@@ -1,0 +1,4 @@
+{
+  "$schema_note": "Manifest of external binaries: per file SHA256 + size (bytes) + official source URL. Populated in stage 8; anishift setup downloads and verifies against this, anishift doctor checks presence/hash.",
+  "binaries": {}
+}

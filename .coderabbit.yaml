@@ -1,0 +1,34 @@
+# CodeRabbit configuration — https://docs.coderabbit.ai/guides/configure-coderabbit
+# The GitHub App must be installed on the repo for this to take effect.
+language: en-US
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/*.lock"
+    - "!utils/**"          # vendored, untouchable — do not review
+    - "!external/**"
+    - "!workspace/**"
+    - "!scripts/tmp/**"
+  path_instructions:
+    - path: "anishift/**/*.py"
+      instructions: >-
+        Enforce the project's Python standards: Google-style docstrings,
+        full type hints, guard clauses, dataclass(slots=True) for value
+        objects, Final constants with docstrings, and the engine-registry /
+        error-hierarchy patterns recycled from MangaShift. Flag over-engineering
+        (KISS/YAGNI) and anything a senior would call needlessly complex.
+    - path: "tests/**/*.py"
+      instructions: >-
+        Expect pytest with AAA structure, tmp_path / monkeypatch for isolation,
+        and pytest.raises with a match pattern. Test names describe behavior.
+
+chat:
+  auto_reply: true

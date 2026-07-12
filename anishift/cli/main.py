@@ -1,0 +1,70 @@
+"""CLI entry point — Typer app registered as the ``anishift`` script.
+
+Stage 1 scope: a banner stub (default, when no subcommand is given) and the
+``doctor`` subcommand. Stage 2 replaces the default action with the interactive
+shell (banner + REPL).
+"""
+
+from __future__ import annotations
+
+import typer
+
+from anishift.setup.doctor import CheckResult, CheckStatus, run_doctor
+from utils.rich_console import StatusType, console, get_status_icon
+
+app = typer.Typer(
+    name="anishift",
+    help="AniShift — terminal-based anime lector for Polish.",
+    no_args_is_help=False,
+    add_completion=False,
+)
+
+_STATUS_ICON: dict[CheckStatus, StatusType] = {
+    CheckStatus.OK: "success",
+    CheckStatus.WARN: "warning",
+    CheckStatus.FAIL: "error",
+    CheckStatus.SKIP: "stopped",
+}
+"""Maps a check outcome to a ``rich_console`` status-icon name."""
+
+
+def _print_banner() -> None:
+    """Render the startup banner stub (full shell arrives in stage 2)."""
+    console.print("[blue_bold]AniShift[/blue_bold] — terminal-based anime lector for Polish.")
+    console.print(
+        "[gray]Interactive shell coming soon. Run [/gray][info]anishift doctor[/info][gray] to check your setup.[/gray]"
+    )
+
+
+def _print_doctor_report(results: list[CheckResult]) -> None:
+    """Render doctor results as an icon + message list."""
+    for result in results:
+        icon = get_status_icon(_STATUS_ICON.get(result.status, "info"))
+        console.print(f"{icon} [bold]{result.name}[/bold]: {result.message}")
+        if result.suggestion and result.status in (CheckStatus.FAIL, CheckStatus.WARN):
+            console.print(f"   [gray]-> {result.suggestion}[/gray]")
+
+
+@app.callback(invoke_without_command=True)
+def _default(ctx: typer.Context) -> None:
+    """Show the banner when invoked without a subcommand."""
+    if ctx.invoked_subcommand is None:
+        _print_banner()
+
+
+@app.command()
+def doctor() -> None:
+    """Run diagnostics and report the state of binaries, keys and workspace."""
+    results = run_doctor()
+    _print_doctor_report(results)
+    if any(r.status is CheckStatus.FAIL for r in results):
+        raise typer.Exit(code=1)
+
+
+def main() -> None:
+    """Console-script entry point (see ``[project.scripts]``)."""
+    app()
+
+
+if __name__ == "__main__":
+    main()

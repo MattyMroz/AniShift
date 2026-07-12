@@ -14,6 +14,7 @@ dependencies = [
     "google-genai>=2.11.0",
     "googletrans>=4.0.2",
     "httpx>=0.28.1",
+    "loguru>=0.7.3",
     "natsort>=8.4.0",
     "openai>=2.45.0",
     "prompt-toolkit>=3.0.52",
@@ -66,18 +67,42 @@ exclude = [
 
 [tool.ruff.lint]
 select = [
-    "E",
-    "F",
-    "W",
-    "I",
-    "N",
-    "UP",
-    "B",
-    "C4",
-    "SIM",
-    "RUF",
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "W",     # pycodestyle warnings
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "S",     # flake8-bandit (security)
+    "BLE",   # flake8-blind-except
+    "G",     # flake8-logging-format
+    "T20",   # flake8-print
+    "C4",    # flake8-comprehensions
+    "SIM",   # flake8-simplify
+    "RET",   # flake8-return
+    "PTH",   # flake8-use-pathlib
+    "PT",    # flake8-pytest-style
+    "TRY",   # tryceratops (exception handling)
+    "PERF",  # perflint
+    "PL",    # pylint
+    "LOG",   # flake8-logging
+    "D",     # pydocstyle
+    "RUF",   # ruff-specific
 ]
-ignore = []
+ignore = [
+    "D100",  # missing docstring in public module
+    "D104",  # missing docstring in public package
+    "D105",  # missing docstring in magic method
+    "D107",  # missing docstring in __init__
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "S101", "PLR2004"]
+"scripts/**" = ["D", "T20"]
 
 [tool.mypy]
 python_version = "3.14"

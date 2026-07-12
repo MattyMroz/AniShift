@@ -1,2 +1,7 @@
-def main() -> None:
-    print("Hello from anishift!")
+"""AniShift — terminal-based anime lector for Polish."""
+
+from __future__ import annotations
+
+__all__ = ["__version__"]
+
+__version__ = "0.1.0"
