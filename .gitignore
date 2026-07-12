@@ -144,11 +144,10 @@ logs/
 
 
 # ── External (binaries fetched via bin_hashes.json) ───────────────────────────
-# Track only README and .gitkeep, nothing else.
+# Track only README, the hash manifest and .gitkeep, nothing else.
 
-external/
-!external/README.md
-!external/.gitkeep
+external/bin/*
+!external/bin/.gitkeep
 
 
 # ── Workspace (user runtime data: MKV, subtitles, audio) ──────────────────────
