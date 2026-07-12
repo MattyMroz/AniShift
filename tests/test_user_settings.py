@@ -66,3 +66,8 @@ def test_load_corrupt_json_returns_defaults(config_file: Path) -> None:
 def test_load_non_object_json_returns_defaults(config_file: Path) -> None:
     config_file.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
     assert load_user_settings() == UserSettings()
+
+
+def test_load_non_utf8_file_returns_defaults(config_file: Path) -> None:
+    config_file.write_bytes(b"\xff\xfe not utf-8 \x80\x81")
+    assert load_user_settings() == UserSettings()

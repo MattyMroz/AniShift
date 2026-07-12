@@ -2,7 +2,7 @@
 
 External binaries live here — outside the Python package and outside git.
 
-```
+```text
 external/
 ├── README.md          # this file (tracked)
 ├── bin_hashes.json    # SHA256 + size + source URL per file (tracked)

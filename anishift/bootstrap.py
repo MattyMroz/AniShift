@@ -49,7 +49,8 @@ def bootstrap(
     """Load config, resolve the workspace, and return an :class:`AppContext`.
 
     Args:
-        settings: Pre-built :class:`Settings` (skips ``.env`` loading).
+        settings: Pre-built :class:`Settings` (skips constructing a new one;
+            ``.env`` is still loaded so it can feed other consumers).
         create_dirs: When ``True`` create the workspace root and its
             default subdirectories on disk.
 

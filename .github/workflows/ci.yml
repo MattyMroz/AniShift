@@ -20,6 +20,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v4
         with:
           version: "latest"
@@ -35,6 +37,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v4
         with:
           version: "latest"
@@ -50,6 +54,8 @@ jobs:
     # Windows off the matrix: local pre-push pytest covers OS bugs, GHA Windows = 2x minutes.
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v4
         with:
           version: "latest"

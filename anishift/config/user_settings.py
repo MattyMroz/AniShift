@@ -79,6 +79,8 @@ def load_user_settings() -> UserSettings:
         raw = json.loads(text)
     except OSError:
         return UserSettings()
+    except UnicodeDecodeError:
+        return UserSettings()
     except json.JSONDecodeError:
         return UserSettings()
     if not isinstance(raw, dict):

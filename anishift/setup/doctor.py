@@ -138,11 +138,15 @@ def check_binaries() -> CheckResult:
         "balcon": _balcon_status(),
     }
     if missing:
+        suggestion = "Run `anishift setup` to download them into external/bin/"
+        if is_windows():
+            # On Windows only bundled binaries count — PATH is not searched.
+            suggestion += " (on Windows binaries must be bundled there, not just on PATH)"
         return CheckResult(
             name="binaries",
             status=CheckStatus.FAIL,
             message=f"missing external binaries: {', '.join(missing)}",
-            suggestion="Run `anishift setup` to download them into external/bin/",
+            suggestion=suggestion,
             details=details,
         )
     return CheckResult(
