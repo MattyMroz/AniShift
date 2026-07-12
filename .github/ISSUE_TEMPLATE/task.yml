@@ -1,0 +1,37 @@
+name: 🔧 Task / Chore
+description: Technical task, cleanup, tech debt, research
+title: "chore: "
+labels: ["infra"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What needs to be done
+      description: A concrete task. Can be research, refactor, tech-debt, cleanup.
+      placeholder: "Split the god-file subtitle_to_speech into a TTS engine registry."
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area (you can add more via labels after creating)
+      options:
+        - infra
+        - extraction
+        - subtitles
+        - translation
+        - tts
+        - audio
+        - composition
+        - cli
+        - pipeline
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      value: |
+        - [ ]
+    validations:
+      required: false

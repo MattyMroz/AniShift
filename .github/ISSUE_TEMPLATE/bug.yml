@@ -1,0 +1,55 @@
+name: 🐛 Bug
+description: Something does not work as expected
+title: "fix: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What breaks and where? How to reproduce it?
+      placeholder: "After typing /settings the panel does not open, it prints an error instead."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should happen?
+      placeholder: "The /settings panel opens and shows current settings."
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Files, paths, logs, screenshots, commit where it appeared.
+      placeholder: "anishift/cli/settings_panel.py, since commit abc123"
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area (you can add more via labels after creating)
+      options:
+        - extraction
+        - subtitles
+        - translation
+        - tts
+        - audio
+        - composition
+        - cli
+        - pipeline
+        - infra
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      description: When is it considered fixed? (checklist)
+      value: |
+        - [ ] bug no longer occurs
+        - [ ] test covers the case
+    validations:
+      required: false

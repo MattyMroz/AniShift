@@ -1,0 +1,31 @@
+# Pre-commit hooks for AniShift.
+# Install once after `uv sync`:
+#   uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
+#
+# pre-commit stage: fast, blocks the commit if ruff fails.
+# commit-msg stage: enforces Conventional Commits message format.
+
+minimum_pre_commit_version: "4.0.0"
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      - id: ruff
+        name: ruff check (auto-fix)
+        args: [--fix]
+        stages: [pre-commit]
+      - id: ruff-format
+        name: ruff format
+        stages: [pre-commit]
+
+  - repo: local
+    hooks:
+      - id: conventional-commit
+        name: conventional commit message
+        entry: python scripts/hooks/check_commit_msg.py
+        language: system
+        stages: [commit-msg]

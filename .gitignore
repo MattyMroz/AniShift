@@ -1,0 +1,159 @@
+# ── Claude (skills/agents/statusline synced from agents repo) ─────────────────
+# settings.json stays tracked (differs per project).
+
+.claude/skills/
+.claude/agents/
+.claude/statusline.mjs
+
+
+# ── Python Runtime ────────────────────────────────────────────────────────────
+
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+*.pyo
+*.pyd
+
+
+# ── Build & Distribution ──────────────────────────────────────────────────────
+
+build/
+dist/
+*.egg-info/
+*.egg
+
+
+# ── Virtual Environments ──────────────────────────────────────────────────────
+
+.venv/
+# NOTE: .python-version and uv.lock ARE committed
+
+
+# ── Testing & Coverage ────────────────────────────────────────────────────────
+
+.pytest_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+
+# ── Tool Caches ───────────────────────────────────────────────────────────────
+
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.uv-cache/
+
+
+# ── IDE & Editor ──────────────────────────────────────────────────────────────
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+
+# ── OS Generated ──────────────────────────────────────────────────────────────
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+
+.env
+.env.local
+.env.*.local
+!.env.example
+.pypirc
+
+
+# ── User Settings (outside workspace, next to code) ───────────────────────────
+
+config/settings.json
+
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+
+logs/
+*.log
+*.log.jsonl
+
+
+# ── Temporary Files ───────────────────────────────────────────────────────────
+
+*.tmp
+*.temp
+*.cache
+
+
+# ── Media (text-based subtitles stay tracked, binaries do not) ────────────────
+
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.mp3
+*.wav
+*.flac
+*.aac
+*.ogg
+*.eac3
+*.m4a
+
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.webp
+*.ico
+# NOTE: SVG tracked (text-based, useful in docs)
+
+
+# ── Archives ──────────────────────────────────────────────────────────────────
+
+*.zip
+*.tar
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.rar
+*.7z
+*.gz
+*.bz2
+
+
+# ── AI/ML Model Weights (future, if a local model returns) ────────────────────
+
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.bin
+*.pkl
+*.pickle
+
+
+# ── External (binaries fetched via bin_hashes.json) ───────────────────────────
+# Track only README and .gitkeep, nothing else.
+
+external/
+!external/README.md
+!external/.gitkeep
+
+
+# ── Workspace (user runtime data: MKV, subtitles, audio) ──────────────────────
+# Track only the folder structure (.gitkeep), no data.
+
+workspace/**/*
+!workspace/**/.gitkeep
+!workspace/README.md

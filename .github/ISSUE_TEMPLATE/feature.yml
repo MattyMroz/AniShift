@@ -1,0 +1,57 @@
+name: ✨ Feature
+description: New feature or improvement
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be built and why? What value does it bring?
+      placeholder: "Add a Piper TTS engine for a free offline lector on Linux."
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope / how to do it
+      description: Roughly what needs to change. No over-planning.
+      placeholder: "New folder services/tts/engines/piper/ + entry in _REGISTRY."
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area (you can add more via labels after creating)
+      options:
+        - extraction
+        - subtitles
+        - translation
+        - tts
+        - audio
+        - composition
+        - cli
+        - pipeline
+        - infra
+    validations:
+      required: true
+  - type: dropdown
+    id: size
+    attributes:
+      label: Size
+      options:
+        - small (up to 1 day)
+        - medium (a few days)
+        - large (epic, split it)
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      value: |
+        - [ ] works in the pipeline
+        - [ ] tests green
+        - [ ] validated before commit
+    validations:
+      required: false
