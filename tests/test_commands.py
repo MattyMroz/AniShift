@@ -11,6 +11,7 @@ from anishift.cli.commands import COMMANDS, dispatch
 from anishift.config import user_settings
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
+from anishift.setup.installer import ResourceResult
 
 
 @pytest.fixture
@@ -23,8 +24,48 @@ def context(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AppContext:
     )
 
 
-def test_registry_has_the_six_commands() -> None:
-    assert set(COMMANDS) == {"/help", "/settings", "/auto", "/manual", "/doctor", "/exit"}
+def test_registry_has_the_seven_commands() -> None:
+    assert set(COMMANDS) == {"/help", "/settings", "/auto", "/manual", "/doctor", "/exit", "/setup"}
+
+
+def test_setup_defaults_to_no_force(context: AppContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, bool] = {}
+
+    def _fake_run_setup(*, force: bool = False) -> list[ResourceResult]:
+        seen["force"] = force
+        return [ResourceResult("ffmpeg", "installed", "downloaded and verified")]
+
+    monkeypatch.setattr("anishift.setup.installer.run_setup", _fake_run_setup)
+    assert dispatch("/setup", context) is True
+    assert seen["force"] is False
+
+
+def test_setup_force_token_forces_reinstall(context: AppContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, bool] = {}
+
+    def _fake_run_setup(*, force: bool = False) -> list[ResourceResult]:
+        seen["force"] = force
+        return []
+
+    monkeypatch.setattr("anishift.setup.installer.run_setup", _fake_run_setup)
+    assert dispatch("/setup force", context) is True
+    assert seen["force"] is True
+
+
+def test_setup_unknown_option_reports_without_running(
+    context: AppContext, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def _never(**_kwargs: object) -> list[ResourceResult]:
+        raise AssertionError("run_setup must not run for an unknown option")
+
+    monkeypatch.setattr("anishift.setup.installer.run_setup", _never)
+    assert dispatch("/setup blah", context) is True
+    assert "Unknown option" in capsys.readouterr().out
+
+
+def test_option_on_optionless_command_reports(context: AppContext, capsys: pytest.CaptureFixture[str]) -> None:
+    assert dispatch("/help force", context) is True
+    assert "Unknown option" in capsys.readouterr().out
 
 
 def test_exit_handler_returns_false(context: AppContext) -> None:
