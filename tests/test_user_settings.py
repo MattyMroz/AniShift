@@ -118,3 +118,9 @@ def test_load_invalid_output_variant_falls_back_to_default(config_file: Path) ->
 def test_load_wrong_typed_tempo_falls_back_to_default(config_file: Path) -> None:
     config_file.write_text(json.dumps({"tempo": "fast"}), encoding="utf-8")
     assert load_user_settings().tempo == 1.0
+
+
+@pytest.mark.parametrize("raw", ["false", "true", 1, 0, None])
+def test_load_wrong_typed_move_results_falls_back_to_default(raw: object, config_file: Path) -> None:
+    config_file.write_text(json.dumps({"move_results_to_output": raw}), encoding="utf-8")
+    assert load_user_settings().move_results_to_output is False

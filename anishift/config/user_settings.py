@@ -99,6 +99,12 @@ def _clean_string(raw: dict[str, Any], key: str, allowed: frozenset[str]) -> Non
         raw.pop(key, None)
 
 
+def _clean_bool(raw: dict[str, Any], key: str) -> None:
+    """Drop ``key`` from ``raw`` when its value is not a real boolean."""
+    if not isinstance(raw.get(key), bool):
+        raw.pop(key, None)
+
+
 def _clean_number(raw: dict[str, Any], key: str, low: float, high: float) -> None:
     """Drop ``key`` from ``raw`` when it is non-numeric or out of range."""
     value = raw.get(key)
@@ -135,6 +141,7 @@ def load_user_settings() -> UserSettings:
     _clean_string(filtered, "output_variant", _OUTPUT_VARIANTS)
     _clean_number(filtered, "tempo", *TEMPO_RANGE)
     _clean_number(filtered, "volume", *VOLUME_RANGE)
+    _clean_bool(filtered, "move_results_to_output")
     return UserSettings(**filtered)
 
 

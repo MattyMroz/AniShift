@@ -110,10 +110,13 @@ def dispatch(text: str, context: AppContext) -> bool:
         context: The wired application context passed to the handler.
 
     Returns:
-        ``True`` to keep the REPL running, ``False`` to exit. An unknown
-        command prints a hint and keeps the loop running.
+        ``True`` to keep the REPL running, ``False`` to exit. A blank line or
+        an unknown command keeps the loop running.
     """
-    name = text.strip().split()[0]
+    parts = text.strip().split()
+    if not parts:
+        return True
+    name = parts[0]
     command = COMMANDS.get(name)
     if command is None:
         console.print(f"[warning]Unknown command[/warning] [info]{name}[/info]. Type [info]/help[/info].")

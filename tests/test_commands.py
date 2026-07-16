@@ -50,3 +50,8 @@ def test_manual_sets_mode_and_persists(context: AppContext) -> None:
 
 def test_unknown_command_returns_true(context: AppContext) -> None:
     assert dispatch("/nope", context) is True
+
+
+@pytest.mark.parametrize("text", ["", "   ", "\t\n"])
+def test_blank_input_returns_true_without_raising(text: str, context: AppContext) -> None:
+    assert dispatch(text, context) is True
