@@ -1,4 +1,27 @@
 {
-  "$schema_note": "Manifest of external binaries: per file SHA256 + size (bytes) + official source URL. Populated in stage 8; anishift setup downloads and verifies against this, anishift doctor checks presence/hash.",
-  "binaries": {}
+  "$schema_note": "Manifest of external resources: per resource a type (binary; AI models may come later), archive URL + SHA256 + size (bytes) + members to extract. Lazy on-demand installs (ensure_binary/ensure_resource) and `anishift setup` download and verify against this. Windows (win64) builds; non-Windows falls back to PATH.",
+  "resources": {
+    "mkvtoolnix": {
+      "type": "binary",
+      "url": "https://mkvtoolnix.download/windows/releases/100.0/mkvtoolnix-64-bit-100.0.7z",
+      "sha256": "061de38bd10e7e28697b897e0b890b78d6f2ec8d668a9c198600ed45c19672ab",
+      "size_bytes": 29708584,
+      "archive": "7z",
+      "members": [
+        { "archive_path": "mkvtoolnix/mkvextract.exe", "dest": "mkvtoolnix/mkvextract.exe" },
+        { "archive_path": "mkvtoolnix/mkvmerge.exe", "dest": "mkvtoolnix/mkvmerge.exe" }
+      ]
+    },
+    "ffmpeg": {
+      "type": "binary",
+      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-15-14-01/ffmpeg-N-125628-ga5e6c0175a-win64-gpl.zip",
+      "sha256": "1c7a6a3d7126e85c6148c42e83bdfb6f964c4a04453075323828a52b331ca149",
+      "size_bytes": 168700637,
+      "archive": "zip",
+      "members": [
+        { "archive_path": "ffmpeg-N-125628-ga5e6c0175a-win64-gpl/bin/ffmpeg.exe", "dest": "ffmpeg/ffmpeg.exe" },
+        { "archive_path": "ffmpeg-N-125628-ga5e6c0175a-win64-gpl/bin/ffprobe.exe", "dest": "ffmpeg/ffprobe.exe" }
+      ]
+    }
+  }
 }
