@@ -3,10 +3,10 @@
   "resources": {
     "mkvtoolnix": {
       "type": "binary",
-      "url": "https://mkvtoolnix.download/windows/releases/100.0/mkvtoolnix-64-bit-100.0.7z",
-      "sha256": "061de38bd10e7e28697b897e0b890b78d6f2ec8d668a9c198600ed45c19672ab",
-      "size_bytes": 29708584,
-      "archive": "7z",
+      "url": "https://mkvtoolnix.download/windows/releases/100.0/mkvtoolnix-64-bit-100.0.zip",
+      "sha256": "5b9f0cf3c52a2f0d9e03e3b36413d42ad6ef455d8f4eeffb70a43e3b7df29c00",
+      "size_bytes": 89387603,
+      "archive": "zip",
       "members": [
         { "archive_path": "mkvtoolnix/mkvextract.exe", "dest": "mkvtoolnix/mkvextract.exe" },
         { "archive_path": "mkvtoolnix/mkvmerge.exe", "dest": "mkvtoolnix/mkvmerge.exe" }

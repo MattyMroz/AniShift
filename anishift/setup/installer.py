@@ -33,11 +33,9 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal, cast
+from typing import Final, Literal
 
 import httpx
-import py7zr
-from py7zr.exceptions import ArchiveError
 
 from anishift.errors import ErrorCode, ErrorContext, FatalError
 from anishift.platform.binaries import (
@@ -159,36 +157,16 @@ def _fail(message: str) -> InstallerError:
     )
 
 
-def _read_zip_member(archive: Path, archive_path: str) -> bytes:
-    """Read one member's bytes from a zip archive."""
-    with zipfile.ZipFile(archive) as zf:
-        if archive_path not in zf.namelist():
-            msg = f"member not found in archive: {archive_path}"
-            raise _fail(msg)
-        return zf.read(archive_path)
-
-
-def _read_7z_member(archive: Path, archive_path: str) -> bytes:
-    """Read one member's bytes from a 7z archive."""
-    with py7zr.SevenZipFile(archive, "r") as zf:
-        extracted = zf.read(targets=[archive_path])
-        if not extracted or archive_path not in extracted:
-            msg = f"member not found in archive: {archive_path}"
-            raise _fail(msg)
-        return cast("bytes", extracted[archive_path].read())
-
-
 def _read_member(archive: Path, resource: Resource, archive_path: str) -> bytes:
-    """Read one member's bytes, mapping archive errors to :class:`InstallerError`."""
+    """Read one member's bytes from a zip archive."""
     try:
-        if resource.archive == "zip":
-            return _read_zip_member(archive, archive_path)
-        return _read_7z_member(archive, archive_path)
+        with zipfile.ZipFile(archive) as zf:
+            if archive_path not in zf.namelist():
+                msg = f"member not found in archive: {archive_path}"
+                raise _fail(msg)
+            return zf.read(archive_path)
     except zipfile.BadZipFile as exc:
         msg = f"{resource.name}: broken zip archive"
-        raise _fail(msg) from exc
-    except ArchiveError as exc:
-        msg = f"{resource.name}: broken 7z archive"
         raise _fail(msg) from exc
 
 

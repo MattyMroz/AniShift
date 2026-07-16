@@ -29,7 +29,7 @@ __all__ = [
 ResourceType = Literal["binary"]
 """Kinds of downloadable resources (a future AI model adds a literal here)."""
 
-ArchiveFormat = Literal["7z", "zip"]
+ArchiveFormat = Literal["zip"]
 """Supported archive container formats."""
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ ArchiveFormat = Literal["7z", "zip"]
 _RESOURCE_TYPES: Final[frozenset[str]] = frozenset(("binary",))
 """Accepted values of the manifest ``type`` field."""
 
-_ARCHIVE_FORMATS: Final[frozenset[str]] = frozenset(("7z", "zip"))
+_ARCHIVE_FORMATS: Final[frozenset[str]] = frozenset(("zip",))
 """Accepted values of the manifest ``archive`` field."""
 
 _SHA256_HEX_LENGTH: Final[int] = 64
