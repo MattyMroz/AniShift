@@ -28,14 +28,6 @@ _STATUS_ICON: dict[CheckStatus, StatusType] = {
 """Maps a check outcome to a ``rich_console`` status-icon name."""
 
 
-def _print_banner() -> None:
-    """Render the startup banner stub (full shell arrives in stage 2)."""
-    console.print("[blue_bold]AniShift[/blue_bold] — terminal-based anime lector for Polish.")
-    console.print(
-        "[gray]Interactive shell coming soon. Run [/gray][info]anishift doctor[/info][gray] to check your setup.[/gray]"
-    )
-
-
 def _print_doctor_report(results: list[CheckResult]) -> None:
     """Render doctor results as an icon + message list."""
     for result in results:
@@ -47,9 +39,12 @@ def _print_doctor_report(results: list[CheckResult]) -> None:
 
 @app.callback(invoke_without_command=True)
 def _default(ctx: typer.Context) -> None:
-    """Show the banner when invoked without a subcommand."""
+    """Launch the interactive shell when invoked without a subcommand."""
     if ctx.invoked_subcommand is None:
-        _print_banner()
+        from anishift.bootstrap import bootstrap  # noqa: PLC0415
+        from anishift.cli.shell import run_shell  # noqa: PLC0415
+
+        run_shell(bootstrap())
 
 
 @app.command()
