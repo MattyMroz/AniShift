@@ -156,3 +156,4 @@ external/bin/*
 workspace/**/*
 !workspace/**/.gitkeep
 !workspace/README.md
+docs/todo-mangashift.md
