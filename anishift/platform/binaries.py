@@ -11,6 +11,7 @@ branch on the OS themselves.
 
 Public API:
     Binary: Enum of the binaries the app needs.
+    TOOL_DIR: Subdirectory holding each binary.
     is_windows: Whether the current OS is Windows.
     external_bin_root: Root of the bundled-binary tree.
     resolve_binary: Best-effort path to a binary (repo, then PATH).
@@ -28,6 +29,7 @@ from typing import Final
 from anishift.errors import ErrorCode, ErrorContext, FatalError
 
 __all__ = [
+    "TOOL_DIR",
     "Binary",
     "BinaryNotFoundError",
     "external_bin_root",
@@ -53,7 +55,7 @@ class BinaryNotFoundError(FatalError):
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_TOOL_DIR: Final[dict[Binary, str]] = {
+TOOL_DIR: Final[dict[Binary, str]] = {
     Binary.BALCON: "balabolka",
     Binary.FFMPEG: "ffmpeg",
     Binary.FFPROBE: "ffmpeg",
@@ -105,7 +107,7 @@ def resolve_binary(binary: Binary) -> Path | None:
     if binary in _WINDOWS_ONLY and not is_windows():
         return None
 
-    bundled = external_bin_root() / _TOOL_DIR[binary] / _exe_name(binary)
+    bundled = external_bin_root() / TOOL_DIR[binary] / _exe_name(binary)
     if bundled.is_file():
         return bundled
 
@@ -135,7 +137,7 @@ def require_binary(binary: Binary) -> Path:
 
     suggestion = f"Run `anishift setup` to download {binary.value}"
     if not is_windows():
-        suggestion += f", or add it under {external_bin_root() / _TOOL_DIR[binary]}"
+        suggestion += f", or add it under {external_bin_root() / TOOL_DIR[binary]}"
     raise BinaryNotFoundError(
         context=ErrorContext(
             code=ErrorCode.BINARY_NOT_FOUND,
