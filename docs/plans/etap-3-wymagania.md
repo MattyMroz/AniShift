@@ -219,12 +219,24 @@ mm_avh: plik >1 KB → skip. **Ślepy** — nie wie z której ścieżki; dwie ś
 
 **Rekomendacja: (c) + issue na (d).** Skoro cały odcinek to ~1 min, cache oszczędza sekundy i wprowadza ryzyko cichego użycia złego pliku. (d) to realny use-case, ale „skąd wiemy, że plik jest zewnętrzny" wymaga własnych wymagań.
 
-### D3 — `UNCERTAIN`: czytać czy wyświetlać?
-Dziś: `DIALOG + UNCERTAIN` → czytane („lepiej za dużo niż zgubić"). User proponuje odwrotnie.
-- **(a)** jak dziś — czytaj przy niepewności
-- **(b)** wyświetlaj przy niepewności — widz i tak zobaczy, nic nie ginie
+### D3 — `UNCERTAIN`: czytać czy wyświetlać? — ZMIERZONE
+Dziś: `DIALOG + UNCERTAIN` → czytane. User proponuje odwrotnie.
 
-**Brak rekomendacji — trzeba policzyć.** Jeśli `UNCERTAIN` to 2 linie/plik, (b) jest tanie. Jeśli 200 — (b) wycisza pół odcinka. **Do zmierzenia przed decyzją.**
+Pomiar na 183 plikach:
+```
+UNCERTAIN:  35 stylow (3.4%),  485 linii (0.7%)
+mediana na plik: 0        <- 161 z 183 plikow ma ZERO
+srednia: 2.7 linii,  max: 54
+```
+
+**`UNCERTAIN` praktycznie nie istnieje.** 88% plików nie ma go wcale.
+
+- **(a)** jak dziś — czytaj przy niepewności
+- **(b)** wyświetlaj przy niepewności
+
+**Rekomendacja: (b)** — kosztuje wyciszenie ~3 linii na plik (widz i tak je zobaczy), chroni przed czytaniem szyldu. Przy takiej skali to decyzja tania w obie strony.
+
+**Ważniejszy wniosek: niepewność NIE jest problemem klasyfikatora.** Problem to 4% przypadków, w których jest pewny **błędnie** — a na to ani D3, ani LLM-na-UNCERTAIN (Trop 6) nie pomaga.
 
 ### D4 — Format `displayed` gdy wejściem był SRT?
 - **(a)** zawsze ASS (jednolity produkt)
@@ -318,17 +330,34 @@ Collapse FBF + odsiew rysunków: `1381 → 18` linii. Heurystyka dostaje uczciwy
 ### Trop 3 — `\pos` jako sygnał, nie reguła (zmierzone)
 Sama pozycja: **78.66%**, 212× szum. Ale mechanika jest prawdziwa: **dialogi nie mają `\pos`** (Fuji: `Furry` 251 linii dialogu, zero `\pos`) — płyną z alignmentu stylu; typesetting jest przyklejany ręcznie. mm_avh już to ma (`_RE_POS`, `_DLG_MAX_POS_RATIO`), pytanie brzmi czy waga jest dobra. **Tanie do przetestowania: przestroić próg, zmierzyć na 182 plikach.**
 
-### Trop 4 — `UNCERTAIN` jako brama, nie kategoria (D3)
-Dziś `UNCERTAIN` → czytane. Nie policzone, ile tego jest. Jeśli mało — to naturalne miejsce na drogie rozstrzyganie (człowiek albo LLM) bez kosztu na resztę. **Najpierw policzyć.**
+### Trop 4 — `UNCERTAIN` jako brama — ⛔ ZMIERZONE, ODPADA
+`UNCERTAIN` to **0.7% linii**, mediana **0** na plik (161/183 plików nie ma go wcale). Nie ma tu czego ratować. **Niepewność nie jest problemem — problemem jest błędna pewność** (4% przypadków, gdzie klasyfikator jest przekonany i myli się).
 
 ### Trop 5 — progi jako nazwane stałe
 `_classify_metrics` ma literały wpisane w ciele (`0.20`, `0.40`, `12`, `0.15`, `-0.25`, `-0.30`) obok nazwanych `Final`. Bez wyciągnięcia ich nie da się sensownie stroić. **Warunek wstępny dla każdego strojenia.**
 
-### Trop 6 — LLM tylko na `UNCERTAIN` (⛔ NIE jako bramkarz)
+### Trop 6 — LLM na `UNCERTAIN` — ⛔ ODPADA (zależał od Tropu 4)
 Jako główny klasyfikator: **nie** — niedeterministyczny (zabija N2), kosztuje, wolny.
-Jako rozjemca dla kilku niepewnych linii z kontekstem sąsiednich kwestii: **może**. Serwis llm i tak wchodzi w etapie 5, więc to nowy konsument istniejącej fasady, nie nowa maszyneria. Default OFF. **Zależy od Tropu 4** — bez pomiaru nie wiadomo, czy to 2 linie czy 200.
+Jako rozjemca dla `UNCERTAIN`: **bez sensu** — to 0.7% linii. Zbudowanie ścieżki LLM w pipelinie po to, by poprawić 3 linie na plik, przy 4% błędnych pewnych decyzji obok, to optymalizacja nie tej rzeczy.
 
-### Trop 7 — sygnały jeszcze niezbadane
+*(Otwarte, gdyby kiedyś wrócić: LLM na liniach, które heurystyka uzna za `displayed`, ale mają cechy dialogu — to celuje w prawdziwy błąd, nie w niepewność. Wymaga ground truth na liniach.)*
+
+### Trop 7 — VAD / alignment z audio (JEDYNY nowy sygnał, etap 6+)
+
+**Nikt na świecie tego nie zrobił** (zbadane). Logika: *jeśli w audio nie ma mowy w momencie linii, linia nie jest dialogiem.* Sygnał **niezależny** od stylu, nazwy i tagów — czyli dokładnie ten, którego heurystyce brakuje. Jedyny kandydat na złapanie 2 zgubionych dialogów.
+
+Stan świata:
+- **Sushi** (717★, martwy 2022, Py2) — najbliższy precedens: liczy per-linię `diff` (dopasowanie do audio) i odsiewa medianą. Ale używa tego do **naprawy timingów**, nie klasyfikacji. W kodzie ma `# we don't snap typesetting` — typesetting to dla niego przeszkoda, nie cel.
+- **stable-ts** — **zarchiwizowany 2026-05-30**, „development indefinitely paused". Liczy sygnał wewnątrz i go wyrzuca. Nie budować na tym.
+- Prymitywy żyją: Silero VAD, ctc-forced-aligner. Nikt ich nie złożył pod ten problem.
+
+Dlaczego nikt: heurystyki tekstowe wystarczają fiszkom (subs2srs itp.). **Lektorowi nie** — przeczytany szyld to słyszalna wada.
+
+**Zastrzeżenia (nie liczyć na oracle):** BGM pod szyldem myli VAD; szyld pokazany w trakcie kwestii off-screen da fałszywy sygnał; koszt = dekodowanie audio per plik. To sygnał **uzupełniający**, nie rozstrzygający.
+
+**Etap 6+** (tam mamy audio), nie 3. Tylko jeśli pomiar pokaże zysk.
+
+### Trop 9 — sygnały jeszcze niezbadane
 - **alignment stylu** (`\an`/`Alignment` z `[V4+ Styles]`) — dialog to zwykle 2 (dół); nie sprawdzone jako osobny sygnał
 - **czcionka** — typesetting często ma własny font (Fuji: `FOT-Matisse Pro Toaru EB PL`); dialog trzyma jeden font w całym pliku
 - **kolor** (`\1c`) — j.w.
@@ -337,13 +366,58 @@ Jako rozjemca dla kilku niepewnych linii z kontekstem sąsiednich kwestii: **mo�
 - **wielkość liter** — szyldy bywają CAPS-em (widoczne w danych: `WYNIKI EGZAMINU`, `SALA PLASTYCZNA`), dialog nie
 - **layer** — typesetting bywa na wyższej warstwie
 
-### Trop 8 — więcej danych
-Zbiór ma 183 pliki / 20 packów ground truth. User zbiera bugi (`working_space/bugs/` — 3 pliki z nazwami wskazującymi sekundę). **Każdy nowy przypadek → do zbioru, nie do głowy.**
+### Trop 8 — LEPSZY ZBIÓR DANYCH (warunek wstępny dla 100%)
+
+**Ocena usera: „nie mamy jeszcze dobrego zbioru danych i dobrze sklasyfikowanego". Liczby to potwierdzają:**
+
+```
+1181 stylow oznaczonych
+   77 (6.5%)  <- sam ground truth mowi "uncertain" (czlowiek nie wiedzial)
+   89         <- style zdefiniowane, ZERO linii Dialogue (oznaczone na slepo)
+```
+
+Trzy wady, każda ogranicza sufit:
+1. **Granulacja: per STYL, nie per linia.** Zbiór odpowiada na pytanie, którego już nie zadajemy (§5). Do 100% potrzebny ground truth **na liniach**.
+2. **6.5% oznaczeń niepewnych** — nie da się być pewniejszym niż dane. To realny sufit zmierzonych 95.86%.
+3. **89 stylów oznaczonych bez ani jednej linii** — zgadywanie z nazwy.
+
+**Wniosek: obecny zbiór nadaje się na regresję („nie pogorszyliśmy"), NIE na dążenie do 100%.**
+
+Co potrzebne, zanim strojenie ma sens:
+- ground truth **na liniach** (choćby na kilkunastu plikach — lepiej mało i pewnie niż 183 i na oko)
+- odrzucić style bez linii (nie ma czego oceniać)
+- rozstrzygnąć te 77 niepewnych albo je wykluczyć z metryki
+- **collapse FBF przed oznaczaniem** — człowiek ma oceniać 18 linii, nie 1381
+
+User zbiera bugi (`working_space/bugs/` — pliki z sekundą w nazwie). **Każdy nowy przypadek → do zbioru, nie do głowy.**
+
+### Trop 10 — przegląd ekosystemu: ⛔ GOTOWCA NIE MA (zbadane)
+
+Pytanie usera: „czy są biblioteki/narzędzia do klasyfikacji". Odpowiedź: **nasze 95.86% to prawdopodobnie najlepszy istniejący wynik na tym problemie.**
+
+| Projekt | Stan | Werdykt |
+|---|---|---|
+| **subs2cia** | żywy (2025-06) | Cała heurystyka to **15 linii**: nuta, puste, tekst w `（）`/`[]`, tag alignmentu. Zero stylów, zero `\pos`, **zero odsiewu rysunków**. Na Fuji przepuściłby 100 linii współrzędnych do TTS. Autor w komentarzu: *„could be much more robust"*. |
+| **ASSR** | **martwy 2020** | Jedyny projekt z auto-detekcją po tagach. Autor w README: przy dużej liczbie tagów fałszywe wykrycia → **wycofał się do ręcznego klikania**. Przyznanie, że tagi nie wystarczają. |
+| **ua.QC.lua** (Aegisub) | żywy | Czysty match nazw stylów (`Defa`, `Alt`, `^OP`, `^ED`), **świadomie bez `\pos`**. Niezależnie potwierdza nasz sygnał — my dokładamy pozycję. |
+| **pyasstosrt** | żywy (2025-11) | Filtr tylko po nazwie stylu (`exclude_styles=['Signs']`). Nie klasyfikuje. |
+| **WeeaBlind** | GUI (2024-11) | Najbliższy use case (dubbing) — **czyta każdą linię**, filtrowanie w TODO. |
+| ffsubsync / alass | żywe | VAD do synchronizacji, nie klasyfikują. |
+
+**Filtr `♪` z subs2cia — ZMIERZONY, daje ZERO:** `95.86% → 95.86%`, identyczne 40/2. Nasz klasyfikator już łapie piosenki po nazwie stylu (`_RE_SONG`). Rekomendacja odrzucona pomiarem.
+
+**Datasety: pusto.** Korpusy anime (HuggingFace, Kaggle) są **spłaszczone do czystego tekstu** — wyrzucają style i tagi, czyli dokładnie nasz sygnał. Surowe źródła do własnego labelowania: [jimaku.cc](https://jimaku.cc/), [kitsunekko-mirror](https://github.com/Ajatt-Tools/kitsunekko-mirror).
+
+**Prace naukowe: zero.** Najbliższa to problem odwrotny (mowa bez napisu). Uwaga: „sign" w literaturze = język migowy.
+
+**Zbiór usera (182 pliki, 1014 stylów, ręczny ground truth) to prawdopodobnie najlepszy istniejący zbiór ewaluacyjny na tym problemie.** Aktywo, nie produkt uboczny — mimo wad z Tropu 8.
 
 ### Czego NIE robić
-- ⛔ Nie stroić progów bez pomiaru na 182 plikach — „poprawka" bez regresji to zgadywanie.
+- ⛔ Nie stroić progów bez pomiaru na 182 plikach — „poprawka" bez regresji to zgadywanie (filtr `♪` to dowód: brzmiał sensownie, dał zero).
 - ⛔ Nie ufać nazwie stylu jako rozstrzygnięciu — Fuji dowodzi, że kłamie (`Znaki` = SMS-y = dialog, `TS` = prawdziwy typesetting).
 - ⛔ Nie zastępować heurystyki LLM-em (Trop 6).
+- ⛔ Nie przepisywać klasyfikatora — jest state of the art (Trop 10).
+- ⛔ Nie budować na `stable-ts` (zarchiwizowany) ani `Sushi` (martwy, Py2).
 
 ---
 
