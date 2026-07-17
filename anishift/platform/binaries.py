@@ -40,11 +40,11 @@ __all__ = [
 class Binary(StrEnum):
     """External executables the app depends on (stem, no extension)."""
 
-    MKVEXTRACT = "mkvextract"
-    MKVMERGE = "mkvmerge"
+    BALCON = "balcon"
     FFMPEG = "ffmpeg"
     FFPROBE = "ffprobe"
-    BALCON = "balcon"
+    MKVEXTRACT = "mkvextract"
+    MKVMERGE = "mkvmerge"
 
 
 class BinaryNotFoundError(FatalError):
@@ -54,11 +54,11 @@ class BinaryNotFoundError(FatalError):
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 _TOOL_DIR: Final[dict[Binary, str]] = {
-    Binary.MKVEXTRACT: "mkvtoolnix",
-    Binary.MKVMERGE: "mkvtoolnix",
+    Binary.BALCON: "balabolka",
     Binary.FFMPEG: "ffmpeg",
     Binary.FFPROBE: "ffmpeg",
-    Binary.BALCON: "balabolka",
+    Binary.MKVEXTRACT: "mkvtoolnix",
+    Binary.MKVMERGE: "mkvtoolnix",
 }
 """Subdirectory of ``external/bin/`` that holds each binary."""
 

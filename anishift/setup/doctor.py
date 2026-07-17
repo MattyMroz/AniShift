@@ -36,9 +36,9 @@ _MIN_PYTHON: Final[tuple[int, int]] = (3, 14)
 """Minimum Python version supported by the project."""
 
 _REQUIRED_BINARIES: Final[tuple[Binary, ...]] = (
+    Binary.FFMPEG,
     Binary.MKVEXTRACT,
     Binary.MKVMERGE,
-    Binary.FFMPEG,
 )
 """Binaries required on every platform (balcon is optional / Windows-only)."""
 
