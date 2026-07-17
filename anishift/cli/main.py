@@ -7,9 +7,14 @@ shell (banner + REPL).
 
 from __future__ import annotations
 
+from typing import Annotated
+
 import typer
 
+from anishift.cli.commands import print_setup_report
+from anishift.errors import AniShiftError
 from anishift.setup.doctor import CheckResult, CheckStatus, run_doctor
+from anishift.setup.installer import run_setup
 from utils.rich_console import StatusType, console, get_status_icon
 
 app = typer.Typer(
@@ -53,6 +58,24 @@ def doctor() -> None:
     results = run_doctor()
     _print_doctor_report(results)
     if any(r.status is CheckStatus.FAIL for r in results):
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def setup(
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Re-download everything, even resources already present."),
+    ] = False,
+) -> None:
+    """Download and verify missing external tools into external/bin/."""
+    try:
+        results = run_setup(force=force)
+    except AniShiftError as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1) from exc
+    print_setup_report(results)
+    if any(result.outcome == "failed" for result in results):
         raise typer.Exit(code=1)
 
 
