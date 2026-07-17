@@ -86,13 +86,8 @@ _MAX_PARALLEL: Final[int] = 2
 _WAIT_POLL_SECONDS: Final[float] = 0.2
 """Future-poll interval that keeps Ctrl+C responsive on Windows."""
 
-_BINARY_RESOURCE: Final[dict[Binary, str]] = {
-    Binary.FFMPEG: "ffmpeg",
-    Binary.FFPROBE: "ffmpeg",
-    Binary.MKVEXTRACT: "mkvtoolnix",
-    Binary.MKVMERGE: "mkvtoolnix",
-}
-"""Manifest resource that provides each binary (balcon joins in stage 6)."""
+_EXE_SUFFIX: Final[str] = ".exe"
+"""Extension stripped from a member destination to read its binary stem."""
 
 
 class InstallerError(FatalError):
@@ -353,6 +348,24 @@ def ensure_resource(
         ) from exc
 
 
+def _resource_for(binary: Binary, resources: tuple[Resource, ...]) -> str | None:
+    """Return the name of the resource whose members install *binary*.
+
+    Args:
+        binary: The executable to find a provider for.
+        resources: Parsed manifest resources.
+
+    Returns:
+        The providing resource's name, or ``None`` when no resource installs it.
+    """
+    for resource in resources:
+        for member in resource.members:
+            stem = Path(member.dest).name.removesuffix(_EXE_SUFFIX)
+            if stem == binary.value:
+                return resource.name
+    return None
+
+
 def ensure_binary(binary: Binary) -> Path:
     """Return *binary*'s path, installing its resource first when missing.
 
@@ -375,7 +388,7 @@ def ensure_binary(binary: Binary) -> Path:
     path = resolve_binary(binary)
     if path is not None:
         return path
-    resource_name = _BINARY_RESOURCE.get(binary)
+    resource_name = _resource_for(binary, load_manifest())
     if resource_name is not None:
         ensure_resource(resource_name)
     return require_binary(binary)

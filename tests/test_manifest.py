@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
+from anishift.platform.binaries import TOOL_DIR, Binary
 from anishift.setup.manifest import (
     ManifestError,
     Resource,
@@ -40,12 +41,11 @@ def test_real_manifest_loads_both_resources() -> None:
 
 
 def test_real_manifest_dests_match_binaries_layout() -> None:
-    by_name = {r.name: r for r in load_manifest(manifest_path())}
-    assert {m.dest for m in by_name["mkvtoolnix"].members} == {
-        "mkvtoolnix/mkvextract.exe",
-        "mkvtoolnix/mkvmerge.exe",
-    }
-    assert {m.dest for m in by_name["ffmpeg"].members} == {"ffmpeg/ffmpeg.exe", "ffmpeg/ffprobe.exe"}
+    for resource in load_manifest(manifest_path()):
+        for member in resource.members:
+            dest = PurePosixPath(member.dest)
+            binary = Binary(dest.name.removesuffix(".exe"))
+            assert dest.parent == PurePosixPath(TOOL_DIR[binary]), f"{member.dest} contradicts TOOL_DIR[{binary}]"
 
 
 def test_load_returns_typed_resources(tmp_path: Path) -> None:
