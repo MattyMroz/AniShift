@@ -23,8 +23,8 @@ def _write(tmp_path: Path, data: object) -> Path:
 
 def _raw_resource(**overrides: object) -> dict[str, object]:
     raw: dict[str, object] = {
-        "type": "binary",
-        "url": "https://example.test/a.zip",
+        "kind": "binary",
+        "source": {"type": "url", "url": "https://example.test/a.zip"},
         "sha256": "ab" * 32,
         "size_bytes": 10,
         "archive": "zip",
@@ -55,7 +55,8 @@ def test_load_returns_typed_resources(tmp_path: Path) -> None:
     resource = resources[0]
     assert isinstance(resource, Resource)
     assert resource.name == "tool"
-    assert resource.type == "binary"
+    assert resource.kind == "binary"
+    assert resource.source.url == "https://example.test/a.zip"
     assert resource.members[0].dest == "tool/x.exe"
 
 
@@ -65,8 +66,14 @@ def test_missing_resources_key_raises(tmp_path: Path) -> None:
         load_manifest(path)
 
 
-def test_unknown_type_raises(tmp_path: Path) -> None:
-    path = _write(tmp_path, {"resources": {"t": _raw_resource(type="model")}})
+def test_unknown_kind_raises(tmp_path: Path) -> None:
+    path = _write(tmp_path, {"resources": {"t": _raw_resource(kind="model")}})
+    with pytest.raises(ManifestError):
+        load_manifest(path)
+
+
+def test_unknown_source_type_raises(tmp_path: Path) -> None:
+    path = _write(tmp_path, {"resources": {"t": _raw_resource(source={"type": "hf", "url": "x"})}})
     with pytest.raises(ManifestError):
         load_manifest(path)
 

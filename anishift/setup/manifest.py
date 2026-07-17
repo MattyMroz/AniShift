@@ -1,10 +1,10 @@
 """Load and validate the external-resource manifest (``bin_hashes.json``).
 
 The manifest is the single source of truth for what the resource installer
-downloads: per resource a ``type``, the archive URL, its SHA256 and size, and
-the members to extract. Adding a resource — including a future AI model — is
-a new manifest entry plus at most a new ``type`` literal, not a new
-downloader.
+downloads: per resource a ``kind``, a ``source`` (how to fetch it), its SHA256
+and size, and the members to extract. ``source`` is a tagged union keyed by
+``source.type``; today only ``url`` exists, and a future AI model adds a new
+source type plus a fetcher — not a new manifest shape.
 """
 
 from __future__ import annotations
@@ -21,21 +21,27 @@ __all__ = [
     "ManifestError",
     "Member",
     "Resource",
-    "ResourceType",
+    "ResourceKind",
+    "Source",
+    "SourceType",
+    "UrlSource",
     "load_manifest",
     "manifest_path",
 ]
 
-ResourceType = Literal["binary"]
+ResourceKind = Literal["binary"]
 """Kinds of downloadable resources (a future AI model adds a literal here)."""
+
+SourceType = Literal["url"]
+"""How a resource is fetched (a future ``hf``/``licensed`` adds a literal here)."""
 
 ArchiveFormat = Literal["zip"]
 """Supported archive container formats."""
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-_RESOURCE_TYPES: Final[frozenset[str]] = frozenset(("binary",))
-"""Accepted values of the manifest ``type`` field."""
+_RESOURCE_KINDS: Final[frozenset[str]] = frozenset(("binary",))
+"""Accepted values of the manifest ``kind`` field."""
 
 _ARCHIVE_FORMATS: Final[frozenset[str]] = frozenset(("zip",))
 """Accepted values of the manifest ``archive`` field."""
@@ -46,6 +52,22 @@ _SHA256_HEX_LENGTH: Final[int] = 64
 
 class ManifestError(FatalError):
     """Raised when the resource manifest is missing or malformed."""
+
+
+@dataclass(frozen=True, slots=True)
+class UrlSource:
+    """A resource fetched from a direct download URL.
+
+    Attributes:
+        url: Download URL of the archive.
+    """
+
+    type: Literal["url"]
+    url: str
+
+
+Source = UrlSource
+"""Tagged union of resource sources (only :class:`UrlSource` exists today)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,12 +85,12 @@ class Member:
 
 @dataclass(frozen=True, slots=True)
 class Resource:
-    """One downloadable resource: an archive plus the members to install.
+    """One downloadable resource: a source plus the members to install.
 
     Attributes:
         name: Resource name (also the manifest key), e.g. ``"ffmpeg"``.
-        type: Resource kind; decides the install root (binary -> ``external/bin/``).
-        url: Download URL of the archive.
+        kind: Resource kind; decides the install root (binary -> ``external/bin/``).
+        source: How to fetch the archive.
         sha256: Expected SHA256 of the downloaded archive (lowercase hex).
         size_bytes: Expected archive size in bytes.
         archive: Container format of the download.
@@ -76,8 +98,8 @@ class Resource:
     """
 
     name: str
-    type: ResourceType
-    url: str
+    kind: ResourceKind
+    source: Source
     sha256: str
     size_bytes: int
     archive: ArchiveFormat
@@ -105,6 +127,22 @@ def _fail(message: str) -> ManifestError:
     )
 
 
+def _parse_source(name: str, raw: Any) -> Source:
+    """Validate and build a :class:`Source` from raw JSON."""
+    if not isinstance(raw, dict):
+        msg = f"resource {name} needs a source object"
+        raise _fail(msg)
+    source_type = raw.get("type")
+    if source_type != "url":
+        msg = f"resource {name} has unsupported source type: {source_type!r}"
+        raise _fail(msg)
+    url = raw.get("url")
+    if not isinstance(url, str) or not url:
+        msg = f"resource {name} source needs a non-empty url"
+        raise _fail(msg)
+    return UrlSource(type="url", url=url)
+
+
 def _parse_member(raw: Any) -> Member:
     """Validate and build a :class:`Member` from raw JSON."""
     if not isinstance(raw, dict):
@@ -129,17 +167,13 @@ def _parse_resource(name: str, raw: Any) -> Resource:
     if not isinstance(raw, dict):
         msg = f"resource {name} must be an object"
         raise _fail(msg)
-    kind = raw.get("type")
-    url = raw.get("url")
+    kind = raw.get("kind")
     sha256 = raw.get("sha256")
     size_bytes = raw.get("size_bytes")
     archive = raw.get("archive")
     members = raw.get("members")
-    if kind not in _RESOURCE_TYPES:
-        msg = f"resource {name} has unsupported type: {kind!r}"
-        raise _fail(msg)
-    if not isinstance(url, str) or not url:
-        msg = f"resource {name} needs a non-empty url"
+    if kind not in _RESOURCE_KINDS:
+        msg = f"resource {name} has unsupported kind: {kind!r}"
         raise _fail(msg)
     if not isinstance(sha256, str) or len(sha256) != _SHA256_HEX_LENGTH:
         msg = f"resource {name} needs a {_SHA256_HEX_LENGTH}-char sha256"
@@ -155,8 +189,8 @@ def _parse_resource(name: str, raw: Any) -> Resource:
         raise _fail(msg)
     return Resource(
         name=name,
-        type=cast(ResourceType, kind),
-        url=url,
+        kind=cast(ResourceKind, kind),
+        source=_parse_source(name, raw.get("source")),
         sha256=sha256.lower(),
         size_bytes=size_bytes,
         archive=cast(ArchiveFormat, archive),

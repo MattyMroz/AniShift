@@ -24,7 +24,7 @@ from anishift.setup.installer import (
     run_setup,
     sha256_file,
 )
-from anishift.setup.manifest import Member, Resource
+from anishift.setup.manifest import Member, Resource, UrlSource
 
 
 def _zip(tmp_path: Path, entries: dict[str, bytes], name: str = "pkg.zip") -> Path:
@@ -38,8 +38,8 @@ def _zip(tmp_path: Path, entries: dict[str, bytes], name: str = "pkg.zip") -> Pa
 def _resource(archive: Path, members: list[Member], name: str = "tool") -> Resource:
     return Resource(
         name=name,
-        type="binary",
-        url=f"https://example.test/{name}.zip",
+        kind="binary",
+        source=UrlSource(type="url", url=f"https://example.test/{name}.zip"),
         sha256=sha256_file(archive),
         size_bytes=archive.stat().st_size,
         archive="zip",
@@ -74,8 +74,8 @@ def test_extract_members_rejects_broken_archive(tmp_path: Path) -> None:
     archive.write_bytes(b"this is not a zip")
     resource = Resource(
         name="tool",
-        type="binary",
-        url="https://example.test/tool.zip",
+        kind="binary",
+        source=UrlSource(type="url", url="https://example.test/tool.zip"),
         sha256="00" * 32,
         size_bytes=1,
         archive="zip",
@@ -155,8 +155,8 @@ def test_install_resource_rejects_bad_hash(tmp_path: Path) -> None:
     archive = _zip(tmp_path, {"root/tool.exe": b"MZ"})
     resource = Resource(
         name="tool",
-        type="binary",
-        url="https://example.test/tool.zip",
+        kind="binary",
+        source=UrlSource(type="url", url="https://example.test/tool.zip"),
         sha256="00" * 32,
         size_bytes=archive.stat().st_size,
         archive="zip",
@@ -201,8 +201,8 @@ def test_run_setup_installs_missing_and_isolates_failure(tmp_path: Path, monkeyp
     good = _resource(good_archive, [Member("root/good.exe", "good/good.exe")], name="good")
     bad = Resource(
         name="bad",
-        type="binary",
-        url="https://example.test/bad.zip",
+        kind="binary",
+        source=UrlSource(type="url", url="https://example.test/bad.zip"),
         sha256="00" * 32,
         size_bytes=good_archive.stat().st_size,
         archive="zip",
@@ -296,8 +296,8 @@ def test_ensure_resource_propagates_hash_mismatch(tmp_path: Path, monkeypatch: p
     archive = _zip(tmp_path, {"root/tool.exe": b"MZ"})
     resource = Resource(
         name="tool",
-        type="binary",
-        url="https://example.test/tool.zip",
+        kind="binary",
+        source=UrlSource(type="url", url="https://example.test/tool.zip"),
         sha256="00" * 32,
         size_bytes=archive.stat().st_size,
         archive="zip",

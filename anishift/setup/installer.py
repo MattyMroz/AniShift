@@ -87,10 +87,10 @@ _WAIT_POLL_SECONDS: Final[float] = 0.2
 """Future-poll interval that keeps Ctrl+C responsive on Windows."""
 
 _BINARY_RESOURCE: Final[dict[Binary, str]] = {
-    Binary.MKVEXTRACT: "mkvtoolnix",
-    Binary.MKVMERGE: "mkvtoolnix",
     Binary.FFMPEG: "ffmpeg",
     Binary.FFPROBE: "ffmpeg",
+    Binary.MKVEXTRACT: "mkvtoolnix",
+    Binary.MKVMERGE: "mkvtoolnix",
 }
 """Manifest resource that provides each binary (balcon joins in stage 6)."""
 
@@ -198,7 +198,7 @@ def _download_httpx(
     cancel: threading.Event | None = None,
 ) -> None:
     """Stream *resource*'s archive to *target* over HTTPS."""
-    with httpx.stream("GET", resource.url, follow_redirects=True, timeout=_DOWNLOAD_TIMEOUT) as response:
+    with httpx.stream("GET", resource.source.url, follow_redirects=True, timeout=_DOWNLOAD_TIMEOUT) as response:
         response.raise_for_status()
         with target.open("wb") as handle:
             for chunk in response.iter_bytes(_CHUNK_SIZE):
@@ -329,7 +329,7 @@ def ensure_resource(
                 suggestion="Fix the resource name or add it to external/bin_hashes.json",
             ),
         )
-    if resource.type == "binary" and not is_windows():
+    if resource.kind == "binary" and not is_windows():
         return
     if is_installed(resource, root):
         return
@@ -485,7 +485,7 @@ def run_setup(
     results: dict[str, ResourceResult] = {}
     to_install: list[Resource] = []
     for resource in loaded:
-        if resource.type == "binary" and not is_windows():
+        if resource.kind == "binary" and not is_windows():
             results[resource.name] = ResourceResult(resource.name, "unavailable", "install via your OS package manager")
         elif not force and is_installed(resource, root):
             results[resource.name] = ResourceResult(resource.name, "skipped", "already present")
