@@ -93,6 +93,9 @@ _MIN_BAR_WIDTH: Final[int] = 3
 _MAX_DESCRIPTION_DISPLAY: Final[int] = 20
 """Maximum description characters counted toward layout width."""
 
+_STYLE_FIELD: Final[str] = "style"
+"""Per-task field name that overrides a column's shared ``style_name``."""
+
 # ── Progress Bar Builders ─────────────────────────────────────────────────────
 
 
@@ -202,10 +205,11 @@ class ColoredPercentageColumn(ProgressColumn):
 
     def render(self, task: Task) -> Text:
         """Render percentage or empty text for indeterminate tasks."""
+        style = task.fields.get(_STYLE_FIELD) or self.style_name
         if task.total is None:
-            return Text("", style=self.style_name)
+            return Text("", style=style)
         percentage = min(100, int(task.percentage))
-        return Text(f"| {percentage:>3d}%", style=self.style_name)
+        return Text(f"| {percentage:>3d}%", style=style)
 
 
 class ColoredElapsedColumn(ProgressColumn):
@@ -221,6 +225,7 @@ class ColoredElapsedColumn(ProgressColumn):
 
     def render(self, task: Task) -> Text:
         """Render elapsed time as HH:MM:SS.mmm."""
+        style = task.fields.get(_STYLE_FIELD) or self.style_name
         elapsed = task.elapsed if task.elapsed else 0
         hours = int(elapsed // 3600)
         minutes = int((elapsed % 3600) // 60)
@@ -228,7 +233,7 @@ class ColoredElapsedColumn(ProgressColumn):
         milliseconds = int((elapsed % 1) * 1000)
         return Text(
             f"| {hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}",
-            style=self.style_name,
+            style=style,
         )
 
 
@@ -245,15 +250,16 @@ class ColoredETAColumn(ProgressColumn):
 
     def render(self, task: Task) -> Text:
         """Render estimated time remaining."""
+        style = task.fields.get(_STYLE_FIELD) or self.style_name
         if task.total is None:
-            return Text("", style=self.style_name)
+            return Text("", style=style)
         remaining = task.time_remaining
         if remaining is None:
-            return Text("| 00:00:00", style=self.style_name)
+            return Text("| 00:00:00", style=style)
         hours = int(remaining // 3600)
         minutes = int((remaining % 3600) // 60)
         seconds = int(remaining % 60)
-        return Text(f"| {hours:02d}:{minutes:02d}:{seconds:02d}", style=self.style_name)
+        return Text(f"| {hours:02d}:{minutes:02d}:{seconds:02d}", style=style)
 
 
 class ColoredBytesColumn(ProgressColumn):
@@ -269,11 +275,12 @@ class ColoredBytesColumn(ProgressColumn):
 
     def render(self, task: Task) -> Text:
         """Render completed/total byte counts."""
+        style = task.fields.get(_STYLE_FIELD) or self.style_name
         completed = int(task.completed)
         total = int(task.total) if task.total else 0
         completed_str = format_bytes(completed, precision=1)
         total_str = format_bytes(total, precision=1)
-        return Text(f"| {completed_str}/{total_str}", style=self.style_name)
+        return Text(f"| {completed_str}/{total_str}", style=style)
 
 
 class ColoredSpeedColumn(ProgressColumn):
@@ -289,11 +296,12 @@ class ColoredSpeedColumn(ProgressColumn):
 
     def render(self, task: Task) -> Text:
         """Render current transfer speed."""
+        style = task.fields.get(_STYLE_FIELD) or self.style_name
         speed = task.finished_speed or task.speed
         if speed is None:
-            return Text("| ? MB/s", style=self.style_name)
+            return Text("| ? MB/s", style=style)
         speed_str = format_bytes(speed, precision=1)
-        return Text(f"| {speed_str}/s", style=self.style_name)
+        return Text(f"| {speed_str}/s", style=style)
 
 
 # ── Progress Bar Manager ──────────────────────────────────────────────────────

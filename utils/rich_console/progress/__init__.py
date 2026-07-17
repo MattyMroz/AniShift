@@ -21,5 +21,6 @@ Usage:
 from __future__ import annotations
 
 from .manager import ProgressBarBuilder, ProgressBarManager
+from .multi import MultiProgressManager
 
-__all__ = ["ProgressBarBuilder", "ProgressBarManager"]
+__all__ = ["MultiProgressManager", "ProgressBarBuilder", "ProgressBarManager"]
