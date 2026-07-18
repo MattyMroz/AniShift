@@ -1,0 +1,43 @@
+{
+  "container": {
+    "recognized": true,
+    "supported": true,
+    "type": "Matroska"
+  },
+  "tracks": [
+    {
+      "id": 0,
+      "type": "video",
+      "properties": {
+        "codec_id": "V_MPEG4/ISO/AVC",
+        "language": "und",
+        "language_ietf": "und",
+        "default_track": true,
+        "num_index_entries": 710
+      }
+    },
+    {
+      "id": 1,
+      "type": "audio",
+      "properties": {
+        "codec_id": "A_AAC",
+        "language": "jpn",
+        "language_ietf": "ja",
+        "default_track": true,
+        "num_index_entries": 0
+      }
+    },
+    {
+      "id": 2,
+      "type": "subtitles",
+      "properties": {
+        "codec_id": "S_TEXT/ASS",
+        "language": "eng",
+        "language_ietf": "en",
+        "track_name": "English subs",
+        "default_track": true,
+        "num_index_entries": 353
+      }
+    }
+  ]
+}
