@@ -179,3 +179,42 @@ Nie ma opcji pośredniej która działa — kto ją sprzedaje, sprzedaje teatr.
 **Efekt: nowy typ zasobu = nowy wpis JSON + max jeden plik fetchera. Zero przepisywania.**
 Wzorzec ollamy (jeden store, wiele typów blobów) + pip (jeden indeks, hash-pinning),
 sprawdzony na miliardach pobrań.
+
+---
+
+## Backport do MangaShift: multi-task progress bar
+
+**Kontekst:** AniShift skopiował `utils/rich_console` 1:1 z MangaShift, ale dołożył
+`MultiProgressManager` — wiele pasków naraz, każdy z własnym kolorem per-task.
+MangaShift tego nie ma. Żeby `utils/` pozostał wspólny (1:1 w obie strony), ten dodatek
+powinien wrócić do MangaShift.
+
+**Co skopiować z AniShift → MangaShift:**
+
+- `utils/rich_console/progress/multi.py` — cała klasa `MultiProgressManager` (nowy plik).
+  Tryb tylko `blocks` (bo `BarColumn` trzyma `complete_style` na konstruktorze i nie czyta
+  `task.fields`; blocks idzie przez `TextColumn("{task.fields[custom_bar]}")` — per-task).
+  Karmiony bajtami (`total=size_bytes`, `advance` o bajty) → kolumny bytes/speed pokazują
+  realne MB i MB/s. Thread-safe (własny `threading.Lock`).
+- `utils/rich_console/progress/manager.py` — fix 5 kolumn (`ColoredPercentageColumn`,
+  `Elapsed`, `ETA`, `Bytes`, `Speed`): każda `render` czyta styl z
+  `task.fields.get(_STYLE_FIELD) or self.style_name`. Wstecznie zgodne — stary
+  jednotaskowy manager nie ustawia pola, więc fallback zachowuje zachowanie 1:1.
+  Nowa stała `_STYLE_FIELD: Final[str] = "style"`.
+- `utils/rich_console/progress/__init__.py` + `rich_console/__init__.py` — eksport
+  `MultiProgressManager`.
+- `utils/rich_console/tests/test_progress.py` — klasa `TestMultiProgressManager` (9 testów:
+  per-task style niezależny, thread-safety, clamp, truncation, fallback bez pola).
+- `utils/rich_console/examples/demo_progress.py` — demo 25 „MULTI-TASK" (dwa paski,
+  różne prędkości → różne kolory jednocześnie).
+
+**Uwaga o strukturze:** w MangaShift `utils/` jest WEWNĄTRZ pakietu (`mangashift/utils/`),
+importy relatywne (`..progress.multi`) — więc kopiuje się bez zmiany ścieżek. W AniShift
+`utils/` też jest w pakiecie (`anishift/utils/`, przeniesione z rootu) — symetryczne.
+
+**Dlaczego to działa (sedno fixu):** `rich.Progress` natywnie renderuje wiele tasków;
+problemem był tylko wrapper trzymający jeden `self.task`. Kolor per-task wymagał
+przeniesienia stylu z instancji kolumny (współdzielonej przez wszystkie wiersze) do
+`task.fields` — inaczej ostatni `update` przemalowywał wszystkie paski.
+
+**Efekt: `utils/rich_console` znów 1:1 między AniShift i MangaShift, z multi-paskiem po obu stronach.**
