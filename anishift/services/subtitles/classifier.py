@@ -13,37 +13,70 @@ if TYPE_CHECKING:
 
 __all__ = ["Category", "StyleVerdict", "classify_styles", "dedup_animation"]
 
-# Constants
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 _BACKSLASH: Final[str] = chr(92)
 """Literal backslash used to build ASS tag expressions."""
 
+
+# ── ASS tag signatures ──────────────────────────────────────────────────────
 _RE_DRAW: Final[re.Pattern[str]] = re.compile(_BACKSLASH + _BACKSLASH + r"p[1-9]")
+"""Vector-drawing tag marking a shape rather than text."""
+
 _RE_POS: Final[re.Pattern[str]] = re.compile(_BACKSLASH + _BACKSLASH + r"(pos|move|clip|frz|fad|org|t\()")
+"""Positioning and animation tags typical of on-screen typesetting."""
+
 _RE_KARA: Final[re.Pattern[str]] = re.compile(_BACKSLASH + _BACKSLASH + r"[kK][fo]?[0-9]")
+"""Karaoke timing tags typical of song lines."""
+
 _RE_PUNCT: Final[re.Pattern[str]] = re.compile(r'[.!?…»"]')
+"""Sentence punctuation signalling dialogue."""
+
+
+# ── Style-name signatures (supporting, not decisive on their own) ───────────
 _RE_SONG: Final[re.Pattern[str]] = re.compile(
     r"\bop\b|\bed\b|opening|ending|song|lyric|piosenk|karaoke|insert.?song|theme", re.I
 )
+"""Style names suggesting an opening, ending or insert song."""
+
 _RE_NOTE: Final[re.Pattern[str]] = re.compile(r"disclaimer|\bnote\b|notka|przypis|tln|t/n|credit|copyright", re.I)
+"""Style names suggesting a translator note or credit."""
+
 _RE_SIGN: Final[re.Pattern[str]] = re.compile(
     r"sign|znak|kartka|title|next_ep|acquired|chyron|chapter|^ts$|typeset|caption.?box|box$", re.I
 )
+"""Style names suggesting an on-screen sign, title or chapter card."""
+
 _RE_DLG: Final[re.Pattern[str]] = re.compile(
     r"default|main|dialog|narrat|italic|flashback|tirets|thought|mysli|myśli|alter|overlap", re.I
 )
+"""Style names suggesting dialogue, narration or thoughts."""
 
+
+# ── Animation deduplication thresholds ──────────────────────────────────────
 _DEDUP_MIN_REPEAT: Final[int] = 5
 """Minimum repeated lines required for animation deduplication."""
 
 _DEDUP_WINDOW_MS: Final[int] = 2000
 """Maximum median start gap for animation deduplication."""
 
+
+# ── Style classification thresholds ─────────────────────────────────────────
 _DRAW_SIGN_RATIO: Final[float] = 0.30
+"""Vector-drawing line ratio above which a style is a sign (shape)."""
+
 _KARA_SONG_RATIO: Final[float] = 0.30
+"""Karaoke line ratio above which a style is an OP/ED song."""
+
 _DLG_MAX_POS_RATIO: Final[float] = 0.50
+"""Max positioning ratio for the confident-dialogue-variant shortcut."""
+
 _SCORE_DIALOG: Final[float] = 0.55
+"""Score at or above which a style is classified as DIALOG."""
+
 _SCORE_SIGN: Final[float] = 0.25
+"""Score at or below which a style is classified as SIGN."""
+
 _FRAC_DIALOG_MIN: Final[float] = 0.20
 """File-share ratio at or above which a style earns the share score."""
 

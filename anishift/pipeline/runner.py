@@ -31,7 +31,7 @@ from .types import FileFailure, FileOutcome, PipelineInteraction, PipelineReport
 
 __all__ = ["discover_inputs", "run_pipeline"]
 
-# Constants
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 _WORKER_CAP: Final[int] = 4
 """Upper bound on parallel file workers."""

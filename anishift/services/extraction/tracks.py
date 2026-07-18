@@ -9,6 +9,7 @@ from typing import Any, Final
 from anishift.services.extraction.types import TrackInfo, TrackSelection, is_text_subtitle_codec
 
 __all__ = [
+    "is_polish_language",
     "score_audio_track",
     "score_subtitle_track",
     "select_audio_track",
@@ -16,7 +17,7 @@ __all__ = [
     "select_tracks",
 ]
 
-# Constants
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 _SUB_LANG_WEIGHT: Final[dict[str, int]] = {"pol": 100, "pl": 100, "eng": 50, "en": 50}
 """Subtitle language weights."""
@@ -53,6 +54,11 @@ _RE_SIGNS: Final[re.Pattern[str]] = re.compile(r"sign|song|forced", re.I)
 
 _POLISH_LANGS: Final[frozenset[str]] = frozenset({"pol", "pl"})
 """Subtitle language tags meaning the track is already Polish."""
+
+
+def is_polish_language(language: str) -> bool:
+    """Tell whether a subtitle language tag means the track is already Polish."""
+    return language.lower() in _POLISH_LANGS
 
 
 def _track_name(track: dict[str, Any]) -> str:
@@ -146,5 +152,5 @@ def select_tracks(tracks: Sequence[TrackInfo]) -> TrackSelection:
     audio_id = select_audio_track(audio_shaped)
     subtitle_id = select_subtitle_track(text_shaped)
     subtitle = next((track for track in tracks if track.id == subtitle_id), None)
-    already_polish = subtitle is not None and subtitle.language.lower() in _POLISH_LANGS
+    already_polish = subtitle is not None and is_polish_language(subtitle.language)
     return TrackSelection(audio_id=audio_id, subtitle_id=subtitle_id, already_polish=already_polish)

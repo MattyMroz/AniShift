@@ -15,7 +15,7 @@ __all__ = [
     "is_text_subtitle_codec",
 ]
 
-# Constants
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 _CODEC_EXTENSION: Final[dict[str, str]] = {
     "A_AAC/MPEG2/*": "aac",

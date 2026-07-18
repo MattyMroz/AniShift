@@ -9,8 +9,9 @@ from typing import cast
 from anishift.bootstrap import AppContext
 from anishift.errors import AniShiftError
 from anishift.pipeline import discover_inputs, run_pipeline
-from anishift.pipeline.types import FileOutcome, PipelineReport, ProgressReporter
+from anishift.pipeline.types import FileOutcome, FileStatus, PipelineReport, ProgressReporter
 from anishift.platform.binaries import Binary, BinaryNotFoundError
+from anishift.services.extraction.tracks import is_polish_language
 from anishift.services.extraction.types import MediaInfo, TrackInfo, TrackSelection
 from anishift.services.subtitles.classifier import StyleVerdict
 from anishift.setup.installer import InstallerError, ensure_binary
@@ -18,7 +19,7 @@ from anishift.utils.rich_console import MultiProgressManager, StatusType, consol
 
 __all__ = ["run_pipeline_command"]
 
-_STATUS_ICON: dict[str, StatusType] = {
+_STATUS_ICON: dict[FileStatus, StatusType] = {
     "done": "success",
     "failed": "error",
     "cancelled": "warning",
@@ -71,7 +72,7 @@ def _render_pipeline_error(error: AniShiftError) -> None:
 
 def _render_report(report: PipelineReport) -> None:
     """Render all file outcomes and the summary footer."""
-    counts = {"done": 0, "failed": 0, "cancelled": 0}
+    counts: dict[FileStatus, int] = {"done": 0, "failed": 0, "cancelled": 0}
     for outcome in report.outcomes:
         counts[outcome.status] += 1
         _render_outcome(outcome)
@@ -118,7 +119,7 @@ class _ManualInteraction:
             allow_none=True,
         )
         subtitle = next((track for track in info.tracks if track.id == subtitle_id), None)
-        already_polish = subtitle is not None and subtitle.language.lower() in {"pol", "pl"}
+        already_polish = subtitle is not None and is_polish_language(subtitle.language)
         return TrackSelection(audio_id, subtitle_id, already_polish)
 
     def choose_spoken_styles(

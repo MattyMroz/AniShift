@@ -32,7 +32,7 @@ __all__ = [
     "parse_media_info",
 ]
 
-# Constants
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 _RE_GUI_PROGRESS: Final[re.Pattern[str]] = re.compile(r"^#GUI#progress\s+(\d+)%")
 """One ``--gui-mode`` progress line of mkvextract."""

@@ -31,7 +31,7 @@ __all__ = [
     "write_displayed",
 ]
 
-# Constants
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 _FBF_MAX_GAP_MS: Final[int] = 500
 """Maximum gap between consecutive identical events merged as one FBF run."""

@@ -7,7 +7,7 @@ from typing import Final
 
 __all__ = ["is_drawing", "replace_visible_text", "visible_text"]
 
-# Constants
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 _RE_TAG_BLOCK: Final[re.Pattern[str]] = re.compile(r"\{[^}]*\}")
 """One ASS override-tag block, ``{...}``."""
