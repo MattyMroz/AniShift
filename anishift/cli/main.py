@@ -15,7 +15,7 @@ from anishift.cli.commands import print_setup_report
 from anishift.errors import AniShiftError
 from anishift.setup.doctor import CheckResult, CheckStatus, run_doctor
 from anishift.setup.installer import run_setup
-from utils.rich_console import StatusType, console, get_status_icon
+from anishift.utils.rich_console import StatusType, console, get_status_icon
 
 app = typer.Typer(
     name="anishift",

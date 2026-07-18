@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from .console import console
 from .progress import (
+    MultiProgressManager,
     ProgressBarBuilder,
     ProgressBarManager,
 )
@@ -47,6 +48,7 @@ from .utilities import (
 __all__ = [
     "RICH_THEME",
     "Colors",
+    "MultiProgressManager",
     "ProgressBarBuilder",
     "ProgressBarManager",
     "StatusType",

@@ -1,0 +1,360 @@
+"""Demo progress bar system — all styles and modular features.
+
+Demonstrate ProgressBarManager capabilities:
+- Unknown progress (spinner)
+- Standard 4-color transition
+- Full palette 13-color transition
+- Custom chars (█░, ﷼)
+- All colors palette showcase
+- Download mode with bytes + speed (show_download=True)
+- ETA with time remaining (show_eta=True)
+- Modular component mixing (spinner, bar, percentage, elapsed, bytes)
+- Description truncation modes (end, start, middle)
+- Multi-task concurrent bars with independent per-task colors
+
+Usage (via module entry point):
+
+    python -m <pkg>.rich_console.examples --progress
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Final
+
+from ..console import console
+from ..progress import MultiProgressManager, ProgressBarManager
+
+__all__ = ["run_all_demos"]
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+HEADER_WIDTH: Final[int] = 70
+SECTION_SEPARATOR: Final[str] = "" * HEADER_WIDTH
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def print_section(title: str) -> None:
+    """Print section header with centered title."""
+    console.print(f"\n{SECTION_SEPARATOR}")
+    console.print(title.center(HEADER_WIDTH), style="white_bold")
+    console.print(f"{SECTION_SEPARATOR}\n")
+
+
+def run_all_demos() -> None:
+    """Run complete progress bar demo suite."""
+    print_section("PROGRESS BAR SYSTEM TESTS")
+
+    # 1. Unknown Progress
+    console.print("1. Unknown Progress (no total):", style="white_bold")
+    with ProgressBarManager("Processing unknown amount", total=None, bar="rich", show_percentage=False) as pb:
+        time.sleep(1.5)
+
+    # 2. Standard 4-Color (RICH)
+    console.print("\n2. Standard 4-Color (RICH):", style="white_bold")
+    with ProgressBarManager("Processing data", total=100, bar="rich") as pb:
+        for _i in range(100):
+            pb.advance(1)
+            time.sleep(0.02)
+
+    # 3. Full Palette 13-Color (BLOCKS)
+    console.print("\n3. Full Palette 13-Color (BLOCKS):", style="white_bold")
+    with ProgressBarManager(
+        "Loading colors",
+        total=100,
+        bar="blocks",
+        colors={
+            8: ("purple_bold", "purple_bold"),
+            16: ("ruby_red_bold", "ruby_red_bold"),
+            24: ("pink_bold", "pink_bold"),
+            32: ("red_bold", "red_bold"),
+            40: ("brown_bold", "brown_bold"),
+            48: ("orange_bold", "orange_bold"),
+            56: ("yellow_bold", "yellow_bold"),
+            64: ("green_bold", "green_bold"),
+            72: ("blue_bold", "blue_bold"),
+            80: ("white_bold", "white_bold"),
+            88: ("normal_bold", "normal_bold"),
+            92: ("gray_bold", "gray_bold"),
+            100: ("black_bold", "black_bold"),
+        },
+    ) as pb:
+        for _i in range(100):
+            pb.advance(1)
+            time.sleep(0.05)
+
+    # 4. Custom Chars (█░)
+    console.print("\n4. Custom Chars (█░):", style="white_bold")
+    with ProgressBarManager("Custom blocks", total=50, bar="custom", custom_chars=("█", "░")) as pb:
+        for _i in range(50):
+            pb.advance(1)
+            time.sleep(0.02)
+
+    # 5. ALL Colors Demo (illustrates full color palette)
+    console.print("\n5. ALL Colors Demo (every color from palette):", style="white_bold")
+    all_colors = [
+        ("purple_bold", 8),
+        ("ruby_red_bold", 8),
+        ("pink_bold", 8),
+        ("red_bold", 8),
+        ("brown_bold", 8),
+        ("orange_bold", 8),
+        ("yellow_bold", 8),
+        ("green_bold", 8),
+        ("blue_bold", 8),
+        ("white_bold", 8),
+        ("normal_bold", 8),
+        ("gray_bold", 8),
+        ("black_bold", 8),
+    ]
+
+    for color_name, steps in all_colors:
+        color_display = color_name.replace("_bold", "").upper()
+        with ProgressBarManager(
+            f"{color_display:12s}",
+            total=steps,
+            bar="blocks",
+            colors={steps: (color_name, color_name)},
+        ) as pb:
+            for _i in range(steps):
+                pb.advance(1)
+                time.sleep(0.01)
+
+    # 6. Custom Chars (﷼ space) ARABIC
+    console.print("\n6. Custom Chars (﷼ space) ARABIC:", style="white_bold")
+    with ProgressBarManager("Custom ARABIC", total=50, bar="custom", custom_chars=("﷼", " ")) as pb:
+        for _i in range(50):
+            pb.advance(1)
+            time.sleep(0.02)
+
+    print_section("MODULAR FEATURES - Download with bytes + speed")
+
+    # 7. DOWNLOAD with bytes + speed (RICH style)
+    console.print("7. DOWNLOAD with bytes + speed (bar='rich'):", style="white_bold")
+    with ProgressBarManager(
+        "large_dataset.zip",
+        total=100_000_000,
+        bar="rich",
+        show_download=True,
+        show_eta=True,
+    ) as pb:
+        for _i in range(100):
+            pb.advance(1_000_000)  # 1MB chunks
+            time.sleep(0.05)
+
+    # 8. DOWNLOAD with bytes + speed (BLOCKS style)
+    console.print("\n8. DOWNLOAD with bytes + speed (bar='blocks'):", style="white_bold")
+    with ProgressBarManager(
+        "video_file.mp4",
+        total=250_000_000,
+        bar="blocks",
+        show_download=True,
+        show_eta=True,
+        colors={
+            33: ("red_bold", "red_bold"),
+            66: ("yellow_bold", "yellow_bold"),
+            100: ("green_bold", "green_bold"),
+        },
+    ) as pb:
+        for _i in range(100):
+            pb.advance(2_500_000)  # 2.5MB chunks
+            time.sleep(0.05)
+
+    # 9. DOWNLOAD with bytes + speed (CUSTOM █░ style)
+    console.print("\n9. DOWNLOAD with bytes + speed (bar='custom' █░):", style="white_bold")
+    with ProgressBarManager(
+        "archive.tar.gz",
+        total=50_000_000,
+        bar="custom",
+        custom_chars=("█", "░"),
+        show_download=True,
+        show_eta=True,
+        colors={
+            25: ("ruby_red_bold", "ruby_red_bold"),
+            50: ("orange_bold", "orange_bold"),
+            75: ("yellow_bold", "yellow_bold"),
+            100: ("green_bold", "green_bold"),
+        },
+    ) as pb:
+        for _i in range(100):
+            pb.advance(500_000)  # 500KB chunks
+            time.sleep(0.05)
+
+    print_section("FULL MODULARITY - Mix ANY components!")
+
+    # 10. TYLKO SPINNER (sam kręciołek)
+    console.print("10. ONLY SPINNER (nothing else):", style="white_bold")
+    with ProgressBarManager("Thinking...", total=None, show_spinner=True, show_elapsed=False) as pb:
+        time.sleep(1.5)
+
+    # 11. TYLKO CZAS (sam elapsed time)
+    console.print("\n11. ONLY TIME (elapsed only):", style="white_bold")
+    with ProgressBarManager(
+        "Timer",
+        total=100,
+        show_bar=False,
+        show_percentage=False,
+        show_elapsed=True,
+        colors={100: ("green_bold", "green_bold")},
+    ) as pb:
+        for _i in range(100):
+            pb.advance(1)
+            time.sleep(0.02)
+
+    # 12. TYLKO PROCENT (sam percentage)
+    console.print("\n12. ONLY PERCENTAGE (no bar, no time):", style="white_bold")
+    with ProgressBarManager("Counting", total=50, show_bar=False, show_percentage=True, show_elapsed=False) as pb:
+        for _i in range(50):
+            pb.advance(1)
+            time.sleep(0.03)
+
+    # 13. TYLKO ETA (sam remaining time)
+    console.print("\n13. ONLY ETA (remaining time only):", style="white_bold")
+    with ProgressBarManager(
+        "Waiting",
+        total=50,
+        show_bar=False,
+        show_percentage=False,
+        show_eta=True,
+        show_elapsed=False,
+    ) as pb:
+        for _i in range(50):
+            pb.advance(1)
+            time.sleep(0.03)
+
+    # 14. TYLKO BYTES (sam progress bytes, NO speed)
+    console.print("\n14. ONLY BYTES (no speed, no bar, no time):", style="white_bold")
+    with ProgressBarManager(
+        "Downloading",
+        total=50_000_000,
+        show_bar=False,
+        show_percentage=False,
+        show_download=True,
+        show_speed=False,
+        show_elapsed=False,
+        show_eta=False,
+    ) as pb:
+        for _i in range(100):
+            pb.advance(500_000)
+            time.sleep(0.03)
+
+    # 15. SPINNER + DOWNLOAD (kręciołek z bytes + speed)
+    console.print("\n15. SPINNER + DOWNLOAD (spinner with bytes):", style="white_bold")
+    with ProgressBarManager(
+        "Syncing...",
+        total=30_000_000,
+        show_spinner=True,
+        show_download=True,
+        show_percentage=True,
+        show_elapsed=True,
+    ) as pb:
+        for _i in range(100):
+            pb.advance(300_000)
+            time.sleep(0.03)
+
+    # 16. TYLKO NAZWA (description only - minimalist)
+    console.print("\n16. ONLY NAME (description only - nothing else!):", style="white_bold")
+    with ProgressBarManager("Done!", total=10, show_bar=False, show_percentage=False, show_elapsed=False) as pb:
+        for _i in range(10):
+            pb.advance(1)
+            time.sleep(0.1)
+
+    #
+    # TRUNCATE TESTS - Description length limits
+    #
+    print_section("TRUNCATE MODES - Description length control")
+
+    # 17. TRUNCATE END (default)
+    console.print("17. TRUNCATE END (start...):", style="white_bold")
+    with ProgressBarManager(
+        "very_long_filename_example_that_should_be_truncated.zip",
+        total=50,
+        max_description_length=25,
+        truncate_mode="end",
+    ) as pb:
+        for _i in range(50):
+            pb.advance(1)
+            time.sleep(0.02)
+
+    # 18. TRUNCATE START
+    console.print("\n18. TRUNCATE START (...end):", style="white_bold")
+    with ProgressBarManager(
+        "very_long_filename_example_that_should_be_truncated.zip",
+        total=50,
+        max_description_length=25,
+        truncate_mode="start",
+    ) as pb:
+        for _i in range(50):
+            pb.advance(1)
+            time.sleep(0.02)
+
+    # 19. TRUNCATE MIDDLE
+    console.print("\n19. TRUNCATE MIDDLE (mid...dle):", style="white_bold")
+    with ProgressBarManager(
+        "very_long_filename_example_that_should_be_truncated.zip",
+        total=50,
+        max_description_length=25,
+        truncate_mode="middle",
+    ) as pb:
+        for _i in range(50):
+            pb.advance(1)
+            time.sleep(0.02)
+
+    # 20. MINIMUM LENGTH (5 chars)
+    console.print("\n20. MINIMUM LENGTH (5 chars - '1...6'):", style="white_bold")
+    with ProgressBarManager("123456789", total=30, max_description_length=5, truncate_mode="middle") as pb:
+        for _i in range(30):
+            pb.advance(1)
+            time.sleep(0.02)
+
+    # 21. SHORT NAME (no truncate)
+    console.print("\n21. SHORT NAME (no truncate needed):", style="white_bold")
+    with ProgressBarManager("abc", total=30, max_description_length=25) as pb:
+        for _i in range(30):
+            pb.advance(1)
+            time.sleep(0.02)
+
+    # 22. EMPTY NAME (edge case)
+    console.print("\n22. EMPTY NAME (edge case):", style="white_bold")
+    with ProgressBarManager("", total=20, max_description_length=10) as pb:
+        for _i in range(20):
+            pb.advance(1)
+            time.sleep(0.03)
+
+    # 24. INVALID TRUNCATE MODE (fallback to 'end')
+    console.print("\n24. INVALID TRUNCATE MODE (fallback to 'end'):", style="white_bold")
+    with ProgressBarManager(
+        "test_invalid_mode.zip",
+        total=30,
+        max_description_length=10,
+        truncate_mode="invalid",  # type: ignore[arg-type]  # intentional: test fallback
+    ) as pb:
+        for _i in range(30):
+            pb.advance(1)
+            time.sleep(0.02)
+
+    # 25. MULTI-TASK (concurrent bars, independent per-task colors)
+    console.print("\n25. MULTI-TASK (concurrent bars, independent colors):", style="white_bold")
+    fast_total = 89_000_000
+    slow_total = 169_000_000
+    with MultiProgressManager() as mp:
+        fast = mp.add_task("fast.zip", total=fast_total)
+        slow = mp.add_task("slow.zip", total=slow_total)
+        for _step in range(100):
+            mp.advance(fast, fast_total // 100)
+            mp.advance(slow, slow_total // 200)
+            time.sleep(0.02)
+        mp.update(slow, slow_total)
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    print_section("DEMO SUMMARY")
+    console.print("  • 6 demos: Core styles (rich, blocks, custom chars)", style="white_bold")
+    console.print("  • 3 demos: Download mode (bytes + speed)", style="white_bold")
+    console.print("  • 7 demos: Modular components (mix any features)", style="white_bold")
+    console.print("  • 7 demos: Truncation modes (end, start, middle + edge cases)", style="white_bold")
+    console.print("  • 1 demo: Multi-task concurrent bars", style="white_bold")
+    console.print("  • Total: 24 demos", style="white_bold")
+
+
+if __name__ == "__main__":
+    run_all_demos()

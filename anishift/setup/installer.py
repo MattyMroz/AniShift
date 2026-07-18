@@ -46,7 +46,7 @@ from anishift.platform.binaries import (
     resolve_binary,
 )
 from anishift.setup.manifest import Resource, load_manifest
-from utils.rich_console import ProgressBarManager
+from anishift.utils.rich_console import MultiProgressManager, ProgressBarManager
 
 __all__ = [
     "HashMismatchError",
@@ -418,40 +418,34 @@ def _collect(futures: dict[str, Future[ResourceResult]]) -> dict[str, ResourceRe
 
 
 def _install_parallel(to_install: list[Resource], dest_root: Path, *, force: bool) -> dict[str, ResourceResult]:
-    """Download and install *to_install* in parallel behind one shared bar."""
+    """Download and install *to_install* in parallel, one progress bar per resource."""
     cancel = threading.Event()
-    bar_lock = threading.Lock()
-    total = sum(resource.size_bytes for resource in to_install)
     futures: dict[str, Future[ResourceResult]] = {}
     try:
         with (
-            ProgressBarManager(
-                "Downloading tools",
-                total=total,
-                bar="blocks",
-                show_download=True,
-                show_speed=True,
-                show_percentage=True,
-                show_elapsed=True,
-                show_eta=False,
-                show_spinner=False,
-            ) as bar,
+            MultiProgressManager() as bar,
             ThreadPoolExecutor(max_workers=_MAX_PARALLEL) as pool,
         ):
+            tasks = {resource.name: bar.add_task(resource.name, total=resource.size_bytes) for resource in to_install}
 
-            def _advance(amount: int) -> None:
-                with bar_lock:
-                    bar.advance(amount)
+            def _download_for(resource: Resource) -> DownloadFn:
+                task = tasks[resource.name]
 
-            def _download(resource: Resource, target: Path) -> None:
-                _download_httpx(resource, target, progress=_advance, cancel=cancel)
+                def _download(res: Resource, target: Path) -> None:
+                    def _advance(amount: int) -> None:
+                        bar.advance(task, amount)
+
+                    _download_httpx(res, target, progress=_advance, cancel=cancel)
+                    bar.update(task, res.size_bytes)
+
+                return _download
 
             futures = {
                 resource.name: pool.submit(
                     install_resource,
                     resource,
                     dest_root=dest_root,
-                    download=_download,
+                    download=_download_for(resource),
                     force=force,
                 )
                 for resource in to_install

@@ -31,9 +31,9 @@ Non-portable (moved to services/image_processing/):
     postprocess.py — resize & compress (now in <pkg>.services.image_processing)
 
 Smoke test (after copying to a clean project):
-    python -c "from utils.logger import setup_mode, LoggerMode; setup_mode(LoggerMode.SILENT); print('OK')"
-    python -c "from utils.timer import Timer; t = Timer('x', auto_start=True); t.stop(); print('OK')"
-    python -c "from utils.rich_console import console; console.print('[bold]OK[/bold]')"
+    python -c "from anishift.utils.logger import setup_mode, LoggerMode; setup_mode(LoggerMode.SILENT); print('OK')"
+    python -c "from anishift.utils.timer import Timer; t = Timer('x', auto_start=True); t.stop(); print('OK')"
+    python -c "from anishift.utils.rich_console import console; console.print('[bold]OK[/bold]')"
 """
 
 from __future__ import annotations

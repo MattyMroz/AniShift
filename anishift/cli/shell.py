@@ -16,7 +16,7 @@ from anishift.cli.banner import show_banner
 from anishift.cli.commands import dispatch
 from anishift.cli.completer import SlashCompleter
 from anishift.config.user_settings import config_path
-from utils.rich_console import console
+from anishift.utils.rich_console import console
 
 __all__ = ["run_shell"]
 

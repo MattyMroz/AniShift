@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Final
 from anishift.bootstrap import AppContext
 from anishift.config.user_settings import Mode, save_user_settings
 from anishift.setup.doctor import CheckStatus, run_doctor
-from utils.rich_console import StatusType, console, get_status_icon
+from anishift.utils.rich_console import StatusType, console, get_status_icon
 
 if TYPE_CHECKING:
     from anishift.setup.installer import ResourceResult

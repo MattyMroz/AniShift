@@ -9,7 +9,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 
 from anishift.bootstrap import AppContext
-from utils.rich_console import console
+from anishift.utils.rich_console import console
 
 __all__ = ["show_banner"]
 
