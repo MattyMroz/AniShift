@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import threading
@@ -46,6 +45,9 @@ _ERROR_TAIL_LINES: Final[int] = 8
 
 _CANCEL_POLL_SECONDS: Final[float] = 0.1
 """Interval used to notice cancellation while stdout is blocked."""
+
+_NEW_PROCESS_GROUP: Final[int] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+"""Windows flag isolating the child from the console Ctrl+C; zero elsewhere."""
 
 
 def _fail(
@@ -234,7 +236,7 @@ def extract_tracks(  # noqa: PLR0912
             encoding="utf-8",
             errors="replace",
             bufsize=1,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            creationflags=_NEW_PROCESS_GROUP,
         )
         if cancel is not None:
             cancel_watcher = threading.Thread(
