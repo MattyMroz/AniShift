@@ -13,6 +13,7 @@ from anishift.services.subtitles.service import (
     write_displayed,
 )
 from anishift.services.subtitles.text import is_drawing, replace_visible_text, visible_text
+from anishift.services.subtitles.txt import txt_to_spoken
 from anishift.services.subtitles.types import Decision, SplitStats, SpokenLine, SubtitleKind, SubtitleSplit
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "replace_visible_text",
     "split_subtitles",
     "subtitle_kind",
+    "txt_to_spoken",
     "visible_text",
     "write_displayed",
 ]
