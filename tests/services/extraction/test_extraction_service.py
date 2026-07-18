@@ -4,13 +4,12 @@ import threading
 from pathlib import Path
 
 import pytest
+from conftest import DATA_DIR
 
 from anishift.errors import ErrorCode
 from anishift.services.extraction import service
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo, TrackSelection
-
-DATA_DIR = Path(__file__).parent / "data"
 
 
 def _info() -> MediaInfo:

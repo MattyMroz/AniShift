@@ -1,14 +1,11 @@
 import json
-from pathlib import Path
 from typing import Final
 
 import pytest
+from conftest import MM_AVH_TEMP as DATASET
 
 from anishift.services.subtitles.classifier import Category, classify_styles
 from anishift.services.subtitles.service import load_subtitles
-
-DATASET: Final[Path] = Path(__file__).resolve().parents[1].parent / "mm_avh_working_space" / "temp"
-"""Local mm_avh regression dataset."""
 
 _KNOWN_MISSED_DIALOG: Final[frozenset[tuple[str, str]]] = frozenset(
     {
