@@ -11,6 +11,9 @@ Demonstrate ProgressBarManager capabilities:
 - Modular component mixing (spinner, bar, percentage, elapsed, bytes)
 - Description truncation modes (end, start, middle)
 - Multi-task concurrent bars with independent per-task colors
+- Multi-task per-row configuration (each row its own columns and colors)
+- Multi-task alignment modes (aligned columns vs independent bar widths)
+- Multi-task thread-safe parallel workers
 
 Usage (via module entry point):
 
@@ -19,8 +22,9 @@ Usage (via module entry point):
 
 from __future__ import annotations
 
+import threading
 import time
-from typing import Final
+from typing import Final, Literal
 
 from ..console import console
 from ..progress import MultiProgressManager, ProgressBarManager
@@ -39,6 +43,31 @@ def print_section(title: str) -> None:
     console.print(f"\n{SECTION_SEPARATOR}")
     console.print(title.center(HEADER_WIDTH), style="white_bold")
     console.print(f"{SECTION_SEPARATOR}\n")
+
+
+def _run_per_row_config(align: Literal["aligned", "independent"]) -> None:
+    """Animate the same six differently-configured rows in one align mode."""
+    ocean_colors = {
+        33: ("blue_bold", "blue_bold"),
+        66: ("purple_bold", "purple_bold"),
+        100: ("pink_bold", "pink_bold"),
+    }
+    download_total = 40_000_000
+    with MultiProgressManager(align=align) as mp:
+        download = mp.add_task("tools.zip", total=download_total, show_download=True, show_eta=True)
+        percent_only = mp.add_task("episode.mkv", show_elapsed=False)
+        spinner = mp.add_task("Analyzing subs...", show_spinner=True, show_percentage=False)
+        eta_only = mp.add_task("Waiting", show_bar=False, show_percentage=False, show_elapsed=False, show_eta=True)
+        colored = mp.add_task("ocean_colors", colors=ocean_colors)
+        truncated = mp.add_task("very_long_episode_name_that_gets_truncated.mkv")
+        for _step in range(100):
+            mp.advance(download, download_total // 100)
+            mp.advance(percent_only, 1)
+            mp.advance(spinner, 1)
+            mp.advance(eta_only, 1)
+            mp.advance(colored, 1)
+            mp.advance(truncated, 1)
+            time.sleep(0.04)
 
 
 def run_all_demos() -> None:
@@ -333,11 +362,13 @@ def run_all_demos() -> None:
             pb.advance(1)
             time.sleep(0.02)
 
-    # 25. MULTI-TASK (concurrent bars, independent per-task colors)
-    console.print("\n25. MULTI-TASK (concurrent bars, independent colors):", style="white_bold")
+    print_section("MULTI-TASK - Many bars in one live display")
+
+    # 25. MULTI-TASK DOWNLOAD (concurrent bars, independent per-task colors)
+    console.print("25. MULTI-TASK DOWNLOAD (concurrent bars, independent colors):", style="white_bold")
     fast_total = 89_000_000
     slow_total = 169_000_000
-    with MultiProgressManager() as mp:
+    with MultiProgressManager(show_download=True) as mp:
         fast = mp.add_task("fast.zip", total=fast_total)
         slow = mp.add_task("slow.zip", total=slow_total)
         for _step in range(100):
@@ -346,14 +377,46 @@ def run_all_demos() -> None:
             time.sleep(0.02)
         mp.update(slow, slow_total)
 
+    # 26. MULTI-TASK PER-ROW CONFIG, ALIGNED (default mode: columns line up)
+    console.print("\n26. MULTI-TASK PER-ROW CONFIG - ALIGNED (columns line up):", style="white_bold")
+    _run_per_row_config("aligned")
+
+    # 27. MULTI-TASK PARALLEL WORKERS (thread-safe concurrent updates)
+    console.print("\n27. MULTI-TASK PARALLEL WORKERS (thread-safe updates):", style="white_bold")
+    with MultiProgressManager(show_download=True, show_eta=True) as mp:
+        worker_tasks = [
+            mp.add_task(f"worker-{index}.bin", total=(index + 1) * 10_000_000) for index in range(4)
+        ]
+
+        def _worker(task_id, chunk):
+            for _step in range(100):
+                mp.advance(task_id, chunk)
+                time.sleep(0.02)
+
+        workers = [
+            threading.Thread(target=_worker, args=(task_id, (index + 1) * 100_000))
+            for index, task_id in enumerate(worker_tasks)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+
+    # 28. MULTI-TASK PER-ROW CONFIG, INDEPENDENT (same rows, self-contained)
+    console.print(
+        "\n28. MULTI-TASK PER-ROW CONFIG - INDEPENDENT (values glued to each bar):",
+        style="white_bold",
+    )
+    _run_per_row_config("independent")
+
     # ── Summary ───────────────────────────────────────────────────────────────
     print_section("DEMO SUMMARY")
     console.print("  • 6 demos: Core styles (rich, blocks, custom chars)", style="white_bold")
     console.print("  • 3 demos: Download mode (bytes + speed)", style="white_bold")
     console.print("  • 7 demos: Modular components (mix any features)", style="white_bold")
     console.print("  • 7 demos: Truncation modes (end, start, middle + edge cases)", style="white_bold")
-    console.print("  • 1 demo: Multi-task concurrent bars", style="white_bold")
-    console.print("  • Total: 24 demos", style="white_bold")
+    console.print("  • 4 demos: Multi-task (download, aligned vs independent, workers)", style="white_bold")
+    console.print("  • Total: 27 demos", style="white_bold")
 
 
 if __name__ == "__main__":

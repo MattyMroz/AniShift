@@ -96,6 +96,83 @@ _MAX_DESCRIPTION_DISPLAY: Final[int] = 20
 _STYLE_FIELD: Final[str] = "style"
 """Per-task field name that overrides a column's shared ``style_name``."""
 
+# ── Shared Helpers ────────────────────────────────────────────────────────────
+
+
+def _truncate_description(description: str, max_length: int, mode: Literal["start", "middle", "end"]) -> str:
+    """Truncate description with ellipsis based on mode.
+
+    Args:
+        description: Text to truncate.
+        max_length: Maximum length (raised to 5 when smaller).
+        mode: Truncation mode; unknown values fall back to ``'end'``.
+
+    Returns:
+        The description, shortened with ``...`` when it exceeds the limit.
+    """
+    max_length = max(5, max_length)
+
+    if not description or len(description) <= max_length:
+        return description
+
+    # Validate mode
+    if mode not in ("start", "middle", "end"):
+        mode = "end"
+
+    if mode == "start":
+        # ...end
+        return "..." + description[-(max_length - 3) :]
+    if mode == "middle":
+        # mid...dle
+        left_size = (max_length - 3) // 2
+        right_size = max_length - 3 - left_size
+        return description[:left_size] + "..." + description[-right_size:]
+    # start...
+    return description[: max_length - 3] + "..."
+
+
+def _color_for_percentage(colors: dict[int, tuple[str, str]], percentage: int) -> tuple[str, str]:
+    """Return the ``(text_color, bar_color)`` pair for a progress percentage.
+
+    Args:
+        colors: Color transitions as ``{percentage: (text_color, bar_color)}``.
+        percentage: Progress percentage (0-100).
+
+    Returns:
+        The pair of the first threshold at or above *percentage*, or the last
+        pair when the percentage exceeds every threshold.
+    """
+    for threshold, pair in sorted(colors.items()):
+        if percentage <= threshold:
+            return pair
+    return list(colors.values())[-1]
+
+
+def _fit_bar_width(description: str, *, show_download: bool, show_eta: bool) -> int:
+    """Fit the bar between the description and the enabled info columns.
+
+    Args:
+        description: Task description counted toward the layout width.
+        show_download: Whether the bytes and speed columns take width.
+        show_eta: Whether the ETA column takes width.
+
+    Returns:
+        Bar width in characters, clamped to the shared minimum and maximum.
+    """
+    console_width = console.width
+    desc_length = min(len(description) + 2, _MAX_DESCRIPTION_DISPLAY)
+
+    info_width = _BASE_INFO_WIDTH
+    if show_download:
+        info_width += _DOWNLOAD_COLUMN_WIDTH
+    if show_eta:
+        info_width += _ETA_COLUMN_WIDTH
+
+    available_width = console_width - desc_length - info_width
+    max_bar = _MAX_BAR_WITH_DOWNLOAD if show_download else _MAX_BAR_NORMAL
+    return max(_MIN_BAR_WIDTH, min(max_bar, available_width))
+
+
 # ── Progress Bar Builders ─────────────────────────────────────────────────────
 
 
@@ -369,7 +446,7 @@ class ProgressBarManager:
             show_speed: Show speed column (requires show_download).
         """
         # Core settings
-        self.description = self._truncate_description(description, max_description_length, truncate_mode)
+        self.description = _truncate_description(description, max_description_length, truncate_mode)
         self.total = total
         self.colors = colors or self.DEFAULT_COLORS
         self.bar_type = bar
@@ -396,28 +473,6 @@ class ProgressBarManager:
         self._init_custom_columns()
         self._init_progress()
 
-    def _truncate_description(self, description: str, max_length: int, mode: Literal["start", "middle", "end"]) -> str:
-        """Truncate description with ellipsis based on mode."""
-        max_length = max(5, max_length)
-
-        if not description or len(description) <= max_length:
-            return description
-
-        # Validate mode
-        if mode not in ("start", "middle", "end"):
-            mode = "end"
-
-        if mode == "start":
-            # ...end
-            return "..." + description[-(max_length - 3) :]
-        if mode == "middle":
-            # mid...dle
-            left_size = (max_length - 3) // 2
-            right_size = max_length - 3 - left_size
-            return description[:left_size] + "..." + description[-right_size:]
-        # start...
-        return description[: max_length - 3] + "..."
-
     def _get_initial_color(self) -> str:
         """Get initial color based on progress type."""
         if self.total is not None:
@@ -426,18 +481,7 @@ class ProgressBarManager:
 
     def _calculate_bar_width(self) -> int:
         """Calculate optimal bar width based on console width and enabled features."""
-        console_width = console.width
-        desc_length = min(len(self.description) + 2, _MAX_DESCRIPTION_DISPLAY)
-
-        info_width = _BASE_INFO_WIDTH
-        if self.show_download:
-            info_width += _DOWNLOAD_COLUMN_WIDTH
-        if self.show_eta:
-            info_width += _ETA_COLUMN_WIDTH
-
-        available_width = console_width - desc_length - info_width
-        max_bar = _MAX_BAR_WITH_DOWNLOAD if self.show_download else _MAX_BAR_NORMAL
-        return max(_MIN_BAR_WIDTH, min(max_bar, available_width))
+        return _fit_bar_width(self.description, show_download=self.show_download, show_eta=self.show_eta)
 
     def _init_custom_columns(self) -> None:
         """Initialize all custom column components."""
@@ -613,18 +657,7 @@ class ProgressBarManager:
         if self.task is None:
             return
 
-        # Find applicable color threshold
-        target_color = None
-        for threshold, (text_color, bar_color) in sorted(self.colors.items()):
-            if percentage <= threshold:
-                target_color = (text_color, bar_color)
-                break
-
-        if not target_color:
-            # Use last color if over all thresholds
-            target_color = list(self.colors.values())[-1]
-
-        text_color, bar_color = target_color
+        text_color, bar_color = _color_for_percentage(self.colors, percentage)
 
         # Apply color update
         if self.current_style != bar_color:

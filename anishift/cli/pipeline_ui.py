@@ -39,7 +39,7 @@ def run_pipeline_command(context: AppContext) -> None:
         if context.user_settings.mode == "manual":
             report = run_pipeline(context, interaction=_ManualInteraction())
         else:
-            with MultiProgressManager() as progress:
+            with MultiProgressManager(show_download=False) as progress:
                 report = run_pipeline(context, progress=cast(ProgressReporter, progress))
     except KeyboardInterrupt:
         console.print("[warning]Interrupted.[/warning]")
