@@ -11,6 +11,7 @@ from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline import discover_inputs, run_pipeline
+from anishift.pipeline.runner import _worker_count
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo
 
@@ -49,3 +50,18 @@ def test_run_pipeline_isolates_identify_failure(monkeypatch: pytest.MonkeyPatch,
     assert report.outcomes[0].status == "failed"
     assert report.outcomes[0].failure is not None
     assert report.outcomes[1].status == "done"
+
+
+def test_worker_count_scales_with_cores(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("anishift.pipeline.runner.os.cpu_count", lambda: 20)
+    assert _worker_count(100) == 6  # round(sqrt(20)) + 2, the measured optimum
+
+
+def test_worker_count_never_exceeds_item_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("anishift.pipeline.runner.os.cpu_count", lambda: 20)
+    assert _worker_count(2) == 2
+
+
+def test_worker_count_is_at_least_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("anishift.pipeline.runner.os.cpu_count", lambda: None)
+    assert _worker_count(5) == 3  # round(sqrt(1)) + 2

@@ -33,8 +33,8 @@ __all__ = ["discover_inputs", "run_pipeline"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_WORKER_CAP: Final[int] = 4
-"""Upper bound on parallel file workers."""
+_WORKER_IO_HEADROOM: Final[int] = 2
+"""Extra workers added over the core-count square root for I/O latency."""
 
 _WAIT_POLL_SECONDS: Final[float] = 0.2
 """Future-poll interval keeping Ctrl+C responsive."""
@@ -117,8 +117,15 @@ def _process_mkvs(
 
 
 def _worker_count(item_count: int) -> int:
-    """Return a bounded worker count scaled to the machine."""
-    return max(1, min(item_count, os.cpu_count() or 1, _WORKER_CAP))
+    """Return a worker count scaled to the machine for I/O-bound extraction.
+
+    Extraction is disk-bound, so the count grows with the core-count square
+    root rather than the raw core count, which saturates the disk and stops
+    helping past a handful of workers.
+    """
+    cores = os.cpu_count() or 1
+    root: int = round(cores**0.5)
+    return max(1, min(item_count, root + _WORKER_IO_HEADROOM))
 
 
 def _process_mkv(  # noqa: PLR0911
