@@ -38,7 +38,7 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = ""
-module-name = ["anishift", "utils"]
+module-name = ["anishift"]
 
 [dependency-groups]
 dev = [
@@ -62,7 +62,7 @@ exclude = [
     ".claude",
     ".github",
     "scripts/tmp",
-    "utils",
+    "anishift/utils",
 ]
 
 [tool.ruff.lint]
@@ -111,10 +111,18 @@ plugins = ["pydantic.mypy"]
 warn_return_any = true
 warn_unused_configs = true
 exclude = [
-    "utils/",
+    "anishift/utils/",
     "scripts/tmp/",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = [
+    "tests",
+    "anishift/utils/logger/tests",
+    "anishift/utils/rich_console/tests",
+    "anishift/utils/timer/tests",
+]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
 addopts = "-q"

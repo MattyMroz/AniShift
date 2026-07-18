@@ -23,8 +23,10 @@ from rich.progress import Progress, TaskID, TextColumn
 
 from ..console import console
 from .manager import (
+    ColoredBytesColumn,
     ColoredElapsedColumn,
     ColoredPercentageColumn,
+    ColoredSpeedColumn,
     ProgressBarBuilder,
     ProgressBarManager,
 )
@@ -42,8 +44,8 @@ _STYLE_FIELD: Final[str] = "style"
 _BAR_FIELD: Final[str] = "custom_bar"
 """Per-task field carrying the pre-rendered block bar markup."""
 
-_BASE_INFO_WIDTH: Final[int] = 23
-"""Character width reserved for the percentage and elapsed columns."""
+_BASE_INFO_WIDTH: Final[int] = 53
+"""Character width reserved for the bytes, speed, percentage and elapsed columns."""
 
 _MAX_BAR_WIDTH: Final[int] = 40
 """Maximum bar width in characters."""
@@ -89,7 +91,7 @@ class MultiProgressManager:
         self,
         *,
         colors: dict[int, tuple[str, str]] | None = None,
-        max_description_length: int = 40,
+        max_description_length: int = 20,
     ) -> None:
         """Initialize the display without starting it.
 
@@ -107,6 +109,8 @@ class MultiProgressManager:
         self._progress = Progress(
             TextColumn("{task.description}"),
             TextColumn(f"{{task.fields[{_BAR_FIELD}]}}", justify="left"),
+            ColoredBytesColumn(initial_style),
+            ColoredSpeedColumn(initial_style),
             ColoredPercentageColumn(initial_style),
             ColoredElapsedColumn(initial_style),
             console=console,
@@ -132,7 +136,8 @@ class MultiProgressManager:
 
         Args:
             description: Row label; truncated at the tail when too long.
-            total: Total units of the task (100 for percent-driven feeds).
+            total: Total units of the task; pass byte counts to drive the
+                bytes and speed columns with real download figures.
 
         Returns:
             The task id accepted by :meth:`advance` and :meth:`update`.
