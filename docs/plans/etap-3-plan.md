@@ -434,7 +434,7 @@ Bez tego rozdzielenia D3(b) i DoD („zero nowych zgubił dialog poza 2 znanymi"
 
 Rzeczy, które wymagania zostawiają domyślne, a agent kodujący nie może o nich decydować:
 
-**I1 — „Collapse FBF PRZED klasyfikacją" realizuje wewnętrzny dedup portowanego klasyfikatora.** `classify_styles` (port `style_classifier.py:224-274`) już dziś liczy metryki na zdeduplikowanych liniach (`dedup_animation`, `:138-168`: ≥5 powtórzeń, mediana odstępu startów < 2000 ms) — czyli „klasyfikator dostaje 18 linii zamiast 1381" jest spełnione **przez port as-is**. Nasz osobny `collapse_fbf` (R6b, `start=min`, `end=max`) buduje **strumień spoken** (lektor czyta raz, w scalonym oknie czasowym) i NIE jest podawany klasyfikatorowi na wejściu. Powód: podanie klasyfikatorowi pre-zbitych eventów zmieniłoby jego metryki względem wersji mierzonej (95.86%) — a „ZERO strojenia" i regresja są ważniejsze niż literalne czytanie kolejności R6. Werdykty pozostają bitowo zgodne z mm_avh; DoD „1381 → 18" jest testowane na naszym sicie (odsiew rysunków + collapse) bezpośrednio na stylu `[Znaki]` pliku Fuji (§14.4).
+**I1 — „Collapse FBF PRZED klasyfikacją" realizuje wewnętrzny dedup portowanego klasyfikatora.** `classify_styles` (port `style_classifier.py:224-274`) już dziś liczy metryki na zdeduplikowanych liniach (`dedup_animation`, `:138-168`: ≥5 powtórzeń, mediana odstępu startów < 2000 ms) — czyli „klasyfikator dostaje ~18 unikalnych linii zamiast 1381" jest spełnione **przez port as-is**. Nasz osobny `collapse_fbf` (R6b, `start=min`, `end=max`) buduje **strumień spoken** (lektor czyta raz, w scalonym oknie czasowym) i NIE jest podawany klasyfikatorowi na wejściu. Powód: podanie klasyfikatorowi pre-zbitych eventów zmieniłoby jego metryki względem wersji mierzonej (95.86%) — a „ZERO strojenia" i regresja są ważniejsze niż literalne czytanie kolejności R6. Werdykty pozostają bitowo zgodne z mm_avh; DoD „1381 → 20 linii / 18 unikalnych" jest testowane na naszym sicie (odsiew rysunków + collapse) bezpośrednio na stylu `[Znaki]` pliku Fuji (§14.4).
 
 **I2 — decyzja per linia = model danych, nie nowa heurystyka.** W etapie 3 sygnał klasyfikatora jest per-styl (port as-is); granulacja per linia bierze się z: (a) odsiewu rysunków per linia, (b) collapse FBF per grupa linii, (c) fallbacku E11/E12 per plik. Typ `Decision` przypisany **każdej linii** to rura, którą issue #16 wleje lepsze sygnały bez przebudowy. Agent NIE dodaje żadnych per-liniowych reguł ponad (a)–(c).
 
@@ -1062,7 +1062,7 @@ _ENCODING: Final[str] = "utf-8"
 """The only subtitle encoding stage 3 reads and writes."""
 ```
 
-Wartość `_FBF_MAX_GAP_MS = 500` to punkt startowy; **arbitrem jest test DoD** „Fuji `[Znaki]` 1381 → 18" (§14.4). Jeśli test da inną liczbę, jedyną dozwoloną zmianą jest ta stała (procedura: zmierzyć na pliku Fuji rozkład odstępów `next.start - prev.end` w grupach o identycznym tekście i ustawić najmniejszą wartość, przy której wychodzi 18; wynik wpisać do stałej i do PR). To nie jest strojenie klasyfikatora — to kalibracja naszego, nowego filtra względem zmierzonego wzorca.
+Wartość `_FBF_MAX_GAP_MS = 500` to punkt startowy; **arbitrem jest test DoD** „Fuji `[Znaki]` 1381 → 20 linii / 18 unikalnych" (§14.4). Jeśli test da inną liczbę, jedyną dozwoloną zmianą jest ta stała (procedura: zmierzyć na pliku Fuji rozkład odstępów `next.start - prev.end` w grupach o identycznym tekście i ustawić najmniejszą wartość, przy której wychodzi 18; wynik wpisać do stałej i do PR). To nie jest strojenie klasyfikatora — to kalibracja naszego, nowego filtra względem zmierzonego wzorca.
 
 Funkcje:
 
@@ -1615,7 +1615,7 @@ Testy syntetyczne — port zestawu z `mm_avh/tests/track_selector_test.py` (help
 - `test_write_displayed_is_byte_deterministic` — dwa zapisy → `read_bytes()` identyczne (N2).
 - `test_write_displayed_returns_none_without_displayed_events`.
 - `test_source_subs_object_is_not_mutated` — snapshot `to_string` przed/po split+write identyczny (N1 w pamięci).
-- **`test_fuji_znaki_sieve_collapses_to_18`** (skipif bez datasetu; import `FUJI_EPISODE_3` z conftest) — wczytaj plik; eventy stylu `[Znaki]`: asercja `len == 1381` (strażnik wersji datasetu); po odsiewie rysunków + `collapse_fbf` → **18** linii. To pin dla `_FBF_MAX_GAP_MS` (DoD).
+- **`test_collapse_fbf_reduces_fuji_signs_to_a_handful_of_lines`** (skipif bez datasetu; import `MM_AVH_TEMP` z conftest) — wczytaj plik; eventy stylu `[Znaki]`: asercja `len == 1381` (strażnik wersji datasetu); po `collapse_fbf` → **20 linii, 18 unikalnych tekstów** (zmierzone: `TSUNAGU HIDAKA` i `AYANO SHITARA` w dwóch odległych czasowo scenach nie zwijają się — słusznie). To pin dla `_FBF_MAX_GAP_MS` (DoD).
 
 `test_subtitles_txt.py`:
 
@@ -1740,7 +1740,7 @@ Warunek startu: PR 3.1 zmergowany (Część I). Branch: `feat/stage-3-extraction
 | Klasyfikator ≥95.86% na 182 plikach — automatyczny test | `test_regression_classifier.py` (mapowanie parytetowe, §8.3) |
 | Zero nowych „zgubił dialog" poza 2 znanymi (Fuji 3-4) | asercja `missed <= _KNOWN_MISSED_DIALOG` |
 | Rysunki (`\p1`) nie trafiają do lektora | `test_drawings_always_go_to_displayed` + E12-test (rysunki nie wchodzą do fallbacku) |
-| Collapse FBF: 1381 → 18 na pliku Fuji | `test_fuji_znaki_sieve_collapses_to_18` |
+|  Collapse FBF: 1381 → 20 linii / 18 unikalnych na Fuji | `test_collapse_fbf_reduces_fuji_signs_to_a_handful_of_lines` |
 | Determinizm: dwa przebiegi → identyczny bajt (N2) | `test_write_displayed_is_byte_deterministic` + smoke `test_two_runs_are_byte_identical`; pysubs2 przypięty przez `uv.lock` (I7) |
 | Pasek live przez `--gui-mode`; wiele plików = wiele pasków | Część I (3.1) + `test_auto_mode_reports_progress_per_file` + weryfikacja wizualna kroku 11 |
 | SRT na wejściu działa jak ASS (R2) | `test_srt_input_marks_everything_spoken_and_writes_no_product` + ścieżka wspólna w splicie |

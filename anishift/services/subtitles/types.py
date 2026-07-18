@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from pysubs2 import SSAFile
 
-    StyleVerdict = Any
+    from anishift.services.subtitles.classifier import StyleVerdict
 
 __all__ = ["Decision", "SplitStats", "SpokenLine", "SubtitleKind", "SubtitleSplit"]
 
