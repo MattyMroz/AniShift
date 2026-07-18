@@ -43,12 +43,6 @@ _IDENTIFY_TIMEOUT_S: Final[float] = 120.0
 _ERROR_TAIL_LINES: Final[int] = 8
 """How many trailing non-progress output lines land in an error message."""
 
-_AUDIO_STEM: Final[str] = "audio"
-"""Base name of the extracted audio file inside the per-file tmp dir."""
-
-_SUBS_STEM: Final[str] = "subs"
-"""Base name of the extracted subtitle file inside the per-file tmp dir."""
-
 
 def _fail(
     code: ErrorCode,
@@ -165,8 +159,9 @@ def _build_specs(
     dest_dir: Path,
 ) -> list[tuple[int, Path]]:
     """Build output specifications for the selected tracks."""
+    stem = info.path.stem
     specs: list[tuple[int, Path]] = []
-    for track_id, stem in ((selection.audio_id, _AUDIO_STEM), (selection.subtitle_id, _SUBS_STEM)):
+    for track_id in (selection.audio_id, selection.subtitle_id):
         if track_id is None:
             continue
         track = _track_for(info, track_id)
