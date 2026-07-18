@@ -65,12 +65,36 @@ class _FakeProcess:
     def __init__(self, output: list[str], returncode: int = 0) -> None:
         self.stdout = iter(output)
         self.returncode = returncode
+        self.terminated = False
 
     def wait(self) -> int:
         return self.returncode
 
     def terminate(self) -> None:
-        return None
+        self.terminated = True
+
+
+class _BlockingOutput:
+    def __init__(self, released: threading.Event) -> None:
+        self._released = released
+
+    def __iter__(self) -> _BlockingOutput:
+        return self
+
+    def __next__(self) -> str:
+        self._released.wait()
+        raise StopIteration
+
+
+class _BlockingProcess(_FakeProcess):
+    def __init__(self) -> None:
+        self._released = threading.Event()
+        super().__init__([])
+        self.stdout = _BlockingOutput(self._released)
+
+    def terminate(self) -> None:
+        super().terminate()
+        self._released.set()
 
 
 def test_extract_tracks_validates_missing_and_empty_outputs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -98,9 +122,13 @@ def test_extract_tracks_reports_progress_and_success(monkeypatch: pytest.MonkeyP
 
 
 def test_extract_tracks_cancel_removes_partial_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    process: _FakeProcess | None = None
+
     def fake_popen(command: list[str], **_: object) -> _FakeProcess:
+        nonlocal process
         Path(command[-2].split(":", 1)[1]).write_bytes(b"partial")
-        return _FakeProcess(["ordinary output\n"])
+        process = _FakeProcess(["ordinary output\n"])
+        return process
 
     monkeypatch.setattr(service, "ensure_binary", lambda _: Path("mkvextract.exe"))
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -109,7 +137,40 @@ def test_extract_tracks_cancel_removes_partial_files(monkeypatch: pytest.MonkeyP
     with pytest.raises(ExtractionError) as exc_info:
         service.extract_tracks(_info(), TrackSelection(1, 2, False), tmp_path, cancel=cancel)
     assert exc_info.value.context.code is ErrorCode.CANCELLED
+    assert process is not None
+    assert process.terminated
     assert list(tmp_path.iterdir()) == []
+
+
+def test_extract_tracks_cancel_terminates_process_during_blocked_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    process = _BlockingProcess()
+    Path(tmp_path / "source.aac").write_bytes(b"partial")
+    cancel = threading.Event()
+    result: list[ExtractionError] = []
+
+    def fake_popen(*_: object, **__: object) -> _BlockingProcess:
+        return process
+
+    def run_extraction() -> None:
+        try:
+            service.extract_tracks(_info(), TrackSelection(1, 2, False), tmp_path, cancel=cancel)
+        except ExtractionError as exc:
+            result.append(exc)
+
+    monkeypatch.setattr(service, "ensure_binary", lambda _: Path("mkvextract.exe"))
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    worker = threading.Thread(target=run_extraction)
+    worker.start()
+    cancel.set()
+    worker.join(timeout=2)
+
+    assert worker.is_alive() is False
+    assert process.terminated
+    assert result
+    assert result[0].context.code is ErrorCode.CANCELLED
 
 
 def test_extract_tracks_with_no_selection_runs_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

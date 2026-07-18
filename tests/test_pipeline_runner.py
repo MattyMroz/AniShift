@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import Future
 from pathlib import Path
 
 import pytest
@@ -10,8 +12,9 @@ from anishift.bootstrap import AppContext
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
-from anishift.pipeline import discover_inputs, run_pipeline
+from anishift.pipeline import discover_inputs, run_pipeline, runner
 from anishift.pipeline.runner import _worker_count
+from anishift.pipeline.types import FileOutcome
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo
 
@@ -65,3 +68,34 @@ def test_worker_count_never_exceeds_item_count(monkeypatch: pytest.MonkeyPatch) 
 def test_worker_count_is_at_least_one(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("anishift.pipeline.runner.os.cpu_count", lambda: None)
     assert _worker_count(5) == 3  # round(sqrt(1)) + 2
+
+
+def test_process_mkvs_reraises_interrupt_after_cancelling_workers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    mkv = tmp_path / "episode.mkv"
+    mkv.touch()
+    worker_cancel: threading.Event | None = None
+    waits = 0
+
+    def fake_process_mkv(*_: object, cancel: threading.Event, **__: object) -> FileOutcome:
+        nonlocal worker_cancel
+        worker_cancel = cancel
+        return FileOutcome(mkv, "cancelled")
+
+    def interrupted_wait(*_: object, **__: object) -> tuple[set[Future[FileOutcome]], set[Future[FileOutcome]]]:
+        nonlocal waits
+        waits += 1
+        if waits == 1:
+            raise KeyboardInterrupt
+        return set(), set()
+
+    monkeypatch.setattr(runner, "_process_mkv", fake_process_mkv)
+    monkeypatch.setattr(runner, "wait", interrupted_wait)
+
+    with pytest.raises(KeyboardInterrupt):
+        runner._process_mkvs((mkv,), tmp_path, None, None, threading.Event())
+
+    assert worker_cancel is not None
+    assert worker_cancel.is_set()

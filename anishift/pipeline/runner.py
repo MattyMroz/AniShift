@@ -113,6 +113,7 @@ def _process_mkvs(
         except KeyboardInterrupt:
             cancel.set()
             wait(set(futures.values()))
+            raise
     return {path: future.result() for path, future in futures.items()}
 
 

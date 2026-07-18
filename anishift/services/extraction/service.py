@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import threading
@@ -42,6 +43,9 @@ _IDENTIFY_TIMEOUT_S: Final[float] = 120.0
 
 _ERROR_TAIL_LINES: Final[int] = 8
 """How many trailing non-progress output lines land in an error message."""
+
+_CANCEL_POLL_SECONDS: Final[float] = 0.1
+"""Interval used to notice cancellation while stdout is blocked."""
 
 
 def _fail(
@@ -184,7 +188,19 @@ def _cancel(process: subprocess.Popen[str], specs: list[tuple[int, Path]]) -> No
     raise _fail(ErrorCode.CANCELLED, msg)
 
 
-def extract_tracks(
+def _terminate_on_cancel(
+    process: subprocess.Popen[str],
+    cancel: threading.Event,
+    stop: threading.Event,
+) -> None:
+    """Terminate the child when cancellation occurs during a blocked read."""
+    while not stop.wait(_CANCEL_POLL_SECONDS):
+        if cancel.is_set():
+            process.terminate()
+            return
+
+
+def extract_tracks(  # noqa: PLR0912
     info: MediaInfo,
     selection: TrackSelection,
     dest_dir: Path,
@@ -207,6 +223,8 @@ def extract_tracks(
     exe = ensure_binary(Binary.MKVEXTRACT)
     command = [str(exe), "--ui-language", "en", "--gui-mode", str(info.path), "tracks"]
     command.extend(f"{track_id}:{destination}" for track_id, destination in specs)
+    cancel_watcher: threading.Thread | None = None
+    stop_watcher = threading.Event()
     try:
         process = subprocess.Popen(  # noqa: S603
             command,
@@ -216,7 +234,15 @@ def extract_tracks(
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
         )
+        if cancel is not None:
+            cancel_watcher = threading.Thread(
+                target=_terminate_on_cancel,
+                args=(process, cancel, stop_watcher),
+                daemon=True,
+            )
+            cancel_watcher.start()
         if cancel is not None and cancel.is_set():
             _cancel(process, specs)
         tail: deque[str] = deque(maxlen=_ERROR_TAIL_LINES)
@@ -229,6 +255,8 @@ def extract_tracks(
                     on_progress(min(100, int(match.group(1))))
                 continue
             tail.append(line.strip())
+        if cancel is not None and cancel.is_set():
+            _cancel(process, specs)
         returncode = process.wait()
         if returncode != 0:
             detail = " | ".join(line for line in tail if line)
@@ -246,6 +274,10 @@ def extract_tracks(
     except OSError as exc:
         msg = f"{info.path}: extraction I/O failed: {exc}"
         raise _fail(ErrorCode.IO_ERROR, msg) from exc
+    finally:
+        stop_watcher.set()
+        if cancel_watcher is not None:
+            cancel_watcher.join()
     if on_progress is not None:
         on_progress(100)
     return ExtractionResult(audio_path, subtitle_path)
