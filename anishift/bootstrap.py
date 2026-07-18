@@ -1,9 +1,7 @@
 """Application composition root.
 
 ``bootstrap()`` is the single place that loads ``.env``, resolves settings and
-the workspace, and returns an :class:`AppContext`. Trimmed vs. MangaShift: no
-DB engine, no runtime manager, no device detection — AniShift processes one
-folder in a terminal.
+the workspace, and returns an :class:`AppContext`.
 
 Usage:
     from anishift.bootstrap import bootstrap

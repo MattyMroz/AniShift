@@ -1,7 +1,6 @@
 """Platform layer — OS detection and external-binary resolution.
 
-Trimmed vs. MangaShift: no GPU / torch-wheel concerns (AniShift has no local
-ML models). Just OS detection and locating ``external/bin`` binaries per OS.
+Detects the OS and locates ``external/bin`` binaries per platform.
 """
 
 from __future__ import annotations
