@@ -60,7 +60,12 @@ def run_shell(context: AppContext) -> None:
             break
         stripped = line.strip()
         if not stripped:
-            console.print("[warning]Pipeline in progress[/warning] — arrives in stage 3.")
+            from anishift.cli.pipeline_ui import run_pipeline_command  # noqa: PLC0415
+
+            try:
+                run_pipeline_command(context)
+            except KeyboardInterrupt:
+                console.print("[warning]Interrupted.[/warning]")
             continue
         if stripped.startswith("/"):
             if not dispatch(stripped, context):

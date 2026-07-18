@@ -6,6 +6,9 @@ External binaries live here — outside the Python package and outside git.
 external/
 ├── README.md          # this file (tracked)
 ├── bin_hashes.json    # SHA256 + size + source URL per file (tracked)
+├── docs/              # official manuals for the pinned versions (tracked)
+│   ├── mkvtoolnix/    # mkvextract, mkvmerge
+│   └── ffmpeg/        # ffmpeg, ffprobe, filters, codecs, formats, utils
 └── bin/               # binaries themselves (gitignored)
     ├── mkvtoolnix/    # mkvextract, mkvmerge
     ├── ffmpeg/        # ffmpeg, ffprobe

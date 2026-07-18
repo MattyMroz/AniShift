@@ -45,6 +45,7 @@ dev = [
     "mypy>=2.2.0",
     "pre-commit>=4.6.0",
     "pytest>=9.1.1",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.15.21",
 ]
 
@@ -125,4 +126,20 @@ testpaths = [
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-q"
+markers = [
+    "unit: fast, isolated, no I/O or network (<100ms)",
+    "integration: requires a real component (subprocess, filesystem) (<5s)",
+    "e2e: full pipeline from input to output (>5s)",
+    "network: requires internet or an online API",
+    "slow: takes more than 30s",
+    "smoke: quick happy-path sanity check (<5s)",
+]
+addopts = [
+    "-q",
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "-n",
+    "auto",
+    "--dist=worksteal",
+]

@@ -423,7 +423,7 @@ def _install_parallel(to_install: list[Resource], dest_root: Path, *, force: boo
     futures: dict[str, Future[ResourceResult]] = {}
     try:
         with (
-            MultiProgressManager() as bar,
+            MultiProgressManager(show_download=True) as bar,
             ThreadPoolExecutor(max_workers=_MAX_PARALLEL) as pool,
         ):
             tasks = {resource.name: bar.add_task(resource.name, total=resource.size_bytes) for resource in to_install}
