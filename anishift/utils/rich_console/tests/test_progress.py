@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Literal
 from unittest.mock import MagicMock
 
@@ -501,6 +502,20 @@ class TestMultiProgressManager:
             task = mp.add_task("task")
             mp.update(task, 100)
         capsys.readouterr()
+
+    def test_completed_task_elapsed_freezes_while_other_task_runs(self):
+        mp = MultiProgressManager()
+        completed = mp.add_task("completed")
+        running = mp.add_task("running")
+
+        mp.update(completed, 100)
+        elapsed_at_completion = mp._progress.tasks[0].elapsed
+        time.sleep(0.01)
+        mp.advance(running, 1)
+
+        assert mp._progress.tasks[0].finished is True
+        assert mp._progress.tasks[0].elapsed == elapsed_at_completion
+        assert mp._progress.tasks[1].finished is False
 
     def test_single_task_columns_fall_back_without_field(self):
         col = ColoredPercentageColumn("green_bold")

@@ -427,5 +427,7 @@ class MultiProgressManager:
             fields[_STYLE_FIELD] = bar_color
             description = f"[{text_color}]{state.description}"
             self._progress.update(task_id, completed=state.completed, description=description, **fields)
-            return
-        self._progress.update(task_id, completed=state.completed, **fields)
+        else:
+            self._progress.update(task_id, completed=state.completed, **fields)
+        if state.total > 0 and state.completed >= state.total:
+            self._progress.stop_task(task_id)
