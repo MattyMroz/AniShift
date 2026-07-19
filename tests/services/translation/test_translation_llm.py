@@ -36,10 +36,7 @@ def test_translate_batch_happy_path() -> None:
     assert all(line.ok for line in result)
 
 
-def test_translate_batch_shrinks_to_per_line_on_persistent_mismatch() -> None:
-    # Completer always returns a single '[1] x' regardless of batch size, so the
-    # multi-line parse fails, repair fails, shrink recurses to per-line (which
-    # parses because expected == 1).
+def test_translate_batch_shrinks_to_per_line_when_completer_always_returns_one_line() -> None:
     engine = LlmTranslateService(
         LlmTranslateConfig(max_repair_attempts=1, min_batch_size=1),
         completer=_FakeCompleter("[1] x"),

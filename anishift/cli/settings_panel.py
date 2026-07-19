@@ -20,7 +20,6 @@ from prompt_toolkit.layout.controls import FormattedTextControl
 
 from anishift.bootstrap import AppContext
 from anishift.config.user_settings import (
-    CONCURRENCY_RANGE,
     MAX_RETRIES_RANGE,
     TEMPO_RANGE,
     VOLUME_RANGE,
@@ -32,9 +31,6 @@ from anishift.services.translation.engines import available_engine_ids
 __all__ = ["open_settings_panel"]
 
 # ── Constants ──────────────────────────────────────────────────────────────
-
-_CONCURRENCY_STEP: Final[int] = 1
-"""Concurrency increment per ``←``/``→`` press."""
 
 _RETRIES_STEP: Final[int] = 1
 """Retry-count increment per ``←``/``→`` press."""
@@ -74,7 +70,6 @@ class _Field:
 _FIELDS: Final[tuple[_Field, ...]] = (
     _Field("mode", "Mode"),
     _Field("translation_engine", "Translation"),
-    _Field("translation_concurrency", "Concurrency"),
     _Field("translation_max_retries", "Max retries"),
     _Field("tts_engine", "TTS engine"),
     _Field("voice", "Voice"),
@@ -123,10 +118,6 @@ def _step_field(settings: UserSettings, field: _Field, delta: int, engines: tupl
         settings.mode = _cycle(_MODES, settings.mode, delta)  # type: ignore[assignment]
     elif field.key == "translation_engine":
         settings.translation_engine = _cycle(engines, settings.translation_engine, delta)
-    elif field.key == "translation_concurrency":
-        settings.translation_concurrency = _clamp_int(
-            settings.translation_concurrency + delta * _CONCURRENCY_STEP, *CONCURRENCY_RANGE
-        )
     elif field.key == "translation_max_retries":
         settings.translation_max_retries = _clamp_int(
             settings.translation_max_retries + delta * _RETRIES_STEP, *MAX_RETRIES_RANGE

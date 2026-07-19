@@ -1,22 +1,22 @@
-"""Index-preserving batched translation for the Google engine.
+r"""Index-preserving batched translation for the Google engine.
 
 Free Google Translate mangles structure, so this guarantees input[i] maps to
 output[i] by construction: join lines with a zero-width separator; on a
 segment-count mismatch fall back to newline-join, then to per-line, then pad
-with the source text. Multi-line cells survive via a distinct newline marker.
-Sequential, no gather - that is what avoids Google rate limits.
+with the source text. Sequential, no gather - that is what avoids Google rate
+limits.
+
+Every input line is single-line: the subtitle stage (``visible_text``) collapses
+all ``\\n``/``\\N`` breaks to spaces before translation ever runs, so there are
+no in-cell newlines to preserve.
 """
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING
 
-from anishift.services.translation.engines.google.constants import (
-    LINE_SEPARATOR,
-    NEWLINE_MARKER,
-    ZERO_WIDTH,
-)
+from anishift.services.translation.chunking import ZERO_WIDTH
+from anishift.services.translation.engines.google.constants import LINE_SEPARATOR
 from anishift.services.translation.types import BatchedLine
 
 if TYPE_CHECKING:
@@ -24,20 +24,19 @@ if TYPE_CHECKING:
 
 
 def _chunks(texts: list[str], batch_size: int, max_chars: int) -> list[list[str]]:
-    """Split lines (newline-escaped) into chunks bounded by count and chars."""
+    """Split lines into chunks bounded by line count and character budget."""
     chunks: list[list[str]] = []
     current: list[str] = []
     current_chars = 0
     for text in texts:
-        prepared = text.replace("\n", NEWLINE_MARKER)
-        line_chars = len(prepared) + len(LINE_SEPARATOR)
+        line_chars = len(text) + len(LINE_SEPARATOR)
         too_many = len(current) >= batch_size
         too_long = bool(current) and current_chars + line_chars > max_chars
         if too_many or too_long:
             chunks.append(current)
             current = []
             current_chars = 0
-        current.append(prepared)
+        current.append(text)
         current_chars += line_chars
     if current:
         chunks.append(current)
@@ -45,11 +44,8 @@ def _chunks(texts: list[str], batch_size: int, max_chars: int) -> list[list[str]
 
 
 def _restore(text: str) -> str:
-    """Undo markers and strip separators from a translated segment."""
-    cleaned = text.replace(NEWLINE_MARKER, "\n").replace(ZERO_WIDTH, "")
-    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
-    cleaned = re.sub(r"\n[ \t]+", "\n", cleaned)
-    return cleaned.strip()
+    """Strip zero-width separators and surrounding whitespace from a segment."""
+    return text.replace(ZERO_WIDTH, "").strip()
 
 
 async def _per_line(
@@ -62,7 +58,7 @@ async def _per_line(
         try:
             translated, detected = await translate_joined(line)
         except Exception:  # noqa: BLE001 - googletrans has no stable exception hierarchy
-            out.append(BatchedLine(text=line.replace(NEWLINE_MARKER, "\n"), ok=False))
+            out.append(BatchedLine(text=line, ok=False))
             continue
         out.append(BatchedLine(text=_restore(translated), detected_lang=detected, ok=True))
     return out
@@ -100,7 +96,7 @@ def _map_parts(prepared: list[str], parts: list[str], detected: str | None) -> l
     for source, part in zip(prepared, parts, strict=True):
         restored = _restore(part)
         if not restored and source.strip():
-            out.append(BatchedLine(text=source.replace(NEWLINE_MARKER, "\n"), ok=False))
+            out.append(BatchedLine(text=source, ok=False))
         else:
             out.append(BatchedLine(text=restored, detected_lang=detected, ok=True))
     return out

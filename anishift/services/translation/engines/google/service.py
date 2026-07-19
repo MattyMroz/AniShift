@@ -36,7 +36,6 @@ class GoogleService:
                 batch_size=config.batch_size,
                 max_chars_per_request=config.max_chars_per_request,
                 max_retries=config.max_retries,
-                concurrency=config.concurrency,
             )
 
     @property

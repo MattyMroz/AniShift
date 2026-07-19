@@ -1,5 +1,3 @@
-"""Tests for the diagnostic doctor."""
-
 from __future__ import annotations
 
 from pathlib import Path

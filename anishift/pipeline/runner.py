@@ -21,6 +21,7 @@ from anishift.services.subtitles import (
     load_subtitles,
     preview_styles,
     split_subtitles,
+    spoken_to_srt,
     subtitle_kind,
     txt_to_spoken,
     visible_text,
@@ -102,7 +103,6 @@ def _translation_settings(context: AppContext) -> TranslationSettings:
         engine=prefs.translation_engine,
         fallback_chain=tuple(prefs.translation_fallback_chain),
         batch_size=prefs.translation_batch_size,
-        concurrency=prefs.translation_concurrency,
         max_retries=prefs.translation_max_retries,
         deepl_api_key=context.settings.deepl_api_key,
     )
@@ -294,7 +294,6 @@ def _translate_config(translation: TranslationSettings) -> TranslationConfig:
         engine=translation.engine,
         source_lang="auto",
         batch_size=translation.batch_size if translation.batch_size > 0 else DEFAULT_BATCH_SIZE,
-        concurrency=translation.concurrency,
         max_retries=translation.max_retries,
         api_key=translation.deepl_api_key,
     )
@@ -327,9 +326,11 @@ def _process_txt(path: Path, translation: TranslationSettings) -> FileOutcome:
             return FileOutcome(path, "done")
         service = TranslationService(_translate_config(translation), fallback_chain=translation.fallback_chain)
         result = service.translate_file(list(spoken), [], source_lang="auto")
+        translated_path = spoken_to_srt(result.spoken, path.with_suffix(".pl.srt")) if result.is_success else None
         return FileOutcome(
             path,
             "done",
+            translated_path=translated_path,
             spoken_lines=len(spoken),
             translation=result,
             translated_lines=len(result.spoken),

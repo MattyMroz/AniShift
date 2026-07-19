@@ -49,7 +49,6 @@ def test_to_deepl_code_mapping() -> None:
 
 
 def test_logical_pl_reaches_deepl_sdk_as_uppercase() -> None:
-    # The facade passes the logical "pl"; the deepl engine maps it to "PL".
     captured: dict[str, str] = {}
 
     class _CapturingClient:

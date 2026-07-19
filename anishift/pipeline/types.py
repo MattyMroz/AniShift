@@ -49,6 +49,7 @@ class FileOutcome:
     audio_path: Path | None = None
     subtitle_path: Path | None = None
     displayed_path: Path | None = None
+    translated_path: Path | None = None
     already_polish: bool = False
     spoken_lines: int = 0
     displayed_events: int = 0
@@ -70,7 +71,6 @@ class TranslationSettings:
         engine: Selected translation engine id.
         fallback_chain: Ordered fallback engine ids.
         batch_size: Lines per request (0 = engine default).
-        concurrency: Concurrent batches per file.
         max_retries: Retry attempts per batch.
         deepl_api_key: DeepL key (used by the deepl engine, ignored by google).
     """
@@ -78,7 +78,6 @@ class TranslationSettings:
     engine: str
     fallback_chain: tuple[str, ...]
     batch_size: int
-    concurrency: int
     max_retries: int
     deepl_api_key: str
 

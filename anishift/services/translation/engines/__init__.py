@@ -22,11 +22,11 @@ if TYPE_CHECKING:
 TranslationEngineId = Literal["google", "deepl", "llm"]
 """Registry keys of translation engines; higher layers import this, never respell it."""
 
-# engine_id -> (module_path, service_class, config_class)
-_REGISTRY: Final[dict[TranslationEngineId, tuple[str, str, str]]] = {
-    "google": ("anishift.services.translation.engines.google", "GoogleService", "GoogleConfig"),
-    "deepl": ("anishift.services.translation.engines.deepl", "DeeplService", "DeeplConfig"),
-    "llm": ("anishift.services.translation.engines.llm", "LlmTranslateService", "LlmTranslateConfig"),
+# engine_id -> (module_path, service_class)
+_REGISTRY: Final[dict[TranslationEngineId, tuple[str, str]]] = {
+    "google": ("anishift.services.translation.engines.google", "GoogleService"),
+    "deepl": ("anishift.services.translation.engines.deepl", "DeeplService"),
+    "llm": ("anishift.services.translation.engines.llm", "LlmTranslateService"),
 }
 
 
@@ -65,7 +65,7 @@ def create_engine(config: TranslationConfig) -> TranslationEngine:
             "directly and pass it via TranslationService(engine=...)."
         )
         raise TranslationConfigError(msg)
-    module_path, class_name, _config_class = _REGISTRY[engine_id]
+    module_path, class_name = _REGISTRY[engine_id]
     module = importlib.import_module(module_path)
     engine_cls = getattr(module, class_name)
     engine: TranslationEngine = engine_cls(config)

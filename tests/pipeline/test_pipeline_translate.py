@@ -16,7 +16,6 @@ def _ts() -> TranslationSettings:
         engine="google",
         fallback_chain=("google",),
         batch_size=0,
-        concurrency=3,
         max_retries=3,
         deepl_api_key="",
     )
@@ -78,3 +77,9 @@ def test_process_txt_translates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     assert outcome.translation_engine == "fake"
     assert outcome.translated_lines == outcome.spoken_lines
     assert outcome.translated_lines > 0
+    assert outcome.translated_path is not None
+    assert outcome.translated_path.exists()
+    assert outcome.translated_path.suffix == ".srt"
+    srt = outcome.translated_path.read_text(encoding="utf-8")
+    assert "-->" in srt
+    assert "PL:" in srt

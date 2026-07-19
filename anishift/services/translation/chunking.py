@@ -19,11 +19,11 @@ from typing import Final, Literal
 DEFAULT_SENTENCE_LENGTH: Final[int] = 750
 """Preferred maximum characters when grouping into narrator-sized chunks."""
 
-DEFAULT_CHUNK_LIMIT: Final[int] = 250
-"""Preferred maximum characters per fine-grained chunk."""
-
-_SENTENCE_ENDINGS: Final[str] = ".!?" + chr(0x2026) + chr(0x3002) + chr(0xFF01) + chr(0xFF1F)
+SENTENCE_ENDINGS: Final[str] = ".!?" + chr(0x2026) + chr(0x3002) + chr(0xFF01) + chr(0xFF1F)
 """Sentence-ending chars; handled by ``get_sentences``, never a phrase cut."""
+
+ZERO_WIDTH: Final[str] = chr(0x200B)
+"""Zero-width space some sources place after a sentence mark; SSOT of this char."""
 
 _APOSTROPHES: Final[str] = chr(0x27) + chr(0x2019)
 """Apostrophes; kept inside a word (e.g. ``don't``), never a cut point."""
@@ -48,17 +48,14 @@ def _punctuation_chars(categories: frozenset[str], *, exclude: str) -> str:
 # begins right after an opening bracket or quote.
 _PHRASE_CUT_CHARS: Final[str] = _punctuation_chars(
     frozenset({"Pd", "Pe", "Pf", "Po"}),
-    exclude=_SENTENCE_ENDINGS + _APOSTROPHES,
+    exclude=SENTENCE_ENDINGS + _APOSTROPHES,
 )
 """All Unicode phrase-cut punctuation, minus sentence endings and apostrophes."""
 
 _RE_PARAGRAPHS: Final[re.Pattern[str]] = re.compile(r"((?:\r?\n\s*){2,})")
 """Blank-line paragraph separator."""
 
-_ZERO_WIDTH: Final[str] = chr(0x200B)
-"""Zero-width space some sources place after a sentence mark."""
-
-_RE_SENTENCES: Final[re.Pattern[str]] = re.compile("([" + re.escape(_SENTENCE_ENDINGS) + r"]+[\s" + _ZERO_WIDTH + "]+)")
+_RE_SENTENCES: Final[re.Pattern[str]] = re.compile("([" + re.escape(SENTENCE_ENDINGS) + r"]+[\s" + ZERO_WIDTH + "]+)")
 """Sentence-ending marks (any language) followed by whitespace."""
 
 _ABBREVIATIONS: Final[re.Pattern[str]] = re.compile(
@@ -239,6 +236,15 @@ class WordBreaker(_Breaker):
         return result
 
 
+def phrase_cut_chars() -> str:
+    """Return every Unicode phrase-cut char (one source of truth for cutting).
+
+    Reused by :mod:`anishift.services.translation.linebreak` so both tools share
+    the same punctuation base instead of hand-written lists.
+    """
+    return _PHRASE_CUT_CHARS
+
+
 def chunk_text(text: str, *, method: ChunkMethod = "char", limit: int = DEFAULT_SENTENCE_LENGTH) -> list[str]:
     """Split ``text`` into chunks no larger than ``limit`` in the chosen unit.
 
@@ -257,11 +263,13 @@ def chunk_text(text: str, *, method: ChunkMethod = "char", limit: int = DEFAULT_
 
 
 __all__ = [
-    "DEFAULT_CHUNK_LIMIT",
     "DEFAULT_SENTENCE_LENGTH",
+    "SENTENCE_ENDINGS",
+    "ZERO_WIDTH",
     "CharBreaker",
     "ChunkMethod",
     "LatinPunctuator",
     "WordBreaker",
     "chunk_text",
+    "phrase_cut_chars",
 ]

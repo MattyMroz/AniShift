@@ -1,5 +1,3 @@
-"""Tests for pipeline discovery and per-file isolation."""
-
 from __future__ import annotations
 
 import threading
@@ -20,7 +18,6 @@ from anishift.services.extraction.types import MediaInfo
 
 
 def _context(root: Path) -> AppContext:
-    """Build a minimal test context."""
     return AppContext(Settings(), UserSettings(), root)
 
 
@@ -29,7 +26,6 @@ def _ts() -> TranslationSettings:
         engine="google",
         fallback_chain=("google",),
         batch_size=0,
-        concurrency=3,
         max_retries=3,
         deepl_api_key="",
     )
@@ -68,7 +64,7 @@ def test_run_pipeline_isolates_identify_failure(monkeypatch: pytest.MonkeyPatch,
 
 def test_worker_count_scales_with_cores(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("anishift.pipeline.runner.os.cpu_count", lambda: 20)
-    assert _worker_count(100) == 6  # round(sqrt(20)) + 2, the measured optimum
+    assert _worker_count(100) == 6
 
 
 def test_worker_count_never_exceeds_item_count(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -78,7 +74,7 @@ def test_worker_count_never_exceeds_item_count(monkeypatch: pytest.MonkeyPatch) 
 
 def test_worker_count_is_at_least_one(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("anishift.pipeline.runner.os.cpu_count", lambda: None)
-    assert _worker_count(5) == 3  # round(sqrt(1)) + 2
+    assert _worker_count(5) == 3
 
 
 def test_process_mkvs_reraises_interrupt_after_cancelling_workers(

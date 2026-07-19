@@ -8,7 +8,7 @@ the chain. Accepts an injected engine for tests / the LLM engine.
 from __future__ import annotations
 
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.translation.config import TranslationConfig
@@ -21,11 +21,17 @@ from anishift.services.translation.errors import (
     TranslationQuotaError,
     TranslationRateLimitError,
 )
+from anishift.services.translation.linebreak import split_line
 from anishift.services.translation.types import BatchedLine, FileTranslation, TranslatedLine
 
 if TYPE_CHECKING:
     from anishift.services.subtitles.types import SpokenLine
     from anishift.services.translation.protocols import TranslationEngine
+
+# ── Constants ──────────────────────────────────────────────────────────────
+
+_ASS_LINE_BREAK: Final[str] = "\\N"
+"""ASS/SRT soft line break joining a displayed line's re-split verses."""
 
 
 class TranslationService:
@@ -112,7 +118,6 @@ class TranslationService:
             batch_size=self.config.batch_size,
             max_chars_per_request=self.config.max_chars_per_request,
             max_retries=self.config.max_retries,
-            concurrency=self.config.concurrency,
             api_key=self.config.api_key,
         )
         return create_engine(engine_config)
@@ -182,11 +187,16 @@ class TranslationService:
         source_lang: str,
         target_lang: str,
     ) -> tuple[tuple[str, ...], int, int]:
-        """Translate the displayed stream into plain strings."""
+        """Translate the displayed stream, re-split each line into on-screen verses.
+
+        A viewer reads displayed subtitles on screen, so each translated line is
+        re-split into readable verses joined by the ASS/SRT soft break.
+        """
         dedup = deduplicate(displayed)
         batched = self._call_engine(engine, list(dedup.unique), source_lang=source_lang, target_lang=target_lang)
         calls = 1 if dedup.unique else 0
-        out = tuple(redistribute([line.text for line in batched], dedup, displayed))
+        full = redistribute([line.text for line in batched], dedup, displayed)
+        out = tuple(_ASS_LINE_BREAK.join(split_line(text)) for text in full)
         return out, calls, len(dedup.unique)
 
     @staticmethod

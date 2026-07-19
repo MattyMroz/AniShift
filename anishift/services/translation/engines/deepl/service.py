@@ -17,7 +17,6 @@ from anishift.services.translation.engines.deepl.config import DeeplConfig
 from anishift.services.translation.engines.deepl.constants import (
     MAX_PAYLOAD_BYTES,
     RATE_LIMIT_BASE_DELAY_S,
-    RATE_LIMIT_MAX_ATTEMPTS,
 )
 from anishift.services.translation.errors import (
     TranslationAuthError,
@@ -127,12 +126,13 @@ class DeeplService:
         self._ensure_client()
         target = to_deepl_code(target_lang) or "EN-US"
         source = to_deepl_code(source_lang)
+        max_attempts = self._config.max_retries + 1
         out: list[BatchedLine] = []
         for chunk in _chunk_by_bytes(texts, MAX_PAYLOAD_BYTES):
             out.extend(
                 call_with_retry(
                     partial(self._translate_once, chunk, target, source),
-                    max_attempts=RATE_LIMIT_MAX_ATTEMPTS,
+                    max_attempts=max_attempts,
                     retry_on=TranslationRateLimitError,
                     base_s=RATE_LIMIT_BASE_DELAY_S,
                 )

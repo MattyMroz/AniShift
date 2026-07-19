@@ -1,5 +1,3 @@
-"""Tests for external-binary resolution."""
-
 from __future__ import annotations
 
 import shutil

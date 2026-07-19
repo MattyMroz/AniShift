@@ -1,5 +1,3 @@
-"""Tests for the resource installer (no network — synthetic archives)."""
-
 from __future__ import annotations
 
 import hashlib
@@ -59,7 +57,7 @@ def test_extract_members_writes_dest_tree(tmp_path: Path) -> None:
     dest_root = tmp_path / "bin"
     extract_members(archive, resource, dest_root)
     assert (dest_root / "tool" / "tool.exe").read_bytes() == b"MZbinary"
-    assert not (dest_root / "root").exists()  # only named members land
+    assert not (dest_root / "root").exists()
 
 
 def test_extract_members_rejects_missing_member(tmp_path: Path) -> None:
@@ -231,7 +229,7 @@ def test_run_setup_swallows_network_error(tmp_path: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr(installer, "is_windows", lambda: True)
     monkeypatch.setattr(installer, "_download_httpx", _boom)
-    results = run_setup(resources=(resource,), dest_root=tmp_path / "bin")  # must NOT raise
+    results = run_setup(resources=(resource,), dest_root=tmp_path / "bin")
     assert [r.outcome for r in results] == ["failed"]
 
 
@@ -260,7 +258,7 @@ def test_ensure_resource_noop_when_installed(tmp_path: Path, monkeypatch: pytest
 
     monkeypatch.setattr(installer, "is_windows", lambda: True)
     monkeypatch.setattr(installer, "_download_httpx", _never)
-    ensure_resource(resource.name, resources=(resource,), dest_root=dest_root)  # must not raise
+    ensure_resource(resource.name, resources=(resource,), dest_root=dest_root)
 
 
 def test_ensure_resource_installs_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -322,7 +320,7 @@ def test_ensure_resource_noop_off_windows(tmp_path: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr(installer, "is_windows", lambda: False)
     monkeypatch.setattr(installer, "_download_httpx", _never)
-    ensure_resource(resource.name, resources=(resource,), dest_root=tmp_path / "bin")  # silent no-op
+    ensure_resource(resource.name, resources=(resource,), dest_root=tmp_path / "bin")
 
 
 def test_ensure_resource_unknown_name_raises(tmp_path: Path) -> None:

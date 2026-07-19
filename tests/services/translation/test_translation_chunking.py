@@ -3,19 +3,15 @@ import pytest
 from anishift.services.translation.chunking import _PHRASE_CUT_CHARS, LatinPunctuator, chunk_text
 
 
-def test_unicode_cut_set_covers_all_languages() -> None:
-    # Built from unicodedata categories, so it spans hundreds of chars across
-    # every script - not the handful a hand-written list would hold.
+def test_unicode_cut_set_spans_hundreds_of_chars_across_scripts() -> None:
     assert len(_PHRASE_CUT_CHARS) > 500
 
 
 @pytest.mark.parametrize(
     "closing",
-    # Pe/Pf/Pd/Po phrase marks from many scripts must all be cut points.
-    # CJK full stop U+3002 is a sentence ending, not a phrase cut - excluded.
     [")", "]", "}", "»", "”", "、", "،", "؛"],
 )
-def test_closing_and_marks_are_cut_points(closing: str) -> None:
+def test_closing_and_phrase_marks_from_many_scripts_are_cut_points(closing: str) -> None:
     assert closing in _PHRASE_CUT_CHARS
 
 
@@ -62,9 +58,15 @@ def test_empty_text_returns_empty() -> None:
     assert chunk_text("", limit=100) == []
 
 
-def test_word_method_produces_more_chunks_at_lower_limit() -> None:
-    # WordBreaker counts word+separator tokens (faithful to the original);
-    # a smaller limit yields more chunks and preserves all content.
+def test_whitespace_only_text_is_returned_as_one_chunk() -> None:
+    assert chunk_text("   \t  ", limit=100) == ["   \t  "]
+
+
+def test_single_word_returns_that_word() -> None:
+    assert chunk_text("słowo", limit=100) == ["słowo"]
+
+
+def test_word_method_produces_more_chunks_at_lower_limit_and_preserves_content() -> None:
     text = "one two three four five six"
     few = chunk_text(text, method="word", limit=6)
     many = chunk_text(text, method="word", limit=2)
@@ -82,15 +84,12 @@ def test_single_punctuation_char() -> None:
     assert chunk_text(".", limit=100) == ["."]
 
 
-def test_abbreviation_is_not_a_sentence_boundary() -> None:
-    # "Dr." must not split the sentence; "Dr. Kowalski był" stays whole.
+def test_english_abbreviation_dot_is_not_a_sentence_boundary() -> None:
     sentences = LatinPunctuator().get_sentences("Dr. Kowalski był tutaj. Potem wyszedł.")
     assert any("Dr. Kowalski był tutaj." in s for s in sentences)
 
 
-def test_polish_abbreviation_not_split() -> None:
-    # "itd." is an abbreviation, so its dot does not end the sentence: the whole
-    # phrase up to and past "itd." stays in one piece.
+def test_polish_abbreviation_dot_keeps_following_word_in_same_sentence() -> None:
     sentences = LatinPunctuator().get_sentences("Kup mleko, chleb itd. Potem wróć.")
     assert any("itd. Potem" in s for s in sentences)
 

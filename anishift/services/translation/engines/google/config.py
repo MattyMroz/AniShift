@@ -15,18 +15,18 @@ from anishift.services.translation.engines.google.constants import MAX_CHARS_PER
 class GoogleConfig:
     """Runtime config for the free Google Translate engine.
 
+    Requests are always issued sequentially, one chunk after another - that is
+    what avoids the free endpoint's aggressive rate limiting.
+
     Attributes:
         batch_size: Lines joined per request.
         max_chars_per_request: Character budget per request.
         max_retries: Retry attempts on transient errors.
-        concurrency: Concurrent requests per file; kept low as Google
-            rate-limits the free endpoint aggressively.
     """
 
     batch_size: int = DEFAULT_BATCH_SIZE
     max_chars_per_request: int = MAX_CHARS_PER_REQUEST
     max_retries: int = DEFAULT_MAX_RETRIES
-    concurrency: int = 1
 
     def __post_init__(self) -> None:
         """Validate numeric ranges."""

@@ -55,8 +55,7 @@ def test_translate_file_builds_translated_lines_with_timings() -> None:
     assert result.engine_id == "fake"
 
 
-def test_facade_defaults_target_to_polish() -> None:
-    # No target_lang passed -> the engine receives the logical "pl".
+def test_facade_defaults_target_to_polish_when_no_target_passed() -> None:
     engine = _FakeEngine()
     service = TranslationService(_config(), engine=engine)
     service.translate_file(_spoken("hi"), [])
@@ -67,7 +66,6 @@ def test_dedup_collapses_repeated_lines() -> None:
     engine = _FakeEngine()
     service = TranslationService(_config(), engine=engine)
     result = service.translate_file(_spoken("same", "same", "same"), [], target_lang="pl")
-    # engine saw only the unique line once
     assert engine.calls == [["same"]]
     assert [line.text for line in result.spoken] == ["PL:same", "PL:same", "PL:same"]
     assert result.unique_lines == 1

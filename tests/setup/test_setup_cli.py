@@ -1,5 +1,3 @@
-"""Tests for the `anishift setup` CLI command."""
-
 from __future__ import annotations
 
 import importlib

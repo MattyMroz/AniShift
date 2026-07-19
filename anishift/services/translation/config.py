@@ -13,7 +13,6 @@ from typing import Any
 
 from anishift.services.translation.constants import (
     DEFAULT_BATCH_SIZE,
-    DEFAULT_CONCURRENCY,
     DEFAULT_MAX_CHARS,
     DEFAULT_MAX_RETRIES,
     DEFAULT_SOURCE_LANG,
@@ -40,7 +39,6 @@ class TranslationConfig:
         batch_size: Lines joined per provider request.
         max_chars_per_request: Character budget per request before chunking.
         max_retries: Retry attempts on transient errors.
-        concurrency: Concurrent batches per file (semaphore).
         api_key: Provider key (used by deepl; empty for the free google engine).
     """
 
@@ -49,7 +47,6 @@ class TranslationConfig:
     batch_size: int = DEFAULT_BATCH_SIZE
     max_chars_per_request: int = DEFAULT_MAX_CHARS
     max_retries: int = DEFAULT_MAX_RETRIES
-    concurrency: int = DEFAULT_CONCURRENCY
     api_key: str = ""
 
     def __init__(self, **kwargs: Any) -> None:

@@ -23,13 +23,9 @@ DEFAULT_MAX_CHARS: Final[int] = 4500
 DEFAULT_MAX_RETRIES: Final[int] = 3
 """Retry attempts on transient errors before giving up."""
 
-DEFAULT_CONCURRENCY: Final[int] = 3
-"""Concurrent batches per file (semaphore); conservative for API rate limits."""
-
 
 __all__ = [
     "DEFAULT_BATCH_SIZE",
-    "DEFAULT_CONCURRENCY",
     "DEFAULT_MAX_CHARS",
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_SOURCE_LANG",

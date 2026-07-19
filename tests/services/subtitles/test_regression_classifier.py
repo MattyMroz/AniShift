@@ -13,7 +13,6 @@ _KNOWN_MISSED_DIALOG: Final[frozenset[tuple[str, str]]] = frozenset(
         ("141___Fuji__Kimi_to_Koete_Koi_ni_Naru_-_04__1080p_.mkv.ass", "Znaki"),
     }
 )
-"""The two style-granularity misses measured at port time (Fuji 3-4)."""
 
 
 def test_classifier_regression_matches_mm_avh_baseline() -> None:

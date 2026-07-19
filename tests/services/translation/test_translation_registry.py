@@ -45,7 +45,6 @@ def test_config_without_engine_raises() -> None:
 
 
 def test_registry_import_does_not_load_provider_sdks() -> None:
-    # Importing the registry must NOT pull googletrans/deepl (lazy import).
     for module in ("googletrans", "deepl"):
         sys.modules.pop(module, None)
     import importlib  # noqa: PLC0415 - reload requires a fresh in-function import

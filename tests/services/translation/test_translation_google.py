@@ -31,7 +31,7 @@ def test_falls_back_to_per_line_on_segment_mismatch() -> None:
     async def fake(joined: str) -> tuple[str, str | None]:
         calls.append(joined)
         if LINE_SEPARATOR in joined or "\n" in joined:
-            return "wrong-merge", "en"  # collapses -> triggers ladder
+            return "wrong-merge", "en"
         return f"PL-{joined}", "en"
 
     result = _run(translate_lines(texts, batch_size=50, max_chars=15000, translate_joined=fake))
@@ -50,8 +50,8 @@ def test_per_line_failure_pads_source() -> None:
 
     async def fake(joined: str) -> tuple[str, str | None]:
         if LINE_SEPARATOR in joined or "\n" in joined:
-            return "merged", None  # force ladder to per-line
-        raise RuntimeError("boom")  # per-line call fails -> pad source
+            return "merged", None
+        raise RuntimeError("boom")
 
     result = _run(translate_lines(texts, batch_size=50, max_chars=15000, translate_joined=fake))
     assert [line.text for line in result] == ["x", "y"]
