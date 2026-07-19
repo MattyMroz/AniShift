@@ -264,6 +264,10 @@ _RE_SPACES: Final[re.Pattern[str]] = re.compile(r"\s+")
 def split_line(text: str, *, max_chars: int = DEFAULT_MAX_CHARS) -> tuple[str, ...]:
     """Split ``text`` into readable verses; return one entry when it fits.
 
+    Verses over ``max_chars`` are split again, but never past :data:`MAX_LINES`
+    verses: once the budget is used up an over-length verse is accepted rather
+    than fragmenting the line further.
+
     Args:
         text: Single-line text to split.
         max_chars: Preferred maximum length of one verse.
@@ -272,14 +276,20 @@ def split_line(text: str, *, max_chars: int = DEFAULT_MAX_CHARS) -> tuple[str, .
         One or more verses; a single-entry tuple when the text already fits.
     """
     text = _RE_SPACES.sub(" ", text).strip()
-    if len(text) <= max_chars or " " not in text:
+    return _split(text, max_chars, MAX_LINES)
+
+
+def _split(text: str, max_chars: int, budget: int) -> tuple[str, ...]:
+    """Recursively split ``text`` into at most ``budget`` verses."""
+    if len(text) <= max_chars or " " not in text or budget <= 1:
         return (text,)
     point = _best_cut(text, max_chars)
     left = text[:point].strip()
     right = text[point:].strip()
     if not left or not right:
         return (text,)
-    return (left, right)
+    verses = _split(left, max_chars, budget - 1)
+    return verses + _split(right, max_chars, budget - len(verses))
 
 
 def _best_cut(text: str, max_chars: int) -> int:

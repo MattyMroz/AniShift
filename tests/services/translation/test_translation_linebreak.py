@@ -53,6 +53,20 @@ def test_long_line_splits_into_short_verses(text: str) -> None:
         assert len(verse) <= 50
 
 
+def test_never_exceeds_max_lines_even_when_text_cannot_fit() -> None:
+    text = " ".join(f"slowo{i}" for i in range(40))
+    verses = split_line(text, max_chars=20)
+    assert len(verses) <= MAX_LINES
+    assert all(verses)
+
+
+def test_both_verses_fit_when_split_is_possible() -> None:
+    verses = split_line("To zdanie ma dokladnie tyle znakow ile trzeba do podzialu", max_chars=32)
+    assert len(verses) == 2
+    for verse in verses:
+        assert len(verse) <= 32
+
+
 def test_no_orphan_single_word_verse() -> None:
     verses = split_line("To jest naprawdę bardzo długie zdanie do przetestowania podziału", max_chars=42)
     for verse in verses:

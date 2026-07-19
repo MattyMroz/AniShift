@@ -11,6 +11,7 @@ from anishift.services.subtitles.service import (
     split_subtitles,
     subtitle_kind,
     write_displayed,
+    write_translated_displayed,
 )
 from anishift.services.subtitles.srt import spoken_to_srt
 from anishift.services.subtitles.text import is_drawing, replace_visible_text, visible_text
@@ -39,4 +40,5 @@ __all__ = [
     "txt_to_spoken",
     "visible_text",
     "write_displayed",
+    "write_translated_displayed",
 ]

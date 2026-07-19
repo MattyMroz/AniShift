@@ -13,7 +13,6 @@ from typing import Any
 
 from anishift.services.translation.constants import (
     DEFAULT_BATCH_SIZE,
-    DEFAULT_MAX_CHARS,
     DEFAULT_MAX_RETRIES,
     DEFAULT_SOURCE_LANG,
 )
@@ -33,11 +32,14 @@ class TranslationConfig:
     The translation target is always Polish, so this config carries no target
     language (see ``constants.TARGET_LANG``).
 
+    The per-request character limit is not carried here: it is the engine's own
+    hard limit (Google 15000, DeepL 128 KiB), owned by the engine's constants so
+    the facade can never under-set it.
+
     Attributes:
         engine: Engine id from the lazy registry (``google``/``deepl``/``llm``).
         source_lang: Source language; ``auto`` lets the provider detect it.
         batch_size: Lines joined per provider request.
-        max_chars_per_request: Character budget per request before chunking.
         max_retries: Retry attempts on transient errors.
         api_key: Provider key (used by deepl; empty for the free google engine).
     """
@@ -45,7 +47,6 @@ class TranslationConfig:
     engine: str
     source_lang: str = DEFAULT_SOURCE_LANG
     batch_size: int = DEFAULT_BATCH_SIZE
-    max_chars_per_request: int = DEFAULT_MAX_CHARS
     max_retries: int = DEFAULT_MAX_RETRIES
     api_key: str = ""
 

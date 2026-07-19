@@ -26,6 +26,7 @@ from anishift.services.subtitles import (
     txt_to_spoken,
     visible_text,
     write_displayed,
+    write_translated_displayed,
 )
 from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
 from anishift.utils.safe_fs import safe_rmtree
@@ -221,14 +222,18 @@ def _process_mkv(  # noqa: PLR0911, PLR0913 - orchestration entry: each dependen
         displayed = write_displayed(split, destination)
         step = "translate"
         result = None
+        translated_path = None
         if _should_translate(split, selection.already_polish):
             result = _translate_split(split, translation, cancel)
+            if result.is_success and result.displayed:
+                translated_path = _write_translated(split, result.displayed, workspace_root / f"{mkv.stem}.pl.{kind}")
         return FileOutcome(
             source=mkv,
             status="done",
             audio_path=extracted.audio_path,
             subtitle_path=extracted.subtitle_path,
             displayed_path=displayed,
+            translated_path=translated_path,
             already_polish=selection.already_polish,
             spoken_lines=split.stats.spoken_lines,
             displayed_events=split.stats.displayed_events,
@@ -284,6 +289,14 @@ def _displayed_visible_texts(split: SubtitleSplit) -> list[str]:
         for event, decision in zip(dialogue, split.decisions, strict=True)
         if decision == "displayed"
     ]
+
+
+def _write_translated(split: SubtitleSplit, displayed: tuple[str, ...], dest: Path) -> Path | None:
+    """Re-split translated displayed lines into verses and write the ASS/SRT."""
+    from anishift.services.translation.linebreak import split_line  # noqa: PLC0415 - lazy: keep engines off import path
+
+    verses = [split_line(text) for text in displayed]
+    return write_translated_displayed(split, verses, dest)
 
 
 def _translate_config(translation: TranslationSettings) -> TranslationConfig:

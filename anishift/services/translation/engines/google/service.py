@@ -34,7 +34,6 @@ class GoogleService:
         else:
             self._config = GoogleConfig(
                 batch_size=config.batch_size,
-                max_chars_per_request=config.max_chars_per_request,
                 max_retries=config.max_retries,
             )
 
@@ -71,7 +70,7 @@ class GoogleService:
 
         client: Any = Translator()
 
-        async def _translate_joined(joined: str) -> tuple[str, str | None]:
+        async def _translate_joined(joined: str) -> str:
             return await self._call_with_retry(client, joined, dest=dest)
 
         return await translate_lines(
@@ -81,8 +80,8 @@ class GoogleService:
             translate_joined=_translate_joined,
         )
 
-    async def _call_with_retry(self, client: Any, text: str, *, dest: str) -> tuple[str, str | None]:
-        """Call googletrans with capped linear backoff; return (text, src lang)."""
+    async def _call_with_retry(self, client: Any, text: str, *, dest: str) -> str:
+        """Call googletrans with capped linear backoff; return the translation."""
         attempts = self._config.max_retries + 1
         for attempt in range(1, attempts + 1):
             try:
@@ -92,8 +91,7 @@ class GoogleService:
                     raise
                 await asyncio.sleep(min(RETRY_BACKOFF_BASE_S * attempt, RETRY_MAX_WAIT_S))
                 continue
-            detected = getattr(result, "src", None)
-            return str(result.text), (detected.lower() if detected else None)
+            return str(result.text)
         msg = "google retry exhausted without returning"  # unreachable
         raise RuntimeError(msg)
 

@@ -17,16 +17,12 @@ DEFAULT_SOURCE_LANG: Final[str] = "auto"
 DEFAULT_BATCH_SIZE: Final[int] = 50
 """Lines joined into one provider request (subtitle batching by line count)."""
 
-DEFAULT_MAX_CHARS: Final[int] = 4500
-"""Per-request character budget fallback (engines override with their own limit)."""
-
 DEFAULT_MAX_RETRIES: Final[int] = 3
 """Retry attempts on transient errors before giving up."""
 
 
 __all__ = [
     "DEFAULT_BATCH_SIZE",
-    "DEFAULT_MAX_CHARS",
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_SOURCE_LANG",
     "TARGET_LANG",

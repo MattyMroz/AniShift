@@ -15,13 +15,10 @@ class BatchedLine:
 
     Attributes:
         text: Translated text, or the source text when the line failed.
-        detected_lang: Source language the provider auto-detected; ``None`` when
-            not reported (e.g. the LLM engine).
         ok: ``False`` when the line was padded with its source on failure.
     """
 
     text: str
-    detected_lang: str | None = None
     ok: bool = True
 
 

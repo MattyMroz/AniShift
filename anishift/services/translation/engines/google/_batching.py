@@ -50,55 +50,51 @@ def _restore(text: str) -> str:
 
 async def _per_line(
     prepared: list[str],
-    translate_joined: Callable[[str], Awaitable[tuple[str, str | None]]],
+    translate_joined: Callable[[str], Awaitable[str]],
 ) -> list[BatchedLine]:
     """Translate each line in its own call; pad source on failure."""
     out: list[BatchedLine] = []
     for line in prepared:
         try:
-            translated, detected = await translate_joined(line)
+            translated = await translate_joined(line)
         except Exception:  # noqa: BLE001 - googletrans has no stable exception hierarchy
             out.append(BatchedLine(text=line, ok=False))
             continue
-        out.append(BatchedLine(text=_restore(translated), detected_lang=detected, ok=True))
+        out.append(BatchedLine(text=_restore(translated), ok=True))
     return out
 
 
 async def _translate_chunk(
     prepared: list[str],
-    translate_joined: Callable[[str], Awaitable[tuple[str, str | None]]],
+    translate_joined: Callable[[str], Awaitable[str]],
 ) -> list[BatchedLine]:
     """Translate one chunk via separator -> newline -> per-line ladder."""
     try:
         joined = LINE_SEPARATOR.join(prepared)
-        result, detected = await translate_joined(joined)
+        result = await translate_joined(joined)
         parts = result.split(LINE_SEPARATOR)
         if len(parts) == len(prepared):
-            return _map_parts(prepared, parts, detected)
+            return _map_parts(prepared, parts)
 
         joined_nl = "\n".join(prepared)
-        result_nl, detected_nl = await translate_joined(joined_nl)
+        result_nl = await translate_joined(joined_nl)
         parts_nl = result_nl.split("\n")
         if len(parts_nl) == len(prepared):
-            return _map_parts(prepared, parts_nl, detected_nl)
+            return _map_parts(prepared, parts_nl)
     except Exception:  # noqa: BLE001, S110 - ladder fallback: retry per-line on any batch failure
         pass
     return await _per_line(prepared, translate_joined)
 
 
-def _map_parts(prepared: list[str], parts: list[str], detected: str | None) -> list[BatchedLine]:
-    """Map translated parts to lines; empty output for non-empty input pads source.
-
-    ``detected`` is the chunk-level source language (Google reports one per
-    request); it is applied to every successfully translated line in the chunk.
-    """
+def _map_parts(prepared: list[str], parts: list[str]) -> list[BatchedLine]:
+    """Map translated parts to lines; empty output for non-empty input pads source."""
     out: list[BatchedLine] = []
     for source, part in zip(prepared, parts, strict=True):
         restored = _restore(part)
         if not restored and source.strip():
             out.append(BatchedLine(text=source, ok=False))
         else:
-            out.append(BatchedLine(text=restored, detected_lang=detected, ok=True))
+            out.append(BatchedLine(text=restored, ok=True))
     return out
 
 
@@ -107,7 +103,7 @@ async def translate_lines(
     *,
     batch_size: int,
     max_chars: int,
-    translate_joined: Callable[[str], Awaitable[tuple[str, str | None]]],
+    translate_joined: Callable[[str], Awaitable[str]],
 ) -> list[BatchedLine]:
     """Translate lines with index<->index mapping guaranteed by construction.
 
@@ -115,9 +111,8 @@ async def translate_lines(
         texts: Lines to translate, in order.
         batch_size: Max lines per request.
         max_chars: Max characters per request (chunking budget).
-        translate_joined: Async callback translating one already-joined string;
-            returns ``(translated, detected_lang)`` where detected is the
-            chunk-level source language (``None`` if not reported).
+        translate_joined: Async callback translating one already-joined string
+            and returning the translated string.
 
     Returns:
         One ``BatchedLine`` per input line, same order; failed lines carry the

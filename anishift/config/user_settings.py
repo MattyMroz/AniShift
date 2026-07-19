@@ -55,6 +55,9 @@ VOLUME_RANGE: Final[tuple[int, int]] = (0, 100)
 BATCH_SIZE_RANGE: Final[tuple[int, int]] = (0, 500)
 """Allowed inclusive range for the translation batch size (0 = engine default)."""
 
+CONCURRENCY_RANGE: Final[tuple[int, int]] = (1, 16)
+"""Allowed inclusive range for the translation batch concurrency."""
+
 MAX_RETRIES_RANGE: Final[tuple[int, int]] = (0, 10)
 """Allowed inclusive range for the translation retry count."""
 
@@ -83,6 +86,7 @@ class UserSettings:
         translation_engine: Selected translation engine id.
         translation_fallback_chain: Ordered fallback engine ids.
         translation_batch_size: Lines per request (0 = engine default).
+        translation_concurrency: Concurrent batches per file (semaphore).
         translation_max_retries: Retry attempts per batch.
         llm_model: LLM provider model id (stage 5).
         llm_temperature: LLM sampling temperature (stage 5).
@@ -101,6 +105,7 @@ class UserSettings:
     translation_engine: str = "google"
     translation_fallback_chain: list[str] = field(default_factory=lambda: ["google"])
     translation_batch_size: int = 0
+    translation_concurrency: int = 1
     translation_max_retries: int = 3
     llm_model: str = ""
     llm_temperature: float = 0.3
@@ -181,6 +186,7 @@ def load_user_settings() -> UserSettings:
     _clean_string(filtered, "translation_engine", engine_ids)
     _clean_str_list(filtered, "translation_fallback_chain", engine_ids)
     _clean_number(filtered, "translation_batch_size", *BATCH_SIZE_RANGE)
+    _clean_number(filtered, "translation_concurrency", *CONCURRENCY_RANGE)
     _clean_number(filtered, "translation_max_retries", *MAX_RETRIES_RANGE)
     _clean_number(filtered, "llm_temperature", *LLM_TEMPERATURE_RANGE)
     _clean_number(filtered, "llm_top_p", *LLM_TOP_P_RANGE)

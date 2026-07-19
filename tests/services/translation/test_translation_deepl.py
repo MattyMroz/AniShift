@@ -7,9 +7,8 @@ from anishift.services.translation.errors import TranslationAuthError
 
 
 class _Result:
-    def __init__(self, text: str, detected: str | None = "EN") -> None:
+    def __init__(self, text: str) -> None:
         self.text = text
-        self.detected_source_lang = detected
 
 
 class _FakeClient:
@@ -38,7 +37,6 @@ def test_translate_maps_results_in_order() -> None:
     engine._client = _FakeClient()
     result = engine.translate_batch(["a", "b"], source_lang="auto", target_lang="pl")
     assert [line.text for line in result] == ["PL:a", "PL:b"]
-    assert all(line.detected_lang == "en" for line in result)
 
 
 def test_to_deepl_code_mapping() -> None:
@@ -65,3 +63,17 @@ def test_logical_pl_reaches_deepl_sdk_as_uppercase() -> None:
 def test_empty_batch_returns_empty() -> None:
     engine = DeeplService(DeeplConfig(api_key="key:fx"))
     assert engine.translate_batch([], source_lang="auto", target_lang="pl") == []
+
+
+def test_batch_size_limits_lines_per_request() -> None:
+    seen: list[int] = []
+
+    class _CountingClient:
+        def translate_text(self, texts, *, target_lang, source_lang):  # type: ignore[no-untyped-def]
+            seen.append(len(texts))
+            return [_Result(f"PL:{t}") for t in texts]
+
+    engine = DeeplService(DeeplConfig(api_key="key:fx", batch_size=2))
+    engine._client = _CountingClient()
+    engine.translate_batch(["a", "b", "c", "d", "e"], source_lang="auto", target_lang="pl")
+    assert seen == [2, 2, 1]

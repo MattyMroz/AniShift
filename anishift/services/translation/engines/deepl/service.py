@@ -48,19 +48,16 @@ def _map_sdk_error(exc: Exception) -> Exception:
     return exc
 
 
-def _normalize_lang(code: str | None) -> str | None:
-    """Lowercase the provider's detected code (DeepL returns ``JA``/``EN``)."""
-    return code.lower() if code else None
-
-
-def _chunk_by_bytes(texts: list[str], max_bytes: int) -> list[list[str]]:
-    """Split lines into sub-batches whose UTF-8 size stays under ``max_bytes``."""
+def _chunk_batches(texts: list[str], max_lines: int, max_bytes: int) -> list[list[str]]:
+    """Split lines into sub-batches bounded by line count and UTF-8 byte size."""
     chunks: list[list[str]] = []
     current: list[str] = []
     current_bytes = 0
     for text in texts:
         size = len(text.encode("utf-8")) + 1
-        if current and current_bytes + size > max_bytes:
+        too_many = len(current) >= max_lines
+        too_large = bool(current) and current_bytes + size > max_bytes
+        if too_many or too_large:
             chunks.append(current)
             current = []
             current_bytes = 0
@@ -81,7 +78,11 @@ class DeeplService:
         if isinstance(config, DeeplConfig):
             self._config = config
         else:
-            self._config = DeeplConfig(api_key=config.api_key, max_retries=config.max_retries)
+            self._config = DeeplConfig(
+                api_key=config.api_key,
+                batch_size=config.batch_size,
+                max_retries=config.max_retries,
+            )
         self._client: Any = None
 
     @property
@@ -128,7 +129,7 @@ class DeeplService:
         source = to_deepl_code(source_lang)
         max_attempts = self._config.max_retries + 1
         out: list[BatchedLine] = []
-        for chunk in _chunk_by_bytes(texts, MAX_PAYLOAD_BYTES):
+        for chunk in _chunk_batches(texts, self._config.batch_size, MAX_PAYLOAD_BYTES):
             out.extend(
                 call_with_retry(
                     partial(self._translate_once, chunk, target, source),
@@ -145,10 +146,7 @@ class DeeplService:
             results = self._client.translate_text(texts, target_lang=target, source_lang=source)
         except Exception as exc:
             raise _map_sdk_error(exc) from exc
-        return [
-            BatchedLine(text=result.text, detected_lang=_normalize_lang(getattr(result, "detected_source_lang", None)))
-            for result in results
-        ]
+        return [BatchedLine(text=result.text) for result in results]
 
 
 __all__ = ["DeeplService"]

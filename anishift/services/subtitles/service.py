@@ -13,7 +13,7 @@ from pysubs2 import SSAEvent, SSAFile
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.subtitles.classifier import Category, StyleVerdict, classify_styles
 from anishift.services.subtitles.errors import SubtitleError
-from anishift.services.subtitles.text import is_drawing, visible_text
+from anishift.services.subtitles.text import is_drawing, replace_visible_text, visible_text
 from anishift.services.subtitles.types import (
     Decision,
     SplitStats,
@@ -29,6 +29,7 @@ __all__ = [
     "split_subtitles",
     "subtitle_kind",
     "write_displayed",
+    "write_translated_displayed",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -47,6 +48,9 @@ _SUFFIX_KIND: Final[dict[str, SubtitleKind]] = {".ass": "ass", ".ssa": "ass", ".
 
 _ENCODING: Final[str] = "utf-8"
 """Subtitle file encoding."""
+
+_LINE_BREAKS: Final[dict[SubtitleKind, str]] = {"ass": "\\N", "srt": "\n"}
+"""Soft line break joining a displayed event's verses, per subtitle format."""
 
 
 def _fail(code: ErrorCode, message: str) -> SubtitleError:
@@ -213,5 +217,54 @@ def write_displayed(split: SubtitleSplit, dest: Path) -> Path | None:
         temporary.replace(dest)
     except OSError as exc:
         msg = f"Displayed subtitles could not be written: {dest}"
+        raise _fail(ErrorCode.IO_ERROR, msg) from exc
+    return dest
+
+
+def _translated_displayed_file(split: SubtitleSplit, verses: Sequence[tuple[str, ...]]) -> SSAFile:
+    out = SSAFile()
+    out.info = dict(split.subs.info)
+    out.styles = {name: style.copy() for name, style in split.subs.styles.items()}
+    line_break = _LINE_BREAKS[split.kind]
+    dialogue_index = 0
+    verse_index = 0
+    for event in split.subs.events:
+        if event.type != "Dialogue":
+            out.events.append(event)
+            continue
+        if split.decisions[dialogue_index] == "displayed":
+            translated = line_break.join(verses[verse_index])
+            replaced = event.copy()
+            replaced.text = replace_visible_text(event.text, translated)
+            out.events.append(replaced)
+            verse_index += 1
+        dialogue_index += 1
+    return out
+
+
+def write_translated_displayed(
+    split: SubtitleSplit,
+    verses: Sequence[tuple[str, ...]],
+    dest: Path,
+) -> Path | None:
+    r"""Write the translated displayed subtitles atomically, or None when empty.
+
+    Each displayed Dialogue event keeps its tags, style and timing; only its
+    visible text is replaced with the translated verses joined by the format's
+    soft break (``\N`` for ASS, ``\n`` for SRT). ``verses`` carries one verse
+    tuple per displayed event, in event order.
+
+    Raises:
+        SubtitleError: The file could not be written.
+    """
+    if split.stats.displayed_events == 0:
+        return None
+    output = _translated_displayed_file(split, verses)
+    temporary = dest.with_name(dest.name + ".tmp")
+    try:
+        temporary.write_text(output.to_string(format_=split.kind), encoding=_ENCODING)
+        temporary.replace(dest)
+    except OSError as exc:
+        msg = f"Translated displayed subtitles could not be written: {dest}"
         raise _fail(ErrorCode.IO_ERROR, msg) from exc
     return dest
