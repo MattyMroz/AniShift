@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from natsort import os_sorted
 
@@ -23,11 +23,26 @@ from anishift.services.subtitles import (
     split_subtitles,
     subtitle_kind,
     txt_to_spoken,
+    visible_text,
     write_displayed,
 )
+from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
 from anishift.utils.safe_fs import safe_rmtree
 
-from .types import FileFailure, FileOutcome, PipelineInteraction, PipelineReport, ProgressReporter, StepName
+from .types import (
+    FileFailure,
+    FileOutcome,
+    PipelineInteraction,
+    PipelineReport,
+    ProgressReporter,
+    StepName,
+    TranslationSettings,
+)
+
+if TYPE_CHECKING:
+    from anishift.services.subtitles.types import SubtitleSplit
+    from anishift.services.translation import TranslationConfig
+    from anishift.services.translation.types import FileTranslation
 
 __all__ = ["discover_inputs", "run_pipeline"]
 
@@ -73,23 +88,40 @@ def run_pipeline(
         return PipelineReport(())
     mkvs = [path for path in files if path.suffix.lower() == _MKV_SUFFIX]
     txts = [path for path in files if path.suffix.lower() == _TXT_SUFFIX]
+    translation = _translation_settings(context)
     cancel = threading.Event()
-    outcomes = _process_mkvs(mkvs, context.workspace_root, interaction, progress, cancel)
-    outcomes.update({path: _process_txt(path) for path in txts})
+    outcomes = _process_mkvs(mkvs, context.workspace_root, interaction, progress, cancel, translation)
+    outcomes.update({path: _process_txt(path, translation) for path in txts})
     return PipelineReport(tuple(outcomes[path] for path in files))
 
 
-def _process_mkvs(
+def _translation_settings(context: AppContext) -> TranslationSettings:
+    """Resolve translation parameters from the wired context once."""
+    prefs = context.user_settings
+    return TranslationSettings(
+        engine=prefs.translation_engine,
+        fallback_chain=tuple(prefs.translation_fallback_chain),
+        batch_size=prefs.translation_batch_size,
+        concurrency=prefs.translation_concurrency,
+        max_retries=prefs.translation_max_retries,
+        deepl_api_key=context.settings.deepl_api_key,
+    )
+
+
+def _process_mkvs(  # noqa: PLR0913 - orchestration entry: each dependency is distinct
     mkvs: Sequence[Path],
     workspace_root: Path,
     interaction: PipelineInteraction | None,
     progress: ProgressReporter | None,
     cancel: threading.Event,
+    translation: TranslationSettings,
 ) -> dict[Path, FileOutcome]:
     """Process MKVs sequentially for manual mode and concurrently otherwise."""
     if interaction is not None:
         return {
-            path: _process_mkv(path, workspace_root, interaction=interaction, on_progress=None, cancel=cancel)
+            path: _process_mkv(
+                path, workspace_root, interaction=interaction, on_progress=None, cancel=cancel, translation=translation
+            )
             for path in mkvs
         }
     if not mkvs:
@@ -105,6 +137,7 @@ def _process_mkvs(
                 interaction=None,
                 on_progress=_progress_callback(progress, task_ids.get(path)),
                 cancel=cancel,
+                translation=translation,
             )
         pending = set(futures.values())
         try:
@@ -129,15 +162,16 @@ def _worker_count(item_count: int) -> int:
     return max(1, min(item_count, root + _WORKER_IO_HEADROOM))
 
 
-def _process_mkv(  # noqa: PLR0911
+def _process_mkv(  # noqa: PLR0911, PLR0913 - orchestration entry: each dependency is distinct
     mkv: Path,
     workspace_root: Path,
     *,
     interaction: PipelineInteraction | None,
     on_progress: Callable[[int], None] | None,
     cancel: threading.Event,
+    translation: TranslationSettings,
 ) -> FileOutcome:
-    """Run identify, select, extract, split and write for one MKV."""
+    """Run identify, select, extract, split, write and translate for one MKV."""
     work_dir = workspace_root / "tmp" / mkv.stem
     step: StepName = "identify"
     try:
@@ -185,6 +219,10 @@ def _process_mkv(  # noqa: PLR0911
         step = "write"
         destination = workspace_root / f"{mkv.stem}.displayed.{kind}"
         displayed = write_displayed(split, destination)
+        step = "translate"
+        result = None
+        if _should_translate(split, selection.already_polish):
+            result = _translate_split(split, translation, cancel)
         return FileOutcome(
             source=mkv,
             status="done",
@@ -196,6 +234,10 @@ def _process_mkv(  # noqa: PLR0911
             displayed_events=split.stats.displayed_events,
             drawing_events=split.stats.drawing_events,
             collapsed_away=split.stats.collapsed_away,
+            translation=result,
+            translated_lines=len(result.spoken) if result is not None else 0,
+            translation_engine=result.engine_id if result is not None else "",
+            translation_failed_lines=result.failed_lines if result is not None else 0,
             warnings=warnings,
         )
     except AniShiftError as exc:
@@ -227,10 +269,73 @@ def _selection_warnings(info: MediaInfo, selection: TrackSelection) -> tuple[str
     return tuple(warnings)
 
 
-def _process_txt(path: Path) -> FileOutcome:
-    """Convert one text input into narrator lines."""
+def _should_translate(split: SubtitleSplit, already_polish: bool) -> bool:
+    """Whether the translate step runs (skip Polish files and empty splits)."""
+    if already_polish:
+        return False
+    return bool(split.stats.spoken_lines or split.stats.displayed_events)
+
+
+def _displayed_visible_texts(split: SubtitleSplit) -> list[str]:
+    """Return the visible texts of displayed Dialogue events, in order."""
+    dialogue = [event for event in split.subs.events if event.type == "Dialogue"]
+    return [
+        visible_text(event.text)
+        for event, decision in zip(dialogue, split.decisions, strict=True)
+        if decision == "displayed"
+    ]
+
+
+def _translate_config(translation: TranslationSettings) -> TranslationConfig:
+    """Build a TranslationConfig from the runner settings (lazy import)."""
+    from anishift.services.translation import TranslationConfig  # noqa: PLC0415 - lazy: keep engines off import path
+
+    return TranslationConfig(
+        engine=translation.engine,
+        source_lang="auto",
+        batch_size=translation.batch_size if translation.batch_size > 0 else DEFAULT_BATCH_SIZE,
+        concurrency=translation.concurrency,
+        max_retries=translation.max_retries,
+        api_key=translation.deepl_api_key,
+    )
+
+
+def _translate_split(
+    split: SubtitleSplit,
+    translation: TranslationSettings,
+    cancel: threading.Event,
+) -> FileTranslation:
+    """Translate the spoken and displayed streams of one split."""
+    from anishift.services.translation import TranslationService  # noqa: PLC0415 - lazy: keep engines off import path
+
+    service = TranslationService(_translate_config(translation), fallback_chain=translation.fallback_chain)
+    return service.translate_file(
+        list(split.spoken),
+        _displayed_visible_texts(split),
+        source_lang="auto",
+        cancel=cancel,
+    )
+
+
+def _process_txt(path: Path, translation: TranslationSettings) -> FileOutcome:
+    """Convert one text input into narrator lines and translate them."""
+    from anishift.services.translation import TranslationService  # noqa: PLC0415 - lazy: keep engines off import path
+
     try:
-        return FileOutcome(path, "done", spoken_lines=len(txt_to_spoken(path)))
+        spoken = txt_to_spoken(path)
+        if not spoken:
+            return FileOutcome(path, "done")
+        service = TranslationService(_translate_config(translation), fallback_chain=translation.fallback_chain)
+        result = service.translate_file(list(spoken), [], source_lang="auto")
+        return FileOutcome(
+            path,
+            "done",
+            spoken_lines=len(spoken),
+            translation=result,
+            translated_lines=len(result.spoken),
+            translation_engine=result.engine_id,
+            translation_failed_lines=result.failed_lines,
+        )
     except AniShiftError as exc:
         return _failed(path, "txt", exc.context.code, exc.context.message, exc.context.suggestion)
     except OSError as exc:

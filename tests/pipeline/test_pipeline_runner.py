@@ -14,7 +14,7 @@ from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline import discover_inputs, run_pipeline, runner
 from anishift.pipeline.runner import _worker_count
-from anishift.pipeline.types import FileOutcome
+from anishift.pipeline.types import FileOutcome, TranslationSettings
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo
 
@@ -22,6 +22,17 @@ from anishift.services.extraction.types import MediaInfo
 def _context(root: Path) -> AppContext:
     """Build a minimal test context."""
     return AppContext(Settings(), UserSettings(), root)
+
+
+def _ts() -> TranslationSettings:
+    return TranslationSettings(
+        engine="google",
+        fallback_chain=("google",),
+        batch_size=0,
+        concurrency=3,
+        max_retries=3,
+        deepl_api_key="",
+    )
 
 
 def test_discover_inputs_uses_top_level_natural_order(tmp_path: Path) -> None:
@@ -95,7 +106,7 @@ def test_process_mkvs_reraises_interrupt_after_cancelling_workers(
     monkeypatch.setattr(runner, "wait", interrupted_wait)
 
     with pytest.raises(KeyboardInterrupt):
-        runner._process_mkvs((mkv,), tmp_path, None, None, threading.Event())
+        runner._process_mkvs((mkv,), tmp_path, None, None, threading.Event(), _ts())
 
     assert worker_cancel is not None
     assert worker_cancel.is_set()

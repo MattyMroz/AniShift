@@ -93,6 +93,11 @@ def _render_outcome(outcome: FileOutcome) -> None:
         )
         if outcome.displayed_path is not None:
             console.print(f"    [gray]-> {outcome.displayed_path}[/gray]")
+        if outcome.translation_engine:
+            failed = f" · {outcome.translation_failed_lines} failed" if outcome.translation_failed_lines else ""
+            console.print(
+                f"    [gray]translated {outcome.translated_lines} via {outcome.translation_engine}{failed}[/gray]"
+            )
     elif outcome.status == "failed" and outcome.failure is not None:
         console.print(f"{icon} {outcome.source.name} [{outcome.failure.step}] {outcome.failure.message}")
         if outcome.failure.suggestion:

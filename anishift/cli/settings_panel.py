@@ -2,8 +2,8 @@
 
 Arrow keys only (no WASD): ``↑``/``↓`` pick a field, ``←``/``→`` or ``Enter``
 cycle its value, ``Esc``/``q`` returns to the shell. Each change is persisted
-immediately. Engine and voice lists are static placeholders until stages 4/6
-derive them from the engine registries.
+immediately. The translation-engine list is derived from the registry; the TTS
+engine and voice lists stay static placeholders until stage 6.
 """
 
 from __future__ import annotations
@@ -20,18 +20,24 @@ from prompt_toolkit.layout.controls import FormattedTextControl
 
 from anishift.bootstrap import AppContext
 from anishift.config.user_settings import (
+    CONCURRENCY_RANGE,
+    MAX_RETRIES_RANGE,
     TEMPO_RANGE,
     VOLUME_RANGE,
     UserSettings,
     save_user_settings,
 )
+from anishift.services.translation.engines import available_engine_ids
 
 __all__ = ["open_settings_panel"]
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-_TRANSLATION_ENGINES: Final[tuple[str, ...]] = ("google", "deepl", "llm")
-"""Placeholder translation-engine ids (real list arrives in stage 4)."""
+_CONCURRENCY_STEP: Final[int] = 1
+"""Concurrency increment per ``←``/``→`` press."""
+
+_RETRIES_STEP: Final[int] = 1
+"""Retry-count increment per ``←``/``→`` press."""
 
 _TTS_ENGINES: Final[tuple[str, ...]] = ("edge", "elevenlabs", "balcon")
 """Placeholder TTS-engine ids (real list arrives in stage 6)."""
@@ -68,6 +74,8 @@ class _Field:
 _FIELDS: Final[tuple[_Field, ...]] = (
     _Field("mode", "Mode"),
     _Field("translation_engine", "Translation"),
+    _Field("translation_concurrency", "Concurrency"),
+    _Field("translation_max_retries", "Max retries"),
     _Field("tts_engine", "TTS engine"),
     _Field("voice", "Voice"),
     _Field("tempo", "Tempo"),
@@ -76,6 +84,21 @@ _FIELDS: Final[tuple[_Field, ...]] = (
     _Field("move_results_to_output", "-> output/"),
 )
 """Editable rows, top to bottom."""
+
+
+def _translation_engines(context: AppContext) -> tuple[str, ...]:
+    """Return selectable engine ids: registry order, filtered by availability.
+
+    ``llm`` is hidden until stage 5; ``deepl`` shows only when a key is set.
+    """
+    engines: list[str] = []
+    for engine_id in available_engine_ids():
+        if engine_id == "llm":
+            continue
+        if engine_id == "deepl" and not context.settings.deepl_api_key:
+            continue
+        engines.append(engine_id)
+    return tuple(engines) or ("google",)
 
 
 def _cycle(options: tuple[str, ...], current: str, delta: int) -> str:
@@ -94,12 +117,20 @@ def _clamp_int(value: int, low: int, high: int) -> int:
     return min(max(value, low), high)
 
 
-def _step_field(settings: UserSettings, field: _Field, delta: int) -> None:
+def _step_field(settings: UserSettings, field: _Field, delta: int, engines: tuple[str, ...]) -> None:
     """Advance ``field`` by ``delta`` on ``settings`` in place."""
     if field.key == "mode":
         settings.mode = _cycle(_MODES, settings.mode, delta)  # type: ignore[assignment]
     elif field.key == "translation_engine":
-        settings.translation_engine = _cycle(_TRANSLATION_ENGINES, settings.translation_engine, delta)
+        settings.translation_engine = _cycle(engines, settings.translation_engine, delta)
+    elif field.key == "translation_concurrency":
+        settings.translation_concurrency = _clamp_int(
+            settings.translation_concurrency + delta * _CONCURRENCY_STEP, *CONCURRENCY_RANGE
+        )
+    elif field.key == "translation_max_retries":
+        settings.translation_max_retries = _clamp_int(
+            settings.translation_max_retries + delta * _RETRIES_STEP, *MAX_RETRIES_RANGE
+        )
     elif field.key == "tts_engine":
         settings.tts_engine = _cycle(_TTS_ENGINES, settings.tts_engine, delta)
     elif field.key == "voice":
@@ -136,6 +167,7 @@ def open_settings_panel(context: AppContext) -> UserSettings:
         The mutated :class:`UserSettings` (already persisted on every change).
     """
     settings = context.user_settings
+    engines = _translation_engines(context)
     state = {"row": 0}
 
     def render() -> StyleAndTextTuples:
@@ -159,17 +191,17 @@ def open_settings_panel(context: AppContext) -> UserSettings:
 
     @bindings.add("left")
     def _left(event: KeyPressEvent) -> None:
-        _step_field(settings, _FIELDS[state["row"]], -1)
+        _step_field(settings, _FIELDS[state["row"]], -1, engines)
         save_user_settings(settings)
 
     @bindings.add("right")
     def _right(event: KeyPressEvent) -> None:
-        _step_field(settings, _FIELDS[state["row"]], 1)
+        _step_field(settings, _FIELDS[state["row"]], 1, engines)
         save_user_settings(settings)
 
     @bindings.add("enter")
     def _enter(event: KeyPressEvent) -> None:
-        _step_field(settings, _FIELDS[state["row"]], 1)
+        _step_field(settings, _FIELDS[state["row"]], 1, engines)
         save_user_settings(settings)
 
     @bindings.add("escape")
