@@ -1,10 +1,7 @@
 """Preconfigured Rich console with custom theme and auto-highlighting.
 
-Features:
-- Custom theme (RICH_THEME) with 150+ styles
-- Auto-highlighting: URLs, paths, booleans, versions, numbers+units, fractions
-- Number normalization: 1,5 → 1.5
-- Automatic bracket escaping for literal []
+Applies the 150+ style RICH_THEME, auto-highlights URLs/paths/numbers,
+normalizes decimal commas, and escapes literal brackets.
 
 Usage:
     >>> from rich_console import console
@@ -34,8 +31,7 @@ __all__ = [
 
 # ── Auto-Highlighting ─────────────────────────────────────────────────────────
 
-# Compiled path regex: absolute (2+ segments), relative 3+ segments, or 2-segment with extension
-_PATH_RE: re.Pattern[str] = re.compile(
+_PATH_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:"
     r"(?:[A-Za-z]:[/\\]|/)[\w.@+-]+(?:[/\\][\w.@+-]+)+[/\\]?"
     r"|"
@@ -44,6 +40,7 @@ _PATH_RE: re.Pattern[str] = re.compile(
     r"[\w.@+-]+/[\w.@+-]+\.[\w]{1,32}"
     r")"
 )
+"""Matches absolute (2+ segments), relative 3+ segment, or 2-segment-with-extension paths."""
 
 
 def auto_highlight_text(text: str) -> str:
@@ -96,20 +93,17 @@ def auto_highlight_text(text: str) -> str:
         protected.append((placeholder, tagged_text))
         return placeholder
 
-    # 1. URLs → blue
     result = re.sub(
         r"(https?://[^\s]+)",
         lambda m: protect(f"[repr.url]{m.group(1)}[/repr.url]"),
         result,
     )
 
-    # 2. File paths → repr.path (whole path as one unit, incl. embedded versions)
     result = _PATH_RE.sub(
         lambda m: protect(f"[repr.path]{m.group(0)}[/repr.path]"),
         result,
     )
 
-    # 3. Booleans → green/red
     result = re.sub(
         r"\b(true|True|TRUE)\b",
         lambda m: protect(f"[repr.bool_true]{m.group(1)}[/repr.bool_true]"),
@@ -121,52 +115,43 @@ def auto_highlight_text(text: str) -> str:
         result,
     )
 
-    # 4. None/null → red
     result = re.sub(
         r"\b(None|null|NULL|nil)\b",
         lambda m: protect(f"[repr.none]{m.group(1)}[/repr.none]"),
         result,
     )
 
-    # 5a. Version strings v-prefixed (v2.1.0, v2.1.0+cu128)
     result = re.sub(
         r"\bv\d+(?:\.\d+)+(?:[+\-][\w.]+)?",
         lambda m: protect(f"[repr.number]{m.group(0)}[/repr.number]"),
         result,
     )
-    # 5b. Version strings 3+ dotted segments (3.13.11, 2.6.0+cu128)
     result = re.sub(
         r"\b\d+\.\d+\.\d+(?:\.\d+)*(?:[+\-][\w.]+)?",
         lambda m: protect(f"[repr.number]{m.group(0)}[/repr.number]"),
         result,
     )
 
-    # 6. Number + unit → repr.number (1.33s, 245MB, 8.04 GB, 42ms)
     result = re.sub(
         r"\b\d+(?:\.\d+)?(?:\s?)(?:ms|MB|GB|TB|KB|kB|px|dp|pt|em|rem|fps|Hz|kHz|min|sec|s)\b",
         lambda m: protect(f"[repr.number]{m.group(0)}[/repr.number]"),
         result,
     )
 
-    # 7. Fractions → repr.number (24/24, 1/3)
     result = re.sub(
         r"\b\d+/\d+\b",
         lambda m: protect(f"[repr.number]{m.group(0)}[/repr.number]"),
         result,
     )
 
-    # 8. Standalone numbers → repr.number
     result = re.sub(
         r"\b\d+\.?\d*\b",
         lambda m: protect(f"[repr.number]{m.group(0)}[/repr.number]"),
         result,
     )
 
-    # Escape remaining literal brackets (not part of any matched pattern)
-    # Only [ needs escaping in Rich markup; ] is always literal
     result = result.replace("[", "\\[")
 
-    # Restore protected regions (reversed: inner placeholders resolve first)
     for placeholder, tagged in reversed(protected):
         result = result.replace(placeholder, tagged)
 
@@ -351,8 +336,6 @@ def _patched_console_print(*args: Any, **kwargs: Any) -> None:
                 text = auto_highlight_text(text)
                 auto_highlighted = True
 
-            # Escape literal brackets only when auto_highlight didn't run
-            # (auto_highlight_text handles its own bracket escaping internally)
             if not auto_highlighted and "[" in text:
                 if not has_markup:
                     text = text.replace("[", "\\[")
@@ -364,12 +347,10 @@ def _patched_console_print(*args: Any, **kwargs: Any) -> None:
         else:
             processed_args.append(arg)
 
-    # Disable Rich's built-in ReprHighlighter when we already did our own
-    # highlighting — prevents double-coloring of numbers, booleans, braces, etc.
     if any_auto_highlighted and "highlight" not in kwargs:
         kwargs["highlight"] = False
 
     _original_console_print(*processed_args, **kwargs)
 
 
-console.print = _patched_console_print
+console.print = _patched_console_print  # type: ignore[method-assign]  # intentional monkeypatch

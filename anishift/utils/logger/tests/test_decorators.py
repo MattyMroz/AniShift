@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from ..decorators import (
-    time_it,
     timed,
     timed_debug,
     timed_if,
@@ -185,13 +184,3 @@ class TestTimedWhenDebug:
         # With DEBUG=true → timed path
         monkeypatch.setenv("DEBUG", "true")
         assert work() == 5
-
-
-# ── Backward Compatibility ────────────────────────────────────────────────────
-
-
-class TestBackwardCompat:
-    """Tests for backward-compatible aliases."""
-
-    def test_time_it_is_timed(self) -> None:
-        assert time_it is timed

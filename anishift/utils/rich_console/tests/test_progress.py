@@ -768,15 +768,15 @@ class TestMultiProgressManagerPerTask:
 
     def test_independent_row_values_glued_to_own_bar(self):
         mp = MultiProgressManager(align="independent")
-        percent = mp.add_task("episode.mkv", show_elapsed=False)
+        percent = mp.add_task("data.bin", show_elapsed=False)
         mp.update(percent, 100)
         rendered = mp._progress.columns[0].render(mp._progress.tasks[0]).plain
         bar = "█" * mp._states[percent].bar_width
-        assert rendered == f"episode.mkv {bar} | 100%"
+        assert rendered == f"data.bin {bar} | 100%"
 
     def test_independent_rows_do_not_share_column_positions(self):
         mp = MultiProgressManager(align="independent")
-        percent = mp.add_task("episode.mkv", show_elapsed=False)
+        percent = mp.add_task("data.bin", show_elapsed=False)
         download = mp.add_task("tools.zip", total=1000, show_download=True, show_eta=True, show_elapsed=False)
         mp.update(percent, 100)
         mp.update(download, 1000)
@@ -790,7 +790,7 @@ class TestMultiProgressManagerPerTask:
 
     def test_independent_rows_have_no_padding_gaps(self):
         mp = MultiProgressManager(align="independent")
-        percent = mp.add_task("episode.mkv", show_elapsed=False)
+        percent = mp.add_task("data.bin", show_elapsed=False)
         download = mp.add_task("tools.zip", total=1000, show_download=True, show_eta=True)
         mp.update(percent, 100)
         mp.update(download, 1000)
@@ -836,7 +836,7 @@ class TestMultiProgressManagerPerTask:
     def test_mixed_rows_context_manager_smoke(self, capsys):
         with MultiProgressManager() as mp:
             download = mp.add_task("tools.zip", total=1_000_000, show_download=True, show_eta=True)
-            percent = mp.add_task("episode.mkv")
+            percent = mp.add_task("data.bin")
             spinner = mp.add_task("thinking", show_spinner=True)
             mp.update(download, 1_000_000)
             mp.update(percent, 100)

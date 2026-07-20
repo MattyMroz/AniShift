@@ -17,7 +17,10 @@ from typing import Final
 
 from ..console import console
 
+__all__ = ["main"]
+
 DemoRunner = Callable[[], None]
+"""A demo entry point invoked with no arguments."""
 
 
 def _run_theme_demo() -> None:
@@ -60,10 +63,12 @@ DEMO_RUNNERS: Final[dict[str, tuple[DemoRunner, ...]]] = {
     "--utilities": (_run_utilities_demo,),
     "--progress": (_run_progress_demo,),
 }
+"""CLI flag mapped to the demo runners it triggers."""
 
 USAGE: Final[str] = (
     f"Usage: python -m {__package__ or 'rich_console.examples'} [--all|--theme|--colors|--utilities|--progress]"
 )
+"""One-line CLI usage string shown on bad or missing arguments."""
 
 
 def _print_usage() -> None:

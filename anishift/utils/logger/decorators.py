@@ -23,6 +23,7 @@ from .timing import log_duration
 __all__ = ["timed", "timed_debug", "timed_if", "timed_in_dev", "timed_when_debug"]
 
 F = TypeVar("F", bound=Callable[..., Any])
+"""Callable type preserved by the timing decorators (signature stays intact)."""
 
 
 def timed(
@@ -89,7 +90,6 @@ def timed_if(
     def decorator(func: F) -> F:
         name = operation_name or func.__name__
 
-        # Evaluate condition if it's callable
         def should_time() -> bool:
             if callable(condition):
                 return condition()
@@ -101,7 +101,6 @@ def timed_if(
                 with log_duration(name, level=level):
                     return func(*args, **kwargs)
             else:
-                # No overhead - direct call
                 return func(*args, **kwargs)
 
         return wrapper  # type: ignore[return-value]
@@ -147,15 +146,3 @@ def timed_when_debug(operation_name: str | None = None) -> Callable[[F], F]:
         lambda: os.getenv("DEBUG", "false").lower() == "true",
         operation_name,
     )
-
-
-# ── Backwards Compatibility ───────────────────────────────────────────────────
-
-time_it = timed
-"""Alias for :func:`timed` — common naming convention."""
-
-measure_time = timed
-"""Alias for :func:`timed` — alternative naming convention."""
-
-profile = timed_debug
-"""Alias for :func:`timed_debug` — quick profiling decorator."""

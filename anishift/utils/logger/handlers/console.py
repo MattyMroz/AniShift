@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from rich.text import Text
 
@@ -30,10 +30,10 @@ def set_show_icons(enabled: bool) -> None:
 
 
 # ── Per-field styling ─────────────────────────────────────────────────────────
-_SEP = " | "
+_SEP: Final[str] = " | "
+"""Separator drawn between log line fields."""
 
-# Badge style (column 2: icon + level name — full intensity, bold)
-_LEVEL_BADGE: dict[str, str] = {
+_LEVEL_BADGE: Final[dict[str, str]] = {
     "TRACE": "rgb(58,58,58) bold",
     "DEBUG": "rgb(255,135,70) bold",
     "INFO": "dodger_blue2 bold",
@@ -42,9 +42,9 @@ _LEVEL_BADGE: dict[str, str] = {
     "ERROR": "bright_red bold",
     "CRITICAL": "rgb(0,0,0) on bright_red bold",
 }
+"""Column-2 badge style per level (icon + level name, full intensity, bold)."""
 
-# Base color (columns 1 & 3: same hue as badge, italic — no dim)
-_LEVEL_COLOR: dict[str, str] = {
+_LEVEL_COLOR: Final[dict[str, str]] = {
     "TRACE": "rgb(58,58,58)",
     "DEBUG": "rgb(255,135,70)",
     "INFO": "dodger_blue2",
@@ -53,9 +53,9 @@ _LEVEL_COLOR: dict[str, str] = {
     "ERROR": "bright_red",
     "CRITICAL": "bright_red",
 }
+"""Base color per level for columns 1 & 3 (same hue as badge, italic)."""
 
-# Emoji icons per level (matching rich_console.utilities)
-_LEVEL_ICON: dict[str, str] = {
+_LEVEL_ICON: Final[dict[str, str]] = {
     "TRACE": "🔬",
     "DEBUG": "🔍",
     "INFO": "ℹ️ ",
@@ -64,13 +64,11 @@ _LEVEL_ICON: dict[str, str] = {
     "ERROR": "❌",
     "CRITICAL": "💀",
 }
+"""Emoji icon per level (matching rich_console.utilities)."""
 
 
 def console_sink(message: Any) -> None:
-    """Format and print log record to console with Rich styling.
-
-    Called by loguru for each log record.
-    Increment stats and print formatted message.
+    """Format and print a log record to console with Rich styling.
 
     Args:
         message: Loguru message object with ``.record`` dict.
@@ -128,8 +126,6 @@ def _build_message(record: dict[str, Any]) -> Text:
     t.append(logger_name, style=f"{color} italic")
     t.append(_SEP, style="white")
 
-    # Message: auto_highlight_text from rich_console applies ruby_red to
-    # numbers/specials and blue to URLs, then Text.from_markup resolves tags.
     highlighted: str = auto_highlight_text(message_text)
     msg = Text.from_markup(highlighted, style=f"bold italic {color}")
     t.append_text(msg)

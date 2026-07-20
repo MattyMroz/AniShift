@@ -1,12 +1,7 @@
 """Modular progress bar manager with dynamic color transitions.
 
-Features:
-- 100% modular show/hide flags for all components
-- Dynamic color transitions (any number of colors)
-- Multiple bar styles (rich, blocks, custom)
-- Spinner, download, time tracking
-- Description truncation with 3 modes
-- Context manager interface
+Context manager with per-component show/hide flags, multiple bar styles,
+spinner/download/time columns, and description truncation.
 
 Usage:
     >>> # Standard 4-color transition
@@ -71,7 +66,6 @@ __all__ = [
 _DEFAULT_EMPTY_COLOR: Final[str] = "gray_bold"
 """Default color for empty progress bar sections."""
 
-# Bar layout metrics (character widths)
 _BASE_INFO_WIDTH: Final[int] = 23
 """Base info panel width in characters."""
 
@@ -115,19 +109,15 @@ def _truncate_description(description: str, max_length: int, mode: Literal["star
     if not description or len(description) <= max_length:
         return description
 
-    # Validate mode
     if mode not in ("start", "middle", "end"):
         mode = "end"
 
     if mode == "start":
-        # ...end
         return "..." + description[-(max_length - 3) :]
     if mode == "middle":
-        # mid...dle
         left_size = (max_length - 3) // 2
         right_size = max_length - 3 - left_size
         return description[:left_size] + "..." + description[-right_size:]
-    # start...
     return description[: max_length - 3] + "..."
 
 
@@ -445,7 +435,6 @@ class ProgressBarManager:
             show_download: Show bytes column.
             show_speed: Show speed column (requires show_download).
         """
-        # Core settings
         self.description = _truncate_description(description, max_description_length, truncate_mode)
         self.total = total
         self.colors = colors or self.DEFAULT_COLORS
@@ -453,7 +442,6 @@ class ProgressBarManager:
         self.custom_chars = custom_chars
         self.unknown_style = unknown_style
 
-        # Modular flags
         self.show_bar = show_bar
         self.show_percentage = show_percentage
         self.show_download = show_download
@@ -462,12 +450,10 @@ class ProgressBarManager:
         self.show_elapsed = show_elapsed
         self.show_spinner = show_spinner
 
-        # State tracking
         self.current_style = self._get_initial_color()
         self.last_successful_progress = 0
         self.task: TaskID | None = None
 
-        # Initialize components
         self.bar_width = self._calculate_bar_width()
         self.bar_style = "rich" if total is None else bar
         self._init_custom_columns()
@@ -485,12 +471,10 @@ class ProgressBarManager:
 
     def _init_custom_columns(self) -> None:
         """Initialize all custom column components."""
-        # Spinner (dynamic color that updates in real-time!)
         self.spinner: DynamicSpinnerColumn | None = (
             DynamicSpinnerColumn(self.current_style) if self.show_spinner else None
         )
 
-        # Standard columns
         self.percentage_col: ColoredPercentageColumn | None = (
             ColoredPercentageColumn(self.current_style) if self.show_percentage else None
         )
@@ -499,7 +483,6 @@ class ProgressBarManager:
         )
         self.eta_col: ColoredETAColumn | None = ColoredETAColumn(self.current_style) if self.show_eta else None
 
-        # Download columns
         if self.show_download:
             self.bytes_col: ColoredBytesColumn | None = ColoredBytesColumn(self.current_style)
             self.speed_col: ColoredSpeedColumn | None = (
@@ -509,7 +492,6 @@ class ProgressBarManager:
             self.bytes_col = None
             self.speed_col = None
 
-        # Bar column (created later in _init_progress)
         self.bar_column: BarColumn | None = None
 
     def _init_progress(self) -> None:
@@ -523,14 +505,11 @@ class ProgressBarManager:
         """Initialize Rich-style progress bar."""
         columns: list[ProgressColumn] = []
 
-        # Spinner
         if self.spinner:
             columns.append(self.spinner)
 
-        # Description
         columns.append(TextColumn("[progress.description]{task.description}"))
 
-        # Bar (only if no spinner)
         if self.show_bar and not self.show_spinner:
             last_color = (
                 list(
@@ -547,17 +526,14 @@ class ProgressBarManager:
             )
             columns.append(self.bar_column)
 
-        # Download columns
         if self.bytes_col:
             columns.append(self.bytes_col)
             if self.speed_col:
                 columns.append(self.speed_col)
 
-        # Percentage
         if self.percentage_col:
             columns.append(self.percentage_col)
 
-        # Time columns
         if self.eta_col:
             columns.append(self.eta_col)
         if self.elapsed_col:
@@ -597,7 +573,6 @@ class ProgressBarManager:
                 total=self.total,
             )
         else:
-            # Custom bar (blocks/custom chars)
             initial_bar = self._build_custom_bar(0)
             self.task = self.progress.add_task(
                 f"[{self.current_style}]{self.description}",
@@ -659,15 +634,12 @@ class ProgressBarManager:
 
         text_color, bar_color = _color_for_percentage(self.colors, percentage)
 
-        # Apply color update
         if self.current_style != bar_color:
             self.current_style = bar_color
 
-            # Update spinner (DynamicSpinnerColumn uses style_name)
             if self.spinner:
                 self.spinner.style_name = bar_color
 
-            # Update custom columns
             if self.percentage_col:
                 self.percentage_col.style_name = bar_color
             if self.elapsed_col:
@@ -679,12 +651,10 @@ class ProgressBarManager:
             if self.speed_col:
                 self.speed_col.style_name = bar_color
 
-            # Update bar
             if self.bar_column:
                 self.bar_column.complete_style = bar_color
                 self.bar_column.pulse_style = bar_color
 
-            # Update description color
             self.progress.update(
                 self.task,
                 description=f"[{text_color}]{self.description}",

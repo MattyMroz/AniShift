@@ -135,26 +135,26 @@ class TestAutoHighlightText:
         assert "[repr.path]/home/user/.cache/models/v2.1.0[/repr.path]" in result
 
     def test_relative_path_3_segments(self):
-        result = auto_highlight_text("saved to output/volume_01/chapter_03/")
-        assert "[repr.path]output/volume_01/chapter_03/[/repr.path]" in result
+        result = auto_highlight_text("saved to output/dir_01/sub_03/")
+        assert "[repr.path]output/dir_01/sub_03/[/repr.path]" in result
 
     def test_relative_path_with_extension(self):
-        result = auto_highlight_text("Processing: volume_01/chapter_01.cbz")
-        assert "[repr.path]volume_01/chapter_01.cbz[/repr.path]" in result
+        result = auto_highlight_text("Processing: dir_01/file_01.dat")
+        assert "[repr.path]dir_01/file_01.dat[/repr.path]" in result
 
     def test_relative_path_with_long_extension(self):
         result = auto_highlight_text("hashing vae/flux2-vae.safetensors")
         assert "[repr.path]vae/flux2-vae.safetensors[/repr.path]" in result
 
     def test_path_does_not_match_fraction(self):
-        result = auto_highlight_text("24/24 pages")
+        result = auto_highlight_text("24/24 items")
         assert "[repr.path]" not in result
         assert "[repr.number]24/24[/repr.number]" in result
 
     # ── Versions ──────────────────────────────────────────────────────────────
 
     def test_version_v_prefixed(self):
-        result = auto_highlight_text("AniShift v2.1.0 starting")
+        result = auto_highlight_text("MyApp v2.1.0 starting")
         assert "[repr.number]v2.1.0[/repr.number]" in result
 
     def test_version_dotted_3_segments(self):
@@ -204,7 +204,7 @@ class TestAutoHighlightText:
         assert "files," in result  # comma stays as-is
 
     def test_parens_not_colored(self):
-        result = auto_highlight_text("(avg 27ms/region)")
+        result = auto_highlight_text("(avg 27ms/item)")
         assert "\\[" not in result or "(" in result  # parens stay literal
 
     def test_em_dash_not_colored(self):

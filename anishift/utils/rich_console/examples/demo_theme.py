@@ -28,10 +28,15 @@ __all__ = ["run_all_demos"]
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 HEADER_WIDTH: Final[int] = 70
-SECTION_SEPARATOR: Final[str] = "" * HEADER_WIDTH
+"""Character width of demo section headers."""
+
+SECTION_SEPARATOR: Final[str] = "═" * HEADER_WIDTH
+"""Horizontal rule printed above and below each section title."""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
 def print_section(title: str) -> None:
     """Print section header with centered title."""
     console.print(f"\n{SECTION_SEPARATOR}")

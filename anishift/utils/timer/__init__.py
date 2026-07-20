@@ -195,7 +195,7 @@ class ExecutionTimer:
 # ── Decorator ─────────────────────────────────────────────────────────────────
 
 
-def timed(display_mode: DisplayMode = "standard") -> Callable:
+def timed(display_mode: DisplayMode = "standard") -> Callable[..., Any]:
     """Decorate a function to time its execution with Rich display.
 
     Args:
@@ -205,7 +205,7 @@ def timed(display_mode: DisplayMode = "standard") -> Callable:
         Decorated function.
     """
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             t = Timer(func.__name__, auto_start=True)
@@ -254,7 +254,6 @@ def format_duration(
     if mode == "none":
         return None
 
-    # Decompose nanoseconds
     secs, remainder = divmod(duration_ns, 1_000_000_000)
     ms, remainder = divmod(remainder, 1_000_000)
     us, ns = divmod(remainder, 1_000)

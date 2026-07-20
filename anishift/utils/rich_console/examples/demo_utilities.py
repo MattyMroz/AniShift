@@ -26,10 +26,15 @@ __all__ = ["run_all_demos"]
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 HEADER_WIDTH: Final[int] = 70
-SECTION_SEPARATOR: Final[str] = "" * HEADER_WIDTH
+"""Character width of demo section headers."""
+
+SECTION_SEPARATOR: Final[str] = "═" * HEADER_WIDTH
+"""Horizontal rule printed above and below each section title."""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
 def print_section(title: str) -> None:
     """Print section header with centered title."""
     console.print(f"\n{SECTION_SEPARATOR}")
@@ -72,26 +77,26 @@ def demo_format_bytes() -> None:
     print_section("BYTE SIZE FORMATTING")
 
     console.print("Decimal Units (1000-based, KB/MB/GB) — default:")
-    sizes_decimal = [1000, 1000**2, 1000**3]
+    sizes_decimal: list[float] = [1000, 1000**2, 1000**3]
     labels_decimal = ["1 KB", "1 MB", "1 GB"]
-    for label, size in zip(labels_decimal, sizes_decimal, strict=True):
-        console.print(f"  {label:15} = {format_bytes(size)}")
+    for decimal_label, decimal_size in zip(labels_decimal, sizes_decimal, strict=True):
+        console.print(f"  {decimal_label:15} = {format_bytes(decimal_size)}")
 
     console.print("\nBinary Units (1024-based, KiB/MiB/GiB):")
-    sizes_binary = [1024, 1024**2 * 1.5, 1024**3 * 5, 1024**4 * 2.5]
-    labels = ["1 KiB", "1.5 MiB", "5 GiB", "2.5 TiB"]
-    for label, size in zip(labels, sizes_binary, strict=True):
-        console.print(f"  {label:15} = {format_bytes(size, binary=True)}")
+    sizes_binary: list[float] = [1024, 1024**2 * 1.5, 1024**3 * 5, 1024**4 * 2.5]
+    labels_binary = ["1 KiB", "1.5 MiB", "5 GiB", "2.5 TiB"]
+    for binary_label, binary_size in zip(labels_binary, sizes_binary, strict=True):
+        console.print(f"  {binary_label:15} = {format_bytes(binary_size, binary=True)}")
 
     console.print("\nReal-world Examples:")
-    examples = {
+    examples: dict[str, float] = {
         "Small file": 45678,
         "Image file": 1024**2 * 3.5,
         "Video file": 1024**3 * 1.2,
         "Database dump": 1024**3 * 15.7,
     }
-    for label, size in examples.items():
-        console.print(f"  {label:15} = {format_bytes(size)}")
+    for example_label, example_size in examples.items():
+        console.print(f"  {example_label:15} = {format_bytes(example_size)}")
 
 
 def demo_format_duration() -> None:

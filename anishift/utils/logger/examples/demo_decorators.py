@@ -15,6 +15,8 @@ import time
 from ...rich_console import console
 from .. import LoggerMode, setup_mode, timed, timed_debug, timed_if, timed_in_dev
 
+__all__ = ["run_all_demos"]
+
 
 @timed()
 def slow_operation() -> str:

@@ -12,8 +12,6 @@ __all__ = ["LogAggregator"]
 class LogAggregator:
     """Aggregation utilities for log analysis.
 
-    Provide methods to analyze and summarize log data.
-
     Example:
         >>> from logger.readers import LogReader, LogAggregator
         >>> reader = LogReader("logs/app.log.jsonl")
@@ -187,7 +185,7 @@ class LogAggregator:
         Returns:
             List of timeline points with counts by level.
         """
-        timeline_data = defaultdict(lambda: defaultdict(int))
+        timeline_data: defaultdict[str, defaultdict[str, int]] = defaultdict(lambda: defaultdict(int))
 
         for log in self._logs:
             timestamp_str = log.get("timestamp")
@@ -196,21 +194,15 @@ class LogAggregator:
 
             try:
                 ts = datetime.fromisoformat(timestamp_str)
-
-                if interval == "hour":
-                    bucket = ts.strftime("%Y-%m-%d %H:00")
-                else:  # day
-                    bucket = ts.strftime("%Y-%m-%d")
-
+                bucket = ts.strftime("%Y-%m-%d %H:00") if interval == "hour" else ts.strftime("%Y-%m-%d")
                 level = log.get("level", "UNKNOWN")
                 timeline_data[bucket][level] += 1
             except (ValueError, TypeError):
                 continue
 
-        # Convert to list of dicts
         result = []
         for bucket, levels in sorted(timeline_data.items()):
-            point = {"time": bucket}
+            point: dict[str, Any] = {"time": bucket}
             point.update(levels)
             result.append(point)
 

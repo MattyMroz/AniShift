@@ -83,13 +83,11 @@ class LogViewer:
         Args:
             logs: List of log dictionaries.
         """
-        # Stats
         stats = self._calculate_stats(logs)
         self._display_stats(stats)
 
         console.print()
 
-        # Logs
         self.display(logs, show_context=False)
 
     def display_stats(self, stats: dict[str, Any]) -> None:

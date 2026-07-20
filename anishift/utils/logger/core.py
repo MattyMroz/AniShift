@@ -9,13 +9,16 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Final
 
 from loguru import logger
 
 from .config import LoggerMode
 from .modes import get_mode_config
 from .scrubber import scrub_patcher
+
+if TYPE_CHECKING:
+    from types import FrameType
 
 __all__ = [
     "InterceptHandler",
@@ -24,8 +27,7 @@ __all__ = [
     "shutdown_logger",
 ]
 
-# Vendor libraries that flood logs — set to WARNING
-_VENDOR_LOGGERS: tuple[str, ...] = (
+_VENDOR_LOGGERS: Final[tuple[str, ...]] = (
     "torch",
     "torchvision",
     "httpx",
@@ -40,6 +42,7 @@ _VENDOR_LOGGERS: tuple[str, ...] = (
     "fsspec",
     "huggingface_hub",
 )
+"""Noisy vendor loggers pinned to WARNING to keep logs readable."""
 
 
 class InterceptHandler(logging.Handler):
@@ -60,7 +63,8 @@ class InterceptHandler(logging.Handler):
         except ValueError:
             level = str(record.levelno)
 
-        frame, depth = logging.currentframe(), 2
+        frame: FrameType | None = logging.currentframe()
+        depth = 2
         while frame and frame.f_code.co_filename == logging.__file__:
             frame = frame.f_back
             depth += 1
@@ -69,11 +73,9 @@ class InterceptHandler(logging.Handler):
 
 
 def setup_mode(mode: LoggerMode, **overrides: Any) -> None:
-    """Set up logger with predefined mode.
+    """Set up logger with a predefined mode.
 
-    This is the main function to configure the logger system.
-    Uses loguru's built-in `enqueue=True` for non-blocking queue-based logging.
-    Installs InterceptHandler to bridge stdlib logging → loguru.
+    Adds enqueued console/file sinks and installs the stdlib → loguru bridge.
 
     Args:
         mode: Logger operating mode to apply.
@@ -84,46 +86,39 @@ def setup_mode(mode: LoggerMode, **overrides: Any) -> None:
         >>> setup_mode(LoggerMode.DEV)
         >>> setup_mode(LoggerMode.PRODUCTION, level="DEBUG")
     """
-    logger.remove()  # Clear existing handlers
+    logger.remove()
 
     config = get_mode_config(mode, **overrides)
 
-    # In production, disable diagnose (variable exposure in tracebacks).
     is_dev = mode == LoggerMode.DEV
     diagnose = is_dev
 
-    # Console sink (if enabled)
     if config.console_enabled:
         from .handlers.console import console_sink
 
         logger.add(
             sink=console_sink,
             level=config.console_level or config.level,
-            enqueue=True,  # 🔑 Non-blocking queue-based logging!
+            enqueue=True,
             diagnose=diagnose,
             format="{message}",
         )
 
-    # File sink (if enabled)
     if config.file.enable:
-        # Create log directory if needed
         config.file.path.parent.mkdir(parents=True, exist_ok=True)
 
         logger.add(
             sink=str(config.file.path),
             level=config.file_level or config.level,
-            enqueue=True,  # 🔑 Non-blocking queue-based logging!
+            enqueue=True,
             diagnose=diagnose,
             rotation=config.file.rotation,
             retention=config.file.retention,
             compression=config.file.compression,
-            serialize=True,  # Auto JSON serialization
+            serialize=True,
             format="{message}",
         )
 
-        # Dedicated ERROR+ sink so crashes are always greppable in one file,
-        # regardless of the active mode (DEV/PRODUCTION write everything to
-        # their own log; SILENT already targets errors.log.jsonl directly).
         if mode is not LoggerMode.SILENT:
             errors_path = config.file.path.parent / "errors.log.jsonl"
             logger.add(
@@ -138,11 +133,9 @@ def setup_mode(mode: LoggerMode, **overrides: Any) -> None:
                 format="{message}",
             )
 
-    # In production, install a global patcher that scrubs sensitive data.
     if not is_dev:
         logger.configure(patcher=scrub_patcher)
 
-    # Install stdlib → loguru bridge + vendor level control
     _install_intercept()
 
 
@@ -181,7 +174,6 @@ def setup_mode_from_env(**overrides: Any) -> None:
         >>> from logger import setup_mode_from_env
         >>> setup_mode_from_env()
     """
-    # Mode
     mode_str = os.getenv("LOGGER_MODE", "PRODUCTION").upper()
     try:
         mode = LoggerMode(mode_str)
@@ -189,8 +181,7 @@ def setup_mode_from_env(**overrides: Any) -> None:
         logger.warning("Invalid LOGGER_MODE: {mode_str}, using PRODUCTION", mode_str=mode_str)
         mode = LoggerMode.PRODUCTION
 
-    # Overrides from env
-    env_overrides = {}
+    env_overrides: dict[str, Any] = {}
 
     if level := os.getenv("LOGGER_LEVEL"):
         env_overrides["level"] = level.upper()
@@ -204,7 +195,6 @@ def setup_mode_from_env(**overrides: Any) -> None:
     if os.getenv("LOGGER_DISABLE_FILE", "").lower() == "true":
         env_overrides["file"] = {"enable": False}
 
-    # Merge: env_overrides < user overrides
     final_overrides = {**env_overrides, **overrides}
 
     setup_mode(mode, **final_overrides)
@@ -220,4 +210,4 @@ def shutdown_logger() -> None:
         >>> from logger import shutdown_logger
         >>> shutdown_logger()
     """
-    logger.remove()  # Waits for queue to flush
+    logger.remove()

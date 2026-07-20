@@ -1,4 +1,4 @@
-"""Tenacity retry presets for AniShift.
+"""Tenacity retry presets for network calls.
 
 - ``NETWORK_RETRY`` — HTTP / connection errors, 60 s budget (decorator).
 - ``build_retry()`` — per-call ``AsyncRetrying`` for network engines with an
@@ -56,6 +56,7 @@ except ImportError:
     _HTTPX_STATUS_ERROR = None
 
 _RETRYABLE_STATUS_CODES: Final[frozenset[int]] = frozenset({429, 500, 502, 503, 504})
+"""HTTP status codes treated as transient and worth retrying."""
 
 _NETWORK_BUDGET_SEC: Final[int] = 60
 """Max retry window for HTTP / connection errors."""
@@ -69,10 +70,8 @@ _NETWORK_MAX_WAIT_SEC: Final[int] = 15
 
 def _is_retryable_network_error(exc: BaseException) -> bool:
     """Return True when *exc* is a retryable network / HTTP error."""
-    # Standard library
     if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
         return True
-    # Our own TransientError mixin
     if isinstance(exc, TransientError):
         return True
     # Model-layer DownloadError (but NOT OfflineError — terminal offline state).
@@ -80,10 +79,8 @@ def _is_retryable_network_error(exc: BaseException) -> bool:
     mro_names = {cls.__name__ for cls in type(exc).__mro__}
     if "DownloadError" in mro_names and "OfflineError" not in mro_names:
         return True
-    # httpx transport-level errors
     if _HTTPX_RETRYABLE and isinstance(exc, _HTTPX_RETRYABLE):
         return True
-    # httpx HTTP responses with retryable status codes
     if _HTTPX_STATUS_ERROR and isinstance(exc, _HTTPX_STATUS_ERROR):
         response = getattr(exc, "response", None)
         return response is not None and response.status_code in _RETRYABLE_STATUS_CODES
@@ -117,10 +114,11 @@ NETWORK_RETRY: Final = retry(
 # ── build_retry ───────────────────────────────────────────────────────────────
 
 BackoffKind = Literal["linear", "exponential"]
+"""Backoff growth shape for retry waits."""
 
 
 class _BackoffWait(wait_base):
-    """Wait 1:1 with the legacy engine loops: linear=min(base*n, cap), exponential=base*2^(n-1)."""
+    """Compute backoff wait: linear = min(base*n, cap), exponential = base*2^(n-1)."""
 
     def __init__(self, kind: BackoffKind, base_s: float, cap_s: float | None) -> None:
         self._kind = kind
@@ -141,12 +139,16 @@ def build_retry(
     cap_s: float | None = None,
     retry_on: type[BaseException] | tuple[type[BaseException], ...],
 ) -> AsyncRetrying:
-    """Retry for network engines. ``max_attempts`` = TOTAL number of calls."""
+    """Retry for network engines. ``max_attempts`` = TOTAL number of calls.
+
+    Note:
+        ``asyncio.sleep`` is passed by reference (late-binding) so tests that
+        patch it via ``monkeypatch.setattr(asyncio, "sleep", ...)`` still take
+        effect. Do NOT move it to a parameter default — that freezes the
+        reference, and tenacity's own default (``_portable_async_sleep``) would
+        bypass the monkeypatch.
+    """
     return AsyncRetrying(
-        # asyncio.sleep is read HERE (late-binding) so tests that patch it via
-        # monkeypatch.setattr(asyncio, "sleep", ...) still work. Do NOT move it to
-        # a parameter default (that would freeze the reference). Tenacity's own
-        # default is _portable_async_sleep, which monkeypatching asyncio.sleep misses.
         sleep=asyncio.sleep,
         stop=stop_after_attempt(max_attempts),
         wait=_BackoffWait(backoff, base_s, cap_s),

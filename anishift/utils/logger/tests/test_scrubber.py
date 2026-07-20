@@ -114,7 +114,7 @@ class TestScrubMessage:
     # ── Safe Messages ─────────────────────────────────────────────────────────
 
     def test_safe_message_unchanged(self) -> None:
-        msg = "Processing image manga_001.jpg with 3 panels"
+        msg = "Processing file file_001.txt with 3 records"
         assert scrub_message(msg) == msg
 
     def test_empty_string(self) -> None:

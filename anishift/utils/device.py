@@ -1,11 +1,9 @@
 """Select best available compute device — CUDA > CPU, torch-free.
 
-Importing torch puts it in ``sys.modules``, which makes a later
-``onnxruntime.InferenceSession`` log ``"Skip loading CUDA and cuDNN DLLs
-since torch is imported."`` and reuse torch's cuDNN — ~8x slower JIT for
-dynamic-shape ONNX models (MTS cold 707ms vs 6450ms empirically).
-``get_device()`` runs in ``bootstrap()`` on every pipeline call, so it
-must not be what drags torch in.
+Never imports torch itself — importing torch puts it in ``sys.modules``,
+which makes a later ``onnxruntime.InferenceSession`` reuse torch's cuDNN
+instead of its own, slowing dynamic-shape ONNX model loading. Detection
+only reads torch if some other module already imported it first.
 
 Detection order:
     1. torch already in ``sys.modules`` -> use it (no penalty).
@@ -25,7 +23,10 @@ from typing import Final, Literal
 __all__ = ["DeviceInfo", "get_device"]
 
 _BYTES_PER_MB: Final[int] = 1024 * 1024
+"""Bytes per megabyte, for VRAM byte→MB conversion."""
+
 _NVIDIA_SMI_TIMEOUT_S: Final[float] = 2.0
+"""Timeout for the nvidia-smi subprocess probe."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +84,7 @@ def _ort_reports_cuda() -> bool:
     ort = sys.modules.get("onnxruntime")
     if ort is None:
         try:
-            import onnxruntime
+            import onnxruntime  # type: ignore[import-not-found]  # optional dependency, no stubs
         except ImportError:
             return False
         ort = onnxruntime

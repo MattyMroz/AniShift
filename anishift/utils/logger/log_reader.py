@@ -52,8 +52,8 @@ class LogReader:
             return self._logs
 
         with self.log_file.open(encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
+            for raw_line in f:
+                line = raw_line.strip()
                 if not line:
                     continue
 
@@ -91,7 +91,7 @@ class LogReader:
         if not self._logs:
             self.read_all()
 
-        upper_levels = [l.upper() for l in levels]
+        upper_levels = [level.upper() for level in levels]
         return [log for log in self._logs if log.get("level") in upper_levels]
 
     def filter_by_time(
@@ -176,7 +176,7 @@ class LogReader:
         if not self._logs:
             self.read_all()
 
-        return self._logs[-count:][::-1]  # Last N, reversed
+        return self._logs[-count:][::-1]
 
     def get_stats(self) -> dict[str, Any]:
         """Get log statistics.
@@ -187,13 +187,11 @@ class LogReader:
         if not self._logs:
             self.read_all()
 
-        # Count by level
         level_counts: dict[str, int] = {}
         for log in self._logs:
             level = log.get("level", "UNKNOWN")
             level_counts[level] = level_counts.get(level, 0) + 1
 
-        # Count by logger
         logger_counts: dict[str, int] = {}
         for log in self._logs:
             logger = log.get("logger", "unknown")

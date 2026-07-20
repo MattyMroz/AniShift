@@ -1,12 +1,6 @@
 """JSON file handler for loguru sink with rotation support.
 
-Handles structured JSON logging to files with automatic rotation and retention.
-Compatible with log aggregation and analysis tools.
-
-Note:
-    For production use, prefer ``logger.add(sink=path, serialize=True)``
-    which handles rotation, retention and non-blocking writes natively.
-    This handler is for standalone or custom sink scenarios.
+Writes structured JSON log lines to a file with rotation and retention.
 """
 
 from __future__ import annotations
@@ -101,7 +95,6 @@ class JSONHandler:
             if exc:
                 exception = f"{exc.type.__name__}: {exc.value}"
 
-        # Extract file path safely - record["file"] is RecordFile object
         file_path = ""
         file_info = record.get("file")
         if file_info and hasattr(file_info, "path"):

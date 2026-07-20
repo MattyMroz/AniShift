@@ -1,11 +1,4 @@
-"""Utility functions for Rich console.
-
-Provides stateless helper functions for:
-- Status icons with styling
-- Byte size formatting (binary/decimal units)
-- Progress color selection by percentage
-- Time duration formatting
-- Percentage formatting
+"""Stateless helper functions for Rich console: icons, sizes, colors, durations, percentages.
 
 Usage:
     >>> from rich_console import get_status_icon, format_bytes, format_duration

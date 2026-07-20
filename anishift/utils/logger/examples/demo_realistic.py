@@ -16,11 +16,13 @@ from loguru import logger
 from ...rich_console import console
 from .. import LoggerMode, log_duration, setup_mode
 
+__all__ = ["run_all_demos"]
+
 
 def _simulate_startup() -> None:
     """Simulate application startup."""
     log = logger.bind(logger_name="app")
-    log.info("AniShift v2.1.0 starting")
+    log.info("MyApp v2.1.0 starting")
     log.debug("Python 3.13.11 | CUDA 12.4 | torch 2.7.0")
 
     with log_duration("config_load"):
@@ -33,7 +35,7 @@ def _simulate_model_loading() -> None:
     """Simulate model loading phase."""
     log = logger.bind(logger_name="models")
 
-    models = ["detector", "ocr", "translator", "inpainter"]
+    models = ["detector", "parser", "transformer", "renderer"]
     for model_name in models:
         with log_duration(f"load_{model_name}"):
             time.sleep(0.02)
@@ -43,48 +45,43 @@ def _simulate_model_loading() -> None:
 
 
 def _simulate_processing() -> None:
-    """Simulate manga processing pipeline."""
+    """Simulate data processing pipeline."""
     log = logger.bind(logger_name="pipeline")
-    pages = ["page_001.png", "page_002.png", "page_003.png"]
+    items = ["item_001.dat", "item_002.dat", "item_003.dat"]
 
-    for i, page in enumerate(pages, 1):
-        log.info("Processing {page} ({i}/{total})", page=page, i=i, total=len(pages))
+    for i, item in enumerate(items, 1):
+        log.info("Processing {item} ({i}/{total})", item=item, i=i, total=len(items))
 
-        # Detection
         det_log = logger.bind(logger_name="detection")
-        with log_duration(f"detect_{page}"):
+        with log_duration(f"detect_{item}"):
             time.sleep(0.015)
-        det_log.debug("Found {n} panels, {b} bubbles", n=4 + i, b=2 + i)
+        det_log.debug("Found {n} regions, {b} records", n=4 + i, b=2 + i)
 
-        # OCR
-        ocr_log = logger.bind(logger_name="ocr")
-        with log_duration(f"ocr_{page}"):
+        parse_log = logger.bind(logger_name="parse")
+        with log_duration(f"parse_{item}"):
             time.sleep(0.01)
 
         if i == 2:
-            ocr_log.warning("Low confidence on bubble #3 (0.42)")
+            parse_log.warning("Low confidence on record #3 (0.42)")
 
-        # Translation
-        with log_duration(f"translate_{page}"):
+        with log_duration(f"transform_{item}"):
             time.sleep(0.01)
 
-        # Rendering
-        with log_duration(f"render_{page}"):
+        with log_duration(f"render_{item}"):
             time.sleep(0.01)
 
-    log.success("Batch complete: {n} pages processed", n=len(pages))
+    log.success("Batch complete: {n} items processed", n=len(items))
 
 
 def _simulate_error_scenario() -> None:
     """Simulate an error during processing."""
     log = logger.bind(logger_name="pipeline")
-    log.info("Processing page_004.png (bonus chapter)")
+    log.info("Processing item_004.dat (extra batch)")
 
     det_log = logger.bind(logger_name="detection")
-    det_log.debug("Running panel detection")
+    det_log.debug("Running region detection")
 
     try:
-        # Simulate OOM
         msg = "CUDA out of memory. Tried to allocate 2.10 GiB"
         raise RuntimeError(msg)
     except RuntimeError:
@@ -102,7 +99,7 @@ def _simulate_shutdown() -> None:
     log.info("Shutdown requested")
     log.debug("Flushing 3 pending writes")
     log.debug("Closing model handles")
-    log.info("AniShift stopped gracefully")
+    log.info("MyApp stopped gracefully")
 
 
 def demo_realistic_dev() -> None:
@@ -140,5 +137,4 @@ def run_all_demos() -> None:
     demo_realistic_production()
     console.print()
 
-    # Restore DEV mode for subsequent demos
     setup_mode(LoggerMode.DEV, name="demo")

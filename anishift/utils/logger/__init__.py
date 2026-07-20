@@ -1,23 +1,7 @@
-"""Production-ready logging system with environment modes and structured output.
+"""Preconfigured loguru logger with DEV/PRODUCTION/SILENT modes and JSONL output.
 
-Provide a preconfigured loguru-based logger with:
-- 3 environment modes: DEV, PRODUCTION, SILENT
-- Queue-based non-blocking logging (enqueue=True)
-- JSONL structured log files (.log.jsonl)
-- Timer integration (log_duration context manager)
-- Chain-able LogReader API for log analysis
-- Logger statistics tracking
-
-Public API:
-    setup_mode: Configure logger for a specific mode.
-    LoggerMode: Enum of available modes (DEV, PRODUCTION, SILENT).
-    get_logger: Get a logger instance with bound context.
-    log_duration: Context manager for timing code blocks.
-    LogReader: Chain-able API for reading and filtering logs.
-    LogAggregator: Aggregate statistics from log files.
-    LogViewer: Rich-formatted log viewer for terminal.
-    LoggerStats: Dataclass with logging statistics.
-    timed: Decorator for timing function execution.
+Bundles non-blocking sinks, a ``log_duration`` timer, a chain-able ``LogReader``,
+and statistics tracking.
 
 Example:
     >>> from logger import setup_mode, LoggerMode
