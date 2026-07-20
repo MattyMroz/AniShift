@@ -33,22 +33,41 @@ __all__ = [
 
 # ── Auto-Highlighting ─────────────────────────────────────────────────────────
 
+_PATH_SEG: Final[str] = r"[\w.@+(),'’\[\]-]+"
+"""Path segment without spaces."""
+
+_PATH_EXT: Final[str] = r"\.[A-Za-z]\w{0,31}(?![\w.\]/\\])"
+"""Letter-first file extension that ends the path (not mid-token or mid-path)."""
+
+_PATH_SPACED_NAME: Final[str] = rf"(?:(?!{_PATH_EXT})[\w.@+(),'’ \[\]-])*{_PATH_EXT}"
+"""Filename that may contain spaces, ending at the first terminal extension."""
+
+_PATH_SPACED_TAIL: Final[str] = rf"(?:(?!{_PATH_EXT})[\w.@+(),'’ \[\]/\\-])*{_PATH_EXT}"
+"""Multi-segment tail with spaces in any segment, ending at the first
+terminal extension."""
+
 _PATH_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:"
-    r"[A-Za-z]:[/\\][\w.@+(),'’ \[\]-]+"
-    r"(?:[/\\][\w.@+(),'’ \[\]-]+)*[/\\]?"
-    r"|"
-    r"/[\w.@+(),'’ \[\]-]+(?:[/\\][\w.@+(),'’ \[\]-]+)+[/\\]?"
-    r"|"
-    r"[\w.@+-]+(?:[/\\][\w.@+-]+)*[/\\]\[[\w.@+(),'’ \[\]/\\-]*\.\w{1,32}"
-    r"|"
-    r"[\w.@+-]+(?:[/\\][\w.@+-]+){2,}[/\\]?"
-    r"|"
-    r"[\w.@+-]+/[\w.@+-]+\.[\w]{1,32}"
-    r")"
+    rf"(?:"
+    rf"[A-Za-z]:[/\\](?:{_PATH_SPACED_TAIL}|(?:{_PATH_SEG}[/\\])*{_PATH_SEG}(?<![.,])[/\\]?)"
+    rf"|"
+    rf"(?<!\w)/(?:"
+    rf"(?:(?!{_PATH_EXT})[\w.@+(),'’ \[\]-])*[/\\]{_PATH_SPACED_TAIL}"
+    rf"|(?:{_PATH_SEG}[/\\])+(?:{_PATH_SEG}(?<![.,]))?"
+    rf")"
+    rf"|"
+    rf"[\w.@+-]+(?:[/\\][\w.@+-]+)*[/\\](?=\[){_PATH_SPACED_NAME}"
+    rf"|"
+    rf"(?!\d+/\d)[\w.@+-]+(?:/[\w.@+-]+)+\.\w{{1,32}}"
+    rf"|"
+    rf"[\w.@+-]+(?:[/\\][\w.@+-]+){{2,}}[/\\]"
+    rf")"
 )
-"""Match absolute paths, relative paths with a bracketed segment and an
-extension, relative 3+ segments, or 2 segments with an extension."""
+"""Match drive/POSIX absolute paths, relative paths with a bracketed final
+segment, relative file paths with an extension, or relative 3+ segment
+directories ending with a separator. A strong start (drive root, POSIX root
+with 2+ segments) plus a terminating extension permits spaces in every
+segment; without an extension only space-free segments match, so prose
+around a path is never swallowed."""
 
 _HIGHLIGHT_STYLES: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
     (re.compile(r"https?://[^\s]+"), "repr.url"),
@@ -56,8 +75,8 @@ _HIGHLIGHT_STYLES: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
     (re.compile(r"\b(?:true|True|TRUE)\b"), "repr.bool_true"),
     (re.compile(r"\b(?:false|False|FALSE)\b"), "repr.bool_false"),
     (re.compile(r"\b(?:None|null|NULL|nil)\b"), "repr.none"),
-    (re.compile(r"\bv\d+(?:\.\d+)+(?:[+\-][\w.]+)?"), "repr.number"),
-    (re.compile(r"\b\d+\.\d+\.\d+(?:\.\d+)*(?:[+\-][\w.]+)?"), "repr.number"),
+    (re.compile(r"\bv\d+(?:\.\d+)+(?:[+\-][\w.]+)*"), "repr.number"),
+    (re.compile(r"\b\d+\.\d+\.\d+(?:\.\d+)*(?:[+\-][\w.]+)*"), "repr.number"),
     (
         re.compile(r"\b\d+(?:\.\d+)?\s?(?:ms|MB|GB|TB|KB|kB|px|dp|pt|em|rem|fps|Hz|kHz|min|sec|s)\b"),
         "repr.number",

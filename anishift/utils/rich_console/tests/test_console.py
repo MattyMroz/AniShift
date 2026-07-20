@@ -166,6 +166,7 @@ class TestAutoHighlightText:
             pytest.param(r"C:\Users\me\output\[Draft] Report Final - v2 (2024).pdf", id="uppercase-bracket"),
             pytest.param(r"/home/user/[a] file (x) [b].txt", id="posix-brackets"),
             pytest.param(r"output\dir\[X] plain.ass", id="relative-bracket"),
+            pytest.param(r"C:\ws\[label] Sample Show II - 01.displayed.ass", id="multi-dot-extension"),
         ],
     )
     def test_bracketed_path_preserved_and_colored(self, path):
@@ -183,6 +184,110 @@ class TestAutoHighlightText:
     def test_path_does_not_match_status_text(self, text):
         assert styled(auto_highlight_text(text), "repr.path") == []
 
+    # ── Paths: sentences are not paths ────────────────────────────────────────
+
+    def test_posix_path_stops_before_trailing_words(self):
+        result = auto_highlight_text("path /home/user/file done extra words here")
+        assert result.plain == "path /home/user/file done extra words here"
+        assert styled(result, "repr.path") == ["/home/user/file"]
+
+    def test_slashed_words_in_sentence_are_not_a_path(self):
+        result = auto_highlight_text("24/24 done but a/b/c is path")
+        assert styled(result, "repr.path") == []
+        assert "24/24" in styled(result, "repr.number")
+
+    def test_fraction_with_words_is_not_a_path(self):
+        result = auto_highlight_text("progress 5/10 items remaining")
+        assert styled(result, "repr.path") == []
+        assert styled(result, "repr.number") == ["5/10"]
+
+    def test_status_summary_with_middle_dot_is_not_a_path(self):
+        result = auto_highlight_text("Done 5 · Failed 0")
+        assert styled(result, "repr.path") == []
+
+    def test_drive_path_stops_before_trailing_words(self):
+        result = auto_highlight_text(r"Saved C:\out\[draft] final.ass in 1.33s")
+        assert result.plain == r"Saved C:\out\[draft] final.ass in 1.33s"
+        assert styled(result, "repr.path") == [r"C:\out\[draft] final.ass"]
+        assert styled(result, "repr.number") == ["1.33s"]
+
+    def test_drive_path_stops_at_first_extension(self):
+        result = auto_highlight_text(r"C:\out\file.ass then see readme.txt")
+        assert styled(result, "repr.path") == [r"C:\out\file.ass"]
+
+    # ── Paths: edge cases that must still match ───────────────────────────────
+
+    def test_posix_path_at_end_of_sentence(self):
+        result = auto_highlight_text("wrote /var/log/app/output.log")
+        assert styled(result, "repr.path") == ["/var/log/app/output.log"]
+
+    def test_posix_dir_with_trailing_slash_in_sentence(self):
+        result = auto_highlight_text("saved to /tmp/out/ then continued work")
+        assert styled(result, "repr.path") == ["/tmp/out/"]
+
+    def test_relative_multi_segment_file_path(self):
+        result = auto_highlight_text("compiled src/pkg/module_a/main.py ok")
+        assert styled(result, "repr.path") == ["src/pkg/module_a/main.py"]
+
+    def test_drive_dir_without_extension(self):
+        result = auto_highlight_text(r"scan C:\Users\me\output now")
+        assert styled(result, "repr.path") == [r"C:\Users\me\output"]
+
+    def test_fraction_with_unit_is_not_a_path(self):
+        result = auto_highlight_text("speed 3/4.5s done")
+        assert styled(result, "repr.path") == []
+
+    def test_digit_first_extension_still_a_path(self):
+        result = auto_highlight_text("stored in data/backup.7z ok")
+        assert styled(result, "repr.path") == ["data/backup.7z"]
+
+    def test_numeric_segment_with_letter_extension_still_a_path(self):
+        result = auto_highlight_text("archived 2024/report.pdf ok")
+        assert styled(result, "repr.path") == ["2024/report.pdf"]
+
+    def test_posix_path_inside_parens(self):
+        result = auto_highlight_text("(see /var/log/x.log)")
+        assert result.plain == "(see /var/log/x.log)"
+        assert styled(result, "repr.path") == ["/var/log/x.log"]
+
+    def test_quoted_drive_path_stops_at_quote(self):
+        result = auto_highlight_text(r'"C:\out\file.ass" saved')
+        assert styled(result, "repr.path") == [r"C:\out\file.ass"]
+
+    def test_sentence_period_not_part_of_path(self):
+        result = auto_highlight_text("see /home/user/file. Next line")
+        assert styled(result, "repr.path") == ["/home/user/file"]
+
+    def test_single_posix_dir_with_trailing_slash_is_a_path(self):
+        result = auto_highlight_text("GET /users/ 200")
+        assert styled(result, "repr.path") == ["/users/"]
+        assert styled(result, "repr.number") == ["200"]
+
+    # ── Paths: spaced intermediate segments (extension-bounded) ───────────────
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param(r"C:\My Documents\report.pdf", id="spaced-dir"),
+            pytest.param(r"C:\Program Files\app\data.bin", id="spaced-dir-nested"),
+            pytest.param(r"C:\Users\John Smith\output\file.txt", id="spaced-user-dir"),
+            pytest.param("/home/user/My Documents/report.pdf", id="posix-spaced-dir"),
+        ],
+    )
+    def test_spaced_intermediate_segments_match_fully(self, path):
+        result = auto_highlight_text(path)
+        assert result.plain == path
+        assert styled(result, "repr.path") == [path]
+
+    def test_spaced_dir_path_in_sentence(self):
+        result = auto_highlight_text(r"Saved C:\My Documents\report.pdf in 1.33s")
+        assert styled(result, "repr.path") == [r"C:\My Documents\report.pdf"]
+        assert styled(result, "repr.number") == ["1.33s"]
+
+    def test_spaced_dir_without_extension_stays_bounded(self):
+        result = auto_highlight_text(r"open C:\My Documents now")
+        assert styled(result, "repr.path") == [r"C:\My"]
+
     # ── Versions ──────────────────────────────────────────────────────────────
 
     def test_version_v_prefixed(self):
@@ -196,6 +301,27 @@ class TestAutoHighlightText:
     def test_version_with_build_metadata(self):
         result = auto_highlight_text("torch 2.6.0+cu128")
         assert styled(result, "repr.number") == ["2.6.0+cu128"]
+
+    def test_version_with_prerelease_and_build_suffixes(self):
+        result = auto_highlight_text("release v2.0.0-rc1+build.5 ready")
+        assert result.plain == "release v2.0.0-rc1+build.5 ready"
+        assert styled(result, "repr.number") == ["v2.0.0-rc1+build.5"]
+
+    def test_bare_version_with_multiple_suffixes(self):
+        result = auto_highlight_text("pkg 1.4.0-beta.2+exp.sha.5114f85 installed")
+        assert styled(result, "repr.number") == ["1.4.0-beta.2+exp.sha.5114f85"]
+
+    def test_multiple_versions_in_sentence(self):
+        result = auto_highlight_text("upgrade v1.2.3 to v2.0.0-rc1+build.5 now")
+        assert styled(result, "repr.number") == ["v1.2.3", "v2.0.0-rc1+build.5"]
+
+    def test_version_suffix_stops_before_detached_dash(self):
+        result = auto_highlight_text("built v2.1.0 - done in 3s")
+        assert styled(result, "repr.number") == ["v2.1.0", "3s"]
+
+    def test_v_number_without_dots_is_not_a_version(self):
+        result = auto_highlight_text("rev v1 deployed")
+        assert styled(result, "repr.number") == []
 
     # ── Number + unit ─────────────────────────────────────────────────────────
 
