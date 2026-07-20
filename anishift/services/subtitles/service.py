@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Final
 
@@ -29,7 +29,7 @@ __all__ = [
     "split_subtitles",
     "subtitle_kind",
     "write_displayed",
-    "write_translated_displayed",
+    "write_translated",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -221,50 +221,67 @@ def write_displayed(split: SubtitleSplit, dest: Path) -> Path | None:
     return dest
 
 
-def _translated_displayed_file(split: SubtitleSplit, verses: Sequence[tuple[str, ...]]) -> SSAFile:
+def _translated_file(
+    split: SubtitleSplit,
+    displayed_verses: Sequence[tuple[str, ...]],
+    spoken_verses: Mapping[tuple[str, str], tuple[str, ...]],
+) -> SSAFile:
     out = SSAFile()
     out.info = dict(split.subs.info)
     out.styles = {name: style.copy() for name, style in split.subs.styles.items()}
     line_break = _LINE_BREAKS[split.kind]
     dialogue_index = 0
-    verse_index = 0
+    displayed_index = 0
     for event in split.subs.events:
         if event.type != "Dialogue":
             out.events.append(event)
             continue
         if split.decisions[dialogue_index] == "displayed":
-            translated = line_break.join(verses[verse_index])
-            replaced = event.copy()
-            replaced.text = replace_visible_text(event.text, translated)
-            out.events.append(replaced)
-            verse_index += 1
+            verses: tuple[str, ...] | None = displayed_verses[displayed_index]
+            displayed_index += 1
+        else:
+            verses = spoken_verses.get((event.style, visible_text(event.text)))
         dialogue_index += 1
+        if verses is None:
+            out.events.append(event)
+            continue
+        replaced = event.copy()
+        replaced.text = replace_visible_text(event.text, line_break.join(verses))
+        out.events.append(replaced)
     return out
 
 
-def write_translated_displayed(
+def write_translated(
     split: SubtitleSplit,
-    verses: Sequence[tuple[str, ...]],
+    displayed_verses: Sequence[tuple[str, ...]],
+    spoken_verses: Mapping[tuple[str, str], tuple[str, ...]],
     dest: Path,
 ) -> Path | None:
-    r"""Write the translated displayed subtitles atomically, or None when empty.
+    r"""Write the whole translated subtitle file atomically, or None when empty.
 
-    Each displayed Dialogue event keeps its tags, style and timing; only its
-    visible text is replaced with the translated verses joined by the format's
-    soft break (``\N`` for ASS, ``\n`` for SRT). ``verses`` carries one verse
-    tuple per displayed event, in event order.
+    Every Dialogue event is kept - spoken and displayed alike - with its tags,
+    style and timing intact; only the visible text is replaced with translated
+    verses joined by the format's soft break (``\N`` for ASS, ``\n`` for SRT).
+
+    Args:
+        split: The split whose source file is re-assembled.
+        displayed_verses: One verse tuple per displayed event, in event order.
+        spoken_verses: Verse tuples keyed by ``(style, visible_text)`` - the
+            inverse of the ``collapse_fbf`` grouping key. Spoken events without
+            a key (e.g. empty visible text) are copied unchanged.
+        dest: Output path (same format as the source).
 
     Raises:
         SubtitleError: The file could not be written.
     """
-    if split.stats.displayed_events == 0:
+    if split.stats.total_events == 0:
         return None
-    output = _translated_displayed_file(split, verses)
+    output = _translated_file(split, displayed_verses, spoken_verses)
     temporary = dest.with_name(dest.name + ".tmp")
     try:
         temporary.write_text(output.to_string(format_=split.kind), encoding=_ENCODING)
         temporary.replace(dest)
     except OSError as exc:
-        msg = f"Translated displayed subtitles could not be written: {dest}"
+        msg = f"Translated subtitles could not be written: {dest}"
         raise _fail(ErrorCode.IO_ERROR, msg) from exc
     return dest

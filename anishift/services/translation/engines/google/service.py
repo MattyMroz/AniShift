@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from anishift.services.translation._retry import call_with_retry_async
 from anishift.services.translation.engines.google._batching import translate_lines
 from anishift.services.translation.engines.google.config import GoogleConfig
 from anishift.services.translation.engines.google.constants import (
@@ -81,19 +82,25 @@ class GoogleService:
         )
 
     async def _call_with_retry(self, client: Any, text: str, *, dest: str) -> str:
-        """Call googletrans with capped linear backoff; return the translation."""
-        attempts = self._config.max_retries + 1
-        for attempt in range(1, attempts + 1):
-            try:
-                result = await client.translate(text, dest=dest)
-            except Exception:
-                if attempt >= attempts:
-                    raise
-                await asyncio.sleep(min(RETRY_BACKOFF_BASE_S * attempt, RETRY_MAX_WAIT_S))
-                continue
-            return str(result.text)
-        msg = "google retry exhausted without returning"  # unreachable
-        raise RuntimeError(msg)
+        """Call googletrans, retrying transient HTTP errors with shared backoff.
+
+        ``httpx.HTTPError`` is the only stable transient class googletrans
+        raises (network/timeout/status); anything else (parse failures) raises
+        immediately and the batching ladder falls back per-line.
+        """
+        import httpx  # noqa: PLC0415 - lazy import: ships with googletrans
+
+        async def _once() -> Any:
+            return await client.translate(text, dest=dest)
+
+        result = await call_with_retry_async(
+            _once,
+            max_attempts=self._config.max_retries + 1,
+            retry_on=httpx.HTTPError,
+            base_s=RETRY_BACKOFF_BASE_S,
+            cap_s=RETRY_MAX_WAIT_S,
+        )
+        return str(result.text)
 
 
 __all__ = ["GoogleService"]

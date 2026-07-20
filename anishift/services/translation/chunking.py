@@ -1,10 +1,13 @@
-"""Text chunking for the plain-text (txt) translation path.
+"""Multilingual text chunking for the plain-text (txt) translation path.
 
-The txt input may be any language (source subtitles are foreign), so phrase and
-word boundaries use full Unicode punctuation via ``unicodedata`` categories.
-``LatinPunctuator`` splits on paragraph/sentence/phrase/word boundaries;
-``CharBreaker`` and ``WordBreaker`` group the pieces into bounded chunks. Feeds
-the txt -> translation -> SRT mini-feature.
+Cuts text in any language into translator-sized chunks at natural boundaries.
+Cut points come from characters alone (ASCII plus Unicode punctuation), never
+per-language word lists, so one code path handles EN/JP/PL and the rest. Two
+limits drive it: text is broken into pieces of at most ``chunk_limit`` chars
+(paragraph -> sentence -> phrase -> word), then packed up to ``char_limit``;
+concatenating the chunks restores the input exactly. An ambiguous sentence dot
+is resolved NLTK-Punkt style: heuristic first (lowercase continuation,
+single-letter initial), then an abbreviation list for the ``Dr. Smith`` case.
 """
 
 from __future__ import annotations
@@ -12,28 +15,37 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Callable
-from typing import Final, Literal
+from typing import Final
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-DEFAULT_SENTENCE_LENGTH: Final[int] = 750
-"""Preferred maximum characters when grouping into narrator-sized chunks."""
+DEFAULT_CHAR_LIMIT: Final[int] = 750
+"""Default maximum size of one output chunk (one translator request)."""
 
-SENTENCE_ENDINGS: Final[str] = ".!?" + chr(0x2026) + chr(0x3002) + chr(0xFF01) + chr(0xFF1F)
-"""Sentence-ending chars; handled by ``get_sentences``, never a phrase cut."""
+DEFAULT_CHUNK_LIMIT: Final[int] = 250
+"""Default maximum size of the natural pieces chunks are packed from."""
 
-ZERO_WIDTH: Final[str] = chr(0x200B)
-"""Zero-width space some sources place after a sentence mark; SSOT of this char."""
+_LATIN_SENTENCE_ENDINGS: Final[str] = ".!?…"
+"""Sentence-ending marks that need trailing whitespace to end a sentence."""
 
-_APOSTROPHES: Final[str] = chr(0x27) + chr(0x2019)
-"""Apostrophes; kept inside a word (e.g. ``don't``), never a cut point."""
+_CJK_SENTENCE_ENDINGS: Final[str] = "。！？"  # noqa: RUF001 - fullwidth CJK marks are intentional
+"""Fullwidth marks that end a sentence even without trailing whitespace."""
+
+SENTENCE_ENDINGS: Final[str] = _LATIN_SENTENCE_ENDINGS + _CJK_SENTENCE_ENDINGS
+"""Sentence-ending marks (Latin plus fullwidth CJK); shared with linebreak."""
+
+ZERO_WIDTH: Final[str] = "\u200b"
+"""Zero-width space some subtitle sources emit after a sentence mark."""
+
+_APOSTROPHES: Final[str] = "'’"  # noqa: RUF001 - typographic apostrophe is intentional
+"""Apostrophes (ASCII and typographic) are excluded so ``don't`` stays whole."""
 
 
 def _punctuation_chars(categories: frozenset[str], *, exclude: str) -> str:
-    """Return every Unicode char in ``categories`` except those in ``exclude``.
+    """Return every Unicode character whose category is in ``categories``.
 
-    Uses ``unicodedata`` (stdlib) so the full punctuation set of every language
-    is covered without a hand-written list or a ``regex`` dependency.
+    Built from ``unicodedata`` so every script is covered without hand-written
+    per-language lists; ``exclude`` removes characters handled elsewhere.
     """
     excluded = set(exclude)
     return "".join(
@@ -43,233 +55,435 @@ def _punctuation_chars(categories: frozenset[str], *, exclude: str) -> str:
     )
 
 
-# Cut categories: Pd (dashes), Pe (closing), Pf (final quotes), Po (comma,
-# colon, CJK/Arabic marks...). Opening Ps/Pi are excluded - a phrase never
-# begins right after an opening bracket or quote.
 _PHRASE_CUT_CHARS: Final[str] = _punctuation_chars(
     frozenset({"Pd", "Pe", "Pf", "Po"}),
     exclude=SENTENCE_ENDINGS + _APOSTROPHES,
 )
-"""All Unicode phrase-cut punctuation, minus sentence endings and apostrophes."""
+"""Phrase separators of every script.
 
-_RE_PARAGRAPHS: Final[re.Pattern[str]] = re.compile(r"((?:\r?\n\s*){2,})")
+Opening marks (categories ``Ps``/``Pi``) are excluded because a phrase never
+starts right after an opening bracket or quote.
+"""
+
+_CLOSING_MARKS: Final[str] = _punctuation_chars(frozenset({"Pe", "Pf"}), exclude="")
+"""Closing brackets and final quotes of every script.
+
+A sentence never breaks right before one of these - the closer stays glued to
+the sentence it closes.
+"""
+
+# source: https://en.wiktionary.org/wiki/Category:English_abbreviations
+_ABBREVIATIONS_EN: Final[frozenset[str]] = frozenset(
+    [
+        "adm",
+        "al",
+        "approx",
+        "apr",
+        "apt",
+        "assn",
+        "assoc",
+        "aug",
+        "ave",
+        "blvd",
+        "bros",
+        "ca",
+        "capt",
+        "cf",
+        "ch",
+        "chap",
+        "co",
+        "col",
+        "comdr",
+        "corp",
+        "cpl",
+        "dec",
+        "dept",
+        "dist",
+        "div",
+        "dr",
+        "ed",
+        "eg",
+        "esp",
+        "est",
+        "etc",
+        "feb",
+        "fig",
+        "fr",
+        "gen",
+        "gov",
+        "govt",
+        "hon",
+        "ie",
+        "inc",
+        "incl",
+        "jan",
+        "jr",
+        "jul",
+        "jun",
+        "lieut",
+        "lt",
+        "ltd",
+        "maj",
+        "mar",
+        "max",
+        "messrs",
+        "min",
+        "misc",
+        "mount",
+        "mr",
+        "mrs",
+        "ms",
+        "mt",
+        "no",
+        "nov",
+        "obj",
+        "oct",
+        "orig",
+        "p",
+        "par",
+        "pp",
+        "prof",
+        "rd",
+        "ref",
+        "rev",
+        "sec",
+        "sep",
+        "sept",
+        "sgt",
+        "sir",
+        "sr",
+        "st",
+        "subj",
+        "transl",
+        "univ",
+        "viz",
+        "vol",
+        "vs",
+    ]
+)
+"""English abbreviations written with a trailing dot (support for the capitalised-word case)."""
+
+# source: https://pl.wikipedia.org/wiki/Wikipedia:Skróty
+_ABBREVIATIONS_PL: Final[frozenset[str]] = frozenset(
+    [
+        "adm",
+        "afryk",
+        "al",
+        "alb",
+        "alg",
+        "amer",
+        "argent",
+        "arm",
+        "art",
+        "austr",
+        "austral",
+        "azerb",
+        "azjat",
+        "b",
+        "bp",
+        "bryt",
+        "cd",
+        "cdn",
+        "cieśn",
+        "cs",
+        "cz",
+        "dn",
+        "doc",
+        "dol",
+        "dop",
+        "dr",
+        "duń",
+        "dyr",
+        "dzis",
+        "el",
+        "fl",
+        "gen",
+        "gm",
+        "godz",
+        "gr",
+        "hab",
+        "im",
+        "inst",
+        "inż",
+        "itd",
+        "itp",
+        "jask",
+        "jez",
+        "jw",
+        "k",
+        "kan",
+        "kl",
+        "kol",
+        "kpt",
+        "ks",
+        "l",
+        "lic",
+        "lp",
+        "m",
+        "marsz",
+        "mec",
+        "mgr",
+        "mies",
+        "mjr",
+        "mld",
+        "mln",
+        "nadl",
+        "nast",
+        "ndm",
+        "np",
+        "nr",
+        "o",
+        "ob",
+        "ok",
+        "os",
+        "pkt",
+        "pl",
+        "plut",
+        "płk",
+        "płw",
+        "pn",
+        "pol",
+        "por",
+        "pow",
+        "ppor",
+        "ppoż",
+        "prof",
+        "przeł",
+        "przyl",
+        "ps",
+        "pt",
+        "pust",
+        "pw",
+        "r",
+        "red",
+        "ryc",
+        "rys",
+        "rz",
+        "s",
+        "scs",
+        "sierż",
+        "ss",
+        "st",
+        "str",
+        "szt",
+        "św",
+        "tab",
+        "tel",
+        "tj",
+        "trb",
+        "trl",
+        "tys",
+        "tzn",
+        "tzw",
+        "ul",
+        "ur",
+        "viz",
+        "wdp",
+        "wg",
+        "wł",
+        "właśc",
+        "woj",
+        "wulg",
+        "ww",
+        "wyb",
+        "zam",
+        "zat",
+        "zb",
+        "zm",
+        "zob",
+    ]
+)
+"""Polish abbreviations written with a trailing dot (support for the capitalised-word case)."""
+
+_ABBREVIATIONS: Final[frozenset[str]] = _ABBREVIATIONS_EN | _ABBREVIATIONS_PL
+"""Support list for the ambiguous dot followed by a capitalised word."""
+
+_RE_PARAGRAPH_SEP: Final[re.Pattern[str]] = re.compile(r"((?:\r?\n\s*){2,})")
 """Blank-line paragraph separator."""
 
-_RE_SENTENCES: Final[re.Pattern[str]] = re.compile("([" + re.escape(SENTENCE_ENDINGS) + r"]+[\s" + ZERO_WIDTH + "]+)")
-"""Sentence-ending marks (any language) followed by whitespace."""
-
-_ABBREVIATIONS: Final[re.Pattern[str]] = re.compile(
-    r"\b(\w|[A-Z][a-z]|Assn|Ave|Capt|Col|Comdr|Corp|Cpl|Gen|Gov|Hon|Inc|Lieut|Ltd|Rev|Mr|Ms|Mrs|Dr|No|Univ"
-    r"|Jan|Feb|Mar|Apr|Aug|Sept|Oct|Nov|Dec|dept|ed|est|vol|vs"
-    r"|np|itd|itp|tzn|tj|prof|mgr|inż|ul|godz|str|nr|wg|św|ok|por|zob|red)\.\s+$"
+_RE_SENTENCE_SEP: Final[re.Pattern[str]] = re.compile(
+    "(["
+    + re.escape(_LATIN_SENTENCE_ENDINGS)
+    + "]+[\\s"
+    + ZERO_WIDTH
+    + "]+|["
+    + re.escape(_CJK_SENTENCE_ENDINGS)
+    + "]+(?!["
+    + re.escape(_CLOSING_MARKS)
+    + "])[\\s"
+    + ZERO_WIDTH
+    + "]*)"
 )
-"""Trailing abbreviations (English + Polish) whose dot is not a sentence end."""
+"""A run of sentence-ending marks, plus the whitespace that follows it.
 
-_RE_PHRASES: Final[re.Pattern[str]] = re.compile("([" + re.escape(_PHRASE_CUT_CHARS) + r"]+\s*)")
-"""Phrase separators: every Unicode dash/closing/final-quote/other-punctuation char."""
-_RE_WORDS: Final[re.Pattern[str]] = re.compile("([" + re.escape(_PHRASE_CUT_CHARS) + r"]|[\s\-/]+)")
-"""Word separators: phrase punctuation plus whitespace, hyphen and slash."""
-_RE_WORD_SYMBOL: Final[re.Pattern[str]] = re.compile("^[" + re.escape(_PHRASE_CUT_CHARS) + r"\s]+$")
-"""A separator token kept as its own word instead of being reattached."""
-ChunkMethod = Literal["char", "word"]
+Latin marks need trailing whitespace (``e.g.`` mid-word dots must not split);
+CJK fullwidth marks end a sentence even with no space, unless a closing quote
+or bracket follows.
+"""
 
+_RE_PHRASE_SEP: Final[re.Pattern[str]] = re.compile("([" + re.escape(_PHRASE_CUT_CHARS) + "]+\\s*)")
+"""A run of phrase-cut punctuation plus the whitespace that follows it."""
 
-class LatinPunctuator:
-    """Split Latin-script and CJK text on sentence, phrase and word boundaries."""
+_RE_WORD_SEP: Final[re.Pattern[str]] = re.compile(r"(\s+)")
+"""Whitespace between words."""
 
-    def get_paragraphs(self, text: str) -> list[str]:
-        """Split text into paragraphs on blank lines."""
-        return self._recombine(_RE_PARAGRAPHS.split(text))
-
-    def get_sentences(self, text: str) -> list[str]:
-        """Split text into sentences, keeping abbreviations (Mr./Dr./itd.) whole."""
-        return self._recombine(_RE_SENTENCES.split(text), _ABBREVIATIONS)
-
-    def get_phrases(self, sentence: str) -> list[str]:
-        """Split a sentence into phrases on commas, dashes, quotes and brackets."""
-        return self._recombine(_RE_PHRASES.split(sentence))
-
-    def get_words(self, phrase: str) -> list[str]:
-        """Split a phrase into words, keeping standalone symbols as their own token."""
-        tokens = _RE_WORDS.split(phrase.strip())
-        result: list[str] = []
-        index = 0
-        while index < len(tokens):
-            if tokens[index]:
-                result.append(tokens[index])
-            separator = tokens[index + 1] if index + 1 < len(tokens) else None
-            if separator is not None:
-                if _RE_WORD_SYMBOL.match(separator):
-                    result.append(separator)
-                elif result:
-                    result[-1] += separator
-            index += 2
-        return result
-
-    def _recombine(self, tokens: list[str], non_punc: re.Pattern[str] | None = None) -> list[str]:
-        """Rejoin split tokens with their separators; keep abbreviation dots attached.
-
-        Args:
-            tokens: Alternating content/separator tokens from ``re.split``.
-            non_punc: When the previous piece matches this pattern (an
-                abbreviation), the current piece is appended to it instead of
-                starting a new sentence.
-        """
-        result: list[str] = []
-        for index in range(0, len(tokens), 2):
-            part = tokens[index] + tokens[index + 1] if index + 1 < len(tokens) else tokens[index]
-            if not part:
-                continue
-            if non_punc is not None and result and non_punc.search(result[-1]):
-                result[-1] += part
-            else:
-                result.append(part)
-        return result
+_RE_DOTTED_TAIL: Final[re.Pattern[str]] = re.compile("(\\w+)\\.[\\s" + ZERO_WIDTH + "]*$")
+"""A word plus exactly one trailing dot; runs like ``...``/``?!`` never match."""
 
 
-class _Breaker:
-    """Shared greedy merge over punctuator pieces with a recursive fallback."""
+def _rejoin(tokens: list[str]) -> list[str]:
+    """Merge ``re.split`` capture output back into whole pieces.
 
-    def __init__(self, limit: int, punctuator: LatinPunctuator) -> None:
-        """Store the size budget and the punctuator used to split text."""
-        self.limit = limit
-        self.punctuator = punctuator
-
-    def _size(self, part: str) -> int:
-        """Return the cost of ``part`` in the breaker's unit."""
-        raise NotImplementedError
-
-    def _merge(
-        self,
-        parts: list[str],
-        break_part: Callable[[str], list[str]],
-        combine_threshold: int | None = None,
-    ) -> list[str]:
-        """Greedily group ``parts`` up to the budget, recursing on oversized ones."""
-        result: list[str] = []
-        group: list[str] = []
-        group_size = 0
-        threshold = combine_threshold or self.limit
-
-        def flush() -> None:
-            nonlocal group, group_size
-            if group:
-                result.append("".join(group))
-                group = []
-                group_size = 0
-
-        for part in parts:
-            size = self._size(part)
-            if size > self.limit:
-                flush()
-                result.extend(break_part(part))
-                continue
-            if group_size + size > threshold:
-                flush()
-            group.append(part)
-            group_size += size
-        flush()
-        return result
+    Each captured separator is reattached to the piece on its left, so
+    concatenating the result restores the input exactly.
+    """
+    pieces: list[str] = []
+    for index in range(0, len(tokens), 2):
+        separator = tokens[index + 1] if index + 1 < len(tokens) else ""
+        part = tokens[index] + separator
+        if part:
+            pieces.append(part)
+    return pieces
 
 
-class CharBreaker(_Breaker):
-    """Group punctuator pieces into chunks bounded by a character budget."""
-
-    def __init__(
-        self,
-        char_limit: int,
-        punctuator: LatinPunctuator,
-        paragraph_combine_threshold: int | None = None,
-    ) -> None:
-        """Store the character budget and optional paragraph combine threshold."""
-        super().__init__(char_limit, punctuator)
-        self.paragraph_combine_threshold = paragraph_combine_threshold
-
-    def _size(self, part: str) -> int:
-        """Return the character length of ``part``."""
-        return len(part)
-
-    def break_text(self, text: str) -> list[str]:
-        """Break text into chunks no larger than the character budget."""
-        return self._merge(self.punctuator.get_paragraphs(text), self.break_paragraph, self.paragraph_combine_threshold)
-
-    def break_paragraph(self, text: str) -> list[str]:
-        """Break one paragraph into sentence-bounded chunks."""
-        return self._merge(self.punctuator.get_sentences(text), self.break_sentence)
-
-    def break_sentence(self, sentence: str) -> list[str]:
-        """Break one sentence into phrase-bounded chunks."""
-        return self._merge(self.punctuator.get_phrases(sentence), self.break_phrase)
-
-    def break_phrase(self, phrase: str) -> list[str]:
-        """Break one phrase into word-bounded chunks."""
-        return self._merge(self.punctuator.get_words(phrase), self.break_word)
-
-    def break_word(self, word: str) -> list[str]:
-        """Hard-cut a single over-budget word into character slices."""
-        return [word[i : i + self.limit] for i in range(0, len(word), self.limit)] or [word]
+def split_paragraphs(text: str) -> list[str]:
+    """Split text into paragraphs on blank lines, separators kept attached."""
+    return _rejoin(_RE_PARAGRAPH_SEP.split(text))
 
 
-class WordBreaker(_Breaker):
-    """Group punctuator pieces into chunks bounded by a word-count budget."""
+def split_sentences(text: str) -> list[str]:
+    """Split text into sentences; an abbreviation dot does not end a sentence."""
+    tokens = _RE_SENTENCE_SEP.split(text)
+    pieces: list[str] = []
+    for index in range(0, len(tokens), 2):
+        separator = tokens[index + 1] if index + 1 < len(tokens) else ""
+        part = tokens[index] + separator
+        if not part:
+            continue
+        if pieces and _is_false_sentence_break(pieces[-1], part):
+            pieces[-1] += part
+        else:
+            pieces.append(part)
+    return pieces
 
-    def _size(self, part: str) -> int:
-        """Return the word count of ``part``."""
-        return len(self.punctuator.get_words(part))
 
-    def break_text(self, text: str) -> list[str]:
-        """Break text into chunks no larger than the word budget."""
-        return [phrase for sentence in self.punctuator.get_sentences(text) for phrase in self.break_sentence(sentence)]
+def split_phrases(sentence: str) -> list[str]:
+    """Split a sentence into phrases after commas, dashes and closing marks."""
+    return _rejoin(_RE_PHRASE_SEP.split(sentence))
 
-    def break_sentence(self, sentence: str) -> list[str]:
-        """Break one sentence into phrase-bounded chunks."""
-        return self._merge(self.punctuator.get_phrases(sentence), self.break_phrase)
 
-    def break_phrase(self, phrase: str) -> list[str]:
-        """Hard-split a single over-budget phrase into word slices."""
-        words = self.punctuator.get_words(phrase)
-        split_point = max(1, min(len(words) // 2, self.limit))
-        result: list[str] = []
-        while words:
-            result.append("".join(words[:split_point]))
-            words = words[split_point:]
-        return result
+def split_words(phrase: str) -> list[str]:
+    """Split a phrase into words, whitespace kept attached to the left word."""
+    return _rejoin(_RE_WORD_SEP.split(phrase))
+
+
+def _is_false_sentence_break(previous: str, following: str) -> bool:
+    """Return True when the dot ending ``previous`` is an abbreviation dot.
+
+    Language-independent heuristics run first: a lowercase continuation
+    (``np. taki``, ``ca. fünf``, ``w 1798. roku``) or a single-letter initial
+    (``A. Mickiewicz``) never ends a sentence. The abbreviation list only
+    decides the remaining case of a capitalised word after the dot.
+    """
+    tail = _RE_DOTTED_TAIL.search(previous)
+    if tail is None:
+        return False
+    first_letter = next((char for char in following if char.isalpha()), "")
+    if first_letter.islower():
+        return True
+    token = tail.group(1)
+    if len(token) == 1 and token.isalpha():
+        return True
+    return token.lower() in _ABBREVIATIONS
+
+
+_SPLITTERS: Final[tuple[Callable[[str], list[str]], ...]] = (
+    split_paragraphs,
+    split_sentences,
+    split_phrases,
+    split_words,
+)
+"""Boundary finders ordered from the widest cut to the narrowest."""
+
+
+def _break(text: str, limit: int, level: int = 0) -> list[str]:
+    """Break ``text`` into natural pieces of at most ``limit`` characters.
+
+    Tries each splitter in ``_SPLITTERS`` order and recurses one level deeper
+    only into pieces that are still oversized; a word longer than the limit is
+    hard-cut as the last resort.
+    """
+    if len(text) <= limit:
+        return [text]
+    if level == len(_SPLITTERS):
+        return [text[start : start + limit] for start in range(0, len(text), limit)]
+    pieces: list[str] = []
+    for part in _SPLITTERS[level](text):
+        if len(part) <= limit:
+            pieces.append(part)
+        else:
+            pieces.extend(_break(part, limit, level + 1))
+    return pieces
+
+
+def _pack(pieces: list[str], limit: int) -> list[str]:
+    """Greedily join consecutive pieces without exceeding ``limit`` characters."""
+    chunks: list[str] = []
+    group: list[str] = []
+    group_size = 0
+    for piece in pieces:
+        if group and group_size + len(piece) > limit:
+            chunks.append("".join(group))
+            group = []
+            group_size = 0
+        group.append(piece)
+        group_size += len(piece)
+    if group:
+        chunks.append("".join(group))
+    return chunks
 
 
 def phrase_cut_chars() -> str:
-    """Return every Unicode phrase-cut char (one source of truth for cutting).
-
-    Reused by :mod:`anishift.services.translation.linebreak` so both tools share
-    the same punctuation base instead of hand-written lists.
-    """
+    """Return every Unicode phrase-cut char; shared with ``linebreak`` as the one cutting base."""
     return _PHRASE_CUT_CHARS
 
 
-def chunk_text(text: str, *, method: ChunkMethod = "char", limit: int = DEFAULT_SENTENCE_LENGTH) -> list[str]:
-    """Split ``text`` into chunks no larger than ``limit`` in the chosen unit.
+def chunk_text(
+    text: str,
+    *,
+    char_limit: int = DEFAULT_CHAR_LIMIT,
+    chunk_limit: int = DEFAULT_CHUNK_LIMIT,
+) -> list[str]:
+    """Split ``text`` into translator-sized chunks at natural boundaries.
+
+    The text is first broken into pieces no longer than ``chunk_limit``
+    (paragraph -> sentence -> phrase -> word), then consecutive pieces are
+    packed back together up to ``char_limit``, so every chunk boundary falls
+    on a natural cut. A smaller ``chunk_limit`` packs chunks tighter.
 
     Args:
-        text: The full text to chunk.
-        method: ``char`` bounds chunks by characters, ``word`` by word count.
-        limit: Budget per chunk in the chosen unit.
+        text: Full text in any language.
+        char_limit: Maximum characters of one output chunk.
+        chunk_limit: Maximum characters of the pieces chunks are packed from.
 
     Returns:
-        Non-empty chunks in reading order.
+        Chunks in reading order; concatenating them restores ``text`` exactly.
     """
-    punctuator = LatinPunctuator()
-    if method == "word":
-        return WordBreaker(limit, punctuator).break_text(text)
-    return CharBreaker(limit, punctuator).break_text(text)
+    if not text:
+        return []
+    pieces = _break(text, min(chunk_limit, char_limit))
+    return _pack(pieces, char_limit)
 
 
 __all__ = [
-    "DEFAULT_SENTENCE_LENGTH",
+    "DEFAULT_CHAR_LIMIT",
+    "DEFAULT_CHUNK_LIMIT",
     "SENTENCE_ENDINGS",
     "ZERO_WIDTH",
-    "CharBreaker",
-    "ChunkMethod",
-    "LatinPunctuator",
-    "WordBreaker",
     "chunk_text",
     "phrase_cut_chars",
+    "split_paragraphs",
+    "split_phrases",
+    "split_sentences",
+    "split_words",
 ]

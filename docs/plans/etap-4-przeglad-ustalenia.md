@@ -16,8 +16,9 @@
 ## Ustalenia per plik
 
 ### chunking.py
-- **Czanker MA sens** (tnie tekst — używa go tłumaczenie do cięcia przed API + ścieżka txt do audiobooka). ZOSTAJE.
-- **PROBLEM: API czankera ma być w 100% POPRAWNE** — obecnie niedbałe:
+- **Czanker MA sens** (tnie tekst — używa go tłumaczenie do cięcia przed API + ścieżka txt do audiobooka). ZOSTAJE jako funkcja, ale...
+- **⚠️ DECYZJA USERA: chunker NAPISAĆ OD ZERA, LEPSZY ALGORYTM.** NIE "zostawić jak jest" (plan `etap-4-chunker-linebreak.md:176` błędnie mówi "bez zmian algorytmu" — to SPRZECZNE z wolą usera). API czankera ma być w 100% POPRAWNE — obecny algorytm jest niedbały, trzeba przepisać cały od nowa z lepszym algorytmem, nie łatać. Zachować SENS (tnie txt hierarchicznie: paragraf→zdanie→fraza→słowo, skróty, Unicode, chunk_limit=250/sentence_length=750, wpięty w txt→SRT), ale KOD napisać od zera porządnie wg python instructions.
+- **PROBLEM: API czankera ma być w 100% POPRAWNE** — obecnie niedbałe (dlatego OD ZERA):
   - martwa maszyneria (chunk_text/CharBreaker/WordBreaker nie wpięte w produkcję — do wpięcia w txt→SRT)
   - `_ABBREVIATIONS` legacy z angielskiego (Assn, Ave, Comdr...) + polskie niekompletne
   - **`chunk_limit=250` ZNIKNĄŁ z kodu — subagent usunął jako "martwą stałą" NIE sprawdzając że PLAN go wymaga** (etap-4-wymagania.md linie 53, 135, 164, 256). To 2. domyślny parametr cięcia txt (750=duże kawałki zdań, 250=mniejsze pod-kawałki). MUSI WRÓCIĆ przy naprawie chunkera + wpięciu w txt→SRT. Dowód że porządki wyrzuciły część specyfikacji.

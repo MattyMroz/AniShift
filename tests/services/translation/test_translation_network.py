@@ -8,7 +8,7 @@ from anishift.services.subtitles import (
     split_subtitles,
     subtitle_kind,
     visible_text,
-    write_translated_displayed,
+    write_translated,
 )
 from anishift.services.subtitles.types import SpokenLine
 from anishift.services.translation.config import TranslationConfig
@@ -95,12 +95,11 @@ def test_google_real_ass_displayed_round_trip_to_disk(tmp_path: Path) -> None:
     split = split_subtitles(load_subtitles(ass), kind=kind)
 
     dialogue = [event for event in split.subs.events if event.type == "Dialogue"]
-    displayed_source = [
-        (event, visible_text(event.text))
+    displayed_texts = [
+        visible_text(event.text)
         for event, decision in zip(dialogue, split.decisions, strict=True)
         if decision == "displayed"
     ]
-    displayed_texts = [text for _, text in displayed_source]
 
     service = TranslationService(TranslationConfig(engine="google"))
     result = service.translate_file([], displayed_texts, target_lang="pl")
@@ -108,14 +107,14 @@ def test_google_real_ass_displayed_round_trip_to_disk(tmp_path: Path) -> None:
     assert len(result.displayed) == split.stats.displayed_events
 
     verses = [split_line(text) for text in result.displayed]
-    dest = write_translated_displayed(split, verses, tmp_path / "out.pl.ass")
+    dest = write_translated(split, verses, {}, tmp_path / "out.pl.ass")
     assert dest is not None
 
     written = load_subtitles(dest)
-    written_displayed = [event for event in written.events if event.type == "Dialogue"]
-    assert len(written_displayed) == split.stats.displayed_events
+    written_dialogue = [event for event in written.events if event.type == "Dialogue"]
+    assert len(written_dialogue) == split.stats.total_events
     assert written.styles.keys() == split.subs.styles.keys()
-    for (source_event, _), written_event in zip(displayed_source, written_displayed, strict=True):
+    for source_event, written_event in zip(dialogue, written_dialogue, strict=True):
         assert written_event.start == source_event.start
         assert written_event.end == source_event.end
         assert written_event.style == source_event.style

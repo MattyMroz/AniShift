@@ -1,6 +1,10 @@
 import asyncio
 from collections.abc import Coroutine
+from types import SimpleNamespace
 from typing import Any
+
+import httpx
+import pytest
 
 from anishift.services.translation.config import TranslationConfig
 from anishift.services.translation.engines.google._batching import translate_lines
@@ -63,3 +67,56 @@ def test_facade_built_google_uses_engine_char_limit_not_domain_default() -> None
     engine = GoogleService(TranslationConfig(engine="google"))
     assert engine._config.max_chars_per_request == MAX_CHARS_PER_REQUEST
     assert engine._config.max_chars_per_request == 15000
+
+
+def test_retry_retries_transient_http_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("anishift.services.translation.engines.google.service.RETRY_BACKOFF_BASE_S", 0.0)
+
+    class _FlakyClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def translate(self, text: str, dest: str) -> SimpleNamespace:
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.ConnectError("boom")
+            return SimpleNamespace(text=f"PL-{text}")
+
+    engine = GoogleService(TranslationConfig(engine="google", max_retries=2))
+    client = _FlakyClient()
+    assert asyncio.run(engine._call_with_retry(client, "hi", dest="pl")) == "PL-hi"
+    assert client.calls == 2
+
+
+def test_retry_raises_non_transient_immediately() -> None:
+    class _BrokenClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def translate(self, text: str, dest: str) -> SimpleNamespace:
+            self.calls += 1
+            raise ValueError("parse failure")
+
+    engine = GoogleService(TranslationConfig(engine="google", max_retries=3))
+    client = _BrokenClient()
+    with pytest.raises(ValueError, match="parse failure"):
+        asyncio.run(engine._call_with_retry(client, "hi", dest="pl"))
+    assert client.calls == 1
+
+
+def test_retry_exhausts_attempts_then_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("anishift.services.translation.engines.google.service.RETRY_BACKOFF_BASE_S", 0.0)
+
+    class _DownClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def translate(self, text: str, dest: str) -> SimpleNamespace:
+            self.calls += 1
+            raise httpx.ConnectTimeout("down")
+
+    engine = GoogleService(TranslationConfig(engine="google", max_retries=2))
+    client = _DownClient()
+    with pytest.raises(httpx.ConnectTimeout):
+        asyncio.run(engine._call_with_retry(client, "hi", dest="pl"))
+    assert client.calls == 3

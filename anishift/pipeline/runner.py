@@ -18,15 +18,16 @@ from anishift.services.extraction import extract_tracks, identify
 from anishift.services.extraction.tracks import select_tracks
 from anishift.services.extraction.types import MediaInfo, TrackSelection
 from anishift.services.subtitles import (
+    SpokenLine,
     load_subtitles,
     preview_styles,
+    read_txt,
     split_subtitles,
     spoken_to_srt,
     subtitle_kind,
-    txt_to_spoken,
     visible_text,
     write_displayed,
-    write_translated_displayed,
+    write_translated,
 )
 from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
 from anishift.utils.safe_fs import safe_rmtree
@@ -225,8 +226,8 @@ def _process_mkv(  # noqa: PLR0911, PLR0913 - orchestration entry: each dependen
         translated_path = None
         if _should_translate(split, selection.already_polish):
             result = _translate_split(split, translation, cancel)
-            if result.is_success and result.displayed:
-                translated_path = _write_translated(split, result.displayed, workspace_root / f"{mkv.stem}.pl.{kind}")
+            if result.is_success:
+                translated_path = _write_translated(split, result, workspace_root / f"{mkv.stem}.pl.{kind}")
         return FileOutcome(
             source=mkv,
             status="done",
@@ -291,12 +292,17 @@ def _displayed_visible_texts(split: SubtitleSplit) -> list[str]:
     ]
 
 
-def _write_translated(split: SubtitleSplit, displayed: tuple[str, ...], dest: Path) -> Path | None:
-    """Re-split translated displayed lines into verses and write the ASS/SRT."""
+def _write_translated(split: SubtitleSplit, result: FileTranslation, dest: Path) -> Path | None:
+    """Write the whole translated ASS/SRT: every event kept, text replaced.
+
+    Both streams are re-split into on-screen verses for the file copy only; the
+    TTS stream (``result.spoken``) itself stays unbroken.
+    """
     from anishift.services.translation.linebreak import split_line  # noqa: PLC0415 - lazy: keep engines off import path
 
-    verses = [split_line(text) for text in displayed]
-    return write_translated_displayed(split, verses, dest)
+    displayed_verses = [split_line(text) for text in result.displayed]
+    spoken_verses = {(line.style, line.source_text): split_line(line.text) for line in result.spoken}
+    return write_translated(split, displayed_verses, spoken_verses, dest)
 
 
 def _translate_config(translation: TranslationSettings) -> TranslationConfig:
@@ -329,12 +335,20 @@ def _translate_split(
     )
 
 
+def _txt_spoken_lines(text: str) -> tuple[SpokenLine, ...]:
+    """Chunk plain text hierarchically and wrap each chunk as a narrator line."""
+    from anishift.services.translation.chunking import chunk_text  # noqa: PLC0415 - lazy: keep engines off import path
+
+    flattened = (" ".join(chunk.split()) for chunk in chunk_text(text))
+    return tuple(SpokenLine(start=0, end=0, text=chunk, style="") for chunk in flattened if chunk)
+
+
 def _process_txt(path: Path, translation: TranslationSettings) -> FileOutcome:
     """Convert one text input into narrator lines and translate them."""
     from anishift.services.translation import TranslationService  # noqa: PLC0415 - lazy: keep engines off import path
 
     try:
-        spoken = txt_to_spoken(path)
+        spoken = _txt_spoken_lines(read_txt(path))
         if not spoken:
             return FileOutcome(path, "done")
         service = TranslationService(_translate_config(translation), fallback_chain=translation.fallback_chain)

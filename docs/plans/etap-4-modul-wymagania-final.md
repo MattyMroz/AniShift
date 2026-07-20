@@ -65,10 +65,12 @@ MKV → [etap 3: identify → select → extract → split → write displayed(o
 ### B.2 Ścieżka TXT (mini-ficzer audiobook)
 
 ```
-TXT → txt_to_spoken (czankowanie po zdaniach/słowach, chunk_limit)
+TXT → chunk_text(text, limit)  (hierarchiczne: paragraf→zdanie→fraza→słowo, skróty PL+EN)
+    → SpokenLine per kawałek
     → TranslationService.translate_file(spoken, displayed=[])
-    → spoken_to_srt(result.spoken, <stem>.pl.srt)   ← JUŻ DZIAŁA
+    → spoken_to_srt(result.spoken, <stem>.pl.srt)
 ```
+(Chunker `chunk_text` wpięty jako konsument — patrz R6. Zapis SRT `spoken_to_srt` już działa.)
 
 ### B.3 Warianty eksportu (granica z etapem 7 — udokumentowane, NIE implementowane w etapie 4)
 
@@ -95,12 +97,15 @@ Numeracja spójna z poprzednimi rundami (R = funkcjonalne). Stan każdego: ✔ z
 - **R12 ✔ Błąd jednego pliku nie ubija reszty** — `_process_mkv` łapie precyzyjnie, zwraca failed outcome.
 
 ### Zapis wyniku — 🔧 SEDNO NIEZROBIONE
-- **R14 🔧 (S1) Zapis przetłumaczonego pliku napisów.** Po tłumaczeniu displayed MUSI trafić z powrotem do pliku napisów tego samego formatu:
-  - iteruj zdarzenia displayed pliku, wstrzyknij przetłumaczony `visible_text` przez `replace_visible_text` (zachowaj `{...}` tagi, style, timingi zdarzenia),
-  - **zachowaj strukturę pliku jak etap 3** (`write_displayed` wzorzec: kopia `info`/`styles`/eventów, tylko tekst dialogu podmieniony),
+- **R14 🔧 (S1) Zapis przetłumaczonego pliku napisów — WARIANT CAŁOŚCIOWY (decyzja usera, nadpisuje wcześniejszy lektorski).** Po tłumaczeniu CAŁY plik napisów wraca na dysk z podmienionym tekstem: **WSZYSTKIE zdarzenia Dialogue zachowane** (spoken + displayed), nic nie wypada. To całościowy plik do oglądania z polskimi napisami — user otwiera go i na oko widzi, że wszystko się przetłumaczyło, a struktura została nietknięta. (Wariant lektorski 790→478 i wariant spoken = etap 7, NIE etap 4.)
+  - iteruj WSZYSTKIE zdarzenia Dialogue, wstrzyknij przetłumaczony tekst przez `replace_visible_text` (zachowaj `{...}` tagi, style, timingi zdarzenia):
+    - **displayed** → przetłumaczony `visible_text`, re-podzielony na wersy (linebreak, format-aware `\N`/`\n`),
+    - **spoken** → przetłumaczony tekst, TEŻ re-podzielony na wersy (idzie do PLIKU = do oglądania, więc łamiemy tak samo jak displayed; reguła usera: co idzie do ASS/SRT jest łamane, co idzie do TTS nie jest). Tor TTS (`FileTranslation.spoken` → etap 6) zostaje BEZ łamania — łamanie dotyczy tylko kopii wstrzykiwanej do pliku.
+    - **mapowanie spoken → event:** `FileTranslation.spoken` to `TranslatedLine` per zwinięta FBF-linia (klucz `(style, source_text)`), nie per event. Buduj mapę `(style, visible_text(event)) → translated` i podmieniaj tekst w każdym spoken-evencie po jego widocznym tekście (odwrotność `collapse_fbf`).
+  - **zachowaj strukturę pliku jak etap 3** (`write_displayed` wzorzec: kopia `info`/`styles`/eventów, wszystkie eventy w tej samej kolejności, tylko tekst podmieniony),
   - zapis atomowy (`.tmp` + `replace`) do `<stem>.pl.<kind>`,
   - format wyjścia = format wejścia (ASS→ASS, SRT→SRT).
-  - **Test bitowy** (patrz §F): wczytaj realny ASS → przetłumacz → zapisz → plik identyczny z oryginałem POZA tekstem dialogu (liczba eventów, style, timingi, tagi bez zmian).
+  - **Test bitowy** (patrz §F): wczytaj realny ASS → przetłumacz przez FAKE engine → zapisz → plik ma **TĘ SAMĄ liczbę zdarzeń** (790→790), identyczny z oryginałem POZA tekstem (style, timingi, tagi `{...}` bez zmian; tylko widoczny tekst po polsku).
 
 ### Podział linii — 🔧 częściowo
 - **R15 🔧 Format-aware line break.** Displayed re-dzielony na wersy joinowany separatorem zależnym od formatu: `\N` dla ASS, `\n` dla SRT. Obecnie zahardkodowany `\\N` w `service.py` (linia 33/199) — **zepsuty dla SRT** (wstawia dosłowne „\N"). Fasada / warstwa zapisu musi znać `kind`.
@@ -117,7 +122,7 @@ Numeracja spójna z poprzednimi rundami (R = funkcjonalne). Stan każdego: ✔ z
 - **R8a ✔ Limit ponowień konfigurowalny** — `translation_max_retries` w settings, range 0..10.
 
 ### TXT / chunker — 🔧
-- **R6 🔧 chunk_limit=250 + chunker.** `chunking.py` (`LatinPunctuator`/`CharBreaker`/`WordBreaker`/`chunk_text`) jest MARTWY produkcyjnie — txt path używa `txt_to_spoken` (chunk po zdaniach, max 750). Z `chunking.py` żywe są tylko `ZERO_WIDTH`, `SENTENCE_ENDINGS`, `phrase_cut_chars` (import przez google/linebreak). `chunk_limit=250` (z planu) NIE ISTNIEJE. **Rozstrzygnięcie — patrz §D (co usunąć).**
+- **R6 🔧 chunker `chunk_text` ZOSTAJE i JEST WPIĘTY (decyzja usera — NIE usuwać jako "martwy").** `chunking.py` (`LatinPunctuator`/`CharBreaker`/`WordBreaker`/`chunk_text`) to dojrzała, hierarchiczna maszyneria (paragraf→zdanie→fraza→słowo, rekurencja, skróty PL+EN, pełny Unicode). Była bez konsumenta produkcyjnego — **naprawą jest DAĆ JEJ KONSUMENTA, nie skasować.** `_process_txt` ma używać `chunk_text` (ścieżka txt→SRT wg `etap-4-chunker-linebreak.md` §2/§5): `txt → chunk_text(limit) → SpokenLine per kawałek → tłumaczenie → spoken_to_srt`. Chunker daje mądrzejsze cięcie niż `txt_to_spoken` (skróty typu `Dr.`/`itd.` nie kończą zdania, cięcie na frazach/przecinkach przy długich zdaniach). **Zalecenie usera jest nadrzędne nad wcześniejszym "usuń martwe".**
 
 ### Progres, silniki
 - **R11 ✔ Silniki google, deepl (+ llm szkielet)** — wszystkie w rejestrze. Google darmowy (`is_available`=True), DeepL `is_available`=`bool(api_key)`, llm guard w `create_engine`.
@@ -140,7 +145,7 @@ Zasada simple krok 2: domyślnie kasuj. Każda pozycja z uzasadnieniem.
 | Rzecz | Decyzja | Uzasadnienie |
 |---|---|---|
 | **`BatchedLine.detected_lang`** (produkowane w google `_batching`, deepl service, typie) | **USUŃ** kanał | Nigdy nie czytane (S3 zweryfikowane — grep: tylko zapis, zero odczytu poza testami). Martwy kanał danych. AniShift zawsze tłumaczy na `pl` z `auto` — wykryty język źródła do niczego nie służy. Usuń pole z `BatchedLine`, przestań je produkować w silnikach. |
-| **`chunk_text` / `CharBreaker` / `WordBreaker` / `WordBreaker`+`_Breaker`** w `chunking.py` | **USUŃ** martwą maszynerię | Nieużywane produkcyjnie (txt path = `txt_to_spoken`). ~200 linii bez konsumenta. ZOSTAW tylko to co żywe: `ZERO_WIDTH`, `SENTENCE_ENDINGS`, `phrase_cut_chars` (używane przez google/linebreak). Plik `chunking.py` skurczy się do współdzielonych stałych/funkcji punktacji Unicode. `chunk_limit=250` — NIE dodawaj (nie ma konsumenta; `txt_to_spoken` ma własny `max_chars=750`; dodanie 250 = wymóg bez odbiorcy). **⚠️ Świadome odstępstwo od `chunk_limit=250` z planu:** wymóg zakładał pełny chunker w txt path; realnie txt path go nie potrzebuje (simple krok 1: kwestionuj wymóg — 250 nie ma konsumenta). Jeśli user upiera się przy 250 → wraca jako `txt_to_spoken(max_chars=250)` parametr, ale bez maszynerii CharBreaker. |
+| **`chunk_text` / `CharBreaker` / `WordBreaker` / `_Breaker`** w `chunking.py` | **ZOSTAJE — WEPNIJ** (decyzja usera, NIE usuwać) | Dojrzała hierarchiczna maszyneria (paragraf→zdanie→fraza→słowo, rekurencja, skróty PL+EN, Unicode). Była bez konsumenta produkcyjnego — **naprawą jest DAĆ JEJ KONSUMENTA, nie skasować.** `_process_txt` używa `chunk_text` (ścieżka txt→SRT). Patrz R6. **To zalecenie usera; wcześniejsze "usuń martwe" było błędem — subagenci wyrzucali chunker uznając go za martwy, i TO było źródłem chaosu, nie sprzątaniem.** `chunk_limit` = parametr `limit` w `chunk_text` (user steruje długością kawałka). |
 | **`_ABBREVIATIONS` legacy angielskie** (Assn, Ave, Capt, Comdr, Corp, Cpl, Gov, Hon, Inc, Lieut, Ltd, Rev, Univ, Jan..Dec, dept, ed, est, vol, vs) w `chunking.py` | **USUŃ** angielskie, jeśli `get_sentences` zostaje | `get_sentences` należy do `LatinPunctuator` — jeśli usuwamy `CharBreaker`/`chunk_text`, `LatinPunctuator.get_sentences` też traci konsumenta produkcyjnego. Wtedy CAŁA klasa `LatinPunctuator` do usunięcia (razem z `_ABBREVIATIONS`, regexami zdań/paragrafów). Zostaje tylko `_PHRASE_CUT_CHARS`/`phrase_cut_chars()` + `SENTENCE_ENDINGS` + `ZERO_WIDTH` (używane). To najczystsze cięcie. |
 | **`_APOSTROPHES`** w `chunking.py` | zostaje jeśli używane w `_PHRASE_CUT_CHARS` exclude | Używane w `_punctuation_chars(exclude=SENTENCE_ENDINGS+_APOSTROPHES)` — żywe (chroni `don't`). Zostaw. |
 | **`max_chars_per_request` w `TranslationConfig`** | **USUŃ** z domenowego configu | Źródło buga 4500. Limit znaków należy do SILNIKA (SSOT w `google/constants.py`=15000, `deepl/constants.py`=128KiB). Domenowy config nie powinien go nieść ani zaniżać. Usuń pole; silnik używa swojej stałej. (`DEFAULT_MAX_CHARS` w domenowym `constants.py` też usuń jeśli osierocony.) |
@@ -224,5 +229,5 @@ Zasada: **testy bez docstringów/komentarzy** (nazwy + asercje samoopisujące; `
 4. **R6b/MAX_LINES:** `split_line` rekurencja + egzekwowanie limitu + MAX_LINES.
 5. **R5 DeepL batch_size:** respektuj limit linii obok bajtów.
 6. **R8/N8 retry:** Google używa wspólnego `call_with_retry`, precyzyjny wyjątek.
-7. **S3 martwe:** usuń `detected_lang`; usuń martwą maszynerię chunkera + angielskie `_ABBREVIATIONS`.
+7. **S3 martwe:** usuń `detected_lang` (prawdziwie martwy kanał — nigdy nie czytany). **Chunker `chunk_text` NIE jest martwy do usunięcia — ZOSTAJE i zostaje wpięty w `_process_txt` (R6, decyzja usera).** `_ABBREVIATIONS` zostają (używane przez `chunk_text.get_sentences`).
 8. **R7 concurrency:** dodaj parametr `translation_concurrency` do settings (realne zrównoleglanie batchy odłożone — bezpieczeństwo API).

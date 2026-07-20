@@ -10,7 +10,7 @@ MAX_CHARS_PER_REQUEST: Final[int] = 15000
 """Google Translate hard limit per request (~15000 chars); SSOT of this limit."""
 
 RETRY_BACKOFF_BASE_S: Final[float] = 2.0
-"""Base seconds for capped linear backoff on transient errors."""
+"""Base seconds for the shared exponential backoff on transient errors."""
 
 RETRY_MAX_WAIT_S: Final[float] = 5.0
 """Cap on a single backoff wait."""

@@ -173,8 +173,7 @@ Warianty eksportu = granica etapu 7 (udokumentowane, bez composition w etapie 4)
 
 ## 7. Kolejność realizacji (z weryfikacją)
 
-1. `chunking.py` — bez zmian algorytmu, tylko upewnij że eksportuje bazę fraz →
-   testy chunking zielone.
+1. `chunking.py` — **PRZEPISAĆ OD ZERA** wg §8 (NIE "bez zmian algorytmu" — ta wersja była błędna, sprzeczna z decyzją usera). Eksportuje bazę fraz + realny skrypt testowy w `scripts/`.
 2. `linebreak.py` OD ZERA — kompletne listy, wielowyrazowe, wspólna baza →
    `test_translation_linebreak` (realne PL, ≤max, ≤2 wersy, bez sierot, nie tnie
    zrostów, wielowyrazowe całe).
@@ -185,3 +184,45 @@ Warianty eksportu = granica etapu 7 (udokumentowane, bez composition w etapie 4)
 7. `subtitles/srt.py` + `_process_txt` → `test_translation_txt_srt` end-to-end.
 8. `test_translation_network.py` — real ASS smoke.
 9. Bramki: ruff check + format --check + mypy + pytest — wszystko zielone.
+
+---
+
+## 8. chunking.py — PRZEPISANIE OD ZERA (decyzja usera, spec wiążący)
+
+> Obecny `chunking.py` DZIAŁA i jest wpięty (txt→SRT), ale user uznał kod za niedbały i każe **napisać go OD ZERA porządnie** (nie łatać). Zachować SENS (hierarchiczne cięcie txt na kawałki ≤limit), poprawić KOD i podejście. Poniżej wiążący kontrakt.
+
+### 8.1 Wymóg nadrzędny — wielojęzyczność po znakach
+Chunker tnie tekst w **dowolnym języku** (napisy źródłowe bywają EN/JP/inne). Podział opiera się na **znakach ASCII + Unicode**, nie na listach słów per język. `_PHRASE_CUT_CHARS` (kategorie Unicode `Pd/Pe/Pf/Po` przez `unicodedata`) to DOBRE podejście — zostaje jako fundament cięcia fraz. **Zakaz mieszania "wyjątków per język"** wpisanych na sztywno w jedną regexową listę jak obecne `_ABBREVIATIONS` (PL+EN sklejone) — to jest to, co user nazwał niedbałym.
+
+### 8.2 Twardy wymóg — DWA limity
+- **`char_limit = 750`** — duże kawałki (grupowanie zdań).
+- **`chunk_limit = 250`** — mniejsze pod-kawałki (drugi domyślny parametr cięcia).
+- **OBA parametry MUSZĄ istnieć** (subagent wcześniej usunął `chunk_limit=250` jako "martwą stałą" — to był błąd, plan go wymagał). Sterowalne argumentem funkcji. Nazwy do ustalenia przez Fable, ale semantyka: 750=domyślny duży, 250=mniejszy pod-podział.
+
+### 8.3 Skróty (Mr./Dr./np./itd.) — problem językowy, Fable dobiera rozwiązanie
+Skróty z natury zależą od języka (kropka po "Dr" wygląda jak koniec zdania). Obecna ręczna lista PL+EN jest zła (mieszana, niekompletna). **Realna liczba skrótów: PL ~40-60, EN ~30-50** (skończone, rozsądne). Profesjonalny NLP (NLTK Punkt) NIE trzyma ręcznych list per język — używa **heurystyki** ("kropka + następne słowo z małej litery = środek zdania") + małej listy wsparcia.
+
+**Fable dobiera podejście** (user: "oczywiście Fable ma to zrobić"), spełniając wymóg wielojęzyczności. Rekomendowana hybryda:
+1. heurystyka bazowa (wielojęzyczna, bez list): kropka + następne słowo małą literą → nie koniec zdania,
+2. mała lista wsparcia najczęstszych skrótów PL+EN (te ~40+40, dla przypadków z wielką literą po skrócie, np. `Dr. Smith`).
+
+Jeśli Fable wybierze pełne listy — pobrać z Wikisłownika jak spójniki w `linebreak.py` (`# source:` URL, alfabetycznie, single + multiword). **NIE zostawiać legacy angielskich skrótów sklejonych z polskimi w jednym regexie.** Decyzja + uzasadnienie w raporcie.
+
+### 8.4 Jakość kodu (python instructions, skill `simple`)
+- **Znaki wprost, nie przez kody** — `"…"` zamiast `chr(0x2026)` tam gdzie znak jest drukowalny i czytelny (SSOT stałych OK, ale nie zaciemniać).
+- **Komentarze WHY, nie WHAT** — usunąć `# Cut categories: Pd (dashes)...` (opisuje co widać w kodzie).
+- **`_APOSTROPHES`** — user: "dodane bez zamówienia, do przemyślenia". Zostaw TYLKO jeśli realnie chroni `don't`/apostrofy w cięciu; inaczej usuń.
+- Docstringi Google-style dla publicznych funkcji + każdej `Final`. Guard clauses, ≤2 poziomy zagnieżdżeń, `dataclass(slots=True)` gdzie pasuje.
+- Zachować DOBRE: `frozenset({Pd,Pe,Pf,Po})` + generator Unicode; hierarchiczna struktura cięcia (paragraf→zdanie→fraza→słowo, rekurencja na nadwymiarowych).
+
+### 8.5 Realny skrypt testowy — WYMÓG USERA
+User chce **zobaczyć na własne oczy** jak chunker tnie, w terminalu (nie tylko testy jednostkowe w tle). Utwórz `scripts/` skrypt (np. `scripts/chunk_demo.py`) uruchamiany `uv run python scripts/chunk_demo.py`:
+- bierze przykładowe teksty **PL, EN i inny język** (np. JP lub DE),
+- pokazuje jak chunker tnie je na kawałki przy `char_limit=750` i `chunk_limit=250`,
+- drukuje czytelnie: wejście → lista kawałków z długościami, żeby user zobaczył granice cięcia i że nic nie ginie.
+
+### 8.6 Weryfikacja (kryteria sukcesu)
+- Testy jednostkowe: żaden kawałek > limit; nic nie ginie (suma tekstu = wejście bez zmian poza normalizacją spacji); skróty nie tną zdania (`Dr. Smith` = jedno zdanie); cięcie na znakach Unicode działa dla nie-łacińskich.
+- **Skrypt w `scripts/` odpalony w terminalu przez usera** — widzi realne cięcie.
+- Bramki: ruff + format + mypy + pytest zielone.
+- Chunker nadal wpięty w `_process_txt` (txt→SRT), nie zepsuty.
