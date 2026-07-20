@@ -65,8 +65,8 @@ class LogViewer:
             logger_name = log.get("logger", "")
             message = log.get("message", "")
 
-            highlighted = auto_highlight_text(message)
-            msg = Text.from_markup(highlighted, style=f"bold italic {color}")
+            msg = auto_highlight_text(message)
+            msg.style = f"bold italic {color}"
 
             table.add_row(
                 Text(timestamp, style=f"{color} italic"),
@@ -128,8 +128,8 @@ class LogViewer:
             t.append(logger_name, style=f"{color} italic")
             t.append(sep, style="white")
 
-        highlighted = auto_highlight_text(message)
-        msg = Text.from_markup(highlighted, style=f"bold italic {color}")
+        msg = auto_highlight_text(message)
+        msg.style = f"bold italic {color}"
         t.append_text(msg)
 
         if show_context and "context" in log:

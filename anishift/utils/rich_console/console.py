@@ -1,12 +1,13 @@
 """Preconfigured Rich console with custom theme and auto-highlighting.
 
-Applies the 150+ style RICH_THEME, auto-highlights URLs/paths/numbers,
-normalizes decimal commas, and escapes literal brackets.
+Applies the 150+ style RICH_THEME, auto-highlights URLs/paths/numbers as
+``Text`` spans (content is never re-parsed as markup, so brackets and
+backslashes in paths survive verbatim), and normalizes decimal commas.
 
 Usage:
     >>> from rich_console import console
     >>> console.print("Value: 123")  # 123 is auto-colored ruby_red
-    >>> console.print("Loaded /home/user/model in 1.33s")  # path + number+unit
+    >>> console.print(r"Saved C:\\out\\[draft] final.ass")  # path kept 1:1
     >>> console.print("Visit https://example.com")  # URL is blue
 """
 
@@ -17,6 +18,7 @@ import re
 from typing import TYPE_CHECKING, Final
 
 from rich.console import Console
+from rich.text import Text
 
 from .theme import RICH_THEME
 
@@ -33,20 +35,44 @@ __all__ = [
 
 _PATH_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:"
-    r"(?:[A-Za-z]:[/\\]|/)[\w.@+-]+(?:[/\\][\w.@+-]+)+[/\\]?"
+    r"[A-Za-z]:[/\\][\w.@+(),'’ \[\]-]+"
+    r"(?:[/\\][\w.@+(),'’ \[\]-]+)*[/\\]?"
+    r"|"
+    r"/[\w.@+(),'’ \[\]-]+(?:[/\\][\w.@+(),'’ \[\]-]+)+[/\\]?"
+    r"|"
+    r"[\w.@+-]+(?:[/\\][\w.@+-]+)*[/\\]\[[\w.@+(),'’ \[\]/\\-]*\.\w{1,32}"
     r"|"
     r"[\w.@+-]+(?:[/\\][\w.@+-]+){2,}[/\\]?"
     r"|"
     r"[\w.@+-]+/[\w.@+-]+\.[\w]{1,32}"
     r")"
 )
-"""Matches absolute (2+ segments), relative 3+ segment, or 2-segment-with-extension paths."""
+"""Match absolute paths, relative paths with a bracketed segment and an
+extension, relative 3+ segments, or 2 segments with an extension."""
+
+_HIGHLIGHT_STYLES: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
+    (re.compile(r"https?://[^\s]+"), "repr.url"),
+    (_PATH_RE, "repr.path"),
+    (re.compile(r"\b(?:true|True|TRUE)\b"), "repr.bool_true"),
+    (re.compile(r"\b(?:false|False|FALSE)\b"), "repr.bool_false"),
+    (re.compile(r"\b(?:None|null|NULL|nil)\b"), "repr.none"),
+    (re.compile(r"\bv\d+(?:\.\d+)+(?:[+\-][\w.]+)?"), "repr.number"),
+    (re.compile(r"\b\d+\.\d+\.\d+(?:\.\d+)*(?:[+\-][\w.]+)?"), "repr.number"),
+    (
+        re.compile(r"\b\d+(?:\.\d+)?\s?(?:ms|MB|GB|TB|KB|kB|px|dp|pt|em|rem|fps|Hz|kHz|min|sec|s)\b"),
+        "repr.number",
+    ),
+    (re.compile(r"\b\d+/\d+\b"), "repr.number"),
+    (re.compile(r"\b\d+\.?\d*\b"), "repr.number"),
+)
+"""Priority-ordered (pattern, style) pairs: URLs, paths, booleans, none,
+versions, number+unit, fractions, numbers. Earlier matches claim their span."""
 
 
-def auto_highlight_text(text: str) -> str:
-    """Add Rich markup to common patterns in log/console text.
+def auto_highlight_text(text: str) -> Text:
+    """Highlight common log patterns in text as a styled ``Text``.
 
-    Patterns colored (in matching order):
+    Patterns colored (in priority order):
 
     1. URLs (``https://...``) → ``repr.url`` (blue underline)
     2. File paths (``/foo/bar``, ``dir/sub/file.ext``) → ``repr.path`` (ruby_red)
@@ -57,104 +83,33 @@ def auto_highlight_text(text: str) -> str:
     7. Fractions (``24/24``, ``1/3``) → ``repr.number``
     8. Standalone numbers (``123``, ``45.67``) → ``repr.number``
 
-    Natural language punctuation (``:`` ``,`` ``()`` ``—``) is intentionally
-    **not** colored to keep log messages readable.
+    Styles are applied as spans on the raw string — content is never
+    re-parsed as Rich markup — so brackets and backslashes in paths are
+    preserved verbatim. Text containing real Rich markup keeps its tags and
+    is highlighted only outside them.
 
     Args:
-        text: Plain text to process.
+        text: Plain text or text with Rich markup tags.
 
     Returns:
-        Text with Rich markup tags.
+        Styled ``Text`` ready for printing.
     """
     if _has_rich_markup(text):
-        return text
+        return _highlight_outside_rich_markup(text)
+    return _highlight_plain(text)
 
-    result: str = text
-    protected: list[tuple[str, str]] = []
 
-    def build_placeholder_token(index: int) -> str:
-        """Return an alphabetic placeholder token safe from later regex passes."""
-        letters: list[str] = []
-        current_index = index
-
-        while True:
-            current_index, remainder = divmod(current_index, 26)
-            letters.append(chr(65 + remainder))
-            if current_index == 0:
-                break
-            current_index -= 1
-
-        suffix = "".join(reversed(letters))
-        return f"PROTECTED{suffix}TOKEN"
-
-    def protect(tagged_text: str) -> str:
-        """Protect tagged text from further processing."""
-        placeholder: str = build_placeholder_token(len(protected))
-        protected.append((placeholder, tagged_text))
-        return placeholder
-
-    result = re.sub(
-        r"(https?://[^\s]+)",
-        lambda m: protect(f"[repr.url]{m.group(1)}[/repr.url]"),
-        result,
-    )
-
-    result = _PATH_RE.sub(
-        lambda m: protect(f"[repr.path]{m.group(0)}[/repr.path]"),
-        result,
-    )
-
-    result = re.sub(
-        r"\b(true|True|TRUE)\b",
-        lambda m: protect(f"[repr.bool_true]{m.group(1)}[/repr.bool_true]"),
-        result,
-    )
-    result = re.sub(
-        r"\b(false|False|FALSE)\b",
-        lambda m: protect(f"[repr.bool_false]{m.group(1)}[/repr.bool_false]"),
-        result,
-    )
-
-    result = re.sub(
-        r"\b(None|null|NULL|nil)\b",
-        lambda m: protect(f"[repr.none]{m.group(1)}[/repr.none]"),
-        result,
-    )
-
-    result = re.sub(
-        r"\bv\d+(?:\.\d+)+(?:[+\-][\w.]+)?",
-        lambda m: protect(f"[repr.number]{m.group(0)}[/repr.number]"),
-        result,
-    )
-    result = re.sub(
-        r"\b\d+\.\d+\.\d+(?:\.\d+)*(?:[+\-][\w.]+)?",
-        lambda m: protect(f"[repr.number]{m.group(0)}[/repr.number]"),
-        result,
-    )
-
-    result = re.sub(
-        r"\b\d+(?:\.\d+)?(?:\s?)(?:ms|MB|GB|TB|KB|kB|px|dp|pt|em|rem|fps|Hz|kHz|min|sec|s)\b",
-        lambda m: protect(f"[repr.number]{m.group(0)}[/repr.number]"),
-        result,
-    )
-
-    result = re.sub(
-        r"\b\d+/\d+\b",
-        lambda m: protect(f"[repr.number]{m.group(0)}[/repr.number]"),
-        result,
-    )
-
-    result = re.sub(
-        r"\b\d+\.?\d*\b",
-        lambda m: protect(f"[repr.number]{m.group(0)}[/repr.number]"),
-        result,
-    )
-
-    result = result.replace("[", "\\[")
-
-    for placeholder, tagged in reversed(protected):
-        result = result.replace(placeholder, tagged)
-
+def _highlight_plain(text: str) -> Text:
+    """Stylize pattern matches as spans; earlier patterns win overlaps."""
+    result = Text(text)
+    claimed: list[tuple[int, int]] = []
+    for pattern, style in _HIGHLIGHT_STYLES:
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            if any(start < claimed_end and claimed_start < end for claimed_start, claimed_end in claimed):
+                continue
+            result.stylize(style, start, end)
+            claimed.append((start, end))
     return result
 
 
@@ -246,7 +201,7 @@ _RICH_TAG_PREFIXES: Final[tuple[str, ...]] = (
 )
 """Known Rich markup prefixes for tag detection.
 
-Prevent double-highlighting and accidental bracket escaping.
+Prevent double-highlighting and accidental literal-bracket styling.
 Single source of truth for ``_has_rich_markup`` and ``_highlight_outside_rich_markup``.
 """
 
@@ -280,29 +235,37 @@ def _has_rich_markup(text: str) -> bool:
     return _GENERIC_RICH_TAG_PAIR_PATTERN.search(text) is not None
 
 
-def _highlight_outside_rich_markup(text: str) -> str:
+def _highlight_outside_rich_markup(text: str) -> Text:
     """Apply auto-highlighting around and inside paired Rich markup tags."""
-    parts: list[str] = []
-    current_position = 0
+    result = Text()
+    position = 0
 
     for match in _GENERIC_RICH_TAG_PAIR_PATTERN.finditer(text):
-        before_markup = text[current_position : match.start()]
-        if before_markup:
-            parts.append(auto_highlight_text(before_markup))
+        _append_highlighted(result, text[position : match.start()])
 
         style = match.group(1)
         inner_text = match.group(2)
         if style.startswith(_LEAF_RICH_TAG_PREFIXES):
-            parts.append(match.group(0))
+            result.append_text(Text.from_markup(match.group(0)))
         else:
-            parts.append(f"[{style}]{_highlight_outside_rich_markup(inner_text)}[/{style}]")
-        current_position = match.end()
+            segment = _highlight_outside_rich_markup(inner_text)
+            # Base style sits under inner spans, so nested highlights keep their colors.
+            segment.style = style
+            result.append_text(segment)
+        position = match.end()
 
-    after_markup = text[current_position:]
-    if after_markup:
-        parts.append(auto_highlight_text(after_markup))
+    _append_highlighted(result, text[position:])
+    return result
 
-    return "".join(parts) if parts else text
+
+def _append_highlighted(result: Text, segment: str) -> None:
+    """Append a segment, markup-parsed if it still contains Rich tags."""
+    if not segment:
+        return
+    if _has_rich_markup(segment):
+        result.append_text(Text.from_markup(segment))
+        return
+    result.append_text(_highlight_plain(segment))
 
 
 # ── Enhanced Console Print ────────────────────────────────────────────────────
@@ -311,44 +274,21 @@ _original_console_print = console.print
 
 
 def _patched_console_print(*args: Any, **kwargs: Any) -> None:
-    """Wrap console.print with auto-highlighting, normalization, and bracket escaping."""
+    """Wrap console.print with number normalization and span-based highlighting."""
     explicit_highlight: bool | None = kwargs.get("highlight")
 
     processed_args: list[Any] = []
-    any_auto_highlighted = False
-
     for arg in args:
-        if isinstance(arg, str):
-            text: str = normalize_numbers(arg)
-            has_markup: bool = _has_rich_markup(text)
-
-            auto_highlighted = False
-            if explicit_highlight is True and has_markup:
-                text = _highlight_outside_rich_markup(text)
-                auto_highlighted = True
-            elif explicit_highlight is True:
-                text = auto_highlight_text(text)
-                auto_highlighted = True
-            elif explicit_highlight is not False and has_markup:
-                text = _highlight_outside_rich_markup(text)
-                auto_highlighted = True
-            elif explicit_highlight is not False and not has_markup:
-                text = auto_highlight_text(text)
-                auto_highlighted = True
-
-            if not auto_highlighted and "[" in text:
-                if not has_markup:
-                    text = text.replace("[", "\\[")
-
-            if auto_highlighted:
-                any_auto_highlighted = True
-
-            processed_args.append(text)
-        else:
+        if not isinstance(arg, str):
             processed_args.append(arg)
+            continue
 
-    if any_auto_highlighted and "highlight" not in kwargs:
-        kwargs["highlight"] = False
+        text: str = normalize_numbers(arg)
+        if explicit_highlight is False:
+            # Wrap plain strings in Text so literal brackets are never parsed as tags.
+            processed_args.append(text if _has_rich_markup(text) else Text(text))
+            continue
+        processed_args.append(auto_highlight_text(text))
 
     _original_console_print(*processed_args, **kwargs)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+from rich.text import Text
 
 from ..console import (
     _has_rich_markup,
@@ -13,6 +14,12 @@ from ..console import (
     auto_highlight_text,
     normalize_numbers,
 )
+
+
+def styled(text: Text, style: str) -> list[str]:
+    """Return substrings of ``text`` covered by spans with the given style."""
+    return [text.plain[span.start : span.end] for span in text.spans if str(span.style) == style]
+
 
 # ── normalize_numbers ─────────────────────────────────────────────────────────
 
@@ -93,151 +100,172 @@ class TestAutoHighlightText:
 
     def test_plain_text_unchanged(self):
         result = auto_highlight_text("hello")
-        assert "hello" in result
+        assert result.plain == "hello"
+        assert not result.spans
 
     def test_number_highlighted(self):
         result = auto_highlight_text("value 123")
-        assert "[repr.number]123[/repr.number]" in result
+        assert styled(result, "repr.number") == ["123"]
 
     def test_float_highlighted(self):
         result = auto_highlight_text("pi is 3.14")
-        assert "[repr.number]3.14[/repr.number]" in result
+        assert styled(result, "repr.number") == ["3.14"]
 
     def test_url_highlighted_blue(self):
         result = auto_highlight_text("visit https://example.com")
-        assert "[repr.url]https://example.com[/repr.url]" in result
+        assert styled(result, "repr.url") == ["https://example.com"]
 
     def test_true_highlighted(self):
         result = auto_highlight_text("value is True")
-        assert "[repr.bool_true]True[/repr.bool_true]" in result
+        assert styled(result, "repr.bool_true") == ["True"]
 
     def test_false_highlighted(self):
         result = auto_highlight_text("value is False")
-        assert "[repr.bool_false]False[/repr.bool_false]" in result
+        assert styled(result, "repr.bool_false") == ["False"]
 
     def test_none_highlighted(self):
         result = auto_highlight_text("value is None")
-        assert "[repr.none]None[/repr.none]" in result
+        assert styled(result, "repr.none") == ["None"]
 
-    def test_already_marked_text_returned_as_is(self):
-        text = "[bold]already marked[/bold]"
-        result = auto_highlight_text(text)
-        assert result == text
+    def test_already_marked_text_keeps_markup_styling(self):
+        result = auto_highlight_text("[bold]already marked[/bold]")
+        assert result.plain == "already marked"
+        assert styled(result, "bold") == ["already marked"]
 
     def test_empty_string(self):
         result = auto_highlight_text("")
-        assert result == ""
+        assert result.plain == ""
 
     # ── Paths ─────────────────────────────────────────────────────────────────
 
     def test_absolute_path(self):
         result = auto_highlight_text("Loading /home/user/.cache/models/v2.1.0")
-        assert "[repr.path]/home/user/.cache/models/v2.1.0[/repr.path]" in result
+        assert styled(result, "repr.path") == ["/home/user/.cache/models/v2.1.0"]
 
     def test_relative_path_3_segments(self):
         result = auto_highlight_text("saved to output/dir_01/sub_03/")
-        assert "[repr.path]output/dir_01/sub_03/[/repr.path]" in result
+        assert styled(result, "repr.path") == ["output/dir_01/sub_03/"]
 
     def test_relative_path_with_extension(self):
         result = auto_highlight_text("Processing: dir_01/file_01.dat")
-        assert "[repr.path]dir_01/file_01.dat[/repr.path]" in result
+        assert styled(result, "repr.path") == ["dir_01/file_01.dat"]
 
     def test_relative_path_with_long_extension(self):
         result = auto_highlight_text("hashing vae/flux2-vae.safetensors")
-        assert "[repr.path]vae/flux2-vae.safetensors[/repr.path]" in result
+        assert styled(result, "repr.path") == ["vae/flux2-vae.safetensors"]
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param(r"C:\Users\me\output\[draft] Report Final - v2 (2024).pdf", id="single-bracket"),
+            pytest.param(r"C:\data\output\[backup] Data Set - 03 (1080p) [checksum].zip", id="two-brackets-parens"),
+            pytest.param(
+                r"C:\proj\workspace\TASK [module.core] Build - 01 [stage-2] run - 2.00s.log",
+                id="space-prefixed-brackets",
+            ),
+            pytest.param(r"C:\Users\me\output\[Draft] Report Final - v2 (2024).pdf", id="uppercase-bracket"),
+            pytest.param(r"/home/user/[a] file (x) [b].txt", id="posix-brackets"),
+            pytest.param(r"output\dir\[X] plain.ass", id="relative-bracket"),
+        ],
+    )
+    def test_bracketed_path_preserved_and_colored(self, path):
+        result = auto_highlight_text(path)
+
+        assert result.plain == path  # every char preserved 1:1
+        assert styled(result, "repr.path") == [path]
 
     def test_path_does_not_match_fraction(self):
         result = auto_highlight_text("24/24 items")
-        assert "[repr.path]" not in result
-        assert "[repr.number]24/24[/repr.number]" in result
+        assert styled(result, "repr.path") == []
+        assert styled(result, "repr.number") == ["24/24"]
+
+    @pytest.mark.parametrize("text", ["a, b, c", "Done 5 - Failed 0"])
+    def test_path_does_not_match_status_text(self, text):
+        assert styled(auto_highlight_text(text), "repr.path") == []
 
     # ── Versions ──────────────────────────────────────────────────────────────
 
     def test_version_v_prefixed(self):
         result = auto_highlight_text("MyApp v2.1.0 starting")
-        assert "[repr.number]v2.1.0[/repr.number]" in result
+        assert styled(result, "repr.number") == ["v2.1.0"]
 
     def test_version_dotted_3_segments(self):
         result = auto_highlight_text("Python 3.13.11")
-        assert "[repr.number]3.13.11[/repr.number]" in result
+        assert styled(result, "repr.number") == ["3.13.11"]
 
     def test_version_with_build_metadata(self):
         result = auto_highlight_text("torch 2.6.0+cu128")
-        assert "[repr.number]2.6.0+cu128[/repr.number]" in result
+        assert styled(result, "repr.number") == ["2.6.0+cu128"]
 
     # ── Number + unit ─────────────────────────────────────────────────────────
 
     def test_number_unit_seconds(self):
         result = auto_highlight_text("loaded in 1.33s")
-        assert "[repr.number]1.33s[/repr.number]" in result
+        assert styled(result, "repr.number") == ["1.33s"]
 
     def test_number_unit_with_space(self):
         result = auto_highlight_text("size is 8.04 GB")
-        assert "[repr.number]8.04 GB[/repr.number]" in result
+        assert styled(result, "repr.number") == ["8.04 GB"]
 
     def test_number_unit_megabytes(self):
         result = auto_highlight_text("file size 245MB")
-        assert "[repr.number]245MB[/repr.number]" in result
+        assert styled(result, "repr.number") == ["245MB"]
 
     def test_number_unit_milliseconds(self):
         result = auto_highlight_text("latency 42ms")
-        assert "[repr.number]42ms[/repr.number]" in result
+        assert styled(result, "repr.number") == ["42ms"]
 
     # ── Fractions ─────────────────────────────────────────────────────────────
 
     def test_fraction(self):
         result = auto_highlight_text("Batch 3/5 done")
-        assert "[repr.number]3/5[/repr.number]" in result
+        assert styled(result, "repr.number") == ["3/5"]
 
     def test_fraction_larger(self):
         result = auto_highlight_text("Detection 156/156 regions")
-        assert "[repr.number]156/156[/repr.number]" in result
+        assert styled(result, "repr.number") == ["156/156"]
 
     # ── Punctuation NOT colored ───────────────────────────────────────────────
 
     def test_colon_not_colored(self):
         result = auto_highlight_text("key: value")
-        assert "[special]" not in result
+        assert styled(result, "special") == []
 
     def test_comma_not_colored(self):
         result = auto_highlight_text("24 files, 12MB")
-        assert "files," in result  # comma stays as-is
+        assert result.plain == "24 files, 12MB"
 
     def test_parens_not_colored(self):
         result = auto_highlight_text("(avg 27ms/item)")
-        assert "\\[" not in result or "(" in result  # parens stay literal
+        assert result.plain == "(avg 27ms/item)"
 
     def test_em_dash_not_colored(self):
         result = auto_highlight_text("loaded — 3 profiles")
-        assert "[special]" not in result
+        assert styled(result, "special") == []
 
-    # ── Bracket escaping ──────────────────────────────────────────────────────
+    # ── Literal brackets ──────────────────────────────────────────────────────
 
-    def test_literal_bracket_escaped(self):
+    def test_literal_brackets_preserved(self):
         result = auto_highlight_text("result[0] = 42")
-        assert "\\[" in result
-        assert "[repr.number]0[/repr.number]" in result
-        assert "[repr.number]42[/repr.number]" in result
+        assert result.plain == "result[0] = 42"
+        assert styled(result, "repr.number") == ["0", "42"]
 
-    def test_literal_brackets_no_crash_from_markup(self):
-        """Escaped brackets should render without errors in Rich."""
-        from rich.text import Text
-
+    def test_literal_brackets_never_parsed_as_markup(self):
         result = auto_highlight_text("array[1:3]")
-        # Should not raise
-        Text.from_markup(result)
+        assert result.plain == "array[1:3]"
 
     @pytest.mark.parametrize(
-        "text",
+        ("text", "style", "plain"),
         [
-            "[repr.number]42[/repr.number]",
-            "[bold]text[/bold]",
-            "[info]msg[/info]",
+            ("[repr.number]42[/repr.number]", "repr.number", "42"),
+            ("[bold]text[/bold]", "bold", "text"),
+            ("[info]msg[/info]", "info", "msg"),
         ],
     )
-    def test_existing_markup_not_double_highlighted(self, text):
+    def test_existing_markup_not_double_highlighted(self, text, style, plain):
         result = auto_highlight_text(text)
-        assert result == text
+        assert result.plain == plain
+        assert styled(result, style) == [plain]
 
 
 # ── _highlight_outside_rich_markup ────────────────────────────────────────────
@@ -248,34 +276,41 @@ class TestHighlightOutsideRichMarkup:
 
     def test_plain_text_highlighted(self):
         result = _highlight_outside_rich_markup("value 42")
-        assert "[repr.number]42[/repr.number]" in result
+        assert styled(result, "repr.number") == ["42"]
 
     def test_preserves_existing_markup(self):
-        text = "[bold]hello[/bold] world 42"
-        result = _highlight_outside_rich_markup(text)
-        assert "[bold]hello[/bold]" in result
-        assert "[repr.number]42[/repr.number]" in result
+        result = _highlight_outside_rich_markup("[bold]hello[/bold] world 42")
+        assert result.plain == "hello world 42"
+        assert styled(result, "bold") == ["hello"]
+        assert styled(result, "repr.number") == ["42"]
 
     def test_only_markup_returned_as_is(self):
-        text = "[bold]test[/bold]"
-        result = _highlight_outside_rich_markup(text)
-        assert "[bold]test[/bold]" in result
+        result = _highlight_outside_rich_markup("[bold]test[/bold]")
+        assert result.plain == "test"
+        assert styled(result, "bold") == ["test"]
 
     def test_empty_string(self):
-        assert _highlight_outside_rich_markup("") == ""
+        assert _highlight_outside_rich_markup("").plain == ""
 
     def test_no_double_highlight(self):
-        text = "[repr.number]42[/repr.number]"
-        result = _highlight_outside_rich_markup(text)
-        assert result.count("[repr.number]") == 1
+        result = _highlight_outside_rich_markup("[repr.number]42[/repr.number]")
+        assert styled(result, "repr.number") == ["42"]
 
     def test_container_markup_highlights_inner_numbers(self):
         text = "[dim]Hashing text_encoders/qwen-3-4b.safetensors (8.04 GB)…[/dim]"
         result = _highlight_outside_rich_markup(text)
 
-        assert "[dim]" in result
-        assert "[/dim]" in result
-        assert "[repr.number]8.04 GB[/repr.number]" in result
+        assert result.plain == "Hashing text_encoders/qwen-3-4b.safetensors (8.04 GB)…"
+        assert styled(result, "dim") == [result.plain]
+        assert styled(result, "repr.number") == ["8.04 GB"]
+
+    def test_container_markup_keeps_bracketed_path_intact(self):
+        path = r"C:\data\output\[backup] Data Set - 03 (1080p) [checksum].zip"
+        result = _highlight_outside_rich_markup(f"[gray]-> {path}[/gray]")
+
+        assert result.plain == f"-> {path}"
+        assert styled(result, "gray") == [result.plain]
+        assert styled(result, "repr.path") == [path]
 
 
 # ── _patched_console_print ────────────────────────────────────────────────────
@@ -289,47 +324,56 @@ class TestPatchedConsolePrint:
         _patched_console_print("value 42")
         mock_print.assert_called_once()
         arg = mock_print.call_args[0][0]
-        assert "[repr.number]42[/repr.number]" in arg
+        assert isinstance(arg, Text)
+        assert styled(arg, "repr.number") == ["42"]
 
     @patch("anishift.utils.rich_console.console._original_console_print")
     def test_markup_text_highlights_unstyled_tail(self, mock_print: MagicMock):
         _patched_console_print("[bold]hello[/bold]")
         arg = mock_print.call_args[0][0]
-        assert "[bold]hello[/bold]" in arg
+        assert styled(arg, "bold") == ["hello"]
 
         _patched_console_print("[green]done[/green] (0.0s)")
         arg = mock_print.call_args[0][0]
-        assert "[green]done[/green]" in arg
-        assert "[repr.number]0.0s[/repr.number]" in arg
+        assert styled(arg, "green") == ["done"]
+        assert styled(arg, "repr.number") == ["0.0s"]
 
         _patched_console_print("[dim]Hashing text_encoders/qwen-3-4b.safetensors (8.04 GB)…[/dim]")
         arg = mock_print.call_args[0][0]
-        assert "[repr.number]8.04 GB[/repr.number]" in arg
+        assert styled(arg, "repr.number") == ["8.04 GB"]
 
     @patch("anishift.utils.rich_console.console._original_console_print")
     def test_explicit_highlight_true_with_markup(self, mock_print: MagicMock):
         _patched_console_print("[bold]hi[/bold] 42", highlight=True)
         arg = mock_print.call_args[0][0]
-        assert "[bold]hi[/bold]" in arg
-        assert "[repr.number]42[/repr.number]" in arg
+        assert styled(arg, "bold") == ["hi"]
+        assert styled(arg, "repr.number") == ["42"]
 
     @patch("anishift.utils.rich_console.console._original_console_print")
     def test_explicit_highlight_true_plain(self, mock_print: MagicMock):
         _patched_console_print("value 99", highlight=True)
         arg = mock_print.call_args[0][0]
-        assert "[repr.number]99[/repr.number]" in arg
+        assert styled(arg, "repr.number") == ["99"]
 
     @patch("anishift.utils.rich_console.console._original_console_print")
     def test_highlight_false_no_highlighting(self, mock_print: MagicMock):
         _patched_console_print("value 42", highlight=False)
         arg = mock_print.call_args[0][0]
-        assert "[repr.number]" not in arg
+        assert isinstance(arg, Text)
+        assert not arg.spans
 
     @patch("anishift.utils.rich_console.console._original_console_print")
-    def test_bracket_escaping(self, mock_print: MagicMock):
+    def test_highlight_false_plain_brackets_stay_literal(self, mock_print: MagicMock):
         _patched_console_print("config [section]", highlight=False)
         arg = mock_print.call_args[0][0]
-        assert "\\[section]" in arg
+        assert isinstance(arg, Text)
+        assert arg.plain == "config [section]"
+
+    @patch("anishift.utils.rich_console.console._original_console_print")
+    def test_highlight_false_markup_passed_through(self, mock_print: MagicMock):
+        _patched_console_print("[bold]hi[/bold]", highlight=False)
+        arg = mock_print.call_args[0][0]
+        assert arg == "[bold]hi[/bold]"
 
     @patch("anishift.utils.rich_console.console._original_console_print")
     def test_non_string_passthrough(self, mock_print: MagicMock):
@@ -342,4 +386,4 @@ class TestPatchedConsolePrint:
     def test_comma_normalization(self, mock_print: MagicMock):
         _patched_console_print("value 1,5", highlight=False)
         arg = mock_print.call_args[0][0]
-        assert "1.5" in arg
+        assert arg.plain == "value 1.5"

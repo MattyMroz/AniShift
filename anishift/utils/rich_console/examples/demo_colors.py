@@ -50,6 +50,20 @@ def demo_colors() -> None:
     console.print(r"  Windows:  C:\Users\user\Documents\project")
     console.print("  Relative 3+: output/dir_01/sub_03/")
     console.print("  With ext: dir_01/file_01.dat")
+    bracketed_paths = [
+        r"C:\Users\me\output\[draft] Report Final - v2.pdf",
+        r"C:\Users\me\output\[backup] Data Set - 03 (1080p) [checksum].zip",
+        (
+            r"C:\Users\me\output\TASK [module.core] Build Step - 01 "
+            r"[stage-2] run - 2.00s notes.log"
+        ),
+        (
+            r"C:\Users\me\output\JOB [tool+] Weekly Export - S01E01v2 "
+            r"(REGION WEB-DL 1080p AVC AAC) [86445822] items 0.01s.log"
+        ),
+    ]
+    for path in bracketed_paths:
+        console.print(f"    [gray]-> {path}[/gray]")
     console.print("  NOT a path: 24/24 items (→ fraction)")
     console.print()
 

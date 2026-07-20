@@ -94,7 +94,7 @@ def _build_message(record: dict[str, Any]) -> Text:
     - Column 1 (timestamp): level color, italic.
     - Column 2 (icon + badge): level color, bold (CRITICAL: black on red).
     - Column 3 (logger name): level color, italic, dynamic width.
-    - Column 4 (message): bold white italic with ``auto_highlight_text`` markup.
+    - Column 4 (message): bold white italic with ``auto_highlight_text`` styling.
     - Separators: ``|`` white.
     - Context binds: omitted on console (kept in file sink only).
 
@@ -126,8 +126,8 @@ def _build_message(record: dict[str, Any]) -> Text:
     t.append(logger_name, style=f"{color} italic")
     t.append(_SEP, style="white")
 
-    highlighted: str = auto_highlight_text(message_text)
-    msg = Text.from_markup(highlighted, style=f"bold italic {color}")
+    msg: Text = auto_highlight_text(message_text)
+    msg.style = f"bold italic {color}"
     t.append_text(msg)
 
     return t
