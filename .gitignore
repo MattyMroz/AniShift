@@ -157,3 +157,8 @@ external/bin/*
 workspace/**/*
 !workspace/**/.gitkeep
 !workspace/README.md
+
+
+# ── Session logs (local work notes, not part of the repo) ─────────────────────
+
+docs/session-logs/
