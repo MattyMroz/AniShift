@@ -9,7 +9,7 @@ from typing import cast
 from anishift.bootstrap import AppContext
 from anishift.errors import AniShiftError
 from anishift.pipeline import discover_inputs, run_pipeline
-from anishift.pipeline.types import FileOutcome, FileStatus, PipelineReport, ProgressReporter
+from anishift.pipeline.types import FileOutcome, FileStatus, PipelineReport, ProgressPhase
 from anishift.platform.binaries import Binary, BinaryNotFoundError
 from anishift.services.extraction.tracks import is_polish_language
 from anishift.services.extraction.types import MediaInfo, TrackInfo, TrackSelection
@@ -39,12 +39,16 @@ def run_pipeline_command(context: AppContext) -> None:
         if context.user_settings.mode == "manual":
             report = run_pipeline(context, interaction=_ManualInteraction())
         else:
-            with MultiProgressManager(show_download=False) as progress:
-                report = run_pipeline(context, progress=cast(ProgressReporter, progress))
+            report = run_pipeline(context, progress_factory=_progress_phase)
     except KeyboardInterrupt:
         console.print("[warning]Interrupted.[/warning]")
         return
     _render_report(report)
+
+
+def _progress_phase() -> ProgressPhase:
+    """Build one transient progress display whose rows clear when it stops."""
+    return cast(ProgressPhase, MultiProgressManager(show_download=False, transient=True))
 
 
 def _ensure_binaries(paths: Sequence[Path]) -> bool:

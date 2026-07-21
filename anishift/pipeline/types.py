@@ -18,6 +18,7 @@ __all__ = [
     "FileStatus",
     "PipelineInteraction",
     "PipelineReport",
+    "ProgressPhase",
     "ProgressReporter",
     "StepName",
     "TranslationSettings",
@@ -98,6 +99,22 @@ class ProgressReporter(Protocol):
 
     def update(self, task_id: int, completed: int) -> None:
         """Set one progress row's absolute completion."""
+        ...
+
+
+class ProgressPhase(Protocol):
+    """A progress display for one pipeline phase, entered per phase.
+
+    Each phase is a fresh transient display: its rows disappear on exit so
+    the next phase draws its own rows in the same place.
+    """
+
+    def __enter__(self) -> ProgressReporter:
+        """Start the phase display and return its reporter."""
+        ...
+
+    def __exit__(self, *exc: object) -> None:
+        """Stop the phase display, clearing its rows."""
         ...
 
 

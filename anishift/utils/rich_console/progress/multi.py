@@ -234,6 +234,7 @@ class MultiProgressManager:
         show_eta: bool = False,
         show_download: bool = False,
         show_speed: bool = True,
+        transient: bool = False,
     ) -> None:
         """Initialize the display defaults without starting the live render.
 
@@ -256,6 +257,9 @@ class MultiProgressManager:
             show_eta: Show time remaining.
             show_download: Show bytes column.
             show_speed: Show speed column (requires show_download).
+            transient: Remove all rows when the display stops, leaving no
+                trace in the scrollback (use for a phase whose bars a later
+                phase replaces in place).
         """
         self._align = align
         self._shared_bar_width: int | None = None
@@ -276,7 +280,7 @@ class MultiProgressManager:
             columns = self._aligned_columns(initial_style)
         else:
             columns = (_IndependentRowColumn(initial_style),)
-        self._progress = Progress(*columns, console=console, expand=False)
+        self._progress = Progress(*columns, console=console, expand=False, transient=transient)
 
     def __enter__(self) -> MultiProgressManager:
         """Start the live display and return self."""

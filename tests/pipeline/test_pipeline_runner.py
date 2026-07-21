@@ -17,6 +17,22 @@ from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo
 
 
+class _NullPhase:
+    """A progress phase that records rows without rendering anything."""
+
+    def __enter__(self) -> _NullPhase:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def add_task(self, description: str, *, total: int = 100) -> int:
+        return 0
+
+    def update(self, task_id: int, completed: int) -> None:
+        return None
+
+
 def _context(root: Path) -> AppContext:
     return AppContext(Settings(), UserSettings(), root)
 
@@ -77,7 +93,7 @@ def test_worker_count_is_at_least_one(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _worker_count(5) == 3
 
 
-def test_process_mkvs_reraises_interrupt_after_cancelling_workers(
+def test_extract_phase_reraises_interrupt_after_cancelling_workers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -86,23 +102,26 @@ def test_process_mkvs_reraises_interrupt_after_cancelling_workers(
     worker_cancel: threading.Event | None = None
     waits = 0
 
-    def fake_process_mkv(*_: object, cancel: threading.Event, **__: object) -> FileOutcome:
+    def fake_extract_mkv(*_: object, cancel: threading.Event, **__: object) -> runner._MkvState:
         nonlocal worker_cancel
         worker_cancel = cancel
-        return FileOutcome(mkv, "cancelled")
+        return runner._MkvState(FileOutcome(mkv, "cancelled"), None)
 
-    def interrupted_wait(*_: object, **__: object) -> tuple[set[Future[FileOutcome]], set[Future[FileOutcome]]]:
+    def interrupted_wait(*_: object, **__: object) -> tuple[set[Future[object]], set[Future[object]]]:
         nonlocal waits
         waits += 1
         if waits == 1:
             raise KeyboardInterrupt
         return set(), set()
 
-    monkeypatch.setattr(runner, "_process_mkv", fake_process_mkv)
+    monkeypatch.setattr(runner, "_extract_mkv", fake_extract_mkv)
     monkeypatch.setattr(runner, "wait", interrupted_wait)
 
+    def factory() -> _NullPhase:
+        return _NullPhase()
+
     with pytest.raises(KeyboardInterrupt):
-        runner._process_mkvs((mkv,), tmp_path, None, None, threading.Event(), _ts())
+        runner._extract_phase((mkv,), tmp_path, None, factory, threading.Event())
 
     assert worker_cancel is not None
     assert worker_cancel.is_set()
