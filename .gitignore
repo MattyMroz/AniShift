@@ -6,6 +6,12 @@
 .claude/statusline.mjs
 
 
+# ── Codex (skills/config synced from agents repo) ─────────────────────────────
+
+.agents/skills/
+.codex/config.toml
+
+
 # ── Python Runtime ────────────────────────────────────────────────────────────
 
 __pycache__/
