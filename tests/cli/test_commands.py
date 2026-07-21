@@ -1,5 +1,3 @@
-"""Tests for the shell command registry and dispatch."""
-
 from __future__ import annotations
 
 from pathlib import Path

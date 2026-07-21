@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from ..rich_console import console
 from .log_reader import LogReader
@@ -31,24 +31,19 @@ def main() -> None:
         print_help()
         return
 
-    # Get log file
     log_file = args[0]
 
     if not Path(log_file).exists():
         console.print(f"[red]Error: File not found: {log_file}[/red]")
         return
 
-    # Parse options
     options = parse_args(args[1:])
 
-    # Read logs
     reader = LogReader(log_file)
     viewer = LogViewer()
 
-    # Apply filters
     logs = apply_filters(reader, options)
 
-    # Display
     if options.get("stats"):
         viewer.display_with_stats(logs)
     elif options.get("table"):
@@ -57,7 +52,7 @@ def main() -> None:
         viewer.display(logs)
 
 
-_VALUE_ARGS: dict[str, tuple[str, type]] = {
+_VALUE_ARGS: Final[dict[str, tuple[str, type]]] = {
     "--recent": ("recent", int),
     "-n": ("recent", int),
     "--level": ("level", str),
@@ -71,11 +66,13 @@ _VALUE_ARGS: dict[str, tuple[str, type]] = {
     "--search": ("search", str),
     "-s": ("search", str),
 }
+"""Flags that consume a following value, mapped to (option_key, parser)."""
 
-_FLAG_ARGS: dict[str, str] = {
+_FLAG_ARGS: Final[dict[str, str]] = {
     "--table": "table",
     "--stats": "stats",
 }
+"""Boolean flags mapped to their option key."""
 
 
 def _parse_int_arg(name: str, value: str) -> int | None:
@@ -144,26 +141,21 @@ def apply_filters(reader: LogReader, options: dict[str, Any]) -> list[dict[str, 
     """
     logs = reader.read_all()
 
-    # Level
     if "level" in options:
         logs = [log for log in logs if log.get("level") == options["level"].upper()]
 
-    # Time
     if "minutes" in options:
         logs = reader.filter_by_time(minutes=options["minutes"])
     elif "hours" in options:
         logs = reader.filter_by_time(hours=options["hours"])
 
-    # Logger
     if "logger" in options:
         logs = [log for log in logs if options["logger"].lower() in log.get("logger", "").lower()]
 
-    # Search
     if "search" in options:
         search = options["search"].lower()
         logs = [log for log in logs if search in log.get("message", "").lower()]
 
-    # Recent (apply LAST, after all filters)
     if "recent" in options:
         logs = logs[-options["recent"] :][::-1]
 

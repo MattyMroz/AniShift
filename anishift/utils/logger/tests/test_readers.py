@@ -59,28 +59,28 @@ def duration_logs() -> list[dict[str, object]]:
         {
             "level": "INFO",
             "message": "op1 done",
-            "operation": "resize",
+            "operation": "encode",
             "duration_ms": 100.0,
             "timestamp": "2024-06-15T10:00:00",
         },
         {
             "level": "INFO",
             "message": "op2 done",
-            "operation": "resize",
+            "operation": "encode",
             "duration_ms": 200.0,
             "timestamp": "2024-06-15T11:00:00",
         },
         {
             "level": "INFO",
             "message": "op3 done",
-            "operation": "ocr",
+            "operation": "parse",
             "duration_ms": 50.0,
             "timestamp": "2024-06-15T10:00:00",
         },
         {
             "level": "ERROR",
             "message": "op4 fail",
-            "operation": "ocr",
+            "operation": "parse",
             "duration_ms": 300.0,
             "timestamp": "2024-06-16T10:00:00",
         },
@@ -257,8 +257,8 @@ class TestLogAggregator:
 
     def test_avg_duration_by_operation(self, duration_logs: list[dict[str, object]]) -> None:
         agg = LogAggregator(duration_logs)
-        assert agg.avg_duration("resize") == pytest.approx(150.0)
-        assert agg.avg_duration("ocr") == pytest.approx(175.0)
+        assert agg.avg_duration("encode") == pytest.approx(150.0)
+        assert agg.avg_duration("parse") == pytest.approx(175.0)
 
     def test_avg_duration_no_data(self) -> None:
         agg = LogAggregator([])
@@ -267,19 +267,19 @@ class TestLogAggregator:
     def test_max_duration(self, duration_logs: list[dict[str, object]]) -> None:
         agg = LogAggregator(duration_logs)
         assert agg.max_duration() == 300.0
-        assert agg.max_duration("resize") == 200.0
+        assert agg.max_duration("encode") == 200.0
 
     def test_min_duration(self, duration_logs: list[dict[str, object]]) -> None:
         agg = LogAggregator(duration_logs)
         assert agg.min_duration() == 50.0
-        assert agg.min_duration("resize") == 100.0
+        assert agg.min_duration("encode") == 100.0
 
     def test_operations_summary(self, duration_logs: list[dict[str, object]]) -> None:
         agg = LogAggregator(duration_logs)
         summary = agg.operations_summary()
-        assert "resize" in summary
-        assert summary["resize"]["count"] == 2
-        assert summary["resize"]["avg_ms"] == pytest.approx(150.0)
+        assert "encode" in summary
+        assert summary["encode"]["count"] == 2
+        assert summary["encode"]["avg_ms"] == pytest.approx(150.0)
 
     def test_error_summary(self, log_file: Path) -> None:
         logs = LogReader(log_file).load().to_list()

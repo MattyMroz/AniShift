@@ -11,9 +11,11 @@ from anishift.services.subtitles.service import (
     split_subtitles,
     subtitle_kind,
     write_displayed,
+    write_translated,
 )
+from anishift.services.subtitles.srt import spoken_to_srt
 from anishift.services.subtitles.text import is_drawing, replace_visible_text, visible_text
-from anishift.services.subtitles.txt import txt_to_spoken
+from anishift.services.subtitles.txt import read_txt, txt_to_spoken
 from anishift.services.subtitles.types import Decision, SplitStats, SpokenLine, SubtitleKind, SubtitleSplit
 
 __all__ = [
@@ -31,10 +33,13 @@ __all__ = [
     "is_drawing",
     "load_subtitles",
     "preview_styles",
+    "read_txt",
     "replace_visible_text",
     "split_subtitles",
+    "spoken_to_srt",
     "subtitle_kind",
     "txt_to_spoken",
     "visible_text",
     "write_displayed",
+    "write_translated",
 ]

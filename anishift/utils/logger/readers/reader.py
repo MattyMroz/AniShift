@@ -52,18 +52,16 @@ class LogReader:
             return self
 
         with self._file.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
+            for raw_line in f:
+                line = raw_line.strip()
                 if not line:
                     continue
                 try:
                     log = json.loads(line)
-                    # loguru serialize=True produces {text, record} nested JSON
                     if "record" in log and isinstance(log["record"], dict):
                         flat_log = self._flatten_loguru_record(log["record"])
                         self._all_logs.append(flat_log)
                     else:
-                        # Flat JSON (custom formatter, manual logs)
                         self._all_logs.append(log)
                 except json.JSONDecodeError:
                     continue
@@ -92,7 +90,7 @@ class LogReader:
         Returns:
             Self for chaining.
         """
-        upper_levels = [l.upper() for l in levels]
+        upper_levels = [level.upper() for level in levels]
         self._current = [log for log in self._current if log.get("level", "").upper() in upper_levels]
         return self
 
@@ -220,7 +218,7 @@ class LogReader:
         self._current = self._all_logs
         return self
 
-    def to_dataframe(self):
+    def to_dataframe(self) -> Any:
         """Export to pandas DataFrame (optional).
 
         Returns:
@@ -230,7 +228,7 @@ class LogReader:
             ImportError: If pandas is not installed.
         """
         try:
-            import pandas as pd
+            import pandas as pd  # type: ignore[import-untyped]  # optional dependency, no stubs
 
             return pd.DataFrame(self._current)
         except ImportError as e:
@@ -261,7 +259,6 @@ class LogReader:
             "line": record.get("line", 0),
         }
 
-        # Add extra context (exclude internal logger_name key)
         if isinstance(extra, dict):
             for key, value in extra.items():
                 if key != "logger_name":

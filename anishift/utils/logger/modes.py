@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from .config import (
     ConsoleConfig,
@@ -16,7 +16,7 @@ __all__ = ["get_mode_config"]
 
 # ── Mode Presets ──────────────────────────────────────────────────────────────
 
-_MODE_DEFAULTS: dict[LoggerMode, dict[str, Any]] = {
+_MODE_DEFAULTS: Final[dict[LoggerMode, dict[str, Any]]] = {
     LoggerMode.DEV: {
         "name": "dev",
         "level": "DEBUG",
@@ -87,6 +87,7 @@ _MODE_DEFAULTS: dict[LoggerMode, dict[str, Any]] = {
         ),
     },
 }
+"""Per-mode default config kwargs passed to ``LoggerConfig``."""
 
 
 def get_mode_config(mode: LoggerMode, **overrides: Any) -> LoggerConfig:
@@ -114,15 +115,12 @@ def get_mode_config(mode: LoggerMode, **overrides: Any) -> LoggerConfig:
 
     config = LoggerConfig(**defaults)
 
-    # Apply overrides
     if overrides:
-        # Special handling for file_path override
         if "file_path" in overrides:
             overrides["file"] = FileConfig(
                 **{**config.file.model_dump(), "path": overrides.pop("file_path")},
             )
 
-        # Apply all overrides
         config_dict = config.model_dump()
         config_dict.update(overrides)
         config = LoggerConfig(**config_dict)

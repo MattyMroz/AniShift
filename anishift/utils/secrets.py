@@ -13,7 +13,7 @@ dict (and freshly built nested containers) is returned.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
 __all__ = [
     "REDACTED_VALUE",
@@ -22,10 +22,10 @@ __all__ = [
     "sanitize_secrets",
 ]
 
-REDACTED_VALUE: str = "***REDACTED***"
+REDACTED_VALUE: Final[str] = "***REDACTED***"
 """Replacement value used for every redacted entry."""
 
-SECRET_KEY_FRAGMENTS: tuple[str, ...] = (
+SECRET_KEY_FRAGMENTS: Final[tuple[str, ...]] = (
     "password",
     "token",
     "api_key",

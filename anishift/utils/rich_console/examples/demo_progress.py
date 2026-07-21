@@ -24,20 +24,28 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from ..console import console
 from ..progress import MultiProgressManager, ProgressBarManager
+
+if TYPE_CHECKING:
+    from rich.progress import TaskID
 
 __all__ = ["run_all_demos"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 HEADER_WIDTH: Final[int] = 70
-SECTION_SEPARATOR: Final[str] = "" * HEADER_WIDTH
+"""Character width of demo section headers."""
+
+SECTION_SEPARATOR: Final[str] = "═" * HEADER_WIDTH
+"""Horizontal rule printed above and below each section title."""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
 def print_section(title: str) -> None:
     """Print section header with centered title."""
     console.print(f"\n{SECTION_SEPARATOR}")
@@ -55,11 +63,11 @@ def _run_per_row_config(align: Literal["aligned", "independent"]) -> None:
     download_total = 40_000_000
     with MultiProgressManager(align=align) as mp:
         download = mp.add_task("tools.zip", total=download_total, show_download=True, show_eta=True)
-        percent_only = mp.add_task("episode.mkv", show_elapsed=False)
-        spinner = mp.add_task("Analyzing subs...", show_spinner=True, show_percentage=False)
+        percent_only = mp.add_task("data.bin", show_elapsed=False)
+        spinner = mp.add_task("Analyzing data...", show_spinner=True, show_percentage=False)
         eta_only = mp.add_task("Waiting", show_bar=False, show_percentage=False, show_elapsed=False, show_eta=True)
         colored = mp.add_task("ocean_colors", colors=ocean_colors)
-        truncated = mp.add_task("very_long_episode_name_that_gets_truncated.mkv")
+        truncated = mp.add_task("very_long_file_name_that_gets_truncated.bin")
         for _step in range(100):
             mp.advance(download, download_total // 100)
             mp.advance(percent_only, 1)
@@ -74,19 +82,16 @@ def run_all_demos() -> None:
     """Run complete progress bar demo suite."""
     print_section("PROGRESS BAR SYSTEM TESTS")
 
-    # 1. Unknown Progress
     console.print("1. Unknown Progress (no total):", style="white_bold")
     with ProgressBarManager("Processing unknown amount", total=None, bar="rich", show_percentage=False) as pb:
         time.sleep(1.5)
 
-    # 2. Standard 4-Color (RICH)
     console.print("\n2. Standard 4-Color (RICH):", style="white_bold")
     with ProgressBarManager("Processing data", total=100, bar="rich") as pb:
         for _i in range(100):
             pb.advance(1)
             time.sleep(0.02)
 
-    # 3. Full Palette 13-Color (BLOCKS)
     console.print("\n3. Full Palette 13-Color (BLOCKS):", style="white_bold")
     with ProgressBarManager(
         "Loading colors",
@@ -112,14 +117,12 @@ def run_all_demos() -> None:
             pb.advance(1)
             time.sleep(0.05)
 
-    # 4. Custom Chars (█░)
     console.print("\n4. Custom Chars (█░):", style="white_bold")
     with ProgressBarManager("Custom blocks", total=50, bar="custom", custom_chars=("█", "░")) as pb:
         for _i in range(50):
             pb.advance(1)
             time.sleep(0.02)
 
-    # 5. ALL Colors Demo (illustrates full color palette)
     console.print("\n5. ALL Colors Demo (every color from palette):", style="white_bold")
     all_colors = [
         ("purple_bold", 8),
@@ -149,7 +152,6 @@ def run_all_demos() -> None:
                 pb.advance(1)
                 time.sleep(0.01)
 
-    # 6. Custom Chars (﷼ space) ARABIC
     console.print("\n6. Custom Chars (﷼ space) ARABIC:", style="white_bold")
     with ProgressBarManager("Custom ARABIC", total=50, bar="custom", custom_chars=("﷼", " ")) as pb:
         for _i in range(50):
@@ -158,7 +160,6 @@ def run_all_demos() -> None:
 
     print_section("MODULAR FEATURES - Download with bytes + speed")
 
-    # 7. DOWNLOAD with bytes + speed (RICH style)
     console.print("7. DOWNLOAD with bytes + speed (bar='rich'):", style="white_bold")
     with ProgressBarManager(
         "large_dataset.zip",
@@ -168,10 +169,9 @@ def run_all_demos() -> None:
         show_eta=True,
     ) as pb:
         for _i in range(100):
-            pb.advance(1_000_000)  # 1MB chunks
+            pb.advance(1_000_000)
             time.sleep(0.05)
 
-    # 8. DOWNLOAD with bytes + speed (BLOCKS style)
     console.print("\n8. DOWNLOAD with bytes + speed (bar='blocks'):", style="white_bold")
     with ProgressBarManager(
         "video_file.mp4",
@@ -186,10 +186,9 @@ def run_all_demos() -> None:
         },
     ) as pb:
         for _i in range(100):
-            pb.advance(2_500_000)  # 2.5MB chunks
+            pb.advance(2_500_000)
             time.sleep(0.05)
 
-    # 9. DOWNLOAD with bytes + speed (CUSTOM █░ style)
     console.print("\n9. DOWNLOAD with bytes + speed (bar='custom' █░):", style="white_bold")
     with ProgressBarManager(
         "archive.tar.gz",
@@ -206,17 +205,15 @@ def run_all_demos() -> None:
         },
     ) as pb:
         for _i in range(100):
-            pb.advance(500_000)  # 500KB chunks
+            pb.advance(500_000)
             time.sleep(0.05)
 
     print_section("FULL MODULARITY - Mix ANY components!")
 
-    # 10. TYLKO SPINNER (sam kręciołek)
     console.print("10. ONLY SPINNER (nothing else):", style="white_bold")
     with ProgressBarManager("Thinking...", total=None, show_spinner=True, show_elapsed=False) as pb:
         time.sleep(1.5)
 
-    # 11. TYLKO CZAS (sam elapsed time)
     console.print("\n11. ONLY TIME (elapsed only):", style="white_bold")
     with ProgressBarManager(
         "Timer",
@@ -230,14 +227,12 @@ def run_all_demos() -> None:
             pb.advance(1)
             time.sleep(0.02)
 
-    # 12. TYLKO PROCENT (sam percentage)
     console.print("\n12. ONLY PERCENTAGE (no bar, no time):", style="white_bold")
     with ProgressBarManager("Counting", total=50, show_bar=False, show_percentage=True, show_elapsed=False) as pb:
         for _i in range(50):
             pb.advance(1)
             time.sleep(0.03)
 
-    # 13. TYLKO ETA (sam remaining time)
     console.print("\n13. ONLY ETA (remaining time only):", style="white_bold")
     with ProgressBarManager(
         "Waiting",
@@ -251,7 +246,6 @@ def run_all_demos() -> None:
             pb.advance(1)
             time.sleep(0.03)
 
-    # 14. TYLKO BYTES (sam progress bytes, NO speed)
     console.print("\n14. ONLY BYTES (no speed, no bar, no time):", style="white_bold")
     with ProgressBarManager(
         "Downloading",
@@ -267,7 +261,6 @@ def run_all_demos() -> None:
             pb.advance(500_000)
             time.sleep(0.03)
 
-    # 15. SPINNER + DOWNLOAD (kręciołek z bytes + speed)
     console.print("\n15. SPINNER + DOWNLOAD (spinner with bytes):", style="white_bold")
     with ProgressBarManager(
         "Syncing...",
@@ -281,19 +274,14 @@ def run_all_demos() -> None:
             pb.advance(300_000)
             time.sleep(0.03)
 
-    # 16. TYLKO NAZWA (description only - minimalist)
     console.print("\n16. ONLY NAME (description only - nothing else!):", style="white_bold")
     with ProgressBarManager("Done!", total=10, show_bar=False, show_percentage=False, show_elapsed=False) as pb:
         for _i in range(10):
             pb.advance(1)
             time.sleep(0.1)
 
-    #
-    # TRUNCATE TESTS - Description length limits
-    #
     print_section("TRUNCATE MODES - Description length control")
 
-    # 17. TRUNCATE END (default)
     console.print("17. TRUNCATE END (start...):", style="white_bold")
     with ProgressBarManager(
         "very_long_filename_example_that_should_be_truncated.zip",
@@ -305,7 +293,6 @@ def run_all_demos() -> None:
             pb.advance(1)
             time.sleep(0.02)
 
-    # 18. TRUNCATE START
     console.print("\n18. TRUNCATE START (...end):", style="white_bold")
     with ProgressBarManager(
         "very_long_filename_example_that_should_be_truncated.zip",
@@ -317,7 +304,6 @@ def run_all_demos() -> None:
             pb.advance(1)
             time.sleep(0.02)
 
-    # 19. TRUNCATE MIDDLE
     console.print("\n19. TRUNCATE MIDDLE (mid...dle):", style="white_bold")
     with ProgressBarManager(
         "very_long_filename_example_that_should_be_truncated.zip",
@@ -329,28 +315,24 @@ def run_all_demos() -> None:
             pb.advance(1)
             time.sleep(0.02)
 
-    # 20. MINIMUM LENGTH (5 chars)
     console.print("\n20. MINIMUM LENGTH (5 chars - '1...6'):", style="white_bold")
     with ProgressBarManager("123456789", total=30, max_description_length=5, truncate_mode="middle") as pb:
         for _i in range(30):
             pb.advance(1)
             time.sleep(0.02)
 
-    # 21. SHORT NAME (no truncate)
     console.print("\n21. SHORT NAME (no truncate needed):", style="white_bold")
     with ProgressBarManager("abc", total=30, max_description_length=25) as pb:
         for _i in range(30):
             pb.advance(1)
             time.sleep(0.02)
 
-    # 22. EMPTY NAME (edge case)
     console.print("\n22. EMPTY NAME (edge case):", style="white_bold")
     with ProgressBarManager("", total=20, max_description_length=10) as pb:
         for _i in range(20):
             pb.advance(1)
             time.sleep(0.03)
 
-    # 24. INVALID TRUNCATE MODE (fallback to 'end')
     console.print("\n24. INVALID TRUNCATE MODE (fallback to 'end'):", style="white_bold")
     with ProgressBarManager(
         "test_invalid_mode.zip",
@@ -364,7 +346,6 @@ def run_all_demos() -> None:
 
     print_section("MULTI-TASK - Many bars in one live display")
 
-    # 25. MULTI-TASK DOWNLOAD (concurrent bars, independent per-task colors)
     console.print("25. MULTI-TASK DOWNLOAD (concurrent bars, independent colors):", style="white_bold")
     fast_total = 89_000_000
     slow_total = 169_000_000
@@ -377,18 +358,14 @@ def run_all_demos() -> None:
             time.sleep(0.02)
         mp.update(slow, slow_total)
 
-    # 26. MULTI-TASK PER-ROW CONFIG, ALIGNED (default mode: columns line up)
     console.print("\n26. MULTI-TASK PER-ROW CONFIG - ALIGNED (columns line up):", style="white_bold")
     _run_per_row_config("aligned")
 
-    # 27. MULTI-TASK PARALLEL WORKERS (thread-safe concurrent updates)
     console.print("\n27. MULTI-TASK PARALLEL WORKERS (thread-safe updates):", style="white_bold")
     with MultiProgressManager(show_download=True, show_eta=True) as mp:
-        worker_tasks = [
-            mp.add_task(f"worker-{index}.bin", total=(index + 1) * 10_000_000) for index in range(4)
-        ]
+        worker_tasks = [mp.add_task(f"worker-{index}.bin", total=(index + 1) * 10_000_000) for index in range(4)]
 
-        def _worker(task_id, chunk):
+        def _worker(task_id: TaskID, chunk: int) -> None:
             for _step in range(100):
                 mp.advance(task_id, chunk)
                 time.sleep(0.02)
@@ -402,7 +379,6 @@ def run_all_demos() -> None:
         for worker in workers:
             worker.join()
 
-    # 28. MULTI-TASK PER-ROW CONFIG, INDEPENDENT (same rows, self-contained)
     console.print(
         "\n28. MULTI-TASK PER-ROW CONFIG - INDEPENDENT (values glued to each bar):",
         style="white_bold",
@@ -410,6 +386,7 @@ def run_all_demos() -> None:
     _run_per_row_config("independent")
 
     # ── Summary ───────────────────────────────────────────────────────────────
+
     print_section("DEMO SUMMARY")
     console.print("  • 6 demos: Core styles (rich, blocks, custom chars)", style="white_bold")
     console.print("  • 3 demos: Download mode (bytes + speed)", style="white_bold")

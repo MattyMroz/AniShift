@@ -1,5 +1,3 @@
-"""Regression tests against the external 206-entry selection dataset."""
-
 from __future__ import annotations
 
 import json
@@ -15,7 +13,6 @@ pytestmark = pytest.mark.skipif(not TRACKS_DATASET.is_file(), reason="track data
 
 
 def _codec_id(codec: str) -> str:
-    """Convert the dataset's codec labels to Matroska codec ids."""
     if codec == "SubStationAlpha":
         return "S_TEXT/ASS"
     if codec == "SubRip/SRT":
@@ -24,7 +21,6 @@ def _codec_id(codec: str) -> str:
 
 
 def _tracks(entry: dict[str, Any]) -> tuple[TrackInfo, ...]:
-    """Build typed tracks and their selector-compatible flat dictionaries."""
     result = [
         TrackInfo(
             id=int(track["id"]),
@@ -43,7 +39,6 @@ def _tracks(entry: dict[str, Any]) -> tuple[TrackInfo, ...]:
 
 
 def _flat_tracks(entry: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build the flat dictionaries consumed by the ported selector."""
     result: list[dict[str, Any]] = []
     for raw, track_type in ((entry["subs"], "subtitles"), (entry["auds"], "audio")):
         result.extend({**track, "type": track_type} for track in raw)
@@ -51,7 +46,6 @@ def _flat_tracks(entry: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def test_track_selection_matches_dataset() -> None:
-    """Selection reaches the required ground-truth accuracy and port parity."""
     data = json.loads(TRACKS_DATASET.read_text(encoding="utf-8"))
     entries = data["mkv"]
     audio_correct = 0

@@ -1,11 +1,8 @@
 """Progress bar system with dynamic color transitions.
 
-Features:
-- Modular show/hide flags for all components
-- Dynamic color transitions (any number of colors)
-- Multiple bar styles (rich, blocks, custom)
-- Download mode with bytes + speed
-- Context manager interface
+Modular single-bar (``ProgressBarManager``) and multi-row
+(``MultiProgressManager``) context managers with per-component flags,
+multiple bar styles, and download/speed columns.
 
 Usage:
     >>> from rich_console.progress import ProgressBarManager

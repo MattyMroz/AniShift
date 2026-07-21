@@ -81,6 +81,9 @@ def setup(
 
 def main() -> None:
     """Console-script entry point (see ``[project.scripts]``)."""
+    from loguru import logger  # noqa: PLC0415 - keep loguru off the import path until entry
+
+    logger.remove()
     app()
 
 

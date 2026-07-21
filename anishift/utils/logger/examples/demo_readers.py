@@ -18,6 +18,8 @@ from pathlib import Path
 from ...rich_console import console
 from .. import LogAggregator, LogReader, LogViewer
 
+__all__ = ["run_all_demos"]
+
 
 def _create_sample_logs(path: Path) -> None:
     """Write sample JSONL entries for demo."""
@@ -85,7 +87,6 @@ def demo_chain_reader() -> Path:
     """Demonstrate chain-able LogReader API."""
     console.rule("[ruby_red_bold]Chain-able LogReader[/ruby_red_bold]")
 
-    # Create temp log file
     tmp = Path(tempfile.mkdtemp()) / "demo.log.jsonl"
     _create_sample_logs(tmp)
     console.print(f"[gray]Created sample log: {tmp}[/gray]")
@@ -93,25 +94,20 @@ def demo_chain_reader() -> Path:
 
     reader = LogReader(tmp)
 
-    # Load and count
     total = reader.load().count()
     console.print(f"[white_bold]Total logs:[/white_bold] {total}")
 
-    # Filter by level
     errors = reader.load().filter_by_level("ERROR").to_list()
     console.print(f"[white_bold]Errors:[/white_bold] {len(errors)}")
     for err in errors:
         console.print(f"  [red]• {err['message']}[/red]")
 
-    # Filter by logger
     db_logs = reader.load().filter_by_logger("db").count()
     console.print(f"[white_bold]DB logs:[/white_bold] {db_logs}")
 
-    # Chained filters
     db_errors = reader.load().filter_by_logger("db").filter_by_level("ERROR").to_list()
     console.print(f"[white_bold]DB errors:[/white_bold] {len(db_errors)}")
 
-    # Filter by time range
     time_filtered = (
         reader.load()
         .filter_by_time(
@@ -122,12 +118,11 @@ def demo_chain_reader() -> Path:
     )
     console.print(f"[white_bold]Logs 10:02-10:04:[/white_bold] {time_filtered}")
 
-    # First/Last
     first = reader.load().first(2)
-    console.print(f"[white_bold]First 2:[/white_bold] {[l['message'] for l in first]}")
+    console.print(f"[white_bold]First 2:[/white_bold] {[entry['message'] for entry in first]}")
 
     last = reader.load().last(2)
-    console.print(f"[white_bold]Last 2:[/white_bold] {[l['message'] for l in last]}")
+    console.print(f"[white_bold]Last 2:[/white_bold] {[entry['message'] for entry in last]}")
 
     return tmp
 
@@ -140,19 +135,16 @@ def demo_aggregator(log_file: Path) -> None:
     logs = reader.load().to_list()
     agg = LogAggregator(logs)
 
-    # Count by level
     by_level = agg.count_by_level()
     console.print("[white_bold]By level:[/white_bold]")
     for level, count in sorted(by_level.items()):
         console.print(f"  {level:<10} {count}")
 
-    # Count by logger
     by_logger = agg.count_by_logger()
     console.print("[white_bold]By logger:[/white_bold]")
     for name, count in sorted(by_logger.items(), key=lambda x: -x[1]):
         console.print(f"  {name:<10} {count}")
 
-    # Timeline
     timeline = agg.timeline(interval="hour")
     console.print("[white_bold]Timeline (hourly):[/white_bold]")
     for point in timeline:
@@ -160,7 +152,6 @@ def demo_aggregator(log_file: Path) -> None:
         total = sum(v for k, v in point.items() if k != "time")
         console.print(f"  {bucket}  {'█' * total} ({total})")
 
-    # Error summary
     error_summary = agg.error_summary()
     if error_summary["total_errors"]:
         console.print("[white_bold]Error summary:[/white_bold]")

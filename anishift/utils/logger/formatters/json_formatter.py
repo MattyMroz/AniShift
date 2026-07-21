@@ -1,14 +1,13 @@
 """Structured JSON formatter for file logging.
 
 Serializes log records to JSON format for machine-readable structured logging.
-Compatible with log aggregation systems (ELK, Datadog, CloudWatch).
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 __all__ = ["JSONFormatter", "LogRecordMeta"]
 
@@ -38,7 +37,7 @@ class LogRecordMeta:
     exception: str | None = None
 
 
-_EMPTY_META = LogRecordMeta()
+_EMPTY_META: Final[LogRecordMeta] = LogRecordMeta()
 """Default empty metadata singleton (frozen, safe to share)."""
 
 

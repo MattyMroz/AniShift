@@ -17,6 +17,8 @@ from loguru import logger
 from ...rich_console import console
 from .. import LoggerMode, log_duration, setup_mode
 
+__all__ = ["run_all_demos"]
+
 
 def demo_dev_mode() -> None:
     """Show DEV mode: stderr + file, DEBUG level, colored output."""
@@ -90,5 +92,4 @@ def run_all_demos() -> None:
     demo_timer_integration()
     console.print()
 
-    # Restore DEV mode for subsequent demos
     setup_mode(LoggerMode.DEV, name="demo")

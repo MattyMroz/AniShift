@@ -1,5 +1,3 @@
-"""Tests for the resource-manifest loader."""
-
 from __future__ import annotations
 
 import json

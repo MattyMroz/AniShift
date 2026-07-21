@@ -94,7 +94,7 @@ class RichHandler:
             time_str = timestamp.strftime("%H:%M:%S")
         elif self._config.time_format == "ISO8601":
             time_str = timestamp.isoformat()
-        else:  # timestamp
+        else:
             time_str = str(int(timestamp.timestamp()))
 
         if self._config.show_date and self._config.time_format != "ISO8601":

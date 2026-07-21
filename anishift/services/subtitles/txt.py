@@ -10,7 +10,7 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.types import SpokenLine
 
-__all__ = ["txt_to_spoken"]
+__all__ = ["read_txt", "txt_to_spoken"]
 
 _RE_SPACES: Final[re.Pattern[str]] = re.compile(r"\s+")
 """Whitespace normalisation pattern."""
@@ -29,10 +29,14 @@ def _fail(message: str, suggestion: str = "") -> SubtitleError:
     )
 
 
-def txt_to_spoken(path: Path, *, max_chars: int = _MAX_CHUNK_CHARS) -> tuple[SpokenLine, ...]:
-    """Read UTF-8 text and split it into narrator lines."""
+def read_txt(path: Path) -> str:
+    """Read a UTF-8 text file.
+
+    Raises:
+        SubtitleError: The file is missing, unreadable or not UTF-8.
+    """
     try:
-        text = path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         msg = f"Text file not found: {path}"
         raise _fail(msg, "Check that the file still exists") from exc
@@ -42,7 +46,11 @@ def txt_to_spoken(path: Path, *, max_chars: int = _MAX_CHUNK_CHARS) -> tuple[Spo
     except OSError as exc:
         msg = f"Text file could not be read: {path}"
         raise _fail(msg, "Check file permissions") from exc
-    text = _RE_SPACES.sub(" ", text).strip()
+
+
+def txt_to_spoken(path: Path, *, max_chars: int = _MAX_CHUNK_CHARS) -> tuple[SpokenLine, ...]:
+    """Read UTF-8 text and split it into narrator lines."""
+    text = _RE_SPACES.sub(" ", read_txt(path)).strip()
     if not text:
         return ()
     chunks: list[str] = []

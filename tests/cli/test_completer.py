@@ -1,5 +1,3 @@
-"""Tests for the slash-command completer."""
-
 from __future__ import annotations
 
 from prompt_toolkit.completion import CompleteEvent

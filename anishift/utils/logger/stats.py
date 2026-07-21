@@ -14,8 +14,6 @@ __all__ = ["LoggerStats", "get_logger_stats", "increment_stat", "reset_stats"]
 class LoggerStats:
     """Thread-safe logger health statistics.
 
-    Track logging activity for monitoring and debugging.
-
     Attributes:
         total_logged: Total number of logged messages.
         by_level: Message count per log level.
@@ -76,7 +74,6 @@ class LoggerStats:
             self.started_at = datetime.now()
 
 
-# Global instance
 _stats = LoggerStats()
 
 

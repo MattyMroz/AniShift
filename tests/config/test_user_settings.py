@@ -1,5 +1,3 @@
-"""Tests for panel-preference load/save (config/settings.json)."""
-
 from __future__ import annotations
 
 import json
@@ -17,7 +15,6 @@ from anishift.config.user_settings import (
 
 @pytest.fixture
 def config_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Point config_path() at a temp file and return its path."""
     target = tmp_path / "settings.json"
     monkeypatch.setattr(user_settings, "config_path", lambda: target)
     return target

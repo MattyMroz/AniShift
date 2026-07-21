@@ -27,9 +27,6 @@ Portable modules:
     safe_path.py     — path traversal protection
     safe_fs.py       — retry-on-lock filesystem ops (safe_rmtree, safe_move)
 
-Non-portable (moved to services/image_processing/):
-    postprocess.py — resize & compress (now in <pkg>.services.image_processing)
-
 Smoke test (after copying to a clean project):
     python -c "from anishift.utils.logger import setup_mode, LoggerMode; setup_mode(LoggerMode.SILENT); print('OK')"
     python -c "from anishift.utils.timer import Timer; t = Timer('x', auto_start=True); t.stop(); print('OK')"
@@ -39,6 +36,14 @@ Smoke test (after copying to a clean project):
 from __future__ import annotations
 
 from typing import Final
+
+__all__ = [
+    "MIN_PYTHON",
+    "MODULE_DEPS",
+    "OPTIONAL_DEPS",
+    "PORTABLE_MODULES",
+    "REQUIRED_DEPS",
+]
 
 REQUIRED_DEPS: Final[dict[str, str]] = {
     "loguru": ">=0.7",

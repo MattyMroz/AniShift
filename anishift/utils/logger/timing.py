@@ -32,9 +32,6 @@ def log_duration(
 ) -> Generator[Timer]:
     """Time an operation and log the duration on exit.
 
-    Use ``Timer`` for nanosecond precision.
-    Automatically log duration with structured context.
-
     Args:
         operation_name: Name of the operation being timed.
         level: Log level for the timing message.

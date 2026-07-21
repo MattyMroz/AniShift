@@ -8,6 +8,7 @@ from typing import Literal
 from unittest.mock import MagicMock
 
 import pytest
+from rich.console import Console
 from rich.text import Text
 
 from ..console import console
@@ -25,6 +26,7 @@ from ..progress.manager import (
     _truncate_description,
 )
 from ..progress.multi import MultiProgressManager, _PerTaskColumn
+from ..theme import RICH_THEME
 
 # ── ProgressBarBuilder ────────────────────────────────────────────────────────
 
@@ -768,15 +770,15 @@ class TestMultiProgressManagerPerTask:
 
     def test_independent_row_values_glued_to_own_bar(self):
         mp = MultiProgressManager(align="independent")
-        percent = mp.add_task("episode.mkv", show_elapsed=False)
+        percent = mp.add_task("data.bin", show_elapsed=False)
         mp.update(percent, 100)
         rendered = mp._progress.columns[0].render(mp._progress.tasks[0]).plain
         bar = "█" * mp._states[percent].bar_width
-        assert rendered == f"episode.mkv {bar} | 100%"
+        assert rendered == f"data.bin {bar} | 100%"
 
     def test_independent_rows_do_not_share_column_positions(self):
         mp = MultiProgressManager(align="independent")
-        percent = mp.add_task("episode.mkv", show_elapsed=False)
+        percent = mp.add_task("data.bin", show_elapsed=False)
         download = mp.add_task("tools.zip", total=1000, show_download=True, show_eta=True, show_elapsed=False)
         mp.update(percent, 100)
         mp.update(download, 1000)
@@ -790,7 +792,7 @@ class TestMultiProgressManagerPerTask:
 
     def test_independent_rows_have_no_padding_gaps(self):
         mp = MultiProgressManager(align="independent")
-        percent = mp.add_task("episode.mkv", show_elapsed=False)
+        percent = mp.add_task("data.bin", show_elapsed=False)
         download = mp.add_task("tools.zip", total=1000, show_download=True, show_eta=True)
         mp.update(percent, 100)
         mp.update(download, 1000)
@@ -836,9 +838,73 @@ class TestMultiProgressManagerPerTask:
     def test_mixed_rows_context_manager_smoke(self, capsys):
         with MultiProgressManager() as mp:
             download = mp.add_task("tools.zip", total=1_000_000, show_download=True, show_eta=True)
-            percent = mp.add_task("episode.mkv")
+            percent = mp.add_task("data.bin")
             spinner = mp.add_task("thinking", show_spinner=True)
             mp.update(download, 1_000_000)
             mp.update(percent, 100)
             mp.update(spinner, 100)
         capsys.readouterr()
+
+
+# ── Bracketed descriptions survive markup rendering ───────────────────────────
+
+_BRACKET_NAMES = (
+    "[draft] Report Final - 01",
+    "TASK [module.core] Build (v2) [stage-2]",
+    "BUG [backup] Data Set",
+    "plain name no brackets",
+)
+
+
+def _render_progress_plain(progress) -> str:
+    render_console = Console(width=200, theme=RICH_THEME)
+    with render_console.capture() as capture:
+        render_console.print(progress.get_renderable())
+    return capture.get()
+
+
+class TestBracketedDescriptions:
+    @pytest.mark.parametrize("name", _BRACKET_NAMES)
+    def test_single_rich_bar_keeps_brackets(self, name):
+        with ProgressBarManager(name, total=100, max_description_length=60) as pb:
+            output = _render_progress_plain(pb.progress)
+        assert name in output
+
+    @pytest.mark.parametrize("name", _BRACKET_NAMES)
+    def test_single_blocks_bar_keeps_brackets(self, name):
+        with ProgressBarManager(name, total=100, bar="blocks", max_description_length=60) as pb:
+            output = _render_progress_plain(pb.progress)
+        assert name in output
+
+    def test_single_bar_keeps_brackets_after_color_change(self):
+        with ProgressBarManager("[draft] Report Final - 01", total=100, max_description_length=60) as pb:
+            pb.advance(60)
+            output = _render_progress_plain(pb.progress)
+        assert "[draft] Report Final - 01" in output
+
+    def test_multi_aligned_keeps_brackets(self):
+        mp = MultiProgressManager(max_description_length=60)
+        for name in _BRACKET_NAMES:
+            mp.add_task(name)
+        output = _render_progress_plain(mp._progress)
+        for name in _BRACKET_NAMES:
+            assert name in output
+
+    def test_multi_aligned_keeps_brackets_after_color_change(self):
+        mp = MultiProgressManager(max_description_length=60)
+        task = mp.add_task("BUG [backup] Data Set")
+        mp.update(task, 100)
+        assert "BUG [backup] Data Set" in _render_progress_plain(mp._progress)
+
+    @pytest.mark.parametrize("name", _BRACKET_NAMES)
+    def test_multi_independent_row_keeps_brackets(self, name):
+        mp = MultiProgressManager(align="independent", max_description_length=60)
+        task = mp.add_task(name)
+        mp.update(task, 50)
+        rendered = mp._progress.columns[0].render(mp._progress.tasks[0]).plain
+        assert name in rendered
+
+    def test_truncated_name_keeps_visible_brackets(self):
+        mp = MultiProgressManager(max_description_length=15)
+        mp.add_task("[draft] Report Final - 01")
+        assert "[draft] Repo..." in _render_progress_plain(mp._progress)

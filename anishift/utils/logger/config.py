@@ -1,7 +1,6 @@
-"""Logger configuration models with full control over console and file output.
+"""Logger configuration models for console and file output.
 
 Every component is configurable: time, level, icon, logger name, message, context.
-Designed for any project: API, AI/ML, CLI, services.
 
 Example:
     >>> from logger import LoggerConfig, ConsoleConfig, FileConfig
@@ -49,8 +48,13 @@ __all__ = [
 # ── Type Aliases ──────────────────────────────────────────────────────────────
 
 LogLevel = Literal["DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"]
+"""Accepted log level names, from least to most severe."""
+
 TimeFormat = Literal["HH:MM:SS.ms", "HH:MM:SS", "ISO8601", "timestamp"]
+"""Accepted console timestamp display formats."""
+
 TimestampFormat = Literal["iso8601", "timestamp"]
+"""Accepted JSON timestamp formats."""
 
 
 # ── Logger Modes ──────────────────────────────────────────────────────────────
@@ -74,7 +78,7 @@ class LoggerMode(StrEnum):
 
 
 class ConsoleConfig(BaseModel):
-    """Console output configuration with full control over displayed components.
+    """Console output configuration controlling which components are displayed.
 
     Example:
         >>> ConsoleConfig(
@@ -373,6 +377,7 @@ PresetName = Literal[
     "api_logging",
     "ml_logging",
 ]
+"""Names of built-in logger configuration presets."""
 
 
 class PresetConfig(BaseModel):
