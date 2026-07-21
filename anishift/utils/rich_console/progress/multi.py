@@ -52,6 +52,7 @@ from .manager import (
     ProgressBarManager,
     _color_for_percentage,
     _fit_bar_width,
+    _style_description,
     _truncate_description,
 )
 
@@ -350,7 +351,7 @@ class MultiProgressManager:
                 _SHOW_ETA_FIELD: eta_flag,
                 _SHOW_ELAPSED_FIELD: self._pick(show_elapsed, self._show_elapsed),
             }
-            task_id = self._progress.add_task(f"[{text_color}]{label}", total=total, **fields)
+            task_id = self._progress.add_task(_style_description(text_color, label), total=total, **fields)
             self._states[task_id] = _TaskState(label, total, 0, bar_color, task_colors, bar_width, bar_visible)
             return task_id
 
@@ -425,7 +426,7 @@ class MultiProgressManager:
         if bar_color != state.style:
             state.style = bar_color
             fields[_STYLE_FIELD] = bar_color
-            description = f"[{text_color}]{state.description}"
+            description = _style_description(text_color, state.description)
             self._progress.update(task_id, completed=state.completed, description=description, **fields)
         else:
             self._progress.update(task_id, completed=state.completed, **fields)

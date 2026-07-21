@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Final, Literal
 
+from rich.markup import escape
 from rich.progress import (
     BarColumn,
     Progress,
@@ -119,6 +120,22 @@ def _truncate_description(description: str, max_length: int, mode: Literal["star
         right_size = max_length - 3 - left_size
         return description[:left_size] + "..." + description[-right_size:]
     return description[: max_length - 3] + "..."
+
+
+def _style_description(color: str, description: str) -> str:
+    """Wrap a description in a color tag, escaping it first.
+
+    Task descriptions are markup-parsed by ``rich.Progress``, so bracketed
+    names like ``[draft] file.mkv`` must be escaped or Rich eats them as tags.
+
+    Args:
+        color: Rich style name for the description text.
+        description: Raw label; rendered verbatim, brackets included.
+
+    Returns:
+        Markup string safe to pass as a task description.
+    """
+    return f"[{color}]{escape(description)}"
 
 
 def _color_for_percentage(colors: dict[int, tuple[str, str]], percentage: int) -> tuple[str, str]:
@@ -569,13 +586,13 @@ class ProgressBarManager:
 
         if self.bar_style == "rich":
             self.task = self.progress.add_task(
-                f"[{self.current_style}]{self.description}",
+                _style_description(self.current_style, self.description),
                 total=self.total,
             )
         else:
             initial_bar = self._build_custom_bar(0)
             self.task = self.progress.add_task(
-                f"[{self.current_style}]{self.description}",
+                _style_description(self.current_style, self.description),
                 total=self.total,
                 custom_bar=initial_bar,
             )
@@ -657,7 +674,7 @@ class ProgressBarManager:
 
             self.progress.update(
                 self.task,
-                description=f"[{text_color}]{self.description}",
+                description=_style_description(text_color, self.description),
             )
 
     def _build_custom_bar(self, current: int) -> str:
