@@ -1,5 +1,3 @@
-"""Tests for Grupa 1: Core (config, modes, core)."""
-
 from __future__ import annotations
 
 import json
@@ -31,12 +29,8 @@ from ..modes import get_mode_config
 
 _CORE_SETUP_MODE = f"{_core_mod.__name__}.setup_mode"
 
-# ── LoggerMode ────────────────────────────────────────────────────────────────
-
 
 class TestLoggerMode:
-    """Tests for LoggerMode enum."""
-
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
@@ -57,12 +51,7 @@ class TestLoggerMode:
         assert LoggerMode.DEV == "DEV"
 
 
-# ── ConsoleConfig ─────────────────────────────────────────────────────────────
-
-
 class TestConsoleConfig:
-    """Tests for ConsoleConfig defaults and overrides."""
-
     def test_defaults(self) -> None:
         cfg = ConsoleConfig()
         assert cfg.show_time is True
@@ -81,12 +70,7 @@ class TestConsoleConfig:
             ConsoleConfig(nonexistent_field="x")  # type: ignore[call-arg]
 
 
-# ── FileConfig ────────────────────────────────────────────────────────────────
-
-
 class TestFileConfig:
-    """Tests for FileConfig defaults and overrides."""
-
     def test_defaults(self) -> None:
         cfg = FileConfig()
         assert cfg.enable is True
@@ -100,12 +84,7 @@ class TestFileConfig:
         assert cfg.path == Path("logs/custom.log")
 
 
-# ── LoggerConfig ──────────────────────────────────────────────────────────────
-
-
 class TestLoggerConfig:
-    """Tests for LoggerConfig model."""
-
     def test_defaults(self) -> None:
         cfg = LoggerConfig()
         assert cfg.name == "app"
@@ -156,12 +135,7 @@ class TestLoggerConfig:
         assert loaded.name == "app"
 
 
-# ── get_level_priority ────────────────────────────────────────────────────────
-
-
 class TestGetLevelPriority:
-    """Tests for get_level_priority helper."""
-
     @pytest.mark.parametrize(
         ("level", "expected"),
         [
@@ -179,12 +153,7 @@ class TestGetLevelPriority:
         assert get_level_priority("GARBAGE") == 0  # type: ignore[arg-type]
 
 
-# ── PresetConfig ──────────────────────────────────────────────────────────────
-
-
 class TestPresetConfig:
-    """Tests for PresetConfig model."""
-
     def test_valid_preset(self) -> None:
         preset = PresetConfig(
             name="standard",
@@ -194,12 +163,7 @@ class TestPresetConfig:
         assert preset.name == "standard"
 
 
-# ── get_mode_config (modes.py) ────────────────────────────────────────────────
-
-
 class TestGetModeConfig:
-    """Tests for get_mode_config factory."""
-
     @pytest.mark.parametrize(
         ("mode", "expected_name", "expected_console"),
         [
@@ -245,12 +209,7 @@ class TestGetModeConfig:
         assert cfg.file.path == custom
 
 
-# ── InterceptHandler (core.py) ────────────────────────────────────────────────
-
-
 class TestInterceptHandler:
-    """Tests for InterceptHandler stdlib→loguru bridge."""
-
     def test_is_logging_handler(self) -> None:
         handler = InterceptHandler()
         assert isinstance(handler, logging.Handler)
@@ -277,12 +236,7 @@ class TestInterceptHandler:
             logger.remove(handler_id)
 
 
-# ── setup_mode (core.py) ──────────────────────────────────────────────────────
-
-
 class TestSetupMode:
-    """Tests for setup_mode function."""
-
     def test_setup_dev_mode(self) -> None:
         setup_mode(LoggerMode.DEV)
         shutdown_logger()
@@ -308,12 +262,7 @@ class TestSetupMode:
             shutdown_logger()
 
 
-# ── setup_mode_from_env (core.py) ─────────────────────────────────────────────
-
-
 class TestSetupModeFromEnv:
-    """Tests for setup_mode_from_env function."""
-
     def test_default_is_production(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LOGGER_MODE", raising=False)
         setup_mode_from_env()
@@ -359,25 +308,14 @@ class TestSetupModeFromEnv:
             assert kwargs.get("level") == "ERROR"
 
 
-# ── shutdown_logger (core.py) ─────────────────────────────────────────────────
-
-
 class TestShutdownLogger:
-    """Tests for shutdown_logger function."""
-
     def test_shutdown_removes_handlers(self) -> None:
         setup_mode(LoggerMode.DEV)
         shutdown_logger()
-        # After shutdown, logging a message should not raise
         logger.info("This should be a no-op after shutdown")
 
 
-# ── __all__ exports ───────────────────────────────────────────────────────────
-
-
 class TestExports:
-    """Verify __all__ in all Core modules."""
-
     def test_config_all(self) -> None:
         assert hasattr(_config_mod, "__all__")
         assert "LoggerConfig" in _config_mod.__all__

@@ -1,5 +1,3 @@
-"""Tests for chain-able LogReader and LogAggregator."""
-
 from __future__ import annotations
 
 import json
@@ -16,7 +14,6 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def log_file(tmp_path: Path) -> Path:
-    """Create a temp JSONL log file with sample data."""
     logs = [
         {"level": "INFO", "message": "app started", "logger": "app", "timestamp": "2024-06-15T10:00:00"},
         {"level": "DEBUG", "message": "loading config", "logger": "config", "timestamp": "2024-06-15T10:01:00"},
@@ -32,7 +29,6 @@ def log_file(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def loguru_file(tmp_path: Path) -> Path:
-    """Create a temp JSONL log file with loguru record format."""
     records = [
         {
             "text": "msg",
@@ -54,7 +50,6 @@ def loguru_file(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def duration_logs() -> list[dict[str, object]]:
-    """Logs with duration_ms for aggregation tests."""
     return [
         {
             "level": "INFO",
@@ -87,12 +82,7 @@ def duration_logs() -> list[dict[str, object]]:
     ]
 
 
-# ── LogReader ─────────────────────────────────────────────────────────────────
-
-
 class TestLogReaderLoad:
-    """Tests for LogReader.load()."""
-
     def test_load_simple_jsonl(self, log_file: Path) -> None:
         reader = LogReader(log_file)
         logs = reader.load().to_list()
@@ -125,8 +115,6 @@ class TestLogReaderLoad:
 
 
 class TestLogReaderFilters:
-    """Tests for LogReader filter methods."""
-
     def test_filter_by_level(self, log_file: Path) -> None:
         errors = LogReader(log_file).load().filter_by_level("ERROR").to_list()
         assert len(errors) == 2
@@ -170,8 +158,6 @@ class TestLogReaderFilters:
 
 
 class TestLogReaderTerminals:
-    """Tests for terminal methods (count, first, last, reset)."""
-
     def test_count(self, log_file: Path) -> None:
         assert LogReader(log_file).load().count() == 6
 
@@ -197,8 +183,6 @@ class TestLogReaderTerminals:
 
 
 class TestLogReaderFilterByTime:
-    """Tests for time-based filtering."""
-
     def test_filter_by_time_range(self, log_file: Path) -> None:
         results = (
             LogReader(log_file)
@@ -209,7 +193,6 @@ class TestLogReaderFilterByTime:
             )
             .to_list()
         )
-        # Inclusive range: 10:01, 10:02, 10:03
         assert len(results) == 3
 
     def test_filter_no_start_end_returns_all(self, log_file: Path) -> None:
@@ -217,12 +200,7 @@ class TestLogReaderFilterByTime:
         assert len(results) == 6
 
 
-# ── LogAggregator ─────────────────────────────────────────────────────────────
-
-
 class TestLogAggregator:
-    """Tests for LogAggregator."""
-
     def test_count_by_level(self, log_file: Path) -> None:
         logs = LogReader(log_file).load().to_list()
         agg = LogAggregator(logs)

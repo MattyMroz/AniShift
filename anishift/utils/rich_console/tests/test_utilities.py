@@ -1,5 +1,3 @@
-"""Tests for rich_console.utilities module."""
-
 from __future__ import annotations
 
 import pytest
@@ -12,12 +10,8 @@ from ..utilities import (
     get_status_icon,
 )
 
-# ── get_status_icon ───────────────────────────────────────────────────────────
-
 
 class TestGetStatusIcon:
-    """Test get_status_icon for all status types and options."""
-
     @pytest.mark.parametrize(
         ("status", "expected_icon"),
         [
@@ -60,12 +54,7 @@ class TestGetStatusIcon:
         assert result == "[error]❌[/error]"
 
 
-# ── format_bytes ──────────────────────────────────────────────────────────────
-
-
 class TestFormatBytes:
-    """Test format_bytes with binary/decimal units and edge cases."""
-
     def test_zero_bytes(self):
         assert format_bytes(0) == "0 B"
 
@@ -115,12 +104,7 @@ class TestFormatBytes:
         assert result == "1.00 PB"
 
 
-# ── get_progress_color ────────────────────────────────────────────────────────
-
-
 class TestGetProgressColor:
-    """Test get_progress_color threshold logic."""
-
     def test_zero_returns_red(self):
         assert get_progress_color(0) == "red"
 
@@ -153,12 +137,7 @@ class TestGetProgressColor:
         assert get_progress_color(59, good_threshold=90, warning_threshold=60) == "red"
 
 
-# ── format_duration ───────────────────────────────────────────────────────────
-
-
 class TestFormatDuration:
-    """Test format_duration at second/minute/hour boundaries."""
-
     def test_negative_raises(self):
         with pytest.raises(ValueError, match="negative"):
             format_duration(-1)
@@ -191,12 +170,7 @@ class TestFormatDuration:
         assert format_duration(1.2345, precision=4) == "1.2345s"
 
 
-# ── format_percentage ─────────────────────────────────────────────────────────
-
-
 class TestFormatPercentage:
-    """Test format_percentage with various value/total combos."""
-
     def test_basic(self):
         assert format_percentage(75, 100) == "75.0%"
 

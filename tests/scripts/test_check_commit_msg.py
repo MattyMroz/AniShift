@@ -50,13 +50,13 @@ def test_accepts_valid_scoped_subject(monkeypatch: pytest.MonkeyPatch, tmp_path:
 @pytest.mark.parametrize(
     "message",
     [
-        "feat: add deepl retry backoff",  # no scope
-        "fix: guard empty repl line",  # no scope
-        "feat(unknown): touch mystery module",  # scope not in the allowed set
-        "feature(cli): typo in type",  # invalid type
-        "update(cli): non-conventional type",  # invalid type
-        "feat(cli) missing colon",  # no colon
-        "random text",  # not conventional at all
+        "feat: add deepl retry backoff",
+        "fix: guard empty repl line",
+        "feat(unknown): touch mystery module",
+        "feature(cli): typo in type",
+        "update(cli): non-conventional type",
+        "feat(cli) missing colon",
+        "random text",
     ],
 )
 def test_rejects_invalid_subject(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, message: str) -> None:

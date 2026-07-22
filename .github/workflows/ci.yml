@@ -30,6 +30,8 @@ jobs:
       - run: uv sync --frozen --group dev
       - run: uv run ruff check anishift/ tests/
       - run: uv run ruff format --check anishift/ tests/
+      - name: No docstrings/comments in tests
+        run: uv run python scripts/hooks/check_test_comments.py $(git ls-files 'tests/**/test_*.py' 'anishift/**/test_*.py')
 
   typecheck:
     name: Type Check (mypy)

@@ -18,8 +18,6 @@ from anishift.services.extraction.types import MediaInfo
 
 
 class _NullPhase:
-    """A progress phase that records rows without rendering anything."""
-
     def __enter__(self) -> _NullPhase:
         return self
 

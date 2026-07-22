@@ -1,5 +1,3 @@
-"""Unit tests for timing decorators."""
-
 from __future__ import annotations
 
 import pytest
@@ -12,12 +10,8 @@ from ..decorators import (
     timed_when_debug,
 )
 
-# ── @timed ────────────────────────────────────────────────────────────────────
-
 
 class TestTimed:
-    """Tests for the @timed() decorator."""
-
     def test_returns_original_value(self) -> None:
         @timed()
         def add(a: int, b: int) -> int:
@@ -55,12 +49,7 @@ class TestTimed:
             fail()
 
 
-# ── @timed_if ─────────────────────────────────────────────────────────────────
-
-
 class TestTimedIf:
-    """Tests for the @timed_if() decorator."""
-
     def test_condition_true_still_returns_value(self) -> None:
         @timed_if(True)
         def work() -> int:
@@ -112,12 +101,7 @@ class TestTimedIf:
             fail()
 
 
-# ── @timed_debug ──────────────────────────────────────────────────────────────
-
-
 class TestTimedDebug:
-    """Tests for the @timed_debug() convenience decorator."""
-
     def test_returns_value(self) -> None:
         @timed_debug()
         def compute() -> int:
@@ -133,15 +117,9 @@ class TestTimedDebug:
         assert compute() == 1
 
 
-# ── @timed_in_dev ─────────────────────────────────────────────────────────────
-
-
 class TestTimedInDev:
-    """Tests for the @timed_in_dev() decorator."""
-
     def test_returns_value_in_dev(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("LOGGER_MODE", "DEV")
-        # Must re-create decorator after env change
         from ..decorators import timed_if as _tif
 
         dec = _tif(True)
@@ -160,12 +138,7 @@ class TestTimedInDev:
         assert work() == 20
 
 
-# ── @timed_when_debug ─────────────────────────────────────────────────────────
-
-
 class TestTimedWhenDebug:
-    """Tests for the @timed_when_debug() decorator."""
-
     def test_returns_value(self) -> None:
         @timed_when_debug()
         def work() -> str:
@@ -178,9 +151,7 @@ class TestTimedWhenDebug:
         def work() -> int:
             return 5
 
-        # Without DEBUG set → direct call path
         assert work() == 5
 
-        # With DEBUG=true → timed path
         monkeypatch.setenv("DEBUG", "true")
         assert work() == 5

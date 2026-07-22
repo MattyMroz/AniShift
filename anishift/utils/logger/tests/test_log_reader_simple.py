@@ -1,5 +1,3 @@
-"""Tests for simple LogReader (log_reader.py)."""
-
 from __future__ import annotations
 
 import json
@@ -15,7 +13,6 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def log_file(tmp_path: Path) -> Path:
-    """Create a temp JSONL log file."""
     logs = [
         {"level": "INFO", "message": "boot", "logger": "core", "timestamp": "2024-06-15T10:00:00"},
         {"level": "DEBUG", "message": "detail", "logger": "core", "timestamp": "2024-06-15T10:01:00"},
@@ -29,8 +26,6 @@ def log_file(tmp_path: Path) -> Path:
 
 
 class TestSimpleLogReader:
-    """Tests for the simple LogReader."""
-
     def test_read_all(self, log_file: Path) -> None:
         reader = LogReader(log_file)
         logs = reader.read_all()

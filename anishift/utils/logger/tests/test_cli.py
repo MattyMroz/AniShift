@@ -1,5 +1,3 @@
-"""Tests for CLI module."""
-
 from __future__ import annotations
 
 import json
@@ -18,12 +16,9 @@ _CLI_VIEWER = f"{_cli_mod.__name__}.LogViewer"
 if TYPE_CHECKING:
     from pathlib import Path
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
-
 
 @pytest.fixture
 def log_file(tmp_path: Path) -> Path:
-    """Create a temporary log file with sample entries."""
     p = tmp_path / "test.log.jsonl"
     entries: list[dict[str, Any]] = [
         {"level": "INFO", "message": "boot", "logger": "core", "timestamp": "2024-06-15T10:00:00"},
@@ -36,12 +31,7 @@ def log_file(tmp_path: Path) -> Path:
     return p
 
 
-# ── parse_args ────────────────────────────────────────────────────────────────
-
-
 class TestParseArgs:
-    """Tests for parse_args()."""
-
     def test_empty(self) -> None:
         assert parse_args([]) == {}
 
@@ -94,17 +84,11 @@ class TestParseArgs:
         assert "unknown" not in opts
 
     def test_missing_value_skipped(self) -> None:
-        """Flag without value is silently skipped."""
         opts = parse_args(["--recent"])
         assert "recent" not in opts
 
 
-# ── apply_filters ─────────────────────────────────────────────────────────────
-
-
 class TestApplyFilters:
-    """Tests for apply_filters()."""
-
     def test_no_filters(self, log_file: Path) -> None:
         reader = LogReader(log_file)
         logs = apply_filters(reader, {})
@@ -130,7 +114,6 @@ class TestApplyFilters:
         reader = LogReader(log_file)
         logs = apply_filters(reader, {"recent": 2})
         assert len(logs) == 2
-        # Recent returns newest first
         assert logs[0]["message"] == "ready"
 
     def test_combined_filters(self, log_file: Path) -> None:
@@ -140,17 +123,11 @@ class TestApplyFilters:
         assert logs[0]["message"] == "ready"
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
-
-
 class TestMain:
-    """Tests for main() entry point."""
-
     @patch(_CLI_CONSOLE)
     def test_no_args_prints_help(self, mock_console: Any) -> None:
         with patch("sys.argv", ["cli"]):
             main()
-        # print_help uses console.print
         mock_console.print.assert_called()
 
     @patch(_CLI_CONSOLE)
