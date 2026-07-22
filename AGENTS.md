@@ -20,7 +20,7 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 
 - Kod, komentarze, nazwy, commity, issue i PR po angielsku. Rozmowa z userem po polsku.
 - Zależności tylko przez `uv add` / `uv remove`. Nigdy nie edytuj `pyproject.toml` ręcznie.
-- Commity w formacie Conventional Commits (hook wymusza). Zero śladów AI (`Co-Authored-By`, stopki generatora) — też w treści PR.
+- Commity w formacie `typ(scope): opis` — scope OBOWIĄZKOWY, z listy w `scripts/hooks/check_commit_msg.py` (hook odrzuca commit bez scope lub ze scope spoza listy). Zero śladów AI (`Co-Authored-By`, stopki generatora) — też w treści PR.
 - Issue zakładaj wg szablonów z `.github/ISSUE_TEMPLATE/` (bug / feature / task). Tytuł z prefiksem Conventional Commits, jak w szablonie.
 - Rób tylko to, o co user prosi. Zero nieproszonych plików, refaktorów, issue.
 - Przed większą lub planowaną zmianą potwierdź zakres z userem. Nie ruszaj od razu.
