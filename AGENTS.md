@@ -29,19 +29,16 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 
 ## Python
 
-Python 3.14+. Stosuj CAŁY standard ze skilli `python` i `instructions` — w całości, bez wyjątków. Przed pisaniem lub przeglądem kodu przeczytaj pasującą instrukcję. Poniżej tylko rzeczy najczęściej łamane oraz specyfika AniShift.
+Python 3.14+. Stosuj CAŁY standard ze skilli `python` i `instructions` — w całości, bez wyjątków. Przed pisaniem lub przeglądem kodu przeczytaj pasującą instrukcję. Poniżej tylko rzeczy, których lint NIE wymusza (resztę łapie ruff/mypy — patrz Twarde strażniki).
 
-Najłatwiej przeoczyć (patrz skille):
-- Typuj WSZYSTKO: parametry, zwroty, atrybuty i zmienne lokalne, w tym `int`. Puste kolekcje z jawnym typem (`items: list[str] = []`).
-- `from __future__ import annotations` w linii 1 każdego modułu. Generyki małą literą (`list`, `dict`), `X | None`, nigdy `Optional`.
-- Docstring Google-style dla publicznych modułów, klas, funkcji i dla każdej stałej `Final`. Typów w docstringu nie powtarzaj — są w sygnaturze.
-- Docstring stałej `Final` pod nią, nie nad. Stałe grupuj w sekcji `# ── Constants ──`.
-- Komentarze mówią WHY, nie WHAT. Guard clauses, early return, max 2 poziomy zagnieżdżeń.
+Reguły bez lintera (agent je łamie, nic ich nie łapie):
+- Typuj też zmienne lokalne i atrybuty, nie tylko parametry/zwroty (te wymusza mypy). Puste kolekcje z jawnym typem (`items: list[str] = []`).
+- Docstring stałej `Final` pod nią, nie nad (hook sprawdza że JEST, nie czy pod). Stałe grupuj w sekcji `# ── Constants ──`.
+- Docstring/komentarz mówi CO kod robi, nigdy historii zmian ani planu. Komentarze WHY, nie WHAT. Guard clauses, early return, max 2 poziomy zagnieżdżeń.
 
 Specyfika AniShift:
-- Hierarchia błędów: `AniShiftError` → `{Domain}Error`, plus `TransientError` / `FatalError`. Nigdy `except Exception` (ruff `BLE001`) — łap precyzyjnie. Definicje w `anishift/errors.py`.
+- Hierarchia błędów: `AniShiftError` → `{Domain}Error`, plus `TransientError` / `FatalError`; definicje w `anishift/errors.py`. Łap precyzyjnie (`except Exception` blokuje ruff `BLE001`).
 - Rejestr silników tylko w domenach z wyborem: `translation` (i docelowo `tts`, `llm`). Reszta to zwykłe moduły.
-- Każda stała `Final` i type alias na poziomie modułu ma docstring pod spodem (hook `check_const_docstrings.py` wymusza).
 
 ## Mapa katalogów
 
@@ -57,8 +54,13 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 
 ## Twarde strażniki
 
-- Pre-commit: ruff `--fix` + ruff-format (blokują commit); commit-msg: `scripts/hooks/check_commit_msg.py` (Conventional Commits). Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit-msg`.
-- CI: `.github/workflows/ci.yml`.
+Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push`.
+
+- **pre-commit:** ruff `--fix` + ruff-format; `check_test_comments.py` (zero docstringów/komentarzy w testach, dyrektywy `# noqa`/`# type:` OK); `check_const_docstrings.py` (docstring pod każdą stałą `Final`/aliasem).
+- **commit-msg:** `check_commit_msg.py` — `typ(scope): opis`, scope obowiązkowy z listy.
+- **pre-push:** mypy + pytest (łapią błędy lokalnie zanim pójdą do CI).
+- **ruff select** wymusza m.in.: typy param/zwrot (`ANN`), `from __future__` (`FA`), `X | None` zamiast `Optional` (`UP`), docstringi modułów/klas/funkcji (`D`), zakaz `except Exception` (`BLE`).
+- **CI:** `.github/workflows/ci.yml` — powtarza wszystkie powyższe na całym repo.
 - `testpaths` obejmuje też `anishift/utils/{logger,rich_console,timer}/tests` — samo `pytest tests/` je pomija.
 
 ## Dane runtime

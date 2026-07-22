@@ -74,6 +74,7 @@ select = [
     "I",     # isort
     "N",     # pep8-naming
     "ANN",   # flake8-annotations (missing type hints)
+    "FA",    # flake8-future-annotations (require from __future__ import annotations)
     "UP",    # pyupgrade
     "B",     # flake8-bugbear
     "S",     # flake8-bandit (security)
