@@ -32,6 +32,8 @@ jobs:
       - run: uv run ruff format --check anishift/ tests/
       - name: No docstrings/comments in tests
         run: uv run python scripts/hooks/check_test_comments.py $(git ls-files 'tests/**/test_*.py' 'anishift/**/test_*.py')
+      - name: Docstring under every constant
+        run: uv run python scripts/hooks/check_const_docstrings.py $(git ls-files 'anishift/**/*.py')
 
   typecheck:
     name: Type Check (mypy)

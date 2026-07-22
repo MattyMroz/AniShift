@@ -41,7 +41,7 @@ Najłatwiej przeoczyć (patrz skille):
 Specyfika AniShift:
 - Hierarchia błędów: `AniShiftError` → `{Domain}Error`, plus `TransientError` / `FatalError`. Nigdy `except Exception` (ruff `BLE001`) — łap precyzyjnie. Definicje w `anishift/errors.py`.
 - Rejestr silników tylko w domenach z wyborem: `translation` (i docelowo `tts`, `llm`). Reszta to zwykłe moduły.
-- ruff 0.15.21 psuje `except (A, B):` na `except A, B:`. Rozbijaj na osobne `except`, nie łącz typów.
+- Każda stała `Final` i type alias na poziomie modułu ma docstring pod spodem (hook `check_const_docstrings.py` wymusza).
 
 ## Mapa katalogów
 
