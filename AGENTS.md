@@ -1,33 +1,11 @@
-# AniShift — instrukcje projektu
+# AniShift
 
-Terminalowy lektor anime po polsku (MKV → napisy → tłumaczenie → TTS → merge). Siostra MangaShift.
+Terminalowy lektor anime po polsku: MKV → napisy → tłumaczenie → TTS → merge. Siostra MangaShift.
 
-## Zasada nadrzędna
+Zakres i etapy: `docs/plan-anishift.md`.
+Wzorzec do recyklingu struktury i nazewnictwa: `../MangaShift/mangashift/` — bierz dobre, słabe rób lepiej.
 
-**Recykling MangaShift w 100%** — struktura, nazewnictwo, wzorce (`services/<domena>/engines/` z rejestrem, bootstrap, doctor, errors hierarchy, `external/` + `workspace/`). MangaShift to ściąga referencyjna (`../MangaShift/mangashift/`), nie biblia — dobre kawałki bierz, słabe rób lepiej. Druga zasada: **wszystko ma być proste** (KISS/YAGNI, skill `simple`).
-
-Źródło prawdy o zakresie i etapach: `docs/plan-anishift.md`.
-
-## Twarde reguły
-
-- **Kod i komentarze po angielsku.** Rozmowa z userem po polsku.
-- **Zależności tylko przez `uv add` / `uv remove`** — nigdy ręczna edycja `pyproject.toml`. AniShift nie ma profili CUDA/Torch — gołe `uv add` dla lekkiego core.
-- **Commity: Conventional Commits** (hook wymusza), **bez śladów AI** — zero `Co-Authored-By`, zero stopek generatora. Dotyczy też PR body.
-- **Robię tylko to, o co user prosi** — zero inicjatywy, zero nieproszonych plików/refaktorów.
-
-## Standardy Pythona
-
-Pełny standard: skille `python` i `instructions` (w `.claude/skills/`). W skrócie:
-
-- Python ≥3.14, `from __future__ import annotations`, lowercase generics, `X | None`.
-- **Docstringi Google-style** dla publicznych modułów/klas/funkcji **i dla każdej stałej `Final`** (`"""..."""` pod stałą).
-- Stałe `Final` grupuj w sekcji (`# ── Constants ──`), nie wplataj między klasy/funkcje.
-- Guard clauses, early return, max 2 poziomy zagnieżdżeń.
-- `dataclass(slots=True[, frozen=True])` dla value objects; `Literal` dla zamkniętych zbiorów.
-- Hierarchia błędów: `AniShiftError` → `{Domain}Error`; `TransientError`/`FatalError`. Nie blind `except Exception` (ruff `BLE001`) — łap precyzyjnie.
-- Rejestr silników tylko w domenach z wyborem: `tts`, `translation`, `llm`. Reszta (extraction, subtitles, audio, composition) = zwykłe moduły.
-
-## Jakość — bramki przed commitem
+## Bramki jakości (przed każdym commitem)
 
 ```bash
 uv run ruff check anishift/ tests/
@@ -36,18 +14,47 @@ uv run mypy anishift/ tests/
 uv run pytest
 ```
 
-- ruff select: Tier 1/2 + `D` (pydocstyle google) — patrz `pyproject.toml`.
-- **Uwaga: ruff 0.15.21 format ma bug** — psuje `except (A, B):` na niepoprawne `except A, B:`. Nie łącz wielu typów w jednym `except` — rozbij na osobne `except`.
-- CI (GitHub Actions) i pre-commit pilnują tego samego. CodeRabbit review na PR (skill `/coderabbit` do przeglądu uwag).
+Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie setkami fałszywych błędów.
 
-## Workspace i config
+## Twarde reguły
 
-- `workspace/` — user wrzuca tam MKV; pliki pośrednie powstają obok. Tylko podfoldery `tmp/` i `output/`. Zero `input/`/`cache/`/`logs/`/`settings.json` w workspace.
+- Kod, komentarze, nazwy, commity, issue i PR po angielsku. Rozmowa z userem po polsku.
+- Zależności tylko przez `uv add` / `uv remove`. Nigdy nie edytuj `pyproject.toml` ręcznie.
+- Commity w formacie Conventional Commits (hook wymusza). Zero śladów AI (`Co-Authored-By`, stopki generatora) — też w treści PR.
+- Issue zakładaj wg szablonów z `.github/ISSUE_TEMPLATE/` (bug / feature / task). Tytuł z prefiksem Conventional Commits, jak w szablonie.
+- Rób tylko to, o co user prosi. Zero nieproszonych plików, refaktorów, issue.
+- Przed większą lub planowaną zmianą potwierdź zakres z userem. Nie ruszaj od razu.
+- Nie commituj na `main`. Feature branch → PR → merge.
+- KISS/YAGNI — użyj skilla `simple` przy pisaniu i przeglądzie kodu.
+
+## Python
+
+Stosuj CAŁY standard ze skilli `python` i `instructions` — w całości, bez wyjątków. Przed pisaniem lub przeglądem kodu Pythona przeczytaj pasującą instrukcję. Poniżej tylko rzeczy najczęściej łamane oraz specyfika AniShift.
+
+Najłatwiej przeoczyć (patrz skille):
+- Typuj WSZYSTKO: parametry, zwroty, atrybuty i zmienne lokalne, w tym `int`. Puste kolekcje z jawnym typem (`items: list[str] = []`).
+- `from __future__ import annotations` w linii 1 każdego modułu. Generyki małą literą (`list`, `dict`), `X | None`, nigdy `Optional`.
+- Docstring Google-style dla publicznych modułów, klas, funkcji i dla każdej stałej `Final`. Typów w docstringu nie powtarzaj — są w sygnaturze.
+- Docstring stałej `Final` pod nią, nie nad. Stałe grupuj w sekcji `# ── Constants ──`.
+- Komentarze mówią WHY, nie WHAT. Guard clauses, early return, max 2 poziomy zagnieżdżeń.
+
+Specyfika AniShift:
+- Hierarchia błędów: `AniShiftError` → `{Domain}Error`, plus `TransientError` / `FatalError`. Nigdy `except Exception` (ruff `BLE001`) — łap precyzyjnie.
+- Rejestr silników tylko w domenach z wyborem: `tts`, `translation`, `llm`. Reszta to zwykłe moduły.
+- ruff 0.15.21 psuje `except (A, B):` na `except A, B:`. Rozbijaj na osobne `except`, nie łącz typów.
+
+## Moduły (`anishift/`)
+
+- `cli/` — REPL, komendy `/`, panel `/settings`, banner.
+- `pipeline/` — orkiestracja etapów i paski postępu.
+- `services/` — domeny (extraction, subtitles, translation, tts, audio, composition); wybór silnika przez rejestr w `engines/`.
+- `setup/` — pobieranie i instalacja zewnętrznych binarek (mkvtoolnix, ffmpeg).
+- `platform/` — kod zależny od systemu.
+- `config/` — ustawienia i `Settings` (pydantic-settings, prefix `ANISHIFT_`, z `.env`, wszystkie opcjonalne).
+- `utils/` — logger, rich_console, timer. Przenośne (współdzielone z mm_avh): zero zależności od AniShift. Podlega standardowi `python`.
+
+## Workspace
+
+- `workspace/` — user wrzuca tam MKV, pliki pośrednie powstają obok. Dozwolone tylko podfoldery `tmp/` i `output/`. Zero `input/`, `cache/`, `logs/`, `settings.json`.
 - Preferencje panelu: `config/settings.json` (obok kodu, gitignored, poza workspace).
-- Klucze API: `.env` + `Settings` (pydantic-settings, prefix `ANISHIFT_`). Wszystkie opcjonalne.
-- Logger (`utils/`) domyślnie OFF — nic nie zapisuje bez jawnego włączenia.
-- `utils/` jest **nietykalne** (1:1 z mm_avh) — nowe rzeczy tylko jako nowe pliki obok.
-
-## Git flow
-
-Feature branch → PR do `main` → CodeRabbit review → merge. Nie commituj na `main` bezpośrednio.
+- Logger domyślnie nic nie zapisuje — żaden zapis bez jawnego włączenia.
