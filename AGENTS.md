@@ -2,7 +2,7 @@
 
 Terminalowy lektor anime po polsku: MKV → napisy → tłumaczenie → TTS → merge. Siostra MangaShift.
 
-Zakres i etapy: `docs/plan-anishift.md`.
+Zakres i etapy: `docs/plans/plan-anishift.md`.
 Wzorzec do recyklingu struktury i nazewnictwa: `../MangaShift/mangashift/` — bierz dobre, słabe rób lepiej.
 
 ## Bramki jakości (przed każdym commitem)
@@ -29,7 +29,7 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 
 ## Python
 
-Stosuj CAŁY standard ze skilli `python` i `instructions` — w całości, bez wyjątków. Przed pisaniem lub przeglądem kodu Pythona przeczytaj pasującą instrukcję. Poniżej tylko rzeczy najczęściej łamane oraz specyfika AniShift.
+Python 3.14+. Stosuj CAŁY standard ze skilli `python` i `instructions` — w całości, bez wyjątków. Przed pisaniem lub przeglądem kodu przeczytaj pasującą instrukcję. Poniżej tylko rzeczy najczęściej łamane oraz specyfika AniShift.
 
 Najłatwiej przeoczyć (patrz skille):
 - Typuj WSZYSTKO: parametry, zwroty, atrybuty i zmienne lokalne, w tym `int`. Puste kolekcje z jawnym typem (`items: list[str] = []`).
@@ -39,22 +39,31 @@ Najłatwiej przeoczyć (patrz skille):
 - Komentarze mówią WHY, nie WHAT. Guard clauses, early return, max 2 poziomy zagnieżdżeń.
 
 Specyfika AniShift:
-- Hierarchia błędów: `AniShiftError` → `{Domain}Error`, plus `TransientError` / `FatalError`. Nigdy `except Exception` (ruff `BLE001`) — łap precyzyjnie.
-- Rejestr silników tylko w domenach z wyborem: `tts`, `translation`, `llm`. Reszta to zwykłe moduły.
+- Hierarchia błędów: `AniShiftError` → `{Domain}Error`, plus `TransientError` / `FatalError`. Nigdy `except Exception` (ruff `BLE001`) — łap precyzyjnie. Definicje w `anishift/errors.py`.
+- Rejestr silników tylko w domenach z wyborem: `translation` (i docelowo `tts`, `llm`). Reszta to zwykłe moduły.
 - ruff 0.15.21 psuje `except (A, B):` na `except A, B:`. Rozbijaj na osobne `except`, nie łącz typów.
 
-## Moduły (`anishift/`)
+## Mapa katalogów
 
-- `cli/` — REPL, komendy `/`, panel `/settings`, banner.
-- `pipeline/` — orkiestracja etapów i paski postępu.
-- `services/` — domeny (extraction, subtitles, translation, tts, audio, composition); wybór silnika przez rejestr w `engines/`.
-- `setup/` — pobieranie i instalacja zewnętrznych binarek (mkvtoolnix, ffmpeg).
-- `platform/` — kod zależny od systemu.
-- `config/` — ustawienia i `Settings` (pydantic-settings, prefix `ANISHIFT_`, z `.env`, wszystkie opcjonalne).
-- `utils/` — logger, rich_console, timer. Przenośne (współdzielone z mm_avh): zero zależności od AniShift. Podlega standardowi `python`.
+Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczytaj go, gdy tam wejdziesz.
 
-## Workspace
+- `anishift/` — pakiet aplikacji (composition root, hierarchia błędów); ma własny AGENTS.md
+- `tests/` — testy pytest; konwencje i markery w jego AGENTS.md
+- `docs/plans/` — plany etapów (`plan-anishift.md` = zakres); `docs/reference/` — audyt mm_avh + wzorzec mangashift
+- `external/` — pobrane binarki (gitignored) + docs HTML narzędzi; szczegóły w `external/README.md`
+- `config/` — runtime katalog na `settings.json` panelu (gitignored); opis w `config/README.md`
+- `scripts/hooks/` — hook `check_commit_msg.py` (Conventional Commits); `scripts/tmp/` — jednorazowe
+- `workspace/` — user wrzuca MKV, pliki pośrednie powstają obok (patrz Dane runtime)
 
-- `workspace/` — user wrzuca tam MKV, pliki pośrednie powstają obok. Dozwolone tylko podfoldery `tmp/` i `output/`. Zero `input/`, `cache/`, `logs/`, `settings.json`.
+## Twarde strażniki
+
+- Pre-commit: ruff `--fix` + ruff-format (blokują commit); commit-msg: `scripts/hooks/check_commit_msg.py` (Conventional Commits). Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit-msg`.
+- CI: `.github/workflows/ci.yml`.
+- `testpaths` obejmuje też `anishift/utils/{logger,rich_console,timer}/tests` — samo `pytest tests/` je pomija.
+
+## Dane runtime
+
+- `workspace/` — dozwolone tylko podfoldery `tmp/` i `output/`. Zero `input/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`.
 - Preferencje panelu: `config/settings.json` (obok kodu, gitignored, poza workspace).
+- Settings API/env: pydantic-settings, prefix `ANISHIFT_`, z `.env`, wszystkie opcjonalne.
 - Logger domyślnie nic nie zapisuje — żaden zapis bez jawnego włączenia.
