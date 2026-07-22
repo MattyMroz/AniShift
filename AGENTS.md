@@ -54,6 +54,8 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 
 ## Twarde strażniki
 
+Filozofia: regułę egzekwuje maszyna (hook / ruff / test), nie pamięć agenta. Gdy user ustala nową regułę, albo ten sam błąd wraca dwa razy — ZAPROPONUJ userowi zamianę na strażnika (hook w `scripts/hooks/`, reguła ruff, test) i zapytaj, czy zrobić. Nie dodawaj strażnika bez zgody usera. Każdy strażnik z `scripts/hooks/` ma test w `tests/scripts/`.
+
 Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push`.
 
 - **pre-commit:** ruff `--fix` + ruff-format; `check_test_comments.py` (zero docstringów/komentarzy w testach, dyrektywy `# noqa`/`# type:` OK); `check_const_docstrings.py` (docstring pod każdą stałą `Final`/aliasem).
