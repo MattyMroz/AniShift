@@ -1,13 +1,9 @@
-"""Tests for stats module."""
-
 from __future__ import annotations
 
 from ..stats import LoggerStats, get_logger_stats, increment_stat, reset_stats
 
 
 class TestLoggerStats:
-    """Tests for LoggerStats dataclass."""
-
     def test_initial_state(self) -> None:
         stats = LoggerStats()
         assert stats.total_logged == 0
@@ -64,8 +60,6 @@ class TestLoggerStats:
 
 
 class TestModuleFunctions:
-    """Tests for module-level stats functions."""
-
     def test_get_logger_stats_singleton(self) -> None:
         s1 = get_logger_stats()
         s2 = get_logger_stats()

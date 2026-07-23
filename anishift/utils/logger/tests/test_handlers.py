@@ -1,5 +1,3 @@
-"""Tests for handler classes (JSONHandler, RichHandler)."""
-
 from __future__ import annotations
 
 import json
@@ -29,7 +27,6 @@ def _make_loguru_message(
     line: int = 42,
     exception: object = None,
 ) -> Any:
-    """Create a fake loguru message object for testing."""
     record: dict[str, Any] = {
         "level": SimpleNamespace(name=level),
         "message": message,
@@ -43,12 +40,7 @@ def _make_loguru_message(
     return SimpleNamespace(record=record)
 
 
-# ── JSONHandler ───────────────────────────────────────────────────────────────
-
-
 class TestJSONHandler:
-    """Tests for JSONHandler."""
-
     def test_write_creates_file(self, tmp_path: Path) -> None:
         fp = tmp_path / "logs" / "test.log.jsonl"
         handler = JSONHandler(fp)
@@ -94,7 +86,7 @@ class TestJSONHandler:
         handler = JSONHandler(fp, formatter=fmt)
         handler.write(_make_loguru_message())
         content = fp.read_text(encoding="utf-8")
-        assert "\n" in content.strip()  # Indented JSON
+        assert "\n" in content.strip()
 
     def test_ensure_directory(self, tmp_path: Path) -> None:
         fp = tmp_path / "deep" / "nested" / "test.log"
@@ -109,12 +101,7 @@ class TestJSONHandler:
         assert data.get("location", {}).get("file") == "app.py"
 
 
-# ── RichHandler ───────────────────────────────────────────────────────────────
-
-
 class TestRichHandler:
-    """Tests for RichHandler."""
-
     @patch(_RICH_CONSOLE)
     def test_write_calls_console_print(self, mock_console: MagicMock) -> None:
         handler = RichHandler()
@@ -223,12 +210,7 @@ class TestRichHandler:
         mock_console.print.assert_called_once()
 
 
-# ── JSONHandler.close ─────────────────────────────────────────────────────────
-
-
 class TestJSONHandlerClose:
-    """Tests for JSONHandler close / file management."""
-
     def test_close_closes_handle(self, tmp_path: Path) -> None:
         fp = tmp_path / "test.log.jsonl"
         handler = JSONHandler(fp)
@@ -239,8 +221,8 @@ class TestJSONHandlerClose:
     def test_close_idempotent(self, tmp_path: Path) -> None:
         fp = tmp_path / "test.log.jsonl"
         handler = JSONHandler(fp)
-        handler.close()  # No file opened yet
-        handler.close()  # Again — should not fail
+        handler.close()
+        handler.close()
 
     def test_write_after_close_reopens(self, tmp_path: Path) -> None:
         fp = tmp_path / "test.log.jsonl"

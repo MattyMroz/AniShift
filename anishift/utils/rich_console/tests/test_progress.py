@@ -1,5 +1,3 @@
-"""Tests for rich_console.progress module."""
-
 from __future__ import annotations
 
 import threading
@@ -28,12 +26,8 @@ from ..progress.manager import (
 from ..progress.multi import MultiProgressManager, _PerTaskColumn
 from ..theme import RICH_THEME
 
-# ── ProgressBarBuilder ────────────────────────────────────────────────────────
-
 
 class TestProgressBarBuilder:
-    """Test static bar-building methods."""
-
     def test_blocks_zero_progress(self):
         result = ProgressBarBuilder.blocks(10, 0.0, "green")
         assert "░" in result
@@ -81,12 +75,7 @@ class TestProgressBarBuilder:
         assert "." in result
 
 
-# ── _truncate_description ─────────────────────────────────────────────────────
-
-
 class TestTruncateDescription:
-    """Test description truncation modes."""
-
     def _truncate(
         self,
         text: str,
@@ -121,15 +110,10 @@ class TestTruncateDescription:
 
     def test_min_length_enforced(self):
         result = self._truncate("abcdefghij", 3)
-        assert len(result) == 5  # min is 5
-
-
-# ── ProgressBarManager context manager ────────────────────────────────────────
+        assert len(result) == 5
 
 
 class TestProgressBarManagerContextManager:
-    """Test ProgressBarManager enter/exit lifecycle."""
-
     def test_enter_returns_self(self):
         with ProgressBarManager("Test", total=10) as pb:
             assert isinstance(pb, ProgressBarManager)
@@ -170,12 +154,7 @@ class TestProgressBarManagerContextManager:
             assert pb.last_successful_progress == 5
 
 
-# ── ProgressBarManager configuration ──────────────────────────────────────────
-
-
 class TestProgressBarManagerConfig:
-    """Test ProgressBarManager initialization options."""
-
     def test_default_colors(self):
         assert ProgressBarManager.DEFAULT_COLORS == {
             25: ("red_bold", "red_bold"),
@@ -226,12 +205,7 @@ class TestProgressBarManagerConfig:
             assert pb.show_eta is True
 
 
-# ── ProgressBarManager._update_colors ─────────────────────────────────────────
-
-
 class TestProgressBarManagerColors:
-    """Test color transition logic."""
-
     def test_initial_color_is_first_threshold(self):
         with ProgressBarManager("Test", total=100) as pb:
             assert pb.current_style == "red_bold"
@@ -252,12 +226,7 @@ class TestProgressBarManagerColors:
             assert pb.current_style == "purple_bold"
 
 
-# ── Width Validation ──────────────────────────────────────────────────────────
-
-
 class TestWidthValidation:
-    """Test ValueError on invalid bar widths."""
-
     def test_blocks_zero_width_raises(self):
         with pytest.raises(ValueError, match="width must be >= 1"):
             ProgressBarBuilder.blocks(0, 0.5, "green")
@@ -283,9 +252,6 @@ class TestWidthValidation:
         assert isinstance(result, str)
 
 
-# ── Column Render Methods ─────────────────────────────────────────────────────
-
-
 def _mock_task(
     *,
     total: float | None = 100,
@@ -296,7 +262,6 @@ def _mock_task(
     finished_speed: float | None = None,
     finished: bool = False,
 ) -> MagicMock:
-    """Create a mock Rich Task with common defaults."""
     task = MagicMock()
     task.total = total
     task.completed = completed
@@ -311,8 +276,6 @@ def _mock_task(
 
 
 class TestColoredPercentageColumn:
-    """Test ColoredPercentageColumn render."""
-
     def test_render_determinate(self):
         col = ColoredPercentageColumn("green")
         result = col.render(_mock_task(completed=75))
@@ -332,8 +295,6 @@ class TestColoredPercentageColumn:
 
 
 class TestColoredElapsedColumn:
-    """Test ColoredElapsedColumn render."""
-
     def test_render_with_elapsed(self):
         col = ColoredElapsedColumn("blue")
         result = col.render(_mock_task(elapsed=3661.123))
@@ -352,8 +313,6 @@ class TestColoredElapsedColumn:
 
 
 class TestColoredETAColumn:
-    """Test ColoredETAColumn render."""
-
     def test_render_with_remaining(self):
         col = ColoredETAColumn("yellow")
         result = col.render(_mock_task(time_remaining=90.0))
@@ -372,8 +331,6 @@ class TestColoredETAColumn:
 
 
 class TestColoredBytesColumn:
-    """Test ColoredBytesColumn render."""
-
     def test_render_with_total(self):
         col = ColoredBytesColumn("green")
         result = col.render(_mock_task(completed=5_000_000, total=10_000_000))
@@ -388,8 +345,6 @@ class TestColoredBytesColumn:
 
 
 class TestColoredSpeedColumn:
-    """Test ColoredSpeedColumn render."""
-
     def test_render_with_speed(self):
         col = ColoredSpeedColumn("orange")
         result = col.render(_mock_task(speed=2_500_000.0))
@@ -409,8 +364,6 @@ class TestColoredSpeedColumn:
 
 
 class TestDynamicSpinnerColumn:
-    """Test DynamicSpinnerColumn render and lifecycle."""
-
     def test_render_active(self):
         col = DynamicSpinnerColumn("red_bold")
         task = _mock_task(finished=False)
@@ -430,9 +383,6 @@ class TestDynamicSpinnerColumn:
         assert col.is_finished is False
         col.mark_finished()
         assert col.is_finished is True
-
-
-# ── MultiProgressManager ──────────────────────────────────────────────────────
 
 
 class TestMultiProgressManager:
@@ -527,9 +477,6 @@ class TestMultiProgressManager:
         assert rendered.style == "green_bold"
 
 
-# ── Shared helpers (_color_for_percentage, _fit_bar_width) ────────────────────
-
-
 class TestColorForPercentage:
     def test_first_threshold_wins(self):
         colors = {25: ("a", "b"), 100: ("c", "d")}
@@ -571,9 +518,6 @@ class TestFitBarWidth:
         )
 
 
-# ── _PerTaskColumn ────────────────────────────────────────────────────────────
-
-
 class TestPerTaskColumn:
     def test_hidden_renders_empty_cell(self):
         col = _PerTaskColumn(ColoredPercentageColumn("green_bold"), "show_percentage")
@@ -600,9 +544,6 @@ class TestPerTaskColumn:
         rendered = col.render(task)
         assert "✓" in rendered.plain
         assert rendered.style == "green_bold"
-
-
-# ── MultiProgressManager flags and per-task overrides ─────────────────────────
 
 
 class TestMultiProgressManagerFlags:
@@ -785,9 +726,7 @@ class TestMultiProgressManagerPerTask:
         row_percent = mp._progress.columns[0].render(mp._progress.tasks[0]).plain
         row_download = mp._progress.columns[0].render(mp._progress.tasks[1]).plain
         download_bar = "█" * mp._states[download].bar_width
-        # The download row's first value sits right after ITS own bar...
         assert row_download.startswith(f"tools.zip {download_bar} | ")
-        # ...at a different X position than the percent row's first value.
         assert row_percent.index(" | ") != row_download.index(" | ")
 
     def test_independent_rows_have_no_padding_gaps(self):
@@ -845,8 +784,6 @@ class TestMultiProgressManagerPerTask:
             mp.update(spinner, 100)
         capsys.readouterr()
 
-
-# ── Bracketed descriptions survive markup rendering ───────────────────────────
 
 _BRACKET_NAMES = (
     "[draft] Report Final - 01",

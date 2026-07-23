@@ -1,5 +1,3 @@
-"""Unit tests for console sink and error hierarchy."""
-
 from __future__ import annotations
 
 from datetime import datetime
@@ -24,12 +22,7 @@ _CSINK_CONSOLE = f"{_console_handler_mod.__name__}.console"
 _CSINK_STAT = f"{_console_handler_mod.__name__}.increment_stat"
 
 
-# ── Error Hierarchy ───────────────────────────────────────────────────────────
-
-
 class TestErrorHierarchy:
-    """Tests for logger exception classes."""
-
     @pytest.mark.parametrize(
         "exc_class",
         [
@@ -54,15 +47,11 @@ class TestErrorHierarchy:
         assert str(err) == "invalid JSON"
 
 
-# ── Console Sink Helpers ──────────────────────────────────────────────────────
-
-
 def _make_record(
     level: str = "INFO",
     message: str = "test msg",
     logger_name: str = "app",
 ) -> dict[str, Any]:
-    """Build a minimal loguru-like record dict."""
     return {
         "level": SimpleNamespace(name=level),
         "message": message,
@@ -71,12 +60,7 @@ def _make_record(
     }
 
 
-# ── Level Lookup Dicts ────────────────────────────────────────────────────────
-
-
 class TestLevelDicts:
-    """Tests for _LEVEL_BADGE, _LEVEL_COLOR, _LEVEL_ICON."""
-
     @pytest.mark.parametrize(
         "level",
         ["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"],
@@ -87,12 +71,7 @@ class TestLevelDicts:
         assert level in _LEVEL_ICON
 
 
-# ── console_sink ──────────────────────────────────────────────────────────────
-
-
 class TestConsoleSink:
-    """Tests for console_sink function."""
-
     @patch(_CSINK_CONSOLE)
     @patch(_CSINK_STAT)
     def test_calls_console_print(self, mock_stat: MagicMock, mock_console: MagicMock) -> None:
@@ -109,12 +88,7 @@ class TestConsoleSink:
         mock_stat.assert_called_once_with("ERROR", "myapp")
 
 
-# ── set_show_icons ────────────────────────────────────────────────────────────
-
-
 class TestSetShowIcons:
-    """Tests for set_show_icons toggle."""
-
     @patch(_CSINK_CONSOLE)
     @patch(_CSINK_STAT)
     def test_icons_disabled(self, mock_stat: MagicMock, mock_console: MagicMock) -> None:
@@ -123,18 +97,12 @@ class TestSetShowIcons:
             record = _make_record()
             console_sink(SimpleNamespace(record=record))
             printed_text = mock_console.print.call_args[0][0]
-            # Icons should be in LEVEL_ICON but not in output
             assert "ℹ️" not in printed_text.plain
         finally:
             set_show_icons(True)
 
 
-# ── _build_message ────────────────────────────────────────────────────────────
-
-
 class TestBuildMessage:
-    """Tests for _build_message formatting."""
-
     def test_contains_timestamp(self) -> None:
         text = _build_message(_make_record())
         assert "12:00:00" in text.plain

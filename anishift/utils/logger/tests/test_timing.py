@@ -1,5 +1,3 @@
-"""Unit tests for Timer class and log_duration context manager."""
-
 from __future__ import annotations
 
 import time
@@ -10,12 +8,8 @@ from loguru import logger
 from ...timer import Timer
 from ..timing import log_duration
 
-# ── Timer ─────────────────────────────────────────────────────────────────────
-
 
 class TestTimerInit:
-    """Test Timer initialization."""
-
     def test_default_state(self) -> None:
         t = Timer()
         assert t.name == "Timer"
@@ -37,8 +31,6 @@ class TestTimerInit:
 
 
 class TestTimerStartStop:
-    """Test Timer start/stop lifecycle."""
-
     def test_start_sets_running(self) -> None:
         t = Timer()
         t.start()
@@ -77,8 +69,6 @@ class TestTimerStartStop:
 
 
 class TestTimerReset:
-    """Test Timer reset."""
-
     def test_reset_clears_state(self) -> None:
         t = Timer(auto_start=True)
         time.sleep(0.01)
@@ -91,21 +81,14 @@ class TestTimerReset:
 
 
 class TestTimerPrecision:
-    """Test Timer nanosecond precision."""
-
     def test_measures_at_least_10ms(self) -> None:
         t = Timer(auto_start=True)
         time.sleep(0.01)
         ns = t.stop()
-        assert ns >= 5_000_000  # >=5ms (generous for CI jitter)
-
-
-# ── log_duration ──────────────────────────────────────────────────────────────
+        assert ns >= 5_000_000
 
 
 class TestLogDuration:
-    """Test log_duration context manager."""
-
     def test_yields_timer(self) -> None:
         with log_duration("test_op") as t:
             assert isinstance(t, Timer)

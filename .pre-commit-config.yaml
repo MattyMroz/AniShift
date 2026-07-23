@@ -9,8 +9,41 @@ minimum_pre_commit_version: "4.0.0"
 default_install_hook_types:
   - pre-commit
   - commit-msg
+  - pre-push
 
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        stages: [pre-commit]
+        exclude: ^external/
+      - id: end-of-file-fixer
+        stages: [pre-commit]
+        exclude: ^external/
+      - id: check-yaml
+        stages: [pre-commit]
+      - id: check-toml
+        stages: [pre-commit]
+      - id: check-json
+        stages: [pre-commit]
+      - id: check-merge-conflict
+        stages: [pre-commit]
+      - id: check-added-large-files
+        stages: [pre-commit]
+      - id: check-case-conflict
+        stages: [pre-commit]
+      - id: check-illegal-windows-names
+        stages: [pre-commit]
+      - id: detect-private-key
+        stages: [pre-commit]
+      - id: check-ast
+        stages: [pre-commit]
+      - id: debug-statements
+        stages: [pre-commit]
+      - id: no-commit-to-branch
+        stages: [pre-commit]
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.21
     hooks:
@@ -24,8 +57,32 @@ repos:
 
   - repo: local
     hooks:
+      - id: no-test-prose
+        name: no docstrings/comments in tests
+        entry: python scripts/hooks/check_test_comments.py
+        language: system
+        files: (^tests/|/tests/).*(test_.*|.*\.test|.*\.spec)\.(py|ts|tsx|js|jsx)$
+        stages: [pre-commit]
+      - id: const-docstrings
+        name: docstring under every constant
+        entry: python scripts/hooks/check_const_docstrings.py
+        language: system
+        files: ^anishift/.*\.py$
+        stages: [pre-commit]
       - id: conventional-commit
         name: conventional commit message
         entry: python scripts/hooks/check_commit_msg.py
         language: system
         stages: [commit-msg]
+      - id: mypy
+        name: mypy (pre-push)
+        entry: uv run mypy anishift/ tests/
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: pytest
+        name: pytest (pre-push)
+        entry: uv run pytest
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

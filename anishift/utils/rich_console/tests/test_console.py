@@ -1,5 +1,3 @@
-"""Tests for rich_console.console module."""
-
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -17,16 +15,10 @@ from ..console import (
 
 
 def styled(text: Text, style: str) -> list[str]:
-    """Return substrings of ``text`` covered by spans with the given style."""
     return [text.plain[span.start : span.end] for span in text.spans if str(span.style) == style]
 
 
-# ── normalize_numbers ─────────────────────────────────────────────────────────
-
-
 class TestNormalizeNumbers:
-    """Test comma-to-dot decimal normalization."""
-
     def test_comma_to_dot(self):
         assert normalize_numbers("1,5") == "1.5"
 
@@ -49,12 +41,7 @@ class TestNormalizeNumbers:
         assert normalize_numbers("values: 1,5 and 2.3") == "values: 1.5 and 2.3"
 
 
-# ── _has_rich_markup ──────────────────────────────────────────────────────────
-
-
 class TestHasRichMarkup:
-    """Test Rich markup detection."""
-
     def test_plain_text(self):
         assert _has_rich_markup("hello world") is False
 
@@ -92,12 +79,7 @@ class TestHasRichMarkup:
         assert _has_rich_markup("") is False
 
 
-# ── auto_highlight_text ───────────────────────────────────────────────────────
-
-
 class TestAutoHighlightText:
-    """Test auto-highlighting of text patterns."""
-
     def test_plain_text_unchanged(self):
         result = auto_highlight_text("hello")
         assert result.plain == "hello"
@@ -136,8 +118,6 @@ class TestAutoHighlightText:
         result = auto_highlight_text("")
         assert result.plain == ""
 
-    # ── Paths ─────────────────────────────────────────────────────────────────
-
     def test_absolute_path(self):
         result = auto_highlight_text("Loading /home/user/.cache/models/v2.1.0")
         assert styled(result, "repr.path") == ["/home/user/.cache/models/v2.1.0"]
@@ -172,7 +152,7 @@ class TestAutoHighlightText:
     def test_bracketed_path_preserved_and_colored(self, path):
         result = auto_highlight_text(path)
 
-        assert result.plain == path  # every char preserved 1:1
+        assert result.plain == path
         assert styled(result, "repr.path") == [path]
 
     def test_path_does_not_match_fraction(self):
@@ -183,8 +163,6 @@ class TestAutoHighlightText:
     @pytest.mark.parametrize("text", ["a, b, c", "Done 5 - Failed 0"])
     def test_path_does_not_match_status_text(self, text):
         assert styled(auto_highlight_text(text), "repr.path") == []
-
-    # ── Paths: sentences are not paths ────────────────────────────────────────
 
     def test_posix_path_stops_before_trailing_words(self):
         result = auto_highlight_text("path /home/user/file done extra words here")
@@ -214,8 +192,6 @@ class TestAutoHighlightText:
     def test_drive_path_stops_at_first_extension(self):
         result = auto_highlight_text(r"C:\out\file.ass then see readme.txt")
         assert styled(result, "repr.path") == [r"C:\out\file.ass"]
-
-    # ── Paths: edge cases that must still match ───────────────────────────────
 
     def test_posix_path_at_end_of_sentence(self):
         result = auto_highlight_text("wrote /var/log/app/output.log")
@@ -263,8 +239,6 @@ class TestAutoHighlightText:
         assert styled(result, "repr.path") == ["/users/"]
         assert styled(result, "repr.number") == ["200"]
 
-    # ── Paths: spaced intermediate segments (extension-bounded) ───────────────
-
     @pytest.mark.parametrize(
         "path",
         [
@@ -287,8 +261,6 @@ class TestAutoHighlightText:
     def test_spaced_dir_without_extension_stays_bounded(self):
         result = auto_highlight_text(r"open C:\My Documents now")
         assert styled(result, "repr.path") == [r"C:\My"]
-
-    # ── Versions ──────────────────────────────────────────────────────────────
 
     def test_version_v_prefixed(self):
         result = auto_highlight_text("MyApp v2.1.0 starting")
@@ -323,8 +295,6 @@ class TestAutoHighlightText:
         result = auto_highlight_text("rev v1 deployed")
         assert styled(result, "repr.number") == []
 
-    # ── Number + unit ─────────────────────────────────────────────────────────
-
     def test_number_unit_seconds(self):
         result = auto_highlight_text("loaded in 1.33s")
         assert styled(result, "repr.number") == ["1.33s"]
@@ -341,8 +311,6 @@ class TestAutoHighlightText:
         result = auto_highlight_text("latency 42ms")
         assert styled(result, "repr.number") == ["42ms"]
 
-    # ── Fractions ─────────────────────────────────────────────────────────────
-
     def test_fraction(self):
         result = auto_highlight_text("Batch 3/5 done")
         assert styled(result, "repr.number") == ["3/5"]
@@ -350,8 +318,6 @@ class TestAutoHighlightText:
     def test_fraction_larger(self):
         result = auto_highlight_text("Detection 156/156 regions")
         assert styled(result, "repr.number") == ["156/156"]
-
-    # ── Punctuation NOT colored ───────────────────────────────────────────────
 
     def test_colon_not_colored(self):
         result = auto_highlight_text("key: value")
@@ -368,8 +334,6 @@ class TestAutoHighlightText:
     def test_em_dash_not_colored(self):
         result = auto_highlight_text("loaded — 3 profiles")
         assert styled(result, "special") == []
-
-    # ── Literal brackets ──────────────────────────────────────────────────────
 
     def test_literal_brackets_preserved(self):
         result = auto_highlight_text("result[0] = 42")
@@ -394,12 +358,7 @@ class TestAutoHighlightText:
         assert styled(result, style) == [plain]
 
 
-# ── _highlight_outside_rich_markup ────────────────────────────────────────────
-
-
 class TestHighlightOutsideRichMarkup:
-    """Test selective highlighting around existing markup."""
-
     def test_plain_text_highlighted(self):
         result = _highlight_outside_rich_markup("value 42")
         assert styled(result, "repr.number") == ["42"]
@@ -439,12 +398,7 @@ class TestHighlightOutsideRichMarkup:
         assert styled(result, "repr.path") == [path]
 
 
-# ── _patched_console_print ────────────────────────────────────────────────────
-
-
 class TestPatchedConsolePrint:
-    """Test monkey-patched console.print branches."""
-
     @patch("anishift.utils.rich_console.console._original_console_print")
     def test_plain_text_auto_highlighted(self, mock_print: MagicMock):
         _patched_console_print("value 42")

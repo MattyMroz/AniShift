@@ -1,5 +1,3 @@
-"""Tests for LogViewer."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -18,8 +16,6 @@ SAMPLE_LOGS: list[dict[str, Any]] = [
 
 
 class TestLogViewerDisplay:
-    """Tests for LogViewer.display()."""
-
     @patch(_LV_CONSOLE)
     def test_display_empty(self, mock_console: MagicMock) -> None:
         viewer = LogViewer()
@@ -43,8 +39,6 @@ class TestLogViewerDisplay:
 
 
 class TestLogViewerTable:
-    """Tests for LogViewer.display_table()."""
-
     @patch(_LV_CONSOLE)
     def test_display_table_empty(self, mock_console: MagicMock) -> None:
         viewer = LogViewer()
@@ -59,13 +53,10 @@ class TestLogViewerTable:
 
 
 class TestLogViewerStats:
-    """Tests for LogViewer stats methods."""
-
     @patch(_LV_CONSOLE)
     def test_display_with_stats(self, mock_console: MagicMock) -> None:
         viewer = LogViewer()
         viewer.display_with_stats(SAMPLE_LOGS)
-        # Panel + newline + 3 log entries
         assert mock_console.print.call_count >= 4
 
     @patch(_LV_CONSOLE)
@@ -89,8 +80,6 @@ class TestLogViewerStats:
 
 
 class TestLogViewerFormatting:
-    """Tests for formatting helpers."""
-
     def test_format_timestamp_valid(self) -> None:
         viewer = LogViewer()
         result = viewer._format_timestamp("2024-06-15T10:30:45.123456")

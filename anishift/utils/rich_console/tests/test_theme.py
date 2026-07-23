@@ -1,5 +1,3 @@
-"""Tests for rich_console.theme module."""
-
 from __future__ import annotations
 
 from rich.theme import Theme
@@ -11,12 +9,8 @@ from ..theme import (
     get_style_categories,
 )
 
-# ── Colors ────────────────────────────────────────────────────────────────────
-
 
 class TestColors:
-    """Test Colors class constants."""
-
     def test_all_constants_are_strings(self):
         for attr in dir(Colors):
             if attr.isupper() and not attr.startswith("_"):
@@ -33,12 +27,7 @@ class TestColors:
         assert Colors.WHITE
 
 
-# ── RICH_THEME ────────────────────────────────────────────────────────────────
-
-
 class TestRichTheme:
-    """Test RICH_THEME definition."""
-
     def test_is_theme_instance(self):
         assert isinstance(RICH_THEME, Theme)
 
@@ -69,12 +58,7 @@ class TestRichTheme:
         assert len(RICH_THEME.styles) > 100
 
 
-# ── get_all_style_names ───────────────────────────────────────────────────────
-
-
 class TestGetAllStyleNames:
-    """Test get_all_style_names function."""
-
     def test_returns_list(self):
         result = get_all_style_names()
         assert isinstance(result, list)
@@ -94,12 +78,7 @@ class TestGetAllStyleNames:
         assert len(result) == len(RICH_THEME.styles)
 
 
-# ── get_style_categories ──────────────────────────────────────────────────────
-
-
 class TestGetStyleCategories:
-    """Test get_style_categories function."""
-
     def test_returns_dict(self):
         result = get_style_categories()
         assert isinstance(result, dict)

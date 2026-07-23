@@ -1,5 +1,3 @@
-"""Unit tests for _time_helpers module."""
-
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -13,12 +11,8 @@ from .._time_helpers import (
     resolve_time_window,
 )
 
-# ── resolve_time_window ───────────────────────────────────────────────────────
-
 
 class TestResolveTimeWindow:
-    """Tests for resolve_time_window."""
-
     def test_passthrough_when_no_shortcuts(self) -> None:
         start = datetime(2024, 1, 1)
         end = datetime(2024, 1, 2)
@@ -56,25 +50,17 @@ class TestResolveTimeWindow:
         assert e <= after
 
     def test_minutes_beats_hours(self) -> None:
-        """minutes has priority over hours."""
         s, _e = resolve_time_window(minutes=5, hours=2)
         assert s is not None
-        # Should be ~5 min ago, not ~2 hours ago
         assert (datetime.now() - s) < timedelta(minutes=6)
 
     def test_hours_beats_days(self) -> None:
-        """hours has priority over days."""
         s, _e = resolve_time_window(hours=1, days=30)
         assert s is not None
         assert (datetime.now() - s) < timedelta(hours=2)
 
 
-# ── _parse_timestamp ──────────────────────────────────────────────────────────
-
-
 class TestParseTimestamp:
-    """Tests for _parse_timestamp."""
-
     def test_iso_format(self) -> None:
         log = {"timestamp": "2024-06-15T12:00:00"}
         result = _parse_timestamp(log)
@@ -93,12 +79,7 @@ class TestParseTimestamp:
         assert _parse_timestamp({"timestamp": 12345}) is None
 
 
-# ── _in_range ─────────────────────────────────────────────────────────────────
-
-
 class TestInRange:
-    """Tests for _in_range."""
-
     def test_within_range(self) -> None:
         log = {"timestamp": "2024-06-15T12:00:00"}
         start = datetime(2024, 6, 15, 11, 0, 0)
@@ -131,12 +112,7 @@ class TestInRange:
         assert _in_range({}, datetime(2024, 1, 1), datetime(2024, 1, 2)) is False
 
 
-# ── filter_logs_by_time ───────────────────────────────────────────────────────
-
-
 class TestFilterLogsByTime:
-    """Tests for filter_logs_by_time."""
-
     @pytest.fixture
     def logs(self) -> list[dict[str, str]]:
         return [

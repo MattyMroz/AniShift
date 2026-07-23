@@ -3713,4 +3713,3 @@ przez `chunk_text()` przy `method='char'` (domyślna metoda).
   - `number_in_words.py:53` (`from six import u`) — zależność bez realnej funkcji w Python 3.
 
 ---
-

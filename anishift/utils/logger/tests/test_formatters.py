@@ -1,5 +1,3 @@
-"""Tests for formatters module."""
-
 from __future__ import annotations
 
 from datetime import datetime
@@ -8,8 +6,6 @@ from ..formatters import JSONFormatter, LogRecordMeta
 
 
 class TestJSONFormatter:
-    """Tests for JSONFormatter."""
-
     def test_basic_format(self) -> None:
         fmt = JSONFormatter()
         result = fmt.format_record(

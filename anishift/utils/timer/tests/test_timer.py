@@ -1,5 +1,3 @@
-"""Tests for timer module — Timer, ExecutionTimer, format_duration, timed."""
-
 from __future__ import annotations
 
 import time
@@ -16,16 +14,10 @@ from .. import (
     timed,
 )
 
-# Build patch path dynamically from the class's own module — stays portable.
 _TIMER_CONSOLE = f"{ExecutionTimer.__module__}.console"
 
 
-# ── Timer ─────────────────────────────────────────────────────────────────────
-
-
 class TestTimer:
-    """Tests for low-level Timer class."""
-
     def test_init_defaults(self) -> None:
         t = Timer("test")
         assert t.name == "test"
@@ -91,16 +83,10 @@ class TestTimer:
         assert t.end_date is None
         time.sleep(0.001)
         t.stop()
-        # New measurement after restart
         assert t.duration_ns > 0
 
 
-# ── ExecutionTimer ────────────────────────────────────────────────────────────
-
-
 class TestExecutionTimer:
-    """Tests for ExecutionTimer context manager."""
-
     def test_context_manager_basic(self) -> None:
         with ExecutionTimer("test", display_mode="none") as et:
             time.sleep(0.001)
@@ -112,7 +98,6 @@ class TestExecutionTimer:
         assert et.timer.name == "test"
 
     def test_display_mode_none_no_console(self) -> None:
-        """display_mode='none' should not print anything."""
         with patch(_TIMER_CONSOLE) as mock_console:
             with ExecutionTimer("test", display_mode="none"):
                 pass
@@ -137,16 +122,10 @@ class TestExecutionTimer:
         with pytest.raises(ValueError, match="boom"):
             with et:
                 raise ValueError("boom")
-        # Timer should still have recorded duration
         assert et.get_duration_ns() > 0
 
 
-# ── timed decorator ───────────────────────────────────────────────────────────
-
-
 class TestTimedDecorator:
-    """Tests for @timed() decorator."""
-
     def test_basic(self) -> None:
         @timed(display_mode="none")
         def add(a: int, b: int) -> int:
@@ -194,12 +173,7 @@ class TestTimedDecorator:
             noop()
 
 
-# ── format_duration ───────────────────────────────────────────────────────────
-
-
 class TestFormatDuration:
-    """Tests for format_duration function."""
-
     def test_none_mode_returns_none(self) -> None:
         assert format_duration(1000, mode="none") is None
 

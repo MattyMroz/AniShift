@@ -22,12 +22,12 @@ if TYPE_CHECKING:
 TranslationEngineId = Literal["google", "deepl", "llm"]
 """Registry keys of translation engines; higher layers import this, never respell it."""
 
-# engine_id -> (module_path, service_class)
 _REGISTRY: Final[dict[TranslationEngineId, tuple[str, str]]] = {
     "google": ("anishift.services.translation.engines.google", "GoogleService"),
     "deepl": ("anishift.services.translation.engines.deepl", "DeeplService"),
     "llm": ("anishift.services.translation.engines.llm", "LlmTranslateService"),
 }
+"""Registry of available translation engines."""
 
 
 def available_engine_ids() -> tuple[TranslationEngineId, ...]:

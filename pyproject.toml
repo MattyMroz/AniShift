@@ -73,6 +73,8 @@ select = [
     "W",     # pycodestyle warnings
     "I",     # isort
     "N",     # pep8-naming
+    "ANN",   # flake8-annotations (missing type hints)
+    "FA",    # flake8-future-annotations (require from __future__ import annotations)
     "UP",    # pyupgrade
     "B",     # flake8-bugbear
     "S",     # flake8-bandit (security)
@@ -87,23 +89,28 @@ select = [
     "TRY",   # tryceratops (exception handling)
     "PERF",  # perflint
     "PL",    # pylint
+    "C90",   # mccabe — cyclomatic complexity limit
     "LOG",   # flake8-logging
     "D",     # pydocstyle
     "RUF",   # ruff-specific
 ]
 ignore = [
-    "D100",  # missing docstring in public module
-    "D104",  # missing docstring in public package
-    "D105",  # missing docstring in magic method
-    "D107",  # missing docstring in __init__
+    "D100",   # missing docstring in public module
+    "D104",   # missing docstring in public package
+    "D105",   # missing docstring in magic method
+    "D107",   # missing docstring in __init__
+    "ANN401", # allow explicit Any where external/JSON typing is unavoidable
 ]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D", "S101", "PLR2004", "TRY003"]
-"scripts/**" = ["D", "T20"]
+"tests/**" = ["D", "ANN", "S101", "PLR2004", "TRY003"]
+"scripts/**" = ["D", "T20", "PERF"]
 
 [tool.mypy]
 python_version = "3.14"

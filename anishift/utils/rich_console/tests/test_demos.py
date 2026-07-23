@@ -1,10 +1,3 @@
-"""Smoke tests for rich_console.examples demo scripts.
-
-Verify each demo module imports successfully and its main function
-is callable. Full visual demos require a terminal and are validated
-by manual execution.
-"""
-
 from __future__ import annotations
 
 from ..examples.demo_colors import demo_colors
@@ -15,8 +8,6 @@ from ..examples.run_demos import main
 
 
 class TestDemoImports:
-    """Verify demo modules import and expose expected callables."""
-
     def test_demo_colors_callable(self):
         assert callable(demo_colors)
 
@@ -34,8 +25,6 @@ class TestDemoImports:
 
 
 class TestModulePublicAPI:
-    """Verify rich_console public API is importable."""
-
     def test_console_import(self):
         from .. import console
 

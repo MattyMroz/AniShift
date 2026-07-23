@@ -1,5 +1,3 @@
-"""Unit tests for sensitive data scrubber."""
-
 from __future__ import annotations
 
 import pytest
@@ -8,10 +6,6 @@ from ..scrubber import scrub_message
 
 
 class TestScrubMessage:
-    """Tests for scrub_message pattern matching."""
-
-    # ── API Keys ──────────────────────────────────────────────────────────────
-
     @pytest.mark.parametrize(
         "raw",
         [
@@ -26,12 +20,9 @@ class TestScrubMessage:
     def test_api_key_patterns_masked(self, raw: str) -> None:
         result = scrub_message(raw)
         assert "***" in result
-        # Original value should be gone
         for secret in ("sk-1234567890abcdef", "secret123", "mykey", "awskey", "val"):
             if secret in raw:
                 assert secret not in result
-
-    # ── Bearer Tokens ─────────────────────────────────────────────────────────
 
     def test_bearer_token_masked(self) -> None:
         result = scrub_message("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload")
@@ -43,8 +34,6 @@ class TestScrubMessage:
         assert "***" in result
         assert "MyToken123" not in result
 
-    # ── OpenAI Keys ───────────────────────────────────────────────────────────
-
     def test_openai_key_masked(self) -> None:
         key = "sk-" + "a" * 48
         result = scrub_message(f"Using key {key}")
@@ -53,18 +42,13 @@ class TestScrubMessage:
 
     def test_short_sk_not_masked(self) -> None:
         result = scrub_message("sk-short")
-        # Too short for OpenAI pattern — should NOT be masked
         assert "sk-short" in result
-
-    # ── Google API Keys ───────────────────────────────────────────────────────
 
     def test_google_api_key_masked(self) -> None:
         key = "AIza" + "B" * 35
         result = scrub_message(f"key={key}")
         assert "AIza***" in result
         assert key not in result
-
-    # ── Password Fields ───────────────────────────────────────────────────────
 
     @pytest.mark.parametrize(
         "raw",
@@ -78,8 +62,6 @@ class TestScrubMessage:
         result = scrub_message(raw)
         assert "***" in result
 
-    # ── Token / Auth Fields ───────────────────────────────────────────────────
-
     @pytest.mark.parametrize(
         "raw",
         [
@@ -91,8 +73,6 @@ class TestScrubMessage:
         result = scrub_message(raw)
         assert "***" in result
 
-    # ── 32-char Hex (ElevenLabs-style) ────────────────────────────────────────
-
     def test_hex_key_masked(self) -> None:
         key = "a1b2c3d4e5f67890a1b2c3d4e5f67890"
         result = scrub_message(f"elevenlabs key: {key}")
@@ -100,18 +80,14 @@ class TestScrubMessage:
         assert key not in result
 
     def test_pure_digit_hex_not_masked(self) -> None:
-        # All digits — should NOT match (requires mixed digits+letters)
         key = "1" * 32
         result = scrub_message(f"hash: {key}")
         assert key in result
 
     def test_pure_letter_hex_not_masked(self) -> None:
-        # All letters — should NOT match (requires mixed digits+letters)
         key = "a" * 32
         result = scrub_message(f"hash: {key}")
         assert key in result
-
-    # ── Safe Messages ─────────────────────────────────────────────────────────
 
     def test_safe_message_unchanged(self) -> None:
         msg = "Processing file file_001.txt with 3 records"
@@ -119,8 +95,6 @@ class TestScrubMessage:
 
     def test_empty_string(self) -> None:
         assert scrub_message("") == ""
-
-    # ── Multiple Patterns ─────────────────────────────────────────────────────
 
     def test_multiple_secrets_in_one_message(self) -> None:
         msg = "api_key=secret123 password=hunter2"
@@ -131,8 +105,6 @@ class TestScrubMessage:
 
 
 class TestScrubPatcher:
-    """Tests for scrub_patcher loguru integration."""
-
     def test_patches_record_message(self) -> None:
         from ..scrubber import scrub_patcher
 
