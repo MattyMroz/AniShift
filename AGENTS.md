@@ -18,7 +18,7 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 
 ## Twarde reguły
 
-- Kod, komentarze, nazwy i wszystko związane z gitem/GitHub (branch, commit, PR, issue, label) po angielsku. Rozmowa z userem po polsku.
+- Kod, komentarze, nazwy i wszystko związane z gitem/GitHub (branch, commit, PR, issue, label) po angielsku. Rozmowa z userem po polsku. Kopiuj wzorce już zastane w repo (istniejące tytuły, opisy, nazwy branchy).
 - Zależności tylko przez `uv add` / `uv remove`. Nigdy nie edytuj `pyproject.toml` ręcznie.
 - Commity w formacie `typ(scope): opis` — scope OBOWIĄZKOWY, z listy w `scripts/hooks/check_commit_msg.py` (hook odrzuca commit bez scope lub ze scope spoza listy). Zero śladów AI (`Co-Authored-By`, stopki generatora) — też w treści PR.
 - Issue zakładaj wg szablonów z `.github/ISSUE_TEMPLATE/` (bug / feature / task). Tytuł z prefiksem Conventional Commits, jak w szablonie.
