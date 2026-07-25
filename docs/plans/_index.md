@@ -10,6 +10,7 @@
 | 2.5 | [etap-2.5-pobieracz-binarek-v2.md](etap-2.5-pobieracz-binarek-v2.md) | pobieracz zasobów zewnętrznych: manifest + leniwe pobieranie mkvtoolnix/ffmpeg na żądanie (`ensure_binary`) + `anishift setup`/`/setup` do pobrania z góry. | 2 |
 | 3 | [etap-3-ekstrakcja-refaktor.md](etap-3-ekstrakcja-refaktor.md) | Enter zaczyna działać: MKV z `workspace/` → wyciągnięte ścieżki + napisy przerobione do SRT (kroki 1-2 runnera). | 1, 2, 2.5 |
 | 4 | [etap-4-tlumaczenie.md](etap-4-tlumaczenie.md) | pierwszy rejestr silników (google + deepl) z dedupem i czyszczeniem znaczników — krok 3 runnera. | 3 |
+| 4.5 | — (issue #21) | **W TOKU** — agentyzacja repo: twarde strażniki (hooki/ruff/pre-push/CI), AGENTS.md per moduł, standardy review. Proces, nie kod produktu. | — |
 | 5 | [etap-5-llm.md](etap-5-llm.md) | serwis llm (6 dostawców, recykling 1:1 z MangaShift) + trzeci silnik tłumaczenia `llm` + opcjonalna korekta napisów. | 4 |
 | 6 | [etap-6-tts-audio.md](etap-6-tts-audio.md) | rozbicie god-files TTS na rejestr 5 silników + osobny tor audio ffmpeg — krok 4 runnera. | 4 (równolegle z 5) |
 | 7 | [etap-7-skladanie-e2e.md](etap-7-skladanie-e2e.md) | składanie wyniku (players / merge mkv / burn mp4) i pełne e2e od Enter do gotowego pliku. | 6 |
@@ -30,4 +31,4 @@ etapy 5 i 6 mogą iść równolegle (tts nie korzysta z llm). etap 8 dopiero gdy
 - pliki pośrednie powstają obok MKV w `workspace/`; robocze w `workspace/tmp/`; wyniki w `output/` tylko gdy włączone w `/settings`.
 - domenowe configi: dataclass `slots=True`, wymagany `engine_id` bez defaultu — default trzyma panel (`config/settings.json`).
 - błędy domenowe (podklasy `anishift/errors.py`), nigdy `sys.exit()` ani goły traceback do usera.
-- `utils/` nietykalne — nowe rzeczy tylko jako nowe pliki obok.
+- `utils/` — dawniej nietykalne; reguła zniesiona, całość docelowo doprowadzana do standardu (patrz issue #21).
