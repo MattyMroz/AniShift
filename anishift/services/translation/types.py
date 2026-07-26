@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from anishift.errors import ErrorContext
+
 
 @dataclass(frozen=True, slots=True)
 class BatchedLine:
@@ -63,6 +65,7 @@ class FileTranslation:
         failed_lines: Lines that fell back to source (partial failure).
         error: Set only on a hard failure of the whole file (fallback chain
             exhausted); the file is then reported failed.
+        error_context: Structured safe failure used by pipeline orchestration.
     """
 
     spoken: tuple[TranslatedLine, ...] = ()
@@ -74,6 +77,7 @@ class FileTranslation:
     api_calls: int = 0
     failed_lines: int = 0
     error: str | None = None
+    error_context: ErrorContext | None = None
 
     @property
     def is_success(self) -> bool:

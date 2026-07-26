@@ -13,6 +13,10 @@ class TranslationEngineError(TranslationError):
     """An engine failed to produce a translation."""
 
 
+class TranslationContextLengthError(TranslationEngineError):
+    """An LLM request exceeded the provider context window."""
+
+
 class TranslationConfigError(TranslationError, FatalError):
     """Invalid translation configuration (non-retryable)."""
 
@@ -32,6 +36,7 @@ class TranslationAuthError(TranslationError, FatalError):
 __all__ = [
     "TranslationAuthError",
     "TranslationConfigError",
+    "TranslationContextLengthError",
     "TranslationEngineError",
     "TranslationError",
     "TranslationQuotaError",

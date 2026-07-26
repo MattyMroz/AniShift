@@ -107,7 +107,7 @@ def test_google_real_ass_displayed_round_trip_to_disk(tmp_path: Path) -> None:
     assert len(result.displayed) == split.stats.displayed_events
 
     verses = [split_line(text) for text in result.displayed]
-    dest = write_translated(split, verses, {}, tmp_path / "out.pl.ass")
+    dest = write_translated(split, verses, [], tmp_path / "out.pl.ass")
     assert dest is not None
 
     written = load_subtitles(dest)

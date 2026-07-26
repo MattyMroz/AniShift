@@ -47,13 +47,13 @@ def _fake_translation(split: SubtitleSplit, prefix: str = "PL:"):  # type: ignor
         for event, decision in zip(dialogue, split.decisions, strict=True)
         if decision == "displayed"
     ]
-    spoken_verses = {(line.style, line.text): (f"{prefix}{line.text}",) for line in split.spoken}
+    spoken_verses = [(f"{prefix}{line.text}",) for line in split.spoken]
     return displayed_verses, spoken_verses
 
 
 def test_returns_none_when_no_dialogue_events(tmp_path: Path) -> None:
     split = split_subtitles(SSAFile(), kind="ass", spoken_styles=set())
-    assert write_translated(split, [], {}, tmp_path / "out.ass") is None
+    assert write_translated(split, [], [], tmp_path / "out.ass") is None
 
 
 def test_ass_keeps_every_event_and_translates_both_streams(tmp_path: Path) -> None:
@@ -106,7 +106,7 @@ def test_ass_uses_hard_backslash_n_between_verses(tmp_path: Path) -> None:
     subs = _ass_with_both_streams()
     split = split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
     displayed_verses = [("Pierwszy wers", "drugi wers")] * split.stats.displayed_events
-    spoken_verses = {(line.style, line.text): ("Pierwszy wers", "drugi wers") for line in split.spoken}
+    spoken_verses = [("Pierwszy wers", "drugi wers") for _line in split.spoken]
     translated = write_translated(split, displayed_verses, spoken_verses, tmp_path / "out.pl.ass")
     assert translated is not None
     body = translated.read_text(encoding="utf-8")
@@ -125,7 +125,7 @@ def test_srt_round_trip_keeps_all_events_and_uses_newline(tmp_path: Path) -> Non
     source_path.write_text(source.to_string(format_="srt"), encoding="utf-8")
 
     split = split_subtitles(load_subtitles(source_path), kind="srt")
-    spoken_verses = {(line.style, line.text): ("Pierwszy wers", "drugi wers") for line in split.spoken}
+    spoken_verses = [("Pierwszy wers", "drugi wers") for _line in split.spoken]
     translated = write_translated(split, [], spoken_verses, tmp_path / "out.pl.srt")
     assert translated is not None
 
@@ -139,6 +139,30 @@ def test_srt_round_trip_keeps_all_events_and_uses_newline(tmp_path: Path) -> Non
     body = translated.read_text(encoding="utf-8")
     assert "Pierwszy wers\ndrugi wers" in body
     assert "\\N" not in body
+
+
+def test_duplicate_spoken_occurrences_keep_distinct_translations(
+    tmp_path: Path,
+) -> None:
+    source = SSAFile()
+    source.events.extend(
+        [
+            SSAEvent(start=1000, end=2000, style="Dialog", text="Same"),
+            SSAEvent(start=5000, end=6000, style="Dialog", text="Same"),
+        ]
+    )
+    split = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})
+    assert len(split.spoken) == 2
+    translated = write_translated(
+        split,
+        [],
+        [("Pierwszy kontekst",), ("Drugi kontekst",)],
+        tmp_path / "out.pl.ass",
+    )
+    assert translated is not None
+    after = load_subtitles(translated)
+    visible = [visible_text(event.text) for event in after.events if event.type == "Dialogue"]
+    assert visible == ["Pierwszy kontekst", "Drugi kontekst"]
 
 
 @pytest.mark.skipif(not _REAL_ASS.is_file(), reason="dataset_ass corpus not available")

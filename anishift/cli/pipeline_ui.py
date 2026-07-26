@@ -9,6 +9,7 @@ from typing import cast
 from anishift.bootstrap import AppContext
 from anishift.errors import AniShiftError
 from anishift.pipeline import discover_inputs, run_pipeline
+from anishift.pipeline.llm_queue import LlmFailureAction
 from anishift.pipeline.types import FileOutcome, FileStatus, PipelineReport, ProgressPhase
 from anishift.platform.binaries import Binary, BinaryNotFoundError
 from anishift.services.extraction.tracks import is_polish_language
@@ -23,6 +24,7 @@ _STATUS_ICON: dict[FileStatus, StatusType] = {
     "done": "success",
     "failed": "error",
     "cancelled": "warning",
+    "not_processed": "warning",
 }
 """Map file statuses to console icons."""
 
@@ -37,11 +39,32 @@ def run_pipeline_command(context: AppContext) -> None:
         return
     try:
         if context.user_settings.mode == "manual":
-            report = run_pipeline(context, interaction=_ManualInteraction())
+            report = run_pipeline(
+                context,
+                interaction=_ManualInteraction(),
+                llm_failure_handler=lambda outcome, completed, pending: _choose_llm_failure(
+                    context,
+                    outcome,
+                    completed,
+                    pending,
+                ),
+            )
         else:
-            report = run_pipeline(context, progress_factory=_progress_phase)
+            report = run_pipeline(
+                context,
+                progress_factory=_progress_phase,
+                llm_failure_handler=lambda outcome, completed, pending: _choose_llm_failure(
+                    context,
+                    outcome,
+                    completed,
+                    pending,
+                ),
+            )
     except KeyboardInterrupt:
         console.print("[warning]Interrupted.[/warning]")
+        return
+    except AniShiftError as error:
+        _render_pipeline_error(error)
         return
     _render_report(report)
 
@@ -76,11 +99,20 @@ def _render_pipeline_error(error: AniShiftError) -> None:
 
 def _render_report(report: PipelineReport) -> None:
     """Render all file outcomes and the summary footer."""
-    counts: dict[FileStatus, int] = {"done": 0, "failed": 0, "cancelled": 0}
+    counts: dict[FileStatus, int] = {
+        "done": 0,
+        "failed": 0,
+        "cancelled": 0,
+        "not_processed": 0,
+    }
     for outcome in report.outcomes:
         counts[outcome.status] += 1
         _render_outcome(outcome)
-    console.print(f"Done {counts['done']} · Failed {counts['failed']} · Cancelled {counts['cancelled']}")
+    console.print(
+        f"Done {counts['done']} · Failed {counts['failed']} · "
+        f"Not processed {counts['not_processed']} · Cancelled {counts['cancelled']}"
+    )
+    _render_llm_summary(report)
     if counts["cancelled"]:
         console.print("[warning]Interrupted — press Enter to run again.[/warning]")
 
@@ -102,7 +134,7 @@ def _render_outcome(outcome: FileOutcome) -> None:
             console.print(
                 f"    [gray]translated {outcome.translated_lines} via {outcome.translation_engine}{failed}[/gray]"
             )
-    elif outcome.status == "failed" and outcome.failure is not None:
+    elif outcome.status in {"failed", "not_processed"} and outcome.failure is not None:
         console.print(f"{icon} {outcome.source.name} [{outcome.failure.step}] {outcome.failure.message}")
         if outcome.failure.suggestion:
             console.print(f"    [gray]-> {outcome.failure.suggestion}[/gray]")
@@ -110,6 +142,53 @@ def _render_outcome(outcome: FileOutcome) -> None:
         console.print(f"{icon} {outcome.source.name} interrupted")
     for warning in outcome.warnings:
         console.print(f"{get_status_icon('warning')} {warning}")
+
+
+def _choose_llm_failure(
+    context: AppContext,
+    outcome: FileOutcome,
+    completed: int,
+    pending: int,
+) -> LlmFailureAction:
+    """Show a clear provider failure and wait for an explicit safe decision."""
+    from anishift.cli.settings_panel import open_settings_panel  # noqa: PLC0415 - interactive failure path
+
+    failure = outcome.failure
+    message = failure.message if failure is not None else "LLM provider failed"
+    console.print(f"[error]{message}[/error]")
+    console.print(f"[warning]Completed {completed} · waiting {pending}[/warning]")
+    console.print("[bold]> settings[/bold]\n[bold]> finish[/bold]")
+    while True:
+        answer = input("> ").strip().lower()
+        if answer == "settings":
+            open_settings_panel(context)
+            return "settings"
+        if answer == "finish":
+            return "finish"
+        console.print("[warning]Choose 'settings' or 'finish'.[/warning]")
+
+
+def _render_llm_summary(report: PipelineReport) -> None:
+    """Render aggregate content-free LLM usage when calls are present."""
+    calls = [call for outcome in report.outcomes for call in outcome.llm_calls]
+    if not calls:
+        return
+    repairs = sum(call.purpose == "translation_repair" for call in calls)
+    retries = sum(call.transport_retries for call in calls)
+    omitted_context_items = sum(call.omitted_context_items for call in calls)
+    input_tokens = sum(call.input_tokens or 0 for call in calls)
+    output_tokens = sum(call.output_tokens or 0 for call in calls)
+    total_tokens = sum(call.total_tokens or 0 for call in calls)
+    costs = [call.reported_cost for call in calls if call.reported_cost is not None]
+    summary = (
+        f"LLM calls {len(calls)} · repairs {repairs} · retries {retries} · "
+        f"tokens {input_tokens}/{output_tokens}/{total_tokens}"
+    )
+    if costs:
+        summary += f" · provider cost {sum(costs):.6f}"
+    if omitted_context_items:
+        summary += f" · omitted context items {omitted_context_items}"
+    console.print(f"[gray]{summary}[/gray]")
 
 
 class _ManualInteraction:

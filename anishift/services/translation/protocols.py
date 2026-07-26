@@ -8,12 +8,67 @@ imports ``anishift.services.llm`` directly (independence contract, stage 5).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from anishift.services._base import EngineInfo
 
 if TYPE_CHECKING:
+    from anishift.services.translation.config import TranslationConfig
     from anishift.services.translation.types import BatchedLine
+
+TranslationInputPolicy = Literal["deduplicate", "preserve"]
+"""Preparation policy applied before an engine receives a stream."""
+
+TranslationStream = Literal["spoken", "displayed"]
+"""Subtitle text stream translated by an engine."""
+
+PromptPurpose = Literal["translation", "translation_repair"]
+"""Stable purpose identifier attached to a translation LLM request."""
+
+type TranslationEngineFactory = Callable[
+    [str, TranslationConfig],
+    TranslationEngine,
+]
+"""Build a translation engine for one fallback-chain entry."""
+
+
+@dataclass(frozen=True, slots=True)
+class PromptIdentity:
+    """Identity of the static prompt assets used for a completion.
+
+    Attributes:
+        prompt_id: Selected translation task identifier.
+        prompt_version: Version of the selected task.
+        style_id: Selected translation style identifier.
+        fingerprint: SHA-256 fingerprint of all static prompt assets.
+        purpose: Translation or output-format repair.
+    """
+
+    prompt_id: str
+    prompt_version: int
+    style_id: str
+    fingerprint: str
+    purpose: PromptPurpose
+
+
+@dataclass(frozen=True, slots=True)
+class LlmCompletionRequest:
+    """Translation-owned LLM completion input."""
+
+    system: str
+    user: str
+    identity: PromptIdentity
+    omitted_context_items: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class LlmCompletionResult:
+    """Translation-owned LLM completion output."""
+
+    text: str
+    finish_reason: str
 
 
 @runtime_checkable
@@ -35,6 +90,10 @@ class TranslationEngine(EngineInfo, Protocol):
         """Translate one batch; output length must equal input length."""
         ...
 
+    def input_policy(self, stream: TranslationStream) -> TranslationInputPolicy:
+        """Return the preparation policy for one subtitle stream."""
+        ...
+
     def close(self) -> None:
         """Release resources held by the engine."""
         ...
@@ -48,9 +107,19 @@ class LlmCompleter(Protocol):
     protocol, never the concrete LLM service.
     """
 
-    def complete(self, system: str, user: str) -> str:
-        """Run a single chat completion and return the assistant text."""
+    def complete(self, request: LlmCompletionRequest) -> LlmCompletionResult:
+        """Run one completion and return normalized text plus finish reason."""
         ...
 
 
-__all__ = ["LlmCompleter", "TranslationEngine"]
+__all__ = [
+    "LlmCompleter",
+    "LlmCompletionRequest",
+    "LlmCompletionResult",
+    "PromptIdentity",
+    "PromptPurpose",
+    "TranslationEngine",
+    "TranslationEngineFactory",
+    "TranslationInputPolicy",
+    "TranslationStream",
+]

@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING, Final
 from natsort import os_sorted
 
 from anishift.bootstrap import AppContext
+from anishift.config.user_settings import config_path
 from anishift.config.workspace import ensure_workspace_dir
-from anishift.errors import AniShiftError, ErrorCode
+from anishift.errors import AniShiftError, ErrorCode, ErrorContext
 from anishift.services.extraction import extract_tracks, identify
 from anishift.services.extraction.tracks import select_tracks
 from anishift.services.extraction.types import MediaInfo, TrackSelection
@@ -36,6 +37,7 @@ from anishift.utils.safe_fs import safe_rmtree
 from .types import (
     FileFailure,
     FileOutcome,
+    LlmSettings,
     PipelineInteraction,
     PipelineReport,
     ProgressPhase,
@@ -45,8 +47,14 @@ from .types import (
 )
 
 if TYPE_CHECKING:
+    from anishift.pipeline.llm_queue import (
+        LlmFailureHandler,
+        LlmQueueInput,
+        SharedProviderState,
+    )
     from anishift.services.subtitles.types import SubtitleSplit
     from anishift.services.translation import TranslationConfig
+    from anishift.services.translation.protocols import TranslationEngineFactory
     from anishift.services.translation.types import FileTranslation
 
 ProgressPhaseFactory = Callable[[], ProgressPhase]
@@ -105,6 +113,7 @@ def run_pipeline(
     *,
     interaction: PipelineInteraction | None = None,
     progress_factory: ProgressPhaseFactory | None = None,
+    llm_failure_handler: LlmFailureHandler | None = None,
 ) -> PipelineReport:
     """Process every discovered input in two phases, isolating failures per file.
 
@@ -120,46 +129,148 @@ def run_pipeline(
     txts = [path for path in files if path.suffix.lower() == _TXT_SUFFIX]
     translation = _translation_settings(context)
     cancel = threading.Event()
-    states = _extract_phase(mkvs, context.workspace_root, interaction, progress_factory, cancel)
-    _translate_phase(states, context.workspace_root, translation, progress_factory, cancel)
+    txt_outcomes: dict[Path, FileOutcome]
+    if translation.engine == "llm":
+        from anishift.pipeline.llm_queue import LlmQueueInput  # noqa: PLC0415 - LLM-only path
+
+        queue_input = LlmQueueInput(files)
+        states: dict[Path, _MkvState] = {}
+
+        def enqueue_extracted(path: Path, state: _MkvState) -> None:
+            states[path] = state
+            if state.split is not None:
+                queue_input.put(path)
+
+        with ThreadPoolExecutor(max_workers=1) as queue_executor:
+            queued = queue_executor.submit(
+                _translate_llm_inputs,
+                queue_input,
+                states,
+                context,
+                cancel,
+                on_provider_failure=llm_failure_handler,
+            )
+            try:
+                try:
+                    for path in txts:
+                        queue_input.put(path)
+                    extracted = _extract_phase(
+                        mkvs,
+                        context.workspace_root,
+                        interaction,
+                        progress_factory,
+                        cancel,
+                        on_complete=enqueue_extracted,
+                    )
+                    states.update(extracted)
+                finally:
+                    queue_input.close()
+                txt_outcomes = queued.result()
+            except KeyboardInterrupt:
+                cancel.set()
+                queue_input.close()
+                raise
+    else:
+        states = _extract_phase(mkvs, context.workspace_root, interaction, progress_factory, cancel)
+        _translate_phase(states, context.workspace_root, translation, progress_factory, cancel)
+        txt_outcomes = {path: _process_txt(path, translation, cancel=cancel) for path in txts}
     outcomes = {path: state.outcome for path, state in states.items()}
-    outcomes.update({path: _process_txt(path, translation) for path in txts})
+    outcomes.update(txt_outcomes)
     return PipelineReport(tuple(outcomes[path] for path in files))
 
 
 def _translation_settings(context: AppContext) -> TranslationSettings:
     """Resolve translation parameters from the wired context once."""
     prefs = context.user_settings
+    fallback_chain = () if prefs.translation_engine == "llm" else tuple(prefs.translation_fallback_chain)
+    prompt_root = config_path().parent / "prompts"
+    if prefs.translation_engine == "llm":
+        from anishift.services.translation.engines.llm.prompts import (  # noqa: PLC0415
+            PromptRegistry,
+        )
+
+        registry = PromptRegistry(custom_root=prompt_root)
+        registry.resolve("task", prefs.llm_prompt_id)
+        registry.resolve("style", prefs.llm_style_id)
+        for module_id in prefs.llm_module_ids:
+            registry.resolve("module", module_id)
     return TranslationSettings(
         engine=prefs.translation_engine,
-        fallback_chain=tuple(prefs.translation_fallback_chain),
+        fallback_chain=fallback_chain,
         batch_size=prefs.translation_batch_size,
         max_retries=prefs.translation_max_retries,
         deepl_api_key=context.settings.deepl_api_key,
+        llm=LlmSettings(
+            provider=prefs.llm_provider,
+            model=prefs.llm_provider_model_id,
+            prompt_id=prefs.llm_prompt_id,
+            style_id=prefs.llm_style_id,
+            module_ids=tuple(prefs.llm_module_ids),
+            max_concurrency=prefs.llm_max_concurrency,
+            max_retries=prefs.translation_max_retries,
+            prompt_root=prompt_root,
+            temperature=prefs.llm_temperature,
+            top_p=prefs.llm_top_p,
+            max_output_tokens=prefs.llm_max_output_tokens,
+            anthropic_api_key=context.settings.anthropic_api_key,
+            gemini_api_key=context.settings.gemini_api_key,
+            openai_api_key=context.settings.openai_api_key,
+            deepseek_api_key=context.settings.deepseek_api_key,
+            openrouter_api_key=context.settings.openrouter_api_key,
+            openai_compatible_api_key=context.settings.openai_compatible_api_key,
+            openai_compatible_base_url=context.settings.openai_compatible_base_url,
+        ),
     )
 
 
-def _extract_phase(
+def _extract_phase(  # noqa: PLR0913 - extraction wiring plus optional ready callback
     mkvs: Sequence[Path],
     workspace_root: Path,
     interaction: PipelineInteraction | None,
     progress_factory: ProgressPhaseFactory | None,
     cancel: threading.Event,
+    *,
+    on_complete: Callable[[Path, _MkvState], None] | None = None,
 ) -> dict[Path, _MkvState]:
     """Extract every MKV, one transient progress row each, keeping order."""
     if not mkvs:
         return {}
     if interaction is not None:
-        return {
-            path: _extract_mkv(path, workspace_root, interaction=interaction, on_progress=None, cancel=cancel)
-            for path in mkvs
-        }
+        states: dict[Path, _MkvState] = {}
+        for path in mkvs:
+            state = _extract_mkv(
+                path,
+                workspace_root,
+                interaction=interaction,
+                on_progress=None,
+                cancel=cancel,
+            )
+            states[path] = state
+            if on_complete is not None:
+                on_complete(path, state)
+        return states
     if progress_factory is None:
-        return {
-            path: _extract_mkv(path, workspace_root, interaction=None, on_progress=None, cancel=cancel) for path in mkvs
-        }
+        states = {}
+        for path in mkvs:
+            state = _extract_mkv(
+                path,
+                workspace_root,
+                interaction=None,
+                on_progress=None,
+                cancel=cancel,
+            )
+            states[path] = state
+            if on_complete is not None:
+                on_complete(path, state)
+        return states
     with progress_factory() as progress:
-        return _extract_concurrently(mkvs, workspace_root, progress, cancel)
+        return _extract_concurrently(
+            mkvs,
+            workspace_root,
+            progress,
+            cancel,
+            on_complete=on_complete,
+        )
 
 
 def _extract_concurrently(
@@ -167,6 +278,8 @@ def _extract_concurrently(
     workspace_root: Path,
     progress: ProgressReporter,
     cancel: threading.Event,
+    *,
+    on_complete: Callable[[Path, _MkvState], None] | None = None,
 ) -> dict[Path, _MkvState]:
     """Run extraction across a worker pool with one progress row per file."""
     task_ids = {path: progress.add_task(path.name) for path in mkvs}
@@ -182,14 +295,22 @@ def _extract_concurrently(
                 cancel=cancel,
             )
         pending = set(futures.values())
+        by_future = {future: path for path, future in futures.items()}
+        states: dict[Path, _MkvState] = {}
         try:
             while pending:
-                _done, pending = wait(pending, timeout=_WAIT_POLL_SECONDS)
+                done, pending = wait(pending, timeout=_WAIT_POLL_SECONDS)
+                for future in done:
+                    path = by_future[future]
+                    state = future.result()
+                    states[path] = state
+                    if on_complete is not None:
+                        on_complete(path, state)
         except KeyboardInterrupt:
             cancel.set()
             wait(set(futures.values()))
             raise
-    return {path: future.result() for path, future in futures.items()}
+    return states
 
 
 def _translate_phase(
@@ -215,6 +336,96 @@ def _translate_phase(
             )
 
 
+def _translate_llm_inputs(
+    ready_paths: Sequence[Path] | LlmQueueInput,
+    states: dict[Path, _MkvState],
+    context: AppContext,
+    cancel: threading.Event,
+    *,
+    on_provider_failure: LlmFailureHandler | None,
+) -> dict[Path, FileOutcome]:
+    """Translate ready MKV and TXT inputs through the central concurrent queue."""
+    from anishift.pipeline.llm_queue import LlmQueueConfig, run_llm_queue  # noqa: PLC0415 - LLM-only path
+    from anishift.pipeline.llm_runtime import PipelineLlmRuntime  # noqa: PLC0415 - LLM-only path
+
+    def build_worker(
+        provider_state: SharedProviderState,
+    ) -> Callable[[Path, SharedProviderState], FileOutcome]:
+        current = _translation_settings(context)
+        llm_settings = current.llm
+        if llm_settings is None:
+            msg = "LLM settings are unavailable"
+            raise RuntimeError(msg)
+
+        def worker(path: Path, _state: SharedProviderState) -> FileOutcome:
+            with PipelineLlmRuntime(
+                llm_settings,
+                cancel=cancel,
+                observer=provider_state,
+                title=path.stem,
+            ) as runtime:
+                if path.suffix.lower() == _MKV_SUFFIX:
+                    state = states[path]
+                    try:
+                        _translate_one(
+                            path,
+                            state,
+                            context.workspace_root,
+                            current,
+                            cancel,
+                            progress=None,
+                            task_id=None,
+                            engine_factory=runtime.engine_factory(),
+                        )
+                    except AniShiftError as error:
+                        _mark_raised_translation_error(
+                            state.outcome,
+                            error,
+                            step="write" if state.outcome.translation is not None else "translate",
+                        )
+                    except OSError as error:
+                        state.outcome.status = "failed"
+                        state.outcome.failure = FileFailure(
+                            "write" if state.outcome.translation is not None else "translate",
+                            ErrorCode.IO_ERROR.value,
+                            str(error),
+                            "Check file permissions and free disk space.",
+                        )
+                    state.outcome.llm_calls = tuple(runtime.records)
+                    return state.outcome
+                outcome = _process_txt(
+                    path,
+                    current,
+                    cancel=cancel,
+                    engine_factory=runtime.engine_factory(),
+                )
+                outcome.llm_calls = tuple(runtime.records)
+                return outcome
+
+        return worker
+
+    def not_processed(path: Path, error: ErrorContext) -> FileOutcome:
+        failure = FileFailure("translate", error.code.value, error.message, error.suggestion)
+        if path.suffix.lower() == _MKV_SUFFIX:
+            outcome = states[path].outcome
+            outcome.status = "not_processed"
+            outcome.failure = failure
+            return outcome
+        return FileOutcome(path, "not_processed", failure=failure)
+
+    queued = run_llm_queue(
+        ready_paths,
+        worker_factory=build_worker,
+        not_processed_factory=not_processed,
+        config=LlmQueueConfig(
+            configured_limit=lambda: context.user_settings.llm_max_concurrency,
+            cancel=cancel,
+            on_provider_failure=on_provider_failure,
+        ),
+    )
+    return {path: outcome for path, outcome in queued.items() if path.suffix.lower() == _TXT_SUFFIX}
+
+
 def _translate_one(  # noqa: PLR0913 - one file's translate step wiring
     path: Path,
     state: _MkvState,
@@ -224,21 +435,24 @@ def _translate_one(  # noqa: PLR0913 - one file's translate step wiring
     *,
     progress: ProgressReporter | None,
     task_id: int | None,
+    engine_factory: TranslationEngineFactory | None = None,
 ) -> None:
     """Translate one file's split and write the result, updating its outcome."""
     split = state.split
     if split is None:
         return
-    result = _translate_split(split, translation, cancel)
+    result = _translate_split(split, translation, cancel, engine_factory=engine_factory)
     if progress is not None and task_id is not None:
         progress.update(task_id, 100)
     state.outcome.translation = result
     state.outcome.translated_lines = len(result.spoken)
     state.outcome.translation_engine = result.engine_id
     state.outcome.translation_failed_lines = result.failed_lines
-    if result.is_success:
-        dest = workspace_root / f"{path.stem}.pl.{state.kind}"
-        state.outcome.translated_path = _write_translated(split, result, dest)
+    if not result.is_success:
+        _mark_translation_failed(state.outcome, result, step="translate")
+        return
+    dest = workspace_root / f"{path.stem}.pl.{state.kind}"
+    state.outcome.translated_path = _write_translated(split, result, dest)
 
 
 def _worker_count(item_count: int) -> int:
@@ -379,7 +593,7 @@ def _write_translated(split: SubtitleSplit, result: FileTranslation, dest: Path)
     from anishift.services.translation.linebreak import split_line  # noqa: PLC0415 - lazy: keep engines off import path
 
     displayed_verses = [split_line(text) for text in result.displayed]
-    spoken_verses = {(line.style, line.source_text): split_line(line.text) for line in result.spoken}
+    spoken_verses = [split_line(line.text) for line in result.spoken]
     return write_translated(split, displayed_verses, spoken_verses, dest)
 
 
@@ -400,11 +614,17 @@ def _translate_split(
     split: SubtitleSplit,
     translation: TranslationSettings,
     cancel: threading.Event,
+    *,
+    engine_factory: TranslationEngineFactory | None = None,
 ) -> FileTranslation:
     """Translate the spoken and displayed streams of one split."""
     from anishift.services.translation import TranslationService  # noqa: PLC0415 - lazy: keep engines off import path
 
-    service = TranslationService(_translate_config(translation), fallback_chain=translation.fallback_chain)
+    service = TranslationService(
+        _translate_config(translation),
+        fallback_chain=translation.fallback_chain,
+        engine_factory=engine_factory,
+    )
     return service.translate_file(
         list(split.spoken),
         _displayed_visible_texts(split),
@@ -421,7 +641,13 @@ def _txt_spoken_lines(text: str) -> tuple[SpokenLine, ...]:
     return tuple(SpokenLine(start=0, end=0, text=chunk, style="") for chunk in flattened if chunk)
 
 
-def _process_txt(path: Path, translation: TranslationSettings) -> FileOutcome:
+def _process_txt(
+    path: Path,
+    translation: TranslationSettings,
+    *,
+    cancel: threading.Event,
+    engine_factory: TranslationEngineFactory | None = None,
+) -> FileOutcome:
     """Convert one text input into narrator lines and translate them."""
     from anishift.services.translation import TranslationService  # noqa: PLC0415 - lazy: keep engines off import path
 
@@ -429,29 +655,82 @@ def _process_txt(path: Path, translation: TranslationSettings) -> FileOutcome:
         spoken = _txt_spoken_lines(read_txt(path))
         if not spoken:
             return FileOutcome(path, "done")
-        service = TranslationService(_translate_config(translation), fallback_chain=translation.fallback_chain)
-        result = service.translate_file(list(spoken), [], source_lang="auto")
-        translated_path = spoken_to_srt(result.spoken, path.with_suffix(".pl.srt")) if result.is_success else None
-        return FileOutcome(
+        service = TranslationService(
+            _translate_config(translation),
+            fallback_chain=translation.fallback_chain,
+            engine_factory=engine_factory,
+        )
+        result = service.translate_file(list(spoken), [], source_lang="auto", cancel=cancel)
+        outcome = FileOutcome(
             path,
             "done",
-            translated_path=translated_path,
             spoken_lines=len(spoken),
             translation=result,
             translated_lines=len(result.spoken),
             translation_engine=result.engine_id,
             translation_failed_lines=result.failed_lines,
         )
+        if not result.is_success:
+            _mark_translation_failed(outcome, result, step="txt")
+        else:
+            outcome.translated_path = spoken_to_srt(result.spoken, path.with_suffix(".pl.srt"))
     except AniShiftError as exc:
+        if exc.context.code is ErrorCode.CANCELLED:
+            failure = FileFailure(
+                "txt",
+                exc.context.code.value,
+                exc.context.message,
+                exc.context.suggestion,
+            )
+            return FileOutcome(path, "cancelled", failure=failure)
         return _failed(path, "txt", exc.context.code, exc.context.message, exc.context.suggestion)
     except OSError as exc:
         return _failed(path, "txt", ErrorCode.IO_ERROR, str(exc), "Check file permissions")
+    return outcome
 
 
 def _failed(path: Path, step: StepName, code: ErrorCode, message: str, suggestion: str) -> FileOutcome:
     """Build a failed file outcome."""
     failure = FileFailure(step, code.value, message, suggestion)
     return FileOutcome(path, "failed", failure=failure)
+
+
+def _mark_translation_failed(
+    outcome: FileOutcome,
+    result: FileTranslation,
+    *,
+    step: StepName,
+) -> None:
+    """Mark a translated outcome failed while preserving extraction artifacts."""
+    context = result.error_context or ErrorContext(
+        code=ErrorCode.TRANSLATION_FAILED,
+        message=result.error or "Translation failed",
+        suggestion="Check translation settings and try again.",
+    )
+    outcome.status = "cancelled" if context.code is ErrorCode.CANCELLED else "failed"
+    outcome.failure = FileFailure(
+        step,
+        context.code.value,
+        context.message,
+        context.suggestion,
+    )
+
+
+def _mark_raised_translation_error(
+    outcome: FileOutcome,
+    error: AniShiftError,
+    *,
+    step: StepName,
+) -> None:
+    """Convert a raised typed pipeline-domain failure into a file-local outcome."""
+    context = error.context
+    outcome.status = "cancelled" if context.code is ErrorCode.CANCELLED else "failed"
+    outcome.failure = FileFailure(
+        step,
+        context.code.value,
+        context.message,
+        context.suggestion,
+    )
 
 
 def _progress_callback(progress: ProgressReporter | None, task_id: int | None) -> Callable[[int], None] | None:

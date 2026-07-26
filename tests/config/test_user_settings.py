@@ -79,10 +79,23 @@ def test_defaults_include_all_panel_fields() -> None:
     assert s.tempo == 1.0
     assert s.volume == 100
     assert s.output_variant == "merge"
+    assert s.llm_provider == "gemini"
+    assert s.llm_provider_model_id == "gemini-3.5-flash-lite"
+    assert s.llm_max_concurrency == 4
 
 
 @pytest.mark.usefixtures("config_file")
 def test_full_roundtrip_preserves_every_field() -> None:
+    prompt_root = user_settings.config_path().parent / "prompts"
+    for directory, name in (
+        ("tasks", "custom_task.txt"),
+        ("styles", "custom_style.txt"),
+        ("modules", "honorifics.txt"),
+        ("modules", "names.txt"),
+    ):
+        path = prompt_root / directory / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(name, encoding="utf-8")
     original = UserSettings(
         mode="manual",
         translation_engine="deepl",
@@ -92,9 +105,37 @@ def test_full_roundtrip_preserves_every_field() -> None:
         volume=80,
         output_variant="burn",
         move_results_to_output=True,
+        llm_provider="openrouter",
+        llm_provider_model_id="vendor/custom-model",
+        llm_temperature=0.2,
+        llm_top_p=0.9,
+        llm_max_output_tokens=4096,
+        llm_prompt_id="custom_task",
+        llm_style_id="custom_style",
+        llm_module_ids=["honorifics", "names"],
+        llm_max_concurrency=3,
     )
     save_user_settings(original)
     assert load_user_settings() == original
+
+
+def test_load_stale_prompt_selection_falls_back_to_defaults(config_file: Path) -> None:
+    config_file.write_text(
+        json.dumps(
+            {
+                "llm_prompt_id": "missing_task",
+                "llm_style_id": "missing_style",
+                "llm_module_ids": ["missing_module"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_user_settings()
+
+    assert loaded.llm_prompt_id == UserSettings().llm_prompt_id
+    assert loaded.llm_style_id == UserSettings().llm_style_id
+    assert loaded.llm_module_ids == []
 
 
 def test_load_out_of_range_tempo_falls_back_to_default(config_file: Path) -> None:
@@ -115,6 +156,49 @@ def test_load_invalid_output_variant_falls_back_to_default(config_file: Path) ->
 def test_load_wrong_typed_tempo_falls_back_to_default(config_file: Path) -> None:
     config_file.write_text(json.dumps({"tempo": "fast"}), encoding="utf-8")
     assert load_user_settings().tempo == 1.0
+
+
+def test_load_migrates_legacy_llm_model(config_file: Path) -> None:
+    config_file.write_text(json.dumps({"llm_model": " legacy/model "}), encoding="utf-8")
+    loaded = load_user_settings()
+    assert loaded.llm_provider_model_id == "legacy/model"
+
+
+def test_load_prefers_new_llm_model_field(config_file: Path) -> None:
+    config_file.write_text(
+        json.dumps(
+            {
+                "llm_model": "legacy/model",
+                "llm_provider_model_id": "new/model",
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_user_settings()
+    assert loaded.llm_provider_model_id == "new/model"
+
+
+def test_load_optional_llm_values_accept_none(config_file: Path) -> None:
+    config_file.write_text(
+        json.dumps(
+            {
+                "llm_temperature": None,
+                "llm_top_p": None,
+                "llm_max_output_tokens": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_user_settings()
+    assert loaded.llm_temperature is None
+    assert loaded.llm_top_p is None
+    assert loaded.llm_max_output_tokens is None
+
+
+@pytest.mark.parametrize("value", [0, 5, "4", True])
+def test_load_invalid_llm_concurrency_uses_default(value: object, config_file: Path) -> None:
+    config_file.write_text(json.dumps({"llm_max_concurrency": value}), encoding="utf-8")
+    assert load_user_settings().llm_max_concurrency == 4
 
 
 @pytest.mark.parametrize("raw", ["false", "true", 1, 0, None])

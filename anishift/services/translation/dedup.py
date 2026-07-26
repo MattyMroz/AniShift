@@ -9,19 +9,63 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from anishift.services.translation.protocols import TranslationInputPolicy
+
 
 @dataclass(frozen=True, slots=True)
-class DedupResult:
-    """Deduplicated lines plus the mapping back to every occurrence.
+class PreparedLines:
+    """Prepared lines plus the mapping back to every occurrence.
 
     Attributes:
-        unique: Distinct non-empty lines in first-seen order.
-        index_map: For each original line index, the position in ``unique`` it
+        texts: Non-empty texts sent to the engine.
+        index_map: For each original line index, the position in ``texts`` it
             maps to, or ``-1`` when the line was empty (skipped).
     """
 
-    unique: tuple[str, ...]
+    texts: tuple[str, ...]
     index_map: tuple[int, ...]
+
+    @property
+    def unique(self) -> tuple[str, ...]:
+        """Return the legacy name for prepared engine texts."""
+        return self.texts
+
+
+DedupResult = PreparedLines
+"""Backward-compatible name for deduplicated prepared lines."""
+
+
+def prepare_lines(lines: list[str], policy: TranslationInputPolicy) -> PreparedLines:
+    """Prepare lines according to an engine stream policy.
+
+    Args:
+        lines: Cleaned single-line texts in order.
+        policy: Whether identical non-empty texts collapse or stay separate.
+
+    Returns:
+        Engine texts and a per-position redistribution map.
+    """
+    if policy == "preserve":
+        texts: list[str] = []
+        index_map: list[int] = []
+        for line in lines:
+            if not line.strip():
+                index_map.append(-1)
+                continue
+            index_map.append(len(texts))
+            texts.append(line)
+        return PreparedLines(texts=tuple(texts), index_map=tuple(index_map))
+
+    order: dict[str, int] = {}
+    index_map = []
+    for line in lines:
+        if not line.strip():
+            index_map.append(-1)
+            continue
+        if line not in order:
+            order[line] = len(order)
+        index_map.append(order[line])
+    return PreparedLines(texts=tuple(order), index_map=tuple(index_map))
 
 
 def deduplicate(lines: list[str]) -> DedupResult:
@@ -33,19 +77,10 @@ def deduplicate(lines: list[str]) -> DedupResult:
     Returns:
         The unique lines and a per-index map back onto them.
     """
-    order: dict[str, int] = {}
-    index_map: list[int] = []
-    for line in lines:
-        if not line.strip():
-            index_map.append(-1)
-            continue
-        if line not in order:
-            order[line] = len(order)
-        index_map.append(order[line])
-    return DedupResult(unique=tuple(order), index_map=tuple(index_map))
+    return prepare_lines(lines, "deduplicate")
 
 
-def redistribute(translations: list[str], result: DedupResult, sources: list[str]) -> list[str]:
+def redistribute(translations: list[str], result: PreparedLines, sources: list[str]) -> list[str]:
     """Fill every original position from the translated unique lines.
 
     Args:
@@ -63,7 +98,7 @@ def redistribute(translations: list[str], result: DedupResult, sources: list[str
     return out
 
 
-def redistribute_flags(flags: list[bool], result: DedupResult) -> list[bool]:
+def redistribute_flags(flags: list[bool], result: PreparedLines) -> list[bool]:
     """Map per-unique ok flags back to every original line (empty -> True).
 
     Args:
@@ -76,4 +111,11 @@ def redistribute_flags(flags: list[bool], result: DedupResult) -> list[bool]:
     return [True if position < 0 else flags[position] for position in result.index_map]
 
 
-__all__ = ["DedupResult", "deduplicate", "redistribute", "redistribute_flags"]
+__all__ = [
+    "DedupResult",
+    "PreparedLines",
+    "deduplicate",
+    "prepare_lines",
+    "redistribute",
+    "redistribute_flags",
+]

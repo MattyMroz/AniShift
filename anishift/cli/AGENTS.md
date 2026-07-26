@@ -21,7 +21,8 @@ REPL prompt_toolkit, komendy `/`, panel `/settings`, banner. Typer entry point `
 - `_ensure_binaries` sprawdza MKVToolNix tylko gdy w inputach jest `.mkv`, i musi wykonać się PRZED startem Rich Live (inaczej prompt instalatora zderzy się z Live). `pipeline_ui.py:54-67`
 - W panelu `/settings` `Enter` NIE zatwierdza/wychodzi — działa jak `→` (cykluje wartość); wyjście to tylko `Esc`/`q`. `settings_panel.py:193-201`
 - Każda zmiana w panelu jest natychmiast zapisywana na dysk (`save_user_settings` po każdym kroku) — brak anulowania. `settings_panel.py:184-196`
-- Lista silników w panelu ukrywa `llm` zawsze i `deepl` bez klucza API; pusty wynik → fallback twardo na `("google",)`. `settings_panel.py:90-96`
+- Panel zawsze pokazuje `llm` i wszystkich providerów; brak sekretu jest markerem `missing key`/`missing base URL`, nie powodem ukrycia lub resetu wyboru. `settings_panel.py`
+- Trwała awaria LLM kończy Live przed promptem i wymaga jawnej komendy `settings` albo `finish`; `finish` zachowuje gotowe wyniki i oznacza resztę `not_processed`. `pipeline_ui.py`
 - Manualny prompt stylów: Enter (pusto) zwraca `None` = akceptacja klasyfikatora, nie pusty zbiór. `pipeline_ui.py:149-161`
 
 ## Konwencje

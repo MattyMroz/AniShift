@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import Final
 
@@ -238,12 +238,13 @@ def write_displayed(split: SubtitleSplit, dest: Path) -> Path | None:
 def _translated_file(
     split: SubtitleSplit,
     displayed_verses: Sequence[tuple[str, ...]],
-    spoken_verses: Mapping[tuple[str, str], tuple[str, ...]],
+    spoken_verses: Sequence[tuple[str, ...]],
 ) -> SSAFile:
     out = SSAFile()
     out.info = dict(split.subs.info)
     out.styles = {name: style.copy() for name, style in split.subs.styles.items()}
     line_break = _LINE_BREAKS[split.kind]
+    translated_spoken = tuple(zip(split.spoken, spoken_verses, strict=True))
     dialogue_index = 0
     displayed_index = 0
     for event in split.subs.events:
@@ -254,7 +255,18 @@ def _translated_file(
             verses: tuple[str, ...] | None = displayed_verses[displayed_index]
             displayed_index += 1
         else:
-            verses = spoken_verses.get((event.style, visible_text(event.text)))
+            visible = visible_text(event.text)
+            verses = next(
+                (
+                    translated
+                    for spoken, translated in translated_spoken
+                    if spoken.style == event.style
+                    and spoken.text == visible
+                    and spoken.start <= event.start
+                    and event.end <= spoken.end
+                ),
+                None,
+            )
         dialogue_index += 1
         if verses is None:
             out.events.append(event)
@@ -268,7 +280,7 @@ def _translated_file(
 def write_translated(
     split: SubtitleSplit,
     displayed_verses: Sequence[tuple[str, ...]],
-    spoken_verses: Mapping[tuple[str, str], tuple[str, ...]],
+    spoken_verses: Sequence[tuple[str, ...]],
     dest: Path,
 ) -> Path | None:
     r"""Write the whole translated subtitle file atomically, or None when empty.
@@ -280,9 +292,9 @@ def write_translated(
     Args:
         split: The split whose source file is re-assembled.
         displayed_verses: One verse tuple per displayed event, in event order.
-        spoken_verses: Verse tuples keyed by ``(style, visible_text)`` - the
-            inverse of the ``collapse_fbf`` grouping key. Spoken events without
-            a key (e.g. empty visible text) are copied unchanged.
+        spoken_verses: One verse tuple per collapsed spoken run, in
+            ``split.spoken`` order. Every source event is matched by style,
+            visible text, and its run's timing bounds.
         dest: Output path (same format as the source).
 
     Raises:

@@ -5,15 +5,30 @@ import pytest
 from anishift.services.subtitles.types import SpokenLine
 from anishift.services.translation.config import TranslationConfig
 from anishift.services.translation.errors import TranslationError, TranslationQuotaError
+from anishift.services.translation.protocols import (
+    TranslationEngineFactory,
+    TranslationInputPolicy,
+    TranslationStream,
+)
 from anishift.services.translation.service import TranslationService
 from anishift.services.translation.types import BatchedLine
 
 
 class _FakeEngine:
-    def __init__(self, *, engine_id: str = "fake", fail_with: Exception | None = None, prefix: str = "PL:") -> None:
+    def __init__(
+        self,
+        *,
+        engine_id: str = "fake",
+        fail_with: Exception | None = None,
+        prefix: str = "PL:",
+        spoken_policy: TranslationInputPolicy = "deduplicate",
+        displayed_policy: TranslationInputPolicy = "deduplicate",
+    ) -> None:
         self._engine_id = engine_id
         self._fail = fail_with
         self._prefix = prefix
+        self._spoken_policy = spoken_policy
+        self._displayed_policy = displayed_policy
         self.calls: list[list[str]] = []
         self.target_langs: list[str] = []
 
@@ -35,6 +50,9 @@ class _FakeEngine:
     def close(self) -> None:
         pass
 
+    def input_policy(self, stream: TranslationStream) -> TranslationInputPolicy:
+        return self._spoken_policy if stream == "spoken" else self._displayed_policy
+
 
 def _spoken(*texts: str) -> list[SpokenLine]:
     return [SpokenLine(start=i * 1000, end=i * 1000 + 500, text=t, style="Default") for i, t in enumerate(texts)]
@@ -44,9 +62,16 @@ def _config() -> TranslationConfig:
     return TranslationConfig(engine="google")
 
 
+def _single_engine_factory(engine: _FakeEngine) -> TranslationEngineFactory:
+    def build(_engine_id: str, _config: TranslationConfig) -> _FakeEngine:
+        return engine
+
+    return build
+
+
 def test_translate_file_builds_translated_lines_with_timings() -> None:
     engine = _FakeEngine()
-    service = TranslationService(_config(), engine=engine)
+    service = TranslationService(_config(), engine_factory=_single_engine_factory(engine))
     result = service.translate_file(_spoken("hi", "bye"), [], target_lang="pl")
     assert [line.text for line in result.spoken] == ["PL:hi", "PL:bye"]
     assert result.spoken[0].start == 0
@@ -57,14 +82,14 @@ def test_translate_file_builds_translated_lines_with_timings() -> None:
 
 def test_facade_defaults_target_to_polish_when_no_target_passed() -> None:
     engine = _FakeEngine()
-    service = TranslationService(_config(), engine=engine)
+    service = TranslationService(_config(), engine_factory=_single_engine_factory(engine))
     service.translate_file(_spoken("hi"), [])
     assert engine.target_langs == ["pl"]
 
 
 def test_dedup_collapses_repeated_lines() -> None:
     engine = _FakeEngine()
-    service = TranslationService(_config(), engine=engine)
+    service = TranslationService(_config(), engine_factory=_single_engine_factory(engine))
     result = service.translate_file(_spoken("same", "same", "same"), [], target_lang="pl")
     assert engine.calls == [["same"]]
     assert [line.text for line in result.spoken] == ["PL:same", "PL:same", "PL:same"]
@@ -72,8 +97,21 @@ def test_dedup_collapses_repeated_lines() -> None:
     assert result.total_lines == 3
 
 
+def test_stream_policies_preserve_spoken_and_deduplicate_displayed() -> None:
+    engine = _FakeEngine(spoken_policy="preserve")
+    service = TranslationService(_config(), engine_factory=_single_engine_factory(engine))
+    result = service.translate_file(
+        _spoken("same", "same"),
+        ["Sign", "Sign"],
+        target_lang="pl",
+    )
+    assert engine.calls == [["same", "same"], ["Sign"]]
+    assert [line.text for line in result.spoken] == ["PL:same", "PL:same"]
+    assert result.displayed == ("PL:Sign", "PL:Sign")
+
+
 def test_empty_streams_return_empty_result() -> None:
-    service = TranslationService(_config(), engine=_FakeEngine())
+    service = TranslationService(_config(), engine_factory=_single_engine_factory(_FakeEngine()))
     result = service.translate_file([], [], target_lang="pl")
     assert result.spoken == ()
     assert result.displayed == ()
@@ -81,7 +119,7 @@ def test_empty_streams_return_empty_result() -> None:
 
 
 def test_displayed_translated_as_strings() -> None:
-    service = TranslationService(_config(), engine=_FakeEngine())
+    service = TranslationService(_config(), engine_factory=_single_engine_factory(_FakeEngine()))
     result = service.translate_file([], ["Sign one", "Sign two"], target_lang="pl")
     assert result.displayed == ("PL:Sign one", "PL:Sign two")
 
@@ -92,11 +130,10 @@ def test_fallback_chain_uses_next_engine_on_quota() -> None:
     engines = {"deepl": failing, "google": working}
     config = TranslationConfig(engine="deepl")
 
-    class _Service(TranslationService):
-        def _build_engine(self, engine_id):  # type: ignore[no-untyped-def]
-            return engines[engine_id]
+    def build(engine_id: str, _config: TranslationConfig) -> _FakeEngine:
+        return engines[engine_id]
 
-    service = _Service(config, fallback_chain=("google",))
+    service = TranslationService(config, fallback_chain=("google",), engine_factory=build)
     result = service.translate_file(_spoken("x"), [], target_lang="pl")
     assert result.engine_id == "google"
     assert [line.text for line in result.spoken] == ["G:x"]
@@ -104,15 +141,16 @@ def test_fallback_chain_uses_next_engine_on_quota() -> None:
 
 def test_exhausted_chain_sets_error() -> None:
     failing = _FakeEngine(fail_with=TranslationQuotaError("quota"))
-    service = TranslationService(_config(), engine=failing)
+    service = TranslationService(_config(), engine_factory=_single_engine_factory(failing))
     result = service.translate_file(_spoken("x"), [], target_lang="pl")
     assert not result.is_success
     assert result.error is not None
+    assert result.error_context is not None
 
 
 def test_cancel_raises_translation_error() -> None:
     cancel = threading.Event()
     cancel.set()
-    service = TranslationService(_config(), engine=_FakeEngine())
+    service = TranslationService(_config(), engine_factory=_single_engine_factory(_FakeEngine()))
     with pytest.raises(TranslationError):
         service.translate_file(_spoken("x"), [], target_lang="pl", cancel=cancel)

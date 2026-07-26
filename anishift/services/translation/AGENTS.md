@@ -20,9 +20,9 @@ Serwis tłumaczenia: synchroniczna fasada `TranslationService` nad jednym silnik
 
 - `TranslationConfig` NIE waliduje typów ani nieznanych kluczy błędem — nieznane klucze tylko logują warning i są ignorowane; brak/pusty `engine` to jedyny warunek rzucający `TranslationConfigError`. `config.py:53-66`
 - `TranslationConfig` używa `init=False` + ręcznego `__init__` przepisującego pola; `MISSING` default staje się `None` — pominięte pole bez defaultu wyląduje jako `None`, nie rzuci. `config.py:68-70`
-- Wstrzyknięty silnik (`engine=`) całkowicie wyłącza łańcuch fallbacku — `_resolve_chain` zwraca tylko jego `engine_id`, ignorując `config.engine` i `fallback_chain`. `service.py:97-101`
+- Composition wstrzykuje `engine_factory=`, nie gotowy engine. Factory dostaje każdy wpis fallback chain i bazowy `TranslationConfig`; to jedyne wspierane spięcie silnika LLM. `service.py`
 - Silnik jest zawsze zamykany w `finally` po każdej próbie, także po sukcesie — `close()` wykona się przed zwrotem. `service.py:83-94`
-- `translate_file` łapie tylko cztery błędy (Quota/RateLimit/Auth/Engine); każdy inny wyjątek przebije fallback i wyleci. `service.py:85-92`
+- `translate_file` łapie bazowy `TranslationError`, zachowuje `ErrorContext` w wyniku i natychmiast przepuszcza `CANCELLED`; błędy programistyczne nadal przebijają. `service.py`
 - Anulowanie sprawdzane tylko na starcie każdej iteracji łańcucha, nie w trakcie tłumaczenia pliku; rzuca `TranslationError` z `ErrorCode.CANCELLED`. `service.py:76-78`
 - `deduplicate` mapuje puste/whitespace linie na `-1` i pomija; puste linie zawsze liczą się jako sukces (`redistribute_flags`→`True`). `dedup.py:38-45,76`
 - `chunk_text` gwarantuje, że konkatenacja kawałków odtwarza wejście DOKŁADNIE (separatory po lewej stronie) — nie wolno trymować kawałków. `chunking.py:334-346`
@@ -42,4 +42,4 @@ Serwis tłumaczenia: synchroniczna fasada `TranslationService` nad jednym silnik
 - `translation` NIGDY nie importuje `anishift.services.llm` — silnik LLM dostaje protokół `LlmCompleter` przez DI (etap 5). `protocols.py:2-7,43-53`
 - Per-request limit znaków NIE jest w `TranslationConfig` — to twardy limit silnika (Google 15000, DeepL 128 KiB), by fasada nie mogła go zaniżyć. `config.py:35-38`
 - `TARGET_LANG = "pl"` zawsze — config nie niesie języka docelowego. `constants.py:11`
-- `_run` woła silnik dwa razy (osobno spoken i displayed), z osobną deduplikacją każdego strumienia. `service.py:118-133`
+- `_run` woła silnik osobno dla `spoken` i `displayed`. Politykę przygotowania wybiera engine: LLM zachowuje każde `spoken` i deduplikuje `displayed`, Google/DeepL deduplikują oba. `service.py`, `dedup.py`

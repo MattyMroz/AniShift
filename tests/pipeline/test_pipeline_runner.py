@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import Future
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -15,6 +16,8 @@ from anishift.pipeline.runner import _worker_count
 from anishift.pipeline.types import FileOutcome, TranslationSettings
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo
+from anishift.services.subtitles.errors import SubtitleError
+from anishift.services.subtitles.types import SubtitleSplit
 
 
 class _NullPhase:
@@ -91,6 +94,32 @@ def test_worker_count_is_at_least_one(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _worker_count(5) == 3
 
 
+def test_translation_settings_routes_llm_preferences_and_env_secrets(
+    tmp_path: Path,
+) -> None:
+    context = AppContext(
+        Settings(
+            gemini_api_key="gemini-secret",
+            openrouter_api_key="router-secret",
+        ),
+        UserSettings(
+            translation_engine="llm",
+            llm_provider="gemini",
+            llm_provider_model_id="gemini-model",
+            llm_max_concurrency=4,
+        ),
+        tmp_path,
+    )
+    settings = runner._translation_settings(context)
+    assert settings.llm is not None
+    assert settings.llm.provider == "gemini"
+    assert settings.llm.model == "gemini-model"
+    assert settings.llm.api_key() == "gemini-secret"
+    assert settings.fallback_chain == ()
+    assert "gemini-secret" not in repr(settings.llm)
+    assert "router-secret" not in repr(settings.llm)
+
+
 def test_extract_phase_reraises_interrupt_after_cancelling_workers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -123,3 +152,93 @@ def test_extract_phase_reraises_interrupt_after_cancelling_workers(
 
     assert worker_cancel is not None
     assert worker_cancel.is_set()
+
+
+def test_llm_queue_isolates_mkv_write_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bad = tmp_path / "episode1.mkv"
+    good = tmp_path / "episode2.mkv"
+    states = {
+        bad: runner._MkvState(FileOutcome(bad, "done"), cast("SubtitleSplit", object())),
+        good: runner._MkvState(FileOutcome(good, "done"), cast("SubtitleSplit", object())),
+    }
+    context = AppContext(
+        Settings(gemini_api_key="secret"),
+        UserSettings(translation_engine="llm"),
+        tmp_path,
+    )
+
+    class _FakeRuntime:
+        def __init__(self, *_: object, **__: object) -> None:
+            self.records: list[object] = []
+
+        def __enter__(self) -> _FakeRuntime:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def engine_factory(self) -> None:
+            return None
+
+    def fake_translate(path: Path, state: runner._MkvState, *_: object, **__: object) -> None:
+        if path == bad:
+            error_context = ErrorContext(
+                code=ErrorCode.IO_ERROR,
+                message="write failed",
+            )
+            raise SubtitleError(context=error_context)
+        state.outcome.translated_path = path.with_suffix(".pl.ass")
+
+    monkeypatch.setattr("anishift.pipeline.llm_runtime.PipelineLlmRuntime", _FakeRuntime)
+    monkeypatch.setattr(runner, "_translate_one", fake_translate)
+
+    runner._translate_llm_inputs(
+        (bad, good),
+        states,
+        context,
+        threading.Event(),
+        on_provider_failure=None,
+    )
+
+    assert states[bad].outcome.status == "failed"
+    assert states[bad].outcome.failure is not None
+    assert states[good].outcome.status == "done"
+
+
+def test_llm_pipeline_sets_cancel_before_executor_wait_on_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "episode.txt"
+    source.write_text("Source", encoding="utf-8")
+    worker_observed_cancel = threading.Event()
+
+    def fake_translate_inputs(
+        _paths: object,
+        _states: object,
+        _context: object,
+        cancel: threading.Event,
+        **_: object,
+    ) -> dict[Path, FileOutcome]:
+        if cancel.wait(timeout=2):
+            worker_observed_cancel.set()
+        return {}
+
+    def interrupt_extract(*_: object, **__: object) -> dict[Path, runner._MkvState]:
+        raise KeyboardInterrupt
+
+    context = AppContext(
+        Settings(gemini_api_key="secret"),
+        UserSettings(translation_engine="llm"),
+        tmp_path,
+    )
+    monkeypatch.setattr(runner, "_translate_llm_inputs", fake_translate_inputs)
+    monkeypatch.setattr(runner, "_extract_phase", interrupt_extract)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_pipeline(context)
+
+    assert worker_observed_cancel.is_set()

@@ -49,7 +49,7 @@ def create_engine(config: TranslationConfig) -> TranslationEngine:
     Raises:
         TranslationConfigError: If ``config.engine`` is empty, unknown, or is
             ``llm`` (needs an injected completer; build LlmTranslateService
-            directly and pass it via ``TranslationService(engine=...)``).
+            directly and pass it through a composition-owned engine factory).
     """
     engine_id = config.engine
     if not engine_id:
@@ -62,7 +62,7 @@ def create_engine(config: TranslationConfig) -> TranslationEngine:
     if engine_id == "llm":
         msg = (
             "The 'llm' engine needs an injected completer; build LlmTranslateService "
-            "directly and pass it via TranslationService(engine=...)."
+            "directly and pass it through TranslationService(engine_factory=...)."
         )
         raise TranslationConfigError(msg)
     module_path, class_name = _REGISTRY[engine_id]

@@ -13,36 +13,47 @@ from typing import TYPE_CHECKING
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.translation.config import TranslationConfig
 from anishift.services.translation.constants import TARGET_LANG
-from anishift.services.translation.dedup import deduplicate, redistribute, redistribute_flags
-from anishift.services.translation.errors import (
-    TranslationAuthError,
-    TranslationEngineError,
-    TranslationError,
-    TranslationQuotaError,
-    TranslationRateLimitError,
-)
+from anishift.services.translation.dedup import prepare_lines, redistribute, redistribute_flags
+from anishift.services.translation.errors import TranslationEngineError, TranslationError
 from anishift.services.translation.types import BatchedLine, FileTranslation, TranslatedLine
 
 if TYPE_CHECKING:
     from anishift.services.subtitles.types import SpokenLine
-    from anishift.services.translation.protocols import TranslationEngine
+    from anishift.services.translation.protocols import TranslationEngine, TranslationEngineFactory
+
+
+def _default_engine_factory(
+    engine_id: str,
+    config: TranslationConfig,
+) -> TranslationEngine:
+    """Build one registry engine from the facade's base configuration."""
+    from anishift.services.translation.engines import create_engine  # noqa: PLC0415 - lazy engine import
+
+    engine_config = TranslationConfig(
+        engine=engine_id,
+        source_lang=config.source_lang,
+        batch_size=config.batch_size,
+        max_retries=config.max_retries,
+        api_key=config.api_key,
+    )
+    return create_engine(engine_config)
 
 
 class TranslationService:
     """Sync translation facade over one engine with a fallback chain."""
 
-    __slots__ = ("_injected", "config", "fallback_chain")
+    __slots__ = ("_engine_factory", "config", "fallback_chain")
 
     def __init__(
         self,
         config: TranslationConfig,
         *,
-        engine: TranslationEngine | None = None,
+        engine_factory: TranslationEngineFactory | None = None,
         fallback_chain: tuple[str, ...] = (),
     ) -> None:
-        """Create the facade; optionally inject an engine (tests / LLM DI)."""
+        """Create the facade with an optional composition-owned engine factory."""
         self.config = config
-        self._injected = engine
+        self._engine_factory = engine_factory or _default_engine_factory
         self.fallback_chain = fallback_chain
 
     def translate_file(
@@ -72,48 +83,41 @@ class TranslationService:
 
         chain = self._resolve_chain()
         last_error: str | None = None
+        last_context: ErrorContext | None = None
         for engine_id in chain:
             if cancel is not None and cancel.is_set():
                 context = ErrorContext(code=ErrorCode.CANCELLED, message="translation cancelled")
                 raise TranslationError(context=context)
-            engine = self._build_engine(engine_id)
-            if not engine.is_available:
-                last_error = f"engine {engine_id} unavailable"
-                continue
+            engine: TranslationEngine | None = None
             try:
+                engine = self._engine_factory(engine_id, self.config)
+                if not engine.is_available:
+                    context = ErrorContext(
+                        code=ErrorCode.TRANSLATION_ENGINE_ERROR,
+                        message=f"engine {engine_id} unavailable",
+                        suggestion="Choose an available translation engine.",
+                    )
+                    raise TranslationEngineError(context=context)
                 return self._run(engine, spoken, displayed, source_lang=source_lang, target_lang=target_lang)
-            except TranslationQuotaError as exc:
+            except TranslationError as exc:
+                if exc.context.code is ErrorCode.CANCELLED:
+                    raise
                 last_error = str(exc)
-            except TranslationRateLimitError as exc:
-                last_error = str(exc)
-            except TranslationAuthError as exc:
-                last_error = str(exc)
-            except TranslationEngineError as exc:
-                last_error = str(exc)
+                last_context = exc.context
             finally:
-                engine.close()
-        return FileTranslation(target_lang=target_lang, error=last_error or "no available translation engine")
+                if engine is not None:
+                    engine.close()
+        error = last_error or "no available translation engine"
+        context = last_context or ErrorContext(
+            code=ErrorCode.TRANSLATION_ENGINE_ERROR,
+            message=error,
+            suggestion="Check translation settings and try again.",
+        )
+        return FileTranslation(target_lang=target_lang, error=error, error_context=context)
 
     def _resolve_chain(self) -> tuple[str, ...]:
-        """Return the ordered engine chain (injected engine wins, no fallback)."""
-        if self._injected is not None:
-            return (self._injected.engine_id,)
+        """Return the ordered engine chain without duplicate entries."""
         return tuple(dict.fromkeys((self.config.engine, *self.fallback_chain)))
-
-    def _build_engine(self, engine_id: str) -> TranslationEngine:
-        """Return the injected engine or build one from the registry."""
-        if self._injected is not None:
-            return self._injected
-        from anishift.services.translation.engines import create_engine  # noqa: PLC0415 - lazy engine import
-
-        engine_config = TranslationConfig(
-            engine=engine_id,
-            source_lang=self.config.source_lang,
-            batch_size=self.config.batch_size,
-            max_retries=self.config.max_retries,
-            api_key=self.config.api_key,
-        )
-        return create_engine(engine_config)
 
     def _run(
         self,
@@ -152,11 +156,16 @@ class TranslationService:
     ) -> tuple[tuple[TranslatedLine, ...], int, int, int]:
         """Translate the spoken stream into TranslatedLine objects."""
         spoken_texts = [line.text for line in spoken]
-        dedup = deduplicate(spoken_texts)
-        batched = self._call_engine(engine, list(dedup.unique), source_lang=source_lang, target_lang=target_lang)
-        calls = 1 if dedup.unique else 0
-        full_text = redistribute([line.text for line in batched], dedup, spoken_texts)
-        full_ok = redistribute_flags([line.ok for line in batched], dedup)
+        prepared = prepare_lines(spoken_texts, engine.input_policy("spoken"))
+        batched = self._call_engine(
+            engine,
+            list(prepared.texts),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        calls = 1 if prepared.texts else 0
+        full_text = redistribute([line.text for line in batched], prepared, spoken_texts)
+        full_ok = redistribute_flags([line.ok for line in batched], prepared)
         lines = tuple(
             TranslatedLine(
                 start=source.start,
@@ -170,7 +179,7 @@ class TranslationService:
             for source, text, ok in zip(spoken, full_text, full_ok, strict=True)
         )
         failed = sum(1 for ok in full_ok if not ok)
-        return lines, calls, len(dedup.unique), failed
+        return lines, calls, len(prepared.texts), failed
 
     def _translate_displayed(
         self,
@@ -186,11 +195,16 @@ class TranslationService:
         into on-screen verses and joining with the format-specific break happens at
         the write step, where the subtitle format (ASS vs SRT) is known.
         """
-        dedup = deduplicate(displayed)
-        batched = self._call_engine(engine, list(dedup.unique), source_lang=source_lang, target_lang=target_lang)
-        calls = 1 if dedup.unique else 0
-        out = tuple(redistribute([line.text for line in batched], dedup, displayed))
-        return out, calls, len(dedup.unique)
+        prepared = prepare_lines(displayed, engine.input_policy("displayed"))
+        batched = self._call_engine(
+            engine,
+            list(prepared.texts),
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+        calls = 1 if prepared.texts else 0
+        out = tuple(redistribute([line.text for line in batched], prepared, displayed))
+        return out, calls, len(prepared.texts)
 
     @staticmethod
     def _call_engine(

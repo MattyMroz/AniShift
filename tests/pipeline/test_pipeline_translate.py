@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
 from pysubs2 import SSAEvent, SSAFile
 
+from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline import runner
 from anishift.pipeline.types import TranslationSettings
 from anishift.services.subtitles.service import split_subtitles
 from anishift.services.translation import chunking
+from anishift.services.translation.errors import TranslationError
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 
 
@@ -74,7 +77,7 @@ def test_process_txt_translates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     txt.write_text("Pierwsze zdanie. Drugie zdanie.", encoding="utf-8")
 
     monkeypatch.setattr("anishift.services.translation.TranslationService", _FakeService)
-    outcome = runner._process_txt(txt, _ts())
+    outcome = runner._process_txt(txt, _ts(), cancel=threading.Event())
     assert outcome.status == "done"
     assert outcome.translation_engine == "fake"
     assert outcome.translated_lines == outcome.spoken_lines
@@ -100,7 +103,7 @@ def test_process_txt_chunks_via_chunk_text(monkeypatch: pytest.MonkeyPatch, tmp_
 
     monkeypatch.setattr("anishift.services.translation.chunking.chunk_text", spy)
     monkeypatch.setattr("anishift.services.translation.TranslationService", _FakeService)
-    outcome = runner._process_txt(txt, _ts())
+    outcome = runner._process_txt(txt, _ts(), cancel=threading.Event())
 
     assert calls, "chunk_text was not used for the txt path"
     assert outcome.status == "done"
@@ -116,3 +119,52 @@ def test_txt_spoken_lines_flatten_chunks_to_single_lines() -> None:
     for line in lines:
         assert "\n" not in line.text
         assert line.text == line.text.strip()
+
+
+def test_process_txt_marks_unsuccessful_translation_as_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    txt = tmp_path / "book.txt"
+    txt.write_text("Source", encoding="utf-8")
+    context = ErrorContext(
+        code=ErrorCode.LLM_AUTH_FAILED,
+        message="missing key",
+        suggestion="configure key",
+    )
+
+    class _FailingService:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        def translate_file(self, *_: object, **__: object) -> FileTranslation:
+            return FileTranslation(error="missing key", error_context=context)
+
+    monkeypatch.setattr("anishift.services.translation.TranslationService", _FailingService)
+    outcome = runner._process_txt(txt, _ts(), cancel=threading.Event())
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.code == ErrorCode.LLM_AUTH_FAILED.value
+    assert outcome.translated_path is None
+
+
+def test_process_txt_maps_raised_cancellation_to_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    txt = tmp_path / "book.txt"
+    txt.write_text("Source", encoding="utf-8")
+    context = ErrorContext(code=ErrorCode.CANCELLED, message="cancelled")
+
+    class _CancelledService:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        def translate_file(self, *_: object, **__: object) -> FileTranslation:
+            raise TranslationError(context=context)
+
+    monkeypatch.setattr("anishift.services.translation.TranslationService", _CancelledService)
+    outcome = runner._process_txt(txt, _ts(), cancel=threading.Event())
+    assert outcome.status == "cancelled"
+    assert outcome.failure is not None
+    assert outcome.failure.code == ErrorCode.CANCELLED.value
