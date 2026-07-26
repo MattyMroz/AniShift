@@ -11,8 +11,9 @@ from anishift.services.subtitles.service import (
     load_subtitles,
     split_subtitles,
     write_translated,
+    write_translated_displayed,
 )
-from anishift.services.subtitles.text import visible_text
+from anishift.services.subtitles.text import is_drawing, visible_text
 from anishift.services.subtitles.types import SubtitleSplit
 
 _REAL_ASS_NAME = "006___shisha__Genjitsu_no_Yohane_-_Sunshine_in_the_Mirror_-_01__1080p_.mkv.ass"
@@ -163,6 +164,26 @@ def test_duplicate_spoken_occurrences_keep_distinct_translations(
     after = load_subtitles(translated)
     visible = [visible_text(event.text) for event in after.events if event.type == "Dialogue"]
     assert visible == ["Pierwszy kontekst", "Drugi kontekst"]
+
+
+def test_translated_displayed_file_contains_only_overlay_events(tmp_path: Path) -> None:
+    source = SSAFile()
+    source.events.extend(
+        [
+            SSAEvent(start=0, end=1000, style="Dialog", text="Spoken"),
+            SSAEvent(start=1000, end=2000, style="Sign", text=r"{\an8}Episode title"),
+            SSAEvent(start=2000, end=3000, style="Sign", text=r"{\p1}m 0 0 l 10 10"),
+        ]
+    )
+    split = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})
+    dest = write_translated_displayed(split, [("Tytuł odcinka",)], tmp_path / "show.lektor.pl.ass")
+    assert dest is not None
+    after = load_subtitles(dest)
+    dialogue = [event for event in after.events if event.type == "Dialogue"]
+    assert len(dialogue) == 2
+    assert visible_text(dialogue[0].text) == "Tytuł odcinka"
+    assert is_drawing(dialogue[1].text)
+    assert dialogue[1].text == source.events[2].text
 
 
 @pytest.mark.skipif(not _REAL_ASS.is_file(), reason="dataset_ass corpus not available")

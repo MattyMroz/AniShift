@@ -2,7 +2,7 @@ import threading
 
 import pytest
 
-from anishift.services.subtitles.types import SpokenLine
+from anishift.services.subtitles.types import DisplayedLine, SpokenLine
 from anishift.services.translation.config import TranslationConfig
 from anishift.services.translation.errors import TranslationError, TranslationQuotaError
 from anishift.services.translation.protocols import (
@@ -55,7 +55,14 @@ class _FakeEngine:
 
 
 def _spoken(*texts: str) -> list[SpokenLine]:
-    return [SpokenLine(start=i * 1000, end=i * 1000 + 500, text=t, style="Default") for i, t in enumerate(texts)]
+    return [
+        SpokenLine(start=i * 1000, end=i * 1000 + 500, text=t, style="Default", order=i * 2)
+        for i, t in enumerate(texts)
+    ]
+
+
+def _displayed(*items: tuple[int, str]) -> list[DisplayedLine]:
+    return [DisplayedLine(start=order * 1000, end=order * 1000 + 500, text=text, order=order) for order, text in items]
 
 
 def _config() -> TranslationConfig:
@@ -102,12 +109,13 @@ def test_stream_policies_preserve_spoken_and_deduplicate_displayed() -> None:
     service = TranslationService(_config(), engine_factory=_single_engine_factory(engine))
     result = service.translate_file(
         _spoken("same", "same"),
-        ["Sign", "Sign"],
+        _displayed((1, "Sign"), (3, "Sign")),
         target_lang="pl",
     )
-    assert engine.calls == [["same", "same"], ["Sign"]]
+    assert engine.calls == [["same", "Sign", "same"]]
     assert [line.text for line in result.spoken] == ["PL:same", "PL:same"]
     assert result.displayed == ("PL:Sign", "PL:Sign")
+    assert result.api_calls == 1
 
 
 def test_empty_streams_return_empty_result() -> None:
@@ -120,8 +128,49 @@ def test_empty_streams_return_empty_result() -> None:
 
 def test_displayed_translated_as_strings() -> None:
     service = TranslationService(_config(), engine_factory=_single_engine_factory(_FakeEngine()))
-    result = service.translate_file([], ["Sign one", "Sign two"], target_lang="pl")
+    result = service.translate_file([], _displayed((0, "Sign one"), (1, "Sign two")), target_lang="pl")
     assert result.displayed == ("PL:Sign one", "PL:Sign two")
+
+
+def test_translate_file_preserves_chronological_context_across_streams() -> None:
+    engine = _FakeEngine(spoken_policy="preserve")
+    service = TranslationService(_config(), engine_factory=_single_engine_factory(engine))
+    result = service.translate_file(
+        [
+            SpokenLine(start=1000, end=1500, text="Before", style="Default", order=0),
+            SpokenLine(start=3000, end=3500, text="After", style="Default", order=2),
+        ],
+        _displayed((1, "Episode title")),
+        target_lang="pl",
+    )
+    assert engine.calls == [["Before", "Episode title", "After"]]
+    assert [line.text for line in result.spoken] == ["PL:Before", "PL:After"]
+    assert result.displayed == ("PL:Episode title",)
+
+
+def test_displayed_animation_duplicates_use_one_provider_item() -> None:
+    engine = _FakeEngine(spoken_policy="preserve")
+    service = TranslationService(_config(), engine_factory=_single_engine_factory(engine))
+    displayed = _displayed(*((index, "Town name") for index in range(100)))
+    result = service.translate_file([], displayed, target_lang="pl")
+    assert engine.calls == [["Town name"]]
+    assert result.displayed == ("PL:Town name",) * 100
+    assert result.unique_lines == 1
+    assert result.total_lines == 100
+
+
+def test_displayed_partial_failure_counts_every_redistributed_occurrence() -> None:
+    class _PartialFailureEngine(_FakeEngine):
+        def translate_batch(self, texts, *, source_lang, target_lang):  # type: ignore[no-untyped-def]
+            del source_lang, target_lang
+            self.calls.append(list(texts))
+            return [BatchedLine(text=text, ok=text != "Broken") for text in texts]
+
+    engine = _PartialFailureEngine()
+    service = TranslationService(_config(), engine_factory=_single_engine_factory(engine))
+    result = service.translate_file([], _displayed((0, "Broken"), (1, "Broken")), target_lang="pl")
+    assert result.displayed == ("Broken", "Broken")
+    assert result.failed_lines == 2
 
 
 def test_fallback_chain_uses_next_engine_on_quota() -> None:

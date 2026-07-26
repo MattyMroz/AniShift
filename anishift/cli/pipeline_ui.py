@@ -128,7 +128,11 @@ def _render_outcome(outcome: FileOutcome) -> None:
             f"collapsed {outcome.collapsed_away}{suffix}"
         )
         if outcome.displayed_path is not None:
-            console.print(f"    [gray]-> {outcome.displayed_path}[/gray]")
+            console.print(f"    [gray]source displayed -> {outcome.displayed_path}[/gray]")
+        if outcome.translated_path is not None:
+            console.print(f"    [gray]Polish full -> {outcome.translated_path}[/gray]")
+        if outcome.lektor_path is not None:
+            console.print(f"    [gray]Polish lector -> {outcome.lektor_path}[/gray]")
         if outcome.translation_engine:
             failed = f" · {outcome.translation_failed_lines} failed" if outcome.translation_failed_lines else ""
             console.print(

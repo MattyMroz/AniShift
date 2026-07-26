@@ -9,7 +9,7 @@ Serwis tłumaczenia: synchroniczna fasada `TranslationService` nad jednym silnik
 - `constants.py` — stałe domeny (`TARGET_LANG="pl"`, batch, retries); bez nazw silników i sekretów
 - `protocols.py` — kontrakty `TranslationEngine` i `LlmCompleter` (DI z composition root)
 - `chunking.py` — wielojęzyczne cięcie tekstu na kawałki (`chunk_text`), ścieżka txt
-- `linebreak.py` — dzielenie przetłumaczonej linii na maks. 2 wersy ekranowe (`split_line`)
+- `linebreak.py` — polski reflow (`split_line`) i odtwarzanie authored layoutu (`split_for_layout`)
 - `dedup.py` — deduplikacja identycznych linii + mapa redystrybucji
 - `_retry.py` — retry z wykładniczym backoffem (sync + async), bez tenacity
 - `types.py` — dataclassy wartości (`BatchedLine`, `TranslatedLine`, `FileTranslation`)
@@ -32,9 +32,9 @@ Serwis tłumaczenia: synchroniczna fasada `TranslationService` nad jednym silnik
 
 - `_PHRASE_CUT_CHARS`/`_CLOSING_MARKS` budowane przez skan CAŁEGO Unicode (0x0–0x10FFFF) w czasie importu — koszt jednorazowy. `chunking.py:52-54`
 - Heurystyka „fałszywego końca zdania" działa językowo-niezależnie; lista skrótów EN+PL rozstrzyga tylko wielką literę po kropce. `chunking.py:380-397`
-- `linebreak` celowo NIE odtwarza układu źródła — buduje nowy podział pod polską składnię (maks. 2 wersy). `linebreak.py:1-16`
+- `split_line` buduje nowy polski podział, a `split_for_layout` zachowuje authored line count dla złożonych `displayed`, jeśli target ma dość granic słów; nigdy nie rozcina pojedynczego słowa ani nie tworzy pustej linii. `linebreak.py`
 - `_retry` świadomie bez tenacity — nie jest zależnością projektu. `_retry.py:1-7`
-- `api_calls` w `FileTranslation` liczy wywołania `translate_batch` (maks. 2 na plik: spoken + displayed), nie surowe HTTP. `types.py:60-63`
+- `api_calls` w `FileTranslation` liczy logiczne wywołania `translate_batch` (zwykle 1 na wspólny strumień pliku), nie surowe HTTP. `types.py`
 - `linebreak` reużywa zbiorów z `chunking` (`SENTENCE_ENDINGS`, `phrase_cut_chars()`) jako SSOT. `linebreak.py:23,33,36`
 
 ## Decyzje
@@ -42,4 +42,4 @@ Serwis tłumaczenia: synchroniczna fasada `TranslationService` nad jednym silnik
 - `translation` NIGDY nie importuje `anishift.services.llm` — silnik LLM dostaje protokół `LlmCompleter` przez DI (etap 5). `protocols.py:2-7,43-53`
 - Per-request limit znaków NIE jest w `TranslationConfig` — to twardy limit silnika (Google 15000, DeepL 128 KiB), by fasada nie mogła go zaniżyć. `config.py:35-38`
 - `TARGET_LANG = "pl"` zawsze — config nie niesie języka docelowego. `constants.py:11`
-- `_run` woła silnik osobno dla `spoken` i `displayed`. Politykę przygotowania wybiera engine: LLM zachowuje każde `spoken` i deduplikuje `displayed`, Google/DeepL deduplikują oba. `service.py`, `dedup.py`
+- `_run` scala `spoken` i tekstowe `displayed` chronologicznie do jednego wywołania. LLM zachowuje każde `spoken` i deduplikuje `displayed`; Google/DeepL deduplikują oba. `service.py`

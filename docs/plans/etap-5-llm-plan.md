@@ -32,6 +32,8 @@ Po zakończeniu etapu:
 - błąd transportu uruchamia kontrolowany retry i circuit breaker; trwała awaria
   pauzuje nowe zadania i oferuje userowi `settings` albo `finish`;
 - niepoprawny wynik modelu nigdy nie zostaje cicho uznany za tłumaczenie;
+- `spoken` i tekstowe `displayed` jednego pliku tworzą jeden chronologiczny
+  strumień wejściowy, dzięki czemu tytuły i znaki zachowują sąsiedni kontekst;
 - Google i DeepL nadal deduplikują oba strumienie; LLM zachowuje każde
   wystąpienie `spoken`, a identyczne `displayed` deduplikuje;
 - prompty są zasobami `.txt` wykrywanymi automatycznie z paczki i
@@ -561,8 +563,7 @@ W tym etapie nie ma planowanej operacji `DEL`.
 - `uv.lock` — brak nowej zależności;
 - `.env.example` — ma wszystkie klucze i compatible base URL;
 - `anishift/config/settings.py` — ma wszystkie sekrety;
-- `anishift/bootstrap.py` — `AppContext` już niesie oba rodzaje settings;
-- subtitle writer — LLM nie może dotykać timingów, tagów ani stylów.
+- `anishift/bootstrap.py` — `AppContext` już niesie oba rodzaje settings.
 
 `config/prompts/` jest katalogiem runtime usera i musi być gitignored. Kod nie
 tworzy przykładowych promptów usera; tworzy brakujące kontrolowane podfoldery
@@ -1292,13 +1293,19 @@ def input_policy(self, stream: TranslationStream) -> TranslationInputPolicy: ...
 zachowanie. Dla `preserve` zachowuje każde niepuste wystąpienie, a whitespace
 mapuje na `-1`, dzięki czemu LLM nie dostaje pustych pozycji, ale wynik nadal ma
 dokładną długość wejścia. `TranslationService` pyta o politykę osobno dla
-`spoken` i `displayed`. Zmiana obejmuje istniejące testy dedup.
+`spoken` i `displayed`, układa obie grupy w jeden strumień według kolejności
+eventów, a następnie rozprowadza odpowiedzi z powrotem do właściwych struktur.
+Deduplikowany `displayed` trafia do providera tylko przy pierwszym wystąpieniu;
+jedna odpowiedź zasila wszystkie powtórzenia animacji. Zmiana obejmuje
+istniejące testy dedup oraz przypadek co najmniej 100 identycznych eventów.
 
 ### 10.8. Liczenie requestów
 
-Obecne `FileTranslation.api_calls` liczy logiczne wywołania
-`TranslationEngine.translate_batch` (maksymalnie spoken + displayed). Zachować
-to pole i semantykę — zastępowanie go licznikiem HTTP wymagałoby rozszerzenia
+`FileTranslation.api_calls` liczy logiczne wywołania
+`TranslationEngine.translate_batch`. Zwykły plik wykonuje jedno takie
+wywołanie dla wspólnego chronologicznego strumienia `spoken` + `displayed`;
+wewnętrzne chunki, fallbacki i requesty transportowe nadal nie zmieniają
+semantyki tego pola. Zastępowanie go licznikiem HTTP wymagałoby rozszerzenia
 kontraktu wszystkich engine'ów i nie jest potrzebne.
 
 Surową liczbę wywołań fake engine sprawdzają testy `LlmService` i adaptera.
@@ -1308,6 +1315,27 @@ kod błędu. Rekord nie zawiera promptu ani odpowiedzi. Retry wewnątrz
 `LlmService` ma osobny licznik prób, aby podsumowanie rozróżniało completion,
 repair i retry. Nie udawać dokładnego billingu nieudanych prób, jeśli
 SDK/provider nie zwrócił usage.
+
+### 10.9. Integralność layoutu ASS
+
+- jeden event ASS jest jednym logicznym elementem tłumaczenia; wizualne wersy
+  rozdzielone `\N` albo `\n` nie stają się osobnymi request items;
+- provider dostaje czysty jednoliniowy tekst, natomiast surowy event zachowuje
+  poza API authored breaki, `\h` i kotwice tagów inline;
+- `spoken` po tłumaczeniu korzysta z polskiej heurystyki czytelnego reflow;
+- `displayed` bez authored breaków korzysta z tej samej heurystyki, a
+  `displayed` z authored layoutem zachowuje liczbę wersów, jeśli target ma
+  dość granic słów, i wybiera naturalne polskie granice przybliżone proporcjami
+  źródła; pojedyncze słowo nie jest sztucznie rozcinane ani uzupełniane pustą
+  linią;
+- niezmieniony tekst widoczny zwraca oryginalny raw event 1:1;
+- tagi inline pozostają heurystycznie zakotwiczone względem tekstu, a tagi
+  akcentujące są dosuwane do granic słów i nigdy nie rozcinają grafemu;
+- `\h` zastępuje najbliższą spację targetu twardą spacją, ale nie jest
+  sztucznie wstawiane wewnątrz pojedynczego słowa;
+- eventy wektorowe `\pN` nie trafiają do translatora i są kopiowane bez zmian;
+- pipeline zapisuje pełny `{stem}.pl.ass` oraz przetłumaczony displayed-only
+  `{stem}.lektor.pl.ass` bez dodatkowego requestu.
 
 ## 11. Fabryka silników i granica błędu
 
@@ -2102,6 +2130,7 @@ Obowiązkowe ręczne scenariusze:
 | Kolejka | cztery workery, natural order, pause/resume i ramp-up tests |
 | Trwała awaria | `settings`/`finish`, brak ponowienia gotowych plików |
 | Deduplikacja | spoken preserve, displayed deduplicate, Google/DeepL bez regresji |
+| Layout ASS | inline tags zachowują kotwice, displayed authored breaks, drawings passthrough |
 | Prompty | built-in + custom discovery, composer, fingerprint i safe data |
 | Raport | content-free calls, completion/repair/retry/tokens/optional cost |
 | Pakiet | wheel zawiera wbudowane prompt assets |
@@ -2265,6 +2294,7 @@ Reviewer ma zacząć od tych pytań:
 12. Czy panel pozwala wpisać, a nie tylko wybrać model?
 13. Czy custom `.txt` są wykrywane bez zmiany kodu?
 14. Czy OpenRouter nigdy nie jest automatycznym płatnym fallbackiem?
+15. Czy wspólny strumień zachowuje kontekst, deduplikację znaków i layout ASS?
 
 ## 23. Świadome odroczenia
 

@@ -4,13 +4,14 @@ import pytest
 
 from anishift.config.settings import Settings
 from anishift.services.subtitles import (
+    is_drawing,
     load_subtitles,
     split_subtitles,
     subtitle_kind,
     visible_text,
     write_translated,
 )
-from anishift.services.subtitles.types import SpokenLine
+from anishift.services.subtitles.types import DisplayedLine, SpokenLine
 from anishift.services.translation.config import TranslationConfig
 from anishift.services.translation.linebreak import split_line
 from anishift.services.translation.service import TranslationService
@@ -95,16 +96,16 @@ def test_google_real_ass_displayed_round_trip_to_disk(tmp_path: Path) -> None:
     split = split_subtitles(load_subtitles(ass), kind=kind)
 
     dialogue = [event for event in split.subs.events if event.type == "Dialogue"]
-    displayed_texts = [
-        visible_text(event.text)
-        for event, decision in zip(dialogue, split.decisions, strict=True)
-        if decision == "displayed"
+    displayed_lines = [
+        DisplayedLine(event.start, event.end, visible_text(event.text), order)
+        for order, (event, decision) in enumerate(zip(dialogue, split.decisions, strict=True))
+        if decision == "displayed" and not is_drawing(event.text)
     ]
 
     service = TranslationService(TranslationConfig(engine="google"))
-    result = service.translate_file([], displayed_texts, target_lang="pl")
+    result = service.translate_file([], displayed_lines, target_lang="pl")
     assert result.is_success
-    assert len(result.displayed) == split.stats.displayed_events
+    assert len(result.displayed) == len(displayed_lines)
 
     verses = [split_line(text) for text in result.displayed]
     dest = write_translated(split, verses, [], tmp_path / "out.pl.ass")

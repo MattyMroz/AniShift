@@ -20,7 +20,7 @@ Orkiestracja etapów dwufazowa (ekstrakcja → tłumaczenie) plus obsługa TXT, 
 
 - Silniki tłumaczeń importowane leniwie WEWNĄTRZ funkcji (`noqa: PLC0415`, „keep engines off import path"). `runner.py:379,388,405,418,426`
 - Liczba workerów skaluje się pierwiastkiem z rdzeni + 2 (`_WORKER_IO_HEADROOM`), NIE liniowo — ekstrakcja jest dyskowo-bound. `runner.py:244-253`
-- Plik `.pl.<kind>` to WHOLE-FILE: wszystkie eventy zachowane, tylko tekst zamieniony; strumień TTS (`result.spoken`) zostaje niepodzielony. `runner.py:373-383`
+- Plik `.pl.<kind>` to WHOLE-FILE, a `.lektor.pl.<kind>` zawiera tylko przetłumaczone `displayed` i rysunki; strumień TTS (`result.spoken`) zostaje niepodzielony. `runner.py`
 - `_extract_concurrently` odpytuje future'y w pętli z timeoutem `_WAIT_POLL_SECONDS` (0.2 s) zamiast blokującego `wait()` — by Ctrl+C był responsywny. `runner.py:186-187`
 - LLM scheduler zaczyna z jednym slotem, rośnie `1 → 2 → max 4`, zatrzymuje niewysłane pliki po trwałym typed failure i wznawia failed-first po akcji `settings`. `llm_queue.py`
 - Wyjątki łapane precyzyjnie: `AniShiftError` z rozróżnieniem `CANCELLED` vs reszta, osobno `OSError` → `IO_ERROR`; brak `except Exception`. `runner.py:330-341`

@@ -18,7 +18,8 @@ Napisy: klasyfikacja stylów ASS (DIALOG/SIGN/UNCERTAIN), split spoken/displayed
 - `classify_styles` liczy `raw_n` po WSZYSTKICH eventach, ale metryki tylko po zdeduplikowanych — dwie pętle po innych zbiorach. `classifier.py:189-203`
 - `split_subtitles` ma cichy fallback: gdy żaden styl nie jest „spoken", a są nierysunkowe eventy, WSZYSTKIE nierysunkowe stają się „spoken". `service.py:167-169`
 - `write_translated` pomija spoken bez klucza `(style, visible_text)` (np. pusty tekst) — kopiuje event bez zmian. `service.py:257,259-261`
-- `replace_visible_text` wstawia nowy tekst w miejsce PIERWSZEGO widocznego segmentu i porzuca kolejne, zachowując tylko bloki `{...}`. `text.py:58-69`
+- `replace_visible_text` zwraca raw event 1:1 dla niezmienionego visible text; przy tłumaczeniu mapuje tagi inline na granicach grafemów, a `\h` zastępuje najbliższy whitespace targetu bez rozcinania słowa. `text.py`
+- `displayed_verses` nie zawiera eventów `\pN`; writer kopiuje rysunki raw i nie konsumuje dla nich pozycji tłumaczenia. `service.py`
 - `spoken_to_srt` używa realnych czasów tylko gdy `end > start`; inaczej generuje czasy od kursora (15 znaków/s, 1200–8000 ms, gap 80 ms). `srt.py:49-56`
 - Zapisy atomowe przez `.tmp` + `replace`, ale nazwa temp = `dest.name + ".tmp"` (dokleja do pełnej nazwy, nie podmienia suffiksu). `service.py:228,294`, `srt.py:79`
 

@@ -9,7 +9,8 @@ from pysubs2 import SSAEvent, SSAFile
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline import runner
 from anishift.pipeline.types import TranslationSettings
-from anishift.services.subtitles.service import split_subtitles
+from anishift.services.subtitles.service import load_subtitles, split_subtitles
+from anishift.services.subtitles.text import visible_text
 from anishift.services.translation import chunking
 from anishift.services.translation.errors import TranslationError
 from anishift.services.translation.types import FileTranslation, TranslatedLine
@@ -43,13 +44,59 @@ def test_should_translate_skips_empty_split() -> None:
     assert not runner._should_translate(split, already_polish=False)
 
 
-def test_displayed_visible_texts_extracts_displayed_only() -> None:
+def test_displayed_lines_extracts_text_and_source_order() -> None:
     events = [
         SSAEvent(start=0, end=1000, style="Dialog", text="Spoken line"),
         SSAEvent(start=1000, end=2000, style="Sign", text="{\\pos(1,2)}On screen"),
     ]
     split = _split(events, spoken_styles={"Dialog"})
-    assert runner._displayed_visible_texts(split) == ["On screen"]
+    displayed = runner._displayed_lines(split)
+    assert [line.text for line in displayed] == ["On screen"]
+    assert [line.order for line in displayed] == [1]
+
+
+def test_displayed_lines_do_not_send_vector_drawings_to_translator() -> None:
+    events = [
+        SSAEvent(start=0, end=1000, style="Sign", text=r"{\p1}m 0 0 l 10 10"),
+        SSAEvent(start=1000, end=2000, style="Sign", text="Translate me"),
+        SSAEvent(start=2000, end=3000, style="Dialog", text="Spoken"),
+    ]
+    split = _split(events, spoken_styles={"Dialog"})
+    assert [line.text for line in runner._displayed_lines(split)] == ["Translate me"]
+
+
+def test_translation_writers_create_full_and_lektor_layout_products(tmp_path: Path) -> None:
+    events = [
+        SSAEvent(start=0, end=1000, style="Dialog", text="We are home"),
+        SSAEvent(start=1000, end=2000, style="Sign", text=r"{\an8}Episode 3\NLife Back at Home"),
+    ]
+    split = _split(events, spoken_styles={"Dialog"})
+    result = FileTranslation(
+        spoken=(
+            TranslatedLine(
+                start=0,
+                end=1000,
+                source_text="We are home",
+                text="Jesteśmy w domu",
+                lines=("Jesteśmy w domu",),
+                style="Dialog",
+            ),
+        ),
+        displayed=("Odcinek 3: Życie z powrotem w domu",),
+    )
+    full = runner._write_translated(split, result, tmp_path / "show.pl.ass")
+    lektor = runner._write_translated_displayed(split, result, tmp_path / "show.lektor.pl.ass")
+    assert full is not None
+    assert lektor is not None
+    full_events = [event for event in load_subtitles(full).events if event.type == "Dialogue"]
+    lektor_events = [event for event in load_subtitles(lektor).events if event.type == "Dialogue"]
+    assert [visible_text(event.text) for event in full_events] == [
+        "Jesteśmy w domu",
+        "Odcinek 3: Życie z powrotem w domu",
+    ]
+    assert r"Odcinek 3:\NŻycie z powrotem w domu" in full_events[1].text
+    assert len(lektor_events) == 1
+    assert r"Odcinek 3:\NŻycie z powrotem w domu" in lektor_events[0].text
 
 
 class _FakeService:

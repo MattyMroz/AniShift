@@ -20,7 +20,9 @@ from anishift.services.extraction import extract_tracks, identify
 from anishift.services.extraction.tracks import select_tracks
 from anishift.services.extraction.types import MediaInfo, TrackSelection
 from anishift.services.subtitles import (
+    DisplayedLine,
     SpokenLine,
+    is_drawing,
     load_subtitles,
     preview_styles,
     read_txt,
@@ -28,8 +30,10 @@ from anishift.services.subtitles import (
     spoken_to_srt,
     subtitle_kind,
     visible_text,
+    visible_verses,
     write_displayed,
     write_translated,
+    write_translated_displayed,
 )
 from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
 from anishift.utils.safe_fs import safe_rmtree
@@ -106,6 +110,14 @@ class _MkvState:
     outcome: FileOutcome
     split: SubtitleSplit | None
     kind: str = "srt"
+
+
+@dataclass(frozen=True, slots=True)
+class _TranslationVerses:
+    """Rendered verse groups for both translated subtitle products."""
+
+    displayed: tuple[tuple[str, ...], ...]
+    spoken: tuple[tuple[str, ...], ...]
 
 
 def run_pipeline(
@@ -453,6 +465,8 @@ def _translate_one(  # noqa: PLR0913 - one file's translate step wiring
         return
     dest = workspace_root / f"{path.stem}.pl.{state.kind}"
     state.outcome.translated_path = _write_translated(split, result, dest)
+    lektor_dest = workspace_root / f"{path.stem}.lektor.pl.{state.kind}"
+    state.outcome.lektor_path = _write_translated_displayed(split, result, lektor_dest)
 
 
 def _worker_count(item_count: int) -> int:
@@ -574,13 +588,18 @@ def _should_translate(split: SubtitleSplit, already_polish: bool) -> bool:
     return bool(split.stats.spoken_lines or split.stats.displayed_events)
 
 
-def _displayed_visible_texts(split: SubtitleSplit) -> list[str]:
-    """Return the visible texts of displayed Dialogue events, in order."""
+def _displayed_lines(split: SubtitleSplit) -> list[DisplayedLine]:
+    """Return translatable displayed events with their source-file order."""
     dialogue = [event for event in split.subs.events if event.type == "Dialogue"]
     return [
-        visible_text(event.text)
-        for event, decision in zip(dialogue, split.decisions, strict=True)
-        if decision == "displayed"
+        DisplayedLine(
+            start=event.start,
+            end=event.end,
+            text=visible_text(event.text),
+            order=order,
+        )
+        for order, (event, decision) in enumerate(zip(dialogue, split.decisions, strict=True))
+        if decision == "displayed" and not is_drawing(event.text)
     ]
 
 
@@ -590,11 +609,39 @@ def _write_translated(split: SubtitleSplit, result: FileTranslation, dest: Path)
     Both streams are re-split into on-screen verses for the file copy only; the
     TTS stream (``result.spoken``) itself stays unbroken.
     """
-    from anishift.services.translation.linebreak import split_line  # noqa: PLC0415 - lazy: keep engines off import path
+    verses = _translation_verses(split, result)
+    return write_translated(split, verses.displayed, verses.spoken, dest)
 
-    displayed_verses = [split_line(text) for text in result.displayed]
-    spoken_verses = [split_line(line.text) for line in result.spoken]
-    return write_translated(split, displayed_verses, spoken_verses, dest)
+
+def _write_translated_displayed(
+    split: SubtitleSplit,
+    result: FileTranslation,
+    dest: Path,
+) -> Path | None:
+    """Write the translated displayed-only lector overlay."""
+    verses = _translation_verses(split, result)
+    return write_translated_displayed(split, verses.displayed, dest)
+
+
+def _translation_verses(split: SubtitleSplit, result: FileTranslation) -> _TranslationVerses:
+    """Build layout-aware displayed and readability-aware spoken verses."""
+    from anishift.services.translation.linebreak import (  # noqa: PLC0415 - lazy: keep engines off import path
+        split_for_layout,
+        split_line,
+    )
+
+    dialogue = [event for event in split.subs.events if event.type == "Dialogue"]
+    displayed_events = [
+        event
+        for event, decision in zip(dialogue, split.decisions, strict=True)
+        if decision == "displayed" and not is_drawing(event.text)
+    ]
+    displayed = tuple(
+        split_for_layout(text, visible_verses(event.text))
+        for event, text in zip(displayed_events, result.displayed, strict=True)
+    )
+    spoken = tuple(split_line(line.text) for line in result.spoken)
+    return _TranslationVerses(displayed, spoken)
 
 
 def _translate_config(translation: TranslationSettings) -> TranslationConfig:
@@ -627,7 +674,7 @@ def _translate_split(
     )
     return service.translate_file(
         list(split.spoken),
-        _displayed_visible_texts(split),
+        _displayed_lines(split),
         source_lang="auto",
         cancel=cancel,
     )

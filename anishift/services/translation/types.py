@@ -60,8 +60,8 @@ class FileTranslation:
         target_lang: Target language code.
         unique_lines: Distinct lines after deduplication.
         total_lines: All lines before deduplication.
-        api_calls: ``translate_batch`` calls the facade issued (max 2), not the
-            raw HTTP request count.
+        api_calls: Logical ``translate_batch`` calls the facade issued (normally
+            one whole-file stream), not the raw HTTP request count.
         failed_lines: Lines that fell back to source (partial failure).
         error: Set only on a hard failure of the whole file (fallback chain
             exhausted); the file is then reported failed.

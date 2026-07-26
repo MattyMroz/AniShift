@@ -8,18 +8,41 @@ the chain. Accepts an injected engine for tests / the LLM engine.
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.translation.config import TranslationConfig
 from anishift.services.translation.constants import TARGET_LANG
-from anishift.services.translation.dedup import prepare_lines, redistribute, redistribute_flags
 from anishift.services.translation.errors import TranslationEngineError, TranslationError
 from anishift.services.translation.types import BatchedLine, FileTranslation, TranslatedLine
 
 if TYPE_CHECKING:
-    from anishift.services.subtitles.types import SpokenLine
-    from anishift.services.translation.protocols import TranslationEngine, TranslationEngineFactory
+    from anishift.services.subtitles.types import DisplayedLine, SpokenLine
+    from anishift.services.translation.protocols import (
+        TranslationEngine,
+        TranslationEngineFactory,
+        TranslationStream,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _TranslationUnit:
+    """One source item placed in whole-file chronological order."""
+
+    stream: TranslationStream
+    source_index: int
+    order: int
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedFile:
+    """Provider texts and maps back onto the two output streams."""
+
+    texts: tuple[str, ...]
+    spoken_map: tuple[int, ...]
+    displayed_map: tuple[int, ...]
 
 
 def _default_engine_factory(
@@ -59,7 +82,7 @@ class TranslationService:
     def translate_file(
         self,
         spoken: list[SpokenLine],
-        displayed: list[str],
+        displayed: list[DisplayedLine],
         *,
         source_lang: str = "auto",
         target_lang: str = TARGET_LANG,
@@ -69,7 +92,7 @@ class TranslationService:
 
         Args:
             spoken: Narrator lines carrying source timings and styles.
-            displayed: Visible-texts of displayed events, in event order.
+            displayed: On-screen events carrying source-file order.
             source_lang: Source language code (``auto`` to auto-detect).
             target_lang: Target language code.
             cancel: Cooperative cancellation event checked before each engine.
@@ -123,101 +146,110 @@ class TranslationService:
         self,
         engine: TranslationEngine,
         spoken: list[SpokenLine],
-        displayed: list[str],
+        displayed: list[DisplayedLine],
         *,
         source_lang: str,
         target_lang: str,
     ) -> FileTranslation:
-        """Translate both streams with one engine and assemble the result."""
-        spoken_lines, spoken_calls, spoken_unique, spoken_failed = self._translate_spoken(
-            engine, spoken, source_lang=source_lang, target_lang=target_lang
+        """Translate one chronological whole-file stream and assemble outputs."""
+        prepared = _prepare_file(engine, spoken, displayed)
+        batched = (
+            engine.translate_batch(
+                list(prepared.texts),
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+            if prepared.texts
+            else []
         )
-        displayed_out, displayed_calls, displayed_unique = self._translate_displayed(
-            engine, displayed, source_lang=source_lang, target_lang=target_lang
-        )
+        spoken_lines, spoken_failed = _translated_spoken(spoken, prepared.spoken_map, batched)
+        displayed_out, displayed_failed = _translated_displayed(displayed, prepared.displayed_map, batched)
         return FileTranslation(
             spoken=spoken_lines,
             displayed=displayed_out,
             engine_id=engine.engine_id,
             target_lang=target_lang,
-            unique_lines=spoken_unique + displayed_unique,
+            unique_lines=len(prepared.texts),
             total_lines=len(spoken) + len(displayed),
-            api_calls=spoken_calls + displayed_calls,
-            failed_lines=spoken_failed,
+            api_calls=1 if prepared.texts else 0,
+            failed_lines=spoken_failed + displayed_failed,
         )
 
-    def _translate_spoken(
-        self,
-        engine: TranslationEngine,
-        spoken: list[SpokenLine],
-        *,
-        source_lang: str,
-        target_lang: str,
-    ) -> tuple[tuple[TranslatedLine, ...], int, int, int]:
-        """Translate the spoken stream into TranslatedLine objects."""
-        spoken_texts = [line.text for line in spoken]
-        prepared = prepare_lines(spoken_texts, engine.input_policy("spoken"))
-        batched = self._call_engine(
-            engine,
-            list(prepared.texts),
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-        calls = 1 if prepared.texts else 0
-        full_text = redistribute([line.text for line in batched], prepared, spoken_texts)
-        full_ok = redistribute_flags([line.ok for line in batched], prepared)
-        lines = tuple(
+
+def _prepare_file(
+    engine: TranslationEngine,
+    spoken: list[SpokenLine],
+    displayed: list[DisplayedLine],
+) -> _PreparedFile:
+    """Prepare one chronological input while applying per-stream deduplication."""
+    units = [
+        *(_TranslationUnit("spoken", index, line.order, line.text) for index, line in enumerate(spoken)),
+        *(_TranslationUnit("displayed", index, line.order, line.text) for index, line in enumerate(displayed)),
+    ]
+    units.sort(key=lambda unit: (unit.order, unit.source_index))
+    maps: dict[TranslationStream, list[int]] = {
+        "spoken": [-1] * len(spoken),
+        "displayed": [-1] * len(displayed),
+    }
+    policies = {
+        "spoken": engine.input_policy("spoken"),
+        "displayed": engine.input_policy("displayed"),
+    }
+    texts: list[str] = []
+    seen: dict[tuple[TranslationStream, str], int] = {}
+    for unit in units:
+        if not unit.text.strip():
+            continue
+        key = (unit.stream, unit.text)
+        if policies[unit.stream] == "deduplicate" and key in seen:
+            maps[unit.stream][unit.source_index] = seen[key]
+            continue
+        position = len(texts)
+        texts.append(unit.text)
+        maps[unit.stream][unit.source_index] = position
+        if policies[unit.stream] == "deduplicate":
+            seen[key] = position
+    return _PreparedFile(tuple(texts), tuple(maps["spoken"]), tuple(maps["displayed"]))
+
+
+def _translated_spoken(
+    sources: list[SpokenLine],
+    positions: tuple[int, ...],
+    translations: list[BatchedLine],
+) -> tuple[tuple[TranslatedLine, ...], int]:
+    """Map provider results back onto narrator lines and count failures."""
+    lines: list[TranslatedLine] = []
+    failed = 0
+    for source, position in zip(sources, positions, strict=True):
+        translated = BatchedLine(source.text) if position < 0 else translations[position]
+        failed += not translated.ok
+        lines.append(
             TranslatedLine(
                 start=source.start,
                 end=source.end,
                 source_text=source.text,
-                text=text,
-                lines=(text,),
+                text=translated.text,
+                lines=(translated.text,),
                 style=source.style,
-                ok=ok,
+                ok=translated.ok,
             )
-            for source, text, ok in zip(spoken, full_text, full_ok, strict=True)
         )
-        failed = sum(1 for ok in full_ok if not ok)
-        return lines, calls, len(prepared.texts), failed
+    return tuple(lines), failed
 
-    def _translate_displayed(
-        self,
-        engine: TranslationEngine,
-        displayed: list[str],
-        *,
-        source_lang: str,
-        target_lang: str,
-    ) -> tuple[tuple[str, ...], int, int]:
-        """Translate the displayed stream into single-line strings, in event order.
 
-        The result is one translated single-line string per input event. Re-splitting
-        into on-screen verses and joining with the format-specific break happens at
-        the write step, where the subtitle format (ASS vs SRT) is known.
-        """
-        prepared = prepare_lines(displayed, engine.input_policy("displayed"))
-        batched = self._call_engine(
-            engine,
-            list(prepared.texts),
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-        calls = 1 if prepared.texts else 0
-        out = tuple(redistribute([line.text for line in batched], prepared, displayed))
-        return out, calls, len(prepared.texts)
-
-    @staticmethod
-    def _call_engine(
-        engine: TranslationEngine,
-        unique: list[str],
-        *,
-        source_lang: str,
-        target_lang: str,
-    ) -> list[BatchedLine]:
-        """Translate a unique set, or return an empty list when there is none."""
-        if not unique:
-            return []
-        return engine.translate_batch(unique, source_lang=source_lang, target_lang=target_lang)
+def _translated_displayed(
+    sources: list[DisplayedLine],
+    positions: tuple[int, ...],
+    translations: list[BatchedLine],
+) -> tuple[tuple[str, ...], int]:
+    """Map provider results back onto displayed events and count failures."""
+    lines: list[str] = []
+    failed = 0
+    for source, position in zip(sources, positions, strict=True):
+        translated = BatchedLine(source.text) if position < 0 else translations[position]
+        failed += not translated.ok
+        lines.append(translated.text)
+    return tuple(lines), failed
 
 
 __all__ = ["TranslationService"]
