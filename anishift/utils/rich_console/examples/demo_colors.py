@@ -94,10 +94,11 @@ def demo_colors() -> None:
     console.print("  Framerate: 60fps, refresh: 144Hz")
     console.print()
 
-    console.print("7. Fractions (RUBY_RED BOLD):", style="white_bold")
+    console.print("7. Slash-separated numbers (RUBY_RED BOLD):", style="white_bold")
     console.print("  Batch 3/5 done")
     console.print("  Detection: 156/156 regions complete")
     console.print("  Progress: 24/24 items processed")
+    console.print("  LLM tokens: 20189/20255/40444")
     console.print()
 
     console.print("8. Numbers (RUBY_RED BOLD):", style="white_bold")
