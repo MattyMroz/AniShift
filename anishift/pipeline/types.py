@@ -112,8 +112,8 @@ class FileOutcome:
     audio_path: Path | None = None
     subtitle_path: Path | None = None
     displayed_path: Path | None = None
+    spoken_path: Path | None = None
     translated_path: Path | None = None
-    lektor_path: Path | None = None
     already_polish: bool = False
     spoken_lines: int = 0
     displayed_events: int = 0

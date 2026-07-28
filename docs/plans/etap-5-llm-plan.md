@@ -1334,8 +1334,11 @@ SDK/provider nie zwrócił usage.
 - `\h` zastępuje najbliższą spację targetu twardą spacją, ale nie jest
   sztucznie wstawiane wewnątrz pojedynczego słowa;
 - eventy wektorowe `\pN` nie trafiają do translatora i są kopiowane bez zmian;
-- pipeline zapisuje pełny `{stem}.pl.ass` oraz przetłumaczony displayed-only
-  `{stem}.lektor.pl.ass` bez dodatkowego requestu.
+- pipeline zapisuje bez dodatkowego requestu trzy końcowe produkty:
+  `{stem}.pl.ass` (pełny), `{stem}.spoken.pl.ass` (spoken-only) oraz
+  `{stem}.displayed.pl.ass` (displayed-only);
+- źródło już polskie omija API, ale nadal zapisuje te same trzy produkty
+  końcowe; pusty strumień nie tworzy pustego pliku.
 
 ## 11. Fabryka silników i granica błędu
 

@@ -8,7 +8,7 @@ from pysubs2 import SSAEvent, SSAFile
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline import runner
-from anishift.pipeline.types import TranslationSettings
+from anishift.pipeline.types import FileOutcome, TranslationSettings
 from anishift.services.subtitles.service import load_subtitles, split_subtitles
 from anishift.services.subtitles.text import visible_text
 from anishift.services.translation import chunking
@@ -65,7 +65,7 @@ def test_displayed_lines_do_not_send_vector_drawings_to_translator() -> None:
     assert [line.text for line in runner._displayed_lines(split)] == ["Translate me"]
 
 
-def test_translation_writers_create_full_and_lektor_layout_products(tmp_path: Path) -> None:
+def test_translation_writer_creates_full_spoken_and_displayed_products(tmp_path: Path) -> None:
     events = [
         SSAEvent(start=0, end=1000, style="Dialog", text="We are home"),
         SSAEvent(start=1000, end=2000, style="Sign", text=r"{\an8}Episode 3\NLife Back at Home"),
@@ -84,19 +84,41 @@ def test_translation_writers_create_full_and_lektor_layout_products(tmp_path: Pa
         ),
         displayed=("Odcinek 3: Życie z powrotem w domu",),
     )
-    full = runner._write_translated(split, result, tmp_path / "show.pl.ass")
-    lektor = runner._write_translated_displayed(split, result, tmp_path / "show.lektor.pl.ass")
-    assert full is not None
-    assert lektor is not None
-    full_events = [event for event in load_subtitles(full).events if event.type == "Dialogue"]
-    lektor_events = [event for event in load_subtitles(lektor).events if event.type == "Dialogue"]
+    outcome = FileOutcome(tmp_path / "show.mkv", "done")
+    state = runner._MkvState(outcome, split, "ass")
+
+    runner._write_translation_products(tmp_path / "show.mkv", state, result, tmp_path)
+
+    assert outcome.translated_path == tmp_path / "show.pl.ass"
+    assert outcome.spoken_path == tmp_path / "show.spoken.pl.ass"
+    assert outcome.displayed_path == tmp_path / "show.displayed.pl.ass"
+    full_events = [event for event in load_subtitles(outcome.translated_path).events if event.type == "Dialogue"]
+    spoken_events = [event for event in load_subtitles(outcome.spoken_path).events if event.type == "Dialogue"]
+    displayed_events = [event for event in load_subtitles(outcome.displayed_path).events if event.type == "Dialogue"]
     assert [visible_text(event.text) for event in full_events] == [
         "Jesteśmy w domu",
         "Odcinek 3: Życie z powrotem w domu",
     ]
     assert r"Odcinek 3:\NŻycie z powrotem w domu" in full_events[1].text
-    assert len(lektor_events) == 1
-    assert r"Odcinek 3:\NŻycie z powrotem w domu" in lektor_events[0].text
+    assert [visible_text(event.text) for event in spoken_events] == ["Jesteśmy w domu"]
+    assert len(displayed_events) == 1
+    assert r"Odcinek 3:\NŻycie z powrotem w domu" in displayed_events[0].text
+
+
+def test_polish_source_writer_creates_final_products_without_translation(tmp_path: Path) -> None:
+    events = [
+        SSAEvent(start=0, end=1000, style="Dialog", text="Jesteśmy w domu"),
+        SSAEvent(start=1000, end=2000, style="Sign", text=r"{\an8}Tytuł odcinka"),
+    ]
+    split = _split(events, spoken_styles={"Dialog"})
+    outcome = FileOutcome(tmp_path / "show.mkv", "done", already_polish=True)
+
+    runner._write_polish_products(tmp_path / "show.mkv", outcome, split, tmp_path, "ass")
+
+    assert outcome.translated_path == tmp_path / "show.pl.ass"
+    assert outcome.spoken_path == tmp_path / "show.spoken.pl.ass"
+    assert outcome.displayed_path == tmp_path / "show.displayed.pl.ass"
+    assert not (tmp_path / "show.displayed.ass").exists()
 
 
 class _FakeService:

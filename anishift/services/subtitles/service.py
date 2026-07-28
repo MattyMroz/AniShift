@@ -29,8 +29,11 @@ __all__ = [
     "split_subtitles",
     "subtitle_kind",
     "write_displayed",
+    "write_full",
+    "write_spoken",
     "write_translated",
     "write_translated_displayed",
+    "write_translated_spoken",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -224,7 +227,7 @@ def split_subtitles(
     return SubtitleSplit(kind, subs, tuple(decisions), final_verdicts, spoken, stats)
 
 
-def _displayed_file(split: SubtitleSplit) -> SSAFile:
+def _stream_file(split: SubtitleSplit, selected: Decision | None) -> SSAFile:
     out = SSAFile()
     out.info = dict(split.subs.info)
     out.styles = {name: style.copy() for name, style in split.subs.styles.items()}
@@ -233,44 +236,67 @@ def _displayed_file(split: SubtitleSplit) -> SSAFile:
         if event.type != "Dialogue":
             out.events.append(event)
             continue
-        if split.decisions[dialogue_index] == "displayed":
+        if selected is None or split.decisions[dialogue_index] == selected:
             out.events.append(event)
         dialogue_index += 1
     return out
+
+
+def _write_output(output: SSAFile, dest: Path, kind: SubtitleKind, *, subject: str) -> Path:
+    temporary = dest.with_name(dest.name + ".tmp")
+    try:
+        temporary.write_text(output.to_string(format_=kind, header_notice=_header_notice()), encoding=_ENCODING)
+        temporary.replace(dest)
+    except OSError as exc:
+        msg = f"{subject} subtitles could not be written: {dest}"
+        raise _fail(ErrorCode.IO_ERROR, msg) from exc
+    return dest
+
+
+def write_full(split: SubtitleSplit, dest: Path) -> Path | None:
+    """Write the complete source subtitle product atomically, or None when empty."""
+    if split.stats.total_events == 0:
+        return None
+    return _write_output(_stream_file(split, None), dest, split.kind, subject="Complete")
+
+
+def write_spoken(split: SubtitleSplit, dest: Path) -> Path | None:
+    """Write the source spoken-only product atomically, or None when empty."""
+    if split.stats.spoken_events == 0:
+        return None
+    return _write_output(_stream_file(split, "spoken"), dest, split.kind, subject="Spoken")
 
 
 def write_displayed(split: SubtitleSplit, dest: Path) -> Path | None:
     """Write the displayed product atomically, or return None when empty."""
     if split.stats.displayed_events == 0:
         return None
-    output = _displayed_file(split)
-    temporary = dest.with_name(dest.name + ".tmp")
-    try:
-        temporary.write_text(output.to_string(format_=split.kind, header_notice=_header_notice()), encoding=_ENCODING)
-        temporary.replace(dest)
-    except OSError as exc:
-        msg = f"Displayed subtitles could not be written: {dest}"
-        raise _fail(ErrorCode.IO_ERROR, msg) from exc
-    return dest
+    return _write_output(_stream_file(split, "displayed"), dest, split.kind, subject="Displayed")
 
 
 def _translated_file(
     split: SubtitleSplit,
     displayed_verses: Sequence[tuple[str, ...]],
     spoken_verses: Sequence[tuple[str, ...]],
+    *,
+    selected: Decision | None = None,
 ) -> SSAFile:
     out = SSAFile()
     out.info = dict(split.subs.info)
     out.styles = {name: style.copy() for name, style in split.subs.styles.items()}
     line_break = _LINE_BREAKS[split.kind]
-    translated_spoken = tuple(zip(split.spoken, spoken_verses, strict=True))
+    translated_spoken = tuple(zip(split.spoken, spoken_verses, strict=True)) if selected in {None, "spoken"} else ()
     dialogue_index = 0
     displayed_index = 0
     for event in split.subs.events:
         if event.type != "Dialogue":
             out.events.append(event)
             continue
-        if split.decisions[dialogue_index] == "displayed":
+        decision = split.decisions[dialogue_index]
+        dialogue_index += 1
+        if selected is not None and decision != selected:
+            continue
+        if decision == "displayed":
             if is_drawing(event.text):
                 verses: tuple[str, ...] | None = None
             else:
@@ -289,41 +315,11 @@ def _translated_file(
                 ),
                 None,
             )
-        dialogue_index += 1
         if verses is None:
             out.events.append(event)
             continue
         replaced = event.copy()
         replaced.text = replace_visible_text(event.text, line_break.join(verses))
-        out.events.append(replaced)
-    return out
-
-
-def _translated_displayed_file(
-    split: SubtitleSplit,
-    displayed_verses: Sequence[tuple[str, ...]],
-) -> SSAFile:
-    """Build a translated displayed-only overlay, retaining vector drawings."""
-    out = SSAFile()
-    out.info = dict(split.subs.info)
-    out.styles = {name: style.copy() for name, style in split.subs.styles.items()}
-    line_break = _LINE_BREAKS[split.kind]
-    dialogue_index = 0
-    displayed_index = 0
-    for event in split.subs.events:
-        if event.type != "Dialogue":
-            out.events.append(event)
-            continue
-        decision = split.decisions[dialogue_index]
-        dialogue_index += 1
-        if decision != "displayed":
-            continue
-        if is_drawing(event.text):
-            out.events.append(event)
-            continue
-        replaced = event.copy()
-        replaced.text = replace_visible_text(event.text, line_break.join(displayed_verses[displayed_index]))
-        displayed_index += 1
         out.events.append(replaced)
     return out
 
@@ -355,14 +351,19 @@ def write_translated(
     if split.stats.total_events == 0:
         return None
     output = _translated_file(split, displayed_verses, spoken_verses)
-    temporary = dest.with_name(dest.name + ".tmp")
-    try:
-        temporary.write_text(output.to_string(format_=split.kind, header_notice=_header_notice()), encoding=_ENCODING)
-        temporary.replace(dest)
-    except OSError as exc:
-        msg = f"Translated subtitles could not be written: {dest}"
-        raise _fail(ErrorCode.IO_ERROR, msg) from exc
-    return dest
+    return _write_output(output, dest, split.kind, subject="Translated")
+
+
+def write_translated_spoken(
+    split: SubtitleSplit,
+    spoken_verses: Sequence[tuple[str, ...]],
+    dest: Path,
+) -> Path | None:
+    """Write the translated spoken-only subtitle product atomically."""
+    if split.stats.spoken_events == 0:
+        return None
+    output = _translated_file(split, (), spoken_verses, selected="spoken")
+    return _write_output(output, dest, split.kind, subject="Translated spoken")
 
 
 def write_translated_displayed(
@@ -370,15 +371,8 @@ def write_translated_displayed(
     displayed_verses: Sequence[tuple[str, ...]],
     dest: Path,
 ) -> Path | None:
-    """Write the translated displayed-only lector overlay atomically."""
+    """Write the translated displayed-only subtitle product atomically."""
     if split.stats.displayed_events == 0:
         return None
-    output = _translated_displayed_file(split, displayed_verses)
-    temporary = dest.with_name(dest.name + ".tmp")
-    try:
-        temporary.write_text(output.to_string(format_=split.kind, header_notice=_header_notice()), encoding=_ENCODING)
-        temporary.replace(dest)
-    except OSError as exc:
-        msg = f"Translated displayed subtitles could not be written: {dest}"
-        raise _fail(ErrorCode.IO_ERROR, msg) from exc
-    return dest
+    output = _translated_file(split, displayed_verses, (), selected="displayed")
+    return _write_output(output, dest, split.kind, subject="Translated displayed")

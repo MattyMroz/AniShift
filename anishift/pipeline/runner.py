@@ -32,8 +32,11 @@ from anishift.services.subtitles import (
     visible_text,
     visible_verses,
     write_displayed,
+    write_full,
+    write_spoken,
     write_translated,
     write_translated_displayed,
+    write_translated_spoken,
 )
 from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
 from anishift.utils.safe_fs import safe_rmtree
@@ -463,10 +466,7 @@ def _translate_one(  # noqa: PLR0913 - one file's translate step wiring
     if not result.is_success:
         _mark_translation_failed(state.outcome, result, step="translate")
         return
-    dest = workspace_root / f"{path.stem}.pl.{state.kind}"
-    state.outcome.translated_path = _write_translated(split, result, dest)
-    lektor_dest = workspace_root / f"{path.stem}.lektor.pl.{state.kind}"
-    state.outcome.lektor_path = _write_translated_displayed(split, result, lektor_dest)
+    _write_translation_products(path, state, result, workspace_root)
 
 
 def _worker_count(item_count: int) -> int:
@@ -538,14 +538,11 @@ def _extract_mkv(  # noqa: PLR0911 - each early return is a distinct extraction 
                 warnings=warnings,
             )
             return _MkvState(outcome, None)
-        step = "write"
-        displayed = write_displayed(split, workspace_root / f"{mkv.stem}.displayed.{kind}")
         outcome = FileOutcome(
             source=mkv,
             status="done",
             audio_path=extracted.audio_path,
             subtitle_path=extracted.subtitle_path,
-            displayed_path=displayed,
             already_polish=selection.already_polish,
             spoken_lines=split.stats.spoken_lines,
             displayed_events=split.stats.displayed_events,
@@ -554,6 +551,9 @@ def _extract_mkv(  # noqa: PLR0911 - each early return is a distinct extraction 
             warnings=warnings,
         )
         needs_translation = _should_translate(split, selection.already_polish)
+        if selection.already_polish:
+            step = "write"
+            _write_polish_products(mkv, outcome, split, workspace_root, kind)
         return _MkvState(outcome, split if needs_translation else None, kind=kind)
     except AniShiftError as exc:
         if exc.context.code is ErrorCode.CANCELLED:
@@ -603,24 +603,49 @@ def _displayed_lines(split: SubtitleSplit) -> list[DisplayedLine]:
     ]
 
 
-def _write_translated(split: SubtitleSplit, result: FileTranslation, dest: Path) -> Path | None:
-    """Write the whole translated ASS/SRT: every event kept, text replaced.
-
-    Both streams are re-split into on-screen verses for the file copy only; the
-    TTS stream (``result.spoken``) itself stays unbroken.
-    """
-    verses = _translation_verses(split, result)
-    return write_translated(split, verses.displayed, verses.spoken, dest)
-
-
-def _write_translated_displayed(
-    split: SubtitleSplit,
+def _write_translation_products(
+    path: Path,
+    state: _MkvState,
     result: FileTranslation,
-    dest: Path,
-) -> Path | None:
-    """Write the translated displayed-only lector overlay."""
+    workspace_root: Path,
+) -> None:
+    """Write complete, spoken-only and displayed-only translated products."""
+    split = state.split
+    if split is None:
+        return
     verses = _translation_verses(split, result)
-    return write_translated_displayed(split, verses.displayed, dest)
+    stem = path.stem
+    kind = state.kind
+    state.outcome.translated_path = write_translated(
+        split,
+        verses.displayed,
+        verses.spoken,
+        workspace_root / f"{stem}.pl.{kind}",
+    )
+    state.outcome.spoken_path = write_translated_spoken(
+        split,
+        verses.spoken,
+        workspace_root / f"{stem}.spoken.pl.{kind}",
+    )
+    state.outcome.displayed_path = write_translated_displayed(
+        split,
+        verses.displayed,
+        workspace_root / f"{stem}.displayed.pl.{kind}",
+    )
+
+
+def _write_polish_products(
+    path: Path,
+    outcome: FileOutcome,
+    split: SubtitleSplit,
+    workspace_root: Path,
+    kind: str,
+) -> None:
+    """Write final products for an already-Polish source without translation."""
+    stem = path.stem
+    outcome.translated_path = write_full(split, workspace_root / f"{stem}.pl.{kind}")
+    outcome.spoken_path = write_spoken(split, workspace_root / f"{stem}.spoken.pl.{kind}")
+    outcome.displayed_path = write_displayed(split, workspace_root / f"{stem}.displayed.pl.{kind}")
 
 
 def _translation_verses(split: SubtitleSplit, result: FileTranslation) -> _TranslationVerses:
