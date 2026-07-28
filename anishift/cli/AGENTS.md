@@ -23,7 +23,7 @@ REPL prompt_toolkit, komendy `/`, panel `/settings`, banner. Typer entry point `
 - Każda zmiana w panelu jest natychmiast zapisywana na dysk (`save_user_settings` po każdym kroku) — brak anulowania. `settings_panel.py:184-196`
 - Panel zawsze pokazuje `llm` i wszystkich providerów; brak sekretu jest markerem `missing key`/`missing base URL`, nie powodem ukrycia lub resetu wyboru. `settings_panel.py`
 - Trwała awaria LLM kończy Live przed promptem i wymaga jawnej komendy `settings` albo `finish`; `finish` zachowuje gotowe wyniki i oznacza resztę `not_processed`. `pipeline_ui.py`
-- Automatyczny LLM współdzieli jeden zwykły `MultiProgressManager` z ekstrakcją, ponieważ oba etapy mogą działać jednocześnie. Start requestu dodaje standardowy wiersz `Translating ...` przy `0%`, sukces ustawia `100%`; etap LLM nie ma własnego renderera ani animacji. `pipeline_ui.py`
+- Automatyczny LLM współdzieli jeden zwykły `MultiProgressManager` z ekstrakcją, ponieważ oba etapy mogą działać jednocześnie. Każdy plik ma jeden prealokowany wiersz w `natsorted`: ekstrakcja dochodzi do `100%`, start requestu resetuje ten sam task i timer do `0%`, a sukces ponownie ustawia `100%`. Etap LLM nie ma własnego renderera ani animacji. `pipeline_ui.py`
 - Manualny prompt stylów: Enter (pusto) zwraca `None` = akceptacja klasyfikatora, nie pusty zbiór. `pipeline_ui.py:149-161`
 
 ## Konwencje

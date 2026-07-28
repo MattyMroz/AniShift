@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import threading
-from concurrent.futures import Future
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import cast
 
@@ -12,7 +13,8 @@ from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline import discover_inputs, run_pipeline, runner
-from anishift.pipeline.runner import _worker_count
+from anishift.pipeline.llm_queue import LlmProgressState
+from anishift.pipeline.runner import _LlmProgressGate, _worker_count
 from anishift.pipeline.types import FileOutcome, TranslationSettings
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo
@@ -56,6 +58,20 @@ def test_discover_inputs_uses_top_level_natural_order(tmp_path: Path) -> None:
     (tmp_path / "nested" / "episode 1.mkv").touch()
 
     assert [path.name for path in discover_inputs(tmp_path)] == ["episode 2.mkv", "episode 10.mkv"]
+
+
+def test_run_pipeline_uses_supplied_input_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fail_discovery(workspace_root: Path) -> list[Path]:
+        pytest.fail(f"unexpected discovery for {workspace_root}")
+
+    monkeypatch.setattr(runner, "discover_inputs", fail_discovery)
+
+    report = run_pipeline(_context(tmp_path), input_paths=())
+
+    assert report.outcomes == ()
 
 
 def test_run_pipeline_isolates_identify_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -241,4 +257,73 @@ def test_llm_pipeline_sets_cancel_before_executor_wait_on_interrupt(
     with pytest.raises(KeyboardInterrupt):
         run_pipeline(context)
 
-    assert worker_observed_cancel.is_set()
+    assert worker_observed_cancel.wait(timeout=1)
+
+
+def test_llm_pipeline_interrupt_does_not_wait_for_blocked_request(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "episode.txt"
+    source.write_text("Source", encoding="utf-8")
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    worker_finished = threading.Event()
+
+    def fake_translate_inputs(*_: object, **__: object) -> dict[Path, FileOutcome]:
+        worker_started.set()
+        release_worker.wait(timeout=2)
+        worker_finished.set()
+        return {}
+
+    def interrupt_extract(*_: object, **__: object) -> dict[Path, runner._MkvState]:
+        assert worker_started.wait(timeout=1)
+        raise KeyboardInterrupt
+
+    context = AppContext(
+        Settings(gemini_api_key="secret"),
+        UserSettings(translation_engine="llm"),
+        tmp_path,
+    )
+    monkeypatch.setattr(runner, "_translate_llm_inputs", fake_translate_inputs)
+    monkeypatch.setattr(runner, "_extract_phase", interrupt_extract)
+    started_at = time.monotonic()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_pipeline(context)
+        elapsed = time.monotonic() - started_at
+    finally:
+        release_worker.set()
+
+    assert elapsed < 1
+    assert worker_finished.wait(timeout=1)
+
+
+def test_llm_progress_gate_closes_atomically_with_active_callback(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "episode.mkv"
+    cancel = threading.Event()
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+    transitions: list[tuple[Path, str]] = []
+
+    def handler(progress_path: Path, state: LlmProgressState) -> None:
+        transitions.append((progress_path, state))
+        callback_started.set()
+        assert release_callback.wait(timeout=2.0)
+
+    gate = _LlmProgressGate(cancel, handler)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        callback = executor.submit(gate.notify, path, "done")
+        assert callback_started.wait(timeout=2.0)
+        closing = executor.submit(gate.close)
+        assert not closing.done()
+        release_callback.set()
+        callback.result(timeout=2.0)
+        closing.result(timeout=2.0)
+
+    gate.notify(path, "failed")
+
+    assert transitions == [(path, "done")]

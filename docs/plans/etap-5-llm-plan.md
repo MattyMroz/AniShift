@@ -1725,11 +1725,11 @@ Wyczerpanie repair/split dla pojedynczej linii:
 
 Podczas pracy scheduler emituje współbieżne przejścia per plik: `translating`,
 a następnie `done`, `failed`, `cancelled` albo `not_processed`. Tryb auto
-współdzieli z ekstrakcją istniejący `MultiProgressManager`: start requestu
-dodaje zwykły wiersz `Translating ...` przy `0%`, czas pochodzi ze standardowej
-kolumny managera, a sukces ustawia `100%`. Etap LLM nie dodaje własnego
-renderera, animacji ani docelowego UI; ich projekt należy do późniejszego etapu
-interfejsu.
+współdzieli z ekstrakcją istniejący `MultiProgressManager`. Każdy plik ma jeden
+prealokowany wiersz w naturalnej kolejności: ekstrakcja dochodzi do `100%`,
+start requestu resetuje ten sam task oraz timer do `0%`, a sukces ponownie
+ustawia `100%`. Etap LLM nie dodaje własnego renderera, animacji ani docelowego
+UI; ich projekt należy do późniejszego etapu interfejsu.
 
 Podsumowanie terminalowe pokazuje:
 

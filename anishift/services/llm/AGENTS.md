@@ -17,6 +17,8 @@ cyklu życia klienta i jedynego retry.
 - Instancja providera należy do jednego synchronicznego workera; współbieżność
   organizuje pipeline przez osobne klienty i wspólny observer.
 - Pusta albo zablokowana przez safety odpowiedź jest błędem, nigdy sukcesem.
+- Sukces providera zakończony po ustawieniu `cancel` jest odrzucany jako
+  `LlmCancelledError`; nie może przejść do zapisu pliku.
 
 ## Mapa
 

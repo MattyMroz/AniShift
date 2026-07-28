@@ -13,7 +13,7 @@ Orkiestracja etapów dwufazowa (ekstrakcja → tłumaczenie) plus obsługa TXT, 
 - `_MkvState.outcome` jest mutowany przez worker tłumaczenia. Dla LLM worker-local runtime/client nie jest współdzielony; wspólny jest tylko per-run `SharedProviderState`. `runner.py`, `llm_runtime.py`, `llm_queue.py`
 - `discover_inputs` cicho pomija każdy plik z infiksem `.displayed` — by nie wciągnąć własnych produktów pipeline'u jako wejść. `runner.py`
 - `_extract_mkv` na starcie kasuje `workspace/tmp/<stem>` przez `safe_rmtree` — ponowny run niszczy poprzedni katalog tymczasowy bez ostrzeżenia. `runner.py:273-275`
-- Anulowanie (Ctrl+C) kooperatywne przez współdzielony `threading.Event`; `KeyboardInterrupt` ustawia `cancel`, czeka na WSZYSTKIE future'y i dopiero re-raise'uje. `runner.py:186-191`
+- Anulowanie (Ctrl+C) jest kooperatywne przez współdzielony `threading.Event`. Dla LLM główny executor nie czeka na blokujący request SDK: pierwszy `KeyboardInterrupt` ustawia `cancel`, zamyka input i wraca, a worker odrzuca ewentualny sukces zakończony po anulowaniu. `runner.py`, `services/llm/_retry.py`
 - `_should_translate` pomija pliki już polskie (`already_polish`) i splity bez `spoken_lines`/`displayed_events`; polskie źródła omijają API, ale writer nadal tworzy ich końcowe produkty. `runner.py`
 
 ## Konwencje

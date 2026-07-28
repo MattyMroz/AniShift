@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from anishift.pipeline.llm_queue import (
         LlmFailureHandler,
         LlmProgressHandler,
+        LlmProgressState,
         LlmQueueInput,
         SharedProviderState,
     )
@@ -124,9 +125,38 @@ class _TranslationVerses:
     spoken: tuple[tuple[str, ...], ...]
 
 
-def run_pipeline(
+class _LlmProgressGate:
+    """Serialize LLM progress callbacks with renderer shutdown."""
+
+    __slots__ = ("_cancel", "_enabled", "_handler", "_lock")
+
+    def __init__(
+        self,
+        cancel: threading.Event,
+        handler: LlmProgressHandler | None,
+    ) -> None:
+        """Bind one cancellation event and optional UI callback."""
+        self._cancel: threading.Event = cancel
+        self._enabled: bool = True
+        self._handler: LlmProgressHandler | None = handler
+        self._lock: threading.Lock = threading.Lock()
+
+    def notify(self, path: Path, state: LlmProgressState) -> None:
+        """Deliver one callback only while the renderer lifecycle is open."""
+        with self._lock:
+            if self._enabled and not self._cancel.is_set() and self._handler is not None:
+                self._handler(path, state)
+
+    def close(self) -> None:
+        """Wait for an active callback and prevent every later callback."""
+        with self._lock:
+            self._enabled = False
+
+
+def run_pipeline(  # noqa: PLR0913 - callers may supply one stable input snapshot
     context: AppContext,
     *,
+    input_paths: Sequence[Path] | None = None,
     interaction: PipelineInteraction | None = None,
     progress_factory: ProgressPhaseFactory | None = None,
     llm_failure_handler: LlmFailureHandler | None = None,
@@ -139,13 +169,14 @@ def run_pipeline(
     extraction rows in place). Text inputs are handled after the MKV phases.
     """
     ensure_workspace_dir(context.workspace_root)
-    files = discover_inputs(context.workspace_root)
+    files = os_sorted(input_paths) if input_paths is not None else discover_inputs(context.workspace_root)
     if not files:
         return PipelineReport(())
     mkvs = [path for path in files if path.suffix.lower() == _MKV_SUFFIX]
     txts = [path for path in files if path.suffix.lower() == _TXT_SUFFIX]
     translation = _translation_settings(context)
     cancel = threading.Event()
+    llm_progress = _LlmProgressGate(cancel, llm_progress_handler)
     txt_outcomes: dict[Path, FileOutcome]
     if translation.engine == "llm":
         from anishift.pipeline.llm_queue import LlmQueueInput  # noqa: PLC0415 - LLM-only path
@@ -158,7 +189,9 @@ def run_pipeline(
             if state.split is not None:
                 queue_input.put(path)
 
-        with ThreadPoolExecutor(max_workers=1) as queue_executor:
+        queue_executor = ThreadPoolExecutor(max_workers=1)
+        wait_for_queue = True
+        try:
             queued = queue_executor.submit(
                 _translate_llm_inputs,
                 queue_input,
@@ -166,7 +199,7 @@ def run_pipeline(
                 context,
                 cancel,
                 on_provider_failure=llm_failure_handler,
-                on_progress=llm_progress_handler,
+                on_progress=llm_progress.notify,
             )
             try:
                 try:
@@ -185,9 +218,13 @@ def run_pipeline(
                     queue_input.close()
                 txt_outcomes = queued.result()
             except KeyboardInterrupt:
+                llm_progress.close()
                 cancel.set()
                 queue_input.close()
+                wait_for_queue = False
                 raise
+        finally:
+            queue_executor.shutdown(wait=wait_for_queue, cancel_futures=not wait_for_queue)
     else:
         states = _extract_phase(mkvs, context.workspace_root, interaction, progress_factory, cancel)
         _translate_phase(states, context.workspace_root, translation, progress_factory, cancel)

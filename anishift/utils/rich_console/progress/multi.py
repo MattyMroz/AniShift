@@ -385,6 +385,14 @@ class MultiProgressManager:
         with self._lock:
             self._progress.stop_task(task_id)
 
+    def reset_task(self, task_id: TaskID, *, completed: int = 0) -> None:
+        """Restart one task's timer and set its completion without moving its row."""
+        with self._lock:
+            state = self._states[task_id]
+            self._progress.reset(task_id, total=state.total, completed=0, start=True)
+            self._progress.tasks[task_id].stop_time = None
+            self._apply(task_id, state, completed)
+
     @staticmethod
     def _aligned_columns(style: str) -> tuple[ProgressColumn, ...]:
         """Build the shared table columns for the ``'aligned'`` mode."""

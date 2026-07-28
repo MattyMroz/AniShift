@@ -67,6 +67,7 @@ def retry_transient(
                 observer.on_fatal_failure(error)
             raise
         else:
+            _raise_if_cancelled(cancel)
             if observer is not None:
                 observer.on_success()
             return response

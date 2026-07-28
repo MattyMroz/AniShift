@@ -257,6 +257,17 @@ def test_retry_transient_cancels_during_backoff() -> None:
     assert calls == 1
 
 
+def test_retry_transient_discards_success_completed_after_cancellation() -> None:
+    cancel = threading.Event()
+
+    def operation() -> LlmResponse:
+        cancel.set()
+        return _response("discarded")
+
+    with pytest.raises(LlmCancelledError):
+        retry_transient(operation, max_retries=0, cancel=cancel)
+
+
 def _response(text: str) -> LlmResponse:
     request = LlmRequest(
         messages=(LlmMessage(role=LlmRole.USER, parts=(TextPart(text),)),),

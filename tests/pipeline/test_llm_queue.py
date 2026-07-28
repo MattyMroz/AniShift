@@ -10,6 +10,7 @@ import pytest
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext
 from anishift.pipeline.llm_queue import (
     LlmFailureAction,
+    LlmProgressState,
     LlmQueueConfig,
     LlmQueueInput,
     SharedProviderState,
@@ -232,6 +233,41 @@ def test_progress_reports_start_terminal_and_unsent_files(tmp_path: Path) -> Non
         (paths[1], "not_processed"),
         (paths[2], "not_processed"),
     ]
+
+
+def test_cancel_suppresses_late_terminal_progress(tmp_path: Path) -> None:
+    path = tmp_path / "episode.mkv"
+    started = threading.Event()
+    release = threading.Event()
+    cancel = threading.Event()
+    transitions: list[tuple[Path, LlmProgressState]] = []
+
+    def factory(_state: SharedProviderState) -> Callable[[Path, SharedProviderState], FileOutcome]:
+        def worker(worker_path: Path, _worker_state: SharedProviderState) -> FileOutcome:
+            started.set()
+            assert release.wait(timeout=2.0)
+            return _done(worker_path)
+
+        return worker
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            run_llm_queue,
+            (path,),
+            worker_factory=factory,
+            not_processed_factory=_not_processed,
+            config=LlmQueueConfig(
+                configured_limit=lambda: 1,
+                cancel=cancel,
+                on_progress=lambda progress_path, state: transitions.append((progress_path, state)),
+            ),
+        )
+        assert started.wait(timeout=2.0)
+        cancel.set()
+        release.set()
+        future.result(timeout=2.0)
+
+    assert transitions == [(path, "translating")]
 
 
 def test_settings_action_retries_failed_file_before_pending_files(

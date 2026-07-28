@@ -480,6 +480,25 @@ class TestMultiProgressManager:
         assert mp._progress.tasks[0].completed == 0
         assert mp._progress.tasks[0].elapsed == elapsed_at_stop
 
+    def test_reset_task_restarts_timer_and_restores_zero_progress(self):
+        mp = MultiProgressManager()
+        task = mp.add_task("translate")
+        mp.update(task, 100)
+        previous_start = mp._progress.tasks[0].start_time
+
+        mp.reset_task(task)
+
+        reset = mp._progress.tasks[0]
+        assert reset.completed == 0
+        assert reset.finished is False
+        assert reset.start_time is not None
+        assert previous_start is not None
+        assert reset.start_time >= previous_start
+        assert reset.elapsed is not None
+        assert reset.elapsed >= 0
+        assert reset.fields["style"] == "red_bold"
+        assert "█" not in reset.fields["custom_bar"]
+
     def test_single_task_columns_fall_back_without_field(self):
         col = ColoredPercentageColumn("green_bold")
         task = _mock_task(total=100, completed=50)

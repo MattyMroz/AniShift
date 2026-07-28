@@ -15,17 +15,32 @@ from anishift.pipeline.llm_queue import LlmProgressState
 from anishift.utils.rich_console import MultiProgressManager, console
 
 
+def test_llm_progress_rows_preallocate_natural_order_and_reuse_extraction_task(tmp_path: Path) -> None:
+    episode_10 = tmp_path / "episode 10.mkv"
+    episode_2 = tmp_path / "episode 2.mkv"
+    progress = MagicMock(spec=MultiProgressManager)
+    progress.add_task.side_effect = [2, 10]
+
+    rows = pipeline_ui._LlmProgressRows(progress, (episode_10, episode_2))
+    extraction_task = rows.add_task(episode_2.name)
+    rows.update(extraction_task, 79)
+
+    assert [item.args[0] for item in progress.add_task.call_args_list] == [episode_2.name, episode_10.name]
+    assert extraction_task == 2
+    progress.update.assert_called_once_with(2, 79)
+
+
 def test_llm_progress_rows_use_standard_zero_to_complete_tasks(tmp_path: Path) -> None:
     progress = MagicMock(spec=MultiProgressManager)
     progress.add_task.return_value = 7
-    rows = pipeline_ui._LlmProgressRows(progress)
     path = tmp_path / "episode 3.mkv"
+    rows = pipeline_ui._LlmProgressRows(progress, (path,))
 
-    rows.on_progress(path, "translating")
     rows.on_progress(path, "translating")
     rows.on_progress(path, "done")
 
-    progress.add_task.assert_called_once_with(f"Translating {path.name}")
+    progress.add_task.assert_called_once_with(path.name)
+    progress.reset_task.assert_called_once_with(7)
     progress.update.assert_called_once_with(7, 100)
 
 
@@ -36,8 +51,8 @@ def test_llm_progress_rows_leave_unsuccessful_tasks_at_zero(
 ) -> None:
     progress = MagicMock(spec=MultiProgressManager)
     progress.add_task.return_value = 7
-    rows = pipeline_ui._LlmProgressRows(progress)
     path = tmp_path / "episode 3.mkv"
+    rows = pipeline_ui._LlmProgressRows(progress, (path,))
 
     rows.on_progress(path, "translating")
     rows.on_progress(path, state)
@@ -46,20 +61,21 @@ def test_llm_progress_rows_leave_unsuccessful_tasks_at_zero(
     progress.stop_task.assert_called_once_with(7)
 
 
-def test_llm_progress_rows_create_a_fresh_task_after_failed_retry(tmp_path: Path) -> None:
+def test_llm_progress_rows_retry_the_same_task_in_the_same_position(tmp_path: Path) -> None:
     progress = MagicMock(spec=MultiProgressManager)
-    progress.add_task.side_effect = [7, 8]
-    rows = pipeline_ui._LlmProgressRows(progress)
+    progress.add_task.return_value = 7
     path = tmp_path / "episode 3.mkv"
+    rows = pipeline_ui._LlmProgressRows(progress, (path,))
 
     rows.on_progress(path, "translating")
     rows.on_progress(path, "failed")
     rows.on_progress(path, "translating")
     rows.on_progress(path, "done")
 
-    assert progress.add_task.call_count == 2
+    progress.add_task.assert_called_once_with(path.name)
+    assert progress.reset_task.call_count == 2
     progress.stop_task.assert_called_once_with(7)
-    progress.update.assert_called_once_with(8, 100)
+    progress.update.assert_called_once_with(7, 100)
 
 
 def test_llm_progress_names_file_provider_and_terminal_state(

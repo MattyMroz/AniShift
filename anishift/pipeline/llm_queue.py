@@ -259,7 +259,7 @@ def run_llm_queue(  # noqa: PLR0912, PLR0915 - explicit queue state transitions
             limit = state.concurrency_limit(configured_limit)
             while pending and len(active) < limit and state.can_submit:
                 path = pending.popleft()
-                _notify_progress(config.on_progress, path, "translating")
+                _notify_progress(config.on_progress, path, "translating", config.cancel)
                 active[pool.submit(worker, path, state)] = path
             if not active:
                 if not input_closed:
@@ -275,7 +275,7 @@ def run_llm_queue(  # noqa: PLR0912, PLR0915 - explicit queue state transitions
                 path = active.pop(future)
                 outcome = future.result()
                 outcomes[path] = outcome
-                _notify_progress(config.on_progress, path, outcome.status)
+                _notify_progress(config.on_progress, path, outcome.status, config.cancel)
                 if _is_provider_terminal(outcome):
                     terminal_paths.append(path)
                     state.disable()
@@ -305,7 +305,7 @@ def run_llm_queue(  # noqa: PLR0912, PLR0915 - explicit queue state transitions
         )
         for path in pending:
             outcomes[path] = not_processed_factory(path, context)
-            _notify_progress(config.on_progress, path, "not_processed")
+            _notify_progress(config.on_progress, path, "not_processed", config.cancel)
     return outcomes
 
 
@@ -313,9 +313,10 @@ def _notify_progress(
     handler: LlmProgressHandler | None,
     path: Path,
     state: LlmProgressState,
+    cancel: threading.Event,
 ) -> None:
     """Report a queue transition when the caller supplied an observer."""
-    if handler is not None:
+    if handler is not None and not cancel.is_set():
         handler(path, state)
 
 
