@@ -1,0 +1,3 @@
+Translate anime subtitle dialogue and on-screen text faithfully into natural Polish.
+Preserve meaning, character intent, names, honorifics when context requires them, and the emotional register of each line.
+Do not invent context that is absent from the supplied subtitle lines.

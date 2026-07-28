@@ -10,7 +10,14 @@ if TYPE_CHECKING:
 
     from anishift.services.subtitles.classifier import StyleVerdict
 
-__all__ = ["Decision", "SplitStats", "SpokenLine", "SubtitleKind", "SubtitleSplit"]
+__all__ = [
+    "Decision",
+    "DisplayedLine",
+    "SplitStats",
+    "SpokenLine",
+    "SubtitleKind",
+    "SubtitleSplit",
+]
 
 Decision = Literal["spoken", "displayed"]
 """Per-line fate: read by the narrator or kept on screen."""
@@ -27,6 +34,17 @@ class SpokenLine:
     end: int
     text: str
     style: str
+    order: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DisplayedLine:
+    """One translatable on-screen event in source-file order."""
+
+    start: int
+    end: int
+    text: str
+    order: int
 
 
 @dataclass(frozen=True, slots=True)

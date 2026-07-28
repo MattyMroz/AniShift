@@ -469,6 +469,48 @@ class TestMultiProgressManager:
         assert mp._progress.tasks[0].elapsed == elapsed_at_completion
         assert mp._progress.tasks[1].finished is False
 
+    def test_stop_task_freezes_elapsed_without_completing_bar(self):
+        mp = MultiProgressManager()
+        task = mp.add_task("failed")
+
+        mp.stop_task(task)
+        elapsed_at_stop = mp._progress.tasks[0].elapsed
+        time.sleep(0.01)
+
+        assert mp._progress.tasks[0].completed == 0
+        assert mp._progress.tasks[0].elapsed == elapsed_at_stop
+
+    def test_reset_task_restarts_timer_and_restores_zero_progress(self):
+        mp = MultiProgressManager()
+        task = mp.add_task("translate")
+        mp.update(task, 100)
+        previous_start = mp._progress.tasks[0].start_time
+
+        mp.reset_task(task)
+
+        reset = mp._progress.tasks[0]
+        assert reset.completed == 0
+        assert reset.finished is False
+        assert reset.start_time is not None
+        assert previous_start is not None
+        assert reset.start_time >= previous_start
+        assert reset.elapsed is not None
+        assert reset.elapsed >= 0
+        assert reset.fields["style"] == "red_bold"
+        assert "█" not in reset.fields["custom_bar"]
+
+    def test_update_description_preserves_task_position_and_progress(self):
+        mp = MultiProgressManager(max_description_length=40)
+        task = mp.add_task("Extracting episode.mkv")
+        mp.update(task, 35)
+
+        mp.update_description(task, "Translating episode.mkv")
+
+        assert mp._states[task].description == "Translating episode.mkv"
+        assert "Translating episode.mkv" in mp._progress.tasks[0].description
+        assert mp._progress.tasks[0].completed == 35
+        assert mp._progress.tasks[0].id == task
+
     def test_single_task_columns_fall_back_without_field(self):
         col = ColoredPercentageColumn("green_bold")
         task = _mock_task(total=100, completed=50)

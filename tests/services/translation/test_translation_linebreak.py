@@ -5,6 +5,7 @@ from anishift.services.translation.linebreak import (
     _CONJUNCTIONS_MULTIWORD,
     _PREPOSITIONS_MULTIWORD,
     MAX_LINES,
+    split_for_layout,
     split_line,
 )
 
@@ -123,3 +124,28 @@ def test_multiword_preposition_three_words_is_kept_whole() -> None:
     assert "bez\nwzględu" not in joined
     assert "względu\nna" not in joined
     assert ("bez", "względu", "na") in _PREPOSITIONS_MULTIWORD
+
+
+def test_split_for_layout_preserves_authored_displayed_line_count() -> None:
+    verses = split_for_layout(
+        "Odcinek 3: Życie z powrotem w domu",
+        ("Episode 3", "Life Back at Home"),
+    )
+    assert verses == ("Odcinek 3:", "Życie z powrotem w domu")
+
+
+def test_split_for_layout_prefers_semantic_boundary_over_source_ratio() -> None:
+    verses = split_for_layout(
+        "W następnym odcinku: Wodny mag rangi królewskiej",
+        ("Next Time", "A King-Class Water Mage"),
+    )
+    assert verses == ("W następnym odcinku:", "Wodny mag rangi królewskiej")
+
+
+def test_split_for_layout_keeps_one_source_verse_on_normal_policy() -> None:
+    text = "To jest długie polskie zdanie, które powinno zostać czytelnie podzielone na ekranie"
+    assert split_for_layout(text, ("One source line",)) == split_line(text)
+
+
+def test_split_for_layout_does_not_break_one_target_word_artificially() -> None:
+    assert split_for_layout("Dom", ("Home", "again")) == ("Dom",)

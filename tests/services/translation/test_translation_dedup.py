@@ -1,5 +1,6 @@
 from anishift.services.translation.dedup import (
     deduplicate,
+    prepare_lines,
     redistribute,
     redistribute_flags,
 )
@@ -18,6 +19,12 @@ def test_dedup_is_deterministic() -> None:
     second = deduplicate(lines)
     assert first == second
     assert first.unique == ("a", "b", "c")
+
+
+def test_preserve_keeps_duplicate_occurrences() -> None:
+    result = prepare_lines(["a", "a", "", "b"], "preserve")
+    assert result.texts == ("a", "a", "b")
+    assert result.index_map == (0, 1, -1, 2)
 
 
 def test_empty_lines_pass_through() -> None:

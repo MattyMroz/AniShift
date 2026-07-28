@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import Final
 
@@ -29,7 +29,11 @@ __all__ = [
     "split_subtitles",
     "subtitle_kind",
     "write_displayed",
+    "write_full",
+    "write_spoken",
     "write_translated",
+    "write_translated_displayed",
+    "write_translated_spoken",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -112,42 +116,56 @@ def preview_styles(subs: SSAFile) -> tuple[tuple[StyleVerdict, ...], dict[str, t
     return verdicts, {style: tuple(lines) for style, lines in samples.items()}
 
 
-def _make_run(events: list[SSAEvent], text: str, style: str) -> SpokenLine:
+def _make_run(events: list[tuple[int, SSAEvent]], text: str, style: str) -> SpokenLine:
+    raw_events = [event for _, event in events]
     return SpokenLine(
-        start=min(event.start for event in events),
-        end=max(event.end for event in events),
+        start=min(event.start for event in raw_events),
+        end=max(event.end for event in raw_events),
         text=text,
         style=style,
+        order=min(order for order, _ in events),
     )
 
 
-def _collapse_group(events: list[SSAEvent], text: str, style: str) -> tuple[list[SpokenLine], int]:
-    ordered = sorted(events, key=lambda event: event.start)
-    runs: list[list[SSAEvent]] = []
-    for event in ordered:
-        if not runs or event.start - max(item.end for item in runs[-1]) > _FBF_MAX_GAP_MS:
-            runs.append([event])
+def _collapse_group(
+    events: list[tuple[int, SSAEvent]],
+    text: str,
+    style: str,
+) -> tuple[list[SpokenLine], int]:
+    ordered = sorted(events, key=lambda item: item[1].start)
+    runs: list[list[tuple[int, SSAEvent]]] = []
+    for item in ordered:
+        event = item[1]
+        if not runs or event.start - max(run_event.end for _, run_event in runs[-1]) > _FBF_MAX_GAP_MS:
+            runs.append([item])
             continue
-        runs[-1].append(event)
+        runs[-1].append(item)
     return [_make_run(run, text, style) for run in runs], len(events) - len(runs)
 
 
 def collapse_fbf(events: Sequence[SSAEvent]) -> tuple[tuple[SpokenLine, ...], int]:
     """Collapse frame-by-frame runs of identical visible text."""
-    groups: dict[tuple[str, str], list[SSAEvent]] = defaultdict(list)
-    for event in events:
+    return _collapse_fbf_indexed(tuple(enumerate(events)))
+
+
+def _collapse_fbf_indexed(
+    events: Sequence[tuple[int, SSAEvent]],
+) -> tuple[tuple[SpokenLine, ...], int]:
+    """Collapse indexed frame events while retaining source-file order."""
+    groups: dict[tuple[str, str], list[tuple[int, SSAEvent]]] = defaultdict(list)
+    for order, event in events:
         if is_drawing(event.text):
             continue
         text = visible_text(event.text)
         if text:
-            groups[(event.style, text)].append(event)
+            groups[(event.style, text)].append((order, event))
     lines: list[SpokenLine] = []
     collapsed_away = 0
     for (style, text), group in groups.items():
         group_lines, removed = _collapse_group(group, text, style)
         lines.extend(group_lines)
         collapsed_away += removed
-    lines.sort(key=lambda line: (line.start, line.end, line.style))
+    lines.sort(key=lambda line: (line.order, line.start, line.end, line.style))
     return tuple(lines), collapsed_away
 
 
@@ -192,8 +210,12 @@ def split_subtitles(
         )
         decisions, _, drawing_events, _ = _dialogue_decisions(dialogue, styles)
     spoken_events = decisions.count("spoken")
-    spoken_input = [event for event, decision in zip(dialogue, decisions, strict=True) if decision == "spoken"]
-    spoken, collapsed_away = collapse_fbf(spoken_input)
+    spoken_input = [
+        (order, event)
+        for order, (event, decision) in enumerate(zip(dialogue, decisions, strict=True))
+        if decision == "spoken"
+    ]
+    spoken, collapsed_away = _collapse_fbf_indexed(spoken_input)
     stats = SplitStats(
         total_events=len(dialogue),
         spoken_events=spoken_events,
@@ -205,7 +227,7 @@ def split_subtitles(
     return SubtitleSplit(kind, subs, tuple(decisions), final_verdicts, spoken, stats)
 
 
-def _displayed_file(split: SubtitleSplit) -> SSAFile:
+def _stream_file(split: SubtitleSplit, selected: Decision | None) -> SSAFile:
     out = SSAFile()
     out.info = dict(split.subs.info)
     out.styles = {name: style.copy() for name, style in split.subs.styles.items()}
@@ -214,48 +236,85 @@ def _displayed_file(split: SubtitleSplit) -> SSAFile:
         if event.type != "Dialogue":
             out.events.append(event)
             continue
-        if split.decisions[dialogue_index] == "displayed":
+        if selected is None or split.decisions[dialogue_index] == selected:
             out.events.append(event)
         dialogue_index += 1
     return out
+
+
+def _write_output(output: SSAFile, dest: Path, kind: SubtitleKind, *, subject: str) -> Path:
+    temporary = dest.with_name(dest.name + ".tmp")
+    try:
+        temporary.write_text(output.to_string(format_=kind, header_notice=_header_notice()), encoding=_ENCODING)
+        temporary.replace(dest)
+    except OSError as exc:
+        msg = f"{subject} subtitles could not be written: {dest}"
+        raise _fail(ErrorCode.IO_ERROR, msg) from exc
+    return dest
+
+
+def write_full(split: SubtitleSplit, dest: Path) -> Path | None:
+    """Write the complete source subtitle product atomically, or None when empty."""
+    if split.stats.total_events == 0:
+        return None
+    return _write_output(_stream_file(split, None), dest, split.kind, subject="Complete")
+
+
+def write_spoken(split: SubtitleSplit, dest: Path) -> Path | None:
+    """Write the source spoken-only product atomically, or None when empty."""
+    if split.stats.spoken_events == 0:
+        return None
+    return _write_output(_stream_file(split, "spoken"), dest, split.kind, subject="Spoken")
 
 
 def write_displayed(split: SubtitleSplit, dest: Path) -> Path | None:
     """Write the displayed product atomically, or return None when empty."""
     if split.stats.displayed_events == 0:
         return None
-    output = _displayed_file(split)
-    temporary = dest.with_name(dest.name + ".tmp")
-    try:
-        temporary.write_text(output.to_string(format_=split.kind, header_notice=_header_notice()), encoding=_ENCODING)
-        temporary.replace(dest)
-    except OSError as exc:
-        msg = f"Displayed subtitles could not be written: {dest}"
-        raise _fail(ErrorCode.IO_ERROR, msg) from exc
-    return dest
+    return _write_output(_stream_file(split, "displayed"), dest, split.kind, subject="Displayed")
 
 
 def _translated_file(
     split: SubtitleSplit,
     displayed_verses: Sequence[tuple[str, ...]],
-    spoken_verses: Mapping[tuple[str, str], tuple[str, ...]],
+    spoken_verses: Sequence[tuple[str, ...]],
+    *,
+    selected: Decision | None = None,
 ) -> SSAFile:
     out = SSAFile()
     out.info = dict(split.subs.info)
     out.styles = {name: style.copy() for name, style in split.subs.styles.items()}
     line_break = _LINE_BREAKS[split.kind]
+    translated_spoken = tuple(zip(split.spoken, spoken_verses, strict=True)) if selected in {None, "spoken"} else ()
     dialogue_index = 0
     displayed_index = 0
     for event in split.subs.events:
         if event.type != "Dialogue":
             out.events.append(event)
             continue
-        if split.decisions[dialogue_index] == "displayed":
-            verses: tuple[str, ...] | None = displayed_verses[displayed_index]
-            displayed_index += 1
-        else:
-            verses = spoken_verses.get((event.style, visible_text(event.text)))
+        decision = split.decisions[dialogue_index]
         dialogue_index += 1
+        if selected is not None and decision != selected:
+            continue
+        if decision == "displayed":
+            if is_drawing(event.text):
+                verses: tuple[str, ...] | None = None
+            else:
+                verses = displayed_verses[displayed_index]
+                displayed_index += 1
+        else:
+            visible = visible_text(event.text)
+            verses = next(
+                (
+                    translated
+                    for spoken, translated in translated_spoken
+                    if spoken.style == event.style
+                    and spoken.text == visible
+                    and spoken.start <= event.start
+                    and event.end <= spoken.end
+                ),
+                None,
+            )
         if verses is None:
             out.events.append(event)
             continue
@@ -268,7 +327,7 @@ def _translated_file(
 def write_translated(
     split: SubtitleSplit,
     displayed_verses: Sequence[tuple[str, ...]],
-    spoken_verses: Mapping[tuple[str, str], tuple[str, ...]],
+    spoken_verses: Sequence[tuple[str, ...]],
     dest: Path,
 ) -> Path | None:
     r"""Write the whole translated subtitle file atomically, or None when empty.
@@ -279,10 +338,11 @@ def write_translated(
 
     Args:
         split: The split whose source file is re-assembled.
-        displayed_verses: One verse tuple per displayed event, in event order.
-        spoken_verses: Verse tuples keyed by ``(style, visible_text)`` - the
-            inverse of the ``collapse_fbf`` grouping key. Spoken events without
-            a key (e.g. empty visible text) are copied unchanged.
+        displayed_verses: One verse tuple per non-drawing displayed event, in
+            event order. Vector drawings are copied without consuming a tuple.
+        spoken_verses: One verse tuple per collapsed spoken run, in
+            ``split.spoken`` order. Every source event is matched by style,
+            visible text, and its run's timing bounds.
         dest: Output path (same format as the source).
 
     Raises:
@@ -291,11 +351,28 @@ def write_translated(
     if split.stats.total_events == 0:
         return None
     output = _translated_file(split, displayed_verses, spoken_verses)
-    temporary = dest.with_name(dest.name + ".tmp")
-    try:
-        temporary.write_text(output.to_string(format_=split.kind, header_notice=_header_notice()), encoding=_ENCODING)
-        temporary.replace(dest)
-    except OSError as exc:
-        msg = f"Translated subtitles could not be written: {dest}"
-        raise _fail(ErrorCode.IO_ERROR, msg) from exc
-    return dest
+    return _write_output(output, dest, split.kind, subject="Translated")
+
+
+def write_translated_spoken(
+    split: SubtitleSplit,
+    spoken_verses: Sequence[tuple[str, ...]],
+    dest: Path,
+) -> Path | None:
+    """Write the translated spoken-only subtitle product atomically."""
+    if split.stats.spoken_events == 0:
+        return None
+    output = _translated_file(split, (), spoken_verses, selected="spoken")
+    return _write_output(output, dest, split.kind, subject="Translated spoken")
+
+
+def write_translated_displayed(
+    split: SubtitleSplit,
+    displayed_verses: Sequence[tuple[str, ...]],
+    dest: Path,
+) -> Path | None:
+    """Write the translated displayed-only subtitle product atomically."""
+    if split.stats.displayed_events == 0:
+        return None
+    output = _translated_file(split, displayed_verses, (), selected="displayed")
+    return _write_output(output, dest, split.kind, subject="Translated displayed")

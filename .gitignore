@@ -84,6 +84,7 @@ desktop.ini
 
 config/settings.json
 config/.shell_history
+config/prompts/**/*.txt
 
 
 # ── Logs ──────────────────────────────────────────────────────────────────────

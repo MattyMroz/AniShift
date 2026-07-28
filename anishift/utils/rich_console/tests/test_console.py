@@ -179,6 +179,10 @@ class TestAutoHighlightText:
         assert styled(result, "repr.path") == []
         assert styled(result, "repr.number") == ["5/10"]
 
+    def test_slash_separated_number_sequence_is_one_highlighted_span(self):
+        result = auto_highlight_text("tokens 20189/20255/40444")
+        assert styled(result, "repr.number") == ["20189/20255/40444"]
+
     def test_status_summary_with_middle_dot_is_not_a_path(self):
         result = auto_highlight_text("Done 5 · Failed 0")
         assert styled(result, "repr.path") == []

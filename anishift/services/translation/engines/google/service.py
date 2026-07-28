@@ -20,6 +20,7 @@ from anishift.services.translation.engines.google.constants import (
 
 if TYPE_CHECKING:
     from anishift.services.translation.config import TranslationConfig
+    from anishift.services.translation.protocols import TranslationInputPolicy, TranslationStream
     from anishift.services.translation.types import BatchedLine
 
 
@@ -50,6 +51,11 @@ class GoogleService:
 
     def close(self) -> None:
         """No persistent client to release."""
+
+    def input_policy(self, stream: TranslationStream) -> TranslationInputPolicy:
+        """Deduplicate both subtitle streams before translation."""
+        del stream
+        return "deduplicate"
 
     def translate_batch(
         self,

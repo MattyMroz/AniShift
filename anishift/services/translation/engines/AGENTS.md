@@ -10,7 +10,7 @@ Fabryka silników tłumaczenia oparta na rejestrze. `create_engine(config)` budu
 
 ## Rejestr (`__init__.py`)
 
-- `create_engine` celowo ODRZUCA silnik `llm` mimo obecności w rejestrze — potrzebuje wstrzykniętego completera; `LlmTranslateService` buduje się ręcznie i podaje przez `TranslationService(engine=...)`. `__init__.py:62-67`
+- `create_engine` celowo ODRZUCA silnik `llm` mimo obecności w rejestrze — pipeline buduje `LlmTranslateService` przez `TranslationService(engine_factory=...)`. `__init__.py`
 - Kolejność guardów jest znacząca: pusty → nieznany → `llm`. `__init__.py:55-67`
 - Silniki ładowane leniwie przez `importlib.import_module` (ciężkie SDK poza ścieżką importu domeny) — błąd importu SDK wypływa dopiero przy `create_engine`. `__init__.py:41,68-69`
 - `TranslationEngineId` (`Literal["google","deepl","llm"]`) jest źródłem prawdy — wyższe warstwy importują go, nie przepisują własnym stringiem. `__init__.py:22-23`

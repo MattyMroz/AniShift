@@ -28,6 +28,7 @@ from anishift.services.translation.types import BatchedLine
 
 if TYPE_CHECKING:
     from anishift.services.translation.config import TranslationConfig
+    from anishift.services.translation.protocols import TranslationInputPolicy, TranslationStream
 
 
 def _map_sdk_error(exc: Exception) -> Exception:
@@ -98,6 +99,11 @@ class DeeplService:
     def close(self) -> None:
         """Drop the client reference."""
         self._client = None
+
+    def input_policy(self, stream: TranslationStream) -> TranslationInputPolicy:
+        """Deduplicate both subtitle streams before translation."""
+        del stream
+        return "deduplicate"
 
     def _ensure_client(self) -> None:
         """Create the DeepL client from the configured key (idempotent).

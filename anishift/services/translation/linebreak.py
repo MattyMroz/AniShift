@@ -279,6 +279,55 @@ def split_line(text: str, *, max_chars: int = DEFAULT_MAX_CHARS) -> tuple[str, .
     return _split(text, max_chars, MAX_LINES)
 
 
+def split_for_layout(
+    text: str,
+    source_verses: tuple[str, ...],
+    *,
+    max_chars: int = DEFAULT_MAX_CHARS,
+) -> tuple[str, ...]:
+    """Split displayed text using authored verse count as the layout contract.
+
+    A single authored verse keeps the normal Polish readability policy. Two or
+    more authored verses retain their count and approximate relative lengths
+    when the translation has enough word boundaries. A shorter translation is
+    kept intact instead of producing empty verses or splitting one word.
+    """
+    normalised = _RE_SPACES.sub(" ", text).strip()
+    if len(source_verses) <= 1:
+        return split_line(normalised, max_chars=max_chars)
+    words = normalised.split()
+    if len(words) < len(source_verses):
+        return tuple(words) if words else ("",)
+    boundaries = _proportional_boundaries(words, source_verses)
+    starts = (0, *boundaries)
+    ends = (*boundaries, len(words))
+    return tuple(" ".join(words[start:end]) for start, end in zip(starts, ends, strict=True))
+
+
+def _proportional_boundaries(words: list[str], source_verses: tuple[str, ...]) -> tuple[int, ...]:
+    """Choose natural target boundaries near authored relative line lengths."""
+    weights = [max(len(verse), 1) for verse in source_verses]
+    total_weight = sum(weights)
+    offsets = _word_offsets(words)
+    boundaries: list[int] = []
+    previous = 0
+    for line_index in range(1, len(source_verses)):
+        remaining_lines = len(source_verses) - line_index
+        desired = round(len(" ".join(words)) * sum(weights[:line_index]) / total_weight)
+        candidates = [
+            index for index in range(previous + 1, len(words) - remaining_lines + 1) if not _protected(words, index)
+        ]
+        if not candidates:
+            candidates = list(range(previous + 1, len(words) - remaining_lines + 1))
+        boundary = min(
+            candidates,
+            key=lambda index: abs(offsets[index] - desired) * _weight(words[index - 1], words, index) ** 2,
+        )
+        boundaries.append(boundary)
+        previous = boundary
+    return tuple(boundaries)
+
+
 def _split(text: str, max_chars: int, budget: int) -> tuple[str, ...]:
     """Recursively split ``text`` into at most ``budget`` verses."""
     if len(text) <= max_chars or " " not in text or budget <= 1:
@@ -381,4 +430,4 @@ def _greedy_cut(text: str, max_chars: int) -> int:
     return cut if cut > 0 else text.find(" ")
 
 
-__all__ = ["DEFAULT_MAX_CHARS", "MAX_LINES", "split_line"]
+__all__ = ["DEFAULT_MAX_CHARS", "MAX_LINES", "split_for_layout", "split_line"]

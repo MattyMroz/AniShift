@@ -380,6 +380,29 @@ class MultiProgressManager:
         with self._lock:
             self._apply(task_id, self._states[task_id], completed)
 
+    def update_description(self, task_id: TaskID, description: str) -> None:
+        """Replace one task's label without changing its position or progress."""
+        with self._lock:
+            state = self._states[task_id]
+            label = _truncate_description(description, self._max_description_length, self._truncate_mode)
+            state.description = label
+            percentage = min(100, int((state.completed / state.total) * 100)) if state.total else 0
+            text_color, _bar_color = _color_for_percentage(state.colors, percentage)
+            self._progress.update(task_id, description=_style_description(text_color, label))
+
+    def stop_task(self, task_id: TaskID) -> None:
+        """Freeze one task's elapsed time without changing its completion."""
+        with self._lock:
+            self._progress.stop_task(task_id)
+
+    def reset_task(self, task_id: TaskID, *, completed: int = 0) -> None:
+        """Restart one task's timer and set its completion without moving its row."""
+        with self._lock:
+            state = self._states[task_id]
+            self._progress.reset(task_id, total=state.total, completed=0, start=True)
+            self._progress.tasks[task_id].stop_time = None
+            self._apply(task_id, state, completed)
+
     @staticmethod
     def _aligned_columns(style: str) -> tuple[ProgressColumn, ...]:
         """Build the shared table columns for the ``'aligned'`` mode."""
