@@ -33,17 +33,28 @@ def _raw_resource(**overrides: object) -> dict[str, object]:
     return raw
 
 
-def test_real_manifest_loads_both_resources() -> None:
+def test_real_manifest_loads_declared_resources() -> None:
     resources = load_manifest(manifest_path())
-    assert {r.name for r in resources} == {"mkvtoolnix", "ffmpeg"}
+    assert {resource.name for resource in resources} == {"mkvtoolnix", "ffmpeg", "balabolka"}
 
 
 def test_real_manifest_dests_match_binaries_layout() -> None:
     for resource in load_manifest(manifest_path()):
         for member in resource.members:
             dest = PurePosixPath(member.dest)
+            if dest.suffix != ".exe":
+                continue
             binary = Binary(dest.name.removesuffix(".exe"))
             assert dest.parent == PurePosixPath(TOOL_DIR[binary]), f"{member.dest} contradicts TOOL_DIR[{binary}]"
+
+
+def test_real_manifest_balabolka_includes_runtime_dependency() -> None:
+    resources = load_manifest(manifest_path())
+    balabolka = next(resource for resource in resources if resource.name == "balabolka")
+    assert {member.dest for member in balabolka.members} == {
+        "balabolka/balcon.exe",
+        "balabolka/chsdet.dll",
+    }
 
 
 def test_load_returns_typed_resources(tmp_path: Path) -> None:
