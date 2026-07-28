@@ -25,7 +25,10 @@ def test_llm_progress_rows_preallocate_natural_order_and_reuse_extraction_task(t
     extraction_task = rows.add_task(episode_2.name)
     rows.update(extraction_task, 79)
 
-    assert [item.args[0] for item in progress.add_task.call_args_list] == [episode_2.name, episode_10.name]
+    assert [item.args[0] for item in progress.add_task.call_args_list] == [
+        f"Extracting  {episode_2.name}",
+        f"Extracting  {episode_10.name}",
+    ]
     assert extraction_task == 2
     progress.update.assert_called_once_with(2, 79)
 
@@ -39,14 +42,43 @@ def test_llm_progress_rows_use_standard_zero_to_complete_tasks(tmp_path: Path) -
     rows.on_progress(path, "translating")
     rows.on_progress(path, "done")
 
-    progress.add_task.assert_called_once_with(path.name)
+    progress.add_task.assert_called_once_with(f"Extracting  {path.name}")
     progress.reset_task.assert_called_once_with(7)
     progress.update.assert_called_once_with(7, 100)
+    assert [item.args[1] for item in progress.update_description.call_args_list] == [
+        f"Translating {path.name}",
+        f"Translated  {path.name}",
+    ]
 
 
-@pytest.mark.parametrize("state", ["failed", "cancelled", "not_processed"])
+def test_llm_progress_rows_mark_completed_extraction_on_the_same_task(
+    tmp_path: Path,
+) -> None:
+    progress = MagicMock(spec=MultiProgressManager)
+    progress.add_task.return_value = 7
+    path = tmp_path / "episode 3.mkv"
+    rows = pipeline_ui._LlmProgressRows(progress, (path,))
+
+    rows.update(7, 100)
+
+    progress.update.assert_called_once_with(7, 100)
+    progress.update_description.assert_called_once_with(
+        7,
+        f"Extracted   {path.name}",
+    )
+
+
+@pytest.mark.parametrize(
+    ("state", "phase"),
+    [
+        pytest.param("failed", "Failed", id="failed"),
+        pytest.param("cancelled", "Cancelled", id="cancelled"),
+        pytest.param("not_processed", "Not processed", id="not-processed"),
+    ],
+)
 def test_llm_progress_rows_leave_unsuccessful_tasks_at_zero(
     state: LlmProgressState,
+    phase: str,
     tmp_path: Path,
 ) -> None:
     progress = MagicMock(spec=MultiProgressManager)
@@ -58,6 +90,10 @@ def test_llm_progress_rows_leave_unsuccessful_tasks_at_zero(
     rows.on_progress(path, state)
 
     progress.update.assert_not_called()
+    progress.update_description.assert_called_with(
+        7,
+        f"{phase:<11} {path.name}",
+    )
     progress.stop_task.assert_called_once_with(7)
 
 
@@ -72,10 +108,16 @@ def test_llm_progress_rows_retry_the_same_task_in_the_same_position(tmp_path: Pa
     rows.on_progress(path, "translating")
     rows.on_progress(path, "done")
 
-    progress.add_task.assert_called_once_with(path.name)
+    progress.add_task.assert_called_once_with(f"Extracting  {path.name}")
     assert progress.reset_task.call_count == 2
     progress.stop_task.assert_called_once_with(7)
     progress.update.assert_called_once_with(7, 100)
+    assert [item.args[1] for item in progress.update_description.call_args_list] == [
+        f"Translating {path.name}",
+        f"Failed      {path.name}",
+        f"Translating {path.name}",
+        f"Translated  {path.name}",
+    ]
 
 
 def test_llm_progress_names_file_provider_and_terminal_state(

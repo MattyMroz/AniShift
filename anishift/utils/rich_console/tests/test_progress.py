@@ -499,6 +499,18 @@ class TestMultiProgressManager:
         assert reset.fields["style"] == "red_bold"
         assert "█" not in reset.fields["custom_bar"]
 
+    def test_update_description_preserves_task_position_and_progress(self):
+        mp = MultiProgressManager(max_description_length=40)
+        task = mp.add_task("Extracting episode.mkv")
+        mp.update(task, 35)
+
+        mp.update_description(task, "Translating episode.mkv")
+
+        assert mp._states[task].description == "Translating episode.mkv"
+        assert "Translating episode.mkv" in mp._progress.tasks[0].description
+        assert mp._progress.tasks[0].completed == 35
+        assert mp._progress.tasks[0].id == task
+
     def test_single_task_columns_fall_back_without_field(self):
         col = ColoredPercentageColumn("green_bold")
         task = _mock_task(total=100, completed=50)

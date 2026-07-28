@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack, nullcontext
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 from natsort import os_sorted
 from rich.progress import TaskID
@@ -32,14 +32,24 @@ _STATUS_ICON: dict[FileStatus, StatusType] = {
 }
 """Map file statuses to console icons."""
 
+_LLM_PROGRESS_DESCRIPTION_LENGTH: Final[int] = 48
+"""Maximum phase-and-filename width for automatic LLM progress rows."""
+
+_LLM_PROGRESS_PHASE_WIDTH: Final[int] = 11
+"""Fixed phase-label width keeping filenames aligned between transitions."""
+
+_PROGRESS_COMPLETE: Final[int] = 100
+"""Completed percentage used by extraction and translation progress rows."""
+
 
 class _LlmProgressRows:
     """Keep extraction and LLM transitions on one naturally ordered row per file."""
 
     def __init__(self, progress: MultiProgressManager, paths: tuple[Path, ...]) -> None:
         self._progress = progress
-        self._task_ids = {path: progress.add_task(path.name) for path in os_sorted(paths)}
+        self._task_ids = {path: progress.add_task(self._description(path, "Extracting")) for path in os_sorted(paths)}
         self._task_ids_by_name = {path.name: task_id for path, task_id in self._task_ids.items()}
+        self._paths_by_task_id = {int(task_id): path for path, task_id in self._task_ids.items()}
 
     def add_task(self, description: str, *, total: int = 100) -> int:
         """Return the preallocated row requested by the extraction phase."""
@@ -49,18 +59,42 @@ class _LlmProgressRows:
     def update(self, task_id: int, completed: int) -> None:
         """Forward extraction completion to the preallocated row."""
         self._progress.update(TaskID(task_id), completed)
+        if completed >= _PROGRESS_COMPLETE:
+            path = self._paths_by_task_id[task_id]
+            self._progress.update_description(
+                TaskID(task_id),
+                self._description(path, "Extracted"),
+            )
 
     def on_progress(self, path: Path, state: LlmProgressState) -> None:
         """Reset the same row for translation and complete it on success."""
         task_id = self._task_ids[path]
         if state == "translating":
             self._progress.reset_task(task_id)
+            self._progress.update_description(
+                task_id,
+                self._description(path, "Translating"),
+            )
             return
         if state == "done":
-            self._progress.update(task_id, 100)
+            self._progress.update(task_id, _PROGRESS_COMPLETE)
+            self._progress.update_description(
+                task_id,
+                self._description(path, "Translated"),
+            )
             return
         if state in {"failed", "cancelled", "not_processed"}:
+            phase = {
+                "failed": "Failed",
+                "cancelled": "Cancelled",
+                "not_processed": "Not processed",
+            }[state]
+            self._progress.update_description(task_id, self._description(path, phase))
             self._progress.stop_task(task_id)
+
+    @staticmethod
+    def _description(path: Path, phase: str) -> str:
+        return f"{phase:<{_LLM_PROGRESS_PHASE_WIDTH}} {path.name}"
 
 
 def run_pipeline_command(context: AppContext) -> None:
@@ -114,7 +148,11 @@ def _progress_phase() -> ProgressPhase:
 
 def _run_llm_auto_pipeline(context: AppContext, paths: tuple[Path, ...]) -> PipelineReport:
     """Render extraction and LLM requests with one standard multi-progress display."""
-    progress = MultiProgressManager(show_download=False, transient=True)
+    progress = MultiProgressManager(
+        max_description_length=_LLM_PROGRESS_DESCRIPTION_LENGTH,
+        show_download=False,
+        transient=True,
+    )
     rows = _LlmProgressRows(progress, paths)
 
     with ExitStack() as live:

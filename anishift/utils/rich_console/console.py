@@ -81,11 +81,12 @@ _HIGHLIGHT_STYLES: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
         re.compile(r"\b\d+(?:\.\d+)?\s?(?:ms|MB|GB|TB|KB|kB|px|dp|pt|em|rem|fps|Hz|kHz|min|sec|s)\b"),
         "repr.number",
     ),
-    (re.compile(r"\b\d+/\d+\b"), "repr.number"),
+    (re.compile(r"\b\d+(?:/\d+)+\b"), "repr.number"),
     (re.compile(r"\b\d+\.?\d*\b"), "repr.number"),
 )
 """Priority-ordered (pattern, style) pairs: URLs, paths, booleans, none,
-versions, number+unit, fractions, numbers. Earlier matches claim their span."""
+versions, number+unit, slash-separated number sequences, numbers. Earlier
+matches claim their span."""
 
 
 def auto_highlight_text(text: str) -> Text:
@@ -99,7 +100,7 @@ def auto_highlight_text(text: str) -> Text:
     4. ``None``/``null`` → ``repr.none`` (red italic)
     5. Version strings (``v2.1.0``, ``3.13.11+cu128``) → ``repr.number``
     6. Number + unit (``1.33s``, ``245MB``, ``42ms``) → ``repr.number``
-    7. Fractions (``24/24``, ``1/3``) → ``repr.number``
+    7. Slash-separated numbers (``24/24``, ``1/2/3``) → ``repr.number``
     8. Standalone numbers (``123``, ``45.67``) → ``repr.number``
 
     Styles are applied as spans on the raw string — content is never
