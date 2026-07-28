@@ -23,5 +23,6 @@ Orkiestracja etapów dwufazowa (ekstrakcja → tłumaczenie) plus obsługa TXT, 
 - Końcowy kontrakt napisów to `.pl.<kind>` (pełny), `.spoken.pl.<kind>` (spoken-only) i `.displayed.pl.<kind>` (displayed-only wraz z rysunkami). Surowy `.displayed.<kind>` nie jest produktem pipeline'u. `runner.py`
 - `_extract_concurrently` odpytuje future'y w pętli z timeoutem `_WAIT_POLL_SECONDS` (0.2 s) zamiast blokującego `wait()` — by Ctrl+C był responsywny. `runner.py:186-187`
 - LLM scheduler zaczyna z jednym slotem, rośnie `1 → 2 → max 4`, zatrzymuje niewysłane pliki po trwałym typed failure i wznawia failed-first po akcji `settings`. `llm_queue.py`
+- LLM scheduler zgłasza przez callback przejścia `translating` oraz każdy stan terminalny; callback jest wywoływany przez wątek koordynatora, nie workerów. `llm_queue.py`
 - Wyjątki łapane precyzyjnie: `AniShiftError` z rozróżnieniem `CANCELLED` vs reszta, osobno `OSError` → `IO_ERROR`; brak `except Exception`. `runner.py:330-341`
 - `batch_size == 0` oznacza domyślną wartość silnika i jest podmieniane na `DEFAULT_BATCH_SIZE`. `runner.py:393`

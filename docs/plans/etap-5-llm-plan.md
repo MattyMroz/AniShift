@@ -1723,6 +1723,11 @@ Wyczerpanie repair/split dla pojedynczej linii:
 
 ### 14.6. Raport końcowy
 
+Podczas pracy scheduler emituje trwałe, współbieżne przejścia per plik:
+`translating`, a następnie `done`, `failed`, `cancelled` albo `not_processed`.
+Terminal pokazuje nazwę pliku oraz provider/model przy starcie, więc user nie
+czeka na końcowy raport bez informacji, które requesty są aktywne.
+
 Podsumowanie terminalowe pokazuje:
 
 - done, failed i not processed;

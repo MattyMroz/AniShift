@@ -9,7 +9,7 @@ from typing import cast
 from anishift.bootstrap import AppContext
 from anishift.errors import AniShiftError
 from anishift.pipeline import discover_inputs, run_pipeline
-from anishift.pipeline.llm_queue import LlmFailureAction
+from anishift.pipeline.llm_queue import LlmFailureAction, LlmProgressState
 from anishift.pipeline.types import FileOutcome, FileStatus, PipelineReport, ProgressPhase
 from anishift.platform.binaries import Binary, BinaryNotFoundError
 from anishift.services.extraction.tracks import is_polish_language
@@ -48,6 +48,7 @@ def run_pipeline_command(context: AppContext) -> None:
                     completed,
                     pending,
                 ),
+                llm_progress_handler=lambda path, state: _render_llm_progress(context, path, state),
             )
         else:
             report = run_pipeline(
@@ -59,6 +60,7 @@ def run_pipeline_command(context: AppContext) -> None:
                     completed,
                     pending,
                 ),
+                llm_progress_handler=lambda path, state: _render_llm_progress(context, path, state),
             )
     except KeyboardInterrupt:
         console.print("[warning]Interrupted.[/warning]")
@@ -95,6 +97,25 @@ def _render_pipeline_error(error: AniShiftError) -> None:
     console.print(f"[error]{error.context.message}[/error]")
     if error.context.suggestion:
         console.print(f"[gray]-> {error.context.suggestion}[/gray]")
+
+
+def _render_llm_progress(context: AppContext, path: Path, state: LlmProgressState) -> None:
+    """Render one durable LLM file transition without competing Rich Live displays."""
+    if state == "translating":
+        provider = context.user_settings.llm_provider
+        model = context.user_settings.llm_provider_model_id or "default model"
+        console.print(f"⏳ [info]Translating[/info] {path.name} [gray]via {provider}/{model}[/gray]")
+        return
+    if state == "done":
+        console.print(f"{get_status_icon('success')} [success]Translated[/success] {path.name}")
+        return
+    if state == "failed":
+        console.print(f"{get_status_icon('error')} [error]Translation failed[/error] {path.name}")
+        return
+    if state == "cancelled":
+        console.print(f"{get_status_icon('warning')} [warning]Translation cancelled[/warning] {path.name}")
+        return
+    console.print(f"{get_status_icon('warning')} [warning]Translation not processed[/warning] {path.name}")
 
 
 def _render_report(report: PipelineReport) -> None:

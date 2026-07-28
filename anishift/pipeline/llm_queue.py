@@ -21,6 +21,8 @@ from anishift.services.llm.errors import (
 
 __all__ = [
     "LlmFailureAction",
+    "LlmProgressHandler",
+    "LlmProgressState",
     "LlmQueueConfig",
     "LlmQueueInput",
     "SharedProviderState",
@@ -38,6 +40,12 @@ type LlmQueueWorkerFactory = Callable[[SharedProviderState], LlmQueueWorker]
 
 type LlmFailureHandler = Callable[[FileOutcome, int, int], LlmFailureAction]
 """Choose whether to reconfigure and retry pending files or finish partially."""
+
+LlmProgressState = Literal["translating", "done", "failed", "cancelled", "not_processed"]
+"""Lifecycle state reported for one file in the concurrent LLM queue."""
+
+type LlmProgressHandler = Callable[[Path, LlmProgressState], None]
+"""Render or record one file's concurrent LLM lifecycle transition."""
 
 type NotProcessedFactory = Callable[[Path, ErrorContext], FileOutcome]
 """Build a terminal outcome for a file that was never submitted."""
@@ -71,6 +79,7 @@ class LlmQueueConfig:
     configured_limit: Callable[[], int]
     cancel: threading.Event
     on_provider_failure: LlmFailureHandler | None = None
+    on_progress: LlmProgressHandler | None = None
 
 
 class LlmQueueInput:
@@ -216,7 +225,7 @@ class SharedProviderState:
         self._attempt_threads.discard(threading.get_ident())
 
 
-def run_llm_queue(  # noqa: PLR0912 - explicit queue state transitions
+def run_llm_queue(  # noqa: PLR0912, PLR0915 - explicit queue state transitions
     paths: Sequence[Path] | LlmQueueInput,
     *,
     worker_factory: LlmQueueWorkerFactory,
@@ -250,6 +259,7 @@ def run_llm_queue(  # noqa: PLR0912 - explicit queue state transitions
             limit = state.concurrency_limit(configured_limit)
             while pending and len(active) < limit and state.can_submit:
                 path = pending.popleft()
+                _notify_progress(config.on_progress, path, "translating")
                 active[pool.submit(worker, path, state)] = path
             if not active:
                 if not input_closed:
@@ -265,6 +275,7 @@ def run_llm_queue(  # noqa: PLR0912 - explicit queue state transitions
                 path = active.pop(future)
                 outcome = future.result()
                 outcomes[path] = outcome
+                _notify_progress(config.on_progress, path, outcome.status)
                 if _is_provider_terminal(outcome):
                     terminal_paths.append(path)
                     state.disable()
@@ -294,7 +305,18 @@ def run_llm_queue(  # noqa: PLR0912 - explicit queue state transitions
         )
         for path in pending:
             outcomes[path] = not_processed_factory(path, context)
+            _notify_progress(config.on_progress, path, "not_processed")
     return outcomes
+
+
+def _notify_progress(
+    handler: LlmProgressHandler | None,
+    path: Path,
+    state: LlmProgressState,
+) -> None:
+    """Report a queue transition when the caller supplied an observer."""
+    if handler is not None:
+        handler(path, state)
 
 
 def _closed_input(paths: Sequence[Path]) -> LlmQueueInput:

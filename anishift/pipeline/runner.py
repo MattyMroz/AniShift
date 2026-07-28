@@ -56,6 +56,7 @@ from .types import (
 if TYPE_CHECKING:
     from anishift.pipeline.llm_queue import (
         LlmFailureHandler,
+        LlmProgressHandler,
         LlmQueueInput,
         SharedProviderState,
     )
@@ -129,6 +130,7 @@ def run_pipeline(
     interaction: PipelineInteraction | None = None,
     progress_factory: ProgressPhaseFactory | None = None,
     llm_failure_handler: LlmFailureHandler | None = None,
+    llm_progress_handler: LlmProgressHandler | None = None,
 ) -> PipelineReport:
     """Process every discovered input in two phases, isolating failures per file.
 
@@ -164,6 +166,7 @@ def run_pipeline(
                 context,
                 cancel,
                 on_provider_failure=llm_failure_handler,
+                on_progress=llm_progress_handler,
             )
             try:
                 try:
@@ -351,13 +354,14 @@ def _translate_phase(
             )
 
 
-def _translate_llm_inputs(
+def _translate_llm_inputs(  # noqa: PLR0913 - queue wiring keeps callbacks explicit
     ready_paths: Sequence[Path] | LlmQueueInput,
     states: dict[Path, _MkvState],
     context: AppContext,
     cancel: threading.Event,
     *,
-    on_provider_failure: LlmFailureHandler | None,
+    on_provider_failure: LlmFailureHandler | None = None,
+    on_progress: LlmProgressHandler | None = None,
 ) -> dict[Path, FileOutcome]:
     """Translate ready MKV and TXT inputs through the central concurrent queue."""
     from anishift.pipeline.llm_queue import LlmQueueConfig, run_llm_queue  # noqa: PLC0415 - LLM-only path
@@ -436,6 +440,7 @@ def _translate_llm_inputs(
             configured_limit=lambda: context.user_settings.llm_max_concurrency,
             cancel=cancel,
             on_provider_failure=on_provider_failure,
+            on_progress=on_progress,
         ),
     )
     return {path: outcome for path, outcome in queued.items() if path.suffix.lower() == _TXT_SUFFIX}

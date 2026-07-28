@@ -205,6 +205,35 @@ def test_provider_failure_stops_unsent_files_and_preserves_completed(
     assert decisions == [(0, 2)]
 
 
+def test_progress_reports_start_terminal_and_unsent_files(tmp_path: Path) -> None:
+    paths = [tmp_path / f"episode{index}.mkv" for index in range(1, 4)]
+    transitions: list[tuple[Path, str]] = []
+
+    def factory(_state: SharedProviderState) -> Callable[[Path, SharedProviderState], FileOutcome]:
+        def worker(path: Path, _worker_state: SharedProviderState) -> FileOutcome:
+            return _failed(path, ErrorCode.LLM_AUTH_FAILED)
+
+        return worker
+
+    run_llm_queue(
+        paths,
+        worker_factory=factory,
+        not_processed_factory=_not_processed,
+        config=LlmQueueConfig(
+            configured_limit=lambda: 1,
+            cancel=threading.Event(),
+            on_progress=lambda path, state: transitions.append((path, state)),
+        ),
+    )
+
+    assert transitions == [
+        (paths[0], "translating"),
+        (paths[0], "failed"),
+        (paths[1], "not_processed"),
+        (paths[2], "not_processed"),
+    ]
+
+
 def test_settings_action_retries_failed_file_before_pending_files(
     tmp_path: Path,
 ) -> None:
