@@ -1723,10 +1723,13 @@ Wyczerpanie repair/split dla pojedynczej linii:
 
 ### 14.6. Raport końcowy
 
-Podczas pracy scheduler emituje trwałe, współbieżne przejścia per plik:
-`translating`, a następnie `done`, `failed`, `cancelled` albo `not_processed`.
-Terminal pokazuje nazwę pliku oraz provider/model przy starcie, więc user nie
-czeka na końcowy raport bez informacji, które requesty są aktywne.
+Podczas pracy scheduler emituje współbieżne przejścia per plik: `translating`,
+a następnie `done`, `failed`, `cancelled` albo `not_processed`. Tryb auto
+współdzieli z ekstrakcją istniejący `MultiProgressManager`: start requestu
+dodaje zwykły wiersz `Translating ...` przy `0%`, czas pochodzi ze standardowej
+kolumny managera, a sukces ustawia `100%`. Etap LLM nie dodaje własnego
+renderera, animacji ani docelowego UI; ich projekt należy do późniejszego etapu
+interfejsu.
 
 Podsumowanie terminalowe pokazuje:
 

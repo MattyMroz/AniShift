@@ -469,6 +469,17 @@ class TestMultiProgressManager:
         assert mp._progress.tasks[0].elapsed == elapsed_at_completion
         assert mp._progress.tasks[1].finished is False
 
+    def test_stop_task_freezes_elapsed_without_completing_bar(self):
+        mp = MultiProgressManager()
+        task = mp.add_task("failed")
+
+        mp.stop_task(task)
+        elapsed_at_stop = mp._progress.tasks[0].elapsed
+        time.sleep(0.01)
+
+        assert mp._progress.tasks[0].completed == 0
+        assert mp._progress.tasks[0].elapsed == elapsed_at_stop
+
     def test_single_task_columns_fall_back_without_field(self):
         col = ColoredPercentageColumn("green_bold")
         task = _mock_task(total=100, completed=50)

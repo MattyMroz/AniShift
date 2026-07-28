@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack, nullcontext
 from pathlib import Path
 from typing import cast
+
+from rich.progress import TaskID
 
 from anishift.bootstrap import AppContext
 from anishift.errors import AniShiftError
@@ -29,6 +32,30 @@ _STATUS_ICON: dict[FileStatus, StatusType] = {
 """Map file statuses to console icons."""
 
 
+class _LlmProgressRows:
+    """Map LLM queue transitions onto ordinary zero-to-complete progress tasks."""
+
+    def __init__(self, progress: MultiProgressManager) -> None:
+        self._progress = progress
+        self._task_ids: dict[Path, TaskID] = {}
+
+    def on_progress(self, path: Path, state: LlmProgressState) -> None:
+        """Start one standard row at zero and complete it on success."""
+        if state == "translating":
+            if path not in self._task_ids:
+                self._task_ids[path] = self._progress.add_task(f"Translating {path.name}")
+            return
+        if state == "done":
+            task_id = self._task_ids.get(path)
+            if task_id is not None:
+                self._progress.update(task_id, 100)
+            return
+        if state in {"failed", "cancelled", "not_processed"}:
+            task_id = self._task_ids.pop(path, None)
+            if task_id is not None:
+                self._progress.stop_task(task_id)
+
+
 def run_pipeline_command(context: AppContext) -> None:
     """Process workspace inputs on Enter and render the resulting report."""
     paths = discover_inputs(context.workspace_root)
@@ -50,6 +77,8 @@ def run_pipeline_command(context: AppContext) -> None:
                 ),
                 llm_progress_handler=lambda path, state: _render_llm_progress(context, path, state),
             )
+        elif context.user_settings.translation_engine == "llm":
+            report = _run_llm_auto_pipeline(context)
         else:
             report = run_pipeline(
                 context,
@@ -74,6 +103,29 @@ def run_pipeline_command(context: AppContext) -> None:
 def _progress_phase() -> ProgressPhase:
     """Build one transient progress display whose rows clear when it stops."""
     return cast(ProgressPhase, MultiProgressManager(show_download=False, transient=True))
+
+
+def _run_llm_auto_pipeline(context: AppContext) -> PipelineReport:
+    """Render extraction and LLM requests with one standard multi-progress display."""
+    progress = MultiProgressManager(show_download=False, transient=True)
+    llm_rows = _LlmProgressRows(progress)
+
+    with ExitStack() as live:
+        live.enter_context(progress)
+
+        def choose_failure(outcome: FileOutcome, completed: int, pending: int) -> LlmFailureAction:
+            live.close()
+            action = _choose_llm_failure(context, outcome, completed, pending)
+            if action == "settings":
+                live.enter_context(progress)
+            return action
+
+        return run_pipeline(
+            context,
+            progress_factory=lambda: cast(ProgressPhase, nullcontext(progress)),
+            llm_failure_handler=choose_failure,
+            llm_progress_handler=llm_rows.on_progress,
+        )
 
 
 def _ensure_binaries(paths: Sequence[Path]) -> bool:

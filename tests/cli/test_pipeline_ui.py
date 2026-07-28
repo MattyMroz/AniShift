@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -10,7 +11,55 @@ from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import AniShiftError
 from anishift.pipeline import runner
-from anishift.utils.rich_console import console
+from anishift.pipeline.llm_queue import LlmProgressState
+from anishift.utils.rich_console import MultiProgressManager, console
+
+
+def test_llm_progress_rows_use_standard_zero_to_complete_tasks(tmp_path: Path) -> None:
+    progress = MagicMock(spec=MultiProgressManager)
+    progress.add_task.return_value = 7
+    rows = pipeline_ui._LlmProgressRows(progress)
+    path = tmp_path / "episode 3.mkv"
+
+    rows.on_progress(path, "translating")
+    rows.on_progress(path, "translating")
+    rows.on_progress(path, "done")
+
+    progress.add_task.assert_called_once_with(f"Translating {path.name}")
+    progress.update.assert_called_once_with(7, 100)
+
+
+@pytest.mark.parametrize("state", ["failed", "cancelled", "not_processed"])
+def test_llm_progress_rows_leave_unsuccessful_tasks_at_zero(
+    state: LlmProgressState,
+    tmp_path: Path,
+) -> None:
+    progress = MagicMock(spec=MultiProgressManager)
+    progress.add_task.return_value = 7
+    rows = pipeline_ui._LlmProgressRows(progress)
+    path = tmp_path / "episode 3.mkv"
+
+    rows.on_progress(path, "translating")
+    rows.on_progress(path, state)
+
+    progress.update.assert_not_called()
+    progress.stop_task.assert_called_once_with(7)
+
+
+def test_llm_progress_rows_create_a_fresh_task_after_failed_retry(tmp_path: Path) -> None:
+    progress = MagicMock(spec=MultiProgressManager)
+    progress.add_task.side_effect = [7, 8]
+    rows = pipeline_ui._LlmProgressRows(progress)
+    path = tmp_path / "episode 3.mkv"
+
+    rows.on_progress(path, "translating")
+    rows.on_progress(path, "failed")
+    rows.on_progress(path, "translating")
+    rows.on_progress(path, "done")
+
+    assert progress.add_task.call_count == 2
+    progress.stop_task.assert_called_once_with(7)
+    progress.update.assert_called_once_with(8, 100)
 
 
 def test_llm_progress_names_file_provider_and_terminal_state(

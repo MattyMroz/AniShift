@@ -380,6 +380,11 @@ class MultiProgressManager:
         with self._lock:
             self._apply(task_id, self._states[task_id], completed)
 
+    def stop_task(self, task_id: TaskID) -> None:
+        """Freeze one task's elapsed time without changing its completion."""
+        with self._lock:
+            self._progress.stop_task(task_id)
+
     @staticmethod
     def _aligned_columns(style: str) -> tuple[ProgressColumn, ...]:
         """Build the shared table columns for the ``'aligned'`` mode."""
