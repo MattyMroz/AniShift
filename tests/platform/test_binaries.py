@@ -31,11 +31,6 @@ def test_resolve_falls_back_to_path_on_non_windows(monkeypatch: pytest.MonkeyPat
     assert resolve_binary(Binary.FFMPEG) == Path("/usr/bin/ffmpeg")
 
 
-def test_resolve_balcon_is_none_off_windows(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(binaries, "is_windows", lambda: False)
-    assert resolve_binary(Binary.BALCON) is None
-
-
 def test_resolve_missing_binary_returns_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(binaries, "external_bin_root", lambda: tmp_path)
     monkeypatch.setattr(binaries, "is_windows", lambda: True)

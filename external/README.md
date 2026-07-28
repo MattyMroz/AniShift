@@ -11,8 +11,7 @@ external/
 │   └── ffmpeg/        # ffmpeg, ffprobe, filters, codecs, formats, utils
 └── bin/               # binaries themselves (gitignored)
     ├── mkvtoolnix/    # mkvextract, mkvmerge
-    ├── ffmpeg/        # ffmpeg, ffprobe
-    └── balabolka/     # balcon.exe (Windows-only)
+    └── ffmpeg/        # ffmpeg, ffprobe
 ```
 
 ## Why not in git

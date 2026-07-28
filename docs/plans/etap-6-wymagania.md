@@ -1,6 +1,6 @@
 # Etap 6 — wymagania TTS i toru audio
 
-> Status: draft 14 do wspólnej iteracji HITL.
+> Status: draft 15 do wspólnej iteracji HITL.
 > Data audytu: 2026-07-28.
 > Branch: `feature/tts-audio`.
 > Ten dokument opisuje **co ma działać**. Nie jest jeszcze planem implementacji ani listą commitów.
@@ -72,8 +72,8 @@ pozostaje źródłem zakresu etapów, ale szczegółowy kontrakt etapu 6 pochodz
 - [ElevenLabs Python SDK — oficjalne repozytorium](https://github.com/elevenlabs/elevenlabs-python);
 - [ElevenLabs Text to Speech API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert);
 - [pyttsx3 na PyPI](https://pypi.org/project/pyttsx3/);
-- [Balcon — oficjalna dokumentacja CLI](https://www.cross-plus-a.com/bconsole.htm);
-- [Balcon — oficjalne archiwum programu](https://www.cross-plus-a.com/balcon.zip);
+- [Microsoft SAPI `SpVoice`](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ms720149(v=vs.85));
+- [Microsoft SAPI `SpFileStream`](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ms722562(v=vs.85));
 - [Supertonic — oficjalne repozytorium](https://github.com/supertone-inc/supertonic);
 - [FLAC — oficjalne wprowadzenie Xiph.Org](https://www.xiph.org/flac/index.html);
 - [FFmpeg — oficjalna dokumentacja kodeków](https://ffmpeg.org/ffmpeg-codecs.html).
@@ -149,7 +149,7 @@ Takie narzędzie może wejść później wyłącznie po:
 2. testach przed/po dla języka polskiego;
 3. dodaniu jako jawnej, wyłączalnej transformacji, a nie ukrytej modyfikacji tekstu.
 
-### 4.5. Agnieszka i Zosia nie są tym samym backendem
+### 4.5. Agnieszka i Zosia wymagają różnych architektur procesu
 
 **USTALONE**
 
@@ -165,12 +165,15 @@ Lokalny audyt na docelowej maszynie:
 
 Wniosek:
 
-- Harpo może korzystać z `pyttsx3`, jeśli testy wielokrotnych wywołań nie pokażą zawieszek;
+- `pyttsx3` odpada: przy teście 20 eventów utworzył dwa WAV-y, po czym zawiesił proces;
 - Agnieszka wymaga procesu x86; ten sam zainstalowany głos nie działa poprawnie w hoście x64;
-- własny worker SAPI x86 jest technicznie możliwy, lecz wymaga osobnego protokołu IPC,
-  utrzymywania procesu i obsługi COM;
-- w etapie 6 używamy Balcon jako gotowego helpera x86; własny worker SAPI x86 pozostaje
-  alternatywą dopiero wtedy, gdy Balcon okaże się niewystarczający;
+- Zosia działa poprawnie w procesie x64;
+- jeden silnik `sapi` używa wspólnego protokołu trwałego workera, uruchamianego jako x86
+  albo x64 zależnie od profilu głosu;
+- Balcon i bezpośredni SAPI wygenerowały dla Agnieszki i Zosi pliki identyczne bitowo,
+  więc Balcon nie daje żadnej przewagi jakościowej;
+- Balcon proces-per-event osiągnął średnio 207,2 ms/event, a trwały worker SAPI po starcie
+  średnio 30,7 ms/event; Balcon został odrzucony;
 - obecność głosu w rejestrze Windows nie jest równoznaczna z możliwością poprawnej syntezy przez dany backend.
 
 ### 4.6. Edge wymaga kontrolowanego patcha jakości
@@ -230,12 +233,11 @@ Supertonic zostaje kandydatem do późniejszego eksperymentu, a nie wymaganiem D
 **USTALONE**
 
 - domena TTS z lazy registry;
-- pięć identyfikatorów silników:
+- cztery identyfikatory silników:
   - `elevenbytes`;
   - `elevenlabs`;
   - `edge`;
-  - `harpo`;
-  - `balcon`;
+  - `sapi`;
 - wspólny kontrakt syntezy eventów spoken;
 - listowanie i walidacja głosów;
 - engine-specific settings;
@@ -618,9 +620,9 @@ Typowany availability probe rozróżnia:
 
 Sam import biblioteki nie oznacza, że usługa Microsoft aktualnie odpowiada.
 
-### 10.4. Harpo
+### 10.4. SAPI / Zosia i Agnieszka
 
-### R21. Wymagany głos
+### R21. Obsługiwane głosy i architektura
 
 **USTALONE**
 
@@ -628,24 +630,28 @@ Engine jest gotowy wyłącznie, gdy:
 
 - system to Windows;
 - SAPI działa;
-- zainstalowany jest głos `Vocalizer Expressive Zosia Harpo 22kHz`;
-- próbna synteza do WAV może się zakończyć w limicie czasu.
+- zainstalowany jest co najmniej jeden obsługiwany głos:
+  - `Vocalizer Expressive Zosia Harpo 22kHz` przez worker x64;
+  - `IVONA 2 Agnieszka 22kHz` przez worker x86;
+- wybrany profil głosu wskazuje właściwą architekturę procesu;
+- jawny smoke test albo pierwsze zadanie potwierdziło syntezę niepustego WAV w limicie.
 
 ### R22. Izolacja zawieszek
 
-**REKOMENDACJA**
+**USTALONE**
 
-`pyttsx3.runAndWait()` może zawiesić proces po wielu wywołaniach. Synteza lokalnego SAPI
-powinna być izolowana w kontrolowanym workerze albo subprocessie z timeoutem.
+Spike na docelowej maszynie rozstrzyga backend:
+
+- bezpośredni SAPI COM w jednym procesie utworzył 20/20 niepustych WAV-ów w 671 ms;
+- czas pojedynczego `Speak` wyniósł 21–48 ms, średnio 24,4 ms;
+- `pyttsx3.runAndWait()` utworzył tylko dwa pliki i nie zakończył procesu w ciągu
+  49 sekund; proces musiał zostać zakończony przymusowo;
+- engine `sapi` używa bezpośredniego SAPI COM, nie `pyttsx3`.
+
+Synteza nadal musi być izolowana w kontrolowanym workerze albo subprocessie z timeoutem.
 Nie wolno pozostawić głównego CLI bez możliwości przerwania.
 
-Przed wyborem ostatecznego backendu należy porównać:
-
-- obecny stary kod Harpo;
-- `pyttsx3`;
-- bezpośredni SAPI COM z jednego trwałego wątku, jak w EchoReader.
-
-Preferowany kontrakt to dedykowany subprocess Windows z kontrolowanym workerem SAPI/COM:
+Kontrakt to dedykowany subprocess Windows z kontrolowanym workerem SAPI/COM:
 
 - główny proces przekazuje pojedyncze zadania przez ograniczony IPC;
 - worker inicjalizuje COM we własnym wątku;
@@ -653,78 +659,56 @@ Preferowany kontrakt to dedykowany subprocess Windows z kontrolowanym workerem S
 - klip jest przyjmowany dopiero po pełnej walidacji;
 - restart workera nie usuwa wcześniej ukończonych klipów.
 
-Ostateczny wybór `pyttsx3` wewnątrz workera albo bezpośredniego SAPI COM wymaga krótkiego
-spike'u z wieloma kolejnymi eventami i wymuszonym timeoutem.
+Test implementacji musi jeszcze wymusić timeout i potwierdzić zabicie oraz odtworzenie
+workera bez utraty wcześniej przyjętych klipów.
 
-### 10.5. Balcon / Agnieszka
-
-### R23. Binarka
+### R23. Wspólny trwały worker
 
 **USTALONE**
 
-- `balcon.exe` jest zasobem Windows-only.
-- Trafia do `external/bin/balabolka/`.
-- Oficjalnym źródłem jest `https://www.cross-plus-a.com/balcon.zip`.
-- Balcon 1.90 jest programem freeware, a nie projektem open source; korzystamy wyłącznie
-  z oficjalnego archiwum autora.
-- Zweryfikowane archiwum ma 842 571 B i SHA-256
-  `26C8618C78AAFBD9DB71017AB8EB95429EA6EF40EB1AC12270A438446713EC02`.
-- Do podstawowego adaptera wymagane są `balcon.exe` i `chsdet.dll`. Sam plik wykonywalny
-  kończy się `0xC0000135`; po dodaniu `chsdet.dll` listowanie głosów i synteza działają.
-- Źródło, rozmiar, SHA-256 i te dwa oczekiwane pliki archiwum trafiają do manifestu
-  zasobów podczas implementacji.
-- Pobieranie odbywa się przez istniejący setup/installer.
-- Runtime nie pobiera binarki poza mechanizmem zasobów.
-- Oficjalna dokumentacja CLI zostaje zachowana offline pod
-  `external/docs/balabolka/`, razem z notatką o źródle i dacie pobrania.
+- Istnieje jeden engine id `sapi` i jeden protokół workera.
+- Zosia uruchamia worker przez 64-bitowy host Windows.
+- Agnieszka uruchamia ten sam worker przez 32-bitowy host Windows.
+- Worker inicjalizuje COM i wybrany głos raz, a następnie obsługuje wiele eventów przez
+  ograniczony protokół IPC.
+- Jednorazowy start prototypu x86 trwał 3,728 s; kolejne eventy trwały 26–42 ms,
+  średnio 30,7 ms.
+- Tekst, ścieżka wyjścia i id eventu są przekazywane jako dane protokołu, nie jako
+  interpolowany command string.
+- AniShift nie pobiera ani nie uruchamia `balcon.exe`.
 
 ### R24. Dostępność
 
 **USTALONE**
-
-Engine jest gotowy wyłącznie, gdy:
-
-- system to Windows;
-- `balcon.exe` i `chsdet.dll` istnieją i przechodzą weryfikację;
-- `balcon -l` widzi IVONA 2 Agnieszka;
-- jawny smoke test albo pierwsze rzeczywiste zadanie potwierdziło, że subprocess może
-  utworzyć niepusty i dekodowalny WAV.
 
 Zwykłe `setup` i `doctor` nie uruchamiają syntezy głosu. Stare sterowniki SAPI mogą
 wyświetlić modal licencyjny i zablokować bezobsługowy proces. Realny krótki WAV powstaje
 wyłącznie po jawnie wybranym `doctor --live`; test ma timeout, kończy subprocess i zgłasza
 `broken backend`, jeżeli pojawi się modal albo nie powstanie poprawny plik.
 
-### R25. Adapter Balcon
+Zwykły doctor:
+
+- potwierdza Windows i dostępność hostów x64/x86;
+- listuje głosy osobno w obu architekturach bez uruchamiania syntezy;
+- pokazuje dla każdego profilu `available`, `missing voice` albo `unsupported architecture`.
+
+### R25. Adapter SAPI
 
 **USTALONE**
 
-Balcon nie dostaje całego SRT i nie posiada osobnej ścieżki montażu. Jest normalnym
+SAPI nie dostaje całego SRT i nie posiada osobnej ścieżki montażu. Jest normalnym
 silnikiem TTS działającym przez wspólny kontrakt per event:
 
 1. adapter otrzymuje jeden znormalizowany spoken event;
-2. przekazuje jego tekst do `balcon.exe` bez pośrednictwa powłoki;
-3. Balcon generuje osobny WAV dla eventu;
+2. przekazuje id, tekst i kontrolowaną ścieżkę do właściwego workera x86/x64;
+3. worker generuje osobny WAV przez `SAPI.SpVoice` i `SAPI.SpFileStream`;
 4. adapter waliduje niepusty i dekodowalny plik;
 5. wspólny manifest zapisuje ukończony event;
 6. wspólny scheduler ustawia klip na osi czasu.
 
-Preferowane jest kontrolowane wejście przez tymczasowy plik tekstowy, jeżeli test CLI
-potwierdzi bezbłędną obsługę UTF-8 i polskich znaków. W przeciwnym razie adapter używa
-bezpiecznej listy argumentów dla opcji tekstowej. Nie budujemy command stringa i nie
-oddajemy tekstu napisów do interpretacji przez shell.
-
-Tryb subtitle/whole-SRT oraz `--sub-fit` Balcon nie są częścią etapu 6. Omijałyby wspólne
-resume, walidację per event, postęp, tempo FFmpeg i jednolitą heurystykę timeline.
-
-Setup/doctor:
-
-- pobiera i weryfikuje Balcon przez wspólny mechanizm zasobów;
-- sprawdza obecność `external/bin/balabolka/balcon.exe`;
-- sprawdza obecność `external/bin/balabolka/chsdet.dll`;
-- uruchamia listę głosów i potwierdza IVONA 2 Agnieszka;
-- wyłącznie w jawnym trybie `--live` wykonuje krótki test polskich znaków do WAV;
-- pokazuje precyzyjny powód `missing binary`, `missing voice` albo `broken backend`.
+Worker zwraca dokładnie jedną odpowiedź per request. Nieudane albo spóźnione odpowiedzi
+nie mogą zatwierdzić klipu po anulowaniu. Zamknięcie wejścia kończy worker; timeout lub
+zerwane IPC zabija cały proces i uruchamia świeży worker dla następnej próby.
 
 ## 11. Concurrency, kolejka i anulowanie
 
@@ -734,7 +718,7 @@ Setup/doctor:
 
 Nie ma jednego globalnego limitu dla wszystkich TTS:
 
-- Harpo i Balcon: `1`;
+- SAPI: `1`;
 - lokalny backend wymagający jednego modelu: według jego możliwości;
 - Edge, ElevenBytes i ElevenLabs: osobne, konfigurowalne limity;
 - wartości domyślne wynikają z testu obciążenia, nie z MangaShift.
@@ -788,7 +772,7 @@ Istniejące pole `audio_path` nie może jednocześnie znaczyć oryginału i goto
 - Nowe requesty nie są uruchamiane.
 - Awaitujące taski dostają anulowanie.
 - `asyncio.CancelledError` nie jest retry.
-- Subprocessy Harpo/Balcon/FFmpeg są kończone.
+- Workery SAPI i subprocessy FFmpeg są kończone.
 - Poprawne, atomowo zapisane klipy zostają do resume.
 - Terminal wraca do promptu po domknięciu workerów.
 - Po rozpoczęciu anulowania obowiązuje late-result commit gate z R11.
@@ -1023,7 +1007,7 @@ Potwierdzony profil początkowy:
 | Engine / voice | Post-process tempo | Voice mix offset |
 |---|---:|---:|
 | ElevenBytes `run6` / Dallin | `1.25` | `-2 dB` |
-| Balcon / IVONA 2 Agnieszka | do ustalenia odsłuchem | `+2 dB` |
+| SAPI / IVONA 2 Agnieszka | do ustalenia odsłuchem | `+2 dB` |
 
 Pozostałe silniki startują od neutralnego `1.0 / 0 dB`, dopóki testy odsłuchowe nie
 ustalą lepszego profilu.
@@ -1155,7 +1139,7 @@ volume są dostępne w ustawieniach. FLAC jest profilem jakościowym, Opus profi
 rozmiaru.
 
 Nie próbujemy od razu rozwiązać wszystkich różnic głośności głosów ElevenLabs, Edge,
-Harpo i pozostałych silników. Najpierw powstaje działający baseline, a kolejne tryby
+SAPI i pozostałych silników. Najpierw powstaje działający baseline, a kolejne tryby
 są włączane i oceniane pojedynczo na różnorodnym materiale.
 
 #### R41.1. Rejestr heurystyk głośności
@@ -1398,8 +1382,7 @@ Panel pokazuje tylko opcje sensowne dla wybranego engine:
   wyłącznie dla eksperymentalnego `run7`;
 - ElevenLabs: model, voice, voice settings, API output format, concurrency;
 - Edge: voice, rate, pitch, volume, concurrency;
-- Harpo: voice, rate, volume;
-- Balcon: voice, SAPI rate, pitch i volume.
+- SAPI: voice, architektura workera, rate i volume.
 
 ### R48. Silnik niedostępny
 
@@ -1434,7 +1417,7 @@ Dodanie, zmiana i usunięcie klucza oraz process-env override mają osobne testy
 **REKOMENDACJA**
 
 - Edge i ElevenLabs odświeżają listę głosów.
-- Harpo i Balcon czytają głosy z systemu.
+- SAPI czyta głosy osobno z hosta x64 i x86.
 - Panel ma rozsądne defaulty.
 - Ustawienia oficjalnego ElevenLabs mogą przechować custom voice ID, którego panel
   jeszcze nie zna.
@@ -1482,7 +1465,7 @@ poprawne eventy / wszystkie eventy
 ```
 
 Resume hits liczą się od razu jako ukończone. Retry nie zwiększa total. Wszystkie silniki,
-w tym Balcon, raportują ukończenie przez wspólny kontrakt per event, więc procent nie
+w tym SAPI, raportują ukończenie przez wspólny kontrakt per event, więc procent nie
 jest udawany ani wyliczany z upływu czasu.
 
 ### R52. Widoczna faza
@@ -1623,7 +1606,7 @@ jest częścią etapu 6 v1.
 Panel/README powinien jasno oznaczać:
 
 - Edge, ElevenBytes i ElevenLabs wysyłają tekst spoken do usługi zewnętrznej;
-- Harpo i Balcon pozostają lokalne;
+- SAPI pozostaje lokalne;
 - resume state zawiera tekst/fingerprint i audio lokalnie.
 
 ### R59. Subprocess
@@ -1631,7 +1614,8 @@ Panel/README powinien jasno oznaczać:
 **USTALONE**
 
 - Argumenty są przekazywane jako lista, nie string shell.
-- Tekst dla Balcon trafia do pliku UTF-8 z kontrolowaną ścieżką.
+- Request SAPI trafia do workera przez ograniczony protokół danych; tekst nie jest
+  interpolowany do polecenia PowerShell.
 - Ścieżki są walidowane wewnątrz workspace albo external.
 - Timeout jest obowiązkowy.
 - Return code jest sprawdzany.
@@ -1685,9 +1669,8 @@ Testy bez sieci obejmują:
 - źródło, w którym narrator kończy się po oryginalnym audio;
 - RF64 albo kontrolowany test ścieżki przekraczającej limit RIFF 4 GiB;
 - przerwany subprocess;
-- Harpo na Windows, jeżeli głos jest dostępny;
-- Balcon na Windows, jeżeli binarka i głos są dostępne;
-- Balcon bez `chsdet.dll`, z pustym WAV-em oraz z procesem zablokowanym do timeoutu;
+- SAPI x64 z Zosią i SAPI x86 z Agnieszką, jeżeli głosy są dostępne;
+- SAPI bez głosu, z pustym WAV-em, zerwanym IPC oraz workerem zablokowanym do timeoutu;
 - zwykły `doctor`, który listuje głosy bez uruchamiania syntezy, oraz jawny `doctor --live`;
 - unavailable paths poza Windows lub bez zasobu.
 
@@ -1754,14 +1737,14 @@ Live tests nie mogą blokować standardowego offline `pytest`.
 
 Etap 6 jest ukończony dopiero, gdy:
 
-- [ ] pięć engine IDs istnieje w lazy registry;
+- [ ] cztery engine IDs istnieją w lazy registry;
 - [ ] każdy engine ma jawny status dostępności i powód niedostępności;
 - [ ] Edge działa na realnym polskim tekście;
 - [ ] automatyczny patch Edge daje rzeczywiste 24 kHz / 96 kb/s i spójne offsety;
-- [ ] Harpo działa na zainstalowanej Zosi bez blokowania Ctrl+C;
-- [ ] Balcon poprawnie obsługuje Agnieszkę na maszynie referencyjnej z zainstalowanym
-  głosem; `unavailable` jest poprawnym wynikiem tylko wtedy, gdy faktycznie brakuje
-  platformy, binarki albo głosu;
+- [ ] SAPI x64 działa na zainstalowanej Zosi, a SAPI x86 na zainstalowanej Agnieszce,
+  bez blokowania jednego `Ctrl+C`;
+- [ ] `unavailable` dla profilu SAPI jest poprawnym wynikiem tylko wtedy, gdy faktycznie
+  brakuje platformy, właściwej architektury hosta albo głosu;
 - [ ] ElevenBytes `run6` przechodzi realny odcinek bez uciętych końcówek;
 - [ ] ElevenBytes `run7` jest dostępny jako `experimental`, a jego wynik i awarie nie
   zmieniają defaultu `run6`;
@@ -1873,22 +1856,15 @@ Konfiguracja usera już łapie sidecary, więc nazewnictwo nie jest blockerem od
 **DECYZJA USERA:** ElevenBytes nie ma konfiguracji tokenu/env. Kontrakt strony jest
 częścią kodu; jeżeli przestanie działać, engine staje się unavailable.
 
-### D9. Balcon
+### D9. Lokalny SAPI
 
-- A: whole-SRT jak stary kod;
-- B: per-event przez wspólny timeline;
-- C: oba warianty.
+**DECYZJA USERA:** jeden engine `sapi` obsługuje Zosię przez trwały worker x64 oraz
+Agnieszkę przez trwały worker x86. Oba profile korzystają ze wspólnego kontraktu
+per-event, resume, progressu, anulowania, tempa i timeline.
 
-**DECYZJA USERA: B.** Balcon implementujemy jako normalny silnik kontraktu per-event.
-Korzysta ze wspólnego resume, progressu, anulowania, tempa i timeline. Setup pobiera
-oficjalną binarkę do `external/bin/balabolka/`, a dokumentację zachowuje pod
-`external/docs/balabolka/`. Whole-SRT path nie jest częścią etapu 6.
-
-**POTWIERDZONE SPIKE'IEM:** bezpośredni SAPI COM x86 potrafi wygenerować Agnieszkę, ale
-AniShift działa jako proces x64, a wariant x64 kończy się `E_ABORT`. Balcon 1.90 jest
-gotowym procesem x86 i poprawnie generuje ten głos. Zostaje więc nie dlatego, że SAPI nie
-ma odpowiedniego API, lecz dlatego, że rozwiązuje granicę architektury bez budowania
-własnego workera x86. Balcon jest freeware, nie open source.
+Balcon został odrzucony po spike'u: dla obu głosów wygenerował pliki bitowo identyczne
+z bezpośrednim SAPI, ale proces-per-event był wyraźnie wolniejszy. AniShift nie pobiera
+Balcona i nie utrzymuje osobnego adaptera ani engine id dla tej nakładki.
 
 ### D10. Miks audio
 
@@ -1975,7 +1951,7 @@ osobnym późniejszym eksperymentem.
 `tempo=1.85` i `volume=60` są placeholderami Stage 2, nie ustawieniami do migracji.
 
 - ElevenBytes `run6` / Dallin: post-process `tempo=1.25`, `voice_mix_offset_db=-2`;
-- Balcon / IVONA 2 Agnieszka: `voice_mix_offset_db=+2`, tempo do odsłuchowego ustalenia;
+- SAPI / IVONA 2 Agnieszka: `voice_mix_offset_db=+2`, tempo do odsłuchowego ustalenia;
 - pozostałe profile zaczynają neutralnie i są poprawiane po testach.
 
 Engine-native rate/volume pozostają oddzielone od wspólnego post-processingu FFmpeg,
@@ -2028,7 +2004,7 @@ Po fundamentalnych decyzjach doprecyzujemy:
 - czy eksponować zaawansowany engine-native rate obok per-engine FFmpeg `atempo`;
 - cleanup po etapie 7;
 - testowy odcinek referencyjny i kryteria odsłuchu;
-- wynik spike'u Harpo: `pyttsx3` czy bezpośredni SAPI COM wewnątrz izolowanego workera;
-- wielokrotne wywołania Balcon/Agnieszka, w tym timeout i brak interaktywnego modala;
+- timeout, zabicie i odtworzenie bezpośredniego workera SAPI COM x64/x86;
+- wielokrotne wywołania SAPI/Agnieszka, w tym brak interaktywnego modala;
 - finalny adapter pojedynczego znaku oraz maksymalnego eventu;
 - wartości deadline/cooldown/bounded queue po benchmarku.

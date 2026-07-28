@@ -8,7 +8,7 @@ Checks:
 
 1. ``python_version``  — interpreter >= 3.14
 2. ``uv_installed``    — uv on PATH
-3. ``binaries``        — mkvextract, mkvmerge, ffmpeg present (balcon: Windows only)
+3. ``binaries``        — mkvextract, mkvmerge, ffmpeg present
 4. ``api_keys``        — which optional API keys are configured (never a failure)
 5. ``workspace``       — workspace root resolves and is writable
 """
@@ -40,7 +40,7 @@ _REQUIRED_BINARIES: Final[tuple[Binary, ...]] = (
     Binary.MKVEXTRACT,
     Binary.MKVMERGE,
 )
-"""Binaries required on every platform (balcon is optional / Windows-only)."""
+"""Binaries required on every platform."""
 
 _API_KEYS: Final[dict[str, str]] = {
     "deepl_api_key": "DeepL",
@@ -121,22 +121,10 @@ def check_uv_installed() -> CheckResult:
     )
 
 
-def _balcon_status() -> str:
-    """Return the balcon availability tag (``ok`` / ``windows-only`` / ``missing``)."""
-    if resolve_binary(Binary.BALCON) is not None:
-        return "ok"
-    if not is_windows():
-        return "windows-only"
-    return "missing"
-
-
 def check_binaries() -> CheckResult:
     """Check that the required external binaries resolve."""
     missing = [b.value for b in _REQUIRED_BINARIES if resolve_binary(b) is None]
-    details: dict[str, Any] = {
-        "missing": missing,
-        "balcon": _balcon_status(),
-    }
+    details: dict[str, Any] = {"missing": missing}
     if missing:
         suggestion = "Run `anishift setup` to download them into external/bin/"
         if is_windows():

@@ -28,20 +28,6 @@
         { "archive_path": "ffmpeg-N-125628-ga5e6c0175a-win64-gpl/bin/ffmpeg.exe", "dest": "ffmpeg/ffmpeg.exe" },
         { "archive_path": "ffmpeg-N-125628-ga5e6c0175a-win64-gpl/bin/ffprobe.exe", "dest": "ffmpeg/ffprobe.exe" }
       ]
-    },
-    "balabolka": {
-      "kind": "binary",
-      "source": {
-        "type": "url",
-        "url": "https://www.cross-plus-a.com/balcon.zip"
-      },
-      "sha256": "26c8618c78aafbd9db71017ab8eb95429ea6ef40eb1ac12270a438446713ec02",
-      "size_bytes": 842571,
-      "archive": "zip",
-      "members": [
-        { "archive_path": "balcon.exe", "dest": "balabolka/balcon.exe" },
-        { "archive_path": "chsdet.dll", "dest": "balabolka/chsdet.dll" }
-      ]
     }
   }
 }

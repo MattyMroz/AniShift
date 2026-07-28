@@ -365,4 +365,4 @@ def test_ensure_binary_unmapped_raises_binary_not_found(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(installer, "ensure_resource", _never)
     with pytest.raises(BinaryNotFoundError):
-        ensure_binary(Binary.BALCON)
+        ensure_binary(Binary.FFMPEG)

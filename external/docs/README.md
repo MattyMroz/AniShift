@@ -9,17 +9,13 @@ docs/
 ├── mkvtoolnix/     # from mkvtoolnix-64-bit-100.0.zip (doc/en/)
 │   ├── mkvextract.html
 │   └── mkvmerge.html
-├── ffmpeg/         # from ffmpeg-N-125628-ga5e6c0175a-win64-gpl.zip (doc/)
+└── ffmpeg/         # from ffmpeg-N-125628-ga5e6c0175a-win64-gpl.zip (doc/)
     ├── ffmpeg.html
     ├── ffprobe.html
     ├── ffmpeg-filters.html
     ├── ffmpeg-codecs.html
     ├── ffmpeg-formats.html
     └── ffmpeg-utils.html
-└── balabolka/      # from balcon.zip
-    ├── readme.eng.txt
-    ├── readme.pol.txt
-    └── SOURCE.md
 ```
 
 ## Why these are in git

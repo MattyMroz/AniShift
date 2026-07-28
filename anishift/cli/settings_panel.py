@@ -44,7 +44,7 @@ __all__ = ["open_settings_panel"]
 _RETRIES_STEP: Final[int] = 1
 """Retry-count increment per ``←``/``→`` press."""
 
-_TTS_ENGINES: Final[tuple[str, ...]] = ("edge", "elevenlabs", "balcon")
+_TTS_ENGINES: Final[tuple[str, ...]] = ("edge", "elevenbytes", "elevenlabs", "sapi")
 """Placeholder TTS-engine ids (real list arrives in stage 6)."""
 
 _VOICES: Final[tuple[str, ...]] = ("pl-PL-MarekNeural", "pl-PL-ZofiaNeural")

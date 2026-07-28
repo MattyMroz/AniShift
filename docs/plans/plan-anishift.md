@@ -44,14 +44,17 @@ Rozważone na poważnie (badanie 07): PyAV pokrywa natywnie cały tor audio (eac
 ### mkvtoolnix: .exe czy biblioteka? → **.exe, tylko 2 pliki**
 Brak dojrzałego natywnego zamiennika (badanie 07: `pymkv2` i tak wymaga `mkvmerge.exe`, `python-matroska` ma 4★ i zero wydań — nie na serce pipeline). Zostają **`mkvextract` + `mkvmerge`** w `external/bin/mkvtoolnix/`; info o ścieżkach robi `mkvmerge --identify --identification-format json` jak dziś. `mkvinfo`, `mkvpropedit`, `espeak-ng` — martwe, nie przenosimy.
 
-### balcon → **zostaje .exe, Windows-only przez `is_available()`**
-`balcon.exe` (SAPI, głos IVONA 2 Agnieszka) w `external/bin/balabolka/`. To silnik w rejestrze TTS, którego `is_available()` zwraca fałsz poza Windows albo gdy binarki/głosu brak — fasada i pipeline nie mają żadnego if-a na OS (dokładnie jak MangaShift gate'uje silniki per platforma). Migracja balcon→pyttsx3 odłożona (wymaga testu ucha) — harpo (pyttsx3/SAPI Zosia) to i tak osobny, już istniejący silnik biblioteczny.
+### lokalny SAPI → **jeden silnik, bez Balcona i pyttsx3**
+Engine `sapi` używa bezpośredniego SAPI COM przez trwały worker Windows: x64 dla
+Vocalizer Expressive Zosia Harpo i x86 dla IVONA 2 Agnieszka. Spike potwierdził bitowo
+identyczny wynik bezpośredniego SAPI i Balcona dla obu głosów, a trwały worker ma znacznie
+mniejszy narzut per event. `balcon.exe` nie jest pobierany ani utrzymywany.
 
 ### dystrybucja binarek → **wzorem external/ MangaShift**
 `external/bin/<narzędzie>/` gitignored (koniec z 218 błędnie trackowanymi plikami), w repo tylko `external/README.md` + `external/bin_hashes.json` (odpowiednik `model_hashes.json`: per plik SHA256 + rozmiar + źródłowy URL oficjalnego buildu). `doctor` sprawdza obecność i hash; `anishift setup` pobiera brakujące binarki z oficjalnych URL-i i weryfikuje hashem (na Linux: fallback na narzędzia z PATH — mkvtoolnix i ffmpeg są w każdej dystrybucji).
 
 ### silniki (zweryfikowane w kodzie — zero wymysłów)
-- **tts**: `elevenbytes` (ElevenLabs **proxy** przez teamsp.org, klucz proxy wbudowany w kod — user nie podaje własnego; v2+v3 jako jeden silnik, wybór modelu przez `provider_model_id`, jak nakazuje naming-glossary), `elevenlabs` (**oficjalne API** ElevenLabs przez SDK `elevenlabs` — user podaje własny klucz `ANISHIFT_ELEVENLABS_API_KEY`; voice_settings + retry/backoff na 429/5xx wzorem EchoReader, audyt 08), `edge` (edge-tts, głosy Zofia/Marek jako opcja głosu, nie osobne silniki), `harpo` (pyttsx3/SAPI, Zosia), `balcon` (balcon.exe/SAPI, Agnieszka, Windows-only). GTTS nie istnieje; sapi5==balcon — nie ma osobnego "sapi5".
+- **tts**: `elevenbytes` (ElevenLabs **proxy** przez teamsp.org, klucz proxy wbudowany w kod — user nie podaje własnego; v2+v3 jako jeden silnik, wybór modelu przez `provider_model_id`, jak nakazuje naming-glossary), `elevenlabs` (**oficjalne API** ElevenLabs przez SDK `elevenlabs` — user podaje własny klucz `ANISHIFT_ELEVENLABS_API_KEY`; voice_settings + retry/backoff na 429/5xx wzorem EchoReader, audyt 08), `edge` (edge-tts, głosy Zofia/Marek jako opcja głosu, nie osobne silniki), `sapi` (bezpośredni SAPI COM; Zosia przez worker x64, Agnieszka przez worker x86). GTTS, Balcon i pyttsx3 nie są osobnymi silnikami.
 - **tłumaczenie**: `google` (googletrans v4, wrapper async→sync), `deepl` (DeepL API), `llm` (cienki adapter delegujący do serwisu llm — patrz niżej). DeepL desktop martwy — nie przenosimy.
 - **llm**: `anthropic`, `gemini`, `openai`, `deepseek`, `openrouter`, `openai_compatible` — wszystkich 6 dostawców z MangaShift, bez wymyślania od nowa.
 - zachowane funkcjonalnie: dedup tłumaczeń (unikalne linie 1×), czyszczenie znaczników ASS, marker nowej linii, retry/backoff elevenbytes, rundy dosyłania nieudanych requestów, wznowienie elevenbytes po crashu (stan w `workspace/tmp/`, nie w osobnym cache/).
@@ -77,8 +80,7 @@ LLM to ogólne narzędzie, więc żyje jako **osobna domena serwisowa `services/
 │   ├── bin_hashes.json          # manifest: SHA256 + rozmiar + URL per plik
 │   └── bin/                     # gitignored
 │       ├── mkvtoolnix/          # mkvextract, mkvmerge
-│       ├── ffmpeg/              # ffmpeg (+ ffprobe)
-│       └── balabolka/           # balcon.exe (Windows-only)
+│       └── ffmpeg/              # ffmpeg (+ ffprobe)
 ├── workspace/                   # dane robocze runtime — gitignored poza strukturą
 │   │                            # tu user wrzuca MKV; pliki pośrednie (.srt, .eac3)
 │   │                            # powstają OBOK nich, jak dziś; Enter = przetwórz wszystko
@@ -181,13 +183,12 @@ LLM to ogólne narzędzie, więc żyje jako **osobna domena serwisowa `services/
 │       │   ├── service.py       # fasada: srt → wav lektora przez wybrany silnik
 │       │   ├── types.py
 │       │   └── engines/
-│       │       ├── __init__.py  # _REGISTRY: elevenbytes, edge, harpo, balcon, elevenlabs
+│       │       ├── __init__.py  # _REGISTRY: elevenbytes, edge, sapi, elevenlabs
 │       │       ├── elevenbytes/ # __init__, config, constants, service, api_backend, types
 │       │       │                #   (proxy teamsp.org, klucz wbudowany; batch async, retry, rundy,
 │       │       │                #   wznowienie w tmp/, v2/v3 przez provider_model_id)
 │       │       ├── edge/        # __init__, config, constants, service (głosy Zofia/Marek w opcjach)
-│       │       ├── harpo/       # __init__, config, constants, service (pyttsx3/SAPI Zosia)
-│       │       ├── balcon/      # __init__, config, constants, service (balcon.exe, is_available=Windows)
+│       │       ├── sapi/        # __init__, config, constants, service + worker (SAPI COM x64/x86)
 │       │       └── elevenlabs/  # __init__, config, constants, service (oficjalny SDK elevenlabs,
 │       │                        #   klucz usera ANISHIFT_ELEVENLABS_API_KEY, voice_settings,
 │       │                        #   retry/backoff 429/5xx wzorem EchoReader)
@@ -293,22 +294,21 @@ jak testować: smoke rejestru z każdym engine_id; tłumaczenie SRT silnikiem `l
 DoD: rejestr llm przechodzi ten sam smoke co tts/translation (nieznany id = ConfigError z posortowaną listą); `llm` widoczny w panelu obok google/deepl z wyborem dostawcy+modelu; korekta default OFF; async klientów SDK nie wycieka ponad sync fasadę.
 
 ### etap 6 — tts + tor audio (największy etap, główny zysk przebudowy)
-**cel:** rozbicie god-files `subtitle_to_speech.py` (1196 linii) + `tts_elevenbytes.py` (617 linii) na rejestr 5 silników + osobny tor audio.
+**cel:** rozbicie god-files `subtitle_to_speech.py` (1196 linii) + `tts_elevenbytes.py` (617 linii) na rejestr 4 silników + osobny tor audio.
 
 pliki:
 - `anishift/services/tts/__init__.py`, `config.py`, `constants.py`, `errors.py`, `protocols.py`, `output.py`, `service.py`, `types.py`
 - `anishift/services/tts/engines/__init__.py` (rejestr)
 - `anishift/services/tts/engines/elevenbytes/__init__.py`, `config.py`, `constants.py`, `service.py`, `api_backend.py`, `types.py`
 - `anishift/services/tts/engines/edge/__init__.py`, `config.py`, `constants.py`, `service.py`
-- `anishift/services/tts/engines/harpo/__init__.py`, `config.py`, `constants.py`, `service.py`
-- `anishift/services/tts/engines/balcon/__init__.py`, `config.py`, `constants.py`, `service.py`
+- `anishift/services/tts/engines/sapi/__init__.py`, `config.py`, `constants.py`, `service.py`, worker Windows
 - `anishift/services/tts/engines/elevenlabs/__init__.py`, `config.py`, `constants.py`, `service.py` — oficjalne API (SDK `elevenlabs`, klucz usera z `.env`, voice_settings, retry/backoff 429/5xx wzorem EchoReader, audyt 08); NIE mylić z elevenbytes (proxy z wbudowanym kluczem)
 - `anishift/services/audio/__init__.py`, `service.py`, `types.py`, `errors.py`
 - `anishift/pipeline/runner.py` — krok 4; `settings_panel.py` — wybór silnika/głosu/tempa
 
 zależności: etap 4 (etap 5 nie blokuje — tts nie korzysta z llm, oba etapy mogą iść równolegle). logika z `modules/subtitle_to_speech.py` + `modules/tts_elevenbytes.py` + wzorce EchoReader (klucz API, voice_settings) — ale dispatch przez rejestr, nie if/elif.
-jak testować: SRT polski → WAV lektora każdym dostępnym silnikiem; elevenbytes: wznowienie po przerwaniu trafia (stan w `workspace/tmp/`, opłacone requesty nie idą drugi raz), retry/rundy działają, v2 i v3 przez provider_model_id; balcon widoczny tylko na Windows z zainstalowanym głosem (`is_available`); elevenlabs bez klucza `ANISHIFT_ELEVENLABS_API_KEY` = `is_available` fałsz (znika z panelu), z kluczem generuje WAV przez oficjalne API; tor audio: atempo/volume/amix daje ten sam wynik co dziś na próbce.
-DoD: pełny lektor elevenbytes na realnym odcinku brzmi/wygląda jak z obecnego kodu; edge i harpo działają; balcon poprawnie gate'owany; żaden plik serwisu nie przekracza ~300 linii; poza tmp/ nie powstaje żaden folder stanu.
+jak testować: SRT polski → WAV lektora każdym dostępnym silnikiem; elevenbytes: wznowienie po przerwaniu trafia (stan w `workspace/tmp/`, opłacone requesty nie idą drugi raz), retry/rundy działają, v2 i v3 przez provider_model_id; SAPI działa z Zosią w workerze x64 i Agnieszką w workerze x86; elevenlabs bez klucza `ANISHIFT_ELEVENLABS_API_KEY` = `is_available` fałsz (znika z panelu), z kluczem generuje WAV przez oficjalne API; tor audio: atempo/volume/amix daje ten sam wynik co dziś na próbce.
+DoD: pełny lektor elevenbytes na realnym odcinku brzmi/wygląda jak z obecnego kodu; edge i SAPI działają; jeden `Ctrl+C` kończy worker SAPI; żaden plik serwisu nie przekracza ~300 linii; poza tmp/ nie powstaje żaden folder stanu.
 
 ### etap 7 — składanie + pełne e2e
 **cel:** domknięcie pipeline: trzy wyjścia jak dziś (players / merge mkv / burn mp4) i pełny tryb auto od Enter do wyniku.
@@ -326,7 +326,7 @@ DoD: happy-path identyczny funkcjonalnie ze starym kodem (tablica prawdy #7); tr
 **cel:** repo po przeprowadzce: binarki zarządzane manifestem, stary kod i bałagan usunięte.
 
 pliki:
-- `external/bin_hashes.json` — wypełniony (mkvtoolnix, ffmpeg, balcon: SHA256 + URL)
+- `external/bin_hashes.json` — wypełniony (mkvtoolnix, ffmpeg: SHA256 + URL)
 - `anishift/setup/installer.py` — `anishift setup` pobiera i weryfikuje binarki
 - rozszerzenie `doctor.py` o weryfikację hashy
 - `scripts/maintenance/migrate_workspace.py` — przeniesienie danych usera z `working_space/` do `workspace/` (płasko: pliki do workspace/, nic do podfolderów poza tmp/output)
@@ -343,12 +343,12 @@ DoD: w repo nie ma śladu nazw `mm_avh` / `working_space` w nowym kodzie; README
 Rejestr istnieje **tylko** w trzech domenach z realnym wyborem: `tts`, `translation` i `llm`. Wygląda kropka w kropkę tak samo we wszystkich (to reguła factory-standard: różnice tylko w miejscach wymuszonych):
 
 - plik `services/<domena>/engines/__init__.py` jest **jedynym źródłem prawdy** o zestawie silników domeny. Kolejność sekcji stała: docstring → importy → `__all__` → logger → typ `…EngineId` (Literal z kluczami rejestru) → `_REGISTRY` → `available_engine_ids()` → `create_engine()`.
-- `_REGISTRY` to słownik `engine_id → trójka (ścieżka modułu, nazwa klasy serwisu, referencja configu)`. Klucz zawsze snake_case (`elevenbytes`, `edge`, `harpo`, `balcon`, `elevenlabs`; `google`, `deepl`, `llm`; `anthropic`, `gemini`, `openai`, `deepseek`, `openrouter`, `openai_compatible`). Żadna inna warstwa nie przepisuje tej listy ręcznie — panel ustawień i pipeline **derywują** dostępne opcje przez `available_engine_ids()`.
+- `_REGISTRY` to słownik `engine_id → trójka (ścieżka modułu, nazwa klasy serwisu, referencja configu)`. Klucz zawsze snake_case (`elevenbytes`, `edge`, `sapi`, `elevenlabs`; `google`, `deepl`, `llm`; `anthropic`, `gemini`, `openai`, `deepseek`, `openrouter`, `openai_compatible`). Żadna inna warstwa nie przepisuje tej listy ręcznie — panel ustawień i pipeline **derywują** dostępne opcje przez `available_engine_ids()`.
 - `create_engine(config)` robi guard: pusty `engine_id` → domenowy `ConfigError`; nieznany → `ConfigError` z posortowaną listą dostępnych. Potem `importlib.import_module` (lazy — silnik ładuje się dopiero gdy wybrany; edge-tts/deepl/googletrans nie są importowane na starcie apki) i konstrukcja klasy z configiem silnika.
 - fasada `service.py` domeny **nie zna żadnego konkretnego silnika** — woła wyłącznie `create_engine`, cache'uje instancję per engine_id. Zero `if engine_id == …` gdziekolwiek. Dodanie silnika = nowy podfolder + jeden wpis w `_REGISTRY`.
 - każdy silnik to pakiet `engines/<engine_id>/` o stałym kształcie: `__init__.py` (re-export), `config.py` (dataclass slots, walidacja w `__post_init__`), `constants.py` (m.in. `provider_model_id` dla dostawców API — elevenbytes trzyma tu katalog modeli v2/v3), `service.py` (implementacja Protocolu domeny), opcjonalnie `types.py` i `api_backend.py` (osobny klient HTTP — elevenbytes). Ciężkie importy wewnątrz metod, nie na górze pliku.
 - specyfika rejestru `llm` (przeniesiona z MangaShift, nie wymyślona): obok `available_engine_ids()` i `create_engine()` jest `supported_models(provider_id)` — czyta katalog modeli z lekkiego `constants.py` silnika bez importu SDK (SSOT dla pickera modeli w panelu); dostawcy z otwartym katalogiem (`openrouter`, `openai_compatible`) zwracają pusty katalog, bo model to wolny slug. `LlmConfig` trzyma `engine_id` + mapę `providers[engine_id] → ProviderConfig` (klucz, base_url, default_model, limity) — nieużywany dostawca nie musi być skonfigurowany. Silniki `llm` nie mają logiki lokalnej — 4 z 6 (openai, deepseek, openrouter, openai_compatible) dzielą jeden backend `_openai_compat.py` na openai SDK.
-- Protocol domeny (w `protocols.py`) wymaga m.in. `engine_id`, `is_available` i głównej metody pracy. **`is_available` załatwia cross-platform bez if-ów OS w fasadzie**: balcon zwraca fałsz poza Windows lub bez binarki/głosu, harpo bez SAPI — panel pokazuje tylko dostępne silniki, pipeline dostaje czytelny błąd domenowy przy wymuszeniu niedostępnego.
+- Protocol domeny (w `protocols.py`) wymaga m.in. `engine_id`, `is_available` i głównej metody pracy. **`is_available` załatwia cross-platform bez if-ów OS w fasadzie**: SAPI zwraca fałsz poza Windows albo bez zgodnego hosta/głosu — panel pokazuje tylko dostępne silniki, pipeline dostaje czytelny błąd domenowy przy wymuszeniu niedostępnego.
 - odstępstwo od MangaShift (świadome, odnotowane): fasady są **sync** (service-standard MangaShift wymaga async, bo stoi pod REST — AniShift nie ma REST). Async żyje tylko wewnątrz silników, które realnie równoleglą requesty (elevenbytes batch, edge) i nie wycieka ponad fasadę.
 - wybór silnika: dokładnie zasada "front decyduje, serwer wykonuje" — u AniShift frontem jest panel `/settings` (trzyma defaulty w `config/settings.json` obok kodu), config domeny dostaje `engine_id` wymagany bez defaultu, serwis waliduje wobec rejestru i wykonuje.
 
@@ -360,7 +360,7 @@ Rejestr istnieje **tylko** w trzech domenach z realnym wyborem: `tts`, `translat
 2. **RF64 / WAV > 4GB** — wielogodzinny lektor wymaga `-rf64 auto`; to jeden z powodów decyzji "ffmpeg zostaje .exe". Trzeba to jawnie objąć testem smoke na długim pliku, bo regresja objawia się dopiero przy dużym odcinku/maratonie.
 3. **REPL prompt_toolkit to nowa funkcjonalność, nie przepisanie** — inline autocomplete + panel + tryby to jedyna część bez działającego pierwowzoru w mm_avh. Dlatego jest wcześnie (etap 2), osobno i bez pipeline — żeby ryzyko UX nie blokowało reszty.
 4. **googletrans v4** — nieoficjalna biblioteka, async pod spodem, bywa krucha na zmiany po stronie Google. Rejestr izoluje ryzyko (deepl i llm jako zapas), ale trzeba przyjąć, że google może paść niezależnie od nas.
-5. **balcon/harpo zależą od głosów SAPI zainstalowanych w systemie** — `is_available` musi sprawdzać obecność konkretnego głosu, nie tylko binarki; na maszynie bez IVONA/Zosia silniki mają znikać z panelu, nie wybuchać. pyttsx3 ma znane zawieszki `save_to_file` w pętli — przenosimy istniejące obejście z toru Harpo.
+5. **SAPI zależy od głosów zainstalowanych w systemie i architektury procesu** — `is_available` sprawdza osobno głosy x64/x86; na maszynie bez IVONA/Zosia profile mają być oznaczone jako niedostępne, nie wybuchać. `pyttsx3` został odrzucony po reprodukowalnym zawieszeniu; bezpośredni worker COM ma timeout i restart.
 6. **migracja workspace** — `working_space/` ma 704 pliki danych usera (w tym luźne MKV i audiobooki). Skrypt migracyjny musi przenosić, nie kasować; kasacja starego folderu dopiero po ręcznym potwierdzeniu usera. Docelowa struktura jest płaska (pliki wprost w `workspace/`), więc migracja nie tworzy podfolderów poza tmp/output.
 7. **odstępstwa od MangaShift — rozstrzygnięte przez usera**: (a) `settings.json` w workspace → **odrzucone**; preferencje idą do `config/settings.json` obok kodu (gitignored), poza workspace — workspace to wyłącznie dane robocze. (b) Typer jako wejście → **zostaje** (daje `doctor`/`setup` za darmo). (c) `pydantic-settings` dla `.env` → **zostaje** (dataclass slots dalej obowiązują dla configów domen; gdyby `Settings` zapachniało przerostem, da się strywializować bez ruszania reszty planu).
 8. **llm: koszt i niedeterminizm** — silnik `llm` tłumaczy wolniej i za pieniądze względem google, a korekta może "poprawiać" za dużo (parafraza zamiast czyszczenia). Mitygacja: llm nigdy nie jest defaultem (default trzyma panel, jak wszędzie), korekta default OFF, testy etapu 5 pilnują niezmienności liczby linii i timingów; sam serwis to sprawdzony kod MangaShift, więc ryzyko leży w promptach i użyciu, nie w maszynerii.
@@ -373,4 +373,3 @@ Rejestr istnieje **tylko** w trzech domenach z realnym wyborem: `tts`, `translat
 - **auto-pobieranie anime z internetu** — user wpisuje nazwę anime, program sam ściąga odcinki (bittorrent lub inne rozwiązanie) prosto do `workspace/`. Pomysł zanotowany na życzenie usera; zero etapów na to teraz, rozstrzygnięcia (źródło, biblioteka, legalność per źródło) dopiero po zakończeniu przebudowy.
 - **migracja toru audio na PyAV** — możliwa przyszła optymalizacja (patrz §B/ffmpeg); nie w tej przebudowie.
 - **`style_classifier` napisów** — tylko hak `subtitles/styles.py`; user zbiera przykłady.
-- **balcon → pyttsx3** — wymaga testu ucha; harpo już jest silnikiem bibliotecznym.
