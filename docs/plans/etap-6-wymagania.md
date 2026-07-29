@@ -33,7 +33,8 @@ MKV
 Główny efekt użytkowy:
 
 - jeden Enter uruchamia automatyczny pipeline;
-- TTS zaczyna pracę na gotowych plikach bez ręcznego eksportowania SRT;
+- pipeline wywołuje TTS po przygotowaniu neutralnego batcha, bez ręcznego eksportowania
+  SRT;
 - przerwanie lub przejściowa awaria API nie marnuje poprawnie wygenerowanych klipów;
 - jeden błąd pliku nie niszczy wyników pozostałych plików;
 - etap 7 dostaje zweryfikowaną ścieżkę audio, którą może dołączyć do MKV, wystawić obok pliku albo wykorzystać przy renderze.
@@ -80,33 +81,47 @@ pozostaje źródłem zakresu etapów, ale szczegółowy kontrakt etapu 6 pochodz
 
 ## 4. Najważniejsze wnioski audytu
 
-### 4.1. Wejściem TTS nie powinien być plik SRT
+### 4.1. TTS jest neutralnym API generowania głosu
 
-**REKOMENDACJA**
+**USTALONE — KOREKTA GRANICY ARCHITEKTONICZNEJ**
 
-Obecny AniShift ma już w pamięci:
+`services/tts` nie jest konwerterem napisów na audio ani drugim pipeline aplikacji.
+Jest usługą generowania klipów głosu, którą istniejący pipeline wywołuje przez publiczne
+API.
 
-- tekst;
-- początek i koniec eventu;
-- kolejność;
-- styl;
-- informację o powodzeniu tłumaczenia.
+Publiczne wywołanie TTS składa się z trzech neutralnych części:
 
-TTS powinien przyjmować znormalizowane eventy z pamięci. Parsowanie dopiero co zapisanego
-`*.spoken.pl.ass` albo pośredniego SRT byłoby zbędnym zapisem, ponownym odczytem i nowym
-miejscem utraty danych.
+1. `SpeechRequest`: nieprzezroczysty `request_id`, gotowy jednoliniowy polski `text`
+   i `request_rank`;
+2. `SpeechBatch`: nieprzezroczysty `scope_id`, `batch_rank` i requesty;
+3. `TtsConfig` oraz zależności runtime: engine, model, voice, engine-native options,
+   kontrolowane miejsce artefaktów, cancel i deadline.
 
-Pliki napisów pozostają produktami i materiałem diagnostycznym, ale nie stają się
-wewnętrznym API pomiędzy translation i TTS.
+TTS nie zna:
 
-### 4.2. Źródło polskie i tłumaczone muszą wejść do tego samego kontraktu
+- `ASS`, `SRT`, `SSAEvent` ani `pysubs2`;
+- `SubtitleSplit`, `SpokenLine`, `DisplayedLine`, `TranslatedLine` ani `FileTranslation`;
+- stylów, tagów, rysunków, alignmentu, margins i pozycji;
+- początku lub końca napisu;
+- ścieżki źródłowego MKV i wybranych tracków;
+- `FileOutcome`, `_MkvState` i kolejnych faz pipeline.
+
+Parsowanie napisów, wybór spoken, sprawdzenie powodzenia tłumaczenia i przygotowanie
+jednoliniowego tekstu należą do istniejących domen subtitles/translation oraz adaptera
+w pipeline. Pliki napisów pozostają produktami i materiałem diagnostycznym, ale nie są
+wewnętrznym API TTS.
+
+### 4.2. Źródło polskie i tłumaczone mapuje pipeline
 
 **USTALONE**
 
-- Dla napisów obcych TTS używa `FileTranslation.spoken`.
-- Dla napisów już polskich TTS używa `SubtitleSplit.spoken`.
-- Obie postacie są normalizowane do jednego typu wejściowego TTS.
+- Dla napisów obcych adapter pipeline czyta `FileTranslation.spoken`.
+- Dla napisów już polskich adapter pipeline czyta `SubtitleSplit.spoken`.
+- Adapter pipeline mapuje obie postacie na ten sam neutralny `SpeechRequest`.
+- `services/tts` nie importuje typów subtitles ani translation.
 - Brak obiektu `FileTranslation` przy źródle polskim nie oznacza pominięcia TTS.
+- Timing jest zachowany przez pipeline i wraca dopiero jako wejście `services/audio`
+  po wygenerowaniu klipu.
 
 ### 4.3. MangaShift jest wzorcem, nie modułem do skopiowania 1:1
 
@@ -175,6 +190,24 @@ Wniosek:
 - Balcon proces-per-event osiągnął średnio 207,2 ms/event, a trwały worker SAPI po starcie
   średnio 30,7 ms/event; Balcon został odrzucony;
 - obecność głosu w rejestrze Windows nie jest równoznaczna z możliwością poprawnej syntezy przez dany backend.
+
+Fala 0 potwierdziła dokładne nazwy tokenów SAPI w obu architekturach:
+
+- `Vocalizer Expressive Zosia Harpo 22kHz`;
+- `IVONA 2 Agnieszka - polski głos żeński [22kHz]`.
+
+Benchmark trwałego workera wykonał warm-up i 100 kolejnych eventów per głos:
+
+| Profil | Cold start z pierwszą syntezą | Średnio per event | Zakres | Wynik |
+|---|---:|---:|---:|---:|
+| Zosia x64 | 465,2 ms | 21,3 ms | 18,5–33,9 ms | 101/101 WAV |
+| Agnieszka x86 | 1041,3 ms | 75,7 ms | 57,9–125,0 ms | 101/101 WAV |
+
+Wszystkie 203 pliki, łącznie z próbą po restarcie, przeszły pełny decode-check FFmpeg.
+Kontrolowany stall przekroczył deadline 400 ms, worker został faktycznie zakończony po
+465,8 ms, a świeży worker utworzył poprawny WAV. Podczas benchmarku Agnieszki nie
+pojawił się modal; stderr zawierał wyłącznie ostrzeżenie starego runtime Qt o wersji
+Windows.
 
 ### 4.6. Edge wymaga kontrolowanego patcha jakości
 
@@ -272,7 +305,13 @@ Supertonic zostaje kandydatem do późniejszego eksperymentu, a nie wymaganiem D
 ## 6. Słownik
 
 - **spoken event** — jeden event zakwalifikowany do przeczytania.
-- **clip** — audio wygenerowane dla jednego spoken eventu.
+- **SpeechRequest** — neutralne żądanie `request_id + czysty tekst`, bez wiedzy o
+  napisach, czasie i pliku źródłowym.
+- **SpeechClip** — audio wygenerowane przez TTS dla jednego `SpeechRequest`.
+- **TimedClip** — `SpeechClip` połączony przez pipeline z zachowanym timingiem; wejście
+  publicznego API Audio, nie TTS.
+- **clip** — ogólne określenie `SpeechClip` albo `TimedClip`, zależnie od opisywanej
+  granicy.
 - **narrator WAV** — pełna ścieżka samego lektora, ułożona na osi czasu.
 - **mixed audio** — lektor połączony z oryginalną ścieżką audio.
 - **engine** — implementacja syntezy, np. Edge albo ElevenBytes.
@@ -286,42 +325,46 @@ Supertonic zostaje kandydatem do późniejszego eksperymentu, a nie wymaganiem D
 
 ## 7. Kontrakt wejściowy
 
-### R1. Znormalizowany spoken event
+### R1. Neutralny request syntezy
 
-**REKOMENDACJA**
+**USTALONE — KOREKTA GRANICY ARCHITEKTONICZNEJ**
 
-Każdy event przekazany do TTS zawiera co najmniej:
+Każdy request przekazany do publicznego API TTS zawiera:
 
-- stabilny indeks w pliku;
-- `start_ms`;
-- `end_ms`;
-- polski `text`;
-- `source_text` dostępny diagnostycznie, jeżeli event był tłumaczony;
-- `style`;
-- informację, czy tekst pochodzi ze źródła polskiego, czy z tłumaczenia;
-- informację o powodzeniu poprzedniego kroku.
+- nieprzezroczysty i stabilny `request_id`;
+- gotowy, jednoliniowy polski `text`;
+- `request_rank` nadany przez caller.
 
-TTS nie musi znać obiektów konkretnego silnika tłumaczenia.
+Nie zawiera timingu, stylu, layoutu ani obiektów napisów. Pipeline przechowuje relację:
+
+```text
+request_id -> start_ms, end_ms, source order, source file
+```
+
+Po syntezie pipeline łączy `SpeechClip.request_id` z timingiem i przekazuje neutralny
+`TimedClip` do `services/audio`.
 
 ### R2. Kolejność
 
 **USTALONE**
 
 - Pliki zachowują kolejność `natsorted`.
-- Eventy do schedulera są stabilnie sortowane po `(start_ms, source_index)`.
-- `source_index` zachowuje pierwotną kolejność z ASS/SRT dla raportu i resume.
-- Remisy czasowe zachowują kolejność źródłową.
+- Adapter pipeline nadaje batchom `batch_rank`, a requestom `request_rank`.
+- Scheduler TTS sortuje po neutralnym `(batch_rank, request_rank)`.
+- TTS nie oblicza kolejności z timingów ani indeksów ASS/SRT.
+- Pipeline zachowuje własne `(start_ms, source_index)` dla późniejszego timeline audio.
 - Współbieżna synteza nie może zmienić kolejności składania.
-- Indeks eventu jest elementem raportu i resume state.
-- Event z `end_ms <= start_ms` nie jest po cichu naprawiany: walidacja zwraca typowany
-  błąd z indeksem i timingiem.
+- `request_id` jest elementem raportu i resume state.
+- Walidacja `end_ms <= start_ms` należy do adaptera pipeline/audio, przed montażem,
+  nie do API generowania głosu.
 
 ### R3. Nieudane tłumaczenie
 
 **USTALONE**
 
-Event z `ok=False` nie powinien być czytany po angielsku jako cichy fallback.
-Plik TTS zostaje zatrzymany z czytelnym błędem „translation incomplete”.
+Event z `ok=False` nie powinien być mapowany na `SpeechRequest` i czytany po angielsku
+jako cichy fallback. Pipeline zatrzymuje batch z czytelnym błędem
+„translation incomplete” przed wywołaniem TTS.
 
 To zapobiega powstaniu ścieżki, która wygląda na poprawną, ale przełącza języki w środku.
 
@@ -339,7 +382,7 @@ TXT nadal może przejść tłumaczenie i zapis SRT, ale TTS zostaje pominięty z
 
 **USTALONE**
 
-Silnik dostaje czysty, widoczny tekst:
+Silnik dostaje gotowy tekst zgodny z publicznym kontraktem:
 
 - bez tagów ASS;
 - bez tagów HTML;
@@ -349,10 +392,13 @@ Silnik dostaje czysty, widoczny tekst:
 - bez konwersji do ANSI;
 - bez zmiany treści pliku napisów.
 
-Usunięcie layoutu dotyczy tylko wejścia syntezy. Nie modyfikuje produktów ASS.
-Tagi i znaczniki layoutu są zastępowane bezpieczną granicą whitespace, a nie ślepo
-usuwane. Przykładowo `dobry\Nwieczór` ma dać `dobry wieczór`, nigdy `dobrywieczór`.
-Po czyszczeniu whitespace jest normalizowany, a tekst ponownie przechodzi reguły R6.
+Usunięcie layoutu i rysunków odbywa się przed granicą TTS, w istniejącej reprezentacji
+wewnętrznej napisów albo adapterze pipeline. `services/tts` nie implementuje parsera ani
+drugiego normalizatora ASS. Na granicy API waliduje jedynie, że request nie zawiera
+znanych tokenów layoutu/tagów i zwraca typed contract error zamiast próbować je naprawiać.
+
+Przykładowo `dobry\Nwieczór` musi zostać zamienione na `dobry wieczór` przed utworzeniem
+`SpeechRequest`, nigdy wewnątrz engine TTS.
 
 ### R6. Puste i jednoliterowe eventy
 
@@ -413,18 +459,18 @@ Availability nie jest samym `bool`. Engine zwraca typowany status z kodem powodu
 `service_unavailable`, `unsupported_platform`), bezpiecznym opisem oraz informacją,
 czy wynik pochodzi ze świeżego probe czy z cache.
 
-Pojedynczy spoken event przekraczający limit engine jest deterministycznie dzielony
+Pojedynczy `SpeechRequest` przekraczający limit engine jest deterministycznie dzielony
 najpierw na granicach zdań, następnie słów. Części są osobno fingerprintowane,
 syntezowane i sklejane bez sztucznej przerwy. Jeżeli nie da się bezpiecznie podzielić
-wejścia, event kończy się typowanym `unsupported_input`, nie obcięciem tekstu.
+wejścia, request kończy się typowanym `unsupported_input`, nie obcięciem tekstu.
 
 ### R10. Wynik syntezy
 
 **REKOMENDACJA**
 
-Wynik jednego eventu zawiera:
+Wynik jednego requestu zawiera:
 
-- event index;
+- ten sam nieprzezroczysty `request_id`;
 - status;
 - bytes albo atomowo zapisaną ścieżkę;
 - format, sample rate i channels;
@@ -433,6 +479,10 @@ Wynik jednego eventu zawiera:
 - liczbę prób;
 - kod błędu bez sekretów;
 - informację, czy wynik pochodzi z resume state.
+
+Wynik batcha/runu agreguje wyłącznie requesty, statystyki providera, circuit,
+niezakończone `request_id`, cancellation i shutdown. Nie zawiera plików źródłowych,
+timingów, narratora ani wyniku miksowania.
 
 ### R11. Sync facade, async internals
 
@@ -632,7 +682,7 @@ Engine jest gotowy wyłącznie, gdy:
 - SAPI działa;
 - zainstalowany jest co najmniej jeden obsługiwany głos:
   - `Vocalizer Expressive Zosia Harpo 22kHz` przez worker x64;
-  - `IVONA 2 Agnieszka 22kHz` przez worker x86;
+  - `IVONA 2 Agnieszka - polski głos żeński [22kHz]` przez worker x86;
 - wybrany profil głosu wskazuje właściwą architekturę procesu;
 - jawny smoke test albo pierwsze zadanie potwierdziło syntezę niepustego WAV w limicie.
 
@@ -661,6 +711,11 @@ Kontrakt to dedykowany subprocess Windows z kontrolowanym workerem SAPI/COM:
 
 Test implementacji musi jeszcze wymusić timeout i potwierdzić zabicie oraz odtworzenie
 workera bez utraty wcześniej przyjętych klipów.
+
+Spike Fali 0 potwierdził zachowanie na prawdziwym procesie: kontrolowany stall zakończył
+się zabiciem workera po 465,8 ms, a następny proces poprawnie zsyntetyzował i zamknął
+WAV. Test produkcyjnego kontrolera nadal musi odtworzyć ten przypadek bez sztucznego
+polecenia `stall`.
 
 ### R23. Wspólny trwały worker
 
@@ -697,14 +752,17 @@ Zwykły doctor:
 **USTALONE**
 
 SAPI nie dostaje całego SRT i nie posiada osobnej ścieżki montażu. Jest normalnym
-silnikiem TTS działającym przez wspólny kontrakt per event:
+silnikiem TTS działającym przez wspólny kontrakt per request:
 
-1. adapter otrzymuje jeden znormalizowany spoken event;
-2. przekazuje id, tekst i kontrolowaną ścieżkę do właściwego workera x86/x64;
+1. engine otrzymuje neutralny `SpeechRequest`;
+2. przekazuje `request_id`, tekst i kontrolowaną ścieżkę do właściwego workera x86/x64;
 3. worker generuje osobny WAV przez `SAPI.SpVoice` i `SAPI.SpFileStream`;
 4. adapter waliduje niepusty i dekodowalny plik;
-5. wspólny manifest zapisuje ukończony event;
-6. wspólny scheduler ustawia klip na osi czasu.
+5. wspólny manifest zapisuje ukończony request;
+6. wynik `SpeechClip` wraca do pipeline.
+
+SAPI ani scheduler TTS nie ustawiają klipu na osi czasu. Robi to później
+`services/audio` na podstawie `TimedClip` zbudowanego przez pipeline.
 
 Worker zwraca dokładnie jedną odpowiedź per request. Nieudane albo spóźnione odpowiedzi
 nie mogą zatwierdzić klipu po anulowaniu. Zamknięcie wejścia kończy worker; timeout lub
@@ -714,14 +772,29 @@ zerwane IPC zabija cały proces i uruchamia świeży worker dla następnej prób
 
 ### R26. Engine-specific concurrency
 
-**REKOMENDACJA**
+**USTALONE**
 
 Nie ma jednego globalnego limitu dla wszystkich TTS:
 
+- ElevenBytes: `12`;
+- Edge: `8`;
 - SAPI: `1`;
-- lokalny backend wymagający jednego modelu: według jego możliwości;
-- Edge, ElevenBytes i ElevenLabs: osobne, konfigurowalne limity;
-- wartości domyślne wynikają z testu obciążenia, nie z MangaShift.
+- ElevenLabs: `4` jako konserwatywny default, nie wynik benchmarku;
+- lokalny backend wymagający jednego modelu: według jego możliwości.
+
+Fala 0 wykonała bez retry po 12 requestów ElevenBytes przy concurrency `1`, `4`, `8`
+i `12`. Każda seria zakończyła się `12/12`, a czas całej serii wyniósł odpowiednio
+42,972 s, 3,485 s, 1,382 s i 1,265 s. Próba bez wymaganych nagłówków HTTP dała
+natychmiastowe `403`; nie jest liczona jako awaria poprawnego kontraktu.
+
+Edge wykonał bez retry po osiem requestów przy concurrency `1`, `4` i `8`. Każda seria
+zakończyła się `8/8`, a czas całej serii wyniósł 27,194 s, 1,288 s i 0,655 s.
+Wszystkie 72 sieciowe próbki obu engine przeszły pełny decode-check. Pojedyncza próbka
+Edge miała MP3 mono 24 kHz / 96 kb/s, a ElevenBytes `run6` MP3 mono
+44,1 kHz / 128 kb/s.
+
+ElevenLabs nie dostaje zmyślonego wyniku benchmarku. `4` jest bezpieczną wartością
+startową do czasu jawnie zaakceptowanego testu kosztowego i pozostaje konfigurowalne.
 
 Limit danego engine jest globalny dla całego przebiegu pipeline, nie mnożony przez liczbę
 plików. Każdy engine ma jedną ograniczoną kolejkę priorytetową wspólną dla wszystkich
@@ -785,9 +858,9 @@ Istniejące pole `audio_path` nie może jednocześnie znaczyć oryginału i goto
 
 W ramach wolnych slotów:
 
-1. retry eventu, który się wywalił;
-2. następny event zgodnie z kolejnością;
-3. następny plik zgodnie z `natsorted`.
+1. retry requestu, który się wywalił;
+2. następny request według `request_rank`;
+3. następny batch według `batch_rank` nadanego przez pipeline.
 
 Provider-wide failure zatrzymuje nowe requesty tego engine, ale nie usuwa wyników innych
 plików ani innych engine.
@@ -798,21 +871,22 @@ plików ani innych engine.
 
 **USTALONE**
 
-Stan żyje wyłącznie pod:
+Pipeline nadaje neutralny, nieprzezroczysty `scope_id`. Stan syntezy żyje wyłącznie pod:
 
 ```text
-workspace/tmp/<file-id>/tts/
+workspace/tmp/<scope-id>/tts/
 ```
 
 Nie powstaje osobny `cache/`, `logs/` ani stan obok kodu.
 
-`file-id` jest krótkim, deterministycznym identyfikatorem odpornym na kolizje i limity
-ścieżek Windows, zbudowanym z bezpiecznego fragmentu stemu oraz hasha tożsamości źródła.
-Tożsamość źródła obejmuje co najmniej kanoniczną ścieżkę, rozmiar, czas modyfikacji oraz
-fingerprint wybranych strumieni; manifest przechowuje te pola jawnie. Zmiana tekstu
-spoken jest niezależnie wykrywana przez synthesis fingerprint R32. Podmiana źródła lub
-zmiana wybranej ścieżki audio unieważnia odpowiednią warstwę stanu. Długie nazwy,
-Unicode i nawiasy mają testy.
+`scope-id` jest krótkim, deterministycznym identyfikatorem odpornym na kolizje i limity
+ścieżek Windows. Pipeline buduje go z własnej tożsamości zadania; `services/tts` traktuje
+go jako opaque value i nie odczytuje ścieżki MKV, subtitle stream ani audio stream.
+
+Manifest TTS przechowuje `scope_id`, requesty i synthesis fingerprinty. Tożsamość
+oryginalnego audio należy wyłącznie do manifestu/fingerprintów `services/audio`.
+Długie nazwy, Unicode i nawiasy w danych źródłowych mają testy adaptera pipeline;
+TTS testuje bezpieczne `scope_id` niezależnie od formatu źródła.
 
 ### R31. Konflikt z obecnym cleanup
 
@@ -824,7 +898,8 @@ state po crashu, zanim TTS mógłby go użyć.
 Etap 6 musi rozdzielić:
 
 - jednorazowy scratch ekstrakcji;
-- walidowany resume state TTS.
+- walidowany resume state syntezy TTS;
+- walidowane pochodne narration/mix należące do audio.
 
 Cleanup nie może usuwać poprawnych klipów TTS przed sprawdzeniem manifestu.
 
@@ -832,21 +907,23 @@ Cleanup nie może usuwać poprawnych klipów TTS przed sprawdzeniem manifestu.
 
 **REKOMENDACJA**
 
-Resume ma trzy niezależne poziomy invalidation:
+Resume ma trzy niezależne poziomy invalidation rozłożone pomiędzy dwa publiczne serwisy:
 
-1. **Synthesis fingerprint** — źródło, event/source index, oczyszczony tekst, engine,
-   provider model/endpoint, faktyczny resolved voice ID, natywne rate/pitch/volume,
-   voice settings, format odpowiedzi API oraz wersja normalizacji tekstu.
-2. **Narration fingerprint** — zestaw synthesis fingerprintów, timingi, rozwiązane
-   tempo profilu engine/voice, scheduler, roboczy sample rate/channels i wersja montażu.
-3. **Mix/output fingerprint** — narrator fingerprint, tożsamość oryginalnej ścieżki
-   audio, bazowy gain miksu, offset głosu, channel policy, codec/kontener/bitrate
-   i wersja miksu.
+1. **Synthesis fingerprint — właściciel `services/tts`:** `scope_id`, `request_id`,
+   gotowy tekst, engine, provider model/endpoint, faktyczny resolved voice ID, natywne
+   rate/pitch/volume, voice settings, format odpowiedzi API, granice chunków oraz wersja
+   kontraktu syntezy.
+2. **Narration fingerprint — właściciel `services/audio`:** ordered clip fingerprinty,
+   `TimedClip` z timingami przekazanymi przez pipeline, rozwiązane tempo profilu,
+   timeline policy, roboczy sample rate/channels i wersja montażu.
+3. **Mix/output fingerprint — właściciel `services/audio`:** narrator fingerprint,
+   tożsamość oryginalnej ścieżki audio, bazowy gain miksu, offset głosu, channel policy,
+   codec/kontener/bitrate/profile i wersja miksu.
 
 Zmiana tempa profilu, gainu, codeca albo bitrate przebudowuje wyłącznie odpowiednią
 warstwę po syntezie i **nie powtarza requestów TTS**. Zmiana tekstu, engine, modelu,
 resolved voice ID albo natywnych ustawień syntezy unieważnia synthesis fingerprint.
-Cache „tylko po indeksie” jest niedopuszczalny.
+Cache „tylko po indeksie” albo „tylko po tekście” jest niedopuszczalny.
 
 Zmiana `voice_mix_offset_db`, bazowego `+7 dB` albo gainu oryginału przebudowuje wyłącznie
 finalny miks. Nie modyfikuje narrator WAV.
@@ -877,7 +954,7 @@ to okno i nigdy świadomie nie powtarza już zweryfikowanego klipu.
 
 Resume state, czyli **stan wznowienia TTS**, to:
 
-- manifest wykonanych eventów;
+- manifest wykonanych requestów;
 - poprawnie wygenerowane klipy audio;
 - fingerprint tekstu, engine, modelu, głosu i ustawień;
 - informacja, które requesty wymagają ponowienia.
@@ -897,8 +974,8 @@ rzadkie, a osobny request pozwala zachować naturalną różnorodność intonacj
 
 Nie należy mylić tego z resume:
 
-- deduplikacja próbowałaby użyć jednego klipu w dwóch różnych eventach — tego nie robimy;
-- resume używa poprzedniego klipu wyłącznie dla tego samego eventu i identycznego
+- deduplikacja próbowałaby użyć jednego klipu w dwóch różnych requestach — tego nie robimy;
+- resume używa poprzedniego klipu wyłącznie dla tego samego `request_id` i identycznego
   fingerprintu po wznowieniu przerwanego zadania — to pozostaje wymagane.
 
 ## 13. Oś czasu
@@ -1004,13 +1081,19 @@ rate.
 
 Potwierdzony profil początkowy:
 
-| Engine / voice | Post-process tempo | Voice mix offset |
-|---|---:|---:|
-| ElevenBytes `run6` / Dallin | `1.25` | `-2 dB` |
-| SAPI / IVONA 2 Agnieszka | do ustalenia odsłuchem | `+2 dB` |
+| Engine / voice | Native rate | Native volume | Post-process tempo | Voice mix offset |
+|---|---:|---:|---:|---:|
+| ElevenBytes `run6` / Dallin | provider default | provider default | `1.25` | `-2 dB` |
+| SAPI / Zosia Harpo | `200 WPM` | `0.7` | `1.0` | `0 dB` |
+| SAPI / IVONA 2 Agnieszka | `5` | `65` | `1.0` | `+2 dB` |
+| Edge / Zofia | `+40%` | `+0%` | `1.0` | `0 dB` |
+| Edge / Marek | `+40%` | `+0%` | `1.0` | `0 dB` |
 
-Pozostałe silniki startują od neutralnego `1.0 / 0 dB`, dopóki testy odsłuchowe nie
-ustalą lepszego profilu.
+Jednostki są częścią profilu i nie są zamienne. Zosia zachowuje user-facing wartości
+starego adaptera `pyttsx3`: `200 WPM` jest mapowane przez zgodny wzór SAPI5 na
+`SpVoice.Rate=2`, a `0.7` na `SpVoice.Volume=70`. Agnieszka używa bezpośrednio skali
+SAPI `Rate=-10..10` i `Volume=0..100`, więc jej wartości pozostają `5/65`. Edge
+otrzymuje literalne ciągi procentowe.
 
 Wartości `-2/+2 dB` są offsetem profilu głosu używanym wyłącznie podczas miksowania
 z oryginalnym audio. Nie zmieniają samodzielnego narrator WAV.
@@ -1218,6 +1301,22 @@ Zawsze używa jawnej, standardowej macierzy, emituje warning i trafia do raportu
 polegamy na automatycznym remapowaniu FFmpeg ani na kolejności wejść. Mapowanie wymaga
 fixture mono, stereo, 5.1 i 7.1 oraz kontroli `channel_layout` przez `ffprobe`.
 
+Macierze v1:
+
+| Przypadek | Mapowanie |
+|---|---|
+| narrator → mono | `FC = narrator` |
+| narrator → stereo | `FL = 0.70710678*narrator`, `FR = 0.70710678*narrator` |
+| narrator → 5.1/5.1(side) | wyłącznie `FC = narrator`, pozostałe kanały `0` |
+| narrator → 7.1 | wyłącznie `FC = narrator`, pozostałe kanały `0` |
+| source 7.1 → E-AC-3 5.1(side) | `SL = 0.70710678*SL + 0.70710678*BL`, analogicznie `SR/BR`; `FL/FR/FC/LFE` bez zmian |
+| source 3–7 kanałów → MP3 stereo | `FL < FL + 0.5*FC + 0.6*BL + 0.6*SL`, analogicznie prawa strona |
+
+Operator `<` w macierzy MP3 normalizuje sumę współczynników danego kanału. LFE jest
+świadomie pomijane w stereo, zgodnie z przykładem `pan` z lokalnej dokumentacji FFmpeg.
+Narrator jest mapowany po downmixie źródła, więc zachowuje phantom center i nie przejmuje
+energii kanału `LFE`. `amix normalize=true` pozostaje osobnym, późniejszym krokiem miksu.
+
 ### R41a. Codec a format pliku
 
 **USTALONE**
@@ -1241,6 +1340,33 @@ wyciągnąć strumień AAC z M4A podczas muxowania, jeżeli kontener docelowy na
 Bitrate jest widoczny tylko dla formatów stratnych. WAV i FLAC nie pokazują fałszywej
 opcji bitrate; mają odpowiednio parametry PCM oraz poziom kompresji FLAC, który zmienia
 czas i rozmiar, ale nie jakość.
+
+Fala 0 potwierdziła lokalnym FFmpeg:
+
+| Format | Zachowany layout | Jawny limit AniShift |
+|---|---|---|
+| E-AC-3 | mono, stereo, 5.1 | 7.1 → jawny downmix do 5.1 |
+| MP3 | mono, stereo | 5.1/7.1 → jawny downmix do stereo |
+| AAC-LC | mono, stereo, 5.1, 7.1 | 7.1 |
+| Opus | mono, stereo, 5.1, 7.1 | 7.1 |
+| FLAC | mono, stereo, 5.1, 7.1 | 7.1 |
+| PCM S16LE WAV | mono, stereo, 5.1, 7.1 | 7.1 |
+
+FFmpeg po cichu zredukował testowe E-AC-3 `7.1 → 5.1` oraz MP3 `5.1/7.1 → stereo`.
+Kod nie może traktować samego exit code `0` jako dowodu zachowania layoutu; wymagane są
+jawna macierz oraz walidacja wyniku przez `ffprobe`.
+
+Domyślne bitrate:
+
+| Format | Mono | Stereo | 5.1 | 7.1 |
+|---|---:|---:|---:|---:|
+| E-AC-3 | 192 kb/s | 384 kb/s | 640 kb/s | niedostępne |
+| MP3 | 192 kb/s | 320 kb/s | niedostępne | niedostępne |
+| AAC-LC | 128 kb/s | 256 kb/s | 512 kb/s | 768 kb/s |
+| Opus | 96 kb/s | 192 kb/s | 384 kb/s | 512 kb/s |
+
+Każdy profil przeszedł encode, `ffprobe` i decode-check. FLAC i WAV nie mają bitrate
+ustawianego przez użytkownika.
 
 ### R42. Brak oryginalnego audio
 
@@ -1279,9 +1405,9 @@ poprzedniego poprawnego pliku.
 Artefakty:
 
 ```text
-workspace/tmp/<file-id>/tts/clips/       # klipy i resume
-workspace/tmp/<file-id>/tts/narrator.wav # sam lektor
-workspace/<stem>.<codec>                 # jedyne gotowe audio dla etapu 7
+workspace/tmp/<scope-id>/tts/clips/         # klipy i resume należące do TTS
+workspace/tmp/<scope-id>/audio/narrator.wav # narrator należący do Audio
+workspace/<stem>.<codec>                    # jedyne gotowe audio dla etapu 7
 ```
 
 AniShift tworzy trzy różne produkty napisów, więc sufiksy `spoken` i `displayed` mają
@@ -1631,8 +1757,9 @@ Testy bez sieci obejmują:
 - registry i lazy imports;
 - config validation;
 - capabilities;
-- text cleaning z polskimi znakami;
-- normalizację `SpokenLine` i `TranslatedLine`;
+- walidację neutralnego `SpeechRequest` z polskimi znakami;
+- odrzucenie tagów/layoutu na publicznej granicy bez parsowania ASS;
+- adapter pipeline dla `SpokenLine` i `TranslatedLine`, testowany poza `services/tts`;
 - zachowanie kolejności;
 - retry classification;
 - cancellation propagation;
@@ -1649,11 +1776,12 @@ Testy bez sieci obejmują:
 - dokładne liczenie jednej próby + trzech retry bez mnożenia warstw;
 - late-result commit gate po anulowaniu blokującego workera;
 - globalny limit engine między kilkoma plikami i priorytet retry;
-- deterministyczny `file-id`, Unicode i długie ścieżki Windows;
+- deterministyczny pipeline `scope_id`, Unicode i długie ścieżki Windows;
 - concurrent manifest completions bez lost update oraz orphan clip recovery;
 - warstwową invalidation: tempo/gain/codec bez ponownego requestu TTS;
 - empty/punctuation/single-character/overlong event;
-- stable sort `(start_ms, source_index)`;
+- stable sort `(batch_rank, request_rank)` w TTS;
+- stable sort `(start_ms, source_index)` w timeline audio;
 - migrację ustawień oraz brak wycieku sekretu przez `repr`;
 - ownership i kolizję istniejącego sidecaru.
 
@@ -1718,6 +1846,19 @@ Jeden używa już polskich napisów, drugi tłumaczenia. Weryfikacja:
 Fixture/odcinki referencyjne, tolerancja czasu i checklisty odsłuchu muszą zostać wpisane
 przed rozpoczęciem końcowej weryfikacji, aby „brzmi poprawnie” nie było ruchomym celem.
 
+Referencyjne odcinki Fali 0:
+
+| Rola | MKV | Spoken |
+|---|---|---:|
+| already Polish | `[shisha] Youjo Senki II - 01.mkv` | 336 eventów |
+| translated | `[SubsPlease] Mushoku Tensei S3 - 03 (1080p) [8488B15C].mkv` | 348 eventów |
+
+Oba źródła trwają około 1420 s i mają japońskie audio AAC stereo. Końcowy odsłuch
+obejmuje początek, środek, koniec, liczby, polskie znaki, szybkie i nakładające się
+dialogi, ciszę, ostatnią wypowiedź, porównanie głośności oraz brak pompowania miksu.
+Tolerancja długości finalnego audio względem `max(original, narrator)` wynosi jedną
+ramkę wybranego encodera plus 50 ms.
+
 ### R64. Quality gates
 
 **USTALONE**
@@ -1749,14 +1890,16 @@ Etap 6 jest ukończony dopiero, gdy:
 - [ ] ElevenBytes `run7` jest dostępny jako `experimental`, a jego wynik i awarie nie
   zmieniają defaultu `run6`;
 - [ ] ElevenLabs działa po podaniu klucza, a bez klucza pokazuje `missing key`;
-- [ ] polskie i tłumaczone źródło używają tego samego wejścia TTS;
-- [ ] synteza nie parsuje ponownie pliku napisów bez uzasadnienia engine-specific;
+- [ ] polskie i tłumaczone źródło są mapowane przez pipeline na ten sam `SpeechRequest`;
+- [ ] `services/tts` nie importuje `pysubs2`, subtitles, translation ani pipeline;
+- [ ] publiczne API TTS można wywołać w teście wyłącznie z tekstem i opaque ID;
+- [ ] synteza nie parsuje pliku napisów i nie interpretuje tagów/layoutu;
 - [ ] retry nie powtarza poprawnych requestów;
 - [ ] dokładna liczba prób nie jest mnożona przez engine/transport;
 - [ ] resume przeżywa restart pipeline i zmianę fazy ekstrakcji;
 - [ ] fingerprint odrzuca nieaktualne klipy;
 - [ ] zmiana tempa, gainu lub codeca nie powtarza requestów syntezy;
-- [ ] współbieżne wpisy manifestu nie gubią ukończonych eventów;
+- [ ] współbieżne wpisy manifestu TTS nie gubią ukończonych requestów;
 - [ ] jedno `Ctrl+C` anuluje cały przebieg;
 - [ ] spóźniony worker po anulowaniu nie zapisuje wyniku ani progressu;
 - [ ] kolejność plików pozostaje `natsorted`;
@@ -1951,8 +2094,12 @@ osobnym późniejszym eksperymentem.
 `tempo=1.85` i `volume=60` są placeholderami Stage 2, nie ustawieniami do migracji.
 
 - ElevenBytes `run6` / Dallin: post-process `tempo=1.25`, `voice_mix_offset_db=-2`;
-- SAPI / IVONA 2 Agnieszka: `voice_mix_offset_db=+2`, tempo do odsłuchowego ustalenia;
-- pozostałe profile zaczynają neutralnie i są poprawiane po testach.
+- SAPI / Zosia Harpo: native `200 WPM / 0.7`, post-process `tempo=1.0`,
+  `voice_mix_offset_db=0`;
+- SAPI / IVONA 2 Agnieszka: native `Rate=5 / Volume=65`, post-process `tempo=1.0`,
+  `voice_mix_offset_db=+2`;
+- Edge / Zofia i Marek: native `rate=+40% / volume=+0%`, post-process `tempo=1.0`,
+  `voice_mix_offset_db=0`.
 
 Engine-native rate/volume pozostają oddzielone od wspólnego post-processingu FFmpeg,
 ponieważ ich skale i wpływ na brzmienie różnią się między providerami.
@@ -1994,17 +2141,33 @@ przestrzenność i możliwie wiernie utrzymać układ kanałów oryginalnego ani
 
 ## 23. Pytania do następnej iteracji
 
-Po fundamentalnych decyzjach doprecyzujemy:
+Pozostałe bramki przed odpowiednimi falami implementacji:
 
-- implementację i test jawnych macierzy `pan` dla mono/stereo/5.1/7.1;
-- domyślne concurrency per engine po małym benchmarku;
-- ElevenLabs default model;
-- konkretne voice settings;
-- domyślny bitrate/profile poszczególnych formatów;
-- czy eksponować zaawansowany engine-native rate obok per-engine FFmpeg `atempo`;
-- cleanup po etapie 7;
-- testowy odcinek referencyjny i kryteria odsłuchu;
-- timeout, zabicie i odtworzenie bezpośredniego workera SAPI COM x64/x86;
-- wielokrotne wywołania SAPI/Agnieszka, w tym brak interaktywnego modala;
-- finalny adapter pojedynczego znaku oraz maksymalnego eventu;
-- wartości deadline/cooldown/bounded queue po benchmarku.
+- test produkcyjnego kontrolera SAPI timeout/restart;
+- końcowy odsłuch macierzy `pan` na sprzęcie użytkownika;
+- decyzja etapu 7 o cleanup zakończonego resume state.
+
+Smoke oficjalnego ElevenLabs został jawnie zaakceptowany i wykonany 2026-07-29:
+
+- klucz poprawnie uwierzytelnił bezpłatne `GET /v2/voices` i `GET /v1/models`;
+- wybrany głos `Adam - Serious, Rich, and Smoky` był professional/fine-tuned;
+- model `eleven_multilingual_v2` był dostępny, obsługiwał TTS i język polski;
+- wykonano dokładnie jeden `POST /v1/text-to-speech/{voice_id}` bez retry;
+- API zwróciło HTTP `400`, więc nie powstał plik audio;
+- przyczyna nie jest zgadywana, ponieważ pierwsza diagnostyka nie zachowała bezpiecznego
+  response body;
+- kolejny płatny POST wymaga osobnej zgody, jawnego voice ID i diagnostyki zapisującej
+  wyłącznie bezpieczny kod/message błędu.
+
+Default model oficjalnego ElevenLabs to `eleven_multilingual_v2`: jest stabilny dla
+długiej narracji, obsługuje polski i normalizuje liczby lepiej niż wariant Flash.
+Zaawansowany engine-native rate pozostaje neutralny i ukryty w widoku advanced.
+
+Wartości wykonawcze v1:
+
+- request timeout: 30 s;
+- shutdown deadline: 5 s, następnie hard kill;
+- queue capacity: `max(2, 2 * max_concurrency)` per engine;
+- cooldown po masowej awarii: 15 s, 30 s, 60 s, następnie limit 120 s;
+- brak oczekiwania w slocie concurrency;
+- `Retry-After` ma pierwszeństwo przed lokalnym cooldownem.

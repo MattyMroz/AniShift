@@ -1,5 +1,12 @@
 # etap 6 — tts + tor audio (największy etap, główny zysk przebudowy)
 
+> **ARCHIWALNY KIERUNEK — NIE IMPLEMENTOWAĆ Z TEGO PLIKU.**
+> Szczegółowe wymagania są w [`etap-6-wymagania.md`](etap-6-wymagania.md), a obowiązujący
+> plan w [`etap-6-tts-audio-plan.md`](etap-6-tts-audio-plan.md). W szczególności opisane
+> niżej `SRT → TtsService → WAV`, parsing napisów w TTS i timeline w `services/tts` zostały
+> odrzucone. Publiczne TTS API ma granicę `czysty tekst + opaque ID → klip głosowy`;
+> adapter napisów należy do pipeline, a timeline i miks do `services/audio`.
+
 > cel: rozbicie god-files `subtitle_to_speech.py` (1196 linii) + `tts_elevenbytes.py` (617 linii) na rejestr 4 silników + osobny tor audio.
 > zależności: etap 4 (etap 5 nie blokuje — tts nie korzysta z llm, oba mogą iść równolegle). logika z `mm_avh/modules/subtitle_to_speech.py` + `modules/tts_elevenbytes.py` + wzorce EchoReader (klucz API, voice_settings) — ale dispatch przez rejestr, nie if/elif.
 > DoD: pełny lektor elevenbytes na realnym odcinku brzmi/wygląda jak z obecnego kodu; edge i SAPI x64/x86 działają; elevenlabs bez klucza znika z panelu; żaden plik serwisu nie przekracza ~300 linii; poza tmp/ nie powstaje żaden folder stanu.
