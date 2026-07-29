@@ -110,7 +110,7 @@ LLM_MAX_CONCURRENCY_RANGE: Final[tuple[int, int]] = (1, 4)
 TTS_MAX_RETRIES_RANGE: Final[tuple[int, int]] = (0, 10)
 """Allowed inclusive range for TTS retry attempts."""
 
-TTS_CONCURRENCY_RANGE: Final[tuple[int, int]] = (1, 16)
+TTS_CONCURRENCY_RANGE: Final[tuple[int, int]] = (1, 100)
 """Allowed inclusive range for persisted per-voice concurrency."""
 
 _MODES: Final[frozenset[str]] = frozenset(("auto", "manual"))
@@ -190,7 +190,7 @@ def default_tts_voice_profiles() -> dict[str, TtsVoiceProfileSettings]:
         _DALLIN_PROFILE_KEY: TtsVoiceProfileSettings(
             postprocess_tempo=1.25,
             voice_mix_offset_db=-2.0,
-            concurrency=16,
+            concurrency=85,
         ),
         _SAPI_AGNIESZKA_PROFILE_KEY: TtsVoiceProfileSettings(
             voice_mix_offset_db=2.0,

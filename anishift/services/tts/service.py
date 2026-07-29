@@ -430,6 +430,9 @@ class TtsService:
             asyncio.create_task(worker(), name=f"tts-batch-{batch.scope_id}-{index}") for index in range(worker_count)
         )
         await asyncio.gather(*workers)
+        repository: TtsResumeRepository | None = self._repositories.get(batch.scope_id)
+        if repository is not None:
+            await asyncio.to_thread(repository.flush)
         ordered: tuple[_RequestExecution, ...] = tuple(
             execution for _, execution in sorted(indexed_executions, key=lambda item: item[0])
         )

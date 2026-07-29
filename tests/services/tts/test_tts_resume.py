@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -14,7 +15,11 @@ from anishift.services.tts import (
     TtsResumeError,
     TtsResumeSchemaError,
 )
-from anishift.services.tts.artifacts import TtsArtifactLayout, sha256_file
+from anishift.services.tts.artifacts import (
+    TtsArtifactLayout,
+    atomic_json_snapshot,
+    sha256_file,
+)
 from anishift.services.tts.fingerprint import (
     SynthesisIdentity,
     SynthesisProfile,
@@ -79,6 +84,8 @@ def _commit(
     repository: TtsResumeRepository,
     identity: SynthesisIdentity,
     payload: bytes = b"valid-audio",
+    *,
+    flush: bool = True,
 ) -> Path:
     temporary = repository.temporary_clip_path(clip_format=AudioFormat.MP3)
     temporary.write_bytes(payload)
@@ -88,6 +95,8 @@ def _commit(
         ClipExpectation(AudioFormat.MP3),
         can_commit=lambda: True,
     )
+    if flush:
+        repository.flush()
     return clip.path
 
 
@@ -170,6 +179,7 @@ def test_exact_valid_orphan_is_adopted_but_random_file_is_ignored(tmp_path: Path
     assert hit is not None
     assert hit.path == orphan
     assert random_file.is_file()
+    repository.flush()
     assert (root / "manifest.json").is_file()
 
 
@@ -209,6 +219,46 @@ def test_concurrent_commits_keep_every_manifest_entry(tmp_path: Path) -> None:
     manifest = json.loads((root / "manifest.json").read_text())
     assert len(manifest["entries"]) == len(identities)
     assert all(path.is_file() for path in paths)
+
+
+def test_commits_are_persisted_by_one_explicit_flush(tmp_path: Path) -> None:
+    root = tmp_path / "tts"
+    repository = TtsResumeRepository(root, "scope-test", _Validator())
+    identities = tuple(_identity(f"spoken-{index}") for index in range(20))
+
+    for identity in identities:
+        _commit(repository, identity, flush=False)
+
+    assert not (root / "manifest.json").exists()
+
+    repository.flush()
+
+    manifest = json.loads((root / "manifest.json").read_text())
+    assert len(manifest["entries"]) == len(identities)
+
+
+def test_atomic_snapshot_retries_transient_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "manifest.json"
+    original_replace = Path.replace
+    calls: int = 0
+
+    def flaky_replace(source: Path, destination: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise PermissionError
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    monkeypatch.setattr(time, "sleep", lambda _delay: None)
+
+    atomic_json_snapshot(target, {"entries": {}})
+
+    assert calls == 3
+    assert json.loads(target.read_text()) == {"entries": {}}
 
 
 def test_two_repository_instances_do_not_lose_manifest_updates(tmp_path: Path) -> None:

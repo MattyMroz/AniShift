@@ -64,7 +64,7 @@ __all__ = ["PipelineTtsProgressSink", "PipelineTtsRuntime"]
 
 _DEFAULT_ENGINE_CONCURRENCY: Final[dict[str, int]] = {
     "edge": 8,
-    "elevenbytes": 16,
+    "elevenbytes": 85,
     "elevenlabs": 4,
     "sapi": 1,
 }

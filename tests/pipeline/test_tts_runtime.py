@@ -66,7 +66,7 @@ def test_runtime_from_context_maps_voice_and_audio_profiles(
     audio_config = cast("AudioConfig", captured["audio_config"])
     assert tts_config.engine_id == "elevenbytes"
     assert tts_config.voice_id == context.user_settings.resolved_tts_voice_id
-    assert tts_config.max_concurrency == 16
+    assert tts_config.max_concurrency == 85
     assert tts_config.metadata_cache_root is not None
     assert tts_config.metadata_cache_root.name == "config"
     assert audio_config.codec_profile is AudioCodecProfile.EAC3

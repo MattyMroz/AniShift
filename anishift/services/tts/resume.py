@@ -110,6 +110,7 @@ class TtsResumeRepository:
         self._lock: threading.RLock = _repository_lock(self._layout.root)
         self._warnings: list[ErrorContext] = []
         self._entries: dict[str, _ManifestEntry] = {}
+        self._dirty_entries: dict[str, _ManifestEntry] = {}
         self._layout.initialize()
         with self._lock:
             self._load()
@@ -123,6 +124,15 @@ class TtsResumeRepository:
     def temporary_clip_path(self, *, clip_format: AudioFormat) -> Path:
         """Reserve an owned same-filesystem path for an engine attempt."""
         return self._layout.temporary_clip_path(clip_format=clip_format)
+
+    def flush(self) -> None:
+        """Persist all staged entries in one durable manifest snapshot."""
+        with self._lock:
+            if not self._dirty_entries:
+                return
+            self._load()
+            self._write_snapshot(self._entries)
+            self._dirty_entries.clear()
 
     def lookup(
         self,
@@ -149,7 +159,7 @@ class TtsResumeRepository:
         *,
         can_commit: Callable[[], bool],
     ) -> CachedTtsClip:
-        """Validate and atomically commit one provider result and snapshot."""
+        """Validate and atomically publish one provider result for later flush."""
         self._require_scope(identity)
         self._require_format(identity, expectation)
         self._layout.relative_clip_path(temporary_path)
@@ -207,13 +217,12 @@ class TtsResumeRepository:
                 validation,
             )
             entry: _ManifestEntry = self._entry_from_clip(identity, clip)
-            updated: dict[str, _ManifestEntry] = {**self._entries, key: entry}
-            self._write_snapshot(updated)
-            self._entries = updated
+            self._entries[key] = entry
+            self._dirty_entries[key] = entry
             return clip
 
     def _load(self) -> None:
-        self._entries = {}
+        self._entries = dict(self._dirty_entries)
         manifest_path: Path = self._layout.manifest_path
         if not manifest_path.is_file():
             return
@@ -242,7 +251,7 @@ class TtsResumeRepository:
         if parsed_schema != schema_version:
             self._quarantine_corrupt(ValueError("manifest schema mismatch"))
             return
-        self._entries = entries
+        self._entries = {**entries, **self._dirty_entries}
 
     def _validated_entry(
         self,
@@ -317,9 +326,8 @@ class TtsResumeRepository:
             validation,
         )
         entry: _ManifestEntry = self._entry_from_clip(identity, clip)
-        updated: dict[str, _ManifestEntry] = {**self._entries, key: entry}
-        self._write_snapshot(updated)
-        self._entries = updated
+        self._entries[key] = entry
+        self._dirty_entries[key] = entry
         return clip
 
     def _cached_clip(
@@ -401,11 +409,21 @@ class TtsResumeRepository:
         try:
             atomic_json_snapshot(self._layout.manifest_path, payload)
         except OSError as error:
+            error_details: dict[str, str | int] = {
+                "operation": "manifest_snapshot",
+                "error_type": type(error).__name__,
+                "reason": str(error),
+            }
+            if error.errno is not None:
+                error_details["errno"] = error.errno
+            winerror: int | None = getattr(error, "winerror", None)
+            if winerror is not None:
+                error_details["winerror"] = winerror
             context: ErrorContext = ErrorContext(
                 code=ErrorCode.TTS_RESUME_ERROR,
                 message="Failed to persist the TTS resume manifest",
                 suggestion="Check workspace permissions and free disk space.",
-                details={"operation": "manifest_snapshot"},
+                details=error_details,
             )
             raise TtsResumeError(context=context) from error
 

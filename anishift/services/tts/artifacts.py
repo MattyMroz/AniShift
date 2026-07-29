@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Never
@@ -19,6 +20,12 @@ __all__ = ["TtsArtifactLayout", "atomic_json_snapshot", "sha256_file"]
 
 _COPY_BUFFER_BYTES: Final[int] = 1024 * 1024
 """Streaming hash buffer size."""
+
+_SNAPSHOT_REPLACE_ATTEMPTS: Final[int] = 5
+"""Maximum attempts for a transiently blocked atomic snapshot replacement."""
+
+_SNAPSHOT_RETRY_DELAY_S: Final[float] = 0.05
+"""Base delay between atomic snapshot replacement attempts."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,10 +212,22 @@ def atomic_json_snapshot(path: Path, payload: dict[str, object]) -> None:
             temporary.write(encoded)
             temporary.flush()
             os.fsync(temporary.fileno())
-        temporary_path.replace(path)
+        _replace_snapshot(temporary_path, path)
     finally:
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
+
+
+def _replace_snapshot(temporary_path: Path, path: Path) -> None:
+    for attempt in range(1, _SNAPSHOT_REPLACE_ATTEMPTS + 1):
+        try:
+            temporary_path.replace(path)
+        except OSError:
+            if attempt == _SNAPSHOT_REPLACE_ATTEMPTS:
+                raise
+            time.sleep(_SNAPSHOT_RETRY_DELAY_S * attempt)
+        else:
+            return
 
 
 def _raise_artifact_io(operation: str, error: OSError) -> Never:
