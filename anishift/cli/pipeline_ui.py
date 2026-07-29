@@ -27,6 +27,7 @@ from anishift.services.tts.engines.elevenbytes.constants import DALLIN_ALIAS
 from anishift.services.tts.types import SpeechBatchProgress, SpeechRequestProgress
 from anishift.setup.installer import InstallerError, ensure_binary
 from anishift.utils.rich_console import MultiProgressManager, StatusType, console, get_status_icon
+from anishift.utils.timer import Timer, format_duration
 
 __all__ = ["run_pipeline_command"]
 
@@ -317,6 +318,7 @@ class _PipelineProgressRows:
 
 def run_pipeline_command(context: AppContext) -> None:
     """Process workspace inputs on Enter and render the resulting report."""
+    pipeline_timer = Timer("pipeline", auto_start=True)
     paths = discover_inputs(context.workspace_root)
     if not paths:
         console.print("[warning]Workspace is empty[/warning] — drop MKV files into workspace/ and press Enter.")
@@ -345,7 +347,14 @@ def run_pipeline_command(context: AppContext) -> None:
     except AniShiftError as error:
         _render_pipeline_error(error)
         return
+    pipeline_timer.stop()
     _render_report(report)
+    format_duration(
+        pipeline_timer.duration_ns,
+        pipeline_timer.start_date,
+        pipeline_timer.end_date,
+        mode="minimal",
+    )
 
 
 def _progress_phase() -> ProgressPhase:

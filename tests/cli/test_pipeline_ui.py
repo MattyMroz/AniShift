@@ -324,6 +324,44 @@ def test_tts_summary_reports_profile_counts_and_stage_times(
     assert any("TTS 01:01 · audio 00:02" in item for item in rendered)
 
 
+def test_pipeline_command_uses_timer_formatter(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "episode.txt"
+    source.touch()
+    report = PipelineReport((FileOutcome(source, "done"),))
+    timer = MagicMock()
+    timer.duration_ns = 2_345_000_000
+    timer.start_date = None
+    timer.end_date = None
+    formatted: list[tuple[int, object, object, str]] = []
+
+    def fake_pipeline(*_: object, **__: object) -> PipelineReport:
+        return report
+
+    def fake_timer(name: str, *, auto_start: bool) -> MagicMock:
+        assert name == "pipeline"
+        assert auto_start
+        return timer
+
+    monkeypatch.setattr(pipeline_ui, "Timer", fake_timer)
+    monkeypatch.setattr(pipeline_ui, "run_pipeline", fake_pipeline)
+    monkeypatch.setattr(pipeline_ui, "_render_report", lambda _report: None)
+    monkeypatch.setattr(
+        pipeline_ui,
+        "format_duration",
+        lambda duration_ns, start_date, end_date, *, mode: formatted.append((duration_ns, start_date, end_date, mode)),
+    )
+
+    pipeline_ui.run_pipeline_command(
+        AppContext(Settings(), UserSettings(mode="manual"), tmp_path),
+    )
+
+    timer.stop.assert_called_once_with()
+    assert formatted == [(2_345_000_000, None, None, "minimal")]
+
+
 def test_shared_recovery_prompt_accepts_retry(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
