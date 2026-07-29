@@ -14,6 +14,7 @@ from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline import runner
 from anishift.pipeline.narration import NarrationBatch, NarrationItem, scope_id_for_source
+from anishift.pipeline.recovery import RecoveryAction, RecoveryContext
 from anishift.pipeline.tts_queue import (
     TtsQueueFailure,
     TtsQueueJob,
@@ -265,6 +266,45 @@ def test_tts_failure_preserves_subtitles_and_does_not_rollback_other_file(
     assert second_outcome.translated_path == tmp_path / "second.pl.ass"
 
 
+def test_deferred_tts_outcome_is_not_processed_in_final_report(tmp_path: Path) -> None:
+    source = tmp_path / "Episode.mkv"
+    narration = _narration(source, tmp_path, 0)
+    state = runner._MkvState(
+        FileOutcome(source, "done"),
+        None,
+        narration=narration,
+    )
+    job = TtsQueueJob(
+        source=source,
+        narration=narration,
+        source_audio_path=None,
+        temporary_root=tmp_path / "tmp",
+        post_process_tempo=1.0,
+    )
+    failure = TtsQueueFailure(
+        step="tts",
+        context=ErrorContext(
+            code=ErrorCode.TTS_ENGINE_UNAVAILABLE,
+            message="paused",
+        ),
+        disposition="not_processed",
+    )
+
+    runner._apply_tts_outcomes(
+        {source: state},
+        {
+            source: TtsQueueOutcome(
+                job=job,
+                speech=None,
+                audio=None,
+                failure=failure,
+            ),
+        },
+    )
+
+    assert state.outcome.status == "not_processed"
+
+
 def test_extract_cleanup_preserves_tts_and_audio_scope_directories(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -374,6 +414,205 @@ def test_tts_outcome_exposes_speech_stats_and_timeline_placements(
 
     assert state.outcome.tts_stats is stats
     assert state.outcome.audio_placements == (placement,)
+
+
+def test_tts_recovery_retries_failed_file_before_deferred_files(tmp_path: Path) -> None:
+    first = tmp_path / "Episode 1.mkv"
+    second = tmp_path / "Episode 2.mkv"
+    first_narration = _narration(first, tmp_path, 0)
+    second_narration = _narration(second, tmp_path, 1)
+    states = {
+        first: runner._MkvState(
+            FileOutcome(first, "done"),
+            None,
+            narration=first_narration,
+        ),
+        second: runner._MkvState(
+            FileOutcome(second, "done"),
+            None,
+            narration=second_narration,
+        ),
+    }
+    initial = _FakeRuntime(tmp_path, (first, second))
+    initial.put(first, first_narration, source_audio_path=None)
+    initial.put(second, second_narration, source_audio_path=None)
+    initial.failures[first] = TtsQueueFailure(
+        step="tts",
+        context=ErrorContext(
+            code=ErrorCode.TTS_AUTH_FAILED,
+            message="auth",
+        ),
+    )
+    initial.failures[second] = TtsQueueFailure(
+        step="tts",
+        context=ErrorContext(
+            code=ErrorCode.TTS_ENGINE_UNAVAILABLE,
+            message="paused",
+        ),
+        disposition="not_processed",
+    )
+    decisions: list[RecoveryContext] = []
+    retries: list[_FakeRuntime] = []
+
+    def runtime_factory(
+        _context: AppContext,
+        discovery_order: tuple[Path, ...],
+        _cancel: threading.Event,
+        _callbacks: PipelineTtsProgressSink | None,
+    ) -> _FakeRuntime:
+        runtime = _FakeRuntime(tmp_path, discovery_order)
+        retries.append(runtime)
+        return runtime
+
+    def recover(context: RecoveryContext) -> RecoveryAction:
+        decisions.append(context)
+        return RecoveryAction.RETRY
+
+    recovered_runtime, outcomes = runner._recover_tts_outcomes(
+        _context(tmp_path),
+        states,
+        initial,
+        initial.wait(),
+        runtime_factory=runtime_factory,
+        failure_handler=recover,
+        progress_callbacks=None,
+        cancel=threading.Event(),
+    )
+
+    assert initial.closed
+    assert recovered_runtime is retries[0]
+    assert retries[0].discovery_order == (first, second)
+    assert [job.source for job in retries[0].jobs] == [first, second]
+    assert decisions[0].failed_files == (first,)
+    assert decisions[0].pending_files == (second,)
+    assert all(outcome.failure is None for outcome in outcomes.values())
+
+
+def test_failed_tts_runtime_rebuild_returns_to_recovery_with_preserved_outcomes(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "episode1.mkv"
+    second = tmp_path / "episode2.mkv"
+    first_narration = _narration(first, tmp_path, 0)
+    second_narration = _narration(second, tmp_path, 1)
+    states = {
+        first: runner._MkvState(FileOutcome(first, "done"), None, narration=first_narration),
+        second: runner._MkvState(FileOutcome(second, "done"), None, narration=second_narration),
+    }
+    initial = _FakeRuntime(tmp_path, (first, second))
+    initial.put(first, first_narration, source_audio_path=None)
+    initial.put(second, second_narration, source_audio_path=None)
+    initial.failures[first] = TtsQueueFailure(
+        step="tts",
+        context=ErrorContext(code=ErrorCode.TTS_AUTH_FAILED, message="auth"),
+    )
+    initial.failures[second] = TtsQueueFailure(
+        step="tts",
+        context=ErrorContext(code=ErrorCode.TTS_ENGINE_UNAVAILABLE, message="paused"),
+        disposition="not_processed",
+    )
+    original_outcomes = initial.wait()
+    decisions: list[RecoveryContext] = []
+
+    def runtime_factory(
+        _context: AppContext,
+        _discovery_order: tuple[Path, ...],
+        _cancel: threading.Event,
+        _callbacks: PipelineTtsProgressSink | None,
+    ) -> _FakeRuntime:
+        raise RuntimeError("invalid updated TTS settings")
+
+    def recover(context: RecoveryContext) -> RecoveryAction:
+        decisions.append(context)
+        return RecoveryAction.SETTINGS if len(decisions) == 1 else RecoveryAction.FINISH
+
+    recovered_runtime, outcomes = runner._recover_tts_outcomes(
+        _context(tmp_path),
+        states,
+        initial,
+        original_outcomes,
+        runtime_factory=runtime_factory,
+        failure_handler=recover,
+        progress_callbacks=None,
+        cancel=threading.Event(),
+    )
+
+    assert initial.closed
+    assert recovered_runtime is initial
+    assert outcomes == original_outcomes
+    assert [decision.error.code for decision in decisions] == [
+        ErrorCode.TTS_AUTH_FAILED,
+        ErrorCode.TTS_CONFIG_INVALID,
+    ]
+    assert decisions[1].error.message == "invalid updated TTS settings"
+    assert decisions[1].failed_files == (first,)
+    assert decisions[1].pending_files == (second,)
+
+
+def test_tts_runtime_rebuild_can_succeed_after_invalid_updated_settings(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "episode1.mkv"
+    second = tmp_path / "episode2.mkv"
+    first_narration = _narration(first, tmp_path, 0)
+    second_narration = _narration(second, tmp_path, 1)
+    states = {
+        first: runner._MkvState(FileOutcome(first, "done"), None, narration=first_narration),
+        second: runner._MkvState(FileOutcome(second, "done"), None, narration=second_narration),
+    }
+    initial = _FakeRuntime(tmp_path, (first, second))
+    initial.put(first, first_narration, source_audio_path=None)
+    initial.put(second, second_narration, source_audio_path=None)
+    initial.failures[first] = TtsQueueFailure(
+        step="tts",
+        context=ErrorContext(code=ErrorCode.TTS_AUTH_FAILED, message="auth"),
+    )
+    initial.failures[second] = TtsQueueFailure(
+        step="tts",
+        context=ErrorContext(code=ErrorCode.TTS_ENGINE_UNAVAILABLE, message="paused"),
+        disposition="not_processed",
+    )
+    factory_calls = 0
+    decisions: list[RecoveryContext] = []
+    recovered: list[_FakeRuntime] = []
+
+    def runtime_factory(
+        _context: AppContext,
+        discovery_order: tuple[Path, ...],
+        _cancel: threading.Event,
+        _callbacks: PipelineTtsProgressSink | None,
+    ) -> _FakeRuntime:
+        nonlocal factory_calls
+        factory_calls += 1
+        if factory_calls == 1:
+            raise ValueError("voice configuration is incomplete")
+        runtime = _FakeRuntime(tmp_path, discovery_order)
+        recovered.append(runtime)
+        return runtime
+
+    def recover(context: RecoveryContext) -> RecoveryAction:
+        decisions.append(context)
+        return RecoveryAction.SETTINGS
+
+    recovered_runtime, outcomes = runner._recover_tts_outcomes(
+        _context(tmp_path),
+        states,
+        initial,
+        initial.wait(),
+        runtime_factory=runtime_factory,
+        failure_handler=recover,
+        progress_callbacks=None,
+        cancel=threading.Event(),
+    )
+
+    assert factory_calls == 2
+    assert recovered_runtime is recovered[0]
+    assert [decision.error.code for decision in decisions] == [
+        ErrorCode.TTS_AUTH_FAILED,
+        ErrorCode.TTS_CONFIG_INVALID,
+    ]
+    assert [job.source for job in recovered[0].jobs] == [first, second]
+    assert all(outcome.failure is None for outcome in outcomes.values())
 
 
 def test_pipeline_interrupt_cancels_tts_runtime_once(

@@ -45,6 +45,7 @@ class TtsQueueFailure:
 
     step: Literal["tts", "audio"]
     context: ErrorContext
+    disposition: Literal["failed", "not_processed"] = "failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +68,9 @@ type TtsQueueTerminalFactory = Callable[[TtsQueueJob], TtsQueueOutcome]
 type TtsQueueResultHandler = Callable[[TtsQueueOutcome], None]
 """Observe one terminal queue result on the coordinator thread."""
 
+type TtsQueuePausePredicate = Callable[[TtsQueueOutcome], bool]
+"""Return whether one result pauses every not-yet-submitted batch."""
+
 
 @dataclass(frozen=True, slots=True)
 class TtsQueueConfig:
@@ -76,6 +80,8 @@ class TtsQueueConfig:
     cancel: threading.Event
     terminal_factory: TtsQueueTerminalFactory
     on_result: TtsQueueResultHandler | None = None
+    pause_on_result: TtsQueuePausePredicate | None = None
+    paused_factory: TtsQueueTerminalFactory | None = None
 
     def __post_init__(self) -> None:
         """Reject a queue that cannot make progress."""
@@ -142,6 +148,7 @@ def run_tts_queue(
     pending: deque[TtsQueueJob] = deque()
     outcomes: dict[Path, TtsQueueOutcome] = {}
     input_closed: bool = False
+    paused: bool = False
     with ThreadPoolExecutor(max_workers=config.max_active_batches) as pool:
         active: dict[Future[TtsQueueOutcome], TtsQueueJob] = {}
         while pending or active or not input_closed:
@@ -153,7 +160,7 @@ def run_tts_queue(
                         key=queue_input.rank,
                     ),
                 )
-            while pending and len(active) < config.max_active_batches and not config.cancel.is_set():
+            while pending and len(active) < config.max_active_batches and not config.cancel.is_set() and not paused:
                 job: TtsQueueJob = pending.popleft()
                 active[pool.submit(worker, job)] = job
             if not active:
@@ -173,10 +180,17 @@ def run_tts_queue(
                 outcome: TtsQueueOutcome = future.result()
                 outcomes[job.source] = outcome
                 _notify(config.on_result, outcome)
+                if config.pause_on_result is not None and config.pause_on_result(outcome):
+                    paused = True
     remaining, _closed = queue_input.drain()
     pending.extend(remaining)
+    terminal_factory: TtsQueueTerminalFactory = (
+        config.paused_factory
+        if paused and not config.cancel.is_set() and config.paused_factory is not None
+        else config.terminal_factory
+    )
     for job in pending:
-        outcome = config.terminal_factory(job)
+        outcome = terminal_factory(job)
         outcomes[job.source] = outcome
         _notify(config.on_result, outcome)
     return outcomes

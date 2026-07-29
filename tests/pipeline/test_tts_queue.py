@@ -45,6 +45,30 @@ def _cancelled(job: TtsQueueJob) -> TtsQueueOutcome:
     )
 
 
+def _failed(job: TtsQueueJob) -> TtsQueueOutcome:
+    context = ErrorContext(code=ErrorCode.TTS_AUTH_FAILED, message="auth")
+    return TtsQueueOutcome(
+        job=job,
+        speech=None,
+        audio=None,
+        failure=TtsQueueFailure(step="tts", context=context),
+    )
+
+
+def _not_processed(job: TtsQueueJob) -> TtsQueueOutcome:
+    context = ErrorContext(code=ErrorCode.TTS_ENGINE_UNAVAILABLE, message="paused")
+    return TtsQueueOutcome(
+        job=job,
+        speech=None,
+        audio=None,
+        failure=TtsQueueFailure(
+            step="tts",
+            context=context,
+            disposition="not_processed",
+        ),
+    )
+
+
 def test_tts_queue_starts_ready_job_before_producer_close(tmp_path: Path) -> None:
     source = tmp_path / "Episode 1.mkv"
     queue_input = TtsQueueInput((source,))
@@ -133,3 +157,36 @@ def test_tts_queue_marks_unsubmitted_jobs_after_cancel(tmp_path: Path) -> None:
     failure = outcomes[second].failure
     assert failure is not None
     assert failure.context.code is ErrorCode.CANCELLED
+
+
+def test_tts_queue_pauses_unsubmitted_jobs_after_provider_failure(tmp_path: Path) -> None:
+    paths = tuple(tmp_path / f"Episode {index}.mkv" for index in range(1, 4))
+    queue_input = TtsQueueInput(paths)
+    for rank, path in enumerate(paths):
+        queue_input.put(_job(path, rank, tmp_path))
+    queue_input.close()
+    observed: list[Path] = []
+
+    def worker(job: TtsQueueJob) -> TtsQueueOutcome:
+        observed.append(job.source)
+        return _failed(job)
+
+    outcomes = run_tts_queue(
+        queue_input,
+        worker=worker,
+        config=TtsQueueConfig(
+            max_active_batches=1,
+            cancel=threading.Event(),
+            terminal_factory=_cancelled,
+            pause_on_result=lambda outcome: outcome.failure is not None,
+            paused_factory=_not_processed,
+        ),
+    )
+
+    assert observed == [paths[0]]
+    first_failure = outcomes[paths[0]].failure
+    assert first_failure is not None
+    assert first_failure.disposition == "failed"
+    deferred_failures = [outcomes[path].failure for path in paths[1:]]
+    assert all(failure is not None for failure in deferred_failures)
+    assert all(failure.disposition == "not_processed" for failure in deferred_failures if failure is not None)

@@ -9,10 +9,11 @@ from anishift.bootstrap import AppContext
 from anishift.cli import pipeline_ui
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
-from anishift.errors import AniShiftError
+from anishift.errors import AniShiftError, ErrorCode, ErrorContext
 from anishift.pipeline import runner
 from anishift.pipeline.llm_queue import LlmProgressState
 from anishift.pipeline.narration import scope_id_for_source
+from anishift.pipeline.recovery import RecoveryAction, RecoveryContext, RecoveryDomain
 from anishift.pipeline.types import FileOutcome, PipelineReport
 from anishift.services.tts.types import (
     SpeechBatchProgress,
@@ -258,6 +259,38 @@ def test_pipeline_progress_resets_unsuccessful_terminal_row(tmp_path: Path) -> N
     progress.stop_task.assert_called_once_with(7)
 
 
+def test_pipeline_progress_reopens_terminal_row_for_tts_retry(tmp_path: Path) -> None:
+    progress = MagicMock(spec=MultiProgressManager)
+    progress.add_task.return_value = 7
+    path = tmp_path / "episode.mkv"
+    rows = pipeline_ui._PipelineProgressRows(progress, (path,), _context(tmp_path))
+    scope_id = scope_id_for_source(path, workspace_root=tmp_path)
+    rows.on_pipeline_terminal(scope_id, "failed")
+    progress.reset_mock()
+
+    rows.on_pipeline_retry(scope_id)
+    rows.on_batch_state(
+        SpeechBatchProgress(
+            scope_id=scope_id,
+            completed_requests=1,
+            total_requests=1,
+            committed_required_requests=1,
+            total_required_requests=1,
+            status=SpeechBatchStatus.COMPLETED,
+        ),
+    )
+
+    assert progress.reset_task.call_count == 2
+    progress.update.assert_called_once_with(7, 100)
+    assert (
+        progress.update_description.call_args_list[-1]
+        .args[1]
+        .startswith(
+            "Synthesizing   elevenbytes/run6 · Dallin ·",
+        )
+    )
+
+
 def test_tts_summary_reports_profile_counts_and_stage_times(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -289,6 +322,29 @@ def test_tts_summary_reports_profile_counts_and_stage_times(
     assert any("Events 5 · synthesized 3 · resumed 1 · skipped 1 · failed 0" in item for item in rendered)
     assert any("Provider calls 3 · retries 1" in item for item in rendered)
     assert any("TTS 01:01 · audio 00:02" in item for item in rendered)
+
+
+def test_shared_recovery_prompt_accepts_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "episode.mkv"
+    recovery = RecoveryContext(
+        domain=RecoveryDomain.TTS,
+        error=ErrorContext(
+            code=ErrorCode.TTS_RATE_LIMITED,
+            message="rate limited",
+        ),
+        completed_files=(),
+        failed_files=(source,),
+        pending_files=(),
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: "retry")
+    monkeypatch.setattr(console, "print", lambda *_args, **_kwargs: None)
+
+    action = pipeline_ui._choose_recovery(_context(tmp_path), recovery)
+
+    assert action is RecoveryAction.RETRY
 
 
 def test_llm_progress_names_file_provider_and_terminal_state(

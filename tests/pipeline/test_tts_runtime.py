@@ -88,6 +88,9 @@ class _Progress:
     def on_pipeline_terminal(self, scope_id: str, state: str) -> None:
         self.terminals.append((scope_id, state))
 
+    def on_pipeline_retry(self, scope_id: str) -> None:
+        del scope_id
+
 
 class _Tts:
     def __init__(self, result: SpeechBatchResult) -> None:
@@ -431,3 +434,84 @@ def test_runtime_isolates_unexpected_audio_failure_per_file(tmp_path: Path) -> N
     assert failure.context.code is ErrorCode.IO_ERROR
     assert outcomes[second].failure is None
     assert outcomes[second].audio is not None
+
+
+def test_runtime_pauses_later_batches_after_provider_wide_tts_failure(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "Episode 1.mkv"
+    second = tmp_path / "Episode 2.mkv"
+    first_narration = _narration()
+    second_narration = replace(
+        first_narration,
+        speech=replace(
+            first_narration.speech,
+            scope_id="scope-second",
+            batch_rank=1,
+        ),
+    )
+
+    class _ProviderFailureTts:
+        def __init__(self) -> None:
+            self.scopes: list[str] = []
+
+        def synthesize(
+            self,
+            batch: SpeechBatch,
+            *,
+            callbacks: TtsProgressSink,
+        ) -> SpeechBatchResult:
+            del callbacks
+            self.scopes.append(batch.scope_id)
+            return SpeechBatchResult(
+                scope_id=batch.scope_id,
+                status=SpeechBatchStatus.FAILED,
+                requests=(),
+                stats=SpeechBatchStats(
+                    total_requests=len(batch.requests),
+                    synthesized=0,
+                    resume_hits=0,
+                    skipped=0,
+                    failed=len(batch.requests),
+                    provider_calls=1,
+                    retries=0,
+                    synthesis_time_ms=1.0,
+                    engine_id="elevenlabs",
+                    provider_model_id="model",
+                    voice_id="voice",
+                ),
+                failure=ErrorContext(
+                    code=ErrorCode.TTS_AUTH_FAILED,
+                    message="auth",
+                ),
+            )
+
+        def cancel(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    tts = _ProviderFailureTts()
+    runtime = PipelineTtsRuntime(
+        tts_config=_config(),
+        audio_config=AudioConfig(),
+        workspace_root=tmp_path,
+        discovery_order=(first, second),
+        cancel=threading.Event(),
+        post_process_tempo=1.0,
+        max_active_batches=1,
+        tts_service=tts,
+        audio_service=_Audio(),
+    )
+    runtime.put(first, first_narration, source_audio_path=None)
+    runtime.put(second, second_narration, source_audio_path=None)
+
+    outcomes = runtime.wait()
+    runtime.close()
+
+    assert tts.scopes == ["scope-runtime"]
+    assert outcomes[first].failure is not None
+    second_failure = outcomes[second].failure
+    assert second_failure is not None
+    assert second_failure.disposition == "not_processed"

@@ -14,8 +14,9 @@ from rich.progress import TaskID
 from anishift.bootstrap import AppContext
 from anishift.errors import AniShiftError
 from anishift.pipeline import discover_inputs, run_pipeline
-from anishift.pipeline.llm_queue import LlmFailureAction, LlmProgressState
+from anishift.pipeline.llm_queue import LlmProgressState
 from anishift.pipeline.narration import scope_id_for_source
+from anishift.pipeline.recovery import RecoveryAction, RecoveryContext
 from anishift.pipeline.types import FileOutcome, FileStatus, PipelineReport, ProgressPhase
 from anishift.platform.binaries import Binary, BinaryNotFoundError
 from anishift.services.extraction.tracks import is_polish_language
@@ -65,6 +66,7 @@ class _PipelineProgressRows:
         paths: tuple[Path, ...],
         context: AppContext,
     ) -> None:
+        self._context: AppContext = context
         self._progress = progress
         self._task_ids = {path: progress.add_task(self._description(path, "Extracting")) for path in os_sorted(paths)}
         self._task_ids_by_name = {path.name: task_id for path, task_id in self._task_ids.items()}
@@ -234,6 +236,26 @@ class _PipelineProgressRows:
                 return
             self._set_terminal(path, state)
 
+    def on_pipeline_retry(self, scope_id: str) -> None:
+        """Reopen one terminal row before a retry runtime starts."""
+        with self._lock:
+            path = self._active_path(scope_id)
+            if path is None:
+                return
+            self._terminal_paths.discard(path)
+            self._stage_rank[path] = _PIPELINE_STAGE_RANK["tts"]
+            self._tts_completed_required[path] = 0
+            self._tts_started.discard(path)
+            self._audio_started.discard(path)
+            self._tts_label = _tts_progress_label(self._context)
+            task_id = self._task_ids[path]
+            self._set_bar(task_id)
+            self._progress.reset_task(task_id)
+            self._progress.update_description(
+                task_id,
+                self._description(path, "Synthesizing", self._tts_label),
+            )
+
     def finalize(self, report: PipelineReport) -> None:
         """Reconcile every preallocated row with the authoritative report."""
         with self._lock:
@@ -311,13 +333,9 @@ def run_pipeline_command(context: AppContext) -> None:
             report = run_pipeline(
                 context,
                 interaction=_ManualInteraction(),
-                llm_failure_handler=lambda outcome, completed, pending: _choose_llm_failure(
-                    context,
-                    outcome,
-                    completed,
-                    pending,
-                ),
+                llm_failure_handler=lambda recovery: _choose_recovery(context, recovery),
                 llm_progress_handler=manual_llm_progress,
+                tts_failure_handler=lambda recovery: _choose_recovery(context, recovery),
             )
         else:
             report = _run_auto_pipeline(context, tuple(paths))
@@ -347,10 +365,10 @@ def _run_auto_pipeline(context: AppContext, paths: tuple[Path, ...]) -> Pipeline
     with ExitStack() as live:
         live.enter_context(progress)
 
-        def choose_failure(outcome: FileOutcome, completed: int, pending: int) -> LlmFailureAction:
+        def choose_failure(recovery: RecoveryContext) -> RecoveryAction:
             live.close()
-            action = _choose_llm_failure(context, outcome, completed, pending)
-            if action == "settings":
+            action = _choose_recovery(context, recovery)
+            if action is not RecoveryAction.FINISH:
                 live.enter_context(progress)
             return action
 
@@ -361,6 +379,7 @@ def _run_auto_pipeline(context: AppContext, paths: tuple[Path, ...]) -> Pipeline
                 progress_factory=lambda: cast(ProgressPhase, nullcontext(rows)),
                 llm_failure_handler=choose_failure,
                 llm_progress_handler=rows.on_progress,
+                tts_failure_handler=choose_failure,
                 tts_progress_callbacks=rows,
             )
             rows.finalize(report)
@@ -492,28 +511,29 @@ def _render_outcome(outcome: FileOutcome) -> None:
         console.print(f"{get_status_icon('warning')} {warning}")
 
 
-def _choose_llm_failure(
+def _choose_recovery(
     context: AppContext,
-    outcome: FileOutcome,
-    completed: int,
-    pending: int,
-) -> LlmFailureAction:
-    """Show a clear provider failure and wait for an explicit safe decision."""
+    recovery: RecoveryContext,
+) -> RecoveryAction:
+    """Show one shared recovery prompt and wait for an explicit decision."""
     from anishift.cli.settings_panel import open_settings_panel  # noqa: PLC0415 - interactive failure path
 
-    failure = outcome.failure
-    message = failure.message if failure is not None else "LLM provider failed"
-    console.print(f"[error]{message}[/error]")
-    console.print(f"[warning]Completed {completed} · waiting {pending}[/warning]")
-    console.print("[bold]> settings[/bold]\n[bold]> finish[/bold]")
+    console.print(f"[error]{recovery.error.message}[/error]")
+    console.print(
+        f"[warning]Completed {len(recovery.completed_files)} · "
+        f"failed {len(recovery.failed_files)} · waiting {len(recovery.pending_files)}[/warning]",
+    )
+    console.print("[bold]> retry[/bold]\n[bold]> settings[/bold]\n[bold]> finish[/bold]")
     while True:
         answer = input("> ").strip().lower()
+        if answer == "retry":
+            return RecoveryAction.RETRY
         if answer == "settings":
             open_settings_panel(context)
-            return "settings"
+            return RecoveryAction.SETTINGS
         if answer == "finish":
-            return "finish"
-        console.print("[warning]Choose 'settings' or 'finish'.[/warning]")
+            return RecoveryAction.FINISH
+        console.print("[warning]Choose 'retry', 'settings' or 'finish'.[/warning]")
 
 
 def _render_llm_summary(report: PipelineReport) -> None:

@@ -68,6 +68,21 @@ _DEFAULT_ENGINE_CONCURRENCY: Final[dict[str, int]] = {
 }
 """Measured or conservative fallback concurrency by engine."""
 
+_PROVIDER_TERMINAL_CODES: Final[frozenset[ErrorCode]] = frozenset(
+    {
+        ErrorCode.TTS_AUTH_FAILED,
+        ErrorCode.TTS_CONFIG_INVALID,
+        ErrorCode.TTS_ENGINE_ERROR,
+        ErrorCode.TTS_ENGINE_UNAVAILABLE,
+        ErrorCode.TTS_FAILED,
+        ErrorCode.TTS_NETWORK_ERROR,
+        ErrorCode.TTS_RATE_LIMITED,
+        ErrorCode.TTS_TIMEOUT,
+        ErrorCode.TTS_VOICE_INVALID,
+    },
+)
+"""TTS failures that stop submitting new files until explicit recovery."""
+
 
 class _TtsBatchService(Protocol):
     def synthesize(
@@ -111,6 +126,10 @@ class PipelineTtsProgressSink(TtsProgressSink, AudioProgressSink, Protocol):
         """Report the terminal state of one queued source."""
         ...
 
+    def on_pipeline_retry(self, scope_id: str) -> None:
+        """Reopen one failed or deferred source for another runtime."""
+        ...
+
 
 class _SilentPipelineProgress:
     def on_batch_state(self, state: SpeechBatchProgress) -> None:
@@ -128,6 +147,9 @@ class _SilentPipelineProgress:
         state: Literal["done", "failed", "cancelled", "not_processed"],
     ) -> None:
         del scope_id, state
+
+    def on_pipeline_retry(self, scope_id: str) -> None:
+        del scope_id
 
 
 class _FfmpegClipAdapter:
@@ -262,6 +284,8 @@ class PipelineTtsRuntime:
                 cancel=cancel,
                 terminal_factory=_cancelled_outcome,
                 on_result=self._on_result,
+                pause_on_result=_is_provider_terminal,
+                paused_factory=_not_processed_outcome,
             ),
         )
 
@@ -441,7 +465,10 @@ class PipelineTtsRuntime:
         """Forward one queue terminal state without exposing queue internals."""
         state: Literal["done", "failed", "cancelled", "not_processed"] = "done"
         if outcome.failure is not None:
-            state = "cancelled" if outcome.failure.context.code is ErrorCode.CANCELLED else "failed"
+            if outcome.failure.disposition == "not_processed":
+                state = "not_processed"
+            else:
+                state = "cancelled" if outcome.failure.context.code is ErrorCode.CANCELLED else "failed"
         try:
             self._callbacks.on_pipeline_terminal(
                 outcome.job.narration.speech.scope_id,
@@ -564,3 +591,31 @@ def _cancelled_outcome(job: TtsQueueJob) -> TtsQueueOutcome:
         suggestion="Run the file again to resume validated clips.",
     )
     return _failed_outcome(job, step="tts", context=context)
+
+
+def _not_processed_outcome(job: TtsQueueJob) -> TtsQueueOutcome:
+    context = ErrorContext(
+        code=ErrorCode.TTS_ENGINE_UNAVAILABLE,
+        message="TTS queue paused after a provider-wide failure",
+        suggestion="Retry, change TTS settings, or finish with completed files.",
+    )
+    return TtsQueueOutcome(
+        job=job,
+        speech=None,
+        audio=None,
+        failure=TtsQueueFailure(
+            step="tts",
+            context=context,
+            disposition="not_processed",
+        ),
+    )
+
+
+def _is_provider_terminal(outcome: TtsQueueOutcome) -> bool:
+    failure = outcome.failure
+    return (
+        failure is not None
+        and failure.step == "tts"
+        and failure.disposition == "failed"
+        and failure.context.code in _PROVIDER_TERMINAL_CODES
+    )

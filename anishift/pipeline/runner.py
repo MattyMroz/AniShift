@@ -48,6 +48,13 @@ from .narration import (
     build_translated_narration,
     scope_id_for_source,
 )
+from .recovery import (
+    RecoveryAction,
+    RecoveryContext,
+    RecoveryDomain,
+    RecoveryHandler,
+    rebuild_error_context,
+)
 from .tts_queue import TtsQueueOutcome
 from .tts_runtime import PipelineTtsProgressSink, PipelineTtsRuntime
 from .types import (
@@ -221,6 +228,7 @@ def run_pipeline(  # noqa: PLR0912,PLR0913,PLR0915 - explicit composition and li
     progress_factory: ProgressPhaseFactory | None = None,
     llm_failure_handler: LlmFailureHandler | None = None,
     llm_progress_handler: LlmProgressHandler | None = None,
+    tts_failure_handler: RecoveryHandler | None = None,
     tts_progress_callbacks: PipelineTtsProgressSink | None = None,
     tts_runtime_factory: TtsRuntimeFactory | None = None,
 ) -> PipelineReport:
@@ -346,7 +354,18 @@ def run_pipeline(  # noqa: PLR0912,PLR0913,PLR0915 - explicit composition and li
                 llm_progress.notify(path, outcome.status)
         if tts_runtime is not None:
             tts_runtime.close_input()
-            _apply_tts_outcomes(states, tts_runtime.wait())
+            tts_outcomes: dict[Path, TtsQueueOutcome] = tts_runtime.wait()
+            tts_runtime, tts_outcomes = _recover_tts_outcomes(
+                context,
+                states,
+                tts_runtime,
+                tts_outcomes,
+                runtime_factory=runtime_factory,
+                failure_handler=tts_failure_handler,
+                progress_callbacks=tts_progress_callbacks,
+                cancel=cancel,
+            )
+            _apply_tts_outcomes(states, tts_outcomes)
     except KeyboardInterrupt:
         llm_progress.close()
         cancel.set()
@@ -391,6 +410,111 @@ def _notify_spoken_ready(
     state.enqueue_generation = 1
 
 
+def _recover_tts_outcomes(  # noqa: PLR0913 - explicit recovery dependencies
+    context: AppContext,
+    states: dict[Path, _MkvState],
+    runtime: _PipelineTtsRuntime,
+    outcomes: dict[Path, TtsQueueOutcome],
+    *,
+    runtime_factory: TtsRuntimeFactory,
+    failure_handler: RecoveryHandler | None,
+    progress_callbacks: PipelineTtsProgressSink | None,
+    cancel: threading.Event,
+) -> tuple[_PipelineTtsRuntime, dict[Path, TtsQueueOutcome]]:
+    """Rebuild TTS runtime after explicit retry/settings decisions."""
+    recovery_error: ErrorContext | None = None
+    while True:
+        recovery = _tts_recovery_context(outcomes)
+        if recovery is None or failure_handler is None:
+            return runtime, outcomes
+        if recovery_error is not None:
+            recovery = RecoveryContext(
+                domain=recovery.domain,
+                error=recovery_error,
+                completed_files=recovery.completed_files,
+                failed_files=recovery.failed_files,
+                pending_files=recovery.pending_files,
+            )
+        action: RecoveryAction = failure_handler(recovery)
+        if action is RecoveryAction.FINISH:
+            return runtime, outcomes
+        retry_paths: tuple[Path, ...] = (
+            *os_sorted(recovery.failed_files),
+            *os_sorted(recovery.pending_files),
+        )
+        runtime.close()
+        try:
+            candidate_runtime = runtime_factory(
+                context,
+                retry_paths,
+                cancel,
+                progress_callbacks,
+            )
+        except (AniShiftError, OSError, RuntimeError, ValueError) as exc:
+            recovery_error = rebuild_error_context(exc, RecoveryDomain.TTS)
+            continue
+        runtime = candidate_runtime
+        recovery_error = None
+        for path in retry_paths:
+            state: _MkvState = states[path]
+            narration = state.narration
+            if narration is None:
+                continue
+            if progress_callbacks is not None:
+                _notify_tts_retry(
+                    progress_callbacks,
+                    narration.speech.scope_id,
+                )
+            runtime.put(
+                path,
+                narration,
+                source_audio_path=state.outcome.source_audio_path,
+            )
+        runtime.close_input()
+        outcomes.update(runtime.wait())
+
+
+def _notify_tts_retry(
+    callbacks: PipelineTtsProgressSink,
+    scope_id: str,
+) -> None:
+    """Keep a retry observer outside recovery ownership."""
+    try:
+        callbacks.on_pipeline_retry(scope_id)
+    except Exception:  # noqa: BLE001 - observers cannot own recovery
+        return
+
+
+def _tts_recovery_context(
+    outcomes: dict[Path, TtsQueueOutcome],
+) -> RecoveryContext | None:
+    """Build one provider recovery snapshot from ordered queue outcomes."""
+    failed: list[Path] = []
+    pending: list[Path] = []
+    completed: list[Path] = []
+    trigger: ErrorContext | None = None
+    for path, outcome in outcomes.items():
+        failure = outcome.failure
+        if failure is None:
+            completed.append(path)
+            continue
+        if failure.disposition == "not_processed":
+            pending.append(path)
+            continue
+        failed.append(path)
+        if trigger is None:
+            trigger = failure.context
+    if not failed or trigger is None:
+        return None
+    return RecoveryContext(
+        domain=RecoveryDomain.TTS,
+        error=trigger,
+        completed_files=tuple(os_sorted(completed)),
+        failed_files=tuple(os_sorted(failed)),
+        pending_files=tuple(os_sorted(pending)),
+    )
+
+
 def _apply_tts_outcomes(
     states: dict[Path, _MkvState],
     outcomes: dict[Path, TtsQueueOutcome],
@@ -419,6 +543,7 @@ def _apply_tts_outcomes(
                 state.outcome,
                 queued.failure.step,
                 queued.failure.context,
+                not_processed=queued.failure.disposition == "not_processed",
             )
             continue
         if queued.speech is None:
@@ -453,8 +578,13 @@ def _mark_tts_failure(
     outcome: FileOutcome,
     step: Literal["tts", "audio"],
     context: ErrorContext,
+    *,
+    not_processed: bool = False,
 ) -> None:
-    outcome.status = "cancelled" if context.code is ErrorCode.CANCELLED else "failed"
+    if not_processed:
+        outcome.status = "not_processed"
+    else:
+        outcome.status = "cancelled" if context.code is ErrorCode.CANCELLED else "failed"
     outcome.failure = FileFailure(
         step,
         context.code.value,
