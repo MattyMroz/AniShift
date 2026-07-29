@@ -14,12 +14,14 @@ from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline import discover_inputs, run_pipeline, runner
 from anishift.pipeline.llm_queue import LlmProgressState
+from anishift.pipeline.narration import NarrationBatch
 from anishift.pipeline.runner import _LlmProgressGate, _worker_count
 from anishift.pipeline.types import FileOutcome, TranslationSettings
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.types import SubtitleSplit
+from anishift.services.tts import SpeechBatch
 
 
 class _NullPhase:
@@ -185,6 +187,7 @@ def test_llm_queue_isolates_mkv_write_failure(
         UserSettings(translation_engine="llm"),
         tmp_path,
     )
+    published: list[Path] = []
 
     class _FakeRuntime:
         def __init__(self, *_: object, **__: object) -> None:
@@ -199,7 +202,13 @@ def test_llm_queue_isolates_mkv_write_failure(
         def engine_factory(self) -> None:
             return None
 
-    def fake_translate(path: Path, state: runner._MkvState, *_: object, **__: object) -> None:
+    def fake_translate(
+        path: Path,
+        state: runner._MkvState,
+        *_: object,
+        on_spoken_ready: runner.SpokenReadyHandler | None,
+        **__: object,
+    ) -> None:
         if path == bad:
             error_context = ErrorContext(
                 code=ErrorCode.IO_ERROR,
@@ -207,6 +216,12 @@ def test_llm_queue_isolates_mkv_write_failure(
             )
             raise SubtitleError(context=error_context)
         state.outcome.translated_path = path.with_suffix(".pl.ass")
+        narration = NarrationBatch(
+            speech=SpeechBatch(scope_id="scope-good", batch_rank=1, requests=()),
+            items=(),
+        )
+        state.narration = narration
+        runner._notify_spoken_ready(path, state, on_spoken_ready)
 
     monkeypatch.setattr("anishift.pipeline.llm_runtime.PipelineLlmRuntime", _FakeRuntime)
     monkeypatch.setattr(runner, "_translate_one", fake_translate)
@@ -217,11 +232,13 @@ def test_llm_queue_isolates_mkv_write_failure(
         context,
         threading.Event(),
         on_provider_failure=None,
+        on_spoken_ready=lambda path, _batch: published.append(path),
     )
 
     assert states[bad].outcome.status == "failed"
     assert states[bad].outcome.failure is not None
     assert states[good].outcome.status == "done"
+    assert published == [good]
 
 
 def test_llm_pipeline_sets_cancel_before_executor_wait_on_interrupt(
