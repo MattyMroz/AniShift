@@ -25,6 +25,7 @@ dependencies = [
     "pysubs2>=1.8.1",
     "python-dotenv>=1.2.2",
     "pyttsx3>=2.99",
+    "regex>=2026.7.19",
     "rich>=15.0.0",
     "typer>=0.26.8",
 ]
