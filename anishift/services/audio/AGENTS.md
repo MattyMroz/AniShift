@@ -40,8 +40,8 @@ sidecara audio przez FFmpeg.
 - `write_timeline` zapisuje bezpośrednio do wskazanego pliku. Atomiczność należy
   do `AudioService`, który przekazuje ścieżkę tymczasową. `timeline.py`,
   `service.py`
-- Istniejący sidecar wolno zastąpić tylko wtedy, gdy manifest potwierdza jego
-  własność dokładnym hashem. Obcego pliku nie nadpisuj. `resume.py`
+- Nowy sidecar jest walidowany pod nazwą tymczasową, a następnie atomowo zastępuje
+  istniejący plik docelowy niezależnie od wcześniejszej własności. `service.py`
 - Uszkodzony manifest jest przenoszony do `manifest.corrupt.*.json`; nowszy
   schema version jest błędem, nie kandydatem do kwarantanny. `resume.py`
 - Blokady manifestu są tylko process-local. Nie zakładaj bezpieczeństwa dwóch

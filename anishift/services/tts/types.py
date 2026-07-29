@@ -148,6 +148,7 @@ class SpeechRequestProgress:
     request_id: str
     status: SynthesisStatus
     attempts: int
+    clip: SpeechClip | None
 
 
 @dataclass(frozen=True, slots=True)

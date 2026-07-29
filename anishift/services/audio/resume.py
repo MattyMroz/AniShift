@@ -13,10 +13,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from anishift.errors import ErrorCode, ErrorContext
-from anishift.services.audio.errors import (
-    AudioOutputCollisionError,
-    AudioResumeError,
-)
+from anishift.services.audio.errors import AudioResumeError
 from anishift.services.audio.fingerprint import sha256_file
 
 __all__ = ["AudioResumeRepository"]
@@ -91,23 +88,6 @@ class AudioResumeRepository:
             key: str = _output_key(path)
             entry: _ArtifactEntry | None = self._outputs.get(key)
             return entry is not None and entry.fingerprint == fingerprint and _matches(path, entry.file_hash)
-
-    def require_replaceable_output(self, path: Path) -> None:
-        """Allow absent or still-owned output and reject foreign collisions."""
-        if not path.exists():
-            return
-        with self._lock:
-            self._reload()
-            entry: _ArtifactEntry | None = self._outputs.get(_output_key(path))
-            if entry is not None and _matches(path, entry.file_hash):
-                return
-        context: ErrorContext = ErrorContext(
-            code=ErrorCode.AUDIO_FAILED,
-            message=f"Refusing to overwrite an unowned audio sidecar: {path.name}",
-            suggestion="Move the existing file or choose another output profile.",
-            details={"operation": "output_collision", "path": str(path)},
-        )
-        raise AudioOutputCollisionError(context=context)
 
     def commit_output(self, fingerprint: str, path: Path) -> None:
         """Record ownership of one validated final sidecar."""

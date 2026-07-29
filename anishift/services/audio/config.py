@@ -48,6 +48,7 @@ class AudioConfig:
     voice_mix_offset_db: float = 0.0
     original_gain_db: float = 0.0
     timeline_policy: TimelinePolicy = TimelinePolicy.SERIALIZE
+    normalization_concurrency: int = 16
     operation_timeout_s: float = 30.0
     shutdown_grace_s: float = 5.0
     flac_compression_level: int = 5
@@ -64,6 +65,8 @@ class AudioConfig:
             _raise_config("narrator_sample_width must be 2 for PCM S16LE")
         if self.narrator_channels != 1:
             _raise_config("narrator_channels must be mono in v1")
+        if self.normalization_concurrency <= 0:
+            _raise_config("normalization_concurrency must be positive")
         if not math.isfinite(self.operation_timeout_s) or self.operation_timeout_s <= 0:
             _raise_config("operation_timeout_s must be finite and positive")
         if not math.isfinite(self.shutdown_grace_s) or self.shutdown_grace_s <= 0:

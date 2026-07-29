@@ -713,6 +713,7 @@ async def _notify_execution(  # noqa: PLR0913 - immutable progress snapshot
             request_id=result.request.request_id,
             status=result.status,
             attempts=execution.provider_calls,
+            clip=result.speech_clip,
         ),
     )
     await _notify_batch(

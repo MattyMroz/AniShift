@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Final, Never, Protocol
 
@@ -23,7 +24,11 @@ from anishift.services.audio.errors import (
     AudioProbeError,
     AudioProcessError,
 )
-from anishift.services.audio.fingerprint import mix_fingerprint, narration_fingerprint
+from anishift.services.audio.fingerprint import (
+    mix_fingerprint,
+    narration_fingerprint,
+    normalization_fingerprint,
+)
 from anishift.services.audio.normalize import NormalizationContext, normalize_clip
 from anishift.services.audio.output import (
     RenderInputs,
@@ -45,6 +50,7 @@ from anishift.services.audio.types import (
     AudioRenderStatus,
     ChannelPlan,
     NormalizedClip,
+    TimedClip,
     TimelinePlan,
 )
 
@@ -108,6 +114,9 @@ class AudioService:
                 details={"operation": "audio_config"},
             )
             raise AudioConfigError(context=context) from error
+        self._normalization_slots: threading.BoundedSemaphore = threading.BoundedSemaphore(
+            config.normalization_concurrency,
+        )
 
     def render(
         self,
@@ -239,14 +248,9 @@ class AudioService:
             _notify(callbacks, request.scope_id, "narration_resume")
             return hit, None
         _notify(callbacks, request.scope_id, "normalizing")
-        normalized: tuple[NormalizedClip, ...] = tuple(
-            self._normalize_one(
-                request,
-                clip_index=index,
-                narration_id=narration_id,
-                cancel=cancel,
-            )
-            for index in range(len(request.clips))
+        normalized: tuple[NormalizedClip, ...] = self._normalize_many(
+            request,
+            cancel=cancel,
         )
         plan: TimelinePlan | None = plan_timeline(normalized)
         if plan is None:
@@ -298,30 +302,61 @@ class AudioService:
             temporary_wav.unlink(missing_ok=True)
         return narrator_path, plan
 
-    def _normalize_one(
+    def _normalize_many(
         self,
         request: AudioRenderRequest,
         *,
-        clip_index: int,
-        narration_id: str,
+        cancel: threading.Event | None,
+    ) -> tuple[NormalizedClip, ...]:
+        worker_count: int = min(
+            len(request.clips),
+            self._config.normalization_concurrency,
+        )
+
+        def normalize_one(clip: TimedClip) -> NormalizedClip:
+            return self.prepare_clip(
+                clip,
+                temporary_root=request.temporary_root,
+                tempo=request.post_process_tempo,
+                cancel=cancel,
+            )
+
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="anishift-audio-normalize",
+        ) as executor:
+            return tuple(executor.map(normalize_one, request.clips))
+
+    def prepare_clip(
+        self,
+        clip: TimedClip,
+        *,
+        temporary_root: Path,
+        tempo: float,
         cancel: threading.Event | None,
     ) -> NormalizedClip:
-        normalized_dir: Path = request.temporary_root / "narration" / "normalized"
+        """Normalize one committed TTS clip into its reusable audio artifact."""
+        normalized_dir: Path = temporary_root / "narration" / "normalized"
         key: str = _digest_name(
-            f"{narration_id}:{clip_index}:{request.clips[clip_index].request_id}",
-        )
-        return normalize_clip(
-            request.clips[clip_index],
-            normalized_dir / f"{key}.pcm",
-            tempo=request.post_process_tempo,
-            context=NormalizationContext(
+            normalization_fingerprint(
+                clip,
+                post_process_tempo=tempo,
                 config=self._config,
-                ffmpeg=self._ffmpeg,
-                runner=self._runner,
-                cancel=cancel,
-                reuse_existing=True,
             ),
         )
+        with self._normalization_slots:
+            return normalize_clip(
+                clip,
+                normalized_dir / f"{key}.pcm",
+                tempo=tempo,
+                context=NormalizationContext(
+                    config=self._config,
+                    ffmpeg=self._ffmpeg,
+                    runner=self._runner,
+                    cancel=cancel,
+                    reuse_existing=True,
+                ),
+            )
 
     def _valid_narrator_hit(
         self,
@@ -472,7 +507,6 @@ class AudioService:
                 expected_duration_ms=expected_duration_ms,
             )
             _check_cancel(cancel)
-            repository.require_replaceable_output(destination)
             temporary.replace(destination)
             repository.commit_output(mix_id, destination)
         finally:

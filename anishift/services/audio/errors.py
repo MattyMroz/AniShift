@@ -10,7 +10,6 @@ __all__ = [
     "AudioDecodeError",
     "AudioError",
     "AudioLayoutError",
-    "AudioOutputCollisionError",
     "AudioProbeError",
     "AudioProcessError",
     "AudioResumeError",
@@ -35,10 +34,6 @@ class AudioDecodeError(AudioError, FatalError):
 
 class AudioLayoutError(AudioError, FatalError):
     """A channel layout has no explicit supported mapping."""
-
-
-class AudioOutputCollisionError(AudioError, FatalError):
-    """A final sidecar exists without proof of AniShift ownership."""
 
 
 class AudioProcessError(AudioError, FatalError):

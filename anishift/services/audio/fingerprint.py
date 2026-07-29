@@ -13,6 +13,7 @@ from anishift.services.audio.types import ChannelPlan, TimedClip
 __all__ = [
     "mix_fingerprint",
     "narration_fingerprint",
+    "normalization_fingerprint",
     "sha256_file",
 ]
 
@@ -23,6 +24,9 @@ _NARRATION_ALGORITHM_VERSION: Final[int] = 1
 
 _MIX_ALGORITHM_VERSION: Final[int] = 1
 """Version of gain, channel mapping, and amix semantics."""
+
+_NORMALIZATION_ALGORITHM_VERSION: Final[int] = 1
+"""Version of provider-clip conversion semantics."""
 
 _COPY_BUFFER_BYTES: Final[int] = 1024 * 1024
 """Streaming file-hash buffer size."""
@@ -107,6 +111,31 @@ def mix_fingerprint(
             "profile": config.codec_profile.value,
             "bitrate": config.bitrate,
             "flac_compression_level": config.flac_compression_level,
+        },
+    }
+    return _digest(payload)
+
+
+def normalization_fingerprint(
+    clip: TimedClip,
+    *,
+    post_process_tempo: float,
+    config: AudioConfig,
+) -> str:
+    """Hash one provider clip and every setting affecting normalized PCM."""
+    payload: dict[str, object] = {
+        "algorithm_version": _NORMALIZATION_ALGORITHM_VERSION,
+        "request_id": clip.request_id,
+        "clip_hash": sha256_file(clip.clip_path),
+        "clip_format": clip.clip_format.value,
+        "sample_rate": clip.sample_rate,
+        "channels": clip.channels,
+        "duration_ms": clip.duration_ms,
+        "post_process_tempo": _canonical_float(post_process_tempo),
+        "target": {
+            "sample_rate": config.narrator_sample_rate,
+            "sample_width": config.narrator_sample_width,
+            "channels": config.narrator_channels,
         },
     }
     return _digest(payload)

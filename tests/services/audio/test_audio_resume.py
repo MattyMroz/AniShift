@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from anishift.services.audio.errors import AudioOutputCollisionError, AudioResumeError
+from anishift.services.audio.errors import AudioResumeError
 from anishift.services.audio.resume import AudioResumeRepository
 
 
@@ -29,15 +29,14 @@ def test_resume_tracks_narrator_and_multiple_output_formats(tmp_path: Path) -> N
     assert reloaded.output_hit(flac, "mix-b")
 
 
-def test_resume_rejects_foreign_or_replaced_output(tmp_path: Path) -> None:
+def test_resume_invalidates_replaced_output(tmp_path: Path) -> None:
     repository = AudioResumeRepository(tmp_path / "audio", "scope")
     output = tmp_path / "Episode.eac3"
     output.write_bytes(b"owned")
     repository.commit_output("mix", output)
     output.write_bytes(b"foreign")
 
-    with pytest.raises(AudioOutputCollisionError):
-        repository.require_replaceable_output(output)
+    assert not repository.output_hit(output, "mix")
 
 
 def test_corrupt_audio_manifest_does_not_touch_tts_directory(tmp_path: Path) -> None:

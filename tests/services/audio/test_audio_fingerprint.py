@@ -5,7 +5,11 @@ from pathlib import Path
 
 from anishift.services.audio.channels import build_channel_plan
 from anishift.services.audio.config import AudioConfig
-from anishift.services.audio.fingerprint import mix_fingerprint, narration_fingerprint
+from anishift.services.audio.fingerprint import (
+    mix_fingerprint,
+    narration_fingerprint,
+    normalization_fingerprint,
+)
 from anishift.services.audio.types import AudioCodecProfile, AudioFormat, TimedClip
 
 
@@ -84,6 +88,47 @@ def test_mix_fingerprint_tracks_original_gain_and_codec(tmp_path: Path) -> None:
 
     assert baseline != gain_changed
     assert baseline != codec_changed
+
+
+def test_normalization_fingerprint_reuses_timing_changes_but_tracks_audio_inputs(
+    tmp_path: Path,
+) -> None:
+    clip_path = tmp_path / "clip.wav"
+    clip_path.write_bytes(b"clip")
+    clip = _clip(clip_path)
+    config = AudioConfig()
+
+    baseline = normalization_fingerprint(
+        clip,
+        post_process_tempo=1.0,
+        config=config,
+    )
+    timing_changed = normalization_fingerprint(
+        replace(clip, start_ms=900, end_ms=1_400, source_order=8),
+        post_process_tempo=1.0,
+        config=config,
+    )
+    tempo_changed = normalization_fingerprint(
+        clip,
+        post_process_tempo=1.25,
+        config=config,
+    )
+    target_changed = normalization_fingerprint(
+        clip,
+        post_process_tempo=1.0,
+        config=replace(config, narrator_sample_rate=44_100),
+    )
+    clip_path.write_bytes(b"changed")
+    content_changed = normalization_fingerprint(
+        clip,
+        post_process_tempo=1.0,
+        config=config,
+    )
+
+    assert baseline == timing_changed
+    assert baseline != tempo_changed
+    assert baseline != target_changed
+    assert baseline != content_changed
 
 
 def _clip(path: Path) -> TimedClip:

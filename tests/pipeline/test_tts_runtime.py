@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -20,6 +21,9 @@ from anishift.services.audio.types import (
     AudioRenderRequest,
     AudioRenderResult,
     AudioRenderStatus,
+    NormalizedClip,
+    PcmStorage,
+    TimedClip,
     TimelinePolicy,
 )
 from anishift.services.tts import (
@@ -62,7 +66,7 @@ def test_runtime_from_context_maps_voice_and_audio_profiles(
     audio_config = cast("AudioConfig", captured["audio_config"])
     assert tts_config.engine_id == "elevenbytes"
     assert tts_config.voice_id == context.user_settings.resolved_tts_voice_id
-    assert tts_config.max_concurrency == 12
+    assert tts_config.max_concurrency == 16
     assert tts_config.metadata_cache_root is not None
     assert tts_config.metadata_cache_root.name == "config"
     assert audio_config.codec_profile is AudioCodecProfile.EAC3
@@ -257,6 +261,246 @@ def test_runtime_joins_reordered_tts_results_by_request_id(tmp_path: Path) -> No
     assert progress.terminals == [("scope-runtime", "done")]
     assert outcomes[source].audio_time_ms >= 0
     assert tts.closed
+
+
+def test_runtime_prepares_committed_clip_before_tts_batch_returns(
+    tmp_path: Path,
+) -> None:
+    narration = _narration()
+    speech = _speech_result(tmp_path, narration)
+    prepared = threading.Event()
+    order: list[str] = []
+
+    class _StreamingTts(_Tts):
+        def synthesize(
+            self,
+            batch: SpeechBatch,
+            *,
+            callbacks: TtsProgressSink,
+        ) -> SpeechBatchResult:
+            result = self.result.requests[0]
+            clip = result.speech_clip
+            callbacks.on_request_committed(
+                SpeechRequestProgress(
+                    scope_id=batch.scope_id,
+                    request_id=result.request.request_id,
+                    status=result.status,
+                    attempts=1,
+                    clip=clip,
+                ),
+            )
+            if not prepared.wait(timeout=1.0):
+                raise RuntimeError("audio preparation did not overlap TTS")
+            order.append("tts_return")
+            return self.result
+
+    class _StreamingAudio(_Audio):
+        def prepare_clip(
+            self,
+            clip: TimedClip,
+            *,
+            temporary_root: Path,
+            tempo: float,
+            cancel: threading.Event | None,
+        ) -> NormalizedClip:
+            del tempo, cancel
+            path = temporary_root / f"{clip.request_id}.pcm"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"\0\0")
+            order.append("prepare")
+            prepared.set()
+            return NormalizedClip(
+                timed_clip=clip,
+                path=path,
+                sample_rate=48000,
+                sample_width=2,
+                channels=1,
+                frame_count=1,
+                storage=PcmStorage.RAW,
+                from_fast_path=False,
+            )
+
+        def render(
+            self,
+            request: AudioRenderRequest,
+            *,
+            callbacks: AudioProgressSink | None = None,
+            cancel: threading.Event | None = None,
+        ) -> AudioRenderResult:
+            order.append("render")
+            return super().render(request, callbacks=callbacks, cancel=cancel)
+
+    source = tmp_path / "Episode.mkv"
+    runtime = PipelineTtsRuntime(
+        tts_config=_config(),
+        audio_config=AudioConfig(normalization_concurrency=2),
+        workspace_root=tmp_path,
+        discovery_order=(source,),
+        cancel=threading.Event(),
+        post_process_tempo=1.0,
+        tts_service=_StreamingTts(speech),
+        audio_service=_StreamingAudio(),
+    )
+    runtime.put(source, narration, source_audio_path=None)
+
+    outcome = runtime.wait()[source]
+    runtime.close()
+
+    assert outcome.failure is None
+    assert order == ["prepare", "tts_return", "render"]
+
+
+def test_runtime_caps_streaming_normalization_globally_across_files(
+    tmp_path: Path,
+) -> None:
+    first_source = tmp_path / "Episode 1.mkv"
+    second_source = tmp_path / "Episode 2.mkv"
+    first_narration = _narration()
+    second_narration = replace(
+        first_narration,
+        speech=replace(first_narration.speech, scope_id="scope-second", batch_rank=1),
+    )
+    results = {
+        first_narration.speech.scope_id: _speech_result(tmp_path, first_narration),
+        second_narration.speech.scope_id: _speech_result(tmp_path, second_narration),
+    }
+
+    class _ConcurrentTts(_Tts):
+        def synthesize(
+            self,
+            batch: SpeechBatch,
+            *,
+            callbacks: TtsProgressSink,
+        ) -> SpeechBatchResult:
+            result = results[batch.scope_id]
+            for item in result.requests:
+                callbacks.on_request_committed(
+                    SpeechRequestProgress(
+                        scope_id=batch.scope_id,
+                        request_id=item.request.request_id,
+                        status=item.status,
+                        attempts=1,
+                        clip=item.speech_clip,
+                    ),
+                )
+            return result
+
+    class _GloballyBoundedAudio(_Audio):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lock = threading.Lock()
+            self.active = 0
+            self.peak = 0
+
+        def prepare_clip(
+            self,
+            clip: TimedClip,
+            *,
+            temporary_root: Path,
+            tempo: float,
+            cancel: threading.Event | None,
+        ) -> NormalizedClip:
+            del tempo, cancel
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            try:
+                time.sleep(0.05)
+                path = temporary_root / f"{clip.request_id}.pcm"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"\0\0")
+            finally:
+                with self.lock:
+                    self.active -= 1
+            return NormalizedClip(
+                timed_clip=clip,
+                path=path,
+                sample_rate=48000,
+                sample_width=2,
+                channels=1,
+                frame_count=1,
+                storage=PcmStorage.RAW,
+                from_fast_path=False,
+            )
+
+    audio = _GloballyBoundedAudio()
+    runtime = PipelineTtsRuntime(
+        tts_config=_config(),
+        audio_config=AudioConfig(normalization_concurrency=2),
+        workspace_root=tmp_path,
+        discovery_order=(first_source, second_source),
+        cancel=threading.Event(),
+        post_process_tempo=1.0,
+        max_active_batches=2,
+        tts_service=_ConcurrentTts(results[first_narration.speech.scope_id]),
+        audio_service=audio,
+    )
+    runtime.put(first_source, first_narration, source_audio_path=None)
+    runtime.put(second_source, second_narration, source_audio_path=None)
+
+    outcomes = runtime.wait()
+    runtime.close()
+
+    assert all(outcome.failure is None for outcome in outcomes.values())
+    assert audio.peak == 2
+
+
+def test_runtime_attributes_streaming_preparation_failure_to_audio(
+    tmp_path: Path,
+) -> None:
+    narration = _narration()
+    speech = _speech_result(tmp_path, narration)
+
+    class _CommittingTts(_Tts):
+        def synthesize(
+            self,
+            batch: SpeechBatch,
+            *,
+            callbacks: TtsProgressSink,
+        ) -> SpeechBatchResult:
+            result = self.result.requests[0]
+            callbacks.on_request_committed(
+                SpeechRequestProgress(
+                    scope_id=batch.scope_id,
+                    request_id=result.request.request_id,
+                    status=result.status,
+                    attempts=1,
+                    clip=result.speech_clip,
+                ),
+            )
+            return self.result
+
+    class _FailingPreparationAudio(_Audio):
+        def prepare_clip(
+            self,
+            clip: TimedClip,
+            *,
+            temporary_root: Path,
+            tempo: float,
+            cancel: threading.Event | None,
+        ) -> NormalizedClip:
+            del clip, temporary_root, tempo, cancel
+            raise RuntimeError("normalization worker failed")
+
+    source = tmp_path / "Episode.mkv"
+    runtime = PipelineTtsRuntime(
+        tts_config=_config(),
+        audio_config=AudioConfig(),
+        workspace_root=tmp_path,
+        discovery_order=(source,),
+        cancel=threading.Event(),
+        post_process_tempo=1.0,
+        tts_service=_CommittingTts(speech),
+        audio_service=_FailingPreparationAudio(),
+    )
+    runtime.put(source, narration, source_audio_path=None)
+
+    outcome = runtime.wait()[source]
+    runtime.close()
+
+    assert outcome.failure is not None
+    assert outcome.failure.step == "audio"
+    assert outcome.failure.context.message == "Audio normalization failed: normalization worker failed"
 
 
 def test_terminal_progress_observer_cannot_fail_queue_execution(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, Final, Literal, Protocol, Self
+from typing import TYPE_CHECKING, Final, Literal, Protocol, Self, runtime_checkable
 
 from anishift.config.user_settings import config_path
 from anishift.errors import ErrorCode, ErrorContext
@@ -33,6 +33,7 @@ from anishift.services.audio.types import (
     AudioCodecProfile,
     AudioRenderRequest,
     AudioRenderResult,
+    NormalizedClip,
     TimedClip,
     TimelinePolicy,
 )
@@ -46,6 +47,7 @@ from anishift.services.tts import (
     SpeechBatchProgress,
     SpeechBatchResult,
     SpeechBatchStatus,
+    SpeechClip,
     SpeechRequestProgress,
     TtsConfig,
     TtsError,
@@ -62,7 +64,7 @@ __all__ = ["PipelineTtsProgressSink", "PipelineTtsRuntime"]
 
 _DEFAULT_ENGINE_CONCURRENCY: Final[dict[str, int]] = {
     "edge": 8,
-    "elevenbytes": 12,
+    "elevenbytes": 16,
     "elevenlabs": 4,
     "sapi": 1,
 }
@@ -115,6 +117,20 @@ class _AudioRenderer(Protocol):
         ...
 
 
+@runtime_checkable
+class _AudioPreparer(Protocol):
+    def prepare_clip(
+        self,
+        clip: TimedClip,
+        *,
+        temporary_root: Path,
+        tempo: float,
+        cancel: threading.Event | None,
+    ) -> NormalizedClip:
+        """Normalize one committed provider clip before final rendering."""
+        ...
+
+
 class PipelineTtsProgressSink(TtsProgressSink, AudioProgressSink, Protocol):
     """Observe TTS commits and coarse audio phases for one pipeline run."""
 
@@ -150,6 +166,58 @@ class _SilentPipelineProgress:
 
     def on_pipeline_retry(self, scope_id: str) -> None:
         del scope_id
+
+
+class _StreamingNormalizationProgress:
+    """Forward UI progress while preparing committed clips immediately."""
+
+    def __init__(
+        self,
+        downstream: PipelineTtsProgressSink,
+        job: TtsQueueJob,
+        preparer: _AudioPreparer | None,
+        executor: ThreadPoolExecutor,
+        cancel: threading.Event,
+    ) -> None:
+        """Store one job's timing map and shared normalization executor."""
+        self._downstream: PipelineTtsProgressSink = downstream
+        self._job: TtsQueueJob = job
+        self._preparer: _AudioPreparer | None = preparer
+        self._executor: ThreadPoolExecutor = executor
+        self._cancel: threading.Event = cancel
+        self._items: dict[str, NarrationItem] = {item.request.request_id: item for item in job.narration.items}
+        self._futures: list[Future[NormalizedClip]] = []
+        self._submitted: set[str] = set()
+        self._lock: threading.Lock = threading.Lock()
+
+    def on_batch_state(self, state: SpeechBatchProgress) -> None:
+        self._downstream.on_batch_state(state)
+
+    def on_request_committed(self, update: SpeechRequestProgress) -> None:
+        clip: SpeechClip | None = update.clip
+        preparer: _AudioPreparer | None = self._preparer
+        if clip is not None and preparer is not None:
+            item: NarrationItem | None = self._items.get(clip.request_id)
+            if item is not None:
+                with self._lock:
+                    if clip.request_id not in self._submitted:
+                        self._submitted.add(clip.request_id)
+                        future: Future[NormalizedClip] = self._executor.submit(
+                            preparer.prepare_clip,
+                            _timed_clip(item, clip),
+                            temporary_root=self._job.temporary_root,
+                            tempo=self._job.post_process_tempo,
+                            cancel=self._cancel,
+                        )
+                        self._futures.append(future)
+        self._downstream.on_request_committed(update)
+
+    def wait(self) -> None:
+        """Raise the first preparation failure after every TTS callback arrived."""
+        with self._lock:
+            futures: tuple[Future[NormalizedClip], ...] = tuple(self._futures)
+        for future in futures:
+            future.result()
 
 
 class _FfmpegClipAdapter:
@@ -249,6 +317,7 @@ class PipelineTtsRuntime:
         """Start the consumer before extraction can publish Polish speech."""
         self._cancel: threading.Event = cancel
         self._post_process_tempo: float = post_process_tempo
+        self._normalization_concurrency: int = audio_config.normalization_concurrency
         self._workspace_root: Path = workspace_root
         self._callbacks: PipelineTtsProgressSink = callbacks or _SilentPipelineProgress()
         self._input: TtsQueueInput = TtsQueueInput(discovery_order)
@@ -274,6 +343,10 @@ class PipelineTtsRuntime:
         resolved_audio: _AudioRenderer = audio_service if audio_service is not None else AudioService(audio_config)
         self._tts: _TtsBatchService = resolved_tts
         self._audio: _AudioRenderer = resolved_audio
+        self._normalization_executor: ThreadPoolExecutor = ThreadPoolExecutor(
+            max_workers=self._normalization_concurrency,
+            thread_name_prefix="anishift-audio-stream",
+        )
         self._executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=1)
         self._future: Future[dict[Path, TtsQueueOutcome]] = self._executor.submit(
             run_tts_queue,
@@ -382,8 +455,14 @@ class PipelineTtsRuntime:
         try:
             self._future.result()
         finally:
-            self._tts.close()
-            self._executor.shutdown(wait=True, cancel_futures=False)
+            try:
+                self._normalization_executor.shutdown(
+                    wait=True,
+                    cancel_futures=False,
+                )
+            finally:
+                self._tts.close()
+                self._executor.shutdown(wait=True, cancel_futures=False)
 
     def __enter__(self) -> Self:
         """Return the already-started run-scoped runtime."""
@@ -402,9 +481,17 @@ class PipelineTtsRuntime:
 
     def _process(self, job: TtsQueueJob) -> TtsQueueOutcome:  # noqa: PLR0911 - explicit terminal boundaries
         try:
+            preparer: _AudioPreparer | None = self._audio if isinstance(self._audio, _AudioPreparer) else None
+            progress = _StreamingNormalizationProgress(
+                self._callbacks,
+                job,
+                preparer,
+                self._normalization_executor,
+                self._cancel,
+            )
             speech: SpeechBatchResult = self._tts.synthesize(
                 job.narration.speech,
-                callbacks=self._callbacks,
+                callbacks=progress,
             )
         except TtsError as error:
             return _failed_outcome(job, step="tts", context=error.context)
@@ -413,6 +500,16 @@ class PipelineTtsRuntime:
                 job,
                 step="tts",
                 context=_unexpected_step_context("TTS", error),
+            )
+        try:
+            progress.wait()
+        except AudioError as error:
+            return _failed_outcome(job, step="audio", context=error.context)
+        except (OSError, RuntimeError, ValueError) as error:
+            return _failed_outcome(
+                job,
+                step="audio",
+                context=_unexpected_step_context("Audio normalization", error),
             )
         if speech.status is not SpeechBatchStatus.COMPLETED:
             context: ErrorContext = speech.failure or ErrorContext(
@@ -514,20 +611,22 @@ def _timed_clips(
             message = f"Unknown TTS result id: {clip.request_id}"
             raise ValueError(message)
         seen.add(clip.request_id)
-        clips.append(
-            TimedClip(
-                request_id=clip.request_id,
-                start_ms=item.start_ms,
-                end_ms=item.end_ms,
-                source_order=item.source_order,
-                clip_path=clip.path,
-                clip_format=RenderAudioFormat(clip.format.value),
-                sample_rate=clip.sample_rate,
-                channels=clip.channels,
-                duration_ms=clip.duration_ms,
-            ),
-        )
+        clips.append(_timed_clip(item, clip))
     return tuple(clips)
+
+
+def _timed_clip(item: NarrationItem, clip: SpeechClip) -> TimedClip:
+    return TimedClip(
+        request_id=clip.request_id,
+        start_ms=item.start_ms,
+        end_ms=item.end_ms,
+        source_order=item.source_order,
+        clip_path=clip.path,
+        clip_format=RenderAudioFormat(clip.format.value),
+        sample_rate=clip.sample_rate,
+        channels=clip.channels,
+        duration_ms=clip.duration_ms,
+    )
 
 
 def _unexpected_step_context(
