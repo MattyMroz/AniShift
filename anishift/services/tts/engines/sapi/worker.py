@@ -18,6 +18,7 @@ from anishift.services.tts.errors import (
 from anishift.services.tts.protocols import CancellationToken
 
 from .config import SapiConfig
+from .constants import MAX_IPC_MESSAGE_BYTES
 from .protocol import SapiWorkerRequest, SapiWorkerResponse, decode_voice_list
 from .types import SapiHost, SapiSynthesisResult, SapiVoiceRecord
 
@@ -214,7 +215,7 @@ class SapiWorkerController:
     async def close(self) -> None:
         """Close stdin, wait to the configured deadline, then hard-kill."""
         async with self._lock:
-            if self._closed:
+            if self._closed and self._process is None:
                 return
             self._closed = True
             process: _SapiProcess | None = self._process
@@ -287,7 +288,11 @@ class SapiWorkerController:
         if read_task not in done:
             message = "SAPI worker request timed out"
             raise TtsTimeoutError(message)
-        raw_response: bytes = read_task.result()
+        try:
+            raw_response: bytes = read_task.result()
+        except ValueError as error:
+            message = "SAPI worker response exceeded the protocol limit"
+            raise TtsProviderUnavailableError(message) from error
         if not raw_response:
             message = f"SAPI worker exited before responding (code={process.returncode})"
             raise TtsProviderUnavailableError(message)
@@ -306,6 +311,10 @@ class SapiWorkerController:
         process: _SapiProcess | None = self._process
         if process is not None and process.returncode is None:
             await self._kill_process(process)
+        if process is not None and process.returncode is None:
+            self._closed = True
+            message: str = "SAPI worker could not be terminated safely"
+            raise TtsProviderUnavailableError(message)
         if process is None or process.returncode is not None:
             await self._clear_process()
 
@@ -313,7 +322,10 @@ class SapiWorkerController:
         with suppress(ProcessLookupError):
             process.kill()
         with suppress(TimeoutError):
-            await asyncio.wait_for(process.wait(), timeout=1.0)
+            await asyncio.wait_for(
+                process.wait(),
+                timeout=self._config.shutdown_deadline_s,
+            )
 
     async def _clear_process(self) -> None:
         stderr_task: asyncio.Task[None] | None = self._stderr_task
@@ -322,7 +334,7 @@ class SapiWorkerController:
         if stderr_task is None:
             return
         stderr_task.cancel()
-        with suppress(asyncio.CancelledError):
+        with suppress(asyncio.CancelledError, OSError, ValueError):
             await stderr_task
 
 
@@ -332,6 +344,7 @@ async def _spawn_process(command: tuple[str, ...]) -> _SapiProcess:
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        limit=MAX_IPC_MESSAGE_BYTES + 1,
         creationflags=_creation_flags(),
     )
     if process.stdin is None or process.stdout is None or process.stderr is None:

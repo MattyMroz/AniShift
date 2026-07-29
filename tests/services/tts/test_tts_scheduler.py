@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections import defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -24,6 +25,20 @@ from anishift.services.tts import (
     VoiceInfo,
 )
 from anishift.services.tts.scheduler import TtsScheduler
+
+
+def test_cancellation_wakes_many_waiters_from_another_thread() -> None:
+    async def scenario() -> None:
+        token = TtsCancellation()
+        waiters = [asyncio.create_task(token.wait()) for _ in range(1_000)]
+        await asyncio.sleep(0)
+        thread = threading.Thread(target=token.cancel)
+        thread.start()
+        thread.join()
+        await asyncio.wait_for(asyncio.gather(*waiters), timeout=1.0)
+        await asyncio.wait_for(token.wait(), timeout=0.1)
+
+    asyncio.run(scenario())
 
 
 class _Clock:

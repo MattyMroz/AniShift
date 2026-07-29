@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import wave
 from collections import deque
 from collections.abc import Callable, Coroutine
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -122,6 +125,11 @@ class QueueReader:
         self._items.put_nowait(line)
 
 
+class OversizedReader(QueueReader):
+    async def readline(self) -> bytes:
+        raise ValueError
+
+
 class EmptyReader:
     async def readline(self) -> bytes:
         return b""
@@ -161,9 +169,20 @@ class FakeWriter:
         return None
 
 
+class StubbornWriter(FakeWriter):
+    def close(self) -> None:
+        self.closed = True
+
+
 class FakeProcess:
-    def __init__(self, handler: ResponseHandler, *, broken: bool = False) -> None:
-        self.stdout = QueueReader()
+    def __init__(
+        self,
+        handler: ResponseHandler,
+        *,
+        broken: bool = False,
+        oversized: bool = False,
+    ) -> None:
+        self.stdout: QueueReader = OversizedReader() if oversized else QueueReader()
         self.stderr = EmptyReader()
         self.returncode: int | None = None
         self._finished = asyncio.Event()
@@ -189,15 +208,28 @@ class FakeProcess:
             self._finished.set()
 
 
+class StubbornProcess(FakeProcess):
+    def __init__(self, handler: ResponseHandler) -> None:
+        super().__init__(handler)
+        self.stdin = StubbornWriter(self, handler, broken=False)
+        self.kill_calls = 0
+
+    def kill(self) -> None:
+        self.killed = True
+        self.kill_calls += 1
+
+
 class FakeProcessFactory:
     def __init__(
         self,
         handlers: tuple[ResponseHandler, ...],
         *,
         broken_first: bool = False,
+        oversized_first: bool = False,
     ) -> None:
         self._handlers = deque(handlers)
         self._broken_first = broken_first
+        self._oversized_first = oversized_first
         self.commands: list[tuple[str, ...]] = []
         self.processes: list[FakeProcess] = []
 
@@ -206,6 +238,7 @@ class FakeProcessFactory:
         process = FakeProcess(
             handler,
             broken=self._broken_first and not self.processes,
+            oversized=self._oversized_first and not self.processes,
         )
         self.commands.append(command)
         self.processes.append(process)
@@ -300,8 +333,13 @@ def _request(
 
 
 def _wav_bytes(*, header_only: bool = False) -> bytes:
-    header: bytes = b"RIFF" + (36).to_bytes(4, "little") + b"WAVE" + bytes(32)
-    return header if header_only else header + b"\x00\x00"
+    output = io.BytesIO()
+    with wave.open(output, "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(22_050)
+        stream.writeframes(b"" if header_only else b"\x00\x00")
+    return output.getvalue()
 
 
 def _success(payload: dict[str, object]) -> bytes:
@@ -510,6 +548,8 @@ def test_live_availability_uses_isolated_synthesis_probe(tmp_path: Path) -> None
 
     assert availability.status is AvailabilityStatus.READY
     assert len(live_controller.calls) == 1
+    assert live_controller.calls[0][2].parent.name == "clips"
+    assert live_controller.calls[0][2].name == ".clip-live.wav.tmp"
     assert live_controller.closed
 
 
@@ -697,6 +737,67 @@ def test_controller_broken_pipe_discards_worker(tmp_path: Path) -> None:
 
     assert factory.processes[0].killed
     assert not controller.is_running
+
+
+def test_close_retries_cleanup_when_forced_kill_does_not_finish(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> StubbornProcess:
+        process = StubbornProcess(_success)
+
+        async def factory(command: tuple[str, ...]) -> StubbornProcess:
+            del command
+            return process
+
+        config = replace(
+            _controller_config(tmp_path),
+            shutdown_deadline_s=0.001,
+        )
+        controller = SapiWorkerController(
+            config,
+            process_factory=cast("_ProcessFactory", factory),
+        )
+        await controller.synthesize(
+            "request",
+            "x",
+            tmp_path / "request.wav",
+            deadline_s=0.1,
+            cancel=FakeCancellation(),
+        )
+        with pytest.raises(TtsProviderUnavailableError):
+            await controller.close()
+        with pytest.raises(TtsProviderUnavailableError):
+            await controller.close()
+        return process
+
+    process = _run(scenario())
+
+    assert process.kill_calls == 2
+
+
+def test_controller_discards_worker_after_oversized_response(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> FakeProcessFactory:
+        factory = FakeProcessFactory((_success,), oversized_first=True)
+        controller = SapiWorkerController(
+            _controller_config(tmp_path),
+            process_factory=cast("_ProcessFactory", factory),
+        )
+        with pytest.raises(TtsProviderUnavailableError, match="protocol limit"):
+            await controller.synthesize(
+                "oversized",
+                "x",
+                tmp_path / "oversized.wav",
+                deadline_s=0.1,
+                cancel=FakeCancellation(),
+            )
+        return factory
+
+    factory = _run(scenario())
+
+    assert factory.processes[0].killed
+    assert factory.processes[0].returncode is not None
 
 
 @pytest.mark.parametrize(

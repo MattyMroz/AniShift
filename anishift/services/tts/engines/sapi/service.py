@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import wave
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -299,7 +300,10 @@ class SapiTtsEngine:
         cancellation = TtsCancellation()
         try:
             with tempfile.TemporaryDirectory(prefix="anishift-sapi-live-") as directory:
-                output_path: Path = Path(directory) / "probe.wav"
+                clips_dir: Path = Path(directory) / "clips"
+                clips_dir.mkdir()
+                output_path: Path = clips_dir / ".clip-live.wav.tmp"
+                output_path.touch()
                 result: SapiSynthesisResult = await controller.synthesize(
                     "sapi-live-probe",
                     "Test.",
@@ -307,7 +311,7 @@ class SapiTtsEngine:
                     deadline_s=self._config.request_timeout_s,
                     cancel=cancellation,
                 )
-                _validate_wav_envelope(result.output_path)
+                _validate_live_wav(result.output_path)
         finally:
             await controller.close()
 
@@ -408,6 +412,21 @@ def _validate_wav_envelope(path: Path) -> None:
         raise TtsClipValidationError(message) from error
     if size <= WAV_HEADER_BYTES or len(header) < WAV_ENVELOPE_BYTES or header[:4] != b"RIFF" or header[8:12] != b"WAVE":
         _raise_invalid_clip("SAPI returned an empty or invalid WAV envelope")
+
+
+def _validate_live_wav(path: Path) -> None:
+    _validate_wav_envelope(path)
+    try:
+        with wave.open(str(path), "rb") as stream:
+            frame_count: int = stream.getnframes()
+            sample_rate: int = stream.getframerate()
+            channels: int = stream.getnchannels()
+            decoded: bytes = stream.readframes(frame_count)
+    except (OSError, EOFError, wave.Error) as error:
+        message: str = "SAPI live probe returned an invalid PCM WAV"
+        raise TtsClipValidationError(message) from error
+    if frame_count <= 0 or sample_rate <= 0 or channels <= 0 or not decoded:
+        _raise_invalid_clip("SAPI live probe returned an empty PCM WAV")
 
 
 def _raise_cancelled(message: str) -> Never:
