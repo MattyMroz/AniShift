@@ -392,6 +392,33 @@ def test_engine_synthesizes_selected_polish_voice_with_native_options(
     assert backend.closed
 
 
+def test_engine_resolves_omitted_native_pitch_without_rejecting_request(
+    tmp_path: Path,
+) -> None:
+    backend = FakeBackend()
+    engine = EdgeTtsEngine(
+        _config(rate="+40%", volume="+0%"),
+        patcher=_ready_patch,
+        backend_factory=lambda: backend,
+    )
+
+    _run(
+        engine.synthesize(
+            _request(
+                tmp_path / "clip.mp3",
+                rate="+40%",
+                volume="+0%",
+            ),
+            cancel=FakeCancellation(),
+        ),
+    )
+
+    assert backend.attempts[0].pitch == "+0Hz"
+    assert engine.synthesis_profile.native_rate == "+40%"
+    assert engine.synthesis_profile.native_volume == "+0%"
+    assert engine.synthesis_profile.native_pitch == "+0Hz"
+
+
 def test_live_availability_distinguishes_missing_voice() -> None:
     backend = FakeBackend()
     backend.voices = (_voice(ZOFIA_VOICE_ID, "Female"),)

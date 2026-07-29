@@ -97,11 +97,9 @@ class EdgeTtsEngine:
             provider_output_id=OUTPUT_FORMAT,
             provider_source_format=AudioFormat.MP3,
             adapter_version=ADAPTER_VERSION,
-            voice_settings={
-                "pitch": self._config.pitch,
-                "rate": self._config.rate,
-                "volume": self._config.volume,
-            },
+            native_rate=self._config.rate,
+            native_volume=self._config.volume,
+            native_pitch=self._config.pitch,
         )
         self._availability: EngineAvailability = self._availability_from_patch()
 
@@ -218,7 +216,7 @@ class EdgeTtsEngine:
         if request.voice_id != self._config.voice_id:
             message = "Edge request voice differs from engine configuration"
             raise TtsUnsupportedError(message)
-        expected_native: tuple[str | float | None, ...] = (
+        requested_native: tuple[str | float | None, ...] = (
             request.native_rate,
             request.native_volume,
             request.native_pitch,
@@ -228,7 +226,10 @@ class EdgeTtsEngine:
             self._config.volume,
             self._config.pitch,
         )
-        if any(value is not None for value in expected_native) and expected_native != configured_native:
+        if any(
+            requested is not None and requested != configured
+            for requested, configured in zip(requested_native, configured_native, strict=True)
+        ):
             message = "Edge request native settings differ from engine configuration"
             raise TtsUnsupportedError(message)
         if request.options:
