@@ -76,6 +76,7 @@ class Settings(BaseSettings):
         openai_compatible_api_key: LLM provider ``openai_compatible``.
         openai_compatible_base_url: Base URL for the ``openai_compatible``
             provider (self-hosted / gateway endpoint).
+        workspace_root: Optional workspace path override.
     """
 
     model_config = SettingsConfigDict(
@@ -104,6 +105,9 @@ class Settings(BaseSettings):
     openrouter_api_key: str = Field(default="", description="OpenRouter API key")
     openai_compatible_api_key: str = Field(default="", description="OpenAI-compatible endpoint key")
     openai_compatible_base_url: str = Field(default="", description="OpenAI-compatible endpoint base URL")
+
+    # Workspace
+    workspace_root: str = Field(default="", description="Workspace root override")
 
     @classmethod
     def settings_customise_sources(

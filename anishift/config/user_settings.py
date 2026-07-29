@@ -33,13 +33,16 @@ from anishift.services.tts.engines import available_engine_ids as available_tts_
 from anishift.services.tts.engines.edge.constants import (
     DEFAULT_RATE,
     DEFAULT_VOLUME,
+    EDGE_PROVIDER_MODEL_ID,
     MAREK_VOICE_ID,
     ZOFIA_VOICE_ID,
 )
 from anishift.services.tts.engines.elevenbytes.constants import (
     DALLIN_ALIAS,
     DALLIN_VOICE_ID,
+    ENDPOINTS,
 )
+from anishift.services.tts.engines.elevenlabs.constants import DEFAULT_MODEL_ID
 from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES
 
 __all__ = [
@@ -145,6 +148,9 @@ _EDGE_ZOFIA_PROFILE_KEY: Final[str] = f"edge:{ZOFIA_VOICE_ID}"
 
 _MISSING: Final[object] = object()
 """Sentinel distinguishing an omitted nested profile field from JSON null."""
+
+_SAPI_PROVIDER_MODEL_ID: Final[str] = "sapi5"
+"""Stable provider model identity shown for the Windows SAPI adapter."""
 
 
 class SettingsSchemaWarning(UserWarning):
@@ -279,6 +285,12 @@ class UserSettings:
     output_variant: OutputVariant = "merge"
     move_results_to_output: bool = False
 
+    def __post_init__(self) -> None:
+        """Normalize engine-bound selections and materialize the active profile."""
+        self._normalize_tts_selection()
+        self._drop_incompatible_tts_options()
+        self.ensure_active_tts_profile()
+
     @property
     def voice(self) -> str:
         """Expose the selected voice to the legacy panel until its TTS rewrite."""
@@ -334,6 +346,118 @@ class UserSettings:
 
     def _active_tts_profile_key(self) -> str:
         return tts_profile_key(self.tts_engine, self.resolved_tts_voice_id)
+
+    def ensure_active_tts_profile(self) -> TtsVoiceProfileSettings:
+        """Return a mutable persisted profile for the active engine and voice."""
+        key: str = self._active_tts_profile_key()
+        profile: TtsVoiceProfileSettings | None = self.tts_voice_profiles.get(key)
+        if profile is None:
+            profile = TtsVoiceProfileSettings(
+                concurrency=1 if self.tts_engine == "sapi" else None,
+            )
+            self.tts_voice_profiles[key] = profile
+        return profile
+
+    def add_elevenbytes_voice(
+        self,
+        *,
+        alias: str,
+        label: str,
+        voice_id: str,
+    ) -> None:
+        """Add one case-insensitively unique custom ElevenBytes voice."""
+        resolved_alias, resolved_label, resolved_voice_id = _validate_custom_voice(
+            alias,
+            label,
+            voice_id,
+            existing=self.elevenbytes_custom_voices,
+        )
+        self.elevenbytes_custom_voices.append(
+            CustomVoiceSetting(
+                alias=resolved_alias,
+                label=resolved_label,
+                voice_id=resolved_voice_id,
+            ),
+        )
+
+    def update_elevenbytes_voice(
+        self,
+        current_alias: str,
+        *,
+        alias: str,
+        label: str,
+        voice_id: str,
+    ) -> None:
+        """Replace one custom ElevenBytes voice while preserving old profiles."""
+        current_index: int = _custom_voice_index(
+            self.elevenbytes_custom_voices,
+            current_alias,
+        )
+        remaining: list[CustomVoiceSetting] = [
+            item for index, item in enumerate(self.elevenbytes_custom_voices) if index != current_index
+        ]
+        resolved_alias, resolved_label, resolved_voice_id = _validate_custom_voice(
+            alias,
+            label,
+            voice_id,
+            existing=remaining,
+        )
+        self.elevenbytes_custom_voices[current_index] = CustomVoiceSetting(
+            alias=resolved_alias,
+            label=resolved_label,
+            voice_id=resolved_voice_id,
+        )
+        if self.tts_engine == "elevenbytes" and self.tts_voice_id.casefold() == current_alias.casefold():
+            self.tts_voice_id = resolved_alias
+            self.ensure_active_tts_profile()
+
+    def remove_elevenbytes_voice(self, alias: str) -> None:
+        """Remove one custom voice and select Dallin when it was active."""
+        index: int = _custom_voice_index(self.elevenbytes_custom_voices, alias)
+        removed: CustomVoiceSetting = self.elevenbytes_custom_voices.pop(index)
+        if self.tts_engine == "elevenbytes" and self.tts_voice_id.casefold() == removed.alias.casefold():
+            self.tts_voice_id = DALLIN_ALIAS
+            self.ensure_active_tts_profile()
+
+    def _normalize_tts_selection(self) -> None:
+        allowed_engines: tuple[str, ...] = tuple(available_tts_engine_ids())
+        if self.tts_engine not in allowed_engines:
+            self.tts_engine = "elevenbytes"
+        if self.tts_engine == "elevenbytes":
+            if self.tts_provider_model_id not in ENDPOINTS:
+                self.tts_provider_model_id = "run6"
+            return
+        if self.tts_engine == "edge":
+            self.tts_provider_model_id = EDGE_PROVIDER_MODEL_ID
+            if self.tts_voice_id not in {MAREK_VOICE_ID, ZOFIA_VOICE_ID}:
+                self.tts_voice_id = MAREK_VOICE_ID
+            return
+        if self.tts_engine == "sapi":
+            self.tts_provider_model_id = _SAPI_PROVIDER_MODEL_ID
+            if not _is_sapi_voice(self.tts_voice_id):
+                self.tts_voice_id = "agnieszka"
+            return
+        if (
+            not self.tts_provider_model_id.strip()
+            or self.tts_provider_model_id in ENDPOINTS
+            or self.tts_provider_model_id
+            in {
+                EDGE_PROVIDER_MODEL_ID,
+                _SAPI_PROVIDER_MODEL_ID,
+            }
+        ):
+            self.tts_provider_model_id = DEFAULT_MODEL_ID
+
+    def _drop_incompatible_tts_options(self) -> None:
+        profile: TtsVoiceProfileSettings | None = self.tts_voice_profiles.get(
+            self._active_tts_profile_key(),
+        )
+        if profile is None:
+            return
+        if self.tts_engine in {"edge", "sapi"} or (
+            self.tts_engine == "elevenbytes" and self.tts_provider_model_id == "run6"
+        ):
+            profile.engine_options = {}
 
 
 def _repo_root() -> Path:
@@ -566,6 +690,53 @@ def _nonempty_string(value: object) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     return value.strip()
+
+
+def _validate_custom_voice(
+    alias: str,
+    label: str,
+    voice_id: str,
+    *,
+    existing: list[CustomVoiceSetting],
+) -> tuple[str, str, str]:
+    resolved_alias: str = alias.strip()
+    resolved_label: str = label.strip()
+    resolved_voice_id: str = voice_id.strip()
+    if not resolved_alias or not resolved_label or not resolved_voice_id:
+        message: str = "Custom voice alias, label, and provider id cannot be empty"
+        raise ValueError(message)
+    aliases: set[str] = {DALLIN_ALIAS, *(item.alias.casefold() for item in existing)}
+    if resolved_alias.casefold() in aliases:
+        message = f"Custom voice alias is reserved or duplicated: {resolved_alias}"
+        raise ValueError(message)
+    return resolved_alias, resolved_label, resolved_voice_id
+
+
+def _custom_voice_index(
+    voices: list[CustomVoiceSetting],
+    alias: str,
+) -> int:
+    index: int | None = next(
+        (candidate for candidate, item in enumerate(voices) if item.alias.casefold() == alias.strip().casefold()),
+        None,
+    )
+    if index is None:
+        message: str = f"Unknown custom ElevenBytes voice: {alias}"
+        raise ValueError(message)
+    return index
+
+
+def _is_sapi_voice(value: str) -> bool:
+    candidate: str = value.casefold()
+    return any(
+        candidate
+        in {
+            alias,
+            profile.voice_name.casefold(),
+            profile.resolved_voice_id.casefold(),
+        }
+        for alias, profile in SAPI_PROFILES.items()
+    )
 
 
 def _migrate_schema(raw: dict[str, Any]) -> bool:

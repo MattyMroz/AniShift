@@ -74,7 +74,7 @@ def _infer_repo_workspace() -> Path:
     return (candidate / _WORKSPACE_DIR_NAME).resolve()
 
 
-def resolve_workspace_root() -> Path:
+def resolve_workspace_root(*, override: str | Path | None = None) -> Path:
     """Resolve the workspace root (env override or ``<repo>/workspace``).
 
     Precedence: ``ANISHIFT_WORKSPACE_ROOT`` env var, otherwise
@@ -87,9 +87,11 @@ def resolve_workspace_root() -> Path:
         WorkspaceRootNotResolvedError: When the env var is unset and the
             module is not running from a repo checkout.
     """
-    override = _read_env_override()
-    if override is not None:
-        return override
+    if override is not None and str(override).strip():
+        return Path(override).expanduser().resolve()
+    env_override: Path | None = _read_env_override()
+    if env_override is not None:
+        return env_override
     return _infer_repo_workspace()
 
 

@@ -130,6 +130,14 @@ class ElevenLabsTtsEngine:
         )
         self._availability: EngineAvailability = self._initial_availability()
         self._load_voice_cache()
+        if self._voices_cache:
+            self._availability = EngineAvailability(
+                status=self._availability.status,
+                message=self._availability.message,
+                checked_at=self._availability.checked_at,
+                source=AvailabilitySource.CACHED,
+                voices=self._voices_cache,
+            )
         self._synthesis_profile: SynthesisProfile = SynthesisProfile(
             engine_id=self.engine_id,
             endpoint_id=ELEVENLABS_ENDPOINT_ID,

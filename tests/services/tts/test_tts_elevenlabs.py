@@ -542,6 +542,7 @@ def test_voice_list_cache_persists_without_secret(
         wall_clock=lambda: wall_clock + 1.0,
     )
 
+    assert _run(second.availability(live=False)).voices == expected
     assert _run(second.list_voices()) == expected
     assert second_backend.voice_calls == 0
     assert config.elevenlabs_api_key not in cache_path.read_text(encoding="utf-8")
