@@ -260,6 +260,20 @@ def test_invalid_provider_audio_is_rejected(
     assert not (tmp_path / "clip.mp3").exists()
 
 
+def test_mp3_payload_is_accepted_when_proxy_mislabels_it_as_html(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_mp3_bytes(), headers={"Content-Type": "text/html; charset=UTF-8"})
+
+    destination = tmp_path / "clip.mp3"
+    engine = _engine(_config(), httpx.MockTransport(handler))
+
+    result = _run(engine.synthesize(_request(destination), cancel=FakeCancellation()))
+    _run(engine.close())
+
+    assert result.format is AudioFormat.MP3
+    assert destination.read_bytes() == _mp3_bytes()
+
+
 def test_timeout_is_single_typed_attempt(tmp_path: Path) -> None:
     call_count = 0
 

@@ -190,12 +190,13 @@ def _validate_mp3_response(audio: bytes, *, content_type: str) -> None:
     if len(audio) < MIN_AUDIO_BYTES:
         message: str = f"ElevenBytes returned too little audio data ({len(audio)} bytes)"
         raise TtsClipValidationError(message)
+    if _contains_mp3_header(audio):
+        return
     if content_type and content_type not in _MP3_CONTENT_TYPES:
-        message = f"ElevenBytes returned unsupported content type: {content_type}"
+        message = f"ElevenBytes returned non-MP3 content ({content_type})"
         raise TtsClipValidationError(message)
-    if not _contains_mp3_header(audio):
-        message = "ElevenBytes response is not recognizable MP3 audio"
-        raise TtsClipValidationError(message)
+    message = "ElevenBytes response is not recognizable MP3 audio"
+    raise TtsClipValidationError(message)
 
 
 def _contains_mp3_header(audio: bytes) -> bool:

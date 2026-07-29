@@ -25,9 +25,9 @@ Adapter publicznego proxy ElevenBytes; różnice względem wspólnej domeny TTS.
   globalnej awarii proxy. `api_backend.py`
 - Cancel nie przerywa aktywnego requestu HTTP; jest sprawdzany przed i po nim.
   `service.py`
-- Odpowiedź musi wyglądać jak MP3. Brak `Content-Type` jest dozwolony, ale
-  nieznany niepusty typ i brak ramki MPEG w początkowym oknie są błędem.
-  `api_backend.py`
+- Odpowiedź musi wyglądać jak MP3. Sygnatura bajtów jest źródłem prawdy, ponieważ
+  proxy PHP potrafi zwrócić poprawne MP3 z `Content-Type: text/html`; nierozpoznane
+  bajty pozostają błędem. `api_backend.py`
 - Engine zapisuje bajty bezpośrednio do przekazanej ścieżki. Przekazuj wyłącznie
   prywatny destination przygotowany przez warstwę TTS. `service.py`
 - Ustawienia `run7` są częścią `SynthesisProfile`; ich zmiana musi unieważniać
