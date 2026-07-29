@@ -10,7 +10,7 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.tts.errors import TtsInputError
 from anishift.services.tts.types import SpeechBatch, SpeechRequest
 
-__all__ = ["is_speech_text", "validate_speech_batch"]
+__all__ = ["is_speech_text", "validate_scope_id", "validate_speech_batch"]
 
 _SAFE_SCOPE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 """Portable opaque scope ids accepted as one path segment."""
@@ -47,11 +47,7 @@ def validate_speech_batch(batch: SpeechBatch) -> SpeechBatch:
         _raise_input_error("TTS batch must use the SpeechBatch contract", field_name="batch")
     if type(batch.scope_id) is not str:
         _raise_input_error("TTS scope id must be a string", field_name="scope_id")
-    if not _is_safe_scope(batch.scope_id):
-        _raise_input_error(
-            "TTS scope id must be one portable opaque path segment",
-            field_name="scope_id",
-        )
+    validate_scope_id(batch.scope_id)
     if type(batch.batch_rank) is not int or batch.batch_rank < 0:
         _raise_input_error(
             "TTS batch rank must be a non-negative integer",
@@ -76,6 +72,18 @@ def validate_speech_batch(batch: SpeechBatch) -> SpeechBatch:
 def is_speech_text(text: str) -> bool:
     """Return whether text contains at least one letter or number."""
     return any(unicodedata.category(character)[0] in {"L", "N"} for character in text)
+
+
+def validate_scope_id(scope_id: str) -> str:
+    """Validate and return one portable opaque resume scope id."""
+    if type(scope_id) is not str:
+        _raise_input_error("TTS scope id must be a string", field_name="scope_id")
+    if not _is_safe_scope(scope_id):
+        _raise_input_error(
+            "TTS scope id must be one portable opaque path segment",
+            field_name="scope_id",
+        )
+    return scope_id
 
 
 def _is_safe_scope(scope_id: str) -> bool:

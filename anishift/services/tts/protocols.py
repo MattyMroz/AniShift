@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from anishift.services._base import EngineInfo
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from anishift.services.tts.types import (
+        ClipExpectation,
+        ClipValidation,
         EngineAvailability,
         EngineCapabilities,
         EngineClipResult,
@@ -15,7 +19,20 @@ if TYPE_CHECKING:
         VoiceInfo,
     )
 
-__all__ = ["CancellationToken", "TtsEngine"]
+__all__ = ["CancellationToken", "ClipValidator", "TtsEngine"]
+
+
+@runtime_checkable
+class ClipValidator(Protocol):
+    """Decode-check one provider-native clip without owning its lifecycle."""
+
+    def validate_clip(
+        self,
+        path: Path,
+        expectation: ClipExpectation,
+    ) -> ClipValidation | None:
+        """Return trusted technical metadata or ``None`` for an invalid clip."""
+        ...
 
 
 @runtime_checkable

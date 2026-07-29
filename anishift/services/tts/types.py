@@ -15,6 +15,8 @@ __all__ = [
     "AvailabilityProbeKind",
     "AvailabilitySource",
     "AvailabilityStatus",
+    "ClipExpectation",
+    "ClipValidation",
     "EngineAvailability",
     "EngineCapabilities",
     "EngineClipResult",
@@ -140,6 +142,38 @@ class SpeechBatch:
     scope_id: str
     batch_rank: int
     requests: tuple[SpeechRequest, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ClipExpectation:
+    """Expected provider-native container for a clip."""
+
+    format: AudioFormat
+
+    def __post_init__(self) -> None:
+        """Reject raw strings crossing the clip-validation boundary."""
+        if type(self.format) is not AudioFormat:
+            message: str = "Clip expectation format must use AudioFormat"
+            raise ValueError(message)
+
+
+@dataclass(frozen=True, slots=True)
+class ClipValidation:
+    """Trusted technical metadata returned by a full decode validator."""
+
+    format: AudioFormat
+    sample_rate: int
+    channels: int
+    duration_ms: int
+
+    def __post_init__(self) -> None:
+        """Reject unusable metadata before it enters resume state."""
+        if type(self.format) is not AudioFormat:
+            message: str = "Validated clip format must use AudioFormat"
+            raise ValueError(message)
+        if any(type(value) is not int or value <= 0 for value in (self.sample_rate, self.channels, self.duration_ms)):
+            message = "Validated TTS clip metadata must be positive integers"
+            raise ValueError(message)
 
 
 @dataclass(frozen=True, slots=True)

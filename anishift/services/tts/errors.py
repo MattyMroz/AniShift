@@ -9,12 +9,16 @@ from anishift.errors import AniShiftError, ErrorCode, ErrorContext, FatalError, 
 __all__ = [
     "TtsAuthError",
     "TtsCancelledError",
+    "TtsClipValidationError",
     "TtsConfigError",
     "TtsError",
     "TtsInputError",
     "TtsNetworkError",
     "TtsProviderUnavailableError",
     "TtsRateLimitError",
+    "TtsResumeConflictError",
+    "TtsResumeError",
+    "TtsResumeSchemaError",
     "TtsTimeoutError",
     "TtsUnsupportedError",
     "TtsVoiceError",
@@ -68,6 +72,30 @@ class TtsUnsupportedError(TtsError, FatalError):
     """Input or capability unsupported by the selected engine."""
 
     error_code = ErrorCode.TTS_UNSUPPORTED
+
+
+class TtsResumeError(TtsError, FatalError):
+    """Persistent TTS resume state cannot be safely used or updated."""
+
+    error_code = ErrorCode.TTS_RESUME_ERROR
+
+
+class TtsResumeSchemaError(TtsResumeError):
+    """Resume manifest uses a newer unsupported schema."""
+
+    error_code = ErrorCode.TTS_RESUME_SCHEMA
+
+
+class TtsResumeConflictError(TtsResumeError):
+    """Concurrent resume update conflicts with the active generation."""
+
+    error_code = ErrorCode.TTS_RESUME_CONFLICT
+
+
+class TtsClipValidationError(TtsError, TransientError):
+    """Provider output is empty, corrupt, or not decodable."""
+
+    error_code = ErrorCode.TTS_CLIP_INVALID
 
 
 class TtsCancelledError(TtsError, FatalError):
