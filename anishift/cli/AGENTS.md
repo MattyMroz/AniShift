@@ -22,8 +22,19 @@ REPL prompt_toolkit, komendy `/`, panel `/settings`, banner. Typer entry point `
 - W panelu `/settings` `Enter` NIE zatwierdza/wychodzi — działa jak `→` (cykluje wartość); wyjście to tylko `Esc`/`q`. `settings_panel.py:193-201`
 - Każda zmiana w panelu jest natychmiast zapisywana na dysk (`save_user_settings` po każdym kroku) — brak anulowania. `settings_panel.py:184-196`
 - Panel zawsze pokazuje `llm` i wszystkich providerów; brak sekretu jest markerem `missing key`/`missing base URL`, nie powodem ukrycia lub resetu wyboru. `settings_panel.py`
-- Trwała awaria LLM kończy Live przed promptem i wymaga jawnej komendy `settings` albo `finish`; `finish` zachowuje gotowe wyniki i oznacza resztę `not_processed`. `pipeline_ui.py`
-- Automatyczny LLM współdzieli jeden zwykły `MultiProgressManager` z ekstrakcją, ponieważ oba etapy mogą działać jednocześnie. Każdy plik ma jeden prealokowany wiersz w `natsorted`: ekstrakcja dochodzi do `100%`, start requestu resetuje ten sam task i timer do `0%`, a sukces ponownie ustawia `100%`. Etap LLM nie ma własnego renderera ani animacji. `pipeline_ui.py`
+- Panel pokazuje wszystkie silniki TTS również gdy są niedostępne. Brak klucza,
+  SDK, hosta albo głosu jest stanem availability przy pozycji, nie powodem jej
+  ukrycia. `tts_settings.py`, `settings_panel.py`
+- TTS fields są zależne od silnika: run7/ElevenLabs pokazuje voice options, Edge
+  native controls, SAPI architecture/rate/volume. Zmiana głosu przywraca jego
+  zapisany profil. `settings_panel.py`, `tts_settings.py`
+- W automatycznym pipeline trwała awaria LLM lub TTS zamyka Live przed promptem
+  i wymaga `retry`, `settings` albo `finish`; `finish` zachowuje gotowe wyniki i
+  oznacza resztę `not_processed`. `pipeline_ui.py`
+- Automatyczny pipeline daje każdemu inputowi jeden prealokowany wiersz
+  `natsorted`: extraction → translation → rzeczywisty procent TTS → spinner
+  audio → stan terminalny. Retry ponownie otwiera ten sam wiersz zamiast dodawać
+  nowy. Manualny wybór stylów nie używa `_PipelineProgressRows`. `pipeline_ui.py`
 - Manualny prompt stylów: Enter (pusto) zwraca `None` = akceptacja klasyfikatora, nie pusty zbiór. `pipeline_ui.py:149-161`
 
 ## Konwencje
@@ -33,8 +44,7 @@ REPL prompt_toolkit, komendy `/`, panel `/settings`, banner. Typer entry point `
 - Ciężkie importy odraczane lokalnie (`noqa: PLC0415`) — prompt_toolkit/loguru/bootstrap poza ścieżką importu do użycia. `main.py:49-51,84`
 - Shell trzyma `.shell_history` obok `config/settings.json` (poza `workspace/`). `shell.py:25-33`
 - Domyślna akcja Typera (bez subkomendy) odpala shell przez `invoke_without_command=True` + `no_args_is_help=False`. `main.py:20-25`
-- Panel czerpie zakresy z `config.user_settings` i listę silników z `services.translation.engines.available_engine_ids`. `settings_panel.py:22-29`
-
-## Uwaga
-
-- TTS engine i głosy w panelu to statyczne placeholdery „do stage 6". `settings_panel.py:38-42`
+- Panel czerpie zakresy z `config.user_settings`, rejestr tłumaczeń z
+  `services.translation.engines`, a katalog TTS z leniwego registry i pasywnych
+  availability probes. Budowa katalogu nie może wykonywać płatnej syntezy ani
+  live network probe. `settings_panel.py`, `tts_settings.py`

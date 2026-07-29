@@ -36,3 +36,19 @@ narratora ani finalnego sidecara.
   `availability()` jest źródłem prawdy dla doctor/settings.
 - Transport providera wykonuje pojedynczą próbę. Wspólna warstwa TTS jest jedynym
   właścicielem retry, limitów współbieżności i circuit state.
+
+## Kontrakty i resume
+
+- `validation.py` wymaga już oczyszczonego tekstu i świadomie odrzuca składnię
+  napisów. Nie „naprawiaj” ASS/SRT wewnątrz TTS.
+- `chunking.py` dzieli wyłącznie według limitów capability silnika; nie zna
+  timingów ani eventów napisów.
+- Provider zapisuje do prywatnej ścieżki klipu przygotowanej przez TTS. Dopiero
+  wspólna warstwa waliduje wynik i commit manifestu.
+- Fingerprint obejmuje profil silnika oraz tekst requestu. Zmiana parametru
+  wpływającego na dźwięk musi unieważniać resume.
+- Callback postępu jest observerem. Jego błąd nie może przejąć syntezy.
+
+## Podkatalogi
+
+- `engines/` — leniwy rejestr i różnice kontraktów providerów.
