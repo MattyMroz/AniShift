@@ -100,6 +100,92 @@ def test_tts_queue_starts_ready_job_before_producer_close(tmp_path: Path) -> Non
     assert outcomes[source].failure is None
 
 
+def test_ready_first_starts_later_ready_episode_without_waiting(tmp_path: Path) -> None:
+    first = tmp_path / "Episode 1.mkv"
+    second = tmp_path / "Episode 2.mkv"
+    queue_input = TtsQueueInput((first, second), policy="ready_first")
+    started = threading.Event()
+
+    def worker(job: TtsQueueJob) -> TtsQueueOutcome:
+        started.set()
+        return _completed(job)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        queued = pool.submit(
+            run_tts_queue,
+            queue_input,
+            worker=worker,
+            config=TtsQueueConfig(
+                max_active_batches=1,
+                cancel=threading.Event(),
+                terminal_factory=_cancelled,
+            ),
+        )
+        queue_input.put(_job(second, 1, tmp_path))
+        assert started.wait(timeout=1.0)
+        queue_input.close()
+        outcomes = queued.result(timeout=1.0)
+
+    assert outcomes[second].failure is None
+
+
+def test_strict_natural_waits_for_earlier_episode_resolution(tmp_path: Path) -> None:
+    first = tmp_path / "Episode 1.mkv"
+    second = tmp_path / "Episode 2.mkv"
+    queue_input = TtsQueueInput((first, second), policy="strict_natural")
+    started = threading.Event()
+
+    def worker(job: TtsQueueJob) -> TtsQueueOutcome:
+        started.set()
+        return _completed(job)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        queued = pool.submit(
+            run_tts_queue,
+            queue_input,
+            worker=worker,
+            config=TtsQueueConfig(
+                max_active_batches=1,
+                cancel=threading.Event(),
+                terminal_factory=_cancelled,
+                paused_factory=_not_processed,
+            ),
+        )
+        queue_input.put(_job(second, 1, tmp_path))
+        assert not started.wait(timeout=0.05)
+        queue_input.skip(first)
+        assert started.wait(timeout=1.0)
+        queue_input.close()
+        outcomes = queued.result(timeout=1.0)
+
+    assert outcomes[second].failure is None
+
+
+def test_strict_natural_marks_jobs_blocked_by_unresolved_rank_not_processed(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "Episode 1.mkv"
+    second = tmp_path / "Episode 2.mkv"
+    queue_input = TtsQueueInput((first, second), policy="strict_natural")
+    queue_input.put(_job(second, 1, tmp_path))
+    queue_input.close()
+
+    outcomes = run_tts_queue(
+        queue_input,
+        worker=_completed,
+        config=TtsQueueConfig(
+            max_active_batches=1,
+            cancel=threading.Event(),
+            terminal_factory=_cancelled,
+            paused_factory=_not_processed,
+        ),
+    )
+
+    failure = outcomes[second].failure
+    assert failure is not None
+    assert failure.disposition == "not_processed"
+
+
 def test_tts_queue_orders_all_ready_jobs_by_discovery_rank(tmp_path: Path) -> None:
     paths = (
         tmp_path / "Episode 1.mkv",

@@ -73,6 +73,8 @@ def test_runtime_from_context_maps_voice_and_audio_profiles(
     assert audio_config.timeline_policy is TimelinePolicy.SERIALIZE
     assert audio_config.voice_mix_offset_db == -2.0
     assert captured["post_process_tempo"] == 1.25
+    assert captured["max_active_batches"] == 4
+    assert captured["processing_order_policy"] == "ready_first"
 
 
 class _Progress:
@@ -445,6 +447,147 @@ def test_runtime_caps_streaming_normalization_globally_across_files(
     assert audio.peak == 2
 
 
+def test_runtime_focuses_tts_per_episode_and_overlaps_next_tts_with_audio(
+    tmp_path: Path,
+) -> None:
+    first_source = tmp_path / "Episode 1.mkv"
+    second_source = tmp_path / "Episode 2.mkv"
+    first_narration = _narration()
+    second_narration = replace(
+        first_narration,
+        speech=replace(
+            first_narration.speech,
+            scope_id="scope-second",
+            batch_rank=1,
+        ),
+    )
+    first_tts_started = threading.Event()
+    release_first_tts = threading.Event()
+    second_tts_started = threading.Event()
+    first_audio_started = threading.Event()
+    release_first_audio = threading.Event()
+
+    class _FocusedTts:
+        def synthesize(
+            self,
+            batch: SpeechBatch,
+            *,
+            callbacks: TtsProgressSink,
+        ) -> SpeechBatchResult:
+            del callbacks
+            narration = first_narration if batch.scope_id == first_narration.speech.scope_id else second_narration
+            if batch.scope_id == first_narration.speech.scope_id:
+                first_tts_started.set()
+                assert release_first_tts.wait(timeout=2.0)
+            else:
+                second_tts_started.set()
+            return _speech_result(tmp_path, narration)
+
+        def cancel(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class _BlockingFirstAudio(_Audio):
+        def render(
+            self,
+            request: AudioRenderRequest,
+            *,
+            callbacks: AudioProgressSink | None = None,
+            cancel: threading.Event | None = None,
+        ) -> AudioRenderResult:
+            if request.source_path == first_source:
+                first_audio_started.set()
+                assert release_first_audio.wait(timeout=2.0)
+            return super().render(request, callbacks=callbacks, cancel=cancel)
+
+    runtime = PipelineTtsRuntime(
+        tts_config=_config(),
+        audio_config=AudioConfig(),
+        workspace_root=tmp_path,
+        discovery_order=(first_source, second_source),
+        cancel=threading.Event(),
+        post_process_tempo=1.0,
+        max_active_batches=2,
+        tts_service=_FocusedTts(),
+        audio_service=_BlockingFirstAudio(),
+    )
+    runtime.put(first_source, first_narration, source_audio_path=None)
+    runtime.put(second_source, second_narration, source_audio_path=None)
+
+    assert first_tts_started.wait(timeout=1.0)
+    assert not second_tts_started.wait(timeout=0.05)
+    release_first_tts.set()
+    assert first_audio_started.wait(timeout=1.0)
+    assert second_tts_started.wait(timeout=1.0)
+    release_first_audio.set()
+    outcomes = runtime.wait()
+    runtime.close()
+
+    assert all(outcome.failure is None for outcome in outcomes.values())
+
+
+def test_ready_first_orders_waiting_tts_batches_by_natural_rank(tmp_path: Path) -> None:
+    sources = tuple(tmp_path / f"Episode {rank}.mkv" for rank in range(1, 4))
+    narrations = tuple(
+        replace(
+            _narration(),
+            speech=replace(
+                _narration().speech,
+                scope_id=f"scope-{rank}",
+                batch_rank=rank,
+            ),
+        )
+        for rank in range(3)
+    )
+    first_started = threading.Event()
+    release_first = threading.Event()
+    observed: list[int] = []
+
+    class _OrderedTts:
+        def synthesize(
+            self,
+            batch: SpeechBatch,
+            *,
+            callbacks: TtsProgressSink,
+        ) -> SpeechBatchResult:
+            del callbacks
+            observed.append(batch.batch_rank)
+            if batch.batch_rank == 0:
+                first_started.set()
+                assert release_first.wait(timeout=2.0)
+            return _speech_result(tmp_path, narrations[batch.batch_rank])
+
+        def cancel(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    runtime = PipelineTtsRuntime(
+        tts_config=_config(),
+        audio_config=AudioConfig(),
+        workspace_root=tmp_path,
+        discovery_order=sources,
+        cancel=threading.Event(),
+        post_process_tempo=1.0,
+        max_active_batches=3,
+        tts_service=_OrderedTts(),
+        audio_service=_Audio(),
+    )
+    runtime.put(sources[0], narrations[0], source_audio_path=None)
+    assert first_started.wait(timeout=1.0)
+    runtime.put(sources[2], narrations[2], source_audio_path=None)
+    runtime.put(sources[1], narrations[1], source_audio_path=None)
+    release_first.set()
+    outcomes = runtime.wait()
+    runtime.close()
+
+    assert observed == [0, 1, 2]
+    assert all(outcome.failure is None for outcome in outcomes.values())
+
+
 def test_runtime_attributes_streaming_preparation_failure_to_audio(
     tmp_path: Path,
 ) -> None:
@@ -744,7 +887,7 @@ def test_runtime_pauses_later_batches_after_provider_wide_tts_failure(
         discovery_order=(first, second),
         cancel=threading.Event(),
         post_process_tempo=1.0,
-        max_active_batches=1,
+        max_active_batches=2,
         tts_service=tts,
         audio_service=_Audio(),
     )

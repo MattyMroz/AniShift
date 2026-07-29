@@ -88,6 +88,73 @@ def test_queue_preserves_submission_order_and_ramps_above_one_slot(
     assert [outcomes[path].status for path in paths] == ["done"] * 5
 
 
+def test_strict_input_waits_for_earlier_path_or_skip(tmp_path: Path) -> None:
+    first = tmp_path / "episode1.mkv"
+    second = tmp_path / "episode2.mkv"
+    queue_input = LlmQueueInput(
+        (first, second),
+        policy="strict_natural",
+    )
+    started = threading.Event()
+
+    def factory(_state: SharedProviderState) -> Callable[[Path, SharedProviderState], FileOutcome]:
+        def worker(path: Path, state: SharedProviderState) -> FileOutcome:
+            started.set()
+            state.on_success()
+            return _done(path)
+
+        return worker
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        queued = pool.submit(
+            run_llm_queue,
+            queue_input,
+            worker_factory=factory,
+            not_processed_factory=_not_processed,
+            config=LlmQueueConfig(
+                configured_limit=lambda: 1,
+                cancel=threading.Event(),
+            ),
+        )
+        queue_input.put(second)
+        assert not started.wait(timeout=0.05)
+        queue_input.skip(first)
+        assert started.wait(timeout=1.0)
+        queue_input.close()
+        outcomes = queued.result(timeout=1.0)
+
+    assert outcomes[second].status == "done"
+
+
+def test_strict_queue_stops_after_any_failed_translation(tmp_path: Path) -> None:
+    paths = tuple(tmp_path / f"episode{index}.mkv" for index in range(1, 3))
+    started: list[Path] = []
+
+    def factory(_state: SharedProviderState) -> Callable[[Path, SharedProviderState], FileOutcome]:
+        def worker(path: Path, state: SharedProviderState) -> FileOutcome:
+            started.append(path)
+            state.on_success()
+            return _failed(path, ErrorCode.PIPELINE_STEP_FAILED)
+
+        return worker
+
+    outcomes = run_llm_queue(
+        paths,
+        worker_factory=factory,
+        not_processed_factory=_not_processed,
+        config=LlmQueueConfig(
+            configured_limit=lambda: 1,
+            cancel=threading.Event(),
+            on_provider_failure=lambda _context: RecoveryAction.FINISH,
+            stop_on_failure=True,
+        ),
+    )
+
+    assert started == [paths[0]]
+    assert outcomes[paths[0]].status == "failed"
+    assert outcomes[paths[1]].status == "not_processed"
+
+
 def test_healthy_limit_starts_configured_and_recovery_ramps_one_two_four() -> None:
     state = SharedProviderState(threading.Event())
     assert state.concurrency_limit(4) == 4

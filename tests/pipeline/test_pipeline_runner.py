@@ -46,6 +46,9 @@ class _NullTtsRuntime:
     def close_input(self) -> None:
         return None
 
+    def skip(self, source: Path) -> None:
+        del source
+
     def wait(self) -> dict[Path, TtsQueueOutcome]:
         return {}
 

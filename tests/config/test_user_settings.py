@@ -32,6 +32,7 @@ def test_load_missing_file_returns_defaults() -> None:
     settings = load_user_settings()
     assert settings == UserSettings()
     assert settings.mode == "auto"
+    assert settings.processing_order_policy == "ready_first"
     assert settings.move_results_to_output is False
 
 
@@ -60,6 +61,22 @@ def test_load_ignores_unknown_keys(config_file: Path) -> None:
 def test_load_invalid_mode_falls_back_to_default(config_file: Path) -> None:
     config_file.write_text(json.dumps({"mode": "nonsense"}), encoding="utf-8")
     assert load_user_settings().mode == "auto"
+
+
+def test_load_invalid_processing_order_falls_back_to_default(config_file: Path) -> None:
+    config_file.write_text(
+        json.dumps({"processing_order_policy": "random"}),
+        encoding="utf-8",
+    )
+
+    assert load_user_settings().processing_order_policy == "ready_first"
+
+
+def test_processing_order_roundtrip_preserves_strict_policy(config_file: Path) -> None:
+    del config_file
+    save_user_settings(UserSettings(processing_order_policy="strict_natural"))
+
+    assert load_user_settings().processing_order_policy == "strict_natural"
 
 
 def test_load_corrupt_json_returns_defaults(config_file: Path) -> None:

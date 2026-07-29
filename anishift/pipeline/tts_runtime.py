@@ -9,7 +9,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Final, Literal, Protocol, Self, runtime_checkable
 
-from anishift.config.user_settings import config_path
+from anishift.config.user_settings import ProcessingOrderPolicy, config_path
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline.tts_queue import (
     TtsQueueConfig,
@@ -73,6 +73,9 @@ _DEFAULT_ENGINE_CONCURRENCY: Final[dict[str, int]] = {
     "sapi": 1,
 }
 """Measured or conservative fallback concurrency by engine."""
+
+_WAIT_POLL_SECONDS: Final[float] = 0.2
+"""Focus-gate polling interval for responsive cancellation."""
 
 _PROVIDER_TERMINAL_CODES: Final[frozenset[ErrorCode]] = frozenset(
     {
@@ -170,6 +173,55 @@ class _SilentPipelineProgress:
 
     def on_pipeline_retry(self, scope_id: str) -> None:
         del scope_id
+
+
+class _SynthesisFocus:
+    """Give one episode exclusive access to the shared TTS request pool."""
+
+    def __init__(self, cancel: threading.Event, policy: ProcessingOrderPolicy) -> None:
+        """Create an idle, rank-aware focus gate."""
+        self._cancel: threading.Event = cancel
+        self._condition: threading.Condition = threading.Condition()
+        self._active: bool = False
+        self._next_rank: int = 0
+        self._paused: bool = False
+        self._policy: ProcessingOrderPolicy = policy
+        self._started: bool = False
+        self._waiting: dict[int, int] = {}
+
+    def acquire(self, admission_rank: int, batch_rank: int) -> bool:
+        """Wait until this batch is the highest-priority ready synthesis."""
+        with self._condition:
+            self._waiting[admission_rank] = batch_rank
+            while True:
+                if self._cancel.is_set() or self._paused:
+                    self._waiting.pop(admission_rank, None)
+                    return False
+                if not self._active and self._has_priority(admission_rank):
+                    self._active = True
+                    self._started = True
+                    self._waiting.pop(admission_rank)
+                    return True
+                self._condition.wait(_WAIT_POLL_SECONDS)
+
+    def release(self, *, failed: bool) -> None:
+        """Release provider focus and stop strict work after an earlier failure."""
+        with self._condition:
+            self._active = False
+            self._next_rank += 1
+            if failed:
+                self._paused = True
+            self._condition.notify_all()
+
+    def _has_priority(self, admission_rank: int) -> bool:
+        """Return whether one waiting batch owns the next provider turn."""
+        if self._policy == "strict_natural" or not self._started:
+            return admission_rank == self._next_rank
+        first: int = min(
+            self._waiting,
+            key=lambda rank: (self._waiting[rank], rank),
+        )
+        return admission_rank == first
 
 
 class _StreamingNormalizationProgress:
@@ -338,6 +390,7 @@ class PipelineTtsRuntime:
         cancel: threading.Event,
         post_process_tempo: float,
         max_active_batches: int = 4,
+        processing_order_policy: ProcessingOrderPolicy = "ready_first",
         callbacks: PipelineTtsProgressSink | None = None,
         tts_service: _TtsBatchService | None = None,
         audio_service: _AudioRenderer | None = None,
@@ -348,7 +401,14 @@ class PipelineTtsRuntime:
         self._normalization_concurrency: int = audio_config.normalization_concurrency
         self._workspace_root: Path = workspace_root
         self._callbacks: PipelineTtsProgressSink = callbacks or _SilentPipelineProgress()
-        self._input: TtsQueueInput = TtsQueueInput(discovery_order)
+        self._input: TtsQueueInput = TtsQueueInput(
+            discovery_order,
+            policy=processing_order_policy,
+        )
+        self._synthesis_focus: _SynthesisFocus = _SynthesisFocus(
+            cancel,
+            processing_order_policy,
+        )
         self._closed_input: bool = False
         self._closed: bool = False
         if tts_service is None:
@@ -433,7 +493,8 @@ class PipelineTtsRuntime:
             discovery_order=discovery_order,
             cancel=cancel,
             post_process_tempo=profile.postprocess_tempo,
-            max_active_batches=min(4, concurrency),
+            max_active_batches=4,
+            processing_order_policy=preferences.processing_order_policy,
             callbacks=callbacks,
         )
 
@@ -462,6 +523,10 @@ class PipelineTtsRuntime:
             return
         self._closed_input = True
         self._input.close()
+
+    def skip(self, source: Path) -> None:
+        """Resolve a strict-order source that has no narration batch."""
+        self._input.skip(source)
 
     def wait(self) -> dict[Path, TtsQueueOutcome]:
         """Wait for active synthesis, retries, and audio rendering."""
@@ -508,6 +573,12 @@ class PipelineTtsRuntime:
         self.close()
 
     def _process(self, job: TtsQueueJob) -> TtsQueueOutcome:  # noqa: PLR0911 - explicit terminal boundaries
+        if not self._synthesis_focus.acquire(
+            job.admission_rank,
+            job.narration.speech.batch_rank,
+        ):
+            return _cancelled_outcome(job) if self._cancel.is_set() else _not_processed_outcome(job)
+        synthesis_failed: bool = True
         try:
             preparer: _AudioPreparer | None = self._audio if isinstance(self._audio, _AudioPreparer) else None
             progress = _StreamingNormalizationProgress(
@@ -521,6 +592,7 @@ class PipelineTtsRuntime:
                 job.narration.speech,
                 callbacks=progress,
             )
+            synthesis_failed = speech.status is not SpeechBatchStatus.COMPLETED
         except TtsError as error:
             return _failed_outcome(job, step="tts", context=error.context)
         except (OSError, RuntimeError, ValueError) as error:
@@ -529,6 +601,8 @@ class PipelineTtsRuntime:
                 step="tts",
                 context=_unexpected_step_context("TTS", error),
             )
+        finally:
+            self._synthesis_focus.release(failed=synthesis_failed)
         try:
             progress.wait()
         except AudioError as error:

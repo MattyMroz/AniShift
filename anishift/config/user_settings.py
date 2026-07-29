@@ -50,6 +50,7 @@ __all__ = [
     "JsonScalar",
     "Mode",
     "OutputVariant",
+    "ProcessingOrderPolicy",
     "SettingsSchemaWarning",
     "TtsVoiceProfileSettings",
     "UserSettings",
@@ -65,6 +66,9 @@ Mode = Literal["auto", "manual"]
 
 OutputVariant = Literal["players", "merge", "burn"]
 """Output assembly: soft players, MKV merge, or burned-in MP4."""
+
+ProcessingOrderPolicy = Literal["ready_first", "strict_natural"]
+"""Cross-file scheduling policy for translation, TTS, and audio."""
 
 type JsonScalar = str | int | float | bool | None
 """JSON scalar accepted by provider-specific TTS options."""
@@ -115,6 +119,9 @@ TTS_CONCURRENCY_RANGE: Final[tuple[int, int]] = (1, 100)
 
 _MODES: Final[frozenset[str]] = frozenset(("auto", "manual"))
 """Accepted values for the ``mode`` field."""
+
+_PROCESSING_ORDER_POLICIES: Final[frozenset[str]] = frozenset(("ready_first", "strict_natural"))
+"""Accepted values for the ``processing_order_policy`` field."""
 
 _OUTPUT_VARIANTS: Final[frozenset[str]] = frozenset(("players", "merge", "burn"))
 """Accepted values for the ``output_variant`` field."""
@@ -222,6 +229,7 @@ class UserSettings:
 
     Attributes:
         mode: ``"auto"`` (Enter processes everything) or ``"manual"``.
+        processing_order_policy: Ready-first throughput or strict natural order.
         translation_engine: Selected translation engine id.
         translation_fallback_chain: Ordered fallback engine ids.
         translation_batch_size: Lines per request (0 = engine default).
@@ -255,6 +263,7 @@ class UserSettings:
 
     schema_version: int = SETTINGS_SCHEMA_VERSION
     mode: Mode = "auto"
+    processing_order_policy: ProcessingOrderPolicy = "ready_first"
     translation_engine: str = "google"
     translation_fallback_chain: list[str] = field(default_factory=lambda: ["google"])
     translation_batch_size: int = 0
@@ -784,6 +793,7 @@ def load_user_settings() -> UserSettings:
     llm_engine_ids = frozenset(available_llm_engine_ids())
     tts_engine_ids = frozenset(available_tts_engine_ids())
     _clean_string(filtered, "mode", _MODES)
+    _clean_string(filtered, "processing_order_policy", _PROCESSING_ORDER_POLICIES)
     _clean_string(filtered, "output_variant", _OUTPUT_VARIANTS)
     _clean_string(filtered, "translation_engine", engine_ids)
     _clean_str_list(filtered, "translation_fallback_chain", engine_ids)

@@ -6,10 +6,11 @@ import threading
 from collections import deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Literal
 
+from anishift.config.user_settings import ProcessingOrderPolicy
 from anishift.errors import ErrorContext
 from anishift.pipeline.narration import NarrationBatch
 from anishift.services.audio.types import AudioRenderResult
@@ -37,6 +38,7 @@ class TtsQueueJob:
     source_audio_path: Path | None
     temporary_root: Path
     post_process_tempo: float
+    admission_rank: int = -1
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,13 +95,21 @@ class TtsQueueConfig:
 class TtsQueueInput:
     """Open producer channel for narration jobs becoming ready over time."""
 
-    __slots__ = ("_closed", "_condition", "_pending", "_rank")
+    __slots__ = ("_closed", "_condition", "_deferred", "_next_rank", "_pending", "_policy", "_rank")
 
-    def __init__(self, discovery_order: Sequence[Path] = ()) -> None:
+    def __init__(
+        self,
+        discovery_order: Sequence[Path] = (),
+        *,
+        policy: ProcessingOrderPolicy = "ready_first",
+    ) -> None:
         """Create an open stream with stable natural discovery ranks."""
         self._condition: threading.Condition = threading.Condition()
         self._pending: deque[TtsQueueJob] = deque()
+        self._deferred: dict[int, TtsQueueJob | None] = {}
         self._closed: bool = False
+        self._next_rank: int = 0
+        self._policy: ProcessingOrderPolicy = policy
         self._rank: dict[Path, int] = {path: index for index, path in enumerate(discovery_order)}
 
     def put(self, job: TtsQueueJob) -> None:
@@ -108,7 +118,23 @@ class TtsQueueInput:
             if self._closed:
                 message: str = "cannot enqueue after closing the TTS queue input"
                 raise RuntimeError(message)
-            self._pending.append(job)
+            if self._policy == "strict_natural":
+                self._deferred[self._rank_for_source(job.source)] = job
+                self._release_resolved()
+            else:
+                self._pending.append(job)
+            self._condition.notify_all()
+
+    def skip(self, source: Path) -> None:
+        """Resolve one natural-order source that requires no TTS work."""
+        if self._policy != "strict_natural":
+            return
+        with self._condition:
+            if self._closed:
+                message: str = "cannot resolve after closing the TTS queue input"
+                raise RuntimeError(message)
+            self._deferred[self._rank_for_source(source)] = None
+            self._release_resolved()
             self._condition.notify_all()
 
     def close(self) -> None:
@@ -133,9 +159,30 @@ class TtsQueueInput:
     def rank(self, job: TtsQueueJob) -> int:
         """Return the stable discovery rank, extending it for injected jobs."""
         with self._condition:
-            if job.source not in self._rank:
-                self._rank[job.source] = len(self._rank)
-            return self._rank[job.source]
+            return self._rank_for_source(job.source)
+
+    def take_deferred(self) -> tuple[TtsQueueJob, ...]:
+        """Take strict-order jobs blocked behind an unresolved earlier source."""
+        with self._condition:
+            jobs: tuple[TtsQueueJob, ...] = tuple(
+                job for _rank, job in sorted(self._deferred.items()) if job is not None
+            )
+            self._deferred.clear()
+            return jobs
+
+    def _rank_for_source(self, source: Path) -> int:
+        """Return or allocate one stable source rank while holding the lock."""
+        if source not in self._rank:
+            self._rank[source] = len(self._rank)
+        return self._rank[source]
+
+    def _release_resolved(self) -> None:
+        """Release the contiguous strict-order prefix while holding the lock."""
+        while self._next_rank in self._deferred:
+            job: TtsQueueJob | None = self._deferred.pop(self._next_rank)
+            self._next_rank += 1
+            if job is not None:
+                self._pending.append(job)
 
 
 def run_tts_queue(
@@ -149,6 +196,7 @@ def run_tts_queue(
     outcomes: dict[Path, TtsQueueOutcome] = {}
     input_closed: bool = False
     paused: bool = False
+    next_admission_rank: int = 0
     with ThreadPoolExecutor(max_workers=config.max_active_batches) as pool:
         active: dict[Future[TtsQueueOutcome], TtsQueueJob] = {}
         while pending or active or not input_closed:
@@ -162,6 +210,8 @@ def run_tts_queue(
                 )
             while pending and len(active) < config.max_active_batches and not config.cancel.is_set() and not paused:
                 job: TtsQueueJob = pending.popleft()
+                job = replace(job, admission_rank=next_admission_rank)
+                next_admission_rank += 1
                 active[pool.submit(worker, job)] = job
             if not active:
                 if config.cancel.is_set():
@@ -184,6 +234,7 @@ def run_tts_queue(
                     paused = True
     remaining, _closed = queue_input.drain()
     pending.extend(remaining)
+    deferred: tuple[TtsQueueJob, ...] = queue_input.take_deferred()
     terminal_factory: TtsQueueTerminalFactory = (
         config.paused_factory
         if paused and not config.cancel.is_set() and config.paused_factory is not None
@@ -191,6 +242,11 @@ def run_tts_queue(
     )
     for job in pending:
         outcome = terminal_factory(job)
+        outcomes[job.source] = outcome
+        _notify(config.on_result, outcome)
+    deferred_factory: TtsQueueTerminalFactory = config.paused_factory or config.terminal_factory
+    for job in deferred:
+        outcome = deferred_factory(job)
         outcomes[job.source] = outcome
         _notify(config.on_result, outcome)
     return outcomes

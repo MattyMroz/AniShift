@@ -106,6 +106,10 @@ class _PipelineTtsRuntime(Protocol):
         """Close admission after the last spoken-ready callback."""
         ...
 
+    def skip(self, source: Path) -> None:
+        """Resolve a strict-order source that requires no narration."""
+        ...
+
     def wait(self) -> dict[Path, TtsQueueOutcome]:
         """Wait for terminal TTS and audio outcomes."""
         ...
@@ -220,7 +224,7 @@ class _LlmProgressGate:
             self._enabled = False
 
 
-def run_pipeline(  # noqa: PLR0912,PLR0913,PLR0915 - explicit composition and lifecycle wiring
+def run_pipeline(  # noqa: C901,PLR0912,PLR0913,PLR0915 - explicit composition and lifecycle wiring
     context: AppContext,
     *,
     input_paths: Sequence[Path] | None = None,
@@ -245,6 +249,7 @@ def run_pipeline(  # noqa: PLR0912,PLR0913,PLR0915 - explicit composition and li
     mkvs = [path for path in files if path.suffix.lower() == _MKV_SUFFIX]
     txts = [path for path in files if path.suffix.lower() == _TXT_SUFFIX]
     translation = _translation_settings(context)
+    strict_order: bool = context.user_settings.processing_order_policy == "strict_natural"
     cancel = threading.Event()
     llm_progress = _LlmProgressGate(cancel, llm_progress_handler)
     runtime_factory: TtsRuntimeFactory = tts_runtime_factory or _default_tts_runtime_factory
@@ -271,17 +276,27 @@ def run_pipeline(  # noqa: PLR0912,PLR0913,PLR0915 - explicit composition and li
             source_audio_path=state.outcome.source_audio_path,
         )
 
+    def resolve_without_narration(path: Path, state: _MkvState) -> None:
+        if tts_runtime is not None and state.narration is None and state.outcome.failure is None:
+            tts_runtime.skip(path)
+
     try:
         if translation.engine == "llm":
             from anishift.pipeline.llm_queue import LlmQueueInput  # noqa: PLC0415 - LLM-only path
 
-            queue_input = LlmQueueInput(files)
+            queue_input = LlmQueueInput(
+                files,
+                policy=context.user_settings.processing_order_policy,
+            )
 
             def enqueue_extracted(path: Path, state: _MkvState) -> None:
                 states[path] = state
                 _notify_spoken_ready(path, state, publish_narration)
                 if state.split is not None:
                     queue_input.put(path)
+                elif state.outcome.failure is None:
+                    queue_input.skip(path)
+                    resolve_without_narration(path, state)
 
             queue_executor = ThreadPoolExecutor(max_workers=1)
             wait_for_queue = True
@@ -295,6 +310,7 @@ def run_pipeline(  # noqa: PLR0912,PLR0913,PLR0915 - explicit composition and li
                     on_provider_failure=llm_failure_handler,
                     on_progress=llm_progress.notify,
                     on_spoken_ready=publish_narration,
+                    on_without_spoken=lambda path: resolve_without_narration(path, states[path]),
                 )
                 try:
                     try:
@@ -328,6 +344,8 @@ def run_pipeline(  # noqa: PLR0912,PLR0913,PLR0915 - explicit composition and li
             def collect_extracted(path: Path, state: _MkvState) -> None:
                 states[path] = state
                 _notify_spoken_ready(path, state, publish_narration)
+                if state.split is None:
+                    resolve_without_narration(path, state)
 
             extracted = _extract_phase(
                 mkvs,
@@ -345,6 +363,8 @@ def run_pipeline(  # noqa: PLR0912,PLR0913,PLR0915 - explicit composition and li
                 progress_factory,
                 cancel,
                 on_spoken_ready=publish_narration,
+                on_without_spoken=lambda path: resolve_without_narration(path, states[path]),
+                strict_order=strict_order,
             )
             txt_outcomes = {}
             for path in txts:
@@ -738,16 +758,26 @@ def _translate_phase(  # noqa: PLR0913 - explicit phase dependencies and callbac
     cancel: threading.Event,
     *,
     on_spoken_ready: SpokenReadyHandler | None = None,
+    on_without_spoken: Callable[[Path], None] | None = None,
+    strict_order: bool = False,
 ) -> None:
     """Translate the files that need it, replacing the extraction rows in place."""
-    pending = [
-        path
-        for path, state in sorted(
-            states.items(),
-            key=lambda item: item[1].source_rank,
+    ordered_states: list[tuple[Path, _MkvState]] = sorted(
+        states.items(),
+        key=lambda item: item[1].source_rank,
+    )
+    if strict_order:
+        first_failed_index: int | None = next(
+            (index for index, (_path, state) in enumerate(ordered_states) if state.outcome.failure is not None),
+            None,
         )
-        if state.split is not None
-    ]
+        if first_failed_index is not None:
+            failed_path: Path = ordered_states[first_failed_index][0]
+            for _path, state in ordered_states[first_failed_index + 1 :]:
+                if state.split is not None:
+                    _mark_translation_blocked(state.outcome, failed_path)
+            ordered_states = ordered_states[:first_failed_index]
+    pending = [path for path, state in ordered_states if state.split is not None]
     if not pending:
         return
     if progress_factory is None:
@@ -762,6 +792,15 @@ def _translate_phase(  # noqa: PLR0913 - explicit phase dependencies and callbac
                 task_id=None,
                 on_spoken_ready=on_spoken_ready,
             )
+            if (
+                states[path].narration is None
+                and states[path].outcome.failure is None
+                and on_without_spoken is not None
+            ):
+                on_without_spoken(path)
+            if strict_order and states[path].outcome.failure is not None:
+                _mark_pending_translation_not_processed(pending, path, states)
+                break
         return
     with progress_factory() as progress:
         task_ids = {path: progress.add_task(path.name) for path in pending}
@@ -776,6 +815,38 @@ def _translate_phase(  # noqa: PLR0913 - explicit phase dependencies and callbac
                 task_id=task_ids[path],
                 on_spoken_ready=on_spoken_ready,
             )
+            if (
+                states[path].narration is None
+                and states[path].outcome.failure is None
+                and on_without_spoken is not None
+            ):
+                on_without_spoken(path)
+            if strict_order and states[path].outcome.failure is not None:
+                _mark_pending_translation_not_processed(pending, path, states)
+                break
+
+
+def _mark_pending_translation_not_processed(
+    pending: Sequence[Path],
+    failed_path: Path,
+    states: dict[Path, _MkvState],
+) -> None:
+    """Stop later strict-order translations after the first failed source."""
+    failed_index: int = pending.index(failed_path)
+    for path in pending[failed_index + 1 :]:
+        outcome: FileOutcome = states[path].outcome
+        _mark_translation_blocked(outcome, failed_path)
+
+
+def _mark_translation_blocked(outcome: FileOutcome, failed_path: Path) -> None:
+    """Mark one later source as untouched by strict translation ordering."""
+    outcome.status = "not_processed"
+    outcome.failure = FileFailure(
+        "translate",
+        ErrorCode.PIPELINE_STEP_FAILED.value,
+        f"Translation paused after an earlier failure in {failed_path.name}",
+        "Retry, change translation settings, or finish with completed files.",
+    )
 
 
 def _translate_llm_inputs(  # noqa: PLR0913 - queue wiring keeps callbacks explicit
@@ -787,6 +858,7 @@ def _translate_llm_inputs(  # noqa: PLR0913 - queue wiring keeps callbacks expli
     on_provider_failure: LlmFailureHandler | None = None,
     on_progress: LlmProgressHandler | None = None,
     on_spoken_ready: SpokenReadyHandler | None = None,
+    on_without_spoken: Callable[[Path], None] | None = None,
 ) -> dict[Path, FileOutcome]:
     """Translate ready MKV and TXT inputs through the central concurrent queue."""
     from anishift.pipeline.llm_queue import LlmQueueConfig, run_llm_queue  # noqa: PLC0415 - LLM-only path
@@ -837,6 +909,8 @@ def _translate_llm_inputs(  # noqa: PLR0913 - queue wiring keeps callbacks expli
                             "Check file permissions and free disk space.",
                         )
                     state.outcome.llm_calls = tuple(runtime.records)
+                    if state.narration is None and state.outcome.failure is None and on_without_spoken is not None:
+                        on_without_spoken(path)
                     return state.outcome
                 outcome = _process_txt(
                     path,
@@ -863,10 +937,15 @@ def _translate_llm_inputs(  # noqa: PLR0913 - queue wiring keeps callbacks expli
         worker_factory=build_worker,
         not_processed_factory=not_processed,
         config=LlmQueueConfig(
-            configured_limit=lambda: context.user_settings.llm_max_concurrency,
+            configured_limit=lambda: (
+                1
+                if context.user_settings.processing_order_policy == "strict_natural"
+                else context.user_settings.llm_max_concurrency
+            ),
             cancel=cancel,
             on_provider_failure=on_provider_failure,
             on_progress=on_progress,
+            stop_on_failure=context.user_settings.processing_order_policy == "strict_natural",
         ),
     )
     return {path: outcome for path, outcome in queued.items() if path.suffix.lower() == _TXT_SUFFIX}

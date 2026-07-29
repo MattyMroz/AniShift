@@ -56,6 +56,9 @@ _OUTPUT_VARIANTS: Final[tuple[str, ...]] = ("players", "merge", "burn")
 _MODES: Final[tuple[str, ...]] = ("auto", "manual")
 """Selectable processing modes."""
 
+_PROCESSING_ORDER_POLICIES: Final[tuple[str, ...]] = ("ready_first", "strict_natural")
+"""Selectable cross-file scheduling policies."""
+
 
 @dataclass(frozen=True, slots=True)
 class _Field:
@@ -72,6 +75,7 @@ class _Field:
 
 _BASE_FIELDS: Final[tuple[_Field, ...]] = (
     _Field("mode", "Mode"),
+    _Field("processing_order_policy", "Processing order"),
     _Field("translation_engine", "Translation"),
     _Field("translation_max_retries", "Max retries"),
 )
@@ -220,6 +224,12 @@ def _step_field(  # noqa: C901, PLR0912, PLR0913 - one typed dispatcher owns all
         return
     if field.key == "mode":
         settings.mode = _cycle(_MODES, settings.mode, delta)  # type: ignore[assignment]
+    elif field.key == "processing_order_policy":
+        settings.processing_order_policy = _cycle(  # type: ignore[assignment]
+            _PROCESSING_ORDER_POLICIES,
+            settings.processing_order_policy,
+            delta,
+        )
     elif field.key == "translation_engine":
         settings.translation_engine = _cycle(engines, settings.translation_engine, delta)
     elif field.key == "translation_max_retries":

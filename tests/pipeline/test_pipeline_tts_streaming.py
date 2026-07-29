@@ -96,6 +96,9 @@ class _FakeRuntime:
     def close_input(self) -> None:
         self.closed_input = True
 
+    def skip(self, source: Path) -> None:
+        del source
+
     def wait(self) -> dict[Path, TtsQueueOutcome]:
         outcomes: dict[Path, TtsQueueOutcome] = {}
         for job in self.jobs:

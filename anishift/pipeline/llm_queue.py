@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, Never
 
+from anishift.config.user_settings import ProcessingOrderPolicy
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext, TransientError
 from anishift.pipeline.recovery import (
     RecoveryAction,
@@ -87,18 +88,27 @@ class LlmQueueConfig:
     cancel: threading.Event
     on_provider_failure: LlmFailureHandler | None = None
     on_progress: LlmProgressHandler | None = None
+    stop_on_failure: bool = False
 
 
 class LlmQueueInput:
     """Thread-safe producer channel for files becoming ready after extraction."""
 
-    __slots__ = ("_closed", "_condition", "_pending", "_rank")
+    __slots__ = ("_closed", "_condition", "_deferred", "_next_rank", "_pending", "_policy", "_rank")
 
-    def __init__(self, discovery_order: Sequence[Path] = ()) -> None:
+    def __init__(
+        self,
+        discovery_order: Sequence[Path] = (),
+        *,
+        policy: ProcessingOrderPolicy = "ready_first",
+    ) -> None:
         """Create an open channel with an optional natural discovery ranking."""
         self._condition = threading.Condition()
         self._pending: deque[Path] = deque()
+        self._deferred: dict[int, Path | None] = {}
         self._closed = False
+        self._next_rank = 0
+        self._policy = policy
         self._rank = {path: index for index, path in enumerate(discovery_order)}
 
     def put(self, path: Path) -> None:
@@ -107,7 +117,23 @@ class LlmQueueInput:
             if self._closed:
                 msg = "cannot enqueue after closing the LLM queue input"
                 raise RuntimeError(msg)
-            self._pending.append(path)
+            if self._policy == "strict_natural":
+                self._deferred[self._rank_for_path(path)] = path
+                self._release_resolved()
+            else:
+                self._pending.append(path)
+            self._condition.notify_all()
+
+    def skip(self, path: Path) -> None:
+        """Resolve one strict-order path that does not require translation."""
+        if self._policy != "strict_natural":
+            return
+        with self._condition:
+            if self._closed:
+                msg = "cannot resolve after closing the LLM queue input"
+                raise RuntimeError(msg)
+            self._deferred[self._rank_for_path(path)] = None
+            self._release_resolved()
             self._condition.notify_all()
 
     def close(self) -> None:
@@ -132,9 +158,28 @@ class LlmQueueInput:
     def rank(self, path: Path) -> int:
         """Return the stable discovery rank, extending it for unknown paths."""
         with self._condition:
-            if path not in self._rank:
-                self._rank[path] = len(self._rank)
-            return self._rank[path]
+            return self._rank_for_path(path)
+
+    def take_deferred(self) -> tuple[Path, ...]:
+        """Take strict-order paths blocked behind an unresolved earlier rank."""
+        with self._condition:
+            paths: tuple[Path, ...] = tuple(path for _rank, path in sorted(self._deferred.items()) if path is not None)
+            self._deferred.clear()
+            return paths
+
+    def _rank_for_path(self, path: Path) -> int:
+        """Return or allocate a rank while holding the condition lock."""
+        if path not in self._rank:
+            self._rank[path] = len(self._rank)
+        return self._rank[path]
+
+    def _release_resolved(self) -> None:
+        """Publish the contiguous strict-order prefix while holding the lock."""
+        while self._next_rank in self._deferred:
+            path: Path | None = self._deferred.pop(self._next_rank)
+            self._next_rank += 1
+            if path is not None:
+                self._pending.append(path)
 
 
 class SharedProviderState:
@@ -283,7 +328,7 @@ def run_llm_queue(  # noqa: PLR0912 - explicit queue state transitions
                 outcome = future.result()
                 outcomes[path] = outcome
                 _notify_progress(config.on_progress, path, outcome.status, config.cancel)
-                if _is_provider_terminal(outcome):
+                if _is_provider_terminal(outcome) or (config.stop_on_failure and outcome.failure is not None):
                     terminal_paths.append(path)
                     state.disable()
             if terminal_paths and not active and input_closed:
@@ -299,6 +344,7 @@ def run_llm_queue(  # noqa: PLR0912 - explicit queue state transitions
                     break
                 state, worker = recovered
                 continue
+    pending.extend(queue_input.take_deferred())
     if pending:
         failure = outcomes[terminal_paths[0]].failure if terminal_paths else None
         context = ErrorContext(
