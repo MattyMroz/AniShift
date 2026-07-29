@@ -14,6 +14,7 @@ from anishift.services.audio.probe import (
     measure_decoded_duration,
     parse_probe_json,
     probe_audio,
+    probe_decoded_mp3,
 )
 
 
@@ -111,6 +112,33 @@ def test_probe_audio_uses_json_argument_list(tmp_path: Path) -> None:
         "json",
     )
     assert command[-1] == str(path)
+
+
+def test_probe_decoded_mp3_uses_one_complete_decode(tmp_path: Path) -> None:
+    path = tmp_path / "voice.mp3"
+    header = (0x7FF << 21) | (0b11 << 19) | (0b01 << 17) | (1 << 16) | (9 << 12) | (0b11 << 6)
+    frame_length = 144 * 128_000 // 44_100
+    frame = header.to_bytes(4, byteorder="big") + bytes(frame_length - 4)
+    path.write_bytes(frame + frame)
+    runner = RecordingRunner(
+        lambda command, operation: command_result(
+            command,
+            stdout="out_time_us=3854512\nprogress=end\n",
+        ),
+    )
+
+    probe = probe_decoded_mp3(
+        path,
+        ffmpeg=Path("ffmpeg.exe"),
+        runner=runner,
+        timeout_s=1,
+    )
+
+    assert probe.codec_name == "mp3"
+    assert probe.sample_rate == 44_100
+    assert probe.channels == 1
+    assert probe.duration_ms == 3855
+    assert [operation for _, operation in runner.calls] == ["measure_duration"]
 
 
 def test_measure_decoded_duration_uses_completed_ffmpeg_progress(

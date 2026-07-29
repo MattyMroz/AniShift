@@ -21,6 +21,10 @@ from anishift.services.audio.errors import (
     AudioProbeError,
     AudioProcessError,
 )
+from anishift.services.audio.mp3 import (
+    Mp3StreamProperties,
+    read_mp3_stream_properties,
+)
 from anishift.services.audio.types import AudioProbe
 
 __all__ = [
@@ -28,6 +32,7 @@ __all__ = [
     "measure_decoded_duration",
     "parse_probe_json",
     "probe_audio",
+    "probe_decoded_mp3",
     "validate_decode",
 ]
 
@@ -136,6 +141,35 @@ def probe_audio(
         cancel=cancel,
     )
     return parse_probe_json(path, result.stdout)
+
+
+def probe_decoded_mp3(
+    path: Path,
+    *,
+    ffmpeg: Path,
+    runner: CommandRunner,
+    timeout_s: float,
+    cancel: threading.Event | None = None,
+) -> AudioProbe:
+    """Inspect MPEG metadata and return duration from one complete decode."""
+    properties: Mp3StreamProperties = read_mp3_stream_properties(path)
+    duration_ms: int = measure_decoded_duration(
+        path,
+        ffmpeg=ffmpeg,
+        runner=runner,
+        timeout_s=timeout_s,
+        cancel=cancel,
+    )
+    return AudioProbe(
+        path=path,
+        codec_name="mp3",
+        format_name="mp3",
+        sample_rate=properties.sample_rate,
+        channels=properties.channels,
+        channel_layout=_default_layout(properties.channels),
+        duration_ms=duration_ms,
+        bit_rate=None,
+    )
 
 
 def validate_decode(

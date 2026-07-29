@@ -292,6 +292,24 @@ The packet scan is important for raw VBR AAC: ordinary FFprobe metadata was
 observed to under-report this episode by about 20.5 seconds, while packet-copy
 scan matched the full decode duration.
 
+### 10.5 Single-process MP3 validation
+
+Implemented:
+
+- provider MP3 keeps a complete FFmpeg decode before it can be committed;
+- the same decode reports the exact decoded duration;
+- sample rate and channel count come from two consecutive MPEG Layer III frame
+  headers rather than a separate FFprobe process;
+- an optional ID3v2 tag is skipped using its sync-safe declared size;
+- malformed headers, inconsistent consecutive frames, incomplete decode, and
+  unsupported non-MP3 data remain validation failures;
+- non-MP3 provider formats retain the previous FFprobe plus FFmpeg path.
+
+Across the 336 Dallin clips, the MPEG reader agreed with FFprobe for every
+sample. Three local runs of the previous validation took 3.46, 3.50, and
+4.26 seconds. Three runs of the single-process validation took 2.24, 1.89, and
+1.80 seconds.
+
 ## 11. Cold benchmark results
 
 All accepted runs removed exactly the required scope before execution and
@@ -304,14 +322,17 @@ processed all 336 spoken events through the real ElevenBytes pipeline.
 | Network-slow sample | 26.17 s | 21.29 s | 4.88 s | rejected as comparison evidence |
 | Full optimized sample A | 21.15 s | 17.41 s | 3.74 s | provider network slow |
 | Full optimized sample B | 15.44 s | 12.22 s | 3.22 s | 3.68 s faster |
+| Single-process MP3 sample A | 33.25 s | 30.14 s | 3.11 s | provider network slow |
+| Single-process MP3 sample B | 14.08 s | 10.98 s | 3.10 s | 5.04 s faster |
+| Single-process MP3 sample C | 14.03 s | 10.81 s | 3.22 s | 5.09 s faster |
 
 These are individual observations, not a statistically valid before/after
-median. The fastest optimized observation is 15.44 seconds, 3.68 seconds below
-the single clean 19.12-second baseline and about 2.25 seconds below the earlier
-17.69-second AniShift observation. The 21-26 second samples demonstrate that
-provider variance can dominate wall time. Deterministic evidence is therefore
-limited to focused concurrency tests and the local audio-tail reduction from
-4.89 to 3.22 seconds in the comparable measured samples.
+median. The fastest optimized observation is 14.03 seconds, 5.09 seconds below
+the single clean 19.12-second baseline and about 3.66 seconds below the earlier
+17.69-second AniShift observation. The 21-33 second samples demonstrate that
+provider variance can dominate wall time. Deterministic evidence is the local
+validation benchmark plus focused concurrency tests; the two network-comparable
+single-process MP3 runs were independently within 0.05 seconds of each other.
 
 ## 12. Deferred performance work
 
@@ -322,11 +343,9 @@ a larger correctness surface:
    length guards and per-item fallback;
 2. remove the raw PCM to narrator WAV to final read round trip through a bounded
    streaming render path;
-3. replace per-clip FFprobe with provider-declared or MP3-frame metadata only
-   after run6, run7, and custom-voice output contracts are verified;
-4. consolidate progress callback offloads and remove the current quadratic
+3. consolidate progress callback offloads and remove the current quadratic
    snapshot construction;
-5. cache process-local resume manifest parsing while retaining external change
+4. cache process-local resume manifest parsing while retaining external change
    detection;
-6. reuse already calculated clip hashes across TTS, normalization, and
+5. reuse already calculated clip hashes across TTS, normalization, and
    narration fingerprints.

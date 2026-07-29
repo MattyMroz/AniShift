@@ -27,7 +27,11 @@ from anishift.services.audio.commands import (
     join_clips_command,
 )
 from anishift.services.audio.errors import AudioError
-from anishift.services.audio.probe import probe_audio, validate_decode
+from anishift.services.audio.probe import (
+    probe_audio,
+    probe_decoded_mp3,
+    validate_decode,
+)
 from anishift.services.audio.service import AudioProgressSink
 from anishift.services.audio.types import (
     AudioCodecProfile,
@@ -246,6 +250,8 @@ class _FfmpegClipAdapter:
     ) -> ClipValidation | None:
         """Return trusted metadata only for a fully decodable expected format."""
         expected: RenderAudioFormat = RenderAudioFormat(expectation.format.value)
+        if expected is RenderAudioFormat.MP3:
+            return self._validate_mp3(path, expectation)
         try:
             probe = probe_audio(
                 path,
@@ -264,6 +270,28 @@ class _FfmpegClipAdapter:
         except AudioError:
             return None
         if not _matches_format(expected, probe.codec_name, probe.format_name):
+            return None
+        return ClipValidation(
+            format=expectation.format,
+            sample_rate=probe.sample_rate,
+            channels=probe.channels,
+            duration_ms=probe.duration_ms,
+        )
+
+    def _validate_mp3(
+        self,
+        path: Path,
+        expectation: ClipExpectation,
+    ) -> ClipValidation | None:
+        try:
+            probe = probe_decoded_mp3(
+                path,
+                ffmpeg=self._ffmpeg,
+                runner=self._runner,
+                timeout_s=self._timeout_s,
+                cancel=self._cancel,
+            )
+        except AudioError:
             return None
         return ClipValidation(
             format=expectation.format,
