@@ -11,6 +11,7 @@ from typing import Final, Protocol
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.errors import AudioCancelledError, AudioProcessError
+from anishift.services.audio.types import AudioFormat
 
 __all__ = [
     "CommandResult",
@@ -18,6 +19,7 @@ __all__ = [
     "PcmTarget",
     "SubprocessRunner",
     "decode_command",
+    "join_clips_command",
     "narrator_wav_command",
     "normalize_command",
     "probe_command",
@@ -36,6 +38,19 @@ _STDERR_TAIL_CHARS: Final[int] = 2_000
 
 _NEW_PROCESS_GROUP: Final[int] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 """Windows flag preventing console Ctrl+C from leaking into child processes."""
+
+_MINIMUM_JOIN_SOURCES: Final[int] = 2
+"""Minimum number of parts that require provider-native assembly."""
+
+_JOIN_OUTPUT_ARGS: Final[dict[AudioFormat, tuple[str, ...]]] = {
+    AudioFormat.AAC: ("-c:a", "aac", "-f", "adts"),
+    AudioFormat.FLAC: ("-c:a", "flac", "-f", "flac"),
+    AudioFormat.MP3: ("-c:a", "libmp3lame", "-f", "mp3"),
+    AudioFormat.OGG: ("-c:a", "libvorbis", "-f", "ogg"),
+    AudioFormat.OPUS: ("-c:a", "libopus", "-f", "ogg"),
+    AudioFormat.WAV: ("-c:a", "pcm_s16le", "-f", "wav"),
+}
+"""Explicit encoder and muxer for provider-native multipart clip assembly."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +215,42 @@ def decode_command(ffmpeg: Path, path: Path) -> tuple[str, ...]:
         "null",
         "-",
     )
+
+
+def join_clips_command(
+    ffmpeg: Path,
+    sources: tuple[Path, ...],
+    destination: Path,
+    *,
+    clip_format: AudioFormat,
+) -> tuple[str, ...]:
+    """Build one filter-concat command without an artificial gap."""
+    if len(sources) < _MINIMUM_JOIN_SOURCES:
+        message: str = "Clip assembly requires at least two source paths"
+        raise ValueError(message)
+    try:
+        output_args: tuple[str, ...] = _JOIN_OUTPUT_ARGS[clip_format]
+    except KeyError as error:
+        message = f"Unsupported provider-native clip format: {clip_format}"
+        raise ValueError(message) from error
+    command: list[str] = [str(ffmpeg), "-v", "error", "-nostdin"]
+    for source in sources:
+        command.extend(("-i", str(source)))
+    command.extend(
+        (
+            "-filter_complex",
+            f"concat=n={len(sources)}:v=0:a=1[out]",
+            "-map",
+            "[out]",
+            "-vn",
+            "-sn",
+            "-dn",
+            *output_args,
+            "-y",
+            str(destination),
+        ),
+    )
+    return tuple(command)
 
 
 def normalize_command(
