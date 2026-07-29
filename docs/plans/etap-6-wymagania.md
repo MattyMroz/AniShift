@@ -777,7 +777,7 @@ zerwane IPC zabija cały proces i uruchamia świeży worker dla następnej prób
 
 Nie ma jednego globalnego limitu dla wszystkich TTS:
 
-- ElevenBytes: `12`;
+- ElevenBytes: `16`;
 - Edge: `8`;
 - SAPI: `1`;
 - ElevenLabs: `4` jako konserwatywny default, nie wynik benchmarku;
@@ -787,6 +787,10 @@ Fala 0 wykonała bez retry po 12 requestów ElevenBytes przy concurrency `1`, `4
 i `12`. Każda seria zakończyła się `12/12`, a czas całej serii wyniósł odpowiednio
 42,972 s, 3,485 s, 1,382 s i 1,265 s. Próba bez wymaganych nagłówków HTTP dała
 natychmiastowe `403`; nie jest liczona jako awaria poprawnego kontraktu.
+
+**NOWSZA DECYZJA USERA:** profil ElevenBytes używa `16` workerów, żeby nie pozostawiać
+wolnych slotów podczas dużego odcinka. Limit nadal jest konfigurowalny, a retry,
+`Retry-After` i circuit breaker pozostają właścicielami przeciążenia providera.
 
 Edge wykonał bez retry po osiem requestów przy concurrency `1`, `4` i `8`. Każda seria
 zakończyła się `8/8`, a czas całej serii wyniósł 27,194 s, 1,288 s i 0,655 s.
@@ -1146,6 +1150,12 @@ Typowy odcinek ma setki spoken events. Implementacja nie uruchamia bezwarunkowo 
 neutralne i format klipu jest już znany z walidacji.
 
 - concurrency subprocessów jest ograniczone;
+- każdy zatwierdzony klip jest przekazywany do normalizacji natychmiast, jeszcze podczas
+  syntezy pozostałych eventów;
+- normalizacja używa jednej run-scoped puli do `16` równoległych procesów dla wszystkich
+  aktywnych plików i zachowuje kolejność requestów;
+- wynik normalizacji jest cache'owany po zawartości klipu, tempie i parametrach PCM,
+  więc finalny render nie wykonuje tej samej pracy drugi raz;
 - dekodowanie i składanie korzysta z bulk/in-process path tam, gdzie jest to bezpieczne;
 - neutralne `atempo=1.0` nie powoduje zbędnego ponownego kodowania każdego klipu;
 - benchmark na cache'owanych klipach typowego odcinka porównuje czas montażu ze starym
@@ -1425,9 +1435,11 @@ muxowania w etapie 7.
 Zapis odbywa się atomowo. Istniejący poprawny sidecar nie jest zastępowany, dopóki nowy
 plik nie przejdzie walidacji.
 
-Nazwa sama nie dowodzi, że plik należy do AniShift. Manifest outputu zapisuje dokładną
-ścieżkę, fingerprint i hash ostatniego sidecaru utworzonego przez aplikację. Nie wolno
-nadpisać obcego `{stem}.<codec>` bez jawnej decyzji usera.
+**NOWSZA DECYZJA USERA:** docelowy `{stem}.<codec>` jest zawsze zastępowany po pełnej
+walidacji nowego pliku, również gdy poprzedni sidecar nie ma manifestu AniShift. Manifest
+outputu nadal zapisuje dokładną ścieżkę, fingerprint i hash, ale służy do bezpiecznego
+resume, a nie do blokowania nadpisania. Nieudany render lub walidacja zachowują poprzedni
+plik bez zmian.
 
 Zmiana codeca pozostawia poprzedni sidecar. Przykładowo po wygenerowaniu `Anime.eac3`,
 a następnie `Anime.mp3`, oba pliki pozostają obok źródła. AniShift nie usuwa starych
@@ -1786,7 +1798,7 @@ Testy bez sieci obejmują:
 - stable sort `(batch_rank, request_rank)` w TTS;
 - stable sort `(start_ms, source_index)` w timeline audio;
 - migrację ustawień oraz brak wycieku sekretu przez `repr`;
-- ownership i kolizję istniejącego sidecaru.
+- atomowe zastąpienie istniejącego sidecaru po walidacji, także bez manifestu AniShift.
 
 ### R61. Integration
 

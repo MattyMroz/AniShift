@@ -4,7 +4,7 @@ Date: 2026-07-29
 
 Branch: `feature/tts-audio`
 
-Validated implementation HEAD: `a30ab0c`
+Validated implementation HEAD: `0b2fdd3`
 
 ## Outcome
 
@@ -33,7 +33,7 @@ validation.
   - explicit mono, stereo, 5.1 and 7.1 channel plans;
   - original-plus-narrator mixing;
   - MP3, WAV, E-AC-3, Opus, FLAC and M4A AAC output;
-  - atomic output ownership and resume.
+  - validated atomic output replacement and resume.
 - Pipeline and CLI
   - immediate TTS enqueue after Polish spoken text becomes available;
   - natsorted file admission;
@@ -118,6 +118,33 @@ about 137 seconds although it decodes to about 20 seconds. The final E-AC-3 must
 match decoded duration within the existing 32 ms tolerance. The tolerance was
 not weakened.
 
+## Post-validation corrections
+
+- ElevenBytes `run6` returns valid MP3 bytes with an incorrect
+  `Content-Type: text/html` header. AniShift now validates the MP3 signature
+  before considering the header. A real adapter request produced a decodable
+  36,824-byte MP3 lasting about 2.23 seconds.
+- The ElevenBytes profile default is now 16 workers. The earlier live benchmark
+  proved concurrency up to 12; 16 is a later user-selected, configurable
+  performance default, not a claimed live benchmark result.
+- Every committed provider clip enters one run-scoped normalization pool
+  immediately while the remaining TTS requests continue. The global pool is
+  capped at 16 across all active files, and the final render reuses the prepared
+  PCM without a second transcode.
+- A 64-clip normalization benchmark improved from about 5.70 seconds
+  sequentially to about 0.39 seconds with 16 workers. All 336 cached clips from
+  the reference episode normalized in about 2.05 seconds.
+- Exact TTS resume hits reuse metadata from the already validated manifest after
+  checking the path, size and SHA-256. The reference ElevenBytes resume run
+  completed 336 clips with zero provider calls in 6.24 seconds total, including
+  2.33 seconds reported for Audio.
+- A validated new `{stem}.<codec>` atomically replaces an existing sidecar even
+  without an AniShift ownership record. Render or validation failure preserves
+  the previous target bit for bit.
+- The official ElevenLabs selector lists the three current Polish TTS models:
+  Multilingual v2, Flash v2.5 and Eleven v3. A shared 5,000-character request
+  limit prevents oversized Eleven v3 calls.
+
 ## Automated verification
 
 Final repository gates:
@@ -126,7 +153,7 @@ Final repository gates:
 ruff check: pass
 ruff format --check: pass
 mypy: pass
-pytest: 1554 passed, 8 skipped
+pytest: 1564 passed, 8 skipped
 ```
 
 The eight skips are five opt-in translation network tests, one unavailable

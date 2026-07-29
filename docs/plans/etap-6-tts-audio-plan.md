@@ -86,7 +86,7 @@ Po zakończeniu etapu 6:
 - domyślny format to E-AC-3;
 - gotowy produkt ma nazwę `{stem}.<codec>`;
 - wcześniejszy sidecar innego formatu nie jest usuwany;
-- obcy plik o tej samej nazwie nie jest nadpisywany bez decyzji usera;
+- plik o tej samej nazwie jest atomowo zastępowany dopiero po walidacji nowego sidecaru;
 - każdy plik ma jeden wiersz progress od ekstrakcji do końca audio;
 - raport pokazuje syntezę, resume, retry, drift, czas i wynik;
 - etap 7 otrzymuje jednoznaczne `mixed_audio_path`;
@@ -1671,7 +1671,7 @@ wstrzykiwanych przez composition root.
 
 Defaulty Fali 0:
 
-- ElevenBytes concurrency `12`;
+- ElevenBytes concurrency `16`;
 - Edge concurrency `8`;
 - SAPI concurrency `1`;
 - ElevenLabs concurrency `4` jako konserwatywny default przed płatnym smoke;
@@ -1762,7 +1762,6 @@ AniShiftError
     ├── AudioProbeError + FatalError
     ├── AudioDecodeError + FatalError
     ├── AudioLayoutError + FatalError
-    ├── AudioOutputCollisionError + FatalError
     ├── AudioProcessError + FatalError
     └── AudioCancelledError + FatalError
 ```
@@ -2209,7 +2208,7 @@ Audio zapisuje własne pochodne. Jego manifest może zawierać:
 - `scope_id`;
 - ordered clip fingerprints;
 - fingerprint i ścieżkę narratora;
-- fingerprint i ownership finalnego outputu;
+- fingerprint, ścieżkę i hash finalnego outputu do resume;
 - bezpieczną tożsamość oryginalnej ścieżki audio;
 - config timeline, kanałów, gainu i codeca.
 
@@ -2915,7 +2914,7 @@ Audio domain:
 - mix;
 - encode;
 - final decode-check;
-- output ownership.
+- output resume i validated atomic replacement.
 
 Nie wykonuje:
 
@@ -3066,12 +3065,15 @@ Powód:
 Strategia v1:
 
 1. provider clip zostaje zwalidowany;
-2. tylko wymagające klipy są normalizowane;
-3. normalizacja jest cache'owana przez narration fingerprint;
-4. subprocess concurrency jest bounded;
-5. PCM frames są składane streamingowo in-process;
-6. nie ładuje się całego odcinka do RAM;
-7. jeden końcowy FFmpeg opakowuje raw PCM jako WAV/RF64.
+2. callback commit natychmiast zleca normalizację, gdy TTS nadal generuje następne klipy;
+3. tylko wymagające klipy są normalizowane;
+4. normalizacja jest cache'owana przez fingerprint zawartości klipu, tempa i target PCM;
+5. jedna run-scoped pula ogranicza wszystkie aktywne pliki łącznie do `16` subprocessów
+   normalizacji, a wyniki zachowują request order;
+6. finalny render wykorzystuje gotowe artefakty bez powtórnego transkodowania;
+7. PCM frames są składane streamingowo in-process;
+8. nie ładuje się całego odcinka do RAM;
+9. jeden końcowy FFmpeg opakowuje raw PCM jako WAV/RF64.
 
 ### 22.12. Raw PCM timeline
 
@@ -3436,19 +3438,18 @@ Episode.mkv -> Episode.m4a
 4. ffprobe jest wykonywany;
 5. full decode-check;
 6. codec/layout/rate/duration są porównywane;
-7. ownership/collision gate;
-8. atomic replace;
-9. output manifest commit.
+7. atomic replace istniejącego targetu;
+8. output manifest commit.
 
 ### 25.8. Collision
 
 Jeżeli `{stem}.<codec>` istnieje:
 
-- manifest potwierdza własność i fingerprint — można zastąpić po walidacji nowego;
 - manifest potwierdza identyczny poprawny fingerprint — resume output hit;
-- manifest nie potwierdza własności — typed collision;
-- user wybiera overwrite/finish/settings w przyszłym UI;
-- v1 nie usuwa obcego pliku.
+- w pozostałych przypadkach nowy sidecar powstaje pod nazwą tymczasową;
+- poprawny nowy sidecar atomowo zastępuje target niezależnie od jego wcześniejszej własności;
+- błąd renderu lub walidacji zachowuje poprzedni target;
+- nie ma osobnego promptu collision.
 
 ### 25.9. Zachowanie innych formatów
 
@@ -3773,7 +3774,7 @@ def run_pipeline(...) -> PipelineReport:
     return ordered_report(states)
 ```
 
-Pseudocode pokazuje ownership.
+Pseudocode pokazuje lifecycle oraz granice odpowiedzialności.
 
 Nie narzuca dokładnej składni implementacji.
 
@@ -4591,7 +4592,8 @@ Stan po pierwszym przebiegu Fali 0:
 - baseline plan commit: `a6f189c`;
 - odcinki referencyjne: Youjo Senki II 01 i Mushoku Tensei S3 03;
 - SAPI: 100 eventów per głos, 203/203 decode, timeout i restart potwierdzone;
-- ElevenBytes: `12/12` przy concurrency do `12`, default `12`;
+- ElevenBytes: `12/12` przy zmierzonym concurrency do `12`; nowsza decyzja ustawia
+  konfigurowalny default `16`;
 - Edge: `8/8` przy concurrency do `8`, default `8`;
 - codec capabilities i bitrate defaults potwierdzone lokalnym FFmpeg;
 - ElevenLabs model: `eleven_multilingual_v2`;
@@ -5517,14 +5519,14 @@ AAC:
 - supported layout;
 - bitrate.
 
-### 36.7. Output ownership
+### 36.7. Output replacement
 
 - no existing file;
-- owned same fingerprint;
-- owned changed fingerprint;
-- unowned collision;
+- identical validated fingerprint resume hit;
+- changed fingerprint;
+- unowned existing target;
 - old codec preserved;
-- atomic replace;
+- validated atomic replace;
 - failed temp preserves old;
 - manifest path exact;
 - hash exact.
@@ -5946,7 +5948,7 @@ Nie zapisuje:
 - [ ] FLAC;
 - [ ] M4A AAC;
 - [ ] old formats preserved;
-- [ ] foreign collision protected;
+- [ ] foreign target replaced only after new sidecar validation;
 - [ ] partial has no final path.
 
 ### 40.11. Pipeline/UI
@@ -5987,7 +5989,7 @@ Nie zapisuje:
 | cleanup usuwa resume | ponowne koszty | scope root i osobny scratch |
 | corrupt manifest | błędne cache hit | reject whole manifest + orphan scan |
 | clip po crashu bez manifestu | ponowny koszt | deterministic orphan recovery |
-| output collision | utrata pliku usera | ownership manifest |
+| output replacement | utrata pliku po błędzie renderu | validated temp + atomic replace |
 | blind Edge patch | uszkodzone venv | version-aware atomic patch |
 | Edge wraca do 48 kb/s | spadek jakości | unavailable zamiast cichego fallback |
 | format providera źle rozpoznany | decode failure | real metadata + full decode |
@@ -6152,7 +6154,7 @@ Po assets:
 - [ ] scheduler;
 - [ ] resume;
 - [ ] fingerprint;
-- [ ] output ownership.
+- [ ] output resume and atomic replacement.
 
 ### 44.3. Engine
 
