@@ -11,6 +11,7 @@ dependencies = [
     "anthropic>=0.116.0",
     "deepl>=1.30.0",
     "edge-tts>=7.2.8",
+    "elevenlabs>=2.59.0",
     "google-genai>=2.11.0",
     "googletrans>=4.0.2",
     "httpx>=0.28.1",
@@ -48,6 +49,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-xdist>=3.8.0",
     "ruff>=0.15.21",
+    "types-regex>=2026.7.19.20260720",
 ]
 
 [tool.ruff]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Never
 
@@ -31,6 +32,7 @@ class TtsConfig:
     native_pitch: str | float | None = None
     engine_options: EngineOptions = field(default_factory=dict)
     elevenlabs_api_key: str = field(default="", repr=False)
+    metadata_cache_root: Path | None = None
 
     def __post_init__(self) -> None:
         """Validate shared constraints and freeze provider-specific options."""
