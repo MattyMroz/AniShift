@@ -31,7 +31,11 @@ from anishift.services.audio.output import (
     render_command,
     validate_output_probe,
 )
-from anishift.services.audio.probe import probe_audio, validate_decode
+from anishift.services.audio.probe import (
+    measure_decoded_duration,
+    probe_audio,
+    validate_decode,
+)
 from anishift.services.audio.resume import AudioResumeRepository
 from anishift.services.audio.timeline import plan_timeline, write_raw_timeline
 from anishift.services.audio.types import (
@@ -153,6 +157,10 @@ class AudioService:
             cancel=cancel,
         )
         original_probe: AudioProbe | None = self._probe_original(request, cancel=cancel)
+        original_duration_ms: int = self._measure_original_duration(
+            request,
+            cancel=cancel,
+        )
         channel_plan: ChannelPlan = build_channel_plan(
             self._config.codec_profile,
             original_probe.channel_layout if original_probe is not None else "mono",
@@ -170,7 +178,7 @@ class AudioService:
         )
         expected_duration_ms: int = max(
             narrator_probe.duration_ms,
-            original_probe.duration_ms if original_probe is not None else 0,
+            original_duration_ms,
         )
         hit_probe: AudioProbe | None = self._output_hit(
             repository,
@@ -355,6 +363,22 @@ class AudioService:
         return probe_audio(
             request.source_audio_path,
             ffprobe=self._ffprobe,
+            runner=self._runner,
+            timeout_s=self._config.operation_timeout_s,
+            cancel=cancel,
+        )
+
+    def _measure_original_duration(
+        self,
+        request: AudioRenderRequest,
+        *,
+        cancel: threading.Event | None,
+    ) -> int:
+        if request.source_audio_path is None:
+            return 0
+        return measure_decoded_duration(
+            request.source_audio_path,
+            ffmpeg=self._ffmpeg,
             runner=self._runner,
             timeout_s=self._config.operation_timeout_s,
             cancel=cancel,

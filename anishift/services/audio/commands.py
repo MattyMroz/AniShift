@@ -19,6 +19,7 @@ __all__ = [
     "PcmTarget",
     "SubprocessRunner",
     "decode_command",
+    "decode_duration_command",
     "join_clips_command",
     "narrator_wav_command",
     "normalize_command",
@@ -211,6 +212,29 @@ def decode_command(ffmpeg: Path, path: Path) -> tuple[str, ...]:
         str(path),
         "-map",
         "0:a:0",
+        "-f",
+        "null",
+        "-",
+    )
+
+
+def decode_duration_command(ffmpeg: Path, path: Path) -> tuple[str, ...]:
+    """Build a complete decode that reports the exact rendered duration."""
+    return (
+        str(ffmpeg),
+        "-v",
+        "error",
+        "-nostdin",
+        "-i",
+        str(path),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-progress",
+        "pipe:1",
+        "-nostats",
         "-f",
         "null",
         "-",

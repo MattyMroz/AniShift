@@ -12,6 +12,7 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.commands import (
     CommandRunner,
     decode_command,
+    decode_duration_command,
     probe_command,
 )
 from anishift.services.audio.errors import (
@@ -21,7 +22,12 @@ from anishift.services.audio.errors import (
 )
 from anishift.services.audio.types import AudioProbe
 
-__all__ = ["parse_probe_json", "probe_audio", "validate_decode"]
+__all__ = [
+    "measure_decoded_duration",
+    "parse_probe_json",
+    "probe_audio",
+    "validate_decode",
+]
 
 
 def parse_probe_json(path: Path, payload: str) -> AudioProbe:
@@ -125,6 +131,43 @@ def validate_decode(
         raise AudioDecodeError(context=context) from error
 
 
+def measure_decoded_duration(
+    path: Path,
+    *,
+    ffmpeg: Path,
+    runner: CommandRunner,
+    timeout_s: float,
+    cancel: threading.Event | None = None,
+) -> int:
+    """Return exact milliseconds from a complete first-stream audio decode."""
+    if not path.is_file() or path.stat().st_size == 0:
+        _raise_decode_duration("Audio duration input is missing or empty")
+    result = runner.run(
+        decode_duration_command(ffmpeg, path),
+        operation="measure_duration",
+        timeout_s=timeout_s,
+        cancel=cancel,
+    )
+    values: dict[str, str] = {}
+    progress_is_complete: bool = False
+    for raw_line in result.stdout.splitlines():
+        key, separator, value = raw_line.partition("=")
+        if not separator:
+            continue
+        values[key] = value
+        if key == "progress" and value == "end":
+            progress_is_complete = True
+    if not progress_is_complete:
+        _raise_decode_duration("Audio decode did not report completed duration")
+    try:
+        duration_us: Decimal = Decimal(values["out_time_us"])
+    except KeyError, InvalidOperation:
+        _raise_decode_duration("Audio decode reported an invalid duration")
+    if not duration_us.is_finite() or duration_us <= 0:
+        _raise_decode_duration("Audio decode reported an invalid duration")
+    return int((duration_us / 1000).to_integral_value(rounding=ROUND_HALF_UP))
+
+
 def _duration_ms(value: object) -> int:
     if isinstance(value, bool) or value is None:
         raise ValueError
@@ -179,3 +222,13 @@ def _raise_probe(path: Path, message: str, *, cause: BaseException | None = None
     if cause is not None:
         raise error from cause
     raise error
+
+
+def _raise_decode_duration(message: str) -> Never:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.AUDIO_FAILED,
+        message=message,
+        suggestion="Regenerate the source audio and inspect FFmpeg diagnostics.",
+        details={"operation": "measure_duration"},
+    )
+    raise AudioDecodeError(context=context)

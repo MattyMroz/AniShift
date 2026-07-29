@@ -8,6 +8,7 @@ from audio_test_helpers import write_wav
 from anishift.platform.binaries import Binary, resolve_binary
 from anishift.services.audio.commands import SubprocessRunner
 from anishift.services.audio.config import AudioConfig
+from anishift.services.audio.probe import measure_decoded_duration, probe_audio
 from anishift.services.audio.service import AudioService, _notify
 from anishift.services.audio.types import (
     AudioCodecProfile,
@@ -152,6 +153,78 @@ def test_audio_service_real_codec_and_channel_matrix(
     assert result.output_probe is not None
     assert result.output_probe.channel_layout == expected_layout
     assert result.output_probe.channels == expected_channels
+
+
+@pytest.mark.skipif(
+    FFMPEG is None or FFPROBE is None,
+    reason="bundled FFmpeg is unavailable",
+)
+def test_audio_service_uses_decoded_duration_for_vbr_adts_aac(
+    tmp_path: Path,
+) -> None:
+    assert FFMPEG is not None
+    assert FFPROBE is not None
+    original_path = tmp_path / "variable.aac"
+    runner = SubprocessRunner()
+    fixture_command = (
+        str(FFMPEG),
+        "-v",
+        "error",
+        "-nostdin",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=r=48000:cl=stereo:d=10",
+        "-f",
+        "lavfi",
+        "-i",
+        "anoisesrc=r=48000:d=10:a=0.5",
+        "-filter_complex",
+        "[1:a]pan=stereo|c0=c0|c1=c0[noise];[0:a][noise]concat=n=2:v=0:a=1[out]",
+        "-map",
+        "[out]",
+        "-c:a",
+        "aac",
+        "-q:a",
+        "5",
+        "-f",
+        "adts",
+        "-y",
+        str(original_path),
+    )
+    runner.run(fixture_command, operation="fixture", timeout_s=10)
+    metadata_probe = probe_audio(
+        original_path,
+        ffprobe=FFPROBE,
+        runner=runner,
+        timeout_s=10,
+    )
+    decoded_duration_ms = measure_decoded_duration(
+        original_path,
+        ffmpeg=FFMPEG,
+        runner=runner,
+        timeout_s=10,
+    )
+    clip_path = tmp_path / "clip.wav"
+    write_wav(clip_path, frames=4_800)
+    request = AudioRenderRequest(
+        scope_id="scope-vbr-aac",
+        source_path=tmp_path / "Episode.mkv",
+        source_audio_path=original_path,
+        clips=(_timed_clip(clip_path),),
+        temporary_root=tmp_path / "tmp" / "vbr-aac" / "audio",
+    )
+    service = AudioService(
+        AudioConfig(codec_profile=AudioCodecProfile.EAC3),
+        ffmpeg=FFMPEG,
+        ffprobe=FFPROBE,
+    )
+
+    result = service.render(request)
+
+    assert abs(metadata_probe.duration_ms - decoded_duration_ms) > 1_000
+    assert result.output_probe is not None
+    assert abs(result.output_probe.duration_ms - decoded_duration_ms) <= 32
 
 
 def _timed_clip(path: Path) -> TimedClip:

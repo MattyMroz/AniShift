@@ -7,8 +7,12 @@ import pytest
 from audio_test_helpers import RecordingRunner, command_result, probe_payload
 
 from anishift.services.audio.commands import CommandResult
-from anishift.services.audio.errors import AudioProbeError
-from anishift.services.audio.probe import parse_probe_json, probe_audio
+from anishift.services.audio.errors import AudioDecodeError, AudioProbeError
+from anishift.services.audio.probe import (
+    measure_decoded_duration,
+    parse_probe_json,
+    probe_audio,
+)
 
 
 def test_parse_probe_json_selects_first_audio_and_rounds_duration() -> None:
@@ -105,3 +109,55 @@ def test_probe_audio_uses_json_argument_list(tmp_path: Path) -> None:
         "json",
     )
     assert command[-1] == str(path)
+
+
+def test_measure_decoded_duration_uses_completed_ffmpeg_progress(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "variable bitrate.aac"
+    path.write_bytes(b"audio")
+    progress = "\n".join(
+        (
+            "out_time_us=1094983401",
+            "progress=continue",
+            "out_time_us=1420109206",
+            "progress=end",
+        ),
+    )
+    runner = RecordingRunner(
+        lambda command, operation: command_result(command, stdout=progress),
+    )
+
+    duration_ms = measure_decoded_duration(
+        path,
+        ffmpeg=Path("ffmpeg.exe"),
+        runner=runner,
+        timeout_s=1,
+    )
+
+    assert duration_ms == 1_420_109
+    command, operation = runner.calls[0]
+    assert operation == "measure_duration"
+    assert command[0] == "ffmpeg.exe"
+    assert command[-1] == "-"
+
+
+def test_measure_decoded_duration_rejects_incomplete_progress(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "truncated.aac"
+    path.write_bytes(b"audio")
+    runner = RecordingRunner(
+        lambda command, operation: command_result(
+            command,
+            stdout="out_time_us=1000000\nprogress=continue\n",
+        ),
+    )
+
+    with pytest.raises(AudioDecodeError, match="completed duration"):
+        measure_decoded_duration(
+            path,
+            ffmpeg=Path("ffmpeg"),
+            runner=runner,
+            timeout_s=1,
+        )

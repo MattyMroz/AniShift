@@ -9,6 +9,7 @@ import pytest
 from anishift.services.audio.commands import (
     SubprocessRunner,
     decode_command,
+    decode_duration_command,
     join_clips_command,
 )
 from anishift.services.audio.errors import AudioCancelledError, AudioProcessError
@@ -96,6 +97,30 @@ def test_decode_command_maps_exactly_one_audio_stream() -> None:
         "voice clip.wav",
         "-map",
         "0:a:0",
+        "-f",
+        "null",
+        "-",
+    )
+
+
+def test_decode_duration_command_reports_progress_for_exact_audio_stream() -> None:
+    command = decode_duration_command(Path("ffmpeg"), Path("voice clip.aac"))
+
+    assert command == (
+        "ffmpeg",
+        "-v",
+        "error",
+        "-nostdin",
+        "-i",
+        "voice clip.aac",
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-progress",
+        "pipe:1",
+        "-nostats",
         "-f",
         "null",
         "-",
