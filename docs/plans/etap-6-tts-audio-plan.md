@@ -189,7 +189,7 @@ Jeżeli źródła się różnią:
 - retry;
 - circuit breaker;
 - engine-specific concurrency;
-- queue wielu plików;
+- kolejka gotowych batchy w pipeline;
 - anulowanie;
 - late-result commit gate;
 - resume manifest;
@@ -739,10 +739,10 @@ elevenbytes       elevenlabs     edge      sapi
     +------------------+----------+---------+
                              |
                              v
-                     SpeechRunResult
+                    SpeechBatchResult
                              |
                              v
-           pipeline reads batch results and joins IDs
+             pipeline joins request_id with timings
                              |
                              v
                        tuple[TimedClip]
@@ -851,12 +851,15 @@ registry import    -X-> provider SDK import
 
 ### 6.6. Właściciel współbieżności
 
-Jedna instancja run-scoped TTS runtime posiada:
+`PipelineTtsRuntime` posiada kolejkę gotowych batchy, mapowanie do plików, agregację
+wyników i recovery całego przebiegu.
 
-- event loop;
+Jedna run-scoped instancja `TtsService` posiada wyłącznie zasoby wykonania syntezy:
+
+- dedykowany Runner/thread dla async engine;
 - selected engine;
 - globalny semaphore engine;
-- bounded priority queue;
+- bounded priority queue requestów providera;
 - retry schedule;
 - circuit state;
 - cancel event;
@@ -866,6 +869,8 @@ Jedna instancja run-scoped TTS runtime posiada:
 
 Nie istnieje:
 
+- kolejka plików w `services/tts`;
+- producer extraction/translation w `services/tts`;
 - semaphore w pipeline i drugi w engine;
 - retry w schedulerze i drugi w SDK;
 - osobny event loop per request;
@@ -878,18 +883,19 @@ Pipeline uruchamia dwa niezależne synchroniczne API:
 
 ```python
 with TtsService(config, dependencies) as service:
-    speech_run = service.synthesize(batches, callbacks=callbacks)
+    speech = service.synthesize(batch, callbacks=callbacks)
 
 audio = audio_service.render(audio_requests, callbacks=callbacks)
 ```
 
 `TtsService.synthesize`:
 
-1. powstaje jeden `asyncio.Runner`;
-2. uruchamia scheduler neutralnych `SpeechRequest`;
+1. synchroniczne, thread-safe wywołanie przekazuje requesty jednego batcha do jednego
+   współdzielonego Runnera;
+2. requesty trafiają do współdzielonego schedulera engine;
 3. async engine generuje klipy;
 4. sync SDK działa w kontrolowanym executorze;
-5. zwraca `SpeechRunResult` z wynikami batchy, bez narratora i miksu;
+5. zwraca `SpeechBatchResult` bez narratora i miksu;
 6. zamknięcie czeka do deadline;
 7. pozostałe late results tracą prawo commitu.
 
@@ -902,6 +908,8 @@ audio = audio_service.render(audio_requests, callbacks=callbacks)
 5. zwraca `AudioRenderResult`.
 
 Pipeline nie otrzymuje coroutine.
+Równoległe wywołania `synthesize(batch)` nie tworzą nowych event loopów ani osobnych
+limitów; współdzielą jedną instancję service.
 
 ## 7. Docelowe drzewo plików
 
@@ -1343,24 +1351,7 @@ Statystyki:
 - model;
 - voice.
 
-### 8.12. `SpeechRunResult`
-
-```python
-@dataclass(frozen=True, slots=True)
-class SpeechRunResult:
-    batches: tuple[SpeechBatchResult, ...]
-    provider_calls: int
-    retries: int
-    circuit_status: CircuitStatus
-    unsent_request_ids: tuple[str, ...]
-    cancelled: bool
-    shutdown_status: ShutdownStatus
-```
-
-To agregat jednego wywołania publicznego API. Nie zawiera listy plików, timingów,
-`FileOutcome`, narratora ani wyniku Audio.
-
-### 8.13. `TimedClip` — typ domeny audio
+### 8.12. `TimedClip` — typ domeny audio
 
 Po otrzymaniu `SpeechBatchResult` pipeline łączy klip z przechowanym timingiem:
 
@@ -1836,10 +1827,10 @@ Każdy error zawiera:
 
 - waliduje config;
 - lazy tworzy engine;
-- otwiera jeden run;
-- uruchamia scheduler;
-- koordynuje resume;
-- zbiera typed report;
+- utrzymuje jedną sesję wybranego engine;
+- planuje wyłącznie requesty syntezy przekazane przez wywołania API;
+- koordynuje resume klipów TTS;
+- zwraca typed result per batch;
 - zamyka engine;
 - nie montuje kanałów samodzielnie;
 - nie renderuje progressu;
@@ -1873,14 +1864,17 @@ Sygnatura publiczna:
 ```python
 def synthesize(
     self,
-    batches: Iterable[SpeechBatch],
+    batch: SpeechBatch,
     *,
     callbacks: TtsProgressSink,
-) -> SpeechRunResult: ...
+) -> SpeechBatchResult: ...
 ```
 
-`Iterable` może zawierać jeden ręcznie utworzony batch albo dostarczać kolejne batche
-podczas pracy callera.
+Pipeline jest właścicielem kolejki batchy i wywołuje tę metodę dla każdego gotowego
+batcha. Jedna run-scoped instancja `TtsService` może przyjmować równoległe wywołania;
+wszystkie korzystają z tego samego limitera, circuit state i engine lifecycle.
+
+TTS nie posiada kolejki plików, producenta ekstrakcji ani agregatu całego pipeline.
 
 Runtime może utrzymywać jedną instancję serwisu i wywoływać ją dla batchy pojawiających
 się podczas pracy pipeline, ale to pipeline:
@@ -1895,15 +1889,15 @@ requestów jest bounded, więc caller nie może bez końca zapełniać pamięci.
 
 ### 14.4. Wynik
 
-`synthesize` zwraca jeden `SpeechRunResult`, który zawiera:
+`synthesize` zwraca jeden `SpeechBatchResult`, który zawiera:
 
-- `SpeechBatchResult` per przekazany batch;
-- provider counters;
-- circuit status;
-- unsent requests;
-- failed requests;
-- cancellation state;
-- shutdown state.
+- wynik każdego requestu przekazanego batcha;
+- statystyki requestów i providera dla batcha;
+- typowany failure, jeżeli batch nie został ukończony;
+- status anulowania należący do tego wywołania.
+
+Agregacja wielu batchy, lista plików `done/failed/not processed` i decyzja recovery
+należą do pipeline.
 
 ## 15. Scheduler requestów
 
@@ -3790,7 +3784,8 @@ Nie narzuca dokładnej składni implementacji.
 - mapuje settings/env na configs;
 - buduje dependencies;
 - otwiera service;
-- odbiera run result;
+- wywołuje `service.synthesize(batch)` dla batchy pobranych z kolejki pipeline;
+- odbiera `SpeechBatchResult`;
 - nie implementuje engine;
 - nie implementuje timeline;
 - nie implementuje FFmpeg filters.
@@ -6448,7 +6443,6 @@ Pokrycie:
 
 - §8.9;
 - §8.10;
-- §8.12;
 - §34.
 
 Dowód:

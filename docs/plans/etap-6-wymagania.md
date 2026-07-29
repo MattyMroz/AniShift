@@ -480,9 +480,10 @@ Wynik jednego requestu zawiera:
 - kod błędu bez sekretów;
 - informację, czy wynik pochodzi z resume state.
 
-Wynik batcha/runu agreguje wyłącznie requesty, statystyki providera, circuit,
-niezakończone `request_id`, cancellation i shutdown. Nie zawiera plików źródłowych,
-timingów, narratora ani wyniku miksowania.
+`SpeechBatchResult` agreguje wyłącznie requesty jednego batcha, statystyki providera
+i typowany failure. Nie zawiera plików źródłowych, timingów, narratora ani wyniku
+miksowania. Agregacja wielu batchy, `done/failed/not processed`, recovery i stan całego
+przebiegu należą do pipeline.
 
 ### R11. Sync facade, async internals
 
@@ -797,9 +798,11 @@ ElevenLabs nie dostaje zmyślonego wyniku benchmarku. `4` jest bezpieczną warto
 startową do czasu jawnie zaakceptowanego testu kosztowego i pozostaje konfigurowalne.
 
 Limit danego engine jest globalny dla całego przebiegu pipeline, nie mnożony przez liczbę
-plików. Każdy engine ma jedną ograniczoną kolejkę priorytetową wspólną dla wszystkich
-odcinków. Concurrency nie zastępuje limitów RPM: scheduler respektuje `Retry-After`,
-cooldown circuit breakera i nie tworzy nieograniczonej liczby oczekujących tasków.
+plików. Pipeline posiada kolejkę gotowych batchy. Współdzielona instancja TTS posiada
+wyłącznie ograniczony scheduler requestów do providera, wspólny dla równoległych wywołań
+`synthesize(batch)`. Concurrency nie zastępuje limitów RPM: scheduler respektuje
+`Retry-After`, cooldown circuit breakera i nie tworzy nieograniczonej liczby oczekujących
+tasków.
 
 ### R27. Pipeline wielu plików
 
@@ -814,11 +817,11 @@ extract wszystko → translate wszystko → TTS wszystko
 Wariant B:
 
 ```text
-gdy plik ma gotowe spoken → od razu kolejkuj TTS,
+gdy plik ma gotowe spoken → pipeline od razu kolejkuje SpeechBatch,
 podczas gdy pozostałe pliki nadal się tłumaczą
 ```
 
-TTS jest kolejkowany natychmiast, gdy:
+Pipeline kolejkuje batch do wywołania TTS natychmiast, gdy:
 
 - zakończyło się tłumaczenie spoken danego pliku; albo
 - źródło jest już polskie i spoken jest dostępny po ekstrakcji/klasyfikacji.
