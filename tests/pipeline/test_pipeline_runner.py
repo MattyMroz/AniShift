@@ -16,6 +16,7 @@ from anishift.pipeline import discover_inputs, run_pipeline, runner
 from anishift.pipeline.llm_queue import LlmProgressState
 from anishift.pipeline.narration import NarrationBatch
 from anishift.pipeline.runner import _LlmProgressGate, _worker_count
+from anishift.pipeline.tts_queue import TtsQueueOutcome
 from anishift.pipeline.types import FileOutcome, TranslationSettings
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo
@@ -35,6 +36,23 @@ class _NullPhase:
         return 0
 
     def update(self, task_id: int, completed: int) -> None:
+        return None
+
+
+class _NullTtsRuntime:
+    def put(self, *_: object, **__: object) -> None:
+        return None
+
+    def close_input(self) -> None:
+        return None
+
+    def wait(self) -> dict[Path, TtsQueueOutcome]:
+        return {}
+
+    def cancel(self) -> None:
+        return None
+
+    def close(self) -> None:
         return None
 
 
@@ -88,8 +106,11 @@ def test_run_pipeline_isolates_identify_failure(monkeypatch: pytest.MonkeyPatch,
             raise ExtractionError(context=context)
         return MediaInfo(path, ())
 
+    def runtime_factory(*_: object) -> _NullTtsRuntime:
+        return _NullTtsRuntime()
+
     monkeypatch.setattr("anishift.pipeline.runner.identify", fake_identify)
-    report = run_pipeline(_context(tmp_path))
+    report = run_pipeline(_context(tmp_path), tts_runtime_factory=runtime_factory)
 
     assert [outcome.source for outcome in report.outcomes] == [bad, good]
     assert report.outcomes[0].status == "failed"
