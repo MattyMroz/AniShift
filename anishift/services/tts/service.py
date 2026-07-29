@@ -73,6 +73,8 @@ class _AttemptContext:
     expectation: ClipExpectation
     validator: ClipValidator
     engine_id: str
+    provider_model_id: str
+    resolved_voice_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,8 +100,10 @@ class _ProviderAttempt:
         "_expectation",
         "_part_index",
         "_paths",
+        "_provider_model_id",
         "_repository",
         "_request",
+        "_resolved_voice_id",
         "_text",
         "_validator",
     )
@@ -121,6 +125,8 @@ class _ProviderAttempt:
         self._expectation: ClipExpectation = context.expectation
         self._validator: ClipValidator = context.validator
         self._engine_id: str = context.engine_id
+        self._provider_model_id: str = context.provider_model_id
+        self._resolved_voice_id: str = context.resolved_voice_id
         self._paths: set[Path] = set()
         self._current_path: Path | None = None
         self._current_request_id: str = ""
@@ -157,8 +163,8 @@ class _ProviderAttempt:
             or result.request_id != self._current_request_id
             or result.format is not self._expectation.format
             or result.engine_id != self._engine_id
-            or result.provider_model_id != self._config.provider_model_id
-            or result.voice_id != self._config.voice_id
+            or result.provider_model_id != self._provider_model_id
+            or result.voice_id != self._resolved_voice_id
         ):
             raise _unowned_clip_error()
         validation = await asyncio.to_thread(
@@ -256,7 +262,13 @@ class TtsService:
             self._cancel.cancel()
             loop: asyncio.AbstractEventLoop | None = self._loop
             thread: threading.Thread | None = self._thread
-        if loop is None or thread is None:
+        if thread is None:
+            return
+        if loop is None:
+            self._loop_ready.wait(timeout=self._config.shutdown_deadline_s)
+            loop = self._loop
+        if loop is None or not loop.is_running():
+            thread.join(timeout=self._config.shutdown_deadline_s)
             return
         future: concurrent.futures.Future[None] = asyncio.run_coroutine_threadsafe(
             self._shutdown_async(),
@@ -311,7 +323,9 @@ class TtsService:
         with self._lifecycle_lock:
             self._loop = loop
             self._loop_ready.set()
-        loop.run_forever()
+            should_run: bool = not self._closed
+        if should_run:
+            loop.run_forever()
         pending: set[asyncio.Task[object]] = asyncio.all_tasks(loop)
         for task in pending:
             task.cancel()
@@ -482,6 +496,8 @@ class TtsService:
             expectation=expectation,
             validator=self._validator,
             engine_id=engine.engine_id,
+            provider_model_id=engine.synthesis_profile.provider_model_id,
+            resolved_voice_id=engine.synthesis_profile.resolved_voice_id,
         )
 
         async def part_worker() -> None:
@@ -517,6 +533,7 @@ class TtsService:
             outcome for _, outcome in sorted(indexed_outcomes, key=lambda item: item[0])
         )
         attempts: int = sum(outcome.attempts for outcome in outcomes)
+        retries: int = sum(max(0, outcome.attempts - 1) for outcome in outcomes)
         request_time_ms: float = sum(outcome.clip.request_time_ms for outcome in outcomes if outcome.clip is not None)
         error: TtsError | None = next(
             (outcome.error for outcome in outcomes if outcome.error is not None),
@@ -528,12 +545,24 @@ class TtsService:
         )
         if error is not None or len(clips) != len(chunks):
             _discard_paths(all_paths)
-            return _failed_execution(request, error or _incomplete_error(), attempts, request_time_ms)
+            return _failed_execution(
+                request,
+                error or _incomplete_error(),
+                attempts,
+                retries,
+                request_time_ms,
+            )
         temporary: Path = clips[0].path
         if len(clips) > 1:
             if self._assembler is None:
                 _discard_paths(all_paths)
-                return _failed_execution(request, _missing_assembler_error(), attempts, request_time_ms)
+                return _failed_execution(
+                    request,
+                    _missing_assembler_error(),
+                    attempts,
+                    retries,
+                    request_time_ms,
+                )
             temporary = repository.temporary_clip_path(clip_format=expectation.format)
             try:
                 await asyncio.to_thread(
@@ -546,7 +575,13 @@ class TtsService:
                 _discard_paths((*all_paths, temporary))
                 failure: TtsClipValidationError = _assembly_error()
                 failure.__cause__ = assembler_error
-                return _failed_execution(request, failure, attempts, request_time_ms)
+                return _failed_execution(
+                    request,
+                    failure,
+                    attempts,
+                    retries,
+                    request_time_ms,
+                )
             _discard_paths(all_paths)
         try:
             committed: CachedTtsClip = await asyncio.to_thread(
@@ -558,7 +593,13 @@ class TtsService:
             )
         except TtsError as commit_error:
             _discard_paths(all_paths)
-            return _failed_execution(request, commit_error, attempts, request_time_ms)
+            return _failed_execution(
+                request,
+                commit_error,
+                attempts,
+                retries,
+                request_time_ms,
+            )
         _discard_paths(all_paths)
         speech_clip = SpeechClip(
             request_id=request.request_id,
@@ -568,8 +609,8 @@ class TtsService:
             channels=committed.channels,
             duration_ms=committed.duration_ms,
             engine_id=engine.engine_id,
-            provider_model_id=self._config.provider_model_id,
-            voice_id=self._config.voice_id,
+            provider_model_id=engine.synthesis_profile.provider_model_id,
+            voice_id=engine.synthesis_profile.resolved_voice_id,
             attempts=attempts,
             request_time_ms=request_time_ms,
             from_resume=False,
@@ -579,7 +620,7 @@ class TtsService:
             status=SynthesisStatus.SYNTHESIZED,
             speech_clip=speech_clip,
             error_code="",
-            retries=max(0, attempts - len(chunks)),
+            retries=retries,
         )
         return _RequestExecution(
             result=result,
@@ -703,6 +744,7 @@ def _failed_execution(
     request: SpeechRequest,
     error: TtsError,
     attempts: int,
+    retries: int,
     request_time_ms: float,
 ) -> _RequestExecution:
     status: SynthesisStatus = (
@@ -713,7 +755,7 @@ def _failed_execution(
         status=status,
         speech_clip=None,
         error_code=error.context.code.value,
-        retries=max(0, attempts - 1),
+        retries=retries,
     )
     return _RequestExecution(
         result=result,

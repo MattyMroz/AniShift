@@ -276,10 +276,16 @@ class TtsScheduler:
                 self._condition.notify_all()
         self._finish(work, error=error)
 
-    def _push_ready(self, work: _WorkItem, *, retry: bool) -> None:
+    def _push_ready(
+        self,
+        work: _WorkItem,
+        *,
+        retry: bool,
+        retry_ready_at: float = 0.0,
+    ) -> None:
         sequence: int = next(self._sequence)
         priority_class: int = 0 if retry else 1
-        ready_at: float = self._clock() if retry else 0.0
+        ready_at: float = retry_ready_at if retry else 0.0
         key: tuple[int, float, int, int, int] = (
             priority_class,
             ready_at,
@@ -293,7 +299,11 @@ class TtsScheduler:
         now: float = self._clock()
         while self._delayed and self._delayed[0].ready_at <= now:
             delayed: _DelayedItem = heapq.heappop(self._delayed)
-            self._push_ready(delayed.work, retry=True)
+            self._push_ready(
+                delayed.work,
+                retry=True,
+                retry_ready_at=delayed.ready_at,
+            )
 
     def _next_retry_delay(self) -> float | None:
         if not self._delayed:

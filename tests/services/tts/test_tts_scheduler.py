@@ -296,3 +296,63 @@ def test_cancel_resolves_delayed_retry_without_advancing_clock(tmp_path: Path) -
         await scheduler.close()
 
     asyncio.run(scenario())
+
+
+def test_older_ready_retry_precedes_lower_rank_retry(tmp_path: Path) -> None:
+    class _DifferentDelays(_Engine):
+        async def synthesize(
+            self,
+            request: SynthesisRequest,
+            *,
+            cancel: CancellationToken,
+        ) -> EngineClipResult:
+            self.calls[request.text] += 1
+            await self.started.put(request.text)
+            if self.calls[request.text] == 1:
+                delay = 15.0 if request.text == "older" else 30.0
+                raise TtsRateLimitError("limited", retry_after_s=delay)
+            del cancel
+            request.destination.write_bytes(b"valid")
+            return EngineClipResult(
+                request_id=request.request_id,
+                path=request.destination,
+                format=AudioFormat.MP3,
+                engine_id=self.engine_id,
+                provider_model_id="fake-model",
+                voice_id="fake-voice",
+                request_time_ms=1.0,
+            )
+
+    async def scenario() -> None:
+        clock = _Clock()
+        engine = _DifferentDelays()
+        scheduler = TtsScheduler(engine, config=_config(concurrency=1), clock=clock)
+        token = TtsCancellation()
+        older = asyncio.create_task(
+            scheduler.submit(
+                _factory(tmp_path, "older"),
+                batch_rank=9,
+                request_rank=0,
+                cancel=token,
+                accept_result=_accept,
+            )
+        )
+        assert await engine.started.get() == "older"
+        newer = asyncio.create_task(
+            scheduler.submit(
+                _factory(tmp_path, "newer"),
+                batch_rank=0,
+                request_rank=0,
+                cancel=token,
+                accept_result=_accept,
+            )
+        )
+        assert await engine.started.get() == "newer"
+        clock.advance(30.0)
+        await scheduler.wake()
+        assert await engine.started.get() == "older"
+        assert await engine.started.get() == "newer"
+        await asyncio.gather(older, newer)
+        await scheduler.close()
+
+    asyncio.run(scenario())

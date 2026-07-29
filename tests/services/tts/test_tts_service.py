@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -126,6 +128,37 @@ class _Engine:
         self.closed += 1
 
 
+class _ResolvedVoiceEngine(_Engine):
+    synthesis_profile = SynthesisProfile(
+        engine_id="fake",
+        endpoint_id="fake-endpoint",
+        provider_model_id="resolved-model",
+        resolved_voice_id="resolved-voice-id",
+        provider_output_id="mp3",
+        provider_source_format=AudioFormat.MP3,
+        adapter_version="test-v1",
+    )
+
+    async def synthesize(
+        self,
+        request: SynthesisRequest,
+        *,
+        cancel: CancellationToken,
+    ) -> EngineClipResult:
+        del cancel
+        self.calls += 1
+        request.destination.write_bytes(b"valid")
+        return EngineClipResult(
+            request_id=request.request_id,
+            path=request.destination,
+            format=AudioFormat.MP3,
+            engine_id=self.engine_id,
+            provider_model_id="resolved-model",
+            voice_id="resolved-voice-id",
+            request_time_ms=1.0,
+        )
+
+
 def _config() -> TtsConfig:
     return TtsConfig(
         engine_id="fake",
@@ -188,3 +221,71 @@ def test_service_close_is_idempotent_and_rejects_new_calls(tmp_path: Path) -> No
     assert engine.closed == 1
     with pytest.raises(TtsConfigError):
         service.synthesize(_batch(), callbacks=_Progress())
+
+
+def test_service_accepts_engine_resolved_voice_identity(tmp_path: Path) -> None:
+    engine = _ResolvedVoiceEngine()
+    with TtsService(
+        _config(),
+        resume_root=tmp_path,
+        validator=_Validator(),
+        engine_factory=lambda config: engine,
+    ) as service:
+        result = service.synthesize(_batch(), callbacks=_Progress())
+
+    assert result.status is SpeechBatchStatus.COMPLETED
+    clip = result.requests[0].speech_clip
+    assert clip is not None
+    assert clip.provider_model_id == "resolved-model"
+    assert clip.voice_id == "resolved-voice-id"
+
+
+def test_close_during_loop_start_does_not_leak_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    original = TtsService._run_loop
+
+    def delayed_start(service: TtsService) -> None:
+        entered.set()
+        release.wait()
+        original(service)
+
+    monkeypatch.setattr(TtsService, "_run_loop", delayed_start)
+    service = TtsService(
+        _config(),
+        resume_root=tmp_path,
+        validator=_Validator(),
+        engine_factory=lambda config: _Engine(),
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        synthesis = pool.submit(service.synthesize, _batch(), callbacks=_Progress())
+        assert entered.wait(timeout=1.0)
+        closing = pool.submit(service.close)
+        release.set()
+        closing.result(timeout=1.0)
+        with pytest.raises(TtsConfigError):
+            synthesis.result(timeout=1.0)
+
+
+def test_multichunk_local_failure_does_not_invent_retry(tmp_path: Path) -> None:
+    engine = _Engine()
+    long_text = " ".join(["długi"] * 40)
+    batch = SpeechBatch(
+        scope_id="episode-long",
+        batch_rank=0,
+        requests=(SpeechRequest(request_id="line-long", text=long_text, request_rank=0),),
+    )
+    with TtsService(
+        _config(),
+        resume_root=tmp_path,
+        validator=_Validator(),
+        engine_factory=lambda config: engine,
+    ) as service:
+        result = service.synthesize(batch, callbacks=_Progress())
+
+    assert result.status is SpeechBatchStatus.FAILED
+    assert result.requests[0].retries == 0
+    assert result.stats.retries == 0
