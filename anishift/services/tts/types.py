@@ -25,12 +25,14 @@ __all__ = [
     "EngineOptions",
     "ProcessArchitecture",
     "SpeechBatch",
+    "SpeechBatchProgress",
     "SpeechBatchResult",
     "SpeechBatchStats",
     "SpeechBatchStatus",
     "SpeechClip",
     "SpeechPreparationStatus",
     "SpeechRequest",
+    "SpeechRequestProgress",
     "SynthesisRequest",
     "SynthesisStatus",
     "SynthesizedRequest",
@@ -124,6 +126,26 @@ class SpeechBatchStatus(StrEnum):
     PARTIAL = "partial"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechBatchProgress:
+    """Observable aggregate progress for one caller-owned batch."""
+
+    scope_id: str
+    completed_requests: int
+    total_requests: int
+    status: SpeechBatchStatus
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechRequestProgress:
+    """Observable terminal update for one request."""
+
+    scope_id: str
+    request_id: str
+    status: SynthesisStatus
+    attempts: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,14 +258,11 @@ class SynthesisRequest:
 
 @dataclass(frozen=True, slots=True)
 class EngineClipResult:
-    """Validated output produced by one engine attempt."""
+    """Provider-native artifact produced by one engine attempt."""
 
     request_id: str
     path: Path
     format: AudioFormat
-    sample_rate: int
-    channels: int
-    duration_ms: int
     engine_id: str
     provider_model_id: str
     voice_id: str

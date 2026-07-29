@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from anishift.services.tts.cancellation import TtsCancellation
 from anishift.services.tts.config import TtsConfig
 from anishift.services.tts.engines import TtsEngineId, available_engine_ids, create_engine
 from anishift.services.tts.errors import (
@@ -22,8 +23,15 @@ from anishift.services.tts.errors import (
     TtsVoiceError,
 )
 from anishift.services.tts.fingerprint import SynthesisIdentity, SynthesisProfile
-from anishift.services.tts.protocols import CancellationToken, ClipValidator, TtsEngine
+from anishift.services.tts.protocols import (
+    CancellationToken,
+    ClipAssembler,
+    ClipValidator,
+    TtsEngine,
+    TtsProgressSink,
+)
 from anishift.services.tts.resume import CachedTtsClip, TtsResumeRepository
+from anishift.services.tts.service import TtsService
 from anishift.services.tts.types import (
     AudioFormat,
     AvailabilityProbeKind,
@@ -39,12 +47,14 @@ from anishift.services.tts.types import (
     EngineOptionValue,
     ProcessArchitecture,
     SpeechBatch,
+    SpeechBatchProgress,
     SpeechBatchResult,
     SpeechBatchStats,
     SpeechBatchStatus,
     SpeechClip,
     SpeechPreparationStatus,
     SpeechRequest,
+    SpeechRequestProgress,
     SynthesisRequest,
     SynthesisStatus,
     SynthesizedRequest,
@@ -58,6 +68,7 @@ __all__ = [
     "AvailabilityStatus",
     "CachedTtsClip",
     "CancellationToken",
+    "ClipAssembler",
     "ClipExpectation",
     "ClipValidation",
     "ClipValidator",
@@ -69,18 +80,21 @@ __all__ = [
     "EngineOptions",
     "ProcessArchitecture",
     "SpeechBatch",
+    "SpeechBatchProgress",
     "SpeechBatchResult",
     "SpeechBatchStats",
     "SpeechBatchStatus",
     "SpeechClip",
     "SpeechPreparationStatus",
     "SpeechRequest",
+    "SpeechRequestProgress",
     "SynthesisIdentity",
     "SynthesisProfile",
     "SynthesisRequest",
     "SynthesisStatus",
     "SynthesizedRequest",
     "TtsAuthError",
+    "TtsCancellation",
     "TtsCancelledError",
     "TtsClipValidationError",
     "TtsConfig",
@@ -90,12 +104,14 @@ __all__ = [
     "TtsError",
     "TtsInputError",
     "TtsNetworkError",
+    "TtsProgressSink",
     "TtsProviderUnavailableError",
     "TtsRateLimitError",
     "TtsResumeConflictError",
     "TtsResumeError",
     "TtsResumeRepository",
     "TtsResumeSchemaError",
+    "TtsService",
     "TtsTimeoutError",
     "TtsUnsupportedError",
     "TtsVoiceError",

@@ -9,17 +9,40 @@ from anishift.services._base import EngineInfo
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from anishift.services.tts.fingerprint import SynthesisProfile
     from anishift.services.tts.types import (
         ClipExpectation,
         ClipValidation,
         EngineAvailability,
         EngineCapabilities,
         EngineClipResult,
+        SpeechBatchProgress,
+        SpeechRequestProgress,
         SynthesisRequest,
         VoiceInfo,
     )
 
-__all__ = ["CancellationToken", "ClipValidator", "TtsEngine"]
+__all__ = [
+    "CancellationToken",
+    "ClipAssembler",
+    "ClipValidator",
+    "TtsEngine",
+    "TtsProgressSink",
+]
+
+
+@runtime_checkable
+class ClipAssembler(Protocol):
+    """Join provider-native parts without introducing an artificial pause."""
+
+    def join_clips(
+        self,
+        paths: tuple[Path, ...],
+        destination: Path,
+        expectation: ClipExpectation,
+    ) -> None:
+        """Write one provider-native clip assembled from ordered parts."""
+        ...
 
 
 @runtime_checkable
@@ -72,6 +95,11 @@ class TtsEngine(EngineInfo, Protocol):
         """Return static capabilities without performing network I/O."""
         ...
 
+    @property
+    def synthesis_profile(self) -> SynthesisProfile:
+        """Return the fully resolved native-audio identity."""
+        ...
+
     async def availability(self, *, live: bool = False) -> EngineAvailability:
         """Return a detailed cached or live availability result."""
         ...
@@ -91,4 +119,17 @@ class TtsEngine(EngineInfo, Protocol):
 
     async def close(self) -> None:
         """Release provider resources."""
+        ...
+
+
+@runtime_checkable
+class TtsProgressSink(Protocol):
+    """Receive non-owning synthesis progress updates."""
+
+    def on_batch_state(self, state: SpeechBatchProgress) -> None:
+        """Observe aggregate batch progress."""
+        ...
+
+    def on_request_committed(self, update: SpeechRequestProgress) -> None:
+        """Observe one terminal request transition."""
         ...

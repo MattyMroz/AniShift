@@ -22,6 +22,7 @@ from anishift.services.tts import (
     SpeechBatchStats,
     SpeechBatchStatus,
     SpeechRequest,
+    SynthesisProfile,
     SynthesisRequest,
     TtsEngine,
     VoiceInfo,
@@ -52,6 +53,15 @@ class FakeEngine:
         max_text_chars=None,
         max_text_bytes=None,
         availability_probe=AvailabilityProbeKind.REMOTE,
+    )
+    synthesis_profile = SynthesisProfile(
+        engine_id="edge",
+        endpoint_id="edge-consumer-v1",
+        provider_model_id="edge-default",
+        resolved_voice_id="pl-PL-ZofiaNeural",
+        provider_output_id="audio-24khz-mp3",
+        provider_source_format=AudioFormat.MP3,
+        adapter_version="edge:v1",
     )
 
     async def availability(self, *, live: bool = False) -> EngineAvailability:
