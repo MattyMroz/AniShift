@@ -356,6 +356,7 @@ class TtsService:
         callbacks: TtsProgressSink,
     ) -> SpeechBatchResult:
         total: int = len(batch.requests)
+        required_total: int = sum(is_speech_text(request.text) for request in batch.requests)
         generation: int = self._cancel.generation
         await _notify_batch(
             callbacks,
@@ -363,6 +364,8 @@ class TtsService:
                 scope_id=batch.scope_id,
                 completed_requests=0,
                 total_requests=total,
+                committed_required_requests=0,
+                total_required_requests=required_total,
                 status=SpeechBatchStatus.COMPLETED if total == 0 else SpeechBatchStatus.PARTIAL,
             ),
             cancel=self._cancel,
@@ -377,6 +380,7 @@ class TtsService:
                     execution,
                     completed_count,
                     total,
+                    required_total,
                     executions[:completed_count],
                     cancel=self._cancel,
                     generation=generation,
@@ -415,6 +419,7 @@ class TtsService:
                     execution,
                     completed_count,
                     total,
+                    required_total,
                     snapshot,
                     cancel=self._cancel,
                     generation=generation,
@@ -692,6 +697,7 @@ async def _notify_execution(  # noqa: PLR0913 - immutable progress snapshot
     execution: _RequestExecution,
     completed: int,
     total: int,
+    required_total: int,
     snapshot: tuple[_RequestExecution, ...],
     *,
     cancel: TtsCancellation,
@@ -715,6 +721,10 @@ async def _notify_execution(  # noqa: PLR0913 - immutable progress snapshot
             scope_id=scope_id,
             completed_requests=completed,
             total_requests=total,
+            committed_required_requests=sum(
+                item.result.status in {SynthesisStatus.SYNTHESIZED, SynthesisStatus.RESUME_HIT} for item in snapshot
+            ),
+            total_required_requests=required_total,
             status=_batch_status(tuple(item.result for item in snapshot), total),
         ),
         cancel=cancel,

@@ -135,6 +135,8 @@ class SpeechBatchProgress:
     scope_id: str
     completed_requests: int
     total_requests: int
+    committed_required_requests: int
+    total_required_requests: int
     status: SpeechBatchStatus
 
 

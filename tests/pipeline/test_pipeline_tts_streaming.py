@@ -19,7 +19,7 @@ from anishift.pipeline.tts_queue import (
     TtsQueueJob,
     TtsQueueOutcome,
 )
-from anishift.pipeline.tts_runtime import PipelineTtsRuntime
+from anishift.pipeline.tts_runtime import PipelineTtsProgressSink, PipelineTtsRuntime
 from anishift.pipeline.types import FileOutcome
 from anishift.services.audio import AudioConfig, AudioRenderResult, AudioRenderStatus
 from anishift.services.audio.types import PlacementReason, TimelinePlacement
@@ -166,8 +166,9 @@ def test_polish_narration_starts_before_foreign_translation_finishes(
         context: AppContext,
         discovery_order: tuple[Path, ...],
         cancel: threading.Event,
+        callbacks: object | None,
     ) -> _FakeRuntime:
-        del context, cancel
+        del context, cancel, callbacks
         runtime.discovery_order = discovery_order
         return runtime
 
@@ -446,6 +447,7 @@ def test_pipeline_interrupt_cancels_tts_runtime_once(
         context: AppContext,
         discovery_order: tuple[Path, ...],
         cancel: threading.Event,
+        callbacks: object | None,
     ) -> PipelineTtsRuntime:
         nonlocal runtime
         runtime = PipelineTtsRuntime(
@@ -461,6 +463,7 @@ def test_pipeline_interrupt_cancels_tts_runtime_once(
             discovery_order=discovery_order,
             cancel=cancel,
             post_process_tempo=1.0,
+            callbacks=cast("PipelineTtsProgressSink | None", callbacks),
             tts_service=blocking_tts,
             audio_service=_UnusedAudio(),
         )

@@ -204,6 +204,8 @@ def test_service_commits_then_reuses_validated_resume_clip(tmp_path: Path) -> No
         SynthesisStatus.RESUME_HIT,
         SynthesisStatus.SKIPPED,
     }
+    assert progress.batches[-1].total_required_requests == 1
+    assert progress.batches[-1].committed_required_requests == 1
 
 
 def test_service_close_is_idempotent_and_rejects_new_calls(tmp_path: Path) -> None:

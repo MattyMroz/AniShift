@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from types import TracebackType
@@ -57,7 +58,7 @@ from .narration import NarrationBatch, NarrationItem
 if TYPE_CHECKING:
     from anishift.bootstrap import AppContext
 
-__all__ = ["PipelineTtsRuntime"]
+__all__ = ["PipelineTtsProgressSink", "PipelineTtsRuntime"]
 
 _DEFAULT_ENGINE_CONCURRENCY: Final[dict[str, int]] = {
     "edge": 8,
@@ -99,12 +100,34 @@ class _AudioRenderer(Protocol):
         ...
 
 
-class _SilentTtsProgress:
+class PipelineTtsProgressSink(TtsProgressSink, AudioProgressSink, Protocol):
+    """Observe TTS commits and coarse audio phases for one pipeline run."""
+
+    def on_pipeline_terminal(
+        self,
+        scope_id: str,
+        state: Literal["done", "failed", "cancelled", "not_processed"],
+    ) -> None:
+        """Report the terminal state of one queued source."""
+        ...
+
+
+class _SilentPipelineProgress:
     def on_batch_state(self, state: SpeechBatchProgress) -> None:
         del state
 
     def on_request_committed(self, update: SpeechRequestProgress) -> None:
         del update
+
+    def on_audio_phase(self, scope_id: str, phase: str) -> None:
+        del scope_id, phase
+
+    def on_pipeline_terminal(
+        self,
+        scope_id: str,
+        state: Literal["done", "failed", "cancelled", "not_processed"],
+    ) -> None:
+        del scope_id, state
 
 
 class _FfmpegClipAdapter:
@@ -197,7 +220,7 @@ class PipelineTtsRuntime:
         cancel: threading.Event,
         post_process_tempo: float,
         max_active_batches: int = 4,
-        callbacks: TtsProgressSink | None = None,
+        callbacks: PipelineTtsProgressSink | None = None,
         tts_service: _TtsBatchService | None = None,
         audio_service: _AudioRenderer | None = None,
     ) -> None:
@@ -205,7 +228,7 @@ class PipelineTtsRuntime:
         self._cancel: threading.Event = cancel
         self._post_process_tempo: float = post_process_tempo
         self._workspace_root: Path = workspace_root
-        self._callbacks: TtsProgressSink = callbacks or _SilentTtsProgress()
+        self._callbacks: PipelineTtsProgressSink = callbacks or _SilentPipelineProgress()
         self._input: TtsQueueInput = TtsQueueInput(discovery_order)
         self._closed_input: bool = False
         self._closed: bool = False
@@ -238,6 +261,7 @@ class PipelineTtsRuntime:
                 max_active_batches=max_active_batches,
                 cancel=cancel,
                 terminal_factory=_cancelled_outcome,
+                on_result=self._on_result,
             ),
         )
 
@@ -248,7 +272,7 @@ class PipelineTtsRuntime:
         *,
         discovery_order: tuple[Path, ...],
         cancel: threading.Event,
-        callbacks: TtsProgressSink | None = None,
+        callbacks: PipelineTtsProgressSink | None = None,
     ) -> PipelineTtsRuntime:
         """Resolve persisted and secret settings at the pipeline boundary."""
         preferences = context.user_settings
@@ -383,6 +407,7 @@ class PipelineTtsRuntime:
             )
             return _failed_outcome(job, step="tts", context=context, speech=speech)
         try:
+            audio_started_at: float = time.monotonic()
             audio: AudioRenderResult = self._audio.render(
                 AudioRenderRequest(
                     scope_id=job.narration.speech.scope_id,
@@ -392,6 +417,7 @@ class PipelineTtsRuntime:
                     temporary_root=job.temporary_root,
                     post_process_tempo=job.post_process_tempo,
                 ),
+                callbacks=self._callbacks,
                 cancel=self._cancel,
             )
         except AudioError as error:
@@ -408,7 +434,21 @@ class PipelineTtsRuntime:
             speech=speech,
             audio=audio,
             failure=None,
+            audio_time_ms=(time.monotonic() - audio_started_at) * 1000,
         )
+
+    def _on_result(self, outcome: TtsQueueOutcome) -> None:
+        """Forward one queue terminal state without exposing queue internals."""
+        state: Literal["done", "failed", "cancelled", "not_processed"] = "done"
+        if outcome.failure is not None:
+            state = "cancelled" if outcome.failure.context.code is ErrorCode.CANCELLED else "failed"
+        try:
+            self._callbacks.on_pipeline_terminal(
+                outcome.job.narration.speech.scope_id,
+                state,
+            )
+        except Exception:  # noqa: BLE001 - observers cannot own queue execution
+            return
 
 
 def _timed_clips(

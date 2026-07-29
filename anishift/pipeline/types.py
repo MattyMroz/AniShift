@@ -142,6 +142,7 @@ class FileOutcome:
     llm_calls: tuple[LlmCallRecord, ...] = ()
     tts_stats: SpeechBatchStats | None = None
     audio_placements: tuple[TimelinePlacement, ...] = ()
+    audio_time_ms: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

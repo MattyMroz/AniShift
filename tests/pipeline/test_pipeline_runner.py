@@ -277,6 +277,40 @@ def test_llm_pipeline_sets_cancel_before_executor_wait_on_interrupt(
     assert worker_observed_cancel.wait(timeout=1)
 
 
+def test_non_llm_text_input_reports_translation_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "episode.txt"
+    source.write_text("Source", encoding="utf-8")
+    transitions: list[tuple[Path, LlmProgressState]] = []
+    context = AppContext(
+        Settings(),
+        UserSettings(translation_engine="google"),
+        tmp_path,
+    )
+
+    def fake_process_txt(
+        path: Path,
+        _settings: object,
+        *,
+        cancel: threading.Event,
+    ) -> FileOutcome:
+        del cancel
+        return FileOutcome(path, "done")
+
+    monkeypatch.setattr(runner, "_process_txt", fake_process_txt)
+
+    report = run_pipeline(
+        context,
+        input_paths=(source,),
+        llm_progress_handler=lambda path, state: transitions.append((path, state)),
+    )
+
+    assert report.outcomes[0].status == "done"
+    assert transitions == [(source, "translating"), (source, "done")]
+
+
 def test_llm_pipeline_interrupt_does_not_wait_for_blocked_request(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

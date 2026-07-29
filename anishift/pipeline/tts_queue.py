@@ -55,6 +55,7 @@ class TtsQueueOutcome:
     speech: SpeechBatchResult | None
     audio: AudioRenderResult | None
     failure: TtsQueueFailure | None
+    audio_time_ms: float = 0.0
 
 
 type TtsQueueWorker = Callable[[TtsQueueJob], TtsQueueOutcome]

@@ -548,8 +548,12 @@ def _notify(
     scope_id: str,
     phase: str,
 ) -> None:
-    if callbacks is not None:
+    if callbacks is None:
+        return
+    try:
         callbacks.on_audio_phase(scope_id, phase)
+    except Exception:  # noqa: BLE001 - observers cannot own audio execution
+        return
 
 
 def _raise_config(message: str) -> Never:

@@ -49,6 +49,7 @@ from .narration import (
     scope_id_for_source,
 )
 from .tts_queue import TtsQueueOutcome
+from .tts_runtime import PipelineTtsProgressSink, PipelineTtsRuntime
 from .types import (
     FileFailure,
     FileOutcome,
@@ -112,7 +113,12 @@ class _PipelineTtsRuntime(Protocol):
 
 
 type TtsRuntimeFactory = Callable[
-    [AppContext, tuple[Path, ...], threading.Event],
+    [
+        AppContext,
+        tuple[Path, ...],
+        threading.Event,
+        PipelineTtsProgressSink | None,
+    ],
     _PipelineTtsRuntime,
 ]
 """Build one run-scoped streamed TTS runtime."""
@@ -207,7 +213,7 @@ class _LlmProgressGate:
             self._enabled = False
 
 
-def run_pipeline(  # noqa: PLR0913,PLR0915 - explicit composition and lifecycle wiring
+def run_pipeline(  # noqa: PLR0912,PLR0913,PLR0915 - explicit composition and lifecycle wiring
     context: AppContext,
     *,
     input_paths: Sequence[Path] | None = None,
@@ -215,6 +221,7 @@ def run_pipeline(  # noqa: PLR0913,PLR0915 - explicit composition and lifecycle 
     progress_factory: ProgressPhaseFactory | None = None,
     llm_failure_handler: LlmFailureHandler | None = None,
     llm_progress_handler: LlmProgressHandler | None = None,
+    tts_progress_callbacks: PipelineTtsProgressSink | None = None,
     tts_runtime_factory: TtsRuntimeFactory | None = None,
 ) -> PipelineReport:
     """Process every discovered input in two phases, isolating failures per file.
@@ -233,7 +240,16 @@ def run_pipeline(  # noqa: PLR0913,PLR0915 - explicit composition and lifecycle 
     cancel = threading.Event()
     llm_progress = _LlmProgressGate(cancel, llm_progress_handler)
     runtime_factory: TtsRuntimeFactory = tts_runtime_factory or _default_tts_runtime_factory
-    tts_runtime: _PipelineTtsRuntime | None = runtime_factory(context, tuple(mkvs), cancel) if mkvs else None
+    tts_runtime: _PipelineTtsRuntime | None = (
+        runtime_factory(
+            context,
+            tuple(mkvs),
+            cancel,
+            tts_progress_callbacks,
+        )
+        if mkvs
+        else None
+    )
     states: dict[Path, _MkvState] = {}
     txt_outcomes: dict[Path, FileOutcome]
 
@@ -322,7 +338,12 @@ def run_pipeline(  # noqa: PLR0913,PLR0915 - explicit composition and lifecycle 
                 cancel,
                 on_spoken_ready=publish_narration,
             )
-            txt_outcomes = {path: _process_txt(path, translation, cancel=cancel) for path in txts}
+            txt_outcomes = {}
+            for path in txts:
+                llm_progress.notify(path, "translating")
+                outcome: FileOutcome = _process_txt(path, translation, cancel=cancel)
+                txt_outcomes[path] = outcome
+                llm_progress.notify(path, outcome.status)
         if tts_runtime is not None:
             tts_runtime.close_input()
             _apply_tts_outcomes(states, tts_runtime.wait())
@@ -345,13 +366,13 @@ def _default_tts_runtime_factory(
     context: AppContext,
     discovery_order: tuple[Path, ...],
     cancel: threading.Event,
+    callbacks: PipelineTtsProgressSink | None,
 ) -> _PipelineTtsRuntime:
-    from anishift.pipeline.tts_runtime import PipelineTtsRuntime  # noqa: PLC0415 - composition boundary
-
     return PipelineTtsRuntime.from_context(
         context,
         discovery_order=discovery_order,
         cancel=cancel,
+        callbacks=callbacks,
     )
 
 
@@ -392,6 +413,7 @@ def _apply_tts_outcomes(
             state.outcome.tts_stats = queued.speech.stats
         if queued.audio is not None:
             state.outcome.audio_placements = queued.audio.placements
+            state.outcome.audio_time_ms = queued.audio_time_ms
         if queued.failure is not None:
             _mark_tts_failure(
                 state.outcome,

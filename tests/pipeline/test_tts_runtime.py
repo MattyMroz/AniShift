@@ -14,6 +14,7 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline.narration import NarrationBatch, NarrationItem
 from anishift.pipeline.tts_runtime import PipelineTtsRuntime
 from anishift.services.audio import AudioConfig
+from anishift.services.audio.service import AudioProgressSink
 from anishift.services.audio.types import (
     AudioCodecProfile,
     AudioRenderRequest,
@@ -71,11 +72,21 @@ def test_runtime_from_context_maps_voice_and_audio_profiles(
 
 
 class _Progress:
+    def __init__(self) -> None:
+        self.audio_phases: list[tuple[str, str]] = []
+        self.terminals: list[tuple[str, str]] = []
+
     def on_batch_state(self, state: SpeechBatchProgress) -> None:
         del state
 
     def on_request_committed(self, update: SpeechRequestProgress) -> None:
         del update
+
+    def on_audio_phase(self, scope_id: str, phase: str) -> None:
+        self.audio_phases.append((scope_id, phase))
+
+    def on_pipeline_terminal(self, scope_id: str, state: str) -> None:
+        self.terminals.append((scope_id, state))
 
 
 class _Tts:
@@ -110,11 +121,13 @@ class _Audio:
         self,
         request: AudioRenderRequest,
         *,
-        callbacks: object | None = None,
+        callbacks: AudioProgressSink | None = None,
         cancel: threading.Event | None = None,
     ) -> AudioRenderResult:
-        del callbacks, cancel
+        del cancel
         self.requests.append(request)
+        if callbacks is not None:
+            callbacks.on_audio_phase(request.scope_id, "mixing")
         return AudioRenderResult(
             scope_id=request.scope_id,
             status=AudioRenderStatus.COMPLETED,
@@ -211,6 +224,7 @@ def _speech_result(
 def test_runtime_joins_reordered_tts_results_by_request_id(tmp_path: Path) -> None:
     tts = _Tts(_speech_result(tmp_path))
     audio = _Audio()
+    progress = _Progress()
     source = tmp_path / "Episode.mkv"
     runtime = PipelineTtsRuntime(
         tts_config=_config(),
@@ -219,7 +233,7 @@ def test_runtime_joins_reordered_tts_results_by_request_id(tmp_path: Path) -> No
         discovery_order=(source,),
         cancel=threading.Event(),
         post_process_tempo=1.25,
-        callbacks=_Progress(),
+        callbacks=progress,
         tts_service=tts,
         audio_service=audio,
     )
@@ -236,7 +250,36 @@ def test_runtime_joins_reordered_tts_results_by_request_id(tmp_path: Path) -> No
     assert request.post_process_tempo == 1.25
     assert request.temporary_root == tmp_path / "tmp" / "scope-runtime" / "audio"
     assert outcomes[source].failure is None
+    assert progress.audio_phases == [("scope-runtime", "mixing")]
+    assert progress.terminals == [("scope-runtime", "done")]
+    assert outcomes[source].audio_time_ms >= 0
     assert tts.closed
+
+
+def test_terminal_progress_observer_cannot_fail_queue_execution(tmp_path: Path) -> None:
+    class _ThrowingTerminal(_Progress):
+        def on_pipeline_terminal(self, scope_id: str, state: str) -> None:
+            del scope_id, state
+            raise RuntimeError("renderer unavailable")
+
+    source = tmp_path / "Episode.mkv"
+    runtime = PipelineTtsRuntime(
+        tts_config=_config(),
+        audio_config=AudioConfig(),
+        workspace_root=tmp_path,
+        discovery_order=(source,),
+        cancel=threading.Event(),
+        post_process_tempo=1.0,
+        callbacks=_ThrowingTerminal(),
+        tts_service=_Tts(_speech_result(tmp_path)),
+        audio_service=_Audio(),
+    )
+    runtime.put(source, _narration(), source_audio_path=None)
+
+    outcome = runtime.wait()[source]
+    runtime.close()
+
+    assert outcome.failure is None
 
 
 def test_runtime_does_not_render_audio_after_failed_tts(tmp_path: Path) -> None:
@@ -263,6 +306,7 @@ def test_runtime_does_not_render_audio_after_failed_tts(tmp_path: Path) -> None:
     )
     tts = _Tts(speech)
     audio = _Audio()
+    progress = _Progress()
     source = tmp_path / "Episode.mkv"
     runtime = PipelineTtsRuntime(
         tts_config=_config(),
@@ -271,6 +315,7 @@ def test_runtime_does_not_render_audio_after_failed_tts(tmp_path: Path) -> None:
         discovery_order=(source,),
         cancel=threading.Event(),
         post_process_tempo=1.0,
+        callbacks=progress,
         tts_service=tts,
         audio_service=audio,
     )
@@ -281,6 +326,7 @@ def test_runtime_does_not_render_audio_after_failed_tts(tmp_path: Path) -> None:
     assert outcome.failure is not None
     assert outcome.failure.step == "tts"
     assert outcome.failure.context is failure
+    assert progress.terminals == [("scope-runtime", "failed")]
     assert not audio.requests
 
 
@@ -355,7 +401,7 @@ def test_runtime_isolates_unexpected_audio_failure_per_file(tmp_path: Path) -> N
             self,
             request: AudioRenderRequest,
             *,
-            callbacks: object | None = None,
+            callbacks: AudioProgressSink | None = None,
             cancel: threading.Event | None = None,
         ) -> AudioRenderResult:
             if request.source_path == first:

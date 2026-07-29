@@ -8,7 +8,7 @@ from audio_test_helpers import write_wav
 from anishift.platform.binaries import Binary, resolve_binary
 from anishift.services.audio.commands import SubprocessRunner
 from anishift.services.audio.config import AudioConfig
-from anishift.services.audio.service import AudioService
+from anishift.services.audio.service import AudioService, _notify
 from anishift.services.audio.types import (
     AudioCodecProfile,
     AudioFormat,
@@ -19,6 +19,16 @@ from anishift.services.audio.types import (
 
 FFMPEG = resolve_binary(Binary.FFMPEG)
 FFPROBE = resolve_binary(Binary.FFPROBE)
+
+
+class _ThrowingProgress:
+    def on_audio_phase(self, scope_id: str, phase: str) -> None:
+        del scope_id, phase
+        raise RuntimeError("renderer unavailable")
+
+
+def test_audio_progress_observer_cannot_fail_audio_execution() -> None:
+    _notify(_ThrowingProgress(), "scope", "mixing")
 
 
 @pytest.mark.skipif(
