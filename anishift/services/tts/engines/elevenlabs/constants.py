@@ -16,6 +16,7 @@ __all__ = [
     "FLASH_MODEL_ID",
     "MAX_TEXT_CHARS",
     "OUTPUT_FORMATS",
+    "POLISH_TTS_MODEL_IDS",
     "VOICES_CACHE_TTL_S",
     "ElevenLabsOutputSpec",
 ]
@@ -41,14 +42,21 @@ DEFAULT_MODEL_ID: Final[str] = "eleven_multilingual_v2"
 FLASH_MODEL_ID: Final[str] = "eleven_flash_v2_5"
 """Lower-latency ElevenLabs model supporting Polish."""
 
+POLISH_TTS_MODEL_IDS: Final[tuple[str, ...]] = (
+    DEFAULT_MODEL_ID,
+    FLASH_MODEL_ID,
+    "eleven_v3",
+)
+"""Current official text-to-speech models that support Polish."""
+
 DEFAULT_OUTPUT_FORMAT: Final[str] = "mp3_44100_128"
 """Default provider-native output format."""
 
 ELEVENLABS_ENDPOINT_ID: Final[str] = "elevenlabs-official-v1"
 """Stable non-secret identity of the official ElevenLabs endpoint."""
 
-MAX_TEXT_CHARS: Final[int] = 10_000
-"""Conservative text limit of the default Multilingual v2 model."""
+MAX_TEXT_CHARS: Final[int] = 5_000
+"""Shared safe request limit including the smaller Eleven v3 context."""
 
 VOICES_CACHE_TTL_S: Final[float] = 300.0
 """In-memory voice-list cache lifetime."""

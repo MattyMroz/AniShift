@@ -46,8 +46,8 @@ from anishift.services.tts.engines.elevenbytes.constants import (
 )
 from anishift.services.tts.engines.elevenlabs.constants import (
     DEFAULT_MODEL_ID,
-    FLASH_MODEL_ID,
     OUTPUT_FORMATS,
+    POLISH_TTS_MODEL_IDS,
 )
 from anishift.services.tts.engines.sapi.constants import (
     SAPI_PROFILES,
@@ -193,7 +193,7 @@ def tts_model_ids(settings: UserSettings) -> tuple[str, ...]:
         return (EDGE_PROVIDER_MODEL_ID,)
     if settings.tts_engine == "sapi":
         return (_SAPI_PROVIDER_MODEL_ID,)
-    builtins: tuple[str, ...] = (DEFAULT_MODEL_ID, FLASH_MODEL_ID)
+    builtins: tuple[str, ...] = POLISH_TTS_MODEL_IDS
     if settings.tts_provider_model_id in builtins:
         return builtins
     return (*builtins, settings.tts_provider_model_id)

@@ -190,7 +190,7 @@ def default_tts_voice_profiles() -> dict[str, TtsVoiceProfileSettings]:
         _DALLIN_PROFILE_KEY: TtsVoiceProfileSettings(
             postprocess_tempo=1.25,
             voice_mix_offset_db=-2.0,
-            concurrency=12,
+            concurrency=16,
         ),
         _SAPI_AGNIESZKA_PROFILE_KEY: TtsVoiceProfileSettings(
             voice_mix_offset_db=2.0,

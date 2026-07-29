@@ -303,9 +303,10 @@ def test_cached_and_custom_elevenlabs_voices_need_no_network() -> None:
         ("voice-cached", "Cached voice"),
         ("voice-custom", "voice-custom (custom id)"),
     ]
-    assert tts_model_ids(settings)[:2] == (
+    assert tts_model_ids(settings) == (
         "eleven_multilingual_v2",
         "eleven_flash_v2_5",
+        "eleven_v3",
     )
 
 

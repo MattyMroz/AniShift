@@ -194,10 +194,11 @@ def _request(
     model_id: str = DEFAULT_MODEL_ID,
     voice_id: str = "voice-selected",
     options: dict[str, str | int | float | bool | None] | None = None,
+    text: str = "Zażółć gęślą jaźń",
 ) -> SynthesisRequest:
     return SynthesisRequest(
         request_id="speech-1",
-        text="Zażółć gęślą jaźń",
+        text=text,
         voice_id=voice_id,
         provider_model_id=model_id,
         native_rate=None,
@@ -653,6 +654,30 @@ def test_wav_output_uses_real_native_format(tmp_path: Path) -> None:
     assert result.format is AudioFormat.WAV
     assert engine.synthesis_profile.provider_output_id == "wav_24000"
     assert engine.synthesis_profile.provider_source_format is AudioFormat.WAV
+
+
+def test_shared_request_limit_is_safe_for_eleven_v3(tmp_path: Path) -> None:
+    backend = FakeBackend()
+    engine = ElevenLabsTtsEngine(
+        _config(model_id="eleven_v3"),
+        backend=cast("ElevenLabsBackend", backend),
+        sdk_probe=lambda: True,
+    )
+
+    with pytest.raises(TtsInputError, match="5000"):
+        _run(
+            engine.synthesize(
+                _request(
+                    tmp_path / "too-long.mp3",
+                    model_id="eleven_v3",
+                    text="x" * 5_001,
+                ),
+                cancel=FakeCancellation(),
+            ),
+        )
+
+    assert ElevenLabsTtsEngine.capabilities.max_text_chars == 5_000
+    assert not backend.attempts
 
 
 def test_cancellation_prevents_request_and_late_write(tmp_path: Path) -> None:

@@ -300,7 +300,7 @@ def test_default_voice_profiles_match_stage_six_decisions() -> None:
     marek = profiles["edge:pl-PL-MarekNeural"]
     zofia = profiles["edge:pl-PL-ZofiaNeural"]
 
-    assert (dallin.postprocess_tempo, dallin.voice_mix_offset_db, dallin.concurrency) == (1.25, -2.0, 12)
+    assert (dallin.postprocess_tempo, dallin.voice_mix_offset_db, dallin.concurrency) == (1.25, -2.0, 16)
     assert (agnieszka.native_rate, agnieszka.native_volume, agnieszka.voice_mix_offset_db) == (5, 65, 2.0)
     assert (zosia.native_rate, zosia.native_volume, zosia.voice_mix_offset_db) == (200, 0.7, 0.0)
     assert (marek.native_rate, marek.native_volume, marek.voice_mix_offset_db) == ("+40%", "+0%", 0.0)
