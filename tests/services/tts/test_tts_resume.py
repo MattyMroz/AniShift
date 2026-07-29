@@ -91,7 +91,7 @@ def _commit(
     return clip.path
 
 
-def test_commit_reopen_and_lookup_revalidate_exact_clip(tmp_path: Path) -> None:
+def test_commit_reopen_and_lookup_trusts_exact_hash_without_redecoding(tmp_path: Path) -> None:
     validator = _Validator()
     repository = TtsResumeRepository(tmp_path / "tts", "scope-test", validator)
     identity = _identity()
@@ -103,7 +103,7 @@ def test_commit_reopen_and_lookup_revalidate_exact_clip(tmp_path: Path) -> None:
     assert hit is not None
     assert hit.path == path
     assert hit.request_id == identity.request_id
-    assert len(validator.calls) >= 2
+    assert len(validator.calls) == 1
     assert json.loads((tmp_path / "tts" / "manifest.json").read_text())["schema_version"] == 1
 
 
@@ -143,7 +143,7 @@ def test_hash_mismatch_and_invalid_clip_are_cache_misses(tmp_path: Path) -> None
     repository = TtsResumeRepository(tmp_path / "tts", "scope-test", _Validator())
     identity = _identity()
     path = _commit(repository, identity)
-    path.write_bytes(b"valid-but-modified")
+    path.write_bytes(b"evil-audio!")
 
     assert repository.lookup(identity, ClipExpectation(AudioFormat.MP3)) is None
     path.write_bytes(b"broken")

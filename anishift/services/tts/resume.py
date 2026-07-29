@@ -266,17 +266,21 @@ class TtsResumeRepository:
             or entry.status != _COMPLETE_STATUS
         ):
             return None
-        validation: ClipValidation | None = self._validate_path(expected_path, expectation)
-        if validation is None:
-            return None
-        stat_size: int = expected_path.stat().st_size
-        if (
-            stat_size != entry.size_bytes
-            or sha256_file(expected_path) != entry.clip_hash
-            or validation.sample_rate != entry.sample_rate
-            or validation.channels != entry.channels
-            or validation.duration_ms != entry.duration_ms
-        ):
+        try:
+            if not expected_path.is_file() or expected_path.is_symlink():
+                return None
+            stat_size: int = expected_path.stat().st_size
+            if stat_size != entry.size_bytes or sha256_file(expected_path) != entry.clip_hash:
+                return None
+        except OSError as error:
+            context: ErrorContext = ErrorContext(
+                code=ErrorCode.TTS_RESUME_ERROR,
+                message="TTS clip validation could not access its artifact",
+                suggestion="Check workspace permissions and file locks.",
+                details={"operation": "validate_clip"},
+            )
+            raise TtsResumeError(context=context) from error
+        if stat_size <= 0:
             return None
         return CachedTtsClip(
             request_id=entry.request_id,
@@ -286,9 +290,9 @@ class TtsResumeRepository:
             clip_hash=entry.clip_hash,
             format=expectation.format,
             size_bytes=stat_size,
-            sample_rate=validation.sample_rate,
-            channels=validation.channels,
-            duration_ms=validation.duration_ms,
+            sample_rate=entry.sample_rate,
+            channels=entry.channels,
+            duration_ms=entry.duration_ms,
         )
 
     def _adopt_orphan(
