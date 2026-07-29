@@ -203,6 +203,135 @@ def test_scheduler_enforces_one_global_concurrency_limit(tmp_path: Path) -> None
     asyncio.run(scenario())
 
 
+def test_scheduler_reuses_provider_slot_while_previous_result_is_accepted(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        engine = _Engine()
+        token = TtsCancellation()
+        acceptance_started = asyncio.Event()
+        release_acceptance = asyncio.Event()
+
+        async def delayed_accept(result: EngineClipResult) -> EngineClipResult:
+            acceptance_started.set()
+            await release_acceptance.wait()
+            return result
+
+        scheduler = TtsScheduler(engine, config=_config(concurrency=1))
+        first = asyncio.create_task(
+            scheduler.submit(
+                _factory(tmp_path, "first"),
+                batch_rank=0,
+                request_rank=0,
+                cancel=token,
+                accept_result=delayed_accept,
+            )
+        )
+        assert await engine.started.get() == "first"
+        await acceptance_started.wait()
+        second = asyncio.create_task(
+            scheduler.submit(
+                _factory(tmp_path, "second"),
+                batch_rank=1,
+                request_rank=0,
+                cancel=token,
+                accept_result=_accept,
+            )
+        )
+
+        assert await asyncio.wait_for(engine.started.get(), timeout=0.1) == "second"
+        assert not first.done()
+        assert engine.peak == 1
+        release_acceptance.set()
+        await asyncio.gather(first, second)
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
+def test_acceptance_failure_retries_through_scheduler(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        clock = _Clock()
+        engine = _Engine()
+        token = TtsCancellation()
+        acceptance_calls = 0
+        first_acceptance = asyncio.Event()
+
+        async def accept_once(result: EngineClipResult) -> EngineClipResult:
+            nonlocal acceptance_calls
+            acceptance_calls += 1
+            if acceptance_calls == 1:
+                first_acceptance.set()
+                raise TtsRateLimitError("invalid provider clip")
+            return result
+
+        scheduler = TtsScheduler(
+            engine,
+            config=_config(concurrency=1),
+            clock=clock,
+        )
+        task = asyncio.create_task(
+            scheduler.submit(
+                _factory(tmp_path, "retry-accept"),
+                batch_rank=0,
+                request_rank=0,
+                cancel=token,
+                accept_result=accept_once,
+            )
+        )
+        assert await engine.started.get() == "retry-accept"
+        await first_acceptance.wait()
+        clock.advance(15.0)
+        await scheduler.wake()
+        assert await engine.started.get() == "retry-accept"
+
+        result = await task
+
+        assert result.error is None
+        assert result.attempts == 2
+        assert acceptance_calls == 2
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_result_cannot_finish_after_acceptance(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        engine = _Engine()
+        token = TtsCancellation()
+        acceptance_started = asyncio.Event()
+        release_acceptance = asyncio.Event()
+
+        async def delayed_accept(result: EngineClipResult) -> EngineClipResult:
+            acceptance_started.set()
+            await release_acceptance.wait()
+            return result
+
+        scheduler = TtsScheduler(engine, config=_config(concurrency=1))
+        task = asyncio.create_task(
+            scheduler.submit(
+                _factory(tmp_path, "cancel-accept"),
+                batch_rank=0,
+                request_rank=0,
+                cancel=token,
+                accept_result=delayed_accept,
+            )
+        )
+        assert await engine.started.get() == "cancel-accept"
+        await acceptance_started.wait()
+        token.cancel()
+        release_acceptance.set()
+
+        result = await task
+
+        assert result.clip is None
+        assert result.error is not None
+        assert result.error.context.code.value == "CANCELLED"
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
 def test_retry_backoff_releases_slot_and_ready_retry_has_priority(tmp_path: Path) -> None:
     async def scenario() -> None:
         clock = _Clock()

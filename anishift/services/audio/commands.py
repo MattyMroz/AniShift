@@ -24,6 +24,7 @@ __all__ = [
     "narrator_wav_command",
     "normalize_command",
     "probe_command",
+    "scan_duration_command",
 ]
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -232,6 +233,31 @@ def decode_duration_command(ffmpeg: Path, path: Path) -> tuple[str, ...]:
         "-vn",
         "-sn",
         "-dn",
+        "-progress",
+        "pipe:1",
+        "-nostats",
+        "-f",
+        "null",
+        "-",
+    )
+
+
+def scan_duration_command(ffmpeg: Path, path: Path) -> tuple[str, ...]:
+    """Build a packet-copy scan that reports exact stream timeline duration."""
+    return (
+        str(ffmpeg),
+        "-v",
+        "error",
+        "-nostdin",
+        "-i",
+        str(path),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-c:a",
+        "copy",
         "-progress",
         "pipe:1",
         "-nostats",

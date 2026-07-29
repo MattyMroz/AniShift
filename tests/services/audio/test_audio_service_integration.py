@@ -10,7 +10,7 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.platform.binaries import Binary, resolve_binary
 from anishift.services.audio.commands import CommandResult, SubprocessRunner
 from anishift.services.audio.config import AudioConfig
-from anishift.services.audio.errors import AudioDecodeError, AudioProcessError
+from anishift.services.audio.errors import AudioProcessError
 from anishift.services.audio.probe import measure_decoded_duration, probe_audio
 from anishift.services.audio.service import AudioService, _notify
 from anishift.services.audio.types import (
@@ -90,13 +90,16 @@ def test_audio_service_renders_and_resumes_real_eac3(tmp_path: Path) -> None:
         clips=(_timed_clip(clip_path),),
         temporary_root=tmp_path / "tmp" / "episode-scope" / "audio",
     )
+    runner = _RecordingRunner()
     service = AudioService(
         AudioConfig(codec_profile=AudioCodecProfile.EAC3),
+        runner=runner,
         ffmpeg=FFMPEG,
         ffprobe=FFPROBE,
     )
 
     first = service.render(request)
+    assert runner.operations.count("decode") == 0
     second = service.render(request)
 
     assert first.status is AudioRenderStatus.COMPLETED
@@ -109,6 +112,7 @@ def test_audio_service_renders_and_resumes_real_eac3(tmp_path: Path) -> None:
     assert first.output_probe.duration_ms >= 300
     assert first.narrator_path is not None
     assert first.narrator_path.is_file()
+    assert runner.operations.count("decode") == 2
     assert second.status is AudioRenderStatus.RESUME_HIT
     assert second.output_path == first.output_path
 
@@ -172,12 +176,12 @@ def test_failed_output_validation_preserves_existing_sidecar_bit_for_bit(
     )
     service = AudioService(
         AudioConfig(codec_profile=AudioCodecProfile.EAC3),
-        runner=_RecordingRunner(fail_operation="decode", fail_occurrence=2),
+        runner=_RecordingRunner(fail_operation="probe", fail_occurrence=2),
         ffmpeg=FFMPEG,
         ffprobe=FFPROBE,
     )
 
-    with pytest.raises(AudioDecodeError, match="complete decode check"):
+    with pytest.raises(AudioProcessError, match="forced audio failure"):
         service.render(request)
 
     assert output_path.read_bytes() == original_bytes

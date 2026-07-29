@@ -14,6 +14,7 @@ from anishift.services.audio.commands import (
     decode_command,
     decode_duration_command,
     probe_command,
+    scan_duration_command,
 )
 from anishift.services.audio.errors import (
     AudioDecodeError,
@@ -23,11 +24,51 @@ from anishift.services.audio.errors import (
 from anishift.services.audio.types import AudioProbe
 
 __all__ = [
+    "measure_audio_duration",
     "measure_decoded_duration",
     "parse_probe_json",
     "probe_audio",
     "validate_decode",
 ]
+
+
+def measure_audio_duration(
+    path: Path,
+    *,
+    ffmpeg: Path,
+    runner: CommandRunner,
+    timeout_s: float,
+    cancel: threading.Event | None = None,
+) -> int:
+    """Return exact packet timeline duration, falling back to full decode."""
+    if not path.is_file() or path.stat().st_size == 0:
+        _raise_decode_duration("Audio duration input is missing or empty")
+    try:
+        result = runner.run(
+            scan_duration_command(ffmpeg, path),
+            operation="scan_duration",
+            timeout_s=timeout_s,
+            cancel=cancel,
+        )
+        return _duration_from_progress(result.stdout)
+    except AudioProcessError as error:
+        if error.context.code is not ErrorCode.AUDIO_FAILED:
+            raise
+        return measure_decoded_duration(
+            path,
+            ffmpeg=ffmpeg,
+            runner=runner,
+            timeout_s=timeout_s,
+            cancel=cancel,
+        )
+    except AudioDecodeError:
+        return measure_decoded_duration(
+            path,
+            ffmpeg=ffmpeg,
+            runner=runner,
+            timeout_s=timeout_s,
+            cancel=cancel,
+        )
 
 
 def parse_probe_json(path: Path, payload: str) -> AudioProbe:
@@ -148,9 +189,13 @@ def measure_decoded_duration(
         timeout_s=timeout_s,
         cancel=cancel,
     )
+    return _duration_from_progress(result.stdout)
+
+
+def _duration_from_progress(progress: str) -> int:
     values: dict[str, str] = {}
     progress_is_complete: bool = False
-    for raw_line in result.stdout.splitlines():
+    for raw_line in progress.splitlines():
         key, separator, value = raw_line.partition("=")
         if not separator:
             continue

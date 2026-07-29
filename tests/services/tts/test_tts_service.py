@@ -35,11 +35,15 @@ from anishift.services.tts import (
 
 
 class _Validator:
+    def __init__(self) -> None:
+        self.calls: list[Path] = []
+
     def validate_clip(
         self,
         path: Path,
         expectation: ClipExpectation,
     ) -> ClipValidation | None:
+        self.calls.append(path)
         if path.is_file() and path.read_bytes() == b"valid":
             return ClipValidation(
                 format=expectation.format,
@@ -185,10 +189,11 @@ def _batch() -> SpeechBatch:
 def test_service_commits_then_reuses_validated_resume_clip(tmp_path: Path) -> None:
     engine = _Engine()
     progress = _Progress()
+    validator = _Validator()
     with TtsService(
         _config(),
         resume_root=tmp_path,
-        validator=_Validator(),
+        validator=validator,
         engine_factory=lambda config: engine,
     ) as service:
         first = service.synthesize(_batch(), callbacks=progress)
@@ -199,6 +204,7 @@ def test_service_commits_then_reuses_validated_resume_clip(tmp_path: Path) -> No
     assert first.requests[1].status is SynthesisStatus.SKIPPED
     assert second.requests[0].status is SynthesisStatus.RESUME_HIT
     assert engine.calls == 1
+    assert len(validator.calls) == 1
     assert engine.closed == 1
     assert {update.status for update in progress.requests[-2:]} == {
         SynthesisStatus.RESUME_HIT,

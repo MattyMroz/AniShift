@@ -44,6 +44,7 @@ __all__ = [
     "ClipExpectation",
     "ClipValidation",
     "TtsResumeRepository",
+    "ValidatedClipReceipt",
 ]
 
 _MANIFEST_SCHEMA_VERSION: Final[int] = 1
@@ -79,6 +80,19 @@ class CachedTtsClip:
 
 
 @dataclass(frozen=True, slots=True)
+class ValidatedClipReceipt:
+    """Bind trusted decode metadata to one unchanged repository temp clip."""
+
+    path: Path
+    validation: ClipValidation
+    size_bytes: int
+    modified_ns: int
+    device: int
+    inode: int
+    repository_token: object
+
+
+@dataclass(frozen=True, slots=True)
 class _ManifestEntry:
     request_id: str
     text_hash: str
@@ -107,6 +121,7 @@ class TtsResumeRepository:
         self._scope_id: str = validate_scope_id(scope_id)
         self._layout: TtsArtifactLayout = TtsArtifactLayout(root.absolute())
         self._validator: ClipValidator = validator
+        self._receipt_token: object = object()
         self._lock: threading.RLock = _repository_lock(self._layout.root)
         self._warnings: list[ErrorContext] = []
         self._entries: dict[str, _ManifestEntry] = {}
@@ -151,6 +166,39 @@ class TtsResumeRepository:
                 return self._validated_entry(identity, expectation, entry)
             return self._adopt_orphan(identity, expectation, key)
 
+    def validate_temporary_clip(
+        self,
+        path: Path,
+        expectation: ClipExpectation,
+    ) -> ValidatedClipReceipt | None:
+        """Validate one owned temp clip and return metadata reusable at commit."""
+        owned_path: Path = self._layout.validate_temporary_clip(
+            path,
+            clip_format=expectation.format,
+        )
+        validation: ClipValidation | None = self._validate_path(owned_path, expectation)
+        if validation is None:
+            return None
+        try:
+            stat = owned_path.stat()
+        except OSError as error:
+            context: ErrorContext = ErrorContext(
+                code=ErrorCode.TTS_RESUME_ERROR,
+                message="TTS clip validation could not access its artifact",
+                suggestion="Check workspace permissions and file locks.",
+                details={"operation": "validate_clip_receipt"},
+            )
+            raise TtsResumeError(context=context) from error
+        return ValidatedClipReceipt(
+            path=owned_path,
+            validation=validation,
+            size_bytes=stat.st_size,
+            modified_ns=stat.st_mtime_ns,
+            device=stat.st_dev,
+            inode=stat.st_ino,
+            repository_token=self._receipt_token,
+        )
+
     def commit_clip(
         self,
         identity: SynthesisIdentity,
@@ -158,20 +206,25 @@ class TtsResumeRepository:
         expectation: ClipExpectation,
         *,
         can_commit: Callable[[], bool],
+        validation_receipt: ValidatedClipReceipt | None = None,
     ) -> CachedTtsClip:
         """Validate and atomically publish one provider result for later flush."""
         self._require_scope(identity)
         self._require_format(identity, expectation)
-        self._layout.relative_clip_path(temporary_path)
-        validation: ClipValidation | None = self._validate_path(
+        owned_path: Path = self._layout.validate_temporary_clip(
             temporary_path,
+            clip_format=expectation.format,
+        )
+        validation: ClipValidation | None = self._receipt_validation(
+            owned_path,
             expectation,
+            validation_receipt,
         )
         if validation is None:
-            self._layout.discard_temporary_clip(temporary_path)
+            self._layout.discard_temporary_clip(owned_path)
             _raise_clip_invalid()
         if not can_commit():
-            self._layout.discard_temporary_clip(temporary_path)
+            self._layout.discard_temporary_clip(owned_path)
             _raise_cancelled()
 
         fingerprint: str = synthesis_fingerprint(identity)
@@ -194,7 +247,7 @@ class TtsResumeRepository:
                     existing,
                 )
                 if hit is not None:
-                    self._layout.discard_temporary_clip(temporary_path)
+                    self._layout.discard_temporary_clip(owned_path)
                     return hit
             elif final_path.is_file():
                 orphan: CachedTtsClip | None = self._adopt_orphan(
@@ -203,10 +256,10 @@ class TtsResumeRepository:
                     key,
                 )
                 if orphan is not None:
-                    self._layout.discard_temporary_clip(temporary_path)
+                    self._layout.discard_temporary_clip(owned_path)
                     return orphan
             self._layout.publish_clip(
-                temporary_path,
+                owned_path,
                 final_path,
                 clip_format=expectation.format,
             )
@@ -220,6 +273,30 @@ class TtsResumeRepository:
             self._entries[key] = entry
             self._dirty_entries[key] = entry
             return clip
+
+    def _receipt_validation(
+        self,
+        path: Path,
+        expectation: ClipExpectation,
+        receipt: ValidatedClipReceipt | None,
+    ) -> ClipValidation | None:
+        if receipt is None:
+            return self._validate_path(path, expectation)
+        try:
+            stat = path.stat()
+        except OSError:
+            return self._validate_path(path, expectation)
+        if (
+            receipt.repository_token is self._receipt_token
+            and receipt.path == path
+            and receipt.validation.format is expectation.format
+            and receipt.size_bytes == stat.st_size
+            and receipt.modified_ns == stat.st_mtime_ns
+            and receipt.device == stat.st_dev
+            and receipt.inode == stat.st_ino
+        ):
+            return receipt.validation
+        return self._validate_path(path, expectation)
 
     def _load(self) -> None:
         self._entries = dict(self._dirty_entries)

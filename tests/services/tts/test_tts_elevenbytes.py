@@ -91,6 +91,7 @@ def _engine(
     handler: httpx.AsyncBaseTransport,
 ) -> ElevenBytesTtsEngine:
     provider_config = ElevenBytesConfig.from_tts_config(config)
+    assert provider_config.max_concurrency == 12
     backend = ElevenBytesApiBackend(provider_config, transport=handler)
     return ElevenBytesTtsEngine(config, backend=backend)
 

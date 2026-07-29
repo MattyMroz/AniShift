@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 from audio_test_helpers import RecordingRunner, command_result, probe_payload
 
+from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.commands import CommandResult
-from anishift.services.audio.errors import AudioDecodeError, AudioProbeError
+from anishift.services.audio.errors import AudioDecodeError, AudioProbeError, AudioProcessError
 from anishift.services.audio.probe import (
+    measure_audio_duration,
     measure_decoded_duration,
     parse_probe_json,
     probe_audio,
@@ -161,3 +163,88 @@ def test_measure_decoded_duration_rejects_incomplete_progress(
             runner=runner,
             timeout_s=1,
         )
+
+
+def test_measure_audio_duration_uses_packet_scan(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.aac"
+    path.write_bytes(b"audio")
+    progress = "out_time_us=1420053333\nprogress=end\n"
+    runner = RecordingRunner(
+        lambda command, operation: command_result(command, stdout=progress),
+    )
+
+    duration_ms = measure_audio_duration(
+        path,
+        ffmpeg=Path("ffmpeg"),
+        runner=runner,
+        timeout_s=1,
+    )
+
+    assert duration_ms == 1_420_053
+    command, operation = runner.calls[0]
+    assert operation == "scan_duration"
+    assert "copy" in command
+
+
+def test_measure_audio_duration_falls_back_to_complete_decode(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.aac"
+    path.write_bytes(b"audio")
+    progress = "out_time_us=1420053333\nprogress=end\n"
+
+    def handle(command: tuple[str, ...], operation: str) -> CommandResult:
+        if operation == "scan_duration":
+            raise AudioProcessError(
+                context=ErrorContext(
+                    code=ErrorCode.AUDIO_FAILED,
+                    message="packet copy unavailable",
+                ),
+            )
+        return command_result(command, stdout=progress)
+
+    runner = RecordingRunner(handle)
+
+    duration_ms = measure_audio_duration(
+        path,
+        ffmpeg=Path("ffmpeg"),
+        runner=runner,
+        timeout_s=1,
+    )
+
+    assert duration_ms == 1_420_053
+    assert [operation for _, operation in runner.calls] == [
+        "scan_duration",
+        "measure_duration",
+    ]
+
+
+def test_measure_audio_duration_does_not_retry_after_timeout(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.aac"
+    path.write_bytes(b"audio")
+
+    def handle(command: tuple[str, ...], operation: str) -> CommandResult:
+        del command, operation
+        raise AudioProcessError(
+            context=ErrorContext(
+                code=ErrorCode.TIMEOUT,
+                message="scan timed out",
+            ),
+        )
+
+    runner = RecordingRunner(handle)
+
+    with pytest.raises(AudioProcessError) as captured:
+        measure_audio_duration(
+            path,
+            ffmpeg=Path("ffmpeg"),
+            runner=runner,
+            timeout_s=1,
+        )
+
+    assert captured.value.context.code is ErrorCode.TIMEOUT
+    assert len(runner.calls) == 1

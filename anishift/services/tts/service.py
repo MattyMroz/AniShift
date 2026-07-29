@@ -22,7 +22,11 @@ from anishift.services.tts.errors import (
     TtsUnsupportedError,
 )
 from anishift.services.tts.fingerprint import SynthesisIdentity
-from anishift.services.tts.resume import CachedTtsClip, TtsResumeRepository
+from anishift.services.tts.resume import (
+    CachedTtsClip,
+    TtsResumeRepository,
+    ValidatedClipReceipt,
+)
 from anishift.services.tts.scheduler import ScheduledSynthesis, TtsScheduler
 from anishift.services.tts.types import (
     ClipExpectation,
@@ -71,7 +75,6 @@ class _AttemptContext:
     config: TtsConfig
     repository: TtsResumeRepository
     expectation: ClipExpectation
-    validator: ClipValidator
     engine_id: str
     provider_model_id: str
     resolved_voice_id: str
@@ -101,11 +104,11 @@ class _ProviderAttempt:
         "_part_index",
         "_paths",
         "_provider_model_id",
+        "_receipt",
         "_repository",
         "_request",
         "_resolved_voice_id",
         "_text",
-        "_validator",
     )
 
     def __init__(
@@ -123,10 +126,10 @@ class _ProviderAttempt:
         self._part_index: int = part_index
         self._repository: TtsResumeRepository = context.repository
         self._expectation: ClipExpectation = context.expectation
-        self._validator: ClipValidator = context.validator
         self._engine_id: str = context.engine_id
         self._provider_model_id: str = context.provider_model_id
         self._resolved_voice_id: str = context.resolved_voice_id
+        self._receipt: ValidatedClipReceipt | None = None
         self._paths: set[Path] = set()
         self._current_path: Path | None = None
         self._current_request_id: str = ""
@@ -135,6 +138,13 @@ class _ProviderAttempt:
     def paths(self) -> tuple[Path, ...]:
         """Return every destination reserved across retries."""
         return tuple(self._paths)
+
+    def receipt_for(self, path: Path) -> ValidatedClipReceipt | None:
+        """Return the trusted receipt only when it belongs to the accepted path."""
+        receipt: ValidatedClipReceipt | None = self._receipt
+        if receipt is None or receipt.path != path:
+            return None
+        return receipt
 
     def request_for_attempt(self, attempt: int) -> SynthesisRequest:
         """Build one request with a destination unique to this payload attempt."""
@@ -167,14 +177,15 @@ class _ProviderAttempt:
             or result.voice_id != self._resolved_voice_id
         ):
             raise _unowned_clip_error()
-        validation = await asyncio.to_thread(
-            self._validator.validate_clip,
+        receipt = await asyncio.to_thread(
+            self._repository.validate_temporary_clip,
             result.path,
             self._expectation,
         )
-        if validation is None or validation.format is not self._expectation.format:
+        if receipt is None or receipt.validation.format is not self._expectation.format:
             result.path.unlink(missing_ok=True)
             raise _invalid_audio_error()
+        self._receipt = receipt
         return result
 
 
@@ -502,7 +513,6 @@ class TtsService:
             config=self._config,
             repository=repository,
             expectation=expectation,
-            validator=self._validator,
             engine_id=engine.engine_id,
             provider_model_id=engine.synthesis_profile.provider_model_id,
             resolved_voice_id=engine.synthesis_profile.resolved_voice_id,
@@ -592,12 +602,16 @@ class TtsService:
                 )
             _discard_paths(all_paths)
         try:
+            validation_receipt: ValidatedClipReceipt | None = None
+            if len(clips) == 1:
+                validation_receipt = provider_attempts[0].receipt_for(temporary)
             committed: CachedTtsClip = await asyncio.to_thread(
                 repository.commit_clip,
                 identity,
                 temporary,
                 expectation,
                 can_commit=lambda: self._cancel.can_commit(generation),
+                validation_receipt=validation_receipt,
             )
         except TtsError as commit_error:
             _discard_paths(all_paths)

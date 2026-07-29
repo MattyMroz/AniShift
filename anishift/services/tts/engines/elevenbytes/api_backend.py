@@ -69,7 +69,14 @@ class ElevenBytesApiBackend:
     ) -> None:
         """Create one reusable async client for an engine lifecycle."""
         self._config: ElevenBytesConfig = config
-        resolved_transport: httpx.AsyncBaseTransport = transport or httpx.AsyncHTTPTransport(retries=0)
+        limits = httpx.Limits(
+            max_connections=config.max_concurrency,
+            max_keepalive_connections=config.max_concurrency,
+        )
+        resolved_transport: httpx.AsyncBaseTransport = transport or httpx.AsyncHTTPTransport(
+            retries=0,
+            limits=limits,
+        )
         self._client: httpx.AsyncClient = httpx.AsyncClient(
             headers=dict(REQUEST_HEADERS),
             timeout=httpx.Timeout(config.timeout_s),

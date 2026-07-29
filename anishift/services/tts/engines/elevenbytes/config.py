@@ -28,6 +28,7 @@ class ElevenBytesConfig:
     endpoint_variant: ElevenBytesEndpointVariant
     voice_id: str
     timeout_s: float
+    max_concurrency: int
     run7_settings: ElevenBytesV3Settings | None
 
     @classmethod
@@ -48,6 +49,7 @@ class ElevenBytesConfig:
             endpoint_variant=endpoint_variant,
             voice_id=resolve_voice_id(config.voice_id),
             timeout_s=config.request_timeout_s,
+            max_concurrency=config.max_concurrency,
             run7_settings=run7_settings,
         )
 

@@ -11,6 +11,7 @@ from anishift.services.audio.commands import (
     decode_command,
     decode_duration_command,
     join_clips_command,
+    scan_duration_command,
 )
 from anishift.services.audio.errors import AudioCancelledError, AudioProcessError
 from anishift.services.audio.types import AudioFormat
@@ -118,6 +119,32 @@ def test_decode_duration_command_reports_progress_for_exact_audio_stream() -> No
         "-vn",
         "-sn",
         "-dn",
+        "-progress",
+        "pipe:1",
+        "-nostats",
+        "-f",
+        "null",
+        "-",
+    )
+
+
+def test_scan_duration_command_copies_exact_audio_stream() -> None:
+    command = scan_duration_command(Path("ffmpeg"), Path("voice clip.aac"))
+
+    assert command == (
+        "ffmpeg",
+        "-v",
+        "error",
+        "-nostdin",
+        "-i",
+        "voice clip.aac",
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-c:a",
+        "copy",
         "-progress",
         "pipe:1",
         "-nostats",

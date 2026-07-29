@@ -37,7 +37,7 @@ from anishift.services.audio.output import (
     validate_output_probe,
 )
 from anishift.services.audio.probe import (
-    measure_decoded_duration,
+    measure_audio_duration,
     probe_audio,
     validate_decode,
 )
@@ -151,18 +151,11 @@ class AudioService:
             post_process_tempo=request.post_process_tempo,
             config=self._config,
         )
-        narrator_path, plan = self._narrator(
+        narrator_path, plan, narrator_probe = self._narrator(
             request,
             repository,
             narration_id,
             callbacks=callbacks,
-            cancel=cancel,
-        )
-        narrator_probe: AudioProbe = probe_audio(
-            narrator_path,
-            ffprobe=self._ffprobe,
-            runner=self._runner,
-            timeout_s=self._config.operation_timeout_s,
             cancel=cancel,
         )
         original_probe: AudioProbe | None = self._probe_original(request, cancel=cancel)
@@ -242,11 +235,13 @@ class AudioService:
         *,
         callbacks: AudioProgressSink | None,
         cancel: threading.Event | None,
-    ) -> tuple[Path, TimelinePlan | None]:
+    ) -> tuple[Path, TimelinePlan | None, AudioProbe]:
         hit: Path | None = repository.narration_hit(narration_id)
-        if hit is not None and self._valid_narrator_hit(hit, cancel=cancel):
-            _notify(callbacks, request.scope_id, "narration_resume")
-            return hit, None
+        if hit is not None:
+            hit_probe: AudioProbe | None = self._valid_narrator_hit(hit, cancel=cancel)
+            if hit_probe is not None:
+                _notify(callbacks, request.scope_id, "narration_resume")
+                return hit, None, hit_probe
         _notify(callbacks, request.scope_id, "normalizing")
         normalized: tuple[NormalizedClip, ...] = self._normalize_many(
             request,
@@ -287,20 +282,13 @@ class AudioService:
                 timeout_s=self._config.operation_timeout_s,
                 cancel=cancel,
             )
-            validate_decode(
-                temporary_wav,
-                ffmpeg=self._ffmpeg,
-                runner=self._runner,
-                timeout_s=self._config.operation_timeout_s,
-                cancel=cancel,
-            )
             _validate_narrator_probe(probe, plan)
             _check_cancel(cancel)
             temporary_wav.replace(narrator_path)
             repository.commit_narration(narration_id, narrator_path)
         finally:
             temporary_wav.unlink(missing_ok=True)
-        return narrator_path, plan
+        return narrator_path, plan, probe
 
     def _normalize_many(
         self,
@@ -363,7 +351,7 @@ class AudioService:
         path: Path,
         *,
         cancel: threading.Event | None,
-    ) -> bool:
+    ) -> AudioProbe | None:
         try:
             probe: AudioProbe = probe_audio(
                 path,
@@ -380,12 +368,14 @@ class AudioService:
                 cancel=cancel,
             )
         except AudioDecodeError, AudioProbeError, AudioProcessError:
-            return False
-        return (
+            return None
+        if (
             probe.codec_name == "pcm_s16le"
             and probe.sample_rate == self._config.narrator_sample_rate
             and probe.channels == self._config.narrator_channels
-        )
+        ):
+            return probe
+        return None
 
     def _probe_original(
         self,
@@ -411,7 +401,7 @@ class AudioService:
     ) -> int:
         if request.source_audio_path is None:
             return 0
-        return measure_decoded_duration(
+        return measure_audio_duration(
             request.source_audio_path,
             ffmpeg=self._ffmpeg,
             runner=self._runner,
@@ -489,13 +479,6 @@ class AudioService:
             probe: AudioProbe = probe_audio(
                 temporary,
                 ffprobe=self._ffprobe,
-                runner=self._runner,
-                timeout_s=self._config.operation_timeout_s,
-                cancel=cancel,
-            )
-            validate_decode(
-                temporary,
-                ffmpeg=self._ffmpeg,
                 runner=self._runner,
                 timeout_s=self._config.operation_timeout_s,
                 cancel=cancel,

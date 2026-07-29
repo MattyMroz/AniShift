@@ -116,6 +116,28 @@ def test_commit_reopen_and_lookup_trusts_exact_hash_without_redecoding(tmp_path:
     assert json.loads((tmp_path / "tts" / "manifest.json").read_text())["schema_version"] == 1
 
 
+def test_commit_revalidates_a_temp_clip_changed_after_receipt(tmp_path: Path) -> None:
+    validator = _Validator()
+    repository = TtsResumeRepository(tmp_path / "tts", "scope-test", validator)
+    identity = _identity()
+    expectation = ClipExpectation(AudioFormat.MP3)
+    temporary = repository.temporary_clip_path(clip_format=AudioFormat.MP3)
+    temporary.write_bytes(b"valid-audio")
+    receipt = repository.validate_temporary_clip(temporary, expectation)
+    temporary.write_bytes(b"valid-audio-changed")
+
+    clip = repository.commit_clip(
+        identity,
+        temporary,
+        expectation,
+        can_commit=lambda: True,
+        validation_receipt=receipt,
+    )
+
+    assert clip.path.read_bytes() == b"valid-audio-changed"
+    assert len(validator.calls) == 2
+
+
 def test_changed_identity_misses_without_deleting_old_version(tmp_path: Path) -> None:
     repository = TtsResumeRepository(tmp_path / "tts", "scope-test", _Validator())
     original = _identity()

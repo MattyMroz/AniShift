@@ -72,6 +72,7 @@ class TtsScheduler:
     """Bounded priority scheduler shared by every concurrent speech batch."""
 
     __slots__ = (
+        "_accepting",
         "_admission",
         "_circuit_error",
         "_clock",
@@ -100,6 +101,7 @@ class TtsScheduler:
         self._clock: Callable[[], float] = clock
         self._condition: asyncio.Condition = asyncio.Condition()
         self._admission: asyncio.Semaphore = asyncio.Semaphore(config.queue_capacity)
+        self._accepting: set[asyncio.Task[None]] = set()
         self._ready: list[_ReadyItem] = []
         self._delayed: list[_DelayedItem] = []
         self._sequence: itertools.count[int] = itertools.count()
@@ -149,6 +151,11 @@ class TtsScheduler:
             self._fail_queued(_cancelled_error("TTS scheduler is closing"))
             self._condition.notify_all()
         await asyncio.gather(*self._workers, return_exceptions=True)
+        accepting: tuple[asyncio.Task[None], ...] = tuple(self._accepting)
+        if accepting:
+            await asyncio.gather(*accepting, return_exceptions=True)
+        async with self._condition:
+            self._fail_queued(_cancelled_error("TTS scheduler is closing"))
 
     async def cancel_pending(self) -> None:
         """Resolve ready and delayed work whose run token was cancelled."""
@@ -205,7 +212,7 @@ class TtsScheduler:
                 except TimeoutError:
                     continue
 
-    async def _attempt(self, work: _WorkItem) -> None:  # noqa: PLR0911
+    async def _attempt(self, work: _WorkItem) -> None:
         if not work.cancel.can_commit(work.generation):
             self._finish(work, error=_cancelled_error("TTS request cancelled before start"))
             return
@@ -235,8 +242,19 @@ class TtsScheduler:
                 mapped_error,
             )
             return
+        task: asyncio.Task[None] = asyncio.create_task(
+            self._accept(work, clip),
+            name=f"tts-accept-{work.batch_rank}-{work.request_rank}-{work.attempts}",
+        )
+        self._accepting.add(task)
+        task.add_done_callback(self._accepting.discard)
+
+    async def _accept(self, work: _WorkItem, clip: EngineClipResult) -> None:
         try:
-            clip = await work.accept_result(clip)
+            accepted: EngineClipResult = await work.accept_result(clip)
+        except asyncio.CancelledError:
+            self._finish(work, error=_cancelled_error("TTS clip acceptance cancelled"))
+            return
         except TtsError as error:
             await self._handle_error(work, error)
             return
@@ -251,7 +269,7 @@ class TtsScheduler:
         if not work.cancel.can_commit(work.generation):
             self._finish(work, error=_cancelled_error("TTS result arrived after cancellation"))
             return
-        self._finish(work, clip=clip)
+        self._finish(work, clip=accepted)
 
     async def _handle_error(self, work: _WorkItem, error: TtsError) -> None:
         if isinstance(error, TransientError) and work.attempts <= self._max_retries:
