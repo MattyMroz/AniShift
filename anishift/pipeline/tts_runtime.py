@@ -202,10 +202,9 @@ class _SynthesisFocus:
         self._started: bool = False
         self._waiting: dict[int, int] = {}
 
-    def acquire(self, admission_rank: int, batch_rank: int) -> bool:
+    def acquire(self, admission_rank: int) -> bool:
         """Wait until this batch is the highest-priority ready synthesis."""
         with self._condition:
-            self._waiting[admission_rank] = batch_rank
             while True:
                 if self._cancel.is_set() or self._paused:
                     self._waiting.pop(admission_rank, None)
@@ -216,6 +215,12 @@ class _SynthesisFocus:
                     self._waiting.pop(admission_rank)
                     return True
                 self._condition.wait(_WAIT_POLL_SECONDS)
+
+    def register(self, admission_rank: int, batch_rank: int) -> None:
+        """Register coordinator priority before its worker can start."""
+        with self._condition:
+            self._waiting[admission_rank] = batch_rank
+            self._condition.notify_all()
 
     def release(self, *, failed: bool) -> None:
         """Release provider focus and stop strict work after an earlier failure."""
@@ -472,6 +477,7 @@ class PipelineTtsRuntime:
                 cancel=cancel,
                 terminal_factory=_cancelled_outcome,
                 on_result=self._on_result,
+                on_admit=self._register_synthesis,
                 pause_on_result=_is_provider_terminal,
                 paused_factory=_not_processed_outcome,
             ),
@@ -604,10 +610,7 @@ class PipelineTtsRuntime:
         self.close()
 
     def _process(self, job: TtsQueueJob) -> TtsQueueOutcome:  # noqa: PLR0911 - explicit terminal boundaries
-        if not self._synthesis_focus.acquire(
-            job.admission_rank,
-            job.narration.speech.batch_rank,
-        ):
+        if not self._synthesis_focus.acquire(job.admission_rank):
             return _cancelled_outcome(job) if self._cancel.is_set() else _not_processed_outcome(job)
         synthesis_failed: bool = True
         try:
@@ -689,6 +692,13 @@ class PipelineTtsRuntime:
             audio=audio,
             failure=None,
             audio_time_ms=(time.monotonic() - audio_started_at) * 1000,
+        )
+
+    def _register_synthesis(self, job: TtsQueueJob) -> None:
+        """Register natural priority before the queue submits a worker."""
+        self._synthesis_focus.register(
+            job.admission_rank,
+            job.narration.speech.batch_rank,
         )
 
     def _on_result(self, outcome: TtsQueueOutcome) -> None:

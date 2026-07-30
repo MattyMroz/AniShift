@@ -70,6 +70,9 @@ type TtsQueueTerminalFactory = Callable[[TtsQueueJob], TtsQueueOutcome]
 type TtsQueueResultHandler = Callable[[TtsQueueOutcome], None]
 """Observe one terminal queue result on the coordinator thread."""
 
+type TtsQueueAdmissionHandler = Callable[[TtsQueueJob], None]
+"""Observe one ranked job immediately before executor submission."""
+
 type TtsQueuePausePredicate = Callable[[TtsQueueOutcome], bool]
 """Return whether one result pauses every not-yet-submitted batch."""
 
@@ -82,6 +85,7 @@ class TtsQueueConfig:
     cancel: threading.Event
     terminal_factory: TtsQueueTerminalFactory
     on_result: TtsQueueResultHandler | None = None
+    on_admit: TtsQueueAdmissionHandler | None = None
     pause_on_result: TtsQueuePausePredicate | None = None
     paused_factory: TtsQueueTerminalFactory | None = None
 
@@ -212,6 +216,7 @@ def run_tts_queue(
                 job: TtsQueueJob = pending.popleft()
                 job = replace(job, admission_rank=next_admission_rank)
                 next_admission_rank += 1
+                _notify_admission(config.on_admit, job)
                 active[pool.submit(worker, job)] = job
             if not active:
                 if config.cancel.is_set():
@@ -229,7 +234,7 @@ def run_tts_queue(
                 job = active.pop(future)
                 outcome: TtsQueueOutcome = future.result()
                 outcomes[job.source] = outcome
-                _notify(config.on_result, outcome)
+                _notify_result(config.on_result, outcome)
                 if config.pause_on_result is not None and config.pause_on_result(outcome):
                     paused = True
     remaining, _closed = queue_input.drain()
@@ -243,16 +248,24 @@ def run_tts_queue(
     for job in pending:
         outcome = terminal_factory(job)
         outcomes[job.source] = outcome
-        _notify(config.on_result, outcome)
+        _notify_result(config.on_result, outcome)
     deferred_factory: TtsQueueTerminalFactory = config.paused_factory or config.terminal_factory
     for job in deferred:
         outcome = deferred_factory(job)
         outcomes[job.source] = outcome
-        _notify(config.on_result, outcome)
+        _notify_result(config.on_result, outcome)
     return outcomes
 
 
-def _notify(
+def _notify_admission(
+    handler: TtsQueueAdmissionHandler | None,
+    job: TtsQueueJob,
+) -> None:
+    if handler is not None:
+        handler(job)
+
+
+def _notify_result(
     handler: TtsQueueResultHandler | None,
     outcome: TtsQueueOutcome,
 ) -> None:

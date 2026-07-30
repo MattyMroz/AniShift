@@ -403,12 +403,13 @@ class TtsService:
         indexed_executions: list[tuple[int, _RequestExecution]] = []
         next_index: int = 0
         completed: int = 0
-        state_lock: asyncio.Lock = asyncio.Lock()
+        index_lock: asyncio.Lock = asyncio.Lock()
+        completion_lock: asyncio.Lock = asyncio.Lock()
 
         async def worker() -> None:
             nonlocal completed, next_index
             while True:
-                async with state_lock:
+                async with index_lock:
                     if next_index >= total:
                         return
                     index: int = next_index
@@ -421,22 +422,22 @@ class TtsService:
                     scheduler,
                     callbacks,
                 )
-                async with state_lock:
+                async with completion_lock:
                     indexed_executions.append((index, execution))
                     completed += 1
                     snapshot: tuple[_RequestExecution, ...] = tuple(item for _, item in indexed_executions)
                     completed_count: int = completed
-                await _notify_execution(
-                    callbacks,
-                    batch.scope_id,
-                    execution,
-                    completed_count,
-                    total,
-                    required_total,
-                    snapshot,
-                    cancel=self._cancel,
-                    generation=generation,
-                )
+                    await _notify_execution(
+                        callbacks,
+                        batch.scope_id,
+                        execution,
+                        completed_count,
+                        total,
+                        required_total,
+                        snapshot,
+                        cancel=self._cancel,
+                        generation=generation,
+                    )
 
         worker_count: int = min(total, self._config.queue_capacity)
         workers: tuple[asyncio.Task[None], ...] = tuple(
