@@ -13,9 +13,19 @@ single-letter initial), then an abbreviation list for the ``Dr. Smith`` case.
 from __future__ import annotations
 
 import re
-import unicodedata
 from collections.abc import Callable
 from typing import Final
+
+from anishift.text.boundaries import (
+    CJK_SENTENCE_ENDINGS,
+    CLOSING_MARKS,
+    LATIN_SENTENCE_ENDINGS,
+    PHRASE_CUT_CHARS,
+    SENTENCE_ENDINGS,
+    ZERO_WIDTH,
+    is_false_sentence_break,
+)
+from anishift.text.graphemes import hard_split_graphemes
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -25,291 +35,21 @@ DEFAULT_CHAR_LIMIT: Final[int] = 750
 DEFAULT_CHUNK_LIMIT: Final[int] = 250
 """Default maximum size of the natural pieces chunks are packed from."""
 
-_LATIN_SENTENCE_ENDINGS: Final[str] = ".!?…"
-"""Sentence-ending marks that need trailing whitespace to end a sentence."""
-
-_CJK_SENTENCE_ENDINGS: Final[str] = "。！？"  # noqa: RUF001 - fullwidth CJK marks are intentional
-"""Fullwidth marks that end a sentence even without trailing whitespace."""
-
-SENTENCE_ENDINGS: Final[str] = _LATIN_SENTENCE_ENDINGS + _CJK_SENTENCE_ENDINGS
-"""Sentence-ending marks (Latin plus fullwidth CJK); shared with linebreak."""
-
-ZERO_WIDTH: Final[str] = "\u200b"
-"""Zero-width space some subtitle sources emit after a sentence mark."""
-
-_APOSTROPHES: Final[str] = "'’"  # noqa: RUF001 - typographic apostrophe is intentional
-"""Apostrophes (ASCII and typographic) are excluded so ``don't`` stays whole."""
-
-
-def _punctuation_chars(categories: frozenset[str], *, exclude: str) -> str:
-    """Return every Unicode character whose category is in ``categories``.
-
-    Built from ``unicodedata`` so every script is covered without hand-written
-    per-language lists; ``exclude`` removes characters handled elsewhere.
-    """
-    excluded = set(exclude)
-    return "".join(
-        char
-        for code_point in range(0x110000)
-        if (char := chr(code_point)) not in excluded and unicodedata.category(char) in categories
-    )
-
-
-_PHRASE_CUT_CHARS: Final[str] = _punctuation_chars(
-    frozenset({"Pd", "Pe", "Pf", "Po"}),
-    exclude=SENTENCE_ENDINGS + _APOSTROPHES,
-)
-"""Phrase separators of every script.
-
-Opening marks (categories ``Ps``/``Pi``) are excluded because a phrase never
-starts right after an opening bracket or quote.
-"""
-
-_CLOSING_MARKS: Final[str] = _punctuation_chars(frozenset({"Pe", "Pf"}), exclude="")
-"""Closing brackets and final quotes of every script.
-
-A sentence never breaks right before one of these - the closer stays glued to
-the sentence it closes.
-"""
-
-# source: https://en.wiktionary.org/wiki/Category:English_abbreviations
-_ABBREVIATIONS_EN: Final[frozenset[str]] = frozenset(
-    [
-        "adm",
-        "al",
-        "approx",
-        "apr",
-        "apt",
-        "assn",
-        "assoc",
-        "aug",
-        "ave",
-        "blvd",
-        "bros",
-        "ca",
-        "capt",
-        "cf",
-        "ch",
-        "chap",
-        "co",
-        "col",
-        "comdr",
-        "corp",
-        "cpl",
-        "dec",
-        "dept",
-        "dist",
-        "div",
-        "dr",
-        "ed",
-        "eg",
-        "esp",
-        "est",
-        "etc",
-        "feb",
-        "fig",
-        "fr",
-        "gen",
-        "gov",
-        "govt",
-        "hon",
-        "ie",
-        "inc",
-        "incl",
-        "jan",
-        "jr",
-        "jul",
-        "jun",
-        "lieut",
-        "lt",
-        "ltd",
-        "maj",
-        "mar",
-        "max",
-        "messrs",
-        "min",
-        "misc",
-        "mount",
-        "mr",
-        "mrs",
-        "ms",
-        "mt",
-        "no",
-        "nov",
-        "obj",
-        "oct",
-        "orig",
-        "p",
-        "par",
-        "pp",
-        "prof",
-        "rd",
-        "ref",
-        "rev",
-        "sec",
-        "sep",
-        "sept",
-        "sgt",
-        "sir",
-        "sr",
-        "st",
-        "subj",
-        "transl",
-        "univ",
-        "viz",
-        "vol",
-        "vs",
-    ]
-)
-"""English abbreviations written with a trailing dot (support for the capitalised-word case)."""
-
-# source: https://pl.wikipedia.org/wiki/Wikipedia:Skróty
-_ABBREVIATIONS_PL: Final[frozenset[str]] = frozenset(
-    [
-        "adm",
-        "afryk",
-        "al",
-        "alb",
-        "alg",
-        "amer",
-        "argent",
-        "arm",
-        "art",
-        "austr",
-        "austral",
-        "azerb",
-        "azjat",
-        "b",
-        "bp",
-        "bryt",
-        "cd",
-        "cdn",
-        "cieśn",
-        "cs",
-        "cz",
-        "dn",
-        "doc",
-        "dol",
-        "dop",
-        "dr",
-        "duń",
-        "dyr",
-        "dzis",
-        "el",
-        "fl",
-        "gen",
-        "gm",
-        "godz",
-        "gr",
-        "hab",
-        "im",
-        "inst",
-        "inż",
-        "itd",
-        "itp",
-        "jask",
-        "jez",
-        "jw",
-        "k",
-        "kan",
-        "kl",
-        "kol",
-        "kpt",
-        "ks",
-        "l",
-        "lic",
-        "lp",
-        "m",
-        "marsz",
-        "mec",
-        "mgr",
-        "mies",
-        "mjr",
-        "mld",
-        "mln",
-        "nadl",
-        "nast",
-        "ndm",
-        "np",
-        "nr",
-        "o",
-        "ob",
-        "ok",
-        "os",
-        "pkt",
-        "pl",
-        "plut",
-        "płk",
-        "płw",
-        "pn",
-        "pol",
-        "por",
-        "pow",
-        "ppor",
-        "ppoż",
-        "prof",
-        "przeł",
-        "przyl",
-        "ps",
-        "pt",
-        "pust",
-        "pw",
-        "r",
-        "red",
-        "ryc",
-        "rys",
-        "rz",
-        "s",
-        "scs",
-        "sierż",
-        "ss",
-        "st",
-        "str",
-        "szt",
-        "św",
-        "tab",
-        "tel",
-        "tj",
-        "trb",
-        "trl",
-        "tys",
-        "tzn",
-        "tzw",
-        "ul",
-        "ur",
-        "viz",
-        "wdp",
-        "wg",
-        "wł",
-        "właśc",
-        "woj",
-        "wulg",
-        "ww",
-        "wyb",
-        "zam",
-        "zat",
-        "zb",
-        "zm",
-        "zob",
-    ]
-)
-"""Polish abbreviations written with a trailing dot (support for the capitalised-word case)."""
-
-_ABBREVIATIONS: Final[frozenset[str]] = _ABBREVIATIONS_EN | _ABBREVIATIONS_PL
-"""Support list for the ambiguous dot followed by a capitalised word."""
+_PHRASE_CUT_CHARS: Final[str] = PHRASE_CUT_CHARS
+"""Compatibility alias for callers that inspect the translation cut set."""
 
 _RE_PARAGRAPH_SEP: Final[re.Pattern[str]] = re.compile(r"((?:\r?\n\s*){2,})")
 """Blank-line paragraph separator."""
 
 _RE_SENTENCE_SEP: Final[re.Pattern[str]] = re.compile(
     "(["
-    + re.escape(_LATIN_SENTENCE_ENDINGS)
+    + re.escape(LATIN_SENTENCE_ENDINGS)
     + "]+[\\s"
     + ZERO_WIDTH
     + "]+|["
-    + re.escape(_CJK_SENTENCE_ENDINGS)
+    + re.escape(CJK_SENTENCE_ENDINGS)
     + "]+(?!["
-    + re.escape(_CLOSING_MARKS)
+    + re.escape(CLOSING_MARKS)
     + "])[\\s"
     + ZERO_WIDTH
     + "]*)"
@@ -326,9 +66,6 @@ _RE_PHRASE_SEP: Final[re.Pattern[str]] = re.compile("([" + re.escape(_PHRASE_CUT
 
 _RE_WORD_SEP: Final[re.Pattern[str]] = re.compile(r"(\s+)")
 """Whitespace between words."""
-
-_RE_DOTTED_TAIL: Final[re.Pattern[str]] = re.compile("(\\w+)\\.[\\s" + ZERO_WIDTH + "]*$")
-"""A word plus exactly one trailing dot; runs like ``...``/``?!`` never match."""
 
 
 def _rejoin(tokens: list[str]) -> list[str]:
@@ -360,7 +97,7 @@ def split_sentences(text: str) -> list[str]:
         part = tokens[index] + separator
         if not part:
             continue
-        if pieces and _is_false_sentence_break(pieces[-1], part):
+        if pieces and is_false_sentence_break(pieces[-1], part):
             pieces[-1] += part
         else:
             pieces.append(part)
@@ -375,26 +112,6 @@ def split_phrases(sentence: str) -> list[str]:
 def split_words(phrase: str) -> list[str]:
     """Split a phrase into words, whitespace kept attached to the left word."""
     return _rejoin(_RE_WORD_SEP.split(phrase))
-
-
-def _is_false_sentence_break(previous: str, following: str) -> bool:
-    """Return True when the dot ending ``previous`` is an abbreviation dot.
-
-    Language-independent heuristics run first: a lowercase continuation
-    (``np. taki``, ``ca. fünf``, ``w 1798. roku``) or a single-letter initial
-    (``A. Mickiewicz``) never ends a sentence. The abbreviation list only
-    decides the remaining case of a capitalised word after the dot.
-    """
-    tail = _RE_DOTTED_TAIL.search(previous)
-    if tail is None:
-        return False
-    first_letter = next((char for char in following if char.isalpha()), "")
-    if first_letter.islower():
-        return True
-    token = tail.group(1)
-    if len(token) == 1 and token.isalpha():
-        return True
-    return token.lower() in _ABBREVIATIONS
 
 
 _SPLITTERS: Final[tuple[Callable[[str], list[str]], ...]] = (
@@ -416,7 +133,7 @@ def _break(text: str, limit: int, level: int = 0) -> list[str]:
     if len(text) <= limit:
         return [text]
     if level == len(_SPLITTERS):
-        return [text[start : start + limit] for start in range(0, len(text), limit)]
+        return hard_split_graphemes(text, limit)
     pieces: list[str] = []
     for part in _SPLITTERS[level](text):
         if len(part) <= limit:

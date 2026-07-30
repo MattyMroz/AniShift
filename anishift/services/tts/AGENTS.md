@@ -41,8 +41,9 @@ narratora ani finalnego sidecara.
 
 - `validation.py` wymaga już oczyszczonego tekstu i świadomie odrzuca składnię
   napisów. Nie „naprawiaj” ASS/SRT wewnątrz TTS.
-- `chunking.py` dzieli wyłącznie według limitów capability silnika; nie zna
-  timingów ani eventów napisów.
+- `chunking.py` dzieli wyłącznie według limitów capability silnika; wspólne
+  granice i grafemy bierze z `anishift/text/`, ale wymowność i backtracking
+  pozostają własnością TTS.
 - Provider zapisuje do prywatnej ścieżki klipu przygotowanej przez TTS. Dopiero
   wspólna warstwa waliduje wynik i commit manifestu.
 - Fingerprint obejmuje profil silnika oraz tekst requestu. Zmiana parametru

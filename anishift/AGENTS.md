@@ -7,6 +7,7 @@ Pakiet aplikacji. Composition root i hierarchia błędów tutaj; reszta w moduł
 - `cli/` — REPL, komendy `/`, panel `/settings`, banner
 - `pipeline/` — orkiestracja ekstrakcji, tłumaczenia, TTS i audio oraz paski postępu
 - `services/` — domeny audio, extraction, llm, subtitles, translation i tts
+- `text/` — bezdomenowe granice Unicode, skróty i segmentacja grafemów
 - `setup/` — pobieranie i instalacja zewnętrznych binarek
 - `platform/` — kod zależny od systemu (binarki, wykrycie OS)
 - `config/` — Settings, preferencje panelu, workspace

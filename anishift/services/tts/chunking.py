@@ -6,36 +6,27 @@ from bisect import bisect_right
 from collections.abc import Iterator
 from typing import Final
 
-import regex
-
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.tts.errors import TtsUnsupportedError
 from anishift.services.tts.validation import is_speech_text
+from anishift.text.boundaries import (
+    CLOSING_MARKS,
+    PHRASE_CUT_CHARS,
+    SENTENCE_ENDINGS,
+    period_ends_sentence,
+)
+from anishift.text.graphemes import split_graphemes
 
 __all__ = ["chunk_speech_text"]
 
-_GRAPHEME_PATTERN: Final[regex.Pattern[str]] = regex.compile(r"\X")
-"""Unicode extended grapheme cluster pattern."""
-
-_SENTENCE_ENDINGS: Final[frozenset[str]] = frozenset(
-    (".", "!", "?", "\u2026", "\u3002", "\uff01", "\uff1f"),
-)
+_SENTENCE_ENDINGS: Final[frozenset[str]] = frozenset(SENTENCE_ENDINGS)
 """Characters preferred as sentence chunk boundaries."""
 
-_PHRASE_ENDINGS: Final[frozenset[str]] = frozenset(
-    (",", ";", ":", "\u2014", "\u2013", "\uff0c", "\uff1b"),
-)
+_PHRASE_ENDINGS: Final[frozenset[str]] = frozenset(PHRASE_CUT_CHARS)
 """Characters preferred as phrase chunk boundaries."""
 
-_CLOSING_PUNCTUATION: Final[frozenset[str]] = frozenset(
-    ('"', "'", "\u201d", "\u2019", "\u00bb", ")", "]", "}"),
-)
+_CLOSING_PUNCTUATION: Final[frozenset[str]] = frozenset(CLOSING_MARKS) | frozenset({'"', "'"})
 """Punctuation retained with a preceding sentence or phrase."""
-
-_COMMON_ABBREVIATIONS: Final[frozenset[str]] = frozenset(
-    {"dr", "itd", "itp", "mgr", "mr", "mrs", "ms", "np", "nr", "prof", "św", "tj", "tzn", "ul"},
-)
-"""Common abbreviations whose full stop does not end a sentence."""
 
 
 def chunk_speech_text(
@@ -54,7 +45,7 @@ def chunk_speech_text(
             _raise_unsupported_limit(text)
         return (text,)
 
-    graphemes: tuple[str, ...] = tuple(_GRAPHEME_PATTERN.findall(text))
+    graphemes: tuple[str, ...] = split_graphemes(text)
     speech_prefix: tuple[int, ...] = _speech_prefix(graphemes)
     character_prefix: tuple[int, ...] = _length_prefix(graphemes, encoded=False)
     byte_prefix: tuple[int, ...] = _length_prefix(graphemes, encoded=True)
@@ -202,13 +193,14 @@ def _is_sentence_ending(graphemes: tuple[str, ...], index: int) -> bool:
     token_start: int = index - 1
     while token_start >= 0 and graphemes[token_start].isalpha():
         token_start -= 1
-    token: str = "".join(graphemes[token_start + 1 : index]).casefold()
-    if token in _COMMON_ABBREVIATIONS:
-        return False
+    token: str = "".join(graphemes[token_start + 1 : index])
     following: str = _next_non_space(graphemes, index + 1)
-    if len(token) == 1 and token.isalpha() and following.isupper():
-        return False
-    return not following.islower()
+    return period_ends_sentence(
+        token,
+        following,
+        previous_character=previous,
+        next_character=immediate_following,
+    )
 
 
 def _next_non_space(graphemes: tuple[str, ...], start: int) -> str:
