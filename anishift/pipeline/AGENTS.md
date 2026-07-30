@@ -44,6 +44,14 @@ izolacja błędów per plik i recovery całego providera.
 - TTS queue jest producer-consumer: ekstrakcja/tłumaczenie może publikować kolejne
   pliki, gdy wcześniejsze są już syntetyzowane. Nie zamieniaj jej na batch
   uruchamiany po zakończeniu całego tłumaczenia. `tts_queue.py`, `runner.py`
+- `ready_first` uruchamia pierwszy gotowy odcinek, a oczekujące szereguje
+  `natsorted`; `strict_natural` czeka na rozstrzygnięcie wcześniejszej pozycji
+  przez `put()` albo `skip()`. Nie usuwaj tych sygnałów z inputów kolejek.
+  `llm_queue.py`, `tts_queue.py`, `runner.py`
+- Wyłączność odcinka obejmuje tylko `TtsService.synthesize()`. Zwolnij focus przed
+  `progress.wait()` i `audio.render()`, aby audio odcinka N mogło nakładać się z
+  TTS odcinka N+1. Nie ustawiaj `max_active_batches=1` ani nie wiąż file-level
+  concurrency z liczbą workerów providera. `tts_runtime.py`
 - Callbacki TTS/audio są nieposiadającymi observerami. Wyjątek UI nie może
   przerwać domeny ani recovery. `tts_runtime.py`, `runner.py`
 - Wyjątki łapane precyzyjnie: `AniShiftError` z rozróżnieniem `CANCELLED` vs reszta, osobno `OSError` → `IO_ERROR`; brak `except Exception`. `runner.py:330-341`
