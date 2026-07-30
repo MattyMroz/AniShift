@@ -38,6 +38,7 @@ from anishift.services.tts.types import (
     SpeechClip,
     SpeechRequest,
     SpeechRequestProgress,
+    SpeechRetryProgress,
     SynthesisRequest,
     SynthesisStatus,
     SynthesizedRequest,
@@ -418,6 +419,7 @@ class TtsService:
                     request,
                     engine,
                     scheduler,
+                    callbacks,
                 )
                 async with state_lock:
                     indexed_executions.append((index, execution))
@@ -455,7 +457,9 @@ class TtsService:
         request: SpeechRequest,
         engine: TtsEngine,
         scheduler: TtsScheduler,
+        callbacks: TtsProgressSink,
     ) -> _RequestExecution:
+        generation: int = self._cancel.generation
         if not is_speech_text(request.text):
             return _skipped_execution(request)
         chunks: tuple[str, ...] = chunk_speech_text(
@@ -489,12 +493,17 @@ class TtsService:
                 repository=repository,
                 engine=engine,
                 scheduler=scheduler,
-            )
+            ),
+            callbacks=callbacks,
+            generation=generation,
         )
 
     async def _synthesize_missing(  # noqa: PLR0915 - explicit artifact lifecycle
         self,
         context: _MissingContext,
+        *,
+        callbacks: TtsProgressSink,
+        generation: int,
     ) -> _RequestExecution:
         batch: SpeechBatch = context.batch
         request: SpeechRequest = context.request
@@ -504,7 +513,6 @@ class TtsService:
         repository: TtsResumeRepository = context.repository
         engine: TtsEngine = context.engine
         scheduler: TtsScheduler = context.scheduler
-        generation: int = self._cancel.generation
         provider_attempts: list[_ProviderAttempt] = []
         indexed_outcomes: list[tuple[int, ScheduledSynthesis]] = []
         next_part: int = 0
@@ -539,6 +547,19 @@ class TtsService:
                     request_rank=request.request_rank,
                     cancel=self._cancel,
                     accept_result=provider_attempt.accept_result,
+                    on_retry=lambda retry_number, max_retries, delay_s, error: _notify_retry(
+                        callbacks,
+                        SpeechRetryProgress(
+                            scope_id=batch.scope_id,
+                            request_id=request.request_id,
+                            retry_number=retry_number,
+                            max_retries=max_retries,
+                            delay_s=delay_s,
+                            error_code=error.context.code.value,
+                        ),
+                        cancel=self._cancel,
+                        generation=generation,
+                    ),
                 )
                 indexed_outcomes.append((part_index, outcome))
 
@@ -759,6 +780,17 @@ async def _notify_batch(
 ) -> None:
     if cancel.can_commit(generation):
         await _safe_callback(callbacks.on_batch_state, progress)
+
+
+async def _notify_retry(
+    callbacks: TtsProgressSink,
+    progress: SpeechRetryProgress,
+    *,
+    cancel: TtsCancellation,
+    generation: int,
+) -> None:
+    if cancel.can_commit(generation):
+        await _safe_callback(callbacks.on_request_retry, progress)
 
 
 async def _safe_callback[T](callback: Callable[[T], None], value: T) -> None:

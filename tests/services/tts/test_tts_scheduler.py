@@ -4,6 +4,7 @@ import asyncio
 import threading
 from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from anishift.services.tts import (
     SynthesisRequest,
     TtsCancellation,
     TtsConfig,
+    TtsError,
     TtsRateLimitError,
     VoiceInfo,
 )
@@ -370,6 +372,62 @@ def test_retry_backoff_releases_slot_and_ready_retry_has_priority(tmp_path: Path
         assert retry_result.attempts == 2
         assert new_result.attempts == 1
         assert engine.calls["retry"] == 2
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
+def test_system_engine_retries_immediately_and_reports_retry(tmp_path: Path) -> None:
+    class _SystemEngine(_Engine):
+        capabilities = replace(
+            _Engine.capabilities,
+            locality=EngineLocality.SYSTEM,
+        )
+
+    async def scenario() -> None:
+        clock = _Clock()
+        engine = _SystemEngine()
+        engine.fail_once.add("retry")
+        retries: list[tuple[int, int, float, str]] = []
+
+        async def on_retry(
+            retry_number: int,
+            max_retries: int,
+            delay_s: float,
+            error: TtsError,
+        ) -> None:
+            retries.append(
+                (
+                    retry_number,
+                    max_retries,
+                    delay_s,
+                    error.context.code.value,
+                ),
+            )
+
+        scheduler = TtsScheduler(
+            engine,
+            config=_config(concurrency=1),
+            clock=clock,
+        )
+        task = asyncio.create_task(
+            scheduler.submit(
+                _factory(tmp_path, "retry"),
+                batch_rank=0,
+                request_rank=0,
+                cancel=TtsCancellation(),
+                accept_result=_accept,
+                on_retry=on_retry,
+            ),
+        )
+
+        assert await engine.started.get() == "retry"
+        assert await asyncio.wait_for(engine.started.get(), timeout=0.1) == "retry"
+        result = await task
+
+        assert result.attempts == 2
+        assert result.error is None
+        assert retries == [(1, 3, 0.0, "TTS_RATE_LIMITED")]
         await scheduler.close()
 
     asyncio.run(scenario())

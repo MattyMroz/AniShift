@@ -868,6 +868,44 @@ def test_controller_cancellation_kills_worker_without_orphan(tmp_path: Path) -> 
     assert factory.processes[0].returncode is not None
 
 
+def test_controller_active_cancellation_kills_worker_immediately(tmp_path: Path) -> None:
+    async def scenario() -> FakeProcessFactory:
+        request_started = asyncio.Event()
+
+        def blocked(payload: dict[str, object]) -> None:
+            del payload
+            request_started.set()
+
+        factory = FakeProcessFactory((blocked,))
+        controller = SapiWorkerController(
+            _controller_config(tmp_path),
+            process_factory=cast("_ProcessFactory", factory),
+        )
+        cancellation = FakeCancellation()
+        synthesis = asyncio.create_task(
+            controller.synthesize(
+                "cancelled-active",
+                "x",
+                tmp_path / "cancelled-active.wav",
+                deadline_s=30.0,
+                cancel=cancellation,
+            ),
+        )
+        await asyncio.wait_for(request_started.wait(), timeout=0.1)
+
+        cancellation.cancel()
+
+        with pytest.raises(TtsCancelledError):
+            await asyncio.wait_for(synthesis, timeout=0.1)
+        await controller.close()
+        return factory
+
+    factory = _run(scenario())
+
+    assert factory.processes[0].killed
+    assert factory.processes[0].returncode is not None
+
+
 def test_worker_command_is_argument_list_with_initialized_voice(tmp_path: Path) -> None:
     async def scenario() -> tuple[str, ...]:
         factory = FakeProcessFactory((_success,))

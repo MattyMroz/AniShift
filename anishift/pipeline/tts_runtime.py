@@ -54,6 +54,7 @@ from anishift.services.tts import (
     SpeechBatchStatus,
     SpeechClip,
     SpeechRequestProgress,
+    SpeechRetryProgress,
     TtsConfig,
     TtsError,
     TtsService,
@@ -74,6 +75,14 @@ _DEFAULT_ENGINE_CONCURRENCY: Final[dict[str, int]] = {
     "sapi": 1,
 }
 """Measured or conservative fallback concurrency by engine."""
+
+_DEFAULT_REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
+"""Fallback request deadline for remote TTS engines."""
+
+_ENGINE_REQUEST_TIMEOUT_SECONDS: Final[dict[str, float]] = {
+    "sapi": 10.0,
+}
+"""Engine-specific request deadlines measured for subtitle-sized inputs."""
 
 _WAIT_POLL_SECONDS: Final[float] = 0.2
 """Focus-gate polling interval for responsive cancellation."""
@@ -160,6 +169,9 @@ class _SilentPipelineProgress:
         del state
 
     def on_request_committed(self, update: SpeechRequestProgress) -> None:
+        del update
+
+    def on_request_retry(self, update: SpeechRetryProgress) -> None:
         del update
 
     def on_audio_phase(self, scope_id: str, phase: str) -> None:
@@ -268,6 +280,9 @@ class _StreamingNormalizationProgress:
                         )
                         self._futures.append(future)
         self._downstream.on_request_committed(update)
+
+    def on_request_retry(self, update: SpeechRetryProgress) -> None:
+        self._downstream.on_request_retry(update)
 
     def wait(self) -> None:
         """Raise the first preparation failure after every TTS callback arrived."""
@@ -486,6 +501,10 @@ class PipelineTtsRuntime:
                 max_concurrency=concurrency,
                 queue_capacity=max(2, 2 * concurrency),
                 max_retries=preferences.tts_max_retries,
+                request_timeout_s=_ENGINE_REQUEST_TIMEOUT_SECONDS.get(
+                    preferences.tts_engine,
+                    _DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                ),
                 native_rate=profile.native_rate,
                 native_volume=profile.native_volume,
                 native_pitch=profile.native_pitch,

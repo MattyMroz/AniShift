@@ -24,7 +24,11 @@ from anishift.services.extraction.types import MediaInfo, TrackInfo, TrackSelect
 from anishift.services.subtitles.classifier import StyleVerdict
 from anishift.services.tts.engines.edge.constants import MAREK_VOICE_ID, ZOFIA_VOICE_ID
 from anishift.services.tts.engines.elevenbytes.constants import DALLIN_ALIAS
-from anishift.services.tts.types import SpeechBatchProgress, SpeechRequestProgress
+from anishift.services.tts.types import (
+    SpeechBatchProgress,
+    SpeechRequestProgress,
+    SpeechRetryProgress,
+)
 from anishift.setup.installer import InstallerError, ensure_binary
 from anishift.utils.rich_console import MultiProgressManager, StatusType, console, get_status_icon
 from anishift.utils.timer import Timer, format_duration
@@ -190,6 +194,19 @@ class _PipelineProgressRows:
     def on_request_committed(self, update: SpeechRequestProgress) -> None:
         """Accept request-level callbacks while aggregate state owns the row."""
         del update
+
+    def on_request_retry(self, update: SpeechRetryProgress) -> None:
+        """Show retry state without replacing the file's aggregate percentage."""
+        with self._lock:
+            path = self._active_path(update.scope_id)
+            if path is None or path in self._terminal_paths:
+                return
+            task_id = self._task_ids[path]
+            detail: str = f"{self._tts_label} · {update.retry_number}/{update.max_retries}"
+            self._progress.update_description(
+                task_id,
+                self._description(path, "Retrying", detail),
+            )
 
     def on_audio_phase(self, scope_id: str, phase: str) -> None:
         """Switch the same row to a spinner for coarse audio phases."""

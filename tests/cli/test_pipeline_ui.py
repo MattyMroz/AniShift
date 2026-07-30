@@ -19,6 +19,7 @@ from anishift.services.tts.types import (
     SpeechBatchProgress,
     SpeechBatchStats,
     SpeechBatchStatus,
+    SpeechRetryProgress,
 )
 from anishift.utils.rich_console import MultiProgressManager, console
 
@@ -170,6 +171,43 @@ def test_pipeline_progress_reuses_row_for_tts_audio_and_terminal_state(tmp_path:
             "show_spinner": True,
         }
         for item in progress.set_task_presentation.call_args_list
+    )
+
+
+def test_pipeline_progress_shows_retry_on_the_existing_tts_row(tmp_path: Path) -> None:
+    progress = MagicMock(spec=MultiProgressManager)
+    progress.add_task.return_value = 7
+    path = tmp_path / "episode 3.mkv"
+    rows = pipeline_ui._PipelineProgressRows(progress, (path,), _context(tmp_path))
+    scope_id = scope_id_for_source(path, workspace_root=tmp_path)
+    rows.on_batch_state(
+        SpeechBatchProgress(
+            scope_id=scope_id,
+            completed_requests=2,
+            total_requests=5,
+            committed_required_requests=2,
+            total_required_requests=5,
+            status=SpeechBatchStatus.PARTIAL,
+        ),
+    )
+    progress.reset_mock()
+
+    rows.on_request_retry(
+        SpeechRetryProgress(
+            scope_id=scope_id,
+            request_id="request-3",
+            retry_number=1,
+            max_retries=3,
+            delay_s=0.0,
+            error_code="TTS_TIMEOUT",
+        ),
+    )
+
+    progress.update.assert_not_called()
+    progress.reset_task.assert_not_called()
+    progress.update_description.assert_called_once_with(
+        7,
+        f"{'Retrying':<14} elevenbytes/run6 · Dallin · 1/3 · {path.name}",
     )
 
 

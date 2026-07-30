@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         EngineClipResult,
         SpeechBatchProgress,
         SpeechRequestProgress,
+        SpeechRetryProgress,
         SynthesisRequest,
         VoiceInfo,
     )
@@ -132,4 +133,8 @@ class TtsProgressSink(Protocol):
 
     def on_request_committed(self, update: SpeechRequestProgress) -> None:
         """Observe one terminal request transition."""
+        ...
+
+    def on_request_retry(self, update: SpeechRetryProgress) -> None:
+        """Observe one retry before its delay begins."""
         ...

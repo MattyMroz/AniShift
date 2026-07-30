@@ -33,6 +33,7 @@ __all__ = [
     "SpeechPreparationStatus",
     "SpeechRequest",
     "SpeechRequestProgress",
+    "SpeechRetryProgress",
     "SynthesisRequest",
     "SynthesisStatus",
     "SynthesizedRequest",
@@ -149,6 +150,18 @@ class SpeechRequestProgress:
     status: SynthesisStatus
     attempts: int
     clip: SpeechClip | None
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechRetryProgress:
+    """Observable retry scheduled for one request."""
+
+    scope_id: str
+    request_id: str
+    retry_number: int
+    max_retries: int
+    delay_s: float
+    error_code: str
 
 
 @dataclass(frozen=True, slots=True)

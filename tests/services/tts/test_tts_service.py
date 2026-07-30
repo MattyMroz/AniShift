@@ -24,11 +24,14 @@ from anishift.services.tts import (
     SpeechBatchStatus,
     SpeechRequest,
     SpeechRequestProgress,
+    SpeechRetryProgress,
     SynthesisProfile,
     SynthesisRequest,
     SynthesisStatus,
+    TtsCancelledError,
     TtsConfig,
     TtsConfigError,
+    TtsRateLimitError,
     TtsService,
     VoiceInfo,
 )
@@ -58,12 +61,16 @@ class _Progress:
     def __init__(self) -> None:
         self.batches: list[SpeechBatchProgress] = []
         self.requests: list[SpeechRequestProgress] = []
+        self.retries: list[SpeechRetryProgress] = []
 
     def on_batch_state(self, state: SpeechBatchProgress) -> None:
         self.batches.append(state)
 
     def on_request_committed(self, update: SpeechRequestProgress) -> None:
         self.requests.append(update)
+
+    def on_request_retry(self, update: SpeechRetryProgress) -> None:
+        self.retries.append(update)
 
 
 class _Engine:
@@ -229,6 +236,99 @@ def test_service_close_is_idempotent_and_rejects_new_calls(tmp_path: Path) -> No
     assert engine.closed == 1
     with pytest.raises(TtsConfigError):
         service.synthesize(_batch(), callbacks=_Progress())
+
+
+def test_service_cancel_wakes_active_provider_request(tmp_path: Path) -> None:
+    class _BlockingEngine(_Engine):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = threading.Event()
+
+        async def synthesize(
+            self,
+            request: SynthesisRequest,
+            *,
+            cancel: CancellationToken,
+        ) -> EngineClipResult:
+            del request
+            self.started.set()
+            await cancel.wait()
+            raise TtsCancelledError("cancelled")
+
+    engine = _BlockingEngine()
+    service = TtsService(
+        _config(),
+        resume_root=tmp_path,
+        validator=_Validator(),
+        engine_factory=lambda config: engine,
+    )
+    batch = SpeechBatch(
+        scope_id="cancel-active",
+        batch_rank=0,
+        requests=(SpeechRequest(request_id="line-1", text="Tekst", request_rank=0),),
+    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        synthesis = pool.submit(service.synthesize, batch, callbacks=_Progress())
+        assert engine.started.wait(timeout=1.0)
+
+        service.cancel()
+        result = synthesis.result(timeout=1.0)
+
+    service.close()
+    assert result.status is SpeechBatchStatus.CANCELLED
+    assert engine.closed == 1
+
+
+def test_service_reports_immediate_system_engine_retry(tmp_path: Path) -> None:
+    class _RetryEngine(_Engine):
+        capabilities = EngineCapabilities(
+            locality=EngineLocality.SYSTEM,
+            native_output_formats=(AudioFormat.MP3,),
+            supports_concurrency=False,
+            supports_native_rate=False,
+            supports_native_volume=False,
+            supports_pitch=False,
+            supports_voice_settings=False,
+            requires_api_key=False,
+            min_text_chars=1,
+            max_text_chars=100,
+            max_text_bytes=400,
+            availability_probe=AvailabilityProbeKind.LOCAL,
+        )
+
+        async def synthesize(
+            self,
+            request: SynthesisRequest,
+            *,
+            cancel: CancellationToken,
+        ) -> EngineClipResult:
+            if self.calls == 0:
+                self.calls += 1
+                raise TtsRateLimitError("retry")
+            return await super().synthesize(request, cancel=cancel)
+
+    engine = _RetryEngine()
+    progress = _Progress()
+    with TtsService(
+        _config(),
+        resume_root=tmp_path,
+        validator=_Validator(),
+        engine_factory=lambda config: engine,
+    ) as service:
+        result = service.synthesize(
+            SpeechBatch(
+                scope_id="retry-system",
+                batch_rank=0,
+                requests=(SpeechRequest(request_id="line-1", text="Tekst", request_rank=0),),
+            ),
+            callbacks=progress,
+        )
+
+    assert result.status is SpeechBatchStatus.COMPLETED
+    assert result.stats.retries == 1
+    assert len(progress.retries) == 1
+    assert progress.retries[0].retry_number == 1
+    assert progress.retries[0].delay_s == 0.0
 
 
 def test_service_accepts_engine_resolved_voice_identity(tmp_path: Path) -> None:

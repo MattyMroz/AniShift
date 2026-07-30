@@ -20,6 +20,7 @@ from anishift.services.tts.errors import (
     TtsTimeoutError,
     TtsVoiceError,
 )
+from anishift.services.tts.types import EngineLocality
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -63,6 +64,7 @@ class _WorkItem:
     batch_rank: int
     request_rank: int
     cancel: CancellationToken
+    on_retry: Callable[[int, int, float, TtsError], Awaitable[None]] | None
     generation: int
     future: asyncio.Future[ScheduledSynthesis]
     attempts: int = 0
@@ -111,7 +113,7 @@ class TtsScheduler:
             asyncio.create_task(self._worker(), name=f"tts-provider-{index}") for index in range(config.max_concurrency)
         )
 
-    async def submit(
+    async def submit(  # noqa: PLR0913 - admission requires explicit ownership callbacks
         self,
         request_factory: Callable[[int], SynthesisRequest],
         *,
@@ -119,6 +121,7 @@ class TtsScheduler:
         request_rank: int,
         cancel: CancellationToken,
         accept_result: Callable[[EngineClipResult], Awaitable[EngineClipResult]],
+        on_retry: Callable[[int, int, float, TtsError], Awaitable[None]] | None = None,
     ) -> ScheduledSynthesis:
         """Admit one request and await its terminal provider outcome."""
         await self._admission.acquire()
@@ -130,6 +133,7 @@ class TtsScheduler:
             batch_rank=batch_rank,
             request_rank=request_rank,
             cancel=cancel,
+            on_retry=on_retry,
             generation=cancel.generation,
             future=future,
         )
@@ -274,6 +278,13 @@ class TtsScheduler:
     async def _handle_error(self, work: _WorkItem, error: TtsError) -> None:
         if isinstance(error, TransientError) and work.attempts <= self._max_retries:
             delay: float = self._retry_delay(work.attempts, error)
+            if work.on_retry is not None:
+                await work.on_retry(
+                    work.attempts,
+                    self._max_retries,
+                    delay,
+                    error,
+                )
             async with self._condition:
                 sequence: int = next(self._sequence)
                 heapq.heappush(
@@ -329,6 +340,8 @@ class TtsScheduler:
         return max(0.0, self._delayed[0].ready_at - self._clock())
 
     def _retry_delay(self, attempts: int, error: TtsError) -> float:
+        if self._engine.capabilities.locality is EngineLocality.SYSTEM:
+            return 0.0
         index: int = min(attempts - 1, len(_BACKOFF_SECONDS) - 1)
         local_delay: float = _BACKOFF_SECONDS[index]
         retry_after: float | None = None

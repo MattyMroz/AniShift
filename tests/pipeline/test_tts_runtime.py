@@ -41,6 +41,7 @@ from anishift.services.tts import (
     SpeechClip,
     SpeechRequest,
     SpeechRequestProgress,
+    SpeechRetryProgress,
     SynthesisStatus,
     SynthesizedRequest,
     TtsConfig,
@@ -198,6 +199,7 @@ def test_runtime_from_context_maps_voice_and_audio_profiles(
     assert tts_config.engine_id == "elevenbytes"
     assert tts_config.voice_id == context.user_settings.resolved_tts_voice_id
     assert tts_config.max_concurrency == 85
+    assert tts_config.request_timeout_s == 30.0
     assert tts_config.metadata_cache_root is not None
     assert tts_config.metadata_cache_root.name == "config"
     assert audio_config.codec_profile is AudioCodecProfile.EAC3
@@ -206,6 +208,34 @@ def test_runtime_from_context_maps_voice_and_audio_profiles(
     assert captured["post_process_tempo"] == 1.25
     assert captured["max_active_batches"] == 4
     assert captured["processing_order_policy"] == "ready_first"
+
+
+def test_runtime_from_context_uses_short_sapi_request_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_init(self: PipelineTtsRuntime, **kwargs: object) -> None:
+        del self
+        captured.update(kwargs)
+
+    monkeypatch.setattr(PipelineTtsRuntime, "__init__", fake_init)
+    preferences = UserSettings(
+        tts_engine="sapi",
+        tts_provider_model_id="sapi5",
+        tts_voice_id="agnieszka",
+    )
+    context = AppContext(Settings(), preferences, tmp_path)
+
+    PipelineTtsRuntime.from_context(
+        context,
+        discovery_order=(tmp_path / "Episode.mkv",),
+        cancel=threading.Event(),
+    )
+
+    tts_config = cast("TtsConfig", captured["tts_config"])
+    assert tts_config.request_timeout_s == 10.0
 
 
 class _Progress:
@@ -217,6 +247,9 @@ class _Progress:
         del state
 
     def on_request_committed(self, update: SpeechRequestProgress) -> None:
+        del update
+
+    def on_request_retry(self, update: SpeechRetryProgress) -> None:
         del update
 
     def on_audio_phase(self, scope_id: str, phase: str) -> None:
