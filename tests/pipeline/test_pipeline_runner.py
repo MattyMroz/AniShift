@@ -14,12 +14,15 @@ from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline import discover_inputs, run_pipeline, runner
 from anishift.pipeline.llm_queue import LlmProgressState
+from anishift.pipeline.narration import NarrationBatch
 from anishift.pipeline.runner import _LlmProgressGate, _worker_count
+from anishift.pipeline.tts_queue import TtsQueueOutcome
 from anishift.pipeline.types import FileOutcome, TranslationSettings
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.types import SubtitleSplit
+from anishift.services.tts import SpeechBatch
 
 
 class _NullPhase:
@@ -33,6 +36,26 @@ class _NullPhase:
         return 0
 
     def update(self, task_id: int, completed: int) -> None:
+        return None
+
+
+class _NullTtsRuntime:
+    def put(self, *_: object, **__: object) -> None:
+        return None
+
+    def close_input(self) -> None:
+        return None
+
+    def skip(self, source: Path) -> None:
+        del source
+
+    def wait(self) -> dict[Path, TtsQueueOutcome]:
+        return {}
+
+    def cancel(self) -> None:
+        return None
+
+    def close(self) -> None:
         return None
 
 
@@ -86,8 +109,11 @@ def test_run_pipeline_isolates_identify_failure(monkeypatch: pytest.MonkeyPatch,
             raise ExtractionError(context=context)
         return MediaInfo(path, ())
 
+    def runtime_factory(*_: object) -> _NullTtsRuntime:
+        return _NullTtsRuntime()
+
     monkeypatch.setattr("anishift.pipeline.runner.identify", fake_identify)
-    report = run_pipeline(_context(tmp_path))
+    report = run_pipeline(_context(tmp_path), tts_runtime_factory=runtime_factory)
 
     assert [outcome.source for outcome in report.outcomes] == [bad, good]
     assert report.outcomes[0].status == "failed"
@@ -185,6 +211,7 @@ def test_llm_queue_isolates_mkv_write_failure(
         UserSettings(translation_engine="llm"),
         tmp_path,
     )
+    published: list[Path] = []
 
     class _FakeRuntime:
         def __init__(self, *_: object, **__: object) -> None:
@@ -199,7 +226,13 @@ def test_llm_queue_isolates_mkv_write_failure(
         def engine_factory(self) -> None:
             return None
 
-    def fake_translate(path: Path, state: runner._MkvState, *_: object, **__: object) -> None:
+    def fake_translate(
+        path: Path,
+        state: runner._MkvState,
+        *_: object,
+        on_spoken_ready: runner.SpokenReadyHandler | None,
+        **__: object,
+    ) -> None:
         if path == bad:
             error_context = ErrorContext(
                 code=ErrorCode.IO_ERROR,
@@ -207,6 +240,12 @@ def test_llm_queue_isolates_mkv_write_failure(
             )
             raise SubtitleError(context=error_context)
         state.outcome.translated_path = path.with_suffix(".pl.ass")
+        narration = NarrationBatch(
+            speech=SpeechBatch(scope_id="scope-good", batch_rank=1, requests=()),
+            items=(),
+        )
+        state.narration = narration
+        runner._notify_spoken_ready(path, state, on_spoken_ready)
 
     monkeypatch.setattr("anishift.pipeline.llm_runtime.PipelineLlmRuntime", _FakeRuntime)
     monkeypatch.setattr(runner, "_translate_one", fake_translate)
@@ -217,11 +256,13 @@ def test_llm_queue_isolates_mkv_write_failure(
         context,
         threading.Event(),
         on_provider_failure=None,
+        on_spoken_ready=lambda path, _batch: published.append(path),
     )
 
     assert states[bad].outcome.status == "failed"
     assert states[bad].outcome.failure is not None
     assert states[good].outcome.status == "done"
+    assert published == [good]
 
 
 def test_llm_pipeline_sets_cancel_before_executor_wait_on_interrupt(
@@ -258,6 +299,40 @@ def test_llm_pipeline_sets_cancel_before_executor_wait_on_interrupt(
         run_pipeline(context)
 
     assert worker_observed_cancel.wait(timeout=1)
+
+
+def test_non_llm_text_input_reports_translation_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "episode.txt"
+    source.write_text("Source", encoding="utf-8")
+    transitions: list[tuple[Path, LlmProgressState]] = []
+    context = AppContext(
+        Settings(),
+        UserSettings(translation_engine="google"),
+        tmp_path,
+    )
+
+    def fake_process_txt(
+        path: Path,
+        _settings: object,
+        *,
+        cancel: threading.Event,
+    ) -> FileOutcome:
+        del cancel
+        return FileOutcome(path, "done")
+
+    monkeypatch.setattr(runner, "_process_txt", fake_process_txt)
+
+    report = run_pipeline(
+        context,
+        input_paths=(source,),
+        llm_progress_handler=lambda path, state: transitions.append((path, state)),
+    )
+
+    assert report.outcomes[0].status == "done"
+    assert transitions == [(source, "translating"), (source, "done")]
 
 
 def test_llm_pipeline_interrupt_does_not_wait_for_blocked_request(

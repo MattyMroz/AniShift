@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 from natsort import os_sorted
 
@@ -16,6 +16,7 @@ from anishift.bootstrap import AppContext
 from anishift.config.user_settings import config_path
 from anishift.config.workspace import ensure_workspace_dir
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext
+from anishift.services.audio.types import AudioRenderStatus
 from anishift.services.extraction import extract_tracks, identify
 from anishift.services.extraction.tracks import select_tracks
 from anishift.services.extraction.types import MediaInfo, TrackSelection
@@ -41,6 +42,21 @@ from anishift.services.subtitles import (
 from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
 from anishift.utils.safe_fs import safe_rmtree
 
+from .narration import (
+    NarrationBatch,
+    build_polish_narration,
+    build_translated_narration,
+    scope_id_for_source,
+)
+from .recovery import (
+    RecoveryAction,
+    RecoveryContext,
+    RecoveryDomain,
+    RecoveryHandler,
+    rebuild_error_context,
+)
+from .tts_queue import TtsQueueOutcome
+from .tts_runtime import PipelineTtsProgressSink, PipelineTtsRuntime
 from .types import (
     FileFailure,
     FileOutcome,
@@ -61,13 +77,62 @@ if TYPE_CHECKING:
         LlmQueueInput,
         SharedProviderState,
     )
+    from anishift.services.audio.types import AudioRenderResult
     from anishift.services.subtitles.types import SubtitleSplit
     from anishift.services.translation import TranslationConfig
     from anishift.services.translation.protocols import TranslationEngineFactory
     from anishift.services.translation.types import FileTranslation
+    from anishift.services.tts.types import SpeechBatchResult
 
 ProgressPhaseFactory = Callable[[], ProgressPhase]
 """Build one transient progress display for a single pipeline phase."""
+
+SpokenReadyHandler = Callable[[Path, NarrationBatch], None]
+"""Publish one pipeline-owned narration batch exactly when it becomes ready."""
+
+
+class _PipelineTtsRuntime(Protocol):
+    def put(
+        self,
+        source: Path,
+        narration: NarrationBatch,
+        *,
+        source_audio_path: Path | None,
+    ) -> None:
+        """Publish one ready MKV."""
+        ...
+
+    def close_input(self) -> None:
+        """Close admission after the last spoken-ready callback."""
+        ...
+
+    def skip(self, source: Path) -> None:
+        """Resolve a strict-order source that requires no narration."""
+        ...
+
+    def wait(self) -> dict[Path, TtsQueueOutcome]:
+        """Wait for terminal TTS and audio outcomes."""
+        ...
+
+    def cancel(self) -> None:
+        """Cancel active and pending provider work."""
+        ...
+
+    def close(self) -> None:
+        """Release runtime resources."""
+        ...
+
+
+type TtsRuntimeFactory = Callable[
+    [
+        AppContext,
+        tuple[Path, ...],
+        threading.Event,
+        PipelineTtsProgressSink | None,
+    ],
+    _PipelineTtsRuntime,
+]
+"""Build one run-scoped streamed TTS runtime."""
 
 __all__ = ["discover_inputs", "run_pipeline"]
 
@@ -115,6 +180,12 @@ class _MkvState:
     outcome: FileOutcome
     split: SubtitleSplit | None
     kind: str = "srt"
+    source_rank: int = 0
+    scope_id: str = ""
+    narration: NarrationBatch | None = None
+    enqueue_generation: int = 0
+    tts_result: SpeechBatchResult | None = None
+    audio_result: AudioRenderResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +224,7 @@ class _LlmProgressGate:
             self._enabled = False
 
 
-def run_pipeline(  # noqa: PLR0913 - callers may supply one stable input snapshot
+def run_pipeline(  # noqa: C901,PLR0912,PLR0913,PLR0915 - explicit composition and lifecycle wiring
     context: AppContext,
     *,
     input_paths: Sequence[Path] | None = None,
@@ -161,6 +232,9 @@ def run_pipeline(  # noqa: PLR0913 - callers may supply one stable input snapsho
     progress_factory: ProgressPhaseFactory | None = None,
     llm_failure_handler: LlmFailureHandler | None = None,
     llm_progress_handler: LlmProgressHandler | None = None,
+    tts_failure_handler: RecoveryHandler | None = None,
+    tts_progress_callbacks: PipelineTtsProgressSink | None = None,
+    tts_runtime_factory: TtsRuntimeFactory | None = None,
 ) -> PipelineReport:
     """Process every discovered input in two phases, isolating failures per file.
 
@@ -175,63 +249,368 @@ def run_pipeline(  # noqa: PLR0913 - callers may supply one stable input snapsho
     mkvs = [path for path in files if path.suffix.lower() == _MKV_SUFFIX]
     txts = [path for path in files if path.suffix.lower() == _TXT_SUFFIX]
     translation = _translation_settings(context)
+    strict_order: bool = context.user_settings.processing_order_policy == "strict_natural"
     cancel = threading.Event()
     llm_progress = _LlmProgressGate(cancel, llm_progress_handler)
+    runtime_factory: TtsRuntimeFactory = tts_runtime_factory or _default_tts_runtime_factory
+    tts_runtime: _PipelineTtsRuntime | None = (
+        runtime_factory(
+            context,
+            tuple(mkvs),
+            cancel,
+            tts_progress_callbacks,
+        )
+        if mkvs
+        else None
+    )
+    states: dict[Path, _MkvState] = {}
     txt_outcomes: dict[Path, FileOutcome]
-    if translation.engine == "llm":
-        from anishift.pipeline.llm_queue import LlmQueueInput  # noqa: PLC0415 - LLM-only path
 
-        queue_input = LlmQueueInput(files)
-        states: dict[Path, _MkvState] = {}
+    def publish_narration(path: Path, narration: NarrationBatch) -> None:
+        if tts_runtime is None:
+            return
+        state: _MkvState = states[path]
+        tts_runtime.put(
+            path,
+            narration,
+            source_audio_path=state.outcome.source_audio_path,
+        )
 
-        def enqueue_extracted(path: Path, state: _MkvState) -> None:
-            states[path] = state
-            if state.split is not None:
-                queue_input.put(path)
+    def resolve_without_narration(path: Path, state: _MkvState) -> None:
+        if tts_runtime is not None and state.narration is None and state.outcome.failure is None:
+            tts_runtime.skip(path)
 
-        queue_executor = ThreadPoolExecutor(max_workers=1)
-        wait_for_queue = True
-        try:
-            queued = queue_executor.submit(
-                _translate_llm_inputs,
-                queue_input,
-                states,
-                context,
-                cancel,
-                on_provider_failure=llm_failure_handler,
-                on_progress=llm_progress.notify,
+    try:
+        if translation.engine == "llm":
+            from anishift.pipeline.llm_queue import LlmQueueInput  # noqa: PLC0415 - LLM-only path
+
+            queue_input = LlmQueueInput(
+                files,
+                policy=context.user_settings.processing_order_policy,
             )
+
+            def enqueue_extracted(path: Path, state: _MkvState) -> None:
+                states[path] = state
+                _notify_spoken_ready(path, state, publish_narration)
+                if state.split is not None:
+                    queue_input.put(path)
+                elif state.outcome.failure is None:
+                    queue_input.skip(path)
+                    resolve_without_narration(path, state)
+
+            queue_executor = ThreadPoolExecutor(max_workers=1)
+            wait_for_queue = True
             try:
+                queued = queue_executor.submit(
+                    _translate_llm_inputs,
+                    queue_input,
+                    states,
+                    context,
+                    cancel,
+                    on_provider_failure=llm_failure_handler,
+                    on_progress=llm_progress.notify,
+                    on_spoken_ready=publish_narration,
+                    on_without_spoken=lambda path: resolve_without_narration(path, states[path]),
+                )
                 try:
-                    for path in txts:
-                        queue_input.put(path)
-                    extracted = _extract_phase(
-                        mkvs,
-                        context.workspace_root,
-                        interaction,
-                        progress_factory,
-                        cancel,
-                        on_complete=enqueue_extracted,
-                    )
-                    states.update(extracted)
-                finally:
+                    try:
+                        for path in txts:
+                            queue_input.put(path)
+                        extracted = _extract_phase(
+                            mkvs,
+                            context.workspace_root,
+                            interaction,
+                            progress_factory,
+                            cancel,
+                            on_complete=enqueue_extracted,
+                        )
+                        states.update(extracted)
+                    finally:
+                        queue_input.close()
+                    txt_outcomes = queued.result()
+                except KeyboardInterrupt:
+                    llm_progress.close()
+                    cancel.set()
                     queue_input.close()
-                txt_outcomes = queued.result()
-            except KeyboardInterrupt:
-                llm_progress.close()
-                cancel.set()
-                queue_input.close()
-                wait_for_queue = False
-                raise
-        finally:
-            queue_executor.shutdown(wait=wait_for_queue, cancel_futures=not wait_for_queue)
-    else:
-        states = _extract_phase(mkvs, context.workspace_root, interaction, progress_factory, cancel)
-        _translate_phase(states, context.workspace_root, translation, progress_factory, cancel)
-        txt_outcomes = {path: _process_txt(path, translation, cancel=cancel) for path in txts}
+                    wait_for_queue = False
+                    raise
+            finally:
+                queue_executor.shutdown(
+                    wait=wait_for_queue,
+                    cancel_futures=not wait_for_queue,
+                )
+        else:
+
+            def collect_extracted(path: Path, state: _MkvState) -> None:
+                states[path] = state
+                _notify_spoken_ready(path, state, publish_narration)
+                if state.split is None:
+                    resolve_without_narration(path, state)
+
+            extracted = _extract_phase(
+                mkvs,
+                context.workspace_root,
+                interaction,
+                progress_factory,
+                cancel,
+                on_complete=collect_extracted,
+            )
+            states.update(extracted)
+            _translate_phase(
+                states,
+                context.workspace_root,
+                translation,
+                progress_factory,
+                cancel,
+                on_spoken_ready=publish_narration,
+                on_without_spoken=lambda path: resolve_without_narration(path, states[path]),
+                strict_order=strict_order,
+            )
+            txt_outcomes = {}
+            for path in txts:
+                llm_progress.notify(path, "translating")
+                outcome: FileOutcome = _process_txt(path, translation, cancel=cancel)
+                txt_outcomes[path] = outcome
+                llm_progress.notify(path, outcome.status)
+        if tts_runtime is not None:
+            tts_runtime.close_input()
+            tts_outcomes: dict[Path, TtsQueueOutcome] = tts_runtime.wait()
+            tts_runtime, tts_outcomes = _recover_tts_outcomes(
+                context,
+                states,
+                tts_runtime,
+                tts_outcomes,
+                runtime_factory=runtime_factory,
+                failure_handler=tts_failure_handler,
+                progress_callbacks=tts_progress_callbacks,
+                cancel=cancel,
+            )
+            _apply_tts_outcomes(states, tts_outcomes)
+    except KeyboardInterrupt:
+        llm_progress.close()
+        cancel.set()
+        if tts_runtime is not None:
+            tts_runtime.cancel()
+        raise
+    finally:
+        if tts_runtime is not None:
+            tts_runtime.close_input()
+            tts_runtime.close()
     outcomes = {path: state.outcome for path, state in states.items()}
     outcomes.update(txt_outcomes)
     return PipelineReport(tuple(outcomes[path] for path in files))
+
+
+def _default_tts_runtime_factory(
+    context: AppContext,
+    discovery_order: tuple[Path, ...],
+    cancel: threading.Event,
+    callbacks: PipelineTtsProgressSink | None,
+) -> _PipelineTtsRuntime:
+    return PipelineTtsRuntime.from_context(
+        context,
+        discovery_order=discovery_order,
+        cancel=cancel,
+        callbacks=callbacks,
+    )
+
+
+def _notify_spoken_ready(
+    path: Path,
+    state: _MkvState,
+    handler: SpokenReadyHandler | None,
+) -> None:
+    narration: NarrationBatch | None = state.narration
+    if narration is None or handler is None:
+        return
+    if state.enqueue_generation != 0:
+        message: str = f"Narration was already queued for {path.name}"
+        raise RuntimeError(message)
+    handler(path, narration)
+    state.enqueue_generation = 1
+
+
+def _recover_tts_outcomes(  # noqa: PLR0913 - explicit recovery dependencies
+    context: AppContext,
+    states: dict[Path, _MkvState],
+    runtime: _PipelineTtsRuntime,
+    outcomes: dict[Path, TtsQueueOutcome],
+    *,
+    runtime_factory: TtsRuntimeFactory,
+    failure_handler: RecoveryHandler | None,
+    progress_callbacks: PipelineTtsProgressSink | None,
+    cancel: threading.Event,
+) -> tuple[_PipelineTtsRuntime, dict[Path, TtsQueueOutcome]]:
+    """Rebuild TTS runtime after explicit retry/settings decisions."""
+    recovery_error: ErrorContext | None = None
+    while True:
+        recovery = _tts_recovery_context(outcomes)
+        if recovery is None or failure_handler is None:
+            return runtime, outcomes
+        if recovery_error is not None:
+            recovery = RecoveryContext(
+                domain=recovery.domain,
+                error=recovery_error,
+                completed_files=recovery.completed_files,
+                failed_files=recovery.failed_files,
+                pending_files=recovery.pending_files,
+            )
+        action: RecoveryAction = failure_handler(recovery)
+        if action is RecoveryAction.FINISH:
+            return runtime, outcomes
+        retry_paths: tuple[Path, ...] = (
+            *os_sorted(recovery.failed_files),
+            *os_sorted(recovery.pending_files),
+        )
+        runtime.close()
+        try:
+            candidate_runtime = runtime_factory(
+                context,
+                retry_paths,
+                cancel,
+                progress_callbacks,
+            )
+        except (AniShiftError, OSError, RuntimeError, ValueError) as exc:
+            recovery_error = rebuild_error_context(exc, RecoveryDomain.TTS)
+            continue
+        runtime = candidate_runtime
+        recovery_error = None
+        for path in retry_paths:
+            state: _MkvState = states[path]
+            narration = state.narration
+            if narration is None:
+                continue
+            if progress_callbacks is not None:
+                _notify_tts_retry(
+                    progress_callbacks,
+                    narration.speech.scope_id,
+                )
+            runtime.put(
+                path,
+                narration,
+                source_audio_path=state.outcome.source_audio_path,
+            )
+        runtime.close_input()
+        outcomes.update(runtime.wait())
+
+
+def _notify_tts_retry(
+    callbacks: PipelineTtsProgressSink,
+    scope_id: str,
+) -> None:
+    """Keep a retry observer outside recovery ownership."""
+    try:
+        callbacks.on_pipeline_retry(scope_id)
+    except Exception:  # noqa: BLE001 - observers cannot own recovery
+        return
+
+
+def _tts_recovery_context(
+    outcomes: dict[Path, TtsQueueOutcome],
+) -> RecoveryContext | None:
+    """Build one provider recovery snapshot from ordered queue outcomes."""
+    failed: list[Path] = []
+    pending: list[Path] = []
+    completed: list[Path] = []
+    trigger: ErrorContext | None = None
+    for path, outcome in outcomes.items():
+        failure = outcome.failure
+        if failure is None:
+            completed.append(path)
+            continue
+        if failure.disposition == "not_processed":
+            pending.append(path)
+            continue
+        failed.append(path)
+        if trigger is None:
+            trigger = failure.context
+    if not failed or trigger is None:
+        return None
+    return RecoveryContext(
+        domain=RecoveryDomain.TTS,
+        error=trigger,
+        completed_files=tuple(os_sorted(completed)),
+        failed_files=tuple(os_sorted(failed)),
+        pending_files=tuple(os_sorted(pending)),
+    )
+
+
+def _apply_tts_outcomes(
+    states: dict[Path, _MkvState],
+    outcomes: dict[Path, TtsQueueOutcome],
+) -> None:
+    for path, state in states.items():
+        if state.narration is None:
+            continue
+        queued: TtsQueueOutcome | None = outcomes.get(path)
+        if queued is None:
+            context = ErrorContext(
+                code=ErrorCode.PIPELINE_STEP_FAILED,
+                message="TTS queue returned no terminal result",
+                suggestion="Retry the file; validated subtitle outputs were preserved.",
+            )
+            _mark_tts_failure(state.outcome, "tts", context)
+            continue
+        state.tts_result = queued.speech
+        state.audio_result = queued.audio
+        if queued.speech is not None:
+            state.outcome.tts_stats = queued.speech.stats
+        if queued.audio is not None:
+            state.outcome.audio_placements = queued.audio.placements
+            state.outcome.audio_time_ms = queued.audio_time_ms
+        if queued.failure is not None:
+            _mark_tts_failure(
+                state.outcome,
+                queued.failure.step,
+                queued.failure.context,
+                not_processed=queued.failure.disposition == "not_processed",
+            )
+            continue
+        if queued.speech is None:
+            context = ErrorContext(
+                code=ErrorCode.PIPELINE_STEP_FAILED,
+                message="TTS queue returned success without a speech result",
+                suggestion="Retry this file; validated subtitle outputs were preserved.",
+            )
+            _mark_tts_failure(state.outcome, "tts", context)
+            continue
+        audio = queued.audio
+        if audio is not None and audio.status is AudioRenderStatus.SKIPPED_NO_SPOKEN:
+            state.outcome.warnings = (
+                *state.outcome.warnings,
+                "TTS skipped non-speech events; no audio created",
+            )
+            continue
+        if audio is None or audio.output_path is None:
+            context = ErrorContext(
+                code=ErrorCode.AUDIO_FAILED,
+                message="Audio renderer returned no final sidecar",
+                suggestion="Retry audio rendering; TTS resume clips were preserved.",
+            )
+            _mark_tts_failure(state.outcome, "audio", context)
+            continue
+        state.outcome.narrator_path = audio.narrator_path
+        state.outcome.mixed_audio_path = audio.output_path
+        state.outcome.warnings = (*state.outcome.warnings, *audio.warnings)
+
+
+def _mark_tts_failure(
+    outcome: FileOutcome,
+    step: Literal["tts", "audio"],
+    context: ErrorContext,
+    *,
+    not_processed: bool = False,
+) -> None:
+    if not_processed:
+        outcome.status = "not_processed"
+    else:
+        outcome.status = "cancelled" if context.code is ErrorCode.CANCELLED else "failed"
+    outcome.failure = FileFailure(
+        step,
+        context.code.value,
+        context.message,
+        context.suggestion,
+    )
 
 
 def _translation_settings(context: AppContext) -> TranslationSettings:
@@ -292,10 +671,11 @@ def _extract_phase(  # noqa: PLR0913 - extraction wiring plus optional ready cal
         return {}
     if interaction is not None:
         states: dict[Path, _MkvState] = {}
-        for path in mkvs:
+        for source_rank, path in enumerate(mkvs):
             state = _extract_mkv(
                 path,
                 workspace_root,
+                source_rank=source_rank,
                 interaction=interaction,
                 on_progress=None,
                 cancel=cancel,
@@ -306,10 +686,11 @@ def _extract_phase(  # noqa: PLR0913 - extraction wiring plus optional ready cal
         return states
     if progress_factory is None:
         states = {}
-        for path in mkvs:
+        for source_rank, path in enumerate(mkvs):
             state = _extract_mkv(
                 path,
                 workspace_root,
+                source_rank=source_rank,
                 interaction=None,
                 on_progress=None,
                 cancel=cancel,
@@ -340,11 +721,12 @@ def _extract_concurrently(
     task_ids = {path: progress.add_task(path.name) for path in mkvs}
     futures: dict[Path, Future[_MkvState]] = {}
     with ThreadPoolExecutor(max_workers=_worker_count(len(mkvs))) as pool:
-        for path in mkvs:
+        for source_rank, path in enumerate(mkvs):
             futures[path] = pool.submit(
                 _extract_mkv,
                 path,
                 workspace_root,
+                source_rank=source_rank,
                 interaction=None,
                 on_progress=_progress_callback(progress, task_ids.get(path)),
                 cancel=cancel,
@@ -368,27 +750,103 @@ def _extract_concurrently(
     return states
 
 
-def _translate_phase(
+def _translate_phase(  # noqa: PLR0913 - explicit phase dependencies and callback
     states: dict[Path, _MkvState],
     workspace_root: Path,
     translation: TranslationSettings,
     progress_factory: ProgressPhaseFactory | None,
     cancel: threading.Event,
+    *,
+    on_spoken_ready: SpokenReadyHandler | None = None,
+    on_without_spoken: Callable[[Path], None] | None = None,
+    strict_order: bool = False,
 ) -> None:
     """Translate the files that need it, replacing the extraction rows in place."""
-    pending = [path for path, state in states.items() if state.split is not None]
+    ordered_states: list[tuple[Path, _MkvState]] = sorted(
+        states.items(),
+        key=lambda item: item[1].source_rank,
+    )
+    if strict_order:
+        first_failed_index: int | None = next(
+            (index for index, (_path, state) in enumerate(ordered_states) if state.outcome.failure is not None),
+            None,
+        )
+        if first_failed_index is not None:
+            failed_path: Path = ordered_states[first_failed_index][0]
+            for _path, state in ordered_states[first_failed_index + 1 :]:
+                if state.split is not None:
+                    _mark_translation_blocked(state.outcome, failed_path)
+            ordered_states = ordered_states[:first_failed_index]
+    pending = [path for path, state in ordered_states if state.split is not None]
     if not pending:
         return
     if progress_factory is None:
         for path in pending:
-            _translate_one(path, states[path], workspace_root, translation, cancel, progress=None, task_id=None)
+            _translate_one(
+                path,
+                states[path],
+                workspace_root,
+                translation,
+                cancel,
+                progress=None,
+                task_id=None,
+                on_spoken_ready=on_spoken_ready,
+            )
+            if (
+                states[path].narration is None
+                and states[path].outcome.failure is None
+                and on_without_spoken is not None
+            ):
+                on_without_spoken(path)
+            if strict_order and states[path].outcome.failure is not None:
+                _mark_pending_translation_not_processed(pending, path, states)
+                break
         return
     with progress_factory() as progress:
         task_ids = {path: progress.add_task(path.name) for path in pending}
         for path in pending:
             _translate_one(
-                path, states[path], workspace_root, translation, cancel, progress=progress, task_id=task_ids[path]
+                path,
+                states[path],
+                workspace_root,
+                translation,
+                cancel,
+                progress=progress,
+                task_id=task_ids[path],
+                on_spoken_ready=on_spoken_ready,
             )
+            if (
+                states[path].narration is None
+                and states[path].outcome.failure is None
+                and on_without_spoken is not None
+            ):
+                on_without_spoken(path)
+            if strict_order and states[path].outcome.failure is not None:
+                _mark_pending_translation_not_processed(pending, path, states)
+                break
+
+
+def _mark_pending_translation_not_processed(
+    pending: Sequence[Path],
+    failed_path: Path,
+    states: dict[Path, _MkvState],
+) -> None:
+    """Stop later strict-order translations after the first failed source."""
+    failed_index: int = pending.index(failed_path)
+    for path in pending[failed_index + 1 :]:
+        outcome: FileOutcome = states[path].outcome
+        _mark_translation_blocked(outcome, failed_path)
+
+
+def _mark_translation_blocked(outcome: FileOutcome, failed_path: Path) -> None:
+    """Mark one later source as untouched by strict translation ordering."""
+    outcome.status = "not_processed"
+    outcome.failure = FileFailure(
+        "translate",
+        ErrorCode.PIPELINE_STEP_FAILED.value,
+        f"Translation paused after an earlier failure in {failed_path.name}",
+        "Retry, change translation settings, or finish with completed files.",
+    )
 
 
 def _translate_llm_inputs(  # noqa: PLR0913 - queue wiring keeps callbacks explicit
@@ -399,6 +857,8 @@ def _translate_llm_inputs(  # noqa: PLR0913 - queue wiring keeps callbacks expli
     *,
     on_provider_failure: LlmFailureHandler | None = None,
     on_progress: LlmProgressHandler | None = None,
+    on_spoken_ready: SpokenReadyHandler | None = None,
+    on_without_spoken: Callable[[Path], None] | None = None,
 ) -> dict[Path, FileOutcome]:
     """Translate ready MKV and TXT inputs through the central concurrent queue."""
     from anishift.pipeline.llm_queue import LlmQueueConfig, run_llm_queue  # noqa: PLC0415 - LLM-only path
@@ -432,6 +892,7 @@ def _translate_llm_inputs(  # noqa: PLR0913 - queue wiring keeps callbacks expli
                             progress=None,
                             task_id=None,
                             engine_factory=runtime.engine_factory(),
+                            on_spoken_ready=on_spoken_ready,
                         )
                     except AniShiftError as error:
                         _mark_raised_translation_error(
@@ -448,6 +909,8 @@ def _translate_llm_inputs(  # noqa: PLR0913 - queue wiring keeps callbacks expli
                             "Check file permissions and free disk space.",
                         )
                     state.outcome.llm_calls = tuple(runtime.records)
+                    if state.narration is None and state.outcome.failure is None and on_without_spoken is not None:
+                        on_without_spoken(path)
                     return state.outcome
                 outcome = _process_txt(
                     path,
@@ -474,10 +937,15 @@ def _translate_llm_inputs(  # noqa: PLR0913 - queue wiring keeps callbacks expli
         worker_factory=build_worker,
         not_processed_factory=not_processed,
         config=LlmQueueConfig(
-            configured_limit=lambda: context.user_settings.llm_max_concurrency,
+            configured_limit=lambda: (
+                1
+                if context.user_settings.processing_order_policy == "strict_natural"
+                else context.user_settings.llm_max_concurrency
+            ),
             cancel=cancel,
             on_provider_failure=on_provider_failure,
             on_progress=on_progress,
+            stop_on_failure=context.user_settings.processing_order_policy == "strict_natural",
         ),
     )
     return {path: outcome for path, outcome in queued.items() if path.suffix.lower() == _TXT_SUFFIX}
@@ -493,6 +961,7 @@ def _translate_one(  # noqa: PLR0913 - one file's translate step wiring
     progress: ProgressReporter | None,
     task_id: int | None,
     engine_factory: TranslationEngineFactory | None = None,
+    on_spoken_ready: SpokenReadyHandler | None = None,
 ) -> None:
     """Translate one file's split and write the result, updating its outcome."""
     split = state.split
@@ -509,6 +978,14 @@ def _translate_one(  # noqa: PLR0913 - one file's translate step wiring
         _mark_translation_failed(state.outcome, result, step="translate")
         return
     _write_translation_products(path, state, result, workspace_root)
+    if split.spoken:
+        state.narration = build_translated_narration(
+            split,
+            result,
+            scope_id=state.scope_id,
+            batch_rank=state.source_rank,
+        )
+        _notify_spoken_ready(path, state, on_spoken_ready)
 
 
 def _worker_count(item_count: int) -> int:
@@ -523,10 +1000,11 @@ def _worker_count(item_count: int) -> int:
     return max(1, min(item_count, root + _WORKER_IO_HEADROOM))
 
 
-def _extract_mkv(  # noqa: PLR0911 - each early return is a distinct extraction outcome
+def _extract_mkv(  # noqa: PLR0911,PLR0913 - distinct outcomes and explicit dependencies
     mkv: Path,
     workspace_root: Path,
     *,
+    source_rank: int,
     interaction: PipelineInteraction | None,
     on_progress: Callable[[int], None] | None,
     cancel: threading.Event,
@@ -537,9 +1015,11 @@ def _extract_mkv(  # noqa: PLR0911 - each early return is a distinct extraction 
     returned in the state for the translate phase; otherwise the state's
     split is ``None`` and the outcome is already final.
     """
-    work_dir = workspace_root / "tmp" / mkv.stem
     step: StepName = "identify"
+    scope_id: str = ""
     try:
+        scope_id = scope_id_for_source(mkv, workspace_root=workspace_root)
+        work_dir: Path = workspace_root / "tmp" / scope_id / "extract-scratch"
         if work_dir.exists():
             safe_rmtree(work_dir)
         work_dir.mkdir(parents=True)
@@ -549,19 +1029,38 @@ def _extract_mkv(  # noqa: PLR0911 - each early return is a distinct extraction 
         selection = interaction.choose_tracks(info, proposal) if interaction is not None else proposal
         warnings = _selection_warnings(info, selection)
         if selection.audio_id is None and selection.subtitle_id is None:
-            return _MkvState(FileOutcome(mkv, "done", warnings=warnings), None)
+            return _MkvState(
+                FileOutcome(mkv, "done", warnings=warnings),
+                None,
+                source_rank=source_rank,
+                scope_id=scope_id,
+            )
         step = "extract"
         extracted = extract_tracks(info, selection, work_dir, on_progress=on_progress, cancel=cancel)
         if extracted.subtitle_path is None:
             outcome = FileOutcome(
-                mkv, "done", audio_path=extracted.audio_path, already_polish=selection.already_polish, warnings=warnings
+                mkv,
+                "done",
+                source_audio_path=extracted.audio_path,
+                already_polish=selection.already_polish,
+                warnings=warnings,
             )
-            return _MkvState(outcome, None)
+            return _MkvState(
+                outcome,
+                None,
+                source_rank=source_rank,
+                scope_id=scope_id,
+            )
         step = "split"
         kind = subtitle_kind(extracted.subtitle_path)
         if kind is None:
             failed = _failed(mkv, step, ErrorCode.SUBTITLE_PARSE_FAILED, "Unsupported subtitle format", "")
-            return _MkvState(failed, None)
+            return _MkvState(
+                failed,
+                None,
+                source_rank=source_rank,
+                scope_id=scope_id,
+            )
         subs = load_subtitles(extracted.subtitle_path)
         verdicts = None
         chosen = None
@@ -574,16 +1073,24 @@ def _extract_mkv(  # noqa: PLR0911 - each early return is a distinct extraction 
             outcome = FileOutcome(
                 mkv,
                 "done",
-                extracted.audio_path,
-                extracted.subtitle_path,
+                source_audio_path=extracted.audio_path,
+                subtitle_path=extracted.subtitle_path,
                 already_polish=selection.already_polish,
                 warnings=warnings,
             )
-            return _MkvState(outcome, None)
+            return _MkvState(
+                outcome,
+                None,
+                kind=kind,
+                source_rank=source_rank,
+                scope_id=scope_id,
+            )
+        if not split.spoken:
+            warnings += ("no spoken subtitle events; TTS skipped",)
         outcome = FileOutcome(
             source=mkv,
             status="done",
-            audio_path=extracted.audio_path,
+            source_audio_path=extracted.audio_path,
             subtitle_path=extracted.subtitle_path,
             already_polish=selection.already_polish,
             spoken_lines=split.stats.spoken_lines,
@@ -596,7 +1103,23 @@ def _extract_mkv(  # noqa: PLR0911 - each early return is a distinct extraction 
         if selection.already_polish:
             step = "write"
             _write_polish_products(mkv, outcome, split, workspace_root, kind)
-        return _MkvState(outcome, split if needs_translation else None, kind=kind)
+        narration: NarrationBatch | None = (
+            build_polish_narration(
+                split,
+                scope_id=scope_id,
+                batch_rank=source_rank,
+            )
+            if selection.already_polish and split.spoken
+            else None
+        )
+        return _MkvState(
+            outcome,
+            split if needs_translation else None,
+            kind=kind,
+            source_rank=source_rank,
+            scope_id=scope_id,
+            narration=narration,
+        )
     except AniShiftError as exc:
         if exc.context.code is ErrorCode.CANCELLED:
             cancelled = FileOutcome(
@@ -604,11 +1127,32 @@ def _extract_mkv(  # noqa: PLR0911 - each early return is a distinct extraction 
                 "cancelled",
                 failure=FileFailure(step, exc.context.code.value, exc.context.message, exc.context.suggestion),
             )
-            return _MkvState(cancelled, None)
-        return _MkvState(_failed(mkv, step, exc.context.code, exc.context.message, exc.context.suggestion), None)
+            return _MkvState(
+                cancelled,
+                None,
+                source_rank=source_rank,
+                scope_id=scope_id,
+            )
+        return _MkvState(
+            _failed(
+                mkv,
+                step,
+                exc.context.code,
+                exc.context.message,
+                exc.context.suggestion,
+            ),
+            None,
+            source_rank=source_rank,
+            scope_id=scope_id,
+        )
     except OSError as exc:
         failed = _failed(mkv, step, ErrorCode.IO_ERROR, str(exc), "Check file permissions and free disk space")
-        return _MkvState(failed, None)
+        return _MkvState(
+            failed,
+            None,
+            source_rank=source_rank,
+            scope_id=scope_id,
+        )
 
 
 def _selection_warnings(info: MediaInfo, selection: TrackSelection) -> tuple[str, ...]:
@@ -768,7 +1312,11 @@ def _process_txt(
     try:
         spoken = _txt_spoken_lines(read_txt(path))
         if not spoken:
-            return FileOutcome(path, "done")
+            return FileOutcome(
+                path,
+                "done",
+                warnings=("no media timeline; TTS skipped",),
+            )
         service = TranslationService(
             _translate_config(translation),
             fallback_chain=translation.fallback_chain,
@@ -783,6 +1331,7 @@ def _process_txt(
             translated_lines=len(result.spoken),
             translation_engine=result.engine_id,
             translation_failed_lines=result.failed_lines,
+            warnings=("no media timeline; TTS skipped",),
         )
         if not result.is_success:
             _mark_translation_failed(outcome, result, step="txt")

@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
+    from anishift.services.audio.types import TimelinePlacement
     from anishift.services.extraction.types import MediaInfo, TrackSelection
     from anishift.services.subtitles.classifier import StyleVerdict
     from anishift.services.translation.protocols import PromptPurpose
     from anishift.services.translation.types import FileTranslation
+    from anishift.services.tts.types import SpeechBatchStats
 
 __all__ = [
     "FileFailure",
@@ -27,7 +29,17 @@ __all__ = [
     "TranslationSettings",
 ]
 
-StepName = Literal["identify", "select", "extract", "split", "write", "translate", "txt"]
+StepName = Literal[
+    "identify",
+    "select",
+    "extract",
+    "split",
+    "write",
+    "translate",
+    "tts",
+    "audio",
+    "txt",
+]
 """Pipeline step a failure is attributed to."""
 
 FileStatus = Literal["done", "failed", "cancelled", "not_processed"]
@@ -109,7 +121,9 @@ class FileOutcome:
 
     source: Path
     status: FileStatus
-    audio_path: Path | None = None
+    source_audio_path: Path | None = None
+    narrator_path: Path | None = None
+    mixed_audio_path: Path | None = None
     subtitle_path: Path | None = None
     displayed_path: Path | None = None
     spoken_path: Path | None = None
@@ -126,6 +140,9 @@ class FileOutcome:
     warnings: tuple[str, ...] = ()
     failure: FileFailure | None = None
     llm_calls: tuple[LlmCallRecord, ...] = ()
+    tts_stats: SpeechBatchStats | None = None
+    audio_placements: tuple[TimelinePlacement, ...] = ()
+    audio_time_ms: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

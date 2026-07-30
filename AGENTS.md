@@ -38,7 +38,8 @@ Reguły bez lintera (agent je łamie, nic ich nie łapie):
 
 Specyfika AniShift:
 - Hierarchia błędów: `AniShiftError` → `{Domain}Error`, plus `TransientError` / `FatalError`; definicje w `anishift/errors.py`. Łap precyzyjnie (`except Exception` blokuje ruff `BLE001`).
-- Rejestr silników tylko w domenach z wyborem: `translation` (i docelowo `tts`, `llm`). Reszta to zwykłe moduły.
+- Rejestr silników tylko w domenach z wyborem: `translation`, `tts` i `llm`.
+  Reszta to zwykłe moduły.
 
 ## Mapa katalogów
 

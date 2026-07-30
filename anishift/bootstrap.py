@@ -1,7 +1,7 @@
 """Application composition root.
 
-``bootstrap()`` is the single place that loads ``.env``, resolves settings and
-the workspace, and returns an :class:`AppContext`.
+``bootstrap()`` is the single place that resolves settings and the workspace
+and returns an :class:`AppContext`.
 
 Usage:
     from anishift.bootstrap import bootstrap
@@ -15,8 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
-
+from anishift.config.env_file import env_path
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings, load_user_settings
 from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_root
@@ -48,18 +47,18 @@ def bootstrap(
 
     Args:
         settings: Pre-built :class:`Settings` (skips constructing a new one;
-            ``.env`` is still loaded so it can feed other consumers).
+            environment and ``.env`` resolution are already complete).
         create_dirs: When ``True`` create the workspace root and its
             default subdirectories on disk.
 
     Returns:
         Fully wired :class:`AppContext`.
     """
-    load_dotenv(override=False)
-
-    resolved = settings if settings is not None else Settings()
+    resolved = settings if settings is not None else Settings(_env_file=env_path())
     user_settings = load_user_settings()
-    workspace_root = resolve_workspace_root()
+    workspace_root = resolve_workspace_root(
+        override=resolved.workspace_root or None,
+    )
     if create_dirs:
         ensure_workspace_dir(workspace_root)
 

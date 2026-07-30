@@ -390,6 +390,35 @@ class MultiProgressManager:
             text_color, _bar_color = _color_for_percentage(state.colors, percentage)
             self._progress.update(task_id, description=_style_description(text_color, label))
 
+    def set_task_presentation(
+        self,
+        task_id: TaskID,
+        *,
+        show_bar: bool,
+        show_percentage: bool,
+        show_spinner: bool,
+    ) -> None:
+        """Change the visual mode of an existing row without replacing it."""
+        with self._lock:
+            state = self._states[task_id]
+            bar_visible: bool = show_bar and not show_spinner
+            state.show_bar = bar_visible
+            percentage: float = state.completed / state.total if state.total else 0.0
+            fields: dict[str, bool | str] = {
+                _SHOW_SPINNER_FIELD: show_spinner,
+                _SHOW_PERCENTAGE_FIELD: show_percentage,
+                _BAR_FIELD: (
+                    ProgressBarBuilder.blocks(
+                        state.bar_width,
+                        percentage,
+                        state.style,
+                    )
+                    if bar_visible
+                    else ""
+                ),
+            }
+            self._progress.update(task_id, **fields)
+
     def stop_task(self, task_id: TaskID) -> None:
         """Freeze one task's elapsed time without changing its completion."""
         with self._lock:

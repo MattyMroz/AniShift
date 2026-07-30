@@ -1,8 +1,15 @@
 # etap 6 — tts + tor audio (największy etap, główny zysk przebudowy)
 
-> cel: rozbicie god-files `subtitle_to_speech.py` (1196 linii) + `tts_elevenbytes.py` (617 linii) na rejestr 5 silników + osobny tor audio.
+> **ARCHIWALNY KIERUNEK — NIE IMPLEMENTOWAĆ Z TEGO PLIKU.**
+> Szczegółowe wymagania są w [`etap-6-wymagania.md`](etap-6-wymagania.md), a obowiązujący
+> plan w [`etap-6-tts-audio-plan.md`](etap-6-tts-audio-plan.md). W szczególności opisane
+> niżej `SRT → TtsService → WAV`, parsing napisów w TTS i timeline w `services/tts` zostały
+> odrzucone. Publiczne TTS API ma granicę `czysty tekst + opaque ID → klip głosowy`;
+> adapter napisów należy do pipeline, a timeline i miks do `services/audio`.
+
+> cel: rozbicie god-files `subtitle_to_speech.py` (1196 linii) + `tts_elevenbytes.py` (617 linii) na rejestr 4 silników + osobny tor audio.
 > zależności: etap 4 (etap 5 nie blokuje — tts nie korzysta z llm, oba mogą iść równolegle). logika z `mm_avh/modules/subtitle_to_speech.py` + `modules/tts_elevenbytes.py` + wzorce EchoReader (klucz API, voice_settings) — ale dispatch przez rejestr, nie if/elif.
-> DoD: pełny lektor elevenbytes na realnym odcinku brzmi/wygląda jak z obecnego kodu; edge i harpo działają; balcon poprawnie gate'owany; elevenlabs bez klucza znika z panelu; żaden plik serwisu nie przekracza ~300 linii; poza tmp/ nie powstaje żaden folder stanu.
+> DoD: pełny lektor elevenbytes na realnym odcinku brzmi/wygląda jak z obecnego kodu; edge i SAPI x64/x86 działają; elevenlabs bez klucza znika z panelu; żaden plik serwisu nie przekracza ~300 linii; poza tmp/ nie powstaje żaden folder stanu.
 
 ## pliki do stworzenia/zmiany
 
@@ -45,8 +52,8 @@
 - **skąd logika:** wspólna warstwa z `modules/subtitle_to_speech.py` (batch, timeline, cisza, mp3→wav przez pipe ffmpeg, fallback pomiaru długości dużego WAV).
 
 ### `anishift/services/tts/engines/__init__.py` (NOWY)
-- **odpowiedzialność:** rejestr 5 silników tts — SSOT.
-- **zawartość:** wg engine-factory-standard: `TtsEngineId = Literal["balcon", "edge", "elevenbytes", "elevenlabs", "harpo"]`, `_REGISTRY` (trzeci element = `config_attr`, wzorzec tts), `available_engine_ids()`, `create_engine()` z guardami i lazy importem (edge-tts/pyttsx3/elevenlabs SDK nie importowane na starcie apki).
+- **odpowiedzialność:** rejestr 4 silników tts — SSOT.
+- **zawartość:** wg engine-factory-standard: `TtsEngineId = Literal["edge", "elevenbytes", "elevenlabs", "sapi"]`, `_REGISTRY` (trzeci element = `config_attr`, wzorzec tts), `available_engine_ids()`, `create_engine()` z guardami i lazy importem (edge-tts/elevenlabs SDK nie importowane na starcie apki).
 - **wzorzec z MangaShift:** kanoniczny szablon engine-factory-standard, wariant tts.
 
 ### `anishift/services/tts/engines/elevenbytes/__init__.py`, `config.py`, `constants.py`, `service.py`, `api_backend.py`, `types.py` (NOWE)
@@ -72,15 +79,10 @@
 - **zawartość:** `constants.py` — lista głosów PL (Zofia, Marek); `service.py` — async edge-tts wewnątrz z jednym event loopem na batch; tempo/pitch przez parametry edge-tts.
 - **skąd logika:** tor edge z `subtitle_to_speech.py`.
 
-### `anishift/services/tts/engines/harpo/__init__.py`, `config.py`, `constants.py`, `service.py` (NOWE)
-- **odpowiedzialność:** silnik `harpo` — pyttsx3/SAPI, głos Zosia.
-- **zawartość:** `service.py` — pyttsx3 `save_to_file` z ISTNIEJĄCYM obejściem zawieszek w pętli (przenieść 1:1 z toru Harpo); `is_available()` = SAPI obecne + głos Zosia zainstalowany (sprawdzenie konkretnego głosu, nie tylko biblioteki — bez głosu silnik znika z panelu, nie wybucha).
-- **skąd logika:** tor harpo z `subtitle_to_speech.py`.
-
-### `anishift/services/tts/engines/balcon/__init__.py`, `config.py`, `constants.py`, `service.py` (NOWE)
-- **odpowiedzialność:** silnik `balcon` — balcon.exe/SAPI, głos IVONA 2 Agnieszka, Windows-only.
-- **zawartość:** `service.py` — wywołanie `external/bin/balabolka/balcon.exe` subprocessem (ścieżka z `platform/binaries.py`); `is_available()` = Windows AND binarka obecna AND głos Agnieszka zainstalowany — fasada i pipeline nie mają ŻADNEGO if-a na OS.
-- **skąd logika:** tor balcon z `subtitle_to_speech.py`.
+### `anishift/services/tts/engines/sapi/__init__.py`, `config.py`, `constants.py`, `service.py`, worker Windows (NOWE)
+- **odpowiedzialność:** silnik `sapi` — bezpośredni SAPI COM; Zosia przez trwały worker x64, Agnieszka przez trwały worker x86.
+- **zawartość:** `service.py` zarządza ograniczonym IPC, timeoutem, restartem i walidacją WAV. Worker inicjalizuje COM/głos raz i zapisuje event przez `SAPI.SpVoice` + `SAPI.SpFileStream`. `is_available()` sprawdza Windows, właściwy host i konkretny głos osobno dla x64/x86.
+- **skąd logika:** tor Harpo/Agnieszka ze starego kodu, zastąpiony bezpośrednim COM po spike'u; Balcon i pyttsx3 zostały odrzucone.
 
 ### `anishift/services/audio/__init__.py`, `service.py`, `types.py`, `errors.py` (NOWE)
 - **odpowiedzialność:** tor audio ffmpeg = zwykły moduł (bez engines/) — obróbka WAV lektora i miks z oryginałem.
@@ -96,14 +98,14 @@
 
 ### `anishift/cli/settings_panel.py` (ZMIANA)
 - **odpowiedzialność:** wybór silnika TTS / głosu / tempa / głośności derywowany z rejestru.
-- **zawartość:** lista silników = `available_engine_ids()` filtrowana `is_available()` (balcon tylko na Windows z głosem, elevenlabs tylko z kluczem); głosy per silnik z `constants.py` silnika; dla elevenbytes wybór modelu v2/v3 (`provider_model_id`).
+- **zawartość:** lista silników = `available_engine_ids()` filtrowana `is_available()` (SAPI tylko na Windows z kompatybilnym głosem, elevenlabs tylko z kluczem); głosy per silnik z `constants.py` silnika; dla elevenbytes wybór modelu v2/v3 (`provider_model_id`).
 
 ## kolejność implementacji
 
 1. kopie `utils/number_in_words.py`, `text_chunker.py` → weryfikacja: diff pusty ze źródłem.
-2. szkielet domeny tts (`errors`, `config`, `constants`, `protocols`, `types`, `output`) + rejestr → weryfikacja: smoke rejestru (nieznany id = ConfigError z listą; lazy import — import rejestru nie ciągnie edge-tts/pyttsx3/SDK).
+2. szkielet domeny tts (`errors`, `config`, `constants`, `protocols`, `types`, `output`) + rejestr → weryfikacja: smoke rejestru (nieznany id = ConfigError z listą; lazy import — import rejestru nie ciągnie edge-tts/SDK).
 3. `audio/service.py` (tor audio osobno, testowalny bez TTS) → weryfikacja: atempo/volume/amix na próbce WAV = ten sam wynik co stary kod (ffprobe: parametry + czas ±100 ms).
-4. silniki proste: `edge` → `harpo` → `balcon` → weryfikacja po każdym: SRT polski (10-20 linii) → WAV; `is_available()` poprawnie gate'uje (balcon: fałsz bez binarki/głosu).
+4. silniki proste: `edge` → `sapi` → weryfikacja po każdym: SRT polski (10-20 linii) → WAV; SAPI sprawdza Zosię x64 i Agnieszkę x86, timeout zabija i odtwarza worker.
 5. `elevenlabs` (oficjalne SDK) → weryfikacja: bez klucza is_available=False; z kluczem WAV przez API; retry tylko na 429/5xx/timeout (test z mockiem).
 6. `elevenbytes` (największy blok — przenosić etapami: api_backend → retry/rundy → wznowienie w tmp/) → weryfikacja: test porównawczy na tym samym SRT co stary kod; przerwanie w połowie + restart = opłacone linie nie idą drugi raz; v2 i v3 przez provider_model_id.
 7. `tts/service.py` fasada (klipy, timeline, cisza, RF64) → weryfikacja: WAV z timingami ±100 ms względem SRT; długi plik (symulacja >4GB lub realny maraton) przechodzi przez RF64.
@@ -111,4 +113,4 @@
 
 ## jak testować
 
-SRT polski → WAV lektora każdym dostępnym silnikiem; elevenbytes: wznowienie po przerwaniu trafia (stan w `workspace/tmp/`, opłacone requesty nie idą drugi raz), retry/rundy działają, v2 i v3 przez provider_model_id; balcon widoczny tylko na Windows z zainstalowanym głosem (`is_available`); elevenlabs bez klucza `ANISHIFT_ELEVENLABS_API_KEY` = `is_available` fałsz (znika z panelu), z kluczem generuje WAV przez oficjalne API; tor audio: atempo/volume/amix daje ten sam wynik co dziś na próbce. dodatkowo odsłuch znaków `ąęłóśćźżń` na Windows.
+SRT polski → WAV lektora każdym dostępnym silnikiem; elevenbytes: wznowienie po przerwaniu trafia (stan w `workspace/tmp/`, opłacone requesty nie idą drugi raz), retry/rundy działają, v2 i v3 przez provider_model_id; SAPI generuje Zosię przez x64 i Agnieszkę przez x86, a jeden `Ctrl+C` kończy worker; elevenlabs bez klucza `ANISHIFT_ELEVENLABS_API_KEY` = `is_available` fałsz (znika z panelu), z kluczem generuje WAV przez oficjalne API; tor audio: atempo/volume/amix daje ten sam wynik co dziś na próbce. dodatkowo odsłuch znaków `ąęłóśćźżń` na Windows.

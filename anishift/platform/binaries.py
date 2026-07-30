@@ -1,13 +1,9 @@
-"""External binary resolution — locate mkvtoolnix / ffmpeg / balcon per OS.
+"""External binary resolution — locate mkvtoolnix and ffmpeg per OS.
 
 Binaries live under ``external/bin/<tool>/`` (gitignored). Resolution order:
 
 1. ``external/bin/<tool>/<exe>`` inside the repo checkout.
-2. On non-Windows, fall back to the same executable on ``PATH`` (mkvtoolnix
-   and ffmpeg ship in every Linux distro; balcon is Windows-only).
-
-``is_windows()`` gates the Windows-only ``balcon`` binary so callers never
-branch on the OS themselves.
+2. On non-Windows, fall back to the same executable on ``PATH``.
 
 Public API:
     Binary: Enum of the binaries the app needs.
@@ -42,7 +38,6 @@ __all__ = [
 class Binary(StrEnum):
     """External executables the app depends on (stem, no extension)."""
 
-    BALCON = "balcon"
     FFMPEG = "ffmpeg"
     FFPROBE = "ffprobe"
     MKVEXTRACT = "mkvextract"
@@ -56,16 +51,12 @@ class BinaryNotFoundError(FatalError):
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 TOOL_DIR: Final[dict[Binary, str]] = {
-    Binary.BALCON: "balabolka",
     Binary.FFMPEG: "ffmpeg",
     Binary.FFPROBE: "ffmpeg",
     Binary.MKVEXTRACT: "mkvtoolnix",
     Binary.MKVMERGE: "mkvtoolnix",
 }
 """Subdirectory of ``external/bin/`` that holds each binary."""
-
-_WINDOWS_ONLY: Final[frozenset[Binary]] = frozenset({Binary.BALCON})
-"""Binaries that only exist on Windows."""
 
 
 # ── Resolution ────────────────────────────────────────────────────────────────
@@ -104,9 +95,6 @@ def resolve_binary(binary: Binary) -> Path | None:
     Returns:
         Absolute path to the executable, or ``None`` when it cannot be found.
     """
-    if binary in _WINDOWS_ONLY and not is_windows():
-        return None
-
     bundled = external_bin_root() / TOOL_DIR[binary] / _exe_name(binary)
     if bundled.is_file():
         return bundled

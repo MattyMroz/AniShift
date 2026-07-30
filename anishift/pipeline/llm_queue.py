@@ -10,7 +10,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, Never
 
+from anishift.config.user_settings import ProcessingOrderPolicy
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext, TransientError
+from anishift.pipeline.recovery import (
+    RecoveryAction,
+    RecoveryContext,
+    RecoveryDomain,
+    RecoveryHandler,
+    rebuild_error_context,
+)
 from anishift.pipeline.types import FileOutcome
 from anishift.services.llm.errors import (
     LlmCancelledError,
@@ -29,7 +37,7 @@ __all__ = [
     "run_llm_queue",
 ]
 
-LlmFailureAction = Literal["settings", "finish"]
+LlmFailureAction = RecoveryAction
 """User decision after a provider has become unusable for the current run."""
 
 type LlmQueueWorker = Callable[[Path, SharedProviderState], FileOutcome]
@@ -38,7 +46,7 @@ type LlmQueueWorker = Callable[[Path, SharedProviderState], FileOutcome]
 type LlmQueueWorkerFactory = Callable[[SharedProviderState], LlmQueueWorker]
 """Build worker-local composition after settings changes."""
 
-type LlmFailureHandler = Callable[[FileOutcome, int, int], LlmFailureAction]
+type LlmFailureHandler = RecoveryHandler
 """Choose whether to reconfigure and retry pending files or finish partially."""
 
 LlmProgressState = Literal["translating", "done", "failed", "cancelled", "not_processed"]
@@ -80,18 +88,27 @@ class LlmQueueConfig:
     cancel: threading.Event
     on_provider_failure: LlmFailureHandler | None = None
     on_progress: LlmProgressHandler | None = None
+    stop_on_failure: bool = False
 
 
 class LlmQueueInput:
     """Thread-safe producer channel for files becoming ready after extraction."""
 
-    __slots__ = ("_closed", "_condition", "_pending", "_rank")
+    __slots__ = ("_closed", "_condition", "_deferred", "_next_rank", "_pending", "_policy", "_rank")
 
-    def __init__(self, discovery_order: Sequence[Path] = ()) -> None:
+    def __init__(
+        self,
+        discovery_order: Sequence[Path] = (),
+        *,
+        policy: ProcessingOrderPolicy = "ready_first",
+    ) -> None:
         """Create an open channel with an optional natural discovery ranking."""
         self._condition = threading.Condition()
         self._pending: deque[Path] = deque()
+        self._deferred: dict[int, Path | None] = {}
         self._closed = False
+        self._next_rank = 0
+        self._policy = policy
         self._rank = {path: index for index, path in enumerate(discovery_order)}
 
     def put(self, path: Path) -> None:
@@ -100,7 +117,23 @@ class LlmQueueInput:
             if self._closed:
                 msg = "cannot enqueue after closing the LLM queue input"
                 raise RuntimeError(msg)
-            self._pending.append(path)
+            if self._policy == "strict_natural":
+                self._deferred[self._rank_for_path(path)] = path
+                self._release_resolved()
+            else:
+                self._pending.append(path)
+            self._condition.notify_all()
+
+    def skip(self, path: Path) -> None:
+        """Resolve one strict-order path that does not require translation."""
+        if self._policy != "strict_natural":
+            return
+        with self._condition:
+            if self._closed:
+                msg = "cannot resolve after closing the LLM queue input"
+                raise RuntimeError(msg)
+            self._deferred[self._rank_for_path(path)] = None
+            self._release_resolved()
             self._condition.notify_all()
 
     def close(self) -> None:
@@ -125,9 +158,28 @@ class LlmQueueInput:
     def rank(self, path: Path) -> int:
         """Return the stable discovery rank, extending it for unknown paths."""
         with self._condition:
-            if path not in self._rank:
-                self._rank[path] = len(self._rank)
-            return self._rank[path]
+            return self._rank_for_path(path)
+
+    def take_deferred(self) -> tuple[Path, ...]:
+        """Take strict-order paths blocked behind an unresolved earlier rank."""
+        with self._condition:
+            paths: tuple[Path, ...] = tuple(path for _rank, path in sorted(self._deferred.items()) if path is not None)
+            self._deferred.clear()
+            return paths
+
+    def _rank_for_path(self, path: Path) -> int:
+        """Return or allocate a rank while holding the condition lock."""
+        if path not in self._rank:
+            self._rank[path] = len(self._rank)
+        return self._rank[path]
+
+    def _release_resolved(self) -> None:
+        """Publish the contiguous strict-order prefix while holding the lock."""
+        while self._next_rank in self._deferred:
+            path: Path | None = self._deferred.pop(self._next_rank)
+            self._next_rank += 1
+            if path is not None:
+                self._pending.append(path)
 
 
 class SharedProviderState:
@@ -225,7 +277,7 @@ class SharedProviderState:
         self._attempt_threads.discard(threading.get_ident())
 
 
-def run_llm_queue(  # noqa: PLR0912, PLR0915 - explicit queue state transitions
+def run_llm_queue(  # noqa: PLR0912 - explicit queue state transitions
     paths: Sequence[Path] | LlmQueueInput,
     *,
     worker_factory: LlmQueueWorkerFactory,
@@ -276,26 +328,23 @@ def run_llm_queue(  # noqa: PLR0912, PLR0915 - explicit queue state transitions
                 outcome = future.result()
                 outcomes[path] = outcome
                 _notify_progress(config.on_progress, path, outcome.status, config.cancel)
-                if _is_provider_terminal(outcome):
+                if _is_provider_terminal(outcome) or (config.stop_on_failure and outcome.failure is not None):
                     terminal_paths.append(path)
                     state.disable()
             if terminal_paths and not active and input_closed:
-                action = _failure_action(
-                    config.on_provider_failure,
-                    outcomes[terminal_paths[0]],
+                recovered = _recover_provider(
+                    worker_factory,
+                    config,
                     outcomes,
                     pending,
+                    terminal_paths,
+                    original_order,
                 )
-                if action == "settings":
-                    retry_paths = sorted(set(terminal_paths), key=original_order.__getitem__)
-                    for path in retry_paths:
-                        outcomes.pop(path, None)
-                    pending.extendleft(reversed(retry_paths))
-                    terminal_paths.clear()
-                    state = SharedProviderState(config.cancel)
-                    worker = worker_factory(state)
-                    continue
-                break
+                if recovered is None:
+                    break
+                state, worker = recovered
+                continue
+    pending.extend(queue_input.take_deferred())
     if pending:
         failure = outcomes[terminal_paths[0]].failure if terminal_paths else None
         context = ErrorContext(
@@ -307,6 +356,42 @@ def run_llm_queue(  # noqa: PLR0912, PLR0915 - explicit queue state transitions
             outcomes[path] = not_processed_factory(path, context)
             _notify_progress(config.on_progress, path, "not_processed", config.cancel)
     return outcomes
+
+
+def _recover_provider(  # noqa: PLR0913 - queue ownership remains explicit
+    worker_factory: LlmQueueWorkerFactory,
+    config: LlmQueueConfig,
+    outcomes: dict[Path, FileOutcome],
+    pending: deque[Path],
+    terminal_paths: list[Path],
+    original_order: dict[Path, int],
+) -> tuple[SharedProviderState, LlmQueueWorker] | None:
+    """Build a valid worker before returning failed files to the live queue."""
+    recovery_error: ErrorContext | None = None
+    while True:
+        action = _failure_action(
+            config.on_provider_failure,
+            outcomes[terminal_paths[0]],
+            outcomes,
+            pending,
+            terminal_paths,
+            original_order,
+            error_override=recovery_error,
+        )
+        if action is RecoveryAction.FINISH:
+            return None
+        candidate_state = SharedProviderState(config.cancel)
+        try:
+            candidate_worker = worker_factory(candidate_state)
+        except (AniShiftError, OSError, RuntimeError, ValueError) as exc:
+            recovery_error = rebuild_error_context(exc, RecoveryDomain.LLM)
+            continue
+        retry_paths = sorted(set(terminal_paths), key=original_order.__getitem__)
+        for path in retry_paths:
+            outcomes.pop(path, None)
+        pending.extendleft(reversed(retry_paths))
+        terminal_paths.clear()
+        return candidate_state, candidate_worker
 
 
 def _notify_progress(
@@ -334,17 +419,48 @@ def _is_provider_terminal(outcome: FileOutcome) -> bool:
     return outcome.failure is not None and outcome.failure.code in _PROVIDER_TERMINAL_CODES
 
 
-def _failure_action(
+def _failure_action(  # noqa: PLR0913 - immutable recovery snapshot inputs
     handler: LlmFailureHandler | None,
     outcome: FileOutcome,
     outcomes: dict[Path, FileOutcome],
     pending: deque[Path],
+    terminal_paths: list[Path],
+    original_order: dict[Path, int],
+    *,
+    error_override: ErrorContext | None = None,
 ) -> LlmFailureAction:
     """Ask the caller after active work drains, defaulting safely to finish."""
     if handler is None:
-        return "finish"
-    completed = sum(1 for result in outcomes.values() if result.status == "done")
-    return handler(outcome, completed, len(pending))
+        return RecoveryAction.FINISH
+    failure = outcome.failure
+    if error_override is not None:
+        error = error_override
+    elif failure is None:
+        error = ErrorContext(
+            code=ErrorCode.LLM_PROVIDER_UNAVAILABLE,
+            message="LLM provider became unavailable",
+        )
+    else:
+        error = ErrorContext(
+            code=ErrorCode(failure.code),
+            message=failure.message,
+            suggestion=failure.suggestion,
+        )
+    order = original_order.__getitem__
+    return handler(
+        RecoveryContext(
+            domain=RecoveryDomain.LLM,
+            error=error,
+            completed_files=tuple(
+                sorted(
+                    (path for path, result in outcomes.items() if result.status == "done"),
+                    key=order,
+                ),
+            ),
+            failed_files=tuple(sorted(set(terminal_paths), key=order)),
+            pending_files=tuple(sorted(pending, key=order)),
+        ),
+    )
 
 
 def _raise_cancelled() -> Never:

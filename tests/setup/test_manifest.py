@@ -33,9 +33,9 @@ def _raw_resource(**overrides: object) -> dict[str, object]:
     return raw
 
 
-def test_real_manifest_loads_both_resources() -> None:
+def test_real_manifest_loads_declared_resources() -> None:
     resources = load_manifest(manifest_path())
-    assert {r.name for r in resources} == {"mkvtoolnix", "ffmpeg"}
+    assert {resource.name for resource in resources} == {"mkvtoolnix", "ffmpeg"}
 
 
 def test_real_manifest_dests_match_binaries_layout() -> None:

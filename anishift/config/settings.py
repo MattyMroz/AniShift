@@ -13,10 +13,47 @@ Usage:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
+
+from dotenv import dotenv_values
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+from pydantic_settings.sources.utils import parse_env_vars
 
 __all__ = ["Settings"]
+
+
+class _LiteralDotEnvSettingsSource(DotEnvSettingsSource):
+    """Read secret values literally instead of expanding ``${NAME}``."""
+
+    @staticmethod
+    def _static_read_env_file(
+        file_path: Path,
+        *,
+        encoding: str | None = None,
+        case_sensitive: bool = False,
+        ignore_empty: bool = False,
+        parse_none_str: str | None = None,
+    ) -> Mapping[str, str | None]:
+        file_vars: dict[str, str | None] = dict(
+            dotenv_values(
+                file_path,
+                encoding=encoding or "utf8",
+                interpolate=False,
+            ),
+        )
+        return parse_env_vars(
+            file_vars,
+            case_sensitive,
+            ignore_empty,
+            parse_none_str,
+        )
 
 
 class Settings(BaseSettings):
@@ -39,6 +76,7 @@ class Settings(BaseSettings):
         openai_compatible_api_key: LLM provider ``openai_compatible``.
         openai_compatible_base_url: Base URL for the ``openai_compatible``
             provider (self-hosted / gateway endpoint).
+        workspace_root: Optional workspace path override.
     """
 
     model_config = SettingsConfigDict(
@@ -53,7 +91,11 @@ class Settings(BaseSettings):
     deepl_api_key: str = Field(default="", description="DeepL API key")
 
     # TTS
-    elevenlabs_api_key: str = Field(default="", description="Official ElevenLabs API key")
+    elevenlabs_api_key: str = Field(
+        default="",
+        description="Official ElevenLabs API key",
+        repr=False,
+    )
 
     # LLM providers
     anthropic_api_key: str = Field(default="", description="Anthropic API key")
@@ -63,3 +105,34 @@ class Settings(BaseSettings):
     openrouter_api_key: str = Field(default="", description="OpenRouter API key")
     openai_compatible_api_key: str = Field(default="", description="OpenAI-compatible endpoint key")
     openai_compatible_base_url: str = Field(default="", description="OpenAI-compatible endpoint base URL")
+
+    # Workspace
+    workspace_root: str = Field(default="", description="Workspace root override")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Replace only dotenv interpolation while preserving source priority."""
+        if not isinstance(dotenv_settings, DotEnvSettingsSource):
+            return init_settings, env_settings, dotenv_settings, file_secret_settings
+        literal_dotenv = _LiteralDotEnvSettingsSource(
+            settings_cls,
+            env_file=dotenv_settings.env_file,
+            env_file_encoding=dotenv_settings.env_file_encoding,
+            dotenv_filtering=dotenv_settings.dotenv_filtering,
+            case_sensitive=dotenv_settings.case_sensitive,
+            env_prefix=dotenv_settings.env_prefix,
+            env_prefix_target=dotenv_settings.env_prefix_target,
+            env_nested_delimiter=dotenv_settings.env_nested_delimiter,
+            env_nested_max_split=dotenv_settings.env_nested_max_split,
+            env_ignore_empty=dotenv_settings.env_ignore_empty,
+            env_parse_none_str=dotenv_settings.env_parse_none_str,
+            env_parse_enums=dotenv_settings.env_parse_enums,
+        )
+        return init_settings, env_settings, literal_dotenv, file_secret_settings

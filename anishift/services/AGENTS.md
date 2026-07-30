@@ -4,9 +4,12 @@ Domeny usług. Każda domena z wyborem silnika ma rejestr w `engines/`; reszta t
 
 ## Domeny (każda ma własny AGENTS.md)
 
+- `audio/` — timeline, normalizacja, kanały, miks, codec i resume sidecara
 - `extraction/` — ekstrakcja ścieżek audio/napisów z MKV
+- `llm/` — providerzy modeli językowych z leniwym rejestrem
 - `subtitles/` — klasyfikacja stylów ASS, split spoken/displayed, zapis ASS/SRT
 - `translation/` — tłumaczenie z rejestrem silników (deepl/google/llm)
+- `tts/` — neutralna synteza mowy z rejestrem providerów i resume klipów
 
 ## Fakty
 

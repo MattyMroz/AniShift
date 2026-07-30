@@ -1,14 +1,9 @@
-"""Full-screen ``/settings`` panel — arrow-key editing with auto-save.
-
-Arrow keys only (no WASD): ``↑``/``↓`` pick a field, ``←``/``→`` or ``Enter``
-cycle its value, ``Esc``/``q`` returns to the shell. Each change is persisted
-immediately. The translation-engine list is derived from the registry; the TTS
-engine and voice lists stay static placeholders until stage 6.
-"""
+"""Full-screen ``/settings`` panel with immediate persisted changes."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Final
 
 from prompt_toolkit.application import Application
@@ -22,8 +17,7 @@ from anishift.bootstrap import AppContext
 from anishift.config.user_settings import (
     LLM_MAX_CONCURRENCY_RANGE,
     MAX_RETRIES_RANGE,
-    TEMPO_RANGE,
-    VOLUME_RANGE,
+    CustomVoiceSetting,
     UserSettings,
     config_path,
     save_user_settings,
@@ -37,6 +31,15 @@ from anishift.services.llm.engines import (
 from anishift.services.translation.engines import available_engine_ids
 from anishift.services.translation.engines.llm.prompts import PromptRegistry
 
+from .tts_settings import (
+    TtsPanelCatalog,
+    build_tts_catalog,
+    remove_elevenlabs_key,
+    save_elevenlabs_key,
+    step_tts_field,
+    tts_field_value,
+)
+
 __all__ = ["open_settings_panel"]
 
 # ── Constants ──────────────────────────────────────────────────────────────
@@ -44,11 +47,8 @@ __all__ = ["open_settings_panel"]
 _RETRIES_STEP: Final[int] = 1
 """Retry-count increment per ``←``/``→`` press."""
 
-_TTS_ENGINES: Final[tuple[str, ...]] = ("edge", "elevenlabs", "balcon")
-"""Placeholder TTS-engine ids (real list arrives in stage 6)."""
-
-_VOICES: Final[tuple[str, ...]] = ("pl-PL-MarekNeural", "pl-PL-ZofiaNeural")
-"""Placeholder TTS voices (real list arrives in stage 6)."""
+_CUSTOM_VOICE_PARTS: Final[int] = 3
+"""Alias, display label, and provider id collected by the custom editor."""
 
 _OUTPUT_VARIANTS: Final[tuple[str, ...]] = ("players", "merge", "burn")
 """Selectable output-assembly variants."""
@@ -56,11 +56,8 @@ _OUTPUT_VARIANTS: Final[tuple[str, ...]] = ("players", "merge", "burn")
 _MODES: Final[tuple[str, ...]] = ("auto", "manual")
 """Selectable processing modes."""
 
-_TEMPO_STEP: Final[float] = 0.05
-"""Tempo increment per ``←``/``→`` press."""
-
-_VOLUME_STEP: Final[int] = 5
-"""Volume increment (percent) per ``←``/``→`` press."""
+_PROCESSING_ORDER_POLICIES: Final[tuple[str, ...]] = ("ready_first", "strict_natural")
+"""Selectable cross-file scheduling policies."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,18 +73,37 @@ class _Field:
     label: str
 
 
-_FIELDS: Final[tuple[_Field, ...]] = (
+_BASE_FIELDS: Final[tuple[_Field, ...]] = (
     _Field("mode", "Mode"),
+    _Field("processing_order_policy", "Processing order"),
     _Field("translation_engine", "Translation"),
     _Field("translation_max_retries", "Max retries"),
+)
+"""Core application rows before provider-specific configuration."""
+
+_TTS_FIELDS: Final[tuple[_Field, ...]] = (
     _Field("tts_engine", "TTS engine"),
-    _Field("voice", "Voice"),
-    _Field("tempo", "Tempo"),
-    _Field("volume", "Volume"),
+    _Field("tts_provider_model_id", "TTS model"),
+    _Field("tts_voice_id", "TTS voice"),
+    _Field("tts_max_retries", "TTS retries"),
+    _Field("tts_concurrency", "TTS workers"),
+    _Field("tts_postprocess_tempo", "Post tempo"),
+    _Field("tts_voice_mix_offset_db", "Voice mix"),
+)
+"""Always-visible TTS selection and active-profile rows."""
+
+_AUDIO_FIELDS: Final[tuple[_Field, ...]] = (
+    _Field("tts_output_profile", "Audio codec"),
+    _Field("tts_output_bitrate", "Audio bitrate"),
+    _Field("narrator_mix_base_gain_db", "Narrator gain"),
+    _Field("original_gain_db", "Original gain"),
+    _Field("tts_timeline_policy", "Timeline"),
+    _Field("tts_resume_enabled", "TTS resume"),
+    _Field("tts_debug_artifacts", "Artifacts"),
     _Field("output_variant", "Output"),
     _Field("move_results_to_output", "-> output/"),
 )
-"""Editable rows, top to bottom."""
+"""Audio, diagnostics, and final-output rows."""
 
 _LLM_FIELDS: Final[tuple[_Field, ...]] = (
     _Field("llm_provider", "LLM provider"),
@@ -106,7 +122,12 @@ class _PanelState:
 
     row: int = 0
     editing: bool = False
+    editing_kind: str = ""
     buffer: str = ""
+    custom_values: list[str] = dataclass_field(default_factory=list)
+    custom_index: int = 0
+    custom_original_alias: str = ""
+    error: str = ""
 
 
 def _translation_engines(context: AppContext) -> tuple[str, ...]:
@@ -134,9 +155,50 @@ def _clamp_int(value: int, low: int, high: int) -> int:
     return min(max(value, low), high)
 
 
-def _visible_fields(_settings: UserSettings) -> tuple[_Field, ...]:
-    """Return panel rows with LLM configuration always visible."""
-    return (*_FIELDS[:3], *_LLM_FIELDS, *_FIELDS[3:])
+def _visible_fields(settings: UserSettings) -> tuple[_Field, ...]:
+    """Return global rows plus engine-specific TTS controls."""
+    engine_fields: tuple[_Field, ...] = ()
+    if settings.tts_engine == "elevenbytes" and settings.tts_provider_model_id == "run7":
+        engine_fields = (
+            _Field("tts_option_stability", "Stability"),
+            _Field("tts_option_similarity_boost", "Similarity"),
+            _Field("tts_option_style", "Style"),
+            _Field("tts_option_use_speaker_boost", "Speaker boost"),
+        )
+    elif settings.tts_engine == "elevenlabs":
+        engine_fields = (
+            _Field("elevenlabs_api_key", "ElevenLabs key"),
+            _Field("tts_option_output_format", "Native format"),
+            _Field("tts_option_stability", "Stability"),
+            _Field("tts_option_similarity_boost", "Similarity"),
+            _Field("tts_option_style", "Style"),
+            _Field("tts_option_use_speaker_boost", "Speaker boost"),
+            _Field("tts_option_speed", "Native speed"),
+        )
+    elif settings.tts_engine == "edge":
+        engine_fields = (
+            _Field("tts_native_rate", "Native rate"),
+            _Field("tts_native_volume", "Native volume"),
+            _Field("tts_native_pitch", "Native pitch"),
+        )
+    elif settings.tts_engine == "sapi":
+        engine_fields = (
+            _Field("tts_sapi_architecture", "SAPI host"),
+            _Field("tts_native_rate", "Native rate"),
+            _Field("tts_native_volume", "Native volume"),
+        )
+    audio_fields: tuple[_Field, ...] = tuple(
+        field
+        for field in _AUDIO_FIELDS
+        if field.key != "tts_output_bitrate" or settings.tts_output_profile in {"aac", "eac3", "mp3", "opus"}
+    )
+    return (
+        *_BASE_FIELDS,
+        *_LLM_FIELDS,
+        *_TTS_FIELDS,
+        *engine_fields,
+        *audio_fields,
+    )
 
 
 def _prompt_registry() -> PromptRegistry:
@@ -144,16 +206,30 @@ def _prompt_registry() -> PromptRegistry:
     return PromptRegistry(custom_root=config_path().parent / "prompts")
 
 
-def _step_field(  # noqa: C901, PLR0912 - one typed dispatcher owns all panel rows
+def _step_field(  # noqa: C901, PLR0912, PLR0913 - one typed dispatcher owns all panel rows
     settings: UserSettings,
     field: _Field,
     delta: int,
     engines: tuple[str, ...],
     registry: PromptRegistry,
+    tts_catalog: TtsPanelCatalog | None = None,
 ) -> None:
     """Advance ``field`` by ``delta`` on ``settings`` in place."""
+    if tts_catalog is not None and step_tts_field(
+        settings,
+        field.key,
+        delta,
+        tts_catalog,
+    ):
+        return
     if field.key == "mode":
         settings.mode = _cycle(_MODES, settings.mode, delta)  # type: ignore[assignment]
+    elif field.key == "processing_order_policy":
+        settings.processing_order_policy = _cycle(  # type: ignore[assignment]
+            _PROCESSING_ORDER_POLICIES,
+            settings.processing_order_policy,
+            delta,
+        )
     elif field.key == "translation_engine":
         settings.translation_engine = _cycle(engines, settings.translation_engine, delta)
     elif field.key == "translation_max_retries":
@@ -200,31 +276,39 @@ def _step_field(  # noqa: C901, PLR0912 - one typed dispatcher owns all panel ro
             settings.llm_max_concurrency + delta,
             *LLM_MAX_CONCURRENCY_RANGE,
         )
-    elif field.key == "tts_engine":
-        settings.tts_engine = _cycle(_TTS_ENGINES, settings.tts_engine, delta)
-    elif field.key == "voice":
-        settings.voice = _cycle(_VOICES, settings.voice, delta)
     elif field.key == "output_variant":
         settings.output_variant = _cycle(_OUTPUT_VARIANTS, settings.output_variant, delta)  # type: ignore[assignment]
-    elif field.key == "tempo":
-        settings.tempo = _clamp_float(settings.tempo + delta * _TEMPO_STEP, *TEMPO_RANGE)
-    elif field.key == "volume":
-        settings.volume = _clamp_int(settings.volume + delta * _VOLUME_STEP, *VOLUME_RANGE)
     elif field.key == "move_results_to_output":
         settings.move_results_to_output = not settings.move_results_to_output
 
 
-def _value_text(  # noqa: PLR0911 - row-specific rendering stays explicit
+def _value_text(  # noqa: PLR0911, PLR0913 - row-specific rendering stays explicit
     context: AppContext,
     settings: UserSettings,
     field: _Field,
     *,
     editing_buffer: str | None = None,
+    tts_catalog: TtsPanelCatalog | None = None,
+    secret_editing: bool = False,
 ) -> str:
     """Render the current value of ``field`` for display."""
-    value = getattr(settings, field.key)
-    if field.key == "llm_provider_model_id" and editing_buffer is not None:
+    if editing_buffer is not None and field.key in {
+        "llm_provider_model_id",
+        "tts_provider_model_id",
+        "tts_voice_id",
+    }:
         return f"{editing_buffer}▏"
+    if tts_catalog is not None:
+        tts_value: str | None = tts_field_value(
+            context,
+            settings,
+            field.key,
+            tts_catalog,
+            secret_editing=secret_editing,
+        )
+        if tts_value is not None:
+            return tts_value
+    value = getattr(settings, field.key)
     if field.key == "llm_provider_model_id":
         suggestions = suggested_model_ids(settings.llm_provider)
         suffix = "" if value in suggestions else " (custom — verify for provider)"
@@ -235,10 +319,6 @@ def _value_text(  # noqa: PLR0911 - row-specific rendering stays explicit
         return f"{value} ({_provider_availability(context, settings.llm_provider)})"
     if field.key == "llm_module_ids":
         return ", ".join(settings.llm_module_ids) or "none"
-    if field.key == "tempo":
-        return f"{value:.2f}x"
-    if field.key == "volume":
-        return f"{value}%"
     if field.key == "move_results_to_output":
         return "yes" if value else "no"
     return str(value)
@@ -258,6 +338,11 @@ def _provider_availability(context: AppContext, provider: str) -> str:
     return "ready" if keys.get(provider, "").strip() else "missing key"
 
 
+def _tts_model_is_freeform(settings: UserSettings) -> bool:
+    """Allow arbitrary provider model ids only for official ElevenLabs."""
+    return settings.tts_engine == "elevenlabs"
+
+
 def open_settings_panel(  # noqa: C901, PLR0915 - prompt_toolkit bindings share local state
     context: AppContext,
 ) -> UserSettings:
@@ -273,6 +358,7 @@ def open_settings_panel(  # noqa: C901, PLR0915 - prompt_toolkit bindings share 
     engines = _translation_engines(context)
     registry = _prompt_registry()
     state = _PanelState()
+    catalog = build_tts_catalog(context)
 
     def render() -> StyleAndTextTuples:
         lines: StyleAndTextTuples = [("class:title", " AniShift · Settings\n\n")]
@@ -282,20 +368,104 @@ def open_settings_panel(  # noqa: C901, PLR0915 - prompt_toolkit bindings share 
             marker = "> " if i == state.row else "  "
             style = "class:active" if i == state.row else "class:normal"
             edit_buffer = state.buffer if state.editing and i == state.row else None
-            value = _value_text(
-                context,
-                settings,
-                field,
-                editing_buffer=edit_buffer,
-            )
-            lines.append((style, f"{marker}{field.label:<16}{value}\n"))
+            if state.editing and state.editing_kind == "custom_voice" and i == state.row:
+                labels: tuple[str, ...] = ("alias", "label", "provider id")
+                value: str = f"{labels[state.custom_index]}: {state.buffer}▏"
+            else:
+                value = _value_text(
+                    context,
+                    settings,
+                    field,
+                    editing_buffer=edit_buffer,
+                    tts_catalog=catalog,
+                    secret_editing=(state.editing and state.editing_kind == "elevenlabs_key" and i == state.row),
+                )
+            lines.append((style, f"{marker}{field.label:<20}{value}\n"))
         hint = (
-            " type model · Enter save · Esc cancel"
+            " type · Enter next/save · Esc cancel"
             if state.editing
-            else " ↑↓ field · ←→ change · e edit model · Esc back"
+            else " ↑↓ field · ←→ change · e edit · a add voice · d remove · Esc back"
         )
+        if state.error:
+            lines.append(("class:error", f"\n {state.error}\n"))
         lines.append(("class:hint", f"\n{hint}"))
         return lines
+
+    def start_editor(kind: str, *, initial: str = "") -> None:
+        state.editing = True
+        state.editing_kind = kind
+        state.buffer = initial
+        state.error = ""
+
+    def stop_editor() -> None:
+        state.editing = False
+        state.editing_kind = ""
+        state.buffer = ""
+        state.custom_values = []
+        state.custom_index = 0
+        state.custom_original_alias = ""
+
+    def selected_custom_voice() -> CustomVoiceSetting | None:
+        if settings.tts_engine != "elevenbytes":
+            return None
+        return next(
+            (
+                item
+                for item in settings.elevenbytes_custom_voices
+                if item.alias.casefold() == settings.tts_voice_id.casefold()
+            ),
+            None,
+        )
+
+    def start_custom_voice_editor(
+        custom: CustomVoiceSetting | None,
+    ) -> None:
+        state.custom_values = [] if custom is None else [custom.alias, custom.label, custom.voice_id]
+        state.custom_index = 0
+        state.custom_original_alias = custom.alias if custom is not None else ""
+        initial: str = state.custom_values[0] if state.custom_values else ""
+        start_editor("custom_voice", initial=initial)
+
+    def commit_custom_stage() -> None:
+        value: str = state.buffer.strip()
+        if not value:
+            state.error = "Custom voice values cannot be empty"
+            return
+        if len(state.custom_values) > state.custom_index:
+            state.custom_values[state.custom_index] = value
+        else:
+            state.custom_values.append(value)
+        state.custom_index += 1
+        if state.custom_index < _CUSTOM_VOICE_PARTS:
+            state.buffer = (
+                state.custom_values[state.custom_index] if len(state.custom_values) > state.custom_index else ""
+            )
+            state.error = ""
+            return
+        alias, label, voice_id = state.custom_values
+        try:
+            if state.custom_original_alias:
+                settings.update_elevenbytes_voice(
+                    state.custom_original_alias,
+                    alias=alias,
+                    label=label,
+                    voice_id=voice_id,
+                )
+            else:
+                settings.add_elevenbytes_voice(
+                    alias=alias,
+                    label=label,
+                    voice_id=voice_id,
+                )
+                settings.tts_voice_id = alias
+                settings.ensure_active_tts_profile()
+            save_user_settings(settings)
+        except ValueError as error:
+            state.custom_index = 0
+            state.buffer = state.custom_values[0]
+            state.error = str(error)
+            return
+        stop_editor()
 
     bindings = KeyBindings()
 
@@ -321,7 +491,14 @@ def open_settings_panel(  # noqa: C901, PLR0915 - prompt_toolkit bindings share 
         if state.editing:
             return
         fields = _visible_fields(settings)
-        _step_field(settings, fields[state.row], -1, engines, registry)
+        _step_field(
+            settings,
+            fields[state.row],
+            -1,
+            engines,
+            registry,
+            catalog,
+        )
         save_user_settings(settings)
 
     @bindings.add("right")
@@ -330,28 +507,58 @@ def open_settings_panel(  # noqa: C901, PLR0915 - prompt_toolkit bindings share 
         if state.editing:
             return
         fields = _visible_fields(settings)
-        _step_field(settings, fields[state.row], 1, engines, registry)
+        _step_field(
+            settings,
+            fields[state.row],
+            1,
+            engines,
+            registry,
+            catalog,
+        )
         save_user_settings(settings)
 
     @bindings.add("enter")
     def _enter(event: KeyPressEvent) -> None:
+        nonlocal catalog
         del event
         if state.editing:
-            if state.buffer.strip():
+            if state.editing_kind == "custom_voice":
+                commit_custom_stage()
+                return
+            if state.editing_kind == "elevenlabs_key":
+                try:
+                    save_elevenlabs_key(context, state.buffer)
+                except (OSError, ValueError) as error:
+                    state.error = str(error)
+                    return
+                catalog = build_tts_catalog(context)
+            elif state.editing_kind == "llm_model" and state.buffer.strip():
                 settings.llm_provider_model_id = state.buffer.strip()
                 save_user_settings(settings)
-            state.editing = False
-            state.buffer = ""
+            elif state.editing_kind == "tts_model" and state.buffer.strip():
+                settings.tts_provider_model_id = state.buffer.strip()
+                save_user_settings(settings)
+            elif state.editing_kind == "tts_voice" and state.buffer.strip():
+                settings.tts_voice_id = state.buffer.strip()
+                settings.ensure_active_tts_profile()
+                save_user_settings(settings)
+            stop_editor()
             return
         fields = _visible_fields(settings)
-        _step_field(settings, fields[state.row], 1, engines, registry)
+        _step_field(
+            settings,
+            fields[state.row],
+            1,
+            engines,
+            registry,
+            catalog,
+        )
         save_user_settings(settings)
 
     @bindings.add("escape")
     def _quit(event: KeyPressEvent) -> None:
         if state.editing:
-            state.editing = False
-            state.buffer = ""
+            stop_editor()
             return
         event.app.exit()
 
@@ -369,9 +576,55 @@ def open_settings_panel(  # noqa: C901, PLR0915 - prompt_toolkit bindings share 
             state.buffer += "e"
             return
         fields = _visible_fields(settings)
-        if fields[state.row].key == "llm_provider_model_id":
-            state.editing = True
-            state.buffer = settings.llm_provider_model_id
+        key: str = fields[state.row].key
+        if key == "llm_provider_model_id":
+            start_editor("llm_model", initial=settings.llm_provider_model_id)
+        elif key == "tts_provider_model_id" and _tts_model_is_freeform(settings):
+            start_editor("tts_model", initial=settings.tts_provider_model_id)
+        elif key == "elevenlabs_api_key":
+            start_editor("elevenlabs_key")
+        elif key == "tts_voice_id":
+            custom: CustomVoiceSetting | None = selected_custom_voice()
+            if custom is not None:
+                start_custom_voice_editor(custom)
+            elif settings.tts_engine == "elevenlabs":
+                start_editor("tts_voice", initial=settings.tts_voice_id)
+
+    @bindings.add("a")
+    def _add_custom_voice(event: KeyPressEvent) -> None:
+        del event
+        if state.editing:
+            state.buffer += "a"
+            return
+        fields = _visible_fields(settings)
+        if fields[state.row].key == "tts_voice_id" and settings.tts_engine == "elevenbytes":
+            start_custom_voice_editor(None)
+
+    @bindings.add("d")
+    def _remove_value(event: KeyPressEvent) -> None:
+        nonlocal catalog
+        del event
+        if state.editing:
+            state.buffer += "d"
+            return
+        fields = _visible_fields(settings)
+        key: str = fields[state.row].key
+        if key == "elevenlabs_api_key":
+            try:
+                remove_elevenlabs_key(context)
+            except OSError as error:
+                state.error = str(error)
+                return
+            catalog = build_tts_catalog(context)
+            state.error = ""
+            return
+        if key != "tts_voice_id":
+            return
+        custom: CustomVoiceSetting | None = selected_custom_voice()
+        if custom is None:
+            return
+        settings.remove_elevenbytes_voice(custom.alias)
+        save_user_settings(settings)
 
     @bindings.add("backspace")
     def _backspace(event: KeyPressEvent) -> None:

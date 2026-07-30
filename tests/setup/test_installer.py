@@ -358,10 +358,11 @@ def test_ensure_binary_installs_then_resolves(tmp_path: Path, monkeypatch: pytes
 def test_ensure_binary_unmapped_raises_binary_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(installer, "resolve_binary", lambda _binary: None)
     monkeypatch.setattr(binaries, "resolve_binary", lambda _binary: None)
+    monkeypatch.setattr(installer, "load_manifest", lambda: ())
 
     def _never(_name: str, **_kwargs: object) -> None:
         raise AssertionError("ensure_resource must not run for a binary without a resource")
 
     monkeypatch.setattr(installer, "ensure_resource", _never)
     with pytest.raises(BinaryNotFoundError):
-        ensure_binary(Binary.BALCON)
+        ensure_binary(Binary.FFMPEG)

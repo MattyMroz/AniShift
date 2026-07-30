@@ -34,5 +34,5 @@ When `bin_hashes.json` moves to a new version, re-extract from the new archive
 rather than downloading from the projects' websites — same file, same hash,
 guaranteed to match.
 
-Only the pages the pipeline actually needs are kept; both archives ship far more
+Only the pages the pipeline actually needs are kept; the archives ship far more
 (translations, GUI manuals, ffplay).

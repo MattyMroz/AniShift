@@ -46,7 +46,16 @@ def test_provider_availability_reports_missing_and_ready_states() -> None:
 def test_llm_fields_are_visible_before_selecting_llm_translation() -> None:
     settings = UserSettings(translation_engine="google")
     keys = [field.key for field in _visible_fields(settings)]
-    assert [field.key for field in _LLM_FIELDS] == keys[3:9]
+    assert [field.key for field in _LLM_FIELDS] == keys[4:10]
+
+
+def test_processing_order_picker_cycles_between_supported_policies() -> None:
+    settings = UserSettings()
+    field = next(field for field in _visible_fields(settings) if field.key == "processing_order_policy")
+
+    _step_field(settings, field, 1, ("google", "deepl", "llm"), PromptRegistry())
+
+    assert settings.processing_order_policy == "strict_natural"
 
 
 def test_provider_change_moves_known_suggestion_to_new_provider_default() -> None:

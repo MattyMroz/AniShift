@@ -9,13 +9,13 @@ import pytest
 
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext
 from anishift.pipeline.llm_queue import (
-    LlmFailureAction,
     LlmProgressState,
     LlmQueueConfig,
     LlmQueueInput,
     SharedProviderState,
     run_llm_queue,
 )
+from anishift.pipeline.recovery import RecoveryAction, RecoveryContext
 from anishift.pipeline.types import FileFailure, FileOutcome
 from anishift.services.llm.errors import (
     LlmAuthError,
@@ -86,6 +86,73 @@ def test_queue_preserves_submission_order_and_ramps_above_one_slot(
     assert set(started) == set(paths)
     assert maximum_active >= 2
     assert [outcomes[path].status for path in paths] == ["done"] * 5
+
+
+def test_strict_input_waits_for_earlier_path_or_skip(tmp_path: Path) -> None:
+    first = tmp_path / "episode1.mkv"
+    second = tmp_path / "episode2.mkv"
+    queue_input = LlmQueueInput(
+        (first, second),
+        policy="strict_natural",
+    )
+    started = threading.Event()
+
+    def factory(_state: SharedProviderState) -> Callable[[Path, SharedProviderState], FileOutcome]:
+        def worker(path: Path, state: SharedProviderState) -> FileOutcome:
+            started.set()
+            state.on_success()
+            return _done(path)
+
+        return worker
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        queued = pool.submit(
+            run_llm_queue,
+            queue_input,
+            worker_factory=factory,
+            not_processed_factory=_not_processed,
+            config=LlmQueueConfig(
+                configured_limit=lambda: 1,
+                cancel=threading.Event(),
+            ),
+        )
+        queue_input.put(second)
+        assert not started.wait(timeout=0.05)
+        queue_input.skip(first)
+        assert started.wait(timeout=1.0)
+        queue_input.close()
+        outcomes = queued.result(timeout=1.0)
+
+    assert outcomes[second].status == "done"
+
+
+def test_strict_queue_stops_after_any_failed_translation(tmp_path: Path) -> None:
+    paths = tuple(tmp_path / f"episode{index}.mkv" for index in range(1, 3))
+    started: list[Path] = []
+
+    def factory(_state: SharedProviderState) -> Callable[[Path, SharedProviderState], FileOutcome]:
+        def worker(path: Path, state: SharedProviderState) -> FileOutcome:
+            started.append(path)
+            state.on_success()
+            return _failed(path, ErrorCode.PIPELINE_STEP_FAILED)
+
+        return worker
+
+    outcomes = run_llm_queue(
+        paths,
+        worker_factory=factory,
+        not_processed_factory=_not_processed,
+        config=LlmQueueConfig(
+            configured_limit=lambda: 1,
+            cancel=threading.Event(),
+            on_provider_failure=lambda _context: RecoveryAction.FINISH,
+            stop_on_failure=True,
+        ),
+    )
+
+    assert started == [paths[0]]
+    assert outcomes[paths[0]].status == "failed"
+    assert outcomes[paths[1]].status == "not_processed"
 
 
 def test_healthy_limit_starts_configured_and_recovery_ramps_one_two_four() -> None:
@@ -182,13 +249,9 @@ def test_provider_failure_stops_unsent_files_and_preserves_completed(
 
         return worker
 
-    def decide(
-        _outcome: FileOutcome,
-        completed: int,
-        pending: int,
-    ) -> LlmFailureAction:
-        decisions.append((completed, pending))
-        return "finish"
+    def decide(context: RecoveryContext) -> RecoveryAction:
+        decisions.append((len(context.completed_files), len(context.pending_files)))
+        return RecoveryAction.FINISH
 
     outcomes = run_llm_queue(
         paths,
@@ -298,10 +361,100 @@ def test_settings_action_retries_failed_file_before_pending_files(
         config=LlmQueueConfig(
             configured_limit=lambda: 1,
             cancel=threading.Event(),
-            on_provider_failure=lambda _outcome, _completed, _pending: "settings",
+            on_provider_failure=lambda _context: RecoveryAction.SETTINGS,
         ),
     )
     assert starts[:2] == [(1, paths[0]), (2, paths[0])]
+    assert all(outcomes[path].status == "done" for path in paths)
+
+
+def test_failed_worker_rebuild_returns_to_recovery_without_losing_queue(
+    tmp_path: Path,
+) -> None:
+    paths = [tmp_path / "episode1.mkv", tmp_path / "episode2.mkv"]
+    generation = 0
+    decisions: list[RecoveryContext] = []
+
+    def factory(_state: SharedProviderState) -> Callable[[Path, SharedProviderState], FileOutcome]:
+        nonlocal generation
+        generation += 1
+        if generation == 2:
+            raise RuntimeError("invalid updated LLM settings")
+
+        def worker(path: Path, _worker_state: SharedProviderState) -> FileOutcome:
+            return _failed(path, ErrorCode.LLM_MODEL_INVALID)
+
+        return worker
+
+    def recover(context: RecoveryContext) -> RecoveryAction:
+        decisions.append(context)
+        return RecoveryAction.SETTINGS if len(decisions) == 1 else RecoveryAction.FINISH
+
+    outcomes = run_llm_queue(
+        paths,
+        worker_factory=factory,
+        not_processed_factory=_not_processed,
+        config=LlmQueueConfig(
+            configured_limit=lambda: 1,
+            cancel=threading.Event(),
+            on_provider_failure=recover,
+        ),
+    )
+
+    assert generation == 2
+    assert [decision.error.code for decision in decisions] == [
+        ErrorCode.LLM_MODEL_INVALID,
+        ErrorCode.LLM_CONFIG_INVALID,
+    ]
+    assert decisions[1].error.message == "invalid updated LLM settings"
+    assert decisions[1].failed_files == (paths[0],)
+    assert decisions[1].pending_files == (paths[1],)
+    assert outcomes[paths[0]].status == "failed"
+    assert outcomes[paths[1]].status == "not_processed"
+
+
+def test_worker_rebuild_can_succeed_after_invalid_updated_settings(
+    tmp_path: Path,
+) -> None:
+    paths = [tmp_path / "episode1.mkv", tmp_path / "episode2.mkv"]
+    generation = 0
+    decisions: list[RecoveryContext] = []
+
+    def factory(state: SharedProviderState) -> Callable[[Path, SharedProviderState], FileOutcome]:
+        nonlocal generation
+        generation += 1
+        current = generation
+        if current == 2:
+            raise ValueError("voice configuration is incomplete")
+
+        def worker(path: Path, _worker_state: SharedProviderState) -> FileOutcome:
+            if current == 1:
+                return _failed(path, ErrorCode.LLM_MODEL_INVALID)
+            state.on_success()
+            return _done(path)
+
+        return worker
+
+    def recover(context: RecoveryContext) -> RecoveryAction:
+        decisions.append(context)
+        return RecoveryAction.SETTINGS
+
+    outcomes = run_llm_queue(
+        paths,
+        worker_factory=factory,
+        not_processed_factory=_not_processed,
+        config=LlmQueueConfig(
+            configured_limit=lambda: 1,
+            cancel=threading.Event(),
+            on_provider_failure=recover,
+        ),
+    )
+
+    assert generation == 3
+    assert [decision.error.code for decision in decisions] == [
+        ErrorCode.LLM_MODEL_INVALID,
+        ErrorCode.LLM_CONFIG_INVALID,
+    ]
     assert all(outcomes[path].status == "done" for path in paths)
 
 

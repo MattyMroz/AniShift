@@ -511,6 +511,38 @@ class TestMultiProgressManager:
         assert mp._progress.tasks[0].completed == 35
         assert mp._progress.tasks[0].id == task
 
+    def test_task_presentation_switches_one_existing_row_between_bar_and_spinner(self):
+        mp = MultiProgressManager()
+        task = mp.add_task("episode.mkv")
+        mp.update(task, 40)
+
+        mp.set_task_presentation(
+            task,
+            show_bar=False,
+            show_percentage=False,
+            show_spinner=True,
+        )
+
+        fields = mp._progress.tasks[0].fields
+        assert fields["show_spinner"] is True
+        assert fields["show_percentage"] is False
+        assert fields["custom_bar"] == ""
+        assert mp._states[task].show_bar is False
+
+        mp.set_task_presentation(
+            task,
+            show_bar=True,
+            show_percentage=True,
+            show_spinner=False,
+        )
+
+        fields = mp._progress.tasks[0].fields
+        assert fields["show_spinner"] is False
+        assert fields["show_percentage"] is True
+        assert fields["custom_bar"]
+        assert mp._states[task].show_bar is True
+        assert mp._progress.tasks[0].completed == 40
+
     def test_single_task_columns_fall_back_without_field(self):
         col = ColoredPercentageColumn("green_bold")
         task = _mock_task(total=100, completed=50)
