@@ -322,6 +322,8 @@ def test_default_voice_profiles_match_stage_six_decisions() -> None:
     assert (zosia.native_rate, zosia.native_volume, zosia.voice_mix_offset_db) == (200, 0.7, 0.0)
     assert (marek.native_rate, marek.native_volume, marek.voice_mix_offset_db) == ("+40%", "+0%", 0.0)
     assert (zofia.native_rate, zofia.native_volume, zofia.voice_mix_offset_db) == ("+40%", "+0%", 0.0)
+    assert marek.concurrency == 16
+    assert zofia.concurrency == 16
 
 
 def test_partial_builtin_profile_override_preserves_other_defaults(config_file: Path) -> None:

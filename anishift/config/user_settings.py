@@ -211,12 +211,12 @@ def default_tts_voice_profiles() -> dict[str, TtsVoiceProfileSettings]:
             native_volume=0.7,
         ),
         _EDGE_MAREK_PROFILE_KEY: TtsVoiceProfileSettings(
-            concurrency=8,
+            concurrency=16,
             native_rate=DEFAULT_RATE,
             native_volume=DEFAULT_VOLUME,
         ),
         _EDGE_ZOFIA_PROFILE_KEY: TtsVoiceProfileSettings(
-            concurrency=8,
+            concurrency=16,
             native_rate=DEFAULT_RATE,
             native_volume=DEFAULT_VOLUME,
         ),

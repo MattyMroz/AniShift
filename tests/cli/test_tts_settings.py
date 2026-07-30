@@ -99,7 +99,7 @@ def test_engine_switch_sets_compatible_model_voice_and_profile() -> None:
     assert settings.tts_engine == "edge"
     assert settings.tts_provider_model_id == EDGE_PROVIDER_MODEL_ID
     assert settings.tts_voice_id == MAREK_VOICE_ID
-    assert settings.active_tts_profile.concurrency == 8
+    assert settings.active_tts_profile.concurrency == 16
 
 
 def test_engine_switch_skips_registry_entries_without_panel_defaults() -> None:
