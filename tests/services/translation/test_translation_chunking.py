@@ -119,6 +119,14 @@ def test_oversized_word_is_hard_cut() -> None:
     assert "".join(chunks) == "a" * 300
 
 
+def test_hard_cut_preserves_graphemes_when_the_limit_allows_it() -> None:
+    text = "A👨‍👩‍👧‍👦B"
+    chunks = chunk_text(text, char_limit=7, chunk_limit=7)
+
+    assert chunks == ["A", "👨‍👩‍👧‍👦", "B"]
+    assert "".join(chunks) == text
+
+
 def test_cjk_splits_on_ideographic_full_stop() -> None:
     assert chunk_text("こんにちは。世界です。", char_limit=8, chunk_limit=8) == ["こんにちは。", "世界です。"]
 

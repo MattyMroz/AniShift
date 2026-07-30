@@ -308,6 +308,13 @@ pliki:
 
 zależności: etap 4 (etap 5 nie blokuje — tts nie korzysta z llm, oba etapy mogą iść równolegle). logika z `modules/subtitle_to_speech.py` + `modules/tts_elevenbytes.py` + wzorce EchoReader (klucz API, voice_settings) — ale dispatch przez rejestr, nie if/elif.
 jak testować: SRT polski → WAV lektora każdym dostępnym silnikiem; elevenbytes: wznowienie po przerwaniu trafia (stan w `workspace/tmp/`, opłacone requesty nie idą drugi raz), retry/rundy działają, v2 i v3 przez provider_model_id; SAPI działa z Zosią w workerze x64 i Agnieszką w workerze x86; elevenlabs bez klucza `ANISHIFT_ELEVENLABS_API_KEY` = `is_available` fałsz (znika z panelu), z kluczem generuje WAV przez oficjalne API; tor audio: atempo/volume/amix daje ten sam wynik co dziś na próbce.
+
+### etap 6.1 — wspólne prymitywy tekstowe
+**cel:** wydzielenie wspólnych granic Unicode, skrótów i segmentacji grafemów z
+chunkerów translation/TTS bez łączenia ich odmiennych kontraktów domenowych.
+
+Szczegółowy zakres, struktura i kryteria:
+[`etap-6.1-shared-text-primitives.md`](etap-6.1-shared-text-primitives.md).
 DoD: pełny lektor elevenbytes na realnym odcinku brzmi/wygląda jak z obecnego kodu; edge i SAPI działają; jeden `Ctrl+C` kończy worker SAPI; żaden plik serwisu nie przekracza ~300 linii; poza tmp/ nie powstaje żaden folder stanu.
 
 ### etap 7 — składanie + pełne e2e
