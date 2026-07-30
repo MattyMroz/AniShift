@@ -30,6 +30,7 @@ from anishift.services.audio.errors import AudioError
 from anishift.services.audio.probe import (
     probe_audio,
     probe_decoded_mp3,
+    probe_pcm_wav,
     validate_decode,
 )
 from anishift.services.audio.service import AudioProgressSink
@@ -304,6 +305,17 @@ class _FfmpegClipAdapter:
         expected: RenderAudioFormat = RenderAudioFormat(expectation.format.value)
         if expected is RenderAudioFormat.MP3:
             return self._validate_mp3(path, expectation)
+        if expected is RenderAudioFormat.WAV:
+            pcm_probe = probe_pcm_wav(path, cancel=self._cancel)
+            if pcm_probe is not None:
+                return ClipValidation(
+                    format=expectation.format,
+                    sample_rate=pcm_probe.sample_rate,
+                    channels=pcm_probe.channels,
+                    duration_ms=pcm_probe.duration_ms,
+                )
+            if self._cancel.is_set():
+                return None
         try:
             probe = probe_audio(
                 path,

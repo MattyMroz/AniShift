@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
+import wave
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -13,8 +15,10 @@ from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline.narration import NarrationBatch, NarrationItem
-from anishift.pipeline.tts_runtime import PipelineTtsRuntime
+from anishift.pipeline.tts_runtime import PipelineTtsRuntime, _FfmpegClipAdapter
 from anishift.services.audio import AudioConfig
+from anishift.services.audio.commands import CommandResult
+from anishift.services.audio.errors import AudioProcessError
 from anishift.services.audio.service import AudioProgressSink
 from anishift.services.audio.types import (
     AudioCodecProfile,
@@ -28,6 +32,7 @@ from anishift.services.audio.types import (
 )
 from anishift.services.tts import (
     AudioFormat,
+    ClipExpectation,
     SpeechBatch,
     SpeechBatchProgress,
     SpeechBatchResult,
@@ -41,6 +46,132 @@ from anishift.services.tts import (
     TtsConfig,
 )
 from anishift.services.tts.protocols import TtsProgressSink
+
+
+class _ClipRunner:
+    def __init__(self, *, fail_decode: bool = False) -> None:
+        self.operations: list[str] = []
+        self.fail_decode: bool = fail_decode
+
+    def run(
+        self,
+        command: tuple[str, ...],
+        *,
+        operation: str,
+        timeout_s: float,
+        cancel: threading.Event | None = None,
+    ) -> CommandResult:
+        del timeout_s, cancel
+        self.operations.append(operation)
+        if operation == "probe":
+            payload: str = json.dumps(
+                {
+                    "streams": [
+                        {
+                            "codec_type": "audio",
+                            "codec_name": "pcm_s16le",
+                            "sample_rate": "48000",
+                            "channels": 1,
+                            "duration": "1",
+                        },
+                    ],
+                    "format": {"format_name": "wav", "duration": "1"},
+                },
+            )
+            return CommandResult(command, payload, "", 0)
+        if operation == "decode" and self.fail_decode:
+            raise AudioProcessError(
+                context=ErrorContext(
+                    code=ErrorCode.AUDIO_FAILED,
+                    message="decode failed",
+                ),
+            )
+        return CommandResult(command, "", "", 0)
+
+
+def _write_pcm_wav(path: Path) -> None:
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(48_000)
+        stream.writeframes(bytes(96_000))
+
+
+def _clip_adapter(
+    runner: _ClipRunner,
+    *,
+    cancel: threading.Event | None = None,
+) -> _FfmpegClipAdapter:
+    return _FfmpegClipAdapter(
+        cancel=cancel if cancel is not None else threading.Event(),
+        runner=runner,
+        ffmpeg=Path("ffmpeg"),
+        ffprobe=Path("ffprobe"),
+        timeout_s=1,
+    )
+
+
+def test_pcm_wav_clip_validation_starts_no_external_process(tmp_path: Path) -> None:
+    path: Path = tmp_path / "voice.wav"
+    _write_pcm_wav(path)
+    runner = _ClipRunner()
+
+    validation = _clip_adapter(runner).validate_clip(
+        path,
+        ClipExpectation(AudioFormat.WAV),
+    )
+
+    assert validation is not None
+    assert validation.sample_rate == 48_000
+    assert validation.channels == 1
+    assert validation.duration_ms == 1000
+    assert runner.operations == []
+
+
+def test_unsupported_wav_clip_validation_falls_back_to_ffmpeg(tmp_path: Path) -> None:
+    path: Path = tmp_path / "voice.wav"
+    _write_pcm_wav(path)
+    payload: bytearray = bytearray(path.read_bytes())
+    payload[20:22] = (6).to_bytes(2, byteorder="little")
+    path.write_bytes(payload)
+    runner = _ClipRunner()
+
+    validation = _clip_adapter(runner).validate_clip(
+        path,
+        ClipExpectation(AudioFormat.WAV),
+    )
+
+    assert validation is not None
+    assert runner.operations == ["probe", "decode"]
+
+
+def test_truncated_wav_falls_back_and_fails_complete_decode(tmp_path: Path) -> None:
+    path: Path = tmp_path / "voice.wav"
+    _write_pcm_wav(path)
+    path.write_bytes(path.read_bytes()[:-2])
+    runner = _ClipRunner(fail_decode=True)
+
+    validation = _clip_adapter(runner).validate_clip(
+        path,
+        ClipExpectation(AudioFormat.WAV),
+    )
+
+    assert validation is None
+    assert runner.operations == ["probe", "decode"]
+
+
+def test_cancelled_pcm_wav_validation_starts_no_process(tmp_path: Path) -> None:
+    path: Path = tmp_path / "voice.wav"
+    _write_pcm_wav(path)
+    runner = _ClipRunner()
+    cancel = threading.Event()
+    cancel.set()
+    adapter = _clip_adapter(runner, cancel=cancel)
+
+    validation = adapter.validate_clip(path, ClipExpectation(AudioFormat.WAV))
+
+    assert validation is None
+    assert runner.operations == []
 
 
 def test_runtime_from_context_maps_voice_and_audio_profiles(

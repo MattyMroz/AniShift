@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import threading
+import wave
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Never
+from typing import Any, Final, Never
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.commands import (
@@ -33,8 +34,25 @@ __all__ = [
     "parse_probe_json",
     "probe_audio",
     "probe_decoded_mp3",
+    "probe_pcm_wav",
     "validate_decode",
 ]
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+_PCM_WAV_CODECS: Final[dict[int, str]] = {
+    1: "pcm_u8",
+    2: "pcm_s16le",
+    3: "pcm_s24le",
+    4: "pcm_s32le",
+}
+"""FFmpeg codec identities for PCM sample widths accepted by ``wave``."""
+
+_WAV_READ_FRAMES: Final[int] = 64 * 1024
+"""Frames read per iteration while validating the complete WAV payload."""
+
+_MAX_FFMPEG_SAMPLE_RATE: Final[int] = 2_147_483_647
+"""Largest WAV sample rate representable by FFmpeg's signed integer path."""
 
 
 def measure_audio_duration(
@@ -141,6 +159,52 @@ def probe_audio(
         cancel=cancel,
     )
     return parse_probe_json(path, result.stdout)
+
+
+def probe_pcm_wav(
+    path: Path,
+    *,
+    cancel: threading.Event | None = None,
+) -> AudioProbe | None:
+    """Return complete PCM WAV metadata without starting external processes."""
+    if (cancel is not None and cancel.is_set()) or not path.is_file() or path.stat().st_size == 0:
+        return None
+    try:
+        with wave.open(str(path), "rb") as stream:
+            sample_width: int = stream.getsampwidth()
+            codec_name: str | None = _PCM_WAV_CODECS.get(sample_width)
+            sample_rate: int = stream.getframerate()
+            channels: int = stream.getnchannels()
+            frame_count: int = stream.getnframes()
+            if (
+                stream.getcomptype() != "NONE"
+                or codec_name is None
+                or not 0 < sample_rate <= _MAX_FFMPEG_SAMPLE_RATE
+                or channels not in {1, 2}
+                or frame_count <= 0
+            ):
+                return None
+            expected_bytes: int = frame_count * sample_width * channels
+            decoded_bytes: int = 0
+            while frames := stream.readframes(_WAV_READ_FRAMES):
+                if cancel is not None and cancel.is_set():
+                    return None
+                decoded_bytes += len(frames)
+    except OSError, EOFError, wave.Error:
+        return None
+    duration_ms: int = (frame_count * 1000 + sample_rate // 2) // sample_rate
+    if decoded_bytes != expected_bytes or duration_ms <= 0:
+        return None
+    return AudioProbe(
+        path=path,
+        codec_name=codec_name,
+        format_name="wav",
+        sample_rate=sample_rate,
+        channels=channels,
+        channel_layout=_default_layout(channels),
+        duration_ms=duration_ms,
+        bit_rate=sample_rate * channels * sample_width * 8,
+    )
 
 
 def probe_decoded_mp3(

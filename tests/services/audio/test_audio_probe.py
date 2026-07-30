@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import threading
+import wave
 from pathlib import Path
 
 import pytest
-from audio_test_helpers import RecordingRunner, command_result, probe_payload
+from audio_test_helpers import RecordingRunner, command_result, probe_payload, write_wav
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.commands import CommandResult
@@ -15,6 +17,7 @@ from anishift.services.audio.probe import (
     parse_probe_json,
     probe_audio,
     probe_decoded_mp3,
+    probe_pcm_wav,
 )
 
 
@@ -112,6 +115,70 @@ def test_probe_audio_uses_json_argument_list(tmp_path: Path) -> None:
         "json",
     )
     assert command[-1] == str(path)
+
+
+def test_probe_pcm_wav_reads_complete_payload_without_subprocess(tmp_path: Path) -> None:
+    path = tmp_path / "voice.wav"
+    write_wav(path, frames=48_000, sample_rate=48_000, channels=1)
+
+    probe = probe_pcm_wav(path)
+
+    assert probe is not None
+    assert probe.codec_name == "pcm_s16le"
+    assert probe.format_name == "wav"
+    assert probe.sample_rate == 48_000
+    assert probe.channels == 1
+    assert probe.duration_ms == 1000
+    assert probe.bit_rate == 768_000
+
+
+def test_probe_pcm_wav_rejects_truncated_payload(tmp_path: Path) -> None:
+    path = tmp_path / "truncated.wav"
+    write_wav(path, frames=48_000, sample_rate=48_000, channels=1)
+    path.write_bytes(path.read_bytes()[:-2])
+
+    assert probe_pcm_wav(path) is None
+
+
+def test_probe_pcm_wav_defers_compressed_wave(tmp_path: Path) -> None:
+    path = tmp_path / "compressed.wav"
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(48_000)
+        stream.setcomptype("NONE", "not compressed")
+        stream.writeframes(b"\0\0")
+    payload = bytearray(path.read_bytes())
+    payload[20:22] = (6).to_bytes(2, byteorder="little")
+    path.write_bytes(payload)
+
+    assert probe_pcm_wav(path) is None
+
+
+def test_probe_pcm_wav_rejects_sample_rate_outside_ffmpeg_range(tmp_path: Path) -> None:
+    path = tmp_path / "invalid-rate.wav"
+    write_wav(path, frames=2_147_484, sample_rate=48_000, channels=1)
+    payload = bytearray(path.read_bytes())
+    payload[24:28] = (0xFFFFFFFF).to_bytes(4, byteorder="little")
+    path.write_bytes(payload)
+
+    assert probe_pcm_wav(path) is None
+
+
+def test_probe_pcm_wav_rejects_duration_rounded_to_zero(tmp_path: Path) -> None:
+    path = tmp_path / "too-short.wav"
+    write_wav(path, frames=1, sample_rate=48_000, channels=1)
+
+    assert probe_pcm_wav(path) is None
+
+
+def test_probe_pcm_wav_stops_before_read_when_cancelled(tmp_path: Path) -> None:
+    path = tmp_path / "voice.wav"
+    write_wav(path, frames=48_000, sample_rate=48_000, channels=1)
+    cancel = threading.Event()
+    cancel.set()
+
+    assert probe_pcm_wav(path, cancel=cancel) is None
 
 
 def test_probe_decoded_mp3_uses_one_complete_decode(tmp_path: Path) -> None:
