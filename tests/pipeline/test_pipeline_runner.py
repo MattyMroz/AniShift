@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from pysubs2 import SSAFile
 
 from anishift.bootstrap import AppContext
 from anishift.config.settings import Settings
@@ -15,13 +16,15 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline import discover_inputs, run_pipeline, runner
 from anishift.pipeline.llm_queue import LlmProgressState
 from anishift.pipeline.narration import NarrationBatch
+from anishift.pipeline.recovery import RecoveryAction
 from anishift.pipeline.runner import _LlmProgressGate, _worker_count
 from anishift.pipeline.tts_queue import TtsQueueOutcome
 from anishift.pipeline.types import FileOutcome, TranslationSettings
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo
 from anishift.services.subtitles.errors import SubtitleError
-from anishift.services.subtitles.types import SubtitleSplit
+from anishift.services.subtitles.types import SplitStats, SpokenLine, SubtitleSplit
+from anishift.services.translation.types import FileTranslation, TranslatedLine
 from anishift.services.tts import SpeechBatch
 
 
@@ -263,6 +266,97 @@ def test_llm_queue_isolates_mkv_write_failure(
     assert states[bad].outcome.failure is not None
     assert states[good].outcome.status == "done"
     assert published == [good]
+
+
+def test_llm_retry_clears_previous_failure_before_publishing_narration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "episode.mkv"
+    spoken = SpokenLine(
+        start=1_000,
+        end=2_000,
+        text="Good evening",
+        style="Default",
+    )
+    split = SubtitleSplit(
+        kind="ass",
+        subs=SSAFile(),
+        decisions=("spoken",),
+        verdicts=(),
+        spoken=(spoken,),
+        stats=SplitStats(1, 1, 1, 0, 0, 0),
+    )
+    state = runner._MkvState(
+        FileOutcome(source, "done"),
+        split,
+        "ass",
+        scope_id="scope-episode",
+    )
+    context = AppContext(
+        Settings(gemini_api_key="secret"),
+        UserSettings(translation_engine="llm"),
+        tmp_path,
+    )
+    attempts: int = 0
+    published: list[Path] = []
+
+    class _FakeRuntime:
+        def __init__(self, *_: object, **__: object) -> None:
+            self.records: list[object] = []
+
+        def __enter__(self) -> _FakeRuntime:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def engine_factory(self) -> None:
+            return None
+
+    def translate_split(*_: object, **__: object) -> FileTranslation:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return FileTranslation(
+                error="Gemini overloaded",
+                error_context=ErrorContext(
+                    code=ErrorCode.LLM_PROVIDER_UNAVAILABLE,
+                    message="Gemini overloaded",
+                ),
+            )
+        return FileTranslation(
+            spoken=(
+                TranslatedLine(
+                    start=spoken.start,
+                    end=spoken.end,
+                    source_text=spoken.text,
+                    text="Dobry wieczór",
+                    lines=("Dobry wieczór",),
+                    style=spoken.style,
+                ),
+            ),
+            engine_id="llm",
+        )
+
+    monkeypatch.setattr("anishift.pipeline.llm_runtime.PipelineLlmRuntime", _FakeRuntime)
+    monkeypatch.setattr(runner, "_translate_split", translate_split)
+    monkeypatch.setattr(runner, "_write_translation_products", lambda *_: None)
+
+    runner._translate_llm_inputs(
+        (source,),
+        {source: state},
+        context,
+        threading.Event(),
+        on_provider_failure=lambda _context: RecoveryAction.RETRY,
+        on_spoken_ready=lambda path, _batch: published.append(path),
+    )
+
+    assert attempts == 2
+    assert published == [source]
+    assert state.enqueue_generation == 1
+    assert state.outcome.status == "done"
+    assert state.outcome.failure is None
 
 
 def test_llm_pipeline_sets_cancel_before_executor_wait_on_interrupt(

@@ -986,6 +986,8 @@ def _translate_one(  # noqa: PLR0913 - one file's translate step wiring
             batch_rank=state.source_rank,
         )
         _notify_spoken_ready(path, state, on_spoken_ready)
+    state.outcome.status = "done"
+    state.outcome.failure = None
 
 
 def _worker_count(item_count: int) -> int:
