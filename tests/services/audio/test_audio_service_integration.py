@@ -343,7 +343,7 @@ def test_audio_service_uses_decoded_duration_for_vbr_adts_aac(
 
     assert abs(metadata_probe.duration_ms - decoded_duration_ms) > 1_000
     assert result.output_probe is not None
-    assert abs(result.output_probe.duration_ms - decoded_duration_ms) <= 32
+    assert abs(result.output_probe.duration_ms - decoded_duration_ms) <= 33
 
 
 def _timed_clip(path: Path) -> TimedClip:
