@@ -44,6 +44,7 @@ from anishift.services.tts.engines.elevenbytes.constants import (
 )
 from anishift.services.tts.engines.elevenlabs.constants import DEFAULT_MODEL_ID
 from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES
+from anishift.utils.logger import get_logger
 
 __all__ = [
     "CustomVoiceSetting",
@@ -60,6 +61,8 @@ __all__ = [
     "save_user_settings",
     "tts_profile_key",
 ]
+
+logger = get_logger(__name__)
 
 Mode = Literal["auto", "manual"]
 """Processing mode: ``auto`` (Enter processes everything) or ``manual``."""
@@ -767,7 +770,7 @@ def _migrate_schema(raw: dict[str, Any]) -> bool:
     return True
 
 
-def load_user_settings() -> UserSettings:
+def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant field validation
     """Load panel preferences, falling back to defaults.
 
     Unknown keys are ignored; missing, unreadable, wrong-typed or out-of-range
@@ -775,12 +778,15 @@ def load_user_settings() -> UserSettings:
     """
     path = config_path()
     if not path.is_file():
+        logger.debug("User settings missing; defaults selected")
         return UserSettings()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except OSError, UnicodeDecodeError, json.JSONDecodeError:
+        logger.warning("User settings unreadable; defaults selected")
         return UserSettings()
     if not isinstance(raw, dict) or not _migrate_schema(raw):
+        logger.warning("User settings schema invalid; defaults selected")
         return UserSettings()
 
     legacy_model = raw.get("llm_model")
@@ -823,7 +829,15 @@ def load_user_settings() -> UserSettings:
     filtered["tts_voice_profiles"] = _load_voice_profiles(filtered.get("tts_voice_profiles"))
     filtered["elevenbytes_custom_voices"] = _load_custom_voices(filtered.get("elevenbytes_custom_voices"))
     _clean_bool(filtered, "move_results_to_output")
-    return UserSettings(**filtered)
+    settings = UserSettings(**filtered)
+    logger.debug(
+        "User settings loaded",
+        translation_engine=settings.translation_engine,
+        llm_provider=settings.llm_provider,
+        tts_engine=settings.tts_engine,
+        processing_order=settings.processing_order_policy,
+    )
+    return settings
 
 
 def save_user_settings(settings: UserSettings) -> None:
@@ -836,3 +850,10 @@ def save_user_settings(settings: UserSettings) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(payload, encoding="utf-8")
     tmp.replace(path)
+    logger.info(
+        "User settings saved",
+        translation_engine=settings.translation_engine,
+        llm_provider=settings.llm_provider,
+        tts_engine=settings.tts_engine,
+        processing_order=settings.processing_order_policy,
+    )

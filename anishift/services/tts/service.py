@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -44,6 +45,7 @@ from anishift.services.tts.types import (
     SynthesizedRequest,
 )
 from anishift.services.tts.validation import is_speech_text, validate_speech_batch
+from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -56,6 +58,8 @@ if TYPE_CHECKING:
         TtsProgressSink,
     )
     from anishift.services.tts.types import EngineClipResult
+
+logger = get_logger(__name__)
 
 __all__ = ["TtsService"]
 
@@ -243,6 +247,14 @@ class TtsService:
     ) -> SpeechBatchResult:
         """Synthesize exactly one neutral batch on the shared runtime."""
         validated: SpeechBatch = validate_speech_batch(batch)
+        started_at = time.monotonic()
+        logger.debug(
+            "TTS service batch started",
+            scope_id=validated.scope_id,
+            request_count=len(validated.requests),
+            engine=self._config.engine_id,
+            model=self._config.provider_model_id,
+        )
         loop: asyncio.AbstractEventLoop = self._ensure_loop()
         with self._lifecycle_lock:
             if self._closed or not loop.is_running():
@@ -252,14 +264,26 @@ class TtsService:
                 loop,
             )
         try:
-            return future.result()
+            result = future.result()
         except KeyboardInterrupt:
             self.cancel()
             raise
+        logger.debug(
+            "TTS service batch completed",
+            scope_id=result.scope_id,
+            status=result.status.value,
+            synthesized=result.stats.synthesized,
+            resumed=result.stats.resume_hits,
+            failed=result.stats.failed,
+            retries=result.stats.retries,
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
+        return result
 
     def cancel(self) -> None:
         """Cancel the run once and close the late-result commit gate."""
         self._cancel.cancel()
+        logger.warning("TTS service cancellation requested")
         loop: asyncio.AbstractEventLoop | None = self._loop
         scheduler: TtsScheduler | None = self._scheduler
         if loop is not None and scheduler is not None and loop.is_running():
@@ -354,6 +378,12 @@ class TtsService:
             )
             self._engine = engine
             self._scheduler = scheduler
+            logger.debug(
+                "TTS provider runtime created",
+                engine=self._config.engine_id,
+                model=self._config.provider_model_id,
+                concurrency=self._config.max_concurrency,
+            )
         if self._scheduler is None:
             _raise_closed()
         resolved_engine: TtsEngine | None = self._engine

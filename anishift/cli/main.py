@@ -7,6 +7,7 @@ shell (banner + REPL).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -81,10 +82,33 @@ def setup(
 
 def main() -> None:
     """Console-script entry point (see ``[project.scripts]``)."""
-    from loguru import logger  # noqa: PLC0415 - keep loguru off the import path until entry
+    from anishift.utils.logger import (  # noqa: PLC0415 - configure logging only at the process boundary
+        get_logger,
+        setup_mode_from_env,
+        shutdown_logger,
+    )
 
-    logger.remove()
-    app()
+    setup_mode_from_env(
+        console_enabled=False,
+        file_path=_log_path(),
+    )
+    log = get_logger("anishift")
+    log.info("AniShift process started")
+    try:
+        app()
+    except Exception as error:
+        log.opt(exception=error).critical("AniShift process terminated unexpectedly")
+        raise
+    finally:
+        log.info("AniShift process stopped")
+        shutdown_logger()
+
+
+def _log_path() -> Path:
+    """Resolve the application log beside the repository config directory."""
+    from anishift.config.user_settings import config_path  # noqa: PLC0415 - keep config startup lazy
+
+    return config_path().parent.parent / "logs" / "anishift.log.jsonl"
 
 
 if __name__ == "__main__":

@@ -46,6 +46,7 @@ from anishift.platform.binaries import (
     resolve_binary,
 )
 from anishift.setup.manifest import Resource, load_manifest
+from anishift.utils.logger import get_logger
 from anishift.utils.rich_console import MultiProgressManager, ProgressBarManager
 
 __all__ = [
@@ -88,6 +89,8 @@ _WAIT_POLL_SECONDS: Final[float] = 0.2
 
 _EXE_SUFFIX: Final[str] = ".exe"
 """Extension stripped from a member destination to read its binary stem."""
+
+logger = get_logger(__name__)
 
 
 class InstallerError(FatalError):
@@ -235,8 +238,10 @@ def install_resource(
         OSError: On disk failure (callers map it).
     """
     if not force and is_installed(resource, dest_root):
+        logger.debug("External resource installation skipped", resource=resource.name, reason="already_present")
         return ResourceResult(resource.name, "skipped", "already present")
 
+    logger.info("External resource installation started", resource=resource.name, force=force)
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         tmp_dir = Path(tmp)
         archive = tmp_dir / f"{resource.name}.{resource.archive}"
@@ -261,6 +266,7 @@ def install_resource(
             final.unlink(missing_ok=True)
             shutil.move(staged / member.dest, final)
 
+    logger.info("External resource installation completed", resource=resource.name)
     return ResourceResult(resource.name, "installed", "downloaded and verified")
 
 
@@ -488,6 +494,7 @@ def run_setup(
     """
     loaded = resources if resources is not None else load_manifest()
     root = dest_root if dest_root is not None else external_bin_root()
+    logger.info("Setup run started", resource_count=len(loaded), force=force)
 
     results: dict[str, ResourceResult] = {}
     to_install: list[Resource] = []
@@ -501,4 +508,13 @@ def run_setup(
 
     if to_install:
         results.update(_install_parallel(to_install, root, force=force))
-    return [results[resource.name] for resource in loaded]
+    ordered = [results[resource.name] for resource in loaded]
+    logger.info(
+        "Setup run completed",
+        installed=sum(result.outcome == "installed" for result in ordered),
+        skipped=sum(result.outcome == "skipped" for result in ordered),
+        failed=sum(result.outcome == "failed" for result in ordered),
+        cancelled=sum(result.outcome == "cancelled" for result in ordered),
+        unavailable=sum(result.outcome == "unavailable" for result in ordered),
+    )
+    return ordered

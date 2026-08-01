@@ -10,7 +10,11 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Final
 
+from anishift.utils.logger import get_logger
+
 __all__ = ["env_path", "update_env_value"]
+
+logger = get_logger(__name__)
 
 _ENV_KEY_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Z_][A-Z0-9_]*\Z")
 """Environment-variable names accepted by the editor."""
@@ -46,6 +50,11 @@ def update_env_value(
     updated: str = _updated_text(text, key=key, value=value, newline=newline)
     encoded: bytes = (_UTF8_BOM if has_bom else b"") + updated.encode("utf-8")
     _atomic_write(target, encoded)
+    logger.info(
+        "Environment setting updated",
+        key=key,
+        action="remove" if value is None else "set",
+    )
 
 
 def _detect_newline(text: str) -> str:

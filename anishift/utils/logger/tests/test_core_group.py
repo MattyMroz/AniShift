@@ -261,6 +261,30 @@ class TestSetupMode:
         finally:
             shutdown_logger()
 
+    def test_dev_mode_scrubs_message_extra_and_exception(self, tmp_path: Path) -> None:
+        log_path = tmp_path / "application.log.jsonl"
+        sensitive_value = "value-that-must-not-appear"
+        setup_mode(
+            LoggerMode.DEV,
+            console_enabled=False,
+            file_path=log_path,
+        )
+        try:
+            logger.bind(
+                api_key=sensitive_value,
+                request={"token": sensitive_value},
+            ).info("api_key={value}", value=sensitive_value)
+            try:
+                raise RuntimeError(f"token={sensitive_value}")
+            except RuntimeError:
+                logger.exception("Provider request failed")
+        finally:
+            shutdown_logger()
+
+        payload = log_path.read_text(encoding="utf-8")
+        assert sensitive_value not in payload
+        assert "***" in payload
+
 
 class TestSetupModeFromEnv:
     def test_default_is_production(self, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     )
 
     # Translation
-    deepl_api_key: str = Field(default="", description="DeepL API key")
+    deepl_api_key: str = Field(default="", description="DeepL API key", repr=False)
 
     # TTS
     elevenlabs_api_key: str = Field(
@@ -98,16 +98,24 @@ class Settings(BaseSettings):
     )
 
     # LLM providers
-    anthropic_api_key: str = Field(default="", description="Anthropic API key")
-    gemini_api_key: str = Field(default="", description="Google Gemini API key")
-    openai_api_key: str = Field(default="", description="OpenAI API key")
-    deepseek_api_key: str = Field(default="", description="DeepSeek API key")
-    openrouter_api_key: str = Field(default="", description="OpenRouter API key")
-    openai_compatible_api_key: str = Field(default="", description="OpenAI-compatible endpoint key")
-    openai_compatible_base_url: str = Field(default="", description="OpenAI-compatible endpoint base URL")
+    anthropic_api_key: str = Field(default="", description="Anthropic API key", repr=False)
+    gemini_api_key: str = Field(default="", description="Google Gemini API key", repr=False)
+    openai_api_key: str = Field(default="", description="OpenAI API key", repr=False)
+    deepseek_api_key: str = Field(default="", description="DeepSeek API key", repr=False)
+    openrouter_api_key: str = Field(default="", description="OpenRouter API key", repr=False)
+    openai_compatible_api_key: str = Field(
+        default="",
+        description="OpenAI-compatible endpoint key",
+        repr=False,
+    )
+    openai_compatible_base_url: str = Field(
+        default="",
+        description="OpenAI-compatible endpoint base URL",
+        repr=False,
+    )
 
     # Workspace
-    workspace_root: str = Field(default="", description="Workspace root override")
+    workspace_root: str = Field(default="", description="Workspace root override", repr=False)
 
     @classmethod
     def settings_customise_sources(

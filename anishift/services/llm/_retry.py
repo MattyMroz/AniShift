@@ -16,11 +16,14 @@ from anishift.services.llm.errors import (
 )
 from anishift.services.llm.protocols import LlmAttemptObserver
 from anishift.services.llm.types import LlmResponse
+from anishift.utils.logger import get_logger
 
 __all__ = ["retry_transient"]
 
 RETRY_BACKOFF_CAP_S: Final[float] = 4.0
 """Maximum deterministic delay between LLM completion attempts."""
+
+logger = get_logger(__name__)
 
 
 def retry_transient(
@@ -58,13 +61,33 @@ def retry_transient(
             if observer is not None:
                 observer.on_transient_failure(error)
             if retry_index >= max_retries:
+                logger.exception(
+                    "LLM provider retries exhausted",
+                    attempts=retry_index + 1,
+                    max_retries=max_retries,
+                    error_type=type(error).__name__,
+                    error_code=error.context.code.value,
+                )
                 raise
             delay_s: float = _retry_delay(error, retry_index)
             retry_index += 1
+            logger.warning(
+                "LLM provider retry scheduled",
+                retry=retry_index,
+                max_retries=max_retries,
+                delay_s=delay_s,
+                error_type=type(error).__name__,
+                error_code=error.context.code.value,
+            )
             _wait(delay_s, cancel=cancel, sleep=sleep)
         except AniShiftError as error:
             if observer is not None:
                 observer.on_fatal_failure(error)
+            logger.exception(
+                "LLM provider attempt failed permanently",
+                error_type=type(error).__name__,
+                error_code=error.context.code.value,
+            )
             raise
         else:
             _raise_if_cancelled(cancel)

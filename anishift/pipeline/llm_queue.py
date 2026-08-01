@@ -26,6 +26,7 @@ from anishift.services.llm.errors import (
     LlmOutputBlockedError,
     LlmProviderUnavailableError,
 )
+from anishift.utils.logger import get_logger
 
 __all__ = [
     "LlmFailureAction",
@@ -78,6 +79,8 @@ _PROVIDER_TERMINAL_CODES: Final[frozenset[str]] = frozenset(
     )
 )
 """Failures that pause all new files after provider-level retries are exhausted."""
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,7 +239,6 @@ class SharedProviderState:
 
     def on_transient_failure(self, error: TransientError) -> None:
         """Open the circuit and reserve the retry probe for this worker."""
-        del error
         with self._condition:
             self._release_attempt_locked()
             self._open = True
@@ -244,6 +246,12 @@ class SharedProviderState:
                 self._probe_thread = threading.get_ident()
             self._ramp_limit = 1
             self._condition.notify_all()
+        logger.warning(
+            "LLM provider circuit opened",
+            error_type=type(error).__name__,
+            error_code=error.context.code.value,
+            concurrency_limit=1,
+        )
 
     def on_success(self) -> None:
         """Close a successful probe and grow scheduler capacity."""
@@ -257,6 +265,8 @@ class SharedProviderState:
             self._probe_thread = None
             self._ramp_limit = 2 if self._ramp_limit == 1 else 4
             self._condition.notify_all()
+            ramp_limit = self._ramp_limit
+        logger.info("LLM provider circuit healthy", concurrency_limit=ramp_limit)
 
     def on_fatal_failure(self, error: AniShiftError) -> None:
         """Release the attempt and block only run-wide provider failures."""
@@ -265,6 +275,12 @@ class SharedProviderState:
             if not isinstance(error, (LlmContextLengthError, LlmOutputBlockedError)):
                 self._disabled = True
             self._condition.notify_all()
+        logger.warning(
+            "LLM provider admission updated after fatal failure",
+            disabled=self._disabled,
+            error_type=type(error).__name__,
+            error_code=error.context.code.value,
+        )
 
     def disable(self) -> None:
         """Disable new attempts and wake workers waiting behind the circuit."""
@@ -277,7 +293,7 @@ class SharedProviderState:
         self._attempt_threads.discard(threading.get_ident())
 
 
-def run_llm_queue(  # noqa: PLR0912 - explicit queue state transitions
+def run_llm_queue(  # noqa: PLR0912,PLR0915 - explicit queue state transitions
     paths: Sequence[Path] | LlmQueueInput,
     *,
     worker_factory: LlmQueueWorkerFactory,
@@ -291,6 +307,7 @@ def run_llm_queue(  # noqa: PLR0912 - explicit queue state transitions
     original_order: dict[Path, int] = {}
     state = SharedProviderState(config.cancel)
     worker = worker_factory(state)
+    logger.info("LLM queue started", configured_limit=max(1, min(4, config.configured_limit())))
     with ThreadPoolExecutor(max_workers=4) as pool:
         active: dict[Future[FileOutcome], Path] = {}
         terminal_paths: list[Path] = []
@@ -312,6 +329,7 @@ def run_llm_queue(  # noqa: PLR0912 - explicit queue state transitions
             while pending and len(active) < limit and state.can_submit:
                 path = pending.popleft()
                 _notify_progress(config.on_progress, path, "translating", config.cancel)
+                logger.debug("LLM file admitted", source=path.name, active_files=len(active) + 1, limit=limit)
                 active[pool.submit(worker, path, state)] = path
             if not active:
                 if not input_closed:
@@ -327,10 +345,16 @@ def run_llm_queue(  # noqa: PLR0912 - explicit queue state transitions
                 path = active.pop(future)
                 outcome = future.result()
                 outcomes[path] = outcome
+                logger.debug("LLM file completed", source=path.name, status=outcome.status)
                 _notify_progress(config.on_progress, path, outcome.status, config.cancel)
                 if _is_provider_terminal(outcome) or (config.stop_on_failure and outcome.failure is not None):
                     terminal_paths.append(path)
                     state.disable()
+                    logger.warning(
+                        "LLM queue paused after provider failure",
+                        source=path.name,
+                        error_code=outcome.failure.code if outcome.failure is not None else "unknown",
+                    )
             if terminal_paths and not active and input_closed:
                 recovered = _recover_provider(
                     worker_factory,
@@ -355,6 +379,13 @@ def run_llm_queue(  # noqa: PLR0912 - explicit queue state transitions
         for path in pending:
             outcomes[path] = not_processed_factory(path, context)
             _notify_progress(config.on_progress, path, "not_processed", config.cancel)
+    logger.info(
+        "LLM queue finished",
+        completed=sum(outcome.status == "done" for outcome in outcomes.values()),
+        failed=sum(outcome.status == "failed" for outcome in outcomes.values()),
+        not_processed=sum(outcome.status == "not_processed" for outcome in outcomes.values()),
+        cancelled=sum(outcome.status == "cancelled" for outcome in outcomes.values()),
+    )
     return outcomes
 
 
@@ -378,6 +409,12 @@ def _recover_provider(  # noqa: PLR0913 - queue ownership remains explicit
             original_order,
             error_override=recovery_error,
         )
+        logger.info(
+            "LLM recovery action selected",
+            action=action.value,
+            failed_files=len(terminal_paths),
+            pending_files=len(pending),
+        )
         if action is RecoveryAction.FINISH:
             return None
         candidate_state = SharedProviderState(config.cancel)
@@ -385,6 +422,11 @@ def _recover_provider(  # noqa: PLR0913 - queue ownership remains explicit
             candidate_worker = worker_factory(candidate_state)
         except (AniShiftError, OSError, RuntimeError, ValueError) as exc:
             recovery_error = rebuild_error_context(exc, RecoveryDomain.LLM)
+            logger.warning(
+                "LLM recovery rebuild failed",
+                error_type=type(exc).__name__,
+                error_code=recovery_error.code.value,
+            )
             continue
         retry_paths = sorted(set(terminal_paths), key=original_order.__getitem__)
         for path in retry_paths:

@@ -12,6 +12,7 @@ from typing import Final, Protocol
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.errors import AudioCancelledError, AudioProcessError
 from anishift.services.audio.types import AudioFormat
+from anishift.utils.logger import get_logger
 
 __all__ = [
     "CommandResult",
@@ -53,6 +54,8 @@ _JOIN_OUTPUT_ARGS: Final[dict[AudioFormat, tuple[str, ...]]] = {
     AudioFormat.WAV: ("-c:a", "pcm_s16le", "-f", "wav"),
 }
 """Explicit encoder and muxer for provider-native multipart clip assembly."""
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +117,7 @@ class SubprocessRunner:
     ) -> CommandResult:
         """Execute one command with timeout, cancellation, and safe stderr."""
         started_at: float = time.monotonic()
+        logger.debug("Audio subprocess started", operation=operation, timeout_s=timeout_s)
         try:
             process: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603
                 list(command),
@@ -173,6 +177,11 @@ class SubprocessRunner:
                     code=ErrorCode.AUDIO_FAILED,
                 ),
             )
+        logger.debug(
+            "Audio subprocess completed",
+            operation=operation,
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+        )
         return result
 
     def _stop(self, process: subprocess.Popen[str]) -> None:

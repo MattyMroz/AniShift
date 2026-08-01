@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Final
 
 from anishift.errors import ErrorCode, ErrorContext, FatalError
+from anishift.utils.logger import get_logger
 
 __all__ = [
     "TOOL_DIR",
@@ -57,6 +58,8 @@ TOOL_DIR: Final[dict[Binary, str]] = {
     Binary.MKVMERGE: "mkvtoolnix",
 }
 """Subdirectory of ``external/bin/`` that holds each binary."""
+
+logger = get_logger(__name__)
 
 
 # ── Resolution ────────────────────────────────────────────────────────────────
@@ -97,13 +100,16 @@ def resolve_binary(binary: Binary) -> Path | None:
     """
     bundled = external_bin_root() / TOOL_DIR[binary] / _exe_name(binary)
     if bundled.is_file():
+        logger.debug("External binary resolved", binary=binary.value, source="bundled")
         return bundled
 
     if not is_windows():
         found = shutil.which(binary.value)
         if found is not None:
+            logger.debug("External binary resolved", binary=binary.value, source="path")
             return Path(found)
 
+    logger.warning("External binary unavailable", binary=binary.value)
     return None
 
 
