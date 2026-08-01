@@ -12,7 +12,7 @@ import pytest
 
 from anishift.bootstrap import AppContext
 from anishift.config.settings import Settings
-from anishift.config.user_settings import ProcessingOrderPolicy, UserSettings
+from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline.narration import NarrationBatch, NarrationItem
 from anishift.pipeline.tts_runtime import PipelineTtsRuntime, _FfmpegClipAdapter
@@ -611,19 +611,7 @@ def test_runtime_caps_streaming_normalization_globally_across_files(
     assert audio.peak == 2
 
 
-@pytest.mark.parametrize(
-    ("policy", "overlaps_tail"),
-    [
-        ("ready_first", True),
-        ("strict_natural", False),
-    ],
-)
-def test_runtime_tts_tail_overlap_follows_processing_policy(
-    tmp_path: Path,
-    policy: ProcessingOrderPolicy,
-    *,
-    overlaps_tail: bool,
-) -> None:
+def test_runtime_keeps_tts_exclusive_until_episode_synthesis_finishes(tmp_path: Path) -> None:
     first_source = tmp_path / "Episode 1.mkv"
     second_source = tmp_path / "Episode 2.mkv"
     first_narration = _narration()
@@ -695,7 +683,6 @@ def test_runtime_tts_tail_overlap_follows_processing_policy(
         cancel=threading.Event(),
         post_process_tempo=1.0,
         max_active_batches=2,
-        processing_order_policy=policy,
         tts_service=_FocusedTts(),
         audio_service=_BlockingFirstAudio(),
     )
@@ -705,7 +692,7 @@ def test_runtime_tts_tail_overlap_follows_processing_policy(
     assert first_tts_started.wait(timeout=1.0)
     assert not second_tts_started.wait(timeout=0.05)
     expose_first_tail.set()
-    assert second_tts_started.wait(timeout=1.0) is overlaps_tail
+    assert not second_tts_started.wait(timeout=0.05)
     release_first_tts.set()
     assert first_audio_started.wait(timeout=1.0)
     assert second_tts_started.wait(timeout=1.0)

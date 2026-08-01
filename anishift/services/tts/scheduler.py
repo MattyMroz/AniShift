@@ -13,7 +13,6 @@ from anishift.errors import ErrorCode, ErrorContext, TransientError
 from anishift.services.tts.errors import (
     TtsAuthError,
     TtsCancelledError,
-    TtsClipValidationError,
     TtsConfigError,
     TtsError,
     TtsProviderUnavailableError,
@@ -366,7 +365,7 @@ class TtsScheduler:
         return max(0.0, self._delayed[0].ready_at - self._clock())
 
     def _retry_delay(self, attempts: int, error: TtsError) -> float:
-        if self._engine.capabilities.locality is EngineLocality.SYSTEM or isinstance(error, TtsClipValidationError):
+        if self._engine.capabilities.locality is EngineLocality.SYSTEM:
             return 0.0
         index: int = min(attempts - 1, len(_BACKOFF_SECONDS) - 1)
         local_delay: float = _BACKOFF_SECONDS[index]

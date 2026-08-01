@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from types import TracebackType
@@ -193,19 +192,18 @@ class _SilentPipelineProgress:
 
 
 class _SynthesisFocus:
-    """Prioritize episodes while allowing ready-first tail overlap."""
+    """Give one episode exclusive access to the shared TTS request pool."""
 
     def __init__(self, cancel: threading.Event, policy: ProcessingOrderPolicy) -> None:
         """Create an idle, rank-aware focus gate."""
         self._cancel: threading.Event = cancel
         self._condition: threading.Condition = threading.Condition()
-        self._active_rank: int | None = None
+        self._active: bool = False
         self._next_rank: int = 0
         self._paused: bool = False
         self._policy: ProcessingOrderPolicy = policy
         self._started: bool = False
         self._waiting: dict[int, int] = {}
-        self._yielded: set[int] = set()
 
     def acquire(self, admission_rank: int) -> bool:
         """Wait until this batch is the highest-priority ready synthesis."""
@@ -214,8 +212,8 @@ class _SynthesisFocus:
                 if self._cancel.is_set() or self._paused:
                     self._waiting.pop(admission_rank, None)
                     return False
-                if self._active_rank is None and self._has_priority(admission_rank):
-                    self._active_rank = admission_rank
+                if not self._active and self._has_priority(admission_rank):
+                    self._active = True
                     self._started = True
                     self._waiting.pop(admission_rank)
                     return True
@@ -227,26 +225,13 @@ class _SynthesisFocus:
             self._waiting[admission_rank] = batch_rank
             self._condition.notify_all()
 
-    def release(self, admission_rank: int, *, failed: bool) -> None:
+    def release(self, *, failed: bool) -> None:
         """Release provider focus and stop strict work after an earlier failure."""
         with self._condition:
-            if admission_rank in self._yielded:
-                self._yielded.remove(admission_rank)
-            elif self._active_rank == admission_rank:
-                self._active_rank = None
-                self._next_rank += 1
+            self._active = False
+            self._next_rank += 1
             if failed:
                 self._paused = True
-            self._condition.notify_all()
-
-    def release_tail(self, admission_rank: int) -> None:
-        """Let the next ready-first batch fill capacity unused by this tail."""
-        with self._condition:
-            if self._policy == "strict_natural" or self._active_rank != admission_rank:
-                return
-            self._active_rank = None
-            self._next_rank += 1
-            self._yielded.add(admission_rank)
             self._condition.notify_all()
 
     def _has_priority(self, admission_rank: int) -> bool:
@@ -263,15 +248,13 @@ class _SynthesisFocus:
 class _StreamingNormalizationProgress:
     """Forward UI progress while preparing committed clips immediately."""
 
-    def __init__(  # noqa: PLR0913 - progress adapter receives explicit pipeline-owned dependencies
+    def __init__(
         self,
         downstream: PipelineTtsProgressSink,
         job: TtsQueueJob,
         preparer: _AudioPreparer | None,
         executor: ThreadPoolExecutor,
         cancel: threading.Event,
-        tail_threshold: int,
-        on_tail: Callable[[], None],
     ) -> None:
         """Store one job's timing map and shared normalization executor."""
         self._downstream: PipelineTtsProgressSink = downstream
@@ -279,8 +262,6 @@ class _StreamingNormalizationProgress:
         self._preparer: _AudioPreparer | None = preparer
         self._executor: ThreadPoolExecutor = executor
         self._cancel: threading.Event = cancel
-        self._tail_threshold: int = tail_threshold
-        self._on_tail: Callable[[], None] = on_tail
         self._items: dict[str, NarrationItem] = {item.request.request_id: item for item in job.narration.items}
         self._futures: list[Future[NormalizedClip]] = []
         self._submitted: set[str] = set()
@@ -288,9 +269,6 @@ class _StreamingNormalizationProgress:
 
     def on_batch_state(self, state: SpeechBatchProgress) -> None:
         self._downstream.on_batch_state(state)
-        remaining: int = state.total_required_requests - state.committed_required_requests
-        if remaining <= self._tail_threshold:
-            self._on_tail()
 
     def on_request_committed(self, update: SpeechRequestProgress) -> None:
         clip: SpeechClip | None = update.clip
@@ -456,7 +434,6 @@ class PipelineTtsRuntime:
         self._cancel: threading.Event = cancel
         self._post_process_tempo: float = post_process_tempo
         self._normalization_concurrency: int = audio_config.normalization_concurrency
-        self._synthesis_tail_threshold: int = tts_config.max_concurrency
         self._workspace_root: Path = workspace_root
         self._callbacks: PipelineTtsProgressSink = callbacks or _SilentPipelineProgress()
         self._input: TtsQueueInput = TtsQueueInput(
@@ -656,8 +633,6 @@ class PipelineTtsRuntime:
                 preparer,
                 self._normalization_executor,
                 self._cancel,
-                self._synthesis_tail_threshold,
-                lambda: self._synthesis_focus.release_tail(job.admission_rank),
             )
             speech: SpeechBatchResult = self._tts.synthesize(
                 job.narration.speech,
@@ -673,7 +648,7 @@ class PipelineTtsRuntime:
                 context=_unexpected_step_context("TTS", error),
             )
         finally:
-            self._synthesis_focus.release(job.admission_rank, failed=synthesis_failed)
+            self._synthesis_focus.release(failed=synthesis_failed)
         try:
             progress.wait()
         except AudioError as error:
