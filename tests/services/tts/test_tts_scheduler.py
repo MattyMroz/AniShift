@@ -21,6 +21,7 @@ from anishift.services.tts import (
     SynthesisProfile,
     SynthesisRequest,
     TtsCancellation,
+    TtsClipValidationError,
     TtsConfig,
     TtsError,
     TtsRateLimitError,
@@ -287,6 +288,41 @@ def test_acceptance_failure_retries_through_scheduler(tmp_path: Path) -> None:
         await scheduler.wake()
         assert await engine.started.get() == "retry-accept"
 
+        result = await task
+
+        assert result.error is None
+        assert result.attempts == 2
+        assert acceptance_calls == 2
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
+def test_invalid_provider_clip_retries_without_idle_backoff(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        engine = _Engine()
+        acceptance_calls: int = 0
+
+        async def reject_once(result: EngineClipResult) -> EngineClipResult:
+            nonlocal acceptance_calls
+            acceptance_calls += 1
+            if acceptance_calls == 1:
+                raise TtsClipValidationError("invalid provider clip")
+            return result
+
+        scheduler = TtsScheduler(engine, config=_config(concurrency=1))
+        task = asyncio.create_task(
+            scheduler.submit(
+                _factory(tmp_path, "invalid-clip"),
+                batch_rank=0,
+                request_rank=0,
+                cancel=TtsCancellation(),
+                accept_result=reject_once,
+            ),
+        )
+
+        assert await engine.started.get() == "invalid-clip"
+        assert await asyncio.wait_for(engine.started.get(), timeout=0.1) == "invalid-clip"
         result = await task
 
         assert result.error is None

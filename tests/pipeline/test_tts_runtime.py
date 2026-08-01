@@ -12,7 +12,7 @@ import pytest
 
 from anishift.bootstrap import AppContext
 from anishift.config.settings import Settings
-from anishift.config.user_settings import UserSettings
+from anishift.config.user_settings import ProcessingOrderPolicy, UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline.narration import NarrationBatch, NarrationItem
 from anishift.pipeline.tts_runtime import PipelineTtsRuntime, _FfmpegClipAdapter
@@ -611,8 +611,18 @@ def test_runtime_caps_streaming_normalization_globally_across_files(
     assert audio.peak == 2
 
 
-def test_runtime_focuses_tts_per_episode_and_overlaps_next_tts_with_audio(
+@pytest.mark.parametrize(
+    ("policy", "overlaps_tail"),
+    [
+        ("ready_first", True),
+        ("strict_natural", False),
+    ],
+)
+def test_runtime_tts_tail_overlap_follows_processing_policy(
     tmp_path: Path,
+    policy: ProcessingOrderPolicy,
+    *,
+    overlaps_tail: bool,
 ) -> None:
     first_source = tmp_path / "Episode 1.mkv"
     second_source = tmp_path / "Episode 2.mkv"
@@ -626,6 +636,7 @@ def test_runtime_focuses_tts_per_episode_and_overlaps_next_tts_with_audio(
         ),
     )
     first_tts_started = threading.Event()
+    expose_first_tail = threading.Event()
     release_first_tts = threading.Event()
     second_tts_started = threading.Event()
     first_audio_started = threading.Event()
@@ -638,10 +649,20 @@ def test_runtime_focuses_tts_per_episode_and_overlaps_next_tts_with_audio(
             *,
             callbacks: TtsProgressSink,
         ) -> SpeechBatchResult:
-            del callbacks
             narration = first_narration if batch.scope_id == first_narration.speech.scope_id else second_narration
             if batch.scope_id == first_narration.speech.scope_id:
                 first_tts_started.set()
+                assert expose_first_tail.wait(timeout=2.0)
+                callbacks.on_batch_state(
+                    SpeechBatchProgress(
+                        scope_id=batch.scope_id,
+                        completed_requests=1,
+                        total_requests=2,
+                        committed_required_requests=1,
+                        total_required_requests=2,
+                        status=SpeechBatchStatus.PARTIAL,
+                    ),
+                )
                 assert release_first_tts.wait(timeout=2.0)
             else:
                 second_tts_started.set()
@@ -674,6 +695,7 @@ def test_runtime_focuses_tts_per_episode_and_overlaps_next_tts_with_audio(
         cancel=threading.Event(),
         post_process_tempo=1.0,
         max_active_batches=2,
+        processing_order_policy=policy,
         tts_service=_FocusedTts(),
         audio_service=_BlockingFirstAudio(),
     )
@@ -682,6 +704,8 @@ def test_runtime_focuses_tts_per_episode_and_overlaps_next_tts_with_audio(
 
     assert first_tts_started.wait(timeout=1.0)
     assert not second_tts_started.wait(timeout=0.05)
+    expose_first_tail.set()
+    assert second_tts_started.wait(timeout=1.0) is overlaps_tail
     release_first_tts.set()
     assert first_audio_started.wait(timeout=1.0)
     assert second_tts_started.wait(timeout=1.0)

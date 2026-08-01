@@ -49,6 +49,9 @@ narratora ani finalnego sidecara.
 - Fingerprint obejmuje profil silnika oraz tekst requestu. Zmiana parametru
   wpływającego na dźwięk musi unieważniać resume.
 - Callback postępu jest observerem. Jego błąd nie może przejąć syntezy.
+- Retry uszkodzonego/niepoprawnego klipu jest natychmiastowe; rate limit,
+  timeout, sieć i niedostępność providera zachowują współdzielony backoff.
+  Gotowy retry ma pierwszeństwo przed nowym requestem. `scheduler.py`
 
 ## Podkatalogi
 

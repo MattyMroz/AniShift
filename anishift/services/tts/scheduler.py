@@ -13,6 +13,7 @@ from anishift.errors import ErrorCode, ErrorContext, TransientError
 from anishift.services.tts.errors import (
     TtsAuthError,
     TtsCancelledError,
+    TtsClipValidationError,
     TtsConfigError,
     TtsError,
     TtsProviderUnavailableError,
@@ -21,6 +22,7 @@ from anishift.services.tts.errors import (
     TtsVoiceError,
 )
 from anishift.services.tts.types import EngineLocality
+from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -30,6 +32,8 @@ if TYPE_CHECKING:
     from anishift.services.tts.types import EngineClipResult, SynthesisRequest
 
 __all__ = ["ScheduledSynthesis", "TtsScheduler"]
+
+logger = get_logger(__name__)
 
 _BACKOFF_SECONDS: Final[tuple[float, ...]] = (15.0, 30.0, 60.0, 120.0)
 """Local retry delays capped at two minutes."""
@@ -278,6 +282,19 @@ class TtsScheduler:
     async def _handle_error(self, work: _WorkItem, error: TtsError) -> None:
         if isinstance(error, TransientError) and work.attempts <= self._max_retries:
             delay: float = self._retry_delay(work.attempts, error)
+            logger.bind(
+                batch_rank=work.batch_rank,
+                request_rank=work.request_rank,
+                error_code=error.context.code.value,
+                retry_number=work.attempts,
+                max_retries=self._max_retries,
+                delay_s=delay,
+            ).warning(
+                "TTS retry {retry}/{maximum} scheduled in {delay:.3f}s",
+                retry=work.attempts,
+                maximum=self._max_retries,
+                delay=delay,
+            )
             if work.on_retry is not None:
                 await work.on_retry(
                     work.attempts,
@@ -297,6 +314,15 @@ class TtsScheduler:
                 )
                 self._condition.notify_all()
             return
+        logger.bind(
+            batch_rank=work.batch_rank,
+            request_rank=work.request_rank,
+            error_code=error.context.code.value,
+            attempts=work.attempts,
+        ).error(
+            "TTS request failed after {attempts} attempts",
+            attempts=work.attempts,
+        )
         if _opens_circuit(error):
             async with self._condition:
                 if self._circuit_error is None:
@@ -340,7 +366,7 @@ class TtsScheduler:
         return max(0.0, self._delayed[0].ready_at - self._clock())
 
     def _retry_delay(self, attempts: int, error: TtsError) -> float:
-        if self._engine.capabilities.locality is EngineLocality.SYSTEM:
+        if self._engine.capabilities.locality is EngineLocality.SYSTEM or isinstance(error, TtsClipValidationError):
             return 0.0
         index: int = min(attempts - 1, len(_BACKOFF_SECONDS) - 1)
         local_delay: float = _BACKOFF_SECONDS[index]
