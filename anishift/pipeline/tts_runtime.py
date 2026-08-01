@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -62,6 +61,7 @@ from anishift.services.tts import (
 )
 from anishift.services.tts.protocols import TtsProgressSink
 from anishift.utils.logger import get_logger
+from anishift.utils.timer import Timer
 
 from .narration import NarrationBatch, NarrationItem
 
@@ -701,7 +701,7 @@ class PipelineTtsRuntime:
             )
             return _failed_outcome(job, step="tts", context=context, speech=speech)
         try:
-            audio_started_at: float = time.monotonic()
+            audio_timer: Timer = Timer("audio_render", auto_start=True)
             audio: AudioRenderResult = self._audio.render(
                 AudioRenderRequest(
                     scope_id=job.narration.speech.scope_id,
@@ -723,12 +723,13 @@ class PipelineTtsRuntime:
                 context=_unexpected_step_context("Audio rendering", error),
                 speech=speech,
             )
+        audio_timer.stop()
         return TtsQueueOutcome(
             job=job,
             speech=speech,
             audio=audio,
             failure=None,
-            audio_time_ms=(time.monotonic() - audio_started_at) * 1000,
+            audio_time_ms=audio_timer.duration_ms,
         )
 
     def _register_synthesis(self, job: TtsQueueJob) -> None:

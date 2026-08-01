@@ -65,6 +65,17 @@ class TestTimer:
         d2 = t.duration_ns
         assert d1 == d2
 
+    def test_duration_unit_conversions(self) -> None:
+        with patch(
+            "anishift.utils.timer.perf_counter_ns",
+            side_effect=(1_000_000_000, 2_500_000_000),
+        ):
+            t = Timer("t", auto_start=True)
+            t.stop()
+
+        assert t.duration_ms == 1_500.0
+        assert t.duration_s == 1.5
+
     def test_reset(self) -> None:
         t = Timer("t", auto_start=True)
         t.stop()

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -46,6 +45,7 @@ from anishift.services.tts.types import (
 )
 from anishift.services.tts.validation import is_speech_text, validate_speech_batch
 from anishift.utils.logger import get_logger
+from anishift.utils.timer import Timer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -247,7 +247,7 @@ class TtsService:
     ) -> SpeechBatchResult:
         """Synthesize exactly one neutral batch on the shared runtime."""
         validated: SpeechBatch = validate_speech_batch(batch)
-        started_at = time.monotonic()
+        timer: Timer = Timer("tts_batch", auto_start=True)
         logger.debug(
             "TTS service batch started",
             scope_id=validated.scope_id,
@@ -268,6 +268,7 @@ class TtsService:
         except KeyboardInterrupt:
             self.cancel()
             raise
+        timer.stop()
         logger.debug(
             "TTS service batch completed",
             scope_id=result.scope_id,
@@ -276,7 +277,7 @@ class TtsService:
             resumed=result.stats.resume_hits,
             failed=result.stats.failed,
             retries=result.stats.retries,
-            duration_ms=round((time.monotonic() - started_at) * 1000),
+            duration_ms=round(timer.duration_ms),
         )
         return result
 

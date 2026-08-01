@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import subprocess
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol
@@ -13,6 +12,7 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.errors import AudioCancelledError, AudioProcessError
 from anishift.services.audio.types import AudioFormat
 from anishift.utils.logger import get_logger
+from anishift.utils.timer import Timer
 
 __all__ = [
     "CommandResult",
@@ -116,7 +116,7 @@ class SubprocessRunner:
         cancel: threading.Event | None = None,
     ) -> CommandResult:
         """Execute one command with timeout, cancellation, and safe stderr."""
-        started_at: float = time.monotonic()
+        timer: Timer = Timer(operation, auto_start=True)
         logger.debug("Audio subprocess started", operation=operation, timeout_s=timeout_s)
         try:
             process: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603
@@ -142,7 +142,7 @@ class SubprocessRunner:
             if cancel is not None and cancel.is_set():
                 self._stop(process)
                 _raise_cancelled(operation)
-            elapsed_s: float = time.monotonic() - started_at
+            elapsed_s: float = timer.duration_s
             remaining_s: float = timeout_s - elapsed_s
             if remaining_s <= 0:
                 self._stop(process)
@@ -177,10 +177,11 @@ class SubprocessRunner:
                     code=ErrorCode.AUDIO_FAILED,
                 ),
             )
+        timer.stop()
         logger.debug(
             "Audio subprocess completed",
             operation=operation,
-            duration_ms=round((time.monotonic() - started_at) * 1000),
+            duration_ms=round(timer.duration_ms),
         )
         return result
 

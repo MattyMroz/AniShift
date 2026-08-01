@@ -6,7 +6,6 @@ import json
 import re
 import subprocess
 import threading
-import time
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
@@ -25,6 +24,7 @@ from anishift.services.extraction.types import (
 )
 from anishift.setup.installer import ensure_binary
 from anishift.utils.logger import get_logger
+from anishift.utils.timer import Timer
 
 __all__ = [
     "extract_tracks",
@@ -131,7 +131,7 @@ def identify(path: Path) -> MediaInfo:
     Raises:
         ExtractionError: When mkvmerge fails, times out or emits bad JSON.
     """
-    started_at = time.monotonic()
+    timer: Timer = Timer("media_identification", auto_start=True)
     logger.debug("Media identification started", source=path.name)
     exe = ensure_binary(Binary.MKVMERGE)
     try:
@@ -154,11 +154,12 @@ def identify(path: Path) -> MediaInfo:
         msg = f"{path}: mkvmerge identify failed: {completed.stderr.strip()}"
         raise _fail(ErrorCode.EXTRACTION_FAILED, msg, details={"file": str(path)})
     info = parse_media_info(path, completed.stdout)
+    timer.stop()
     logger.info(
         "Media identification completed",
         source=path.name,
         track_count=len(info.tracks),
-        duration_ms=round((time.monotonic() - started_at) * 1000),
+        duration_ms=round(timer.duration_ms),
     )
     return info
 
@@ -215,7 +216,7 @@ def _terminate_on_cancel(
             return
 
 
-def extract_tracks(  # noqa: PLR0912
+def extract_tracks(  # noqa: PLR0912,PLR0915 - extraction lifecycle stays explicit
     info: MediaInfo,
     selection: TrackSelection,
     dest_dir: Path,
@@ -233,7 +234,7 @@ def extract_tracks(  # noqa: PLR0912
     if not specs:
         logger.debug("Track extraction skipped", source=info.path.name, reason="no_selected_tracks")
         return ExtractionResult(None, None)
-    started_at = time.monotonic()
+    timer: Timer = Timer("track_extraction", auto_start=True)
     logger.debug(
         "Track extraction started",
         source=info.path.name,
@@ -302,10 +303,11 @@ def extract_tracks(  # noqa: PLR0912
             cancel_watcher.join()
     if on_progress is not None:
         on_progress(100)
+    timer.stop()
     logger.info(
         "Track extraction completed",
         source=info.path.name,
         output_count=len(specs),
-        duration_ms=round((time.monotonic() - started_at) * 1000),
+        duration_ms=round(timer.duration_ms),
     )
     return ExtractionResult(audio_path, subtitle_path)
