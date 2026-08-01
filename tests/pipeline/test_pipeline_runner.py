@@ -15,7 +15,7 @@ from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline import discover_inputs, run_pipeline, runner
-from anishift.pipeline.llm_queue import LlmProgressState, LlmQueueInput
+from anishift.pipeline.llm_queue import LlmProgressState, LlmQueueConfig, LlmQueueInput
 from anishift.pipeline.narration import NarrationBatch
 from anishift.pipeline.recovery import RecoveryAction
 from anishift.pipeline.runner import _LlmProgressGate, _worker_count
@@ -232,6 +232,39 @@ def test_translation_settings_routes_llm_preferences_and_env_secrets(
     assert settings.fallback_chain == ()
     assert "gemini-secret" not in repr(settings.llm)
     assert "router-secret" not in repr(settings.llm)
+
+
+def test_strict_llm_queue_respects_configured_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: LlmQueueConfig | None = None
+
+    def fake_run_llm_queue(
+        *_: object,
+        config: LlmQueueConfig,
+        **__: object,
+    ) -> dict[Path, FileOutcome]:
+        nonlocal captured
+        captured = config
+        return {}
+
+    context = AppContext(
+        Settings(gemini_api_key="secret"),
+        UserSettings(
+            translation_engine="llm",
+            processing_order_policy="strict_natural",
+            llm_max_concurrency=4,
+        ),
+        tmp_path,
+    )
+    monkeypatch.setattr("anishift.pipeline.llm_queue.run_llm_queue", fake_run_llm_queue)
+
+    runner._translate_llm_inputs((), {}, context, threading.Event())
+
+    assert captured is not None
+    assert captured.configured_limit() == 4
+    assert captured.stop_on_failure
 
 
 def test_extract_phase_reraises_interrupt_after_cancelling_workers(

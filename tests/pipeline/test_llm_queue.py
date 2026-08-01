@@ -368,6 +368,59 @@ def test_settings_action_retries_failed_file_before_pending_files(
     assert all(outcomes[path].status == "done" for path in paths)
 
 
+def test_strict_concurrent_queue_retries_failed_rank_before_unsent_later_ranks(
+    tmp_path: Path,
+) -> None:
+    paths = [tmp_path / f"episode{index}.mkv" for index in range(1, 7)]
+    generation = 0
+    transitions: list[tuple[Path, LlmProgressState]] = []
+    first_group_admitted = threading.Event()
+    release_first_group = threading.Event()
+
+    def factory(state: SharedProviderState) -> Callable[[Path, SharedProviderState], FileOutcome]:
+        nonlocal generation
+        generation += 1
+        current = generation
+
+        def worker(path: Path, _worker_state: SharedProviderState) -> FileOutcome:
+            if current == 1 and path == paths[1]:
+                return _failed(path, ErrorCode.TRANSLATION_FAILED)
+            if current == 1:
+                assert release_first_group.wait(timeout=2.0)
+            state.on_success()
+            return _done(path)
+
+        return worker
+
+    def progress(path: Path, state: LlmProgressState) -> None:
+        transitions.append((path, state))
+        translating = [item for item, transition in transitions if transition == "translating"]
+        if translating == paths[:4]:
+            first_group_admitted.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        queued = executor.submit(
+            run_llm_queue,
+            paths,
+            worker_factory=factory,
+            not_processed_factory=_not_processed,
+            config=LlmQueueConfig(
+                configured_limit=lambda: 4,
+                cancel=threading.Event(),
+                on_provider_failure=lambda _context: RecoveryAction.RETRY,
+                on_progress=progress,
+                stop_on_failure=True,
+            ),
+        )
+        assert first_group_admitted.wait(timeout=2.0)
+        release_first_group.set()
+        outcomes = queued.result(timeout=2.0)
+
+    translating = [path for path, state in transitions if state == "translating"]
+    assert translating == [*paths[:4], paths[1], *paths[4:]]
+    assert all(outcomes[path].status == "done" for path in paths)
+
+
 def test_failed_worker_rebuild_returns_to_recovery_without_losing_queue(
     tmp_path: Path,
 ) -> None:

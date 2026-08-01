@@ -973,11 +973,7 @@ def _translate_llm_inputs(  # noqa: PLR0913 - queue wiring keeps callbacks expli
         worker_factory=build_worker,
         not_processed_factory=not_processed,
         config=LlmQueueConfig(
-            configured_limit=lambda: (
-                1
-                if context.user_settings.processing_order_policy == "strict_natural"
-                else context.user_settings.llm_max_concurrency
-            ),
+            configured_limit=lambda: context.user_settings.llm_max_concurrency,
             cancel=cancel,
             on_provider_failure=on_provider_failure,
             on_progress=on_progress,
