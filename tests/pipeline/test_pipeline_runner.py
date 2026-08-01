@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import cast
@@ -14,12 +15,12 @@ from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline import discover_inputs, run_pipeline, runner
-from anishift.pipeline.llm_queue import LlmProgressState
+from anishift.pipeline.llm_queue import LlmProgressState, LlmQueueInput
 from anishift.pipeline.narration import NarrationBatch
 from anishift.pipeline.recovery import RecoveryAction
 from anishift.pipeline.runner import _LlmProgressGate, _worker_count
 from anishift.pipeline.tts_queue import TtsQueueOutcome
-from anishift.pipeline.types import FileOutcome, TranslationSettings
+from anishift.pipeline.types import FileFailure, FileOutcome, TranslationSettings
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo
 from anishift.services.subtitles.errors import SubtitleError
@@ -122,6 +123,74 @@ def test_run_pipeline_isolates_identify_failure(monkeypatch: pytest.MonkeyPatch,
     assert report.outcomes[0].status == "failed"
     assert report.outcomes[0].failure is not None
     assert report.outcomes[1].status == "done"
+
+
+def test_strict_pipeline_resolves_failed_extraction_before_later_translation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    failed = tmp_path / "episode 1.mkv"
+    later = tmp_path / "episode 2.mkv"
+    failed.touch()
+    later.touch()
+    failed_outcome = FileOutcome(
+        failed,
+        "failed",
+        failure=FileFailure("write", ErrorCode.PIPELINE_STEP_FAILED.value, "bad timing", ""),
+    )
+    states = {
+        failed: runner._MkvState(failed_outcome, None, source_rank=0),
+        later: runner._MkvState(FileOutcome(later, "done"), cast("SubtitleSplit", object()), source_rank=1),
+    }
+    translated: list[Path] = []
+    skipped_tts: list[Path] = []
+
+    class _RecordingRuntime(_NullTtsRuntime):
+        def skip(self, source: Path) -> None:
+            skipped_tts.append(source)
+
+    def runtime_factory(*_: object) -> _RecordingRuntime:
+        return _RecordingRuntime()
+
+    def fake_extract_phase(
+        *_: object,
+        on_complete: object,
+        **__: object,
+    ) -> dict[Path, runner._MkvState]:
+        callback = cast("Callable[[Path, runner._MkvState], None]", on_complete)
+        callback(failed, states[failed])
+        callback(later, states[later])
+        return states
+
+    def fake_translate_inputs(
+        ready_paths: object,
+        *_: object,
+        **__: object,
+    ) -> dict[Path, FileOutcome]:
+        queue_input = cast("LlmQueueInput", ready_paths)
+        while True:
+            ready, closed = queue_input.drain()
+            translated.extend(ready)
+            if closed:
+                break
+            queue_input.wait()
+        return {}
+
+    context = AppContext(
+        Settings(gemini_api_key="secret"),
+        UserSettings(
+            processing_order_policy="strict_natural",
+            translation_engine="llm",
+        ),
+        tmp_path,
+    )
+    monkeypatch.setattr(runner, "_extract_phase", fake_extract_phase)
+    monkeypatch.setattr(runner, "_translate_llm_inputs", fake_translate_inputs)
+
+    run_pipeline(context, tts_runtime_factory=runtime_factory)
+
+    assert translated == [later]
+    assert skipped_tts == [failed]
 
 
 def test_worker_count_scales_with_cores(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -288,7 +288,7 @@ def run_pipeline(  # noqa: C901,PLR0912,PLR0913,PLR0915 - explicit composition a
         )
 
     def resolve_without_narration(path: Path, state: _MkvState) -> None:
-        if tts_runtime is not None and state.narration is None and state.outcome.failure is None:
+        if tts_runtime is not None and state.narration is None:
             tts_runtime.skip(path)
 
     try:
@@ -305,7 +305,7 @@ def run_pipeline(  # noqa: C901,PLR0912,PLR0913,PLR0915 - explicit composition a
                 _notify_spoken_ready(path, state, publish_narration)
                 if state.split is not None:
                     queue_input.put(path)
-                elif state.outcome.failure is None:
+                else:
                     queue_input.skip(path)
                     resolve_without_narration(path, state)
 
