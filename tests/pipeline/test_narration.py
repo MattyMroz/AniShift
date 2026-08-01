@@ -224,13 +224,16 @@ def test_request_ranks_follow_input_order_while_timing_stays_outside_request() -
     assert tuple(item.source_order for item in narration.items) == (8, 2)
 
 
-def test_invalid_timing_is_rejected_and_empty_spoken_is_empty() -> None:
-    with pytest.raises(NarrationBuildError):
-        build_polish_narration(
-            _split(_source(start=1000, end=1000)),
-            scope_id="scope-test",
-            batch_rank=0,
-        )
+def test_invalid_timing_is_skipped_and_empty_spoken_is_empty() -> None:
+    valid = _source("Poprawna linia.", start=2_000, end=3_000, order=2)
+    narration = build_polish_narration(
+        _split(_source(start=1_000, end=1_000), valid),
+        scope_id="scope-test",
+        batch_rank=0,
+    )
+
+    assert tuple(request.text for request in narration.speech.requests) == ("Poprawna linia.",)
+    assert tuple(item.source_order for item in narration.items) == (2,)
 
     empty = build_polish_narration(
         _split(),
