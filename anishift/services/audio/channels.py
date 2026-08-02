@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Never
+
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.errors import AudioLayoutError
 from anishift.services.audio.types import AudioCodecProfile, ChannelPlan
@@ -76,7 +78,7 @@ def _center_narrator(layout: str) -> str:
     return "pan=7.1|FL=0*c0|FR=0*c0|FC=c0|LFE=0*c0|BL=0*c0|BR=0*c0|SL=0*c0|SR=0*c0"
 
 
-def _raise_layout(profile: AudioCodecProfile, layout: str) -> None:
+def _raise_layout(profile: AudioCodecProfile, layout: str) -> Never:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.AUDIO_FAILED,
         message=f"Unsupported explicit channel layout: {layout}",

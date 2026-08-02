@@ -9,7 +9,7 @@ import threading
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Never
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.commands import CommandRunner, PcmTarget, normalize_command
@@ -232,7 +232,7 @@ def _format_factor(value: float) -> str:
     return f"{value:.10f}".rstrip("0").rstrip(".")
 
 
-def _raise_invalid_pcm(request_id: str) -> None:
+def _raise_invalid_pcm(request_id: str) -> Never:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.AUDIO_FAILED,
         message="FFmpeg produced invalid normalized PCM",
@@ -242,7 +242,7 @@ def _raise_invalid_pcm(request_id: str) -> None:
     raise AudioDecodeError(context=context)
 
 
-def _raise_cancelled(request_id: str) -> None:
+def _raise_cancelled(request_id: str) -> Never:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.CANCELLED,
         message="Audio clip normalization cancelled",

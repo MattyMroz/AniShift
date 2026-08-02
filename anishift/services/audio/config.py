@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Never
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.errors import AudioConfigError
@@ -88,7 +88,7 @@ class AudioConfig:
             _raise_config("flac_compression_level must be between 0 and 12")
 
 
-def _raise_config(message: str) -> None:
+def _raise_config(message: str) -> Never:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.AUDIO_FAILED,
         message=message,

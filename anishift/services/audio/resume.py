@@ -10,7 +10,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Never
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.errors import AudioResumeError
@@ -300,7 +300,7 @@ def _is_redirect(path: Path) -> bool:
     return path.is_symlink() or path.is_junction()
 
 
-def _raise_resume(message: str, *, cause: BaseException | None = None) -> None:
+def _raise_resume(message: str, *, cause: BaseException | None = None) -> Never:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.AUDIO_FAILED,
         message=message,

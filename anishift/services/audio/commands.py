@@ -6,7 +6,7 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final, Never, Protocol
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.errors import AudioCancelledError, AudioProcessError
@@ -394,7 +394,7 @@ def _safe_stderr(stderr: str) -> str:
     return " | ".join(lines[-_STDERR_TAIL_LINES:])[-_STDERR_TAIL_CHARS:]
 
 
-def _raise_cancelled(operation: str) -> None:
+def _raise_cancelled(operation: str) -> Never:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.CANCELLED,
         message=f"Audio operation cancelled: {operation}",
@@ -408,7 +408,7 @@ def _raise_process(
     failure: _ProcessFailure,
     *,
     cause: OSError | None = None,
-) -> None:
+) -> Never:
     context: ErrorContext = ErrorContext(
         code=failure.code,
         message=f"Audio process failed: {failure.operation}",
