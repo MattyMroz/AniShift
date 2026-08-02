@@ -8,15 +8,35 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from http import HTTPStatus
 from types import ModuleType, TracebackType
-from typing import Any, Final, Literal, Never, Protocol, Self, cast
+from typing import Any, Final, Literal, Protocol, Self, cast
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.llm.config import LlmConfig
+from anishift.services.llm.engines._sdk_helpers import (
+    error_with_context as _error_with_context,
+)
+from anishift.services.llm.engines._sdk_helpers import (
+    normalize_finish_reason as _normalize_finish_reason,
+)
+from anishift.services.llm.engines._sdk_helpers import (
+    optional_int as _optional_int,
+)
+from anishift.services.llm.engines._sdk_helpers import (
+    raise_request_error as _raise_request_error,
+)
+from anishift.services.llm.engines._sdk_helpers import (
+    retry_after_seconds as _retry_after_seconds,
+)
+from anishift.services.llm.engines._sdk_helpers import (
+    status_code as _status_code,
+)
+from anishift.services.llm.engines._sdk_helpers import (
+    transient_error_with_context as _transient_error_with_context,
+)
 from anishift.services.llm.errors import (
     LlmAuthError,
     LlmConfigError,
     LlmContextLengthError,
-    LlmError,
     LlmModelError,
     LlmOutputBlockedError,
     LlmPaymentError,
@@ -473,13 +493,6 @@ def _normalize_usage(usage: object) -> LlmUsage:
     )
 
 
-def _normalize_finish_reason(value: object) -> str:
-    enum_value: object = getattr(value, "value", value)
-    if not isinstance(enum_value, str) or not enum_value.strip():
-        return "unknown"
-    return enum_value.strip().lower()
-
-
 def _structured_codes(body: object) -> frozenset[str]:
     codes: set[str] = set()
     if isinstance(body, Mapping):
@@ -494,73 +507,7 @@ def _structured_codes(body: object) -> frozenset[str]:
     return frozenset(codes)
 
 
-def _status_code(error: BaseException) -> int | None:
-    status: object = getattr(error, "status_code", None)
-    return status if isinstance(status, int) and not isinstance(status, bool) else None
-
-
-def _retry_after_seconds(error: BaseException) -> float | None:
-    response: object = getattr(error, "response", None)
-    headers: object = getattr(response, "headers", None)
-    if not isinstance(headers, Mapping):
-        return None
-    value: object = headers.get("retry-after")
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed: float = float(value)
-    except ValueError:
-        return None
-    return max(0.0, parsed)
-
-
-def _optional_int(value: object) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
 def _optional_float(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
-
-
-def _error_with_context(
-    error_type: type[LlmError],
-    *,
-    engine_id: str,
-    message: str,
-    suggestion: str,
-) -> Exception:
-    context: ErrorContext = ErrorContext(
-        code=error_type.error_code,
-        message=message,
-        suggestion=suggestion,
-        details={"engine_id": engine_id},
-    )
-    return error_type(context=context)
-
-
-def _transient_error_with_context(
-    error_type: type[LlmRateLimitError] | type[LlmProviderUnavailableError],
-    *,
-    engine_id: str,
-    message: str,
-    suggestion: str,
-    retry_after_s: float | None,
-) -> Exception:
-    context: ErrorContext = ErrorContext(
-        code=error_type.error_code,
-        message=message,
-        suggestion=suggestion,
-        details={"engine_id": engine_id},
-    )
-    return error_type(context=context, retry_after_s=retry_after_s)
-
-
-def _raise_request_error(message: str, *, suggestion: str) -> Never:
-    context: ErrorContext = ErrorContext(
-        code=ErrorCode.LLM_REQUEST_FAILED,
-        message=message,
-        suggestion=suggestion,
-    )
-    raise LlmRequestError(context=context)
