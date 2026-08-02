@@ -337,6 +337,18 @@ def test_gemini_per_minute_quota_failure_remains_retryable() -> None:
         service.complete(_conversation_request())
 
 
+def test_gemini_rate_limit_with_billing_wording_stays_transient() -> None:
+    error = _gemini_error(
+        429,
+        "RESOURCE_EXHAUSTED",
+        details=[{"message": "You exceeded your current quota, please check your plan and billing details."}],
+    )
+    service = _gemini_service_raising(error)
+
+    with pytest.raises(LlmRateLimitError):
+        service.complete(_conversation_request())
+
+
 @pytest.mark.parametrize(
     ("error_kind", "expected_error"),
     [

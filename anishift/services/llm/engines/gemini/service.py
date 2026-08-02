@@ -380,6 +380,22 @@ def _map_sdk_error(error: BaseException) -> Exception:
             message="Gemini rejected the configured credentials",
             suggestion="Check the Gemini API key and account permissions.",
         )
+    elif status_code == HTTPStatus.TOO_MANY_REQUESTS and _has_fragment(markers, _QUOTA_FRAGMENTS):
+        mapped_error = _error_with_context(
+            LlmQuotaError,
+            message="Gemini quota is exhausted",
+            suggestion="Wait for the quota reset or select another provider.",
+        )
+    elif status_code == HTTPStatus.TOO_MANY_REQUESTS:
+        # Gemini 429 bodies mention "billing" ("check your plan and billing
+        # details"), so rate limits must be classified before the payment
+        # fragments or a per-minute limit becomes a fatal payment error.
+        mapped_error = _transient_error_with_context(
+            LlmRateLimitError,
+            message="Gemini rate limit was reached",
+            suggestion="Wait for the Gemini retry window.",
+            retry_after_s=retry_after_s,
+        )
     elif _has_fragment(markers, _PAYMENT_FRAGMENTS) or status_code == HTTPStatus.PAYMENT_REQUIRED:
         mapped_error = _error_with_context(
             LlmPaymentError,
@@ -391,19 +407,6 @@ def _map_sdk_error(error: BaseException) -> Exception:
             LlmModelError,
             message="Gemini could not find the selected model",
             suggestion="Check the Gemini model ID in settings.",
-        )
-    elif status_code == HTTPStatus.TOO_MANY_REQUESTS and _has_fragment(markers, _QUOTA_FRAGMENTS):
-        mapped_error = _error_with_context(
-            LlmQuotaError,
-            message="Gemini quota is exhausted",
-            suggestion="Wait for the quota reset or select another provider.",
-        )
-    elif status_code == HTTPStatus.TOO_MANY_REQUESTS:
-        mapped_error = _transient_error_with_context(
-            LlmRateLimitError,
-            message="Gemini rate limit was reached",
-            suggestion="Wait for the Gemini retry window.",
-            retry_after_s=retry_after_s,
         )
     elif isinstance(error, errors_module.ServerError) or (
         status_code is not None and status_code >= HTTPStatus.INTERNAL_SERVER_ERROR
