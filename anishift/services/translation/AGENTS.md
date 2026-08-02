@@ -10,7 +10,6 @@ Serwis tłumaczenia: synchroniczna fasada `TranslationService` nad jednym silnik
 - `protocols.py` — kontrakty `TranslationEngine` i `LlmCompleter` (DI z composition root)
 - `chunking.py` — domenowe cięcie dokumentu (`chunk_text`); wspólne granice i grafemy są w `anishift/text/`
 - `linebreak.py` — polski reflow (`split_line`) i odtwarzanie authored layoutu (`split_for_layout`)
-- `dedup.py` — deduplikacja identycznych linii + mapa redystrybucji
 - `_retry.py` — retry z wykładniczym backoffem (sync + async), bez tenacity
 - `types.py` — dataclassy wartości (`BatchedLine`, `TranslatedLine`, `FileTranslation`)
 - `errors.py` — hierarchia wyjątków domeny
@@ -24,7 +23,7 @@ Serwis tłumaczenia: synchroniczna fasada `TranslationService` nad jednym silnik
 - Silnik jest zawsze zamykany w `finally` po każdej próbie, także po sukcesie — `close()` wykona się przed zwrotem. `service.py:83-94`
 - `translate_file` łapie bazowy `TranslationError`, zachowuje `ErrorContext` w wyniku i natychmiast przepuszcza `CANCELLED`; błędy programistyczne nadal przebijają. `service.py`
 - Anulowanie sprawdzane tylko na starcie każdej iteracji łańcucha, nie w trakcie tłumaczenia pliku; rzuca `TranslationError` z `ErrorCode.CANCELLED`. `service.py:76-78`
-- `deduplicate` mapuje puste/whitespace linie na `-1` i pomija; puste linie zawsze liczą się jako sukces (`redistribute_flags`→`True`). `dedup.py:38-45,76`
+- `_prepare_file` pomija puste/whitespace linie (mapa `-1`); pominięte pozycje przechodzą bez tłumaczenia jako sukces. `service.py:208-241`
 - `chunk_text` gwarantuje, że konkatenacja kawałków odtwarza wejście DOKŁADNIE (separatory po lewej stronie) — nie wolno trymować kawałków. `chunking.py:334-346`
 - Efektywny limit cięcia to `min(chunk_limit, char_limit)` — sam duży `char_limit` bez zmiany `chunk_limit` nie da większych kawałków. `chunking.py:474`
 
