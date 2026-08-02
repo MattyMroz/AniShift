@@ -228,7 +228,7 @@ class LogReader:
             ImportError: If pandas is not installed.
         """
         try:
-            import pandas as pd  # type: ignore[import-untyped]  # optional dependency, no stubs
+            import pandas as pd  # type: ignore[import-untyped]  # noqa: PLC0415 — optional dependency
 
             return pd.DataFrame(self._current)
         except ImportError as e:
@@ -260,8 +260,6 @@ class LogReader:
         }
 
         if isinstance(extra, dict):
-            for key, value in extra.items():
-                if key != "logger_name":
-                    flat_log[key] = value
+            flat_log.update({key: value for key, value in extra.items() if key != "logger_name"})
 
         return flat_log

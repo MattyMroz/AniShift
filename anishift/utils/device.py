@@ -50,7 +50,7 @@ def _query_cuda_via_torch() -> tuple[str, int] | None:
             return None
         vram_mb = torch.cuda.get_device_properties(0).total_memory // _BYTES_PER_MB
         return torch.cuda.get_device_name(0), int(vram_mb)
-    except Exception:
+    except Exception:  # noqa: BLE001 - foreign torch probe may raise anything; fall back to next probe
         return None
 
 
@@ -66,7 +66,7 @@ def _query_cuda_via_nvidia_smi() -> tuple[str, int] | None:
             timeout=_NVIDIA_SMI_TIMEOUT_S,
             check=True,
         )
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.SubprocessError, OSError:
         return None
     lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
     if not lines or "," not in lines[0]:
@@ -84,13 +84,13 @@ def _ort_reports_cuda() -> bool:
     ort = sys.modules.get("onnxruntime")
     if ort is None:
         try:
-            import onnxruntime  # type: ignore[import-not-found]  # optional dependency, no stubs
+            import onnxruntime  # type: ignore[import-not-found]  # noqa: PLC0415 - optional heavy dependency, keep off package import path
         except ImportError:
             return False
         ort = onnxruntime
     try:
         return "CUDAExecutionProvider" in ort.get_available_providers()
-    except Exception:
+    except Exception:  # noqa: BLE001 - foreign onnxruntime probe may raise anything; treat as no CUDA
         return False
 
 

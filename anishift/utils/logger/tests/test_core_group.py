@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 from loguru import logger
+from pydantic import ValidationError
 
 from .. import config as _config_mod
 from .. import core as _core_mod
@@ -66,7 +67,7 @@ class TestConsoleConfig:
         assert cfg.separator == " :: "
 
     def test_extra_forbid(self) -> None:
-        with pytest.raises(Exception):  # noqa: B017
+        with pytest.raises(ValidationError, match="nonexistent_field"):
             ConsoleConfig(nonexistent_field="x")  # type: ignore[call-arg]
 
 
@@ -274,8 +275,13 @@ class TestSetupMode:
                 api_key=sensitive_value,
                 request={"token": sensitive_value},
             ).info("api_key={value}", value=sensitive_value)
+
+            def _fail() -> None:
+                msg = f"token={sensitive_value}"
+                raise RuntimeError(msg)
+
             try:
-                raise RuntimeError(f"token={sensitive_value}")
+                _fail()
             except RuntimeError:
                 logger.exception("Provider request failed")
         finally:

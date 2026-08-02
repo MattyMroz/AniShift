@@ -220,7 +220,7 @@ class MultiProgressManager:
         ...     mp.advance(archive, 8_000_000)
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — public API, one param per display default; signature is frozen
         self,
         *,
         align: Literal["aligned", "independent"] = "aligned",
@@ -296,7 +296,7 @@ class MultiProgressManager:
         """Stop the live display, leaving every task at its last state."""
         self._progress.stop()
 
-    def add_task(
+    def add_task(  # noqa: PLR0913 — public API, one param per per-task override; signature is frozen
         self,
         description: str,
         *,
@@ -404,7 +404,7 @@ class MultiProgressManager:
             bar_visible: bool = show_bar and not show_spinner
             state.show_bar = bar_visible
             percentage: float = state.completed / state.total if state.total else 0.0
-            fields: dict[str, bool | str] = {
+            fields: dict[str, Any] = {
                 _SHOW_SPINNER_FIELD: show_spinner,
                 _SHOW_PERCENTAGE_FIELD: show_percentage,
                 _BAR_FIELD: (

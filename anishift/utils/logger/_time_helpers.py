@@ -76,7 +76,7 @@ def _parse_timestamp(log: dict[str, Any]) -> datetime | None:
         return None
     try:
         return datetime.fromisoformat(timestamp_str)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 
@@ -100,6 +100,4 @@ def _in_range(
         return False
     if start and ts < start:
         return False
-    if end and ts > end:
-        return False
-    return True
+    return not (end and ts > end)

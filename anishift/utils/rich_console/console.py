@@ -1,4 +1,4 @@
-"""Preconfigured Rich console with custom theme and auto-highlighting.
+r"""Preconfigured Rich console with custom theme and auto-highlighting.
 
 Applies the 150+ style RICH_THEME, auto-highlights URLs/paths/numbers as
 ``Text`` spans (content is never re-parsed as markup, so brackets and
@@ -7,7 +7,7 @@ backslashes in paths survive verbatim), and normalizes decimal commas.
 Usage:
     >>> from rich_console import console
     >>> console.print("Value: 123")  # 123 is auto-colored ruby_red
-    >>> console.print(r"Saved C:\\out\\[draft] final.ass")  # path kept 1:1
+    >>> console.print(r"Saved C:\out\[draft] final.ass")  # path kept 1:1
     >>> console.print("Visit https://example.com")  # URL is blue
 """
 
@@ -33,16 +33,19 @@ __all__ = [
 
 # ── Auto-Highlighting ─────────────────────────────────────────────────────────
 
-_PATH_SEG: Final[str] = r"[\w.@+(),'’\[\]-]+"
+_CURLY_APOSTROPHE: Final[str] = "\u2019"
+"""Right single quotation mark accepted in filenames alongside a plain apostrophe."""
+
+_PATH_SEG: Final[str] = rf"[\w.@+(),'{_CURLY_APOSTROPHE}\[\]-]+"
 """Path segment without spaces."""
 
 _PATH_EXT: Final[str] = r"\.[A-Za-z]\w{0,31}(?![\w.\]/\\])"
 """Letter-first file extension that ends the path (not mid-token or mid-path)."""
 
-_PATH_SPACED_NAME: Final[str] = rf"(?:(?!{_PATH_EXT})[\w.@+(),'’ \[\]-])*{_PATH_EXT}"
+_PATH_SPACED_NAME: Final[str] = rf"(?:(?!{_PATH_EXT})[\w.@+(),'{_CURLY_APOSTROPHE} \[\]-])*{_PATH_EXT}"
 """Filename that may contain spaces, ending at the first terminal extension."""
 
-_PATH_SPACED_TAIL: Final[str] = rf"(?:(?!{_PATH_EXT})[\w.@+(),'’ \[\]/\\-])*{_PATH_EXT}"
+_PATH_SPACED_TAIL: Final[str] = rf"(?:(?!{_PATH_EXT})[\w.@+(),'{_CURLY_APOSTROPHE} \[\]/\\-])*{_PATH_EXT}"
 """Multi-segment tail with spaces in any segment, ending at the first
 terminal extension."""
 
@@ -51,7 +54,7 @@ _PATH_RE: Final[re.Pattern[str]] = re.compile(
     rf"[A-Za-z]:[/\\](?:{_PATH_SPACED_TAIL}|(?:{_PATH_SEG}[/\\])*{_PATH_SEG}(?<![.,])[/\\]?)"
     rf"|"
     rf"(?<!\w)/(?:"
-    rf"(?:(?!{_PATH_EXT})[\w.@+(),'’ \[\]-])*[/\\]{_PATH_SPACED_TAIL}"
+    rf"(?:(?!{_PATH_EXT})[\w.@+(),'{_CURLY_APOSTROPHE} \[\]-])*[/\\]{_PATH_SPACED_TAIL}"
     rf"|(?:{_PATH_SEG}[/\\])+(?:{_PATH_SEG}(?<![.,]))?"
     rf")"
     rf"|"

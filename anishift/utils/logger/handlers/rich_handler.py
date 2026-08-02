@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+from rich.cells import cell_len
+
 if TYPE_CHECKING:
     from datetime import datetime
 
@@ -124,8 +126,6 @@ class RichHandler:
             level_text = f"{icon} {level}"
 
         if self._config.level_width:
-            from rich.cells import cell_len
-
             current_width = cell_len(level_text)
             if current_width < self._config.level_width:
                 level_text = level_text + " " * (self._config.level_width - current_width)

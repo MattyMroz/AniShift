@@ -145,7 +145,7 @@ class TestMain:
 
     @patch(_CLI_VIEWER)
     @patch(_CLI_CONSOLE)
-    def test_display_default(self, _console: Any, mock_viewer_cls: Any, log_file: Path) -> None:
+    def test_display_default(self, _console: Any, mock_viewer_cls: Any, log_file: Path) -> None:  # noqa: PT019
         mock_viewer = mock_viewer_cls.return_value
         with patch("sys.argv", ["cli", str(log_file)]):
             main()
@@ -153,7 +153,7 @@ class TestMain:
 
     @patch(_CLI_VIEWER)
     @patch(_CLI_CONSOLE)
-    def test_display_table(self, _console: Any, mock_viewer_cls: Any, log_file: Path) -> None:
+    def test_display_table(self, _console: Any, mock_viewer_cls: Any, log_file: Path) -> None:  # noqa: PT019
         mock_viewer = mock_viewer_cls.return_value
         with patch("sys.argv", ["cli", str(log_file), "--table"]):
             main()
@@ -161,7 +161,7 @@ class TestMain:
 
     @patch(_CLI_VIEWER)
     @patch(_CLI_CONSOLE)
-    def test_display_stats(self, _console: Any, mock_viewer_cls: Any, log_file: Path) -> None:
+    def test_display_stats(self, _console: Any, mock_viewer_cls: Any, log_file: Path) -> None:  # noqa: PT019
         mock_viewer = mock_viewer_cls.return_value
         with patch("sys.argv", ["cli", str(log_file), "--stats"]):
             main()

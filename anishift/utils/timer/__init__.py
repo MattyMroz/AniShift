@@ -221,6 +221,11 @@ def timed(display_mode: DisplayMode = "standard") -> Callable[..., Any]:
             t = Timer(func.__name__, auto_start=True)
             try:
                 result: Any = func(*args, **kwargs)
+            except Exception:
+                if t.is_running:
+                    t.stop()
+                raise
+            else:
                 t.stop()
                 if display_mode != "none":
                     format_duration(
@@ -230,10 +235,6 @@ def timed(display_mode: DisplayMode = "standard") -> Callable[..., Any]:
                         mode=display_mode,
                     )
                 return result
-            except Exception:
-                if t.is_running:
-                    t.stop()
-                raise
 
         return wrapper
 

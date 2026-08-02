@@ -8,6 +8,8 @@ from loguru import logger
 from ...timer import Timer
 from ..timing import log_duration
 
+_BOOM_MSG = "boom"
+
 
 class TestTimerInit:
     def test_default_state(self) -> None:
@@ -113,7 +115,7 @@ class TestLogDuration:
         assert "my_operation completed in" in sink_messages[0]
 
     def test_custom_level(self) -> None:
-        sink_messages: list[dict] = []
+        sink_messages: list[dict[str, str]] = []
         handler_id = logger.add(
             lambda m: sink_messages.append({"level": m.record["level"].name}),
             format="{message}",
@@ -128,12 +130,7 @@ class TestLogDuration:
         assert sink_messages[0]["level"] == "DEBUG"
 
     def test_timer_stopped_on_exception(self) -> None:
-        timer_ref: Timer | None = None
-        with pytest.raises(ValueError, match="boom"):
-            with log_duration("failing") as t:
-                timer_ref = t
-                _msg = "boom"
-                raise ValueError(_msg)
-        assert timer_ref is not None
+        with pytest.raises(ValueError, match="boom"), log_duration("failing") as timer_ref:
+            raise ValueError(_BOOM_MSG)
         assert not timer_ref.is_running
         assert timer_ref.duration_ns > 0

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from ..formatters import JSONFormatter, LogRecordMeta
@@ -14,8 +15,6 @@ class TestJSONFormatter:
             context={},
             timestamp=datetime(2024, 1, 15, 12, 0, 0),
         )
-        import json
-
         data = json.loads(result)
         assert data["level"] == "INFO"
         assert data["message"] == "hello"
@@ -23,8 +22,6 @@ class TestJSONFormatter:
 
     def test_with_context(self) -> None:
         fmt = JSONFormatter()
-        import json
-
         result = fmt.format_record(
             level="ERROR",
             message="failure",
@@ -36,8 +33,6 @@ class TestJSONFormatter:
 
     def test_empty_context_omitted(self) -> None:
         fmt = JSONFormatter()
-        import json
-
         result = fmt.format_record(
             level="DEBUG",
             message="msg",
@@ -49,8 +44,6 @@ class TestJSONFormatter:
 
     def test_with_location(self) -> None:
         fmt = JSONFormatter()
-        import json
-
         result = fmt.format_record(
             level="INFO",
             message="test",
@@ -65,8 +58,6 @@ class TestJSONFormatter:
 
     def test_location_omitted_when_empty(self) -> None:
         fmt = JSONFormatter()
-        import json
-
         result = fmt.format_record(
             level="INFO",
             message="test",
@@ -78,8 +69,6 @@ class TestJSONFormatter:
 
     def test_with_exception(self) -> None:
         fmt = JSONFormatter()
-        import json
-
         result = fmt.format_record(
             level="ERROR",
             message="crash",
@@ -92,8 +81,6 @@ class TestJSONFormatter:
 
     def test_exception_omitted_when_none(self) -> None:
         fmt = JSONFormatter()
-        import json
-
         result = fmt.format_record(
             level="INFO",
             message="ok",
@@ -105,8 +92,6 @@ class TestJSONFormatter:
 
     def test_with_logger_name(self) -> None:
         fmt = JSONFormatter()
-        import json
-
         result = fmt.format_record(
             level="INFO",
             message="test",
@@ -119,8 +104,6 @@ class TestJSONFormatter:
 
     def test_logger_name_omitted_when_empty(self) -> None:
         fmt = JSONFormatter()
-        import json
-
         result = fmt.format_record(
             level="INFO",
             message="test",

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from loguru._recattrs import RecordException
 
-from ..scrubber import scrub_message
+from ..scrubber import scrub_message, scrub_patcher
 
 
 class TestScrubMessage:
@@ -106,23 +107,17 @@ class TestScrubMessage:
 
 class TestScrubPatcher:
     def test_patches_record_message(self) -> None:
-        from ..scrubber import scrub_patcher
-
         record: dict = {"message": "token=secret123"}  # type: ignore[type-arg]
         scrub_patcher(record)  # type: ignore[arg-type]
         assert "secret123" not in record["message"]
         assert "***" in record["message"]
 
     def test_safe_message_unchanged(self) -> None:
-        from ..scrubber import scrub_patcher
-
         record: dict = {"message": "Hello world"}  # type: ignore[type-arg]
         scrub_patcher(record)  # type: ignore[arg-type]
         assert record["message"] == "Hello world"
 
     def test_patches_nested_structured_values(self) -> None:
-        from ..scrubber import scrub_patcher
-
         record: dict = {  # type: ignore[type-arg]
             "message": "request failed",
             "extra": {
@@ -139,10 +134,6 @@ class TestScrubPatcher:
         assert record["extra"]["items"] == ["token=***", "safe"]
 
     def test_patches_exception_message(self) -> None:
-        from loguru._recattrs import RecordException
-
-        from ..scrubber import scrub_patcher
-
         error = RuntimeError("api_key=exception-secret")
         record: dict = {  # type: ignore[type-arg]
             "message": "request failed",

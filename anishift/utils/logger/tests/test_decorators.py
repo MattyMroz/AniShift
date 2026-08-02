@@ -120,9 +120,7 @@ class TestTimedDebug:
 class TestTimedInDev:
     def test_returns_value_in_dev(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("LOGGER_MODE", "DEV")
-        from ..decorators import timed_if as _tif
-
-        dec = _tif(True)
+        dec = timed_if(True)
 
         @dec
         def work() -> int:

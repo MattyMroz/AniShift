@@ -153,7 +153,7 @@ class LogViewer:
         try:
             dt = datetime.fromisoformat(timestamp)
             return dt.strftime("%H:%M:%S.%f")[:-3]
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return timestamp
 
     def _calculate_stats(self, logs: list[dict[str, Any]]) -> dict[str, Any]:

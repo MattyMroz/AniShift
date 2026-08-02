@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 _RICH_CONSOLE = f"{_rich_handler_mod.__name__}.console"
 
 
-def _make_loguru_message(
+def _make_loguru_message(  # noqa: PLR0913
     level: str = "INFO",
     message: str = "test msg",
     logger_name: str = "testlog",

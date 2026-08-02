@@ -64,7 +64,6 @@ exclude = [
     ".claude",
     ".github",
     "scripts/tmp",
-    "anishift/utils",
 ]
 
 [tool.ruff.lint]
@@ -102,6 +101,7 @@ ignore = [
     "D107",   # missing docstring in __init__
     "ANN401", # allow explicit Any where external/JSON typing is unavoidable
 ]
+allowed-confusables = ["ℹ", "×", "–"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -111,6 +111,8 @@ max-complexity = 15
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D", "ANN", "S101", "PLR2004", "TRY003"]
+"anishift/utils/*/tests/**" = ["D", "ANN", "S101", "PLR2004", "TRY003"]
+"anishift/utils/*/examples/**" = ["D", "PLR2004", "PLC0415", "TRY301"]
 "scripts/**" = ["D", "T20", "PERF"]
 
 [tool.mypy]
@@ -120,7 +122,6 @@ plugins = ["pydantic.mypy"]
 warn_return_any = true
 warn_unused_configs = true
 exclude = [
-    "anishift/utils/",
     "scripts/tmp/",
 ]
 

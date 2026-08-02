@@ -35,16 +35,17 @@ def print_section(title: str) -> None:
     console.print(f"{SECTION_SEPARATOR}\n")
 
 
-def demo_colors() -> None:
-    """Demonstrate all auto-highlight patterns and edge cases."""
-    print_section("AUTO-HIGHLIGHTING — 8 PATTERN TYPES")
-
+def _demo_urls() -> None:
+    """Print pattern type 1: URLs."""
     console.print("1. URLs (BLUE UNDERLINE):", style="white_bold")
     console.print("  https://example.com")
     console.print("  http://api.example.com/v1/users?page=3")
     console.print("  https://github.com/user/repo/releases/tag/v2.1.0")
     console.print()
 
+
+def _demo_paths() -> None:
+    """Print pattern type 2: file paths, including bracketed names."""
     console.print("2. File Paths (RUBY_RED):", style="white_bold")
     console.print("  Absolute: /home/user/.cache/models/v2.1.0")
     console.print(r"  Windows:  C:\Users\user\Documents\project")
@@ -67,6 +68,9 @@ def demo_colors() -> None:
     console.print("  NOT a path: 24/24 items (→ fraction)")
     console.print()
 
+
+def _demo_booleans_and_none() -> None:
+    """Print pattern types 3-4: booleans and None/null."""
     console.print("3. Booleans (GREEN / RED):", style="white_bold")
     console.print("  CUDA available: True")
     console.print("  Debug mode: False")
@@ -79,6 +83,9 @@ def demo_colors() -> None:
     console.print("  Optional field: nil")
     console.print()
 
+
+def _demo_versions_and_numbers() -> None:
+    """Print pattern types 5-8: versions, number+unit, fractions, plain numbers."""
     console.print("5. Versions (RUBY_RED BOLD):", style="white_bold")
     console.print("  MyApp v2.1.0 starting")
     console.print("  Python 3.13.11")
@@ -107,12 +114,18 @@ def demo_colors() -> None:
     console.print("  Count: 1024 items in 7 batches")
     console.print()
 
+
+def _demo_bracket_escaping() -> None:
+    """Print the bracket-escaping section."""
     print_section("BRACKET ESCAPING")
     console.print("  result[0] = 42")
     console.print("  array[1:3] sliced")
     console.print("  config[section] loaded")
     console.print()
 
+
+def _demo_uncolored_punctuation() -> None:
+    """Print the section showing punctuation left uncolored on purpose."""
     print_section("PUNCTUATION — NOT COLORED (INTENTIONAL)")
     console.print("  Colons:     key: value, time: 10:30:45")
     console.print("  Commas:     files: 24, size: 12MB, items: 156")
@@ -121,6 +134,9 @@ def demo_colors() -> None:
     console.print("  Operators:  5 + 3 = 8, x > 5, a == b")
     console.print()
 
+
+def _demo_real_world_logs() -> None:
+    """Print the real-world log line examples section."""
     print_section("REAL-WORLD LOG EXAMPLES")
     console.print("  Loaded 4 models from /home/user/.cache/models in 3.45s")
     console.print("  Worker v2.1.0: processed 24/24 items, avg 42ms/item")
@@ -130,6 +146,18 @@ def demo_colors() -> None:
     console.print("  Config: debug=False, cache=None, workers=4")
     console.print("  API: https://api.example.com/v2/translate (latency: 127ms)")
     console.print()
+
+
+def demo_colors() -> None:
+    """Demonstrate all auto-highlight patterns and edge cases."""
+    print_section("AUTO-HIGHLIGHTING — 8 PATTERN TYPES")
+    _demo_urls()
+    _demo_paths()
+    _demo_booleans_and_none()
+    _demo_versions_and_numbers()
+    _demo_bracket_escaping()
+    _demo_uncolored_punctuation()
+    _demo_real_world_logs()
 
 
 if __name__ == "__main__":
