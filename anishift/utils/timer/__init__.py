@@ -112,6 +112,16 @@ class Timer:
         return end_ns - self._start_time_ns
 
     @property
+    def duration_ms(self) -> float:
+        """Return duration in milliseconds."""
+        return self.duration_ns / 1_000_000
+
+    @property
+    def duration_s(self) -> float:
+        """Return duration in seconds."""
+        return self.duration_ns / 1_000_000_000
+
+    @property
     def name(self) -> str:
         """Return timer name."""
         return self._name

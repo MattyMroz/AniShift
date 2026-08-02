@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from types import TracebackType
@@ -60,6 +59,8 @@ from anishift.services.tts import (
     TtsService,
 )
 from anishift.services.tts.protocols import TtsProgressSink
+from anishift.utils.logger import get_logger
+from anishift.utils.timer import Timer
 
 from .narration import NarrationBatch, NarrationItem
 
@@ -67,6 +68,8 @@ if TYPE_CHECKING:
     from anishift.bootstrap import AppContext
 
 __all__ = ["PipelineTtsProgressSink", "PipelineTtsRuntime"]
+
+logger = get_logger(__name__)
 
 _DEFAULT_ENGINE_CONCURRENCY: Final[dict[str, int]] = {
     "edge": 16,
@@ -612,6 +615,15 @@ class PipelineTtsRuntime:
     def _process(self, job: TtsQueueJob) -> TtsQueueOutcome:  # noqa: PLR0911 - explicit terminal boundaries
         if not self._synthesis_focus.acquire(job.admission_rank):
             return _cancelled_outcome(job) if self._cancel.is_set() else _not_processed_outcome(job)
+        logger.bind(
+            source=job.source.name,
+            scope_id=job.narration.speech.scope_id,
+            request_count=len(job.narration.speech.requests),
+            batch_rank=job.narration.speech.batch_rank,
+        ).info(
+            "TTS batch started with {count} requests",
+            count=len(job.narration.speech.requests),
+        )
         synthesis_failed: bool = True
         try:
             preparer: _AudioPreparer | None = self._audio if isinstance(self._audio, _AudioPreparer) else None
@@ -664,7 +676,7 @@ class PipelineTtsRuntime:
             )
             return _failed_outcome(job, step="tts", context=context, speech=speech)
         try:
-            audio_started_at: float = time.monotonic()
+            audio_timer: Timer = Timer("audio_render", auto_start=True)
             audio: AudioRenderResult = self._audio.render(
                 AudioRenderRequest(
                     scope_id=job.narration.speech.scope_id,
@@ -686,12 +698,13 @@ class PipelineTtsRuntime:
                 context=_unexpected_step_context("Audio rendering", error),
                 speech=speech,
             )
+        audio_timer.stop()
         return TtsQueueOutcome(
             job=job,
             speech=speech,
             audio=audio,
             failure=None,
-            audio_time_ms=(time.monotonic() - audio_started_at) * 1000,
+            audio_time_ms=audio_timer.duration_ms,
         )
 
     def _register_synthesis(self, job: TtsQueueJob) -> None:
@@ -709,6 +722,23 @@ class PipelineTtsRuntime:
                 state = "not_processed"
             else:
                 state = "cancelled" if outcome.failure.context.code is ErrorCode.CANCELLED else "failed"
+        speech = outcome.speech
+        log = logger.bind(
+            source=outcome.job.source.name,
+            scope_id=outcome.job.narration.speech.scope_id,
+            status=state,
+            synthesized=speech.stats.synthesized if speech is not None else 0,
+            resumed=speech.stats.resume_hits if speech is not None else 0,
+            retries=speech.stats.retries if speech is not None else 0,
+            audio_time_ms=outcome.audio_time_ms,
+        )
+        if outcome.failure is None:
+            log.info("TTS pipeline completed")
+        else:
+            log.bind(
+                step=outcome.failure.step,
+                error_code=outcome.failure.context.code.value,
+            ).warning("TTS pipeline ended with {state}", state=state)
         try:
             self._callbacks.on_pipeline_terminal(
                 outcome.job.narration.speech.scope_id,

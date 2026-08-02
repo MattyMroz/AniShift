@@ -71,4 +71,11 @@ Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit
 - `workspace/` — dozwolone tylko podfoldery `tmp/` i `output/`. Zero `input/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`.
 - Preferencje panelu: `config/settings.json` (obok kodu, gitignored, poza workspace).
 - Settings API/env: pydantic-settings, prefix `ANISHIFT_`, z `.env`, wszystkie opcjonalne.
-- Logger domyślnie nic nie zapisuje — żaden zapis bez jawnego włączenia.
+- Diagnostyka runtime używa wyłącznie `from anishift.utils.logger import get_logger`
+  oraz modułowego `logger = get_logger(__name__)`. Sinki konfiguruje tylko granica
+  procesu w `cli/main.py`; kod domenowy nie importuje bezpośrednio Loguru.
+- Loguj strukturalnie granice operacji, retry, fallbacki, recovery i błędy terminalne.
+  Nie loguj sekretów, pełnych `Settings`, payloadów, promptów/napisów/TTS text,
+  nagłówków, podpisanych URL-i, pełnych komend/stderr, absolutnych ścieżek ani
+  `ErrorContext.details`. Czyste helpery bez istotnych przejść stanu nie potrzebują
+  loggera.

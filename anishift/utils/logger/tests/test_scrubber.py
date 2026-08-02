@@ -119,3 +119,36 @@ class TestScrubPatcher:
         record: dict = {"message": "Hello world"}  # type: ignore[type-arg]
         scrub_patcher(record)  # type: ignore[arg-type]
         assert record["message"] == "Hello world"
+
+    def test_patches_nested_structured_values(self) -> None:
+        from ..scrubber import scrub_patcher
+
+        record: dict = {  # type: ignore[type-arg]
+            "message": "request failed",
+            "extra": {
+                "api_key": "plain-secret",
+                "context": {"authorization": "Bearer hidden", "attempt": 2},
+                "items": ["token=private", "safe"],
+            },
+            "exception": None,
+        }
+        scrub_patcher(record)  # type: ignore[arg-type]
+        assert record["extra"]["api_key"] == "***"
+        assert record["extra"]["context"]["authorization"] == "***"
+        assert record["extra"]["context"]["attempt"] == 2
+        assert record["extra"]["items"] == ["token=***", "safe"]
+
+    def test_patches_exception_message(self) -> None:
+        from loguru._recattrs import RecordException
+
+        from ..scrubber import scrub_patcher
+
+        error = RuntimeError("api_key=exception-secret")
+        record: dict = {  # type: ignore[type-arg]
+            "message": "request failed",
+            "extra": {},
+            "exception": RecordException(RuntimeError, error, error.__traceback__),
+        }
+        scrub_patcher(record)  # type: ignore[arg-type]
+        assert "exception-secret" not in str(record["exception"].value)
+        assert "api_key=***" in str(record["exception"].value)

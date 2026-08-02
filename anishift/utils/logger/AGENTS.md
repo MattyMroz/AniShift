@@ -19,7 +19,9 @@ Przenośny (współdzielony z mm_avh): logger oparty na loguru z mostem stdlib, 
 
 ## Pułapki
 
-- Scrubbing sekretów działa TYLKO poza DEV (`logger.configure(patcher=...)` za `if not is_dev`) — w DEV klucze/tokeny lecą do logów niezamaskowane. `core.py:136`
+- Scrubbing działa we wszystkich trybach i obejmuje message, zagnieżdżone `extra`
+  oraz komunikat wyjątku. `diagnose=False` zapobiega serializacji lokalnych zmiennych
+  z tracebacka; nie rozluźniaj żadnej z tych ochron. `core.py`, `scrubber.py`
 - `setup_mode` na starcie robi `logger.remove()` — kasuje WSZYSTKIE istniejące sinki loguru (także dodane z zewnątrz) przed dodaniem swoich. `core.py:89`
 - Sink `errors.log.jsonl` NIE powstaje w SILENT, mimo że główny plik SILENT i tak na niego wskazuje. `core.py:122`, `modes.py:79`
 - `InterceptHandler` wyłącza logger `uvicorn.access` (`disabled = True`) — jego logi znikają bez śladu. `core.py:157`

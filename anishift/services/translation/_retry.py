@@ -12,6 +12,10 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 
+from anishift.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 def _backoff_s(attempt: int, base_s: float, cap_s: float) -> float:
     """Return the exponential backoff delay for ``attempt`` capped at ``cap_s``."""
@@ -47,10 +51,24 @@ def call_with_retry[T](
     for attempt in range(1, max_attempts + 1):
         try:
             return func()
-        except retry_on:
+        except retry_on as error:
             if attempt >= max_attempts:
+                logger.exception(
+                    "Translation provider retries exhausted",
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    error_type=type(error).__name__,
+                )
                 raise
-            time.sleep(_backoff_s(attempt, base_s, cap_s))
+            delay_s: float = _backoff_s(attempt, base_s, cap_s)
+            logger.warning(
+                "Translation provider retry scheduled",
+                attempt=attempt,
+                max_attempts=max_attempts,
+                delay_s=delay_s,
+                error_type=type(error).__name__,
+            )
+            time.sleep(delay_s)
     msg = "call_with_retry exhausted without returning"  # unreachable: loop returns or re-raises
     raise RuntimeError(msg)
 
@@ -85,10 +103,24 @@ async def call_with_retry_async[T](
     for attempt in range(1, max_attempts + 1):
         try:
             return await func()
-        except retry_on:
+        except retry_on as error:
             if attempt >= max_attempts:
+                logger.exception(
+                    "Translation provider retries exhausted",
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    error_type=type(error).__name__,
+                )
                 raise
-            await asyncio.sleep(_backoff_s(attempt, base_s, cap_s))
+            delay_s: float = _backoff_s(attempt, base_s, cap_s)
+            logger.warning(
+                "Translation provider retry scheduled",
+                attempt=attempt,
+                max_attempts=max_attempts,
+                delay_s=delay_s,
+                error_type=type(error).__name__,
+            )
+            await asyncio.sleep(delay_s)
     msg = "call_with_retry_async exhausted without returning"  # unreachable: loop returns or re-raises
     raise RuntimeError(msg)
 

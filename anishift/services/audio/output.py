@@ -81,7 +81,7 @@ def codec_spec(
         )
     bitrate: str = config.bitrate or _DEFAULT_BITRATE[profile][channels]
     if profile is AudioCodecProfile.EAC3:
-        return CodecSpec("eac3", "eac3", ".eac3", ("-b:a", bitrate), 32)
+        return CodecSpec("eac3", "eac3", ".eac3", ("-b:a", bitrate), 33)
     if profile is AudioCodecProfile.MP3:
         return CodecSpec("libmp3lame", "mp3", ".mp3", ("-b:a", bitrate), 80)
     if profile is AudioCodecProfile.OPUS:

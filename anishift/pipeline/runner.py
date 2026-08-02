@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+import uuid
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ from anishift.services.subtitles import (
     write_translated_spoken,
 )
 from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
+from anishift.utils.logger import get_logger
 from anishift.utils.safe_fs import safe_rmtree
 
 from .narration import (
@@ -68,6 +70,8 @@ from .types import (
     StepName,
     TranslationSettings,
 )
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from anishift.pipeline.llm_queue import (
@@ -245,7 +249,14 @@ def run_pipeline(  # noqa: C901,PLR0912,PLR0913,PLR0915 - explicit composition a
     ensure_workspace_dir(context.workspace_root)
     files = os_sorted(input_paths) if input_paths is not None else discover_inputs(context.workspace_root)
     if not files:
+        logger.info("Pipeline skipped because no inputs were discovered")
         return PipelineReport(())
+    run_id = uuid.uuid4().hex[:12]
+    logger.bind(
+        run_id=run_id,
+        input_count=len(files),
+        workspace_name=context.workspace_root.name,
+    ).info("Pipeline started with {count} inputs", count=len(files))
     mkvs = [path for path in files if path.suffix.lower() == _MKV_SUFFIX]
     txts = [path for path in files if path.suffix.lower() == _TXT_SUFFIX]
     translation = _translation_settings(context)
@@ -277,7 +288,7 @@ def run_pipeline(  # noqa: C901,PLR0912,PLR0913,PLR0915 - explicit composition a
         )
 
     def resolve_without_narration(path: Path, state: _MkvState) -> None:
-        if tts_runtime is not None and state.narration is None and state.outcome.failure is None:
+        if tts_runtime is not None and state.narration is None:
             tts_runtime.skip(path)
 
     try:
@@ -294,7 +305,7 @@ def run_pipeline(  # noqa: C901,PLR0912,PLR0913,PLR0915 - explicit composition a
                 _notify_spoken_ready(path, state, publish_narration)
                 if state.split is not None:
                     queue_input.put(path)
-                elif state.outcome.failure is None:
+                else:
                     queue_input.skip(path)
                     resolve_without_narration(path, state)
 
@@ -398,7 +409,32 @@ def run_pipeline(  # noqa: C901,PLR0912,PLR0913,PLR0915 - explicit composition a
             tts_runtime.close()
     outcomes = {path: state.outcome for path, state in states.items()}
     outcomes.update(txt_outcomes)
-    return PipelineReport(tuple(outcomes[path] for path in files))
+    report = PipelineReport(tuple(outcomes[path] for path in files))
+    _log_pipeline_report(report, run_id=run_id)
+    return report
+
+
+def _log_pipeline_report(report: PipelineReport, *, run_id: str) -> None:
+    """Persist one terminal pipeline summary and its actionable failures."""
+    counts: dict[str, int] = {}
+    for outcome in report.outcomes:
+        counts[outcome.status] = counts.get(outcome.status, 0) + 1
+        failure = outcome.failure
+        if failure is not None:
+            logger.bind(
+                run_id=run_id,
+                source=outcome.source.name,
+                status=outcome.status,
+                step=failure.step,
+                error_code=failure.code,
+            ).warning("Pipeline input failed")
+    logger.bind(run_id=run_id, **counts).info(
+        "Pipeline finished: {done} done, {failed} failed, {not_processed} not processed, {cancelled} cancelled",
+        done=counts.get("done", 0),
+        failed=counts.get("failed", 0),
+        not_processed=counts.get("not_processed", 0),
+        cancelled=counts.get("cancelled", 0),
+    )
 
 
 def _default_tts_runtime_factory(
@@ -937,11 +973,7 @@ def _translate_llm_inputs(  # noqa: PLR0913 - queue wiring keeps callbacks expli
         worker_factory=build_worker,
         not_processed_factory=not_processed,
         config=LlmQueueConfig(
-            configured_limit=lambda: (
-                1
-                if context.user_settings.processing_order_policy == "strict_natural"
-                else context.user_settings.llm_max_concurrency
-            ),
+            configured_limit=lambda: context.user_settings.llm_max_concurrency,
             cancel=cancel,
             on_provider_failure=on_provider_failure,
             on_progress=on_progress,
@@ -986,6 +1018,8 @@ def _translate_one(  # noqa: PLR0913 - one file's translate step wiring
             batch_rank=state.source_rank,
         )
         _notify_spoken_ready(path, state, on_spoken_ready)
+    state.outcome.status = "done"
+    state.outcome.failure = None
 
 
 def _worker_count(item_count: int) -> int:

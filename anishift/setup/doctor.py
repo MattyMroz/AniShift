@@ -25,6 +25,7 @@ from anishift.config.settings import Settings
 from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_root
 from anishift.errors import AniShiftError
 from anishift.platform.binaries import Binary, is_windows, resolve_binary
+from anishift.utils.logger import get_logger
 
 __all__ = [
     "CheckResult",
@@ -53,6 +54,8 @@ _API_KEYS: Final[dict[str, str]] = {
     "openai_compatible_api_key": "OpenAI-compatible",
 }
 """API keys surfaced by the doctor: Settings attribute name -> display label."""
+
+logger = get_logger(__name__)
 
 
 class CheckStatus(StrEnum):
@@ -187,10 +190,22 @@ def check_workspace() -> CheckResult:
 
 def run_doctor(settings: Settings | None = None) -> list[CheckResult]:
     """Run every diagnostic check in order and return the collected list."""
-    return [
+    logger.info("Environment diagnostics started")
+    results = [
         check_python_version(),
         check_uv_installed(),
         check_binaries(),
         check_api_keys(settings),
         check_workspace(),
     ]
+    logger.info(
+        "Environment diagnostics completed",
+        ok=sum(result.status is CheckStatus.OK for result in results),
+        warnings=sum(result.status is CheckStatus.WARN for result in results),
+        failures=sum(result.status is CheckStatus.FAIL for result in results),
+        skipped=sum(result.status is CheckStatus.SKIP for result in results),
+    )
+    for result in results:
+        if result.status in {CheckStatus.WARN, CheckStatus.FAIL}:
+            logger.warning("Environment diagnostic issue", check=result.name, status=result.status.value)
+    return results

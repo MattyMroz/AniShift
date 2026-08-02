@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import anishift.services.tts.service as tts_service_module
 from anishift.services.tts import (
     AudioFormat,
     AvailabilityProbeKind,
@@ -219,6 +220,41 @@ def test_service_commits_then_reuses_validated_resume_clip(tmp_path: Path) -> No
     }
     assert progress.batches[-1].total_required_requests == 1
     assert progress.batches[-1].committed_required_requests == 1
+
+
+def test_service_stops_timer_after_batch_completion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    engine: _Engine = _Engine()
+    stopped: list[bool] = []
+
+    class _TimerProbe:
+        def __init__(self, name: str, *, auto_start: bool) -> None:
+            assert name == "tts_batch"
+            assert auto_start
+
+        def stop(self) -> int:
+            assert engine.calls == 1
+            stopped.append(True)
+            return 1
+
+        @property
+        def duration_ms(self) -> float:
+            assert stopped
+            return 1.0
+
+    monkeypatch.setattr(tts_service_module, "Timer", _TimerProbe)
+
+    with TtsService(
+        _config(),
+        resume_root=tmp_path,
+        validator=_Validator(),
+        engine_factory=lambda config: engine,
+    ) as service:
+        service.synthesize(_batch(), callbacks=_Progress())
+
+    assert stopped == [True]
 
 
 def test_service_close_is_idempotent_and_rejects_new_calls(tmp_path: Path) -> None:

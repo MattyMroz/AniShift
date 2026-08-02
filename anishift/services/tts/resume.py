@@ -33,6 +33,7 @@ from anishift.services.tts.fingerprint import (
 )
 from anishift.services.tts.types import AudioFormat, ClipExpectation, ClipValidation
 from anishift.services.tts.validation import validate_scope_id
+from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -61,6 +62,8 @@ _REPOSITORY_LOCKS: Final[dict[Path, threading.RLock]] = {}
 
 _REPOSITORY_LOCKS_GUARD: Final[threading.Lock] = threading.Lock()
 """Protects creation of process-local repository locks."""
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -527,6 +530,11 @@ class TtsResumeRepository:
                     "reason": type(error).__name__,
                 },
             ),
+        )
+        logger.warning(
+            "Corrupt TTS resume manifest quarantined",
+            scope_id=self._scope_id,
+            error_type=type(error).__name__,
         )
 
     def _require_scope(self, identity: SynthesisIdentity) -> None:

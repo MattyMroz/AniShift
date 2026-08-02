@@ -21,6 +21,7 @@ from anishift.services.subtitles.types import (
     SubtitleKind,
     SubtitleSplit,
 )
+from anishift.utils.logger import get_logger
 
 __all__ = [
     "collapse_fbf",
@@ -59,6 +60,8 @@ _LINE_BREAKS: Final[dict[SubtitleKind, str]] = {"ass": "\\N", "srt": "\n"}
 _NOTICE_URL: Final[str] = "https://github.com/MattyMroz/AniShift"
 """Project URL written into the Script Info notice of generated ASS files."""
 
+logger = get_logger(__name__)
+
 
 def _header_notice() -> str:
     """Return the ``Script Info`` notice stamped into generated ASS files."""
@@ -87,7 +90,7 @@ def load_subtitles(path: Path) -> SSAFile:
         SubtitleError: When the file is missing, unreadable or unparsable.
     """
     try:
-        return pysubs2.load(str(path), encoding=_ENCODING)
+        subtitles: SSAFile = pysubs2.load(str(path), encoding=_ENCODING)
     except FileNotFoundError as exc:
         msg = f"Subtitle file not found: {path}"
         raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, msg) from exc
@@ -100,6 +103,13 @@ def load_subtitles(path: Path) -> SSAFile:
     except pysubs2.exceptions.Pysubs2Error as exc:
         msg = f"Subtitle file could not be parsed: {path}"
         raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, msg) from exc
+    logger.debug(
+        "Subtitle file loaded",
+        source=path.name,
+        event_count=len(subtitles.events),
+        style_count=len(subtitles.styles),
+    )
+    return subtitles
 
 
 def preview_styles(subs: SSAFile) -> tuple[tuple[StyleVerdict, ...], dict[str, tuple[str, ...]]]:
@@ -224,6 +234,15 @@ def split_subtitles(
         drawing_events=drawing_events,
         collapsed_away=collapsed_away,
     )
+    logger.info(
+        "Subtitles classified",
+        kind=kind,
+        total_events=stats.total_events,
+        spoken_events=stats.spoken_events,
+        displayed_events=stats.displayed_events,
+        drawing_events=stats.drawing_events,
+        collapsed_events=stats.collapsed_away,
+    )
     return SubtitleSplit(kind, subs, tuple(decisions), final_verdicts, spoken, stats)
 
 
@@ -250,6 +269,12 @@ def _write_output(output: SSAFile, dest: Path, kind: SubtitleKind, *, subject: s
     except OSError as exc:
         msg = f"{subject} subtitles could not be written: {dest}"
         raise _fail(ErrorCode.IO_ERROR, msg) from exc
+    logger.debug(
+        "Subtitle product written",
+        product=subject,
+        destination=dest.name,
+        event_count=len(output.events),
+    )
     return dest
 
 

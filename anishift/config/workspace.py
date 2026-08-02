@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Final
 
 from anishift.errors import ErrorCode, ErrorContext, FatalError
+from anishift.utils.logger import get_logger
 
 __all__ = [
     "DEFAULT_SUBDIRS",
@@ -43,6 +44,8 @@ DEFAULT_SUBDIRS: Final[tuple[str, ...]] = (
     "output",
 )
 """Subdirectories materialised by :func:`ensure_workspace_dir`."""
+
+logger = get_logger(__name__)
 
 
 class WorkspaceRootNotResolvedError(FatalError):
@@ -88,11 +91,16 @@ def resolve_workspace_root(*, override: str | Path | None = None) -> Path:
             module is not running from a repo checkout.
     """
     if override is not None and str(override).strip():
-        return Path(override).expanduser().resolve()
+        resolved = Path(override).expanduser().resolve()
+        logger.debug("Workspace root resolved", source="settings", workspace_name=resolved.name)
+        return resolved
     env_override: Path | None = _read_env_override()
     if env_override is not None:
+        logger.debug("Workspace root resolved", source="environment", workspace_name=env_override.name)
         return env_override
-    return _infer_repo_workspace()
+    inferred = _infer_repo_workspace()
+    logger.debug("Workspace root resolved", source="repository", workspace_name=inferred.name)
+    return inferred
 
 
 def ensure_workspace_dir(root: Path) -> None:
@@ -107,3 +115,4 @@ def ensure_workspace_dir(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     for sub in DEFAULT_SUBDIRS:
         (root / sub).mkdir(parents=True, exist_ok=True)
+    logger.debug("Workspace directories ready", workspace_name=root.name, subdirectories=DEFAULT_SUBDIRS)

@@ -49,7 +49,6 @@ narratora ani finalnego sidecara.
 - Fingerprint obejmuje profil silnika oraz tekst requestu. Zmiana parametru
   wpływającego na dźwięk musi unieważniać resume.
 - Callback postępu jest observerem. Jego błąd nie może przejąć syntezy.
-
 ## Podkatalogi
 
 - `engines/` — leniwy rejestr i różnice kontraktów providerów.

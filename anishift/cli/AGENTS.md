@@ -17,7 +17,10 @@ REPL prompt_toolkit, komendy `/`, panel `/settings`, banner. Typer entry point `
 - Pusta linia w REPL (nie `/`-komenda) uruchamia pipeline — jawnego triggera brak, samo Enter przetwarza workspace. `shell.py:61-69`
 - Opcje `/komend` to gołe tokeny w stylu Claude-Code (`/setup force`), NIE uniksowe flagi; ten sam efekt w CLI Typer to jednak `--force`. `commands.py:125,162-165` vs `main.py:66-69`
 - `dispatch` traktuje wszystkie tokeny po nazwie jako opcje przez `frozenset` — duplikaty i kolejność tracone; nieznana opcja tylko ostrzega i utrzymuje REPL. `commands.py:178-187`
-- `main()` woła `logger.remove()` PRZED `app()` — loguru nic nie pisze dopóki ktoś jawnie nie doda handlera; cichy log to zaprojektowany stan wejścia. `main.py:82-87`
+- `main()` konfiguruje publiczne `utils/logger` przez `setup_mode_from_env()` z
+  wyłączonym sinkiem terminalowym i zawsze zamyka kolejkę przez
+  `shutdown_logger()`. Nie dodawaj sinka konsolowego obok Rich Live; diagnostyka
+  aplikacji trafia do `logs/anishift.log.jsonl`. `main.py`
 - `_ensure_binaries` sprawdza MKVToolNix tylko gdy w inputach jest `.mkv`, i musi wykonać się PRZED startem Rich Live (inaczej prompt instalatora zderzy się z Live). `pipeline_ui.py:54-67`
 - W panelu `/settings` `Enter` NIE zatwierdza/wychodzi — działa jak `→` (cykluje wartość); wyjście to tylko `Esc`/`q`. `settings_panel.py:193-201`
 - Każda zmiana w panelu jest natychmiast zapisywana na dysk (`save_user_settings` po każdym kroku) — brak anulowania. `settings_panel.py:184-196`

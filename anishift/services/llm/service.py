@@ -13,8 +13,11 @@ from anishift.services.llm.engines import create_engine
 from anishift.services.llm.errors import LlmAuthError, LlmConfigError
 from anishift.services.llm.protocols import LlmAttemptObserver, LlmEngine
 from anishift.services.llm.types import LlmRequest, LlmResponse
+from anishift.utils.logger import get_logger
 
 __all__ = ["LlmService"]
+
+logger = get_logger(__name__)
 
 
 class LlmService:
@@ -70,12 +73,30 @@ class LlmService:
         """
         self._ensure_open()
         self._ensure_available()
-        return retry_transient(
+        logger.debug(
+            "LLM completion started",
+            provider=self.config.engine_id,
+            model=self.config.provider_model_id,
+            message_count=len(request.messages),
+            max_retries=self.config.max_retries,
+        )
+        response = retry_transient(
             lambda: self._get_or_create_engine().complete(request),
             max_retries=self.config.max_retries,
             observer=self._observer,
             cancel=cancel,
         )
+        logger.info(
+            "LLM completion completed",
+            provider=response.engine_id,
+            model=response.provider_model_id,
+            finish_reason=response.finish_reason,
+            latency_ms=response.latency_ms,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            total_tokens=response.usage.total_tokens,
+        )
+        return response
 
     def close(self) -> None:
         """Close the provider engine once and permanently close the facade."""
@@ -86,6 +107,7 @@ class LlmService:
         self._engine = None
         if engine is not None:
             engine.close()
+        logger.debug("LLM service closed", provider=self.config.engine_id)
 
     def __enter__(self) -> Self:
         """Enter the facade context without constructing an engine."""
@@ -104,6 +126,11 @@ class LlmService:
     def _get_or_create_engine(self) -> LlmEngine:
         if self._engine is None:
             self._engine = create_engine(self.config)
+            logger.debug(
+                "LLM provider engine created",
+                provider=self.config.engine_id,
+                model=self.config.provider_model_id,
+            )
         return self._engine
 
     def _ensure_open(self) -> None:

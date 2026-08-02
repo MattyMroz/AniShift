@@ -2,26 +2,30 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import cast
 
 import pytest
+from pysubs2 import SSAFile
 
 from anishift.bootstrap import AppContext
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline import discover_inputs, run_pipeline, runner
-from anishift.pipeline.llm_queue import LlmProgressState
+from anishift.pipeline.llm_queue import LlmProgressState, LlmQueueConfig, LlmQueueInput
 from anishift.pipeline.narration import NarrationBatch
+from anishift.pipeline.recovery import RecoveryAction
 from anishift.pipeline.runner import _LlmProgressGate, _worker_count
 from anishift.pipeline.tts_queue import TtsQueueOutcome
-from anishift.pipeline.types import FileOutcome, TranslationSettings
+from anishift.pipeline.types import FileFailure, FileOutcome, TranslationSettings
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo
 from anishift.services.subtitles.errors import SubtitleError
-from anishift.services.subtitles.types import SubtitleSplit
+from anishift.services.subtitles.types import SplitStats, SpokenLine, SubtitleSplit
+from anishift.services.translation.types import FileTranslation, TranslatedLine
 from anishift.services.tts import SpeechBatch
 
 
@@ -121,6 +125,74 @@ def test_run_pipeline_isolates_identify_failure(monkeypatch: pytest.MonkeyPatch,
     assert report.outcomes[1].status == "done"
 
 
+def test_strict_pipeline_resolves_failed_extraction_before_later_translation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    failed = tmp_path / "episode 1.mkv"
+    later = tmp_path / "episode 2.mkv"
+    failed.touch()
+    later.touch()
+    failed_outcome = FileOutcome(
+        failed,
+        "failed",
+        failure=FileFailure("write", ErrorCode.PIPELINE_STEP_FAILED.value, "bad timing", ""),
+    )
+    states = {
+        failed: runner._MkvState(failed_outcome, None, source_rank=0),
+        later: runner._MkvState(FileOutcome(later, "done"), cast("SubtitleSplit", object()), source_rank=1),
+    }
+    translated: list[Path] = []
+    skipped_tts: list[Path] = []
+
+    class _RecordingRuntime(_NullTtsRuntime):
+        def skip(self, source: Path) -> None:
+            skipped_tts.append(source)
+
+    def runtime_factory(*_: object) -> _RecordingRuntime:
+        return _RecordingRuntime()
+
+    def fake_extract_phase(
+        *_: object,
+        on_complete: object,
+        **__: object,
+    ) -> dict[Path, runner._MkvState]:
+        callback = cast("Callable[[Path, runner._MkvState], None]", on_complete)
+        callback(failed, states[failed])
+        callback(later, states[later])
+        return states
+
+    def fake_translate_inputs(
+        ready_paths: object,
+        *_: object,
+        **__: object,
+    ) -> dict[Path, FileOutcome]:
+        queue_input = cast("LlmQueueInput", ready_paths)
+        while True:
+            ready, closed = queue_input.drain()
+            translated.extend(ready)
+            if closed:
+                break
+            queue_input.wait()
+        return {}
+
+    context = AppContext(
+        Settings(gemini_api_key="secret"),
+        UserSettings(
+            processing_order_policy="strict_natural",
+            translation_engine="llm",
+        ),
+        tmp_path,
+    )
+    monkeypatch.setattr(runner, "_extract_phase", fake_extract_phase)
+    monkeypatch.setattr(runner, "_translate_llm_inputs", fake_translate_inputs)
+
+    run_pipeline(context, tts_runtime_factory=runtime_factory)
+
+    assert translated == [later]
+    assert skipped_tts == [failed]
+
+
 def test_worker_count_scales_with_cores(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("anishift.pipeline.runner.os.cpu_count", lambda: 20)
     assert _worker_count(100) == 6
@@ -160,6 +232,39 @@ def test_translation_settings_routes_llm_preferences_and_env_secrets(
     assert settings.fallback_chain == ()
     assert "gemini-secret" not in repr(settings.llm)
     assert "router-secret" not in repr(settings.llm)
+
+
+def test_strict_llm_queue_respects_configured_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: LlmQueueConfig | None = None
+
+    def fake_run_llm_queue(
+        *_: object,
+        config: LlmQueueConfig,
+        **__: object,
+    ) -> dict[Path, FileOutcome]:
+        nonlocal captured
+        captured = config
+        return {}
+
+    context = AppContext(
+        Settings(gemini_api_key="secret"),
+        UserSettings(
+            translation_engine="llm",
+            processing_order_policy="strict_natural",
+            llm_max_concurrency=4,
+        ),
+        tmp_path,
+    )
+    monkeypatch.setattr("anishift.pipeline.llm_queue.run_llm_queue", fake_run_llm_queue)
+
+    runner._translate_llm_inputs((), {}, context, threading.Event())
+
+    assert captured is not None
+    assert captured.configured_limit() == 4
+    assert captured.stop_on_failure
 
 
 def test_extract_phase_reraises_interrupt_after_cancelling_workers(
@@ -263,6 +368,97 @@ def test_llm_queue_isolates_mkv_write_failure(
     assert states[bad].outcome.failure is not None
     assert states[good].outcome.status == "done"
     assert published == [good]
+
+
+def test_llm_retry_clears_previous_failure_before_publishing_narration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "episode.mkv"
+    spoken = SpokenLine(
+        start=1_000,
+        end=2_000,
+        text="Good evening",
+        style="Default",
+    )
+    split = SubtitleSplit(
+        kind="ass",
+        subs=SSAFile(),
+        decisions=("spoken",),
+        verdicts=(),
+        spoken=(spoken,),
+        stats=SplitStats(1, 1, 1, 0, 0, 0),
+    )
+    state = runner._MkvState(
+        FileOutcome(source, "done"),
+        split,
+        "ass",
+        scope_id="scope-episode",
+    )
+    context = AppContext(
+        Settings(gemini_api_key="secret"),
+        UserSettings(translation_engine="llm"),
+        tmp_path,
+    )
+    attempts: int = 0
+    published: list[Path] = []
+
+    class _FakeRuntime:
+        def __init__(self, *_: object, **__: object) -> None:
+            self.records: list[object] = []
+
+        def __enter__(self) -> _FakeRuntime:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def engine_factory(self) -> None:
+            return None
+
+    def translate_split(*_: object, **__: object) -> FileTranslation:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return FileTranslation(
+                error="Gemini overloaded",
+                error_context=ErrorContext(
+                    code=ErrorCode.LLM_PROVIDER_UNAVAILABLE,
+                    message="Gemini overloaded",
+                ),
+            )
+        return FileTranslation(
+            spoken=(
+                TranslatedLine(
+                    start=spoken.start,
+                    end=spoken.end,
+                    source_text=spoken.text,
+                    text="Dobry wieczór",
+                    lines=("Dobry wieczór",),
+                    style=spoken.style,
+                ),
+            ),
+            engine_id="llm",
+        )
+
+    monkeypatch.setattr("anishift.pipeline.llm_runtime.PipelineLlmRuntime", _FakeRuntime)
+    monkeypatch.setattr(runner, "_translate_split", translate_split)
+    monkeypatch.setattr(runner, "_write_translation_products", lambda *_: None)
+
+    runner._translate_llm_inputs(
+        (source,),
+        {source: state},
+        context,
+        threading.Event(),
+        on_provider_failure=lambda _context: RecoveryAction.RETRY,
+        on_spoken_ready=lambda path, _batch: published.append(path),
+    )
+
+    assert attempts == 2
+    assert published == [source]
+    assert state.enqueue_generation == 1
+    assert state.outcome.status == "done"
+    assert state.outcome.failure is None
 
 
 def test_llm_pipeline_sets_cancel_before_executor_wait_on_interrupt(

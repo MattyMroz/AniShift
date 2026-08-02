@@ -89,3 +89,22 @@ def test_process_environment_overrides_updated_env_file(
 
     assert settings.elevenlabs_api_key == "process-secret"
     assert "process-secret" not in repr(settings)
+
+
+def test_settings_repr_hides_every_sensitive_field() -> None:
+    protected_value = "value-that-must-not-appear"
+    settings = Settings(
+        _env_file=None,
+        deepl_api_key=protected_value,
+        elevenlabs_api_key=protected_value,
+        anthropic_api_key=protected_value,
+        gemini_api_key=protected_value,
+        openai_api_key=protected_value,
+        deepseek_api_key=protected_value,
+        openrouter_api_key=protected_value,
+        openai_compatible_api_key=protected_value,
+        openai_compatible_base_url=f"https://example.invalid/?token={protected_value}",
+        workspace_root=f"C:/{protected_value}",
+    )
+
+    assert protected_value not in repr(settings)

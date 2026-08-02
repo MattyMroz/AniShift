@@ -19,8 +19,11 @@ from anishift.config.env_file import env_path
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings, load_user_settings
 from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_root
+from anishift.utils.logger import get_logger
 
 __all__ = ["AppContext", "bootstrap"]
+
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -61,6 +64,14 @@ def bootstrap(
     )
     if create_dirs:
         ensure_workspace_dir(workspace_root)
+
+    logger.debug(
+        "Application context composed",
+        create_dirs=create_dirs,
+        workspace_name=workspace_root.name,
+        translation_engine=user_settings.translation_engine,
+        tts_engine=user_settings.tts_engine,
+    )
 
     return AppContext(
         settings=resolved,

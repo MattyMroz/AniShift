@@ -53,6 +53,7 @@ from anishift.services.audio.types import (
     TimedClip,
     TimelinePlan,
 )
+from anishift.utils.logger import get_logger
 
 __all__ = ["AudioProgressSink", "AudioService"]
 
@@ -77,6 +78,8 @@ _WINDOWS_DEVICE_NAMES: Final[frozenset[str]] = frozenset(
     },
 )
 """Reserved Windows path segments rejected on every platform."""
+
+logger = get_logger(__name__)
 
 
 class AudioProgressSink(Protocol):
@@ -127,8 +130,16 @@ class AudioService:
     ) -> AudioRenderResult:
         """Build and atomically commit one final audio sidecar."""
         _validate_request(request)
+        logger.info(
+            "Audio render started",
+            scope_id=request.scope_id,
+            clip_count=len(request.clips),
+            codec=self._config.codec_profile.value,
+            has_original=request.source_audio_path is not None,
+        )
         if not request.clips:
             _notify(callbacks, request.scope_id, "skipped_no_spoken")
+            logger.info("Audio render skipped", scope_id=request.scope_id, reason="no_spoken_clips")
             return AudioRenderResult(
                 scope_id=request.scope_id,
                 status=AudioRenderStatus.SKIPPED_NO_SPOKEN,
@@ -192,6 +203,12 @@ class AudioService:
         )
         if hit_probe is not None:
             _notify(callbacks, request.scope_id, "done")
+            logger.info(
+                "Audio render resumed",
+                scope_id=request.scope_id,
+                duration_ms=hit_probe.duration_ms,
+                channel_layout=hit_probe.channel_layout,
+            )
             return _result(
                 request,
                 status=AudioRenderStatus.RESUME_HIT,
@@ -215,6 +232,12 @@ class AudioService:
             cancel=cancel,
         )
         _notify(callbacks, request.scope_id, "done")
+        logger.info(
+            "Audio render completed",
+            scope_id=request.scope_id,
+            duration_ms=output_probe.duration_ms,
+            channel_layout=output_probe.channel_layout,
+        )
         return _result(
             request,
             status=AudioRenderStatus.COMPLETED,

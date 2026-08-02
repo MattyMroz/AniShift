@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Final, Never
 from anishift.errors import ErrorCode, ErrorContext, FatalError
 from anishift.services.tts import SpeechBatch, SpeechRequest
 from anishift.services.tts.validation import validate_speech_batch
+from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -32,6 +33,8 @@ _IDENTITY_SCHEMA: Final[str] = "anishift-narration-v1"
 
 _IDENTITY_HEX_LENGTH: Final[int] = 24
 """Truncated SHA-256 length used in portable opaque ids."""
+
+logger = get_logger(__name__)
 
 
 class NarrationBuildError(FatalError):
@@ -119,11 +122,14 @@ def _build_narration(
     )
     for source, translated_text in zip(sources, translated_texts, strict=True):
         if source.end <= source.start:
-            _raise_narration_error(
-                "Narration timing must end after it starts",
-                code=ErrorCode.PIPELINE_STEP_FAILED,
-                details={"source_order": source.order},
+            logger.warning(
+                "Narration line skipped because its timing is not positive",
+                scope_id=scope_id,
+                source_order=source.order,
+                start_ms=source.start,
+                end_ms=source.end,
             )
+            continue
         request_rank: int = len(requests)
         request_id: str = _request_id(scope_id, source)
         request = SpeechRequest(

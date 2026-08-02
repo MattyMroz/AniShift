@@ -11,8 +11,9 @@ from anishift.services.audio.output import (
     codec_spec,
     mixed_audio_path,
     render_command,
+    validate_output_probe,
 )
-from anishift.services.audio.types import AudioCodecProfile
+from anishift.services.audio.types import AudioCodecProfile, AudioProbe
 
 
 @pytest.mark.parametrize(
@@ -125,3 +126,25 @@ def test_codec_mapping(
     assert spec.extension == extension
     assert spec.encoder == encoder
     assert mixed_audio_path(Path("Episode.mkv"), profile) == Path(f"Episode{extension}")
+
+
+def test_eac3_validation_accepts_one_frame_rounding_at_48_khz() -> None:
+    config = AudioConfig(codec_profile=AudioCodecProfile.EAC3)
+    plan = build_channel_plan(AudioCodecProfile.EAC3, "stereo")
+    probe = AudioProbe(
+        path=Path("Episode.eac3"),
+        codec_name="eac3",
+        format_name="eac3",
+        sample_rate=48_000,
+        channels=2,
+        channel_layout="stereo",
+        duration_ms=1_420_096,
+        bit_rate=384_000,
+    )
+
+    validate_output_probe(
+        probe,
+        config=config,
+        channel_plan=plan,
+        expected_duration_ms=1_420_063,
+    )

@@ -92,10 +92,10 @@ def _log_before_retry(retry_state: RetryCallState) -> None:
     exc = retry_state.outcome.exception() if retry_state.outcome else None
     fn_name = getattr(retry_state.fn, "__name__", "?")
     logger.warning(
-        "Retry #{attempt} for {fn} — {exc}",
+        "Network retry scheduled",
         attempt=retry_state.attempt_number,
-        fn=fn_name,
-        exc=exc,
+        operation=fn_name,
+        error_type=type(exc).__name__ if exc is not None else "unknown",
     )
 
 

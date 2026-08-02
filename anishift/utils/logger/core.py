@@ -90,8 +90,7 @@ def setup_mode(mode: LoggerMode, **overrides: Any) -> None:
 
     config = get_mode_config(mode, **overrides)
 
-    is_dev = mode == LoggerMode.DEV
-    diagnose = is_dev
+    diagnose = False
 
     if config.console_enabled:
         from .handlers.console import console_sink
@@ -133,8 +132,7 @@ def setup_mode(mode: LoggerMode, **overrides: Any) -> None:
                 format="{message}",
             )
 
-    if not is_dev:
-        logger.configure(patcher=scrub_patcher)
+    logger.configure(patcher=scrub_patcher)
 
     _install_intercept()
 

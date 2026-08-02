@@ -16,6 +16,7 @@ from anishift.services.translation.config import TranslationConfig
 from anishift.services.translation.constants import TARGET_LANG
 from anishift.services.translation.errors import TranslationEngineError, TranslationError
 from anishift.services.translation.types import BatchedLine, FileTranslation, TranslatedLine
+from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from anishift.services.subtitles.types import DisplayedLine, SpokenLine
@@ -24,6 +25,8 @@ if TYPE_CHECKING:
         TranslationEngineFactory,
         TranslationStream,
     )
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +108,12 @@ class TranslationService:
             return FileTranslation(target_lang=target_lang)
 
         chain = self._resolve_chain()
+        logger.debug(
+            "File translation started",
+            spoken_lines=len(spoken),
+            displayed_lines=len(displayed),
+            engine_chain=chain,
+        )
         last_error: str | None = None
         last_context: ErrorContext | None = None
         for engine_id in chain:
@@ -121,12 +130,27 @@ class TranslationService:
                         suggestion="Choose an available translation engine.",
                     )
                     raise TranslationEngineError(context=context)
-                return self._run(engine, spoken, displayed, source_lang=source_lang, target_lang=target_lang)
+                result = self._run(engine, spoken, displayed, source_lang=source_lang, target_lang=target_lang)
+                logger.info(
+                    "File translation completed",
+                    engine=engine_id,
+                    total_lines=result.total_lines,
+                    unique_lines=result.unique_lines,
+                    failed_lines=result.failed_lines,
+                    api_calls=result.api_calls,
+                )
+                return result  # noqa: TRY300 - return must precede engine close in finally
             except TranslationError as exc:
                 if exc.context.code is ErrorCode.CANCELLED:
                     raise
                 last_error = str(exc)
                 last_context = exc.context
+                logger.warning(
+                    "Translation engine attempt failed",
+                    engine=engine_id,
+                    error_code=exc.context.code.value,
+                    fallback_remaining=engine_id != chain[-1],
+                )
             finally:
                 if engine is not None:
                     engine.close()
@@ -135,6 +159,11 @@ class TranslationService:
             code=ErrorCode.TRANSLATION_ENGINE_ERROR,
             message=error,
             suggestion="Check translation settings and try again.",
+        )
+        logger.error(
+            "Translation engine chain exhausted",
+            error_code=context.code.value,
+            attempted_engines=chain,
         )
         return FileTranslation(target_lang=target_lang, error=error, error_context=context)
 

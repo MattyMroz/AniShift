@@ -15,6 +15,7 @@ from typing import Any, Final
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.errors import AudioResumeError
 from anishift.services.audio.fingerprint import sha256_file
+from anishift.utils.logger import get_logger
 
 __all__ = ["AudioResumeRepository"]
 
@@ -28,6 +29,8 @@ _LOCKS_GUARD: Final[threading.Lock] = threading.Lock()
 
 _LOCKS: Final[dict[Path, threading.RLock]] = {}
 """Process-local serialization by resolved Audio manifest path."""
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +154,11 @@ class AudioResumeRepository:
             )
         self._narration = None
         self._outputs = {}
+        logger.warning(
+            "Invalid audio resume manifest quarantined",
+            scope_id=self._scope_id,
+            error_type=type(error).__name__,
+        )
 
     def _relative_name(self, path: Path) -> str:
         resolved: Path = path.resolve()
