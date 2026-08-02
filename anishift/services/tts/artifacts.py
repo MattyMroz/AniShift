@@ -27,6 +27,16 @@ _SNAPSHOT_REPLACE_ATTEMPTS: Final[int] = 5
 _SNAPSHOT_RETRY_DELAY_S: Final[float] = 0.05
 """Base delay between atomic snapshot replacement attempts."""
 
+_SUGGESTION_REMOVE_REDIRECT: Final[str] = (
+    "Remove the symlink or junction so the pipeline can recreate a real directory."
+)
+"""Suggestion for artifact paths that resolve through symlinks or junctions."""
+
+_SUGGESTION_RESET_ARTIFACTS: Final[str] = (
+    "Delete the TTS artifacts directory under workspace/tmp and run the file again."
+)
+"""Suggestion for artifacts that violate the resume repository layout contract."""
+
 
 @dataclass(frozen=True, slots=True)
 class TtsArtifactLayout:
@@ -47,15 +57,19 @@ class TtsArtifactLayout:
     def initialize(self) -> None:
         """Create only directories owned by this TTS repository."""
         if self.root.exists() and _is_redirect(self.root):
-            root_message: str = "TTS repository root cannot be a symlink or junction"
-            raise TtsResumeError(root_message)
+            _raise_resume(
+                "TTS repository root cannot be a symlink or junction",
+                _SUGGESTION_REMOVE_REDIRECT,
+            )
         try:
             self.root.mkdir(parents=True, exist_ok=True)
         except OSError as error:
             _raise_artifact_io("initialize_root", error)
         if self.clips_dir.exists() and _is_redirect(self.clips_dir):
-            clips_message: str = "TTS clips directory cannot be a symlink or junction"
-            raise TtsResumeError(clips_message)
+            _raise_resume(
+                "TTS clips directory cannot be a symlink or junction",
+                _SUGGESTION_REMOVE_REDIRECT,
+            )
         try:
             self.clips_dir.mkdir(parents=True, exist_ok=True)
         except OSError as error:
@@ -63,8 +77,11 @@ class TtsArtifactLayout:
         try:
             self.clips_dir.resolve().relative_to(self.root.resolve())
         except ValueError as error:
-            escape_message = "TTS clips directory escapes the repository root"
-            raise TtsResumeError(escape_message) from error
+            _raise_resume(
+                "TTS clips directory escapes the repository root",
+                _SUGGESTION_RESET_ARTIFACTS,
+                cause=error,
+            )
 
     def clip_path(
         self,
@@ -110,11 +127,15 @@ class TtsArtifactLayout:
         )
         final: Path = self._contained_clip(final_path)
         if temporary.parent != self.clips_dir.resolve() or final.parent != temporary.parent:
-            message: str = "TTS clip commit must stay inside the owned clips directory"
-            raise TtsResumeError(message)
+            _raise_resume(
+                "TTS clip commit must stay inside the owned clips directory",
+                _SUGGESTION_RESET_ARTIFACTS,
+            )
         if temporary.is_symlink() or final.is_symlink():
-            message = "TTS clip paths cannot be symbolic links"
-            raise TtsResumeError(message)
+            _raise_resume(
+                "TTS clip paths cannot be symbolic links",
+                _SUGGESTION_REMOVE_REDIRECT,
+            )
         try:
             temporary.replace(final)
         except OSError as error:
@@ -124,8 +145,10 @@ class TtsArtifactLayout:
         """Remove only one repository-created uncommitted clip."""
         temporary: Path = self._contained_clip(path)
         if temporary.parent != self.clips_dir.resolve() or not _is_temp_name(temporary.name):
-            message: str = "Refusing to remove a non-temporary TTS artifact"
-            raise TtsResumeError(message)
+            _raise_resume(
+                "Refusing to remove a non-temporary TTS artifact",
+                _SUGGESTION_RESET_ARTIFACTS,
+            )
         try:
             temporary.unlink(missing_ok=True)
         except OSError as error:
@@ -147,20 +170,27 @@ class TtsArtifactLayout:
             or not lexical.name.endswith(expected_suffix)
             or _is_redirect(path)
         ):
-            message: str = "TTS commit input is not a reserved temporary clip"
-            raise TtsResumeError(message)
+            _raise_resume(
+                "TTS commit input is not a reserved temporary clip",
+                _SUGGESTION_RESET_ARTIFACTS,
+            )
         return self._contained_clip(path)
 
     def _contained_clip(self, path: Path) -> Path:
         if path.is_symlink():
-            symlink_message: str = "TTS artifact paths cannot be symbolic links"
-            raise TtsResumeError(symlink_message)
+            _raise_resume(
+                "TTS artifact paths cannot be symbolic links",
+                _SUGGESTION_REMOVE_REDIRECT,
+            )
         resolved: Path = path.resolve()
         try:
             resolved.relative_to(self.clips_dir.resolve())
         except ValueError as error:
-            escape_message: str = "TTS artifact path escapes the owned clips directory"
-            raise TtsResumeError(escape_message) from error
+            _raise_resume(
+                "TTS artifact path escapes the owned clips directory",
+                _SUGGESTION_RESET_ARTIFACTS,
+                cause=error,
+            )
         return resolved
 
 
@@ -228,6 +258,18 @@ def _replace_snapshot(temporary_path: Path, path: Path) -> None:
             time.sleep(_SNAPSHOT_RETRY_DELAY_S * attempt)
         else:
             return
+
+
+def _raise_resume(message: str, suggestion: str, *, cause: BaseException | None = None) -> Never:
+    """Raise a resume-contract error carrying an actionable suggestion."""
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.TTS_RESUME_ERROR,
+        message=message,
+        suggestion=suggestion,
+    )
+    if cause is not None:
+        raise TtsResumeError(context=context) from cause
+    raise TtsResumeError(context=context)
 
 
 def _raise_artifact_io(operation: str, error: OSError) -> Never:
