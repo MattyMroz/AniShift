@@ -257,6 +257,9 @@ _PREPOSITIONS_MULTIWORD: Final[frozenset[tuple[str, ...]]] = frozenset(
 _MAX_PHRASE_WORDS: Final[int] = 4
 """Longest multi-word phrase looked up (``w związku z czym``)."""
 
+_LAYOUT_WINDOW_MIN_CHARS: Final[int] = 8
+"""Smallest search window around one proportional layout boundary target."""
+
 _RE_SPACES: Final[re.Pattern[str]] = re.compile(r"\s+")
 """Whitespace run, collapsed to a single space before splitting."""
 
@@ -309,18 +312,24 @@ def _proportional_boundaries(words: list[str], source_verses: tuple[str, ...]) -
     weights = [max(len(verse), 1) for verse in source_verses]
     total_weight = sum(weights)
     offsets = _word_offsets(words)
+    text_length = len(" ".join(words))
+    # Punctuation preference stays local to this window; without it a distant
+    # sentence end outweighs the authored proportions and the tail collapses
+    # into one-word lines.
+    radius = max(_LAYOUT_WINDOW_MIN_CHARS, round(text_length / (2 * len(source_verses))))
     boundaries: list[int] = []
     previous = 0
     for line_index in range(1, len(source_verses)):
         remaining_lines = len(source_verses) - line_index
-        desired = round(len(" ".join(words)) * sum(weights[:line_index]) / total_weight)
+        desired = round(text_length * sum(weights[:line_index]) / total_weight)
         candidates = [
             index for index in range(previous + 1, len(words) - remaining_lines + 1) if not _protected(words, index)
         ]
         if not candidates:
             candidates = list(range(previous + 1, len(words) - remaining_lines + 1))
+        near = [index for index in candidates if abs(offsets[index] - desired) <= radius]
         boundary = min(
-            candidates,
+            near or candidates,
             key=lambda index: abs(offsets[index] - desired) * _weight(words[index - 1], words, index) ** 2,
         )
         boundaries.append(boundary)
