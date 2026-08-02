@@ -70,7 +70,7 @@ class TestTimer:
             "anishift.utils.timer.perf_counter_ns",
             side_effect=(1_000_000_000, 2_500_000_000),
         ):
-            t = Timer("t", auto_start=True)
+            t: Timer = Timer("t", auto_start=True)
             t.stop()
 
         assert t.duration_ms == 1_500.0

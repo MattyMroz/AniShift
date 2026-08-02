@@ -155,7 +155,7 @@ class AudioResumeRepository:
         self._narration = None
         self._outputs = {}
         logger.warning(
-            "Corrupt audio resume manifest quarantined",
+            "Invalid audio resume manifest quarantined",
             scope_id=self._scope_id,
             error_type=type(error).__name__,
         )

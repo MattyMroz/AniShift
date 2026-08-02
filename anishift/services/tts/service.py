@@ -264,7 +264,7 @@ class TtsService:
                 loop,
             )
         try:
-            result = future.result()
+            result: SpeechBatchResult = future.result()
         except KeyboardInterrupt:
             self.cancel()
             raise

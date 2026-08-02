@@ -153,7 +153,7 @@ def identify(path: Path) -> MediaInfo:
     if completed.returncode != 0:
         msg = f"{path}: mkvmerge identify failed: {completed.stderr.strip()}"
         raise _fail(ErrorCode.EXTRACTION_FAILED, msg, details={"file": str(path)})
-    info = parse_media_info(path, completed.stdout)
+    info: MediaInfo = parse_media_info(path, completed.stdout)
     timer.stop()
     logger.info(
         "Media identification completed",

@@ -226,7 +226,7 @@ def test_service_stops_timer_after_batch_completion(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    engine = _Engine()
+    engine: _Engine = _Engine()
     stopped: list[bool] = []
 
     class _TimerProbe:

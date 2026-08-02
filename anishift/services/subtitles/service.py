@@ -90,7 +90,7 @@ def load_subtitles(path: Path) -> SSAFile:
         SubtitleError: When the file is missing, unreadable or unparsable.
     """
     try:
-        subtitles = pysubs2.load(str(path), encoding=_ENCODING)
+        subtitles: SSAFile = pysubs2.load(str(path), encoding=_ENCODING)
     except FileNotFoundError as exc:
         msg = f"Subtitle file not found: {path}"
         raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, msg) from exc

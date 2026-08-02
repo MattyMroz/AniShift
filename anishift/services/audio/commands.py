@@ -117,7 +117,7 @@ class SubprocessRunner:
     ) -> CommandResult:
         """Execute one command with timeout, cancellation, and safe stderr."""
         timer: Timer = Timer(operation, auto_start=True)
-        logger.debug("Audio subprocess started", operation=operation, timeout_s=timeout_s)
+        logger.debug("Audio subprocess starting", operation=operation, timeout_s=timeout_s)
         try:
             process: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603
                 list(command),

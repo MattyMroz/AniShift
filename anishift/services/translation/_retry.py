@@ -60,7 +60,7 @@ def call_with_retry[T](
                     error_type=type(error).__name__,
                 )
                 raise
-            delay_s = _backoff_s(attempt, base_s, cap_s)
+            delay_s: float = _backoff_s(attempt, base_s, cap_s)
             logger.warning(
                 "Translation provider retry scheduled",
                 attempt=attempt,
@@ -112,7 +112,7 @@ async def call_with_retry_async[T](
                     error_type=type(error).__name__,
                 )
                 raise
-            delay_s = _backoff_s(attempt, base_s, cap_s)
+            delay_s: float = _backoff_s(attempt, base_s, cap_s)
             logger.warning(
                 "Translation provider retry scheduled",
                 attempt=attempt,
