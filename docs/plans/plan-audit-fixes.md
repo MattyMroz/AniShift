@@ -50,6 +50,11 @@ duplikacji i wydajności. Branch roboczy: `chore/stage-6.3-audit-fixes`.
 
 ### Poza zakresem tego brancha (świadomie)
 
+- `translation_fallback_chain` nie uczestniczy w ścieżce LLM (`attempted_engines:
+  ["llm"]`): przy trwałej awarii LLM pipeline pyta `retry/settings/finish`,
+  a użytkownik przełącza silnik ręcznie w `settings`. Decyzja z 2026-08-02:
+  zostaje tak — brak cichego fallbacku na gorszy silnik.
+
 - Rozmiar `pipeline/runner.py` (1441 linii) i `open_settings_panel` (~300
   linii) — uzasadnione `noqa`, refaktor UI/pipeline planowany osobno.
 - Problemy heurystyk ASS na realnych MKV — osobny wątek; ASS bywa niepoprawny
