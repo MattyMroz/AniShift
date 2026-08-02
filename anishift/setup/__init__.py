@@ -1,6 +1,7 @@
 """Setup layer — diagnostics (doctor) and binary installation.
 
-Stage 1 ships the ``doctor``; ``installer`` (``anishift setup``) arrives later.
+``doctor`` symbols are re-exported here; ``installer`` is imported directly
+as ``anishift.setup.installer``.
 """
 
 from __future__ import annotations
