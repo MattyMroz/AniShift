@@ -311,6 +311,9 @@ def _translated_file(
     out.styles = {name: style.copy() for name, style in split.subs.styles.items()}
     line_break = _LINE_BREAKS[split.kind]
     translated_spoken = tuple(zip(split.spoken, spoken_verses, strict=True)) if selected in {None, "spoken"} else ()
+    spoken_by_key: defaultdict[tuple[str, str], list[tuple[SpokenLine, tuple[str, ...]]]] = defaultdict(list)
+    for spoken, translated in translated_spoken:
+        spoken_by_key[spoken.style, spoken.text].append((spoken, translated))
     dialogue_index = 0
     displayed_index = 0
     for event in split.subs.events:
@@ -332,11 +335,8 @@ def _translated_file(
             verses = next(
                 (
                     translated
-                    for spoken, translated in translated_spoken
-                    if spoken.style == event.style
-                    and spoken.text == visible
-                    and spoken.start <= event.start
-                    and event.end <= spoken.end
+                    for spoken, translated in spoken_by_key.get((event.style, visible), ())
+                    if spoken.start <= event.start and event.end <= spoken.end
                 ),
                 None,
             )
