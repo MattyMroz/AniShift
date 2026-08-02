@@ -78,10 +78,8 @@ def _run_per_row_config(align: Literal["aligned", "independent"]) -> None:
             time.sleep(0.04)
 
 
-def run_all_demos() -> None:
-    """Run complete progress bar demo suite."""
-    print_section("PROGRESS BAR SYSTEM TESTS")
-
+def _demo_core_styles() -> None:
+    """Run demos 1-6: unknown progress, color transitions, custom chars."""
     console.print("1. Unknown Progress (no total):", style="white_bold")
     with ProgressBarManager("Processing unknown amount", total=None, bar="rich", show_percentage=False) as pb:
         time.sleep(1.5)
@@ -158,6 +156,9 @@ def run_all_demos() -> None:
             pb.advance(1)
             time.sleep(0.02)
 
+
+def _demo_download_mode() -> None:
+    """Run demos 7-9: download mode with bytes + speed, one per bar style."""
     print_section("MODULAR FEATURES - Download with bytes + speed")
 
     console.print("7. DOWNLOAD with bytes + speed (bar='rich'):", style="white_bold")
@@ -208,6 +209,9 @@ def run_all_demos() -> None:
             pb.advance(500_000)
             time.sleep(0.05)
 
+
+def _demo_modular_mixing() -> None:
+    """Run demos 10-16: mix any subset of components (spinner/bar/eta/bytes/...)."""
     print_section("FULL MODULARITY - Mix ANY components!")
 
     console.print("10. ONLY SPINNER (nothing else):", style="white_bold")
@@ -280,6 +284,9 @@ def run_all_demos() -> None:
             pb.advance(1)
             time.sleep(0.1)
 
+
+def _demo_truncate_modes() -> None:
+    """Run demos 17-24: description truncation modes and edge cases."""
     print_section("TRUNCATE MODES - Description length control")
 
     console.print("17. TRUNCATE END (start...):", style="white_bold")
@@ -344,6 +351,9 @@ def run_all_demos() -> None:
             pb.advance(1)
             time.sleep(0.02)
 
+
+def _demo_multi_task() -> None:
+    """Run demos 25-28: multi-task concurrent bars, per-row config, workers."""
     print_section("MULTI-TASK - Many bars in one live display")
 
     console.print("25. MULTI-TASK DOWNLOAD (concurrent bars, independent colors):", style="white_bold")
@@ -385,8 +395,9 @@ def run_all_demos() -> None:
     )
     _run_per_row_config("independent")
 
-    # ── Summary ───────────────────────────────────────────────────────────────
 
+def _print_summary() -> None:
+    """Print the demo suite summary section."""
     print_section("DEMO SUMMARY")
     console.print("  • 6 demos: Core styles (rich, blocks, custom chars)", style="white_bold")
     console.print("  • 3 demos: Download mode (bytes + speed)", style="white_bold")
@@ -394,6 +405,17 @@ def run_all_demos() -> None:
     console.print("  • 7 demos: Truncation modes (end, start, middle + edge cases)", style="white_bold")
     console.print("  • 4 demos: Multi-task (download, aligned vs independent, workers)", style="white_bold")
     console.print("  • Total: 27 demos", style="white_bold")
+
+
+def run_all_demos() -> None:
+    """Run complete progress bar demo suite."""
+    print_section("PROGRESS BAR SYSTEM TESTS")
+    _demo_core_styles()
+    _demo_download_mode()
+    _demo_modular_mixing()
+    _demo_truncate_modes()
+    _demo_multi_task()
+    _print_summary()
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@ def _context(*, gemini_key: str = "", compatible_url: str = "") -> AppContext:
 
 
 def test_translation_picker_keeps_llm_and_unconfigured_deepl_visible() -> None:
-    engines = _translation_engines(_context())
+    engines = _translation_engines()
     assert "llm" in engines
     assert "deepl" in engines
 

@@ -29,7 +29,8 @@ class TestResolveTimeWindow:
         before = datetime.now()
         s, e = resolve_time_window(minutes=10)
         after = datetime.now()
-        assert s is not None and e is not None
+        assert s is not None
+        assert e is not None
         assert before - timedelta(minutes=10, seconds=1) <= s
         assert e <= after
 
@@ -37,7 +38,8 @@ class TestResolveTimeWindow:
         before = datetime.now()
         s, e = resolve_time_window(hours=2)
         after = datetime.now()
-        assert s is not None and e is not None
+        assert s is not None
+        assert e is not None
         assert before - timedelta(hours=2, seconds=1) <= s
         assert e <= after
 
@@ -45,7 +47,8 @@ class TestResolveTimeWindow:
         before = datetime.now()
         s, e = resolve_time_window(days=7)
         after = datetime.now()
-        assert s is not None and e is not None
+        assert s is not None
+        assert e is not None
         assert before - timedelta(days=7, seconds=1) <= s
         assert e <= after
 

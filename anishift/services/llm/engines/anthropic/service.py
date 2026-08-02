@@ -4,13 +4,32 @@ from __future__ import annotations
 
 import importlib
 import time
-from collections.abc import Mapping
 from http import HTTPStatus
 from types import ModuleType
 from typing import Any, Final, Never, Protocol, cast
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.llm.config import LlmConfig
+from anishift.services.llm.engines._sdk_helpers import (
+    error_with_context,
+    raise_request_error,
+    transient_error_with_context,
+)
+from anishift.services.llm.engines._sdk_helpers import (
+    normalize_finish_reason as _normalize_finish_reason,
+)
+from anishift.services.llm.engines._sdk_helpers import (
+    optional_int as _optional_int,
+)
+from anishift.services.llm.engines._sdk_helpers import (
+    retry_after_seconds as _retry_after_seconds,
+)
+from anishift.services.llm.engines._sdk_helpers import (
+    status_code as _status_code,
+)
+from anishift.services.llm.engines._sdk_helpers import (
+    structured_markers as _structured_markers,
+)
 from anishift.services.llm.engines.anthropic.constants import DEFAULT_MAX_OUTPUT_TOKENS
 from anishift.services.llm.errors import (
     LlmAuthError,
@@ -347,63 +366,13 @@ def _normalize_usage(usage: object) -> LlmUsage:
     )
 
 
-def _normalize_finish_reason(value: object) -> str:
-    enum_value: object = getattr(value, "value", value)
-    if not isinstance(enum_value, str) or not enum_value.strip():
-        return "unknown"
-    return enum_value.strip().lower()
-
-
-def _structured_markers(value: object) -> frozenset[str]:
-    markers: set[str] = set()
-    if isinstance(value, Mapping):
-        for nested in value.values():
-            markers.update(_structured_markers(nested))
-    elif isinstance(value, (list, tuple)):
-        for nested in value:
-            markers.update(_structured_markers(nested))
-    elif isinstance(value, str) and value.strip():
-        markers.add(value.strip().lower())
-    return frozenset(markers)
-
-
-def _status_code(error: BaseException) -> int | None:
-    status: object = getattr(error, "status_code", None)
-    return status if isinstance(status, int) and not isinstance(status, bool) else None
-
-
-def _retry_after_seconds(error: BaseException) -> float | None:
-    response: object = getattr(error, "response", None)
-    headers: object = getattr(response, "headers", None)
-    if not isinstance(headers, Mapping):
-        return None
-    value: object = headers.get("retry-after")
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed: float = float(value)
-    except ValueError:
-        return None
-    return max(0.0, parsed)
-
-
-def _optional_int(value: object) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
 def _error_with_context(
     error_type: type[LlmError],
     *,
     message: str,
     suggestion: str,
 ) -> Exception:
-    context: ErrorContext = ErrorContext(
-        code=error_type.error_code,
-        message=message,
-        suggestion=suggestion,
-        details={"engine_id": "anthropic"},
-    )
-    return error_type(context=context)
+    return error_with_context(error_type, engine_id="anthropic", message=message, suggestion=suggestion)
 
 
 def _transient_error_with_context(
@@ -413,20 +382,14 @@ def _transient_error_with_context(
     suggestion: str,
     retry_after_s: float | None,
 ) -> Exception:
-    context: ErrorContext = ErrorContext(
-        code=error_type.error_code,
+    return transient_error_with_context(
+        error_type,
+        engine_id="anthropic",
         message=message,
         suggestion=suggestion,
-        details={"engine_id": "anthropic"},
+        retry_after_s=retry_after_s,
     )
-    return error_type(context=context, retry_after_s=retry_after_s)
 
 
 def _raise_request_error(message: str, *, suggestion: str) -> Never:
-    context: ErrorContext = ErrorContext(
-        code=ErrorCode.LLM_REQUEST_FAILED,
-        message=message,
-        suggestion=suggestion,
-        details={"engine_id": "anthropic"},
-    )
-    raise LlmRequestError(context=context)
+    raise_request_error(message, suggestion=suggestion, engine_id="anthropic")

@@ -39,8 +39,7 @@ class TestErrorHierarchy:
 
     def test_raise_and_catch(self) -> None:
         with pytest.raises(LoggerError):
-            msg = "bad config"
-            raise ConfigError(msg)
+            raise ConfigError("bad config")
 
     def test_message_preserved(self) -> None:
         err = ParserError("invalid JSON")

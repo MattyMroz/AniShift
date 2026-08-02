@@ -9,7 +9,7 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Final, Literal
 
 __all__ = [
     "StatusType",
@@ -19,6 +19,17 @@ __all__ = [
     "get_progress_color",
     "get_status_icon",
 ]
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_MAX_PERCENTAGE: Final[float] = 100
+"""Upper bound of a valid percentage value."""
+
+_SECONDS_PER_MINUTE: Final[int] = 60
+"""Seconds in one minute, used to split a duration into minutes and seconds."""
+
+_MINUTES_PER_HOUR: Final[int] = 60
+"""Minutes in one hour, used to split a duration into hours and minutes."""
 
 # ── Status Icons ──────────────────────────────────────────────────────────────
 
@@ -145,7 +156,7 @@ def get_progress_color(
         >>> get_progress_color(60)
         'yellow'
     """
-    if not 0 <= percentage <= 100:
+    if not 0 <= percentage <= _MAX_PERCENTAGE:
         msg = "Percentage must be between 0 and 100"
         raise ValueError(msg)
 
@@ -182,17 +193,17 @@ def format_duration(seconds: float, precision: int = 2) -> str:
         msg = "Duration cannot be negative"
         raise ValueError(msg)
 
-    if seconds < 60:
+    if seconds < _SECONDS_PER_MINUTE:
         return f"{seconds:.{precision}f}s"
 
-    minutes: int = int(seconds // 60)
-    remaining_seconds: float = seconds % 60
+    minutes: int = int(seconds // _SECONDS_PER_MINUTE)
+    remaining_seconds: float = seconds % _SECONDS_PER_MINUTE
 
-    if minutes < 60:
+    if minutes < _MINUTES_PER_HOUR:
         return f"{minutes}m {remaining_seconds:.{precision}f}s"
 
-    hours: int = minutes // 60
-    remaining_minutes: int = minutes % 60
+    hours: int = minutes // _MINUTES_PER_HOUR
+    remaining_minutes: int = minutes % _MINUTES_PER_HOUR
 
     return f"{hours}h {remaining_minutes}m {remaining_seconds:.{precision}f}s"
 

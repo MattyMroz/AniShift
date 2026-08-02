@@ -93,7 +93,7 @@ def setup_mode(mode: LoggerMode, **overrides: Any) -> None:
     diagnose = False
 
     if config.console_enabled:
-        from .handlers.console import console_sink
+        from .handlers.console import console_sink  # noqa: PLC0415 — keep rich_console off import path when disabled
 
         logger.add(
             sink=console_sink,

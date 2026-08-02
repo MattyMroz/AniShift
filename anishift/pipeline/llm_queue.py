@@ -64,6 +64,9 @@ type NotProcessedFactory = Callable[[Path, ErrorContext], FileOutcome]
 _WAIT_POLL_SECONDS: Final[float] = 0.2
 """Condition and future polling interval for responsive cancellation."""
 
+_MAX_PROVIDER_CONCURRENCY: Final[int] = 4
+"""Ceiling for concurrent provider attempts; the healthy ramp doubles up to it."""
+
 _PROVIDER_TERMINAL_CODES: Final[frozenset[str]] = frozenset(
     (
         ErrorCode.LLM_AUTH_FAILED.value,
@@ -206,7 +209,7 @@ class SharedProviderState:
         self._attempt_threads: set[int] = set()
         self._open = False
         self._probe_thread: int | None = None
-        self._ramp_limit = 4
+        self._ramp_limit = _MAX_PROVIDER_CONCURRENCY
 
     @property
     def can_submit(self) -> bool:
@@ -263,7 +266,7 @@ class SharedProviderState:
                 return
             self._open = False
             self._probe_thread = None
-            self._ramp_limit = 2 if self._ramp_limit == 1 else 4
+            self._ramp_limit = min(self._ramp_limit * 2, _MAX_PROVIDER_CONCURRENCY)
             self._condition.notify_all()
             ramp_limit = self._ramp_limit
         logger.info("LLM provider circuit healthy", concurrency_limit=ramp_limit)
@@ -307,8 +310,11 @@ def run_llm_queue(  # noqa: PLR0912,PLR0915 - explicit queue state transitions
     original_order: dict[Path, int] = {}
     state = SharedProviderState(config.cancel)
     worker = worker_factory(state)
-    logger.info("LLM queue started", configured_limit=max(1, min(4, config.configured_limit())))
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    logger.info(
+        "LLM queue started",
+        configured_limit=max(1, min(_MAX_PROVIDER_CONCURRENCY, config.configured_limit())),
+    )
+    with ThreadPoolExecutor(max_workers=_MAX_PROVIDER_CONCURRENCY) as pool:
         active: dict[Future[FileOutcome], Path] = {}
         terminal_paths: list[Path] = []
         input_closed = False

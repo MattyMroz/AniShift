@@ -12,7 +12,7 @@ from anishift.services.audio.commands import CommandResult, SubprocessRunner
 from anishift.services.audio.config import AudioConfig
 from anishift.services.audio.errors import AudioProcessError
 from anishift.services.audio.probe import measure_decoded_duration, probe_audio
-from anishift.services.audio.service import AudioService, _notify
+from anishift.services.audio.service import AudioService, _notify, _replace_output
 from anishift.services.audio.types import (
     AudioCodecProfile,
     AudioFormat,
@@ -206,6 +206,50 @@ def test_audio_service_skips_empty_speech_without_sidecar(tmp_path: Path) -> Non
     assert result.status is AudioRenderStatus.SKIPPED_NO_SPOKEN
     assert result.output_path is None
     assert not (tmp_path / "Episode.eac3").exists()
+
+
+def test_replace_output_retries_transient_permission_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "out.tmp.eac3"
+    destination = tmp_path / "out.eac3"
+    source.write_bytes(b"payload")
+    attempts: list[int] = []
+    original_replace = Path.replace
+
+    def flaky_replace(self: Path, target: str | Path) -> Path:
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise PermissionError(13, "Access is denied")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    monkeypatch.setattr("anishift.services.audio.service.time.sleep", lambda _delay: None)
+
+    _replace_output(source, destination)
+
+    assert destination.read_bytes() == b"payload"
+    assert len(attempts) == 3
+
+
+def test_replace_output_raises_when_lock_persists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: list[int] = []
+
+    def locked_replace(self: Path, target: str | Path) -> Path:
+        attempts.append(1)
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(Path, "replace", locked_replace)
+    monkeypatch.setattr("anishift.services.audio.service.time.sleep", lambda _delay: None)
+
+    with pytest.raises(PermissionError):
+        _replace_output(tmp_path / "out.tmp.eac3", tmp_path / "out.eac3")
+
+    assert len(attempts) == 4
 
 
 @pytest.mark.skipif(

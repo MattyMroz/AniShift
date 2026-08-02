@@ -45,6 +45,7 @@ from rich.progress import (
     TaskID,
     TextColumn,
 )
+from rich.spinner import Spinner
 from rich.text import Text
 
 from ..console import console
@@ -218,7 +219,9 @@ class ProgressBarBuilder:
         return f"[{color}]{filled_str}[/{color}][{empty_color}]{empty_str}[/{empty_color}]"
 
     @staticmethod
-    def custom(width: int, progress: float, color: str, empty_color: str, filled_char: str, empty_char: str) -> str:
+    def custom(  # noqa: PLR0913 — public API, one param per bar attribute; signature is frozen
+        width: int, progress: float, color: str, empty_color: str, filled_char: str, empty_char: str
+    ) -> str:
         """Create custom character progress bar.
 
         Args:
@@ -257,8 +260,6 @@ class DynamicSpinnerColumn(ProgressColumn):
     """
 
     def __init__(self, style_name: str, spinner_name: str = "dots") -> None:
-        from rich.spinner import Spinner
-
         self.style_name: str = style_name
         self.spinner: Spinner = Spinner(spinner_name, style=style_name)
         self.is_finished: bool = False
@@ -415,7 +416,7 @@ class ProgressBarManager:
     }
     """Default 4-step color transition from red to green."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — public API, one param per display toggle; signature is frozen
         self,
         description: str = "Processing...",
         total: int | None = None,
@@ -625,7 +626,7 @@ class ProgressBarManager:
             self.progress.advance(self.task, amount)
             self.last_successful_progress += amount
             self.update_style(self.last_successful_progress)
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort UI update; a render glitch must never crash the app
             _logger.debug("Progress advance failed")
             self.progress.update(self.task, completed=self.last_successful_progress)
 
@@ -640,7 +641,7 @@ class ProgressBarManager:
 
             if self.bar_style != "rich":
                 self._update_custom_bar(current)
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort UI update; a render glitch must never crash the app
             _logger.debug("Style update failed")
             self.progress.update(self.task, completed=self.last_successful_progress)
 

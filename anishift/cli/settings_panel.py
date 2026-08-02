@@ -130,8 +130,8 @@ class _PanelState:
     error: str = ""
 
 
-def _translation_engines(context: AppContext) -> tuple[str, ...]:
-    """Return selectable engine ids: registry order, filtered by availability.
+def _translation_engines() -> tuple[str, ...]:
+    """Return selectable engine ids in registry order.
 
     Every registered engine remains visible; availability is rendered separately.
     """
@@ -355,7 +355,7 @@ def open_settings_panel(  # noqa: C901, PLR0915 - prompt_toolkit bindings share 
         The mutated :class:`UserSettings` (already persisted on every change).
     """
     settings = context.user_settings
-    engines = _translation_engines(context)
+    engines = _translation_engines()
     registry = _prompt_registry()
     state = _PanelState()
     catalog = build_tts_catalog(context)

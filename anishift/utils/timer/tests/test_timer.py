@@ -88,7 +88,6 @@ class TestTimer:
     def test_restart_after_stop(self) -> None:
         t = Timer("t", auto_start=True)
         t.stop()
-        old_ns = t.duration_ns
         t.start()
         assert t.is_running
         assert t.end_date is None
@@ -130,9 +129,8 @@ class TestExecutionTimer:
 
     def test_exception_still_stops_timer(self) -> None:
         et = ExecutionTimer("test", display_mode="none")
-        with pytest.raises(ValueError, match="boom"):
-            with et:
-                raise ValueError("boom")
+        with pytest.raises(ValueError, match="boom"), et:
+            raise ValueError("boom")
         assert et.get_duration_ns() > 0
 
 

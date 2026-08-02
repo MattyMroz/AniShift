@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Final, Never, Protocol
@@ -61,6 +62,12 @@ __all__ = ["AudioProgressSink", "AudioService"]
 
 _NARRATOR_DURATION_TOLERANCE_MS: Final[int] = 2
 """Maximum narrator WAV duration rounding difference."""
+
+_OUTPUT_REPLACE_ATTEMPTS: Final[int] = 4
+"""Maximum attempts to replace a transiently locked final sidecar."""
+
+_OUTPUT_REPLACE_DELAY_S: Final[float] = 0.5
+"""Initial backoff delay between sidecar replacements (doubles each retry)."""
 
 _SAFE_SCOPE: Final[re.Pattern[str]] = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z",
@@ -513,7 +520,7 @@ class AudioService:
                 expected_duration_ms=expected_duration_ms,
             )
             _check_cancel(cancel)
-            temporary.replace(destination)
+            _replace_output(temporary, destination)
             repository.commit_output(mix_id, destination)
         finally:
             temporary.unlink(missing_ok=True)
@@ -577,6 +584,27 @@ def _validate_narrator_probe(probe: AudioProbe, plan: TimelinePlan) -> None:
         details={"operation": "narrator_validation"},
     )
     raise AudioDecodeError(context=context)
+
+
+def _replace_output(temporary: Path, destination: Path) -> None:
+    """Atomically publish the final sidecar, retrying transient Windows locks."""
+    for attempt in range(1, _OUTPUT_REPLACE_ATTEMPTS + 1):
+        try:
+            temporary.replace(destination)
+        except PermissionError:
+            if attempt == _OUTPUT_REPLACE_ATTEMPTS:
+                raise
+            delay: float = _OUTPUT_REPLACE_DELAY_S * 2 ** (attempt - 1)
+            logger.warning(
+                "Final sidecar is locked, retrying replacement in {delay:.1f}s ({attempt}/{attempts})",
+                delay=delay,
+                attempt=attempt,
+                attempts=_OUTPUT_REPLACE_ATTEMPTS - 1,
+                name=destination.name,
+            )
+            time.sleep(delay)
+        else:
+            return
 
 
 def _temporary_sibling(path: Path) -> Path:

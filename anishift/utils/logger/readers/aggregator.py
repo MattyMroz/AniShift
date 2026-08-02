@@ -59,7 +59,7 @@ class LogAggregator:
             try:
                 ts = datetime.fromisoformat(timestamp_str)
                 hours.append(ts.strftime("%Y-%m-%d %H:00"))
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
         return dict(Counter(hours))
 
@@ -77,7 +77,7 @@ class LogAggregator:
             try:
                 ts = datetime.fromisoformat(timestamp_str)
                 days.append(ts.strftime("%Y-%m-%d"))
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
         return dict(Counter(days))
 
@@ -197,7 +197,7 @@ class LogAggregator:
                 bucket = ts.strftime("%Y-%m-%d %H:00") if interval == "hour" else ts.strftime("%Y-%m-%d")
                 level = log.get("level", "UNKNOWN")
                 timeline_data[bucket][level] += 1
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
 
         result = []

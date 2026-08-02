@@ -46,7 +46,6 @@ def safe_rmtree(path: str | Path, *, retries: int = _MAX_RETRIES) -> None:
     for attempt in range(retries + 1):
         try:
             shutil.rmtree(path)
-            return
         except PermissionError:
             if attempt == retries:
                 raise
@@ -59,6 +58,8 @@ def safe_rmtree(path: str | Path, *, retries: int = _MAX_RETRIES) -> None:
                 retries=retries,
             )
             time.sleep(delay)
+        else:
+            return
 
 
 def safe_move(src: str | Path, dst: str | Path, *, retries: int = _MAX_RETRIES) -> Path:
@@ -80,7 +81,6 @@ def safe_move(src: str | Path, dst: str | Path, *, retries: int = _MAX_RETRIES) 
     for attempt in range(retries + 1):
         try:
             shutil.move(str(src), str(dst))
-            return dst
         except PermissionError:
             if attempt == retries:
                 raise
@@ -94,6 +94,8 @@ def safe_move(src: str | Path, dst: str | Path, *, retries: int = _MAX_RETRIES) 
                 retries=retries,
             )
             time.sleep(delay)
+        else:
+            return dst
     # Unreachable — loop always returns or raises; guard satisfies type checker.
     msg = f"Failed to move {src} → {dst} after {retries} retries"
     raise PermissionError(msg)

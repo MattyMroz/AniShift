@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import wave
 from pathlib import Path
-from typing import BinaryIO, Final
+from typing import BinaryIO, Final, Never
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.errors import AudioCancelledError, AudioDecodeError
@@ -220,7 +220,7 @@ def _check_cancel(cancel: threading.Event | None) -> None:
     raise AudioCancelledError(context=context)
 
 
-def _raise_pcm(message: str) -> None:
+def _raise_pcm(message: str) -> Never:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.AUDIO_FAILED,
         message=message,

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 __all__ = ["scrub_message", "scrub_patcher"]
 
@@ -70,7 +70,8 @@ def scrub_patcher(record: Record) -> None:
     record["message"] = scrub_message(raw_message)
     extra = record.get("extra")
     if isinstance(extra, Mapping):
-        record["extra"] = _scrub_value(extra, sensitive_values=sensitive_values)
+        # Mapping input to _scrub_value always yields a dict via the Mapping branch.
+        record["extra"] = cast("dict[Any, Any]", _scrub_value(extra, sensitive_values=sensitive_values))
     exception = record.get("exception")
     if exception is None:
         return
@@ -86,7 +87,7 @@ def scrub_patcher(record: Record) -> None:
     )
 
 
-def _scrub_value(
+def _scrub_value(  # noqa: PLR0911 — one guard clause per type keeps dispatch flat and readable
     value: object,
     *,
     key: str = "",
