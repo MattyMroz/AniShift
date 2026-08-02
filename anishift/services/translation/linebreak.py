@@ -260,6 +260,9 @@ _MAX_PHRASE_WORDS: Final[int] = 4
 _LAYOUT_WINDOW_MIN_CHARS: Final[int] = 8
 """Smallest search window around one proportional layout boundary target."""
 
+_TRAILING_CONJUNCTION_PENALTY: Final[float] = 8.0
+"""Distance multiplier for a cut that leaves a conjunction ending the line."""
+
 _RE_SPACES: Final[re.Pattern[str]] = re.compile(r"\s+")
 """Whitespace run, collapsed to a single space before splitting."""
 
@@ -328,9 +331,12 @@ def _proportional_boundaries(words: list[str], source_verses: tuple[str, ...]) -
         if not candidates:
             candidates = list(range(previous + 1, len(words) - remaining_lines + 1))
         near = [index for index in candidates if abs(offsets[index] - desired) <= radius]
+        # Linear weights on purpose: squared bonuses would let a mere comma or
+        # percent sign drag the boundary across the whole window and overflow
+        # the line, while linear ones cap the pull at a few characters.
         boundary = min(
             near or candidates,
-            key=lambda index: abs(offsets[index] - desired) * _weight(words[index - 1], words, index) ** 2,
+            key=lambda index: (abs(offsets[index] - desired) + 1.0) * _weight(words[index - 1], words, index),
         )
         boundaries.append(boundary)
         previous = boundary
@@ -361,7 +367,9 @@ def _best_cut(text: str, max_chars: int) -> int:
         prev_word = words[word_index - 1]
         if _protected(words, word_index):
             continue
-        distance = float(abs(cut - center))
+        # The +1 base keeps multipliers meaningful for a cut exactly at the
+        # centre; a bare zero distance would erase every penalty and bonus.
+        distance = float(abs(cut - center)) + 1.0
         distance *= _weight(prev_word, words, word_index)
         if _is_orphan(text[:cut], text[cut:]):
             distance *= 10
@@ -388,6 +396,8 @@ def _weight(prev_word: str, words: list[str], word_index: int) -> float:
         return 1 / 8
     if last_char in _WEAK_CUT:
         return 1 / 4
+    if _clean(prev_word) in _CONJUNCTIONS:
+        return _TRAILING_CONJUNCTION_PENALTY
     if _starts_conjunction(words, word_index):
         return 1 / 3
     return 1.0

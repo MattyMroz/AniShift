@@ -151,6 +151,20 @@ def test_split_for_layout_does_not_break_one_target_word_artificially() -> None:
     assert split_for_layout("Dom", ("Home", "again")) == ("Dom",)
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Co innego bestiodłuni i ich odporność na Urok,",
+        "Zamknęli bramy miasta i nikt nie może teraz wyjść na zewnątrz",
+        "Kupiłem chleb oraz masło na jutrzejsze wspólne śniadanie",
+    ],
+)
+def test_no_conjunction_dangling_at_line_end(text: str) -> None:
+    verses = split_line(text, max_chars=42)
+    assert len(verses) == 2
+    assert verses[0].split()[-1].lower() not in _CONJUNCTIONS
+
+
 def test_split_for_layout_keeps_balanced_paragraph_balanced() -> None:
     source = (
         "This is a work of fiction.",
