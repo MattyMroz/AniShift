@@ -32,3 +32,8 @@ Adapter publicznego proxy ElevenBytes; różnice względem wspólnej domeny TTS.
   prywatny destination przygotowany przez warstwę TTS. `service.py`
 - Ustawienia `run7` są częścią `SynthesisProfile`; ich zmiana musi unieważniać
   resume fingerprint. `service.py`
+- Każda pula VPN dostaje ten sam, zbudowany raz `ssl.SSLContext` — jako
+  `proxy=httpx.Proxy(ssl_context=...)` ORAZ `verify=`. Bez tego httpcore tworzy
+  kontekst i parsuje cały CA bundle dla KAŻDEGO połączenia, synchronicznie na
+  event loopie; przy OpenSSL 3.0 to ~240 ms na trasę i dziesiątki sekund ciszy
+  przed pierwszą odpowiedzią. `vpn.py`

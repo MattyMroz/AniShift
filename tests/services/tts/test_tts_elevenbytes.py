@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 from collections.abc import Coroutine
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -520,6 +521,34 @@ def test_vpn_transport_matches_measured_capacity_and_pool_headroom(
     assert all(limit.max_connections == 100 for limit in limits)
     assert all(limit.max_keepalive_connections == 100 for limit in limits)
     assert all(limit.keepalive_expiry == 60.0 for limit in limits)
+
+
+def test_vpn_transport_shares_one_prebuilt_tls_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport_options: list[dict[str, object]] = []
+
+    def route_transport(**kwargs: object) -> httpx.AsyncBaseTransport:
+        transport_options.append(kwargs)
+        return httpx.MockTransport(lambda request: httpx.Response(200, request=request))
+
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", route_transport)
+
+    transport = elevenbytes_vpn.VpnTransport()
+    _run(transport.aclose())
+
+    contexts: set[int] = set()
+    for option in transport_options:
+        proxy: object = option["proxy"]
+        assert isinstance(proxy, httpx.Proxy)
+        assert isinstance(proxy.ssl_context, ssl.SSLContext)
+        assert option["verify"] is proxy.ssl_context
+        assert proxy.auth is not None
+        assert not proxy.url.username
+        contexts.add(id(proxy.ssl_context))
+
+    assert len(transport_options) == 17
+    assert len(contexts) == 1
 
 
 def test_vpn_backend_uses_short_connect_timeout(tmp_path: Path) -> None:

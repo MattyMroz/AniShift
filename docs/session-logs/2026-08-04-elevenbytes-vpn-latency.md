@@ -2,7 +2,7 @@
 kind: session
 date: 2026-08-04
 topic: elevenbytes-vpn-latency
-status: in-progress
+status: done
 ---
 
 # Integracja ElevenBytes z 1VPN działa, ale pierwszy wynik pełnego anime dociera za późno
@@ -69,18 +69,58 @@ ElevenBytes został połączony z natywnym transportem 1VPN, domyślnie włączo
 - `scripts/one_vpn_production.py` pozostaje lokalnym, untracked plikiem i zgodnie z decyzją użytkownika nie jest częścią commita.
 - Niepowiązane, istniejące wcześniej pliki dokumentacyjne oraz `docs/plans/_index.md` celowo nie należą do tego zadania i nie powinny wejść do jego commita.
 
-## Następne kroki
+## Root cause i poprawka
 
-1. **[REKOMENDACJA]** Uruchomić niezmieniony `one_vpn.py --count 100 --parallel 6` najpierw Pythonem 3.13 projektu TTS, a zaraz potem Pythonem 3.14 z AniShift, po przerwie eliminującej chwilowe throttling. Zapisać czas pierwszego wyniku, całość i błędy. To rozstrzyga najważniejszy trop runtime.
-2. Jeśli tylko Python 3.14 jest wolny, odtworzyć problem minimalnym skryptem `httpx.AsyncClient` + `VpnTransport`, sprawdzić zgodność `httpcore/anyio` z Pythonem 3.14 i zastąpić wadliwą warstwę transportową bez obniżania wymaganego Pythona 3.14+.
-3. Jeśli oba interpretery są szybkie, uruchomić ten sam bezpośredni `ElevenBytesApiBackend` po obu stronach z tym samym payloadem i nagłówkami; dopiero potem wrócić do schedulera.
-4. Po poprawce powtórzyć pełny smoke 336/336 i zaakceptować zmianę tylko wtedy, gdy pierwsze `1%` pojawia się w czasie zbliżonym do `one_vpn.py`, bez skoku po około 40-50 s.
-5. Ponownie uruchomić pełne bramki jakości na `anishift/ tests/`.
+Kontrolowane A/B tym samym skryptem (100 requestów, `parallel=6`) rozstrzygnęło sprawę.
+Przebieg na 3.14 wykonano PRZED przebiegiem na 3.13, żeby wykluczyć throttling.
+
+| pomiar | py3.14.2 (AniShift) | py3.13.11 (TTS) | py3.14.2 po poprawce |
+| --- | --- | --- | --- |
+| pierwszy wynik | 58,49 s | 2,25 s | 0,85 s |
+| 100/100 | 65,93 s | 18,23 s | 9,77 s |
+| max lag pętli zdarzeń | 22 885 ms | 755 ms | 50 ms |
+| `ConnectTimeout` | 152 | 7 | 6 |
+
+Sampling stosu wątku głównego w trakcie zastoju wskazał jedno miejsce:
+`httpcore/_async/connection.py:_connect` → `httpcore/_ssl.py:default_ssl_context`.
+
+`httpx.AsyncHTTPTransport(proxy="https://...")` zostawia `proxy_ssl_context=None`, więc
+httpcore dla KAŻDEGO połączenia do proxy buduje nowy `ssl.SSLContext` i parsuje cały
+CA bundle certifi — synchronicznie, na event loopie. Koszt jednego wywołania:
+**243,7 ms** przy OpenSSL 3.0.18 (Python 3.14) wobec **15,1 ms** przy OpenSSL 3.5.4
+(Python 3.13). 17 pul × do 6 połączeń plus failovery dało 316 prób ≈ 77 s blokady.
+Zagłodzona pętla powodowała, że 8-sekundowy connect timeout zgłaszał się po 25-52 s,
+co wywoływało kolejne failovery i kolejne konteksty — pętla dodatniego sprzężenia.
+
+Root cause to więc powtarzane budowanie kontekstu TLS, a nie Python 3.14; wersja
+interpretera zmieniała tylko koszt jednostkowy przez inny build OpenSSL.
+
+Poprawka w `vpn.py`: jeden `ssl.SSLContext` budowany raz (`@cache`) i przekazywany do
+wszystkich pul jako `proxy=httpx.Proxy(ssl_context=...)` oraz `verify=`.
+
+## Wynik po poprawce
+
+- Bezpośredni `ElevenBytesApiBackend`, 100 requestów, VPN: pierwszy wynik **0,71 s**
+  (przedtem 46,03 s), 100/100 w 10,84 s, max lag pętli 29 ms, zero błędów.
+- Realny zimny smoke całego `[shisha] Youjo Senki II - 01.mkv` przez `run_pipeline(...)`
+  w izolowanym workspace (`ANISHIFT_WORKSPACE_ROOT`, twardy link do MKV, resume
+  użytkownika nietknięty), 336 requestów, `provider_calls=336`, `resume_hits=0`:
+  - pierwsza odpowiedź providera: **tts+1,16 s** (przedtem 48,52 s);
+  - pierwszy commit klipu: tts+1,22 s, czyli 60 ms po odpowiedzi;
+  - 336/336 odpowiedzi: **tts+12,16 s** (przedtem 75,27 s);
+  - koniec audio: tts+15,16 s (przedtem 78,24 s);
+  - 0 retry, 0 błędów, status `done`.
+- Ten MKV ma jedyną ścieżkę napisów w `pol`, więc pipeline pomija tłumaczenie — tak
+  samo jak w pomiarze bazowym.
+- Bramki jakości: ruff check OK, ruff format OK, mypy OK, pytest **1669 passed, 8 skipped**.
+- Regresję pilnuje `test_vpn_transport_shares_one_prebuilt_tls_context`; pułapka
+  opisana w `anishift/services/tts/engines/elevenbytes/AGENTS.md`.
 
 ## Czego NIE robić
 
-- Nie poprawiać dalej renderowania paska: callback panelu jest szybki, problem jest przed nim.
+- Nie poprawiać dalej renderowania paska: callback panelu jest szybki, problem był przed nim.
 - Nie uznawać samego testu jednostkowego ani smoke 10 requestów za dowód poprawy pełnego anime.
 - Nie uruchamiać dwóch instancji AniShift jednocześnie i nie wysyłać automatycznie Enter do terminala użytkownika.
-- Nie usuwać ani nie nadpisywać artefaktów użytkownika; do świeżego smoke użyć zweryfikowanego katalogu i zachować możliwość resume.
-- Nie deklarować Pythona 3.14 jako root cause, dopóki kontrolowane A/B na tym samym skrypcie nie zostanie dokończone.
+- Nie usuwać ani nie nadpisywać artefaktów użytkownika; do świeżego smoke użyć osobnego
+  workspace przez `ANISHIFT_WORKSPACE_ROOT` i zachować możliwość resume.
+- Nie zostawiać żadnej puli proxy bez jawnego `ssl_context` — to wraca dokładnie tym samym błędem.

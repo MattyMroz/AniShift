@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import random
+import ssl
 import statistics
 import time
+from functools import cache
 from typing import Final
 
 import httpx
@@ -99,6 +101,17 @@ class VpnError(Exception):
     """No configured VPN server could serve a request."""
 
 
+@cache
+def _tls_context() -> ssl.SSLContext:
+    """Return the TLS context shared by every proxy hop and tunnelled request.
+
+    httpcore builds a fresh context and reparses the whole CA bundle for each
+    connection left without one, blocking the event loop for hundreds of
+    milliseconds per route.
+    """
+    return httpx.create_ssl_context()
+
+
 def _proxy_urls(location: str | None = None) -> list[str]:
     """Return proxy URLs in a new random order for this process."""
     if location is None:
@@ -134,10 +147,12 @@ class VpnTransport(httpx.AsyncBaseTransport):
             max_keepalive_connections=_POOL_LIMIT,
             keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS,
         )
+        tls_context: ssl.SSLContext = _tls_context()
         self.hosts: list[str] = [url.rsplit("@", 1)[-1] for url in urls]
         self.pools: list[httpx.AsyncBaseTransport] = [
             httpx.AsyncHTTPTransport(
-                proxy=url,
+                proxy=httpx.Proxy(url=url, ssl_context=tls_context),
+                verify=tls_context,
                 retries=_TRANSPORT_RETRIES,
                 limits=limits,
             )
