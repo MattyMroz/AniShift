@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 from collections.abc import Coroutine
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -22,6 +23,8 @@ from anishift.services.tts import (
     TtsUnsupportedError,
 )
 from anishift.services.tts.engines.elevenbytes import ElevenBytesConfig, ElevenBytesTtsEngine
+from anishift.services.tts.engines.elevenbytes import api_backend as elevenbytes_api_backend
+from anishift.services.tts.engines.elevenbytes import vpn as elevenbytes_vpn
 from anishift.services.tts.engines.elevenbytes.api_backend import ElevenBytesApiBackend
 from anishift.services.tts.engines.elevenbytes.constants import (
     DALLIN_VOICE_ID,
@@ -54,6 +57,7 @@ def _config(
     variant: str = "run6",
     voice_id: str = "dallin",
     options: dict[str, str | int | float | bool | None] | None = None,
+    vpn_enabled: bool = True,
 ) -> TtsConfig:
     return TtsConfig(
         engine_id="elevenbytes",
@@ -62,6 +66,7 @@ def _config(
         max_concurrency=12,
         queue_capacity=24,
         engine_options=options or {},
+        elevenbytes_vpn_enabled=vpn_enabled,
     )
 
 
@@ -339,3 +344,224 @@ def test_live_availability_reports_proxy_failure() -> None:
 
     assert availability.status is AvailabilityStatus.SERVICE_UNAVAILABLE
     assert not engine.is_available
+
+
+def test_vpn_is_enabled_by_default_and_can_be_disabled() -> None:
+    vpn_config = ElevenBytesConfig.from_tts_config(_config())
+    direct_config = ElevenBytesConfig.from_tts_config(_config(vpn_enabled=False))
+
+    assert vpn_config.vpn_enabled
+    assert not direct_config.vpn_enabled
+
+
+def test_default_backend_uses_vpn_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    transports: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_mp3_bytes(), headers={"Content-Type": "audio/mpeg"})
+
+    def vpn_transport() -> httpx.AsyncBaseTransport:
+        transports.append("vpn")
+        return httpx.MockTransport(handler)
+
+    monkeypatch.setattr(elevenbytes_api_backend, "VpnTransport", vpn_transport)
+    engine = ElevenBytesTtsEngine(_config())
+
+    _run(engine.synthesize(_request(tmp_path / "clip.mp3"), cancel=FakeCancellation()))
+    _run(engine.close())
+
+    assert transports == ["vpn"]
+
+
+def test_direct_backend_is_only_used_when_explicitly_selected(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    transports: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_mp3_bytes(), headers={"Content-Type": "audio/mpeg"})
+
+    def vpn_transport() -> httpx.AsyncBaseTransport:
+        transports.append("vpn")
+        return httpx.MockTransport(handler)
+
+    def direct_transport(**kwargs: object) -> httpx.AsyncBaseTransport:
+        del kwargs
+        transports.append("direct")
+        return httpx.MockTransport(handler)
+
+    monkeypatch.setattr(elevenbytes_api_backend, "VpnTransport", vpn_transport)
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", direct_transport)
+    engine = ElevenBytesTtsEngine(_config(vpn_enabled=False))
+
+    _run(engine.synthesize(_request(tmp_path / "clip.mp3"), cancel=FakeCancellation()))
+    _run(engine.close())
+
+    assert transports == ["direct"]
+
+
+def test_vpn_transport_moves_transport_failure_to_another_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_routes: list[int] = []
+    route_count = 0
+
+    def route_transport(**kwargs: object) -> httpx.AsyncBaseTransport:
+        nonlocal route_count
+        del kwargs
+        route_id: int = route_count
+        route_count += 1
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            selected_routes.append(route_id)
+            if len(selected_routes) == 1:
+                raise httpx.ConnectError("route unavailable", request=request)
+            return httpx.Response(httpx.codes.OK, request=request)
+
+        return httpx.MockTransport(handler)
+
+    async def send_request() -> None:
+        transport = elevenbytes_vpn.VpnTransport()
+        async with httpx.AsyncClient(transport=transport) as client:
+            await client.post("https://teamsp.org/xi/run6.php", content=b"text=test")
+
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", route_transport)
+
+    _run(send_request())
+
+    assert len(selected_routes) == 2
+    assert selected_routes[0] != selected_routes[1]
+
+
+def test_vpn_transport_tries_every_route_before_failing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_routes: list[int] = []
+    route_count = 0
+
+    def route_transport(**kwargs: object) -> httpx.AsyncBaseTransport:
+        nonlocal route_count
+        del kwargs
+        route_id: int = route_count
+        route_count += 1
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            selected_routes.append(route_id)
+            raise httpx.ConnectError("route unavailable", request=request)
+
+        return httpx.MockTransport(handler)
+
+    async def send_request() -> None:
+        transport = elevenbytes_vpn.VpnTransport()
+        async with httpx.AsyncClient(transport=transport) as client:
+            await client.post("https://teamsp.org/xi/run6.php", content=b"text=test")
+
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", route_transport)
+
+    with pytest.raises(elevenbytes_vpn.VpnError):
+        _run(send_request())
+
+    assert len(selected_routes) == 17
+    assert len(set(selected_routes)) == 17
+
+
+def test_vpn_transport_returns_http_failure_without_internal_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(httpx.codes.FORBIDDEN, request=request)
+
+    def route_transport(**kwargs: object) -> httpx.AsyncBaseTransport:
+        del kwargs
+        return httpx.MockTransport(handler)
+
+    async def send_request() -> int:
+        transport = elevenbytes_vpn.VpnTransport()
+        async with httpx.AsyncClient(transport=transport) as client:
+            response: httpx.Response = await client.get("https://teamsp.org/xi/run6.php")
+        return response.status_code
+
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", route_transport)
+
+    assert _run(send_request()) == httpx.codes.FORBIDDEN
+    assert call_count == 1
+
+
+def test_vpn_transport_matches_measured_capacity_and_pool_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport_options: list[dict[str, object]] = []
+
+    def route_transport(**kwargs: object) -> httpx.AsyncBaseTransport:
+        transport_options.append(kwargs)
+        return httpx.MockTransport(lambda request: httpx.Response(200, request=request))
+
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", route_transport)
+
+    transport = elevenbytes_vpn.VpnTransport()
+    _run(transport.aclose())
+
+    assert elevenbytes_vpn.VPN_MAX_CONCURRENCY == 100
+    assert transport.concurrency == 100
+    assert len(transport_options) == 17
+    assert all(option["retries"] == 1 for option in transport_options)
+    limits: list[httpx.Limits] = []
+    for option in transport_options:
+        limit: object = option["limits"]
+        assert isinstance(limit, httpx.Limits)
+        limits.append(limit)
+    assert all(limit.max_connections == 100 for limit in limits)
+    assert all(limit.max_keepalive_connections == 100 for limit in limits)
+    assert all(limit.keepalive_expiry == 60.0 for limit in limits)
+
+
+def test_vpn_transport_shares_one_prebuilt_tls_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport_options: list[dict[str, object]] = []
+
+    def route_transport(**kwargs: object) -> httpx.AsyncBaseTransport:
+        transport_options.append(kwargs)
+        return httpx.MockTransport(lambda request: httpx.Response(200, request=request))
+
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", route_transport)
+
+    transport = elevenbytes_vpn.VpnTransport()
+    _run(transport.aclose())
+
+    contexts: set[int] = set()
+    for option in transport_options:
+        proxy: object = option["proxy"]
+        assert isinstance(proxy, httpx.Proxy)
+        assert isinstance(proxy.ssl_context, ssl.SSLContext)
+        assert option["verify"] is proxy.ssl_context
+        assert proxy.auth is not None
+        assert not proxy.url.username
+        contexts.add(id(proxy.ssl_context))
+
+    assert len(transport_options) == 17
+    assert len(contexts) == 1
+
+
+def test_vpn_backend_uses_short_connect_timeout(tmp_path: Path) -> None:
+    timeout_extensions: list[dict[str, float]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeout_extensions.append(request.extensions["timeout"])
+        return httpx.Response(200, content=_mp3_bytes(), headers={"Content-Type": "audio/mpeg"})
+
+    engine = _engine(_config(), httpx.MockTransport(handler))
+
+    _run(engine.synthesize(_request(tmp_path / "clip.mp3"), cancel=FakeCancellation()))
+    _run(engine.close())
+
+    assert timeout_extensions[0]["connect"] == 8.0
+    assert timeout_extensions[0]["read"] == 10.0

@@ -139,6 +139,7 @@ class SpeechBatchProgress:
     committed_required_requests: int
     total_required_requests: int
     status: SpeechBatchStatus
+    received_required_requests: int = 0
 
 
 @dataclass(frozen=True, slots=True)

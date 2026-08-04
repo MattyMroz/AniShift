@@ -199,9 +199,40 @@ def test_conditional_rows_follow_selected_engine_and_codec() -> None:
     lossless_keys = {field.key for field in _visible_fields(settings)}
 
     assert "tts_option_stability" not in run6_keys
+    assert "elevenbytes_vpn_enabled" in run6_keys
     assert "tts_option_stability" in run7_keys
+    assert "elevenbytes_vpn_enabled" in run7_keys
     assert "elevenlabs_api_key" in elevenlabs_keys
     assert "tts_output_bitrate" not in lossless_keys
+
+
+def test_elevenbytes_vpn_is_default_and_can_be_disabled() -> None:
+    settings = UserSettings()
+    catalog = _catalog()
+    context = _context(settings)
+
+    assert tts_field_value(context, settings, "elevenbytes_vpn_enabled", catalog) == "enabled (default)"
+
+    assert step_tts_field(settings, "elevenbytes_vpn_enabled", 1, catalog)
+
+    assert not settings.elevenbytes_vpn_enabled
+    assert tts_field_value(context, settings, "elevenbytes_vpn_enabled", catalog) == "direct (local IP visible)"
+
+
+def test_elevenbytes_workers_are_capped_and_rendered_at_vpn_capacity() -> None:
+    settings = UserSettings()
+    settings.active_tts_profile.concurrency = 100
+    catalog = _catalog()
+    context = _context(settings)
+
+    assert tts_field_value(context, settings, "tts_concurrency", catalog) == "100 (VPN limit)"
+    assert step_tts_field(settings, "tts_concurrency", 1, catalog)
+    assert settings.active_tts_profile.concurrency == 100
+
+    settings.elevenbytes_vpn_enabled = False
+    settings.active_tts_profile.concurrency = 100
+
+    assert tts_field_value(context, settings, "tts_concurrency", catalog) == "100"
 
 
 def test_all_audio_codecs_cycle_and_lossless_clears_bitrate() -> None:

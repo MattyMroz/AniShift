@@ -200,7 +200,7 @@ def default_tts_voice_profiles() -> dict[str, TtsVoiceProfileSettings]:
         _DALLIN_PROFILE_KEY: TtsVoiceProfileSettings(
             postprocess_tempo=1.25,
             voice_mix_offset_db=-2.0,
-            concurrency=85,
+            concurrency=100,
         ),
         _SAPI_AGNIESZKA_PROFILE_KEY: TtsVoiceProfileSettings(
             voice_mix_offset_db=2.0,
@@ -252,6 +252,7 @@ class UserSettings:
         tts_provider_model_id: Provider model or endpoint variant.
         tts_voice_id: Selected TTS alias or provider voice id.
         tts_max_retries: Retry attempts for transient synthesis failures.
+        elevenbytes_vpn_enabled: Whether ElevenBytes traffic must use the VPN.
         tts_output_profile: Final narration sidecar codec profile.
         tts_output_bitrate: Optional FFmpeg bitrate for lossy profiles.
         tts_timeline_policy: Narration overlap placement policy.
@@ -285,6 +286,7 @@ class UserSettings:
     tts_provider_model_id: str = "run6"
     tts_voice_id: str = DALLIN_ALIAS
     tts_max_retries: int = 3
+    elevenbytes_vpn_enabled: bool = True
     tts_output_profile: str = AudioCodecProfile.EAC3.value
     tts_output_bitrate: str | None = None
     tts_timeline_policy: str = TimelinePolicy.SERIALIZE.value
@@ -821,6 +823,7 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_free_string(filtered, "tts_provider_model_id")
     _clean_free_string(filtered, "tts_voice_id")
     _clean_number(filtered, "tts_max_retries", *TTS_MAX_RETRIES_RANGE)
+    _clean_bool(filtered, "elevenbytes_vpn_enabled")
     _clean_string(filtered, "tts_output_profile", _TTS_OUTPUT_PROFILES)
     _clean_tts_bitrate(filtered)
     _clean_string(filtered, "tts_timeline_policy", _TTS_TIMELINE_POLICIES)

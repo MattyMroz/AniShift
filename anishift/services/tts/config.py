@@ -6,13 +6,18 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Never
+from typing import Final, Never
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.tts.errors import TtsConfigError
 from anishift.services.tts.types import EngineOptions
 
-__all__ = ["TtsConfig"]
+__all__ = ["DEFAULT_RETRY_BACKOFF_SECONDS", "TtsConfig"]
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+DEFAULT_RETRY_BACKOFF_SECONDS: Final[tuple[float, ...]] = (15.0, 30.0, 60.0, 120.0)
+"""Provider-neutral retry delays capped at two minutes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,12 +30,15 @@ class TtsConfig:
     max_concurrency: int
     queue_capacity: int
     max_retries: int = 3
+    retry_backoff_seconds: tuple[float, ...] = DEFAULT_RETRY_BACKOFF_SECONDS
     request_timeout_s: float = 30.0
+    scheduler_timeout_enabled: bool = True
     shutdown_deadline_s: float = 5.0
     native_rate: str | float | None = None
     native_volume: str | float | None = None
     native_pitch: str | float | None = None
     engine_options: EngineOptions = field(default_factory=dict)
+    elevenbytes_vpn_enabled: bool = True
     elevenlabs_api_key: str = field(default="", repr=False)
     metadata_cache_root: Path | None = None
 
@@ -52,6 +60,13 @@ class TtsConfig:
             )
         if self.max_retries < 0:
             _raise_config_error("TTS max retries cannot be negative", field_name="max_retries")
+        if not self.retry_backoff_seconds or any(
+            not math.isfinite(delay) or delay < 0 for delay in self.retry_backoff_seconds
+        ):
+            _raise_config_error(
+                "TTS retry backoff values must be finite and non-negative",
+                field_name="retry_backoff_seconds",
+            )
         _validate_positive_finite(self.request_timeout_s, field_name="request_timeout_s")
         _validate_positive_finite(
             self.shutdown_deadline_s,

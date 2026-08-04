@@ -29,6 +29,7 @@ class ElevenBytesConfig:
     voice_id: str
     timeout_s: float
     max_concurrency: int
+    vpn_enabled: bool
     run7_settings: ElevenBytesV3Settings | None
 
     @classmethod
@@ -50,6 +51,7 @@ class ElevenBytesConfig:
             voice_id=resolve_voice_id(config.voice_id),
             timeout_s=config.request_timeout_s,
             max_concurrency=config.max_concurrency,
+            vpn_enabled=config.elevenbytes_vpn_enabled,
             run7_settings=run7_settings,
         )
 

@@ -158,13 +158,15 @@ def _clamp_int(value: int, low: int, high: int) -> int:
 def _visible_fields(settings: UserSettings) -> tuple[_Field, ...]:
     """Return global rows plus engine-specific TTS controls."""
     engine_fields: tuple[_Field, ...] = ()
-    if settings.tts_engine == "elevenbytes" and settings.tts_provider_model_id == "run7":
-        engine_fields = (
-            _Field("tts_option_stability", "Stability"),
-            _Field("tts_option_similarity_boost", "Similarity"),
-            _Field("tts_option_style", "Style"),
-            _Field("tts_option_use_speaker_boost", "Speaker boost"),
-        )
+    if settings.tts_engine == "elevenbytes":
+        engine_fields = (_Field("elevenbytes_vpn_enabled", "VPN routing"),)
+        if settings.tts_provider_model_id == "run7":
+            engine_fields += (
+                _Field("tts_option_stability", "Stability"),
+                _Field("tts_option_similarity_boost", "Similarity"),
+                _Field("tts_option_style", "Style"),
+                _Field("tts_option_use_speaker_boost", "Speaker boost"),
+            )
     elif settings.tts_engine == "elevenlabs":
         engine_fields = (
             _Field("elevenlabs_api_key", "ElevenLabs key"),

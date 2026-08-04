@@ -198,8 +198,11 @@ def test_runtime_from_context_maps_voice_and_audio_profiles(
     audio_config = cast("AudioConfig", captured["audio_config"])
     assert tts_config.engine_id == "elevenbytes"
     assert tts_config.voice_id == context.user_settings.resolved_tts_voice_id
-    assert tts_config.max_concurrency == 85
-    assert tts_config.request_timeout_s == 30.0
+    assert tts_config.max_concurrency == 100
+    assert tts_config.retry_backoff_seconds == (5.0, 10.0, 15.0, 30.0)
+    assert tts_config.request_timeout_s == 45.0
+    assert not tts_config.scheduler_timeout_enabled
+    assert tts_config.elevenbytes_vpn_enabled
     assert tts_config.metadata_cache_root is not None
     assert tts_config.metadata_cache_root.name == "config"
     assert audio_config.codec_profile is AudioCodecProfile.EAC3
@@ -236,6 +239,39 @@ def test_runtime_from_context_uses_short_sapi_request_timeout(
 
     tts_config = cast("TtsConfig", captured["tts_config"])
     assert tts_config.request_timeout_s == 10.0
+
+
+@pytest.mark.parametrize(
+    ("vpn_enabled", "expected_concurrency"),
+    [(True, 100), (False, 100)],
+)
+def test_runtime_caps_elevenbytes_workers_to_vpn_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    vpn_enabled: bool,
+    expected_concurrency: int,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_init(self: PipelineTtsRuntime, **kwargs: object) -> None:
+        del self
+        captured.update(kwargs)
+
+    monkeypatch.setattr(PipelineTtsRuntime, "__init__", fake_init)
+    preferences = UserSettings(elevenbytes_vpn_enabled=vpn_enabled)
+    preferences.active_tts_profile.concurrency = 100
+    context = AppContext(Settings(), preferences, tmp_path)
+
+    PipelineTtsRuntime.from_context(
+        context,
+        discovery_order=(tmp_path / "Episode.mkv",),
+        cancel=threading.Event(),
+    )
+
+    tts_config = cast("TtsConfig", captured["tts_config"])
+    assert tts_config.max_concurrency == expected_concurrency
+    assert tts_config.scheduler_timeout_enabled is not vpn_enabled
 
 
 class _Progress:
