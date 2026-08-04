@@ -14,6 +14,7 @@ from rich.progress import TaskID
 from anishift.bootstrap import AppContext
 from anishift.errors import AniShiftError
 from anishift.pipeline import discover_inputs, run_pipeline
+from anishift.pipeline.compose_only import compose_existing
 from anishift.pipeline.llm_queue import LlmProgressState
 from anishift.pipeline.narration import scope_id_for_source
 from anishift.pipeline.recovery import RecoveryAction, RecoveryContext
@@ -33,7 +34,7 @@ from anishift.setup.installer import InstallerError, ensure_binary
 from anishift.utils.rich_console import MultiProgressManager, StatusType, console, get_status_icon
 from anishift.utils.timer import Timer, format_duration
 
-__all__ = ["run_pipeline_command"]
+__all__ = ["run_compose_command", "run_pipeline_command"]
 
 _STATUS_ICON: dict[FileStatus, StatusType] = {
     "done": "success",
@@ -42,6 +43,12 @@ _STATUS_ICON: dict[FileStatus, StatusType] = {
     "not_processed": "warning",
 }
 """Map file statuses to console icons."""
+
+_COMPOSITION_PHASE_STEP: Final[int] = 10
+"""Percent step between printed composition progress lines."""
+
+_SECONDS_PER_MINUTE: Final[int] = 60
+"""Scale used when announcing the estimated rendering time."""
 
 _PIPELINE_PROGRESS_DESCRIPTION_LENGTH: Final[int] = 72
 """Maximum stage, provider, voice and filename width for pipeline rows."""
@@ -364,6 +371,7 @@ def run_pipeline_command(context: AppContext) -> None:
                 llm_failure_handler=lambda recovery: _choose_recovery(context, recovery),
                 llm_progress_handler=manual_llm_progress,
                 tts_failure_handler=lambda recovery: _choose_recovery(context, recovery),
+                composition_ui=CompositionConsole(),
             )
         else:
             report = _run_auto_pipeline(context, tuple(paths))
@@ -381,6 +389,83 @@ def run_pipeline_command(context: AppContext) -> None:
         pipeline_timer.end_date,
         mode="minimal",
     )
+
+
+class CompositionConsole:
+    """Render composition progress and the pre-run cost of burning."""
+
+    def on_composition_phase(self, scope_id: str, phase: str, percent: int) -> None:
+        """Print one line per completed decile of a composition phase.
+
+        FFmpeg reports several times per second; the pipeline's own progress
+        rows are already gone by this stage, so the text stays coarse.
+        """
+        if percent % _COMPOSITION_PHASE_STEP:
+            return
+        console.print(f"[gray]{phase} {scope_id}: {percent}%[/gray]")
+
+    def on_burn_estimate(self, file_count: int, estimated_seconds: float) -> None:
+        """Announce the batch size and rough duration before rendering."""
+        if file_count == 0:
+            return
+        minutes: int = max(1, round(estimated_seconds / _SECONDS_PER_MINUTE))
+        console.print(
+            f"{get_status_icon('info')} Burning {file_count} file(s), roughly {minutes} min — "
+            "press Ctrl+C to stop at any point.",
+        )
+
+
+def run_compose_command(context: AppContext) -> None:
+    """Assemble results from existing files, without translation or TTS."""
+    paths = discover_inputs(context.workspace_root)
+    if not paths:
+        console.print("[warning]Workspace is empty[/warning] — drop MKV files into workspace/ and press Enter.")
+        return
+    if not _ensure_binaries(paths):
+        return
+    try:
+        outcomes = compose_existing(context, ui=CompositionConsole())
+    except KeyboardInterrupt:
+        console.print("[warning]Interrupted.[/warning]")
+        return
+    except AniShiftError as error:
+        _render_pipeline_error(error)
+        return
+    _render_composition_summary(outcomes)
+
+
+def _render_composition_summary(outcomes: tuple[FileOutcome, ...]) -> None:
+    """Print one line per composed file and per skipped or failed file."""
+    if not outcomes:
+        console.print("[warning]Nothing to assemble[/warning] — no products and no Polish subtitles found.")
+        return
+    report = PipelineReport(outcomes)
+    for outcome in outcomes:
+        _render_composition_line(outcome)
+    console.print(
+        f"Composed {report.composed_files} · Skipped {len(report.skipped_compositions)} · "
+        f"Failed {len(report.failed_compositions)}"
+    )
+
+
+def _render_composition_footer(report: PipelineReport) -> None:
+    """Print the composition counters when the step actually ran."""
+    if not any(outcome.composition_status for outcome in report.outcomes):
+        return
+    console.print(
+        f"Composed {report.composed_files} · Skipped {len(report.skipped_compositions)} · "
+        f"Failed {len(report.failed_compositions)}"
+    )
+
+
+def _render_composition_line(outcome: FileOutcome) -> None:
+    """Print one file's composition result with its reason when skipped."""
+    if outcome.composed_path is not None:
+        console.print(f"{get_status_icon('success')} {outcome.source.name} -> {outcome.composed_path.name}")
+    elif outcome.composition_status:
+        console.print(f"{get_status_icon('warning')} {outcome.source.name}: {outcome.composition_status}")
+    for warning in outcome.composition_warnings:
+        console.print(f"    [gray]{warning}[/gray]")
 
 
 def _progress_phase() -> ProgressPhase:
@@ -507,6 +592,7 @@ def _render_report(report: PipelineReport) -> None:
     )
     _render_llm_summary(report)
     _render_tts_summary(report)
+    _render_composition_footer(report)
     if counts["cancelled"]:
         console.print("[warning]Interrupted — press Enter to run again.[/warning]")
 
@@ -544,6 +630,8 @@ def _render_outcome(outcome: FileOutcome) -> None:
         console.print(f"{icon} {outcome.source.name} interrupted")
     for warning in outcome.warnings:
         console.print(f"{get_status_icon('warning')} {warning}")
+    if outcome.composition_status:
+        _render_composition_line(outcome)
 
 
 def _choose_recovery(

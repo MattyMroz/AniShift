@@ -22,8 +22,17 @@ def context(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AppContext:
     )
 
 
-def test_registry_has_the_seven_commands() -> None:
-    assert set(COMMANDS) == {"/help", "/settings", "/auto", "/manual", "/doctor", "/exit", "/setup"}
+def test_registry_has_the_eight_commands() -> None:
+    assert set(COMMANDS) == {
+        "/help",
+        "/settings",
+        "/auto",
+        "/manual",
+        "/compose",
+        "/doctor",
+        "/exit",
+        "/setup",
+    }
 
 
 def test_setup_defaults_to_no_force(context: AppContext, monkeypatch: pytest.MonkeyPatch) -> None:
