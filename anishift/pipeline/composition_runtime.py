@@ -37,8 +37,9 @@ _DISPLAYED_TRACK_NAME: Final[str] = "Napisy poboczne PL"
 _POLISH_LANGUAGE: Final[str] = "pol"
 """Language assigned to every track this application adds."""
 
-_BURN_SECONDS_PER_MINUTE: Final[float] = 40.0
-"""Rough render seconds per minute of video used for the pre-run estimate."""
+_BURN_SECONDS_PER_MINUTE: Final[float] = 10.0
+"""Render seconds per minute of video used for the pre-run estimate, measured
+at 1080p with the balanced preset and kept slightly pessimistic."""
 
 _MICROSECONDS_PER_MINUTE: Final[int] = 60_000_000
 """Scale between probed microseconds and the minutes used in the estimate."""

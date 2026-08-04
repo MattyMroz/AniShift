@@ -52,3 +52,5 @@ jeden zweryfikowany plik wynikowy.
 - Filtr `ass=` dla ASS (pełna wierność stylów), `subtitles=` tylko dla SRT.
 - MP4 nie przyjmuje ASS ani załączników; stylowane napisy istnieją tam wyłącznie
   jako wypalone w obrazie.
+- Rozdziały źródła przechodzą do MP4 same, jako ścieżka `bin_data`/`text`
+  z handlerem `SubtitleHandler` — to rozdziały QuickTime, nie zabłąkane napisy.
