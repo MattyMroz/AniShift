@@ -17,7 +17,11 @@ from anishift.bootstrap import AppContext
 from anishift.config.user_settings import config_path
 from anishift.config.workspace import ensure_workspace_dir
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext
+from anishift.pipeline.composition_runtime import compose_outcomes
 from anishift.services.audio.types import AudioRenderStatus
+from anishift.services.composition.config import CompositionConfig
+from anishift.services.composition.service import CompositionService
+from anishift.services.composition.types import OutputVariant, QualityPreset
 from anishift.services.extraction import extract_tracks, identify
 from anishift.services.extraction.tracks import select_tracks
 from anishift.services.extraction.types import MediaInfo, TrackSelection
@@ -60,6 +64,7 @@ from .recovery import (
 from .tts_queue import TtsQueueOutcome
 from .tts_runtime import PipelineTtsProgressSink, PipelineTtsRuntime
 from .types import (
+    CompositionUi,
     FileFailure,
     FileOutcome,
     LlmSettings,
@@ -68,6 +73,7 @@ from .types import (
     ProgressPhase,
     ProgressReporter,
     StepName,
+    TrackPriorities,
     TranslationSettings,
 )
 
@@ -154,19 +160,29 @@ _MKV_SUFFIX: Final[str] = ".mkv"
 _TXT_SUFFIX: Final[str] = ".txt"
 """Plain-text discovery suffix."""
 
-_DISPLAYED_INFIX: Final[str] = ".displayed"
-"""Infix used by displayed subtitle products."""
+_RESULT_ENDINGS: Final[tuple[str, ...]] = (".pl.mkv", ".pl.mp4")
+"""Endings of containers this application produced, never pipeline inputs."""
 
 
 def discover_inputs(root: Path) -> list[Path]:
-    """List top-level MKV and TXT inputs in natural order."""
+    """List top-level MKV and TXT inputs in natural order.
+
+    Only this application's own containers are filtered out. Subtitle products
+    carry ``.ass``/``.srt`` suffixes and can never match an input suffix, so a
+    source merely named ``Show.displayed.S01E01.mkv`` stays an input.
+    """
     if not root.is_dir():
         return []
     return os_sorted(
         path
         for path in root.iterdir()
-        if path.is_file() and path.suffix.lower() in {_MKV_SUFFIX, _TXT_SUFFIX} and _DISPLAYED_INFIX not in path.name
+        if path.is_file() and path.suffix.lower() in {_MKV_SUFFIX, _TXT_SUFFIX} and not _is_own_result(path)
     )
+
+
+def _is_own_result(path: Path) -> bool:
+    """Return whether a file is a container this application produced."""
+    return path.name.casefold().endswith(_RESULT_ENDINGS)
 
 
 @dataclass(slots=True)
@@ -239,6 +255,7 @@ def run_pipeline(  # noqa: C901,PLR0912,PLR0913,PLR0915 - explicit composition a
     tts_failure_handler: RecoveryHandler | None = None,
     tts_progress_callbacks: PipelineTtsProgressSink | None = None,
     tts_runtime_factory: TtsRuntimeFactory | None = None,
+    composition_ui: CompositionUi | None = None,
 ) -> PipelineReport:
     """Process every discovered input in two phases, isolating failures per file.
 
@@ -260,6 +277,10 @@ def run_pipeline(  # noqa: C901,PLR0912,PLR0913,PLR0915 - explicit composition a
     mkvs = [path for path in files if path.suffix.lower() == _MKV_SUFFIX]
     txts = [path for path in files if path.suffix.lower() == _TXT_SUFFIX]
     translation = _translation_settings(context)
+    priorities = TrackPriorities(
+        audio=context.user_settings.audio_language_priority,
+        subtitle=context.user_settings.subtitle_language_priority,
+    )
     strict_order: bool = context.user_settings.processing_order_policy == "strict_natural"
     cancel = threading.Event()
     llm_progress = _LlmProgressGate(cancel, llm_progress_handler)
@@ -333,6 +354,7 @@ def run_pipeline(  # noqa: C901,PLR0912,PLR0913,PLR0915 - explicit composition a
                             interaction,
                             progress_factory,
                             cancel,
+                            priorities=priorities,
                             on_complete=enqueue_extracted,
                         )
                         states.update(extracted)
@@ -364,6 +386,7 @@ def run_pipeline(  # noqa: C901,PLR0912,PLR0913,PLR0915 - explicit composition a
                 interaction,
                 progress_factory,
                 cancel,
+                priorities=priorities,
                 on_complete=collect_extracted,
             )
             states.update(extracted)
@@ -409,9 +432,40 @@ def run_pipeline(  # noqa: C901,PLR0912,PLR0913,PLR0915 - explicit composition a
             tts_runtime.close()
     outcomes = {path: state.outcome for path, state in states.items()}
     outcomes.update(txt_outcomes)
+    outcomes.update(
+        _compose_phase(
+            {path: outcomes[path] for path in mkvs if path in outcomes},
+            context=context,
+            ui=composition_ui,
+            cancel=cancel,
+        ),
+    )
     report = PipelineReport(tuple(outcomes[path] for path in files))
     _log_pipeline_report(report, run_id=run_id)
     return report
+
+
+def _compose_phase(
+    outcomes: dict[Path, FileOutcome],
+    *,
+    context: AppContext,
+    ui: CompositionUi | None,
+    cancel: threading.Event,
+) -> dict[Path, FileOutcome]:
+    """Assemble every finished file with the variant chosen by the user."""
+    if not outcomes:
+        return {}
+    config: CompositionConfig = CompositionConfig(
+        quality_preset=QualityPreset(context.user_settings.composition_quality_preset),
+    )
+    return compose_outcomes(
+        outcomes,
+        service=CompositionService(config),
+        variant=OutputVariant(context.user_settings.output_variant),
+        workspace_root=context.workspace_root,
+        ui=ui,
+        cancel=cancel,
+    )
 
 
 def _log_pipeline_report(report: PipelineReport, *, run_id: str) -> None:
@@ -700,6 +754,7 @@ def _extract_phase(  # noqa: PLR0913 - extraction wiring plus optional ready cal
     progress_factory: ProgressPhaseFactory | None,
     cancel: threading.Event,
     *,
+    priorities: TrackPriorities,
     on_complete: Callable[[Path, _MkvState], None] | None = None,
 ) -> dict[Path, _MkvState]:
     """Extract every MKV, one transient progress row each, keeping order."""
@@ -715,6 +770,7 @@ def _extract_phase(  # noqa: PLR0913 - extraction wiring plus optional ready cal
                 interaction=interaction,
                 on_progress=None,
                 cancel=cancel,
+                priorities=priorities,
             )
             states[path] = state
             if on_complete is not None:
@@ -730,6 +786,7 @@ def _extract_phase(  # noqa: PLR0913 - extraction wiring plus optional ready cal
                 interaction=None,
                 on_progress=None,
                 cancel=cancel,
+                priorities=priorities,
             )
             states[path] = state
             if on_complete is not None:
@@ -741,16 +798,18 @@ def _extract_phase(  # noqa: PLR0913 - extraction wiring plus optional ready cal
             workspace_root,
             progress,
             cancel,
+            priorities=priorities,
             on_complete=on_complete,
         )
 
 
-def _extract_concurrently(
+def _extract_concurrently(  # noqa: PLR0913 - pool wiring plus selection policy and ready callback
     mkvs: Sequence[Path],
     workspace_root: Path,
     progress: ProgressReporter,
     cancel: threading.Event,
     *,
+    priorities: TrackPriorities,
     on_complete: Callable[[Path, _MkvState], None] | None = None,
 ) -> dict[Path, _MkvState]:
     """Run extraction across a worker pool with one progress row per file."""
@@ -766,6 +825,7 @@ def _extract_concurrently(
                 interaction=None,
                 on_progress=_progress_callback(progress, task_ids.get(path)),
                 cancel=cancel,
+                priorities=priorities,
             )
         pending = set(futures.values())
         by_future = {future: path for path, future in futures.items()}
@@ -1042,6 +1102,7 @@ def _extract_mkv(  # noqa: PLR0911,PLR0913 - distinct outcomes and explicit depe
     interaction: PipelineInteraction | None,
     on_progress: Callable[[int], None] | None,
     cancel: threading.Event,
+    priorities: TrackPriorities,
 ) -> _MkvState:
     """Run identify, select, extract, split and write for one MKV.
 
@@ -1059,7 +1120,11 @@ def _extract_mkv(  # noqa: PLR0911,PLR0913 - distinct outcomes and explicit depe
         work_dir.mkdir(parents=True)
         info = identify(mkv)
         step = "select"
-        proposal = select_tracks(info.tracks)
+        proposal = select_tracks(
+            info.tracks,
+            audio_priority=priorities.audio,
+            subtitle_priority=priorities.subtitle,
+        )
         selection = interaction.choose_tracks(info, proposal) if interaction is not None else proposal
         warnings = _selection_warnings(info, selection)
         if selection.audio_id is None and selection.subtitle_id is None:

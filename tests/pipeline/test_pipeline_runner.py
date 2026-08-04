@@ -20,13 +20,15 @@ from anishift.pipeline.narration import NarrationBatch
 from anishift.pipeline.recovery import RecoveryAction
 from anishift.pipeline.runner import _LlmProgressGate, _worker_count
 from anishift.pipeline.tts_queue import TtsQueueOutcome
-from anishift.pipeline.types import FileFailure, FileOutcome, TranslationSettings
+from anishift.pipeline.types import FileFailure, FileOutcome, TrackPriorities, TranslationSettings
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import MediaInfo
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.types import SplitStats, SpokenLine, SubtitleSplit
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 from anishift.services.tts import SpeechBatch
+
+_PRIORITIES = TrackPriorities(audio=("jpn", "eng"), subtitle=("pol", "eng"))
 
 
 class _NullPhase:
@@ -85,6 +87,20 @@ def test_discover_inputs_uses_top_level_natural_order(tmp_path: Path) -> None:
     (tmp_path / "nested" / "episode 1.mkv").touch()
 
     assert [path.name for path in discover_inputs(tmp_path)] == ["episode 2.mkv", "episode 10.mkv"]
+
+
+def test_discover_inputs_keeps_a_source_named_with_displayed(tmp_path: Path) -> None:
+    (tmp_path / "Show.displayed.S01E01.mkv").touch()
+
+    assert discover_inputs(tmp_path) == [tmp_path / "Show.displayed.S01E01.mkv"]
+
+
+def test_discover_inputs_drops_our_own_containers(tmp_path: Path) -> None:
+    (tmp_path / "Show.pl.mkv").touch()
+    (tmp_path / "Show.pl.mp4").touch()
+    (tmp_path / "Show.displayed.pl.ass").touch()
+
+    assert discover_inputs(tmp_path) == []
 
 
 def test_run_pipeline_uses_supplied_input_snapshot(
@@ -295,7 +311,7 @@ def test_extract_phase_reraises_interrupt_after_cancelling_workers(
         return _NullPhase()
 
     with pytest.raises(KeyboardInterrupt):
-        runner._extract_phase((mkv,), tmp_path, None, factory, threading.Event())
+        runner._extract_phase((mkv,), tmp_path, None, factory, threading.Event(), priorities=_PRIORITIES)
 
     assert worker_cancel is not None
     assert worker_cancel.is_set()

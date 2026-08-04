@@ -27,6 +27,7 @@ __all__ = [
     "ProgressPhase",
     "ProgressReporter",
     "StepName",
+    "TrackPriorities",
     "TranslationSettings",
 ]
 
@@ -168,6 +169,19 @@ class TranslationSettings:
     max_retries: int
     deepl_api_key: str
     llm: LlmSettings | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TrackPriorities:
+    """Language preferences steering automatic track selection.
+
+    Attributes:
+        audio: Preferred source audio languages, most wanted first.
+        subtitle: Preferred source subtitle languages, most wanted first.
+    """
+
+    audio: tuple[str, ...]
+    subtitle: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)

@@ -9,6 +9,8 @@ from typing import Any, Final
 from anishift.services.extraction.types import TrackInfo, TrackSelection, is_text_subtitle_codec
 
 __all__ = [
+    "DEFAULT_AUDIO_PRIORITY",
+    "DEFAULT_SUBTITLE_PRIORITY",
     "is_polish_language",
     "score_audio_track",
     "score_subtitle_track",
@@ -19,32 +21,38 @@ __all__ = [
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_SUB_LANG_WEIGHT: Final[dict[str, int]] = {"pol": 100, "pl": 100, "eng": 50, "en": 50}
-"""Subtitle language weights."""
+DEFAULT_AUDIO_PRIORITY: Final[tuple[str, ...]] = ("jpn", "eng", "zho")
+"""Audio languages preferred by the scorer, most wanted first."""
 
-_SUB_LANG_DEFAULT: Final[int] = 10
-"""Weight for an unlisted subtitle language."""
+DEFAULT_SUBTITLE_PRIORITY: Final[tuple[str, ...]] = ("pol", "eng")
+"""Subtitle languages preferred by the scorer, most wanted first."""
 
-_AUDIO_LANG_WEIGHT: Final[dict[str, int]] = {
-    "jpn": 100,
-    "ja": 100,
-    "eng": 40,
-    "en": 40,
-    "chi": 30,
-    "zho": 30,
-    "chs": 30,
-    "cht": 30,
+_LANGUAGE_ALIASES: Final[dict[str, str]] = {
+    "ja": "jpn",
+    "en": "eng",
+    "pl": "pol",
+    "zh": "zho",
+    "chi": "zho",
+    "chs": "zho",
+    "cht": "zho",
 }
-"""Audio language weights."""
+"""Two-letter and legacy tags mapped to the form used in priority lists."""
 
-_AUDIO_LANG_DEFAULT: Final[int] = 20
-"""Weight for an unlisted audio language."""
+_TOP_LANGUAGE_SCORE: Final[int] = 100
+"""Score of the first language in a priority list."""
+
+_LANGUAGE_STEP: Final[int] = 10
+"""Score lost per position in a priority list."""
+
+_UNRANKED_LANGUAGE_SCORE: Final[int] = 0
+"""Score of a language absent from the priority list."""
 
 _SIGNS_PENALTY: Final[int] = -200
 """Penalty for signs, songs, or forced subtitle tracks."""
 
-_DEFAULT_BONUS: Final[int] = 10
-"""Bonus for an audio track marked as the container default."""
+_DEFAULT_BONUS: Final[int] = 1
+"""Bonus for a default audio track, kept below one language-priority step so
+it only breaks ties inside a language and never outranks a preferred one."""
 
 _LINES_DIVISOR: Final[float] = 1000.0
 """Scale for the subtitle line-count tie-breaker."""
@@ -95,37 +103,58 @@ def _lines_bonus(track: dict[str, Any]) -> float:
     return float(lines) / _LINES_DIVISOR
 
 
-def score_subtitle_track(track: dict[str, Any]) -> float:
+def _language_score(language: str, priority: tuple[str, ...]) -> int:
+    """Return a descending score based on position in the priority list."""
+    normalized: str = language.casefold()
+    canonical: str = _LANGUAGE_ALIASES.get(normalized, normalized)
+    if canonical not in priority:
+        return _UNRANKED_LANGUAGE_SCORE
+    return _TOP_LANGUAGE_SCORE - priority.index(canonical) * _LANGUAGE_STEP
+
+
+def score_subtitle_track(
+    track: dict[str, Any],
+    priority: tuple[str, ...] = DEFAULT_SUBTITLE_PRIORITY,
+) -> float:
     """Score a subtitle track for translation and narration."""
-    score = float(_SUB_LANG_WEIGHT.get(_track_language(track), _SUB_LANG_DEFAULT))
+    score = float(_language_score(_track_language(track), priority))
     if _is_signs_only(track):
         score += _SIGNS_PENALTY
     return score + _lines_bonus(track)
 
 
-def score_audio_track(track: dict[str, Any]) -> float:
+def score_audio_track(
+    track: dict[str, Any],
+    priority: tuple[str, ...] = DEFAULT_AUDIO_PRIORITY,
+) -> float:
     """Score an audio track for use under the narrator."""
-    score = float(_AUDIO_LANG_WEIGHT.get(_track_language(track), _AUDIO_LANG_DEFAULT))
+    score = float(_language_score(_track_language(track), priority))
     if _track_default(track):
         score += _DEFAULT_BONUS
     return score
 
 
-def select_subtitle_track(tracks: list[dict[str, Any]]) -> int | None:
+def select_subtitle_track(
+    tracks: list[dict[str, Any]],
+    priority: tuple[str, ...] = DEFAULT_SUBTITLE_PRIORITY,
+) -> int | None:
     """Pick the highest-scoring subtitle track, preferring lower ids on ties."""
     subtitles = [track for track in tracks if track.get("type") == "subtitles"]
     if not subtitles:
         return None
-    best = max(subtitles, key=lambda track: (score_subtitle_track(track), -int(track["id"])))
+    best = max(subtitles, key=lambda track: (score_subtitle_track(track, priority), -int(track["id"])))
     return int(best["id"])
 
 
-def select_audio_track(tracks: list[dict[str, Any]]) -> int | None:
+def select_audio_track(
+    tracks: list[dict[str, Any]],
+    priority: tuple[str, ...] = DEFAULT_AUDIO_PRIORITY,
+) -> int | None:
     """Pick the highest-scoring audio track, preferring lower ids on ties."""
     audio = [track for track in tracks if track.get("type") == "audio"]
     if not audio:
         return None
-    best = max(audio, key=lambda track: (score_audio_track(track), -int(track["id"])))
+    best = max(audio, key=lambda track: (score_audio_track(track, priority), -int(track["id"])))
     return int(best["id"])
 
 
@@ -141,7 +170,12 @@ def _selector_shape(track: TrackInfo) -> dict[str, Any]:
     }
 
 
-def select_tracks(tracks: Sequence[TrackInfo]) -> TrackSelection:
+def select_tracks(
+    tracks: Sequence[TrackInfo],
+    *,
+    audio_priority: tuple[str, ...] = DEFAULT_AUDIO_PRIORITY,
+    subtitle_priority: tuple[str, ...] = DEFAULT_SUBTITLE_PRIORITY,
+) -> TrackSelection:
     """Pick one audio track and one processable text subtitle track."""
     audio_shaped = [_selector_shape(track) for track in tracks if track.type == "audio"]
     text_shaped = [
@@ -149,8 +183,8 @@ def select_tracks(tracks: Sequence[TrackInfo]) -> TrackSelection:
         for track in tracks
         if track.type == "subtitles" and is_text_subtitle_codec(track.codec_id)
     ]
-    audio_id = select_audio_track(audio_shaped)
-    subtitle_id = select_subtitle_track(text_shaped)
+    audio_id = select_audio_track(audio_shaped, audio_priority)
+    subtitle_id = select_subtitle_track(text_shaped, subtitle_priority)
     subtitle = next((track for track in tracks if track.id == subtitle_id), None)
     already_polish = subtitle is not None and is_polish_language(subtitle.language)
     return TrackSelection(audio_id=audio_id, subtitle_id=subtitle_id, already_polish=already_polish)
