@@ -58,6 +58,21 @@ BASE_CONFIG = TtsConfig(
             id="negative-retries",
         ),
         pytest.param(
+            lambda: replace(BASE_CONFIG, retry_backoff_seconds=()),
+            "retry_backoff_seconds",
+            id="empty-retry-backoff",
+        ),
+        pytest.param(
+            lambda: replace(BASE_CONFIG, retry_backoff_seconds=(15.0, -1.0)),
+            "retry_backoff_seconds",
+            id="negative-retry-backoff",
+        ),
+        pytest.param(
+            lambda: replace(BASE_CONFIG, retry_backoff_seconds=(float("nan"),)),
+            "retry_backoff_seconds",
+            id="nan-retry-backoff",
+        ),
+        pytest.param(
             lambda: replace(BASE_CONFIG, request_timeout_s=0),
             "request_timeout_s",
             id="zero-timeout",

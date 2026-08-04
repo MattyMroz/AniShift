@@ -58,6 +58,7 @@ from anishift.services.tts import (
     TtsError,
     TtsService,
 )
+from anishift.services.tts.config import DEFAULT_RETRY_BACKOFF_SECONDS
 from anishift.services.tts.protocols import TtsProgressSink
 from anishift.utils.logger import get_logger
 from anishift.utils.timer import Timer
@@ -73,7 +74,7 @@ logger = get_logger(__name__)
 
 _DEFAULT_ENGINE_CONCURRENCY: Final[dict[str, int]] = {
     "edge": 16,
-    "elevenbytes": 85,
+    "elevenbytes": 100,
     "elevenlabs": 4,
     "sapi": 1,
 }
@@ -83,9 +84,15 @@ _DEFAULT_REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
 """Fallback request deadline for remote TTS engines."""
 
 _ENGINE_REQUEST_TIMEOUT_SECONDS: Final[dict[str, float]] = {
+    "elevenbytes": 45.0,
     "sapi": 10.0,
 }
 """Engine-specific request deadlines measured for subtitle-sized inputs."""
+
+_ENGINE_RETRY_BACKOFF_SECONDS: Final[dict[str, tuple[float, ...]]] = {
+    "elevenbytes": (5.0, 10.0, 15.0, 30.0),
+}
+"""Provider retry delays chosen at the composition boundary."""
 
 _WAIT_POLL_SECONDS: Final[float] = 0.2
 """Focus-gate polling interval for responsive cancellation."""
@@ -502,6 +509,8 @@ class PipelineTtsRuntime:
             preferences.tts_engine,
             1,
         )
+        if preferences.tts_engine == "elevenbytes" and preferences.elevenbytes_vpn_enabled:
+            concurrency = min(concurrency, _DEFAULT_ENGINE_CONCURRENCY["elevenbytes"])
         return cls(
             tts_config=TtsConfig(
                 engine_id=preferences.tts_engine,
@@ -510,14 +519,22 @@ class PipelineTtsRuntime:
                 max_concurrency=concurrency,
                 queue_capacity=max(2, 2 * concurrency),
                 max_retries=preferences.tts_max_retries,
+                retry_backoff_seconds=_ENGINE_RETRY_BACKOFF_SECONDS.get(
+                    preferences.tts_engine,
+                    DEFAULT_RETRY_BACKOFF_SECONDS,
+                ),
                 request_timeout_s=_ENGINE_REQUEST_TIMEOUT_SECONDS.get(
                     preferences.tts_engine,
                     _DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                ),
+                scheduler_timeout_enabled=not (
+                    preferences.tts_engine == "elevenbytes" and preferences.elevenbytes_vpn_enabled
                 ),
                 native_rate=profile.native_rate,
                 native_volume=profile.native_volume,
                 native_pitch=profile.native_pitch,
                 engine_options=profile.engine_options,
+                elevenbytes_vpn_enabled=preferences.elevenbytes_vpn_enabled,
                 elevenlabs_api_key=context.settings.elevenlabs_api_key,
                 metadata_cache_root=config_path().parent,
             ),

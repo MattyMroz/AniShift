@@ -44,6 +44,7 @@ from anishift.services.tts.engines.elevenbytes.constants import (
     DALLIN_VOICE_ID,
     ENDPOINTS,
 )
+from anishift.services.tts.engines.elevenbytes.vpn import VPN_MAX_CONCURRENCY
 from anishift.services.tts.engines.elevenlabs.constants import (
     DEFAULT_MODEL_ID,
     OUTPUT_FORMATS,
@@ -180,6 +181,7 @@ def _probe_config(context: AppContext, engine_id: str) -> TtsConfig:
         native_volume=profile.native_volume,
         native_pitch=profile.native_pitch,
         engine_options=profile.engine_options,
+        elevenbytes_vpn_enabled=settings.elevenbytes_vpn_enabled,
         elevenlabs_api_key=context.settings.elevenlabs_api_key,
         metadata_cache_root=env_path().parent / "config",
     )
@@ -277,6 +279,8 @@ def step_tts_field(  # noqa: C901, PLR0912 - typed row dispatcher
             settings.tts_max_retries + delta,
             *MAX_RETRIES_RANGE,
         )
+    elif field_key == "elevenbytes_vpn_enabled":
+        settings.elevenbytes_vpn_enabled = not settings.elevenbytes_vpn_enabled
     elif field_key == "tts_concurrency":
         profile = settings.ensure_active_tts_profile()
         if settings.tts_engine == "sapi":
@@ -285,7 +289,8 @@ def step_tts_field(  # noqa: C901, PLR0912 - typed row dispatcher
             current: int = profile.concurrency or 1
             profile.concurrency = _clamp_int(
                 current + delta,
-                *TTS_CONCURRENCY_RANGE,
+                TTS_CONCURRENCY_RANGE[0],
+                _tts_concurrency_max(settings),
             )
     elif field_key == "tts_postprocess_tempo":
         profile = settings.ensure_active_tts_profile()
@@ -371,7 +376,15 @@ def tts_field_value(  # noqa: C901, PLR0911, PLR0912 - typed row renderer
         return selected.label if selected is not None else settings.tts_voice_id
     if field_key == "tts_max_retries":
         return str(settings.tts_max_retries)
+    if field_key == "elevenbytes_vpn_enabled":
+        return "enabled (default)" if settings.elevenbytes_vpn_enabled else "direct (local IP visible)"
     if field_key == "tts_concurrency":
+        if (
+            settings.tts_engine == "elevenbytes"
+            and settings.elevenbytes_vpn_enabled
+            and (profile.concurrency or 1) >= VPN_MAX_CONCURRENCY
+        ):
+            return f"{VPN_MAX_CONCURRENCY} (VPN limit)"
         suffix: str = " (fixed)" if settings.tts_engine == "sapi" else ""
         return f"{profile.concurrency or 1}{suffix}"
     if field_key == "tts_postprocess_tempo":
@@ -698,6 +711,12 @@ def _clamp_float(value: float, low: float, high: float) -> float:
 
 def _clamp_int(value: int, low: int, high: int) -> int:
     return min(max(value, low), high)
+
+
+def _tts_concurrency_max(settings: UserSettings) -> int:
+    if settings.tts_engine == "elevenbytes" and settings.elevenbytes_vpn_enabled:
+        return VPN_MAX_CONCURRENCY
+    return TTS_CONCURRENCY_RANGE[1]
 
 
 def _unavailable(message: str) -> EngineAvailability:

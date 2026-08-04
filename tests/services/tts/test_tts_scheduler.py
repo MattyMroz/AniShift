@@ -251,6 +251,65 @@ def test_scheduler_reuses_provider_slot_while_previous_result_is_accepted(
     asyncio.run(scenario())
 
 
+def test_scheduler_can_delegate_timeout_to_engine(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        engine = _Engine()
+        engine.release["vpn"] = asyncio.Event()
+        config = replace(
+            _config(concurrency=1, retries=0),
+            request_timeout_s=0.01,
+            scheduler_timeout_enabled=False,
+        )
+        scheduler = TtsScheduler(engine, config=config)
+        task = asyncio.create_task(
+            scheduler.submit(
+                _factory(tmp_path, "vpn"),
+                batch_rank=0,
+                request_rank=0,
+                cancel=TtsCancellation(),
+                accept_result=_accept,
+            )
+        )
+
+        assert await engine.started.get() == "vpn"
+        await asyncio.sleep(0.03)
+        assert not task.done()
+        engine.release["vpn"].set()
+        result = await task
+
+        assert result.error is None
+        assert result.attempts == 1
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
+def test_scheduler_enforces_composed_timeout_by_default(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        engine = _Engine()
+        engine.release["timeout"] = asyncio.Event()
+        config = replace(
+            _config(concurrency=1, retries=0),
+            request_timeout_s=0.01,
+        )
+        scheduler = TtsScheduler(engine, config=config)
+
+        result = await scheduler.submit(
+            _factory(tmp_path, "timeout"),
+            batch_rank=0,
+            request_rank=0,
+            cancel=TtsCancellation(),
+            accept_result=_accept,
+        )
+
+        assert result.error is not None
+        assert result.error.context.code.value == "TTS_TIMEOUT"
+        assert result.attempts == 1
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
 def test_acceptance_failure_retries_through_scheduler(tmp_path: Path) -> None:
     async def scenario() -> None:
         clock = _Clock()
@@ -372,6 +431,41 @@ def test_retry_backoff_releases_slot_and_ready_retry_has_priority(tmp_path: Path
         assert retry_result.attempts == 2
         assert new_result.attempts == 1
         assert engine.calls["retry"] == 2
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
+def test_scheduler_uses_composed_retry_backoff(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        clock = _Clock()
+        engine = _Engine()
+        engine.fail_once.add("retry")
+        scheduler = TtsScheduler(
+            engine,
+            config=replace(
+                _config(concurrency=1),
+                retry_backoff_seconds=(5.0, 10.0, 15.0),
+            ),
+            clock=clock,
+        )
+        task = asyncio.create_task(
+            scheduler.submit(
+                _factory(tmp_path, "retry"),
+                batch_rank=0,
+                request_rank=0,
+                cancel=TtsCancellation(),
+                accept_result=_accept,
+            )
+        )
+
+        assert await engine.started.get() == "retry"
+        clock.advance(5.0)
+        await scheduler.wake()
+        assert await engine.started.get() == "retry"
+        result = await task
+
+        assert result.attempts == 2
         await scheduler.close()
 
     asyncio.run(scenario())

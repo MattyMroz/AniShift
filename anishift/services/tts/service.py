@@ -48,7 +48,7 @@ from anishift.utils.logger import get_logger
 from anishift.utils.timer import Timer
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from anishift.services.tts.config import TtsConfig
     from anishift.services.tts.protocols import (
@@ -95,6 +95,12 @@ class _MissingContext:
     repository: TtsResumeRepository
     engine: TtsEngine
     scheduler: TtsScheduler
+
+
+@dataclass(frozen=True, slots=True)
+class _ProgressContext:
+    callbacks: TtsProgressSink
+    on_provider_response: Callable[[str], Awaitable[None]]
 
 
 class _ProviderAttempt:
@@ -410,6 +416,7 @@ class TtsService:
                 committed_required_requests=0,
                 total_required_requests=required_total,
                 status=SpeechBatchStatus.COMPLETED if total == 0 else SpeechBatchStatus.PARTIAL,
+                received_required_requests=0,
             ),
             cancel=self._cancel,
             generation=generation,
@@ -425,6 +432,7 @@ class TtsService:
                     total,
                     required_total,
                     executions[:completed_count],
+                    received_required=0,
                     cancel=self._cancel,
                     generation=generation,
                 )
@@ -432,10 +440,40 @@ class TtsService:
 
         engine, scheduler = await self._ensure_runtime()
         indexed_executions: list[tuple[int, _RequestExecution]] = []
+        received_required_requests: set[str] = set()
         next_index: int = 0
         completed: int = 0
         index_lock: asyncio.Lock = asyncio.Lock()
-        completion_lock: asyncio.Lock = asyncio.Lock()
+        progress_lock: asyncio.Lock = asyncio.Lock()
+
+        async def on_provider_response(request_id: str) -> None:
+            async with progress_lock:
+                if request_id in received_required_requests:
+                    return
+                received_required_requests.add(request_id)
+                snapshot: tuple[_RequestExecution, ...] = tuple(item for _, item in indexed_executions)
+                await _notify_batch(
+                    callbacks,
+                    SpeechBatchProgress(
+                        scope_id=batch.scope_id,
+                        completed_requests=completed,
+                        total_requests=total,
+                        committed_required_requests=sum(
+                            item.result.status in {SynthesisStatus.SYNTHESIZED, SynthesisStatus.RESUME_HIT}
+                            for item in snapshot
+                        ),
+                        total_required_requests=required_total,
+                        status=SpeechBatchStatus.PARTIAL,
+                        received_required_requests=len(received_required_requests),
+                    ),
+                    cancel=self._cancel,
+                    generation=generation,
+                )
+
+        progress_context = _ProgressContext(
+            callbacks=callbacks,
+            on_provider_response=on_provider_response,
+        )
 
         async def worker() -> None:
             nonlocal completed, next_index
@@ -451,9 +489,9 @@ class TtsService:
                     request,
                     engine,
                     scheduler,
-                    callbacks,
+                    progress_context,
                 )
-                async with completion_lock:
+                async with progress_lock:
                     indexed_executions.append((index, execution))
                     completed += 1
                     snapshot: tuple[_RequestExecution, ...] = tuple(item for _, item in indexed_executions)
@@ -466,6 +504,7 @@ class TtsService:
                         total,
                         required_total,
                         snapshot,
+                        received_required=len(received_required_requests),
                         cancel=self._cancel,
                         generation=generation,
                     )
@@ -489,7 +528,7 @@ class TtsService:
         request: SpeechRequest,
         engine: TtsEngine,
         scheduler: TtsScheduler,
-        callbacks: TtsProgressSink,
+        progress: _ProgressContext,
     ) -> _RequestExecution:
         generation: int = self._cancel.generation
         if not is_speech_text(request.text):
@@ -526,8 +565,9 @@ class TtsService:
                 engine=engine,
                 scheduler=scheduler,
             ),
-            callbacks=callbacks,
+            callbacks=progress.callbacks,
             generation=generation,
+            on_provider_response=progress.on_provider_response,
         )
 
     async def _synthesize_missing(  # noqa: PLR0915 - explicit artifact lifecycle
@@ -536,6 +576,7 @@ class TtsService:
         *,
         callbacks: TtsProgressSink,
         generation: int,
+        on_provider_response: Callable[[str], Awaitable[None]],
     ) -> _RequestExecution:
         batch: SpeechBatch = context.batch
         request: SpeechRequest = context.request
@@ -548,7 +589,10 @@ class TtsService:
         provider_attempts: list[_ProviderAttempt] = []
         indexed_outcomes: list[tuple[int, ScheduledSynthesis]] = []
         next_part: int = 0
+        received_parts: set[int] = set()
+        response_reported: bool = False
         part_lock: asyncio.Lock = asyncio.Lock()
+        response_lock: asyncio.Lock = asyncio.Lock()
         attempt_context = _AttemptContext(
             config=self._config,
             repository=repository,
@@ -557,6 +601,17 @@ class TtsService:
             provider_model_id=engine.synthesis_profile.provider_model_id,
             resolved_voice_id=engine.synthesis_profile.resolved_voice_id,
         )
+
+        async def on_part_response(part_index: int) -> None:
+            nonlocal response_reported
+            async with response_lock:
+                if response_reported:
+                    return
+                received_parts.add(part_index)
+                if len(received_parts) != len(chunks):
+                    return
+                response_reported = True
+            await on_provider_response(request.request_id)
 
         async def part_worker() -> None:
             nonlocal next_part
@@ -573,12 +628,21 @@ class TtsService:
                     part_index=part_index,
                 )
                 provider_attempts.append(provider_attempt)
+
+                async def on_result_received(
+                    result: EngineClipResult,
+                    received_part_index: int = part_index,
+                ) -> None:
+                    del result
+                    await on_part_response(received_part_index)
+
                 outcome: ScheduledSynthesis = await scheduler.submit(
                     provider_attempt.request_for_attempt,
                     batch_rank=batch.batch_rank,
                     request_rank=request.request_rank,
                     cancel=self._cancel,
                     accept_result=provider_attempt.accept_result,
+                    on_result=on_result_received,
                     on_retry=lambda retry_number, max_retries, delay_s, error: _notify_retry(
                         callbacks,
                         SpeechRetryProgress(
@@ -770,6 +834,7 @@ async def _notify_execution(  # noqa: PLR0913 - immutable progress snapshot
     required_total: int,
     snapshot: tuple[_RequestExecution, ...],
     *,
+    received_required: int,
     cancel: TtsCancellation,
     generation: int,
 ) -> None:
@@ -797,6 +862,7 @@ async def _notify_execution(  # noqa: PLR0913 - immutable progress snapshot
             ),
             total_required_requests=required_total,
             status=_batch_status(tuple(item.result for item in snapshot), total),
+            received_required_requests=received_required,
         ),
         cancel=cancel,
         generation=generation,

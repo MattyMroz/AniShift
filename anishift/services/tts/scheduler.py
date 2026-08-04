@@ -7,7 +7,7 @@ import heapq
 import itertools
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from anishift.errors import ErrorCode, ErrorContext, TransientError
 from anishift.services.tts.errors import (
@@ -33,9 +33,6 @@ if TYPE_CHECKING:
 __all__ = ["ScheduledSynthesis", "TtsScheduler"]
 
 logger = get_logger(__name__)
-
-_BACKOFF_SECONDS: Final[tuple[float, ...]] = (15.0, 30.0, 60.0, 120.0)
-"""Local retry delays capped at two minutes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +61,7 @@ class _DelayedItem:
 class _WorkItem:
     request_factory: Callable[[int], SynthesisRequest]
     accept_result: Callable[[EngineClipResult], Awaitable[EngineClipResult]]
+    on_result: Callable[[EngineClipResult], Awaitable[None]] | None
     batch_rank: int
     request_rank: int
     cancel: CancellationToken
@@ -79,6 +77,7 @@ class TtsScheduler:
     __slots__ = (
         "_accepting",
         "_admission",
+        "_backoff_seconds",
         "_circuit_error",
         "_clock",
         "_condition",
@@ -102,7 +101,8 @@ class TtsScheduler:
         """Create a loop-owned scheduler without starting provider work."""
         self._engine: TtsEngine = engine
         self._max_retries: int = config.max_retries
-        self._timeout_s: float = config.request_timeout_s
+        self._backoff_seconds: tuple[float, ...] = config.retry_backoff_seconds
+        self._timeout_s: float | None = config.request_timeout_s if config.scheduler_timeout_enabled else None
         self._clock: Callable[[], float] = clock
         self._condition: asyncio.Condition = asyncio.Condition()
         self._admission: asyncio.Semaphore = asyncio.Semaphore(config.queue_capacity)
@@ -124,6 +124,7 @@ class TtsScheduler:
         request_rank: int,
         cancel: CancellationToken,
         accept_result: Callable[[EngineClipResult], Awaitable[EngineClipResult]],
+        on_result: Callable[[EngineClipResult], Awaitable[None]] | None = None,
         on_retry: Callable[[int, int, float, TtsError], Awaitable[None]] | None = None,
     ) -> ScheduledSynthesis:
         """Admit one request and await its terminal provider outcome."""
@@ -133,6 +134,7 @@ class TtsScheduler:
         work: _WorkItem = _WorkItem(
             request_factory=request_factory,
             accept_result=accept_result,
+            on_result=on_result,
             batch_rank=batch_rank,
             request_rank=request_rank,
             cancel=cancel,
@@ -226,10 +228,11 @@ class TtsScheduler:
         work.attempts += 1
         try:
             request: SynthesisRequest = work.request_factory(work.attempts)
-            clip: EngineClipResult = await asyncio.wait_for(
-                self._engine.synthesize(request, cancel=work.cancel),
-                timeout=self._timeout_s,
-            )
+            async with asyncio.timeout(self._timeout_s):
+                clip: EngineClipResult = await self._engine.synthesize(
+                    request,
+                    cancel=work.cancel,
+                )
         except asyncio.CancelledError:
             self._finish(work, error=_cancelled_error("TTS provider task cancelled"))
             return
@@ -257,6 +260,7 @@ class TtsScheduler:
         task.add_done_callback(self._accepting.discard)
 
     async def _accept(self, work: _WorkItem, clip: EngineClipResult) -> None:
+        await self._notify_result(work, clip)
         try:
             accepted: EngineClipResult = await work.accept_result(clip)
         except asyncio.CancelledError:
@@ -277,6 +281,15 @@ class TtsScheduler:
             self._finish(work, error=_cancelled_error("TTS result arrived after cancellation"))
             return
         self._finish(work, clip=accepted)
+
+    @staticmethod
+    async def _notify_result(work: _WorkItem, clip: EngineClipResult) -> None:
+        if work.on_result is None:
+            return
+        try:
+            await work.on_result(clip)
+        except Exception:  # noqa: BLE001 - progress observers cannot own provider execution
+            return
 
     async def _handle_error(self, work: _WorkItem, error: TtsError) -> None:
         if isinstance(error, TransientError) and work.attempts <= self._max_retries:
@@ -367,8 +380,8 @@ class TtsScheduler:
     def _retry_delay(self, attempts: int, error: TtsError) -> float:
         if self._engine.capabilities.locality is EngineLocality.SYSTEM:
             return 0.0
-        index: int = min(attempts - 1, len(_BACKOFF_SECONDS) - 1)
-        local_delay: float = _BACKOFF_SECONDS[index]
+        index: int = min(attempts - 1, len(self._backoff_seconds) - 1)
+        local_delay: float = self._backoff_seconds[index]
         retry_after: float | None = None
         if isinstance(error, (TtsRateLimitError, TtsProviderUnavailableError)):
             retry_after = error.retry_after_s

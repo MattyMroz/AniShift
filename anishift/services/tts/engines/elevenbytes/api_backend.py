@@ -23,6 +23,7 @@ from anishift.services.tts.types import AudioFormat
 from .config import ElevenBytesConfig
 from .constants import MIN_AUDIO_BYTES, PUBLIC_PROXY_TOKEN, REQUEST_HEADERS
 from .types import ElevenBytesResponse
+from .vpn import VPN_CONNECT_TIMEOUT_SECONDS, VpnError, VpnTransport
 
 __all__ = ["ElevenBytesApiBackend"]
 
@@ -73,13 +74,10 @@ class ElevenBytesApiBackend:
             max_connections=config.max_concurrency,
             max_keepalive_connections=config.max_concurrency,
         )
-        resolved_transport: httpx.AsyncBaseTransport = transport or httpx.AsyncHTTPTransport(
-            retries=0,
-            limits=limits,
-        )
+        resolved_transport: httpx.AsyncBaseTransport = transport or _build_transport(config, limits)
         self._client: httpx.AsyncClient = httpx.AsyncClient(
             headers=dict(REQUEST_HEADERS),
-            timeout=httpx.Timeout(config.timeout_s),
+            timeout=_request_timeout(config.timeout_s, vpn_enabled=config.vpn_enabled),
             transport=resolved_transport,
         )
         self._closed: bool = False
@@ -102,13 +100,19 @@ class ElevenBytesApiBackend:
             response: httpx.Response = await self._client.post(
                 self._config.endpoint,
                 data=self._build_payload(text, voice_id),
-                timeout=httpx.Timeout(min(self._config.timeout_s, deadline_s)),
+                timeout=_request_timeout(
+                    min(self._config.timeout_s, deadline_s),
+                    vpn_enabled=self._config.vpn_enabled,
+                ),
             )
         except httpx.TimeoutException as exc:
             message: str = "ElevenBytes request timed out"
             raise TtsTimeoutError(message) from exc
         except httpx.TransportError as exc:
             message = "ElevenBytes network request failed"
+            raise TtsNetworkError(message) from exc
+        except VpnError as exc:
+            message = "Every ElevenBytes VPN route failed"
             raise TtsNetworkError(message) from exc
 
         request_time_ms: float = (time.perf_counter() - started_at) * 1000.0
@@ -134,6 +138,9 @@ class ElevenBytesApiBackend:
             raise TtsTimeoutError(timeout_message) from exc
         except httpx.TransportError as exc:
             network_message: str = "ElevenBytes availability probe failed"
+            raise TtsNetworkError(network_message) from exc
+        except VpnError as exc:
+            network_message = "Every ElevenBytes VPN route failed during probe"
             raise TtsNetworkError(network_message) from exc
         if (
             response.status_code >= httpx.codes.INTERNAL_SERVER_ERROR
@@ -253,3 +260,19 @@ def _retry_after_from_http_date(value: str) -> float | None:
     if retry_at.tzinfo is None:
         retry_at = retry_at.replace(tzinfo=UTC)
     return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+
+
+def _build_transport(
+    config: ElevenBytesConfig,
+    limits: httpx.Limits,
+) -> httpx.AsyncBaseTransport:
+    if config.vpn_enabled:
+        return VpnTransport()
+    return httpx.AsyncHTTPTransport(retries=0, limits=limits)
+
+
+def _request_timeout(seconds: float, *, vpn_enabled: bool) -> httpx.Timeout:
+    if not vpn_enabled:
+        return httpx.Timeout(seconds)
+    connect_seconds: float = min(seconds, VPN_CONNECT_TIMEOUT_SECONDS)
+    return httpx.Timeout(seconds, connect=connect_seconds)

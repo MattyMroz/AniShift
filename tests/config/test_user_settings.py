@@ -103,6 +103,7 @@ def test_defaults_include_all_panel_fields() -> None:
     assert s.tts_provider_model_id == "run6"
     assert s.tts_voice_id == "dallin"
     assert s.tts_max_retries == 3
+    assert s.elevenbytes_vpn_enabled
     assert s.tts_output_profile == "eac3"
     assert s.tts_output_bitrate is None
     assert s.tts_timeline_policy == "serialize"
@@ -141,6 +142,7 @@ def test_full_roundtrip_preserves_every_field() -> None:
         tts_provider_model_id="eleven_multilingual_v2",
         tts_voice_id="custom-voice-id",
         tts_max_retries=5,
+        elevenbytes_vpn_enabled=False,
         tts_output_profile="opus",
         tts_output_bitrate="192k",
         narrator_mix_base_gain_db=6.0,
@@ -317,7 +319,7 @@ def test_default_voice_profiles_match_stage_six_decisions() -> None:
     marek = profiles["edge:pl-PL-MarekNeural"]
     zofia = profiles["edge:pl-PL-ZofiaNeural"]
 
-    assert (dallin.postprocess_tempo, dallin.voice_mix_offset_db, dallin.concurrency) == (1.25, -2.0, 85)
+    assert (dallin.postprocess_tempo, dallin.voice_mix_offset_db, dallin.concurrency) == (1.25, -2.0, 100)
     assert (agnieszka.native_rate, agnieszka.native_volume, agnieszka.voice_mix_offset_db) == (5, 65, 2.0)
     assert (zosia.native_rate, zosia.native_volume, zosia.voice_mix_offset_db) == (200, 0.7, 0.0)
     assert (marek.native_rate, marek.native_volume, marek.voice_mix_offset_db) == ("+40%", "+0%", 0.0)

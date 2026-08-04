@@ -222,6 +222,48 @@ def test_service_commits_then_reuses_validated_resume_clip(tmp_path: Path) -> No
     assert progress.batches[-1].committed_required_requests == 1
 
 
+def test_service_reports_provider_response_before_clip_validation(tmp_path: Path) -> None:
+    class _BlockingValidator(_Validator):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def validate_clip(
+            self,
+            path: Path,
+            expectation: ClipExpectation,
+        ) -> ClipValidation | None:
+            self.entered.set()
+            self.release.wait()
+            return super().validate_clip(path, expectation)
+
+    engine = _Engine()
+    progress = _Progress()
+    validator = _BlockingValidator()
+    with (
+        TtsService(
+            _config(),
+            resume_root=tmp_path,
+            validator=validator,
+            engine_factory=lambda config: engine,
+        ) as service,
+        ThreadPoolExecutor(max_workers=1) as pool,
+    ):
+        synthesis = pool.submit(service.synthesize, _batch(), callbacks=progress)
+        try:
+            assert validator.entered.wait(timeout=1.0)
+            assert any(
+                state.received_required_requests == 1 and state.committed_required_requests == 0
+                for state in progress.batches
+            )
+        finally:
+            validator.release.set()
+        result = synthesis.result(timeout=1.0)
+
+    assert result.status is SpeechBatchStatus.COMPLETED
+
+
 def test_service_stops_timer_after_batch_completion(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

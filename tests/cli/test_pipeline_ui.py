@@ -174,6 +174,49 @@ def test_pipeline_progress_reuses_row_for_tts_audio_and_terminal_state(tmp_path:
     )
 
 
+def test_pipeline_progress_keeps_incomplete_batch_below_100(tmp_path: Path) -> None:
+    progress = MagicMock(spec=MultiProgressManager)
+    progress.add_task.return_value = 7
+    path = tmp_path / "episode.mkv"
+    rows = pipeline_ui._PipelineProgressRows(progress, (path,), _context(tmp_path))
+    scope_id = scope_id_for_source(path, workspace_root=tmp_path)
+
+    rows.on_batch_state(
+        SpeechBatchProgress(
+            scope_id=scope_id,
+            completed_requests=335,
+            total_requests=336,
+            committed_required_requests=335,
+            total_required_requests=336,
+            status=SpeechBatchStatus.PARTIAL,
+        ),
+    )
+
+    progress.update.assert_called_once_with(7, 99)
+
+
+def test_pipeline_progress_advances_on_first_provider_response(tmp_path: Path) -> None:
+    progress = MagicMock(spec=MultiProgressManager)
+    progress.add_task.return_value = 7
+    path = tmp_path / "episode.mkv"
+    rows = pipeline_ui._PipelineProgressRows(progress, (path,), _context(tmp_path))
+    scope_id = scope_id_for_source(path, workspace_root=tmp_path)
+
+    rows.on_batch_state(
+        SpeechBatchProgress(
+            scope_id=scope_id,
+            completed_requests=0,
+            total_requests=336,
+            committed_required_requests=0,
+            total_required_requests=336,
+            status=SpeechBatchStatus.PARTIAL,
+            received_required_requests=1,
+        ),
+    )
+
+    progress.update.assert_called_once_with(7, 1)
+
+
 def test_pipeline_progress_shows_retry_on_the_existing_tts_row(tmp_path: Path) -> None:
     progress = MagicMock(spec=MultiProgressManager)
     progress.add_task.return_value = 7

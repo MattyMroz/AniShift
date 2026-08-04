@@ -90,7 +90,7 @@ class _PipelineProgressRows:
             paths,
             _PIPELINE_STAGE_RANK["extracting"],
         )
-        self._tts_completed_required: dict[Path, int] = dict.fromkeys(paths, 0)
+        self._tts_visible_required: dict[Path, int] = dict.fromkeys(paths, 0)
         self._terminal_paths: set[Path] = set()
         self._closed: bool = False
         self._lock: threading.Lock = threading.Lock()
@@ -179,12 +179,21 @@ class _PipelineProgressRows:
                 self._tts_started.add(path)
                 self._progress.reset_task(task_id)
             required: int = state.total_required_requests
-            completed: int = max(
-                self._tts_completed_required[path],
+            committed: int = state.committed_required_requests
+            visible: int = max(
+                self._tts_visible_required[path],
+                state.received_required_requests,
                 state.committed_required_requests,
             )
-            self._tts_completed_required[path] = completed
-            percentage: int = _PROGRESS_COMPLETE if required == 0 else round(completed * 100 / required)
+            self._tts_visible_required[path] = visible
+            percentage: int = (
+                _PROGRESS_COMPLETE
+                if required == 0 or committed >= required
+                else min(
+                    _PROGRESS_COMPLETE - 1,
+                    (visible * _PROGRESS_COMPLETE + required - 1) // required,
+                )
+            )
             self._progress.update(task_id, percentage)
             self._progress.update_description(
                 task_id,
@@ -262,7 +271,7 @@ class _PipelineProgressRows:
                 return
             self._terminal_paths.discard(path)
             self._stage_rank[path] = _PIPELINE_STAGE_RANK["tts"]
-            self._tts_completed_required[path] = 0
+            self._tts_visible_required[path] = 0
             self._tts_started.discard(path)
             self._audio_started.discard(path)
             self._tts_label = _tts_progress_label(self._context)
