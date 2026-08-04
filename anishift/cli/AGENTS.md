@@ -8,7 +8,7 @@ REPL prompt_toolkit, komendy `/`, panel `/settings`, banner. Typer entry point `
 - `shell.py` — REPL prompt_toolkit routujący linie do komend/pipeline
 - `commands.py` — rejestr `/komend`, opcji, dispatch i walidacja
 - `completer.py` — completer prompt_toolkit dla `/komend`
-- `pipeline_ui.py` — render pipeline na Enter: prompty, progres, raport
+- `pipeline_ui.py` — render pipeline na Enter i `/compose`: prompty, progres, raport
 - `settings_panel.py` — pełnoekranowy panel `/settings` sterowany strzałkami, auto-save
 - `banner.py` — startowy banner ASCII + linia statusu
 
@@ -39,6 +39,8 @@ REPL prompt_toolkit, komendy `/`, panel `/settings`, banner. Typer entry point `
   audio → stan terminalny. Retry ponownie otwiera ten sam wiersz zamiast dodawać
   nowy. Manualny wybór stylów nie używa `_PipelineProgressRows`. `pipeline_ui.py`
 - Manualny prompt stylów: Enter (pusto) zwraca `None` = akceptacja klasyfikatora, nie pusty zbiór. `pipeline_ui.py:149-161`
+- `/compose` składa z tego, co leży na dysku, i NIE zmienia żadnego ustawienia — tryb wyjścia i preset jakości nadal pochodzą z `/settings`. `commands.py`, `pipeline_ui.py`
+- Postęp składania to zwykłe linie tekstu co 10%, nie pasek Live — `/compose` działa poza fazami pipeline'u. `pipeline_ui.py`
 
 ## Konwencje
 
