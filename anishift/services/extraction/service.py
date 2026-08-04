@@ -92,6 +92,7 @@ def parse_media_info(path: Path, payload: str) -> MediaInfo:
             msg = f"{path}: not a supported Matroska file"
             raise _fail(ErrorCode.EXTRACTION_FAILED, msg)
         tracks = tuple(_parse_track(track) for track in raw["tracks"])
+        attachments = tuple(_parse_attachment(attachment) for attachment in raw.get("attachments", []))
     except KeyError as exc:
         msg = f"{path}: identify JSON is missing field {exc}"
         raise _fail(ErrorCode.EXTRACTION_FAILED, msg) from exc
@@ -101,7 +102,16 @@ def parse_media_info(path: Path, payload: str) -> MediaInfo:
     except TypeError as exc:
         msg = f"{path}: identify JSON has invalid data"
         raise _fail(ErrorCode.EXTRACTION_FAILED, msg) from exc
-    return MediaInfo(path=path, tracks=tuple(sorted(tracks, key=lambda track: track.id)))
+    return MediaInfo(
+        path=path,
+        tracks=tuple(sorted(tracks, key=lambda track: track.id)),
+        attachments=tuple(name for name in attachments if name),
+    )
+
+
+def _parse_attachment(raw: dict[str, Any]) -> str:
+    """Return one attachment's file name, empty when the payload omits it."""
+    return str(raw.get("file_name", ""))
 
 
 def _parse_track(raw: dict[str, Any]) -> TrackInfo:

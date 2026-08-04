@@ -28,6 +28,28 @@ def test_parse_media_info_reads_real_identify_payload() -> None:
     assert info.tracks[2].language == "pol"
 
 
+def test_parse_media_info_reads_attachment_names() -> None:
+    payload = json.dumps(
+        {
+            "container": {"recognized": True, "supported": True},
+            "tracks": [],
+            "attachments": [
+                {"file_name": "OpenSans-Semibold.ttf"},
+                {"file_name": "Trebuchet.otf"},
+                {"content_type": "image/jpeg"},
+            ],
+        }
+    )
+
+    info = service.parse_media_info(Path("source.mkv"), payload)
+
+    assert info.attachments == ("OpenSans-Semibold.ttf", "Trebuchet.otf")
+
+
+def test_parse_media_info_without_attachments_reports_none() -> None:
+    assert _info().attachments == ()
+
+
 def test_parse_media_info_rejects_invalid_json() -> None:
     with pytest.raises(ExtractionError, match="identify JSON is invalid"):
         service.parse_media_info(Path("source.mkv"), "not json")
