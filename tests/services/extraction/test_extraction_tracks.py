@@ -60,3 +60,25 @@ def test_select_tracks_prefers_text_over_picture() -> None:
     result = select_tracks((picture, text))
     assert result.subtitle_id == 3
     assert result.already_polish is False
+
+
+def test_default_priorities_keep_the_original_ordering() -> None:
+    result = select_tracks((_aud(1, "eng", default=True), _aud(2, "jpn"), _aud(3, "chi")))
+    assert result.audio_id == 2
+
+
+def test_audio_priority_override_selects_another_language() -> None:
+    tracks = (_aud(1, "jpn"), _aud(2, "eng"))
+    assert select_tracks(tracks).audio_id == 1
+    assert select_tracks(tracks, audio_priority=("eng", "jpn")).audio_id == 2
+
+
+def test_subtitle_priority_override_selects_another_language() -> None:
+    tracks = (_sub(1, "pol"), _sub(2, "eng"))
+    assert select_tracks(tracks).subtitle_id == 1
+    assert select_tracks(tracks, subtitle_priority=("eng", "pol")).subtitle_id == 2
+
+
+def test_two_letter_tags_match_three_letter_priorities() -> None:
+    assert select_tracks((_aud(1, "en"), _aud(2, "ja"))).audio_id == 2
+    assert select_tracks((_sub(1, "en"), _sub(2, "pl"))).subtitle_id == 2

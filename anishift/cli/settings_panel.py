@@ -53,6 +53,12 @@ _CUSTOM_VOICE_PARTS: Final[int] = 3
 _OUTPUT_VARIANTS: Final[tuple[str, ...]] = ("players", "merge", "burn")
 """Selectable output-assembly variants."""
 
+_COMPOSITION_PRESETS: Final[tuple[str, ...]] = ("high", "balanced", "compact")
+"""Selectable hardsub quality presets, best quality first."""
+
+_ROTATABLE_MINIMUM: Final[int] = 2
+"""Shortest language list where rotating the leader changes anything."""
+
 _MODES: Final[tuple[str, ...]] = ("auto", "manual")
 """Selectable processing modes."""
 
@@ -101,7 +107,9 @@ _AUDIO_FIELDS: Final[tuple[_Field, ...]] = (
     _Field("tts_resume_enabled", "TTS resume"),
     _Field("tts_debug_artifacts", "Artifacts"),
     _Field("output_variant", "Output"),
-    _Field("move_results_to_output", "-> output/"),
+    _Field("composition_quality_preset", "Burn quality"),
+    _Field("audio_language_priority", "Audio languages"),
+    _Field("subtitle_language_priority", "Subtitle languages"),
 )
 """Audio, diagnostics, and final-output rows."""
 
@@ -143,6 +151,15 @@ def _cycle(options: tuple[str, ...], current: str, delta: int) -> str:
     """Return the option ``delta`` steps from ``current`` (wrapping)."""
     index = options.index(current) if current in options else 0
     return options[(index + delta) % len(options)]
+
+
+def _rotate_languages(settings: UserSettings, key: str, delta: int) -> None:
+    """Rotate one language-priority list so another language leads."""
+    current: tuple[str, ...] = getattr(settings, key)
+    if len(current) < _ROTATABLE_MINIMUM:
+        return
+    shift: int = delta % len(current)
+    setattr(settings, key, current[shift:] + current[:shift])
 
 
 def _clamp_float(value: float, low: float, high: float) -> float:
@@ -280,8 +297,14 @@ def _step_field(  # noqa: C901, PLR0912, PLR0913 - one typed dispatcher owns all
         )
     elif field.key == "output_variant":
         settings.output_variant = _cycle(_OUTPUT_VARIANTS, settings.output_variant, delta)  # type: ignore[assignment]
-    elif field.key == "move_results_to_output":
-        settings.move_results_to_output = not settings.move_results_to_output
+    elif field.key == "composition_quality_preset":
+        settings.composition_quality_preset = _cycle(  # type: ignore[assignment]
+            _COMPOSITION_PRESETS,
+            settings.composition_quality_preset,
+            delta,
+        )
+    elif field.key in {"audio_language_priority", "subtitle_language_priority"}:
+        _rotate_languages(settings, field.key, delta)
 
 
 def _value_text(  # noqa: PLR0911, PLR0913 - row-specific rendering stays explicit
@@ -321,8 +344,8 @@ def _value_text(  # noqa: PLR0911, PLR0913 - row-specific rendering stays explic
         return f"{value} ({_provider_availability(context, settings.llm_provider)})"
     if field.key == "llm_module_ids":
         return ", ".join(settings.llm_module_ids) or "none"
-    if field.key == "move_results_to_output":
-        return "yes" if value else "no"
+    if field.key in {"audio_language_priority", "subtitle_language_priority"}:
+        return ", ".join(value) if value else "none"
     return str(value)
 
 

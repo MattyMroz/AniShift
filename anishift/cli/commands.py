@@ -106,6 +106,15 @@ def _handle_manual(context: AppContext, options: frozenset[str]) -> bool:
     return _set_mode(context, "manual")
 
 
+def _handle_compose(context: AppContext, options: frozenset[str]) -> bool:
+    """Assemble existing products without translating or synthesizing."""
+    del options
+    from anishift.cli.pipeline_ui import run_compose_command  # noqa: PLC0415 - keep the pipeline off the import path
+
+    run_compose_command(context)
+    return True
+
+
 def _handle_doctor(context: AppContext, options: frozenset[str]) -> bool:
     """Run diagnostics and render the report."""
     for result in run_doctor(context.settings):
@@ -137,6 +146,11 @@ def _handle_exit(context: AppContext, options: frozenset[str]) -> bool:
 
 COMMANDS: dict[str, Command] = {
     "/auto": Command("/auto", "Switch to auto mode (Enter processes everything)", _handle_auto),
+    "/compose": Command(
+        "/compose",
+        "Assemble results from existing files, without translation or TTS",
+        _handle_compose,
+    ),
     "/doctor": Command("/doctor", "Run diagnostics and report your setup", _handle_doctor),
     "/exit": Command("/exit", "Leave AniShift", _handle_exit),
     "/help": Command("/help", "Show available commands", _handle_help),

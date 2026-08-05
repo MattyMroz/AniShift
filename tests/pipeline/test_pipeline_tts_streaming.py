@@ -21,7 +21,7 @@ from anishift.pipeline.tts_queue import (
     TtsQueueOutcome,
 )
 from anishift.pipeline.tts_runtime import PipelineTtsProgressSink, PipelineTtsRuntime
-from anishift.pipeline.types import FileOutcome
+from anishift.pipeline.types import FileOutcome, TrackPriorities
 from anishift.services.audio import AudioConfig, AudioRenderResult, AudioRenderStatus
 from anishift.services.audio.types import PlacementReason, TimelinePlacement
 from anishift.services.extraction.types import MediaInfo
@@ -35,6 +35,8 @@ from anishift.services.tts import (
     TtsConfig,
 )
 from anishift.services.tts.protocols import TtsProgressSink
+
+_PRIORITIES = TrackPriorities(audio=("jpn", "eng"), subtitle=("pol", "eng"))
 
 
 def _context(root: Path) -> AppContext:
@@ -331,6 +333,7 @@ def test_extract_cleanup_preserves_tts_and_audio_scope_directories(
         interaction=None,
         on_progress=None,
         cancel=threading.Event(),
+        priorities=_PRIORITIES,
     )
 
     assert state.outcome.status == "done"

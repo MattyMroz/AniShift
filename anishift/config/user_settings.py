@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
+from anishift.services.extraction.tracks import DEFAULT_AUDIO_PRIORITY, DEFAULT_SUBTITLE_PRIORITY
 from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
 from anishift.services.translation.engines import available_engine_ids
 from anishift.services.translation.engines.llm.prompts import PromptRegistry
@@ -47,6 +48,7 @@ from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES
 from anishift.utils.logger import get_logger
 
 __all__ = [
+    "CompositionQualityPreset",
     "CustomVoiceSetting",
     "JsonScalar",
     "Mode",
@@ -69,6 +71,9 @@ Mode = Literal["auto", "manual"]
 
 OutputVariant = Literal["players", "merge", "burn"]
 """Output assembly: soft players, MKV merge, or burned-in MP4."""
+
+CompositionQualityPreset = Literal["high", "balanced", "compact"]
+"""Named quality target for hardsub rendering."""
 
 ProcessingOrderPolicy = Literal["ready_first", "strict_natural"]
 """Cross-file scheduling policy for translation, TTS, and audio."""
@@ -128,6 +133,15 @@ _PROCESSING_ORDER_POLICIES: Final[frozenset[str]] = frozenset(("ready_first", "s
 
 _OUTPUT_VARIANTS: Final[frozenset[str]] = frozenset(("players", "merge", "burn"))
 """Accepted values for the ``output_variant`` field."""
+
+_COMPOSITION_PRESETS: Final[frozenset[str]] = frozenset(("high", "balanced", "compact"))
+"""Accepted values for the ``composition_quality_preset`` field."""
+
+_DEFAULT_AUDIO_LANGUAGES: Final[tuple[str, ...]] = DEFAULT_AUDIO_PRIORITY
+"""Preferred source audio languages, most wanted first."""
+
+_DEFAULT_SUBTITLE_LANGUAGES: Final[tuple[str, ...]] = DEFAULT_SUBTITLE_PRIORITY
+"""Preferred source subtitle languages, most wanted first."""
 
 _TTS_OUTPUT_PROFILES: Final[frozenset[str]] = frozenset(profile.value for profile in AudioCodecProfile)
 """Accepted final narration sidecar profiles."""
@@ -261,8 +275,11 @@ class UserSettings:
         tts_voice_profiles: Settings keyed by engine and resolved voice id.
         elevenbytes_custom_voices: User-defined ElevenBytes aliases.
         output_variant: Output assembly variant.
-        move_results_to_output: When ``True`` finished files go to
-            ``workspace/output/``; when ``False`` they land next to the MKV.
+        composition_quality_preset: Quality target for burned-in rendering.
+        audio_language_priority: Preferred source audio languages, best first.
+        subtitle_language_priority: Preferred source subtitle languages, best
+            first. Both lists drive automatic track selection only; manual mode
+            still asks per file.
     """
 
     schema_version: int = SETTINGS_SCHEMA_VERSION
@@ -296,8 +313,10 @@ class UserSettings:
         default_factory=default_tts_voice_profiles,
     )
     elevenbytes_custom_voices: list[CustomVoiceSetting] = field(default_factory=list)
-    output_variant: OutputVariant = "merge"
-    move_results_to_output: bool = False
+    output_variant: OutputVariant = "players"
+    composition_quality_preset: CompositionQualityPreset = "balanced"
+    audio_language_priority: tuple[str, ...] = _DEFAULT_AUDIO_LANGUAGES
+    subtitle_language_priority: tuple[str, ...] = _DEFAULT_SUBTITLE_LANGUAGES
 
     def __post_init__(self) -> None:
         """Normalize engine-bound selections and materialize the active profile."""
@@ -518,6 +537,15 @@ def _clean_str_list(raw: dict[str, Any], key: str, allowed: frozenset[str]) -> N
     value = raw.get(key)
     if not isinstance(value, list) or any(item not in allowed for item in value):
         raw.pop(key, None)
+
+
+def _clean_language_tuple(raw: dict[str, Any], key: str) -> None:
+    """Keep a list of plain language codes as a tuple, or drop the field."""
+    value = raw.get(key)
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+        raw.pop(key, None)
+        return
+    raw[key] = tuple(dict.fromkeys(item.strip().casefold() for item in value))
 
 
 def _clean_free_string(raw: dict[str, Any], key: str) -> None:
@@ -831,7 +859,9 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_finite_number(filtered, "original_gain_db")
     filtered["tts_voice_profiles"] = _load_voice_profiles(filtered.get("tts_voice_profiles"))
     filtered["elevenbytes_custom_voices"] = _load_custom_voices(filtered.get("elevenbytes_custom_voices"))
-    _clean_bool(filtered, "move_results_to_output")
+    _clean_string(filtered, "composition_quality_preset", _COMPOSITION_PRESETS)
+    _clean_language_tuple(filtered, "audio_language_priority")
+    _clean_language_tuple(filtered, "subtitle_language_priority")
     settings = UserSettings(**filtered)
     logger.debug(
         "User settings loaded",

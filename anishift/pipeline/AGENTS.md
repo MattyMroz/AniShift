@@ -6,6 +6,8 @@ izolacja błędów per plik i recovery całego providera.
 ## Pliki
 
 - `runner.py` — orkiestracja, izolacja błędów per plik, pula wątków
+- `composition_runtime.py` — macierz „co dołożyć" + pętla składania wspólna dla Entera i `/compose`
+- `compose_only.py` — outcomes z produktów na dysku dla `/compose` (bez tłumaczenia i TTS)
 - `narration.py` — jedyny adapter stanu napisów do neutralnych requestów TTS
 - `llm_queue.py` — współbieżna kolejka plików i circuit providerów LLM
 - `tts_queue.py` — strumień gotowych narration batches przez TTS i audio
@@ -17,7 +19,11 @@ izolacja błędów per plik i recovery całego providera.
 
 - Trzy tryby ekstrakcji wykluczają się w ustalonej kolejności: `interaction` → sekwencyjny; brak `interaction` + brak `progress_factory` → sekwencyjny; progress → pula wątków. Dla LLM callback od razu przekazuje każdy gotowy split do strumieniowej kolejki. `runner.py`
 - `_MkvState.outcome` jest mutowany przez worker tłumaczenia. Dla LLM worker-local runtime/client nie jest współdzielony; wspólny jest tylko per-run `SharedProviderState`. `runner.py`, `llm_runtime.py`, `llm_queue.py`
-- `discover_inputs` cicho pomija każdy plik z infiksem `.displayed` — by nie wciągnąć własnych produktów pipeline'u jako wejść. `runner.py`
+- `discover_inputs` odsiewa wyłącznie własne kontenery (`.pl.mkv`, `.pl.mp4`). Produkty napisowe to `.ass`/`.srt`, więc nigdy nie pasują do filtra wejść, a źródło ze słowem `displayed` w tytule zostaje wejściem. `runner.py`
+- Krok 5 (składanie) idzie po audio i jest OSTATNI: kasuje `tmp/<scope>/` po zwalidowanym wyniku i nigdy po porażce. `runner.py`, `composition_runtime.py`
+- Porażka składania jednego pliku NIE zatrzymuje wsadu — `_compose_one` zwraca status `failed`, a raport liczy złożone/pominięte/nieudane. `composition_runtime.py`
+- `compose_outcomes` dostaje gotowy serwis (`CompositionAssembler`), nie buduje go sam — inaczej testy wymagałyby realnych binarek. `composition_runtime.py`
+- `/compose` bez produktów na dysku wyciąga polskie napisy ZE ŹRÓDŁA; obce napisy nie są wypalane bez tłumaczenia. `compose_only.py`
 - `_extract_mkv` na starcie kasuje `workspace/tmp/<stem>` przez `safe_rmtree` — ponowny run niszczy poprzedni katalog tymczasowy bez ostrzeżenia. `runner.py:273-275`
 - Anulowanie (Ctrl+C) jest kooperatywne przez współdzielony `threading.Event`. Dla LLM główny executor nie czeka na blokujący request SDK: pierwszy `KeyboardInterrupt` ustawia `cancel`, zamyka input i wraca, a worker odrzuca ewentualny sukces zakończony po anulowaniu. `runner.py`, `services/llm/_retry.py`
 - `_should_translate` pomija pliki już polskie (`already_polish`) i splity bez `spoken_lines`/`displayed_events`; polskie źródła omijają API, ale writer nadal tworzy ich końcowe produkty. `runner.py`

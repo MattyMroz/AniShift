@@ -14,7 +14,7 @@
 | 5 | [etap-5-llm.md](etap-5-llm.md) | serwis llm (6 dostawców, recykling 1:1 z MangaShift) + trzeci silnik tłumaczenia `llm` + opcjonalna korekta napisów. | 4 |
 | 6 | [etap-6-tts-audio.md](etap-6-tts-audio.md) | rozbicie god-files TTS na rejestr 5 silników + osobny tor audio ffmpeg — krok 4 runnera. | 4 (równolegle z 5) |
 | 6.1 | [etap-6.1-shared-text-primitives.md](etap-6.1-shared-text-primitives.md) | wspólne granice Unicode i grafemy dla translation/TTS bez łączenia ich różnych kontraktów chunkowania. | 6 |
-| 7 | [etap-7-skladanie-e2e.md](etap-7-skladanie-e2e.md) | składanie wyniku (players / merge mkv / burn mp4) i pełne e2e od Enter do gotowego pliku. | 6 |
+| 7 | [etap-7-wymagania.md](etap-7-wymagania.md) + [etap-7-plan.md](etap-7-plan.md) | **W TOKU** — składanie wyniku (players / merge mkv / burn mp4), macierz kombinacji, `/compose` bez tłumaczenia i TTS, pełne e2e od Enter do gotowego pliku. Zostaje ocena wizualna na realnym odcinku. Zastępuje szkic [etap-7-skladanie-e2e.md](etap-7-skladanie-e2e.md). | 6 |
 | 8 | [etap-8-dystrybucja-binarek.md](etap-8-dystrybucja-binarek.md) | migracja danych usera i wyburzenie starego kodu (dystrybucja binarek przeniesiona do etapu 2.5). | 7 |
 
 ## graf zależności

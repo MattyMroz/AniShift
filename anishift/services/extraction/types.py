@@ -84,10 +84,17 @@ class TrackInfo:
 
 @dataclass(frozen=True, slots=True)
 class MediaInfo:
-    """Identified MKV container."""
+    """Identified MKV container.
+
+    Attributes:
+        path: The identified container.
+        tracks: Tracks reported by ``mkvmerge -J``, sorted by id.
+        attachments: File names of the container's attachments, fonts included.
+    """
 
     path: Path
     tracks: tuple[TrackInfo, ...]
+    attachments: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

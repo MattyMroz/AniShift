@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from anishift.services.tts.types import SpeechBatchStats
 
 __all__ = [
+    "CompositionUi",
     "FileFailure",
     "FileOutcome",
     "FileStatus",
@@ -26,6 +27,7 @@ __all__ = [
     "ProgressPhase",
     "ProgressReporter",
     "StepName",
+    "TrackPriorities",
     "TranslationSettings",
 ]
 
@@ -39,6 +41,7 @@ StepName = Literal[
     "tts",
     "audio",
     "txt",
+    "compose",
 ]
 """Pipeline step a failure is attributed to."""
 
@@ -143,6 +146,9 @@ class FileOutcome:
     tts_stats: SpeechBatchStats | None = None
     audio_placements: tuple[TimelinePlacement, ...] = ()
     audio_time_ms: float = 0.0
+    composed_path: Path | None = None
+    composition_status: str = ""
+    composition_warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,10 +172,58 @@ class TranslationSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class TrackPriorities:
+    """Language preferences steering automatic track selection.
+
+    Attributes:
+        audio: Preferred source audio languages, most wanted first.
+        subtitle: Preferred source subtitle languages, most wanted first.
+    """
+
+    audio: tuple[str, ...]
+    subtitle: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class PipelineReport:
     """Collect per-file outcomes in discovery order."""
 
     outcomes: tuple[FileOutcome, ...]
+
+    @property
+    def composed_files(self) -> int:
+        """Return how many files produced a final artifact."""
+        return sum(1 for outcome in self.outcomes if outcome.composed_path is not None)
+
+    @property
+    def skipped_compositions(self) -> tuple[tuple[Path, str], ...]:
+        """Return files composition deliberately left alone, with the reason."""
+        return tuple(
+            (outcome.source, outcome.composition_status)
+            for outcome in self.outcomes
+            if outcome.composition_status.startswith("skipped")
+        )
+
+    @property
+    def failed_compositions(self) -> tuple[tuple[Path, str], ...]:
+        """Return files whose composition raised, with the first warning."""
+        return tuple(
+            (outcome.source, outcome.composition_warnings[0] if outcome.composition_warnings else "")
+            for outcome in self.outcomes
+            if outcome.composition_status == "failed"
+        )
+
+
+class CompositionUi(Protocol):
+    """Composition progress and pre-run cost reporting owned by the CLI."""
+
+    def on_composition_phase(self, scope_id: str, phase: str, percent: int) -> None:
+        """Report one composition phase without rendering UI."""
+        ...
+
+    def on_burn_estimate(self, file_count: int, estimated_seconds: float) -> None:
+        """Announce how much rendering the batch will cost before it starts."""
+        ...
 
 
 class ProgressReporter(Protocol):

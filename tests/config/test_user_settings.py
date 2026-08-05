@@ -33,15 +33,16 @@ def test_load_missing_file_returns_defaults() -> None:
     assert settings == UserSettings()
     assert settings.mode == "auto"
     assert settings.processing_order_policy == "ready_first"
-    assert settings.move_results_to_output is False
+    assert settings.output_variant == "players"
+    assert settings.composition_quality_preset == "balanced"
 
 
 @pytest.mark.usefixtures("config_file")
 def test_save_then_load_roundtrip() -> None:
-    save_user_settings(UserSettings(mode="manual", move_results_to_output=True))
+    save_user_settings(UserSettings(mode="manual", composition_quality_preset="compact"))
     loaded = load_user_settings()
     assert loaded.mode == "manual"
-    assert loaded.move_results_to_output is True
+    assert loaded.composition_quality_preset == "compact"
 
 
 def test_save_creates_parent_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -109,7 +110,10 @@ def test_defaults_include_all_panel_fields() -> None:
     assert s.tts_timeline_policy == "serialize"
     assert s.narrator_mix_base_gain_db == 7.0
     assert s.original_gain_db == 0.0
-    assert s.output_variant == "merge"
+    assert s.output_variant == "players"
+    assert s.composition_quality_preset == "balanced"
+    assert s.audio_language_priority == ("jpn", "eng", "zho")
+    assert s.subtitle_language_priority == ("pol", "eng")
     assert s.llm_provider == "gemini"
     assert s.llm_provider_model_id == "gemini-3.5-flash-lite"
     assert s.llm_max_concurrency == 4
@@ -156,7 +160,9 @@ def test_full_roundtrip_preserves_every_field() -> None:
             )
         ],
         output_variant="burn",
-        move_results_to_output=True,
+        composition_quality_preset="high",
+        audio_language_priority=("eng", "jpn"),
+        subtitle_language_priority=("eng", "pol"),
         llm_provider="openrouter",
         llm_provider_model_id="vendor/custom-model",
         llm_temperature=0.2,
@@ -205,7 +211,7 @@ def test_load_does_not_migrate_legacy_volume_to_mix_gain(config_file: Path) -> N
 
 def test_load_invalid_output_variant_falls_back_to_default(config_file: Path) -> None:
     config_file.write_text(json.dumps({"output_variant": "bogus"}), encoding="utf-8")
-    assert load_user_settings().output_variant == "merge"
+    assert load_user_settings().output_variant == "players"
 
 
 def test_load_migrates_legacy_voice_without_tempo_or_volume(config_file: Path) -> None:
@@ -274,10 +280,27 @@ def test_load_invalid_llm_concurrency_uses_default(value: object, config_file: P
     assert load_user_settings().llm_max_concurrency == 4
 
 
-@pytest.mark.parametrize("raw", ["false", "true", 1, 0, None])
-def test_load_wrong_typed_move_results_falls_back_to_default(raw: object, config_file: Path) -> None:
-    config_file.write_text(json.dumps({"move_results_to_output": raw}), encoding="utf-8")
-    assert load_user_settings().move_results_to_output is False
+@pytest.mark.parametrize("raw", ["balanced", "bogus", 1, None])
+def test_load_invalid_quality_preset_falls_back_to_default(raw: object, config_file: Path) -> None:
+    config_file.write_text(json.dumps({"composition_quality_preset": raw}), encoding="utf-8")
+    expected = raw if raw == "balanced" else "balanced"
+    assert load_user_settings().composition_quality_preset == expected
+
+
+@pytest.mark.parametrize("raw", ["jpn", [""], [1], None])
+def test_load_invalid_language_priority_falls_back_to_default(raw: object, config_file: Path) -> None:
+    config_file.write_text(json.dumps({"audio_language_priority": raw}), encoding="utf-8")
+    assert load_user_settings().audio_language_priority == ("jpn", "eng", "zho")
+
+
+def test_load_language_priority_normalizes_case_and_duplicates(config_file: Path) -> None:
+    config_file.write_text(json.dumps({"audio_language_priority": [" ENG ", "jpn", "eng"]}), encoding="utf-8")
+    assert load_user_settings().audio_language_priority == ("eng", "jpn")
+
+
+def test_dropped_legacy_output_switch_is_ignored(config_file: Path) -> None:
+    config_file.write_text(json.dumps({"move_results_to_output": True}), encoding="utf-8")
+    assert not hasattr(load_user_settings(), "move_results_to_output")
 
 
 def test_save_writes_schema_v2_without_legacy_tts_placeholders(config_file: Path) -> None:
