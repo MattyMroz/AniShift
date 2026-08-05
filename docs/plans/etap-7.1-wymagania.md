@@ -282,16 +282,44 @@ sesjami, zero UI do zaprojektowania.
 - surowe napisy ze źródła jako trwały produkt;
 - miejsce decyzji o wariancie napisów, jeśli token komendy okaże się za ciasny.
 
-### 12.3. Osobno, bez UI: reużycie gotowych produktów
+### 12.3. Osobno, bez UI: reużycie gotowych napisów
 
-**HITL — do rozstrzygnięcia niezależnie od UI**
+**USTALONE — wymaganie usera 2026-08-05**
 
 Ponowne naciśnięcie Enter tłumaczy wszystko od nowa, nawet gdy `{stem}.pl.<kind>` leży już
-obok filmu. To kosztuje pieniądze na API i czas. Reużycie istniejących produktów jest
-**zachowaniem domyślnym, nie opcją** — nie wymaga żadnego elementu interfejsu.
+obok filmu. To kosztuje pieniądze na API i czas. Reużycie jest **zachowaniem domyślnym**,
+a regeneracja — świadomym wyborem.
 
-Zasada „jak najmniej wpisywać" ma tu swoją prawdziwą odpowiedź: program ma wnioskować ze stanu
-dysku, a nie czekać na flagi. `/compose` już tak działa; Enter jeszcze nie.
+Zasada „jak najmniej wpisywać" ma tu swoją prawdziwą odpowiedź: program wnioskuje ze stanu
+dysku, zamiast czekać na flagi. `/compose` już tak działa; Enter jeszcze nie.
+
+**Reguła rozpoznania**: dla źródła `X.mkv` gotowym tłumaczeniem jest `X.pl.<kind>` w korzeniu
+`workspace/`. Ten sam trzon nazwy plus infiks `.pl` — dokładnie kontrakt, w którym pipeline
+sam zapisuje produkty. Dzięki temu działa to również dla napisów, które użytkownik przyniósł
+sam, o ile nazwie je tak samo jak film.
+
+**Co się dzieje przy trafieniu**:
+
+| Etap | Los |
+|---|---|
+| identify + wybór ścieżek | wykonywany — potrzebny do ścieżki audio |
+| ekstrakcja audio | wykonywana — lektor potrzebuje podkładu |
+| ekstrakcja napisów | pomijana |
+| **tłumaczenie** | **pomijane — tu jest cała oszczędność** |
+| split na spoken/displayed | wykonywany lokalnie na gotowym pliku, bez API |
+| TTS, audio, składanie | bez zmian |
+
+**Regeneracja**: skasowanie `X.pl.<kind>` sprawia, że kolejny przebieg tłumaczy od nowa. Plik
+leży w korzeniu `workspace/`, jest widoczny i użytkownik nim zarządza — w wersji pierwszej
+to wystarcza za przełącznik.
+
+**Widoczność**: reużycie zawsze trafia do raportu jako jawna informacja przy pliku. Cicha
+podmiana źródła tłumaczenia byłaby dokładnie tą klasą niespodzianek, których zabrania §11.2b
+etapu 7.
+
+**HITL — otwarte**: czy potrzebny jest jawny przełącznik regeneracji obok kasowania pliku,
+i czy reużycie ma obejmować także `.spoken.pl` i `.displayed.pl`, czy zawsze przeliczać je
+z pełnego pliku.
 
 ## 13. Poza zakresem
 
