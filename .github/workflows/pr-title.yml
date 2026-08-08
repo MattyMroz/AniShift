@@ -1,0 +1,41 @@
+name: PR Title
+
+# A squash merge builds the commit message from the PR title, on GitHub's
+# servers, where the local commit-msg hook does not exist. This check covers
+# that path. It reuses scripts/hooks/check_commit_msg.py, so the allowed
+# types and scopes are defined once.
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: Conventional Commits (PR title)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the trusted validator
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Validate PR title
+        env:
+          # Via env, never inlined into run: — a PR title is untrusted input.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/pr-title.txt"
+          python scripts/hooks/check_commit_msg.py "$RUNNER_TEMP/pr-title.txt"
