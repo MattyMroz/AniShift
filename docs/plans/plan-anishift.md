@@ -1,7 +1,7 @@
 # plan strategiczny: AniShift (pakiet `anishift`) — FINAL
 
 > Status: legacy roadmap zakończony — etapy 1–8 ukończone.
-> Dalszy kierunek: etap 9 rozwija analizę z `etap-7.1-wymagania.md`.
+> Dalszy kierunek: [`etap-9-wymagania.md`](etap-9-wymagania.md).
 > data: 2026-07-12 | autor: Fable | zastępuje `2026-07-12-plan-anishift-fable-v2.md` (v2 + wbudowane korekty usera z `_korekty-planu-anishift.md`) | aktualizacja: dodany serwis llm (decyzja usera)
 > zasada nadrzędna: **recykling MangaShift w 100%** — struktura, nazewnictwo, wzorce. druga zasada (od usera): **wszystko ma być proste** — zero rozdmuchanych folderów i mechanizmów.
 > repo: obecne (3 gwiazdki zostają), przebudowa na nowym branchu. nazwy `mm_avh` i `working_space` znikają z nowego kodu.
@@ -348,7 +348,7 @@ DoD: brak zależności runtime od starego `mm_avh`, zielone testy i zgodne statu
 
 ### etap 9 — model produktu i wpływ na UI
 **status:** do zaprojektowania.
-**cel:** przekształcić analizę z [`etap-7.1-wymagania.md`](etap-7.1-wymagania.md)
+**cel:** przekształcić analizę w [`etap-9-wymagania.md`](etap-9-wymagania.md)
 w decyzje o produktach, trybach pracy, stanach, konfiguracji i ich wpływie na UI v2.
 
 Etap 9 najpierw ustala zachowanie produktu. Implementacja UI wynika z tych decyzji,

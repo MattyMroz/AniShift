@@ -1,8 +1,9 @@
-# Etap 7.1 — mapa stanów, produktów i trybów pracy
+# Etap 9 — wymagania produktu, workflow i wpływu na UI
 
-> Status: analiza przed wymaganiami — rozpisanie przestrzeni możliwości.
+> Status: analiza wymagań przed decyzjami implementacyjnymi.
 > Data: 2026-08-05.
-> Poprzednik: [`etap-7-wymagania.md`](etap-7-wymagania.md) (zaimplementowany).
+> Poprzednik funkcjonalny: [`etap-7-wymagania.md`](etap-7-wymagania.md) (zaimplementowany).
+> Poprzednik roadmapu: [`etap-8-wymagania.md`](etap-8-wymagania.md) (zakończony).
 > Ten dokument opisuje **co program potrafi zrobić i w jakich kombinacjach**, zanim
 > zdecydujemy, które kombinacje wystawić użytkownikowi i czym je sterować.
 

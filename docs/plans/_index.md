@@ -16,7 +16,7 @@
 | 6.1 | [etap-6.1-shared-text-primitives.md](etap-6.1-shared-text-primitives.md) | **ZROBIONE** — wspólne granice Unicode i grafemy dla translation/TTS. | 6 |
 | 7 | [etap-7-wymagania.md](etap-7-wymagania.md) + [etap-7-plan.md](etap-7-plan.md) | **ZROBIONE** — składanie players/MKV/MP4, `/compose` i pełny pipeline. | 6 |
 | 8 | [wymagania](etap-8-wymagania.md) + [plan](etap-8-dystrybucja-binarek.md) | **ZROBIONE** — launcher Windows, audyt legacy, walidacja i zamknięcie roadmapu. | 7 |
-| 9 | [analiza 7.1](etap-7.1-wymagania.md) | **NASTĘPNY** — docelowe produkty, tryby pracy, stany i wpływ decyzji na UI v2. | 8 |
+| 9 | [etap-9-wymagania.md](etap-9-wymagania.md) | **NASTĘPNY** — docelowe produkty, tryby pracy, stany i wpływ decyzji na UI v2. | 8 |
 
 ## graf zależności
 
@@ -25,7 +25,7 @@
                       └→ 6 (tts+audio) → 6.1 (text) → 7 (e2e) → 8 (closure) → 9 (product/UI model)
 ```
 
-etapy 5 i 6 mogły iść równolegle. etap 9 korzysta z analizy 7.1, ale decyzje są podejmowane po zamknięciu starego roadmapu w etapie 8.
+etapy 5 i 6 mogły iść równolegle. decyzje etapu 9 są podejmowane po zamknięciu starego roadmapu w etapie 8.
 
 ## reguły obowiązujące w każdym etapie
 

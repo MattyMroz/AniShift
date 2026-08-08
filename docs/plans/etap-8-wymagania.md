@@ -73,8 +73,8 @@ wyłącznie statusy oraz opisy starego roadmapu potrzebne do jego zamknięcia.
 - poprawić nieaktualny opis etapu 8;
 - poprawić indeks planów i jego link do źródła prawdy;
 - pozostawić zakończone plany w obecnych ścieżkach, aby nie psuć linków;
-- zachować `etap-7.1-wymagania.md` jako wejście do nowego etapu 9;
-- przenieść numer etapu 9 z issue #22, ponieważ nowy etap 9 przejmuje analizę 7.1.
+- zachować `etap-9-wymagania.md` jako wymagania produktu, workflow i wpływu na UI;
+- przenieść numer etapu 9 z issue #22, ponieważ nowy etap 9 przejmuje tę analizę.
 
 ## 4. Poza zakresem
 
@@ -84,13 +84,13 @@ wyłącznie statusy oraz opisy starego roadmapu potrzebne do jego zamknięcia.
 - finalne README produktu;
 - nowy korpus lub baza danych do testów;
 - projektowanie albo implementacja UI v2;
-- implementacja trybów pracy opisanych w etapie 7.1;
+- implementacja trybów pracy opisanych w etapie 9;
 - naprawa backlogowych issue #16, #22, #23 i #34;
 - zmiana instalatora binarek dostarczonego w etapie 2.5.
 
 ## 5. Przekazanie do nowego roadmapu
 
-Następnym krokiem jest etap 9 oparty na `etap-7.1-wymagania.md`:
+Następnym krokiem jest `etap-9-wymagania.md`:
 
 1. ustalenie docelowych produktów i trybów pracy;
 2. ustalenie stanów, konfiguracji, reuse i regeneracji wyników;
@@ -120,5 +120,5 @@ Dodatkowo należy sprawdzić status CI po wypchnięciu zmian.
 - [x] brak migratora i EXE jest zapisany jako świadoma decyzja;
 - [x] etap 8, główny roadmap, indeks planów i issue etapu 8 opisują ten sam stan;
 - [x] etapy 1–8 są oznaczone jako zakończone po merge;
-- [x] etap 7.1 pozostaje wejściem do nowego etapu 9;
+- [x] analiza została przeniesiona do wymagań etapu 9;
 - [x] backlogowe issue pozostają otwarte i nie blokują zamknięcia etapu 8.
