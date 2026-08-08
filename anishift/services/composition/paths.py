@@ -66,7 +66,7 @@ def escape_filter_path(path: Path) -> str:
     drops them whatever the escaping, so callers pass a
     :func:`filter_safe_copy` result instead.
     """
-    text: str = path.as_posix()
+    text: str = path.as_posix().replace("\\", "/")
     for character in _FILTER_ESCAPED:
         text = text.replace(character, f"\\{character}")
     return f"'{text}'"
