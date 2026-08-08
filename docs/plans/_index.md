@@ -1,30 +1,31 @@
 # plany etapów AniShift — spis
 
-> źródło prawdy: `docs/plan-anishift.md` (FINAL, 2026-07-12). wzorce: `mangashift-architecture-ref/` (engine-factory-standard, engine-standard, naming-glossary).
+> źródło prawdy dla etapów 1–8: [`plan-anishift.md`](plan-anishift.md) (legacy roadmap). wzorce: `mangashift-architecture-ref/` (engine-factory-standard, engine-standard, naming-glossary).
 > zasady wspólne: recykling MangaShift 1:1, prostota (KISS/YAGNI), rejestr silników TYLKO w tts/translation/llm, fasady sync, zero kodu poza planem etapu.
 
 | etap | plik | cel (1 zdanie) | zależy od |
 |---|---|---|---|
 | 1 | [etap-1-fundament.md](etap-1-fundament.md) | **ZROBIONE** — pakiet `anishift` z configiem, workspace, platform i doktorem, uruchamialny przez `uv run anishift`. | — |
-| 2 | [etap-2-shell.md](etap-2-shell.md) | interaktywny shell (banner + REPL prompt_toolkit + `/komendy` + `/settings`) jako pusta skorupa bez pipeline. | 1 |
-| 2.5 | [etap-2.5-pobieracz-binarek-v2.md](etap-2.5-pobieracz-binarek-v2.md) | pobieracz zasobów zewnętrznych: manifest + leniwe pobieranie mkvtoolnix/ffmpeg na żądanie (`ensure_binary`) + `anishift setup`/`/setup` do pobrania z góry. | 2 |
-| 3 | [etap-3-ekstrakcja-refaktor.md](etap-3-ekstrakcja-refaktor.md) | Enter zaczyna działać: MKV z `workspace/` → wyciągnięte ścieżki + napisy przerobione do SRT (kroki 1-2 runnera). | 1, 2, 2.5 |
-| 4 | [etap-4-tlumaczenie.md](etap-4-tlumaczenie.md) | pierwszy rejestr silników (google + deepl) z dedupem i czyszczeniem znaczników — krok 3 runnera. | 3 |
+| 2 | [etap-2-shell.md](etap-2-shell.md) | **ZROBIONE** — interaktywny shell z REPL, komendami i ustawieniami. | 1 |
+| 2.5 | [etap-2.5-pobieracz-binarek-v2.md](etap-2.5-pobieracz-binarek-v2.md) | **ZROBIONE** — manifest, leniwe pobieranie MKVToolNix/FFmpeg oraz `setup`/`doctor`. | 2 |
+| 3 | [etap-3-ekstrakcja-refaktor.md](etap-3-ekstrakcja-refaktor.md) | **ZROBIONE** — ekstrakcja ścieżek i przygotowanie napisów. | 1, 2, 2.5 |
+| 4 | [etap-4-tlumaczenie.md](etap-4-tlumaczenie.md) | **ZROBIONE** — tłumaczenie Google/DeepL z deduplikacją i czyszczeniem znaczników. | 3 |
 | 4.5 | — (issue #21) | **W TOKU** — agentyzacja repo: twarde strażniki (hooki/ruff/pre-push/CI), AGENTS.md per moduł, standardy review. Proces, nie kod produktu. | — |
-| 5 | [etap-5-llm.md](etap-5-llm.md) | serwis llm (6 dostawców, recykling 1:1 z MangaShift) + trzeci silnik tłumaczenia `llm` + opcjonalna korekta napisów. | 4 |
-| 6 | [etap-6-tts-audio.md](etap-6-tts-audio.md) | rozbicie god-files TTS na rejestr 5 silników + osobny tor audio ffmpeg — krok 4 runnera. | 4 (równolegle z 5) |
-| 6.1 | [etap-6.1-shared-text-primitives.md](etap-6.1-shared-text-primitives.md) | wspólne granice Unicode i grafemy dla translation/TTS bez łączenia ich różnych kontraktów chunkowania. | 6 |
-| 7 | [etap-7-wymagania.md](etap-7-wymagania.md) + [etap-7-plan.md](etap-7-plan.md) | **W TOKU** — składanie wyniku (players / merge mkv / burn mp4), macierz kombinacji, `/compose` bez tłumaczenia i TTS, pełne e2e od Enter do gotowego pliku. Zostaje ocena wizualna na realnym odcinku. Zastępuje szkic [etap-7-skladanie-e2e.md](etap-7-skladanie-e2e.md). | 6 |
-| 8 | [etap-8-dystrybucja-binarek.md](etap-8-dystrybucja-binarek.md) | migracja danych usera i wyburzenie starego kodu (dystrybucja binarek przeniesiona do etapu 2.5). | 7 |
+| 5 | [etap-5-llm.md](etap-5-llm.md) | **ZROBIONE** — serwis LLM, silnik tłumaczenia i opcjonalna korekta napisów. | 4 |
+| 6 | [etap-6-tts-audio.md](etap-6-tts-audio.md) | **ZROBIONE** — silniki TTS i osobny tor audio FFmpeg. | 4 (równolegle z 5) |
+| 6.1 | [etap-6.1-shared-text-primitives.md](etap-6.1-shared-text-primitives.md) | **ZROBIONE** — wspólne granice Unicode i grafemy dla translation/TTS. | 6 |
+| 7 | [etap-7-wymagania.md](etap-7-wymagania.md) + [etap-7-plan.md](etap-7-plan.md) | **ZROBIONE** — składanie players/MKV/MP4, `/compose` i pełny pipeline. | 6 |
+| 8 | [wymagania](etap-8-wymagania.md) + [plan](etap-8-dystrybucja-binarek.md) | **GOTOWE DO PR** — launcher Windows, audyt legacy, walidacja i zamknięcie roadmapu. | 7 |
+| 9 | [analiza 7.1](etap-7.1-wymagania.md) | **NASTĘPNY** — docelowe produkty, tryby pracy, stany i wpływ decyzji na UI v2. | 8 |
 
 ## graf zależności
 
 ```text
 1 → 2 → 2.5 → 3 → 4 → 5 (llm)
-                      └→ 6 (tts+audio) → 6.1 (text) → 7 (e2e) → 8 (migracja+kasacje)
+                      └→ 6 (tts+audio) → 6.1 (text) → 7 (e2e) → 8 (closure) → 9 (product/UI model)
 ```
 
-etapy 5 i 6 mogą iść równolegle (tts nie korzysta z llm). etap 8 dopiero gdy 7 ma parytet ze starym kodem — nic starego nie kasujemy wcześniej.
+etapy 5 i 6 mogły iść równolegle. etap 9 korzysta z analizy 7.1, ale decyzje są podejmowane po zamknięciu starego roadmapu w etapie 8.
 
 ## reguły obowiązujące w każdym etapie
 

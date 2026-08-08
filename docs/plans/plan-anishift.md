@@ -1,5 +1,7 @@
 # plan strategiczny: AniShift (pakiet `anishift`) — FINAL
 
+> Status: legacy roadmap — etapy 1–7 ukończone, etap 8 domyka plan.
+> Dalszy kierunek: etap 9 rozwija analizę z `etap-7.1-wymagania.md`.
 > data: 2026-07-12 | autor: Fable | zastępuje `2026-07-12-plan-anishift-fable-v2.md` (v2 + wbudowane korekty usera z `_korekty-planu-anishift.md`) | aktualizacja: dodany serwis llm (decyzja usera)
 > zasada nadrzędna: **recykling MangaShift w 100%** — struktura, nazewnictwo, wzorce. druga zasada (od usera): **wszystko ma być proste** — zero rozdmuchanych folderów i mechanizmów.
 > repo: obecne (3 gwiazdki zostają), przebudowa na nowym branchu. nazwy `mm_avh` i `working_space` znikają z nowego kodu.
@@ -318,6 +320,7 @@ Szczegółowy zakres, struktura i kryteria:
 DoD: pełny lektor elevenbytes na realnym odcinku brzmi/wygląda jak z obecnego kodu; edge i SAPI działają; jeden `Ctrl+C` kończy worker SAPI; żaden plik serwisu nie przekracza ~300 linii; poza tmp/ nie powstaje żaden folder stanu.
 
 ### etap 7 — składanie + pełne e2e
+**status:** ukończony.
 **cel:** domknięcie pipeline: trzy wyjścia jak dziś (players / merge mkv / burn mp4) i pełny tryb auto od Enter do wyniku.
 
 pliki:
@@ -329,19 +332,27 @@ zależności: etap 6. logika z `modules/mkv_processing.py`.
 jak testować: smoke e2e — 1 realny odcinek wrzucony do `workspace/` przechodzi Enter→wynik we wszystkich trzech wariantach wyjścia; wynik domyślnie obok MKV, po włączeniu opcji w `output/`; porównanie z wynikiem starego `start.py` na tym samym pliku.
 DoD: happy-path identyczny funkcjonalnie ze starym kodem (tablica prawdy #7); tryb auto nie zadaje żadnego pytania; oba warianty miejsca wyniku (obok MKV / output/) działają.
 
-### etap 8 — dystrybucja binarek + wyburzenie starego
-**cel:** repo po przeprowadzce: binarki zarządzane manifestem, stary kod i bałagan usunięte.
+### etap 8 — domknięcie legacy
+**status:** implementacja lokalna zakończona — gotowe do PR.
+**cel:** potwierdzić sprawną bazę po etapach 1–7 i zamknąć stary roadmap bez
+tworzenia migratora, EXE ani nowej infrastruktury.
 
 pliki:
-- `external/bin_hashes.json` — wypełniony (mkvtoolnix, ffmpeg: SHA256 + URL)
-- `anishift/setup/installer.py` — `anishift setup` pobiera i weryfikuje binarki
-- rozszerzenie `doctor.py` o weryfikację hashy
-- `scripts/maintenance/migrate_workspace.py` — przeniesienie danych usera z `working_space/` do `workspace/` (płasko: pliki do workspace/, nic do podfolderów poza tmp/output)
-- kasacje: `modules/`, `data/`, `start.py`, `constants.py`, `run_mm_avh.bat`, `bin/` (w tym stylish_tts 567MB, espeak-ng), `working_space/`, porządek w `temp/` i `tests/` (realne skrypty → `scripts/maintenance/`)
+- `run_anishift.bat` — prosty launcher Windows dla `uv run anishift`;
+- [`etap-8-wymagania.md`](etap-8-wymagania.md) — zatwierdzone decyzje;
+- [`etap-8-dystrybucja-binarek.md`](etap-8-dystrybucja-binarek.md) — plan domknięcia zachowany pod starą ścieżką dla stabilności linków.
 
-zależności: etap 7 (nic starego nie kasujemy, dopóki nowe nie ma parytetu).
-jak testować: świeży klon repo + `uv sync` + `anishift setup` + `anishift doctor` = zielono; smoke e2e przechodzi; `git status` czysty, żadnych binarek w gicie.
-DoD: w repo nie ma śladu nazw `mm_avh` / `working_space` w nowym kodzie; README opisuje AniShift.
+zależności: ukończony etap 7.
+jak testować: pełne bramki jakości + `run_anishift.bat doctor` uruchomiony spoza repo.
+DoD: brak zależności runtime od starego `mm_avh`, zielone testy i zgodne statusy planów.
+
+### etap 9 — model produktu i wpływ na UI
+**status:** do zaprojektowania.
+**cel:** przekształcić analizę z [`etap-7.1-wymagania.md`](etap-7.1-wymagania.md)
+w decyzje o produktach, trybach pracy, stanach, konfiguracji i ich wpływie na UI v2.
+
+Etap 9 najpierw ustala zachowanie produktu. Implementacja UI wynika z tych decyzji,
+nie poprzedza ich.
 
 ---
 
