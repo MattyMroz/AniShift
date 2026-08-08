@@ -1,33 +1,47 @@
-# etap 8 — migracja danych + wyburzenie starego
+# Etap 8 — domknięcie legacy
 
-> cel: repo po przeprowadzce — dane usera zmigrowane, stary kod i bałagan usunięte.
-> **binarki wyprowadzone z tego etapu:** manifest, `anishift setup` i leniwe pobieranie mkvtoolnix/ffmpeg (`ensure_binary` przy pierwszym użyciu) zrealizowane w [etap-2.5-pobieracz-binarek-v2.md](etap-2.5-pobieracz-binarek-v2.md); wpis balcon w manifeście dochodzi w etapie 6 razem z silnikiem.
-> zależności: etap 7 (nic starego nie kasujemy, dopóki nowe nie ma parytetu).
-> DoD: w repo nie ma śladu nazw `mm_avh` / `working_space` w nowym kodzie; README opisuje AniShift; świeży klon + `uv sync` + `anishift setup` + `anishift doctor` = zielono (albo bez `setup` — binarki dociągają się same przy pierwszym użyciu w pipeline).
+> Status: implementacja lokalna zakończona — gotowe do PR
+> Szczegółowe wymagania: [`etap-8-wymagania.md`](etap-8-wymagania.md)
+> Zależności: zakończony etap 7
 
-## pliki do stworzenia/zmiany
+## Cel
 
-### `scripts/maintenance/migrate_workspace.py` (NOWY)
-- **odpowiedzialność:** jednorazowe przeniesienie danych usera ze starego `working_space/` do `workspace/`.
-- **zawartość:** skrypt: PRZENOSI (nigdy nie kasuje) pliki usera płasko do `workspace/` (żadnych podfolderów poza tmp/output — struktura docelowa jest płaska); kolizje nazw = pomiń + raport; dry-run domyślnie (`--apply` wykonuje); na końcu raport co przeniesiono/pominięto. kasacja starego `working_space/` NIE jest częścią skryptu — dopiero ręczne potwierdzenie usera (704 pliki danych, w tym luźne MKV i audiobooki).
+Zamknąć stary roadmap bez tworzenia niepotrzebnej migracji albo nowego sposobu
+dystrybucji aplikacji. AniShift pozostaje pakietem Pythona zarządzanym przez `uv`.
 
-### kasacje starego kodu (ZMIANA — commit(y) porządkowe, osobno od zmian architektury)
-- **odpowiedzialność:** wyburzenie mm_avh po potwierdzonym parytecie.
-- **zawartość (kolejność bezpieczeństwa):**
-  1. zrzut `git ls-files bin/` do notatki (dowód co było trackowane).
-  2. kasacje kodu: `modules/`, `start.py`, `constants.py`, `run_mm_avh.bat`, `data/`.
-  3. kasacje binarek: `bin/` (w tym stylish_tts ~567MB — zweryfikować absolutną ścieżkę przed `rm`, oraz espeak-ng); untrack z gita.
-  4. `working_space/` — dopiero PO migracji skryptem i ręcznym potwierdzeniu usera.
-  5. porządek w `temp/` i starych `tests/`: przejrzeć każdy skrypt, realnie używane → `scripts/maintenance/`, reszta out.
-  6. `.gitignore` — finalna wersja (external/bin, workspace, config/settings.json, .env); `pyproject.toml` — usunięcie martwych zależności po `rg` importów.
-  7. `README.md` — opisuje AniShift (instalacja: uv sync; binarki dociągają się same przy pierwszym użyciu, `anishift setup` pobiera je z góry; użycie: anishift → Enter).
+## Decyzje
 
-## kolejność implementacji
+- dystrybucja MKVToolNix i FFmpeg pozostaje rozwiązaniem z etapu 2.5;
+- migrator nie powstaje, ponieważ nie istnieją dane użytkownika do migracji;
+- aplikacja nie jest pakowana do EXE;
+- `workspace/tmp/` zachowuje obecną nazwę;
+- zewnętrzny korpus `mm_avh` pozostaje opcjonalnym źródłem regresji;
+- finalne README powstanie po ustaleniu funkcji i workflow w nowym roadmapie.
 
-1. `migrate_workspace.py` → weryfikacja: dry-run na kopii `working_space/` raportuje komplet; `--apply` przenosi płasko, nic nie kasuje.
-2. smoke czystego klonu: świeży klon → `uv sync` → `anishift` (shell startuje natychmiast, zero pobierania) → smoke e2e (binarki dociągają się same przy pierwszym użyciu przez `ensure_binary`) → `anishift doctor` → weryfikacja: wszystko zielono bez ręcznych kroków.
-3. kasacje (osobne commity, w kolejności wyżej) → weryfikacja: `git status` czysty, `git ls-files` bez binarek, `rg "mm_avh|working_space"` w nowym kodzie = 0 trafień, smoke e2e nadal przechodzi.
+## Zmiany
 
-## jak testować
+1. Dodać `run_anishift.bat`, wzorowany na dawnym launcherze `mm_avh`:
+   - UTF-8 przez `chcp 65001`;
+   - przejście do katalogu repo;
+   - `uv run anishift %*`.
+2. Potwierdzić brak zależności runtime od starego kodu i katalogów.
+3. Uruchomić wszystkie bramki jakości oraz `run_anishift.bat doctor`.
+4. Uaktualnić główny roadmap, indeks planów i issue etapu 8.
+5. Zachować etap 7.1 jako wejście do nowego etapu 9.
 
-świeży klon repo + `uv sync` + smoke e2e = zielono (osobny `anishift setup` niepotrzebny — brakującą binarkę pobiera pierwsze użycie w pipeline; `setup` zostaje jako jawne „pobierz wszystko z góry"); `anishift doctor` zielony po pobraniu; `git status` czysty, żadnych binarek w gicie. dodatkowo: `rg` po nazwach `mm_avh`/`working_space` w nowym kodzie pusty; migracja danych potwierdzona przez usera przed kasacją starego folderu.
+## Poza zakresem
+
+- naprawa backlogowych issue;
+- implementacja funkcji z etapu 7.1;
+- projektowanie UI v2;
+- nowy korpus testowy;
+- przenoszenie albo usuwanie danych spoza repozytorium.
+
+## Definition of Done
+
+- [x] `run_anishift.bat doctor` przechodzi także przy uruchomieniu spoza repo;
+- [x] ruff, format, mypy i pytest przechodzą na pełnym zakresie;
+- [x] audyt nie wykazuje zależności runtime od `mm_avh`;
+- [x] repo nie śledzi binarek ani dawnych katalogów runtime;
+- [x] główny roadmap, indeks i issue etapu 8 opisują aktualny stan;
+- [x] nowy etap 9 przejmuje dalszą analizę produktu i wpływu na UI.
