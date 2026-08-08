@@ -1,6 +1,6 @@
 # Etap 8 — domknięcie legacy
 
-> Status: implementacja lokalna zakończona — gotowe do PR
+> Status: zakończony — PR #36 zmergowany 2026-08-08
 > Szczegółowe wymagania: [`etap-8-wymagania.md`](etap-8-wymagania.md)
 > Zależności: zakończony etap 7
 

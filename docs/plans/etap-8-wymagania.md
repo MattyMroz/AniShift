@@ -1,6 +1,6 @@
 # Etap 8 — domknięcie legacy
 
-> Status: wymagania zatwierdzone i wdrożone lokalnie — gotowe do PR
+> Status: zakończony — PR #36 zmergowany 2026-08-08
 > Cel: zamknąć stary roadmap na sprawnej bazie przed projektowaniem nowych funkcji i UI
 
 ## 1. Stan wyjściowy
@@ -119,6 +119,6 @@ Dodatkowo należy sprawdzić status CI po wypchnięciu zmian.
 - [x] nie ma śledzonych binarek ani dawnych katalogów runtime;
 - [x] brak migratora i EXE jest zapisany jako świadoma decyzja;
 - [x] etap 8, główny roadmap, indeks planów i issue etapu 8 opisują ten sam stan;
-- [ ] etapy 1–8 są oznaczone jako zakończone po merge;
+- [x] etapy 1–8 są oznaczone jako zakończone po merge;
 - [x] etap 7.1 pozostaje wejściem do nowego etapu 9;
 - [x] backlogowe issue pozostają otwarte i nie blokują zamknięcia etapu 8.

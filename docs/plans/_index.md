@@ -15,7 +15,7 @@
 | 6 | [etap-6-tts-audio.md](etap-6-tts-audio.md) | **ZROBIONE** — silniki TTS i osobny tor audio FFmpeg. | 4 (równolegle z 5) |
 | 6.1 | [etap-6.1-shared-text-primitives.md](etap-6.1-shared-text-primitives.md) | **ZROBIONE** — wspólne granice Unicode i grafemy dla translation/TTS. | 6 |
 | 7 | [etap-7-wymagania.md](etap-7-wymagania.md) + [etap-7-plan.md](etap-7-plan.md) | **ZROBIONE** — składanie players/MKV/MP4, `/compose` i pełny pipeline. | 6 |
-| 8 | [wymagania](etap-8-wymagania.md) + [plan](etap-8-dystrybucja-binarek.md) | **GOTOWE DO PR** — launcher Windows, audyt legacy, walidacja i zamknięcie roadmapu. | 7 |
+| 8 | [wymagania](etap-8-wymagania.md) + [plan](etap-8-dystrybucja-binarek.md) | **ZROBIONE** — launcher Windows, audyt legacy, walidacja i zamknięcie roadmapu. | 7 |
 | 9 | [analiza 7.1](etap-7.1-wymagania.md) | **NASTĘPNY** — docelowe produkty, tryby pracy, stany i wpływ decyzji na UI v2. | 8 |
 
 ## graf zależności

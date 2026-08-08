@@ -1,6 +1,6 @@
 # plan strategiczny: AniShift (pakiet `anishift`) — FINAL
 
-> Status: legacy roadmap — etapy 1–7 ukończone, etap 8 domyka plan.
+> Status: legacy roadmap zakończony — etapy 1–8 ukończone.
 > Dalszy kierunek: etap 9 rozwija analizę z `etap-7.1-wymagania.md`.
 > data: 2026-07-12 | autor: Fable | zastępuje `2026-07-12-plan-anishift-fable-v2.md` (v2 + wbudowane korekty usera z `_korekty-planu-anishift.md`) | aktualizacja: dodany serwis llm (decyzja usera)
 > zasada nadrzędna: **recykling MangaShift w 100%** — struktura, nazewnictwo, wzorce. druga zasada (od usera): **wszystko ma być proste** — zero rozdmuchanych folderów i mechanizmów.
@@ -333,7 +333,7 @@ jak testować: smoke e2e — 1 realny odcinek wrzucony do `workspace/` przechodz
 DoD: happy-path identyczny funkcjonalnie ze starym kodem (tablica prawdy #7); tryb auto nie zadaje żadnego pytania; oba warianty miejsca wyniku (obok MKV / output/) działają.
 
 ### etap 8 — domknięcie legacy
-**status:** implementacja lokalna zakończona — gotowe do PR.
+**status:** ukończony w PR #36.
 **cel:** potwierdzić sprawną bazę po etapach 1–7 i zamknąć stary roadmap bez
 tworzenia migratora, EXE ani nowej infrastruktury.
 
