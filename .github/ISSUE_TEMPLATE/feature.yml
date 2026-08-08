@@ -1,6 +1,6 @@
 name: ✨ Feature
 description: New feature or improvement
-title: "feat: "
+title: "feat(scope): "
 labels: ["enhancement"]
 body:
   - type: textarea

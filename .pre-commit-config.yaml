@@ -1,9 +1,10 @@
 # Pre-commit hooks for AniShift.
 # Install once after `uv sync`:
-#   uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
+#   uv run pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
 #
 # pre-commit stage: fast, blocks the commit if ruff fails.
 # commit-msg stage: enforces Conventional Commits message format.
+# pre-push stage: mypy + pytest, so type/test failures surface locally, not in CI.
 
 minimum_pre_commit_version: "4.0.0"
 default_install_hook_types:

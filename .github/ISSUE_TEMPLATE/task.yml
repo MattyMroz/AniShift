@@ -1,6 +1,6 @@
 name: 🔧 Task / Chore
 description: Technical task, cleanup, tech debt, research
-title: "chore: "
+title: "chore(scope): "
 labels: ["infra"]
 body:
   - type: textarea
