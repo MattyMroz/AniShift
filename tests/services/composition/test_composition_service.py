@@ -99,6 +99,25 @@ def test_players_moves_products_next_to_source(tmp_path: Path) -> None:
     assert result.moved_paths == (media_dir / "Episode.pl.ass",)
 
 
+def test_players_does_not_require_external_tools(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    source = tmp_path / "Episode.mkv"
+    source.touch()
+    plan = CompositionPlan(
+        source_path=source,
+        variant=OutputVariant.PLAYERS,
+        destination_dir=tmp_path,
+    )
+
+    monkeypatch.setattr(
+        "anishift.services.composition.service.require_binary",
+        lambda _binary: pytest.fail("players resolved an external tool"),
+    )
+
+    result = CompositionService(CompositionConfig()).compose(plan)
+
+    assert result.status is CompositionStatus.COMPLETED
+
+
 def test_players_leaves_products_already_next_to_source(tmp_path: Path) -> None:
     source = tmp_path / "Episode.mkv"
     source.write_bytes(b"source")

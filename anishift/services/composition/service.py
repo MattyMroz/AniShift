@@ -70,15 +70,21 @@ class CompositionService:
         ffmpeg: Path | None = None,
         ffprobe: Path | None = None,
     ) -> None:
-        """Resolve external tools eagerly so a missing binary fails early."""
+        """Store tool overrides and defer resolution until a variant needs them."""
         self._config: CompositionConfig = config
         self._runner: StreamingRunner = runner or StreamingRunner(
             shutdown_grace_s=config.shutdown_grace_s,
         )
+        self._mkvmerge: Path | None = mkvmerge
+        self._ffmpeg: Path | None = ffmpeg
+        self._ffprobe: Path | None = ffprobe
+
+    def _resolve_tool(self, binary: Binary, configured: Path | None) -> Path:
+        """Return one configured or bundled composition tool."""
+        if configured is not None:
+            return configured
         try:
-            self._mkvmerge: Path = mkvmerge or require_binary(Binary.MKVMERGE)
-            self._ffmpeg: Path = ffmpeg or require_binary(Binary.FFMPEG)
-            self._ffprobe: Path = ffprobe or require_binary(Binary.FFPROBE)
+            return require_binary(binary)
         except BinaryNotFoundError as error:
             context: ErrorContext = ErrorContext(
                 code=ErrorCode.BINARY_NOT_FOUND,
@@ -91,7 +97,23 @@ class CompositionService:
     @property
     def ffprobe(self) -> Path:
         """Return the resolved FFprobe binary, reused for pre-run estimates."""
+        if self._ffprobe is None:
+            self._ffprobe = self._resolve_tool(Binary.FFPROBE, None)
         return self._ffprobe
+
+    @property
+    def _mkvmerge_path(self) -> Path:
+        """Return the resolved MKVmerge binary."""
+        if self._mkvmerge is None:
+            self._mkvmerge = self._resolve_tool(Binary.MKVMERGE, None)
+        return self._mkvmerge
+
+    @property
+    def _ffmpeg_path(self) -> Path:
+        """Return the resolved FFmpeg binary."""
+        if self._ffmpeg is None:
+            self._ffmpeg = self._resolve_tool(Binary.FFMPEG, None)
+        return self._ffmpeg
 
     def compose(
         self,
@@ -160,7 +182,7 @@ class CompositionService:
         warnings: tuple[str, ...] = self._font_warnings(plan)
         try:
             outcome: CommandOutcome = self._runner.run(
-                merge_command(plan, mkvmerge=self._mkvmerge, destination=temporary),
+                merge_command(plan, mkvmerge=self._mkvmerge_path, destination=temporary),
                 operation="merge",
                 timeout_s=self._config.operation_timeout_s,
                 progress=parse_mkvmerge_progress,
@@ -204,7 +226,8 @@ class CompositionService:
         """Render an MP4 with the subtitles composited into the picture."""
         destination: Path = output_path(plan.source_path, plan.variant, plan.destination_dir)
         temporary: Path = temporary_sibling(destination)
-        total_us: int = source_duration_us(plan.source_path, ffprobe=self._ffprobe)
+        ffprobe: Path = self.ffprobe
+        total_us: int = source_duration_us(plan.source_path, ffprobe=ffprobe)
         subtitle_argument: str | None = self._burn_filter(plan)
         warnings: tuple[str, ...] = self._font_warnings(plan)
         audio_source: Path = plan.narration_audio or plan.source_path
@@ -212,10 +235,10 @@ class CompositionService:
             self._runner.run(
                 burn_command(
                     plan,
-                    ffmpeg=self._ffmpeg,
+                    ffmpeg=self._ffmpeg_path,
                     config=self._config,
                     subtitle_argument=subtitle_argument,
-                    audio_codec=audio_codec_name(audio_source, ffprobe=self._ffprobe),
+                    audio_codec=audio_codec_name(audio_source, ffprobe=ffprobe),
                     destination=temporary,
                 ),
                 operation="burn",
@@ -224,7 +247,7 @@ class CompositionService:
                 on_percent=lambda percent: _notify(callbacks, plan.scope_id, "burning", percent),
                 cancel=cancel,
             )
-            validate_burned(temporary, expected_duration_us=total_us, ffprobe=self._ffprobe)
+            validate_burned(temporary, expected_duration_us=total_us, ffprobe=ffprobe)
             temporary.replace(destination)
         finally:
             temporary.unlink(missing_ok=True)

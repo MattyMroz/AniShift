@@ -52,6 +52,7 @@ SCOPES: Final[tuple[str, ...]] = (
     "logger",
     "agents",
     "deps",
+    "infra",
     "release",
     "repo",
 )
