@@ -188,6 +188,12 @@ class AutoPreset:
         if not self.preset_id.strip() or not self.name.strip():
             msg = "Preset ID and name cannot be empty"
             raise ValueError(msg)
+        if self.subtitle_source_policy in {
+            SubtitleSourcePolicy.EXTERNAL,
+            SubtitleSourcePolicy.READY_POLISH,
+        }:
+            msg = "Automatic presets cannot require a manual subtitle selection"
+            raise ValueError(msg)
 
 
 def apply_preset(preset: AutoPreset, groups: Sequence[SourceGroup]) -> tuple[GroupIntent, ...]:
