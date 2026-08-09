@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Final
 
 __all__ = [
+    "ExtractionRequest",
     "ExtractionResult",
+    "ExtractionTargetFormat",
+    "LegacyExtractionResult",
     "MediaInfo",
     "TrackInfo",
     "TrackSelection",
@@ -80,6 +84,7 @@ class TrackInfo:
     name: str
     default: bool
     num_entries: int | None
+    forced: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +100,7 @@ class MediaInfo:
     path: Path
     tracks: tuple[TrackInfo, ...]
     attachments: tuple[str, ...] = ()
+    duration_us: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,11 +113,64 @@ class TrackSelection:
 
 
 @dataclass(frozen=True, slots=True)
-class ExtractionResult:
+class LegacyExtractionResult:
     """Paths produced by one extraction run."""
 
     audio_path: Path | None
     subtitle_path: Path | None
+
+
+class ExtractionTargetFormat(StrEnum):
+    """Normalized output requested from one embedded media track."""
+
+    ASS = "ass"
+    SRT = "srt"
+    AUDIO_COPY = "audio_copy"
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionRequest:
+    """One embedded track extraction into an explicit run-scope path."""
+
+    media_path: Path
+    track_id: int
+    target_format: ExtractionTargetFormat
+    target_path: Path
+
+    def __post_init__(self) -> None:
+        if self.media_path.suffix.casefold() not in {".mkv", ".mp4"}:
+            msg = "Extraction source must be MKV or MP4"
+            raise ValueError(msg)
+        if self.track_id < 0:
+            msg = "Extraction track ID cannot be negative"
+            raise ValueError(msg)
+        if self.media_path == self.target_path:
+            msg = "Extraction cannot overwrite its media source"
+            raise ValueError(msg)
+        expected_suffix: str | None = {
+            ExtractionTargetFormat.ASS: ".ass",
+            ExtractionTargetFormat.SRT: ".srt",
+            ExtractionTargetFormat.AUDIO_COPY: None,
+        }[self.target_format]
+        if expected_suffix is not None and self.target_path.suffix.casefold() != expected_suffix:
+            msg = f"Extraction target must use {expected_suffix} suffix"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionResult:
+    """Validated non-empty output from one neutral extraction request."""
+
+    media_path: Path
+    track_id: int
+    target_format: ExtractionTargetFormat
+    target_path: Path
+    bytes_written: int
+
+    def __post_init__(self) -> None:
+        if self.track_id < 0 or self.bytes_written <= 0:
+            msg = "Extraction result requires a valid track and non-empty output"
+            raise ValueError(msg)
 
 
 def format_extension(codec_id: str) -> str:

@@ -27,9 +27,12 @@ __all__ = [
     "ErrorContext",
     "ExecutionError",
     "FatalError",
+    "MediaError",
+    "MediaProbeError",
     "PlanningError",
     "RunConflictError",
     "TransientError",
+    "UnsupportedMediaError",
     "WorkflowError",
 ]
 
@@ -58,6 +61,10 @@ class ErrorCode(StrEnum):
     # Extraction
     EXTRACTION_FAILED = "EXTRACTION_FAILED"
     TRACK_NOT_FOUND = "TRACK_NOT_FOUND"
+
+    # Media
+    MEDIA_PROBE_FAILED = "MEDIA_PROBE_FAILED"
+    MEDIA_UNSUPPORTED = "MEDIA_UNSUPPORTED"
 
     # Subtitles
     SUBTITLE_PARSE_FAILED = "SUBTITLE_PARSE_FAILED"
@@ -186,6 +193,18 @@ class ExecutionError(WorkflowError):
 
 class RunConflictError(WorkflowError):
     """Raised when a second run conflicts with an active workflow."""
+
+
+class MediaError(WorkflowError):
+    """Base error for neutral media identification failures."""
+
+
+class MediaProbeError(MediaError):
+    """Raised when a supported container cannot be identified safely."""
+
+
+class UnsupportedMediaError(MediaError):
+    """Raised when no media adapter supports the requested container."""
 
 
 class FatalError(AniShiftError):

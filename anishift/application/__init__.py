@@ -11,6 +11,12 @@ from anishift.application.artifacts import (
 )
 from anishift.application.cancellation import CancellationToken
 from anishift.application.discovery import DiscoveryResult, DiscoveryWarning
+from anishift.application.inspection import (
+    InspectedSourceGroup,
+    InspectedWorkspace,
+    InspectionWarning,
+    WorkspaceInspector,
+)
 from anishift.application.intents import (
     AutoPreset,
     BurnSubtitleProduct,
@@ -54,6 +60,9 @@ __all__ = [
     "GroupConflictKind",
     "GroupIntent",
     "GroupPlan",
+    "InspectedSourceGroup",
+    "InspectedWorkspace",
+    "InspectionWarning",
     "MkvTrackProduct",
     "Mp4AudioSource",
     "PlanProblem",
@@ -71,4 +80,5 @@ __all__ = [
     "TaskResult",
     "TaskState",
     "TranslationAction",
+    "WorkspaceInspector",
 ]

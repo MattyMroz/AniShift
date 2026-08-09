@@ -15,8 +15,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez TUI, CLI i testy.
 
 ## Inwarianty
 
-- ID grup i artefaktów powstają wyłącznie z normalizowanych ścieżek względnych;
-  nie używaj `hash()`, losowego UUID ani ścieżki absolutnej.
+- ID grup i odkrytych artefaktów powstają wyłącznie z normalizowanych ścieżek
+  względnych. Ręcznie zarejestrowany plik spoza workspace używa znormalizowanej
+  ścieżki zewnętrznej wyłącznie jako wejścia stabilnego skrótu; nie używaj `hash()`
+  ani losowego UUID.
 - `SOURCE` ma `planned_destination == path`, `INTERMEDIATE` nie ma trwałego celu,
   a `DURABLE` otrzymuje `planned_destination` przed wykonaniem.
 - `AUTO` nie zawiera ręcznych artifact/track ID. `MANUAL` może wskazać artefakt albo
