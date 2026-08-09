@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
 
+from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
+from anishift.application.intents import GroupIntent
 from anishift.errors import PlanningError
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from anishift.application.intents import GroupIntent
 
 
 class TaskKind(StrEnum):
@@ -23,6 +20,7 @@ class TaskKind(StrEnum):
     TRANSLATE_SUBTITLES = "translate_subtitles"
     SPLIT_SUBTITLES = "split_subtitles"
     SYNTHESIZE_SPEECH = "synthesize_speech"
+    TRANSCODE_AUDIO = "transcode_audio"
     MIX_NARRATION = "mix_narration"
     COMPOSE_MKV = "compose_mkv"
     COMPOSE_MP4 = "compose_mp4"
@@ -59,6 +57,7 @@ class PlanTask:
     produces: tuple[str, ...]
     depends_on: tuple[str, ...]
     resource_key: str
+    parameters: tuple[tuple[str, str | int | bool], ...] = ()
     is_network: bool = False
     is_paid: bool = False
 
@@ -69,6 +68,9 @@ class PlanTask:
         _require_unique(self.requires, "required artifact IDs")
         _require_unique(self.produces, "produced artifact IDs")
         _require_unique(self.depends_on, "dependency task IDs")
+        parameter_names: tuple[str, ...] = tuple(name for name, _ in self.parameters)
+        _require_unique(parameter_names, "task parameter names")
+        _validate_task_parameter_names(self.kind, frozenset(parameter_names))
         if not self.produces:
             msg = "A plan task must produce at least one artifact"
             raise ValueError(msg)
@@ -134,6 +136,16 @@ class RunSettingsSnapshot:
     audio_profile_id: str
     composition_profile_id: str
     processing_order_policy: ProcessingOrderPolicy
+    audio_output_profile: str = "eac3"
+    audio_duration_tolerance_us: int = 1_000_000
+    subtitle_language_priority: tuple[str, ...] = ("eng",)
+    audio_language_priority: tuple[str, ...] = ("jpn",)
+    translation_is_network: bool = True
+    translation_is_paid: bool = True
+    llm_is_network: bool = True
+    llm_is_paid: bool = True
+    tts_is_network: bool = True
+    tts_is_paid: bool = True
 
     def __post_init__(self) -> None:
         profile_ids: tuple[str, ...] = (
@@ -155,6 +167,15 @@ class RunSettingsSnapshot:
         _require_range(self.llm_max_concurrency, 1, 4, "LLM concurrency")
         _require_range(self.tts_max_retries, 0, 10, "TTS retries")
         _require_range(self.tts_group_jobs, 1, 100, "TTS group jobs")
+        supported_audio_profiles: frozenset[str] = frozenset({"aac", "eac3", "mp3", "opus", "flac", "wav"})
+        if self.audio_output_profile.casefold() not in supported_audio_profiles:
+            msg = "Audio output profile is unsupported"
+            raise ValueError(msg)
+        if self.audio_duration_tolerance_us < 0:
+            msg = "Audio duration tolerance cannot be negative"
+            raise ValueError(msg)
+        _require_unique(self.subtitle_language_priority, "subtitle language priorities")
+        _require_unique(self.audio_language_priority, "audio language priorities")
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +183,7 @@ class ExecutionPlan:
     """Complete immutable plan in stable topological task order."""
 
     groups: tuple[GroupPlan, ...]
+    artifacts: tuple[Artifact, ...]
     tasks: tuple[PlanTask, ...]
     settings: RunSettingsSnapshot
     problems: tuple[PlanProblem, ...]
@@ -169,6 +191,8 @@ class ExecutionPlan:
     def __post_init__(self) -> None:
         group_ids: tuple[str, ...] = tuple(group.group_id for group in self.groups)
         _require_unique(group_ids, "execution group IDs")
+        artifact_ids: tuple[str, ...] = tuple(artifact.artifact_id for artifact in self.artifacts)
+        _require_unique(artifact_ids, "execution artifact IDs")
         task_ids: tuple[str, ...] = tuple(task.task_id for task in self.tasks)
         _require_unique(task_ids, "execution task IDs")
         ordered_tasks: tuple[PlanTask, ...] = stable_topological_order(self.tasks)
@@ -183,13 +207,24 @@ class ExecutionPlan:
         return not any(problem.is_blocking for problem in self.problems)
 
     def _validate_group_references(self) -> None:
+        artifact_by_id: dict[str, Artifact] = {artifact.artifact_id: artifact for artifact in self.artifacts}
         task_by_id: dict[str, PlanTask] = {task.task_id: task for task in self.tasks}
         producer_by_artifact: dict[str, str] = _index_artifact_producers(self.tasks)
-        _validate_task_dependencies(self.tasks, task_by_id, producer_by_artifact)
+        if not any(problem.is_blocking for problem in self.problems):
+            orphaned: tuple[str, ...] = tuple(
+                artifact.artifact_id
+                for artifact in self.artifacts
+                if artifact.state is ArtifactState.MISSING and artifact.artifact_id not in producer_by_artifact
+            )
+            if orphaned:
+                msg = "Executable plan contains missing artifacts without producers"
+                raise PlanningError(msg)
+        _validate_task_dependencies(self.tasks, task_by_id, producer_by_artifact, artifact_by_id)
         referenced_task_ids: set[str] = _validate_group_declarations(
             self.groups,
             self.problems,
             task_by_id,
+            artifact_by_id,
         )
         if referenced_task_ids != set(task_by_id):
             msg = "Every execution task must belong to exactly one group plan"
@@ -247,15 +282,34 @@ def _validate_task_dependencies(
     tasks: tuple[PlanTask, ...],
     task_by_id: dict[str, PlanTask],
     producer_by_artifact: dict[str, str],
+    artifact_by_id: dict[str, Artifact],
 ) -> None:
     for task in tasks:
         if any(task_by_id[dependency_id].group_id != task.group_id for dependency_id in task.depends_on):
             msg = "Plan tasks cannot depend on a different source group"
             raise PlanningError(msg)
         for artifact_id in task.requires:
+            artifact: Artifact | None = artifact_by_id.get(artifact_id)
+            if artifact is None:
+                msg = f"Task {task.task_id!r} requires unknown artifact {artifact_id!r}"
+                raise PlanningError(msg)
             producer_id: str | None = producer_by_artifact.get(artifact_id)
             if producer_id is not None and producer_id not in task.depends_on:
                 msg = f"Task {task.task_id!r} is missing dependency {producer_id!r}"
+                raise PlanningError(msg)
+            if producer_id is None and artifact.state is not ArtifactState.READY:
+                msg = f"Task {task.task_id!r} requires an artifact that is not ready and has no producer"
+                raise PlanningError(msg)
+        for artifact_id in task.produces:
+            artifact = artifact_by_id.get(artifact_id)
+            if artifact is None:
+                msg = f"Task {task.task_id!r} produces unknown artifact {artifact_id!r}"
+                raise PlanningError(msg)
+            if artifact.state is not ArtifactState.MISSING:
+                msg = f"Task {task.task_id!r} output must be missing before execution"
+                raise PlanningError(msg)
+            if artifact.lifetime is ArtifactLifetime.SOURCE:
+                msg = f"Task {task.task_id!r} cannot produce a source artifact"
                 raise PlanningError(msg)
 
 
@@ -263,12 +317,28 @@ def _validate_group_declarations(
     groups: tuple[GroupPlan, ...],
     problems: tuple[PlanProblem, ...],
     task_by_id: dict[str, PlanTask],
+    artifact_by_id: dict[str, Artifact],
 ) -> set[str]:
     referenced_task_ids: set[str] = set()
     for group in groups:
+        declared_artifacts: tuple[Artifact, ...] = tuple(
+            artifact_by_id[artifact_id] for artifact_id in group.artifact_ids if artifact_id in artifact_by_id
+        )
+        if len(declared_artifacts) != len(group.artifact_ids):
+            msg = f"Group {group.group_id!r} references an unknown artifact"
+            raise PlanningError(msg)
+        if any(artifact.group_id != group.group_id for artifact in declared_artifacts):
+            msg = f"Group {group.group_id!r} references another group's artifact"
+            raise PlanningError(msg)
         if any(problem not in problems for problem in group.problems):
             msg = "Group problems must also be present in execution plan problems"
             raise PlanningError(msg)
+        for problem in group.problems:
+            for artifact_id in problem.artifact_ids:
+                artifact: Artifact | None = artifact_by_id.get(artifact_id)
+                if artifact is None or artifact.group_id != group.group_id:
+                    msg = f"Problem {problem.code!r} references an invalid artifact"
+                    raise PlanningError(msg)
         for task_id in group.task_ids:
             task: PlanTask | None = task_by_id.get(task_id)
             if task is None or task.group_id != group.group_id:
@@ -279,6 +349,10 @@ def _validate_group_declarations(
                 msg = f"Group {group.group_id!r} does not declare every task artifact"
                 raise PlanningError(msg)
             referenced_task_ids.add(task_id)
+    declared_ids: set[str] = {artifact_id for group in groups for artifact_id in group.artifact_ids}
+    if declared_ids != set(artifact_by_id):
+        msg = "Every execution artifact must belong to exactly one group plan"
+        raise PlanningError(msg)
     return referenced_task_ids
 
 
@@ -294,4 +368,33 @@ def _require_unique(values: tuple[str, ...], label: str) -> None:
 def _require_range(value: int, minimum: int, maximum: int, label: str) -> None:
     if not minimum <= value <= maximum:
         msg = f"{label.capitalize()} must be between {minimum} and {maximum}"
+        raise ValueError(msg)
+
+
+def _validate_task_parameter_names(kind: TaskKind, names: frozenset[str]) -> None:
+    contracts: dict[TaskKind, tuple[frozenset[str], frozenset[str]]] = {
+        TaskKind.EXTRACT_AUDIO: (
+            frozenset({"source_codec", "track_id", "target_format"}),
+            frozenset({"source_codec", "track_id", "target_format"}),
+        ),
+        TaskKind.EXTRACT_SUBTITLES: (
+            frozenset({"track_id", "target_format"}),
+            frozenset({"track_id", "target_format"}),
+        ),
+        TaskKind.NORMALIZE_SUBTITLES: (frozenset({"output_format"}), frozenset({"output_format"})),
+        TaskKind.TRANSLATE_SUBTITLES: (
+            frozenset({"output_format"}),
+            frozenset({"output_format", "source_kind"}),
+        ),
+        TaskKind.TRANSCODE_AUDIO: (frozenset({"output_profile"}), frozenset({"output_profile"})),
+        TaskKind.MIX_NARRATION: (frozenset({"output_profile"}), frozenset({"output_profile"})),
+        TaskKind.COMPOSE_MKV: (frozenset({"mkv_tracks"}), frozenset({"mkv_tracks"})),
+        TaskKind.COMPOSE_MP4: (
+            frozenset({"audio_source", "burn_subtitles"}),
+            frozenset({"audio_source", "burn_subtitles"}),
+        ),
+    }
+    required, allowed = contracts.get(kind, (frozenset(), frozenset()))
+    if not required.issubset(names) or not names.issubset(allowed):
+        msg = f"Task parameters do not match the {kind.value} contract"
         raise ValueError(msg)

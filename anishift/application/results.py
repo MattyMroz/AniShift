@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from anishift.application.artifacts import Artifact, ArtifactState
+from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
 from anishift.errors import ExecutionError
 
 
@@ -32,16 +32,31 @@ class _FrozenMapping[K, V](Mapping[K, V]):
 
 @dataclass(frozen=True, slots=True)
 class ArtifactSnapshot:
-    """Read-only artifact view given to one task handler."""
+    """Read-only task inputs and planned output descriptors given to one handler."""
 
     artifacts: Mapping[str, Artifact]
+    planned_outputs: Mapping[str, Artifact] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         copied: dict[str, Artifact] = dict(self.artifacts)
         if any(key != artifact.artifact_id for key, artifact in copied.items()):
             msg = "Artifact snapshot keys must match artifact IDs"
             raise ValueError(msg)
+        outputs: dict[str, Artifact] = dict(self.planned_outputs)
+        if any(key != artifact.artifact_id for key, artifact in outputs.items()):
+            msg = "Planned output keys must match artifact IDs"
+            raise ValueError(msg)
+        if set(copied) & set(outputs):
+            msg = "Task inputs and outputs must be disjoint"
+            raise ValueError(msg)
+        if any(
+            artifact.state is not ArtifactState.MISSING or artifact.lifetime is ArtifactLifetime.SOURCE
+            for artifact in outputs.values()
+        ):
+            msg = "Planned outputs must be missing intermediate or durable artifacts"
+            raise ValueError(msg)
         object.__setattr__(self, "artifacts", _FrozenMapping(copied))
+        object.__setattr__(self, "planned_outputs", _FrozenMapping(outputs))
 
     def require_ready(self, artifact_id: str) -> Artifact:
         """Return a ready artifact or reject an invalid handler input."""
@@ -51,6 +66,14 @@ class ArtifactSnapshot:
             raise ExecutionError(msg)
         if artifact.state is not ArtifactState.READY:
             msg = f"Required artifact is not ready: {artifact_id}"
+            raise ExecutionError(msg)
+        return artifact
+
+    def require_output(self, artifact_id: str) -> Artifact:
+        """Return one immutable planned output descriptor for a task handler."""
+        artifact: Artifact | None = self.planned_outputs.get(artifact_id)
+        if artifact is None:
+            msg = f"Planned output is absent from snapshot: {artifact_id}"
             raise ExecutionError(msg)
         return artifact
 

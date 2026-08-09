@@ -10,14 +10,13 @@ from anishift.application.artifacts import ArtifactKind, ArtifactState, GroupCon
 from anishift.application.discovery import (
     ArtifactName,
     DiscoveryWarningKind,
-    choose_auto_sidecar,
-    choose_primary_video,
     classify_artifact,
     discover_groups,
     group_candidates,
     is_derived_product,
     is_primary_source,
 )
+from anishift.application.selection import choose_auto_sidecar, choose_primary_video
 
 
 def _touch(root: Path, *names: str) -> None:

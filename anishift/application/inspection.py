@@ -19,8 +19,9 @@ from anishift.application.artifacts import (
     create_artifact_id,
 )
 from anishift.application.cancellation import CancellationToken
-from anishift.application.discovery import DiscoveryResult, choose_primary_video
+from anishift.application.discovery import DiscoveryResult
 from anishift.application.intents import ExternalAudioRole
+from anishift.application.selection import choose_primary_video
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, MediaProbeError
 from anishift.platform.binaries import Binary, require_binary
 from anishift.services.media._process import (
@@ -180,7 +181,8 @@ class WorkspaceInspector:
             state=ArtifactState.READY,
             lifetime=ArtifactLifetime.SOURCE,
             planned_destination=path,
-            audio_codec=path.suffix.casefold().removeprefix(".") or None,
+            audio_codec=None,
+            duration_us=duration_us,
         )
         return _append_external_artifact(group, artifact)
 
@@ -247,7 +249,7 @@ class WorkspaceInspector:
                 "Media source could not be identified",
             )
             return invalid, None, warning
-        return replace(artifact, state=ArtifactState.READY), catalog, None
+        return replace(artifact, state=ArtifactState.READY, duration_us=catalog.duration_us), catalog, None
 
     def _inspect_non_video(
         self,
@@ -339,7 +341,7 @@ class WorkspaceInspector:
                 "Audio duration differs from video beyond tolerance",
             )
             return invalid, warning
-        return replace(artifact, state=ArtifactState.READY), None
+        return replace(artifact, state=ArtifactState.READY, duration_us=duration_us), None
 
     def _require_valid_subtitles(self, path: Path, *, cancel: CancellationToken) -> None:
         cancel.raise_if_cancelled()

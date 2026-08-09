@@ -4,7 +4,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez TUI, CLI i testy.
 
 ## Kierunek zależności
 
-- `artifacts.py`, `intents.py`, `planning.py` i `planner.py` nie importują I/O,
+- `artifacts.py`, `intents.py`, `planning.py`, `selection.py` i `planner.py` nie importują I/O,
   `anishift.services`, `anishift.config`, `anishift.pipeline`, CLI ani TUI.
 - Kontrolowane I/O należy wyłącznie do `discovery.py`, `inspection.py`,
   `publisher.py`, `sessions.py` i handlerów; decyzje produktowe pozostają w plannerze.
@@ -25,8 +25,12 @@ Czysta warstwa produktu i use case'ów współdzielona przez TUI, CLI i testy.
   embedded track danego rodzaju, nigdy oba jednocześnie.
 - `ExecutionPlan.tasks` musi wejść już w porządku zwróconym przez
   `stable_topological_order()`; każdy produkowany artefakt ma jednego producenta.
-- Worker otrzymuje tylko `ArtifactSnapshot` i zwraca `TaskResult`; mutable store
-  pozostaje prywatny dla schedulera.
+- Wykonywalny plan nie zawiera `MISSING` bez producenta. Task produkuje wyłącznie
+  `MISSING` o lifetime `INTERMEDIATE` albo `DURABLE`, a parametry odpowiadają jego
+  `TaskKind`.
+- Worker otrzymuje w `ArtifactSnapshot` gotowe wejścia i niezmienne deskryptory
+  planowanych wyjść, po czym zwraca `TaskResult`; mutable store pozostaje prywatny
+  dla schedulera.
 
 ## Testy
 

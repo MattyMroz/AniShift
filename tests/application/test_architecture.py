@@ -20,7 +20,7 @@ def _imported_modules(path: Path) -> set[str]:
 
 def test_application_contracts_do_not_depend_on_ui_io_or_domain_services() -> None:
     root = Path(__file__).parents[2] / "anishift" / "application"
-    pure_modules = ("artifacts.py", "intents.py", "planning.py", "planner.py")
+    pure_modules = ("artifacts.py", "intents.py", "planning.py", "planner.py", "selection.py")
     forbidden = (
         "anishift.cli",
         "anishift.config",
@@ -41,6 +41,8 @@ def test_application_contracts_do_not_depend_on_ui_io_or_domain_services() -> No
         assert not any(
             module == prefix or module.startswith(f"{prefix}.") for prefix in forbidden for module in imports
         )
+    planner_imports = _imported_modules(root / "planner.py")
+    assert "anishift.application.discovery" not in planner_imports
 
 
 def test_public_application_facade_excludes_io_helpers() -> None:

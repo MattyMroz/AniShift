@@ -6,9 +6,10 @@ import pytest
 
 from anishift.application.artifacts import ArtifactKind, ArtifactState
 from anishift.application.cancellation import CancellationToken, NeverCancelledToken
-from anishift.application.discovery import choose_auto_sidecar, discover_groups
+from anishift.application.discovery import discover_groups
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.intents import ExternalAudioRole
+from anishift.application.selection import choose_auto_sidecar
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, MediaProbeError
 from anishift.services.media._process import (
     ProcessExecutionError,

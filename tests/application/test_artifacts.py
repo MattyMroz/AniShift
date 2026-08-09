@@ -129,6 +129,24 @@ def test_artifact_snapshot_requires_validated_input() -> None:
         snapshot.require_ready("missing")
 
 
+def test_artifact_snapshot_exposes_planned_output_descriptor() -> None:
+    ready = _source_artifact()
+    destination = Path("workspace/episode.pl.mkv")
+    output = Artifact(
+        "final-mkv",
+        "episode",
+        ArtifactKind.FINAL_MKV,
+        None,
+        ArtifactState.MISSING,
+        ArtifactLifetime.DURABLE,
+        destination,
+    )
+    snapshot = ArtifactSnapshot({ready.artifact_id: ready}, {output.artifact_id: output})
+    assert snapshot.require_output(output.artifact_id).planned_destination == destination
+    with pytest.raises(ExecutionError, match="absent"):
+        snapshot.require_output("missing")
+
+
 def test_task_result_copies_read_only_metadata() -> None:
     metadata: dict[str, str | int | bool] = {"published": True}
     output = ProducedArtifact("final-mkv", Path("workspace/episode.pl.mkv"), metadata)

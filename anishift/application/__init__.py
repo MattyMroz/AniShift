@@ -31,6 +31,7 @@ from anishift.application.intents import (
     SubtitleSourcePolicy,
     TranslationAction,
 )
+from anishift.application.planner import plan_auto, plan_manual
 from anishift.application.planning import (
     ExecutionPlan,
     GroupPlan,
@@ -81,4 +82,6 @@ __all__ = [
     "TaskState",
     "TranslationAction",
     "WorkspaceInspector",
+    "plan_auto",
+    "plan_manual",
 ]

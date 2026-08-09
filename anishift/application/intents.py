@@ -112,9 +112,9 @@ class ProductIntent:
             raise ValueError(msg)
         if (
             self.burn_subtitle_product is not BurnSubtitleProduct.NONE
-            and not {ProductKind.MKV, ProductKind.MP4} & self.requested_products
+            and ProductKind.MP4 not in self.requested_products
         ):
-            msg = "Burned subtitles require a video product"
+            msg = "Burned subtitles require an MP4 product"
             raise ValueError(msg)
 
 

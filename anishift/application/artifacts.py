@@ -83,6 +83,7 @@ class Artifact:
     language: str | None = None
     subtitle_format: str | None = None
     audio_codec: str | None = None
+    duration_us: int | None = None
 
     def __post_init__(self) -> None:
         if not self.artifact_id.strip() or not self.group_id.strip():
@@ -95,6 +96,9 @@ class Artifact:
             raise ValueError(msg)
         if self.state is not ArtifactState.MISSING and self.path is None:
             msg = f"Artifact in state {self.state.value!r} requires a runtime path"
+            raise ValueError(msg)
+        if self.duration_us is not None and self.duration_us < 0:
+            msg = "Artifact duration cannot be negative"
             raise ValueError(msg)
         self._validate_lifetime()
 

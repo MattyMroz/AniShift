@@ -114,43 +114,6 @@ def classify_artifact(path: Path) -> ArtifactName | None:
     return None
 
 
-def choose_primary_video(candidates: Sequence[Artifact]) -> Artifact | None:
-    """Choose MKV before MP4 while retaining deterministic filename order."""
-    videos: tuple[Artifact, ...] = tuple(
-        artifact
-        for artifact in candidates
-        if artifact.kind in {ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4}
-        and artifact.state is not ArtifactState.INVALID
-    )
-    if not videos:
-        return None
-    return min(
-        videos,
-        key=lambda artifact: (
-            0 if artifact.kind is ArtifactKind.VIDEO_MKV else 1,
-            _artifact_path_key(artifact),
-        ),
-    )
-
-
-def choose_auto_sidecar(candidates: Sequence[Artifact]) -> Artifact | None:
-    """Choose a usable exact-stem ASS before SRT without validating contents."""
-    sidecars: tuple[Artifact, ...] = tuple(
-        artifact
-        for artifact in candidates
-        if artifact.kind is ArtifactKind.SOURCE_SUBTITLES and artifact.state is not ArtifactState.INVALID
-    )
-    if not sidecars:
-        return None
-    return min(
-        sidecars,
-        key=lambda artifact: (
-            0 if artifact.subtitle_format == "ass" else 1,
-            _artifact_path_key(artifact),
-        ),
-    )
-
-
 def group_candidates(candidates: Sequence[ArtifactName]) -> tuple[SourceGroup, ...]:
     """Group classified names by directory and normalized stem."""
     buckets: dict[tuple[str, str], list[ArtifactName]] = {}
@@ -342,9 +305,3 @@ def _candidate_sort_key(candidate: ArtifactName) -> tuple[int, int, str, str]:
         candidate.path.name.casefold(),
         candidate.path.name,
     )
-
-
-def _artifact_path_key(artifact: Artifact) -> tuple[str, str]:
-    if artifact.path is None:
-        return "", ""
-    return artifact.path.name.casefold(), artifact.path.name

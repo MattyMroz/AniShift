@@ -7,6 +7,7 @@ import pytest
 from anishift.application.artifacts import SourceGroup
 from anishift.application.intents import (
     AutoPreset,
+    BurnSubtitleProduct,
     ExternalAudioRole,
     GroupIntent,
     MkvTrackProduct,
@@ -28,6 +29,14 @@ def test_product_intent_rejects_container_options_without_container() -> None:
         ProductIntent(
             requested_products=frozenset({ProductKind.FULL_PL}),
             mkv_tracks=frozenset({MkvTrackProduct.FULL_PL_SUBTITLES}),
+        )
+
+
+def test_product_intent_rejects_burn_without_mp4() -> None:
+    with pytest.raises(ValueError, match="MP4 product"):
+        ProductIntent(
+            requested_products=frozenset({ProductKind.MKV}),
+            burn_subtitle_product=BurnSubtitleProduct.FULL_PL,
         )
 
 
