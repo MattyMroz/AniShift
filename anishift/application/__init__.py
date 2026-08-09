@@ -10,6 +10,7 @@ from anishift.application.artifacts import (
     SourceGroup,
 )
 from anishift.application.cancellation import CancellationToken
+from anishift.application.discovery import DiscoveryResult, DiscoveryWarning
 from anishift.application.intents import (
     AutoPreset,
     BurnSubtitleProduct,
@@ -45,6 +46,8 @@ __all__ = [
     "AutoPreset",
     "BurnSubtitleProduct",
     "CancellationToken",
+    "DiscoveryResult",
+    "DiscoveryWarning",
     "ExecutionPlan",
     "ExternalAudioRole",
     "GroupConflict",
