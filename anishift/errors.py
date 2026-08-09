@@ -25,8 +25,12 @@ __all__ = [
     "AniShiftError",
     "ErrorCode",
     "ErrorContext",
+    "ExecutionError",
     "FatalError",
+    "PlanningError",
+    "RunConflictError",
     "TransientError",
+    "WorkflowError",
 ]
 
 
@@ -166,6 +170,22 @@ class TransientError(AniShiftError):
 
     Engine retry logic should retry on ``isinstance(err, TransientError)``.
     """
+
+
+class WorkflowError(AniShiftError):
+    """Base error for application planning and execution failures."""
+
+
+class PlanningError(WorkflowError):
+    """Raised when a planning contract or dependency graph is invalid."""
+
+
+class ExecutionError(WorkflowError):
+    """Raised when an execution contract cannot be fulfilled safely."""
+
+
+class RunConflictError(WorkflowError):
+    """Raised when a second run conflicts with an active workflow."""
 
 
 class FatalError(AniShiftError):

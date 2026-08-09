@@ -4,6 +4,7 @@ Pakiet aplikacji. Composition root i hierarchia błędów tutaj; reszta w moduł
 
 ## Moduły (każdy ma własny AGENTS.md)
 
+- `application/` — czysty model produktu, planowanie i wykonawcze use case'y dla wszystkich UI
 - `cli/` — REPL, komendy `/`, panel `/settings`, banner
 - `pipeline/` — orkiestracja ekstrakcji, tłumaczenia, TTS i audio oraz paski postępu
 - `services/` — domeny audio, extraction, llm, subtitles, translation i tts
