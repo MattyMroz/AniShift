@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -108,3 +109,34 @@ def test_group_temp_rejects_escape_and_inactive_session(tmp_path: Path) -> None:
         session.group_temp("group-1")
     with session, pytest.raises(ValueError, match="safe group ID"):
         session.group_temp("../outside")
+
+
+def test_generation_commit_is_serialized_with_session_close(tmp_path: Path) -> None:
+    run_root = tmp_path / "run-1"
+    destination = tmp_path / "published.ass"
+    session = RunSession(run_root)
+    session.__enter__()
+    generation: int = session.generation
+    entered = threading.Event()
+    release = threading.Event()
+    committed: list[bool] = []
+
+    def publish() -> None:
+        entered.set()
+        assert release.wait(timeout=1.0)
+        destination.write_bytes(b"published")
+
+    commit_thread = threading.Thread(target=lambda: committed.append(session.commit_if_generation(generation, publish)))
+    commit_thread.start()
+    assert entered.wait(timeout=1.0)
+    close_thread = threading.Thread(target=lambda: session.__exit__(None, None, None))
+    close_thread.start()
+    close_thread.join(timeout=0.01)
+    assert close_thread.is_alive() is True
+    release.set()
+    commit_thread.join(timeout=1.0)
+    close_thread.join(timeout=1.0)
+
+    assert committed == [True]
+    assert destination.read_bytes() == b"published"
+    assert session.commit_if_generation(generation, lambda: pytest.fail("late commit")) is False

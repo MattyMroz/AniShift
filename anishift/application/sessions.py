@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from secrets import token_hex
 from types import TracebackType
@@ -130,6 +131,14 @@ class RunSession:
         """Allow commits only from the currently active run generation."""
         with self._lock:
             return self._active and generation == self._generation
+
+    def commit_if_generation(self, generation: int, action: Callable[[], None]) -> bool:
+        """Run one final commit atomically against closing this run generation."""
+        with self._lock:
+            if not self._active or generation != self._generation:
+                return False
+            action()
+            return True
 
     def _owner_marker(self) -> Path:
         return self._run_root / _OWNER_MARKER_NAME

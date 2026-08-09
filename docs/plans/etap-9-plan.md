@@ -645,10 +645,19 @@ bez uruchamiania schedulera:
 class CancellationToken(Protocol):
     def is_cancelled(self) -> bool: ...
     def raise_if_cancelled(self) -> None: ...
+
+class CommitCancellationToken(CancellationToken, Protocol):
+    def commit_if_active(self, action: Callable[[], None]) -> bool: ...
 ```
 
-Fake `NeverCancelledToken` służy testom kroków 3–7. Produkcyjny
-`EventCancellationToken` powstaje w kroku 8 bez zmiany tego kontraktu.
+Minimalny `CancellationToken` pozostaje granicą handlerów i serwisów. Rozszerzony
+`CommitCancellationToken` zna wyłącznie scheduler. Fake `NeverCancelledToken` służy
+testom kroków 3–7, a produkcyjny `EventCancellationToken` powstaje w kroku 8.
+`commit_if_active()` serializuje tylko krótki finalny `replace()` z równoległym
+`cancel()`; długa praca nadal sprawdza dwa pozostałe wywołania i nigdy nie wykonuje
+się pod tą blokadą. Analogiczna
+`RunSession.commit_if_generation()` obejmuje ten sam `replace()` blokadą generacji,
+więc cleanup nie może zamknąć scope pomiędzy sprawdzeniem a publikacją.
 
 ### 5.6. `anishift/errors.py` — diff
 
@@ -1349,12 +1358,17 @@ Mutable `ArtifactStore` jest prywatnym runtime state tego modułu, nie części�
 regułę zależną od lifetime:
 
 - `INTERMEDIATE` musi istnieć wewnątrz dokładnego run/group scope;
-- `DURABLE` musi istnieć pod dokładnie `planned_destination` i posiadać potwierdzenie
-  udanej atomowej publikacji w `ProducedArtifact.metadata`;
+- handler zwraca `DURABLE` jako zwalidowany staging wewnątrz dokładnego run/group
+  scope z `metadata["validated"] is True`, nigdy jako już opublikowany produkt;
+- coordinator dopiero po sprawdzeniu cancel, generation gate i `strict_natural`
+  atomowo przenosi staging pod dokładnie `planned_destination`, a do końcowego
+  `TaskResult` wpisuje docelową ścieżkę i `metadata["published"] is True`;
 - `SOURCE` nigdy nie może być outputem taska.
 
-Rejestracja odrzuca brak pliku, dowolną inną ścieżkę, niezgodny `artifact_id` oraz
-dwa różne wyniki dla tego samego ID. Store nie jest przekazywany workerowi.
+Rejestracja odrzuca brak pliku, staging poza scope, niezgodny `artifact_id`, brak
+potwierdzenia walidacji oraz dwa różne wyniki dla tego samego ID. Task publikujący
+trwały wynik produkuje dokładnie jeden artefakt, aby nie udawać atomowości transakcji
+wieloplikowej. Store nie jest przekazywany workerowi.
 
 Algorytm:
 
@@ -1416,7 +1430,10 @@ progress i kontrolowaną kolejność zakończeń. Testy:
 - strict gate, skip i brak deadlocku;
 - cancel przed admission i podczas niekooperującego fake handlera;
 - konflikt dwóch wyników o tym samym artifact ID;
-- późny wynik po cancel odrzucony przez generation gate;
+- późny trwały wynik po cancel pozostaje stagingiem i jest usuwany z run scope bez
+  zastąpienia wcześniejszego produktu;
+- trwały wynik późniejszej grupy w `strict_natural` nie jest widoczny przed bramką;
+- różna wielkość liter tego samego klucza providera nie tworzy osobnej puli;
 - peak submitted-not-done nie przekracza admission window;
 - executory mają ustalone prefiksy, skończony shutdown i nie zostawiają wątków.
 
