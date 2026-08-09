@@ -385,6 +385,11 @@ uv lock --check
 interfejs przyjmuje input podczas progressu, a licznik aktywnych workerów wraca do
 zera po cancel.
 
+**Wynik spike'a: PASS.** Pięć testów Pilota pokrywa wszystkie siedem scenariuszy:
+20 grup, edycję formularza manualnego, komendę `refresh`, responsywność i anulowanie
+workera, blokadę podwójnego startu oraz bezpieczny stan terminala `80x24`. Textual
+pozostaje wyborem dla produkcyjnego TUI; spike zostaje usunięty w kroku 13.
+
 ---
 
 ## 5. Krok 2 — kontrakty artefaktów i intencji
