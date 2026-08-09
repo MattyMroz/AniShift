@@ -370,10 +370,15 @@ kombinacji, na przykład TTS bez tekstu mówionego.
 
 Tryby mają różne modele sterowania:
 
-- `auto` — użytkownik wybiera jeden preset dla całej wykrytej paczki;
+- `auto` — użytkownik wybiera jeden preset dla grup aktualnie zaznaczonych w Workspace;
 - `manual` — użytkownik tworzy niezależny zamiar dla każdej grupy plików;
 - skopiowanie manualnego zamiaru na kilka zaznaczonych grup może być wygodnym
   skrótem, ale tworzy osobne jawne plany i nie wprowadza dziedziczenia presetów.
+
+Paczka `auto` oznacza grupy aktualnie zaznaczone na ekranie Workspace; domyślnie
+zaznaczone są wszystkie poprawnie wykryte grupy. Jeden preset obowiązuje cały ten
+zbiór bez wyjątków per grupa. Odznaczenie grupy usuwa ją z bieżącego uruchomienia,
+nie zmieniając jej artefaktów ani zamiaru pozostałych grup.
 
 ### 7.3. Wybór źródła napisów
 
@@ -427,6 +432,12 @@ AniShift nie próbuje zgadywać języka na podstawie treści:
 produkt od nowa, planner musi mieć osobne napisy źródłowe, na przykład `1.srt`
 albo ścieżkę osadzoną.
 
+`translation_action=do_not_translate` może prowadzić do produktu `.pl` tylko wtedy,
+gdy język wybranego źródła został oznaczony albo jawnie zadeklarowany jako `pol`.
+Dla źródła obcego albo o nieustalonym języku planner pozwala zachować lub wypalić
+`source_subtitles`, lecz odrzuca żądanie produktu `.pl` zamiast nadawać mu fałszywe
+oznaczenie języka.
+
 ### 7.5. Nazwane reguły automatycznego rozstrzygania
 
 Poniższe reguły są źródłem prawdy dla discovery i planera:
@@ -450,7 +461,7 @@ Poniższe reguły są źródłem prawdy dla discovery i planera:
 | `MKV_FIRST` | gdy istnieją `1.mkv` i `1.mp4`, `auto` wybiera MKV jako źródło grupy |
 | `MANUAL_OVERRIDE` | wybór użytkownika w `manual` ma pierwszeństwo przed wszystkimi regułami automatycznymi |
 | `INTENT_NOT_STAGES` | `manual` wybiera źródła, działania i produkty; planner wyprowadza etapy pipeline'u |
-| `AUTO_PRESET_BATCH` | jeden preset `auto` określa ten sam cel dla całej wykrytej paczki |
+| `AUTO_PRESET_BATCH` | jeden preset `auto` określa ten sam cel dla całej aktualnie zaznaczonej paczki |
 | `MANUAL_PER_GROUP` | każda grupa w `manual` ma własny jawny punkt startowy, działania i produkty |
 | `VISIBLE_AUTO_DECISION` | plan pokazuje wybrane źródło i pominięte alternatywy przed rozpoczęciem płatnej pracy |
 
@@ -476,7 +487,8 @@ Lektor nie potrzebuje osobnej pięciostanowej polityki. Wystarczają dwie decyzj
 
 | Decyzja | Znaczenie |
 |---|---|
-| `narration_audio` w `requested_products` | lektor ma istnieć jako wynik lub zależność kontenera |
+| `narration_audio` w `requested_products` | lektor ma zostać opublikowany jako trwały sidecar obok filmu |
+| kontener żąda ścieżki narration, ale `narration_audio` nie jest produktem | lektor powstaje wyłącznie jako tymczasowa zależność composition |
 | brak zapotrzebowania na lektora | TTS i miks nie trafiają do planu |
 
 W `auto` istniejący `<stem>.<kodek>` nie pomija TTS i miksu: żądany lektor
@@ -525,6 +537,11 @@ bez żadnych wypalonych napisów.
 
 Planner odrzuca wybór ścieżki, której nie można uzyskać z dostępnych wejść i
 pozostałych decyzji.
+
+Composition produkuje wyłącznie kontenery MKV albo MP4. Trwałe sidecary publikuje
+application layer atomowo z wyniku właściwego producenta: ekstrakcji, splitu albo
+audio. Dzięki temu composition nie staje się właścicielem produktów, których nie
+tworzy.
 
 ### 7.9. Tryb pracy, retry i fallback
 
@@ -604,7 +621,7 @@ decyzje składają się poprawnie.
 | translation | tekst źródłowy + konfiguracja silnika | przetłumaczony tekst w tej samej strukturze |
 | TTS | neutralne żądania mowy | klipy audio z tożsamością i metadanymi |
 | audio | klipy + źródłowe audio + ustawienia miksu | gotowy lektor w wybranym kodeku |
-| composition | źródłowy film + opcjonalne audio/napisy + specyfikacja wyjścia | MKV, MP4 albo rozmieszczone sidecary |
+| composition | źródłowy film + opcjonalne audio/napisy + specyfikacja wyjścia | wyłącznie kontener MKV albo MP4; sidecary publikuje warstwa aplikacyjna |
 
 Serwis nie odczytuje globalnego `UserSettings`. Otrzymuje zwalidowany, minimalny
 kontrakt potrzebny do konkretnego zadania. Dzięki temu jego zachowanie można
@@ -639,6 +656,12 @@ odcinek 3:           ekstrakcja ──> tłumaczenie ──> TTS
 - częściowy sukces pozostaje widoczny; trwały produkt może zostać ręcznie
   wybrany jako punkt wznowienia.
 
+`strict_natural` blokuje przekazanie lub publikację wyniku za wcześniejszą,
+nierozstrzygniętą grupą w tej samej kolejce. Nie blokuje discovery, probe,
+ekstrakcji ani innych bezpiecznych operacji w tle. Wcześniejsza grupa musi zostać
+rozstrzygnięta jako sukces, błąd, pominięcie albo anulowanie, zanim późniejszy wynik
+przejdzie przez bramkę kolejności.
+
 ### 11.3. Sprzątanie plików tymczasowych
 
 - każde źródło posiada własny katalog roboczy w `workspace/temp/<scope>`;
@@ -672,7 +695,7 @@ Każde ustawienie musi posiadać metadane niezależne od interfejsu:
 |---|---|---|
 | globalne | kolejność przetwarzania | zapisane w konfiguracji |
 | profil silnika | głos i tempo konkretnego głosu TTS | zapisane per silnik i głos |
-| preset `auto` | tłumacz i utwórz lektora dla całej paczki | zapisany albo jednorazowy wybór uruchomienia |
+| preset `auto` | tłumacz i utwórz lektora dla całej aktualnie zaznaczonej paczki | zapisany albo jednorazowy wybór uruchomienia |
 | plan `manual` | ręcznie wybrane źródła i produkty jednej grupy | obowiązuje jedną grupę w bieżącym uruchomieniu |
 | sekret | klucz API | środowisko lub bezpieczny magazyn, nie zwykły preset |
 | wewnętrzne | limit bajtów żądania dostawcy | nie jest ustawieniem użytkownika |
@@ -701,7 +724,7 @@ Legenda stanu:
 | `selected_audio_track` | nowe | grupa `manual` | ręczny override automatycznego wyboru |
 | `selected_subtitle_track` | nowe | grupa `manual` | ręczny override automatycznego wyboru |
 | `preferred_video_source` | nowe | grupa `manual` | ręczny wybór MKV albo MP4, gdy oba mają ten sam rdzeń |
-| `source_subtitle_language` | nowe | preset `auto`/grupa `manual` | override metadanych lub nieoznaczonego sidecara, np. `pol`, `eng`, `fra`; w `auto` dotyczy całej paczki |
+| `source_subtitle_language` | nowe | preset `auto`/grupa `manual` | override metadanych lub nieoznaczonego sidecara, np. `pol`, `eng`, `fra`; w `auto` dotyczy całej aktualnie zaznaczonej paczki |
 | `selected_external_subtitle` | nowe | grupa `manual` | jawna ścieżka ASS/SRT przypisana do wybranego filmu; nie zmienia rdzenia nazw produktów |
 | `selected_external_audio` | nowe | grupa `manual` | jawna ścieżka zewnętrznego audio |
 | `external_audio_role` | nowe | grupa `manual` | `source_audio` albo `narration_mix` |
@@ -888,7 +911,7 @@ Docelowy kontrakt powinien pozwalać na:
 
 Preset jest zestawem wartości kontraktu. Nie jest osobnym pipeline'em i nie może
 kodować logiki niedostępnej przez podstawowe pola. Jeden preset `auto` obowiązuje
-całą wykrytą paczkę. Tryb `manual` nie korzysta z presetów celu: każda grupa ma
+całą aktualnie zaznaczoną paczkę. Tryb `manual` nie korzysta z presetów celu: każda grupa ma
 własny jawny plan.
 
 ## 15. Decyzja o interfejsie
@@ -930,7 +953,7 @@ zależność.
 
 TUI musi udostępnić:
 
-- ekran wyboru i edycji presetu `auto` dla całej paczki;
+- ekran wyboru i edycji presetu `auto` dla całej aktualnie zaznaczonej paczki;
 - listę grup w `manual`, gdzie każda grupa ma osobny punkt startowy i produkty;
 - wybór ścieżek osadzonych, exact-stem sidecarów oraz zewnętrznych napisów i audio;
 - ustawienia globalne oraz zależne od aktywnego silnika/modelu/głosu;
@@ -977,7 +1000,7 @@ interfejs nie może mieć własnej kopii reguł kompatybilności.
 
 Kolejność stabilizuje application API przed podłączeniem TUI.
 
-### 9.1. Domena artefaktów i planu
+### 17.1. Domena artefaktów i planu
 
 - neutralne typy artefaktów;
 - grupa źródłowa;
@@ -986,7 +1009,7 @@ Kolejność stabilizuje application API przed podłączeniem TUI.
 - deterministyczny graf planu;
 - testy reprezentatywnych ścieżek.
 
-### 9.2. Wejścia MP4 i sidecary
+### 17.2. Wejścia MP4 i sidecary
 
 - discovery MKV/MP4/ASS/SRT;
 - adapter ffprobe/FFmpeg dla MP4;
@@ -994,7 +1017,7 @@ Kolejność stabilizuje application API przed podłączeniem TUI.
 - neutralny katalog ścieżek;
 - testy kolizji i wyboru źródła napisów.
 
-### 9.3. Wielokrotne produkty
+### 17.3. Wielokrotne produkty
 
 - zastąpienie pojedynczego `output_variant`;
 - niezależne zadania MKV i MP4;
@@ -1002,7 +1025,7 @@ Kolejność stabilizuje application API przed podłączeniem TUI.
 - użycie jednego świeżo zbudowanego lektora i napisów w obu wynikach;
 - bezpieczne nazwy i zakaz nadpisania źródła.
 
-### 9.4. Schemat ustawień
+### 17.4. Schemat ustawień
 
 - wspólne metadane pól;
 - zależności per silnik/model/głos;
@@ -1010,9 +1033,11 @@ Kolejność stabilizuje application API przed podłączeniem TUI.
 - usunięcie pozornych ustawień;
 - implementacja rzeczywistego limitu `translation_concurrency` 1–16;
 - zastąpienie starego `output_variant` dopiero po wdrożeniu nowego kontraktu;
-  bez tworzenia osobnego migratora plików użytkownika.
+  loader mapuje legacy `players/merge/burn` na odpowiadający domyślny zestaw
+  produktów i zapisuje nowy schemat dopiero po jawnej akcji `Save`, bez osobnego
+  migratora plików użytkownika i bez cichej zmiany celu.
 
-### 9.5. Scheduler grafu
+### 17.5. Scheduler grafu
 
 - kolejki per serwis;
 - uruchamianie po gotowości zależności;
@@ -1022,19 +1047,25 @@ Kolejność stabilizuje application API przed podłączeniem TUI.
 - gwarantowane sprzątanie `workspace/temp`;
 - zgodność z `ready_first` oraz `strict_natural`.
 
-### 9.6. TUI i cienkie CLI
+### 17.6. TUI i cienkie CLI
 
 - application API niezależne od terminalowego renderowania;
 - pełnoekranowe TUI na `Textual`;
-- preset `auto` dla całej paczki;
+- preset `auto` dla całej aktualnie zaznaczonej paczki;
 - osobny plan każdej grupy w `manual`;
 - ustawienia zależne od silnika i produktu;
 - plan preview, progress, cancel i podsumowanie;
+- stały dolny command bar z promptem `❯`, krótkimi odpowiednikami widocznych akcji
+  oraz paskiem statusu;
 - zachowanie `doctor`, `setup` i nieinteraktywnego uruchomienia presetu w CLI;
 - testy interakcji bez prawdziwego terminala.
 
 TUI rozpoczyna się dopiero po ustabilizowaniu wcześniejszych kontraktów, ale jest
 częścią docelowego Etapu 9.
+
+Poprzedza je wyłącznie odrzucalny spike Textual oparty na minimalnym fake API.
+Spike sprawdza wykonalność frameworka i nie ustanawia kontraktów domeny ani
+application API; produkcyjne ekrany powstają dopiero po krokach 17.1–17.5.
 
 ## 18. Strategia testów
 
@@ -1085,7 +1116,7 @@ Planner wymaga osobnego zestawu macierzowego:
 - wybór MKV i brak drugiego zadania przy `1.mkv` + `1.mp4`;
 - ignorowanie samodzielnych produktów pochodnych w discovery `auto`;
 - ręczny wybór innej ścieżki językowej;
-- jeden preset `auto` zastosowany do całej paczki;
+- jeden preset `auto` zastosowany do całej aktualnie zaznaczonej paczki;
 - trzy niezależne grupy `manual` z różnymi punktami startowymi i produktami;
 - kopiowanie manualnego zamiaru nie tworzy dziedziczenia między grupami;
 - brak surowego sterowania etapami i prawidłowe wyprowadzenie zależności;
@@ -1204,7 +1235,7 @@ Logika ekranów korzysta z application API i jest testowana bez prawdziwego
 terminala:
 
 - `Textual.App.run_test()` i `Pilot` sterują interakcją bez prawdziwego terminala;
-- wybór presetu `auto` tworzy plany wszystkich grup;
+- wybór presetu `auto` tworzy plany wszystkich aktualnie zaznaczonych grup;
 - trzy grupy `manual` zachowują trzy niezależne zamiary;
 - wybór `.pl`, `.spoken.pl` i zewnętrznego audio uruchamia właściwy fragment
   pipeline'u;
@@ -1257,7 +1288,7 @@ implementacji:
     roli zewnętrznego audio.
 15. `manual` steruje źródłami, działaniami i produktami, a nie surową listą
     etapów. Planner zawsze wyprowadza poprawny graf zależności.
-16. Preset `auto` obowiązuje całą paczkę. W `manual` każda grupa posiada osobny
+16. Preset `auto` obowiązuje całą aktualnie zaznaczoną paczkę. W `manual` każda grupa posiada osobny
     jawny zamiar; skopiowanie zamiaru jest wyłącznie skrótem i nie tworzy
     dziedziczenia między grupami.
 17. Głównym interfejsem interaktywnym jest pełnoekranowe TUI na `Textual`.
@@ -1276,6 +1307,21 @@ implementacji:
     napisów wybranego filmu. Plik jest tylko źródłem; produkty otrzymują rdzeń
     nazwy filmu. Jeżeli żądane jest `source_subtitles`, AniShift publikuje kopię
     pod rdzeniem filmu, nie zmieniając oryginału.
+23. Textual TUI posiada stały dolny command bar z promptem `❯`. W Etapie 9
+    obsługuje on wyłącznie krótkie odpowiedniki widocznych akcji. Późniejszy agent
+    może użyć tego samego wejścia tylko przez typowane application API, plan preview
+    i zwykłe potwierdzenie; sam agent nie należy do zakresu Etapu 9.
+24. `auto` stosuje jeden preset do grup zaznaczonych w Workspace, domyślnie do
+    wszystkich. Odznaczenie grupy wyłącza ją z runu, ale nie tworzy wyjątku od
+    presetu dla grup pozostających w paczce.
+25. Composition produkuje wyłącznie kontenery. Sidecary publikuje application
+    layer, a `narration_audio` trafia obok filmu tylko wtedy, gdy jest jawnym
+    produktem; jako zależność samego kontenera pozostaje artefaktem tymczasowym.
+26. Filtr TUI `done` jest wyłącznie etykietą obejmującą terminalne stany domenowe;
+    publiczny kontrakt zachowuje nazwę `succeeded`.
+27. Istniejący źródłowy exact-stem sidecar nigdy nie jest zastępowany ani przez
+    ekstrakcję, ani przez publikację kopii zewnętrznych napisów. Planner wymaga
+    rezygnacji z publikacji `source_subtitles` albo zmiany wejścia przez użytkownika.
 
 ## 20. Kryteria ukończenia
 
@@ -1296,5 +1342,5 @@ Etap 9 jest ukończony, gdy:
 - każde zakończenie procesu sprząta własne pliki z `workspace/temp`;
 - TUI i CLI używają wspólnego application API;
 - testy TUI pokrywają `auto`, niezależne plany `manual`, settings, preview,
-  progress i cancel;
-- szczegółowy plan TUI powstaje po ustabilizowaniu kontraktów 9.1–9.5.
+  progress, cancel oraz command bar;
+- szczegółowy plan TUI powstaje po ustabilizowaniu kontraktów 17.1–17.5.

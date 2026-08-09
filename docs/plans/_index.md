@@ -16,7 +16,7 @@
 | 6.1 | [etap-6.1-shared-text-primitives.md](etap-6.1-shared-text-primitives.md) | **ZROBIONE** — wspólne granice Unicode i grafemy dla translation/TTS. | 6 |
 | 7 | [etap-7-wymagania.md](etap-7-wymagania.md) + [etap-7-plan.md](etap-7-plan.md) | **ZROBIONE** — składanie players/MKV/MP4, `/compose` i pełny pipeline. | 6 |
 | 8 | [wymagania](etap-8-wymagania.md) + [plan](etap-8-dystrybucja-binarek.md) | **ZROBIONE** — launcher Windows, audyt legacy, walidacja i zamknięcie roadmapu. | 7 |
-| 9 | [produkt](etap-9-wymagania.md) + [interfejs](etap-9-interfejs-wymagania.md) | **WYMAGANIA** — model artefaktów, workflow i ustawień oraz docelowe Textual TUI z cienkim CLI; gotowe do akceptacji. | 8 |
+| 9 | [produkt](etap-9-wymagania.md) + [interfejs](etap-9-interfejs-wymagania.md) + [plan](etap-9-plan.md) | **PLAN** — model artefaktów, strumieniowy scheduler, application API i Textual TUI z command barem `❯`; gotowe do realizacji po akceptacji planu. | 8 |
 
 ## graf zależności
 

@@ -1,7 +1,9 @@
 # plan strategiczny: AniShift (pakiet `anishift`) — FINAL
 
 > Status: legacy roadmap zakończony — etapy 1–8 ukończone.
-> Dalszy kierunek: [`etap-9-wymagania.md`](etap-9-wymagania.md).
+> Dalszy kierunek: [`etap-9-wymagania.md`](etap-9-wymagania.md),
+> [`etap-9-interfejs-wymagania.md`](etap-9-interfejs-wymagania.md) i
+> [`etap-9-plan.md`](etap-9-plan.md).
 > data: 2026-07-12 | autor: Fable | zastępuje `2026-07-12-plan-anishift-fable-v2.md` (v2 + wbudowane korekty usera z `_korekty-planu-anishift.md`) | aktualizacja: dodany serwis llm (decyzja usera)
 > zasada nadrzędna: **recykling MangaShift w 100%** — struktura, nazewnictwo, wzorce. druga zasada (od usera): **wszystko ma być proste** — zero rozdmuchanych folderów i mechanizmów.
 > repo: obecne (3 gwiazdki zostają), przebudowa na nowym branchu. nazwy `mm_avh` i `working_space` znikają z nowego kodu.
@@ -351,7 +353,7 @@ jak testować: pełne bramki jakości + `run_anishift.bat doctor` uruchomiony sp
 DoD: brak zależności runtime od starego `mm_avh`, zielone testy i zgodne statusy planów.
 
 ### etap 9 — model produktu, workflow i ustawień
-**status:** wymagania gotowe do akceptacji przed planem implementacji.
+**status:** wymagania domknięte, plan wykonawczy gotowy do akceptacji.
 **cel:** przekształcić analizę w [`etap-9-wymagania.md`](etap-9-wymagania.md)
 w decyzje o artefaktach, trybach pracy, stanach, konfiguracji, planowaniu oraz
 pełnoekranowym TUI.
@@ -359,6 +361,8 @@ pełnoekranowym TUI.
 Etap 9 najpierw stabilizuje zachowanie produktu oraz application API, a następnie
 podłącza pełnoekranowe TUI na `Textual` i cienkie CLI zgodnie z
 [`etap-9-interfejs-wymagania.md`](etap-9-interfejs-wymagania.md).
+Dokładna kolejność plików, testów i inkrementów znajduje się w
+[`etap-9-plan.md`](etap-9-plan.md).
 W tym samym etapie mechanicznie zmienia kontrakt katalogu roboczego z
 `workspace/tmp` na `workspace/temp` i aktualizuje wszystkie testy oraz instrukcje.
 

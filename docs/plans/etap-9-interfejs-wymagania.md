@@ -37,6 +37,8 @@ potrzebuje serwera wieloużytkownikowego, kont, bazy danych ani zdalnego panelu.
 - Uruchomienie bez argumentów otwiera główny interfejs.
 - Podstawowe operacje są widoczne na ekranie; command palette i skróty są tylko
   przyspieszeniem.
+- Na dole każdego głównego ekranu pozostaje widoczny command bar z promptem `❯`;
+  jest alternatywą dla kontrolek, a nie jedyną drogą do funkcji.
 - Klawiatura wystarcza do całej obsługi, ale mysz działa tam, gdzie terminal ją
   udostępnia.
 - Sam Enter nie uruchamia ukrytej, płatnej pracy.
@@ -90,7 +92,7 @@ workspace nie uruchamia pipeline'u.
 
 ### 5.2. Auto
 
-- Użytkownik wybiera albo edytuje jeden preset dla całej paczki.
+- Użytkownik wybiera albo edytuje jeden preset dla całej aktualnie zaznaczonej paczki.
 - Interfejs pokazuje, do ilu grup preset można zastosować.
 - Grupy niewykonalne są oznaczone przed startem z konkretnym powodem.
 - `auto` nie oferuje wyjątków per grupa. Nietypowe przypadki przechodzą do
@@ -159,7 +161,35 @@ TUI udostępnia czytelny widok `doctor` i `setup`, ale te operacje pozostają ta
 dostępne z cienkiego CLI. Dzięki temu można naprawić środowisko, gdy główny
 interfejs albo pipeline nie startuje poprawnie.
 
-### 5.9. Przyszłe pobieranie anime
+### 5.9. Command bar i pasek statusu
+
+Dolna część głównego układu zawiera dwa stałe elementy:
+
+```text
+──────────────────────────────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────────────────────────────
+  workspace: 20 grup  |  preset: lector  |  run: idle  |  auto
+```
+
+- prompt command bara ma dokładnie znak `❯`;
+- pole jest dostępne na każdym głównym ekranie i otrzymuje focus przez jawny skrót;
+- Etap 9 obsługuje krótkie, odkrywalne polecenia odpowiadające widocznym akcjom,
+  na przykład `auto`, `manual`, `settings`, `refresh`, `doctor`, `setup` i `help`;
+- command bar nie przyjmuje nazw wewnętrznych etapów pipeline'u i nie zastępuje
+  formularzy `manual` ani ustawień dziesiątkami argumentów;
+- nieznane polecenie niczego nie uruchamia, tylko pokazuje błąd i dostępne sugestie;
+- Enter wykonuje polecenie wyłącznie wtedy, gdy pole ma focus i zawiera poprawną,
+  widoczną treść; pusty Enter nie uruchamia pracy;
+- pasek statusu pokazuje kontekst AniShift, między innymi aktywny tryb lub preset,
+  stan runu i skrócone informacje o workspace; nie kopiuje metryk konkretnego
+  narzędzia deweloperskiego;
+- przyszły agent językowy może użyć tego samego pola wejściowego, ale jego wynik
+  musi zostać zamieniony na typowane polecenie application API i przejść przez
+  zwykły plan preview oraz potwierdzenie;
+- agent, integracja z MyAnimeList i pobieranie anime nie należą do Etapu 9.
+
+### 5.10. Przyszłe pobieranie anime
 
 Etap 9 nie implementuje pobierarki. Interfejs rezerwuje jednak naturalny punkt
 rozszerzenia `Acquire`, który może później zawierać:
@@ -183,6 +213,8 @@ Typer CLI ───┘
 ```
 
 - TUI przechowuje wyłącznie stan prezentacji i wersje robocze formularzy.
+- TUI parsuje wyłącznie mały zestaw poleceń nawigacyjnych command bara i mapuje je
+  na te same use case'y, które uruchamiają widoczne kontrolki.
 - Application API przyjmuje typowane zamiary i publikuje typowane zdarzenia.
 - Planner jest jedynym źródłem grafu, konfliktów i automatycznych wyborów.
 - Scheduler jest jedynym źródłem stanów wykonania i postępu.
@@ -255,6 +287,8 @@ edycja ustawień i planowanie wielu różnych grup należą do TUI.
 - Globalna pomoc opisuje ekran i skróty.
 - Command palette może przyspieszać nawigację, ale żadna funkcja nie jest
   dostępna wyłącznie przez palette.
+- Command bar z `❯` jest stale widoczny; jego podpowiedzi pokazują dostępne w danym
+  kontekście akcje bez wymagania zapamiętywania składni.
 - Akcje niebezpieczne i płatne wymagają jednoznacznego przycisku oraz
   potwierdzenia wynikającego z planu.
 - Powtarzanie klawisza i podwójne kliknięcie nie mogą uruchomić tej samej pracy
@@ -310,6 +344,8 @@ edycja ustawień i planowanie wielu różnych grup należą do TUI.
 - testowane są focus, mały terminal, modal potwierdzenia i blokada podwójnego
   startu;
 - długie zadanie nie blokuje obsługi wejścia ani anulowania.
+- command bar poprawnie wykonuje znane akcje, sugeruje polecenia i odrzuca pustą
+  albo nieznaną treść bez efektu ubocznego.
 
 ### 14.3. Integracja
 
@@ -366,13 +402,21 @@ application API. Nie tworzymy go równolegle z TUI „na zapas”.
 
 - `anishift` i `run_anishift.bat` bez argumentów otwierają Textual TUI.
 - Workspace pokazuje wszystkie grupy i konflikty bez uruchamiania pracy.
-- Jeden preset `auto` planuje całą paczkę.
+- Jeden preset `auto` planuje grupy aktualnie zaznaczone w Workspace; domyślnie są
+  zaznaczone wszystkie poprawne grupy.
 - `manual` przechowuje niezależny zamiar każdej grupy.
 - Settings pokazuje wyłącznie rzeczywiście aktywne pola i zapisuje jawnie.
 - Plan preview poprzedza płatne i nadpisujące operacje.
 - Execution pozostaje responsywne podczas wielu równoległych zadań.
+- Discovery, inspection i walidacja zewnętrznych plików pozostają responsywne i
+  ignorują spóźnione wyniki poprzedniego żądania.
 - Cancel dociera do application API i subprocessów.
 - Results pokazuje produkty i błędy per grupa.
 - TUI i CLI nie duplikują reguł planera ani walidacji.
+- Stały command bar z promptem `❯` uruchamia krótkie odpowiedniki widocznych akcji
+  i pozostawia miejsce na późniejszy adapter agenta bez implementowania go teraz.
+- Stały pasek statusu jest widoczny na każdym głównym ekranie i przy małym
+  terminalu; aktualizuje workspace, preset/tryb, stan runu i czas bez metryk
+  deweloperskich.
 - Testy Textual pokrywają główny przepływ, focus, resize i anulowanie.
 - Obecny REPL i stary panel zostają usunięte po osiągnięciu parytetu.
