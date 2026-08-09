@@ -5,10 +5,21 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
+from anishift.application.events import sanitize_event_message
 from anishift.errors import ExecutionError
+
+__all__ = [
+    "ArtifactSnapshot",
+    "GroupResult",
+    "GroupStatus",
+    "ProducedArtifact",
+    "RunResult",
+    "TaskResult",
+]
 
 
 class _FrozenMapping[K, V](Mapping[K, V]):
@@ -111,3 +122,81 @@ class TaskResult:
         if len(output_ids) != len(set(output_ids)):
             msg = "Task result output IDs must be unique"
             raise ValueError(msg)
+
+
+class GroupStatus(StrEnum):
+    """Terminal outcome of one independently executable source group."""
+
+    SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True, slots=True)
+class GroupResult:
+    """Terminal group outcome preserving every product completed before failure."""
+
+    group_id: str
+    status: GroupStatus
+    task_results: tuple[TaskResult, ...] = ()
+    products: tuple[ProducedArtifact, ...] = ()
+    error_messages: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.group_id.strip():
+            msg = "Group result requires a group ID"
+            raise ValueError(msg)
+        task_ids: tuple[str, ...] = tuple(result.task_id for result in self.task_results)
+        product_ids: tuple[str, ...] = tuple(product.artifact_id for product in self.products)
+        _require_unique_result_ids(task_ids, "task result IDs")
+        _require_unique_result_ids(product_ids, "product artifact IDs")
+        safe_messages: tuple[str, ...] = tuple(sanitize_event_message(message) or "" for message in self.error_messages)
+        object.__setattr__(self, "error_messages", safe_messages)
+        if any(not message.strip() for message in safe_messages):
+            msg = "Group result errors cannot be blank"
+            raise ValueError(msg)
+        if self.status is GroupStatus.SUCCEEDED and safe_messages:
+            msg = "Successful group result cannot contain errors"
+            raise ValueError(msg)
+        if self.status is GroupStatus.PARTIAL and (not self.products or not safe_messages):
+            msg = "Partial group result requires completed products and errors"
+            raise ValueError(msg)
+        if self.status is GroupStatus.FAILED:
+            if self.products:
+                msg = "Group result with completed products must be partial, not failed"
+                raise ValueError(msg)
+            if not safe_messages:
+                msg = "Failed group result requires at least one error"
+                raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class RunResult:
+    """Immutable terminal results for every group admitted to one run."""
+
+    run_id: str
+    groups: tuple[GroupResult, ...]
+
+    def __post_init__(self) -> None:
+        if not self.run_id.strip() or not self.groups:
+            msg = "Run result requires a run ID and at least one group result"
+            raise ValueError(msg)
+        group_ids: tuple[str, ...] = tuple(group.group_id for group in self.groups)
+        _require_unique_result_ids(group_ids, "run group IDs")
+
+    @property
+    def succeeded(self) -> bool:
+        """Return whether every group completed successfully."""
+        return all(group.status is GroupStatus.SUCCEEDED for group in self.groups)
+
+    @property
+    def cancelled(self) -> bool:
+        """Return whether cancellation affected at least one group."""
+        return any(group.status is GroupStatus.CANCELLED for group in self.groups)
+
+
+def _require_unique_result_ids(values: tuple[str, ...], label: str) -> None:
+    if any(not value.strip() for value in values) or len(values) != len(set(values)):
+        msg = f"{label.capitalize()} must be non-empty and unique"
+        raise ValueError(msg)
