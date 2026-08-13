@@ -36,10 +36,13 @@ from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings, save_user_settings
 from anishift.config.workspace import cleanup_orphaned_temp, run_temp_dir
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, PlanningError, RunConflictError
+from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
+from anishift.services.translation.engines import available_engine_ids as available_translation_engine_ids
+from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
 from anishift.setup.doctor import CheckResult, run_doctor
 from anishift.setup.installer import ResourceResult, run_setup
 
-__all__ = ["AppService", "AutoPresetDraft", "ExecutionHandlerFactory", "SettingsDraft"]
+__all__ = ["AppService", "AutoPresetDraft", "EngineAvailability", "ExecutionHandlerFactory", "SettingsDraft"]
 
 type SettingsDraft = UserSettings
 """Detached mutable settings copy edited by a frontend before explicit save."""
@@ -68,6 +71,16 @@ class AutoPresetDraft:
             source_subtitle_language=self.source_subtitle_language,
             subtitle_output_format=self.subtitle_output_format,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class EngineAvailability:
+    """Cheap configuration-level engine status suitable for frontends."""
+
+    domain: str
+    engine_id: str
+    is_available: bool
+    reason: str
 
 
 class ExecutionHandlerFactory(Protocol):
@@ -252,9 +265,46 @@ class AppService:
             self._active_cancel.cancel()
             return True
 
-    def settings_catalog(self) -> tuple[SettingSpec, ...]:
-        """Return fields active for the current saved engine selections."""
-        return setting_catalog(SettingCatalogContext.from_user_settings(self._user_settings))
+    def settings_catalog(self, draft: SettingsDraft | None = None) -> tuple[SettingSpec, ...]:
+        """Return fields active for saved or explicitly supplied draft selections."""
+        preferences: UserSettings = deepcopy(draft) if draft is not None else self.settings_snapshot()
+        return setting_catalog(SettingCatalogContext.from_user_settings(preferences))
+
+    def environment_statuses(self) -> Mapping[str, bool]:
+        """Return environment-only availability without exposing configured values."""
+        return {
+            spec.setting_id: bool(getattr(self._settings, spec.setting_id, ""))
+            for spec in self.settings_catalog()
+            if spec.is_secret or not hasattr(self._user_settings, spec.setting_id)
+        }
+
+    def engine_availability(self) -> tuple[EngineAvailability, ...]:
+        """Describe configured engine readiness without creating provider clients."""
+        secret_by_engine: tuple[tuple[str, str, str], ...] = (
+            ("translation", "deepl", "deepl_api_key"),
+            ("tts", "elevenlabs", "elevenlabs_api_key"),
+            ("llm", "anthropic", "anthropic_api_key"),
+            ("llm", "deepseek", "deepseek_api_key"),
+            ("llm", "gemini", "gemini_api_key"),
+            ("llm", "openai", "openai_api_key"),
+            ("llm", "openai_compatible", "openai_compatible_api_key"),
+            ("llm", "openrouter", "openrouter_api_key"),
+        )
+        configured: dict[tuple[str, str], str] = {
+            (domain, engine_id): secret_id for domain, engine_id, secret_id in secret_by_engine
+        }
+        engines: tuple[tuple[str, str], ...] = (
+            *(("translation", engine_id) for engine_id in available_translation_engine_ids()),
+            *(("tts", engine_id) for engine_id in available_tts_engine_ids()),
+            *(("llm", engine_id) for engine_id in available_llm_engine_ids()),
+        )
+        statuses: list[EngineAvailability] = []
+        for domain, engine_id in engines:
+            secret_id: str | None = configured.get((domain, engine_id))
+            available: bool = secret_id is None or bool(getattr(self._settings, secret_id, ""))
+            reason: str = "ready" if available else f"missing {secret_id}; configure environment or open Tools"
+            statuses.append(EngineAvailability(domain, engine_id, available, reason))
+        return tuple(statuses)
 
     def settings_snapshot(self) -> SettingsDraft:
         """Return a detached mutable copy that cannot affect an active plan."""
@@ -276,7 +326,7 @@ class AppService:
 
     def setup(self, *, force: bool = False) -> tuple[ResourceResult, ...]:
         """Install configured external resources without exposing setup internals."""
-        return tuple(self._setup_runner(force=force))
+        return tuple(self._setup_runner(force=force, show_progress=False))
 
     def _selected_groups(self, group_ids: Sequence[str]) -> tuple[InspectedSourceGroup, ...]:
         requested: tuple[str, ...] = tuple(group_ids)

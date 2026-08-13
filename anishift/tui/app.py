@@ -10,12 +10,12 @@ from textual.app import App
 from textual.screen import Screen
 from textual.timer import Timer
 
-from anishift.application.events import EventBuffer, RunEvent, RunEventKind
+from anishift.application.events import EventBuffer, RunEvent, RunEventKind, sanitize_event_message
 from anishift.application.planning import ExecutionPlan
 from anishift.application.results import RunResult
 from anishift.application.service import AppService
 from anishift.tui.commands import ParsedCommand, UiCommand, parse_command
-from anishift.tui.messages import CommandSubmitted, RunCompleted, RunEventsReceived
+from anishift.tui.messages import CommandSubmitted, RunCompleted, RunEventsReceived, RunFailed
 from anishift.tui.screens import (
     AutoScreen,
     ExecutionScreen,
@@ -99,6 +99,9 @@ class AniShiftApp(App[None]):
             if event.run_id == self.session.active_run_id:
                 accepted.append(event)
         if accepted:
+            self.session.run_events.extend(accepted)
+            if isinstance(self.screen, ExecutionScreen):
+                self.screen.apply_events(tuple(accepted))
             self._refresh_footer()
 
     def on_run_completed(self, message: RunCompleted) -> None:
@@ -106,11 +109,26 @@ class AniShiftApp(App[None]):
         if message.generation != self.session.generation:
             return
         state: str = "cancelled" if message.result.cancelled else "completed"
+        self.session.run_result = message.result
         self.session.finish_run(state)
         self._event_buffer = None
         if self._event_timer is not None:
             self._event_timer.pause()
         self._refresh_footer()
+        if self.screen_stack:
+            self.call_later(self.open_route, "results")
+
+    def on_run_failed(self, message: RunFailed) -> None:
+        """Recover the shell when execution fails before producing a RunResult."""
+        if message.generation != self.session.generation:
+            return
+        self.session.run_error = message.error
+        self.session.finish_run("failed")
+        self._event_buffer = None
+        if self._event_timer is not None:
+            self._event_timer.pause()
+        self.call_later(self.open_route, "results")
+        self.notify(message.error, severity="error")
 
     async def start_execution(self, plan: ExecutionPlan) -> bool:
         """Start exactly one blocking application run outside the UI loop."""
@@ -139,7 +157,12 @@ class AniShiftApp(App[None]):
 
     @work(thread=True, exclusive=True, group="application-execution")
     def _execute_plan(self, plan: ExecutionPlan, generation: int, buffer: EventBuffer) -> None:
-        result: RunResult = self.service.execute(plan, buffer)
+        try:
+            result: RunResult = self.service.execute(plan, buffer)
+        except Exception as error:  # noqa: BLE001 - process boundary must recover the interactive shell
+            message: str = sanitize_event_message(str(error)) or type(error).__name__
+            self.call_from_thread(self._post_failure, generation, message, buffer)
+            return
         self.call_from_thread(self._post_completion, generation, result, buffer)
 
     def _post_completion(self, generation: int, result: RunResult, buffer: EventBuffer) -> None:
@@ -147,6 +170,12 @@ class AniShiftApp(App[None]):
         if events:
             self.post_message(RunEventsReceived(generation, events))
         self.post_message(RunCompleted(generation, result))
+
+    def _post_failure(self, generation: int, error: str, buffer: EventBuffer) -> None:
+        events: tuple[RunEvent, ...] = buffer.drain()
+        if events:
+            self.post_message(RunEventsReceived(generation, events))
+        self.post_message(RunFailed(generation, error))
 
     def _drain_events(self) -> None:
         buffer: EventBuffer | None = self._event_buffer
@@ -174,6 +203,11 @@ class AniShiftApp(App[None]):
                 self.screen.refresh_workspace()
             self.session.route = "workspace"
             return
+        if command in {UiCommand.DOCTOR, UiCommand.SETUP}:
+            if isinstance(self.screen, ToolsScreen):
+                self.screen.run_tool(command.value)
+                return
+            self.session.pending_tool_action = command.value
         route: str = routes[command]
         self.session.route = route
         if command is UiCommand.AUTO:

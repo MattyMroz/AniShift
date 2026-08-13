@@ -196,6 +196,16 @@ def test_settings_draft_and_plan_snapshot_are_detached(tmp_path: Path) -> None:
     assert service.settings_snapshot().translation_concurrency == 3
 
 
+def test_engine_availability_exposes_reasons_without_secret_values(tmp_path: Path) -> None:
+    service: AppService = _service(tmp_path, FakeTranslationService())
+
+    statuses = {(item.domain, item.engine_id): item for item in service.engine_availability()}
+
+    assert statuses["translation", "google"].is_available
+    assert not statuses["translation", "deepl"].is_available
+    assert statuses["translation", "deepl"].reason == "missing deepl_api_key; configure environment or open Tools"
+
+
 def test_bootstrap_builds_the_shared_service_without_creating_provider_clients(tmp_path: Path) -> None:
     workspace_root: Path = tmp_path / "workspace"
     context: AppContext = bootstrap(

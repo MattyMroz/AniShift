@@ -142,6 +142,7 @@ class GroupResult:
     task_results: tuple[TaskResult, ...] = ()
     products: tuple[ProducedArtifact, ...] = ()
     error_messages: tuple[str, ...] = ()
+    preserved_products: tuple[ProducedArtifact, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.group_id.strip():
@@ -149,8 +150,13 @@ class GroupResult:
             raise ValueError(msg)
         task_ids: tuple[str, ...] = tuple(result.task_id for result in self.task_results)
         product_ids: tuple[str, ...] = tuple(product.artifact_id for product in self.products)
+        preserved_ids: tuple[str, ...] = tuple(product.artifact_id for product in self.preserved_products)
         _require_unique_result_ids(task_ids, "task result IDs")
         _require_unique_result_ids(product_ids, "product artifact IDs")
+        _require_unique_result_ids(preserved_ids, "preserved product artifact IDs")
+        if set(product_ids) & set(preserved_ids):
+            msg = "New and preserved products must be disjoint"
+            raise ValueError(msg)
         safe_messages: tuple[str, ...] = tuple(sanitize_event_message(message) or "" for message in self.error_messages)
         object.__setattr__(self, "error_messages", safe_messages)
         if any(not message.strip() for message in safe_messages):

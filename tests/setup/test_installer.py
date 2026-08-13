@@ -14,6 +14,7 @@ from anishift.setup.installer import (
     HashMismatchError,
     InstallCancelledError,
     InstallerError,
+    ResourceResult,
     ensure_binary,
     ensure_resource,
     extract_members,
@@ -218,6 +219,36 @@ def test_run_setup_installs_missing_and_isolates_failure(tmp_path: Path, monkeyp
     assert results["bad"].outcome == "failed"
     assert (dest_root / "good" / "good.exe").read_bytes() == b"MZ"
     assert not (dest_root / "bad" / "bad.exe").exists()
+
+
+def test_run_setup_can_install_without_terminal_progress(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive = _zip(tmp_path, {"root/tool.exe": b"MZ"})
+    resource = _resource(archive, [Member("root/tool.exe", "tool/tool.exe")])
+    dest_root = tmp_path / "bin"
+
+    def _fake_install(
+        selected: Resource,
+        *,
+        dest_root: Path,
+        force: bool,
+    ) -> ResourceResult:
+        del force
+        target = dest_root / selected.members[0].dest
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"MZ")
+        return ResourceResult(selected.name, "installed", "verified")
+
+    monkeypatch.setattr(installer, "is_windows", lambda: True)
+    monkeypatch.setattr(installer, "install_resource", _fake_install)
+    monkeypatch.setattr(
+        installer,
+        "MultiProgressManager",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("progress UI must stay silent")),
+    )
+
+    results = run_setup(resources=(resource,), dest_root=dest_root, show_progress=False)
+
+    assert [result.outcome for result in results] == ["installed"]
 
 
 def test_run_setup_swallows_network_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

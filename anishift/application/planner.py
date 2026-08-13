@@ -1020,6 +1020,7 @@ class _GroupPlanner:
             state=ArtifactState.MISSING,
             lifetime=ArtifactLifetime.DURABLE,
             planned_destination=destination,
+            preserved_path=existing.path if existing is not None else None,
             subtitle_format=subtitle_format,
             language=language,
             audio_codec=audio_codec,

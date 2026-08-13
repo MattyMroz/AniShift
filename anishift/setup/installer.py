@@ -423,8 +423,16 @@ def _collect(futures: dict[str, Future[ResourceResult]]) -> dict[str, ResourceRe
     return {name: _result_of(name, future) for name, future in futures.items()}
 
 
-def _install_parallel(to_install: list[Resource], dest_root: Path, *, force: bool) -> dict[str, ResourceResult]:
+def _install_parallel(
+    to_install: list[Resource],
+    dest_root: Path,
+    *,
+    force: bool,
+    show_progress: bool,
+) -> dict[str, ResourceResult]:
     """Download and install *to_install* in parallel, one progress bar per resource."""
+    if not show_progress:
+        return _install_parallel_silent(to_install, dest_root, force=force)
     cancel = threading.Event()
     futures: dict[str, Future[ResourceResult]] = {}
     try:
@@ -468,11 +476,32 @@ def _install_parallel(to_install: list[Resource], dest_root: Path, *, force: boo
     return _collect(futures)
 
 
+def _install_parallel_silent(
+    to_install: list[Resource],
+    dest_root: Path,
+    *,
+    force: bool,
+) -> dict[str, ResourceResult]:
+    futures: dict[str, Future[ResourceResult]] = {}
+    with ThreadPoolExecutor(max_workers=_MAX_PARALLEL) as pool:
+        futures = {
+            resource.name: pool.submit(
+                install_resource,
+                resource,
+                dest_root=dest_root,
+                force=force,
+            )
+            for resource in to_install
+        }
+    return _collect(futures)
+
+
 def run_setup(
     *,
     force: bool = False,
     resources: tuple[Resource, ...] | None = None,
     dest_root: Path | None = None,
+    show_progress: bool = True,
 ) -> list[ResourceResult]:
     """Install every manifest resource up front; never crash the caller.
 
@@ -485,6 +514,7 @@ def run_setup(
         force: Reinstall everything, even resources already present.
         resources: Manifest override for tests (defaults to :func:`load_manifest`).
         dest_root: Install-root override for tests (defaults to ``external/bin``).
+        show_progress: Render terminal progress bars for interactive CLI callers.
 
     Returns:
         One :class:`ResourceResult` per manifest resource, in manifest order.
@@ -507,7 +537,7 @@ def run_setup(
             to_install.append(resource)
 
     if to_install:
-        results.update(_install_parallel(to_install, root, force=force))
+        results.update(_install_parallel(to_install, root, force=force, show_progress=show_progress))
     ordered = [results[resource.name] for resource in loaded]
     logger.info(
         "Setup run completed",

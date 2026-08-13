@@ -562,6 +562,14 @@ def test_auto_never_uses_existing_derived_product_as_input() -> None:
     assert TaskKind.EXTRACT_SUBTITLES in _task_kinds(plan)
     assert TaskKind.TRANSLATE_SUBTITLES in _task_kinds(plan)
     assert any(problem.code == "product_overwrite" and not problem.is_blocking for problem in plan.problems)
+    target = next(
+        artifact
+        for artifact in plan.artifacts
+        if artifact.kind is ArtifactKind.FULL_PL
+        and artifact.state is ArtifactState.MISSING
+        and artifact.lifetime is ArtifactLifetime.DURABLE
+    )
+    assert target.preserved_path == previous.path
 
 
 def test_forced_translation_translates_declared_polish_source() -> None:

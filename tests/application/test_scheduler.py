@@ -384,6 +384,44 @@ def test_failed_group_does_not_stop_independent_group(tmp_path: Path) -> None:
     assert (tmp_path / "succeeds.pl.ass").is_file()
 
 
+def test_overwrite_reports_preserved_product_only_when_publication_fails(tmp_path: Path) -> None:
+    plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "publish", durable=True),))
+    target: Artifact = next(artifact for artifact in plan.artifacts if artifact.lifetime is ArtifactLifetime.DURABLE)
+    destination: Path = tmp_path / "publish.pl.ass"
+    destination.write_bytes(b"old")
+    target = Artifact(
+        target.artifact_id,
+        target.group_id,
+        target.kind,
+        target.path,
+        target.state,
+        target.lifetime,
+        target.planned_destination,
+        preserved_path=destination,
+    )
+    plan = ExecutionPlan(
+        plan.groups,
+        tuple(target if artifact.artifact_id == target.artifact_id else artifact for artifact in plan.artifacts),
+        plan.tasks,
+        plan.settings,
+        plan.problems,
+    )
+
+    succeeded, _, _ = _run(tmp_path, plan, _FakeHandler)
+    assert succeeded.groups[0].status is GroupStatus.SUCCEEDED
+    assert succeeded.groups[0].products
+    assert succeeded.groups[0].preserved_products == ()
+
+    destination.write_bytes(b"old-again")
+    failed, _, _ = _run(
+        tmp_path,
+        plan,
+        lambda run_root: _FakeHandler(run_root, failures={"publish": FatalError("failed")}),
+    )
+    assert failed.groups[0].status is GroupStatus.FAILED
+    assert failed.groups[0].preserved_products[0].path == destination
+
+
 def test_strict_natural_holds_later_result_and_group_event(tmp_path: Path) -> None:
     specs: tuple[_TaskSpec, ...] = (
         _TaskSpec("group-1", "slow"),

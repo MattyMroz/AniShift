@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from time import monotonic
 
+from anishift.application.events import RunEvent
 from anishift.application.inspection import InspectedWorkspace
 from anishift.application.intents import (
     BurnSubtitleProduct,
@@ -22,6 +23,7 @@ from anishift.application.intents import (
     TranslationAction,
 )
 from anishift.application.planning import ExecutionPlan
+from anishift.application.results import RunResult
 from anishift.application.service import AutoPresetDraft
 
 
@@ -44,6 +46,27 @@ class GroupIntentDraft:
     burn_subtitle_product: BurnSubtitleProduct = BurnSubtitleProduct.NONE
     mkv_tracks: set[MkvTrackProduct] = field(default_factory=set)
     mp4_audio_source: Mp4AudioSource = Mp4AudioSource.AUTO
+
+    @classmethod
+    def from_intent(cls, intent: GroupIntent) -> GroupIntentDraft:
+        """Restore every editable decision from an immutable group intent."""
+        return cls(
+            group_id=intent.group_id,
+            products=set(intent.products.requested_products),
+            subtitle_source_policy=intent.subtitle_source_policy,
+            translation_action=intent.translation_action,
+            selected_subtitle_artifact_id=intent.selected_subtitle_artifact_id,
+            selected_audio_artifact_id=intent.selected_audio_artifact_id,
+            selected_audio_track_id=intent.selected_audio_track_id,
+            selected_subtitle_track_id=intent.selected_subtitle_track_id,
+            source_subtitle_language=intent.source_subtitle_language,
+            subtitle_output_format=intent.subtitle_output_format,
+            preferred_video_artifact_id=intent.preferred_video_artifact_id,
+            external_audio_role=intent.external_audio_role,
+            burn_subtitle_product=intent.products.burn_subtitle_product,
+            mkv_tracks=set(intent.products.mkv_tracks),
+            mp4_audio_source=intent.products.mp4_audio_source,
+        )
 
     def clone_for(self, group_id: str) -> GroupIntentDraft:
         """Copy values into a draft with independent mutable product state."""
@@ -93,6 +116,10 @@ class SessionState:
     auto_draft: AutoPresetDraft | None = None
     manual_drafts: dict[str, GroupIntentDraft] = field(default_factory=dict)
     preview_plan: ExecutionPlan | None = None
+    run_result: RunResult | None = None
+    run_error: str | None = None
+    run_events: list[RunEvent] = field(default_factory=list)
+    pending_tool_action: str | None = None
     _started_at: float | None = None
     _clock: Callable[[], float] = monotonic
 
@@ -113,6 +140,9 @@ class SessionState:
         self.generation += 1
         self.run_state = "running"
         self.active_run_id = None
+        self.run_result = None
+        self.run_error = None
+        self.run_events.clear()
         self._started_at = self._clock()
         return self.generation
 

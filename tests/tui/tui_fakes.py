@@ -13,7 +13,9 @@ from anishift.application.artifacts import (
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace
 from anishift.application.intents import AutoPreset, ProductIntent, ProductKind
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
-from anishift.application.service import AppService
+from anishift.application.service import AppService, EngineAvailability
+from anishift.config.field_catalog import setting_catalog
+from anishift.config.user_settings import UserSettings
 
 
 def inspected_workspace(count: int = 20) -> InspectedWorkspace:
@@ -63,4 +65,8 @@ def app_service(workspace: InspectedWorkspace | None = None) -> Mock:
     )
     facade.plan_auto.return_value = plan
     facade.plan_manual.return_value = plan
+    facade.engine_availability.return_value = (EngineAvailability("translation", "google", True, "ready"),)
+    facade.settings_snapshot.return_value = UserSettings()
+    facade.settings_catalog.return_value = setting_catalog()
+    facade.environment_statuses.return_value = {}
     return facade

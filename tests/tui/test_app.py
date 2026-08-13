@@ -12,10 +12,12 @@ from anishift.application.inspection import InspectedWorkspace
 from anishift.application.intents import AutoPreset, ProductIntent, ProductKind
 from anishift.application.planning import ExecutionPlan
 from anishift.application.results import GroupResult, GroupStatus, RunResult
-from anishift.application.service import AppService
+from anishift.application.service import AppService, EngineAvailability
+from anishift.config.field_catalog import setting_catalog
+from anishift.config.user_settings import UserSettings
 from anishift.tui.app import AniShiftApp
 from anishift.tui.messages import RunEventsReceived
-from anishift.tui.screens import AutoScreen, ManualScreen, SettingsScreen, ToolsScreen, WorkspaceScreen
+from anishift.tui.screens import AutoScreen, ManualScreen, ResultsScreen, SettingsScreen, ToolsScreen, WorkspaceScreen
 from anishift.tui.widgets.command_bar import (
     COMMAND_FEEDBACK_ID,
     COMMAND_INPUT_ID,
@@ -30,6 +32,12 @@ def _service() -> Mock:
     preset = AutoPreset("default", "Default", ProductIntent(frozenset({ProductKind.FULL_PL})))
     service.list_presets.return_value = (preset,)
     service.get_preset.return_value = preset
+    service.settings_snapshot.return_value = UserSettings()
+    service.settings_catalog.return_value = setting_catalog()
+    service.environment_statuses.return_value = {}
+    service.engine_availability.return_value = (EngineAvailability("translation", "google", True, "ready"),)
+    service.doctor.return_value = ()
+    service.setup.return_value = ()
     return service
 
 
@@ -85,8 +93,8 @@ async def _assert_routes_and_persistent_shell() -> None:
         await _submit(app, pilot, "help")
         feedback = app.screen.query_one(f"#{COMMAND_FEEDBACK_ID}", Static)
         assert "Commands: auto, manual" in _rendered(feedback)
-        service.doctor.assert_not_called()
-        service.setup.assert_not_called()
+        service.doctor.assert_called_once()
+        service.setup.assert_called_once_with(force=False)
 
 
 def test_commands_route_without_calling_application_workflows() -> None:
@@ -203,3 +211,28 @@ async def _assert_fast_run_drains_state_events_before_completion() -> None:
 
 def test_fast_run_drains_state_events_before_completion() -> None:
     asyncio.run(_assert_fast_run_drains_state_events_before_completion())
+
+
+async def _assert_worker_failure_recovers_shell() -> None:
+    service = _service()
+
+    def fail(_plan: ExecutionPlan, sink: RunEventSink) -> RunResult:
+        sink.emit(RunEvent("run-failed", 1, RunEventKind.RUN_STARTED))
+        raise RuntimeError(r'failed C:\Users\name\Episode.mkv token="secret"')
+
+    service.execute.side_effect = fail
+    app = AniShiftApp(service)
+    app.session.run_result = RunResult("old", (GroupResult("old-group", GroupStatus.SUCCEEDED),))
+    plan = cast(ExecutionPlan, Mock(spec=ExecutionPlan))
+    async with app.run_test(size=(100, 30)) as pilot:
+        assert await app.start_execution(plan) is True
+        await pilot.pause(0.2)
+        assert app.session.run_state == "failed"
+        assert app.session.run_result is None
+        assert app.session.run_error == "failed <path> token=<redacted>"
+        assert isinstance(app.screen, ResultsScreen)
+        assert "failed <path> token=<redacted>" in _rendered(app.screen.query_one("#result-details", Static))
+
+
+def test_unexpected_worker_failure_returns_to_results_safely() -> None:
+    asyncio.run(_assert_worker_failure_recovers_shell())

@@ -65,6 +65,19 @@ def test_cancelled_run_can_preserve_products_completed_before_cancel() -> None:
     assert result.groups[0].products
 
 
+def test_group_result_distinguishes_old_product_preserved_during_replacement() -> None:
+    preserved = ProducedArtifact("full-pl", Path("workspace/Episode.pl.ass"), {"preserved": True})
+    group = GroupResult(
+        group_id="group-1",
+        status=GroupStatus.FAILED,
+        error_messages=("Replacement failed",),
+        preserved_products=(preserved,),
+    )
+
+    assert group.products == ()
+    assert group.preserved_products == (preserved,)
+
+
 def test_partial_and_failed_statuses_are_not_interchangeable() -> None:
     with pytest.raises(ValueError, match="Partial"):
         GroupResult(group_id="group-1", status=GroupStatus.PARTIAL)

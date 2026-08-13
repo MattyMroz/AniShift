@@ -214,7 +214,7 @@ class ArtifactStore:
         metadata: dict[str, str | int | bool] = dict(output.metadata)
         metadata["published"] = True
         registered = ProducedArtifact(output.artifact_id, destination, metadata)
-        artifact = replace(planned, path=destination, state=ArtifactState.READY)
+        artifact = replace(planned, path=destination, state=ArtifactState.READY, preserved_path=None)
         return artifact, registered
 
 
@@ -343,15 +343,29 @@ def build_group_result(group_id: str, runtime: SchedulerRuntime) -> GroupResult:
         for output in result.outputs
         if runtime.store.artifact(output.artifact_id).lifetime is ArtifactLifetime.DURABLE
     )
+    product_ids: frozenset[str] = frozenset(product.artifact_id for product in products)
+    preserved_products: tuple[ProducedArtifact, ...] = tuple(
+        ProducedArtifact(artifact.artifact_id, artifact.preserved_path, {"preserved": True})
+        for artifact_id in group.artifact_ids
+        if (artifact := runtime.store.artifact(artifact_id)).preserved_path is not None
+        and artifact.artifact_id not in product_ids
+    )
     task_states: tuple[TaskState, ...] = tuple(runtime.state.task_states[task_id] for task_id in group.task_ids)
     errors: tuple[str, ...] = tuple(runtime.state.errors[group_id])
     if any(task_state is TaskState.CANCELLED for task_state in task_states):
-        return GroupResult(group_id, GroupStatus.CANCELLED, task_results, products, (*errors, "Cancelled"))
+        return GroupResult(
+            group_id,
+            GroupStatus.CANCELLED,
+            task_results,
+            products,
+            (*errors, "Cancelled"),
+            preserved_products,
+        )
     if any(task_state in {TaskState.FAILED, TaskState.BLOCKED} for task_state in task_states):
         status: GroupStatus = GroupStatus.PARTIAL if products else GroupStatus.FAILED
         failure_messages: tuple[str, ...] = errors or ("A required task failed",)
-        return GroupResult(group_id, status, task_results, products, failure_messages)
-    return GroupResult(group_id, GroupStatus.SUCCEEDED, task_results, products)
+        return GroupResult(group_id, status, task_results, products, failure_messages, preserved_products)
+    return GroupResult(group_id, GroupStatus.SUCCEEDED, task_results, products, preserved_products=preserved_products)
 
 
 def group_event_state(group_id: str, state: RunState) -> TaskState:

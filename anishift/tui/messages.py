@@ -36,6 +36,15 @@ class RunCompleted(Message):
         self.result: RunResult = result
 
 
+class RunFailed(Message):
+    """Sanitized unexpected application-boundary failure."""
+
+    def __init__(self, generation: int, error: str) -> None:
+        super().__init__()
+        self.generation: int = generation
+        self.error: str = error
+
+
 class WorkspaceInspected(Message):
     """Completed inspection result tagged with its request generation."""
 
