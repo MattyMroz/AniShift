@@ -18,7 +18,7 @@ def _raise_inside_session(run_root: Path) -> None:
 
 
 def test_run_session_cleans_successful_scope_and_rejects_late_generation(tmp_path: Path) -> None:
-    run_root = tmp_path / "run-1"
+    run_root = tmp_path / "temp" / "run-1"
     session = RunSession(run_root)
 
     with session:
@@ -32,7 +32,7 @@ def test_run_session_cleans_successful_scope_and_rejects_late_generation(tmp_pat
 
 
 def test_run_session_cleans_scope_after_exception(tmp_path: Path) -> None:
-    run_root = tmp_path / "run-1"
+    run_root = tmp_path / "temp" / "run-1"
 
     with pytest.raises(RuntimeError, match="handler failed"):
         _raise_inside_session(run_root)
@@ -41,7 +41,7 @@ def test_run_session_cleans_scope_after_exception(tmp_path: Path) -> None:
 
 
 def test_run_session_cleans_scope_after_cancel(tmp_path: Path) -> None:
-    run_root = tmp_path / "run-1"
+    run_root = tmp_path / "temp" / "run-1"
     cancel = EventCancellationToken()
 
     with RunSession(run_root) as session:
@@ -53,8 +53,8 @@ def test_run_session_cleans_scope_after_cancel(tmp_path: Path) -> None:
 
 
 def test_run_session_refuses_existing_directory_without_deleting_it(tmp_path: Path) -> None:
-    run_root = tmp_path / "run-1"
-    run_root.mkdir()
+    run_root = tmp_path / "temp" / "run-1"
+    run_root.mkdir(parents=True)
     sentinel = run_root / "owned-by-other-process"
     sentinel.write_text("keep", encoding="utf-8")
 
@@ -65,7 +65,7 @@ def test_run_session_refuses_existing_directory_without_deleting_it(tmp_path: Pa
 
 
 def test_old_session_does_not_delete_recreated_root_owned_by_another_run(tmp_path: Path) -> None:
-    run_root = tmp_path / "run-1"
+    run_root = tmp_path / "temp" / "run-1"
     session = RunSession(run_root)
     session.__enter__()
     shutil.rmtree(run_root)
@@ -80,7 +80,7 @@ def test_old_session_does_not_delete_recreated_root_owned_by_another_run(tmp_pat
 
 
 def test_active_session_claim_prevents_same_process_reuse_after_root_disappears(tmp_path: Path) -> None:
-    run_root = tmp_path / "run-1"
+    run_root = tmp_path / "temp" / "run-1"
     first = RunSession(run_root)
 
     with first:
@@ -92,7 +92,7 @@ def test_active_session_claim_prevents_same_process_reuse_after_root_disappears(
 def test_failed_enter_releases_process_local_root_claim(tmp_path: Path) -> None:
     parent = tmp_path / "blocked-parent"
     parent.write_text("file", encoding="utf-8")
-    run_root = parent / "run-1"
+    run_root = parent / "temp" / "run-1"
 
     with pytest.raises(RunConflictError, match="already in use"):
         RunSession(run_root).__enter__()
@@ -103,7 +103,7 @@ def test_failed_enter_releases_process_local_root_claim(tmp_path: Path) -> None:
 
 
 def test_group_temp_rejects_escape_and_inactive_session(tmp_path: Path) -> None:
-    session = RunSession(tmp_path / "run-1")
+    session = RunSession(tmp_path / "temp" / "run-1")
 
     with pytest.raises(ExecutionError, match="active"):
         session.group_temp("group-1")
@@ -111,8 +111,13 @@ def test_group_temp_rejects_escape_and_inactive_session(tmp_path: Path) -> None:
         session.group_temp("../outside")
 
 
+def test_run_session_rejects_a_root_outside_workspace_temp(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="workspace/temp"):
+        RunSession(tmp_path / "run-1")
+
+
 def test_generation_commit_is_serialized_with_session_close(tmp_path: Path) -> None:
-    run_root = tmp_path / "run-1"
+    run_root = tmp_path / "temp" / "run-1"
     destination = tmp_path / "published.ass"
     session = RunSession(run_root)
     session.__enter__()

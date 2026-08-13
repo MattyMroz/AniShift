@@ -89,7 +89,7 @@ class _FakeRuntime:
                 source=source,
                 narration=narration,
                 source_audio_path=source_audio_path,
-                temporary_root=self.root / "tmp" / narration.speech.scope_id / "audio",
+                temporary_root=self.root / "temp" / narration.speech.scope_id / "audio",
                 post_process_tempo=1.0,
             ),
         )
@@ -283,7 +283,7 @@ def test_deferred_tts_outcome_is_not_processed_in_final_report(tmp_path: Path) -
         source=source,
         narration=narration,
         source_audio_path=None,
-        temporary_root=tmp_path / "tmp",
+        temporary_root=tmp_path / "temp",
         post_process_tempo=1.0,
     )
     failure = TtsQueueFailure(
@@ -317,7 +317,7 @@ def test_extract_cleanup_preserves_tts_and_audio_scope_directories(
     source = tmp_path / "Episode.mkv"
     source.touch()
     scope_id = scope_id_for_source(source, workspace_root=tmp_path)
-    scope_root = tmp_path / "tmp" / scope_id
+    scope_root = tmp_path / "temp" / scope_id
     tts_marker = scope_root / "tts" / "clip.bin"
     audio_marker = scope_root / "audio" / "mix.bin"
     scratch_marker = scope_root / "extract-scratch" / "stale.bin"
@@ -402,7 +402,7 @@ def test_tts_outcome_exposes_speech_stats_and_timeline_placements(
         source=source,
         narration=narration,
         source_audio_path=None,
-        temporary_root=tmp_path / "tmp",
+        temporary_root=tmp_path / "temp",
         post_process_tempo=1.0,
     )
 

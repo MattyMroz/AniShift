@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import shutil
+import json
+import os
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -10,17 +11,16 @@ from secrets import token_hex
 from types import TracebackType
 from typing import Final, Literal
 
+from anishift.config.workspace import RUN_OWNER_MARKER_NAME, group_temp_dir, run_temp_dir
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, RunConflictError
 from anishift.utils.logger import get_logger
+from anishift.utils.safe_fs import safe_rmtree
 
 __all__ = ["RunSession"]
 
 logger = get_logger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
-
-_OWNER_MARKER_NAME: Final[str] = ".anishift-owner"
-"""Private marker proving that a run root still belongs to this session."""
 
 _ACTIVE_ROOTS: Final[set[Path]] = set()
 """Normalized run roots currently claimed by this AniShift process."""
@@ -34,6 +34,7 @@ class RunSession:
 
     __slots__ = (
         "_active",
+        "_cleanup_warnings",
         "_generation",
         "_lock",
         "_owner_token",
@@ -43,14 +44,16 @@ class RunSession:
 
     def __init__(self, run_root: Path) -> None:
         """Store an explicit run directory that this session alone will create."""
-        if run_root.name in {"", ".", ".."} or run_root.parent == run_root:
-            msg = "Run root must identify one dedicated child directory"
+        expected: Path = run_temp_dir(run_root.parent.parent, run_root.name)
+        if run_root != expected:
+            msg = "Run root must be an exact workspace/temp child directory"
             raise ValueError(msg)
         self._run_root: Path = run_root
         self._registry_key: Path = run_root.resolve(strict=False)
         self._owner_token: str = token_hex(32)
         self._generation: int = 1
         self._active: bool = False
+        self._cleanup_warnings: list[str] = []
         self._lock: threading.Lock = threading.Lock()
 
     def __enter__(self) -> RunSession:
@@ -72,7 +75,12 @@ class RunSession:
             try:
                 self._run_root.parent.mkdir(parents=True, exist_ok=True)
                 self._run_root.mkdir()
-                self._owner_marker().write_text(self._owner_token, encoding="utf-8")
+                marker: dict[str, str | int] = {
+                    "pid": os.getpid(),
+                    "run_id": self._run_root.name,
+                    "token": self._owner_token,
+                }
+                self._owner_marker().write_text(json.dumps(marker, sort_keys=True), encoding="utf-8")
             except FileExistsError as error:
                 _release_root(self._registry_key)
                 context = ErrorContext(
@@ -114,6 +122,12 @@ class RunSession:
         """Return the exact directory exclusively owned by this session."""
         return self._run_root
 
+    @property
+    def cleanup_warnings(self) -> tuple[str, ...]:
+        """Return non-fatal cleanup failures for the enclosing run result."""
+        with self._lock:
+            return tuple(self._cleanup_warnings)
+
     def group_temp(self, group_id: str) -> Path:
         """Create and return one group directory inside the active run root."""
         if not group_id.strip() or Path(group_id).name != group_id or group_id in {".", ".."}:
@@ -123,7 +137,11 @@ class RunSession:
             if not self._active:
                 msg = "Run session must be active before creating group temporary files"
                 raise ExecutionError(msg)
-            group_root: Path = self._run_root / group_id
+            group_root: Path = group_temp_dir(
+                self._run_root.parent.parent,
+                self._run_root.name,
+                group_id,
+            )
             group_root.mkdir(exist_ok=True)
             return group_root
 
@@ -141,12 +159,18 @@ class RunSession:
             return True
 
     def _owner_marker(self) -> Path:
-        return self._run_root / _OWNER_MARKER_NAME
+        return self._run_root / RUN_OWNER_MARKER_NAME
 
     def _owns_run_root(self) -> bool:
         try:
-            return self._owner_marker().read_text(encoding="utf-8") == self._owner_token
-        except OSError:
+            payload: object = json.loads(self._owner_marker().read_text(encoding="utf-8"))
+            return (
+                isinstance(payload, dict)
+                and payload.get("pid") == os.getpid()
+                and payload.get("run_id") == self._run_root.name
+                and payload.get("token") == self._owner_token
+            )
+        except OSError, UnicodeError, json.JSONDecodeError:
             return False
 
     def _cleanup(self, exception: BaseException | None) -> None:
@@ -161,19 +185,14 @@ class RunSession:
             )
             raise RunConflictError(context=context)
         try:
-            shutil.rmtree(self._run_root)
+            safe_rmtree(self._run_root)
         except FileNotFoundError:
             return
-        except OSError as error:
-            if exception is not None:
-                logger.warning("Workflow run cleanup failed after another error")
-                return
-            context = ErrorContext(
-                code=ErrorCode.IO_ERROR,
-                message="Workflow run cleanup failed",
-                suggestion="Close programs using temporary AniShift files and retry.",
-            )
-            raise ExecutionError(context=context) from error
+        except OSError:
+            warning: str = "Workflow run cleanup failed; AniShift will retry it on the next start."
+            with self._lock:
+                self._cleanup_warnings.append(warning)
+            logger.warning("Workflow run cleanup failed", had_prior_error=exception is not None)
 
 
 def _claim_root(root: Path) -> bool:

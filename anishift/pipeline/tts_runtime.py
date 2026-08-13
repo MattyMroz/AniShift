@@ -465,7 +465,7 @@ class PipelineTtsRuntime:
             )
             resolved_tts: _TtsBatchService = TtsService(
                 tts_config,
-                resume_root=workspace_root / "tmp",
+                resume_root=workspace_root / "temp",
                 validator=clip_adapter,
                 assembler=clip_adapter,
             )
@@ -570,7 +570,7 @@ class PipelineTtsRuntime:
                 source=source,
                 narration=narration,
                 source_audio_path=source_audio_path,
-                temporary_root=self._workspace_root / "tmp" / scope_id / "audio",
+                temporary_root=self._workspace_root / "temp" / scope_id / "audio",
                 post_process_tempo=self._post_process_tempo,
             ),
         )

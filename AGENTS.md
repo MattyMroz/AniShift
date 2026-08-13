@@ -68,7 +68,7 @@ Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit
 
 ## Dane runtime
 
-- `workspace/` — dozwolone tylko podfoldery `tmp/` i `output/`. Zero `input/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`.
+- `workspace/` — dozwolony jest tylko zarządzany podfolder `temp/`; trwałe produkty leżą obok źródła. Zero `input/`, `output/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`.
 - Preferencje panelu: `config/settings.json` (obok kodu, gitignored, poza workspace).
 - Settings API/env: pydantic-settings, prefix `ANISHIFT_`, z `.env`, wszystkie opcjonalne.
 - Diagnostyka runtime używa wyłącznie `from anishift.utils.logger import get_logger`

@@ -1113,7 +1113,7 @@ def _extract_mkv(  # noqa: PLR0911,PLR0913 - distinct outcomes and explicit depe
     scope_id: str = ""
     try:
         scope_id = scope_id_for_source(mkv, workspace_root=workspace_root)
-        work_dir: Path = workspace_root / "tmp" / scope_id / "extract-scratch"
+        work_dir: Path = workspace_root / "temp" / scope_id / "extract-scratch"
         if work_dir.exists():
             safe_rmtree(work_dir)
         work_dir.mkdir(parents=True)

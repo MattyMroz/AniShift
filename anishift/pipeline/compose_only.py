@@ -105,7 +105,7 @@ def extracted_polish_outcome(
     if not proposal.already_polish or proposal.subtitle_id is None:
         return None
     scope_id: str = scope_id_for_source(source, workspace_root=workspace_root)
-    work_dir: Path = workspace_root / "tmp" / scope_id / "compose"
+    work_dir: Path = workspace_root / "temp" / scope_id / "compose"
     work_dir.mkdir(parents=True, exist_ok=True)
     extracted: LegacyExtractionResult = extract_tracks(
         info,

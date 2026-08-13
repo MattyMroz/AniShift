@@ -97,7 +97,7 @@ def build_plan(
     displayed-only stream whenever a lector exists.
     """
     destination: Path = _destination_dir(outcome, variant=variant, workspace_root=workspace_root)
-    temporary_root: Path = workspace_root / "tmp" / scope_id
+    temporary_root: Path = workspace_root / "temp" / scope_id
     if variant is OutputVariant.BURN:
         burn_subtitle: Path | None = _burn_subtitle(outcome)
         if burn_subtitle is None and outcome.mixed_audio_path is None:
@@ -157,9 +157,8 @@ def _burn_subtitle(outcome: FileOutcome) -> Path | None:
 
 def _destination_dir(outcome: FileOutcome, *, variant: OutputVariant, workspace_root: Path) -> Path:
     """Return where the artifact belongs for the requested variant."""
-    if variant is OutputVariant.PLAYERS:
-        return outcome.source.parent
-    return workspace_root / "output"
+    del variant, workspace_root
+    return outcome.source.parent
 
 
 def estimate_burn_cost(plans: tuple[CompositionPlan, ...], *, ffprobe: Path) -> BurnEstimate:
@@ -271,7 +270,7 @@ def _compose_one(  # noqa: PLR0913 - one explicit argument per composition conce
 
 def _discard_scope(workspace_root: Path, scope_id: str) -> None:
     """Remove the transient working directory of one finished file."""
-    scope_dir: Path = workspace_root / "tmp" / scope_id
+    scope_dir: Path = workspace_root / "temp" / scope_id
     if not scope_dir.exists():
         return
     try:

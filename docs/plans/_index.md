@@ -30,7 +30,7 @@ etapy 5 i 6 mogły iść równolegle. decyzje etapu 9 są podejmowane po zamkni�
 ## reguły obowiązujące w każdym etapie
 
 - każdy etap kończy się działającą apką (zero half-done).
-- pliki pośrednie powstają obok MKV w `workspace/`; robocze w `workspace/tmp/`; wyniki w `output/` tylko gdy włączone w `/settings`.
+- trwałe produkty powstają obok źródła w `workspace/`; dane robocze jednego runu trafiają do `workspace/temp/` i są sprzątane po zakończeniu.
 - domenowe configi: dataclass `slots=True`, wymagany `engine_id` bez defaultu — default trzyma panel (`config/settings.json`).
 - błędy domenowe (podklasy `anishift/errors.py`), nigdy `sys.exit()` ani goły traceback do usera.
 - `utils/` — dawniej nietykalne; reguła zniesiona, całość docelowo doprowadzana do standardu (patrz issue #21).

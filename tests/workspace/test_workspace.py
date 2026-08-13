@@ -27,14 +27,14 @@ def test_ensure_workspace_dir_creates_only_default_subdirs(tmp_path: Path) -> No
     ensure_workspace_dir(root)
     assert root.is_dir()
     assert sorted(p.name for p in root.iterdir()) == sorted(DEFAULT_SUBDIRS)
+    assert DEFAULT_SUBDIRS == ("temp",)
 
 
 def test_ensure_workspace_dir_is_idempotent(tmp_path: Path) -> None:
     root = tmp_path / "ws"
     ensure_workspace_dir(root)
     ensure_workspace_dir(root)
-    assert (root / "tmp").is_dir()
-    assert (root / "output").is_dir()
+    assert (root / "temp").is_dir()
 
 
 def test_ensure_workspace_dir_rejects_file_collision(tmp_path: Path) -> None:

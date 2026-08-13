@@ -51,7 +51,7 @@ def test_workspace_ok_with_env_override(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
     result = check_workspace()
     assert result.status is CheckStatus.OK
-    assert (tmp_path / "tmp").is_dir()
+    assert (tmp_path / "temp").is_dir()
 
 
 def test_run_doctor_returns_all_checks() -> None:
