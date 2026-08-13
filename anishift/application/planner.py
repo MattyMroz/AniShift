@@ -294,7 +294,7 @@ class _GroupPlanner:
             requires=(source,),
             produces=(translated,),
             variant="txt",
-            resource_key=f"translation:{self.settings.translation_profile_id}",
+            resource_key=_translation_resource_key(self.settings),
             parameters=(("source_kind", "txt"), ("output_format", "srt")),
             is_network=self.settings.translation_is_network,
             is_paid=self.settings.translation_is_paid,
@@ -612,7 +612,7 @@ class _GroupPlanner:
                 requires=(source,),
                 produces=(full,),
                 variant="polish",
-                resource_key=f"translation:{self.settings.translation_profile_id}",
+                resource_key=_translation_resource_key(self.settings),
                 parameters=(("output_format", output_format),),
                 is_network=self.settings.translation_is_network,
                 is_paid=self.settings.translation_is_paid,
@@ -676,9 +676,7 @@ class _GroupPlanner:
             requires=(full,),
             produces=tuple(outputs),
             variant="polish",
-            resource_key=f"llm:{self.settings.llm_profile_id}",
-            is_network=self.settings.llm_is_network,
-            is_paid=self.settings.llm_is_paid,
+            resource_key="subtitles",
         )
 
     def _convert_partial_product(self, source: Artifact, requested_kind: ProductKind) -> Artifact:
@@ -1170,6 +1168,12 @@ def _track_rank(track: _MediaTrackView, priorities: tuple[str, ...]) -> tuple[in
 def _task_id(group_id: str, kind: TaskKind, variant: str) -> str:
     digest: str = sha256(f"{group_id}:{kind.value}:{variant.casefold()}".encode()).hexdigest()
     return f"task-{kind.value}-{digest[:12]}"
+
+
+def _translation_resource_key(settings: RunSettingsSnapshot) -> str:
+    if settings.translation_profile_id == "llm":
+        return f"llm:{settings.llm_profile_id}"
+    return f"translation:{settings.translation_profile_id}"
 
 
 def _artifact_path_key(artifact: Artifact) -> tuple[str, str, str]:

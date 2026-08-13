@@ -36,6 +36,7 @@ from anishift.application.planning import (
     RunSettingsSnapshot,
     TaskKind,
 )
+from anishift.application.scheduler import ResourceLimits
 from anishift.errors import PlanningError
 from anishift.services.media.types import ContainerKind, MediaCatalog, MediaTrack, MediaTrackKind
 
@@ -222,9 +223,30 @@ def test_auto_sidecar_translation_narration_and_mkv_share_only_needed_tasks() ->
     assert TaskKind.EXTRACT_SUBTITLES not in kinds
     assert kinds.count(TaskKind.TRANSLATE_SUBTITLES) == 1
     assert kinds.count(TaskKind.SPLIT_SUBTITLES) == 1
+    split = next(task for task in plan.tasks if task.kind is TaskKind.SPLIT_SUBTITLES)
+    assert split.resource_key == "subtitles"
+    assert split.is_network is False
+    assert split.is_paid is False
     assert kinds.count(TaskKind.SYNTHESIZE_SPEECH) == 1
     assert kinds.count(TaskKind.MIX_NARRATION) == 1
     assert kinds.count(TaskKind.COMPOSE_MKV) == 1
+
+
+def test_llm_translation_uses_the_llm_worker_limit() -> None:
+    video = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    products = ProductIntent(frozenset({ProductKind.FULL_PL}))
+    settings = replace(
+        _settings(),
+        translation_profile_id="llm",
+        translation_concurrency=16,
+        llm_profile_id="gemini",
+        llm_max_concurrency=1,
+    )
+    plan = plan_auto((_group(video),), _preset(products), settings)
+    task = _task(plan, TaskKind.TRANSLATE_SUBTITLES)
+    limits = ResourceLimits.from_settings(settings)
+    assert task.resource_key == "llm:gemini"
+    assert limits.worker_limit(task.resource_key, settings) == 1
 
 
 def test_manual_ready_polish_builds_narration_without_translation() -> None:

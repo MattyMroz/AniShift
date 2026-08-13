@@ -11,6 +11,7 @@ if TYPE_CHECKING:
         InspectionWarning,
         WorkspaceInspector,
     )
+    from anishift.application.service import AppService, AutoPresetDraft, ExecutionHandlerFactory, SettingsDraft
 
 from anishift.application.artifacts import (
     Artifact,
@@ -66,18 +67,21 @@ from anishift.application.results import (
 )
 
 __all__ = [
+    "AppService",
     "Artifact",
     "ArtifactKind",
     "ArtifactLifetime",
     "ArtifactSnapshot",
     "ArtifactState",
     "AutoPreset",
+    "AutoPresetDraft",
     "BurnSubtitleProduct",
     "CancellationToken",
     "DiscoveryResult",
     "DiscoveryWarning",
     "EventBuffer",
     "EventCancellationToken",
+    "ExecutionHandlerFactory",
     "ExecutionPlan",
     "ExternalAudioRole",
     "GroupConflict",
@@ -104,6 +108,7 @@ __all__ = [
     "RunMode",
     "RunResult",
     "RunSettingsSnapshot",
+    "SettingsDraft",
     "SourceGroup",
     "SubtitleOutputFormat",
     "SubtitleSourcePolicy",
@@ -119,11 +124,15 @@ __all__ = [
 ]
 
 _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "AppService": ("anishift.application.service", "AppService"),
+    "AutoPresetDraft": ("anishift.application.service", "AutoPresetDraft"),
     "DiscoveryResult": ("anishift.application.discovery", "DiscoveryResult"),
     "DiscoveryWarning": ("anishift.application.discovery", "DiscoveryWarning"),
     "InspectedSourceGroup": ("anishift.application.inspection", "InspectedSourceGroup"),
     "InspectedWorkspace": ("anishift.application.inspection", "InspectedWorkspace"),
     "InspectionWarning": ("anishift.application.inspection", "InspectionWarning"),
+    "ExecutionHandlerFactory": ("anishift.application.service", "ExecutionHandlerFactory"),
+    "SettingsDraft": ("anishift.application.service", "SettingsDraft"),
     "WorkspaceInspector": ("anishift.application.inspection", "WorkspaceInspector"),
 }
 """I/O exports loaded only when requested, avoiding eager package import cycles."""

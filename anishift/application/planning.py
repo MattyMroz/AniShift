@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Final
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
 from anishift.application.intents import GroupIntent
 from anishift.errors import PlanningError
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+_MAX_LLM_TEMPERATURE: Final[float] = 2.0
+"""Maximum provider-neutral LLM sampling temperature."""
 
 
 class TaskKind(StrEnum):
@@ -136,6 +143,7 @@ class RunSettingsSnapshot:
     audio_profile_id: str
     composition_profile_id: str
     processing_order_policy: ProcessingOrderPolicy
+    tts_request_concurrency: int = 1
     audio_output_profile: str = "eac3"
     audio_duration_tolerance_us: int = 1_000_000
     subtitle_language_priority: tuple[str, ...] = ("eng",)
@@ -146,36 +154,108 @@ class RunSettingsSnapshot:
     llm_is_paid: bool = True
     tts_is_network: bool = True
     tts_is_paid: bool = True
+    translation_batch_size: int = 0
+    llm_model_id: str = "default"
+    llm_temperature: float | None = None
+    llm_top_p: float | None = None
+    llm_max_output_tokens: int | None = None
+    llm_prompt_id: str = "anime_translation_v1"
+    llm_style_id: str = "natural_polish_v1"
+    llm_module_ids: tuple[str, ...] = ()
+    tts_model_id: str = "default"
+    tts_voice_id: str = "default"
+    tts_native_rate: str | float | None = None
+    tts_native_volume: str | float | None = None
+    tts_native_pitch: str | float | None = None
+    tts_engine_options: tuple[tuple[str, str | int | float | bool | None], ...] = ()
+    tts_vpn_enabled: bool = True
+    tts_postprocess_tempo: float = 1.0
+    audio_bitrate: str | None = None
+    narrator_mix_base_gain_db: float = 7.0
+    voice_mix_offset_db: float = 0.0
+    original_gain_db: float = 0.0
+    tts_timeline_policy: str = "serialize"
 
     def __post_init__(self) -> None:
-        profile_ids: tuple[str, ...] = (
-            self.translation_profile_id,
-            self.llm_profile_id,
-            self.tts_profile_id,
-            self.audio_profile_id,
-            self.composition_profile_id,
-        )
-        if any(not profile_id.strip() for profile_id in profile_ids):
-            msg = "Run setting profile IDs cannot be empty"
-            raise ValueError(msg)
-        _require_unique(self.translation_fallback_chain, "translation fallback profiles")
-        if self.translation_profile_id in self.translation_fallback_chain:
-            msg = "Primary translation profile cannot repeat in its fallback chain"
-            raise ValueError(msg)
-        _require_range(self.translation_max_retries, 0, 10, "translation retries")
-        _require_range(self.translation_concurrency, 1, 16, "translation concurrency")
-        _require_range(self.llm_max_concurrency, 1, 4, "LLM concurrency")
-        _require_range(self.tts_max_retries, 0, 10, "TTS retries")
-        _require_range(self.tts_group_jobs, 1, 100, "TTS group jobs")
-        supported_audio_profiles: frozenset[str] = frozenset({"aac", "eac3", "mp3", "opus", "flac", "wav"})
-        if self.audio_output_profile.casefold() not in supported_audio_profiles:
-            msg = "Audio output profile is unsupported"
-            raise ValueError(msg)
-        if self.audio_duration_tolerance_us < 0:
-            msg = "Audio duration tolerance cannot be negative"
-            raise ValueError(msg)
+        _validate_profile_settings(self)
+        _validate_runtime_settings(self)
         _require_unique(self.subtitle_language_priority, "subtitle language priorities")
         _require_unique(self.audio_language_priority, "audio language priorities")
+
+
+def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
+    profile_ids: tuple[str, ...] = (
+        settings.translation_profile_id,
+        settings.llm_profile_id,
+        settings.tts_profile_id,
+        settings.audio_profile_id,
+        settings.composition_profile_id,
+    )
+    if any(not profile_id.strip() for profile_id in profile_ids):
+        msg = "Run setting profile IDs cannot be empty"
+        raise ValueError(msg)
+    _require_unique(settings.translation_fallback_chain, "translation fallback profiles")
+    if settings.translation_profile_id in settings.translation_fallback_chain:
+        msg = "Primary translation profile cannot repeat in its fallback chain"
+        raise ValueError(msg)
+    _require_range(settings.translation_max_retries, 0, 10, "translation retries")
+    _require_range(settings.translation_concurrency, 1, 16, "translation concurrency")
+    _require_range(settings.llm_max_concurrency, 1, 4, "LLM concurrency")
+    _require_range(settings.tts_max_retries, 0, 10, "TTS retries")
+    _require_range(settings.tts_group_jobs, 1, 100, "TTS group jobs")
+    _require_range(settings.tts_request_concurrency, 1, 100, "TTS request concurrency")
+    supported_audio_profiles: frozenset[str] = frozenset({"aac", "eac3", "mp3", "opus", "flac", "wav"})
+    if settings.audio_output_profile.casefold() not in supported_audio_profiles:
+        msg = "Audio output profile is unsupported"
+        raise ValueError(msg)
+    if settings.audio_duration_tolerance_us < 0:
+        msg = "Audio duration tolerance cannot be negative"
+        raise ValueError(msg)
+    if settings.translation_batch_size < 0:
+        msg = "Translation batch size cannot be negative"
+        raise ValueError(msg)
+
+
+def _validate_runtime_settings(settings: RunSettingsSnapshot) -> None:
+    runtime_ids: tuple[str, ...] = (
+        settings.llm_model_id,
+        settings.llm_prompt_id,
+        settings.llm_style_id,
+        settings.tts_model_id,
+        settings.tts_voice_id,
+    )
+    if any(not value.strip() for value in runtime_ids):
+        msg = "Run setting runtime IDs cannot be empty"
+        raise ValueError(msg)
+    _require_unique(settings.llm_module_ids, "LLM prompt module IDs")
+    option_names: tuple[str, ...] = tuple(name for name, _ in settings.tts_engine_options)
+    _require_unique(option_names, "TTS engine option names")
+    if settings.llm_temperature is not None and not 0 <= settings.llm_temperature <= _MAX_LLM_TEMPERATURE:
+        msg = "LLM temperature must be between 0 and 2"
+        raise ValueError(msg)
+    if settings.llm_top_p is not None and not 0 <= settings.llm_top_p <= 1:
+        msg = "LLM top-p must be between 0 and 1"
+        raise ValueError(msg)
+    if settings.llm_max_output_tokens is not None and settings.llm_max_output_tokens <= 0:
+        msg = "LLM max output tokens must be positive"
+        raise ValueError(msg)
+    if not math.isfinite(settings.tts_postprocess_tempo) or settings.tts_postprocess_tempo <= 0:
+        msg = "TTS post-process tempo must be finite and positive"
+        raise ValueError(msg)
+    gains: tuple[float, ...] = (
+        settings.narrator_mix_base_gain_db,
+        settings.voice_mix_offset_db,
+        settings.original_gain_db,
+    )
+    if any(not math.isfinite(value) for value in gains):
+        msg = "Audio gains must be finite"
+        raise ValueError(msg)
+    if settings.audio_bitrate is not None and not settings.audio_bitrate.strip():
+        msg = "Audio bitrate cannot be blank"
+        raise ValueError(msg)
+    if settings.tts_timeline_policy != "serialize":
+        msg = "TTS timeline policy is unsupported"
+        raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)

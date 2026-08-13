@@ -177,6 +177,7 @@ class RunResult:
 
     run_id: str
     groups: tuple[GroupResult, ...]
+    warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.run_id.strip() or not self.groups:
@@ -184,6 +185,11 @@ class RunResult:
             raise ValueError(msg)
         group_ids: tuple[str, ...] = tuple(group.group_id for group in self.groups)
         _require_unique_result_ids(group_ids, "run group IDs")
+        safe_warnings: tuple[str, ...] = tuple(sanitize_event_message(warning) or "" for warning in self.warnings)
+        if any(not warning.strip() for warning in safe_warnings):
+            msg = "Run result warnings cannot be blank"
+            raise ValueError(msg)
+        object.__setattr__(self, "warnings", safe_warnings)
 
     @property
     def succeeded(self) -> bool:
