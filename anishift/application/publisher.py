@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Never
@@ -33,6 +34,9 @@ _EXPECTED_SUFFIXES: Final[dict[ArtifactKind, frozenset[str]]] = {
 
 _VALIDATION_TIMEOUT_S: Final[float] = 120.0
 """Maximum time for one sidecar probe or complete audio decode."""
+
+_COPY_CHUNK_BYTES: Final[int] = 1024 * 1024
+"""Bytes copied between cooperative publication-cancellation checks."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,14 +89,40 @@ class PublishRequest:
 class ArtifactPublisher:
     """Validate and atomically replace one durable product."""
 
+    def stage(
+        self,
+        request: PublishRequest,
+        destination: Path,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> Path:
+        """Validate and copy one product without touching its final destination."""
+        if destination == request.source:
+            msg = "Publication staging source and destination must differ"
+            raise ValueError(msg)
+        allowed_suffixes: frozenset[str] = _EXPECTED_SUFFIXES[request.expected_kind]
+        if destination.suffix.casefold() not in allowed_suffixes:
+            msg = "Publication staging suffix does not match the expected artifact kind"
+            raise ValueError(msg)
+        _validate_product(request.source, request.expected_kind, cancel=cancel)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            _copy_cancellable(request.source, destination, cancel=cancel)
+            _validate_product(destination, request.expected_kind, cancel=cancel)
+        except OSError as error:
+            destination.unlink(missing_ok=True)
+            _raise_publication_error("Artifact staging failed", cause=error)
+        except ExecutionError:
+            destination.unlink(missing_ok=True)
+            raise
+        return destination
+
     def publish(self, request: PublishRequest) -> Artifact:
         """Publish a temporary result without exposing partial destination bytes."""
-        _validate_product(request.source, request.expected_kind)
         request.destination.parent.mkdir(parents=True, exist_ok=True)
         temporary: Path = _temporary_sibling(request.destination)
         try:
-            shutil.copy2(request.source, temporary)
-            _validate_product(temporary, request.expected_kind)
+            self.stage(request, temporary)
             temporary.replace(request.destination)
         except OSError as error:
             _raise_publication_error("Artifact publication failed", cause=error)
@@ -117,7 +147,12 @@ def _temporary_sibling(destination: Path) -> Path:
     return Path(raw_path)
 
 
-def _validate_product(path: Path, expected_kind: ArtifactKind) -> None:
+def _validate_product(
+    path: Path,
+    expected_kind: ArtifactKind,
+    *,
+    cancel: threading.Event | None = None,
+) -> None:
     allowed_suffixes: frozenset[str] = _EXPECTED_SUFFIXES[expected_kind]
     try:
         is_valid: bool = path.is_file() and path.stat().st_size > 0
@@ -127,8 +162,12 @@ def _validate_product(path: Path, expected_kind: ArtifactKind) -> None:
         _raise_publication_error("Published artifact is missing, empty, or has an unexpected format")
     if expected_kind is ArtifactKind.NARRATION_AUDIO:
         try:
-            _validate_audio(path)
-        except (AudioError, BinaryNotFoundError) as error:
+            _validate_audio(path, cancel=cancel)
+        except AudioError as error:
+            if error.context.code is ErrorCode.CANCELLED:
+                raise ExecutionError(context=error.context) from error
+            _raise_publication_error("Published audio failed content validation", cause=error)
+        except BinaryNotFoundError as error:
             _raise_publication_error("Published audio failed content validation", cause=error)
         return
     try:
@@ -137,13 +176,29 @@ def _validate_product(path: Path, expected_kind: ArtifactKind) -> None:
         _raise_publication_error("Published subtitles failed content validation", cause=error)
 
 
-def _validate_audio(path: Path) -> None:
+def _validate_audio(path: Path, *, cancel: threading.Event | None = None) -> None:
     """Require a probed audio stream and a successful complete decode."""
     runner: SubprocessRunner = SubprocessRunner()
     ffprobe: Path = require_binary(Binary.FFPROBE)
     ffmpeg: Path = require_binary(Binary.FFMPEG)
-    probe_audio(path, ffprobe=ffprobe, runner=runner, timeout_s=_VALIDATION_TIMEOUT_S)
-    validate_decode(path, ffmpeg=ffmpeg, runner=runner, timeout_s=_VALIDATION_TIMEOUT_S)
+    probe_audio(path, ffprobe=ffprobe, runner=runner, timeout_s=_VALIDATION_TIMEOUT_S, cancel=cancel)
+    validate_decode(path, ffmpeg=ffmpeg, runner=runner, timeout_s=_VALIDATION_TIMEOUT_S, cancel=cancel)
+
+
+def _copy_cancellable(source: Path, destination: Path, *, cancel: threading.Event | None) -> None:
+    if cancel is not None and cancel.is_set():
+        _raise_cancelled()
+    with source.open("rb") as input_stream, destination.open("wb") as output_stream:
+        while chunk := input_stream.read(_COPY_CHUNK_BYTES):
+            if cancel is not None and cancel.is_set():
+                _raise_cancelled()
+            output_stream.write(chunk)
+    shutil.copystat(source, destination)
+
+
+def _raise_cancelled() -> Never:
+    context: ErrorContext = ErrorContext(code=ErrorCode.CANCELLED, message="Artifact publication was cancelled")
+    raise ExecutionError(context=context)
 
 
 def _raise_publication_error(message: str, *, cause: BaseException | None = None) -> Never:

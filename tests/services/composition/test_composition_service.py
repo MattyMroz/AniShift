@@ -178,7 +178,7 @@ def test_compose_container_builds_mkv_with_selected_tracks(
     destination = tmp_path / "Episode.pl.mkv"
     runner = _ContainerRunner()
     service = _service(runner, tmp_path)
-    monkeypatch.setattr(service, "_container_font_warnings", lambda _request: ())
+    monkeypatch.setattr(service, "_container_font_warnings", lambda _request, **_kwargs: ())
     monkeypatch.setattr("anishift.services.composition.service.validate_merged", lambda *_args, **_kwargs: None)
     request = ContainerCompositionRequest(
         source_video=source,

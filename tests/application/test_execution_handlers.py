@@ -8,11 +8,12 @@ import pytest
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState, SourceGroup
 from anishift.application.cancellation import CancellationToken, NeverCancelledToken
-from anishift.application.events import RunEvent, WorkerNotification, WorkerNotificationKind
+from anishift.application.events import RunEvent, WorkerNotification
 from anishift.application.extraction_handler import LegacyExtractionAdapter
 from anishift.application.handlers import (
     ExecutionHandlers,
     ExtractionTaskHandler,
+    PublishTaskHandler,
     SubtitleTaskHandler,
     TranslationTaskHandler,
 )
@@ -27,9 +28,8 @@ from anishift.application.planning import (
     RunSettingsSnapshot,
     TaskKind,
 )
-from anishift.application.results import ArtifactSnapshot, GroupStatus, ProducedArtifact, TaskResult
+from anishift.application.results import ArtifactSnapshot, GroupStatus, TaskResult
 from anishift.application.scheduler import GraphScheduler, ResourceLimits
-from anishift.application.scheduler_contracts import TaskProgressSink
 from anishift.application.sessions import RunSession
 from anishift.application.subtitle_handler import LegacySubtitleAdapter
 from anishift.application.task_paths import task_staging_path
@@ -68,27 +68,6 @@ class _RunEventSink:
 
     def emit(self, event: RunEvent) -> None:
         self.events.append(event)
-
-
-class _PublishHandler:
-    def __init__(self, run_root: Path) -> None:
-        self.run_root: Path = run_root
-
-    def execute(
-        self,
-        task: PlanTask,
-        artifacts: ArtifactSnapshot,
-        cancel: CancellationToken,
-        progress: TaskProgressSink,
-    ) -> TaskResult:
-        cancel.raise_if_cancelled()
-        source: Artifact = artifacts.require_ready(task.requires[0])
-        output: Artifact = artifacts.require_output(task.produces[0])
-        assert source.path is not None
-        destination: Path = task_staging_path(self.run_root, task, output, source.path.suffix)
-        destination.write_bytes(source.path.read_bytes())
-        progress.emit(WorkerNotification(WorkerNotificationKind.PROGRESS, task.task_id, 100))
-        return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, destination, {"validated": True}),))
 
 
 class _ExtractionService:
@@ -583,7 +562,7 @@ def test_planner_to_scheduler_executes_standalone_text_plan(tmp_path: Path) -> N
             ExtractionTaskHandler(_ExtractionService(), run_root=run_root, timeout_s=30.0),
             SubtitleTaskHandler(run_root=run_root),
             TranslationTaskHandler(_TranslationService(), run_root=run_root),
-            publish=_PublishHandler(run_root),
+            publish=PublishTaskHandler(run_root=run_root, source_groups={source_group.group_id: source_group}),
         )
         result = GraphScheduler(
             handlers,

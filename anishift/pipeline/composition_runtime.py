@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Protocol
 
+from anishift.application.composition_handler import LegacyCompositionAdapter
 from anishift.errors import AniShiftError, ErrorCode
 from anishift.pipeline.narration import scope_id_for_source
 from anishift.pipeline.types import CompositionUi, FileOutcome
@@ -202,6 +203,7 @@ def compose_outcomes(  # noqa: PLR0913 - one explicit argument per composition c
     built by the caller, which keeps this loop testable without real binaries.
     """
     composed: dict[Path, FileOutcome] = dict(outcomes)
+    adapter: LegacyCompositionAdapter = LegacyCompositionAdapter(service)
     plans: dict[Path, CompositionPlan] = {}
     for path, outcome in outcomes.items():
         plan: CompositionPlan | None = _plan_for(outcome, variant=variant, workspace_root=workspace_root)
@@ -217,7 +219,7 @@ def compose_outcomes(  # noqa: PLR0913 - one explicit argument per composition c
         if cancel is not None and cancel.is_set():
             break
         composed[path] = _compose_one(
-            service,
+            adapter,
             composed[path],
             plan,
             workspace_root=workspace_root,
@@ -241,7 +243,7 @@ def _plan_for(outcome: FileOutcome, *, variant: OutputVariant, workspace_root: P
 
 
 def _compose_one(  # noqa: PLR0913 - one explicit argument per composition concern
-    service: CompositionAssembler,
+    service: LegacyCompositionAdapter,
     outcome: FileOutcome,
     plan: CompositionPlan,
     *,
