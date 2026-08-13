@@ -1,0 +1,61 @@
+Screen {
+    background: #0b0f14;
+    color: #e7edf3;
+}
+
+.route-content {
+    height: 1fr;
+    padding: 2 3;
+}
+
+.route-title {
+    text-style: bold;
+    color: #f08a72;
+    margin-bottom: 1;
+}
+
+.placeholder-copy {
+    height: 1fr;
+    color: #9ba8b4;
+}
+
+.small-terminal {
+    height: 1fr;
+    content-align: center middle;
+    color: #f1c75b;
+    display: none;
+}
+
+CommandBar {
+    dock: bottom;
+    height: 4;
+    border-top: solid #384552;
+    padding: 0 1;
+}
+
+#command-prompt {
+    width: 3;
+    height: 3;
+    content-align: center middle;
+    color: #f08a72;
+    text-style: bold;
+}
+
+#command-input {
+    width: 1fr;
+}
+
+#command-feedback {
+    width: 36;
+    height: 3;
+    padding: 1;
+    color: #9ba8b4;
+}
+
+#status-footer {
+    dock: bottom;
+    height: 1;
+    padding: 0 1;
+    background: #151b22;
+    color: #aeb8c2;
+}

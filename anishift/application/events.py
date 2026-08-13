@@ -173,6 +173,10 @@ class EventBuffer:
                 return
             self._state_events.append(event)
 
+    def emit(self, event: RunEvent) -> None:
+        """Accept the event-sink protocol used by the application facade."""
+        self.push(event)
+
     def drain(self) -> tuple[RunEvent, ...]:
         """Atomically return buffered events in per-run sequence order and clear them."""
         with self._lock:
