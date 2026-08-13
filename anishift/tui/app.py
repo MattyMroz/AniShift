@@ -168,7 +168,10 @@ class AniShiftApp(App[None]):
             self._set_feedback(HELP_TEXT)
             return
         if command is UiCommand.REFRESH:
-            await self._switch_route("workspace", "Workspace refresh is available on the Workspace screen.")
+            had_workspace: bool = self.session.workspace is not None
+            await self._switch_route("workspace", "")
+            if had_workspace and isinstance(self.screen, WorkspaceScreen):
+                self.screen.refresh_workspace()
             self.session.route = "workspace"
             return
         route: str = routes[command]
@@ -184,8 +187,18 @@ class AniShiftApp(App[None]):
         self._set_feedback(feedback)
         self._refresh_footer()
 
+    async def open_route(self, route: str) -> None:
+        """Navigate from a screen action through the same route state as commands."""
+        self.session.route = route
+        if route in {"auto", "manual"}:
+            self.session.mode = route
+        await self._switch_route(route, "")
+
     def _set_feedback(self, text: str) -> None:
         self.screen.query_one(CommandBar).set_feedback(text)
 
     def _refresh_footer(self) -> None:
-        self.screen.query_one(StatusFooter).refresh_from_state(self.session)
+        if self.screen_stack:
+            footer = self.screen.query_one_optional(StatusFooter)
+            if footer is not None:
+                footer.refresh_from_state(self.session)

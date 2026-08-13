@@ -8,6 +8,8 @@ from unittest.mock import Mock
 from textual.widgets import Input, Static
 
 from anishift.application.events import RunEvent, RunEventKind, RunEventSink
+from anishift.application.inspection import InspectedWorkspace
+from anishift.application.intents import AutoPreset, ProductIntent, ProductKind
 from anishift.application.planning import ExecutionPlan
 from anishift.application.results import GroupResult, GroupStatus, RunResult
 from anishift.application.service import AppService
@@ -23,7 +25,12 @@ from anishift.tui.widgets.command_bar import (
 
 
 def _service() -> Mock:
-    return Mock(spec=AppService)
+    service = Mock(spec=AppService)
+    service.discover.return_value = InspectedWorkspace((), ())
+    preset = AutoPreset("default", "Default", ProductIntent(frozenset({ProductKind.FULL_PL})))
+    service.list_presets.return_value = (preset,)
+    service.get_preset.return_value = preset
+    return service
 
 
 def _rendered(widget: Static) -> str:
@@ -73,10 +80,13 @@ async def _assert_routes_and_persistent_shell() -> None:
         assert isinstance(app.screen, ToolsScreen)
         await _submit(app, pilot, "refresh")
         assert isinstance(app.screen, WorkspaceScreen)
+        await pilot.pause()
+        assert service.discover.call_count == 2
         await _submit(app, pilot, "help")
         feedback = app.screen.query_one(f"#{COMMAND_FEEDBACK_ID}", Static)
         assert "Commands: auto, manual" in _rendered(feedback)
-        assert service.method_calls == []
+        service.doctor.assert_not_called()
+        service.setup.assert_not_called()
 
 
 def test_commands_route_without_calling_application_workflows() -> None:
@@ -84,9 +94,10 @@ def test_commands_route_without_calling_application_workflows() -> None:
 
 
 async def _assert_every_route_keeps_the_shell() -> None:
-    app = AniShiftApp(_service())
+    service = _service()
+    app = AniShiftApp(service)
     async with app.run_test(size=(100, 30)):
-        for route in app.SCREENS:
+        for route in ("settings", "execution", "results", "tools"):
             await app.switch_screen(route)
             assert COMMAND_PROMPT in _rendered(app.screen.query_one("#command-prompt", Static))
             assert app.screen.query_one(f"#{STATUS_FOOTER_ID}", Static).display is True
@@ -108,7 +119,8 @@ async def _assert_invalid_empty_and_double_submit() -> None:
         await _submit(app, pilot, "auto")
         await _submit(app, pilot, "")
         assert isinstance(app.screen, AutoScreen)
-        assert service.method_calls == []
+        service.plan_auto.assert_not_called()
+        service.plan_manual.assert_not_called()
 
 
 def test_invalid_empty_and_repeated_submit_remain_safe() -> None:

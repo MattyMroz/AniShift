@@ -10,7 +10,7 @@ from pathlib import Path
 from secrets import token_hex
 from typing import Protocol
 
-from anishift.application.cancellation import EventCancellationToken, NeverCancelledToken
+from anishift.application.cancellation import CancellationToken, EventCancellationToken, NeverCancelledToken
 from anishift.application.discovery import discover_groups
 from anishift.application.events import RunEventSink
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
@@ -115,14 +115,14 @@ class AppService:
         self._active_cancel: EventCancellationToken | None = None
         self._run_lock: threading.Lock = threading.Lock()
 
-    def discover(self) -> InspectedWorkspace:
+    def discover(self, *, cancel: CancellationToken | None = None) -> InspectedWorkspace:
         """Discover and fully inspect the current workspace without starting work."""
+        token: CancellationToken = cancel or NeverCancelledToken()
         inspected: InspectedWorkspace = self._inspector.inspect(
             discover_groups(self._workspace_root),
-            cancel=NeverCancelledToken(),
+            cancel=token,
         )
-        with self._run_lock:
-            self._workspace = inspected
+        _commit_if_active(token, lambda: self._cache_workspace(inspected))
         return inspected
 
     def register_external_subtitle(
@@ -130,16 +130,19 @@ class AppService:
         group_id: str,
         path: Path,
         declared_language: str | None,
+        *,
+        cancel: CancellationToken | None = None,
     ) -> InspectedSourceGroup:
         """Validate one external subtitle and update the cached inspected group."""
+        token: CancellationToken = cancel or NeverCancelledToken()
         group: InspectedSourceGroup = self._require_group(group_id)
         updated: InspectedSourceGroup = self._inspector.register_external_subtitle(
             group,
             path,
             declared_language=declared_language,
-            cancel=NeverCancelledToken(),
+            cancel=token,
         )
-        self._replace_group(updated)
+        _commit_if_active(token, lambda: self._replace_group(updated))
         return updated
 
     def register_external_audio(
@@ -147,16 +150,19 @@ class AppService:
         group_id: str,
         path: Path,
         role: ExternalAudioRole,
+        *,
+        cancel: CancellationToken | None = None,
     ) -> InspectedSourceGroup:
         """Validate one external audio source and update the cached group."""
+        token: CancellationToken = cancel or NeverCancelledToken()
         group: InspectedSourceGroup = self._require_group(group_id)
         updated: InspectedSourceGroup = self._inspector.register_external_audio(
             group,
             path,
             role=role,
-            cancel=NeverCancelledToken(),
+            cancel=token,
         )
-        self._replace_group(updated)
+        _commit_if_active(token, lambda: self._replace_group(updated))
         return updated
 
     def list_presets(self) -> tuple[AutoPreset, ...]:
@@ -304,6 +310,10 @@ class AppService:
         with self._run_lock:
             self._workspace = replace(workspace, groups=groups)
 
+    def _cache_workspace(self, inspected: InspectedWorkspace) -> None:
+        with self._run_lock:
+            self._workspace = inspected
+
     def _settings_snapshot(self) -> RunSettingsSnapshot:
         with self._run_lock:
             preferences: UserSettings = deepcopy(self._user_settings)
@@ -382,3 +392,12 @@ def _close_handler(handler: TaskHandler) -> None:
     close: object = getattr(handler, "close", None)
     if callable(close):
         close()
+
+
+def _commit_if_active(token: CancellationToken, action: Callable[[], None]) -> None:
+    if isinstance(token, EventCancellationToken):
+        if token.commit_if_active(action):
+            return
+        token.raise_if_cancelled()
+    token.raise_if_cancelled()
+    action()

@@ -19,6 +19,51 @@ Screen {
     color: #9ba8b4;
 }
 
+#auto-options {
+    grid-size: 2 4;
+    grid-gutter: 1 2;
+    height: 18;
+}
+
+#auto-products,
+#auto-mkv-tracks {
+    height: 6;
+}
+
+#intent-form {
+    layout: grid;
+    grid-size: 3;
+    grid-gutter: 1 2;
+    height: 18;
+}
+
+#manual-products,
+#manual-mkv-tracks {
+    height: 6;
+}
+
+.screen-actions {
+    height: 3;
+}
+
+#external-subtitle-fields,
+#external-audio-fields {
+    height: 3;
+}
+
+StartConfirmationScreen {
+    align: center middle;
+    background: #0008;
+}
+
+#start-confirmation {
+    width: 64;
+    height: 10;
+    padding: 1 2;
+    border: solid #f08a72;
+    background: #151b22;
+}
+
 .small-terminal {
     height: 1fr;
     content-align: center middle;
