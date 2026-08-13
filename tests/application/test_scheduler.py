@@ -318,6 +318,28 @@ def test_dependent_task_streams_before_another_group_finishes(tmp_path: Path) ->
     assert handler.started["fast-second"] < handler.finished["slow-first"]
 
 
+def test_audio_for_one_group_overlaps_tts_for_the_next_group(tmp_path: Path) -> None:
+    specs: tuple[_TaskSpec, ...] = (
+        _TaskSpec("group-1", "tts-1", resource_key="tts:sapi"),
+        _TaskSpec("group-1", "audio-1", ("tts-1",), resource_key="audio"),
+        _TaskSpec("group-2", "tts-2", resource_key="tts:sapi"),
+    )
+    plan: ExecutionPlan = _plan(tmp_path, specs)
+
+    result, handler, _ = _run(
+        tmp_path,
+        plan,
+        lambda run_root: _FakeHandler(
+            run_root,
+            delays={"tts-1": 0.01, "audio-1": 0.08, "tts-2": 0.08},
+        ),
+    )
+
+    assert result.succeeded is True
+    assert handler.started["audio-1"] < handler.finished["tts-2"]
+    assert handler.started["tts-2"] < handler.finished["audio-1"]
+
+
 def test_scheduler_respects_provider_and_sapi_worker_limits(tmp_path: Path) -> None:
     specs: tuple[_TaskSpec, ...] = tuple(_TaskSpec("group-1", f"translate-{index}") for index in range(6)) + tuple(
         _TaskSpec(

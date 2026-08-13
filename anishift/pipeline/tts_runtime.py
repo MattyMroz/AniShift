@@ -8,6 +8,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Final, Literal, Protocol, Self, runtime_checkable
 
+from anishift.application.tts_handler import NarrationTiming, build_narration_manifest
 from anishift.config.user_settings import ProcessingOrderPolicy, config_path
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.pipeline.tts_queue import (
@@ -769,40 +770,30 @@ def _timed_clips(
     narration: NarrationBatch,
     speech: SpeechBatchResult,
 ) -> tuple[TimedClip, ...]:
-    if speech.scope_id != narration.speech.scope_id:
-        message: str = f"TTS result scope mismatch: expected {narration.speech.scope_id}, received {speech.scope_id}"
-        raise ValueError(message)
-    items: dict[str, NarrationItem] = {item.request.request_id: item for item in narration.items}
-    expected_ids: set[str] = {request.request_id for request in narration.speech.requests}
-    returned_ids: list[str] = [result.request.request_id for result in speech.requests]
-    if len(returned_ids) != len(set(returned_ids)):
-        message = "TTS result contains duplicate request ids"
-        raise ValueError(message)
-    returned_id_set: set[str] = set(returned_ids)
-    if returned_id_set != expected_ids:
-        missing: list[str] = sorted(expected_ids - returned_id_set)
-        unknown: list[str] = sorted(returned_id_set - expected_ids)
-        message = f"TTS result request ids do not match the batch: missing={missing}, unknown={unknown}"
-        raise ValueError(message)
-    clips: list[TimedClip] = []
-    seen: set[str] = set()
-    for result in speech.requests:
-        clip = result.speech_clip
-        if clip is None:
-            continue
-        if clip.request_id != result.request.request_id:
-            message = f"TTS clip id {clip.request_id} does not match result id {result.request.request_id}"
-            raise ValueError(message)
-        if clip.request_id in seen:
-            duplicate_message: str = f"Duplicate TTS result id: {clip.request_id}"
-            raise ValueError(duplicate_message)
-        item: NarrationItem | None = items.get(clip.request_id)
-        if item is None:
-            message = f"Unknown TTS result id: {clip.request_id}"
-            raise ValueError(message)
-        seen.add(clip.request_id)
-        clips.append(_timed_clip(item, clip))
-    return tuple(clips)
+    timings: tuple[NarrationTiming, ...] = tuple(
+        NarrationTiming(item.request.request_id, item.start_ms, item.end_ms, item.source_order)
+        for item in narration.items
+    )
+    manifest = build_narration_manifest(
+        speech,
+        timings,
+        expected_scope_id=narration.speech.scope_id,
+        allow_skipped_requests=True,
+    )
+    return tuple(
+        TimedClip(
+            request_id=clip.request_id,
+            start_ms=clip.start_ms,
+            end_ms=clip.end_ms,
+            source_order=clip.source_order,
+            clip_path=clip.path,
+            clip_format=RenderAudioFormat(clip.format),
+            sample_rate=clip.sample_rate,
+            channels=clip.channels,
+            duration_ms=clip.duration_ms,
+        )
+        for clip in manifest.clips
+    )
 
 
 def _timed_clip(item: NarrationItem, clip: SpeechClip) -> TimedClip:

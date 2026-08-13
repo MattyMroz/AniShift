@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from anishift.application.artifacts import Artifact, ArtifactKind
+from anishift.application.audio_handler import AudioTaskHandler
 from anishift.application.cancellation import CancellationToken
 from anishift.application.extraction_handler import ExtractionTaskHandler
 from anishift.application.intents import BurnSubtitleProduct, MkvTrackProduct
@@ -14,6 +15,7 @@ from anishift.application.results import ArtifactSnapshot, TaskResult
 from anishift.application.scheduler_contracts import TaskHandler, TaskProgressSink
 from anishift.application.subtitle_handler import SubtitleTaskHandler
 from anishift.application.translation_handler import TranslationTaskHandler
+from anishift.application.tts_handler import TtsTaskHandler
 from anishift.errors import ExecutionError
 from anishift.services.composition.types import (
     AttachedSubtitle,
@@ -23,10 +25,12 @@ from anishift.services.composition.types import (
 )
 
 __all__ = [
+    "AudioTaskHandler",
     "ExecutionHandlers",
     "ExtractionTaskHandler",
     "SubtitleTaskHandler",
     "TranslationTaskHandler",
+    "TtsTaskHandler",
     "build_composition_request",
 ]
 
@@ -38,8 +42,8 @@ class ExecutionHandlers:
     media: ExtractionTaskHandler
     subtitles: SubtitleTaskHandler
     translation: TranslationTaskHandler
-    tts: TaskHandler | None = None
-    audio: TaskHandler | None = None
+    tts: TtsTaskHandler | None = None
+    audio: AudioTaskHandler | None = None
     composition: TaskHandler | None = None
     publish: TaskHandler | None = None
 
@@ -71,6 +75,16 @@ class ExecutionHandlers:
             msg = f"Task handler is unavailable for operation: {task.kind.value}"
             raise ExecutionError(msg)
         return handler.execute(task, artifacts, cancel, progress)
+
+    def cancel(self) -> None:
+        """Cancel run-scoped provider work without closing shared runtimes."""
+        if self.tts is not None:
+            self.tts.cancel()
+
+    def close(self) -> None:
+        """Close run-scoped provider runtimes exactly once at the application boundary."""
+        if self.tts is not None:
+            self.tts.close()
 
 
 def build_composition_request(task: PlanTask, artifacts: ArtifactSnapshot) -> ContainerCompositionRequest:
