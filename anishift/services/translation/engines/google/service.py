@@ -20,7 +20,7 @@ from anishift.services.translation.engines.google.constants import (
 
 if TYPE_CHECKING:
     from anishift.services.translation.config import TranslationConfig
-    from anishift.services.translation.protocols import TranslationInputPolicy, TranslationStream
+    from anishift.services.translation.protocols import TranslationInputPolicy, TranslationObserver, TranslationStream
     from anishift.services.translation.types import BatchedLine
 
 
@@ -63,22 +63,29 @@ class GoogleService:
         *,
         source_lang: str,
         target_lang: str,
+        observer: TranslationObserver | None = None,
     ) -> list[BatchedLine]:
         """Translate one batch, preserving order and length (one event loop)."""
         del source_lang  # googletrans auto-detects the source language
         if not texts:
             return []
         dest = (target_lang or "pl").lower()
-        return asyncio.run(self._translate_all(texts, dest=dest))
+        return asyncio.run(self._translate_all(texts, dest=dest, observer=observer))
 
-    async def _translate_all(self, texts: list[str], *, dest: str) -> list[BatchedLine]:
+    async def _translate_all(
+        self,
+        texts: list[str],
+        *,
+        dest: str,
+        observer: TranslationObserver | None,
+    ) -> list[BatchedLine]:
         """Build the client and run the batching ladder in this event loop."""
         from googletrans import Translator  # type: ignore[import-untyped]  # noqa: PLC0415 - lazy SDK import
 
         client: Any = Translator()
 
         async def _translate_joined(joined: str) -> str:
-            return await self._call_with_retry(client, joined, dest=dest)
+            return await self._call_with_retry(client, joined, dest=dest, observer=observer)
 
         return await translate_lines(
             texts,
@@ -87,7 +94,14 @@ class GoogleService:
             translate_joined=_translate_joined,
         )
 
-    async def _call_with_retry(self, client: Any, text: str, *, dest: str) -> str:
+    async def _call_with_retry(
+        self,
+        client: Any,
+        text: str,
+        *,
+        dest: str,
+        observer: TranslationObserver | None = None,
+    ) -> str:
         """Call googletrans, retrying transient HTTP errors with shared backoff.
 
         ``httpx.HTTPError`` is the only stable transient class googletrans
@@ -105,6 +119,9 @@ class GoogleService:
             retry_on=httpx.HTTPError,
             base_s=RETRY_BACKOFF_BASE_S,
             cap_s=RETRY_MAX_WAIT_S,
+            on_retry=(
+                None if observer is None else lambda attempt, maximum: observer.retry(self.engine_id, attempt, maximum)
+            ),
         )
         return str(result.text)
 

@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from anishift.application.artifacts import Artifact, ArtifactKind
+from anishift.application.cancellation import CancellationToken
+from anishift.application.extraction_handler import ExtractionTaskHandler
 from anishift.application.intents import BurnSubtitleProduct, MkvTrackProduct
 from anishift.application.planning import PlanTask, TaskKind
-from anishift.application.results import ArtifactSnapshot
+from anishift.application.results import ArtifactSnapshot, TaskResult
+from anishift.application.scheduler_contracts import TaskHandler, TaskProgressSink
+from anishift.application.subtitle_handler import SubtitleTaskHandler
+from anishift.application.translation_handler import TranslationTaskHandler
 from anishift.errors import ExecutionError
 from anishift.services.composition.types import (
     AttachedSubtitle,
@@ -16,7 +22,55 @@ from anishift.services.composition.types import (
     SubtitleRole,
 )
 
-__all__ = ["build_composition_request"]
+__all__ = [
+    "ExecutionHandlers",
+    "ExtractionTaskHandler",
+    "SubtitleTaskHandler",
+    "TranslationTaskHandler",
+    "build_composition_request",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionHandlers:
+    """Explicit task-family dispatcher shared by the graph scheduler."""
+
+    media: ExtractionTaskHandler
+    subtitles: SubtitleTaskHandler
+    translation: TranslationTaskHandler
+    tts: TaskHandler | None = None
+    audio: TaskHandler | None = None
+    composition: TaskHandler | None = None
+    publish: TaskHandler | None = None
+
+    def execute(
+        self,
+        task: PlanTask,
+        artifacts: ArtifactSnapshot,
+        cancel: CancellationToken,
+        progress: TaskProgressSink,
+    ) -> TaskResult:
+        """Dispatch a task by its closed operation kind without a plugin registry."""
+        handler: TaskHandler | None
+        match task.kind:
+            case TaskKind.EXTRACT_AUDIO | TaskKind.EXTRACT_SUBTITLES:
+                handler = self.media
+            case TaskKind.NORMALIZE_SUBTITLES | TaskKind.SPLIT_SUBTITLES:
+                handler = self.subtitles
+            case TaskKind.TRANSLATE_SUBTITLES:
+                handler = self.translation
+            case TaskKind.SYNTHESIZE_SPEECH:
+                handler = self.tts
+            case TaskKind.TRANSCODE_AUDIO | TaskKind.MIX_NARRATION:
+                handler = self.audio
+            case TaskKind.COMPOSE_MKV | TaskKind.COMPOSE_MP4:
+                handler = self.composition
+            case TaskKind.PUBLISH_ARTIFACT:
+                handler = self.publish
+        if handler is None:
+            msg = f"Task handler is unavailable for operation: {task.kind.value}"
+            raise ExecutionError(msg)
+        return handler.execute(task, artifacts, cancel, progress)
 
 
 def build_composition_request(task: PlanTask, artifacts: ArtifactSnapshot) -> ContainerCompositionRequest:

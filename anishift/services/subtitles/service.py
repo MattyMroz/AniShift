@@ -26,6 +26,7 @@ from anishift.utils.logger import get_logger
 __all__ = [
     "collapse_fbf",
     "load_subtitles",
+    "normalize_subtitles",
     "preview_styles",
     "split_subtitles",
     "subtitle_kind",
@@ -110,6 +111,14 @@ def load_subtitles(path: Path) -> SSAFile:
         style_count=len(subtitles.styles),
     )
     return subtitles
+
+
+def normalize_subtitles(source: Path, destination: Path, *, kind: SubtitleKind) -> Path:
+    """Convert one supported subtitle file while preserving its complete event stream."""
+    subtitles: SSAFile = load_subtitles(source)
+    if not any(event.type == "Dialogue" for event in subtitles.events):
+        raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, "Subtitle file contains no dialogue events")
+    return _write_output(subtitles, destination, kind, subject="Normalized")
 
 
 def preview_styles(subs: SSAFile) -> tuple[tuple[StyleVerdict, ...], dict[str, tuple[str, ...]]]:

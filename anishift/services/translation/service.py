@@ -7,7 +7,6 @@ the chain. Accepts an injected engine for tests / the LLM engine.
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -20,11 +19,13 @@ from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from anishift.services.subtitles.types import DisplayedLine, SpokenLine
-    from anishift.services.translation.protocols import (
-        TranslationEngine,
-        TranslationEngineFactory,
-        TranslationStream,
-    )
+from anishift.services.translation.protocols import (
+    TranslationCancellation,
+    TranslationEngine,
+    TranslationEngineFactory,
+    TranslationObserver,
+    TranslationStream,
+)
 
 logger = get_logger(__name__)
 
@@ -82,14 +83,15 @@ class TranslationService:
         self._engine_factory = engine_factory or _default_engine_factory
         self.fallback_chain = fallback_chain
 
-    def translate_file(
+    def translate_file(  # noqa: PLR0913 - public facade keeps explicit language and observation controls
         self,
         spoken: list[SpokenLine],
         displayed: list[DisplayedLine],
         *,
         source_lang: str = "auto",
         target_lang: str = TARGET_LANG,
-        cancel: threading.Event | None = None,
+        cancel: TranslationCancellation | None = None,
+        observer: TranslationObserver | None = None,
     ) -> FileTranslation:
         """Translate one file's spoken + displayed streams with dedup + fallback.
 
@@ -99,6 +101,7 @@ class TranslationService:
             source_lang: Source language code (``auto`` to auto-detect).
             target_lang: Target language code.
             cancel: Cooperative cancellation event checked before each engine.
+            observer: Optional provider retry and fallback observer.
 
         Returns:
             A :class:`FileTranslation`; ``error`` is set only when the whole
@@ -116,7 +119,7 @@ class TranslationService:
         )
         last_error: str | None = None
         last_context: ErrorContext | None = None
-        for engine_id in chain:
+        for index, engine_id in enumerate(chain):
             if cancel is not None and cancel.is_set():
                 context = ErrorContext(code=ErrorCode.CANCELLED, message="translation cancelled")
                 raise TranslationError(context=context)
@@ -130,7 +133,14 @@ class TranslationService:
                         suggestion="Choose an available translation engine.",
                     )
                     raise TranslationEngineError(context=context)
-                result = self._run(engine, spoken, displayed, source_lang=source_lang, target_lang=target_lang)
+                result = self._run(
+                    engine,
+                    spoken,
+                    displayed,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    observer=observer,
+                )
                 logger.info(
                     "File translation completed",
                     engine=engine_id,
@@ -151,6 +161,8 @@ class TranslationService:
                     error_code=exc.context.code.value,
                     fallback_remaining=engine_id != chain[-1],
                 )
+                if observer is not None and index + 1 < len(chain):
+                    observer.fallback(engine_id, chain[index + 1])
             finally:
                 if engine is not None:
                     engine.close()
@@ -171,7 +183,7 @@ class TranslationService:
         """Return the ordered engine chain without duplicate entries."""
         return tuple(dict.fromkeys((self.config.engine, *self.fallback_chain)))
 
-    def _run(
+    def _run(  # noqa: PLR0913 - one engine invocation receives the full bounded context
         self,
         engine: TranslationEngine,
         spoken: list[SpokenLine],
@@ -179,6 +191,7 @@ class TranslationService:
         *,
         source_lang: str,
         target_lang: str,
+        observer: TranslationObserver | None,
     ) -> FileTranslation:
         """Translate one chronological whole-file stream and assemble outputs."""
         prepared = _prepare_file(engine, spoken, displayed)
@@ -187,6 +200,7 @@ class TranslationService:
                 list(prepared.texts),
                 source_lang=source_lang,
                 target_lang=target_lang,
+                observer=observer,
             )
             if prepared.texts
             else []

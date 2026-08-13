@@ -13,6 +13,7 @@ __all__ = [
     "CommitCancellationToken",
     "EventCancellationToken",
     "NeverCancelledToken",
+    "ThreadEventCancellationToken",
 ]
 
 
@@ -88,3 +89,27 @@ class EventCancellationToken:
                 return False
             action()
             return True
+
+
+class ThreadEventCancellationToken:
+    """Minimal adapter retaining compatibility with the legacy pipeline event."""
+
+    __slots__ = ("_event",)
+
+    def __init__(self, event: threading.Event) -> None:
+        """Wrap an existing event without taking cancellation ownership."""
+        self._event: threading.Event = event
+
+    def is_cancelled(self) -> bool:
+        """Return the state of the wrapped legacy event."""
+        return self._event.is_set()
+
+    def raise_if_cancelled(self) -> None:
+        """Raise the standard application cancellation error when requested."""
+        if not self._event.is_set():
+            return
+        context: ErrorContext = ErrorContext(
+            code=ErrorCode.CANCELLED,
+            message="Workflow execution was cancelled",
+        )
+        raise ExecutionError(context=context)

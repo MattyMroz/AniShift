@@ -18,6 +18,7 @@ from anishift.services.translation.protocols import (
     LlmCompletionRequest,
     LlmCompletionResult,
     TranslationInputPolicy,
+    TranslationObserver,
     TranslationStream,
 )
 from anishift.services.translation.types import BatchedLine
@@ -108,8 +109,10 @@ class LlmTranslateService:
         *,
         source_lang: str,
         target_lang: str,
+        observer: TranslationObserver | None = None,
     ) -> list[BatchedLine]:
         """Translate lines with one-shot batches and deterministic recovery."""
+        del observer
         if not texts:
             return []
         translated: list[BatchedLine] = []

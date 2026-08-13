@@ -5,7 +5,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from anishift.application.cancellation import CancellationToken, EventCancellationToken
+from anishift.application.cancellation import (
+    CancellationToken,
+    EventCancellationToken,
+    ThreadEventCancellationToken,
+)
 from anishift.errors import ErrorCode, ExecutionError
 
 
@@ -56,3 +60,16 @@ def test_final_commit_is_serialized_with_concurrent_cancellation() -> None:
     assert committed == [True]
     assert token.is_cancelled() is True
     assert token.commit_if_active(lambda: pytest.fail("late commit")) is False
+
+
+def test_thread_event_adapter_preserves_legacy_cancellation_signal() -> None:
+    event = threading.Event()
+    token = ThreadEventCancellationToken(event)
+
+    assert token.is_cancelled() is False
+    event.set()
+
+    with pytest.raises(ExecutionError) as captured:
+        token.raise_if_cancelled()
+
+    assert captured.value.context.code is ErrorCode.CANCELLED
