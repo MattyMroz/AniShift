@@ -1,4 +1,9 @@
-"""Typer entry point for the Textual app and non-interactive utilities."""
+"""CLI entry point — Typer app registered as the ``anishift`` script.
+
+Stage 1 scope: a banner stub (default, when no subcommand is given) and the
+``doctor`` subcommand. Stage 2 replaces the default action with the interactive
+shell (banner + REPL).
+"""
 
 from __future__ import annotations
 
@@ -7,12 +12,10 @@ from typing import Annotated
 
 import typer
 
-from anishift.application.events import EventBuffer
-from anishift.application.results import GroupStatus, RunResult
-from anishift.bootstrap import bootstrap, create_app_service
+from anishift.cli.commands import print_setup_report
 from anishift.errors import AniShiftError
 from anishift.setup.doctor import CheckResult, CheckStatus, run_doctor
-from anishift.setup.installer import ResourceResult, run_setup
+from anishift.setup.installer import run_setup
 from anishift.utils.rich_console import StatusType, console, get_status_icon
 
 app = typer.Typer(
@@ -40,28 +43,14 @@ def _print_doctor_report(results: list[CheckResult]) -> None:
             console.print(f"   [gray]-> {result.suggestion}[/gray]")
 
 
-def _print_setup_report(results: list[ResourceResult]) -> None:
-    """Render setup results without importing the retired interactive CLI."""
-    for result in results:
-        console.print(f"[bold]{result.name}[/bold]: {result.outcome} — {result.detail}")
-
-
 @app.callback(invoke_without_command=True)
 def _default(ctx: typer.Context) -> None:
-    """Launch the Textual interface when invoked without a subcommand."""
+    """Launch the interactive shell when invoked without a subcommand."""
     if ctx.invoked_subcommand is None:
-        launch_tui()
+        from anishift.bootstrap import bootstrap  # noqa: PLC0415
+        from anishift.cli.shell import run_shell  # noqa: PLC0415
 
-
-def launch_tui() -> None:
-    """Compose and run the full-screen interface at the process boundary."""
-    from anishift.tui import AniShiftApp  # noqa: PLC0415 - utilities must not import Textual
-
-    context = bootstrap()
-    AniShiftApp(
-        create_app_service(context),
-        workspace_label=context.workspace_root.name,
-    ).run()
+        run_shell(bootstrap())
 
 
 @app.command()
@@ -86,38 +75,9 @@ def setup(
     except AniShiftError as exc:
         console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1) from exc
-    _print_setup_report(results)
+    print_setup_report(results)
     if any(result.outcome == "failed" for result in results):
         raise typer.Exit(code=1)
-
-
-@app.command("run")
-def run_preset(
-    preset: Annotated[str, typer.Option("--preset", help="Automatic preset ID to execute.")],
-) -> None:
-    """Run one automatic preset without starting the Textual interface."""
-    try:
-        context = bootstrap()
-        service = create_app_service(context)
-        workspace = service.discover()
-        selected_ids: tuple[str, ...] = _require_selected_groups(tuple(group.group_id for group in workspace.groups))
-        plan = service.plan_auto(selected_ids, service.get_preset(preset))
-        result: RunResult = service.execute(plan, EventBuffer())
-    except (AniShiftError, ValueError) as error:
-        console.print(f"[error]{error}[/error]")
-        raise typer.Exit(code=1) from error
-    for group in result.groups:
-        console.print(f"{group.group_id}: {group.status.value} ({len(group.products)} products)")
-    if any(group.status is not GroupStatus.SUCCEEDED for group in result.groups):
-        raise typer.Exit(code=1)
-
-
-def _require_selected_groups(group_ids: tuple[str, ...]) -> tuple[str, ...]:
-    """Reject a non-interactive run that discovered no supported inputs."""
-    if not group_ids:
-        msg = "Workspace contains no supported source groups"
-        raise ValueError(msg)
-    return group_ids
 
 
 def main() -> None:
