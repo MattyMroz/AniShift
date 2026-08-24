@@ -569,7 +569,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie twórz ekranu ustawień, palety, composera ani połączeń sieciowych.
 - Nie dodawaj animacji, obrazów rastrowych, maskotki ani trzeciego motywu.
 
-**Sugerowany commit:** `feat(cli): add the AniShift terminal design system`
+**Sugerowany commit:** `feat(tui): add the AniShift terminal design system`
 
 ---
 
@@ -638,7 +638,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie importuj konkretnych usług, providerów ani pipeline.
 - Nie buduj własnego globalnego event loop poza Textual.
 
-**Sugerowany commit:** `feat(cli): add the Textual application shell and session state`
+**Sugerowany commit:** `feat(tui): add the Textual application shell and session state`
 
 ---
 
@@ -706,7 +706,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie dodawaj piętnastej komendy ani ukrytej alternatywnej ścieżki dispatch.
 - Nie wykonuj use case bezpośrednio z widoku palety; zawsze przez registry.dispatch.
 
-**Sugerowany commit:** `feat(cli): add the unified TUI command registry`
+**Sugerowany commit:** `feat(tui): add the unified TUI command registry`
 
 ---
 
@@ -774,7 +774,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie twórz osobnych selektorów dla modeli, TTS, ustawień i palety.
 - Nie zapisuj ustawień wewnątrz prymitywów; dialog zwraca wynik.
 
-**Sugerowany commit:** `feat(cli): add reusable OpenCode-style dialog primitives`
+**Sugerowany commit:** `feat(tui): add reusable OpenCode-style dialog primitives`
 
 ---
 
@@ -840,7 +840,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie wywołuj prawdziwego AppService ani providerów.
 - Nie dodawaj automatycznego startu z /auto ani z tekstu niebędącego slashem.
 
-**Sugerowany commit:** `feat(cli): make empty Enter start exactly one Auto request`
+**Sugerowany commit:** `feat(tui): make empty Enter start exactly one Auto request`
 
 ---
 
@@ -904,7 +904,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie przełączaj jeszcze domyślnego entrypointu anishift.
 - Nie importuj ProductionHandlerFactory, providerów ani plików mediów.
 
-**Sugerowany commit:** `feat(cli): assemble the visual TUI prototype`
+**Sugerowany commit:** `feat(tui): assemble the visual TUI prototype`
 
 ---
 
@@ -1095,7 +1095,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie twórz globalnego Save/Cancel ani wielkiego formularza.
 - Nie uruchamiaj syntezy, tłumaczenia, model probe ani discovery przy przeglądaniu ustawień.
 
-**Sugerowany commit:** `feat(cli): add dialog-driven per-field settings`
+**Sugerowany commit:** `feat(tui): add dialog-driven per-field settings`
 
 ---
 
@@ -1368,7 +1368,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie uznawaj wpisu z przykładu za dostępny bez probe albo jawnego statusu enrollment.
 - Nie dodawaj /variant.
 
-**Sugerowany commit:** `feat(cli): connect Palantir model roles to settings and the TUI`
+**Sugerowany commit:** `feat(tui): connect Palantir model roles to settings and the TUI`
 
 ---
 
@@ -1439,7 +1439,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie wywołuj blocking AppService na wątku UI.
 - Nie importuj anishift.services ani anishift.pipeline z anishift/tui.
 
-**Sugerowany commit:** `feat(cli): wire the Textual shell to AppService`
+**Sugerowany commit:** `feat(tui): wire the Textual shell to AppService`
 
 ---
 
@@ -1504,7 +1504,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie uruchamiaj planowania ani pipeline przy zaznaczeniu lub refresh.
 - Nie używaj ścieżek absolutnych jako etykiet głównych ani ID.
 
-**Sugerowany commit:** `feat(cli): rebuild the workspace route`
+**Sugerowany commit:** `feat(tui): rebuild the workspace route`
 
 ---
 
@@ -1568,7 +1568,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie dodawaj globalnego formularza Auto ani obowiązkowego Preview dla bezpiecznego domyślnego Auto.
 - Nie uruchamiaj z /auto, wyboru presetu ani samego zapisu.
 
-**Sugerowany commit:** `feat(cli): implement the default Auto workflow`
+**Sugerowany commit:** `feat(tui): implement the default Auto workflow`
 
 ---
 
@@ -1631,7 +1631,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie czytaj plików mediów bezpośrednio w TUI.
 - Nie współdziel jednej instancji draftu między grupami.
 
-**Sugerowany commit:** `feat(cli): implement independent manual group intents`
+**Sugerowany commit:** `feat(tui): implement independent manual group intents`
 
 ---
 
@@ -1694,7 +1694,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie duplikuj reguł planera ani nie buduj planu w widgetach.
 - Nie pokazuj pełnych promptów, sekretów ani absolutnych prywatnych ścieżek.
 
-**Sugerowany commit:** `feat(cli): add executable plan preview and start gating`
+**Sugerowany commit:** `feat(tui): add executable plan preview and start gating`
 
 ---
 
@@ -1760,7 +1760,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie renderuj surowego payloadu RunEvent ani stderr procesu.
 - Nie anuluj runu samym Esc bez potwierdzenia.
 
-**Sugerowany commit:** `feat(cli): add responsive execution progress and cancellation`
+**Sugerowany commit:** `feat(tui): add responsive execution progress and cancellation`
 
 ---
 
@@ -1823,7 +1823,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie obiecuj automatycznego resume, jeśli kontrakt aplikacji go nie zapewnia.
 - Nie pokazuj pełnych ErrorContext.details ani absolutnych ścieżek.
 
-**Sugerowany commit:** `feat(cli): add terminal results and partial recovery`
+**Sugerowany commit:** `feat(tui): add terminal results and partial recovery`
 
 ---
 
@@ -1887,7 +1887,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie renderuj os.environ, Settings repr, headers, tokenów, pełnych command lines ani payloadów.
 - Nie wykonuj setup, probe ani run bez jawnej akcji użytkownika.
 
-**Sugerowany commit:** `feat(cli): finish TUI diagnostics and utility commands`
+**Sugerowany commit:** `feat(tui): finish TUI diagnostics and utility commands`
 
 ---
 
@@ -1952,7 +1952,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Nie dodawaj nowych komend, ekranów, providerów ani formatu konfiguracji.
 - Nie poluzowuj timeoutów testowych tylko po to, by ukryć blokujący kod UI.
 
-**Sugerowany commit:** `test(cli): converge the complete TUI workflow`
+**Sugerowany commit:** `test(tui): converge the complete TUI workflow`
 
 ---
 
