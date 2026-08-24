@@ -18,8 +18,8 @@ __all__ = [
 
 # ── Constants ──
 
-_UTF8_NAMES: Final[frozenset[str]] = frozenset({"utf-8", "utf8", "cp65001"})
-"""Encoding names considered safe — no reconfiguration advice needed."""
+_UTF8_NAMES: Final[frozenset[str]] = frozenset({"utf8", "cp65001", "65001"})
+"""Normalized encoding names treated as UTF-8-safe — no reconfiguration advice needed."""
 
 
 def configure_utf8_streams() -> None:
@@ -45,7 +45,7 @@ def console_encoding_check() -> CheckResult:
     encoding: str = _effective_encoding()
     normalized: str = encoding.lower().replace("-", "").replace("_", "")
 
-    if normalized in {"utf8", "cp65001"}:
+    if normalized in _UTF8_NAMES:
         return CheckResult(
             name="console_encoding",
             status=CheckStatus.OK,
