@@ -78,17 +78,25 @@ def test_doctor_report_no_unicode_error_on_cp1250_stream(
     _print_doctor_report(results)
 
 
-@pytest.mark.parametrize("command", ["doctor", "setup"])
-def test_cli_command_does_not_import_textual(command: str) -> None:
+def test_cli_commands_do_not_import_textual() -> None:
     snippet = (
         "import sys\n"
         "from typer.testing import CliRunner\n"
         "from anishift.cli.main import app\n"
-        "CliRunner().invoke(app, [sys.argv[1]])\n"
-        "raise SystemExit(1 if 'textual' in sys.modules else 0)\n"
+        "runner = CliRunner()\n"
+        "guilty = []\n"
+        "runner.invoke(app, ['doctor'])\n"
+        "if 'textual' in sys.modules:\n"
+        "    guilty.append('doctor')\n"
+        "runner.invoke(app, ['setup'])\n"
+        "if 'textual' in sys.modules and 'doctor' not in guilty:\n"
+        "    guilty.append('setup')\n"
+        "if guilty:\n"
+        "    print('textual imported by: ' + ', '.join(guilty))\n"
+        "raise SystemExit(1 if guilty else 0)\n"
     )
     completed = subprocess.run(  # noqa: S603
-        [sys.executable, "-c", snippet, command],
+        [sys.executable, "-c", snippet],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -96,4 +104,4 @@ def test_cli_command_does_not_import_textual(command: str) -> None:
         timeout=60,
         check=False,
     )
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == 0, completed.stdout + completed.stderr
