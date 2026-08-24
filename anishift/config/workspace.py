@@ -17,6 +17,7 @@ import ctypes
 import json
 import os
 import re
+import sys
 from collections.abc import Collection
 from pathlib import Path
 from typing import Final
@@ -205,7 +206,7 @@ def _owner_pid(run_root: Path) -> int | None:
 def _process_is_running(pid: int) -> bool:
     if pid == os.getpid():
         return True
-    if os.name != "nt":
+    if sys.platform != "win32":
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -213,7 +214,7 @@ def _process_is_running(pid: int) -> bool:
         except PermissionError:
             return True
         return True
-    kernel32: ctypes.WinDLL = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32: ctypes.CDLL = ctypes.WinDLL("kernel32", use_last_error=True)
     process = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not process:
         return ctypes.get_last_error() == _ERROR_ACCESS_DENIED

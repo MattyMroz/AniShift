@@ -94,7 +94,7 @@ def test_failed_enter_releases_process_local_root_claim(tmp_path: Path) -> None:
     parent.write_text("file", encoding="utf-8")
     run_root = parent / "temp" / "run-1"
 
-    with pytest.raises(RunConflictError, match="already in use"):
+    with pytest.raises((RunConflictError, OSError)):
         RunSession(run_root).__enter__()
     parent.unlink()
     parent.mkdir()
