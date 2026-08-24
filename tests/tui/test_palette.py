@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import replace
 from typing import Any, Final
 
@@ -9,7 +9,12 @@ from textual.app import App
 from textual.widgets import Static
 
 from anishift.tui.app import AniShiftApp
-from anishift.tui.commands.catalog import PALETTE_COMMAND_NAME, PALETTE_KEY, palette_command
+from anishift.tui.commands.catalog import (
+    EXIT_COMMAND_NAME,
+    PALETTE_COMMAND_NAME,
+    PALETTE_KEY,
+    palette_command,
+)
 from anishift.tui.commands.palette import (
     CommandOption,
     format_keys,
@@ -26,9 +31,23 @@ _FULL_SIZE: Final[tuple[int, int]] = (100, 30)
 
 _CATALOG_SIZE: Final[int] = 14
 
+_QUIT_KEY: Final[str] = "ctrl+q"
+
+_HELP_QUIT_KEY: Final[str] = "ctrl+c"
+
 
 def _run(scenario: Coroutine[Any, Any, None]) -> None:
     asyncio.run(scenario)
+
+
+def _spy_dispatch(app: AniShiftApp, calls: list[str]) -> None:
+    original: Callable[[str], bool] = app.commands.dispatch
+
+    def dispatch(name: str) -> bool:
+        calls.append(name)
+        return original(name)
+
+    app.commands.dispatch = dispatch  # type: ignore[method-assign]
 
 
 def _recorder(calls: list[str], name: str) -> CommandRun:
@@ -246,5 +265,69 @@ def test_the_shell_footer_takes_its_labels_from_the_registry() -> None:
             app.post_message(NavigationRequested(UiRoute.AUTO))
             await pilot.pause()
             assert str(footer.content).endswith(" · F5 Refresh")
+
+    _run(scenario())
+
+
+def test_the_inherited_quit_key_runs_the_exit_command_through_the_registry() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_dispatch(app, calls)
+            await pilot.press(_QUIT_KEY)
+            await pilot.pause()
+        assert calls == [EXIT_COMMAND_NAME]
+
+    _run(scenario())
+
+
+def test_the_inherited_quit_key_still_closes_the_application() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            assert app.is_running is True
+            await pilot.press(_QUIT_KEY)
+            await pilot.pause()
+        assert app.is_running is False
+
+    _run(scenario())
+
+
+def test_the_help_quit_key_is_no_second_way_out_of_the_application() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_dispatch(app, calls)
+            await pilot.press(_HELP_QUIT_KEY)
+            await pilot.pause()
+            assert calls == []
+            assert app.is_running is True
+            await pilot.press(PALETTE_KEY)
+            await pilot.pause()
+            assert calls == [PALETTE_COMMAND_NAME]
+
+    _run(scenario())
+
+
+def test_a_scope_claims_the_help_quit_key_before_textual_answers_it() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            app.commands.register(
+                (_action("close", keys=(_HELP_QUIT_KEY,), run=_recorder(calls, "close")),),
+                scope="dialog",
+            )
+            await pilot.press(_HELP_QUIT_KEY)
+            await pilot.pause()
+            assert calls == ["close"]
+            assert app.is_running is True
+            assert len(app._notifications) == 0
 
     _run(scenario())

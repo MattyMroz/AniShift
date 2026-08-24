@@ -10,6 +10,7 @@ fifteenth command by adding an action. ``palette_command`` is such an action: it
 stays out of every listing so the palette never offers to open itself.
 
 Public API:
+    EXIT_COMMAND_NAME: Name of the one command that leaves the application.
     PALETTE_COMMAND_NAME: Name of the action that opens the command palette.
     PALETTE_KEY: Key the specification reserves for the command palette.
     CommandHost: Behaviour the catalogue delegates to.
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
     from anishift.tui.commands.spec import CommandRun
 
 __all__ = [
+    "EXIT_COMMAND_NAME",
     "PALETTE_COMMAND_NAME",
     "PALETTE_KEY",
     "CommandHost",
@@ -35,6 +37,9 @@ __all__ = [
 ]
 
 # ── Constants ──────────────────────────────────────────────────────────────
+
+EXIT_COMMAND_NAME: Final[str] = "exit"
+"""Name of the one command that leaves the application, whatever asks for it."""
 
 PALETTE_COMMAND_NAME: Final[str] = "palette"
 """Name of the contextual action that opens the command palette."""
@@ -133,12 +138,12 @@ def global_commands(host: CommandHost) -> tuple[CommandSpec, ...]:
             slash_name="help",
         ),
         CommandSpec(
-            name="exit",
+            name=EXIT_COMMAND_NAME,
             title="Wyjście",
             description="Zamyka aplikację; aktywny przebieg wymaga potwierdzenia.",
             category=CommandCategory.SESSION,
             run=host.exit_app,
-            slash_name="exit",
+            slash_name=EXIT_COMMAND_NAME,
         ),
         CommandSpec(
             name="auto",

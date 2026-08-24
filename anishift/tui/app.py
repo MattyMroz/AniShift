@@ -31,7 +31,7 @@ from textual.widgets import Static
 
 from anishift.tui import lifecycle
 from anishift.tui.brand import logo_for_size
-from anishift.tui.commands.catalog import global_commands, palette_command
+from anishift.tui.commands.catalog import EXIT_COMMAND_NAME, global_commands, palette_command
 from anishift.tui.commands.registry import CommandRegistry
 from anishift.tui.messages import (
     NavigationRequested,
@@ -135,9 +135,23 @@ class AniShiftApp(App[None]):
         self._apply_size(event.size)
 
     def on_key(self, event: Key) -> None:
-        """Run the command the registry binds to the pressed key, if it has one."""
+        """Run the command the registry binds to the pressed key, if it has one.
+
+        A key the registry answered is fully claimed, so no inherited Textual
+        binding may answer it a second time.
+        """
         if self._commands.dispatch_key(event.key):
             event.stop()
+            event.prevent_default()
+
+    async def action_quit(self) -> None:
+        """Route the inherited quit key through the one registry.
+
+        Textual binds ``Ctrl+Q`` to this action with ``priority=True``, so the
+        key never reaches ``on_key``. Delegating here keeps ``dispatch`` the
+        only point that runs a command, instead of a second way out.
+        """
+        self._commands.dispatch(EXIT_COMMAND_NAME)
 
     @on(NavigationRequested)
     def _on_navigation_requested(self, message: NavigationRequested) -> None:
