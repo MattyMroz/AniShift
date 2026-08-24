@@ -1,0 +1,1461 @@
+{
+  "version": 1,
+  "plan": "./plan.md",
+  "requirements": "./spec.md",
+  "baseline": "6849f32d4b197aff3507266e55f3d7fbb5c674d4",
+  "branch": "feature/stage-10-tui",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Ustabilizować baseline i wyjście UTF-8",
+      "goal": "Potwierdzić aktualny stan gałęzi oraz zabezpieczyć wszystkie ścieżki CLI przed awarią kodowania na konsoli Windows.",
+      "depends_on": [],
+      "spec_refs": [
+        "R-001",
+        "R-106",
+        "R-109",
+        "I-001",
+        "I-010"
+      ],
+      "plan_refs": [
+        "P-01",
+        "D-01",
+        "D-16"
+      ],
+      "scope": [
+        "anishift/cli/main.py",
+        "anishift/cli/console.py",
+        "anishift/setup/doctor.py",
+        "tests/cli/test_console.py",
+        "tests/setup/test_doctor.py"
+      ],
+      "context": [
+        "Punktem odniesienia jest commit 6849f32d4b197aff3507266e55f3d7fbb5c674d4; przed zmianą porównaj rzeczywisty HEAD i git status.",
+        "CLI już używa Rich/Typer. Rekonfiguracja strumieni należy do granicy procesu, przed pierwszym renderem.",
+        "Doctor ma raportować kodowanie informacyjnie, lecz błędna strona kodowa nie może wywracać procesu."
+      ],
+      "acceptance": [
+        "stdout i stderr są rekonfigurowane do UTF-8 z errors=replace, jeśli strumień udostępnia reconfigure.",
+        "Raport doctor zapisany przez strumień cp1250 nie zgłasza UnicodeEncodeError.",
+        "Doctor zwraca OK dla UTF-8/65001 i WARN z konkretną sugestią dla innych kodowań.",
+        "Zmiana nie uruchamia Textual i nie zmienia dotychczasowego wejścia do legacy shell."
+      ],
+      "verify": [
+        "uv run pytest tests/cli/test_console.py tests/setup/test_doctor.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie zmieniaj TUI, pipeline, providerów ani ustawień produktu.",
+        "Nie zapisuj kodowania przez globalne monkeypatche bibliotek."
+      ]
+    },
+    {
+      "id": "T-002",
+      "title": "Usunąć odrzuconą warstwę TUI",
+      "goal": "Usunąć bieżący prototyp Textual i jego testy, pozostawiając działający legacy shell oraz nietknięty backend aplikacyjny.",
+      "depends_on": [
+        "T-001"
+      ],
+      "spec_refs": [
+        "R-002",
+        "R-108",
+        "I-001",
+        "I-002"
+      ],
+      "plan_refs": [
+        "P-01",
+        "D-01",
+        "D-16"
+      ],
+      "scope": [
+        "anishift/tui/**",
+        "tests/tui/**",
+        "anishift/cli/main.py"
+      ],
+      "context": [
+        "Obecne TUI nie jest entrypointem po revercie, więc można je usunąć przed budową następcy.",
+        "Legacy shell jest tymczasową ścieżką bezpieczeństwa i pozostaje do T-026.",
+        "Nie wolno usuwać anishift/application ani anishift/pipeline na tym etapie."
+      ],
+      "acceptance": [
+        "Repozytorium nie zawiera produkcyjnych importów usuniętego anishift.tui.",
+        "uv run anishift nadal otwiera legacy shell.",
+        "doctor i setup nadal działają.",
+        "Pełne bramki jakości pozostają zielone po usunięciu testów starej prezentacji."
+      ],
+      "verify": [
+        "rg 'anishift\\.tui' anishift tests",
+        "uv run anishift doctor",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie zmieniaj kontraktów AppService, planera, schedulera ani usług.",
+        "Nie usuwaj prompt-toolkit ani legacy pipeline."
+      ]
+    },
+    {
+      "id": "T-003",
+      "title": "Zbudować markę, motywy i responsywną ramę wizualną",
+      "goal": "Utworzyć semantyczny design system, statyczne logo ANISHIFT i style bazowe zgodne z ustaloną gramatyką.",
+      "depends_on": [
+        "T-002"
+      ],
+      "spec_refs": [
+        "R-003",
+        "R-004",
+        "R-005",
+        "R-006",
+        "R-007",
+        "R-008",
+        "I-003",
+        "I-004"
+      ],
+      "plan_refs": [
+        "P-02",
+        "D-02",
+        "D-03",
+        "D-15"
+      ],
+      "scope": [
+        "anishift/tui/__init__.py",
+        "anishift/tui/brand.py",
+        "anishift/tui/theme.py",
+        "anishift/tui/ui_state.py",
+        "anishift/tui/styles/base.tcss",
+        "anishift/tui/styles/screens.tcss",
+        "tests/tui/test_brand.py",
+        "tests/tui/test_theme.py",
+        "tests/tui/test_ui_state.py"
+      ],
+      "context": [
+        "Logo jest statyczne: ANI stonowane, SHIFT wyróżnione; bez maskotki i animacji.",
+        "Kolory pochodzą wyłącznie z theme.py; TCSS używa semantycznych zmiennych.",
+        "Stan UI przechowuje jedynie preferencje prezentacji, początkowo motyw."
+      ],
+      "acceptance": [
+        "Zarejestrowane są dokładnie dwa motywy: anishift-dark i anishift-light z paletami z wymagań.",
+        "Logo ma pełny i kompaktowy wariant oraz nie zmienia szerokości podczas pracy.",
+        "ui_state.json jest zapisywany atomowo i uszkodzony plik wraca do bezpiecznych wartości domyślnych.",
+        "W żadnym TCSS nie ma literału koloru ani pustych wierszy użytych jako mechanizm layoutu."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_brand.py tests/tui/test_theme.py tests/tui/test_ui_state.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie twórz ekranu ustawień, palety, composera ani połączeń sieciowych.",
+        "Nie dodawaj animacji, obrazów rastrowych, maskotki ani trzeciego motywu."
+      ]
+    },
+    {
+      "id": "T-004",
+      "title": "Zbudować powłokę aplikacji i model stanu sesji",
+      "goal": "Utworzyć minimalną aplikację Textual z jednym właścicielem stanu, stałym obszarem treści, composerem-slotem i stopką-slotem.",
+      "depends_on": [
+        "T-003"
+      ],
+      "spec_refs": [
+        "R-002",
+        "R-004",
+        "R-007",
+        "R-100",
+        "R-101",
+        "R-104",
+        "I-001",
+        "I-005"
+      ],
+      "plan_refs": [
+        "P-02",
+        "D-04",
+        "D-13",
+        "D-15"
+      ],
+      "scope": [
+        "anishift/tui/app.py",
+        "anishift/tui/state.py",
+        "anishift/tui/lifecycle.py",
+        "anishift/tui/messages.py",
+        "anishift/tui/screens/__init__.py",
+        "anishift/tui/screens/workspace.py",
+        "anishift/tui/widgets/__init__.py",
+        "anishift/tui/widgets/footer.py",
+        "tests/tui/test_app_shell.py",
+        "tests/tui/test_state.py"
+      ],
+      "context": [
+        "TUI na razie nie staje się domyślnym entrypointem; uruchomienie testowe jest bezpośrednie.",
+        "App jest jedynym właścicielem SessionState; ekrany nie przechowują konkurencyjnego stanu runu.",
+        "W tej fazie workspace może używać danych pustych, lecz nie może zawierać placeholderowego tekstu obiecującego przyszłą funkcję."
+      ],
+      "acceptance": [
+        "Powłoka montuje się w App.run_test bez dostępu do sieci, narzędzi zewnętrznych i AppService.",
+        "Zmiana 100x30 -> 80x24 nie powoduje wyjątku ani nakładania stałych obszarów.",
+        "SessionState ma jawne pola route, focus, workspace, selected_groups, drafty, plan, run i result.",
+        "Lifecycle przywraca fokus po zamknięciu warstwy modalnej."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_app_shell.py tests/tui/test_state.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie importuj konkretnych usług, providerów ani pipeline.",
+        "Nie buduj własnego globalnego event loop poza Textual."
+      ]
+    },
+    {
+      "id": "T-005",
+      "title": "Zbudować jeden rejestr komend, paletę i autocomplete",
+      "goal": "Wdrożyć jedno źródło prawdy dla dokładnie 14 komend, ich dostępności, skrótów, palety i slash autocomplete.",
+      "depends_on": [
+        "T-004"
+      ],
+      "spec_refs": [
+        "R-010",
+        "R-011",
+        "R-012",
+        "R-013",
+        "R-014",
+        "R-015",
+        "R-093",
+        "I-006"
+      ],
+      "plan_refs": [
+        "P-02",
+        "D-05"
+      ],
+      "scope": [
+        "anishift/tui/commands/__init__.py",
+        "anishift/tui/commands/spec.py",
+        "anishift/tui/commands/registry.py",
+        "anishift/tui/commands/catalog.py",
+        "anishift/tui/commands/palette.py",
+        "anishift/tui/app.py",
+        "anishift/tui/widgets/footer.py",
+        "tests/tui/test_commands.py",
+        "tests/tui/test_palette.py"
+      ],
+      "context": [
+        "Katalog slash jest zamknięty i zawiera wyłącznie 14 nazw z wymagań.",
+        "Refresh, Cancel, Preview, Results i Back istnieją jako akcje kontekstowe, nie slash commands.",
+        "Wbudowana paleta Textual jest wyłączona; paleta AniShift korzysta z rejestru."
+      ],
+      "acceptance": [
+        "Rejestr odrzuca duplikaty nazw i pozwala rejestrować zakres globalny oraz zakres aktywnego ekranu.",
+        "Paleta i slash pokazują wyłącznie enabled i visible commands.",
+        "Fuzzy ranking preferuje prefiks, uwzględnia aliasy bez duplikowania wpisów i zwraca maksymalnie 10 sugestii w composerze.",
+        "Help i stopka pobierają etykiety klawiszy z rejestru, nie z ręcznie wpisanego tekstu.",
+        "Test potwierdza dokładny zbiór 14 slash commands oraz brak /variant."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_commands.py tests/tui/test_palette.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie dodawaj piętnastej komendy ani ukrytej alternatywnej ścieżki dispatch.",
+        "Nie wykonuj use case bezpośrednio z widoku palety; zawsze przez registry.dispatch."
+      ]
+    },
+    {
+      "id": "T-006",
+      "title": "Zbudować wspólne prymitywy dialogowe",
+      "goal": "Dostarczyć jedną spójną ramę modalną oraz selektor, edytor wartości i edytor kolejności używane przez wszystkie domeny.",
+      "depends_on": [
+        "T-003",
+        "T-004"
+      ],
+      "spec_refs": [
+        "R-030",
+        "R-031",
+        "R-032",
+        "R-033",
+        "R-034",
+        "R-047",
+        "I-005"
+      ],
+      "plan_refs": [
+        "P-02",
+        "D-06"
+      ],
+      "scope": [
+        "anishift/tui/dialogs/__init__.py",
+        "anishift/tui/dialogs/base.py",
+        "anishift/tui/dialogs/select.py",
+        "anishift/tui/dialogs/value.py",
+        "anishift/tui/dialogs/reorder.py",
+        "anishift/tui/styles/dialogs.tcss",
+        "tests/tui/test_dialogs.py"
+      ],
+      "context": [
+        "OpenCode jest wzorcem mechaniki: przyciemniona zasłona, panel bez ciężkiej ramki, filtr od otwarcia, marker wartości aktualnej niezależny od kursora.",
+        "Textual ModalScreen i dismiss są mechanizmem platformowym; nie tworzymy drugiego stosu modalnego."
+      ],
+      "acceptance": [
+        "Dialog ma rozmiary medium/large/xlarge ograniczone do terminala minus 2 kolumny.",
+        "Select obsługuje filtr, kategorie, current, disabled, single, multi, akcje i initial_highlight.",
+        "Value editor obsługuje tekst, optional, int, float, boolean i walidację inline.",
+        "Reorder obsługuje przesunięcie, dodanie, usunięcie, zatwierdzenie i rollback.",
+        "Esc/ctrl+c anuluje i przywraca poprzedni fokus; Enter zatwierdza tylko poprawną wartość."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_dialogs.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie twórz osobnych selektorów dla modeli, TTS, ustawień i palety.",
+        "Nie zapisuj ustawień wewnątrz prymitywów; dialog zwraca wynik."
+      ]
+    },
+    {
+      "id": "T-007",
+      "title": "Zbudować composer i dokładnie-jeden pusty Enter",
+      "goal": "Wdrożyć stały composer, slash popup i odporną na podwójne zdarzenia maszynę stanu pustego Enter.",
+      "depends_on": [
+        "T-005",
+        "T-006"
+      ],
+      "spec_refs": [
+        "R-020",
+        "R-021",
+        "R-022",
+        "R-023",
+        "R-024",
+        "R-025",
+        "R-026",
+        "I-007"
+      ],
+      "plan_refs": [
+        "P-02",
+        "D-07"
+      ],
+      "scope": [
+        "anishift/tui/widgets/composer.py",
+        "anishift/tui/auto_trigger.py",
+        "anishift/tui/app.py",
+        "anishift/tui/state.py",
+        "tests/tui/test_composer.py",
+        "tests/tui/test_auto_trigger.py"
+      ],
+      "context": [
+        "Composer rozpoznaje trzy wejścia: puste, slash command, zwykły tekst.",
+        "Pusty Enter ma natychmiast zarezerwować trigger przed zaplanowaniem workera.",
+        "Zwykły tekst jest zachowywany jako informacja zwrotna, ale niczego nie wykonuje."
+      ],
+      "acceptance": [
+        "Whitespace-only + Enter publikuje jeden AutoRequested dla jednej generacji wejścia.",
+        "Podwójny Enter, key repeat, Enter podczas planning/running i spóźniony event nie tworzą drugiego runu.",
+        "Slash command jest wykonywana przez rejestr; pusta komenda nie jest wysyłana do rejestru.",
+        "Zwykły tekst nie wywołuje AppService ani side effectów.",
+        "Shift+Enter, IME composition i paste nie są błędnie klasyfikowane jako pusty Auto."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_composer.py tests/tui/test_auto_trigger.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie wywołuj prawdziwego AppService ani providerów.",
+        "Nie dodawaj automatycznego startu z /auto ani z tekstu niebędącego slashem."
+      ]
+    },
+    {
+      "id": "T-008",
+      "title": "Złożyć działający prototyp wizualny",
+      "goal": "Połączyć markę, powłokę, komendy, dialogi i composer w realny prototyp uruchamiany na Windows Terminal bez podłączania backendu.",
+      "depends_on": [
+        "T-003",
+        "T-004",
+        "T-005",
+        "T-006",
+        "T-007"
+      ],
+      "spec_refs": [
+        "R-003",
+        "R-004",
+        "R-007",
+        "R-013",
+        "R-021",
+        "R-032",
+        "R-040"
+      ],
+      "plan_refs": [
+        "P-02",
+        "D-02",
+        "D-03",
+        "D-04",
+        "D-05",
+        "D-06",
+        "D-07"
+      ],
+      "scope": [
+        "anishift/tui/__main__.py",
+        "anishift/tui/app.py",
+        "anishift/tui/screens/workspace.py",
+        "anishift/tui/settings/__init__.py",
+        "anishift/tui/settings/tree.py",
+        "tests/tui/test_prototype_flow.py"
+      ],
+      "context": [
+        "Prototyp używa danych w pamięci i oferuje minimum reprezentatywne: home/workspace, /tts, selektor, number editor, /theme i symulowany Auto.",
+        "To jest bramka wyglądu. Nie wolno maskować braku backendu tekstem placeholderowym; operacje są jawnie oznaczone jako tryb demonstracyjny tylko w komendzie uruchomieniowej prototypu."
+      ],
+      "acceptance": [
+        "python -m anishift.tui uruchamia pełnoekranowy prototyp bez legacy shell.",
+        "Logo, composer, slash popup, paleta, /tts, edytor liczbowy i motyw działają klawiaturą.",
+        "Pusty Enter pokazuje jeden spójny symulowany przebieg oraz wynik, bez drugiego startu.",
+        "80x24 pozostaje sterowalne, a 100x30 pokazuje pełny wariant.",
+        "Pilot przechodzi reprezentatywny przepływ bez usług zewnętrznych."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_prototype_flow.py -q",
+        "uv run python -m anishift.tui",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie przełączaj jeszcze domyślnego entrypointu anishift.",
+        "Nie importuj ProductionHandlerFactory, providerów ani plików mediów."
+      ]
+    },
+    {
+      "id": "T-009",
+      "title": "Przejść bramkę wizualną użytkownika",
+      "goal": "Uzyskać jawną akceptację prototypu na Windows Terminal przed podłączeniem backendu i rozbudową ekranów.",
+      "depends_on": [
+        "T-008"
+      ],
+      "spec_refs": [
+        "R-003",
+        "R-004",
+        "R-005",
+        "R-007",
+        "R-008"
+      ],
+      "plan_refs": [
+        "P-03"
+      ],
+      "scope": [],
+      "context": [
+        "Bramkę wykonuje użytkownik na własnym Windows Terminal. Nie jest to automatyczny test ani raport do repo.",
+        "Ocena obejmuje wygląd, gęstość, fokus, dialogi, composer, /tts, motyw i zachowanie 80x24/100x30."
+      ],
+      "acceptance": [
+        "Użytkownik jawnie zatwierdza kontynuację albo podaje poprawki.",
+        "Wszystkie poprawki wizualne są wprowadzane w T-003..T-008 przed oznaczeniem tej bramki jako spełnionej.",
+        "Bez akceptacji żadne zadanie zależne od T-009 nie startuje."
+      ],
+      "verify": [
+        "uv run python -m anishift.tui w Windows Terminal przy 100x30",
+        "powtórzenie przy 80x24",
+        "ręczne przejście: composer -> /tts -> edycja liczby -> Esc/Enter -> /theme -> pusty Enter"
+      ],
+      "forbidden": [
+        "Nie implementuj backendu ani nie omijaj bramki na podstawie screenshotu z innego terminala.",
+        "Nie twórz osobnego raportu walidacyjnego; decyzja jest wpisem w rozmowie/Task Result."
+      ]
+    },
+    {
+      "id": "T-010",
+      "title": "Wydzielić dostęp do pól i atomowy zapis ustawień",
+      "goal": "Przenieść mapowanie SettingSpec <-> UserSettings do warstwy konfiguracji i udostępnić bezpieczną operację zmiany jednego pola przez AppService.",
+      "depends_on": [
+        "T-009"
+      ],
+      "spec_refs": [
+        "R-041",
+        "R-042",
+        "R-043",
+        "R-044",
+        "R-105",
+        "I-001",
+        "I-008"
+      ],
+      "plan_refs": [
+        "P-04",
+        "D-08"
+      ],
+      "scope": [
+        "anishift/config/field_access.py",
+        "anishift/application/service.py",
+        "anishift/config/user_settings.py",
+        "tests/config/test_field_access.py",
+        "tests/application/test_settings_update.py"
+      ],
+      "context": [
+        "UI nie może znać wewnętrznego układu profili TTS i engine_options.",
+        "Zmiana pola działa na detached copy i zapisuje cały poprawny UserSettings atomowo dopiero po walidacji.",
+        "Aktywny RunSettingsSnapshot pozostaje niezmienny."
+      ],
+      "acceptance": [
+        "read_setting_value, assign_setting_value i setting_is_active pokrywają wszystkie istniejące SettingValueType.",
+        "AppService.update_setting(setting_id, value) waliduje spec, post-init i zapis; przy błędzie nie zmienia pamięci ani dysku.",
+        "Zmiana pola kontekstowego materializuje właściwy profil TTS i usuwa niezgodne engine_options zgodnie z UserSettings.",
+        "Test udowadnia, że aktywny snapshot runu nie zmienia się po późniejszym zapisie preferencji."
+      ],
+      "verify": [
+        "uv run pytest tests/config/test_field_access.py tests/application/test_settings_update.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie importuj Textual w config/application.",
+        "Nie duplikuj walidacji SettingSpec w TUI."
+      ]
+    },
+    {
+      "id": "T-011",
+      "title": "Podłączyć kompletne drzewa ustawień",
+      "goal": "Zastąpić prototyp /tts wspólnym dispatch edytorów i obsłużyć komplet aktywnych pól dla /auto, /translation, /prompts, /tts i /theme.",
+      "depends_on": [
+        "T-010",
+        "T-005",
+        "T-006"
+      ],
+      "spec_refs": [
+        "R-040",
+        "R-041",
+        "R-042",
+        "R-043",
+        "R-044",
+        "R-045",
+        "R-046",
+        "R-047",
+        "R-048"
+      ],
+      "plan_refs": [
+        "P-04",
+        "D-08",
+        "D-09"
+      ],
+      "scope": [
+        "anishift/tui/settings/tree.py",
+        "anishift/tui/settings/editors.py",
+        "anishift/tui/settings/secrets.py",
+        "anishift/tui/app.py",
+        "tests/tui/test_settings.py",
+        "tests/tui/test_settings_coverage.py"
+      ],
+      "context": [
+        "Każda domena jest projekcją tego samego katalogu SettingSpec, nie osobnym formularzem.",
+        "Sekrety nie pokazują wartości; edytor zapisuje przez AppService i wymaga jawnego zatwierdzenia.",
+        "Zmiana motywu ma live preview, ale pozostałe pola nie wykonują efektów ubocznych podczas przesuwania kursora."
+      ],
+      "acceptance": [
+        "Każdy aktywny SettingSpec ma editor strategy; nieobsłużony typ powoduje czerwony test.",
+        "Enter zatwierdza jedno pole i wraca na tę samą pozycję listy; Esc wraca bez zapisu.",
+        "Zmiana tts_engine/model/voice odświeża zależne pola i zachowuje profile per głos.",
+        "Sekret pokazuje missing/configured, nigdy wartość; po zmianie status środowiska jest odświeżony albo UI jawnie wymaga restartu zgodnie z wybraną implementacją AppService.",
+        "Theme live preview cofa się po Esc i utrwala po Enter."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_settings.py tests/tui/test_settings_coverage.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie twórz globalnego Save/Cancel ani wielkiego formularza.",
+        "Nie uruchamiaj syntezy, tłumaczenia, model probe ani discovery przy przeglądaniu ustawień."
+      ]
+    },
+    {
+      "id": "T-012",
+      "title": "Wdrożyć lokalny katalog modeli JSONC",
+      "goal": "Dostarczyć wersjonowany, komentowalny katalog providerów i aliasów modeli Palantir bez sekretów oraz bez zgadywania dostępności enrollment.",
+      "depends_on": [
+        "T-009"
+      ],
+      "spec_refs": [
+        "R-050",
+        "R-051",
+        "R-052",
+        "R-053",
+        "R-054",
+        "R-055",
+        "R-056",
+        "R-105",
+        "I-009"
+      ],
+      "plan_refs": [
+        "P-04",
+        "D-10"
+      ],
+      "scope": [
+        "anishift/config/model_catalog.py",
+        "config/anishift.models.example.jsonc",
+        ".gitignore",
+        "pyproject.toml",
+        "uv.lock",
+        "tests/config/test_model_catalog.py"
+      ],
+      "context": [
+        "Plik wykonawczy to config/anishift.models.jsonc i jest ignorowany przez Git; repo zawiera wyłącznie bezpieczny przykład.",
+        "Sanityzowany opencode.corrected.jsonc może dostarczyć aliasy, protokoły i limity, lecz nie token, prywatny status ani gwarancję dostępności.",
+        "Dodaj parser JSONC wyłącznie przez uv. Preferowana decyzja: json5; jeśli resolver odrzuca Python 3.14, zatrzymaj zadanie i zaktualizuj D-10 zamiast pisać własny mechanizm usuwania komentarzy."
+      ],
+      "acceptance": [
+        "ModelCatalog ma schema_version, enrollment.base_url, providers z protocol i relatywną path, models z aliasem/ID/etykietą/bezpiecznymi limitami oraz defaults; odrzuca duplikaty, nieznany provider, pusty model ID i nieobsługiwany protokół.",
+        "Obsługiwane protokoły to openai_chat, anthropic_messages, google_generate i xai_chat.",
+        "W katalogu nie ma pola token, api_key, authorization ani trwałego pola stanu dostępności.",
+        "Brak/uszkodzony plik wykonawczy tworzy kopię bezpiecznego przykładu albo zwraca typowany błąd z instrukcją; nie nadpisuje cicho poprawnego pliku.",
+        "Wczytanie i filtrowanie katalogu nie wykonuje sieci; status niezweryfikowany/zweryfikowany/błąd żyje w stanie bieżącej sesji TUI."
+      ],
+      "verify": [
+        "uv run pytest tests/config/test_model_catalog.py -q",
+        "uv lock --check",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie umieszczaj tokena, nagłówków Authorization ani prywatnych RID-ów w przykładzie.",
+        "Nie implementuj automatycznego GET /models ani live probe podczas load/filter.",
+        "Nie edytuj pyproject.toml ręcznie; użyj uv add/uv remove."
+      ]
+    },
+    {
+      "id": "T-013",
+      "title": "Zbudować konfigurację, autoryzację i router protokołów Foundry",
+      "goal": "Utworzyć provider-neutralną konfigurację Palantir, pobieranie tokenu z env i bezpieczne routowanie żądań według protokołu katalogu.",
+      "depends_on": [
+        "T-012"
+      ],
+      "spec_refs": [
+        "R-053",
+        "R-054",
+        "R-057",
+        "R-059",
+        "R-103",
+        "I-009"
+      ],
+      "plan_refs": [
+        "P-04",
+        "D-11"
+      ],
+      "scope": [
+        "anishift/config/settings.py",
+        "anishift/services/llm/engines/palantir/__init__.py",
+        "anishift/services/llm/engines/palantir/config.py",
+        "anishift/services/llm/engines/palantir/auth.py",
+        "anishift/services/llm/engines/palantir/protocols.py",
+        "anishift/services/llm/engines/palantir/errors.py",
+        "tests/services/llm/test_palantir_config.py",
+        "tests/services/llm/test_palantir_auth.py"
+      ],
+      "context": [
+        "Kanoniczna zmienna AniShift to ANISHIFT_PALANTIR_TOKEN; dla zgodności można odczytać FOUNDRY_API_TOKEN, lecz zapis z TUI używa kanonicznej nazwy.",
+        "Token jest repr=False i nie wchodzi do ModelCatalog ani UserSettings.",
+        "Adres bazowy pochodzi z enrollment.base_url, a protocol i relatywna path z wpisu dostawcy. Pełny endpoint składa konfiguracja, nie widok."
+      ],
+      "acceptance": [
+        "Brak tokenu daje typowany błąd konfiguracji przed żądaniem sieciowym.",
+        "Router wybiera builder/parser dla czterech protokołów i odrzuca nieznany protocol podczas load katalogu.",
+        "Logi i str(error) nie zawierają tokenu, pełnego Authorization ani request body.",
+        "Konfiguracja nie tworzy klienta ani połączenia przed pierwszym complete/probe."
+      ],
+      "verify": [
+        "uv run pytest tests/services/llm/test_palantir_config.py tests/services/llm/test_palantir_auth.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie dodawaj tokena do JSONC, UserSettings, fixtures ani snapshotów.",
+        "Nie wykonuj live requestu w testach domyślnych."
+      ]
+    },
+    {
+      "id": "T-014",
+      "title": "Dodać silnik Palantir do neutralnej warstwy LLM",
+      "goal": "Zaimplementować jeden lazy engine Palantir obsługujący cztery protokoły, normalizację odpowiedzi i klasyfikację błędów zgodną z LlmService.",
+      "depends_on": [
+        "T-013"
+      ],
+      "spec_refs": [
+        "R-054",
+        "R-058",
+        "R-059",
+        "R-060",
+        "R-103",
+        "I-001"
+      ],
+      "plan_refs": [
+        "P-04",
+        "D-11"
+      ],
+      "scope": [
+        "anishift/services/llm/engines/palantir/service.py",
+        "anishift/services/llm/engines/palantir/http.py",
+        "anishift/services/llm/engines/palantir/normalize.py",
+        "anishift/services/llm/engines/__init__.py",
+        "anishift/services/llm/config.py",
+        "anishift/services/llm/service.py",
+        "tests/services/llm/test_palantir_engine.py",
+        "tests/services/llm/test_palantir_errors.py"
+      ],
+      "context": [
+        "Wykorzystaj istniejące httpx oraz LlmRequest/LlmResponse/LlmUsage/LlmError; nie twórz równoległego publicznego API.",
+        "Model alias jest rozwiązywany do provider + provider model ID przed konstrukcją LlmConfig.",
+        "Dotychczasowi providerzy pozostają działający i testowani."
+      ],
+      "acceptance": [
+        "Każdy protokół ma hermetyczny test request mapping oraz response normalization.",
+        "401/403 -> auth, 404/model errors -> model/config, 408/timeout -> timeout, 429 -> rate/quota, 5xx -> provider unavailable; komunikaty są bezpieczne.",
+        "Streaming response może zostać zebrany do neutralnej odpowiedzi bez przecieku surowych chunków do UI.",
+        "Engine jest lazy, close jest idempotentne, cancellation jest respektowane między próbami.",
+        "Pełne istniejące testy LLM pozostają zielone."
+      ],
+      "verify": [
+        "uv run pytest tests/services/llm/test_palantir_engine.py tests/services/llm/test_palantir_errors.py tests/services/llm -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie usuwaj ani nie przepisuj istniejących adapterów Anthropic/Gemini/OpenAI/OpenRouter/DeepSeek.",
+        "Nie loguj payloadu, promptu, tekstu napisów ani kompletnej odpowiedzi providera."
+      ]
+    },
+    {
+      "id": "T-015",
+      "title": "Podłączyć role modeli, picker, /connect i prompty",
+      "goal": "Dodać niezależny wybór modelu głównego i tłumaczeniowego, picker oparty na katalogu oraz jawny test połączenia.",
+      "depends_on": [
+        "T-011",
+        "T-012",
+        "T-014"
+      ],
+      "spec_refs": [
+        "R-051",
+        "R-052",
+        "R-055",
+        "R-056",
+        "R-057",
+        "R-060",
+        "R-090"
+      ],
+      "plan_refs": [
+        "P-04",
+        "D-10",
+        "D-11",
+        "D-12"
+      ],
+      "scope": [
+        "anishift/config/user_settings.py",
+        "anishift/config/field_catalog.py",
+        "anishift/application/service.py",
+        "anishift/tui/models/__init__.py",
+        "anishift/tui/models/picker.py",
+        "anishift/tui/models/connect.py",
+        "tests/config/test_model_settings.py",
+        "tests/tui/test_model_picker.py",
+        "tests/tui/test_connect.py"
+      ],
+      "context": [
+        "primary_model_alias służy przyszłemu agentowi/statusowi i jest niezależny od llm_provider_model_id używanego przez tłumaczenie.",
+        "Dla provider=palantir pole modelu tłumaczeniowego przechowuje alias katalogu; adapter rozwiązuje go do rzeczywistego model ID.",
+        "Picker filtruje lokalnie. Probe jest osobną, potwierdzoną akcją /connect i może zużyć limit."
+      ],
+      "acceptance": [
+        "/model pokazuje alias, etykietę, dostawcę, protokół i sesyjny stan dostępności oraz zapisuje wyłącznie primary_model_alias.",
+        "/translation pozwala niezależnie ustawić dostawcę i model tłumaczeniowy bez zmiany modelu głównego.",
+        "/prompts edytuje istniejące pola promptu zadania, stylu i modułów przez wspólne dialogi.",
+        "/connect wybiera dokładnie jeden model, pokazuje ostrzeżenie o żądaniu i wykonuje maksymalnie jeden minimalny test po potwierdzeniu.",
+        "Sukces testu ustawia stan `zweryfikowany` z czasem wyłącznie w bieżącej sesji; błąd ustawia `błąd` z bezpieczną klasą bez sekretu i treści odpowiedzi."
+      ],
+      "verify": [
+        "uv run pytest tests/config/test_model_settings.py tests/tui/test_model_picker.py tests/tui/test_connect.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie wykonuj probe przy wejściu do /model, /translation, /status ani przy filtrze.",
+        "Nie uznawaj wpisu z przykładu za dostępny bez probe albo jawnego statusu enrollment.",
+        "Nie dodawaj /variant."
+      ]
+    },
+    {
+      "id": "T-016",
+      "title": "Podłączyć TUI do AppService i zdarzeń wykonania",
+      "goal": "Zastąpić dane prototypowe prawdziwym composition root, workerami Textual, EventBuffer i bramką generacji/run ID.",
+      "depends_on": [
+        "T-010",
+        "T-014",
+        "T-015"
+      ],
+      "spec_refs": [
+        "R-002",
+        "R-048",
+        "R-100",
+        "R-101",
+        "R-102",
+        "R-103",
+        "R-104",
+        "I-001",
+        "I-007"
+      ],
+      "plan_refs": [
+        "P-04",
+        "D-04",
+        "D-12",
+        "D-13",
+        "D-14"
+      ],
+      "scope": [
+        "anishift/bootstrap.py",
+        "anishift/application/service.py",
+        "anishift/application/runtime.py",
+        "anishift/tui/app.py",
+        "anishift/tui/workers.py",
+        "anishift/tui/messages.py",
+        "anishift/tui/state.py",
+        "tests/tui/tui_fakes.py",
+        "tests/tui/test_app_service_wiring.py",
+        "tests/tui/test_event_pump.py"
+      ],
+      "context": [
+        "Wszystkie blokujące AppService methods działają w Worker(thread=True).",
+        "AppService pozostaje publiczną fasadą; TUI nie importuje planera, schedulera ani konkretnych usług.",
+        "EventBuffer jest drenowany przez timer UI 50-100 ms tylko podczas runu."
+      ],
+      "acceptance": [
+        "Production bootstrap tworzy AppService raz i przekazuje go do AniShiftApp.",
+        "Discovery, register external, doctor, setup, plan i execute nie blokują wątku UI.",
+        "Każdy wynik workera niesie generation; zdarzenia runu dodatkowo run_id; obce/stare wyniki są ignorowane.",
+        "Postęp jest koalescowany, terminalne zdarzenia nie są opóźniane, a EventBuffer nie rośnie bez ograniczeń.",
+        "Wyjątek procesu jest sanityzowany przed notify/result."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_app_service_wiring.py tests/tui/test_event_pump.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie wywołuj blocking AppService na wątku UI.",
+        "Nie importuj anishift.services ani anishift.pipeline z anishift/tui."
+      ]
+    },
+    {
+      "id": "T-017",
+      "title": "Zbudować prawdziwy ekran workspace",
+      "goal": "Wyświetlić odkryte grupy, konflikty, sidecary i produkty oraz zapewnić stabilną selekcję i odświeżanie.",
+      "depends_on": [
+        "T-016"
+      ],
+      "spec_refs": [
+        "R-070",
+        "R-071",
+        "R-072",
+        "R-100",
+        "R-101"
+      ],
+      "plan_refs": [
+        "P-05",
+        "D-12",
+        "D-13"
+      ],
+      "scope": [
+        "anishift/tui/screens/workspace.py",
+        "anishift/tui/widgets/group_table.py",
+        "tests/tui/test_workspace.py"
+      ],
+      "context": [
+        "Źródłem danych jest InspectedWorkspace zwracany przez AppService.discover.",
+        "Wiersze używają stabilnych group_id, nie indeksu tabeli.",
+        "Refresh jest akcją kontekstową i workerem; nie jest slash command."
+      ],
+      "acceptance": [
+        "Tabela pokazuje zaznaczenie, nazwę, główne źródło, artefakty, wykryty stan oraz konflikt/ostrzeżenie słowem i glifem.",
+        "Space przełącza grupę, zaznaczenie przeżywa sortowanie i refresh dla nadal istniejących group_id.",
+        "Usunięta grupa znika z selekcji; nowa nie jest automatycznie zaznaczana poza jawną polityką Select all.",
+        "Spóźniony refresh poprzedniej generacji nie nadpisuje nowszego workspace.",
+        "100 grup przewija się i filtruje bez blokującego I/O."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_workspace.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie uruchamiaj planowania ani pipeline przy zaznaczeniu lub refresh.",
+        "Nie używaj ścieżek absolutnych jako etykiet głównych ani ID."
+      ]
+    },
+    {
+      "id": "T-018",
+      "title": "Zbudować konfigurację i wykonanie Auto",
+      "goal": "Podłączyć presety Auto do wybranych grup oraz pusty Enter do bezpośredniego planowania i startu bez zbędnego formularza.",
+      "depends_on": [
+        "T-017",
+        "T-011",
+        "T-007"
+      ],
+      "spec_refs": [
+        "R-021",
+        "R-023",
+        "R-024",
+        "R-026",
+        "R-073",
+        "R-074",
+        "R-081",
+        "I-007"
+      ],
+      "plan_refs": [
+        "P-05",
+        "D-07",
+        "D-12"
+      ],
+      "scope": [
+        "anishift/tui/screens/auto.py",
+        "anishift/tui/auto_trigger.py",
+        "anishift/tui/app.py",
+        "tests/tui/test_auto.py"
+      ],
+      "context": [
+        "/auto jest edytorem presetów i nie startuje pracy.",
+        "Pusty Enter używa default preset oraz aktualnie zaznaczonych grup; jeśli nic nie zaznaczono, stosuje jawną politykę wszystkich gotowych grup albo pokazuje jednoznaczny błąd zgodnie z wymaganiami.",
+        "Plan zawsze powstaje przez AppService.plan_auto."
+      ],
+      "acceptance": [
+        "/auto listuje presety, pozwala wybrać domyślny, edytować pola AUTO_PRESET, zapisać, zresetować i wrócić bez startu.",
+        "Pusty Enter rezerwuje trigger, tworzy plan w workerze i przy planie bez blockerów/destrukcji przechodzi bezpośrednio do execution.",
+        "Jeśli plan ma blocker, UI wraca z problemami bez startu; jeśli wykryto nową operację destrukcyjną/nadpisanie, pokazuje ConfirmDialog.",
+        "Podwójny Enter nie wywołuje drugiego plan_auto ani execute.",
+        "Zmiana default preset jest atomowo zapisana i widoczna po restarcie."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_auto.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie dodawaj globalnego formularza Auto ani obowiązkowego Preview dla bezpiecznego domyślnego Auto.",
+        "Nie uruchamiaj z /auto, wyboru presetu ani samego zapisu."
+      ]
+    },
+    {
+      "id": "T-019",
+      "title": "Zbudować workflow Manual i rejestrację źródeł",
+      "goal": "Zapewnić niezależne drafty intencji per grupa, wybór artefaktów/tracków i bezpieczną rejestrację plików zewnętrznych.",
+      "depends_on": [
+        "T-017",
+        "T-011"
+      ],
+      "spec_refs": [
+        "R-027",
+        "R-075",
+        "R-076",
+        "R-077",
+        "I-005"
+      ],
+      "plan_refs": [
+        "P-05",
+        "D-08",
+        "D-12",
+        "D-13"
+      ],
+      "scope": [
+        "anishift/tui/screens/manual.py",
+        "tests/tui/test_manual.py"
+      ],
+      "context": [
+        "GroupIntent jest kontraktem aplikacyjnym; TUI przechowuje draft i materializuje GroupIntent dopiero przy planowaniu.",
+        "Pliki zewnętrzne są walidowane przez AppService.register_external_subtitle/audio w workerze.",
+        "Pola MANUAL_RUN korzystają z tych samych editor strategies co ustawienia."
+      ],
+      "acceptance": [
+        "Każda grupa ma niezależny draft; przełączenie grupy nie gubi zmian.",
+        "Copy to selected kopiuje wartości, ale nie współdzieli mutowalnego obiektu.",
+        "Sprzeczne artifact ID/track ID są blokowane przed plan_manual.",
+        "Spóźniony wynik rejestracji pliku nie zmienia draftu po zmianie generacji lub grupy.",
+        "Akcja Preview materializuje kompletny zestaw GroupIntent dla wybranych grup; Manual nigdy nie startuje bez Preview."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_manual.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie czytaj plików mediów bezpośrednio w TUI.",
+        "Nie współdziel jednej instancji draftu między grupami."
+      ]
+    },
+    {
+      "id": "T-020",
+      "title": "Zbudować Preview i bezpieczną bramkę Start",
+      "goal": "Renderować pełny plan wykonania, blockery, koszty i nadpisania oraz dopuścić Start wyłącznie dla poprawnego planu.",
+      "depends_on": [
+        "T-018",
+        "T-019",
+        "T-006"
+      ],
+      "spec_refs": [
+        "R-027",
+        "R-077",
+        "R-080",
+        "R-081",
+        "R-103",
+        "I-007"
+      ],
+      "plan_refs": [
+        "P-05",
+        "D-12",
+        "D-14"
+      ],
+      "scope": [
+        "anishift/tui/screens/preview.py",
+        "anishift/tui/widgets/plan_view.py",
+        "anishift/tui/app.py",
+        "tests/tui/test_preview.py"
+      ],
+      "context": [
+        "ExecutionPlan jest jedynym źródłem prawdy; TUI nie rekalkuluje grafu ani zależności.",
+        "Manual zawsze przechodzi przez Preview. Auto pokazuje Preview tylko przy blockerze lub wymaganym potwierdzeniu."
+      ],
+      "acceptance": [
+        "Preview pokazuje per grupę źródła, operacje w kolejności, produkty, pominięcia, warningi, blockery, modele/silniki i ścieżki docelowe względne.",
+        "Start jest disabled, gdy can_execute=false.",
+        "Nadpisanie, operacja płatna wymagająca jawnego potwierdzenia albo inny nieodwracalny skutek otwiera ConfirmDialog z konkretnym opisem.",
+        "Start rezerwuje run przed workerem; podwójny Enter/klik nie tworzy dwóch execute.",
+        "Back wraca do Auto albo Manual z zachowanym draftem."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_preview.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie duplikuj reguł planera ani nie buduj planu w widgetach.",
+        "Nie pokazuj pełnych promptów, sekretów ani absolutnych prywatnych ścieżek."
+      ]
+    },
+    {
+      "id": "T-021",
+      "title": "Zbudować Execution, postęp i Cancel",
+      "goal": "Wyświetlać stabilny przebieg per grupa, retry/fallback i umożliwić idempotentne anulowanie bez zamrażania UI.",
+      "depends_on": [
+        "T-020",
+        "T-016"
+      ],
+      "spec_refs": [
+        "R-082",
+        "R-083",
+        "R-084",
+        "R-100",
+        "R-101",
+        "R-102",
+        "R-103"
+      ],
+      "plan_refs": [
+        "P-05",
+        "D-13",
+        "D-14"
+      ],
+      "scope": [
+        "anishift/tui/screens/execution.py",
+        "anishift/tui/widgets/progress_table.py",
+        "anishift/tui/app.py",
+        "anishift/tui/state.py",
+        "tests/tui/test_execution.py"
+      ],
+      "context": [
+        "Wiersze są prealokowane w naturalnej kolejności plan.groups i aktualizowane zdarzeniami RunEvent.",
+        "Postęp jest koalescowany do maksymalnie 10 renderów/s per task; zdarzenia terminalne są natychmiastowe.",
+        "Cancel wymaga potwierdzenia i wywołuje AppService.cancel(active_run_id)."
+      ],
+      "acceptance": [
+        "Każda grupa pokazuje glif+słowo stanu, bieżący task, procent i rozwijane szczegóły.",
+        "Retry i fallback są widoczne tekstowo z numerem próby i nazwą silnika/modelu.",
+        "Filtr all/running/failed/done nie zmienia danych, tylko projekcję.",
+        "Pierwszy Cancel przełącza stan na cancelling; kolejne są bezpieczne i nie wysyłają lawiny żądań.",
+        "Composer, paleta i resize działają podczas aktywnego runu."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_execution.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie renderuj surowego payloadu RunEvent ani stderr procesu.",
+        "Nie anuluj runu samym Esc bez potwierdzenia."
+      ]
+    },
+    {
+      "id": "T-022",
+      "title": "Zbudować Results i odzyskiwanie partial",
+      "goal": "Pokazać wynik per grupa, utworzone produkty, bezpieczne błędy i sensowne ścieżki ponowienia.",
+      "depends_on": [
+        "T-021",
+        "T-019"
+      ],
+      "spec_refs": [
+        "R-085",
+        "R-086",
+        "R-103"
+      ],
+      "plan_refs": [
+        "P-05",
+        "D-12",
+        "D-14"
+      ],
+      "scope": [
+        "anishift/tui/screens/results.py",
+        "anishift/tui/app.py",
+        "anishift/tui/state.py",
+        "tests/tui/test_results.py"
+      ],
+      "context": [
+        "RunResult i GroupResult są źródłem prawdy; partial nie jest sprowadzany do ogólnego failure.",
+        "Ponowienie prowadzi przez nowy plan, nigdy przez ręczne odpalenie wewnętrznego taska."
+      ],
+      "acceptance": [
+        "Results grupuje succeeded/partial/failed/cancelled glifem i słowem.",
+        "Dla każdej grupy pokazuje trwałe produkty, zachowane artefakty, warningi i zredagowany błąd.",
+        "Open in Manual tworzy niezależny draft dla wybranej nieudanej grupy i wraca do bezpiecznego planowania.",
+        "Results pozostaje dostępny z rejestru tylko po istniejącym wyniku sesji.",
+        "Spóźnione RunCompleted poprzedniej generacji nie podmienia aktualnego wyniku."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_results.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie obiecuj automatycznego resume, jeśli kontrakt aplikacji go nie zapewnia.",
+        "Nie pokazuj pełnych ErrorContext.details ani absolutnych ścieżek."
+      ]
+    },
+    {
+      "id": "T-023",
+      "title": "Podłączyć komendy narzędziowe i diagnostykę",
+      "goal": "Dokończyć /init, /status, /debug, /help, /doctor i /exit oraz spójnie podłączyć /connect i setup.",
+      "depends_on": [
+        "T-016",
+        "T-015",
+        "T-005",
+        "T-006"
+      ],
+      "spec_refs": [
+        "R-057",
+        "R-090",
+        "R-091",
+        "R-092",
+        "R-093",
+        "R-094",
+        "R-103"
+      ],
+      "plan_refs": [
+        "P-05",
+        "D-05",
+        "D-12",
+        "D-14"
+      ],
+      "scope": [
+        "anishift/tui/tools.py",
+        "anishift/tui/screens/tools.py",
+        "anishift/tui/app.py",
+        "tests/tui/test_tools.py"
+      ],
+      "context": [
+        "Doctor i setup są publicznymi metodami AppService i działają w workerach.",
+        "Status/debug korzystają z bezpiecznych DTO/projekcji; nie introspektują prywatnych obiektów providerów.",
+        "Exit przy aktywnym runie wymaga ConfirmDialog."
+      ],
+      "acceptance": [
+        "/init pokazuje brakujące kroki i może uruchomić setup po potwierdzeniu, lecz nie startuje pipeline.",
+        "/status pokazuje workspace, selekcję, default preset, primary/translation model, engine readiness i run state bez sekretów.",
+        "/debug dodaje wersje, kodowanie, ścieżki względne, ostatnie bezpieczne klasy błędów i stan katalogu; nie pokazuje promptów/body/tokenów.",
+        "/doctor renderuje pełne CheckResult i sugestie; setup jest jawnie wywoływany, nie automatyczny przy wejściu.",
+        "/help odzwierciedla dokładne 14 komend i żywe skróty; /exit respektuje active run."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_tools.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie renderuj os.environ, Settings repr, headers, tokenów, pełnych command lines ani payloadów.",
+        "Nie wykonuj setup, probe ani run bez jawnej akcji użytkownika."
+      ]
+    },
+    {
+      "id": "T-024",
+      "title": "Zbiec pełny przepływ, responsywność i wydajność",
+      "goal": "Połączyć wszystkie ekrany i komendy w jeden spójny produkt oraz usunąć regresje fokusów, rozmiaru i responsywności.",
+      "depends_on": [
+        "T-017",
+        "T-018",
+        "T-019",
+        "T-020",
+        "T-021",
+        "T-022",
+        "T-023"
+      ],
+      "spec_refs": [
+        "R-002",
+        "R-004",
+        "R-007",
+        "R-013",
+        "R-100",
+        "R-101",
+        "R-102",
+        "R-104",
+        "I-005",
+        "I-007",
+        "I-010"
+      ],
+      "plan_refs": [
+        "P-05",
+        "D-04",
+        "D-12",
+        "D-13",
+        "D-15",
+        "D-17"
+      ],
+      "scope": [
+        "anishift/tui/**",
+        "tests/tui/test_flow.py",
+        "tests/tui/test_responsive.py",
+        "tests/tui/test_performance.py"
+      ],
+      "context": [
+        "To zadanie jest zbieżnością, nie miejscem na nowe funkcje.",
+        "Realny AppService używa fake boundary handlers; providerzy i prawdziwe media nie są potrzebne do Pilot E2E.",
+        "Wszelkie poprawki pozostają w warstwie odpowiedzialnej za defekt, nie w testowym obejściu."
+      ],
+      "acceptance": [
+        "Pilot przechodzi: workspace -> pusty Enter -> Auto execution -> Results.",
+        "Pilot przechodzi: workspace -> /manual -> Preview -> Start -> Cancel -> Results.",
+        "Pilot przechodzi ustawienia, model picker, /connect z fake transportem, status, doctor i exit.",
+        "80x24 pozwala otworzyć composer/paletę i wyjść; 100x30 pokazuje pełny layout bez nakładania.",
+        "20 grup z gęstymi progress events zachowuje input; 100 grup przewija się w ustalonym limicie testu.",
+        "Brak placeholderów, konkurencyjnych dispatch paths, surowych kolorów w TCSS i niezabezpieczonych komunikatów."
+      ],
+      "verify": [
+        "uv run pytest tests/tui/test_flow.py tests/tui/test_responsive.py tests/tui/test_performance.py -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie dodawaj nowych komend, ekranów, providerów ani formatu konfiguracji.",
+        "Nie poluzowuj timeoutów testowych tylko po to, by ukryć blokujący kod UI."
+      ]
+    },
+    {
+      "id": "T-025",
+      "title": "Przełączyć entrypoint i przywrócić tryb run CLI",
+      "goal": "Ustawić nowe TUI jako domyślne uruchomienie oraz zachować nieinteraktywne doctor, setup i run --preset bez importowania Textual na ich ścieżce.",
+      "depends_on": [
+        "T-024"
+      ],
+      "spec_refs": [
+        "R-002",
+        "R-106",
+        "R-107",
+        "R-109",
+        "I-010"
+      ],
+      "plan_refs": [
+        "P-06",
+        "D-16"
+      ],
+      "scope": [
+        "anishift/cli/main.py",
+        "anishift/tui/__init__.py",
+        "run_anishift.bat",
+        "tests/cli/test_main.py",
+        "tests/cli/test_run.py"
+      ],
+      "context": [
+        "No args tworzy AppContext, AppService i AniShiftApp przez lazy import.",
+        "doctor/setup/run muszą działać w procesie bez montowania Textual.",
+        "run --preset używa tej samej AppService.plan_auto/execute co TUI i zwraca stabilny tekstowy raport."
+      ],
+      "acceptance": [
+        "uv run anishift bez argumentów uruchamia TUI.",
+        "uv run anishift doctor i setup nie importują anishift.tui/textual na ścieżce wykonania.",
+        "uv run anishift run --preset default zwraca 0 tylko przy pełnym sukcesie; partial/failure/cancel zwraca niezero.",
+        "run_anishift.bat deleguje argumenty bez zmiany semantyki i zapewnia UTF-8.",
+        "Test runnera używa fake AppService/handlers, bez sieci i mediów."
+      ],
+      "verify": [
+        "uv run pytest tests/cli/test_main.py tests/cli/test_run.py -q",
+        "uv run anishift doctor",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie usuwaj jeszcze legacy shell/pipeline przed T-026.",
+        "Nie importuj Textual na poziomie modułu cli/main.py dla subkomend technicznych."
+      ]
+    },
+    {
+      "id": "T-026",
+      "title": "Udowodnić parytet i usunąć legacy",
+      "goal": "Porównać nową ścieżkę aplikacyjną z legacy dla reprezentatywnych przypadków, przenieść brakujące regresje i usunąć prompt-toolkit shell oraz stary pipeline.",
+      "depends_on": [
+        "T-025"
+      ],
+      "spec_refs": [
+        "R-108",
+        "R-105",
+        "I-001",
+        "I-002",
+        "I-010"
+      ],
+      "plan_refs": [
+        "P-06",
+        "D-16",
+        "D-17"
+      ],
+      "scope": [
+        "tests/application/test_legacy_parity.py",
+        "tests/application/**",
+        "anishift/cli/shell.py",
+        "anishift/cli/commands.py",
+        "anishift/cli/completer.py",
+        "anishift/cli/pipeline_ui.py",
+        "anishift/cli/settings_panel.py",
+        "anishift/cli/banner.py",
+        "anishift/cli/tts_settings.py",
+        "anishift/pipeline/**",
+        "tests/pipeline/**",
+        "tests/cli/**",
+        "pyproject.toml",
+        "uv.lock",
+        "AGENTS.md"
+      ],
+      "context": [
+        "Najpierw uruchom tymczasowy test parytetu na identycznych hermetycznych wejściach; dopiero po zielonym wyniku usuń legacy.",
+        "Porównuj statusy grup, rodzaje/nazwy produktów i liczbę wywołań fake providerów; nie porównuj timestampów ani kolejności logów.",
+        "Przed usunięciem przejrzyj testy pipeline i przenieś przypadki nadal wartościowe do application/services."
+      ],
+      "acceptance": [
+        "Tymczasowy test parytetu przechodzi przed kasacją.",
+        "Po kasacji nie istnieją anishift/pipeline ani tests/pipeline, a rg nie znajduje prompt_toolkit, run_shell ani anishift.pipeline w produkcji/testach.",
+        "prompt-toolkit jest usunięty wyłącznie przez uv remove i lock jest spójny.",
+        "Domyślne TUI oraz CLI doctor/setup/run pozostają działające.",
+        "Pełna liczba testów może zmaleć tylko o jawnie usunięte testy legacy zastąpione równoważnym pokryciem."
+      ],
+      "verify": [
+        "uv run pytest tests/application/test_legacy_parity.py -q przed usunięciem",
+        "rg 'prompt_toolkit|run_shell|anishift\\.pipeline' anishift tests po usunięciu",
+        "uv lock --check",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie usuwaj legacy przy czerwonym parytecie albo nieprzeniesionym scenariuszu regresyjnym.",
+        "Nie utrzymuj dwóch aktywnych ścieżek wykonania po zakończeniu zadania."
+      ]
+    },
+    {
+      "id": "T-027",
+      "title": "Domknąć Windows CI, granice architektury i dokumentację",
+      "goal": "Dodać wystarczające zabezpieczenia dla produktu Windows-only oraz zaktualizować istniejące dokumenty bez tworzenia osobnego pakietu raportów.",
+      "depends_on": [
+        "T-026"
+      ],
+      "spec_refs": [
+        "R-001",
+        "R-109",
+        "I-001",
+        "I-003",
+        "I-009",
+        "I-010"
+      ],
+      "plan_refs": [
+        "P-06",
+        "D-17"
+      ],
+      "scope": [
+        ".github/workflows/ci.yml",
+        "tests/application/test_architecture.py",
+        "tests/cli/test_console.py",
+        "tests/tui/test_flow.py",
+        "AGENTS.md",
+        "anishift/tui/AGENTS.md",
+        "anishift/cli/AGENTS.md",
+        "anishift/config/AGENTS.md",
+        "config/README.md",
+        "README.md",
+        "docs/plans/_index.md"
+      ],
+      "context": [
+        "Nie powstaje osobny validation report, release dossier ani taskbook. Dowodem są testy i wynik CI.",
+        "CI Linux zachowuje pełne bramki; Windows job może być skupiony na CLI/TUI/config i nie musi dublować kosztownego real-media E2E.",
+        "Dokumentacja aktualizuje istniejące pliki i opisuje aktualny produkt, nie historię implementacji."
+      ],
+      "acceptance": [
+        "Test architektury blokuje import textual/typer/rich/cli/tui w application oraz import services/pipeline w TUI.",
+        "Windows CI uruchamia co najmniej sync frozen, kodowanie CLI, model catalog, TUI flow i pełny zestaw testów możliwy w czasie joba.",
+        "README opisuje pusty Enter, 14 komend, /auto vs /manual, modele Foundry, token env i tryby CLI.",
+        "AGENTS opisują własność theme, rejestru, dialogów, AppService boundary i zakaz sekretów.",
+        "docs/plans/_index.md oznacza 10 jako ukończony dopiero po zielonym CI i akceptacji użytkownika."
+      ],
+      "verify": [
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest",
+        "uv sync --frozen --group dev",
+        "uv run anishift doctor"
+      ],
+      "forbidden": [
+        "Nie twórz nowych raportów walidacji, ledgerów, CSV ani schematów planistycznych.",
+        "Nie zamykaj całego Etapu 9, jeśli jego pozostałe backendowe wymagania są nadal otwarte."
+      ]
+    }
+  ]
+}

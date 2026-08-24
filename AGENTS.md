@@ -48,6 +48,7 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 - `anishift/` — pakiet aplikacji (composition root, hierarchia błędów); ma własny AGENTS.md
 - `tests/` — testy pytest; konwencje i markery w jego AGENTS.md
 - `docs/plans/` — plany etapów (`plan-anishift.md` = zakres); `docs/reference/` — audyt mm_avh + wzorzec mangashift
+- `docs/work/` — artefakty aktywnego workstreamu (spec + plan + graf zadań), poza `docs/plans/`
 - `external/` — pobrane binarki (gitignored) + docs HTML narzędzi; szczegóły w `external/README.md`
 - `config/` — runtime katalog na `settings.json` panelu (gitignored); opis w `config/README.md`
 - `scripts/hooks/` — hook `check_commit_msg.py` (Conventional Commits); `scripts/tmp/` — jednorazowe
