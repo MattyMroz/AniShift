@@ -32,15 +32,29 @@ body:
     attributes:
       label: Area (you can add more via labels after creating)
       options:
+        - cli
+        - config
+        - pipeline
+        - platform
+        - setup
+        - services
+        - application
+        - text
+        - tui
         - extraction
         - subtitles
         - translation
         - tts
+        - llm
         - audio
         - composition
-        - cli
-        - pipeline
+        - utils
+        - logger
+        - agents
+        - deps
         - infra
+        - release
+        - repo
     validations:
       required: true
   - type: textarea
