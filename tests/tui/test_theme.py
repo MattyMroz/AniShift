@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
@@ -36,7 +37,30 @@ _TCSS_DECLARATION_VALUE: Final[re.Pattern[str]] = re.compile(r":\s*([^;{}]*)")
 
 _TCSS_VARIABLE_REFERENCE: Final[re.Pattern[str]] = re.compile(r"\$[\w-]+")
 
-_COLOUR_CONSTRUCTOR: Final[re.Pattern[str]] = re.compile(r"\bColor\s*\(")
+_COLOUR_CONSTRUCTOR_NAME: Final[str] = "Color"
+
+_COLOUR_CONSTRUCTOR_ORIGIN: Final[str] = "textual.color.Color"
+
+_RUNTIME_COMPOSED_COLOURS_ARE_OUTSIDE_STATIC_REACH: Final[str] = (
+    "colours composed while the program runs are an accepted blind spot of this static guard: "
+    "no static analysis can resolve a value produced at runtime, so the guard owns literals and "
+    "constructor calls only and deliberately does not guess about computed strings"
+)
+
+_COLOUR_CONSTRUCTOR_IMPORT_FORMS: Final[tuple[str, ...]] = (
+    "from textual.color import Color\nACCENT = Color(1, 2, 3)\n",
+    "from textual.color import Color as C\nACCENT = C(1, 2, 3)\n",
+    "from textual import color\nACCENT = color.Color(1, 2, 3)\n",
+    "from textual import color as clr\nACCENT = clr.Color(1, 2, 3)\n",
+    "import textual.color\nACCENT = textual.color.Color(1, 2, 3)\n",
+    "import textual.color as tc\nACCENT = tc.Color(1, 2, 3)\n",
+)
+
+_RUNTIME_COMPOSED_COLOUR_FORMS: Final[tuple[str, ...]] = (
+    'ACCENT = f"#{red_hex}{green_hex}{blue_hex}"',
+    'ACCENT = "#" + computed_hex',
+    "ACCENT = build_colour(11, 13, 16)",
+)
 
 _COLOUR_FORMS: Final[tuple[tuple[str, str], ...]] = (
     (".tcss", "Widget { color: #f00; }"),
@@ -97,13 +121,61 @@ def _python_string_literals(source: str) -> list[str]:
     return [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
 
 
+def _import_origins(tree: ast.Module) -> dict[str, str]:
+    origins: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                origins[alias.asname or alias.name.partition(".")[0]] = (
+                    alias.name if alias.asname else alias.name.partition(".")[0]
+                )
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            for alias in node.names:
+                origins[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return origins
+
+
+def _dotted_name(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix: str | None = _dotted_name(node.value)
+        return None if prefix is None else f"{prefix}.{node.attr}"
+    return None
+
+
+def _resolved_origin(dotted: str, origins: Mapping[str, str]) -> str | None:
+    root, _, rest = dotted.partition(".")
+    if root not in origins:
+        return None
+    return f"{origins[root]}.{rest}" if rest else origins[root]
+
+
+def _colour_constructor_calls(source: str) -> list[str]:
+    tree: ast.Module = ast.parse(source)
+    origins: Mapping[str, str] = _import_origins(tree)
+    calls: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        dotted: str | None = _dotted_name(node.func)
+        if dotted is None:
+            continue
+        origin: str | None = _resolved_origin(dotted, origins)
+        if origin == _COLOUR_CONSTRUCTOR_ORIGIN or (
+            origin is None and dotted.rpartition(".")[2] == _COLOUR_CONSTRUCTOR_NAME
+        ):
+            calls.append(f"{dotted}(")
+    return calls
+
+
 def _colour_literals(source: str, *, suffix: str) -> list[str]:
     scopes: list[str] = _tcss_declaration_values(source) if suffix == ".tcss" else _python_string_literals(source)
     literals: list[str] = [
         token for scope in scopes for token in _COLOUR_TOKEN.findall(scope) if _token_is_a_colour(token)
     ]
-    if suffix != ".tcss" and _COLOUR_CONSTRUCTOR.search(source):
-        literals.append("Color(")
+    if suffix != ".tcss":
+        literals.extend(_colour_constructor_calls(source))
     return literals
 
 
@@ -207,6 +279,20 @@ def test_theme_module_is_the_only_owner_of_colour_literals() -> None:
 @pytest.mark.parametrize(("suffix", "source"), _COLOUR_FORMS)
 def test_colour_guard_flags_every_colour_form(suffix: str, source: str) -> None:
     assert _colour_literals(source, suffix=suffix)
+
+
+@pytest.mark.parametrize("source", _COLOUR_CONSTRUCTOR_IMPORT_FORMS)
+def test_colour_guard_flags_the_constructor_under_every_import_alias(source: str) -> None:
+    assert _colour_literals(source, suffix=".py")
+
+
+def test_colour_guard_ignores_a_color_class_imported_from_another_module() -> None:
+    assert _colour_literals("from anishift.tui.brand import Color\nACCENT = Color(1, 2, 3)\n", suffix=".py") == []
+
+
+@pytest.mark.parametrize("source", _RUNTIME_COMPOSED_COLOUR_FORMS)
+def test_runtime_composed_colours_are_an_accepted_blind_spot(source: str) -> None:
+    assert _colour_literals(source, suffix=".py") == [], _RUNTIME_COMPOSED_COLOURS_ARE_OUTSIDE_STATIC_REACH
 
 
 @pytest.mark.parametrize("token", _NON_COLOUR_TOKENS)

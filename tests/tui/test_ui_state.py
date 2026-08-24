@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -52,7 +53,7 @@ def test_save_writes_a_temporary_then_atomically_replaces_the_target(
     state_file: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real_replace = os.replace
+    real_replace: Callable[[os.PathLike[str], os.PathLike[str]], None] = os.replace
     calls: list[tuple[str, str, bool]] = []
 
     def spy(src: os.PathLike[str], dst: os.PathLike[str]) -> None:
@@ -62,6 +63,9 @@ def test_save_writes_a_temporary_then_atomically_replaces_the_target(
     monkeypatch.setattr(os, "replace", spy)
     save_ui_state(UiState(theme=LIGHT_THEME_ID))
     assert len(calls) == 1
+    source: str
+    destination: str
+    target_existed_before_replace: bool
     source, destination, target_existed_before_replace = calls[0]
     assert destination == str(state_file)
     assert source != destination
