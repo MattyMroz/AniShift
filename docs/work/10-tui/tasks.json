@@ -243,7 +243,7 @@
         "anishift/tui/commands/palette.py",
         "anishift/tui/app.py",
         "anishift/tui/widgets/footer.py",
-        "tests/tui/test_commands.py",
+        "tests/tui/test_command_registry.py",
         "tests/tui/test_palette.py"
       ],
       "context": [
@@ -259,7 +259,7 @@
         "Test potwierdza dokładny zbiór 14 slash commands oraz brak /variant."
       ],
       "verify": [
-        "uv run pytest tests/tui/test_commands.py tests/tui/test_palette.py -q",
+        "uv run pytest tests/tui/test_command_registry.py tests/tui/test_palette.py -q",
         "uv run ruff check anishift/ tests/",
         "uv run ruff format --check anishift/ tests/",
         "uv run mypy anishift/ tests/",

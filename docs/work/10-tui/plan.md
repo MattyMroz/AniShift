@@ -662,7 +662,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - `anishift/tui/commands/palette.py`
 - `anishift/tui/app.py`
 - `anishift/tui/widgets/footer.py`
-- `tests/tui/test_commands.py`
+- `tests/tui/test_command_registry.py`
 - `tests/tui/test_palette.py`
 
 **Kontrakty, które to zadanie ma ustanowić:**
@@ -694,7 +694,7 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 - Test potwierdza dokładny zbiór 14 slash commands oraz brak /variant.
 
 **Weryfikacja ukierunkowana:**
-- `uv run pytest tests/tui/test_commands.py tests/tui/test_palette.py -q`
+- `uv run pytest tests/tui/test_command_registry.py tests/tui/test_palette.py -q`
 - Następnie wykonaj pełny zestaw **BRAMKA-PEŁNA**.
 
 **Przekazanie do następnego zadania:**
