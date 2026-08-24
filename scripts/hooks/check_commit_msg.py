@@ -41,6 +41,7 @@ SCOPES: Final[tuple[str, ...]] = (
     "platform",
     "setup",
     "services",
+    "application",
     "extraction",
     "subtitles",
     "translation",

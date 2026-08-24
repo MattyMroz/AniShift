@@ -37,6 +37,7 @@ def _check(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, message: str) -> int
     [
         "feat(translation): add deepl retry backoff",
         "fix(cli): guard empty repl line",
+        "chore(application): add the application commit scope",
         "refactor(setup): derive mapping from manifest",
         "docs(agents): scan-generated control files",
         "chore(deps): bump ruff to 0.15.21",
