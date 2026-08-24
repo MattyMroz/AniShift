@@ -121,18 +121,24 @@ def _python_string_literals(source: str) -> list[str]:
     return [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
 
 
-def _import_origins(tree: ast.Module) -> dict[str, str]:
-    origins: dict[str, str] = {}
+def _name_bindings(tree: ast.Module) -> dict[str, str]:
+    bindings: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                origins[alias.asname or alias.name.partition(".")[0]] = (
+                bindings[alias.asname or alias.name.partition(".")[0]] = (
                     alias.name if alias.asname else alias.name.partition(".")[0]
                 )
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
             for alias in node.names:
-                origins[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-    return origins
+                bindings[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+        elif isinstance(node, ast.ClassDef):
+            bindings[node.name] = node.name
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    bindings[target.id] = node.value.id
+    return bindings
 
 
 def _dotted_name(node: ast.expr) -> str | None:
@@ -144,16 +150,23 @@ def _dotted_name(node: ast.expr) -> str | None:
     return None
 
 
-def _resolved_origin(dotted: str, origins: Mapping[str, str]) -> str | None:
+def _resolved_origin(dotted: str, bindings: Mapping[str, str]) -> str | None:
+    root: str
+    rest: str
     root, _, rest = dotted.partition(".")
-    if root not in origins:
+    if root not in bindings:
         return None
-    return f"{origins[root]}.{rest}" if rest else origins[root]
+    seen: set[str] = {root}
+    origin: str = bindings[root]
+    while origin in bindings and origin not in seen:
+        seen.add(origin)
+        origin = bindings[origin]
+    return f"{origin}.{rest}" if rest else origin
 
 
 def _colour_constructor_calls(source: str) -> list[str]:
     tree: ast.Module = ast.parse(source)
-    origins: Mapping[str, str] = _import_origins(tree)
+    bindings: Mapping[str, str] = _name_bindings(tree)
     calls: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -161,7 +174,7 @@ def _colour_constructor_calls(source: str) -> list[str]:
         dotted: str | None = _dotted_name(node.func)
         if dotted is None:
             continue
-        origin: str | None = _resolved_origin(dotted, origins)
+        origin: str | None = _resolved_origin(dotted, bindings)
         if origin == _COLOUR_CONSTRUCTOR_ORIGIN or (
             origin is None and dotted.rpartition(".")[2] == _COLOUR_CONSTRUCTOR_NAME
         ):
@@ -288,6 +301,14 @@ def test_colour_guard_flags_the_constructor_under_every_import_alias(source: str
 
 def test_colour_guard_ignores_a_color_class_imported_from_another_module() -> None:
     assert _colour_literals("from anishift.tui.brand import Color\nACCENT = Color(1, 2, 3)\n", suffix=".py") == []
+
+
+def test_colour_guard_ignores_a_color_class_defined_in_the_same_module() -> None:
+    assert _colour_literals("class Color:\n    pass\n\n\nACCENT = Color(1, 2, 3)\n", suffix=".py") == []
+
+
+def test_colour_guard_flags_the_constructor_behind_an_assignment_alias() -> None:
+    assert _colour_literals("from textual.color import Color\nAlias = Color\nACCENT = Alias(1, 2, 3)\n", suffix=".py")
 
 
 @pytest.mark.parametrize("source", _RUNTIME_COMPOSED_COLOUR_FORMS)
