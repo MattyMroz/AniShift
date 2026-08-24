@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 from typing import Final
 
+import pytest
 from textual.app import App
+from textual.color import Color, ColorParseError
 from textual.css.stylesheet import Stylesheet
 from textual.theme import Theme
 
@@ -21,11 +24,87 @@ from anishift.tui.theme import (
     register_themes,
 )
 
-_COLOR_LITERAL: Final[re.Pattern[str]] = re.compile(
-    r"#(?:[0-9A-Fa-f]{8}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{3,4})\b|\bColor\s*\(",
+_STYLED_SUFFIXES: Final[frozenset[str]] = frozenset((".py", ".tcss"))
+
+_COLOUR_TOKEN: Final[re.Pattern[str]] = re.compile(
+    r"#[0-9A-Fa-f]+|(?:rgba?|hsla?)\([^)]*\)|[A-Za-z][A-Za-z0-9_]*",
 )
 
-_STYLED_SUFFIXES: Final[frozenset[str]] = frozenset((".py", ".tcss"))
+_TCSS_COMMENT: Final[re.Pattern[str]] = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+_TCSS_DECLARATION_VALUE: Final[re.Pattern[str]] = re.compile(r":\s*([^;{}]*)")
+
+_TCSS_VARIABLE_REFERENCE: Final[re.Pattern[str]] = re.compile(r"\$[\w-]+")
+
+_COLOUR_CONSTRUCTOR: Final[re.Pattern[str]] = re.compile(r"\bColor\s*\(")
+
+_COLOUR_FORMS: Final[tuple[tuple[str, str], ...]] = (
+    (".tcss", "Widget { color: #f00; }"),
+    (".tcss", "Widget { color: #f00f; }"),
+    (".tcss", "Widget { color: #ff0000; }"),
+    (".tcss", "Widget { color: #ff0000ff; }"),
+    (".tcss", "Widget { color: red; }"),
+    (".tcss", "Widget { color: rgb(1, 2, 3); }"),
+    (".tcss", "Widget { color: rgba(1, 2, 3, 0.5); }"),
+    (".tcss", "Widget { color: hsl(1, 2%, 3%); }"),
+    (".tcss", "Widget { color: hsla(1, 2%, 3%, 0.5); }"),
+    (".tcss", "Widget { color: ansi_red; }"),
+    (".py", 'ACCENT = "#ff0000"'),
+    (".py", 'ACCENT = "ansi_red"'),
+    (".py", 'ACCENT = Color("red")'),
+)
+
+_NON_COLOUR_TOKENS: Final[tuple[str, ...]] = (
+    "panel",
+    "round",
+    "solid",
+    "hidden",
+    "auto",
+    "none",
+    "block",
+    "focus",
+    "border",
+    "surface",
+    "background",
+    "elevated",
+    "success",
+    "warning",
+    "error",
+    "info",
+    "muted",
+    "accent",
+    "compact",
+    "app-brand",
+    "text-muted",
+)
+
+
+def _token_is_a_colour(token: str) -> bool:
+    try:
+        Color.parse(token)
+    except ColorParseError:
+        return False
+    return True
+
+
+def _tcss_declaration_values(source: str) -> list[str]:
+    body: str = _TCSS_COMMENT.sub(" ", source)
+    return [_TCSS_VARIABLE_REFERENCE.sub(" ", match.group(1)) for match in _TCSS_DECLARATION_VALUE.finditer(body)]
+
+
+def _python_string_literals(source: str) -> list[str]:
+    tree: ast.Module = ast.parse(source)
+    return [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+
+
+def _colour_literals(source: str, *, suffix: str) -> list[str]:
+    scopes: list[str] = _tcss_declaration_values(source) if suffix == ".tcss" else _python_string_literals(source)
+    literals: list[str] = [
+        token for scope in scopes for token in _COLOUR_TOKEN.findall(scope) if _token_is_a_colour(token)
+    ]
+    if suffix != ".tcss" and _COLOUR_CONSTRUCTOR.search(source):
+        literals.append("Color(")
+    return literals
 
 
 def test_theme_ids_are_exactly_the_two_stable_ids() -> None:
@@ -106,7 +185,7 @@ def test_register_themes_registers_both_ids() -> None:
     register_themes(app)
     registered: list[Theme] = []
     for theme_id in THEME_IDS:
-        theme = app.get_theme(theme_id)
+        theme: Theme | None = app.get_theme(theme_id)
         assert theme is not None
         registered.append(theme)
     assert [theme.name for theme in registered] == list(THEME_IDS)
@@ -120,16 +199,26 @@ def test_theme_module_is_the_only_owner_of_colour_literals() -> None:
         if path.is_file()
         and path.suffix in _STYLED_SUFFIXES
         and path.name != "theme.py"
-        and _COLOR_LITERAL.search(path.read_text(encoding="utf-8")) is not None
+        and _colour_literals(path.read_text(encoding="utf-8"), suffix=path.suffix)
     ]
     assert offenders == []
+
+
+@pytest.mark.parametrize(("suffix", "source"), _COLOUR_FORMS)
+def test_colour_guard_flags_every_colour_form(suffix: str, source: str) -> None:
+    assert _colour_literals(source, suffix=suffix)
+
+
+@pytest.mark.parametrize("token", _NON_COLOUR_TOKENS)
+def test_colour_guard_ignores_tokens_that_are_not_colours(token: str) -> None:
+    assert not _token_is_a_colour(token)
 
 
 def test_style_sheets_resolve_every_variable_from_both_themes() -> None:
     styles: list[Path] = sorted((Path(anishift.tui.__file__).parent / "styles").glob("*.tcss"))
     assert [path.name for path in styles] == ["base.tcss", "screens.tcss"]
     for theme in anishift_themes():
-        stylesheet = Stylesheet(
+        stylesheet: Stylesheet = Stylesheet(
             variables={**theme.to_color_system().generate(), **theme.variables},
         )
         for path in styles:
@@ -140,4 +229,4 @@ def test_style_sheets_resolve_every_variable_from_both_themes() -> None:
 
 def test_theme_module_actually_contains_colour_literals() -> None:
     theme_source: Path = Path(anishift.tui.__file__).with_name("theme.py")
-    assert _COLOR_LITERAL.search(theme_source.read_text(encoding="utf-8")) is not None
+    assert _colour_literals(theme_source.read_text(encoding="utf-8"), suffix=".py")
