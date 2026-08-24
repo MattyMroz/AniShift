@@ -11,7 +11,7 @@ Public API:
     accepts_message: Whether a late message may still change the view.
     navigate: Show another route without disturbing run or drafts.
     set_workspace: Store an inspection and keep the surviving selection.
-    report_error: Keep a redacted failure that no run owns.
+    report_error: Keep redacted failure feedback that no run owns.
     begin_planning: Reserve a new generation and start planning.
     plan_ready: Store a plan awaiting preview or start.
     abandon_planning: Drop planning and keep its reason.
@@ -30,7 +30,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
-from anishift.tui.state import RunUiState
+from anishift.tui.state import RunUiState, UiFeedback
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -106,8 +106,8 @@ def set_workspace(state: SessionState, workspace: InspectedWorkspace) -> None:
 
 
 def report_error(state: SessionState, reason: str) -> None:
-    """Keep a redacted failure that no run owns, such as a failed inspection."""
-    state.error_message = reason
+    """Keep failure feedback no run owns, such as a failed inspection."""
+    state.feedback = UiFeedback.error(reason)
 
 
 def begin_planning(state: SessionState) -> int | None:
@@ -117,9 +117,9 @@ def begin_planning(state: SessionState) -> int | None:
     state.generation += 1
     state.plan = None
     state.result = None
-    state.error_message = None
+    state.feedback = None
     state.active_run_id = None
-    state.run_events.clear()
+    state.events.clear()
     return state.generation
 
 
@@ -133,7 +133,7 @@ def abandon_planning(state: SessionState, reason: str) -> bool:
     if not _enter(state, RunUiState.IDLE):
         return False
     state.plan = None
-    state.error_message = reason
+    state.feedback = UiFeedback.error(reason)
     return True
 
 
@@ -147,7 +147,7 @@ def begin_run(state: SessionState, run_id: str) -> bool:
 
 def record_run_events(state: SessionState, events: Iterable[RunEvent]) -> None:
     """Append events the shell already accepted for the active run."""
-    state.run_events.extend(events)
+    state.events.extend(events)
 
 
 def request_cancel(state: SessionState) -> bool:
@@ -168,7 +168,7 @@ def fail_run(state: SessionState, reason: str) -> bool:
     """End the active run without a result, keeping its redacted reason."""
     if not _enter(state, RunUiState.TERMINAL):
         return False
-    state.error_message = reason
+    state.feedback = UiFeedback.error(reason)
     state.active_run_id = None
     return True
 

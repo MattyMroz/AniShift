@@ -26,6 +26,7 @@ from anishift.application.intents import (
     SubtitleSourcePolicy,
     TranslationAction,
 )
+from anishift.config import presets
 from anishift.tui.lifecycle import (
     ALLOWED_RUN_TRANSITIONS,
     abandon_planning,
@@ -39,11 +40,20 @@ from anishift.tui.lifecycle import (
     open_modal,
     plan_ready,
     record_run_events,
+    report_error,
     request_cancel,
     run_transition_allowed,
     set_workspace,
 )
-from anishift.tui.state import GroupIntentDraft, RunUiState, SessionState, UiRoute
+from anishift.tui.state import (
+    DEFAULT_PRESET_ID,
+    FeedbackLevel,
+    GroupIntentDraft,
+    RunUiState,
+    SessionState,
+    UiFeedback,
+    UiRoute,
+)
 
 _ROUTES: Final[tuple[str, ...]] = (
     "workspace",
@@ -56,6 +66,24 @@ _ROUTES: Final[tuple[str, ...]] = (
 )
 
 _RUN_STATES: Final[tuple[str, ...]] = ("idle", "planning", "running", "cancelling", "terminal")
+
+_CONTRACT_FIELDS: Final[tuple[str, ...]] = (
+    "route",
+    "generation",
+    "workspace",
+    "selected_group_ids",
+    "default_preset_id",
+    "auto_draft",
+    "manual_drafts",
+    "plan",
+    "active_run_id",
+    "run_state",
+    "events",
+    "result",
+    "feedback",
+)
+
+_SHELL_FIELDS: Final[tuple[str, ...]] = ("focus_id", "modal_focus_stack")
 
 _TRANSITIONS: Final[frozenset[tuple[RunUiState, RunUiState]]] = frozenset(
     {
@@ -124,6 +152,30 @@ def test_settings_is_a_dialog_and_never_a_route() -> None:
     assert "settings" not in {route.value for route in UiRoute}
 
 
+def test_session_state_carries_every_field_of_the_state_contract() -> None:
+    assert tuple(field.name for field in fields(SessionState)) == (*_CONTRACT_FIELDS, *_SHELL_FIELDS)
+
+
+def test_a_fresh_session_starts_from_the_stored_default_preset() -> None:
+    assert SessionState().default_preset_id == DEFAULT_PRESET_ID
+    assert DEFAULT_PRESET_ID == presets.DEFAULT_PRESET_ID
+
+
+def test_a_fresh_session_carries_no_draft_no_event_and_no_feedback() -> None:
+    state: SessionState = SessionState()
+    assert state.auto_draft is None
+    assert state.events == []
+    assert state.feedback is None
+
+
+def test_failure_feedback_keeps_its_reason_at_error_level() -> None:
+    state: SessionState = SessionState()
+    report_error(state, "Skanowanie nie powiodło się")
+    assert state.feedback == UiFeedback(level=FeedbackLevel.ERROR, message="Skanowanie nie powiodło się")
+    assert state.feedback is not None
+    assert state.feedback.level is FeedbackLevel.ERROR
+
+
 def test_run_states_are_exactly_the_five_explicit_states() -> None:
     assert tuple(run_state.value for run_state in RunUiState) == _RUN_STATES
 
@@ -175,7 +227,7 @@ def test_planning_can_be_abandoned_without_a_run() -> None:
     assert abandon_planning(state, "Nie ukończono") is True
     assert state.run_state is RunUiState.IDLE
     assert state.plan is None
-    assert state.error_message == "Nie ukończono"
+    assert state.feedback == UiFeedback(level=FeedbackLevel.ERROR, message="Nie ukończono")
 
 
 def test_a_new_generation_is_reserved_for_every_planning_attempt() -> None:
@@ -188,11 +240,11 @@ def test_a_new_generation_is_reserved_for_every_planning_attempt() -> None:
 
 def test_planning_clears_the_previous_attempt() -> None:
     state: SessionState = SessionState()
-    state.error_message = "Nie ukończono"
-    state.run_events.append(cast("RunEvent", object()))
+    state.feedback = UiFeedback.error("Nie ukończono")
+    state.events.append(cast("RunEvent", object()))
     begin_planning(state)
-    assert state.error_message is None
-    assert state.run_events == []
+    assert state.feedback is None
+    assert state.events == []
     assert state.plan is None
     assert state.result is None
 

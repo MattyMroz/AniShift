@@ -1,7 +1,7 @@
 """One-row status footer projecting the session state.
 
-The footer shows counts and the run state only. Paths, file names, provider
-answers and secrets never reach it.
+The footer shows counts, the selected auto-preset and the run state only. Paths,
+file names, provider answers and secrets never reach it.
 
 Public API:
     footer_text: Render the status row of one session state.
@@ -22,7 +22,12 @@ __all__ = ["SessionFooter", "footer_text"]
 
 def footer_text(state: SessionState) -> str:
     """Return the safe status projection of *state*."""
-    return f"workspace: {state.group_count} · selected: {len(state.selected_group_ids)} · run: {state.run_state.value}"
+    return (
+        f"workspace: {state.group_count}"
+        f" · selected: {len(state.selected_group_ids)}"
+        f" · preset: {state.default_preset_id}"
+        f" · run: {state.run_state.value}"
+    )
 
 
 class SessionFooter(Static):

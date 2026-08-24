@@ -10,8 +10,11 @@ bus into the process. Everything the session merely stores is imported for type
 checking only, through the public application facade.
 
 Public API:
+    DEFAULT_PRESET_ID: Auto-preset a fresh session starts from.
     UiRoute: The only routes the shell can show.
     RunUiState: Explicit lifecycle of the one run a session can own.
+    FeedbackLevel: Severity of one message shown to the user.
+    UiFeedback: One redacted message about the last operation.
     GroupIntentDraft: Editable manual decisions for one source group.
     SessionState: The single mutable state of one session.
 """
@@ -21,7 +24,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from anishift.application.intents import (
     BurnSubtitleProduct,
@@ -38,14 +41,32 @@ from anishift.application.intents import (
 )
 
 if TYPE_CHECKING:
-    from anishift.application import ExecutionPlan, InspectedWorkspace, RunEvent, RunResult
+    from anishift.application import (
+        AutoPresetDraft,
+        ExecutionPlan,
+        InspectedWorkspace,
+        RunEvent,
+        RunResult,
+    )
 
 __all__ = [
+    "DEFAULT_PRESET_ID",
+    "FeedbackLevel",
     "GroupIntentDraft",
     "RunUiState",
     "SessionState",
+    "UiFeedback",
     "UiRoute",
 ]
+
+# ── Constants ──────────────────────────────────────────────────────────────
+
+DEFAULT_PRESET_ID: Final[str] = "default"
+"""Auto-preset a fresh session starts from, before it reads the preset file.
+
+Mirrors ``anishift.config.presets.DEFAULT_PRESET_ID``, which the shell must not
+import: that module reaches the panel preferences and their engine registries.
+"""
 
 
 class UiRoute(StrEnum):
@@ -71,6 +92,32 @@ class RunUiState(StrEnum):
     RUNNING = "running"
     CANCELLING = "cancelling"
     TERMINAL = "terminal"
+
+
+class FeedbackLevel(StrEnum):
+    """Severity of one message the shell shows about the last operation."""
+
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class UiFeedback:
+    """One redacted message about the last operation, shown to the user.
+
+    Attributes:
+        level: Severity the frame renders with a glyph and a word, not by colour.
+        message: Redacted text; never a path, a secret or a provider payload.
+    """
+
+    level: FeedbackLevel
+    message: str
+
+    @classmethod
+    def error(cls, message: str) -> UiFeedback:
+        """Build the feedback of one refused, abandoned or broken operation."""
+        return cls(level=FeedbackLevel.ERROR, message=message)
 
 
 @dataclass(slots=True)
@@ -155,33 +202,37 @@ class SessionState:
 
     Attributes:
         route: Route the host currently shows.
-        focus_id: Element that should hold focus on the current layer.
-        modal_focus_stack: Focus to restore for every open modal layer.
+        generation: Identity of the current interaction.
         workspace: Last inspected workspace, if the session loaded one.
         selected_group_ids: Groups the next workflow acts on.
+        default_preset_id: Auto-preset the auto workflow starts from.
+        auto_draft: Auto decisions being edited, before they are applied.
         manual_drafts: Independent manual draft per selected group.
         plan: Last built execution plan awaiting preview or start.
-        run_state: Lifecycle state of the one run the session can own.
         active_run_id: Identity of the run while it is not terminal.
-        run_events: Events accepted for the active run.
+        run_state: Lifecycle state of the one run the session can own.
+        events: Events accepted for the active run.
         result: Terminal result kept for the results route.
-        error_message: Last redacted failure shown to the user.
-        generation: Identity of the current interaction.
+        feedback: Last redacted message shown to the user.
+        focus_id: Element that should hold focus on the current layer.
+        modal_focus_stack: Focus to restore for every open modal layer.
     """
 
     route: UiRoute = UiRoute.WORKSPACE
-    focus_id: str | None = None
-    modal_focus_stack: list[str | None] = field(default_factory=list)
+    generation: int = 0
     workspace: InspectedWorkspace | None = None
     selected_group_ids: set[str] = field(default_factory=set)
+    default_preset_id: str = DEFAULT_PRESET_ID
+    auto_draft: AutoPresetDraft | None = None
     manual_drafts: dict[str, GroupIntentDraft] = field(default_factory=dict)
     plan: ExecutionPlan | None = None
-    run_state: RunUiState = RunUiState.IDLE
     active_run_id: str | None = None
-    run_events: list[RunEvent] = field(default_factory=list)
+    run_state: RunUiState = RunUiState.IDLE
+    events: list[RunEvent] = field(default_factory=list)
     result: RunResult | None = None
-    error_message: str | None = None
-    generation: int = 0
+    feedback: UiFeedback | None = None
+    focus_id: str | None = None
+    modal_focus_stack: list[str | None] = field(default_factory=list)
 
     @property
     def group_count(self) -> int:

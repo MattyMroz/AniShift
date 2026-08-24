@@ -21,9 +21,9 @@ import math
 import re
 import warnings
 from dataclasses import asdict, dataclass, field, replace
-from pathlib import Path
 from typing import Any, Final, Literal
 
+from anishift.paths import config_path
 from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
 from anishift.services.extraction.tracks import DEFAULT_AUDIO_PRIORITY, DEFAULT_SUBTITLE_PRIORITY
 from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
@@ -82,12 +82,6 @@ type JsonScalar = str | int | float | bool | None
 """JSON scalar accepted by provider-specific TTS options."""
 
 # ── Constants ──────────────────────────────────────────────────────────────
-
-_CONFIG_DIR_NAME: Final[str] = "config"
-"""Name of the directory holding panel preferences under the repo root."""
-
-_CONFIG_FILE_NAME: Final[str] = "settings.json"
-"""Filename of the panel-preferences JSON file."""
 
 SETTINGS_SCHEMA_VERSION: Final[int] = 2
 """Current persisted user-settings schema."""
@@ -491,16 +485,6 @@ class UserSettings:
             self.tts_engine == "elevenbytes" and self.tts_provider_model_id == "run6"
         ):
             profile.engine_options = {}
-
-
-def _repo_root() -> Path:
-    """Return the repository root (ancestor holding ``pyproject.toml``)."""
-    return Path(__file__).resolve().parents[2]
-
-
-def config_path() -> Path:
-    """Return the absolute path to ``<repo>/config/settings.json``."""
-    return _repo_root() / _CONFIG_DIR_NAME / _CONFIG_FILE_NAME
 
 
 def _clean_string(raw: dict[str, Any], key: str, allowed: frozenset[str]) -> None:

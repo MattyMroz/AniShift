@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
+import subprocess
+import sys
 from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any, Final
@@ -27,7 +30,7 @@ from anishift.tui.messages import (
     WorkspaceFailed,
 )
 from anishift.tui.screens.workspace import EMPTY_WORKSPACE_TEXT, WorkspaceView, workspace_body
-from anishift.tui.state import GroupIntentDraft, RunUiState, SessionState, UiRoute
+from anishift.tui.state import GroupIntentDraft, RunUiState, SessionState, UiFeedback, UiRoute
 from anishift.tui.widgets.footer import footer_text
 
 _FRAME_IDS: Final[tuple[str, ...]] = (
@@ -48,6 +51,49 @@ _FORBIDDEN_IMPORTS: Final[tuple[str, ...]] = (
     "anishift.application.service",
     "anishift.application.runtime",
 )
+
+_SHELL_MODULES: Final[tuple[str, ...]] = (
+    "anishift.tui.app",
+    "anishift.tui.brand",
+    "anishift.tui.lifecycle",
+    "anishift.tui.messages",
+    "anishift.tui.state",
+    "anishift.tui.theme",
+    "anishift.tui.ui_state",
+    "anishift.tui.screens.workspace",
+    "anishift.tui.widgets.footer",
+)
+
+_IMPORT_PROBE: Final[str] = """
+import importlib
+import json
+import pkgutil
+import sys
+
+import anishift.tui
+
+prefixes = tuple(json.loads(sys.argv[1]))
+imported = sorted(module.name for module in pkgutil.walk_packages(anishift.tui.__path__, "anishift.tui."))
+for name in imported:
+    importlib.import_module(name)
+loaded = sorted(name for name in sys.modules if name.startswith(prefixes))
+print(json.dumps({"imported": imported, "loaded": loaded}))
+"""
+
+_PROBE_TIMEOUT: Final[int] = 120
+
+
+def _import_graph() -> dict[str, list[str]]:
+    probe: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603 - fixed probe on this interpreter
+        [sys.executable, "-c", _IMPORT_PROBE, json.dumps(_FORBIDDEN_IMPORTS)],
+        capture_output=True,
+        text=True,
+        timeout=_PROBE_TIMEOUT,
+        check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
+    graph: dict[str, list[str]] = json.loads(probe.stdout)
+    return graph
 
 
 def _run(scenario: Coroutine[Any, Any, None]) -> None:
@@ -81,20 +127,26 @@ def test_layout_threshold_matches_the_full_terminal_size() -> None:
     assert is_compact(width=100, height=29) is True
 
 
-def test_footer_projects_only_counts_and_the_run_state() -> None:
+def test_footer_projects_only_counts_the_preset_and_the_run_state() -> None:
     state: SessionState = SessionState()
     state.selected_group_ids = {"ep01", "ep02"}
-    assert footer_text(state) == "workspace: 0 · selected: 2 · run: idle"
+    assert footer_text(state) == "workspace: 0 · selected: 2 · preset: default · run: idle"
 
 
 def test_footer_projection_never_leaks_a_path() -> None:
     state: SessionState = SessionState()
-    state.error_message = "C:/Users/secret/workspace/ep01.mkv"
+    state.feedback = UiFeedback.error("C:/Users/secret/workspace/ep01.mkv")
     assert "secret" not in footer_text(state)
 
 
 def test_workspace_body_shows_the_base_state_without_sources() -> None:
     assert workspace_body(None) == EMPTY_WORKSPACE_TEXT
+
+
+def test_the_shell_import_graph_loads_no_backend_module() -> None:
+    graph: dict[str, list[str]] = _import_graph()
+    assert set(_SHELL_MODULES) <= set(graph["imported"])
+    assert graph["loaded"] == []
 
 
 def test_shell_modules_import_no_backend_module() -> None:
@@ -235,10 +287,10 @@ def test_a_late_run_event_of_an_old_generation_changes_nothing() -> None:
             assert begin_run(app.session_state, "run-1") is True
             app.post_message(RunProgressed(events=(_event(1),), run_id="run-1", generation=generation - 1))
             await pilot.pause()
-            assert app.session_state.run_events == []
+            assert app.session_state.events == []
             app.post_message(RunProgressed(events=(_event(2),), run_id="run-1", generation=generation))
             await pilot.pause()
-            assert [event.sequence for event in app.session_state.run_events] == [2]
+            assert [event.sequence for event in app.session_state.events] == [2]
 
     _run(scenario())
 
@@ -253,7 +305,7 @@ def test_a_run_event_of_another_run_changes_nothing() -> None:
             assert begin_run(app.session_state, "run-1") is True
             app.post_message(RunProgressed(events=(_event(1),), run_id="run-2", generation=generation))
             await pilot.pause()
-            assert app.session_state.run_events == []
+            assert app.session_state.events == []
 
     _run(scenario())
 
@@ -267,7 +319,7 @@ def test_a_late_failure_of_an_old_generation_never_reaches_the_state() -> None:
             app.post_message(PlanFailed(reason="Nie ukończono", generation=-1))
             app.post_message(RunFailed(reason="Nie ukończono", run_id="run-1", generation=-1))
             await pilot.pause()
-            assert app.session_state.error_message is None
+            assert app.session_state.feedback is None
             assert app.session_state.run_state is RunUiState.IDLE
 
     _run(scenario())
@@ -281,7 +333,7 @@ def test_a_failure_of_the_current_generation_reaches_the_state() -> None:
             generation: int = app.session_state.generation
             app.post_message(WorkspaceFailed(reason="Skanowanie nie powiodło się", generation=generation))
             await pilot.pause()
-            assert app.session_state.error_message == "Skanowanie nie powiodło się"
+            assert app.session_state.feedback == UiFeedback.error("Skanowanie nie powiodło się")
 
     _run(scenario())
 

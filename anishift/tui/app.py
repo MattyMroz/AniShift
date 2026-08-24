@@ -73,7 +73,7 @@ class AniShiftApp(App[None]):
     """Single owner of ``SessionState`` and host of the fixed frame."""
 
     CSS_PATH: ClassVar[CSSPathType] = ["styles/base.tcss", "styles/screens.tcss"]
-    TITLE = "AniShift"
+    TITLE: str | None = "AniShift"
 
     def __init__(self) -> None:
         """Build the frame regions and select the stored theme.

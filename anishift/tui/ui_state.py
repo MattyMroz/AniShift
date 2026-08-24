@@ -17,7 +17,7 @@ import json
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Final
 
-from anishift.config.user_settings import config_path
+from anishift.paths import config_path
 from anishift.tui.theme import DEFAULT_THEME_ID, THEME_IDS
 from anishift.utils.logger import get_logger
 
