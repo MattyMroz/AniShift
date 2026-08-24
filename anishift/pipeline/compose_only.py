@@ -16,7 +16,7 @@ from anishift.services.composition.service import CompositionService
 from anishift.services.composition.types import OutputVariant, QualityPreset
 from anishift.services.extraction.service import extract_tracks, identify
 from anishift.services.extraction.tracks import select_tracks
-from anishift.services.extraction.types import ExtractionResult, MediaInfo, TrackSelection
+from anishift.services.extraction.types import LegacyExtractionResult, MediaInfo, TrackSelection
 from anishift.utils.logger import get_logger
 
 __all__ = ["compose_existing", "extracted_polish_outcome", "product_outcome"]
@@ -105,9 +105,9 @@ def extracted_polish_outcome(
     if not proposal.already_polish or proposal.subtitle_id is None:
         return None
     scope_id: str = scope_id_for_source(source, workspace_root=workspace_root)
-    work_dir: Path = workspace_root / "tmp" / scope_id / "compose"
+    work_dir: Path = workspace_root / "temp" / scope_id / "compose"
     work_dir.mkdir(parents=True, exist_ok=True)
-    extracted: ExtractionResult = extract_tracks(
+    extracted: LegacyExtractionResult = extract_tracks(
         info,
         TrackSelection(audio_id=None, subtitle_id=proposal.subtitle_id, already_polish=True),
         work_dir,

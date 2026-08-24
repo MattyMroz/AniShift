@@ -23,5 +23,5 @@ Ustawienia i `Settings` (pydantic-settings, prefix `ANISHIFT_`, z `.env`), prefe
 - System env ma pierwszeństwo nad `.env`; nieznane klucze ignorowane (`extra="ignore"`, `case_sensitive=False`). `settings.py:44-50`
 - Zapis preferencji atomowy: `<name>.tmp` + `replace`. `user_settings.py:205-207`
 - `load_user_settings` nigdy nie rzuca — brak/nieczytelny/zły-typ/poza-zakresem cicho wraca do defaultów, nieznane klucze odfiltrowane po `__dataclass_fields__`. `user_settings.py:168-197`
-- `DEFAULT_SUBDIRS` = dokładnie `("tmp", "output")` — zgodne z regułą „tylko te dwa podfoldery w workspace". `workspace.py:41-44`
+- `DEFAULT_SUBDIRS` = dokładnie `("temp",)`. Run scope ma marker PID/run ID, a cleanup usuwa tylko bezpiecznie zweryfikowane, nieaktywne katalogi bez żywego właściciela. `workspace.py`
 - Root repo (`parents[2]` + marker `pyproject.toml`) liczony niezależnie dla configu i dla inferencji workspace. `user_settings.py:124`, `workspace.py:65`

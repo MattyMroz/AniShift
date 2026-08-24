@@ -86,6 +86,7 @@ class TranslationEngine(EngineInfo, Protocol):
         *,
         source_lang: str,
         target_lang: str,
+        observer: TranslationObserver | None = None,
     ) -> list[BatchedLine]:
         """Translate one batch; output length must equal input length."""
         ...
@@ -96,6 +97,26 @@ class TranslationEngine(EngineInfo, Protocol):
 
     def close(self) -> None:
         """Release resources held by the engine."""
+        ...
+
+
+class TranslationCancellation(Protocol):
+    """Minimal cancellation view accepted by the synchronous facade."""
+
+    def is_set(self) -> bool:
+        """Return whether the caller requested cancellation."""
+        ...
+
+
+class TranslationObserver(Protocol):
+    """Observer of provider retry and engine fallback decisions."""
+
+    def retry(self, engine_id: str, attempt: int, max_attempts: int) -> None:
+        """Observe one provider request being scheduled again."""
+        ...
+
+    def fallback(self, failed_engine_id: str, next_engine_id: str) -> None:
+        """Observe the facade selecting the next configured engine."""
         ...
 
 
@@ -118,8 +139,10 @@ __all__ = [
     "LlmCompletionResult",
     "PromptIdentity",
     "PromptPurpose",
+    "TranslationCancellation",
     "TranslationEngine",
     "TranslationEngineFactory",
     "TranslationInputPolicy",
+    "TranslationObserver",
     "TranslationStream",
 ]

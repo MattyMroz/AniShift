@@ -11,22 +11,29 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final
 
+from anishift.application.cancellation import CancellationToken
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.platform.binaries import Binary
 from anishift.services.extraction.errors import ExtractionError
+from anishift.services.extraction.mkv import extract_mkv_track
+from anishift.services.extraction.mp4 import extract_mp4_track
 from anishift.services.extraction.types import (
+    ExtractionRequest,
     ExtractionResult,
+    LegacyExtractionResult,
     MediaInfo,
     TrackInfo,
     TrackSelection,
     format_extension,
     is_text_subtitle_codec,
 )
+from anishift.services.media._process import ProcessRunner, SubprocessRunner
 from anishift.setup.installer import ensure_binary
 from anishift.utils.logger import get_logger
 from anishift.utils.timer import Timer
 
 __all__ = [
+    "ExtractionService",
     "extract_tracks",
     "format_extension",
     "identify",
@@ -93,6 +100,7 @@ def parse_media_info(path: Path, payload: str) -> MediaInfo:
             raise _fail(ErrorCode.EXTRACTION_FAILED, msg)
         tracks = tuple(_parse_track(track) for track in raw["tracks"])
         attachments = tuple(_parse_attachment(attachment) for attachment in raw.get("attachments", []))
+        duration_us: int = _parse_duration_us(container)
     except KeyError as exc:
         msg = f"{path}: identify JSON is missing field {exc}"
         raise _fail(ErrorCode.EXTRACTION_FAILED, msg) from exc
@@ -106,6 +114,7 @@ def parse_media_info(path: Path, payload: str) -> MediaInfo:
         path=path,
         tracks=tuple(sorted(tracks, key=lambda track: track.id)),
         attachments=tuple(name for name in attachments if name),
+        duration_us=duration_us,
     )
 
 
@@ -126,7 +135,24 @@ def _parse_track(raw: dict[str, Any]) -> TrackInfo:
         name=properties.get("track_name", ""),
         default=properties.get("default_track", False),
         num_entries=properties.get("num_index_entries"),
+        forced=properties.get("forced_track", False),
     )
+
+
+def _parse_duration_us(container: dict[str, Any]) -> int:
+    """Return Matroska nanosecond duration as microseconds, zero when absent."""
+    properties: object = container.get("properties", {})
+    if not isinstance(properties, dict):
+        raise TypeError("container.properties")
+    duration: object = properties.get("duration")
+    if duration is None:
+        return 0
+    if isinstance(duration, bool) or not isinstance(duration, int | str):
+        raise TypeError("container.properties.duration")
+    duration_ns: int = int(duration)
+    if duration_ns < 0:
+        raise ValueError("container.properties.duration")
+    return duration_ns // 1000
 
 
 def identify(path: Path) -> MediaInfo:
@@ -233,7 +259,7 @@ def extract_tracks(  # noqa: PLR0912,PLR0915 - extraction lifecycle stays explic
     *,
     on_progress: Callable[[int], None] | None = None,
     cancel: threading.Event | None = None,
-) -> ExtractionResult:
+) -> LegacyExtractionResult:
     """Extract the selected tracks into *dest_dir* with live progress.
 
     Runs a single ``mkvextract --gui-mode`` process covering both tracks and
@@ -243,7 +269,7 @@ def extract_tracks(  # noqa: PLR0912,PLR0915 - extraction lifecycle stays explic
     specs = _build_specs(info, selection, dest_dir)
     if not specs:
         logger.debug("Track extraction skipped", source=info.path.name, reason="no_selected_tracks")
-        return ExtractionResult(None, None)
+        return LegacyExtractionResult(None, None)
     timer: Timer = Timer("track_extraction", auto_start=True)
     logger.debug(
         "Track extraction started",
@@ -320,4 +346,42 @@ def extract_tracks(  # noqa: PLR0912,PLR0915 - extraction lifecycle stays explic
         output_count=len(specs),
         duration_ms=round(timer.duration_ms),
     )
-    return ExtractionResult(audio_path, subtitle_path)
+    return LegacyExtractionResult(audio_path, subtitle_path)
+
+
+class ExtractionService:
+    """Dispatch one neutral extraction request to its container adapter."""
+
+    def __init__(self, *, runner: ProcessRunner | None = None) -> None:
+        self._runner: ProcessRunner = runner or SubprocessRunner()
+
+    def extract(
+        self,
+        request: ExtractionRequest,
+        *,
+        cancel: CancellationToken,
+        timeout_s: float,
+    ) -> ExtractionResult:
+        """Extract exactly one selected track into an explicit target path."""
+        if request.media_path.suffix.casefold() == ".mkv":
+            return extract_mkv_track(
+                request,
+                cancel=cancel,
+                timeout_s=timeout_s,
+                runner=self._runner,
+            )
+        if request.media_path.suffix.casefold() == ".mp4":
+            return extract_mp4_track(
+                request,
+                cancel=cancel,
+                timeout_s=timeout_s,
+                runner=self._runner,
+            )
+        msg = f"Unsupported extraction container: {request.media_path.name}"
+        raise ExtractionError(
+            context=ErrorContext(
+                code=ErrorCode.MEDIA_UNSUPPORTED,
+                message=msg,
+                suggestion="Use an MKV or MP4 source file.",
+            )
+        )

@@ -81,6 +81,12 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
+      - id: mypy-linux
+        name: mypy (linux target)
+        entry: uv run mypy --platform linux anishift/ tests/
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
       - id: pytest
         name: pytest (pre-push)
         entry: uv run pytest

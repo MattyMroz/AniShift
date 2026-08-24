@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+import threading
+from collections.abc import Mapping
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from fakes import (
+    CollectingRunSink,
+    FailingGroupHandler,
+    FakeMediaProbe,
+    FakeTranslationService,
+    write_media_source,
+    write_text_source,
+)
+
+from anishift.application.handlers import (
+    ExecutionHandlers,
+    ExtractionTaskHandler,
+    PublishTaskHandler,
+    SubtitleTaskHandler,
+    TranslationTaskHandler,
+)
+from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
+from anishift.application.intents import ProductIntent, ProductKind
+from anishift.application.planning import ExecutionPlan
+from anishift.application.results import GroupStatus, RunResult
+from anishift.application.scheduler_contracts import TaskHandler
+from anishift.application.service import AppService, AutoPresetDraft
+from anishift.bootstrap import AppContext, bootstrap, create_app_service
+from anishift.config.presets import AutoPresetFile, default_preset_file
+from anishift.config.settings import Settings
+from anishift.config.user_settings import UserSettings
+from anishift.errors import RunConflictError
+from anishift.services.extraction import ExtractionRequest, ExtractionResult
+from anishift.services.media import DefaultMediaProbe
+
+
+class _UnusedExtraction:
+    def extract(
+        self,
+        request: ExtractionRequest,
+        *,
+        cancel: object,
+        timeout_s: float,
+    ) -> ExtractionResult:
+        del request, cancel, timeout_s
+        raise AssertionError("TXT flow must not extract media tracks")
+
+
+def _service(
+    tmp_path: Path,
+    translation: FakeTranslationService,
+    *,
+    fail_group_id: str | None = None,
+    preset_store: list[AutoPresetFile] | None = None,
+    inspector: WorkspaceInspector | None = None,
+) -> AppService:
+    stored: list[AutoPresetFile] = preset_store if preset_store is not None else [default_preset_file()]
+
+    def handlers(
+        run_root: Path,
+        plan: ExecutionPlan,
+        source_groups: Mapping[str, InspectedSourceGroup],
+    ) -> TaskHandler:
+        del plan
+        discovered_groups = {group_id: group.source for group_id, group in source_groups.items()}
+        delegate = ExecutionHandlers(
+            ExtractionTaskHandler(_UnusedExtraction(), run_root=run_root, timeout_s=30.0),
+            SubtitleTaskHandler(run_root=run_root),
+            TranslationTaskHandler(translation, run_root=run_root),
+            publish=PublishTaskHandler(run_root=run_root, source_groups=discovered_groups),
+        )
+        return FailingGroupHandler(delegate, group_id=fail_group_id)
+
+    return AppService(
+        workspace_root=tmp_path,
+        settings=Settings(_env_file=None),
+        user_settings=UserSettings(),
+        inspector=inspector or WorkspaceInspector(DefaultMediaProbe()),
+        handler_factory=handlers,
+        preset_loader=lambda: stored[0],
+        preset_saver=lambda value: stored.__setitem__(0, value),
+        settings_saver=lambda value: None,
+    )
+
+
+def test_real_service_flows_from_discovery_through_partial_execution(tmp_path: Path) -> None:
+    for name in ("Episode 1", "Episode 2", "Episode 3"):
+        write_media_source(tmp_path / f"{name}.mkv")
+    preset_store: list[AutoPresetFile] = [default_preset_file()]
+    service: AppService = _service(
+        tmp_path,
+        FakeTranslationService(),
+        preset_store=preset_store,
+        inspector=WorkspaceInspector(FakeMediaProbe()),
+    )
+    workspace = service.discover()
+    selected = workspace.groups[:2]
+    draft = AutoPresetDraft(
+        "preview",
+        "Preview once",
+        ProductIntent(frozenset({ProductKind.FULL_PL, ProductKind.SPOKEN_PL})),
+    )
+    fail_group_id: str = selected[1].group_id
+    service = _service(
+        tmp_path,
+        FakeTranslationService(),
+        fail_group_id=fail_group_id,
+        preset_store=preset_store,
+        inspector=WorkspaceInspector(FakeMediaProbe()),
+    )
+    workspace = service.discover()
+    selected = workspace.groups[:2]
+
+    plan: ExecutionPlan = service.plan_auto(tuple(group.group_id for group in selected), draft)
+    sink = CollectingRunSink()
+    result: RunResult = service.execute(plan, sink)
+
+    assert tuple(group.status for group in result.groups) == (GroupStatus.SUCCEEDED, GroupStatus.PARTIAL)
+    assert (tmp_path / "Episode 1.pl.srt").is_file()
+    assert (tmp_path / "Episode 1.spoken.pl.srt").is_file()
+    assert (tmp_path / "Episode 2.pl.srt").is_file()
+    assert not (tmp_path / "Episode 2.spoken.pl.srt").exists()
+    assert not any((tmp_path / "temp").iterdir())
+    assert service.list_presets() == default_preset_file().presets
+    assert sink.events[0].kind.value == "run_started"
+    assert sink.events[-1].kind.value == "run_finished"
+
+
+def test_preview_draft_does_not_save_and_explicit_save_replaces_preset(tmp_path: Path) -> None:
+    write_text_source(tmp_path / "Episode.txt", "Text")
+    store: list[AutoPresetFile] = [default_preset_file()]
+    service: AppService = _service(tmp_path, FakeTranslationService(), preset_store=store)
+    group_id: str = service.discover().groups[0].group_id
+    draft = AutoPresetDraft("default", "Changed", ProductIntent(frozenset({ProductKind.SPOKEN_PL})))
+
+    service.plan_auto((group_id,), draft)
+    assert store[0] == default_preset_file()
+
+    saved = service.save_preset(draft)
+    assert store[0].presets == (saved,)
+
+
+def test_active_run_rejects_a_second_execute_before_creating_another_scope(tmp_path: Path) -> None:
+    write_text_source(tmp_path / "Episode.txt", "Text")
+    entered = threading.Event()
+    release = threading.Event()
+    service: AppService = _service(tmp_path, FakeTranslationService(entered=entered, release=release))
+    group_id: str = service.discover().groups[0].group_id
+    plan: ExecutionPlan = service.plan_auto(
+        (group_id,),
+        AutoPresetDraft("preview", "Preview", ProductIntent(frozenset({ProductKind.FULL_PL}))),
+    )
+    sink = CollectingRunSink()
+    results: list[RunResult] = []
+    thread = threading.Thread(target=lambda: results.append(service.execute(plan, sink)))
+    thread.start()
+    assert entered.wait(timeout=1.0)
+
+    with pytest.raises(RunConflictError, match="already active"):
+        service.execute(plan, CollectingRunSink())
+
+    assert len(tuple((tmp_path / "temp").iterdir())) == 1
+    assert service.cancel(sink.events[0].run_id)
+    assert not service.cancel("another-run")
+    release.set()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert len(results) == 1
+    assert results[0].cancelled
+    assert not any((tmp_path / "temp").iterdir())
+
+
+def test_settings_draft_and_plan_snapshot_are_detached(tmp_path: Path) -> None:
+    write_text_source(tmp_path / "Episode.txt", "Text")
+    service: AppService = _service(tmp_path, FakeTranslationService())
+    group_id: str = service.discover().groups[0].group_id
+    draft = service.settings_snapshot()
+    draft.translation_concurrency = 3
+    draft.tts_voice_profiles = {
+        key: replace(profile, postprocess_tempo=1.5) for key, profile in draft.tts_voice_profiles.items()
+    }
+    plan: ExecutionPlan = service.plan_auto(
+        (group_id,),
+        AutoPresetDraft("preview", "Preview", ProductIntent(frozenset({ProductKind.FULL_PL}))),
+    )
+
+    service.save_settings(draft)
+
+    assert plan.settings.translation_concurrency == 1
+    assert plan.settings.tts_postprocess_tempo == 1.25
+    assert plan.settings.tts_group_jobs == 4
+    assert plan.settings.tts_request_concurrency == 100
+    assert service.settings_snapshot().translation_concurrency == 3
+
+
+def test_engine_availability_exposes_reasons_without_secret_values(tmp_path: Path) -> None:
+    service: AppService = _service(tmp_path, FakeTranslationService())
+
+    statuses = {(item.domain, item.engine_id): item for item in service.engine_availability()}
+
+    assert statuses["translation", "google"].is_available
+    assert not statuses["translation", "deepl"].is_available
+    assert statuses["translation", "deepl"].reason == "missing deepl_api_key; configure environment or open Tools"
+
+
+def test_bootstrap_builds_the_shared_service_without_creating_provider_clients(tmp_path: Path) -> None:
+    workspace_root: Path = tmp_path / "workspace"
+    context: AppContext = bootstrap(
+        settings=Settings(workspace_root=str(workspace_root), _env_file=None),
+        create_dirs=False,
+    )
+
+    service: AppService = create_app_service(context)
+
+    assert isinstance(service, AppService)
+    assert not workspace_root.exists()

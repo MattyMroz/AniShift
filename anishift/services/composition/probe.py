@@ -3,17 +3,28 @@
 from __future__ import annotations
 
 import json
-import subprocess
+import threading
 from pathlib import Path
 from typing import Any, Final, Never
 
-from anishift.errors import ErrorCode, ErrorContext
+from anishift.application.cancellation import (
+    CancellationToken,
+    NeverCancelledToken,
+    ThreadEventCancellationToken,
+)
+from anishift.errors import ErrorCode, ErrorContext, MediaProbeError
 from anishift.services.composition.errors import (
+    CompositionCancelledError,
     CompositionProcessError,
     CompositionValidationError,
 )
-from anishift.services.extraction.service import identify
-from anishift.services.extraction.types import MediaInfo
+from anishift.services.media import DefaultMediaProbe, MediaCatalog
+from anishift.services.media._process import (
+    ProcessExecutionError,
+    ProcessFailureReason,
+    ProcessRunner,
+    SubprocessRunner,
+)
 
 __all__ = [
     "audio_codec_name",
@@ -37,20 +48,37 @@ _MICROSECONDS_PER_SECOND: Final[int] = 1_000_000
 _MICROSECONDS_PER_MILLISECOND: Final[int] = 1_000
 """Scale between microseconds and the milliseconds used in tolerances."""
 
-_NEW_PROCESS_GROUP: Final[int] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-"""Windows flag preventing console Ctrl+C from leaking into child processes."""
 
-
-def source_tracks(path: Path) -> MediaInfo:
+def source_tracks(
+    path: Path,
+    *,
+    cancel: threading.Event | None = None,
+    runner: ProcessRunner | None = None,
+) -> MediaCatalog:
     """Return the current track layout of one container.
 
     Identification runs immediately before assembling, so the result reflects
     the file on disk rather than a snapshot from an earlier stage.
     """
-    return identify(path)
+    try:
+        return DefaultMediaProbe(runner=runner).identify(
+            path,
+            cancel=_cancellation_token(cancel),
+            timeout_s=_PROBE_TIMEOUT_S,
+        )
+    except MediaProbeError as error:
+        if error.context.code is ErrorCode.CANCELLED:
+            raise CompositionCancelledError(context=error.context) from error
+        raise CompositionProcessError(context=error.context) from error
 
 
-def audio_codec_name(path: Path, *, ffprobe: Path) -> str:
+def audio_codec_name(
+    path: Path,
+    *,
+    ffprobe: Path,
+    cancel: threading.Event | None = None,
+    runner: ProcessRunner | None = None,
+) -> str:
     """Return the codec name of a file's first audio stream.
 
     The name comes from the file that is actually mapped into the render — the
@@ -61,6 +89,8 @@ def audio_codec_name(path: Path, *, ffprobe: Path) -> str:
         path,
         ffprobe=ffprobe,
         arguments=("-select_streams", "a:0", "-show_entries", "stream=codec_name"),
+        cancel=cancel,
+        runner=runner,
     )
     streams: object = payload.get("streams", [])
     if not isinstance(streams, list) or not streams:
@@ -70,12 +100,20 @@ def audio_codec_name(path: Path, *, ffprobe: Path) -> str:
     return name if isinstance(name, str) else ""
 
 
-def source_duration_us(path: Path, *, ffprobe: Path) -> int:
+def source_duration_us(
+    path: Path,
+    *,
+    ffprobe: Path,
+    cancel: threading.Event | None = None,
+    runner: ProcessRunner | None = None,
+) -> int:
     """Return the container duration in microseconds."""
     payload: dict[str, Any] = _probe_json(
         path,
         ffprobe=ffprobe,
         arguments=("-show_entries", "format=duration"),
+        cancel=cancel,
+        runner=runner,
     )
     container: object = payload.get("format", {})
     raw: object = container.get("duration") if isinstance(container, dict) else None
@@ -88,7 +126,13 @@ def source_duration_us(path: Path, *, ffprobe: Path) -> int:
     return max(0, round(seconds * _MICROSECONDS_PER_SECOND))
 
 
-def validate_merged(path: Path, *, expected_track_names: tuple[str, ...]) -> None:
+def validate_merged(
+    path: Path,
+    *,
+    expected_track_names: tuple[str, ...],
+    cancel: threading.Event | None = None,
+    runner: ProcessRunner | None = None,
+) -> None:
     """Confirm a merged container carries every track this run appended.
 
     Track names are checked instead of counting Polish tracks: a source that
@@ -96,9 +140,9 @@ def validate_merged(path: Path, *, expected_track_names: tuple[str, ...]) -> Non
     nothing would pass unnoticed.
     """
     _require_non_empty(path)
-    info: MediaInfo = identify(path)
-    present: frozenset[str] = frozenset(track.name for track in info.tracks)
-    missing: tuple[str, ...] = tuple(name for name in expected_track_names if name not in present)
+    info: MediaCatalog = source_tracks(path, cancel=cancel, runner=runner)
+    present: frozenset[str] = frozenset(track.name.casefold() for track in info.tracks if track.name is not None)
+    missing: tuple[str, ...] = tuple(name for name in expected_track_names if name.casefold() not in present)
     if missing:
         _raise_validation(
             "Merged container is missing appended tracks",
@@ -106,13 +150,22 @@ def validate_merged(path: Path, *, expected_track_names: tuple[str, ...]) -> Non
         )
 
 
-def validate_burned(path: Path, *, expected_duration_us: int, ffprobe: Path) -> None:
+def validate_burned(
+    path: Path,
+    *,
+    expected_duration_us: int,
+    ffprobe: Path,
+    cancel: threading.Event | None = None,
+    runner: ProcessRunner | None = None,
+) -> None:
     """Confirm a rendered MP4 decodes and matches the source duration."""
     _require_non_empty(path)
     payload: dict[str, Any] = _probe_json(
         path,
         ffprobe=ffprobe,
         arguments=("-show_entries", "format=duration:stream=codec_type"),
+        cancel=cancel,
+        runner=runner,
     )
     streams: object = payload.get("streams", [])
     if not isinstance(streams, list) or not any(
@@ -121,7 +174,7 @@ def validate_burned(path: Path, *, expected_duration_us: int, ffprobe: Path) -> 
         _raise_validation("Rendered file carries no video stream", details={})
     if expected_duration_us <= 0:
         return
-    actual_us: int = source_duration_us(path, ffprobe=ffprobe)
+    actual_us: int = source_duration_us(path, ffprobe=ffprobe, cancel=cancel, runner=runner)
     drift_ms: int = abs(actual_us - expected_duration_us) // _MICROSECONDS_PER_MILLISECOND
     if drift_ms > _DURATION_TOLERANCE_MS:
         _raise_validation(
@@ -136,7 +189,14 @@ def _require_non_empty(path: Path) -> None:
         _raise_validation("Composed file is missing or empty", details={"name": path.name})
 
 
-def _probe_json(path: Path, *, ffprobe: Path, arguments: tuple[str, ...]) -> dict[str, Any]:
+def _probe_json(
+    path: Path,
+    *,
+    ffprobe: Path,
+    arguments: tuple[str, ...],
+    cancel: threading.Event | None,
+    runner: ProcessRunner | None,
+) -> dict[str, Any]:
     """Return one ffprobe JSON payload, or raise a typed process failure."""
     command: tuple[str, ...] = (
         str(ffprobe),
@@ -147,24 +207,29 @@ def _probe_json(path: Path, *, ffprobe: Path, arguments: tuple[str, ...]) -> dic
         *arguments,
         str(path),
     )
+    process_runner: ProcessRunner = runner or SubprocessRunner()
     try:
-        completed: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603 - bundled binary with typed arguments
-            list(command),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_PROBE_TIMEOUT_S,
-            check=True,
-            creationflags=_NEW_PROCESS_GROUP,
+        completed = process_runner.run(
+            command,
+            cancel=_cancellation_token(cancel),
+            timeout_s=_PROBE_TIMEOUT_S,
         )
-    except (subprocess.SubprocessError, OSError) as error:
+    except ProcessExecutionError as error:
+        if error.reason is ProcessFailureReason.CANCELLED:
+            context = ErrorContext(code=ErrorCode.CANCELLED, message="Composition probe was cancelled")
+            raise CompositionCancelledError(context=context) from error
         _raise_probe("ffprobe failed to read the composed file", cause=error)
     try:
         payload: Any = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
         _raise_probe("ffprobe returned malformed JSON", cause=error)
     return payload if isinstance(payload, dict) else {}
+
+
+def _cancellation_token(cancel: threading.Event | None) -> CancellationToken:
+    if cancel is None:
+        return NeverCancelledToken()
+    return ThreadEventCancellationToken(cancel)
 
 
 def _raise_probe(message: str, *, cause: Exception) -> Never:

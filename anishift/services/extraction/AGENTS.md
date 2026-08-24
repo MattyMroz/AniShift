@@ -1,21 +1,26 @@
 # extraction
 
-Ekstrakcja ścieżek z MKV: `mkvmerge -J` identify + `mkvextract --gui-mode` z paskiem postępu i anulowaniem. Heurystyczny wybór ścieżki audio i napisów przez scoring.
+Neutralna ekstrakcja pojedynczej ścieżki z MKV/MP4 do jawnej ścieżki celu oraz zachowany interfejs legacy ekstrakcji MKV. Heurystyczny wybór ścieżki audio i napisów pozostaje osobnym mechanizmem legacy.
 
 ## Pliki
 
-- `service.py` — identify + extract z paskiem postępu i anulowaniem
+- `service.py` — publiczny `ExtractionService` oraz legacy identify/extract
+- `mkv.py`, `mp4.py` — adaptery ekstrakcji dla kontenerów
+- `_adapter.py` — wspólna walidacja wyniku i mapowanie kontrolowanego procesu
 - `tracks.py` — scoring i wybór ścieżek (NIE re-eksportowany)
-- `types.py` — dataclassy wartości + tabela codec→rozszerzenie
+- `types.py` — neutralne request/result/format oraz typy legacy
 - `errors.py` — `ExtractionError` (dziedziczy `FatalError`)
 
 ## Pułapki
 
 - `tracks.py` NIE jest re-eksportowany w `__init__.py` ani importowany przez `service.py` — scoring/wybór ścieżek dostępny tylko przez bezpośredni import modułu. `__init__.py:5`
+- `ExtractionRequest.target_path` jest dokładnym celem w katalogu run-scope; adapter nie może go zastąpić, zmienić rozszerzenia ani nadpisać istniejącego pliku.
+- MP4 używa indeksów streamów z `ffprobe`; napisy `mov_text`/`tx3g` są normalizowane przez FFmpeg do SRT. Audio jest kopiowane bez transkodowania.
+- Neutralny adapter usuwa pusty lub częściowy cel po błędzie, timeout i anulowanie mapuje na kontrolowany `ExtractionError`.
 - Funkcje scoringu przyjmują płaski `dict[str, Any]`, nie `TrackInfo`; `select_tracks` przepakowuje przez `_selector_shape`, który przemianowuje `num_entries`→`num_lines`. `tracks.py:132`
 - Anulowanie dwutorowe: inline `cancel.is_set()` w pętli po stdout ORAZ osobny wątek-watcher (zablokowany read stdout sam nie zauważy anulowania). `service.py:193`
 - Po exit code 0 brakujący lub pusty (0 bajtów) plik wyjściowy jest traktowany jako błąd ekstrakcji. `service.py:272`
-- Anulowanie usuwa częściowe pliki (`_remove_outputs`) i RZUCA `ErrorCode.CANCELLED`, nie zwraca. `service.py:184`
+- Anulowanie obu interfejsów usuwa częściowe pliki i RZUCA `ErrorCode.CANCELLED`, nie zwraca.
 
 ## Konwencje
 

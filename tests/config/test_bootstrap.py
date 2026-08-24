@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from anishift.bootstrap import bootstrap
 from anishift.config.env_file import update_env_value
+
+
+def test_config_imports_in_a_fresh_process() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", "import anishift.config"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_bootstrap_reloads_changed_dotenv_without_injecting_process_env(

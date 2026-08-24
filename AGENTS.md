@@ -48,6 +48,7 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 - `anishift/` — pakiet aplikacji (composition root, hierarchia błędów); ma własny AGENTS.md
 - `tests/` — testy pytest; konwencje i markery w jego AGENTS.md
 - `docs/plans/` — plany etapów (`plan-anishift.md` = zakres); `docs/reference/` — audyt mm_avh + wzorzec mangashift
+- `docs/work/` — artefakty aktywnego workstreamu (spec + plan + graf zadań), poza `docs/plans/`
 - `external/` — pobrane binarki (gitignored) + docs HTML narzędzi; szczegóły w `external/README.md`
 - `config/` — runtime katalog na `settings.json` panelu (gitignored); opis w `config/README.md`
 - `scripts/hooks/` — hook `check_commit_msg.py` (Conventional Commits); `scripts/tmp/` — jednorazowe
@@ -68,7 +69,7 @@ Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit
 
 ## Dane runtime
 
-- `workspace/` — dozwolone tylko podfoldery `tmp/` i `output/`. Zero `input/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`.
+- `workspace/` — dozwolony jest tylko zarządzany podfolder `temp/`; trwałe produkty leżą obok źródła. Zero `input/`, `output/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`.
 - Preferencje panelu: `config/settings.json` (obok kodu, gitignored, poza workspace).
 - Settings API/env: pydantic-settings, prefix `ANISHIFT_`, z `.env`, wszystkie opcjonalne.
 - Diagnostyka runtime używa wyłącznie `from anishift.utils.logger import get_logger`

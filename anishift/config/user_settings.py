@@ -194,7 +194,7 @@ class TtsVoiceProfileSettings:
     engine_options: dict[str, JsonScalar] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class CustomVoiceSetting:
     """One user-defined ElevenBytes voice alias."""
 

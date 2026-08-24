@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Protocol
 
+from anishift.application.composition_handler import LegacyCompositionAdapter
 from anishift.errors import AniShiftError, ErrorCode
 from anishift.pipeline.narration import scope_id_for_source
 from anishift.pipeline.types import CompositionUi, FileOutcome
@@ -96,7 +97,7 @@ def build_plan(
     displayed-only stream whenever a lector exists.
     """
     destination: Path = _destination_dir(outcome, variant=variant, workspace_root=workspace_root)
-    temporary_root: Path = workspace_root / "tmp" / scope_id
+    temporary_root: Path = workspace_root / "temp" / scope_id
     if variant is OutputVariant.BURN:
         burn_subtitle: Path | None = _burn_subtitle(outcome)
         if burn_subtitle is None and outcome.mixed_audio_path is None:
@@ -156,9 +157,8 @@ def _burn_subtitle(outcome: FileOutcome) -> Path | None:
 
 def _destination_dir(outcome: FileOutcome, *, variant: OutputVariant, workspace_root: Path) -> Path:
     """Return where the artifact belongs for the requested variant."""
-    if variant is OutputVariant.PLAYERS:
-        return outcome.source.parent
-    return workspace_root / "output"
+    del variant, workspace_root
+    return outcome.source.parent
 
 
 def estimate_burn_cost(plans: tuple[CompositionPlan, ...], *, ffprobe: Path) -> BurnEstimate:
@@ -202,6 +202,7 @@ def compose_outcomes(  # noqa: PLR0913 - one explicit argument per composition c
     built by the caller, which keeps this loop testable without real binaries.
     """
     composed: dict[Path, FileOutcome] = dict(outcomes)
+    adapter: LegacyCompositionAdapter = LegacyCompositionAdapter(service)
     plans: dict[Path, CompositionPlan] = {}
     for path, outcome in outcomes.items():
         plan: CompositionPlan | None = _plan_for(outcome, variant=variant, workspace_root=workspace_root)
@@ -217,7 +218,7 @@ def compose_outcomes(  # noqa: PLR0913 - one explicit argument per composition c
         if cancel is not None and cancel.is_set():
             break
         composed[path] = _compose_one(
-            service,
+            adapter,
             composed[path],
             plan,
             workspace_root=workspace_root,
@@ -241,7 +242,7 @@ def _plan_for(outcome: FileOutcome, *, variant: OutputVariant, workspace_root: P
 
 
 def _compose_one(  # noqa: PLR0913 - one explicit argument per composition concern
-    service: CompositionAssembler,
+    service: LegacyCompositionAdapter,
     outcome: FileOutcome,
     plan: CompositionPlan,
     *,
@@ -269,7 +270,7 @@ def _compose_one(  # noqa: PLR0913 - one explicit argument per composition conce
 
 def _discard_scope(workspace_root: Path, scope_id: str) -> None:
     """Remove the transient working directory of one finished file."""
-    scope_dir: Path = workspace_root / "tmp" / scope_id
+    scope_dir: Path = workspace_root / "temp" / scope_id
     if not scope_dir.exists():
         return
     try:

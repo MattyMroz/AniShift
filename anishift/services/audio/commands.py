@@ -26,6 +26,7 @@ __all__ = [
     "normalize_command",
     "probe_command",
     "scan_duration_command",
+    "transcode_command",
 ]
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -387,6 +388,55 @@ def narrator_wav_command(
         "-y",
         str(destination),
     )
+
+
+def transcode_command(  # noqa: PLR0913 - explicit FFmpeg output contract
+    ffmpeg: Path,
+    source: Path,
+    destination: Path,
+    *,
+    encoder: str,
+    output_arguments: tuple[str, ...],
+    container: str,
+    output_layout: str,
+    output_channels: int,
+    sample_rate: int,
+    source_filter: str | None,
+) -> tuple[str, ...]:
+    """Build one explicit single-stream audio transcode command."""
+    command: list[str] = [
+        str(ffmpeg),
+        "-v",
+        "error",
+        "-nostdin",
+        "-i",
+        str(source),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-sn",
+        "-dn",
+    ]
+    if source_filter is not None:
+        command.extend(("-af", source_filter))
+    command.extend(
+        (
+            "-c:a",
+            encoder,
+            *output_arguments,
+            "-ac",
+            str(output_channels),
+            "-channel_layout",
+            output_layout,
+            "-ar",
+            str(sample_rate),
+            "-f",
+            container,
+            "-y",
+            str(destination),
+        )
+    )
+    return tuple(command)
 
 
 def _safe_stderr(stderr: str) -> str:

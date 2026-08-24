@@ -27,12 +27,12 @@ dystrybucji aplikacji. AniShift pozostaje pakietem Pythona zarządzanym przez `u
 2. Potwierdzić brak zależności runtime od starego kodu i katalogów.
 3. Uruchomić wszystkie bramki jakości oraz `run_anishift.bat doctor`.
 4. Uaktualnić główny roadmap, indeks planów i issue etapu 8.
-5. Zachować etap 7.1 jako wejście do nowego etapu 9.
+5. Zachować wymagania produktu i workflow jako nowy etap 9.
 
 ## Poza zakresem
 
 - naprawa backlogowych issue;
-- implementacja funkcji z etapu 7.1;
+- implementacja funkcji z etapu 9;
 - projektowanie UI v2;
 - nowy korpus testowy;
 - przenoszenie albo usuwanie danych spoza repozytorium.

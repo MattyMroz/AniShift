@@ -22,13 +22,14 @@ def _backoff_s(attempt: int, base_s: float, cap_s: float) -> float:
     return min(base_s * (2.0 ** (attempt - 1)), cap_s)
 
 
-def call_with_retry[T](
+def call_with_retry[T](  # noqa: PLR0913 - retry policy remains explicit at provider call sites
     func: Callable[[], T],
     *,
     max_attempts: int,
     retry_on: type[BaseException] | tuple[type[BaseException], ...],
     base_s: float = 1.0,
     cap_s: float = 15.0,
+    on_retry: Callable[[int, int], None] | None = None,
 ) -> T:
     """Call ``func`` up to ``max_attempts`` times, backing off on ``retry_on``.
 
@@ -40,6 +41,7 @@ def call_with_retry[T](
         retry_on: Exception type(s) that trigger a retry; anything else raises.
         base_s: Base delay in seconds.
         cap_s: Upper bound on a single wait.
+        on_retry: Optional observer receiving next and maximum attempt numbers.
 
     Returns:
         The value returned by ``func``.
@@ -61,6 +63,8 @@ def call_with_retry[T](
                 )
                 raise
             delay_s: float = _backoff_s(attempt, base_s, cap_s)
+            if on_retry is not None:
+                on_retry(attempt + 1, max_attempts)
             logger.warning(
                 "Translation provider retry scheduled",
                 attempt=attempt,
@@ -73,13 +77,14 @@ def call_with_retry[T](
     raise RuntimeError(msg)
 
 
-async def call_with_retry_async[T](
+async def call_with_retry_async[T](  # noqa: PLR0913 - sync and async policies intentionally match
     func: Callable[[], Awaitable[T]],
     *,
     max_attempts: int,
     retry_on: type[BaseException] | tuple[type[BaseException], ...],
     base_s: float = 1.0,
     cap_s: float = 15.0,
+    on_retry: Callable[[int, int], None] | None = None,
 ) -> T:
     """Await ``func()`` up to ``max_attempts`` times, backing off on ``retry_on``.
 
@@ -92,6 +97,7 @@ async def call_with_retry_async[T](
         retry_on: Exception type(s) that trigger a retry; anything else raises.
         base_s: Base delay in seconds.
         cap_s: Upper bound on a single wait.
+        on_retry: Optional observer receiving next and maximum attempt numbers.
 
     Returns:
         The value returned by ``func``.
@@ -113,6 +119,8 @@ async def call_with_retry_async[T](
                 )
                 raise
             delay_s: float = _backoff_s(attempt, base_s, cap_s)
+            if on_retry is not None:
+                on_retry(attempt + 1, max_attempts)
             logger.warning(
                 "Translation provider retry scheduled",
                 attempt=attempt,

@@ -7,6 +7,7 @@ from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.service import (
     collapse_fbf,
     load_subtitles,
+    normalize_subtitles,
     preview_styles,
     split_subtitles,
     subtitle_kind,
@@ -44,6 +45,7 @@ __all__ = [
     "dedup_animation",
     "is_drawing",
     "load_subtitles",
+    "normalize_subtitles",
     "preview_styles",
     "read_txt",
     "replace_visible_text",

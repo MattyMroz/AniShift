@@ -2,6 +2,7 @@
 
 > źródło prawdy dla etapów 1–8: [`plan-anishift.md`](plan-anishift.md) (legacy roadmap). wzorce: `mangashift-architecture-ref/` (engine-factory-standard, engine-standard, naming-glossary).
 > zasady wspólne: recykling MangaShift 1:1, prostota (KISS/YAGNI), rejestr silników TYLKO w tts/translation/llm, fasady sync, zero kodu poza planem etapu.
+> artefakty aktywnego workstreamu etapu 10 (wymagania, plan, graf zadań) leżą w [`../work/10-tui/`](../work/10-tui/), nie w `docs/plans/`.
 
 | etap | plik | cel (1 zdanie) | zależy od |
 |---|---|---|---|
@@ -16,21 +17,22 @@
 | 6.1 | [etap-6.1-shared-text-primitives.md](etap-6.1-shared-text-primitives.md) | **ZROBIONE** — wspólne granice Unicode i grafemy dla translation/TTS. | 6 |
 | 7 | [etap-7-wymagania.md](etap-7-wymagania.md) + [etap-7-plan.md](etap-7-plan.md) | **ZROBIONE** — składanie players/MKV/MP4, `/compose` i pełny pipeline. | 6 |
 | 8 | [wymagania](etap-8-wymagania.md) + [plan](etap-8-dystrybucja-binarek.md) | **ZROBIONE** — launcher Windows, audyt legacy, walidacja i zamknięcie roadmapu. | 7 |
-| 9 | [analiza 7.1](etap-7.1-wymagania.md) | **NASTĘPNY** — docelowe produkty, tryby pracy, stany i wpływ decyzji na UI v2. | 8 |
+| 9 | [produkt](etap-9-wymagania.md) + [interfejs](etap-9-interfejs-wymagania.md) + [plan](etap-9-plan.md) | **CZĘŚCIOWO** — dostarczono model artefaktów, strumieniowy scheduler i application API (`AppService`); warstwa Textual TUI odrzucona, przepisywana w etapie 10. issue #38 otwarte, nie zmergowane do `main`. | 8 |
+| 10 | [wymagania](../work/10-tui/spec.md) + [plan](../work/10-tui/plan.md) + [zadania](../work/10-tui/tasks.json) | **PLAN** — silnik LLM Palantir, format `anishift.models.jsonc`, przepisanie Textual TUI, likwidacja `anishift/pipeline/` i `prompt-toolkit`, nowy job CI Windows. | 9 |
 
 ## graf zależności
 
 ```text
 1 → 2 → 2.5 → 3 → 4 → 5 (llm)
-                      └→ 6 (tts+audio) → 6.1 (text) → 7 (e2e) → 8 (closure) → 9 (product/UI model)
+                      └→ 6 (tts+audio) → 6.1 (text) → 7 (e2e) → 8 (closure) → 9 (product/UI model) → 10 (TUI rewrite)
 ```
 
-etapy 5 i 6 mogły iść równolegle. etap 9 korzysta z analizy 7.1, ale decyzje są podejmowane po zamknięciu starego roadmapu w etapie 8.
+etapy 5 i 6 mogły iść równolegle. decyzje etapu 9 są podejmowane po zamknięciu starego roadmapu w etapie 8. etap 10 zastępuje odrzuconą warstwę TUI z etapu 9.
 
 ## reguły obowiązujące w każdym etapie
 
 - każdy etap kończy się działającą apką (zero half-done).
-- pliki pośrednie powstają obok MKV w `workspace/`; robocze w `workspace/tmp/`; wyniki w `output/` tylko gdy włączone w `/settings`.
+- trwałe produkty powstają obok źródła w `workspace/`; dane robocze jednego runu trafiają do `workspace/temp/` i są sprzątane po zakończeniu.
 - domenowe configi: dataclass `slots=True`, wymagany `engine_id` bez defaultu — default trzyma panel (`config/settings.json`).
 - błędy domenowe (podklasy `anishift/errors.py`), nigdy `sys.exit()` ani goły traceback do usera.
 - `utils/` — dawniej nietykalne; reguła zniesiona, całość docelowo doprowadzana do standardu (patrz issue #21).

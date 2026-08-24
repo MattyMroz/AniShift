@@ -8,6 +8,7 @@ from anishift.services.translation.errors import TranslationError, TranslationQu
 from anishift.services.translation.protocols import (
     TranslationEngineFactory,
     TranslationInputPolicy,
+    TranslationObserver,
     TranslationStream,
 )
 from anishift.services.translation.service import TranslationService
@@ -40,7 +41,8 @@ class _FakeEngine:
     def is_available(self) -> bool:
         return True
 
-    def translate_batch(self, texts, *, source_lang, target_lang):  # type: ignore[no-untyped-def]
+    def translate_batch(self, texts, *, source_lang, target_lang, observer=None):  # type: ignore[no-untyped-def]
+        del observer
         self.calls.append(list(texts))
         self.target_langs.append(target_lang)
         if self._fail is not None:
@@ -52,6 +54,17 @@ class _FakeEngine:
 
     def input_policy(self, stream: TranslationStream) -> TranslationInputPolicy:
         return self._spoken_policy if stream == "spoken" else self._displayed_policy
+
+
+class _Observer:
+    def __init__(self) -> None:
+        self.fallbacks: list[tuple[str, str]] = []
+
+    def retry(self, engine_id: str, attempt: int, max_attempts: int) -> None:
+        del engine_id, attempt, max_attempts
+
+    def fallback(self, failed_engine_id: str, next_engine_id: str) -> None:
+        self.fallbacks.append((failed_engine_id, next_engine_id))
 
 
 def _spoken(*texts: str) -> list[SpokenLine]:
@@ -161,7 +174,8 @@ def test_displayed_animation_duplicates_use_one_provider_item() -> None:
 
 def test_displayed_partial_failure_counts_every_redistributed_occurrence() -> None:
     class _PartialFailureEngine(_FakeEngine):
-        def translate_batch(self, texts, *, source_lang, target_lang):  # type: ignore[no-untyped-def]
+        def translate_batch(self, texts, *, source_lang, target_lang, observer=None):  # type: ignore[no-untyped-def]
+            del observer
             del source_lang, target_lang
             self.calls.append(list(texts))
             return [BatchedLine(text=text, ok=text != "Broken") for text in texts]
@@ -183,9 +197,12 @@ def test_fallback_chain_uses_next_engine_on_quota() -> None:
         return engines[engine_id]
 
     service = TranslationService(config, fallback_chain=("google",), engine_factory=build)
-    result = service.translate_file(_spoken("x"), [], target_lang="pl")
+    observer: TranslationObserver = _Observer()
+    result = service.translate_file(_spoken("x"), [], target_lang="pl", observer=observer)
     assert result.engine_id == "google"
     assert [line.text for line in result.spoken] == ["G:x"]
+    assert isinstance(observer, _Observer)
+    assert observer.fallbacks == [("deepl", "google")]
 
 
 def test_exhausted_chain_sets_error() -> None:

@@ -131,21 +131,16 @@ def test_subtitle_kind_follows_the_written_product(tmp_path: Path) -> None:
     assert composed[outcome.source].composition_status == "completed"
 
 
-@pytest.mark.parametrize(
-    ("variant", "expected_parent"),
-    [(OutputVariant.MERGE, "output"), (OutputVariant.BURN, "output")],
-)
-def test_assembled_variants_target_the_output_directory(
-    tmp_path: Path,
-    variant: OutputVariant,
-    expected_parent: str,
-) -> None:
-    outcome = _outcome(tmp_path, translated_path=tmp_path / "Episode.pl.ass")
+@pytest.mark.parametrize("variant", [OutputVariant.MERGE, OutputVariant.BURN])
+def test_assembled_variants_target_the_source_directory(tmp_path: Path, variant: OutputVariant) -> None:
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    outcome = _outcome(media_dir, translated_path=media_dir / "Episode.pl.ass")
 
     plan = build_plan(outcome, variant=variant, workspace_root=tmp_path, scope_id="s")
 
     assert plan is not None
-    assert plan.destination_dir.name == expected_parent
+    assert plan.destination_dir == media_dir
 
 
 def test_players_variant_targets_the_source_directory(tmp_path: Path) -> None:
@@ -214,7 +209,7 @@ def test_unfinished_file_is_left_alone(tmp_path: Path) -> None:
 
 def test_success_discards_the_scope_directory(tmp_path: Path) -> None:
     outcome = _done(tmp_path, "A")
-    scope = tmp_path / "tmp" / scope_id_for_source(outcome.source, workspace_root=tmp_path)
+    scope = tmp_path / "temp" / scope_id_for_source(outcome.source, workspace_root=tmp_path)
     scope.mkdir(parents=True)
 
     compose_outcomes(
@@ -229,7 +224,7 @@ def test_success_discards_the_scope_directory(tmp_path: Path) -> None:
 
 def test_failure_keeps_the_scope_directory(tmp_path: Path) -> None:
     outcome = _done(tmp_path, "A")
-    scope = tmp_path / "tmp" / scope_id_for_source(outcome.source, workspace_root=tmp_path)
+    scope = tmp_path / "temp" / scope_id_for_source(outcome.source, workspace_root=tmp_path)
     scope.mkdir(parents=True)
 
     compose_outcomes(

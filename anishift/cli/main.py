@@ -82,11 +82,14 @@ def setup(
 
 def main() -> None:
     """Console-script entry point (see ``[project.scripts]``)."""
+    from anishift.cli.console import configure_utf8_streams  # noqa: PLC0415 - before any output
     from anishift.utils.logger import (  # noqa: PLC0415 - configure logging only at the process boundary
         get_logger,
         setup_mode_from_env,
         shutdown_logger,
     )
+
+    configure_utf8_streams()
 
     setup_mode_from_env(
         console_enabled=False,

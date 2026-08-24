@@ -28,7 +28,7 @@ from anishift.services.translation.types import BatchedLine
 
 if TYPE_CHECKING:
     from anishift.services.translation.config import TranslationConfig
-    from anishift.services.translation.protocols import TranslationInputPolicy, TranslationStream
+    from anishift.services.translation.protocols import TranslationInputPolicy, TranslationObserver, TranslationStream
 
 
 def _map_sdk_error(exc: Exception) -> Exception:
@@ -126,6 +126,7 @@ class DeeplService:
         *,
         source_lang: str,
         target_lang: str,
+        observer: TranslationObserver | None = None,
     ) -> list[BatchedLine]:
         """Translate one batch via the SDK; retry transient rate-limits."""
         if not texts:
@@ -142,6 +143,11 @@ class DeeplService:
                     max_attempts=max_attempts,
                     retry_on=TranslationRateLimitError,
                     base_s=RATE_LIMIT_BASE_DELAY_S,
+                    on_retry=(
+                        None
+                        if observer is None
+                        else lambda attempt, maximum: observer.retry(self.engine_id, attempt, maximum)
+                    ),
                 )
             )
         return out

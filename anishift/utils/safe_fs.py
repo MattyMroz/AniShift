@@ -7,7 +7,7 @@ backoff retries to handle transient locks.
 
 Usage:
     >>> from <pkg>.utils.safe_fs import safe_rmtree, safe_move
-    >>> safe_rmtree("workspace/tmp")
+    >>> safe_rmtree("workspace/temp")
     >>> safe_move("old/dir", "new/dir")
 """
 

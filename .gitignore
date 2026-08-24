@@ -350,6 +350,7 @@ config/prompts/**/*.txt
 
 # ── Project overrides — ignores that must beat the re-includes above ─────────
 docs/session-logs/
+docs/work/**/.workflow/
 
 # ── Final invariants — MUST STAY LAST ─────────────────────────────────────────
 # Enforced, not documented: last match wins, so nothing above can bury these.

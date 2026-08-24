@@ -25,8 +25,15 @@ __all__ = [
     "AniShiftError",
     "ErrorCode",
     "ErrorContext",
+    "ExecutionError",
     "FatalError",
+    "MediaError",
+    "MediaProbeError",
+    "PlanningError",
+    "RunConflictError",
     "TransientError",
+    "UnsupportedMediaError",
+    "WorkflowError",
 ]
 
 
@@ -54,6 +61,10 @@ class ErrorCode(StrEnum):
     # Extraction
     EXTRACTION_FAILED = "EXTRACTION_FAILED"
     TRACK_NOT_FOUND = "TRACK_NOT_FOUND"
+
+    # Media
+    MEDIA_PROBE_FAILED = "MEDIA_PROBE_FAILED"
+    MEDIA_UNSUPPORTED = "MEDIA_UNSUPPORTED"
 
     # Subtitles
     SUBTITLE_PARSE_FAILED = "SUBTITLE_PARSE_FAILED"
@@ -166,6 +177,34 @@ class TransientError(AniShiftError):
 
     Engine retry logic should retry on ``isinstance(err, TransientError)``.
     """
+
+
+class WorkflowError(AniShiftError):
+    """Base error for application planning and execution failures."""
+
+
+class PlanningError(WorkflowError):
+    """Raised when a planning contract or dependency graph is invalid."""
+
+
+class ExecutionError(WorkflowError):
+    """Raised when an execution contract cannot be fulfilled safely."""
+
+
+class RunConflictError(WorkflowError):
+    """Raised when a second run conflicts with an active workflow."""
+
+
+class MediaError(WorkflowError):
+    """Base error for neutral media identification failures."""
+
+
+class MediaProbeError(MediaError):
+    """Raised when a supported container cannot be identified safely."""
+
+
+class UnsupportedMediaError(MediaError):
+    """Raised when no media adapter supports the requested container."""
 
 
 class FatalError(AniShiftError):

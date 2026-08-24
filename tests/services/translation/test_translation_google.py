@@ -10,11 +10,23 @@ from anishift.services.translation.config import TranslationConfig
 from anishift.services.translation.engines.google._batching import translate_lines
 from anishift.services.translation.engines.google.constants import LINE_SEPARATOR, MAX_CHARS_PER_REQUEST
 from anishift.services.translation.engines.google.service import GoogleService
+from anishift.services.translation.protocols import TranslationObserver
 from anishift.services.translation.types import BatchedLine
 
 
 def _run(coro: Coroutine[Any, Any, list[BatchedLine]]) -> list[BatchedLine]:
     return asyncio.run(coro)
+
+
+class _Observer:
+    def __init__(self) -> None:
+        self.retries: list[tuple[str, int, int]] = []
+
+    def retry(self, engine_id: str, attempt: int, max_attempts: int) -> None:
+        self.retries.append((engine_id, attempt, max_attempts))
+
+    def fallback(self, failed_engine_id: str, next_engine_id: str) -> None:
+        del failed_engine_id, next_engine_id
 
 
 def test_separator_join_maps_lines_in_order() -> None:
@@ -84,8 +96,11 @@ def test_retry_retries_transient_http_errors(monkeypatch: pytest.MonkeyPatch) ->
 
     engine = GoogleService(TranslationConfig(engine="google", max_retries=2))
     client = _FlakyClient()
-    assert asyncio.run(engine._call_with_retry(client, "hi", dest="pl")) == "PL-hi"
+    observer: TranslationObserver = _Observer()
+    assert asyncio.run(engine._call_with_retry(client, "hi", dest="pl", observer=observer)) == "PL-hi"
     assert client.calls == 2
+    assert isinstance(observer, _Observer)
+    assert observer.retries == [("google", 2, 3)]
 
 
 def test_retry_raises_non_transient_immediately() -> None:

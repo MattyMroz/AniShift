@@ -457,7 +457,7 @@ def test_runtime_joins_reordered_tts_results_by_request_id(tmp_path: Path) -> No
     assert clips["request-two"].start_ms == 1200
     assert clips["request-two"].source_order == 20
     assert request.post_process_tempo == 1.25
-    assert request.temporary_root == tmp_path / "tmp" / "scope-runtime" / "audio"
+    assert request.temporary_root == tmp_path / "temp" / "scope-runtime" / "audio"
     assert outcomes[source].failure is None
     assert progress.audio_phases == [("scope-runtime", "mixing")]
     assert progress.terminals == [("scope-runtime", "done")]

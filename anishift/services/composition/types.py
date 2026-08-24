@@ -11,10 +11,20 @@ __all__ = [
     "CompositionPlan",
     "CompositionResult",
     "CompositionStatus",
+    "ContainerCompositionRequest",
+    "ContainerCompositionResult",
+    "ContainerTarget",
     "OutputVariant",
     "QualityPreset",
     "SubtitleRole",
 ]
+
+
+class ContainerTarget(StrEnum):
+    """One independently produced media container."""
+
+    MKV = "mkv"
+    MP4 = "mp4"
 
 
 class OutputVariant(StrEnum):
@@ -55,6 +65,47 @@ class AttachedSubtitle:
     role: SubtitleRole
     language: str
     track_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContainerCompositionRequest:
+    """Exact inputs and destination for one container product."""
+
+    source_video: Path
+    destination: Path
+    target: ContainerTarget
+    burn_subtitle: Path | None
+    attached_subtitles: tuple[AttachedSubtitle, ...]
+    narration_audio: Path | None
+    keep_original_audio: bool
+
+    def __post_init__(self) -> None:
+        if self.source_video == self.destination:
+            msg = "Composition source and destination must differ"
+            raise ValueError(msg)
+        expected_suffix: str = f".{self.target.value}"
+        if self.destination.suffix.casefold() != expected_suffix:
+            msg = f"Container destination must end with {expected_suffix}"
+            raise ValueError(msg)
+        if self.target is ContainerTarget.MKV and self.burn_subtitle is not None:
+            msg = "MKV composition attaches subtitles instead of burning them"
+            raise ValueError(msg)
+        if self.target is ContainerTarget.MP4 and self.attached_subtitles:
+            msg = "MP4 composition does not attach subtitle sidecars"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class ContainerCompositionResult:
+    """Outcome of producing exactly one target container."""
+
+    source_path: Path
+    target: ContainerTarget
+    output_path: Path
+    output_size_bytes: int
+    source_size_bytes: int
+    duration_ms: float
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

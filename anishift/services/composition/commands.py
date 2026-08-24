@@ -19,7 +19,7 @@ from anishift.services.composition.errors import (
     CompositionProcessError,
 )
 from anishift.services.composition.paths import escape_filter_path
-from anishift.services.composition.types import CompositionPlan
+from anishift.services.composition.types import CompositionPlan, ContainerCompositionRequest
 from anishift.utils.logger import get_logger
 from anishift.utils.timer import Timer
 
@@ -29,6 +29,8 @@ __all__ = [
     "ProgressReader",
     "StreamingRunner",
     "burn_command",
+    "container_burn_command",
+    "container_merge_command",
     "merge_command",
     "mp4_audio_is_copyable",
     "parse_ffmpeg_progress",
@@ -113,11 +115,40 @@ def merge_command(
     return tuple(arguments)
 
 
-def _appended_track_arguments(track_name: str, path: Path) -> tuple[str, ...]:
+def container_merge_command(
+    request: ContainerCompositionRequest,
+    *,
+    mkvmerge: Path,
+    destination: Path,
+) -> tuple[str, ...]:
+    """Build one MKV command from the target-specific composition contract."""
+    arguments: list[str] = [str(mkvmerge), "--gui-mode", "--output", str(destination)]
+    if not request.keep_original_audio:
+        arguments.append("--no-audio")
+    arguments.append(str(request.source_video))
+    if request.narration_audio is not None:
+        arguments.extend(_appended_track_arguments(NARRATION_TRACK_NAME, request.narration_audio))
+    for subtitle in request.attached_subtitles:
+        arguments.extend(
+            _appended_track_arguments(
+                subtitle.track_name,
+                subtitle.path,
+                language=subtitle.language,
+            )
+        )
+    return tuple(arguments)
+
+
+def _appended_track_arguments(
+    track_name: str,
+    path: Path,
+    *,
+    language: str = _POLISH_LANGUAGE,
+) -> tuple[str, ...]:
     """Return per-track options plus the file they apply to."""
     return (
         "--language",
-        f"0:{_POLISH_LANGUAGE}",
+        f"0:{language}",
         "--track-name",
         f"0:{track_name}",
         "--default-track-flag",
@@ -163,6 +194,40 @@ def burn_command(  # noqa: PLR0913 - render inputs stay explicit instead of a wr
     arguments.extend(("-movflags", "+faststart"))
     arguments.extend(("-progress", "pipe:1"))
     arguments.append(str(destination))
+    return tuple(arguments)
+
+
+def container_burn_command(  # noqa: PLR0913 - explicit process inputs avoid hidden policy
+    request: ContainerCompositionRequest,
+    *,
+    ffmpeg: Path,
+    config: CompositionConfig,
+    subtitle_argument: str | None,
+    audio_codec: str,
+    destination: Path,
+) -> tuple[str, ...]:
+    """Build one MP4 command without deriving burn or audio policy from presence alone."""
+    arguments: list[str] = [str(ffmpeg), "-y", "-hide_banner", "-nostats", "-i", str(request.source_video)]
+    if request.narration_audio is not None:
+        arguments.extend(("-i", str(request.narration_audio)))
+    arguments.extend(("-map", "0:v:0"))
+    if request.keep_original_audio:
+        arguments.extend(("-map", "0:a:0?"))
+    if request.narration_audio is not None:
+        arguments.extend(("-map", "1:a:0"))
+    if subtitle_argument is not None:
+        arguments.extend(("-vf", subtitle_argument))
+        arguments.extend(("-c:v", config.video_encoder))
+        arguments.extend(("-crf", str(config.crf)))
+        arguments.extend(("-preset", config.encoder_preset))
+        arguments.extend(("-pix_fmt", "yuv420p"))
+    else:
+        arguments.extend(("-c:v", "copy"))
+    if request.keep_original_audio and request.narration_audio is not None:
+        arguments.extend(("-c:a", "aac"))
+    elif request.keep_original_audio or request.narration_audio is not None:
+        arguments.extend(("-c:a", "copy") if mp4_audio_is_copyable(audio_codec) else ("-c:a", "aac"))
+    arguments.extend(("-movflags", "+faststart", "-progress", "pipe:1", str(destination)))
     return tuple(arguments)
 
 

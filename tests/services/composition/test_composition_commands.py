@@ -9,6 +9,8 @@ import pytest
 from anishift.services.composition.commands import (
     StreamingRunner,
     burn_command,
+    container_burn_command,
+    container_merge_command,
     merge_command,
     mp4_audio_is_copyable,
     parse_ffmpeg_progress,
@@ -23,6 +25,8 @@ from anishift.services.composition.errors import (
 from anishift.services.composition.types import (
     AttachedSubtitle,
     CompositionPlan,
+    ContainerCompositionRequest,
+    ContainerTarget,
     OutputVariant,
     SubtitleRole,
 )
@@ -139,6 +143,51 @@ def test_burn_command_transcodes_unsupported_audio(tmp_path: Path) -> None:
 
     audio_index = command.index("-c:a")
     assert command[audio_index + 1] == "aac"
+
+
+def test_container_merge_command_uses_selected_tracks_and_audio_policy(tmp_path: Path) -> None:
+    subtitle = AttachedSubtitle(tmp_path / "signs.ass", SubtitleRole.DISPLAYED, "jpn", "Signs")
+    request = ContainerCompositionRequest(
+        source_video=tmp_path / "Episode.mp4",
+        destination=tmp_path / "Episode.pl.mkv",
+        target=ContainerTarget.MKV,
+        burn_subtitle=None,
+        attached_subtitles=(subtitle,),
+        narration_audio=tmp_path / "Episode.eac3",
+        keep_original_audio=False,
+    )
+
+    command = container_merge_command(request, mkvmerge=Path("mkvmerge"), destination=request.destination)
+
+    assert "--no-audio" in command
+    assert "0:jpn" in command
+    assert str(subtitle.path) in command
+    assert str(request.narration_audio) in command
+
+
+def test_container_burn_command_can_copy_video_and_original_audio(tmp_path: Path) -> None:
+    request = ContainerCompositionRequest(
+        source_video=tmp_path / "Episode.mkv",
+        destination=tmp_path / "Episode.pl.mp4",
+        target=ContainerTarget.MP4,
+        burn_subtitle=None,
+        attached_subtitles=(),
+        narration_audio=None,
+        keep_original_audio=True,
+    )
+
+    command = container_burn_command(
+        request,
+        ffmpeg=Path("ffmpeg"),
+        config=CompositionConfig(),
+        subtitle_argument=None,
+        audio_codec="aac",
+        destination=request.destination,
+    )
+
+    assert "-vf" not in command
+    assert command[command.index("-c:v") + 1] == "copy"
+    assert "0:a:0?" in command
 
 
 @pytest.mark.parametrize(

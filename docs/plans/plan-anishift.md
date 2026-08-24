@@ -1,7 +1,9 @@
 # plan strategiczny: AniShift (pakiet `anishift`) — FINAL
 
 > Status: legacy roadmap zakończony — etapy 1–8 ukończone.
-> Dalszy kierunek: etap 9 rozwija analizę z `etap-7.1-wymagania.md`.
+> Dalszy kierunek: [`etap-9-wymagania.md`](etap-9-wymagania.md),
+> [`etap-9-interfejs-wymagania.md`](etap-9-interfejs-wymagania.md) i
+> [`etap-9-plan.md`](etap-9-plan.md).
 > data: 2026-07-12 | autor: Fable | zastępuje `2026-07-12-plan-anishift-fable-v2.md` (v2 + wbudowane korekty usera z `_korekty-planu-anishift.md`) | aktualizacja: dodany serwis llm (decyzja usera)
 > zasada nadrzędna: **recykling MangaShift w 100%** — struktura, nazewnictwo, wzorce. druga zasada (od usera): **wszystko ma być proste** — zero rozdmuchanych folderów i mechanizmów.
 > repo: obecne (3 gwiazdki zostają), przebudowa na nowym branchu. nazwy `mm_avh` i `working_space` znikają z nowego kodu.
@@ -23,7 +25,11 @@ Z obecnego mm_avh bierzemy wyłącznie dwie rzeczy: **logikę działania pipelin
 ## B) rozstrzygnięcia decyzji
 
 ### ui
-**prompt_toolkit + rich**, zgodnie z badaniem 09. Textual odpada (pełnoekranowy framework, palette na Ctrl+P zamiast inline `/` — dalej od wizji Claude Code). Sam rich nie umie interaktywnego inputu. Recykling z MangaShift: pakiet `cli/` w kształcie MangaShift (cienki `main.py` na Typer + rejestracja komend, wpis w `[project.scripts]`, `load_dotenv` na starcie) — `anishift` bez argumentów odpala interaktywny shell (banner + REPL), `anishift doctor` / `anishift setup` jako subkomendy. Sam REPL (Enter=auto, `/komendy` z inline autocomplete, historia) to prompt_toolkit; rendering (banner, panele, progress) to rich przez `utils/rich_console` przeniesiony z MangaShift (150+ styli, ProgressBarManager — gotowy kod usera).
+Etap 2 użył **prompt_toolkit + rich** do małego REPL-a wzorowanego na Claude Code.
+Ta decyzja opisuje stan historyczny, nie docelowy interfejs większego produktu.
+Etap 9 zastępuje REPL pełnoekranowym TUI w `Textual`, zgodnie z
+[`etap-9-interfejs-wymagania.md`](etap-9-interfejs-wymagania.md). Typer pozostaje
+cienkim CLI dla `doctor`, `setup` i automatyzacji presetów.
 
 ### config i klucze
 Wzorem MangaShift dwie warstwy, obie proste:
@@ -346,13 +352,19 @@ zależności: ukończony etap 7.
 jak testować: pełne bramki jakości + `run_anishift.bat doctor` uruchomiony spoza repo.
 DoD: brak zależności runtime od starego `mm_avh`, zielone testy i zgodne statusy planów.
 
-### etap 9 — model produktu i wpływ na UI
-**status:** do zaprojektowania.
-**cel:** przekształcić analizę z [`etap-7.1-wymagania.md`](etap-7.1-wymagania.md)
-w decyzje o produktach, trybach pracy, stanach, konfiguracji i ich wpływie na UI v2.
+### etap 9 — model produktu, workflow i ustawień
+**status:** wymagania domknięte, plan wykonawczy gotowy do akceptacji.
+**cel:** przekształcić analizę w [`etap-9-wymagania.md`](etap-9-wymagania.md)
+w decyzje o artefaktach, trybach pracy, stanach, konfiguracji, planowaniu oraz
+pełnoekranowym TUI.
 
-Etap 9 najpierw ustala zachowanie produktu. Implementacja UI wynika z tych decyzji,
-nie poprzedza ich.
+Etap 9 najpierw stabilizuje zachowanie produktu oraz application API, a następnie
+podłącza pełnoekranowe TUI na `Textual` i cienkie CLI zgodnie z
+[`etap-9-interfejs-wymagania.md`](etap-9-interfejs-wymagania.md).
+Dokładna kolejność plików, testów i inkrementów znajduje się w
+[`etap-9-plan.md`](etap-9-plan.md).
+W tym samym etapie mechanicznie zmienia kontrakt katalogu roboczego z
+`workspace/tmp` na `workspace/temp` i aktualizuje wszystkie testy oraz instrukcje.
 
 ---
 

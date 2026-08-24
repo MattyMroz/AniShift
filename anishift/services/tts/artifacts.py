@@ -33,7 +33,7 @@ _SUGGESTION_REMOVE_REDIRECT: Final[str] = (
 """Suggestion for artifact paths that resolve through symlinks or junctions."""
 
 _SUGGESTION_RESET_ARTIFACTS: Final[str] = (
-    "Delete the TTS artifacts directory under workspace/tmp and run the file again."
+    "Delete the TTS artifacts directory under workspace/temp and run the file again."
 )
 """Suggestion for artifacts that violate the resume repository layout contract."""
 

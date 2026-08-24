@@ -190,6 +190,8 @@ def check_workspace() -> CheckResult:
 
 def run_doctor(settings: Settings | None = None) -> list[CheckResult]:
     """Run every diagnostic check in order and return the collected list."""
+    from anishift.cli.console import console_encoding_check  # noqa: PLC0415 - avoid circular import
+
     logger.info("Environment diagnostics started")
     results = [
         check_python_version(),
@@ -197,6 +199,7 @@ def run_doctor(settings: Settings | None = None) -> list[CheckResult]:
         check_binaries(),
         check_api_keys(settings),
         check_workspace(),
+        console_encoding_check(),
     ]
     logger.info(
         "Environment diagnostics completed",

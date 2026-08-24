@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 import threading
 from pathlib import Path
 from typing import Final, Protocol
@@ -13,6 +15,8 @@ from anishift.services.composition.commands import (
     CommandOutcome,
     StreamingRunner,
     burn_command,
+    container_burn_command,
+    container_merge_command,
     merge_command,
     parse_ffmpeg_progress,
     parse_mkvmerge_progress,
@@ -33,9 +37,14 @@ from anishift.services.composition.types import (
     CompositionPlan,
     CompositionResult,
     CompositionStatus,
+    ContainerCompositionRequest,
+    ContainerCompositionResult,
+    ContainerTarget,
     OutputVariant,
 )
-from anishift.services.extraction.types import MediaInfo
+from anishift.services.media import MediaCatalog
+from anishift.services.media._process import ProcessRunner
+from anishift.services.media._process import SubprocessRunner as ProbeSubprocessRunner
 from anishift.utils.logger import get_logger
 from anishift.utils.safe_fs import safe_move
 from anishift.utils.timer import Timer
@@ -61,7 +70,7 @@ class CompositionProgressSink(Protocol):
 class CompositionService:
     """Assemble one source container into the requested final artifact."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - explicit tool and runner injection keeps process ownership testable
         self,
         config: CompositionConfig,
         *,
@@ -69,6 +78,7 @@ class CompositionService:
         mkvmerge: Path | None = None,
         ffmpeg: Path | None = None,
         ffprobe: Path | None = None,
+        probe_runner: ProcessRunner | None = None,
     ) -> None:
         """Store tool overrides and defer resolution until a variant needs them."""
         self._config: CompositionConfig = config
@@ -78,6 +88,7 @@ class CompositionService:
         self._mkvmerge: Path | None = mkvmerge
         self._ffmpeg: Path | None = ffmpeg
         self._ffprobe: Path | None = ffprobe
+        self._probe_runner: ProcessRunner = probe_runner or ProbeSubprocessRunner()
 
     def _resolve_tool(self, binary: Binary, configured: Path | None) -> Path:
         """Return one configured or bundled composition tool."""
@@ -145,6 +156,149 @@ class CompositionService:
             return self._compose_merge(plan, timer=timer, callbacks=callbacks, cancel=cancel)
         return self._compose_burn(plan, timer=timer, callbacks=callbacks, cancel=cancel)
 
+    def compose_container(
+        self,
+        request: ContainerCompositionRequest,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> ContainerCompositionResult:
+        """Produce exactly one independently addressed MKV or MP4 container."""
+        timer: Timer = Timer("composition_container", auto_start=True)
+        logger.info(
+            "Container composition started",
+            target=request.target.value,
+            has_narration=request.narration_audio is not None,
+            subtitle_count=len(request.attached_subtitles),
+        )
+        if request.target is ContainerTarget.MKV:
+            return self._compose_container_mkv(request, timer=timer, cancel=cancel)
+        return self._compose_container_mp4(request, timer=timer, cancel=cancel)
+
+    def _compose_container_mkv(
+        self,
+        request: ContainerCompositionRequest,
+        *,
+        timer: Timer,
+        cancel: threading.Event | None,
+    ) -> ContainerCompositionResult:
+        """Mux one MKV while preserving only the source tracks requested by policy."""
+        temporary: Path = temporary_sibling(request.destination)
+        expected: tuple[str, ...] = tuple(subtitle.track_name for subtitle in request.attached_subtitles)
+        if request.narration_audio is not None:
+            expected = (*expected, NARRATION_TRACK_NAME)
+        warnings: tuple[str, ...] = self._container_font_warnings(request, cancel=cancel)
+        source_size: int = request.source_video.stat().st_size
+        output_size: int
+        try:
+            outcome: CommandOutcome = self._runner.run(
+                container_merge_command(request, mkvmerge=self._mkvmerge_path, destination=temporary),
+                operation="merge_container",
+                timeout_s=self._config.operation_timeout_s,
+                progress=parse_mkvmerge_progress,
+                cancel=cancel,
+                warning_exit_code=_MKVMERGE_WARNING_EXIT,
+            )
+            validate_merged(
+                temporary,
+                expected_track_names=expected,
+                cancel=cancel,
+                runner=self._probe_runner,
+            )
+            output_size = temporary.stat().st_size
+            temporary.replace(request.destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        timer.stop()
+        if outcome.had_warnings:
+            warnings = (*warnings, "mkvmerge reported warnings")
+        return _container_result(
+            request,
+            timer=timer,
+            output_size=output_size,
+            source_size=source_size,
+            warnings=warnings,
+        )
+
+    def _compose_container_mp4(
+        self,
+        request: ContainerCompositionRequest,
+        *,
+        timer: Timer,
+        cancel: threading.Event | None,
+    ) -> ContainerCompositionResult:
+        """Render or remux one MP4 with independently selected subtitle and audio policy."""
+        temporary: Path = temporary_sibling(request.destination)
+        ffprobe: Path = self.ffprobe
+        total_us: int = source_duration_us(
+            request.source_video,
+            ffprobe=ffprobe,
+            cancel=cancel,
+            runner=self._probe_runner,
+        )
+        warnings: tuple[str, ...] = self._container_font_warnings(request, cancel=cancel)
+        source_size: int = request.source_video.stat().st_size
+        output_size: int
+        work_dir: Path | None = None
+        try:
+            subtitle_argument: str | None = None
+            if request.burn_subtitle is not None:
+                work_dir = Path(tempfile.mkdtemp(dir=request.destination.parent, prefix=".anishift-compose-"))
+                safe_subtitle: Path = filter_safe_copy(request.burn_subtitle, work_dir)
+                subtitle_argument = subtitle_filter_argument(
+                    safe_subtitle,
+                    kind=request.burn_subtitle.suffix.removeprefix(".").casefold(),
+                )
+            audio_source: Path | None = request.narration_audio
+            if audio_source is None and request.keep_original_audio:
+                audio_source = request.source_video
+            audio_codec: str = (
+                audio_codec_name(
+                    audio_source,
+                    ffprobe=ffprobe,
+                    cancel=cancel,
+                    runner=self._probe_runner,
+                )
+                if audio_source is not None
+                else ""
+            )
+            self._runner.run(
+                container_burn_command(
+                    request,
+                    ffmpeg=self._ffmpeg_path,
+                    config=self._config,
+                    subtitle_argument=subtitle_argument,
+                    audio_codec=audio_codec,
+                    destination=temporary,
+                ),
+                operation="render_container",
+                timeout_s=self._config.render_timeout_s,
+                progress=lambda line: parse_ffmpeg_progress(line, total_us=total_us),
+                cancel=cancel,
+            )
+            validate_burned(
+                temporary,
+                expected_duration_us=total_us,
+                ffprobe=ffprobe,
+                cancel=cancel,
+                runner=self._probe_runner,
+            )
+            output_size = temporary.stat().st_size
+            temporary.replace(request.destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+            if work_dir is not None:
+                shutil.rmtree(work_dir, ignore_errors=True)
+        timer.stop()
+        if source_size > 0 and output_size > source_size * self._config.size_budget_ratio:
+            warnings = (*warnings, "rendered file is larger than the source; consider a smaller preset")
+        return _container_result(
+            request,
+            timer=timer,
+            output_size=output_size,
+            source_size=source_size,
+            warnings=warnings,
+        )
+
     def _compose_players(self, plan: CompositionPlan, *, timer: Timer) -> CompositionResult:
         """Gather every product next to the source so players pair them."""
         destination: Path = plan.source_path.parent
@@ -179,7 +333,7 @@ class CompositionService:
         destination: Path = output_path(plan.source_path, plan.variant, plan.destination_dir)
         temporary: Path = temporary_sibling(destination)
         expected: tuple[str, ...] = _appended_track_names(plan)
-        warnings: tuple[str, ...] = self._font_warnings(plan)
+        warnings: tuple[str, ...] = self._font_warnings(plan, cancel=cancel)
         try:
             outcome: CommandOutcome = self._runner.run(
                 merge_command(plan, mkvmerge=self._mkvmerge_path, destination=temporary),
@@ -190,7 +344,12 @@ class CompositionService:
                 cancel=cancel,
                 warning_exit_code=_MKVMERGE_WARNING_EXIT,
             )
-            validate_merged(temporary, expected_track_names=expected)
+            validate_merged(
+                temporary,
+                expected_track_names=expected,
+                cancel=cancel,
+                runner=self._probe_runner,
+            )
             temporary.replace(destination)
         finally:
             temporary.unlink(missing_ok=True)
@@ -227,9 +386,14 @@ class CompositionService:
         destination: Path = output_path(plan.source_path, plan.variant, plan.destination_dir)
         temporary: Path = temporary_sibling(destination)
         ffprobe: Path = self.ffprobe
-        total_us: int = source_duration_us(plan.source_path, ffprobe=ffprobe)
+        total_us: int = source_duration_us(
+            plan.source_path,
+            ffprobe=ffprobe,
+            cancel=cancel,
+            runner=self._probe_runner,
+        )
         subtitle_argument: str | None = self._burn_filter(plan)
-        warnings: tuple[str, ...] = self._font_warnings(plan)
+        warnings: tuple[str, ...] = self._font_warnings(plan, cancel=cancel)
         audio_source: Path = plan.narration_audio or plan.source_path
         try:
             self._runner.run(
@@ -238,7 +402,12 @@ class CompositionService:
                     ffmpeg=self._ffmpeg_path,
                     config=self._config,
                     subtitle_argument=subtitle_argument,
-                    audio_codec=audio_codec_name(audio_source, ffprobe=ffprobe),
+                    audio_codec=audio_codec_name(
+                        audio_source,
+                        ffprobe=ffprobe,
+                        cancel=cancel,
+                        runner=self._probe_runner,
+                    ),
                     destination=temporary,
                 ),
                 operation="burn",
@@ -247,7 +416,13 @@ class CompositionService:
                 on_percent=lambda percent: _notify(callbacks, plan.scope_id, "burning", percent),
                 cancel=cancel,
             )
-            validate_burned(temporary, expected_duration_us=total_us, ffprobe=ffprobe)
+            validate_burned(
+                temporary,
+                expected_duration_us=total_us,
+                ffprobe=ffprobe,
+                cancel=cancel,
+                runner=self._probe_runner,
+            )
             temporary.replace(destination)
         finally:
             temporary.unlink(missing_ok=True)
@@ -282,7 +457,12 @@ class CompositionService:
         safe_subtitle: Path = filter_safe_copy(plan.burn_subtitle, work_dir)
         return subtitle_filter_argument(safe_subtitle, kind=plan.source_subtitle_kind)
 
-    def _font_warnings(self, plan: CompositionPlan) -> tuple[str, ...]:
+    def _font_warnings(
+        self,
+        plan: CompositionPlan,
+        *,
+        cancel: threading.Event | None,
+    ) -> tuple[str, ...]:
         """Return one warning per font referenced but not attached.
 
         The source is identified only when a subtitle is actually involved, so
@@ -291,12 +471,29 @@ class CompositionService:
         subtitle: Path | None = plan.burn_subtitle or (plan.subtitles[0].path if plan.subtitles else None)
         if subtitle is None:
             return ()
-        info: MediaInfo = source_tracks(plan.source_path)
+        info: MediaCatalog = source_tracks(plan.source_path, cancel=cancel, runner=self._probe_runner)
         available: frozenset[str] = attachment_font_names(info.attachments)
         missing: tuple[str, ...] = missing_fonts(subtitle, available)
         if not missing:
             return ()
         logger.warning("Composition font missing", scope_id=plan.scope_id, font_count=len(missing))
+        return tuple(f"font not embedded: {name}" for name in missing)
+
+    def _container_font_warnings(
+        self,
+        request: ContainerCompositionRequest,
+        *,
+        cancel: threading.Event | None,
+    ) -> tuple[str, ...]:
+        """Return missing-font warnings for a target-specific request."""
+        subtitle: Path | None = request.burn_subtitle
+        if subtitle is None and request.attached_subtitles:
+            subtitle = request.attached_subtitles[0].path
+        if subtitle is None:
+            return ()
+        info: MediaCatalog = source_tracks(request.source_video, cancel=cancel, runner=self._probe_runner)
+        available: frozenset[str] = attachment_font_names(info.attachments)
+        missing: tuple[str, ...] = missing_fonts(subtitle, available)
         return tuple(f"font not embedded: {name}" for name in missing)
 
 
@@ -306,6 +503,26 @@ def _appended_track_names(plan: CompositionPlan) -> tuple[str, ...]:
     if plan.narration_audio is not None:
         names.append(NARRATION_TRACK_NAME)
     return tuple(names)
+
+
+def _container_result(
+    request: ContainerCompositionRequest,
+    *,
+    timer: Timer,
+    output_size: int,
+    source_size: int,
+    warnings: tuple[str, ...],
+) -> ContainerCompositionResult:
+    """Build the immutable result after a container was atomically committed."""
+    return ContainerCompositionResult(
+        source_path=request.source_video,
+        target=request.target,
+        output_path=request.destination,
+        output_size_bytes=output_size,
+        source_size_bytes=source_size,
+        duration_ms=timer.duration_ms,
+        warnings=warnings,
+    )
 
 
 def _notify(callbacks: CompositionProgressSink | None, scope_id: str, phase: str, percent: int) -> None:

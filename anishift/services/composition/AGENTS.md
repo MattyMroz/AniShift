@@ -24,7 +24,7 @@ jeden zweryfikowany plik wynikowy.
 - Kod wyjścia i stderr sprawdzane ZAWSZE. mkvmerge `1` to sukces z ostrzeżeniem,
   `2` to błąd. `commands.py`
 - Nic nie jest kasowane w tej domenie poza własnym plikiem częściowym. Sprzątanie
-  `tmp/` należy do pipeline. `service.py`
+  `temp/` należy do pipeline i `RunSession`. `service.py`
 - Źródłowy plik nie jest nigdy przenoszony ani przemianowywany. Zapis idzie do
   pliku tymczasowego i dopiero po walidacji zastępuje cel. `service.py`
 - Brak materiału zwraca `SKIPPED_NOTHING_TO_ADD`, nigdy pustą komendę. `service.py`

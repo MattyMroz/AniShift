@@ -13,6 +13,15 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 from natsort import os_sorted
 
+from anishift.application.cancellation import ThreadEventCancellationToken
+from anishift.application.extraction_handler import LegacyExtractionAdapter
+from anishift.application.subtitle_handler import LegacySubtitleAdapter, LegacySubtitleProducts
+from anishift.application.translation_handler import (
+    displayed_lines,
+    text_spoken_lines,
+    translate_subtitle_split,
+    translation_verses,
+)
 from anishift.bootstrap import AppContext
 from anishift.config.user_settings import config_path
 from anishift.config.workspace import ensure_workspace_dir
@@ -28,21 +37,11 @@ from anishift.services.extraction.types import MediaInfo, TrackSelection
 from anishift.services.subtitles import (
     DisplayedLine,
     SpokenLine,
-    is_drawing,
-    load_subtitles,
+    SubtitleKind,
     preview_styles,
     read_txt,
-    split_subtitles,
     spoken_to_srt,
     subtitle_kind,
-    visible_text,
-    visible_verses,
-    write_displayed,
-    write_full,
-    write_spoken,
-    write_translated,
-    write_translated_displayed,
-    write_translated_spoken,
 )
 from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
 from anishift.utils.logger import get_logger
@@ -199,7 +198,7 @@ class _MkvState:
 
     outcome: FileOutcome
     split: SubtitleSplit | None
-    kind: str = "srt"
+    kind: SubtitleKind = "srt"
     source_rank: int = 0
     scope_id: str = ""
     narration: NarrationBatch | None = None
@@ -1114,11 +1113,12 @@ def _extract_mkv(  # noqa: PLR0911,PLR0913 - distinct outcomes and explicit depe
     scope_id: str = ""
     try:
         scope_id = scope_id_for_source(mkv, workspace_root=workspace_root)
-        work_dir: Path = workspace_root / "tmp" / scope_id / "extract-scratch"
+        work_dir: Path = workspace_root / "temp" / scope_id / "extract-scratch"
         if work_dir.exists():
             safe_rmtree(work_dir)
         work_dir.mkdir(parents=True)
-        info = identify(mkv)
+        extraction_adapter = LegacyExtractionAdapter(identify, extract_tracks)
+        info = extraction_adapter.identify(mkv)
         step = "select"
         proposal = select_tracks(
             info.tracks,
@@ -1135,7 +1135,13 @@ def _extract_mkv(  # noqa: PLR0911,PLR0913 - distinct outcomes and explicit depe
                 scope_id=scope_id,
             )
         step = "extract"
-        extracted = extract_tracks(info, selection, work_dir, on_progress=on_progress, cancel=cancel)
+        extracted = extraction_adapter.extract(
+            info,
+            selection,
+            work_dir,
+            on_progress=on_progress,
+            cancel=cancel,
+        )
         if extracted.subtitle_path is None:
             outcome = FileOutcome(
                 mkv,
@@ -1160,13 +1166,19 @@ def _extract_mkv(  # noqa: PLR0911,PLR0913 - distinct outcomes and explicit depe
                 source_rank=source_rank,
                 scope_id=scope_id,
             )
-        subs = load_subtitles(extracted.subtitle_path)
+        subtitle_adapter = LegacySubtitleAdapter()
+        subs = subtitle_adapter.load(extracted.subtitle_path)
         verdicts = None
         chosen = None
         if interaction is not None and kind == "ass":
             verdicts, samples = preview_styles(subs)
             chosen = interaction.choose_spoken_styles(mkv, verdicts, samples)
-        split = split_subtitles(subs, kind=kind, spoken_styles=chosen, verdicts=verdicts)
+        split = subtitle_adapter.split(
+            subs,
+            kind=kind,
+            spoken_styles=chosen,
+            verdicts=verdicts,
+        )
         if split.stats.total_events == 0:
             warnings += ("subtitles contain no dialogue events",)
             outcome = FileOutcome(
@@ -1275,17 +1287,7 @@ def _should_translate(split: SubtitleSplit, already_polish: bool) -> bool:
 
 def _displayed_lines(split: SubtitleSplit) -> list[DisplayedLine]:
     """Return translatable displayed events with their source-file order."""
-    dialogue = [event for event in split.subs.events if event.type == "Dialogue"]
-    return [
-        DisplayedLine(
-            start=event.start,
-            end=event.end,
-            text=visible_text(event.text),
-            order=order,
-        )
-        for order, (event, decision) in enumerate(zip(dialogue, split.decisions, strict=True))
-        if decision == "displayed" and not is_drawing(event.text)
-    ]
+    return list(displayed_lines(split))
 
 
 def _write_translation_products(
@@ -1301,22 +1303,16 @@ def _write_translation_products(
     verses = _translation_verses(split, result)
     stem = path.stem
     kind = state.kind
-    state.outcome.translated_path = write_translated(
+    products: LegacySubtitleProducts = LegacySubtitleAdapter().write_translated_products(
         split,
         verses.displayed,
         verses.spoken,
-        workspace_root / f"{stem}.pl.{kind}",
+        workspace_root / stem,
+        kind,
     )
-    state.outcome.spoken_path = write_translated_spoken(
-        split,
-        verses.spoken,
-        workspace_root / f"{stem}.spoken.pl.{kind}",
-    )
-    state.outcome.displayed_path = write_translated_displayed(
-        split,
-        verses.displayed,
-        workspace_root / f"{stem}.displayed.pl.{kind}",
-    )
+    state.outcome.translated_path = products.full
+    state.outcome.spoken_path = products.spoken
+    state.outcome.displayed_path = products.displayed
 
 
 def _write_polish_products(
@@ -1324,34 +1320,23 @@ def _write_polish_products(
     outcome: FileOutcome,
     split: SubtitleSplit,
     workspace_root: Path,
-    kind: str,
+    kind: SubtitleKind,
 ) -> None:
     """Write final products for an already-Polish source without translation."""
-    stem = path.stem
-    outcome.translated_path = write_full(split, workspace_root / f"{stem}.pl.{kind}")
-    outcome.spoken_path = write_spoken(split, workspace_root / f"{stem}.spoken.pl.{kind}")
-    outcome.displayed_path = write_displayed(split, workspace_root / f"{stem}.displayed.pl.{kind}")
+    products: LegacySubtitleProducts = LegacySubtitleAdapter().write_polish(
+        split,
+        workspace_root / path.stem,
+        kind,
+    )
+    outcome.translated_path = products.full
+    outcome.spoken_path = products.spoken
+    outcome.displayed_path = products.displayed
 
 
 def _translation_verses(split: SubtitleSplit, result: FileTranslation) -> _TranslationVerses:
     """Build layout-aware displayed and readability-aware spoken verses."""
-    from anishift.services.translation.linebreak import (  # noqa: PLC0415 - lazy: keep engines off import path
-        split_for_layout,
-        split_line,
-    )
-
-    dialogue = [event for event in split.subs.events if event.type == "Dialogue"]
-    displayed_events = [
-        event
-        for event, decision in zip(dialogue, split.decisions, strict=True)
-        if decision == "displayed" and not is_drawing(event.text)
-    ]
-    displayed = tuple(
-        split_for_layout(text, visible_verses(event.text))
-        for event, text in zip(displayed_events, result.displayed, strict=True)
-    )
-    spoken = tuple(split_line(line.text) for line in result.spoken)
-    return _TranslationVerses(displayed, spoken)
+    verses = translation_verses(split, result)
+    return _TranslationVerses(verses.displayed, verses.spoken)
 
 
 def _translate_config(translation: TranslationSettings) -> TranslationConfig:
@@ -1382,20 +1367,12 @@ def _translate_split(
         fallback_chain=translation.fallback_chain,
         engine_factory=engine_factory,
     )
-    return service.translate_file(
-        list(split.spoken),
-        _displayed_lines(split),
-        source_lang="auto",
-        cancel=cancel,
-    )
+    return translate_subtitle_split(service, split, ThreadEventCancellationToken(cancel))
 
 
 def _txt_spoken_lines(text: str) -> tuple[SpokenLine, ...]:
     """Chunk plain text hierarchically and wrap each chunk as a narrator line."""
-    from anishift.services.translation.chunking import chunk_text  # noqa: PLC0415 - lazy: keep engines off import path
-
-    flattened = (" ".join(chunk.split()) for chunk in chunk_text(text))
-    return tuple(SpokenLine(start=0, end=0, text=chunk, style="") for chunk in flattened if chunk)
+    return text_spoken_lines(text)
 
 
 def _process_txt(

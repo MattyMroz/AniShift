@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from anishift.config.env_file import env_path
 from anishift.config.settings import Settings
@@ -21,7 +22,10 @@ from anishift.config.user_settings import UserSettings, load_user_settings
 from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_root
 from anishift.utils.logger import get_logger
 
-__all__ = ["AppContext", "bootstrap"]
+if TYPE_CHECKING:
+    from anishift.application.service import AppService
+
+__all__ = ["AppContext", "bootstrap", "create_app_service"]
 
 logger = get_logger(__name__)
 
@@ -77,4 +81,20 @@ def bootstrap(
         settings=resolved,
         user_settings=user_settings,
         workspace_root=workspace_root,
+    )
+
+
+def create_app_service(context: AppContext) -> AppService:
+    """Build the shared application facade while keeping providers lazy."""
+    from anishift.application.inspection import WorkspaceInspector  # noqa: PLC0415
+    from anishift.application.runtime import ProductionHandlerFactory  # noqa: PLC0415
+    from anishift.application.service import AppService  # noqa: PLC0415
+    from anishift.services.media import DefaultMediaProbe  # noqa: PLC0415
+
+    return AppService(
+        workspace_root=context.workspace_root,
+        settings=context.settings,
+        user_settings=context.user_settings,
+        inspector=WorkspaceInspector(DefaultMediaProbe()),
+        handler_factory=ProductionHandlerFactory(context.settings),
     )

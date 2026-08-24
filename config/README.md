@@ -4,7 +4,7 @@ Panel preferences live here — **not** in `workspace/`.
 
 `settings.json` (created on first `/settings` save) holds the choices the panel
 edits: processing mode, selected translation/TTS engine, voice, tempo, volume,
-output variant, and whether finished results move to `workspace/output/`.
+and related engine options. Durable products are always written beside their source.
 
 ## Why here and not in workspace
 
