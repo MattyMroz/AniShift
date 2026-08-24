@@ -1,0 +1,65 @@
+/* Base surfaces, typography, and state classes shared by every screen.
+   Colours only ever arrive through the semantic variables of anishift/tui/theme.py. */
+
+Screen {
+    background: $background;
+    color: $text;
+}
+
+.panel {
+    background: $surface;
+    padding: 1 2;
+}
+
+.panel-bordered {
+    border: round $border;
+}
+
+.panel-bordered:focus-within {
+    border: round $focus;
+}
+
+.elevated {
+    background: $elevated;
+}
+
+.row {
+    height: 1;
+}
+
+.muted {
+    color: $text-muted;
+}
+
+.accent {
+    color: $focus;
+}
+
+.selected {
+    background: $accent-soft;
+    color: $text;
+}
+
+.state-success {
+    color: $success;
+}
+
+.state-warning {
+    color: $warning;
+}
+
+.state-error {
+    color: $error;
+}
+
+.state-info {
+    color: $info;
+}
+
+.compact .panel {
+    padding: 0 1;
+}
+
+.compact .panel-bordered {
+    border: none;
+}

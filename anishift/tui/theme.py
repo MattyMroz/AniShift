@@ -1,0 +1,172 @@
+"""Semantic design tokens and the two AniShift Textual themes.
+
+This module is the only production TUI file that holds literal colours. Every
+other module and every ``.tcss`` file reads colours through the semantic Textual
+CSS variables registered here, so a palette change never touches a widget.
+
+Public API:
+    Palette: The twelve semantic colour tokens of one theme.
+    DARK_PALETTE: Token values of the dark theme.
+    LIGHT_PALETTE: Token values of the light theme.
+    DARK_THEME_ID: Stable id of the dark theme.
+    LIGHT_THEME_ID: Stable id of the light theme.
+    THEME_IDS: Both stable theme ids, dark first.
+    DEFAULT_THEME_ID: Theme selected when no valid preference exists.
+    anishift_themes: Build both Textual themes.
+    register_themes: Register both themes with an application.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Final
+
+from textual.theme import Theme
+
+if TYPE_CHECKING:
+    from textual.app import App
+
+__all__ = [
+    "DARK_PALETTE",
+    "DARK_THEME_ID",
+    "DEFAULT_THEME_ID",
+    "LIGHT_PALETTE",
+    "LIGHT_THEME_ID",
+    "THEME_IDS",
+    "Palette",
+    "anishift_themes",
+    "register_themes",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class Palette:
+    """The twelve semantic colour tokens one AniShift theme is built from.
+
+    Attributes:
+        background: Application backdrop behind every surface.
+        surface: Default panel and header background.
+        elevated: Background of dialogs and the status footer.
+        border: Neutral separator and panel border.
+        focus: Highlight used for focus, selection, and the brand accent.
+        text: Primary foreground.
+        muted: Secondary foreground for hints and disabled labels.
+        accent_soft: Low-contrast fill for selected rows and badges.
+        success: Terminal success state.
+        warning: Non-blocking problem state.
+        error: Failure state.
+        info: Neutral informational state.
+    """
+
+    background: str
+    surface: str
+    elevated: str
+    border: str
+    focus: str
+    text: str
+    muted: str
+    accent_soft: str
+    success: str
+    warning: str
+    error: str
+    info: str
+
+
+# ── Constants ──────────────────────────────────────────────────────────────
+
+DARK_THEME_ID: Final[str] = "anishift-dark"
+"""Stable id of the dark theme."""
+
+LIGHT_THEME_ID: Final[str] = "anishift-light"
+"""Stable id of the light theme."""
+
+THEME_IDS: Final[tuple[str, str]] = (DARK_THEME_ID, LIGHT_THEME_ID)
+"""The only theme ids AniShift registers, dark first."""
+
+DEFAULT_THEME_ID: Final[str] = DARK_THEME_ID
+"""Theme selected when the persisted preference is missing or unknown."""
+
+DARK_PALETTE: Final[Palette] = Palette(
+    background="#0B0D10",
+    surface="#11141A",
+    elevated="#171B22",
+    border="#2A303B",
+    focus="#7AA2F7",
+    text="#E6E9EF",
+    muted="#8B93A5",
+    accent_soft="#283457",
+    success="#9ECE6A",
+    warning="#E0AF68",
+    error="#F7768E",
+    info="#7DCFFF",
+)
+"""Token values of the dark theme."""
+
+LIGHT_PALETTE: Final[Palette] = Palette(
+    background="#F5F7FA",
+    surface="#FFFFFF",
+    elevated="#EEF1F5",
+    border="#CDD3DD",
+    focus="#3B6EDC",
+    text="#1F2430",
+    muted="#667085",
+    accent_soft="#DCE7FF",
+    success="#2F7D32",
+    warning="#9A6700",
+    error="#C6283D",
+    info="#1F6FA8",
+)
+"""Token values of the light theme."""
+
+
+def _theme_variables(palette: Palette) -> dict[str, str]:
+    """Pin the semantic CSS variables that Textual would otherwise derive.
+
+    Textual computes ``$border``, ``$text`` and ``$text-muted`` from the primary
+    and background colours, and has no variable for the elevated, soft-accent or
+    informational tokens. Overriding them keeps every TCSS rule on exact palette
+    values.
+    """
+    return {
+        "accent-soft": palette.accent_soft,
+        "border": palette.border,
+        "border-blurred": palette.border,
+        "elevated": palette.elevated,
+        "focus": palette.focus,
+        "info": palette.info,
+        "text": palette.text,
+        "text-muted": palette.muted,
+    }
+
+
+def _build_theme(theme_id: str, palette: Palette, *, dark: bool) -> Theme:
+    """Map one palette onto a Textual theme plus its semantic variables."""
+    return Theme(
+        name=theme_id,
+        primary=palette.focus,
+        secondary=palette.accent_soft,
+        accent=palette.info,
+        foreground=palette.text,
+        background=palette.background,
+        surface=palette.surface,
+        panel=palette.elevated,
+        success=palette.success,
+        warning=palette.warning,
+        error=palette.error,
+        dark=dark,
+        variables=_theme_variables(palette),
+    )
+
+
+def anishift_themes() -> tuple[Theme, Theme]:
+    """Return both AniShift themes in ``THEME_IDS`` order."""
+    return (
+        _build_theme(DARK_THEME_ID, DARK_PALETTE, dark=True),
+        _build_theme(LIGHT_THEME_ID, LIGHT_PALETTE, dark=False),
+    )
+
+
+def register_themes(app: App[Any]) -> None:
+    """Register both AniShift themes with ``app``."""
+    for theme in anishift_themes():
+        app.register_theme(theme)

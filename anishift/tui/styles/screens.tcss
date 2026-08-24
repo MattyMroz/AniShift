@@ -1,0 +1,67 @@
+/* Fixed application frame: brand, contextual header, one work area, composer,
+   one-row status footer. Spacing is padding and margin only, never blank rows. */
+
+#app-brand {
+    height: auto;
+    max-height: 4;
+    padding: 0 2;
+    background: $background;
+}
+
+#app-header {
+    height: 1;
+    padding: 0 2;
+    background: $surface;
+    color: $text;
+}
+
+#app-content {
+    height: 1fr;
+    padding: 1 2;
+    background: $background;
+}
+
+#app-detail {
+    width: 40;
+    padding: 1 2;
+    background: $surface;
+}
+
+#app-composer {
+    height: auto;
+    min-height: 1;
+    padding: 0 2;
+    background: $surface;
+}
+
+#app-footer {
+    height: 1;
+    padding: 0 2;
+    background: $elevated;
+    color: $text-muted;
+}
+
+.compact #app-brand {
+    max-height: 1;
+    padding: 0 1;
+}
+
+.compact #app-header {
+    padding: 0 1;
+}
+
+.compact #app-content {
+    padding: 0 1;
+}
+
+.compact #app-composer {
+    padding: 0 1;
+}
+
+.compact #app-footer {
+    padding: 0 1;
+}
+
+.compact #app-detail {
+    display: none;
+}
