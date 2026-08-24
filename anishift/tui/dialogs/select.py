@@ -42,7 +42,7 @@ from anishift.tui.commands.spec import key_display
 from anishift.tui.dialogs.base import DialogScreen, DialogSize
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from textual.app import ComposeResult
     from textual.binding import BindingType
@@ -337,6 +337,14 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
     Navigation lives on this screen as priority bindings: the filter box holds
     the focus, so ``Home``, ``End`` and ``Enter`` would otherwise belong to the
     text cursor instead of the list.
+
+    A caller that previews the browsed value, such as the live theme preview,
+    passes ``on_highlight``. It is called with the value the cursor rests on:
+    once for the row the dialog opens on, then whenever the cursor moves or the
+    filter changes which option is highlighted. Headings and the empty result
+    announce nothing, and the same option is never announced twice in a row.
+    The dialog still applies nothing itself: the caller previews on highlight
+    and restores its own state when the outcome comes back cancelled.
     """
 
     AUTO_FOCUS: ClassVar[str | None] = f"#{_FILTER_ID}"
@@ -361,6 +369,7 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
         selected: Sequence[int] = (),
         actions: Sequence[SelectAction] = (),
         initial_highlight: int | None = None,
+        on_highlight: Callable[[T], None] | None = None,
         placeholder: str = FILTER_PLACEHOLDER,
         size: DialogSize = DialogSize.LARGE,
     ) -> None:
@@ -372,6 +381,8 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
         self._selected: set[int] = {index for index in selected if 0 <= index < len(self._options)}
         self._actions: tuple[SelectAction, ...] = tuple(actions)
         self._initial_highlight: int | None = initial_highlight
+        self._on_highlight: Callable[[T], None] | None = on_highlight
+        self._announced: int | None = None
         self._rows: tuple[SelectRow, ...] = ()
         self._cursor: int = 0
         self._filter: _FilterInput = _FilterInput(
@@ -446,7 +457,7 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
 
     def action_toggle_row(self) -> None:
         """Add the highlighted row to the multi selection, or take it out."""
-        index: int | None = None if not 0 <= self._cursor < len(self._rows) else self._rows[self._cursor].index
+        index: int | None = self._highlighted_index()
         option: SelectOption[T] | None = self._highlighted()
         if index is None or option is None or option.disabled:
             self._refuse(option)
@@ -531,7 +542,7 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
         self._sync_cursor()
 
     def _sync_cursor(self) -> None:
-        """Show the cursor on the list and describe the row it stopped on."""
+        """Show the cursor on the list, describe its row and announce the option."""
         self._detail.set_class(False, _ERROR_CLASS)
         option: SelectOption[T] | None = self._highlighted()
         if option is None:
@@ -541,13 +552,26 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
         self._list.highlighted = self._cursor
         self._list.scroll_to_highlight()
         self._detail.update(option.description)
+        self._announce(option)
+
+    def _announce(self, option: SelectOption[T]) -> None:
+        """Tell a previewing caller which option the cursor rests on now."""
+        index: int | None = self._highlighted_index()
+        if self._on_highlight is None or index == self._announced:
+            return
+        self._announced = index
+        self._on_highlight(option.value)
 
     def _highlighted(self) -> SelectOption[T] | None:
         """Option the cursor stopped on, or ``None`` on a heading or a placeholder."""
+        index: int | None = self._highlighted_index()
+        return None if index is None else self._options[index]
+
+    def _highlighted_index(self) -> int | None:
+        """Offered option the cursor stopped on, or ``None`` off any real row."""
         if not 0 <= self._cursor < len(self._rows):
             return None
-        index: int | None = self._rows[self._cursor].index
-        return None if index is None else self._options[index]
+        return self._rows[self._cursor].index
 
     def _refuse(self, option: SelectOption[T] | None) -> None:
         """Keep the dialog open and say why the row was not accepted."""

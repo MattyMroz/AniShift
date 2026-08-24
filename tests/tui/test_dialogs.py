@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, Final
 
@@ -44,6 +44,7 @@ from anishift.tui.dialogs.select import (
     SelectOption,
     SelectOutcome,
     SelectOutcomeKind,
+    SelectRow,
     moved_position,
     select_rows,
 )
@@ -159,7 +160,7 @@ def test_the_cursor_wraps_only_when_it_is_asked_to(
 
 
 def test_an_empty_filter_keeps_the_order_and_adds_one_heading_per_category() -> None:
-    rows = select_rows(
+    rows: tuple[SelectRow, ...] = select_rows(
         (_option("a", category="Grupa"), _option("b", category="Grupa"), _option("c", category="Inne")),
         query="",
     )
@@ -168,13 +169,13 @@ def test_an_empty_filter_keeps_the_order_and_adds_one_heading_per_category() -> 
 
 
 def test_the_current_value_is_marked_independently_of_the_cursor() -> None:
-    rows = select_rows((_option("a"), _option("b")), current="b")
+    rows: tuple[SelectRow, ...] = select_rows((_option("a"), _option("b")), current="b")
     assert rows[0].label.startswith(" ")
     assert rows[1].label.startswith(CURRENT_MARKER)
 
 
 def test_a_typed_filter_returns_a_flat_ranking_without_headings() -> None:
-    rows = select_rows(
+    rows: tuple[SelectRow, ...] = select_rows(
         (_option("translation", category="Grupa"), _option("tts", category="Grupa")),
         query="tt",
     )
@@ -183,18 +184,18 @@ def test_a_typed_filter_returns_a_flat_ranking_without_headings() -> None:
 
 
 def test_a_filter_that_matches_nothing_leaves_one_unselectable_row() -> None:
-    rows = select_rows((_option("alpha"),), query="zzzzz")
+    rows: tuple[SelectRow, ...] = select_rows((_option("alpha"),), query="zzzzz")
     assert [(row.label, row.index) for row in rows] == [(NO_RESULTS_TEXT, None)]
 
 
 def test_the_multi_mode_marks_every_picked_row() -> None:
-    rows = select_rows((_option("a"), _option("b")), checked=frozenset({1}))
+    rows: tuple[SelectRow, ...] = select_rows((_option("a"), _option("b")), checked=frozenset({1}))
     assert rows[0].label.startswith(" ")
     assert rows[1].label.startswith(CHECKED_MARKER)
 
 
 def test_a_row_shows_its_footer_next_to_its_title() -> None:
-    rows = select_rows((SelectOption(value="x", title="Tytuł", footer="Ctrl+P"),))
+    rows: tuple[SelectRow, ...] = select_rows((SelectOption(value="x", title="Tytuł", footer="Ctrl+P"),))
     assert "Tytuł" in rows[0].label
     assert rows[0].label.endswith("Ctrl+P")
 
@@ -429,6 +430,138 @@ def test_a_selector_returns_its_decision_without_performing_it() -> None:
             await pilot.pause()
             assert results == [SelectOutcome.single("anishift-light")]
             assert stored == {"theme": "anishift-dark"}
+
+    _run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("current", "initial", "expected"),
+    [(None, None, "a"), (None, 2, "c"), ("b", None, "b"), ("b", 0, "a")],
+)
+def test_the_highlight_hook_announces_the_row_the_dialog_opens_on(
+    current: str | None,
+    initial: int | None,
+    expected: str,
+) -> None:
+    async def scenario() -> None:
+        seen: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: SelectDialog[str] = SelectDialog(
+                title="Motyw",
+                options=(_option("a"), _option("b"), _option("c")),
+                current=current,
+                initial_highlight=initial,
+                on_highlight=seen.append,
+            )
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            assert seen == [expected]
+
+    _run(scenario())
+
+
+def test_the_highlight_hook_announces_every_move_of_the_cursor() -> None:
+    async def scenario() -> None:
+        seen: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: SelectDialog[str] = SelectDialog(
+                title="Motyw",
+                options=(_option("a"), _option("b"), _option("c")),
+                on_highlight=seen.append,
+            )
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            assert seen == ["a"]
+            for key in ("down", "down", "down", "end", "home", "pagedown", "pageup"):
+                await pilot.press(key)
+                await pilot.pause()
+            assert seen == ["a", "b", "c", "a", "c", "a", "c", "a"]
+
+    _run(scenario())
+
+
+def test_the_highlight_hook_announces_what_the_filter_leaves_highlighted() -> None:
+    async def scenario() -> None:
+        seen: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: SelectDialog[str] = SelectDialog(
+                title="Motyw",
+                options=(_option("alfa"), _option("beta")),
+                on_highlight=seen.append,
+            )
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            assert seen == ["alfa"]
+            await pilot.press("b")
+            await pilot.pause()
+            assert seen == ["alfa", "beta"]
+
+    _run(scenario())
+
+
+def test_the_highlight_hook_stays_silent_on_a_heading_and_on_an_empty_result() -> None:
+    async def scenario() -> None:
+        seen: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: SelectDialog[str] = SelectDialog(
+                title="Motyw",
+                options=(_option("a", category="Grupa A"), _option("b", category="Grupa B")),
+                on_highlight=seen.append,
+            )
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            headings: list[str] = ["Grupa A", "Grupa B"]
+            assert _labels(dialog, "select-list")[0] == headings[0]
+            assert seen == ["a"]
+            for _ in range(3):
+                await pilot.press("down")
+                await pilot.pause()
+            assert seen == ["a", "b", "a", "b"]
+            await pilot.press(*"zzz")
+            await pilot.pause()
+            assert _labels(dialog, "select-list") == [NO_RESULTS_TEXT]
+            assert seen == ["a", "b", "a", "b"]
+            assert not [value for value in seen if value in headings]
+
+    _run(scenario())
+
+
+def test_a_live_preview_built_on_the_hook_can_roll_back_after_escape() -> None:
+    async def scenario() -> None:
+        before: str = "anishift-dark"
+        previewed: list[str] = []
+        results: list[SelectOutcome[str] | None] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: SelectDialog[str] = SelectDialog(
+                title="Motyw",
+                options=(_option(before), _option("anishift-light")),
+                current=before,
+                on_highlight=previewed.append,
+            )
+            open_dialog(app, app.session_state, dialog, results.append)
+            await pilot.pause()
+            assert previewed == [before]
+            await pilot.press("down")
+            await pilot.pause()
+            assert previewed == [before, "anishift-light"]
+            await pilot.press("escape")
+            await pilot.pause()
+            outcome: SelectOutcome[str] | None = results[0]
+            assert outcome is not None
+            assert outcome.kind is SelectOutcomeKind.CANCELLED
+            restored: str = before if outcome.kind is SelectOutcomeKind.CANCELLED else str(outcome.value)
+            assert restored == before
+            assert previewed == [before, "anishift-light"]
 
     _run(scenario())
 
@@ -992,7 +1125,7 @@ def _selector() -> SelectDialog[str]:
 
 
 def _spy_dispatch(app: AniShiftApp, calls: list[str]) -> None:
-    original = app.commands.dispatch
+    original: Callable[[str], bool] = app.commands.dispatch
 
     def dispatch(name: str) -> bool:
         calls.append(name)
