@@ -32,7 +32,10 @@ from textual.widgets import Static
 from anishift.tui import lifecycle
 from anishift.tui.brand import logo_for_size
 from anishift.tui.commands.catalog import EXIT_COMMAND_NAME, global_commands, palette_command
+from anishift.tui.commands.palette import palette_options
 from anishift.tui.commands.registry import CommandRegistry
+from anishift.tui.dialogs.base import open_dialog
+from anishift.tui.dialogs.select import SelectDialog, SelectOption, SelectOutcome, SelectOutcomeKind
 from anishift.tui.messages import (
     NavigationRequested,
     PlanFailed,
@@ -73,6 +76,15 @@ _COMPACT_CLASS: Final[str] = "compact"
 _MISSING_SURFACE_TEXT: Final[str] = "Warstwa okien dialogowych nie jest jeszcze dostępna."
 """Missing state a command reports while its modal surface is not mounted."""
 
+_PALETTE_TITLE: Final[str] = "Paleta komend"
+"""Heading of the palette dialog."""
+
+_SUGGESTED_CATEGORY: Final[str] = "Sugerowane"
+"""Heading the palette groups the likely next steps under."""
+
+_COMMAND_CATEGORY: Final[str] = "Komendy"
+"""Heading the palette groups every remaining command under."""
+
 
 def is_compact(*, width: int, height: int) -> bool:
     """Whether a terminal of this size has to use the dense layout."""
@@ -82,7 +94,7 @@ def is_compact(*, width: int, height: int) -> bool:
 class AniShiftApp(App[None]):
     """Single owner of ``SessionState`` and host of the fixed frame."""
 
-    CSS_PATH: ClassVar[CSSPathType] = ["styles/base.tcss", "styles/screens.tcss"]
+    CSS_PATH: ClassVar[CSSPathType] = ["styles/base.tcss", "styles/screens.tcss", "styles/dialogs.tcss"]
     ENABLE_COMMAND_PALETTE: ClassVar[bool] = False
     TITLE: str | None = "AniShift"
 
@@ -272,8 +284,30 @@ class AniShiftApp(App[None]):
         self._report_missing_surface()
 
     def _open_palette(self) -> None:
-        """Open the palette of every command and action the session allows."""
-        self._report_missing_surface()
+        """Open the palette of every command and action the session allows.
+
+        The rows are the projection ``palette_options`` already built, and the
+        chosen row goes straight back to ``dispatch``: the palette owns no
+        command and no second way of running one.
+        """
+        options: tuple[SelectOption[str], ...] = tuple(
+            SelectOption(
+                value=option.name,
+                title=option.label,
+                description=option.description,
+                footer=option.keys,
+                category=_SUGGESTED_CATEGORY if option.suggested else _COMMAND_CATEGORY,
+            )
+            for option in palette_options(self._commands)
+        )
+
+        def chosen(outcome: SelectOutcome[str] | None) -> None:
+            """Run the command of the picked row, and nothing else."""
+            if outcome is None or outcome.kind is not SelectOutcomeKind.SINGLE or outcome.value is None:
+                return
+            self._commands.dispatch(outcome.value)
+
+        open_dialog(self, self._state, SelectDialog(title=_PALETTE_TITLE, options=options), chosen)
 
     def _report_missing_surface(self) -> None:
         """Keep the missing state of a command whose modal surface is absent."""

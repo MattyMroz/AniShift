@@ -1,0 +1,61 @@
+/* Shared modal frame: one borderless elevated panel over the dim backdrop the
+   modal screen already paints. No ornamental border and no large buttons; rows
+   stay one line high. Colours only ever arrive through the semantic variables of
+   anishift/tui/theme.py, and the panel width comes from dialogs/base.py. */
+
+DialogScreen {
+    align: center top;
+}
+
+DialogScreen > #dialog-panel {
+    height: auto;
+    max-height: 100%;
+    padding: 1 2;
+    background: $elevated;
+}
+
+#dialog-title {
+    height: 1;
+    color: $text;
+    text-style: bold;
+}
+
+.dialog-hint,
+.dialog-detail {
+    height: 1;
+    color: $text-muted;
+}
+
+.dialog-error {
+    height: 1;
+    color: $error;
+}
+
+DialogScreen OptionList {
+    height: auto;
+    max-height: 12;
+    border: none;
+    padding: 0;
+    background: $elevated;
+}
+
+DialogScreen OptionList > .option-list--option {
+    padding: 0;
+}
+
+DialogScreen OptionList > .option-list--option-highlighted {
+    background: $accent-soft;
+    color: $text;
+}
+
+DialogScreen OptionList > .option-list--option-disabled {
+    color: $text-muted;
+}
+
+DialogScreen Input {
+    height: 1;
+    border: none;
+    padding: 0;
+    background: $elevated;
+    color: $text;
+}

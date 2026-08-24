@@ -23,6 +23,7 @@ from anishift.tui.commands.palette import (
 )
 from anishift.tui.commands.registry import SLASH_SUGGESTION_LIMIT, CommandRegistry
 from anishift.tui.commands.spec import CommandCategory, CommandRun, CommandSpec, KeyHint
+from anishift.tui.dialogs.select import SelectDialog
 from anishift.tui.messages import NavigationRequested
 from anishift.tui.state import SessionState, UiRoute
 from anishift.tui.widgets.footer import footer_text
@@ -225,10 +226,10 @@ def test_the_reserved_key_runs_the_palette_command_through_the_registry() -> Non
         app: AniShiftApp = AniShiftApp()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
-            assert app.session_state.feedback is None
+            assert not isinstance(app.screen, SelectDialog)
             await pilot.press(PALETTE_KEY)
             await pilot.pause()
-            assert app.session_state.feedback is not None
+            assert isinstance(app.screen, SelectDialog)
 
     _run(scenario())
 

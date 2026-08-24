@@ -323,7 +323,7 @@ def test_colour_guard_ignores_tokens_that_are_not_colours(token: str) -> None:
 
 def test_style_sheets_resolve_every_variable_from_both_themes() -> None:
     styles: list[Path] = sorted((Path(anishift.tui.__file__).parent / "styles").glob("*.tcss"))
-    assert [path.name for path in styles] == ["base.tcss", "screens.tcss"]
+    assert [path.name for path in styles] == ["base.tcss", "dialogs.tcss", "screens.tcss"]
     for theme in anishift_themes():
         stylesheet: Stylesheet = Stylesheet(
             variables={**theme.to_color_system().generate(), **theme.variables},
