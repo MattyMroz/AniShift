@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-import yaml  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -28,14 +27,39 @@ _SCOPES: tuple[str, ...] = _hook.SCOPES
 
 
 def _extract_area_options(template_path: Path) -> list[str]:
-    content: dict[str, object] = yaml.safe_load(template_path.read_text(encoding="utf-8"))
-    body: list[dict[str, object]] = content["body"]  # type: ignore[assignment]
-    for field in body:
-        if field.get("id") == "area":
-            attrs: dict[str, object] = field["attributes"]  # type: ignore[assignment]
-            return attrs["options"]  # type: ignore[return-value]
-    msg = f"No 'area' dropdown found in {template_path.name}"
-    raise ValueError(msg)
+    lines: list[str] = template_path.read_text(encoding="utf-8").splitlines()
+
+    area_index: int | None = None
+    for index, line in enumerate(lines):
+        if line.strip() == "id: area":
+            area_index = index
+            break
+    if area_index is None:
+        msg = f"No 'area' dropdown found in {template_path.name}"
+        raise ValueError(msg)
+
+    options_index: int | None = None
+    for index in range(area_index + 1, len(lines)):
+        stripped: str = lines[index].strip()
+        if stripped.startswith("- type:"):
+            break
+        if stripped == "options:":
+            options_index = index
+            break
+    if options_index is None:
+        msg = f"No 'options:' under 'area' dropdown in {template_path.name}"
+        raise ValueError(msg)
+
+    options: list[str] = []
+    for index in range(options_index + 1, len(lines)):
+        stripped = lines[index].strip()
+        if not stripped.startswith("- "):
+            break
+        options.append(stripped[2:].strip())
+    if not options:
+        msg = f"Empty 'options:' under 'area' dropdown in {template_path.name}"
+        raise ValueError(msg)
+    return options
 
 
 @pytest.mark.parametrize(
