@@ -56,4 +56,11 @@ def test_workspace_ok_with_env_override(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 def test_run_doctor_returns_all_checks() -> None:
     names = [r.name for r in run_doctor(Settings(_env_file=None))]
-    assert names == ["python_version", "uv_installed", "binaries", "api_keys", "workspace"]
+    assert names == [
+        "python_version",
+        "uv_installed",
+        "binaries",
+        "api_keys",
+        "workspace",
+        "console_encoding",
+    ]
