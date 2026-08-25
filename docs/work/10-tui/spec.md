@@ -162,45 +162,77 @@ Komenda może być chwilowo niewykonalna, ale pozostaje widoczna z konkretnym po
 
 ### 6.1. Kanoniczny układ dużego terminala
 
+Referencją jest ekran startowy OpenCode. **Zero obramowań, zero pasków kart, zero nagłówka aplikacji.** Ekran startowy to wyśrodkowany pionowo i poziomo blok treści na tle `background`, z jednowierszowym pasem dolnym przyklejonym do dolnej krawędzi.
+
 ```text
-┌─ ANISHIFT ───────────────────────────────────────── workspace / auto ─┐
-│  statyczne logo tylko na ekranie startowym lub po lewej w nagłówku    │
-│                                                                       │
-│  główny obszar roboczy: jedna dominująca lista/tabela/plan             │
-│  panel szczegółów tylko wtedy, gdy realnie pomaga aktualnej decyzji    │
-│                                                                       │
-│  ❯ Wpisz /komendę albo naciśnij Enter, aby uruchomić Auto             │
-│  workspace: 12 · selected: 12 · preset: default · run: idle           │
-└───────────────────────────────────────────────────────────────────────┘
+
+                          ▄▀▀▄ █▄ █ ▀██▀ █▀▀▀ █  █ ▀██▀ █▀▀▀ ▀██▀
+                          █▄▄█ █▀▄█  ██  █▄▄▄ █▄▄█  ██  █▄▄   ██
+                          █  █ █ ▀█  ██     █ █  █  ██  █     ██
+                          ▀  ▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀ ▀  ▀ ▀▀▀▀ ▀     ▀▀
+
+               ▌ Ask anything or press enter to dub
+               ▌
+               ▌ Auto · Foundry: Claude Opus 5
+
+                 enter  auto      ctrl+p  commands
+
+                     ● Tip  Drop an MKV into workspace to begin
+
+ ~\Desktop\PROJECTS\AniShift:feature/stage-10-tui                    0.1.0
 ```
 
-Nagłówek nie udaje klasycznej aplikacji okienkowej. Nie zawiera paska kart, menu hamburgerowego ani wielkich przycisków. Podstawową nawigacją są composer, paleta i lokalne skróty ekranu.
+Elementy bloku, w kolejności z góry:
+
+1. **logo** — statyczne, czterowierszowe, wyśrodkowane; `ANI` stonowane, `SHIFT` wyróżnione;
+2. **box composera** — tło `elevated`, **pionowy akcent na lewej krawędzi** w kolorze `focus`, bez obramowania; wewnątrz pole wejścia, a pod nim wyblakła **linia kontekstu** `tryb · provider: model`;
+3. **podpowiedzi klawiszy** — klawisz w kolorze `text`, etykieta w `muted`, maksymalnie dwa słowa na etykietę, czytane z żywego rejestru;
+4. **linia tipu** — kropka w `warning` plus jedno krótkie zdanie; opcjonalna.
+
+**Pas dolny** jest zawsze widoczny: po lewej skrócona ścieżka roboczej lokalizacji z gałęzią gita w formie `ścieżka:gałąź`, po prawej wersja aplikacji. Pas dolny **nie** jest panelem statusu przebiegu — stan przebiegu należy do ekranu roboczego.
+
+Po wejściu w pracę logo i tip ustępują miejsca jednej dominującej powierzchni: liście, tabeli albo planowi. Composer zostaje na dole, pas dolny zostaje na dole. Panel szczegółów pojawia się tylko wtedy, gdy realnie pomaga aktualnej decyzji.
+
+Podstawową nawigacją są composer, paleta i lokalne skróty ekranu.
+
+### 6.1.1. Niezmienniki geometrii
+
+Łamanie któregokolwiek jest błędem kontraktu, nie kwestią estetyki:
+
+- obszar roboczy **dominuje** — dostaje całą wysokość pozostałą po logo, composerze i pasie dolnym;
+- composer i pas dolny **mieszczą się w widocznym obszarze** przy każdym rozmiarze terminala; element wyrenderowany poza `y < 0` albo `y >= wysokość` jest usterką, nawet jeśli pozostaje zamontowany w DOM;
+- żaden element nie ma obramowania; warstwy odróżnia wyłącznie tło i akcent krawędziowy;
+- padding panelu to 1 wiersz pionowo i 2 kolumny poziomo.
 
 ### 6.2. Kanoniczny układ małego terminala
 
 Przy szerokości lub wysokości poniżej pełnego progu:
 
 - logo przechodzi do jednowierszowego `ANISHIFT` albo znika;
+- tip znika pierwszy, przed jakimkolwiek funkcjonalnym elementem;
 - panel szczegółów zostaje zwinięty;
 - tabela ogranicza kolumny do identyfikatora/nazwy, zaznaczenia i stanu;
-- composer oraz jednowierszowa stopka pozostają zamontowane;
+- composer oraz pas dolny pozostają **widoczne**, nie tylko zamontowane;
+- pas dolny skraca ścieżkę od lewej, zachowując gałąź i wersję;
 - dialog ogranicza szerokość do `terminal - 2` i przewija własną zawartość;
 - użytkownik zawsze ma dostępną ścieżkę `/help` i `/exit`.
 
 ### 6.3. Teksty stanów bazowych
 
+Napisy zwięzłe, bez kropki kończącej, bez zdań złożonych.
+
 | Stan | Tekst bazowy | Znaczenie |
 | --- | --- | --- |
-| brak workspace | `Nie znaleziono obsługiwanych plików w workspace.` | brak źródeł, nie błąd aplikacji |
-| discovery | `Skanowanie workspace…` | operacja lokalna w workerze |
-| planning | `Budowanie planu…` | `plan_auto` albo `plan_manual`, jeszcze bez wykonania |
-| running | `Przetwarzanie` + bieżąca operacja | aktywny run |
-| cancelling | `Anulowanie…` | prośba wysłana, run jeszcze nie jest terminalny |
-| partial | `Częściowo ukończono` | co najmniej jeden trwały produkt lub sukces grupy oraz co najmniej jeden problem |
-| failed | `Nie ukończono` | brak wymaganego sukcesu; szczegóły bezpiecznie zredagowane |
-| model unknown | `niezweryfikowany` | wpis istnieje lokalnie, ale bieżąca sesja go nie sprawdziła |
-| secret missing | `brak` | wartość nie jest skonfigurowana |
-| secret configured | `skonfigurowany` | wartość istnieje, ale nigdy nie jest wyświetlana |
+| brak workspace | `No supported files in workspace` | brak źródeł, nie błąd aplikacji |
+| discovery | `Scanning workspace…` | operacja lokalna w workerze |
+| planning | `Building plan…` | `plan_auto` albo `plan_manual`, jeszcze bez wykonania |
+| running | `Working` + bieżąca operacja | aktywny run |
+| cancelling | `Cancelling…` | prośba wysłana, run jeszcze nie jest terminalny |
+| partial | `Partly done` | co najmniej jeden trwały produkt lub sukces grupy oraz co najmniej jeden problem |
+| failed | `Not finished` | brak wymaganego sukcesu; szczegóły bezpiecznie zredagowane |
+| model unknown | `unverified` | wpis istnieje lokalnie, ale bieżąca sesja go nie sprawdziła |
+| secret missing | `missing` | wartość nie jest skonfigurowana |
+| secret configured | `configured` | wartość istnieje, ale nigdy nie jest wyświetlana |
 
 ## 7. Wymagania systemowe
 
@@ -214,11 +246,13 @@ Po zakończeniu migracji wywołanie `anishift` bez subkomendy otwiera nowe TUI. 
 
 ### R-003 - Statyczne logo
 
-Ekran startowy pokazuje statyczne, czterowierszowe logo blokowe `ANISHIFT` inspirowane charakterem logo OpenCode. `ANI` jest stonowane, `SHIFT` wyróżnione. Nie ma maskotki, animacji ani dużego pełnoekranowego ASCII artu.
+Ekran startowy pokazuje statyczne, czterowierszowe logo blokowe `ANISHIFT` inspirowane charakterem logo OpenCode, **wyśrodkowane poziomo** w bloku startowym. `ANI` jest stonowane, `SHIFT` wyróżnione. Nie ma maskotki, animacji ani dużego pełnoekranowego ASCII artu.
 
 ### R-004 - Układ główny
 
-Pełny układ składa się z nagłówka kontekstowego, jednego głównego obszaru roboczego, stale dostępnego composera i jednowierszowej stopki statusu. Interfejs nie używa siatki wielkich kart ani szerokich pustych odstępów.
+Pełny układ składa się z jednego dominującego obszaru roboczego, stale dostępnego composera i jednowierszowego pasa dolnego. **Nie ma paska nagłówka aplikacji** — kontekst nosi linia w boxie composera. Ekran startowy centruje blok logo, composera, podpowiedzi i tipu, zgodnie z 6.1.
+
+Interfejs nie używa obramowań, siatki wielkich kart ani szerokich pustych odstępów. Composer i pas dolny pozostają widoczne w każdym rozmiarze terminala.
 
 ### R-005 - Motywy
 
@@ -234,7 +268,19 @@ Pełny układ obowiązuje od 100x30. Przy 80x24 aplikacja nadal pozwala wpisać 
 
 ### R-008 - Język interfejsu
 
-Teksty produktu są po polsku. Nazwy modeli, providerów, plików, kodów błędów i identyfikatory techniczne pozostają w oryginalnej formie.
+Teksty interfejsu są **na razie po angielsku**, tak jak w OpenCode. Polski pozostaje językiem produktu wyjściowego — napisów, lektora i nazw generowanych plików.
+
+Wybór języka powłoki jest **decyzją otwartą** i może zostać cofnięty na polski po ocenie działającego produktu. Dlatego:
+
+- wszystkie napisy widoczne dla użytkownika żyją jako stałe `Final` w jednym module `anishift/tui/strings.py`, nigdy jako literały rozsiane po widgetach;
+- **nie** powstaje warstwa i18n, katalog locale, przełącznik języka ani druga wersja napisów — tłumaczenie ma być zamianą jednego pliku, nie zbudowaniem mechanizmu;
+- testy asertują przez te stałe, nie przez wpisane ręcznie napisy, żeby zmiana języka nie wywróciła zestawu testów.
+
+Nazwy modeli, providerów, plików, kodów błędów i identyfikatory techniczne pozostają w oryginalnej formie niezależnie od języka powłoki.
+
+### R-009 - Zwięzłość napisów
+
+Etykieta akcji ma **maksymalnie dwa słowa** (`ctrl+p commands`, `tab agents`). Opis komendy w palecie to jedno zdanie bez kropki, do ośmiu słów. Komunikat stanu to fraza, nie zdanie złożone. Napis dłuższy niż to jest błędem kontraktu, a nie kwestią gustu — gęstość ekranu jest cechą produktu.
 
 ### R-010 - Jeden rejestr komend
 
@@ -262,7 +308,9 @@ Nieznana komenda nie wykonuje żadnego use case'u i pokazuje najbliższą znaną
 
 ### R-020 - Stały composer
 
-Composer jest dostępny na każdym głównym ekranie. Placeholder brzmi: `Wpisz /komendę albo naciśnij Enter, aby uruchomić Auto`.
+Composer jest dostępny na każdym głównym ekranie. Placeholder brzmi: `Ask anything or press enter to dub`.
+
+Composer renderuje się jako box na tle `elevated` z pionowym akcentem na lewej krawędzi, bez obramowania. Pod polem wejścia stoi wyblakła linia kontekstu w formie `tryb · provider: model`.
 
 ### R-021 - Pusty Enter
 
@@ -470,7 +518,11 @@ Dla nieukończonej grupy Results może utworzyć draft Manual korzystający z tr
 
 ### R-094 - Exit
 
-`/exit` i `Ctrl+Q` zamykają aplikację. Przy aktywnym przebiegu użytkownik wybiera powrót, anulowanie i wyjście albo pozostanie do końca; aplikacja nie zabija pracy bez potwierdzenia.
+`/exit`, `Ctrl+Q` i `Ctrl+C` zamykają aplikację. Wszystkie trzy prowadzą przez tę samą komendę rejestru — nie istnieje druga ścieżka wyjścia.
+
+`Ctrl+C` na poziomie aplikacji wychodzi, tak jak w OpenCode. Wewnątrz otwartego dialogu `Ctrl+C` anuluje dialog, bo priorytetowy binding ekranu ma pierwszeństwo; to jest zamierzone i nie tworzy drugiej ścieżki wyjścia.
+
+Przy aktywnym przebiegu użytkownik wybiera powrót, anulowanie i wyjście albo pozostanie do końca; aplikacja nie zabija pracy bez potwierdzenia.
 
 ### R-100 - Wątek UI
 
