@@ -38,7 +38,8 @@ __all__ = [
     "COMPOSER_ACCENT_GLYPH",
     "COMPOSER_PLACEHOLDER",
     "COMPOSER_PLAIN_TEXT",
-    "COMPOSER_PROMPT_GLYPH",
+    "COMPOSER_TAIL_EDGE_GLYPH",
+    "COMPOSER_TAIL_GLYPH",
     "COMPOSER_UNKNOWN_COMMAND",
     "COMPOSER_UNKNOWN_COMMAND_SUGGESTION",
     "CONTEXT_MODEL_SEPARATOR",
@@ -146,14 +147,17 @@ __all__ = [
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-COMPOSER_PLACEHOLDER: Final[str] = "Ask anything or press enter to dub"
+COMPOSER_PLACEHOLDER: Final[str] = "Press enter to dub, or type / for commands"
 """Hint the empty composer field shows, written once by the specification."""
-
-COMPOSER_PROMPT_GLYPH: Final[str] = "❯"  # noqa: RUF001 - the ornament is the prompt the design system asks for
-"""Glyph the composer shows in front of its text field."""
 
 COMPOSER_ACCENT_GLYPH: Final[str] = "▌"
 """Glyph drawing the vertical accent on the left edge of the composer box."""
+
+COMPOSER_TAIL_GLYPH: Final[str] = "▀"
+"""Glyph closing the composer box with the upper half of one row."""
+
+COMPOSER_TAIL_EDGE_GLYPH: Final[str] = "▘"
+"""Glyph carrying the accent edge through the upper half of the closing row."""
 
 COMPOSER_PLAIN_TEXT: Final[str] = "Chat mode is not available yet"
 """Answer to text that names no command; the text stays in the field."""
@@ -209,10 +213,10 @@ HINT_ENTER_KEY: Final[str] = "enter"
 HINT_ENTER_LABEL: Final[str] = "auto"
 """Label of the hint describing what an empty composer line starts."""
 
-HINT_KEY_GAP: Final[str] = "  "
+HINT_KEY_GAP: Final[str] = " "
 """Separator between one key and the label of the action it runs."""
 
-HINT_PAIR_GAP: Final[str] = "      "
+HINT_PAIR_GAP: Final[str] = "   "
 """Separator between two whole key hints of the same row."""
 
 TIP_GLYPH: Final[str] = "●"
@@ -251,91 +255,91 @@ PALETTE_COMMAND_CATEGORY: Final[str] = "Commands"
 COMMAND_INIT_TITLE: Final[str] = "Init"
 """Title of the ``init`` command."""
 
-COMMAND_INIT_DESCRIPTION: Final[str] = "Prepare the workspace and the configuration"
+COMMAND_INIT_DESCRIPTION: Final[str] = "Guided workspace setup"
 """Description of the ``init`` command."""
 
 COMMAND_CONNECT_TITLE: Final[str] = "Connect"
 """Title of the ``connect`` command."""
 
-COMMAND_CONNECT_DESCRIPTION: Final[str] = "Set up the Palantir Foundry connection"
+COMMAND_CONNECT_DESCRIPTION: Final[str] = "Connect provider"
 """Description of the ``connect`` command."""
 
 COMMAND_STATUS_TITLE: Final[str] = "Status"
 """Title of the ``status`` command."""
 
-COMMAND_STATUS_DESCRIPTION: Final[str] = "Show the safe summary of this session"
+COMMAND_STATUS_DESCRIPTION: Final[str] = "Show session status"
 """Description of the ``status`` command."""
 
 COMMAND_DEBUG_TITLE: Final[str] = "Debug"
 """Title of the ``debug`` command."""
 
-COMMAND_DEBUG_DESCRIPTION: Final[str] = "Show redacted diagnostics without secrets"
+COMMAND_DEBUG_DESCRIPTION: Final[str] = "View debug info"
 """Description of the ``debug`` command."""
 
 COMMAND_HELP_TITLE: Final[str] = "Help"
 """Title of the ``help`` command."""
 
-COMMAND_HELP_DESCRIPTION: Final[str] = "List the commands and keys in use"
+COMMAND_HELP_DESCRIPTION: Final[str] = "Help"
 """Description of the ``help`` command."""
 
 COMMAND_EXIT_TITLE: Final[str] = "Exit"
 """Title of the ``exit`` command."""
 
-COMMAND_EXIT_DESCRIPTION: Final[str] = "Leave the application"
+COMMAND_EXIT_DESCRIPTION: Final[str] = "Exit the app"
 """Description of the ``exit`` command."""
 
 COMMAND_AUTO_TITLE: Final[str] = "Auto"
 """Title of the ``auto`` command."""
 
-COMMAND_AUTO_DESCRIPTION: Final[str] = "Configure the default automatic mode and presets"
+COMMAND_AUTO_DESCRIPTION: Final[str] = "Configure auto mode"
 """Description of the ``auto`` command."""
 
 COMMAND_MANUAL_TITLE: Final[str] = "Manual"
 """Title of the ``manual`` command."""
 
-COMMAND_MANUAL_DESCRIPTION: Final[str] = "Prepare group intents for preview and start"
+COMMAND_MANUAL_DESCRIPTION: Final[str] = "Pick groups manually"
 """Description of the ``manual`` command."""
 
 COMMAND_MODEL_TITLE: Final[str] = "Model"
 """Title of the ``model`` command."""
 
-COMMAND_MODEL_DESCRIPTION: Final[str] = "Choose the primary Palantir model"
+COMMAND_MODEL_DESCRIPTION: Final[str] = "Switch model"
 """Description of the ``model`` command."""
 
 COMMAND_TRANSLATION_TITLE: Final[str] = "Translation"
 """Title of the ``translation`` command."""
 
-COMMAND_TRANSLATION_DESCRIPTION: Final[str] = "Set up translation and its own model"
+COMMAND_TRANSLATION_DESCRIPTION: Final[str] = "Configure translation"
 """Description of the ``translation`` command."""
 
 COMMAND_PROMPTS_TITLE: Final[str] = "Prompts"
 """Title of the ``prompts`` command."""
 
-COMMAND_PROMPTS_DESCRIPTION: Final[str] = "Choose the task prompt, style and modules"
+COMMAND_PROMPTS_DESCRIPTION: Final[str] = "Choose prompts"
 """Description of the ``prompts`` command."""
 
 COMMAND_TTS_TITLE: Final[str] = "Speech"
 """Title of the ``tts`` command."""
 
-COMMAND_TTS_DESCRIPTION: Final[str] = "Set up speech, voices and audio profile"
+COMMAND_TTS_DESCRIPTION: Final[str] = "Configure speech"
 """Description of the ``tts`` command."""
 
 COMMAND_THEME_TITLE: Final[str] = "Theme"
 """Title of the ``theme`` command."""
 
-COMMAND_THEME_DESCRIPTION: Final[str] = "Choose the theme with a live preview"
+COMMAND_THEME_DESCRIPTION: Final[str] = "Switch theme"
 """Description of the ``theme`` command."""
 
 COMMAND_DOCTOR_TITLE: Final[str] = "Doctor"
 """Title of the ``doctor`` command."""
 
-COMMAND_DOCTOR_DESCRIPTION: Final[str] = "Run the technical diagnostics without repairing"
+COMMAND_DOCTOR_DESCRIPTION: Final[str] = "Run diagnostics"
 """Description of the ``doctor`` command."""
 
 COMMAND_PALETTE_TITLE: Final[str] = "Commands"
 """Title of the contextual action that opens the palette."""
 
-COMMAND_PALETTE_DESCRIPTION: Final[str] = "Open the list of commands and actions"
+COMMAND_PALETTE_DESCRIPTION: Final[str] = "Open command list"
 """Description of the contextual action that opens the palette."""
 
 DIALOG_CANCEL_LABEL: Final[str] = "Cancel"

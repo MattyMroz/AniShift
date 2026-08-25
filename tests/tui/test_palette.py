@@ -186,26 +186,26 @@ def test_slash_suggestions_stop_at_ten() -> None:
     assert len(slash_options(registry, "")) == SLASH_SUGGESTION_LIMIT
 
 
-def test_an_empty_query_lists_the_slash_catalog_in_registration_order() -> None:
+def test_an_empty_query_lists_the_slash_catalog_alphabetically() -> None:
     registry: CommandRegistry = _registry()
     registry.register((_slash("theme"), _slash("model"), _action("refresh")))
-    assert [option.label for option in slash_options(registry, "")] == ["/theme", "/model"]
-    assert [option.label for option in slash_options(registry, "/")] == ["/theme", "/model"]
+    assert [option.label for option in slash_options(registry, "")] == ["/model", "/theme"]
+    assert [option.label for option in slash_options(registry, "/")] == ["/model", "/theme"]
 
 
-def test_a_tie_keeps_the_registration_order() -> None:
+def test_a_tie_reads_alphabetically_whatever_the_registration_order() -> None:
     first: CommandRegistry = _registry()
     first.register((_slash("alpha"), _slash("alphb")))
     assert [option.label for option in slash_options(first, "al")] == ["/alpha", "/alphb"]
     second: CommandRegistry = _registry()
     second.register((_slash("alphb"), _slash("alpha")))
-    assert [option.label for option in slash_options(second, "al")] == ["/alphb", "/alpha"]
+    assert [option.label for option in slash_options(second, "al")] == ["/alpha", "/alphb"]
 
 
 def test_the_hint_row_renders_the_keys_the_registry_offers() -> None:
-    assert hints_row((KeyHint(key="f5", label="Refresh"),)) == "f5  refresh"
+    assert hints_row((KeyHint(key="f5", label="Refresh"),)) == "f5 refresh"
     assert hints_row(()) == ""
-    assert hints_row((KeyHint(key="f5", label="Refresh"), KeyHint(key="f6", label="Back"))).endswith("f6  back")
+    assert hints_row((KeyHint(key="f5", label="Refresh"), KeyHint(key="f6", label="Back"))).endswith("f6 back")
 
 
 def test_the_shell_switches_off_the_built_in_textual_palette() -> None:
@@ -220,7 +220,7 @@ def test_the_shell_registers_the_frozen_catalog_once() -> None:
             await pilot.pause()
             assert len(app.commands.slash_names()) == _CATALOG_SIZE
             assert app.commands.command(PALETTE_COMMAND_NAME) is not None
-            assert [option.name for option in palette_options(app.commands)] == list(app.commands.slash_names())
+            assert sorted(option.name for option in palette_options(app.commands)) == sorted(app.commands.slash_names())
 
     _run(scenario())
 
@@ -269,7 +269,7 @@ def test_the_shell_hint_row_takes_its_labels_from_the_registry() -> None:
             app.commands.register((_action("refresh", keys=("f5",)),), scope="workspace")
             app.post_message(NavigationRequested(UiRoute.AUTO))
             await pilot.pause()
-            assert str(keys.content).endswith("f5  refresh")
+            assert str(keys.content).endswith("f5 refresh")
 
     _run(scenario())
 

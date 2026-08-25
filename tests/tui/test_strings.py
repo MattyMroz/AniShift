@@ -91,7 +91,7 @@ def test_the_string_module_is_the_only_owner_of_the_specified_texts() -> None:
 
 
 def test_the_placeholder_and_the_base_state_match_the_specification() -> None:
-    assert COMPOSER_PLACEHOLDER == "Ask anything or press enter to dub"
+    assert COMPOSER_PLACEHOLDER == "Press enter to dub, or type / for commands"
     assert WORKSPACE_EMPTY == "No supported files in workspace"
 
 

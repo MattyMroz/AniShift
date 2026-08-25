@@ -9,23 +9,20 @@ from textual.content import Content
 __all__ = [
     "BRAND_ACCENT_STYLE",
     "BRAND_MUTED_STYLE",
-    "COMPACT_LOGO_MIN_HEIGHT",
-    "COMPACT_LOGO_MIN_WIDTH",
-    "FULL_LOGO_MIN_HEIGHT",
-    "FULL_LOGO_MIN_WIDTH",
+    "LOGO_MIN_HEIGHT",
+    "LOGO_MIN_WIDTH",
     "LOGO_ROWS",
     "LOGO_WIDTH",
     "WORDMARK",
     "LogoVariant",
-    "compact_logo",
     "full_logo",
     "full_logo_lines",
     "logo_for_size",
     "logo_variant",
 ]
 
-type LogoVariant = Literal["full", "compact", "hidden"]
-"""Wordmark variant that fits the terminal, or ``hidden`` when controls win."""
+type LogoVariant = Literal["full", "hidden"]
+"""Wordmark variant the terminal shows: the block wordmark, or nothing at all."""
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -57,20 +54,14 @@ _SPLIT_COLUMN: Final[int] = 21
 BRAND_MUTED_STYLE: Final[str] = "$text-muted"
 """Theme variable styling the toned-down ``ANI`` half."""
 
-BRAND_ACCENT_STYLE: Final[str] = "$primary"
+BRAND_ACCENT_STYLE: Final[str] = "$text"
 """Theme variable styling the highlighted ``SHIFT`` half."""
 
-FULL_LOGO_MIN_WIDTH: Final[int] = 100
-"""Terminal width from which the full six-row wordmark is shown."""
+LOGO_MIN_HEIGHT: Final[int] = 20
+"""Terminal height below which the controls take the rows the wordmark wants."""
 
-FULL_LOGO_MIN_HEIGHT: Final[int] = 30
-"""Terminal height from which the full six-row wordmark is shown."""
-
-COMPACT_LOGO_MIN_WIDTH: Final[int] = 40
-"""Narrowest terminal that still shows the single-row wordmark."""
-
-COMPACT_LOGO_MIN_HEIGHT: Final[int] = 10
-"""Shortest terminal that still shows the single-row wordmark."""
+LOGO_MIN_WIDTH: Final[int] = LOGO_WIDTH
+"""Terminal width below which the wordmark leaves rather than wrap or lose glyphs."""
 
 
 def full_logo_lines() -> tuple[str, ...]:
@@ -89,28 +80,15 @@ def full_logo() -> Content:
     )
 
 
-def compact_logo() -> Content:
-    """Return the single-row wordmark used on small terminals."""
-    return Content.assemble(
-        (_MUTED_PREFIX, BRAND_MUTED_STYLE),
-        (WORDMARK.removeprefix(_MUTED_PREFIX), BRAND_ACCENT_STYLE),
-    )
-
-
 def logo_variant(*, width: int, height: int) -> LogoVariant:
-    """Pick the wordmark variant that fits a ``width`` x ``height`` terminal."""
-    if width >= FULL_LOGO_MIN_WIDTH and height >= FULL_LOGO_MIN_HEIGHT:
-        return "full"
-    if width >= COMPACT_LOGO_MIN_WIDTH and height >= COMPACT_LOGO_MIN_HEIGHT:
-        return "compact"
-    return "hidden"
+    """Pick the wordmark a ``width`` x ``height`` terminal shows: the whole one, or none."""
+    if width < LOGO_MIN_WIDTH or height < LOGO_MIN_HEIGHT:
+        return "hidden"
+    return "full"
 
 
 def logo_for_size(*, width: int, height: int) -> Content | None:
-    """Render the fitting wordmark, or ``None`` when controls take priority."""
-    variant: LogoVariant = logo_variant(width=width, height=height)
-    if variant == "full":
+    """Render the wordmark at its one size, or ``None`` when controls take the rows."""
+    if logo_variant(width=width, height=height) == "full":
         return full_logo()
-    if variant == "compact":
-        return compact_logo()
     return None

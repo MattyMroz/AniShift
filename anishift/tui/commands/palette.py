@@ -69,6 +69,6 @@ def slash_options(registry: CommandRegistry, query: str) -> tuple[CommandOption,
     return tuple(option_of(registry, spec) for spec in registry.suggestions(query))
 
 
-def _suggested_first(option: CommandOption) -> bool:
-    """Sort key lifting the suggested rows, keeping the ranked order below."""
-    return not option.suggested
+def _suggested_first(option: CommandOption) -> tuple[bool, str]:
+    """Sort key lifting the suggested rows, then reading alphabetically inside each group."""
+    return (not option.suggested, option.label)

@@ -8,7 +8,9 @@ import pytest
 from textual.app import App
 from textual.events import Paste
 from textual.message import Message
+from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static
+from textual.widgets.input import Selection
 
 from anishift.tui.app import AniShiftApp
 from anishift.tui.commands.palette import CommandOption, slash_options
@@ -19,7 +21,6 @@ from anishift.tui.state import RunUiState, SessionState
 from anishift.tui.strings import (
     COMPOSER_PLACEHOLDER,
     COMPOSER_PLAIN_TEXT,
-    COMPOSER_PROMPT_GLYPH,
     COMPOSER_UNKNOWN_COMMAND,
     COMPOSER_UNKNOWN_COMMAND_SUGGESTION,
     CONTEXT_MODE_AUTO,
@@ -27,10 +28,10 @@ from anishift.tui.strings import (
     CONTEXT_PROVIDER,
 )
 from anishift.tui.widgets.composer import (
+    BOX_ID,
     CONTEXT_ID,
     HINT_ID,
     INPUT_ID,
-    PROMPT_ID,
     SUGGESTIONS_ID,
     Composer,
     ComposerSubmission,
@@ -41,13 +42,15 @@ from anishift.tui.widgets.composer import (
 
 _FULL_SIZE: Final[tuple[int, int]] = (100, 30)
 
+_EDGE_COLUMNS: Final[int] = 3
+
 _PROBE_ID: Final[str] = "composer-probe"
 
 _DIALOG_INPUT_ID: Final[str] = "value-input"
 
 _REPEAT: Final[int] = 12
 
-_SUGGESTION_LIMIT: Final[int] = 10
+_SUGGESTION_LIMIT: Final[int] = 20
 
 _REASON: Final[str] = "Nie ukończono"
 
@@ -164,14 +167,24 @@ def test_the_context_line_follows_what_the_shell_says() -> None:
     _run(scenario())
 
 
-def test_the_composer_shows_the_prompt_and_the_placeholder_of_the_specification() -> None:
+def test_the_composer_shows_the_placeholder_of_the_specification() -> None:
     async def scenario() -> None:
         app: AniShiftApp = AniShiftApp()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
-            assert str(app.query_one(f"#{PROMPT_ID}", Static).content) == COMPOSER_PROMPT_GLYPH
             assert _field(app).placeholder == COMPOSER_PLACEHOLDER
             assert app.query_one(Composer) is not None
+
+    _run(scenario())
+
+
+def test_only_the_accent_edge_and_its_padding_stand_in_front_of_the_text_field() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            box: Widget = app.query_one(f"#{BOX_ID}")
+            assert _field(app).region.x == box.region.x + _EDGE_COLUMNS
 
     _run(scenario())
 
@@ -460,15 +473,15 @@ def test_a_slash_line_offers_the_rows_of_the_one_registry() -> None:
             await pilot.pause()
             listing: OptionList = _suggestions(app)
             assert listing.display is True
-            assert listing.option_count == _SUGGESTION_LIMIT
             offered: tuple[CommandOption, ...] = slash_options(app.commands, "/")
+            assert 0 < listing.option_count == len(offered) <= _SUGGESTION_LIMIT
             assert [row.split()[0] for row in _rows(app)] == [option.label for option in offered]
             assert {row.split()[0].removeprefix("/") for row in _rows(app)} <= set(app.commands.slash_names())
 
     _run(scenario())
 
 
-def test_enter_runs_the_highlighted_suggestion() -> None:
+def test_enter_writes_the_highlighted_suggestion_and_runs_nothing() -> None:
     async def scenario() -> None:
         calls: list[str] = []
         app: AniShiftApp = AniShiftApp()
@@ -477,18 +490,89 @@ def test_enter_runs_the_highlighted_suggestion() -> None:
             _spy_dispatch(app, calls)
             await pilot.press(*"/th")
             await pilot.pause()
-            expected: str = slash_options(app.commands, "/th")[0].name
+            expected: CommandOption = slash_options(app.commands, "/th")[0]
             assert _suggestions(app).highlighted == 0
             await pilot.press("enter")
             await pilot.pause()
-            assert calls == [expected]
-            assert _field(app).value == ""
+            assert calls == []
+            assert _field(app).value == f"{expected.label} "
             assert _suggestions(app).display is False
 
     _run(scenario())
 
 
-def test_moving_the_highlight_changes_which_command_enter_runs() -> None:
+def test_the_pointer_carries_the_one_highlight_to_the_row_it_rests_on() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("/")
+            await pilot.pause()
+            listing: OptionList = _suggestions(app)
+            assert listing.highlighted == 0
+            await pilot.hover(listing, offset=(4, 2))
+            await pilot.pause()
+            assert listing.highlighted == 2
+
+    _run(scenario())
+
+
+def test_only_the_text_field_lets_one_select_what_it_holds() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press(*"/theme")
+            await pilot.pause()
+            field: Input = _field(app)
+            field.selection = Selection(0, len(field.value))
+            await pilot.pause()
+            assert field.selected_text == "/theme"
+            assert app.ALLOW_SELECT is False
+            assert field.cursor_blink is False
+
+    _run(scenario())
+
+
+def test_a_second_enter_runs_the_name_the_first_one_wrote() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_dispatch(app, calls)
+            await pilot.press(*"/th")
+            await pilot.pause()
+            expected: CommandOption = slash_options(app.commands, "/th")[0]
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert calls == [expected.name]
+
+    _run(scenario())
+
+
+def test_a_click_runs_the_suggestion_it_lands_on() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_dispatch(app, calls)
+            await pilot.press("/")
+            await pilot.pause()
+            listing: OptionList = _suggestions(app)
+            expected: str = slash_options(app.commands, "/")[1].name
+            await pilot.click(listing, offset=(4, 1))
+            await pilot.pause()
+            assert calls == [expected]
+            assert listing.display is False
+
+    _run(scenario())
+
+
+def test_moving_the_highlight_changes_which_name_enter_writes() -> None:
     async def scenario() -> None:
         calls: list[str] = []
         app: AniShiftApp = AniShiftApp()
@@ -503,8 +587,9 @@ def test_moving_the_highlight_changes_which_command_enter_runs() -> None:
             assert _suggestions(app).highlighted == 1
             await pilot.press("enter")
             await pilot.pause()
-            assert calls == [offered[1].name]
-            assert offered[1].name != offered[0].name
+            assert calls == []
+            assert _field(app).value == f"{offered[1].label} "
+            assert offered[1].label != offered[0].label
 
     _run(scenario())
 
@@ -537,8 +622,9 @@ def test_tab_completes_the_name_and_runs_nothing() -> None:
             expected: str = slash_options(app.commands, "/th")[0].label
             await pilot.press("tab")
             await pilot.pause()
-            assert _field(app).value == expected
+            assert _field(app).value == f"{expected} "
             assert calls == []
+            assert _suggestions(app).display is False
             assert app.focused is _field(app)
 
     _run(scenario())
@@ -649,6 +735,8 @@ def test_a_command_that_opens_a_route_clears_the_field() -> None:
             await pilot.press(*"/manual")
             await pilot.press("enter")
             await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
             assert calls == ["manual"]
             assert _field(app).value == ""
             assert requests == []
@@ -667,6 +755,8 @@ def test_the_auto_command_never_starts_a_run() -> None:
             _spy_dispatch(app, calls)
             _spy_auto_requests(app, requests)
             await pilot.press(*"/auto")
+            await pilot.press("enter")
+            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
             assert calls == ["auto"]

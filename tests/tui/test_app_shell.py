@@ -26,7 +26,7 @@ from anishift.tui.app import (
     AniShiftApp,
     is_compact,
 )
-from anishift.tui.brand import WORDMARK, full_logo_lines
+from anishift.tui.brand import full_logo_lines
 from anishift.tui.lifecycle import begin_planning, begin_run
 from anishift.tui.messages import (
     NavigationRequested,
@@ -41,12 +41,14 @@ from anishift.tui.state import GroupIntentDraft, RunUiState, SessionState, UiFee
 from anishift.tui.strings import (
     COMPOSER_ACCENT_GLYPH,
     COMPOSER_PLACEHOLDER,
+    COMPOSER_TAIL_EDGE_GLYPH,
+    COMPOSER_TAIL_GLYPH,
     CONTEXT_MODE_AUTO,
     LOCATION_SEPARATOR,
     PATH_ELLIPSIS,
     WORKSPACE_EMPTY,
 )
-from anishift.tui.widgets.composer import BOX_ID, BOX_ROWS
+from anishift.tui.widgets.composer import BOX_ID, BOX_ROWS, TAIL_ID, TAIL_ROWS
 from anishift.tui.widgets.footer import (
     LOCATION_ID,
     VERSION_ID,
@@ -80,6 +82,14 @@ _FULL_SIZE: Final[tuple[int, int]] = (100, 30)
 _SMALL_SIZE: Final[tuple[int, int]] = (80, 24)
 
 _TALL_SURFACE_ROWS: Final[int] = 120
+
+_BRAND_GAP: Final[int] = 2
+
+_TIP_GAP: Final[int] = 3
+
+_WORDMARK_LESS_HEIGHT: Final[int] = 18
+
+_TIP_LESS_HEIGHT: Final[int] = 11
 
 _FORBIDDEN_IMPORTS: Final[tuple[str, ...]] = (
     "anishift.services",
@@ -369,8 +379,8 @@ def test_a_work_surface_taller_than_the_terminal_keeps_the_composer_on_screen(si
             work_area: Region = app.query_one(f"#{CONTENT_ID}").region
             composer: Region = app.query_one(f"#{COMPOSER_SLOT_ID}").region
             bar: Region = app.query_one(f"#{FOOTER_ID}").region
-            assert work_area.height > composer.height
-            assert composer.height >= BOX_ROWS
+            assert work_area.height > 0
+            assert composer.height >= BOX_ROWS + TAIL_ROWS
             assert bar.y + bar.height == size[1]
 
     _run(scenario())
@@ -429,7 +439,7 @@ def test_the_start_screen_renders_the_canonical_block_in_order() -> None:
 
 
 @pytest.mark.parametrize("size", [_FULL_SIZE, _SMALL_SIZE])
-def test_the_start_block_leaves_no_gap_wider_than_one_row(size: tuple[int, int]) -> None:
+def test_the_start_block_keeps_the_gaps_of_the_specification(size: tuple[int, int]) -> None:
     async def scenario() -> None:
         app: AniShiftApp = AniShiftApp()
         async with app.run_test(size=size) as pilot:
@@ -440,7 +450,25 @@ def test_the_start_block_leaves_no_gap_wider_than_one_row(size: tuple[int, int])
             tip: Static = app.query_one(f"#{TIP_ID}", Static)
             if tip.display:
                 last = _row_of(lines, tip_row())
-            assert [gap for gap in _gaps(lines, first, last) if gap > 1] == []
+            dense: bool = app.screen.has_class("compact")
+            expected: list[int] = [] if dense else [_BRAND_GAP, _TIP_GAP]
+            assert sorted(gap for gap in _gaps(lines, first, last) if gap > 1) == expected
+
+    _run(scenario())
+
+
+def test_the_accent_edge_reaches_the_half_row_closing_the_box() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            box: Region = app.query_one(f"#{BOX_ID}").region
+            tail: Region = app.query_one(f"#{TAIL_ID}").region
+            lines: list[str] = _rendered(app)
+            assert tail.y == box.y + box.height
+            assert lines[tail.y].index(COMPOSER_TAIL_EDGE_GLYPH) == box.x
+            assert COMPOSER_TAIL_GLYPH in lines[tail.y]
+            assert COMPOSER_ACCENT_GLYPH not in lines[tail.y]
 
     _run(scenario())
 
@@ -477,7 +505,7 @@ def test_the_start_block_sits_vertically_centred_between_the_free_rows() -> None
     _run(scenario())
 
 
-def test_no_widget_of_the_start_screen_owns_a_border() -> None:
+def test_only_the_composer_edge_owns_a_border_on_the_start_screen() -> None:
     async def scenario() -> None:
         app: AniShiftApp = AniShiftApp()
         async with app.run_test(size=_FULL_SIZE) as pilot:
@@ -485,7 +513,7 @@ def test_no_widget_of_the_start_screen_owns_a_border() -> None:
             bordered: list[str] = [
                 str(widget.id or type(widget).__name__) for widget in app.screen.query("*") if widget.styles.border
             ]
-            assert bordered == []
+            assert bordered == [BOX_ID]
 
     _run(scenario())
 
@@ -504,7 +532,7 @@ def test_the_bottom_bar_shows_the_location_and_the_version() -> None:
     _run(scenario())
 
 
-def test_the_small_terminal_drops_the_tip_before_the_composer() -> None:
+def test_the_tip_outlives_the_wordmark_as_the_terminal_shrinks() -> None:
     async def scenario() -> None:
         app: AniShiftApp = AniShiftApp()
         async with app.run_test(size=_FULL_SIZE) as pilot:
@@ -512,21 +540,30 @@ def test_the_small_terminal_drops_the_tip_before_the_composer() -> None:
             assert app.query_one(f"#{TIP_ID}", Static).display is True
             await pilot.resize_terminal(*_SMALL_SIZE)
             await pilot.pause()
+            assert app.query_one(f"#{TIP_ID}", Static).display is True
+            await pilot.resize_terminal(_SMALL_SIZE[0], _WORDMARK_LESS_HEIGHT)
+            await pilot.pause()
+            assert app.query_one("#app-brand").display is False
+            assert app.query_one(f"#{TIP_ID}", Static).display is True
+            await pilot.resize_terminal(_SMALL_SIZE[0], _TIP_LESS_HEIGHT)
+            await pilot.pause()
             assert app.query_one(f"#{TIP_ID}", Static).display is False
             assert app.query_one("#app-composer").region.height >= BOX_ROWS
 
     _run(scenario())
 
 
-def test_shrinking_the_terminal_switches_to_the_compact_wordmark() -> None:
+def test_shrinking_the_terminal_never_shrinks_the_wordmark() -> None:
     async def scenario() -> None:
         app: AniShiftApp = AniShiftApp()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
+            brand: Static = app.query_one("#app-brand", Static)
+            full: str = str(brand.content)
             await pilot.resize_terminal(*_SMALL_SIZE)
             await pilot.pause()
-            brand: Static = app.query_one("#app-brand", Static)
-            assert str(brand.content) == WORDMARK
+            assert str(brand.content) == full
+            assert brand.region.height == len(full_logo_lines())
 
     _run(scenario())
 

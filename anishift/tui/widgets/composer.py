@@ -8,18 +8,19 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 from textual import on
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.content import Content
+from textual.events import MouseMove
 from textual.message import Message
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from anishift.tui.commands.palette import slash_options
 from anishift.tui.strings import (
-    COMPOSER_ACCENT_GLYPH,
     COMPOSER_PLACEHOLDER,
     COMPOSER_PLAIN_TEXT,
-    COMPOSER_PROMPT_GLYPH,
+    COMPOSER_TAIL_EDGE_GLYPH,
+    COMPOSER_TAIL_GLYPH,
     COMPOSER_UNKNOWN_COMMAND,
     COMPOSER_UNKNOWN_COMMAND_SUGGESTION,
     CONTEXT_MODE_AUTO,
@@ -35,29 +36,31 @@ from anishift.tui.strings import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from textual.app import ComposeResult
     from textual.binding import BindingType
+    from textual.geometry import Region
 
     from anishift.tui.commands.palette import CommandOption
     from anishift.tui.commands.registry import CommandRegistry
     from anishift.tui.commands.spec import CommandSpec
 
 __all__ = [
-    "ACCENT_ID",
-    "BODY_ID",
     "BOX_ID",
     "BOX_ROWS",
     "COMPOSER_ID",
     "CONTEXT_ID",
-    "FIELD_ID",
     "HINT_ID",
     "INPUT_ID",
-    "PROMPT_ID",
     "SUGGESTIONS_ID",
+    "SUGGESTION_MAX_ROWS",
+    "TAIL_ID",
     "Composer",
     "ComposerSubmission",
     "ComposerSubmissionKind",
     "classify",
+    "context_content",
     "context_text",
 ]
 
@@ -67,13 +70,7 @@ COMPOSER_ID: Final[str] = "composer"
 """Id of the composer itself, inside the fixed slot of the frame."""
 
 BOX_ID: Final[str] = "composer-box"
-"""Id of the raised box holding the accent, the field and the context line."""
-
-BODY_ID: Final[str] = "composer-body"
-"""Id of the column the box keeps beside its accent."""
-
-FIELD_ID: Final[str] = "composer-field"
-"""Id of the one row holding the prompt glyph and the text field."""
+"""Id of the raised box holding the field and the context line."""
 
 INPUT_ID: Final[str] = "composer-input"
 """Id of the one text field a submitted line can come from."""
@@ -84,23 +81,38 @@ SUGGESTIONS_ID: Final[str] = "composer-suggestions"
 HINT_ID: Final[str] = "composer-hint"
 """Id of the one row the composer answers a line it refused in."""
 
-PROMPT_ID: Final[str] = "composer-prompt"
-"""Id of the prompt glyph in front of the text field."""
-
-ACCENT_ID: Final[str] = "composer-accent"
-"""Id of the accent column drawn on the left edge of the box."""
-
 CONTEXT_ID: Final[str] = "composer-context"
 """Id of the faded context line one row below the text field."""
 
-BOX_ROWS: Final[int] = 3
-"""Rows the box always has: the field, one blank row and the context line."""
+TAIL_ID: Final[str] = "composer-tail"
+"""Id of the half row closing the box below its context line."""
+
+BOX_ROWS: Final[int] = 4
+"""Rows the box always has: a blank edge, the field, a blank row, the context line."""
+
+TAIL_ROWS: Final[int] = 1
+"""Rows the closing half row takes under the box."""
+
+SUGGESTION_MAX_ROWS: Final[int] = 10
+"""Rows the suggestion overlay grows to before it starts scrolling instead."""
 
 SLASH_PREFIX: Final[str] = "/"
 """Character that turns a submitted line into a command name."""
 
-_ACCENT_COLUMN: Final[str] = "\n".join([COMPOSER_ACCENT_GLYPH] * BOX_ROWS)
-"""Accent column of the box: the edge glyph once per row of the box."""
+_MODE_STYLE: Final[str] = "bold $secondary"
+"""Style of the mode word, matching the accent edge of the box."""
+
+_ACCENT_STYLE: Final[str] = "$secondary"
+"""Style of the accent edge, carried through the upper half of the closing row."""
+
+_TAIL_STYLE: Final[str] = "$background-element"
+"""Style painting the closing half row in the raised colour of the box."""
+
+_PROVIDER_STYLE: Final[str] = "bold $text"
+"""Style of the provider the context line names."""
+
+_MODEL_STYLE: Final[str] = "$text"
+"""Style of the model the context line names once one is chosen."""
 
 _NAME_STYLE: Final[str] = "$text"
 """Style of the name of a suggestion the highlight does not rest on."""
@@ -151,6 +163,16 @@ def context_text(*, mode: str, provider: str, model: str) -> str:
     return f"{mode}{CONTEXT_SEPARATOR}{provider}{CONTEXT_MODEL_SEPARATOR}{model}"
 
 
+def context_content(*, mode: str, provider: str, model: str) -> Content:
+    """Render the context line with the mode carrying the structural accent."""
+    return Content.assemble(
+        (mode, _MODE_STYLE),
+        CONTEXT_SEPARATOR,
+        (f"{provider}{CONTEXT_MODEL_SEPARATOR}", _PROVIDER_STYLE),
+        (model, _SENTENCE_STYLE if model == CONTEXT_MODEL_UNSET else _MODEL_STYLE),
+    )
+
+
 def _slash_name(stripped: str) -> str:
     """Name one slash line asks for: the first word after the slash, folded."""
     body: str = stripped.removeprefix(SLASH_PREFIX).strip()
@@ -160,9 +182,31 @@ def _slash_name(stripped: str) -> str:
 
 
 class _Suggestions(OptionList):
-    """Suggestion list that never takes the focus away from the text field."""
+    """Suggestion overlay that never takes the focus away from the text field.
+
+    It hangs on the screen layer, so a click cannot bubble to the composer on its own.
+    """
 
     can_focus = False
+
+    def __init__(self, pick: Callable[[int], None], hover: Callable[[int], None], *, widget_id: str) -> None:
+        """Offer rows reporting the picked position through *pick* and the pointed one through *hover*."""
+        super().__init__(id=widget_id, markup=False)
+        self._pick: Callable[[int], None] = pick
+        self._hover: Callable[[int], None] = hover
+
+    @on(OptionList.OptionSelected)
+    def _on_option_selected(self, event: OptionList.OptionSelected) -> None:
+        """Report the clicked row, and let nothing else act on that click."""
+        event.stop()
+        self._pick(event.option_index)
+
+    def _on_mouse_move(self, event: MouseMove) -> None:
+        """Report the row the pointer rests on, so it carries the one highlight."""
+        super()._on_mouse_move(event)
+        pointed: object = event.style.meta.get("option")
+        if isinstance(pointed, int):
+            self._hover(pointed)
 
 
 class Composer(Vertical):
@@ -186,36 +230,47 @@ class Composer(Vertical):
         super().__init__(id=COMPOSER_ID)
         self._registry: CommandRegistry = registry
         self._offered: tuple[CommandOption, ...] = ()
-        self._suggestions: _Suggestions = _Suggestions(id=SUGGESTIONS_ID, markup=False)
-        self._accent: Static = Static(_ACCENT_COLUMN, id=ACCENT_ID)
-        self._prompt: Static = Static(COMPOSER_PROMPT_GLYPH, id=PROMPT_ID)
+        self._suggestions: _Suggestions = _Suggestions(
+            self._pick_suggestion,
+            self._highlight,
+            widget_id=SUGGESTIONS_ID,
+        )
+        self._box: Vertical = Vertical(id=BOX_ID)
         self._input: Input = Input(placeholder=COMPOSER_PLACEHOLDER, id=INPUT_ID)
+        self._input.cursor_blink = False
+        self._written: str = ""
         self._context_line: Static = Static(
-            context_text(mode=CONTEXT_MODE_AUTO, provider=CONTEXT_PROVIDER, model=CONTEXT_MODEL_UNSET),
+            context_content(mode=CONTEXT_MODE_AUTO, provider=CONTEXT_PROVIDER, model=CONTEXT_MODEL_UNSET),
             id=CONTEXT_ID,
         )
+        self._tail: Static = Static(id=TAIL_ID)
         self._hint: Static = Static(id=HINT_ID)
 
     def compose(self) -> ComposeResult:
-        """Draw the suggestions above the box, then the box, then the answer row."""
-        yield self._suggestions
-        with Horizontal(id=BOX_ID):
-            yield self._accent
-            with Vertical(id=BODY_ID):
-                with Horizontal(id=FIELD_ID):
-                    yield self._prompt
-                    yield self._input
-                yield self._context_line
+        """Draw the box and its closing half row, then the answer row.
+
+        The suggestions live on their own layer, mounted on the screen.
+        """
+        with self._box:
+            yield self._input
+            yield self._context_line
+        yield self._tail
         yield self._hint
 
     def show_context(self, *, mode: str, provider: str, model: str) -> None:
         """Say which mode, provider and model the next run would use."""
-        self._context_line.update(context_text(mode=mode, provider=provider, model=model))
+        self._context_line.update(context_content(mode=mode, provider=provider, model=model))
 
     def on_mount(self) -> None:
-        """Start as a plain field: no suggestions and nothing to answer."""
+        """Hang the suggestion overlay on the screen, then start as a plain field."""
+        self.screen.mount(self._suggestions)
         self._hide_suggestions()
         self._clear_hint()
+        self._paint_tail()
+
+    def on_resize(self) -> None:
+        """Redraw the closing half row across the width the box just took."""
+        self._paint_tail()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Claim the suggestion keys only while the suggestion list is on screen."""
@@ -234,6 +289,9 @@ class Composer(Vertical):
         """Offer the commands the typed line could mean, and drop the last answer."""
         event.stop()
         self._clear_hint()
+        if event.value == self._written:
+            self._written = ""
+            return
         self._offer(event.value)
 
     @on(Input.Submitted, f"#{INPUT_ID}")
@@ -242,7 +300,7 @@ class Composer(Vertical):
         event.stop()
         highlighted: CommandOption | None = self._highlighted()
         if highlighted is not None:
-            self._run(highlighted.name)
+            self._write(highlighted)
             return
         submission: ComposerSubmission = classify(event.value)
         if submission.kind is ComposerSubmissionKind.EMPTY_AUTO:
@@ -266,8 +324,15 @@ class Composer(Vertical):
         highlighted: CommandOption | None = self._highlighted()
         if highlighted is None:
             return
-        self._input.value = highlighted.label
-        self._input.cursor_position = len(self._input.value)
+        self._write(highlighted)
+
+    def _write(self, option: CommandOption) -> None:
+        """Write the name of *option* into the field, ready for one more Enter to run it."""
+        text: str = f"{option.label} "
+        self._written = text
+        self._input.value = text
+        self._input.cursor_position = len(text)
+        self._hide_suggestions()
 
     def action_dismiss_suggestions(self) -> None:
         """Drop the suggestions, leaving the typed line exactly as it is."""
@@ -285,12 +350,43 @@ class Composer(Vertical):
             return
         self._suggestions.display = True
         self._paint(0)
+        self._place()
+
+    def _pick_suggestion(self, index: int) -> None:
+        """Run the command a click picked out of the overlay."""
+        if 0 <= index < len(self._offered):
+            self._run(self._offered[index].name)
+
+    def _paint_tail(self) -> None:
+        """Close the box with one half row, the accent edge ending flush with it."""
+        width: int = self._box.region.width
+        if width < 1:
+            return
+        self._tail.update(
+            Content.assemble(
+                (COMPOSER_TAIL_EDGE_GLYPH, _ACCENT_STYLE),
+                (COMPOSER_TAIL_GLYPH * (width - 1), _TAIL_STYLE),
+            )
+        )
+
+    def _place(self) -> None:
+        """Pin the overlay to the rows directly above the box, drawing over the work area."""
+        box: Region = self._box.region
+        rows: int = min(len(self._offered), SUGGESTION_MAX_ROWS, box.y)
+        self._suggestions.styles.width = box.width
+        self._suggestions.styles.height = rows
+        self._suggestions.styles.offset = (box.x, box.y - rows)
+
+    def _name_width(self) -> int:
+        """Columns the name column takes: the widest offered name, so sentences line up."""
+        return max((len(option.label) for option in self._offered), default=0)
 
     def _paint(self, highlighted: int) -> None:
         """Re-render the offered rows so the highlighted one carries the contrast colour."""
+        width: int = self._name_width()
         self._suggestions.set_options(
             [
-                Option(self._suggestion_content(option, selected=index == highlighted))
+                Option(self._suggestion_content(option, width=width, selected=index == highlighted))
                 for index, option in enumerate(self._offered)
             ]
         )
@@ -298,12 +394,12 @@ class Composer(Vertical):
 
     def _suggestion_row(self, option: CommandOption) -> str:
         """Text one suggested command shows: its slash name and its sentence."""
-        return f"{option.label}{SUGGESTION_ROW_GAP}{option.description}"
+        return f"{option.label.ljust(self._name_width())}{SUGGESTION_ROW_GAP}{option.description}"
 
-    def _suggestion_content(self, option: CommandOption, *, selected: bool) -> Content:
-        """Render one suggested command, weighting its name over its sentence."""
+    def _suggestion_content(self, option: CommandOption, *, width: int, selected: bool) -> Content:
+        """Render one suggested command in two columns, weighting its name over its sentence."""
         return Content.assemble(
-            (option.label, _SELECTED_NAME_STYLE if selected else _NAME_STYLE),
+            (option.label.ljust(width), _SELECTED_NAME_STYLE if selected else _NAME_STYLE),
             SUGGESTION_ROW_GAP,
             (option.description, _SELECTED_SENTENCE_STYLE if selected else _SENTENCE_STYLE),
         )
@@ -314,7 +410,26 @@ class Composer(Vertical):
         if count == 0:
             return
         current: int = self._suggestions.highlighted or 0
-        self._paint((current + delta) % count)
+        self._highlight((current + delta) % count)
+
+    def _highlight(self, index: int) -> None:
+        """Rest the one highlight on *index*, repainting only the two rows that change."""
+        if not 0 <= index < len(self._offered):
+            return
+        current: int | None = self._suggestions.highlighted
+        if current == index:
+            return
+        width: int = self._name_width()
+        if current is not None and 0 <= current < len(self._offered):
+            self._suggestions.replace_option_prompt_at_index(
+                current,
+                self._suggestion_content(self._offered[current], width=width, selected=False),
+            )
+        self._suggestions.replace_option_prompt_at_index(
+            index,
+            self._suggestion_content(self._offered[index], width=width, selected=True),
+        )
+        self._suggestions.highlighted = index
 
     def _highlighted(self) -> CommandOption | None:
         """Suggestion the list rests on, or ``None`` while there is no list."""

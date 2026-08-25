@@ -45,7 +45,7 @@ from anishift.tui.theme import DARK_THEME_ID, LIGHT_THEME_ID, register_themes
 from anishift.tui.ui_state import UiState, load_ui_state, save_ui_state
 from anishift.tui.widgets.composer import Composer
 from anishift.tui.widgets.footer import BottomBar
-from anishift.tui.widgets.hints import StartHints, action_hints
+from anishift.tui.widgets.hints import TIP_MIN_HEIGHT, StartHints, action_hints
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -105,6 +105,7 @@ class AniShiftApp(App[None]):
 
     CSS_PATH: ClassVar[CSSPathType] = ["styles/base.tcss", "styles/screens.tcss", "styles/dialogs.tcss"]
     ENABLE_COMMAND_PALETTE: ClassVar[bool] = False
+    ALLOW_SELECT: ClassVar[bool] = False
     TITLE: str | None = "AniShift"
 
     def __init__(self) -> None:
@@ -123,6 +124,7 @@ class AniShiftApp(App[None]):
         self._footer: BottomBar = BottomBar(widget_id=FOOTER_ID)
         self._compact: bool = False
         self._has_logo: bool = False
+        self._has_tip_room: bool = False
         self._has_work: bool = False
         self._group_rows: tuple[GroupRow, ...] = ()
         self._run_status: str = ""
@@ -378,6 +380,7 @@ class AniShiftApp(App[None]):
     def _apply_size(self, size: Size) -> None:
         """Pick the wordmark and the density the current terminal has room for."""
         self._compact = is_compact(width=size.width, height=size.height)
+        self._has_tip_room = size.height >= TIP_MIN_HEIGHT
         logo: Content | None = logo_for_size(width=size.width, height=size.height)
         self._has_logo = logo is not None
         if logo is not None:
@@ -389,4 +392,4 @@ class AniShiftApp(App[None]):
         self.screen.set_class(self._compact, _COMPACT_CLASS)
         self._brand.display = self._has_logo and not self._has_work
         self._spacer.display = not self._has_work
-        self._hints.show_tip(visible=not self._compact and not self._has_work)
+        self._hints.show_tip(visible=self._has_tip_room and not self._has_work)

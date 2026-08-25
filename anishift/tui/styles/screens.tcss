@@ -1,8 +1,13 @@
 /* Application frame: the work area, the start block and the pinned bottom bar. */
 
-$block-width: 80;
+$block-width: 75;
+
+Screen {
+    layers: base popup;
+}
 
 #app-body {
+    layer: base;
     height: 1fr;
     layout: vertical;
     background: $background;
@@ -12,8 +17,10 @@ $block-width: 80;
     width: 100%;
     height: auto;
     max-height: 6;
-    margin-bottom: 1;
+    margin-bottom: 2;
     text-align: center;
+    text-wrap: nowrap;
+    overflow-x: hidden;
     background: $background;
 }
 
@@ -69,33 +76,17 @@ $block-width: 80;
 
 #composer-box {
     width: 100%;
-    height: 3;
+    height: 4;
+    padding: 1 2 0 2;
+    border-left: outer $secondary;
     background: $background-element;
 }
 
-#composer-accent {
-    width: 2;
-    height: 3;
-    color: $primary;
-    text-style: bold;
-    background: $background-element;
-}
-
-#composer-body {
-    width: 1fr;
-    height: 3;
-}
-
-#composer-field {
+#composer-tail {
     width: 100%;
     height: 1;
-}
-
-#composer-prompt {
-    width: 2;
-    color: $primary;
-    text-style: bold;
-    background: $background-element;
+    text-wrap: nowrap;
+    overflow-x: hidden;
 }
 
 #composer-input {
@@ -109,12 +100,17 @@ $block-width: 80;
 }
 
 #composer-input > .input--cursor {
-    background: $primary;
-    color: $on-primary;
+    background: $text;
+    color: $background;
 }
 
 #composer-input > .input--placeholder {
     color: $text-muted;
+}
+
+#composer-input > .input--selection {
+    background: $text;
+    color: $background;
 }
 
 #composer-context {
@@ -125,17 +121,27 @@ $block-width: 80;
 }
 
 #composer-suggestions {
-    height: auto;
-    max-height: 10;
+    layer: popup;
+    position: absolute;
+    width: $block-width;
+    height: 10;
     border: none;
     padding: 0;
     background: $background-element;
     color: $text;
-    scrollbar-size-vertical: 0;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: $background-element;
+    scrollbar-color: $border;
+    scrollbar-color-hover: $border-active;
+    scrollbar-color-active: $border-active;
 }
 
 #composer-suggestions > .option-list--option {
     padding: 0;
+}
+
+#composer-suggestions > .option-list--option-hover {
+    background: $background-element;
 }
 
 #composer-suggestions > .option-list--option-highlighted {
@@ -158,7 +164,6 @@ $block-width: 80;
     width: $block-width;
     max-width: 100%;
     height: 1;
-    margin-top: 1;
     text-align: left;
     color: $text-muted;
 }
@@ -167,13 +172,13 @@ $block-width: 80;
     width: $block-width;
     max-width: 100%;
     height: 1;
-    margin-top: 1;
-    padding-left: 5;
-    text-align: left;
+    margin-top: 3;
+    text-align: center;
     color: $text-muted;
 }
 
 #app-footer {
+    layer: base;
     height: 1;
     padding: 0 1;
     background: $background;
@@ -194,7 +199,11 @@ $block-width: 80;
 }
 
 .compact #app-brand {
-    max-height: 1;
+    margin-bottom: 1;
+}
+
+.compact #app-tip {
+    margin-top: 1;
 }
 
 .compact #app-content {

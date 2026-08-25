@@ -33,6 +33,8 @@ __all__ = [
     "HINT_LABEL_STYLE",
     "KEYS_ID",
     "TIP_ID",
+    "TIP_LABEL_STYLE",
+    "TIP_MIN_HEIGHT",
     "StartHints",
     "action_hints",
     "hints_content",
@@ -58,8 +60,14 @@ HINT_KEY_STYLE: Final[str] = "bold $text"
 HINT_LABEL_STYLE: Final[str] = "$text-muted"
 """Style carrying a hint label, the secondary half of a hint pair."""
 
-TIP_GLYPH_STYLE: Final[str] = "$warning"
+TIP_GLYPH_STYLE: Final[str] = "$primary"
 """Style of the bullet marking the tip row."""
+
+TIP_LABEL_STYLE: Final[str] = "$primary"
+"""Style of the word marking the tip row, carrying the colour of its bullet."""
+
+TIP_MIN_HEIGHT: Final[int] = 12
+"""Rows the frame needs before it offers the tip, well under what the wordmark asks."""
 
 
 def action_hints(registry: CommandRegistry) -> tuple[KeyHint, ...]:
@@ -97,7 +105,7 @@ def tip_content() -> Content:
     return Content.assemble(
         (TIP_GLYPH, TIP_GLYPH_STYLE),
         GLYPH_GAP,
-        (TIP_LABEL, HINT_KEY_STYLE),
+        (TIP_LABEL, TIP_LABEL_STYLE),
         HINT_KEY_GAP,
         (TIP_TEXT, HINT_LABEL_STYLE),
     )

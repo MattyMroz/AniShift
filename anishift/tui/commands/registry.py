@@ -30,8 +30,8 @@ logger = get_logger(__name__)
 GLOBAL_SCOPE: Final[str] = "global"
 """Scope of the commands the application registers once for the whole session."""
 
-SLASH_SUGGESTION_LIMIT: Final[int] = 10
-"""Most slash suggestions the composer may show for one query."""
+SLASH_SUGGESTION_LIMIT: Final[int] = 20
+"""Most slash suggestions the composer may offer for one query, scrolling the rest."""
 
 KEY_HINT_LIMIT: Final[int] = 5
 """Most key hints the one-row status footer may show at once."""
@@ -65,9 +65,14 @@ def _command_score(spec: CommandSpec, query: str) -> float:
     return max(forms, described)
 
 
-def _best_first(scored: tuple[CommandSpec, float]) -> float:
-    """Sort key putting the best score first and keeping registration order."""
-    return -scored[1]
+def _slash_name_of(spec: CommandSpec) -> str:
+    """Sort key ordering the slash commands the way a user reads a list."""
+    return spec.slash_name or ""
+
+
+def _best_first(scored: tuple[CommandSpec, float]) -> tuple[float, str]:
+    """Sort key putting the best score first and breaking every tie alphabetically."""
+    return (-scored[1], _slash_name_of(scored[0]))
 
 
 class CommandRegistry:
@@ -132,7 +137,7 @@ class CommandRegistry:
         candidates: tuple[CommandSpec, ...] = tuple(spec for spec in self.available() if spec.slash_name is not None)
         normalized: str = query.casefold().removeprefix(_SLASH_PREFIX)
         if not normalized:
-            return candidates[:SLASH_SUGGESTION_LIMIT]
+            return tuple(sorted(candidates, key=_slash_name_of))[:SLASH_SUGGESTION_LIMIT]
         scored: list[tuple[CommandSpec, float]] = [(spec, _command_score(spec, normalized)) for spec in candidates]
         ranked: Sequence[tuple[CommandSpec, float]] = sorted(
             (pair for pair in scored if pair[1] > 0.0),

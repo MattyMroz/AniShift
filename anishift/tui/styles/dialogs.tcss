@@ -49,11 +49,19 @@ DialogScreen OptionList {
     padding: 0;
     background: $background-panel;
     color: $text;
-    scrollbar-size-vertical: 0;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: $background-panel;
+    scrollbar-color: $border;
+    scrollbar-color-hover: $border-active;
+    scrollbar-color-active: $border-active;
 }
 
 DialogScreen OptionList > .option-list--option {
     padding: 0;
+}
+
+DialogScreen OptionList > .option-list--option-hover {
+    background: $background-panel;
 }
 
 DialogScreen OptionList > .option-list--option-highlighted {
