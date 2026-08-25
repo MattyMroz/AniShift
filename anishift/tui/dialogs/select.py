@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 from textual import on
 from textual.binding import Binding
+from textual.content import Content
 from textual.fuzzy import FuzzySearch
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
@@ -47,6 +48,7 @@ __all__ = [
     "SelectOutcomeKind",
     "SelectRow",
     "moved_position",
+    "row_content",
     "select_rows",
 ]
 
@@ -75,6 +77,21 @@ _EMPTY_MARKER: Final[str] = " "
 
 _LABEL_GAP: Final[str] = "  "
 """Separator between the title of a row and its footer."""
+
+_HEADING_STYLE: Final[str] = "bold $accent"
+"""Style of a category heading, the only accented text in the list."""
+
+_TITLE_STYLE: Final[str] = "$text"
+"""Style of the title of a row the cursor does not rest on."""
+
+_DESCRIPTION_STYLE: Final[str] = "$text-muted"
+"""Style of the description of a row the cursor does not rest on."""
+
+_SELECTED_TITLE_STYLE: Final[str] = "bold $on-primary"
+"""Style of the title of the row the cursor rests on."""
+
+_SELECTED_DESCRIPTION_STYLE: Final[str] = "$on-primary"
+"""Style of the description of the row the cursor rests on."""
 
 _ACTION_JOINER: Final[str] = " · "
 """Separator between the extra actions the dialog lists."""
@@ -134,6 +151,8 @@ class SelectRow:
 
     label: str
     index: int | None = None
+    description: str = ""
+    heading: bool = False
 
 
 class SelectOutcomeKind(StrEnum):
@@ -206,9 +225,30 @@ def select_rows[T](
     for index, option in matched:
         if grouped and option.category and option.category != heading:
             heading = option.category
-            rows.append(SelectRow(label=option.category))
-        rows.append(SelectRow(label=_label(option, index, current=current, checked=checked), index=index))
+            rows.append(SelectRow(label=option.category, heading=True))
+        rows.append(
+            SelectRow(
+                label=_label(option, index, current=current, checked=checked),
+                index=index,
+                description=option.description,
+            )
+        )
     return tuple(rows)
+
+
+def row_content(row: SelectRow, *, selected: bool) -> Content:
+    """Render one row, weighting its title over its description."""
+    if row.heading:
+        return Content.assemble((row.label, _HEADING_STYLE))
+    title_style: str = _SELECTED_TITLE_STYLE if selected else _TITLE_STYLE
+    if not row.description:
+        return Content.assemble((row.label, title_style))
+    description_style: str = _SELECTED_DESCRIPTION_STYLE if selected else _DESCRIPTION_STYLE
+    return Content.assemble(
+        (row.label, title_style),
+        _LABEL_GAP,
+        (row.description, description_style),
+    )
 
 
 def _matched[T](options: Sequence[SelectOption[T]], query: str) -> tuple[tuple[int, SelectOption[T]], ...]:
@@ -250,9 +290,11 @@ def _label[T](
     current: T | None,
     checked: frozenset[int] | None,
 ) -> str:
-    """Text one option shows, marker column first."""
-    marker: str = _marker(option, index, current=current, checked=checked)
+    """Text one option shows, marker column first when any marker can appear."""
     body: str = option.title if not option.footer else f"{option.title}{_LABEL_GAP}{option.footer}"
+    if checked is None and current is None:
+        return body
+    marker: str = _marker(option, index, current=current, checked=checked)
     return f"{marker} {body}"
 
 
@@ -449,7 +491,16 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
             current=self._current,
             checked=frozenset(self._selected) if self._multi else None,
         )
-        self._list.set_options([Option(row.label, disabled=self._row_is_dead(row)) for row in self._rows])
+        self._paint()
+
+    def _paint(self) -> None:
+        """Re-render every prompt so the cursor row carries the contrast colour."""
+        self._list.set_options(
+            [
+                Option(row_content(row, selected=index == self._cursor), disabled=self._row_is_dead(row))
+                for index, row in enumerate(self._rows)
+            ]
+        )
 
     def _row_is_dead(self, row: SelectRow) -> bool:
         """Whether a row is a heading, a placeholder or an option the caller disabled."""
@@ -491,13 +542,14 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
         """Show the cursor on the list, describe its row and announce the option."""
         self._detail.set_class(False, _ERROR_CLASS)
         option: SelectOption[T] | None = self._highlighted()
+        self._paint()
         if option is None:
             self._list.highlighted = None
             self._detail.update("")
             return
         self._list.highlighted = self._cursor
         self._list.scroll_to_highlight()
-        self._detail.update(option.description)
+        self._detail.update("")
         self._announce(option)
 
     def _announce(self, option: SelectOption[T]) -> None:

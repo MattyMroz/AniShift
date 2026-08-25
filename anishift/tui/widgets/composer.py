@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 from textual import on
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.content import Content
 from textual.message import Message
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
@@ -100,6 +101,18 @@ SLASH_PREFIX: Final[str] = "/"
 
 _ACCENT_COLUMN: Final[str] = "\n".join([COMPOSER_ACCENT_GLYPH] * BOX_ROWS)
 """Accent column of the box: the edge glyph once per row of the box."""
+
+_NAME_STYLE: Final[str] = "$text"
+"""Style of the name of a suggestion the highlight does not rest on."""
+
+_SENTENCE_STYLE: Final[str] = "$text-muted"
+"""Style of the sentence of a suggestion the highlight does not rest on."""
+
+_SELECTED_NAME_STYLE: Final[str] = "bold $on-primary"
+"""Style of the name of the highlighted suggestion."""
+
+_SELECTED_SENTENCE_STYLE: Final[str] = "$on-primary"
+"""Style of the sentence of the highlighted suggestion."""
 
 _SUGGESTION_ACTIONS: Final[frozenset[str]] = frozenset(
     {"previous_suggestion", "next_suggestion", "complete_suggestion", "dismiss_suggestions"},
@@ -270,13 +283,30 @@ class Composer(Vertical):
         if not self._offered:
             self._hide_suggestions()
             return
-        self._suggestions.set_options([Option(self._suggestion_row(option)) for option in self._offered])
         self._suggestions.display = True
-        self._suggestions.highlighted = 0
+        self._paint(0)
+
+    def _paint(self, highlighted: int) -> None:
+        """Re-render the offered rows so the highlighted one carries the contrast colour."""
+        self._suggestions.set_options(
+            [
+                Option(self._suggestion_content(option, selected=index == highlighted))
+                for index, option in enumerate(self._offered)
+            ]
+        )
+        self._suggestions.highlighted = highlighted
 
     def _suggestion_row(self, option: CommandOption) -> str:
         """Text one suggested command shows: its slash name and its sentence."""
         return f"{option.label}{SUGGESTION_ROW_GAP}{option.description}"
+
+    def _suggestion_content(self, option: CommandOption, *, selected: bool) -> Content:
+        """Render one suggested command, weighting its name over its sentence."""
+        return Content.assemble(
+            (option.label, _SELECTED_NAME_STYLE if selected else _NAME_STYLE),
+            SUGGESTION_ROW_GAP,
+            (option.description, _SELECTED_SENTENCE_STYLE if selected else _SENTENCE_STYLE),
+        )
 
     def _move(self, delta: int) -> None:
         """Move the highlight *delta* suggestions, wrapping at either end."""
@@ -284,7 +314,7 @@ class Composer(Vertical):
         if count == 0:
             return
         current: int = self._suggestions.highlighted or 0
-        self._suggestions.highlighted = (current + delta) % count
+        self._paint((current + delta) % count)
 
     def _highlighted(self) -> CommandOption | None:
         """Suggestion the list rests on, or ``None`` while there is no list."""

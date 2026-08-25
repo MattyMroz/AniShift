@@ -49,6 +49,7 @@ DialogScreen OptionList {
     padding: 0;
     background: $background-panel;
     color: $text;
+    scrollbar-size-vertical: 0;
 }
 
 DialogScreen OptionList > .option-list--option {
@@ -58,7 +59,6 @@ DialogScreen OptionList > .option-list--option {
 DialogScreen OptionList > .option-list--option-highlighted {
     background: $primary;
     color: $on-primary;
-    text-style: bold;
 }
 
 DialogScreen OptionList > .option-list--option-disabled {

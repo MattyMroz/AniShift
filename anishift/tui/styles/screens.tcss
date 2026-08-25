@@ -131,6 +131,7 @@ $block-width: 80;
     padding: 0;
     background: $background-element;
     color: $text;
+    scrollbar-size-vertical: 0;
 }
 
 #composer-suggestions > .option-list--option {
@@ -140,7 +141,6 @@ $block-width: 80;
 #composer-suggestions > .option-list--option-highlighted {
     background: $primary;
     color: $on-primary;
-    text-style: bold;
 }
 
 #composer-hint {
