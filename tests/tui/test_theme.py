@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import re
 from collections.abc import Mapping
+from dataclasses import fields
 from pathlib import Path
 from typing import Final
 
@@ -22,6 +23,7 @@ from anishift.tui.theme import (
     THEME_IDS,
     Palette,
     anishift_themes,
+    on_primary,
     register_themes,
 )
 
@@ -208,18 +210,21 @@ def test_exactly_two_themes_are_built_in_id_order() -> None:
 def test_dark_palette_matches_the_visual_grammar() -> None:
     assert (
         Palette(
-            background="#0B0D10",
-            surface="#11141A",
-            elevated="#171B22",
-            border="#2A303B",
-            focus="#7AA2F7",
-            text="#E6E9EF",
-            muted="#8B93A5",
-            accent_soft="#283457",
-            success="#9ECE6A",
-            warning="#E0AF68",
-            error="#F7768E",
-            info="#7DCFFF",
+            primary="#fab283",
+            secondary="#5c9cf5",
+            accent="#9d7cd8",
+            error="#e06c75",
+            warning="#f5a742",
+            success="#7fd88f",
+            info="#56b6c2",
+            text="#eeeeee",
+            text_muted="#808080",
+            background="#0a0a0a",
+            background_panel="#141414",
+            background_element="#1e1e1e",
+            border="#484848",
+            border_active="#606060",
+            border_subtle="#3c3c3c",
         )
         == DARK_PALETTE
     )
@@ -228,41 +233,67 @@ def test_dark_palette_matches_the_visual_grammar() -> None:
 def test_light_palette_matches_the_visual_grammar() -> None:
     assert (
         Palette(
-            background="#F5F7FA",
-            surface="#FFFFFF",
-            elevated="#EEF1F5",
-            border="#CDD3DD",
-            focus="#3B6EDC",
-            text="#1F2430",
-            muted="#667085",
-            accent_soft="#DCE7FF",
-            success="#2F7D32",
-            warning="#9A6700",
-            error="#C6283D",
-            info="#1F6FA8",
+            primary="#3b7dd8",
+            secondary="#7b5bb6",
+            accent="#d68c27",
+            error="#d1383d",
+            warning="#d68c27",
+            success="#3d9a57",
+            info="#318795",
+            text="#1a1a1a",
+            text_muted="#8a8a8a",
+            background="#ffffff",
+            background_panel="#fafafa",
+            background_element="#f5f5f5",
+            border="#b8b8b8",
+            border_active="#a0a0a0",
+            border_subtle="#d4d4d4",
         )
         == LIGHT_PALETTE
     )
 
 
+def test_the_neutral_scale_carries_exactly_one_accent_hue() -> None:
+    for palette in (DARK_PALETTE, LIGHT_PALETTE):
+        neutrals: tuple[str, ...] = (
+            palette.text,
+            palette.text_muted,
+            palette.background,
+            palette.background_panel,
+            palette.background_element,
+            palette.border,
+            palette.border_active,
+            palette.border_subtle,
+        )
+        for colour in neutrals:
+            digits: str = colour.lstrip("#")
+            assert digits[0:2] == digits[2:4] == digits[4:6]
+
+
 def test_every_palette_token_is_reachable_from_tcss() -> None:
     for theme, palette in zip(anishift_themes(), (DARK_PALETTE, LIGHT_PALETTE), strict=True):
         assert theme.background == palette.background
-        assert theme.surface == palette.surface
-        assert theme.panel == palette.elevated
+        assert theme.surface == palette.background_panel
+        assert theme.panel == palette.background_element
         assert theme.foreground == palette.text
-        assert theme.primary == palette.focus
+        assert theme.primary == palette.primary
+        assert theme.secondary == palette.secondary
+        assert theme.accent == palette.accent
         assert theme.success == palette.success
         assert theme.warning == palette.warning
         assert theme.error == palette.error
-        assert theme.variables["border"] == palette.border
+        for field in fields(palette):
+            assert theme.variables[field.name.replace("_", "-")] == getattr(palette, field.name)
         assert theme.variables["border-blurred"] == palette.border
-        assert theme.variables["elevated"] == palette.elevated
-        assert theme.variables["focus"] == palette.focus
-        assert theme.variables["info"] == palette.info
-        assert theme.variables["text"] == palette.text
-        assert theme.variables["text-muted"] == palette.muted
-        assert theme.variables["accent-soft"] == palette.accent_soft
+        assert theme.variables["on-primary"] == on_primary(palette)
+
+
+def test_selection_text_is_black_on_the_bright_dark_accent() -> None:
+    assert on_primary(DARK_PALETTE) == "#000000"
+
+
+def test_selection_text_is_white_on_the_deep_light_accent() -> None:
+    assert on_primary(LIGHT_PALETTE) == "#ffffff"
 
 
 def test_register_themes_registers_both_ids() -> None:

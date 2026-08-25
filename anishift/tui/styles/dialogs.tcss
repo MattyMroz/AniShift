@@ -1,4 +1,4 @@
-/* Shared modal frame: one elevated panel over the backdrop. */
+/* Shared modal frame: one panel over the backdrop. */
 
 DialogScreen {
     align: center top;
@@ -8,12 +8,26 @@ DialogScreen > #dialog-panel {
     height: auto;
     max-height: 100%;
     padding: 1 2;
-    background: $elevated;
+    background: $background-panel;
 }
 
 #dialog-title {
     height: 1;
     color: $text;
+    text-style: bold;
+}
+
+#dialog-escape {
+    height: 1;
+    width: auto;
+    text-align: right;
+    color: $text-muted;
+}
+
+.dialog-group-heading {
+    height: 1;
+    padding-left: 1;
+    color: $accent;
     text-style: bold;
 }
 
@@ -33,7 +47,8 @@ DialogScreen OptionList {
     max-height: 12;
     border: none;
     padding: 0;
-    background: $elevated;
+    background: $background-panel;
+    color: $text;
 }
 
 DialogScreen OptionList > .option-list--option {
@@ -41,8 +56,9 @@ DialogScreen OptionList > .option-list--option {
 }
 
 DialogScreen OptionList > .option-list--option-highlighted {
-    background: $accent-soft;
-    color: $text;
+    background: $primary;
+    color: $on-primary;
+    text-style: bold;
 }
 
 DialogScreen OptionList > .option-list--option-disabled {
@@ -53,6 +69,16 @@ DialogScreen Input {
     height: 1;
     border: none;
     padding: 0;
-    background: $elevated;
+    background: $background-panel;
+    background-tint: $background-panel 0%;
     color: $text;
+}
+
+DialogScreen Input > .input--cursor {
+    background: $primary;
+    color: $on-primary;
+}
+
+DialogScreen Input > .input--placeholder {
+    color: $text-muted;
 }

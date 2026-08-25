@@ -24,12 +24,16 @@ from anishift.tui.brand import (
 )
 from anishift.tui.theme import anishift_themes
 
-_ALLOWED_LOGO_CHARACTERS: Final[frozenset[str]] = frozenset(" \u2580\u2584\u2588")
+_ALLOWED_LOGO_CHARACTERS: Final[frozenset[str]] = frozenset(" \u2588\u2550\u2551\u2554\u2557\u255a\u255d")
 
 
-def test_full_logo_has_exactly_four_rows() -> None:
-    assert LOGO_ROWS == 4
+def test_full_logo_has_exactly_six_rows() -> None:
+    assert LOGO_ROWS == 6
     assert len(full_logo_lines()) == LOGO_ROWS
+
+
+def test_the_full_logo_is_the_width_the_specification_pins() -> None:
+    assert LOGO_WIDTH == 57
 
 
 def test_every_full_logo_row_has_the_same_cell_width() -> None:

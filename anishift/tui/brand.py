@@ -1,4 +1,4 @@
-"""The static ANISHIFT wordmark, four-row and single-row variants."""
+"""The static ANISHIFT wordmark, six-row and single-row variants."""
 
 from __future__ import annotations
 
@@ -35,43 +35,36 @@ WORDMARK: Final[str] = "ANISHIFT"
 _MUTED_PREFIX: Final[str] = "ANI"
 """Leading half of the wordmark rendered in the muted token."""
 
-_GLYPH_GAP: Final[str] = " "
-"""Separator inserted between two block glyphs."""
+_FULL_LOGO_ROWS: Final[tuple[str, ...]] = (
+    " █████╗ ███╗   ██╗██╗███████╗██╗  ██╗██╗███████╗████████╗",
+    "██╔══██╗████╗  ██║██║██╔════╝██║  ██║██║██╔════╝╚══██╔══╝",
+    "███████║██╔██╗ ██║██║███████╗███████║██║█████╗     ██║   ",
+    "██╔══██║██║╚██╗██║██║╚════██║██╔══██║██║██╔══╝     ██║   ",
+    "██║  ██║██║ ╚████║██║███████║██║  ██║██║██║        ██║   ",
+    "╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝╚══════╝╚═╝  ╚═╝╚═╝╚═╝        ╚═╝   ",
+)
+"""Full block wordmark, one entry per row, every row the same cell width."""
 
-_GLYPH_WIDTH: Final[int] = 4
-"""Cell width of every block glyph."""
-
-_GLYPHS: Final[dict[str, tuple[str, str, str, str]]] = {
-    "A": ("▄▀▀▄", "█▄▄█", "█  █", "▀  ▀"),
-    "F": ("█▀▀▀", "█▄▄ ", "█   ", "▀   "),
-    "H": ("█  █", "█▄▄█", "█  █", "▀  ▀"),
-    "I": ("▀██▀", " ██ ", " ██ ", "▀▀▀▀"),
-    "N": ("█▄ █", "█▀▄█", "█ ▀█", "▀  ▀"),
-    "S": ("█▀▀▀", "█▄▄▄", "   █", "▀▀▀▀"),
-    "T": ("▀██▀", " ██ ", " ██ ", " ▀▀ "),
-}
-"""Four-row block glyph for every letter of the wordmark."""
-
-LOGO_ROWS: Final[int] = 4
+LOGO_ROWS: Final[int] = len(_FULL_LOGO_ROWS)
 """Row count of the full wordmark."""
 
-LOGO_WIDTH: Final[int] = len(WORDMARK) * _GLYPH_WIDTH + (len(WORDMARK) - 1) * len(_GLYPH_GAP)
+LOGO_WIDTH: Final[int] = len(_FULL_LOGO_ROWS[0])
 """Cell width of every full-wordmark row."""
 
-_SPLIT_COLUMN: Final[int] = len(_MUTED_PREFIX) * (_GLYPH_WIDTH + len(_GLYPH_GAP))
+_SPLIT_COLUMN: Final[int] = 21
 """Column where the accented ``SHIFT`` half of the full wordmark begins."""
 
 BRAND_MUTED_STYLE: Final[str] = "$text-muted"
 """Theme variable styling the toned-down ``ANI`` half."""
 
-BRAND_ACCENT_STYLE: Final[str] = "$focus"
+BRAND_ACCENT_STYLE: Final[str] = "$primary"
 """Theme variable styling the highlighted ``SHIFT`` half."""
 
 FULL_LOGO_MIN_WIDTH: Final[int] = 100
-"""Terminal width from which the full four-row wordmark is shown."""
+"""Terminal width from which the full six-row wordmark is shown."""
 
 FULL_LOGO_MIN_HEIGHT: Final[int] = 30
-"""Terminal height from which the full four-row wordmark is shown."""
+"""Terminal height from which the full six-row wordmark is shown."""
 
 COMPACT_LOGO_MIN_WIDTH: Final[int] = 40
 """Narrowest terminal that still shows the single-row wordmark."""
@@ -81,12 +74,12 @@ COMPACT_LOGO_MIN_HEIGHT: Final[int] = 10
 
 
 def full_logo_lines() -> tuple[str, ...]:
-    """Return the four plain rows of the block wordmark."""
-    return tuple(_GLYPH_GAP.join(_GLYPHS[letter][row] for letter in WORDMARK) for row in range(LOGO_ROWS))
+    """Return the six plain rows of the block wordmark."""
+    return _FULL_LOGO_ROWS
 
 
 def full_logo() -> Content:
-    """Return the four-row wordmark with a muted ``ANI`` and accented ``SHIFT``."""
+    """Return the six-row wordmark with a muted ``ANI`` and accented ``SHIFT``."""
     return Content("\n").join(
         Content.assemble(
             (line[:_SPLIT_COLUMN], BRAND_MUTED_STYLE),

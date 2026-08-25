@@ -6,7 +6,7 @@ Screen {
 }
 
 .panel {
-    background: $surface;
+    background: $background-panel;
     padding: 1 2;
 }
 
@@ -15,28 +15,62 @@ Screen {
 }
 
 .panel-bordered:focus-within {
-    border: round $focus;
+    border: round $border-active;
 }
 
 .elevated {
-    background: $elevated;
+    background: $background-element;
 }
 
 .row {
     height: 1;
 }
 
+/* Text hierarchy: primary content, secondary content, and group headings. */
+
+.title {
+    color: $text;
+}
+
+.label,
 .muted {
     color: $text-muted;
 }
 
-.accent {
-    color: $focus;
+.heading {
+    color: $text;
+    text-style: bold;
 }
 
+.group-heading {
+    color: $accent;
+    text-style: bold;
+}
+
+.accent {
+    color: $primary;
+}
+
+/* Selection is background plus weight, never another hue. */
+
 .selected {
-    background: $accent-soft;
-    color: $text;
+    background: $primary;
+    color: $on-primary;
+}
+
+.selected .title {
+    color: $on-primary;
+    text-style: bold;
+}
+
+.selected .label,
+.selected .muted {
+    color: $on-primary;
+}
+
+.disabled .title,
+.disabled .label {
+    color: $text-muted;
 }
 
 .state-success {

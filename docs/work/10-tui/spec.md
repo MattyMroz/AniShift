@@ -118,45 +118,87 @@ Komenda może być chwilowo niewykonalna, ale pozostaje widoczna z konkretnym po
 
 ## 6. Gramatyka wizualna
 
+Referencją nie jest interpretacja OpenCode, lecz jego zmierzone wartości. Wszystkie liczby i reguły w tej sekcji pochodzą z zainstalowanej binarki `opencode-ai` (wbudowany motyw `opencode`, wariant `Xa` w rejestrze motywów) oraz z dokumentacji `opencode.ai/docs/themes` i `opencode.ai/docs/keybinds`. Nazwy tokenów są celowo takie same jak w OpenCode, żeby porównanie było bezpośrednie.
+
+### Nazwy tokenów
+
+Piętnaście tokenów, identyczne jak w schemacie `opencode.ai/theme.json`:
+`primary`, `secondary`, `accent`, `error`, `warning`, `success`, `info`, `text`, `textMuted`, `background`, `backgroundPanel`, `backgroundElement`, `border`, `borderActive`, `borderSubtle`.
+
 ### Motyw ciemny
-| Token | Wartość |
-| --- | --- |
-| background | #0B0D10 |
-| surface | #11141A |
-| elevated | #171B22 |
-| border | #2A303B |
-| focus | #7AA2F7 |
-| text | #E6E9EF |
-| muted | #8B93A5 |
-| accent_soft | #283457 |
-| success | #9ECE6A |
-| warning | #E0AF68 |
-| error | #F7768E |
-| info | #7DCFFF |
+| Token | Wartość | Rola |
+| --- | --- | --- |
+| background | #0a0a0a | tło aplikacji |
+| backgroundPanel | #141414 | tło dialogu i panelu |
+| backgroundElement | #1e1e1e | tło elementu wewnątrz panelu |
+| borderSubtle | #3c3c3c | podział bez znaczenia |
+| border | #484848 | zwykła krawędź |
+| borderActive | #606060 | krawędź elementu aktywnego |
+| primary | #fab283 | **jedyny akcent** — zaznaczenie, kursor, aktywna krawędź |
+| textMuted | #808080 | tekst drugorzędny |
+| text | #eeeeee | tekst pierwszorzędny |
+| secondary | #5c9cf5 | rzadkie wyróżnienie strukturalne |
+| accent | #9d7cd8 | nagłówek grupy na liście |
+| error | #e06c75 | stan terminalny nieudany |
+| warning | #f5a742 | ostrzeżenie |
+| success | #7fd88f | stan terminalny udany |
+| info | #56b6c2 | informacja neutralna |
 
 ### Motyw jasny
 | Token | Wartość |
 | --- | --- |
-| background | #F5F7FA |
-| surface | #FFFFFF |
-| elevated | #EEF1F5 |
-| border | #CDD3DD |
-| focus | #3B6EDC |
-| text | #1F2430 |
-| muted | #667085 |
-| accent_soft | #DCE7FF |
-| success | #2F7D32 |
-| warning | #9A6700 |
-| error | #C6283D |
-| info | #1F6FA8 |
+| background | #ffffff |
+| backgroundPanel | #fafafa |
+| backgroundElement | #f5f5f5 |
+| borderSubtle | #d4d4d4 |
+| border | #b8b8b8 |
+| borderActive | #a0a0a0 |
+| primary | #3b7dd8 |
+| textMuted | #8a8a8a |
+| text | #1a1a1a |
+| secondary | #7b5bb6 |
+| accent | #d68c27 |
+| error | #d1383d |
+| warning | #d68c27 |
+| success | #3d9a57 |
+| info | #318795 |
+
+Skala neutralna ma dwanaście stopni i jeden nasycony akcent na wariant. W ciemnym akcentem jest ciepły `#fab283`, w jasnym niebieski `#3b7dd8`. Kolory semantyczne istnieją, ale opisują wyłącznie stan terminalny lub ostrzeżenie — nigdy zaznaczenie, focus ani dekorację.
+
+### 6.0. Hierarchia tekstu
+
+Tekst nie jest jednolity. Waga, odcień i tło wynikają ze stanu, według reguł zmierzonych w komponencie listy OpenCode:
+
+| Element | Tło | Kolor tekstu | Waga |
+| --- | --- | --- | --- |
+| wiersz zaznaczony, tytuł | `primary` | kontrast do `primary` | **bold** |
+| wiersz zaznaczony, etykieta | `primary` | kontrast do `primary` | normalna |
+| wiersz zwykły, tytuł | brak | `text` | normalna |
+| wiersz zwykły, etykieta | brak | `textMuted` | normalna |
+| wiersz nieaktywny | brak | `textMuted` | normalna |
+| nagłówek grupy | brak | `accent` | **bold** |
+| tytuł dialogu | brak | `text` | **bold** |
+| afordancja `esc` | brak | `textMuted` | normalna |
+| placeholder filtra | brak | `textMuted` | normalna |
+| kursor | — | `primary` | — |
+| pusty wynik | brak | `textMuted` | normalna |
+
+Kontrast do `primary` liczy się luminancją `0.299r + 0.587g + 0.114b`: powyżej `0.5` tekst czarny, poniżej biały. Dla `#fab283` luminancja to `0.76`, więc zaznaczony wiersz ma **czarny bold na ciepłym tle**. Reguła jest wyliczana, nie wpisana na sztywno, więc trzyma się każdego motywu.
+
+Zasada nadrzędna: zaznaczenie sygnalizuje **tło plus bold**, nie zmiana barwy tekstu na kolejny hue. Stan drugorzędny sygnalizuje **wyblakły odcień**, nie mniejszy rozmiar.
 
 ### Gęstość i układ
 
 - wiersz listy ma wysokość 1; opis pojawia się w podświetlonym wierszu albo panelu szczegółów;
 - standardowy padding panelu: 1 wiersz pionowo i 2 kolumny poziomo;
-- dialogi nie mają ozdobnej ramki, odróżnia je tło `elevated` na zasłonie;
+- dialogi nie mają ozdobnej ramki, odróżnia je tło `backgroundPanel` na zasłonie;
+- zasłona dialogu to czarne tło z alfa `150/255`;
+- szerokość dialogu jest skokowa: `60` domyślnie, `88` dla dużego, `116` dla bardzo dużego, zawsze przycięta do `terminal - 2`;
+- dialog startuje na wysokości `terminal / 4` od góry i jest wyśrodkowany poziomo;
+- nagłówek dialogu ma padding poziomy 4, lista padding poziomy 1, nagłówek grupy padding lewy 3;
+- pasek przewijania listy jest ukryty;
 - jedna główna powierzchnia ma pierwszeństwo przed wieloma kartami;
-- logo ma maksymalnie 4 wiersze i znika przed funkcjonalnymi kontrolami przy małym terminalu;
+- logo znika przed funkcjonalnymi kontrolami przy małym terminalu;
 - composer i stopka nie mogą zniknąć z powodu resize.
 
 
@@ -166,10 +208,12 @@ Referencją jest ekran startowy OpenCode. **Zero obramowań, zero pasków kart, 
 
 ```text
 
-                          ▄▀▀▄ █▄ █ ▀██▀ █▀▀▀ █  █ ▀██▀ █▀▀▀ ▀██▀
-                          █▄▄█ █▀▄█  ██  █▄▄▄ █▄▄█  ██  █▄▄   ██
-                          █  █ █ ▀█  ██     █ █  █  ██  █     ██
-                          ▀  ▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀ ▀  ▀ ▀▀▀▀ ▀     ▀▀
+                      █████╗ ███╗   ██╗██╗███████╗██╗  ██╗██╗███████╗████████╗
+                     ██╔══██╗████╗  ██║██║██╔════╝██║  ██║██║██╔════╝╚══██╔══╝
+                     ███████║██╔██╗ ██║██║███████╗███████║██║█████╗     ██║
+                     ██╔══██║██║╚██╗██║██║╚════██║██╔══██║██║██╔══╝     ██║
+                     ██║  ██║██║ ╚████║██║███████║██║  ██║██║██║        ██║
+                     ╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝╚══════╝╚═╝  ╚═╝╚═╝╚═╝        ╚═╝
 
                ▌ Ask anything or press enter to dub
                ▌
@@ -184,9 +228,9 @@ Referencją jest ekran startowy OpenCode. **Zero obramowań, zero pasków kart, 
 
 Elementy bloku, w kolejności z góry:
 
-1. **logo** — statyczne, czterowierszowe, wyśrodkowane; `ANI` stonowane, `SHIFT` wyróżnione;
-2. **box composera** — tło `elevated`, **pionowy akcent na lewej krawędzi** w kolorze `focus`, bez obramowania; wewnątrz pole wejścia, a pod nim wyblakła **linia kontekstu** `tryb · provider: model`;
-3. **podpowiedzi klawiszy** — klawisz w kolorze `text`, etykieta w `muted`, maksymalnie dwa słowa na etykietę, czytane z żywego rejestru;
+1. **logo** — statyczne, sześciowierszowe, wyśrodkowane, szerokość 57 kolumn; rysowane blokiem pełnym `█` z cieniem `╗╚═║╝`, nie ręcznie składanymi półblokami. `ANI` zajmuje kolumny 0–20 i jest stonowane w `textMuted`, `SHIFT` zajmuje kolumny 21–56 i jest wyróżnione w `primary`;
+2. **box composera** — tło `backgroundElement`, **pionowy akcent na lewej krawędzi** w kolorze `primary`, bez obramowania; wewnątrz pole wejścia, a pod nim wyblakła **linia kontekstu** `tryb · provider: model` w `textMuted`;
+3. **podpowiedzi klawiszy** — klawisz w kolorze `text`, etykieta w `textMuted`, maksymalnie dwa słowa na etykietę, czytane z żywego rejestru;
 4. **linia tipu** — kropka w `warning` plus jedno krótkie zdanie; opcjonalna.
 
 **Pas dolny** jest zawsze widoczny: po lewej skrócona ścieżka roboczej lokalizacji z gałęzią gita w formie `ścieżka:gałąź`, po prawej wersja aplikacji. Pas dolny **nie** jest panelem statusu przebiegu — stan przebiegu należy do ekranu roboczego.
@@ -234,6 +278,43 @@ Napisy zwięzłe, bez kropki kończącej, bez zdań złożonych.
 | secret missing | `missing` | wartość nie jest skonfigurowana |
 | secret configured | `configured` | wartość istnieje, ale nigdy nie jest wyświetlana |
 
+### 6.4. Kontrakt skrótów klawiszowych
+
+Skróty odwzorowują domyślne `keybinds` OpenCode. Wartości pochodzą z rejestru skrótów w binarce i z `opencode.ai/docs/keybinds`.
+
+| Akcja | Skrót | Nazwa w OpenCode |
+| --- | --- | --- |
+| wyjście z aplikacji | `ctrl+c`, `ctrl+d` | `app_exit` |
+| lista komend | `ctrl+p` | `command_list` |
+| przerwanie przebiegu | `escape` | `session_interrupt` |
+| zatwierdzenie wejścia | `enter` | `input_submit` |
+| nowa linia w wejściu | `shift+enter`, `ctrl+enter`, `alt+enter`, `ctrl+j` | `input_newline` |
+| czyszczenie wejścia | `ctrl+c` | `input_clear` |
+| początek/koniec linii | `ctrl+a` / `ctrl+e` | `input_line_home` / `input_line_end` |
+| usunięcie do końca/początku linii | `ctrl+k` / `ctrl+u` | `input_delete_to_line_end` / `input_delete_to_line_start` |
+| usunięcie słowa wstecz | `ctrl+w`, `ctrl+backspace`, `alt+backspace` | `input_delete_word_backward` |
+| ruch o słowo | `alt+left` / `alt+right`, `ctrl+left` / `ctrl+right` | `input_word_backward` / `input_word_forward` |
+| dialog: poprzedni | `up`, `ctrl+p` | `dialog.select.prev` |
+| dialog: następny | `down`, `ctrl+n` | `dialog.select.next` |
+| dialog: strona | `pageup` / `pagedown` | `dialog.select.page_up` / `page_down` |
+| dialog: skraj | `home` / `end` | `dialog.select.home` / `end` |
+| dialog: zatwierdzenie | `enter` | `dialog.select.submit` |
+| dialog: zamknięcie | `escape`, `ctrl+c` | zamknięcie dialogu |
+| autocomplete: poprzedni | `up`, `ctrl+p` | `prompt.autocomplete.prev` |
+| autocomplete: następny | `down`, `ctrl+n` | `prompt.autocomplete.next` |
+| autocomplete: ukrycie | `escape` | `prompt.autocomplete.hide` |
+| autocomplete: wybór | `enter` | `prompt.autocomplete.select` |
+| autocomplete: dopełnienie | `tab` | `prompt.autocomplete.complete` |
+
+**Rozstrzyganie kolizji.** Ten sam skrót ma różne znaczenie zależnie od tego, co jest otwarte. Pierwszeństwo od najwęższego kontekstu:
+
+1. `ctrl+p` — gdy otwarty jest dialog albo autocomplete, przechodzi do poprzedniej pozycji; w przeciwnym razie otwiera listę komend;
+2. `ctrl+c` — gdy otwarty jest dialog, zamyka dialog; gdy composer ma treść, czyści treść; gdy composer jest pusty, wychodzi z aplikacji;
+3. `escape` — gdy otwarty jest autocomplete, chowa autocomplete; gdy otwarty jest dialog, zamyka dialog; gdy trwa przebieg, przerywa przebieg;
+4. `enter` — gdy otwarty jest autocomplete lub dialog, zatwierdza pozycję; w przeciwnym razie zatwierdza composer.
+
+Klawisz nieobsłużony w węższym kontekście przechodzi do szerszego. Skrót, którego bieżący kontekst nie obsługuje, nie może wykonać cichej akcji w innym kontekście.
+
 ## 7. Wymagania systemowe
 
 ### R-001 - Platforma i framework
@@ -246,7 +327,7 @@ Po zakończeniu migracji wywołanie `anishift` bez subkomendy otwiera nowe TUI. 
 
 ### R-003 - Statyczne logo
 
-Ekran startowy pokazuje statyczne, czterowierszowe logo blokowe `ANISHIFT` inspirowane charakterem logo OpenCode, **wyśrodkowane poziomo** w bloku startowym. `ANI` jest stonowane, `SHIFT` wyróżnione. Nie ma maskotki, animacji ani dużego pełnoekranowego ASCII artu.
+Ekran startowy pokazuje statyczne, sześciowierszowe logo blokowe `ANISHIFT` o szerokości 57 kolumn, **wyśrodkowane poziomo** w bloku startowym. Litery są rysowane pełnym blokiem `█` z cieniem `╗╚═║╝`, w jednym spójnym kroju o stałej metryce — nie ręcznie składanymi półblokami o różnej grubości. `ANI` jest stonowane w `textMuted`, `SHIFT` wyróżnione w `primary`. Nie ma maskotki, animacji ani dużego pełnoekranowego ASCII artu.
 
 ### R-004 - Układ główny
 
@@ -261,6 +342,8 @@ Dostępne są co najmniej `anishift-dark` i `anishift-light`. Wszystkie kolory p
 ### R-006 - Stan nie tylko kolorem
 
 Każdy stan ważny dla użytkownika ma słowo oraz glif albo pozycję strukturalną. Kolor jest wyłącznie dodatkowym sygnałem.
+
+Tekst niesie stan także wagą i odcieniem, zgodnie z tabelą w 6.0. Jednolity tekst o jednej wadze i jednym odcieniu w całym widoku jest usterką kontraktu: pozycja zaznaczona musi różnić się tłem **i** wagą, a treść drugorzędna musi być wyblakła względem pierwszorzędnej. Zaznaczenie nigdy nie sygnalizuje się wprowadzeniem kolejnej barwy — tylko tłem `primary`, wyliczonym kontrastem i pogrubieniem.
 
 ### R-007 - Rozmiar terminala
 
@@ -310,7 +393,7 @@ Nieznana komenda nie wykonuje żadnego use case'u i pokazuje najbliższą znaną
 
 Composer jest dostępny na każdym głównym ekranie. Placeholder brzmi: `Ask anything or press enter to dub`.
 
-Composer renderuje się jako box na tle `elevated` z pionowym akcentem na lewej krawędzi, bez obramowania. Pod polem wejścia stoi wyblakła linia kontekstu w formie `tryb · provider: model`.
+Composer renderuje się jako box na tle `backgroundElement` z pionowym akcentem `primary` na lewej krawędzi, bez obramowania. Pod polem wejścia stoi wyblakła linia kontekstu w `textMuted`, w formie `tryb · provider: model`.
 
 ### R-021 - Pusty Enter
 
