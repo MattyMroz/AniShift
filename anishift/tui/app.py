@@ -171,7 +171,9 @@ class AniShiftApp(App[None]):
         self._apply_size(event.size)
 
     def on_key(self, event: Key) -> None:
-        """Run the command the registry binds to the pressed key, and claim that key."""
+        """Run the command the registry binds to the pressed key, leaving it to any narrower context first."""
+        if event.key in self.screen.active_bindings:
+            return
         if self._commands.dispatch_key(event.key):
             event.stop()
             event.prevent_default()

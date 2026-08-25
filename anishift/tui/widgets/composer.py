@@ -209,6 +209,32 @@ class _Suggestions(OptionList):
             self._hover(pointed)
 
 
+class _ComposerInput(Input):
+    """Text field holding the editing keys of the reference, and its exit reading of ``Ctrl+C``."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("ctrl+backspace", "delete_left_word", show=False),
+        Binding("alt+backspace", "delete_left_word", show=False),
+        Binding("alt+left", "cursor_left_word", show=False),
+        Binding("alt+right", "cursor_right_word", show=False),
+        Binding("ctrl+d", "app.quit", show=False),
+        Binding("ctrl+c", "clear_or_quit", show=False),
+    ]
+
+    def __init__(self, clear: Callable[[], None], *, placeholder: str, widget_id: str) -> None:
+        """Empty the composer through *clear* while there is anything left to empty."""
+        super().__init__(placeholder=placeholder, id=widget_id)
+        self.cursor_blink = False
+        self._clear: Callable[[], None] = clear
+
+    async def action_clear_or_quit(self) -> None:
+        """Empty a field that holds something, and leave the application when it holds nothing."""
+        if self.value:
+            self._clear()
+            return
+        await self.app.action_quit()
+
+
 class Composer(Vertical):
     """The one always-present input line of the application.
 
@@ -217,7 +243,9 @@ class Composer(Vertical):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "previous_suggestion", SUGGESTION_PREVIOUS_LABEL, show=False),
+        Binding("ctrl+p", "previous_suggestion", SUGGESTION_PREVIOUS_LABEL, show=False),
         Binding("down", "next_suggestion", SUGGESTION_NEXT_LABEL, show=False),
+        Binding("ctrl+n", "next_suggestion", SUGGESTION_NEXT_LABEL, show=False),
         Binding("tab", "complete_suggestion", SUGGESTION_COMPLETE_LABEL, show=False),
         Binding("escape", "dismiss_suggestions", SUGGESTION_DISMISS_LABEL, show=False),
     ]
@@ -236,8 +264,11 @@ class Composer(Vertical):
             widget_id=SUGGESTIONS_ID,
         )
         self._box: Vertical = Vertical(id=BOX_ID)
-        self._input: Input = Input(placeholder=COMPOSER_PLACEHOLDER, id=INPUT_ID)
-        self._input.cursor_blink = False
+        self._input: _ComposerInput = _ComposerInput(
+            self.clear,
+            placeholder=COMPOSER_PLACEHOLDER,
+            widget_id=INPUT_ID,
+        )
         self._written: str = ""
         self._context_line: Static = Static(
             context_content(mode=CONTEXT_MODE_AUTO, provider=CONTEXT_PROVIDER, model=CONTEXT_MODEL_UNSET),

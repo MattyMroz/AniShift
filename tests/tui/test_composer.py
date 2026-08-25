@@ -13,6 +13,7 @@ from textual.widgets import Input, OptionList, Static
 from textual.widgets.input import Selection
 
 from anishift.tui.app import AniShiftApp
+from anishift.tui.commands.catalog import EXIT_COMMAND_NAME, PALETTE_COMMAND_NAME
 from anishift.tui.commands.palette import CommandOption, slash_options
 from anishift.tui.dialogs.base import open_dialog
 from anishift.tui.dialogs.value import PromptDialog
@@ -497,6 +498,113 @@ def test_enter_writes_the_highlighted_suggestion_and_runs_nothing() -> None:
             assert calls == []
             assert _field(app).value == f"{expected.label} "
             assert _suggestions(app).display is False
+
+    _run(scenario())
+
+
+def test_ctrl_p_walks_the_suggestions_while_they_are_offered() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_dispatch(app, calls)
+            await pilot.press("/")
+            await pilot.pause()
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+            assert _suggestions(app).highlighted == 1
+            await pilot.press("ctrl+p")
+            await pilot.pause()
+            assert _suggestions(app).highlighted == 0
+            assert calls == []
+
+    _run(scenario())
+
+
+def test_ctrl_p_opens_the_command_list_while_no_suggestion_is_offered() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_dispatch(app, calls)
+            assert _suggestions(app).display is False
+            await pilot.press("ctrl+p")
+            await pilot.pause()
+            assert calls == [PALETTE_COMMAND_NAME]
+
+    _run(scenario())
+
+
+def test_ctrl_c_empties_a_field_that_holds_something() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_dispatch(app, calls)
+            await pilot.press(*"/th")
+            await pilot.pause()
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+            assert _field(app).value == ""
+            assert _suggestions(app).display is False
+            assert calls == []
+
+    _run(scenario())
+
+
+def test_ctrl_c_leaves_the_application_once_the_field_holds_nothing() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_dispatch(app, calls)
+            assert _field(app).value == ""
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+            assert calls == [EXIT_COMMAND_NAME]
+
+    _run(scenario())
+
+
+def test_ctrl_d_leaves_the_application() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_dispatch(app, calls)
+            await pilot.press("ctrl+d")
+            await pilot.pause()
+            assert calls == [EXIT_COMMAND_NAME]
+
+    _run(scenario())
+
+
+def test_the_word_keys_of_the_reference_walk_and_delete_backwards() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            field: Input = _field(app)
+            field.value = "alpha beta gamma"
+            field.cursor_position = len(field.value)
+            await pilot.pause()
+            await pilot.press("alt+left")
+            await pilot.pause()
+            assert field.cursor_position == len("alpha beta ")
+            await pilot.press("alt+right")
+            await pilot.pause()
+            assert field.cursor_position == len(field.value)
+            await pilot.press("ctrl+backspace")
+            await pilot.pause()
+            assert field.value == "alpha beta "
+            await pilot.press("alt+backspace")
+            await pilot.pause()
+            assert field.value == "alpha "
 
     _run(scenario())
 

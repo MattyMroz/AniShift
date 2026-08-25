@@ -306,6 +306,8 @@ Skróty odwzorowują domyślne `keybinds` OpenCode. Wartości pochodzą z rejest
 | autocomplete: wybór | `enter` | `prompt.autocomplete.select` |
 | autocomplete: dopełnienie | `tab` | `prompt.autocomplete.complete` |
 
+**`input_newline` jest odłożone.** Composer stoi na jednoliniowym `Input`, w którym nowa linia nie ma znaczenia, więc te cztery skróty nie są zaimplementowane. Spełnienie ich wymaga wieloliniowego widgetu, a ten ma sens dopiero razem z treścią, która potrzebuje wielu linii. Takiej treści dziś nie ma i nie jest potwierdzone, że będzie: tryb czatu nie jest zaplanowany, a docelowy przepływ to jedno uruchomienie bez pisania, później scheduler bez udziału użytkownika. Do czasu, gdy pojawi się udowodnione zastosowanie, ten wiersz tabeli pozostaje niespełniony świadomie, a nie przez przeoczenie.
+
 **Rozstrzyganie kolizji.** Ten sam skrót ma różne znaczenie zależnie od tego, co jest otwarte. Pierwszeństwo od najwęższego kontekstu:
 
 1. `ctrl+p` — gdy otwarty jest dialog albo autocomplete, przechodzi do poprzedniej pozycji; w przeciwnym razie otwiera listę komend;

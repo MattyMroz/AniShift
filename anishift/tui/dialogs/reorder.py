@@ -94,7 +94,9 @@ class ReorderDialog(DialogScreen[tuple[str, ...] | None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "cursor_up", DIALOG_UP_LABEL, show=False, priority=True),
+        Binding("ctrl+p", "cursor_up", DIALOG_UP_LABEL, show=False, priority=True),
         Binding("down", "cursor_down", DIALOG_DOWN_LABEL, show=False, priority=True),
+        Binding("ctrl+n", "cursor_down", DIALOG_DOWN_LABEL, show=False, priority=True),
         Binding("pageup", "page_up", DIALOG_PAGE_UP_LABEL, show=False, priority=True),
         Binding("pagedown", "page_down", DIALOG_PAGE_DOWN_LABEL, show=False, priority=True),
         Binding("home", "first", DIALOG_FIRST_LABEL, show=False, priority=True),
