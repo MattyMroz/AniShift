@@ -30,6 +30,7 @@ from anishift.application.results import RunResult
 from anishift.application.scheduler import GraphScheduler, ResourceLimits
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.sessions import RunSession
+from anishift.config.env_file import env_path, update_env_value
 from anishift.config.field_access import assign_setting_value, setting_is_active, setting_is_persisted
 from anishift.config.field_catalog import SettingCatalogContext, SettingSpec, SettingValue, setting_catalog
 from anishift.config.presets import AutoPresetFile, load_presets, save_presets
@@ -113,6 +114,7 @@ class AppService:
         settings_saver: Callable[[UserSettings], None] = save_user_settings,
         doctor_runner: Callable[[Settings | None], Sequence[CheckResult]] = run_doctor,
         setup_runner: Callable[..., Sequence[ResourceResult]] = run_setup,
+        env_file: Path | None = None,
     ) -> None:
         self._workspace_root: Path = workspace_root
         self._settings: Settings = settings
@@ -124,6 +126,7 @@ class AppService:
         self._settings_saver: Callable[[UserSettings], None] = settings_saver
         self._doctor_runner: Callable[[Settings | None], Sequence[CheckResult]] = doctor_runner
         self._setup_runner: Callable[..., Sequence[ResourceResult]] = setup_runner
+        self._env_file: Path = env_file if env_file is not None else env_path()
         self._workspace: InspectedWorkspace | None = None
         self._active_run_id: str | None = None
         self._active_cancel: EventCancellationToken | None = None
@@ -271,6 +274,11 @@ class AppService:
         preferences: UserSettings = deepcopy(draft) if draft is not None else self.settings_snapshot()
         return setting_catalog(SettingCatalogContext.from_user_settings(preferences))
 
+    def current_settings(self) -> Settings:
+        """Return the environment settings that the next run must use."""
+        with self._run_lock:
+            return self._settings
+
     def environment_statuses(self) -> Mapping[str, bool]:
         """Return environment-only availability without exposing configured values."""
         return {
@@ -350,6 +358,36 @@ class AppService:
             self._user_settings = deepcopy(candidate)
         return deepcopy(candidate)
 
+    def update_secret(self, setting_id: str, value: str | None) -> None:
+        """Store, clear, or remove one environment secret in the ``.env`` file.
+
+        Args:
+            setting_id: Catalog ID of one secret-scoped environment setting.
+            value: Replacement secret, ``""`` to keep an empty assignment, or
+                ``None`` to remove the key from the file entirely.
+
+        Raises:
+            ConfigError: The ID is unknown to the catalog or is not a secret.
+
+        The secret is never returned, logged, or rendered; only the environment
+        key name and the performed action are recorded. The file is replaced
+        atomically, yet a same-named variable already exported in the process
+        environment keeps overriding the stored value.
+        """
+        spec: SettingSpec = self._secret_spec(setting_id)
+        update_env_value(_env_variable(spec.setting_id), value, path=self._env_file)
+        self._reload_settings()
+
+    def reload_environment(self) -> Mapping[str, bool]:
+        """Re-read the environment file and report which env settings are configured.
+
+        Returns:
+            Exactly what :meth:`environment_statuses` reports for the reloaded
+            environment, so configured values stay hidden.
+        """
+        self._reload_settings()
+        return self.environment_statuses()
+
     def doctor(self) -> tuple[CheckResult, ...]:
         """Return every technical diagnostic through the shared setup API."""
         return tuple(self._doctor_runner(self._settings))
@@ -378,6 +416,25 @@ class AppService:
             )
             raise ConfigError(context=inactive)
         return spec
+
+    def _secret_spec(self, setting_id: str) -> SettingSpec:
+        spec: SettingSpec | None = next(
+            (item for item in self.settings_catalog() if item.setting_id == setting_id and item.is_secret),
+            None,
+        )
+        if spec is None or setting_id not in Settings.model_fields:
+            unknown = ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message=f"Unknown environment secret: {setting_id}",
+                suggestion="Pick one of the secret settings the catalog reports",
+            )
+            raise ConfigError(context=unknown)
+        return spec
+
+    def _reload_settings(self) -> None:
+        reloaded: Settings = Settings(_env_file=self._env_file)
+        with self._run_lock:
+            self._settings = reloaded
 
     def _selected_groups(self, group_ids: Sequence[str]) -> tuple[InspectedSourceGroup, ...]:
         requested: tuple[str, ...] = tuple(group_ids)
@@ -436,6 +493,11 @@ class AppService:
             if self._active_run_id == run_id:
                 self._active_run_id = None
                 self._active_cancel = None
+
+
+def _env_variable(setting_id: str) -> str:
+    prefix: str = Settings.model_config.get("env_prefix", "")
+    return f"{prefix}{setting_id}".upper()
 
 
 def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:

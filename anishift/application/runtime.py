@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
@@ -124,10 +124,10 @@ class _TranslationExecutor(Protocol):
 class ProductionHandlerFactory:
     """Build only the concrete services required by one accepted plan."""
 
-    __slots__ = ("_settings",)
+    __slots__ = ("_settings_provider",)
 
-    def __init__(self, settings: Settings) -> None:
-        self._settings: Settings = settings
+    def __init__(self, settings_provider: Callable[[], Settings]) -> None:
+        self._settings_provider: Callable[[], Settings] = settings_provider
 
     def __call__(
         self,
@@ -136,8 +136,9 @@ class ProductionHandlerFactory:
         source_groups: Mapping[str, InspectedSourceGroup],
     ) -> ExecutionHandlers:
         """Construct a run-owned dispatcher from immutable execution choices."""
+        settings: Settings = self._settings_provider()
         kinds: frozenset[TaskKind] = frozenset(task.kind for task in plan.tasks)
-        tts_handler: TtsTaskHandler | None = self._tts_handler(run_root, plan, kinds)
+        tts_handler: TtsTaskHandler | None = self._tts_handler(settings, run_root, plan, kinds)
         audio_handler: AudioTaskHandler | None = self._audio_handler(run_root, plan, kinds)
         composition_handler: CompositionTaskHandler | None = self._composition_handler(
             run_root,
@@ -154,7 +155,7 @@ class ProductionHandlerFactory:
             ExtractionTaskHandler(ExtractionService(), run_root=run_root, timeout_s=_EXTRACTION_TIMEOUT_S),
             SubtitleTaskHandler(run_root=run_root),
             TranslationTaskHandler(
-                _translation_service(self._settings, plan),
+                _translation_service(settings, plan),
                 run_root=run_root,
             ),
             tts=tts_handler,
@@ -163,8 +164,9 @@ class ProductionHandlerFactory:
             publish=publish_handler,
         )
 
+    @staticmethod
     def _tts_handler(
-        self,
+        settings: Settings,
         run_root: Path,
         plan: ExecutionPlan,
         kinds: frozenset[TaskKind],
@@ -183,7 +185,7 @@ class ProductionHandlerFactory:
             timeout_s=_AUDIO_TIMEOUT_S,
         )
         service = TtsService(
-            _tts_config(self._settings, plan),
+            _tts_config(settings, plan),
             resume_root=run_root / "tts",
             validator=clips,
             assembler=clips,

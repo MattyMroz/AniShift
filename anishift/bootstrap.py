@@ -91,10 +91,13 @@ def create_app_service(context: AppContext) -> AppService:
     from anishift.application.service import AppService  # noqa: PLC0415
     from anishift.services.media import DefaultMediaProbe  # noqa: PLC0415
 
-    return AppService(
+    service: AppService = AppService(
         workspace_root=context.workspace_root,
         settings=context.settings,
         user_settings=context.user_settings,
         inspector=WorkspaceInspector(DefaultMediaProbe()),
-        handler_factory=ProductionHandlerFactory(context.settings),
+        handler_factory=ProductionHandlerFactory(
+            lambda: service.current_settings(),  # noqa: PLW0108 - defers the lookup until the service exists
+        ),
     )
+    return service
