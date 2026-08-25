@@ -313,11 +313,11 @@ def test_the_palette_runs_the_picked_command_through_the_one_registry() -> None:
             await pilot.press(PALETTE_KEY)
             await pilot.pause()
             _spy_dispatch(app, calls)
-            await pilot.press(*"theme")
+            await pilot.press(*"status")
             await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
-            assert calls == ["theme"]
+            assert calls == ["status"]
             assert [screen for screen in app.screen_stack if _is_dialog(screen)] == []
 
     _run(scenario())

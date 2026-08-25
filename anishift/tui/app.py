@@ -27,22 +27,30 @@ from anishift.tui.messages import (
     WorkspaceFailed,
     WorkspaceLoaded,
 )
-from anishift.tui.screens.workspace import WorkspaceView
+from anishift.tui.screens.workspace import GroupRow, WorkspaceView
+from anishift.tui.settings.tree import open_speech_panel, speech_values
 from anishift.tui.state import FeedbackLevel, SessionState, UiFeedback, UiRoute
 from anishift.tui.strings import (
+    COMMAND_THEME_TITLE,
     MISSING_SURFACE,
     PALETTE_COMMAND_CATEGORY,
     PALETTE_SUGGESTED_CATEGORY,
     PALETTE_TITLE,
+    THEME_DARK_DESCRIPTION,
+    THEME_DARK_TITLE,
+    THEME_LIGHT_DESCRIPTION,
+    THEME_LIGHT_TITLE,
 )
-from anishift.tui.theme import register_themes
-from anishift.tui.ui_state import load_ui_state
+from anishift.tui.theme import DARK_THEME_ID, LIGHT_THEME_ID, register_themes
+from anishift.tui.ui_state import UiState, load_ui_state, save_ui_state
 from anishift.tui.widgets.composer import Composer
 from anishift.tui.widgets.footer import BottomBar
 from anishift.tui.widgets.hints import StartHints, action_hints
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from textual.app import ComposeResult
     from textual.content import Content
     from textual.events import Key, Resize
@@ -80,6 +88,12 @@ SPACER_ID: Final[str] = "app-spacer"
 FOOTER_ID: Final[str] = "app-footer"
 """Id of the one-row bottom bar pinned to the bottom edge."""
 
+THEME_ROWS: Final[tuple[tuple[str, str, str], ...]] = (
+    (DARK_THEME_ID, THEME_DARK_TITLE, THEME_DARK_DESCRIPTION),
+    (LIGHT_THEME_ID, THEME_LIGHT_TITLE, THEME_LIGHT_DESCRIPTION),
+)
+"""Id, title and description of every theme the shell offers a user."""
+
 
 def is_compact(*, width: int, height: int) -> bool:
     """Whether a terminal of this size has to use the dense layout."""
@@ -110,6 +124,9 @@ class AniShiftApp(App[None]):
         self._compact: bool = False
         self._has_logo: bool = False
         self._has_work: bool = False
+        self._group_rows: tuple[GroupRow, ...] = ()
+        self._run_status: str = ""
+        self._speech_values: dict[str, object] = speech_values()
         self._commands: CommandRegistry = CommandRegistry(lambda: self._state)
         self._commands.register((*global_commands(self), palette_command(self._open_palette)))
         self._composer: Composer = Composer(self._commands)
@@ -137,9 +154,15 @@ class AniShiftApp(App[None]):
         yield self._footer
 
     def on_mount(self) -> None:
-        """Draw the frame for the current state and terminal size."""
+        """Draw the frame for the current state and the terminal size."""
         self._render_frame()
         self._apply_size(self.size)
+
+    def show_groups(self, rows: Sequence[GroupRow], *, status: str = "") -> None:
+        """Show *rows* and *status* in the work area, in place of the start block."""
+        self._group_rows = tuple(rows)
+        self._run_status = status
+        self._render_frame()
 
     def on_resize(self, event: Resize) -> None:
         """Reflow the frame without rebuilding state or remounting a slot."""
@@ -271,12 +294,39 @@ class AniShiftApp(App[None]):
         self._report_missing_surface()
 
     def open_tts(self) -> None:
-        """Report that the speech surface is not available yet."""
-        self._report_missing_surface()
+        """Offer the representative speech fields, each with the editor it needs."""
+        open_speech_panel(self, self._state, self._speech_values)
 
     def open_theme(self) -> None:
-        """Report that the theme surface is not available yet."""
-        self._report_missing_surface()
+        """Offer both themes, previewing every row and keeping only a confirmed one."""
+        previous: str = self.theme
+        options: tuple[SelectOption[str], ...] = tuple(
+            SelectOption(value=theme_id, title=title, description=description)
+            for theme_id, title, description in THEME_ROWS
+        )
+
+        def preview(theme_id: str) -> None:
+            """Show the highlighted theme without keeping it."""
+            self.theme = theme_id
+
+        def chosen(outcome: SelectOutcome[str] | None) -> None:
+            """Keep a confirmed theme, or bring back the one that was in use."""
+            picked: str | None = None
+            if outcome is not None and outcome.kind is SelectOutcomeKind.SINGLE:
+                picked = outcome.value
+            if picked is None:
+                self.theme = previous
+                return
+            self.theme = picked
+            save_ui_state(UiState(theme=picked))
+
+        dialog: SelectDialog[str] = SelectDialog(
+            title=COMMAND_THEME_TITLE,
+            options=options,
+            current=previous,
+            on_highlight=preview,
+        )
+        open_dialog(self, self._state, dialog, chosen)
 
     def run_doctor(self) -> None:
         """Report that the doctor surface is not available yet."""
@@ -316,9 +366,12 @@ class AniShiftApp(App[None]):
 
     def _render_frame(self) -> None:
         """Redraw every region that projects the session state."""
-        self._has_work = self._state.workspace is not None
+        self._has_work = bool(self._group_rows) or self._state.workspace is not None
         self._workspace_view.display = self._state.route is UiRoute.WORKSPACE and self._has_work
-        self._workspace_view.show(self._state.workspace)
+        if self._group_rows:
+            self._workspace_view.show_groups(self._group_rows, status=self._run_status)
+        else:
+            self._workspace_view.show(self._state.workspace)
         self._hints.show(action_hints(self._commands))
         self._apply_layout()
 

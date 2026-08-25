@@ -117,13 +117,7 @@ class ComposerSubmissionKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ComposerSubmission:
-    """What one submitted line asks for.
-
-    Attributes:
-        kind: Reading of the line the composer decided on.
-        command: Slash name the line carries, without the slash and in one word;
-            empty for every other reading and for a line that names nothing.
-    """
+    """What one submitted line asks for."""
 
     kind: ComposerSubmissionKind
     command: str = ""

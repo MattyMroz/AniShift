@@ -45,12 +45,11 @@ def _print_doctor_report(results: list[CheckResult]) -> None:
 
 @app.callback(invoke_without_command=True)
 def _default(ctx: typer.Context) -> None:
-    """Launch the interactive shell when invoked without a subcommand."""
+    """Launch the interface when invoked without a subcommand."""
     if ctx.invoked_subcommand is None:
-        from anishift.bootstrap import bootstrap  # noqa: PLC0415
-        from anishift.cli.shell import run_shell  # noqa: PLC0415
+        from anishift.tui.prototype import PrototypeApp  # noqa: PLC0415 - keep textual off the Typer import path
 
-        run_shell(bootstrap())
+        PrototypeApp().run()
 
 
 @app.command()

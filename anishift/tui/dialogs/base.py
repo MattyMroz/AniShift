@@ -157,8 +157,6 @@ def _dismissal[T](
         """Give the focus back, then hand the result to the caller."""
         focus_id: str | None = lifecycle.close_modal(state)
         if focus_id is not None:
-            # Textual runs this callback before it pops the dialog, so the
-            # element to focus is only reachable on the next message.
             app.call_next(_refocus, app, focus_id)
         if callback is not None:
             callback(result)

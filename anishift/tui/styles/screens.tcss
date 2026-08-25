@@ -22,7 +22,7 @@ $block-width: 80;
     height: 1fr;
     min-height: 0;
     padding: 1 2;
-    align: center middle;
+    align: center top;
     overflow-y: auto;
     background: $background;
 }
@@ -32,6 +32,13 @@ $block-width: 80;
     max-width: 100%;
     height: auto;
     text-align: center;
+}
+
+#app-content > #workspace-view {
+    width: $block-width;
+    max-width: 100%;
+    height: auto;
+    text-align: left;
 }
 
 #app-detail {

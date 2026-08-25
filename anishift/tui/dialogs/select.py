@@ -109,16 +109,7 @@ _FUZZY: Final[FuzzySearch] = FuzzySearch()
 
 @dataclass(frozen=True, slots=True)
 class SelectOption[T]:
-    """One offered value and everything a row shows about it.
-
-    Attributes:
-        value: What the outcome carries back when this row is chosen.
-        title: Text of the row itself.
-        description: Sentence shown for the highlighted row only.
-        footer: Short trailing text of the row, such as the keys of a command.
-        category: Heading this row is grouped under while no filter is typed.
-        disabled: Whether the row may be chosen; the caller owns the reason.
-    """
+    """One offered value and everything a row shows about it."""
 
     value: T
     title: str
@@ -130,13 +121,7 @@ class SelectOption[T]:
 
 @dataclass(frozen=True, slots=True)
 class SelectAction:
-    """One extra decision the dialog offers next to picking a row.
-
-    Attributes:
-        name: Identity the outcome carries back to the caller.
-        key: Textual key name that runs the action.
-        label: Short text the action row shows.
-    """
+    """One extra decision the dialog offers next to picking a row."""
 
     name: str
     key: str
@@ -145,12 +130,7 @@ class SelectAction:
 
 @dataclass(frozen=True, slots=True)
 class SelectRow:
-    """One rendered row of the list.
-
-    Attributes:
-        label: Text the list shows for this row.
-        index: Option this row stands for, or ``None`` for a heading or the empty-result row.
-    """
+    """One rendered row of the list."""
 
     label: str
     index: int | None = None
@@ -167,13 +147,7 @@ class SelectOutcomeKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class SelectOutcome[T]:
-    """What one select dialog decided; the caller performs the effect.
-
-    Attributes:
-        kind: Which decision this outcome carries.
-        values: The picked value for single or action outcomes, the whole set for multi.
-        action: Name of the extra action, empty for every other kind.
-    """
+    """What one select dialog decided; the caller performs the effect."""
 
     kind: SelectOutcomeKind
     values: tuple[T, ...] = ()

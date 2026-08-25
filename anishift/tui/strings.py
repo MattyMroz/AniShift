@@ -44,8 +44,15 @@ __all__ = [
     "CONTEXT_MODEL_SEPARATOR",
     "CONTEXT_MODEL_UNSET",
     "CONTEXT_MODE_AUTO",
+    "CONTEXT_MODE_DEMO",
     "CONTEXT_PROVIDER",
     "CONTEXT_SEPARATOR",
+    "DEMO_GROUP_FIVE",
+    "DEMO_GROUP_FOUR",
+    "DEMO_GROUP_ONE",
+    "DEMO_GROUP_THREE",
+    "DEMO_GROUP_TWO",
+    "DEMO_TITLE",
     "DIALOG_CANCEL_LABEL",
     "DIALOG_CONFIRM_LABEL",
     "DIALOG_DOWN_LABEL",
@@ -55,6 +62,15 @@ __all__ = [
     "DIALOG_PAGE_UP_LABEL",
     "DIALOG_UP_LABEL",
     "GLYPH_GAP",
+    "GROUP_COLUMN_GAP",
+    "GROUP_CONFLICT_GLYPH",
+    "GROUP_MISSING_GLYPH",
+    "GROUP_READY_GLYPH",
+    "GROUP_SELECTED_GLYPH",
+    "GROUP_STATE_CONFLICT",
+    "GROUP_STATE_NO_SIDECAR",
+    "GROUP_STATE_READY",
+    "GROUP_UNSELECTED_GLYPH",
     "HINT_ENTER_KEY",
     "HINT_ENTER_LABEL",
     "HINT_KEY_GAP",
@@ -74,17 +90,45 @@ __all__ = [
     "REORDER_NOTHING_TO_ADD",
     "REORDER_ORDER_HINT",
     "REORDER_REMOVE_LABEL",
+    "RUN_DONE",
+    "RUN_PLANNING",
+    "RUN_STEP_SPEECH",
+    "RUN_WORKING",
+    "SELECTION_SUMMARY",
     "SELECT_DISABLED_OPTION",
     "SELECT_FILTER_PLACEHOLDER",
     "SELECT_NO_RESULTS",
+    "SETTINGS_OFF",
+    "SETTINGS_ON",
+    "SETTING_BOOST_DESCRIPTION",
+    "SETTING_BOOST_TITLE",
+    "SETTING_CONCURRENCY_DESCRIPTION",
+    "SETTING_CONCURRENCY_TITLE",
+    "SETTING_ENGINE_DESCRIPTION",
+    "SETTING_ENGINE_TITLE",
+    "SETTING_GAIN_DESCRIPTION",
+    "SETTING_GAIN_TITLE",
+    "SETTING_RETRIES_DESCRIPTION",
+    "SETTING_RETRIES_TITLE",
+    "SETTING_TEMPO_DESCRIPTION",
+    "SETTING_TEMPO_TITLE",
+    "STATUS_GLYPH",
     "SUGGESTION_COMPLETE_LABEL",
     "SUGGESTION_DISMISS_LABEL",
     "SUGGESTION_NEXT_LABEL",
     "SUGGESTION_PREVIOUS_LABEL",
     "SUGGESTION_ROW_GAP",
+    "THEME_DARK_DESCRIPTION",
+    "THEME_DARK_TITLE",
+    "THEME_LIGHT_DESCRIPTION",
+    "THEME_LIGHT_TITLE",
     "TIP_GLYPH",
     "TIP_LABEL",
     "TIP_TEXT",
+    "TTS_ENGINE_EDGE",
+    "TTS_ENGINE_ELEVENBYTES",
+    "TTS_ENGINE_ELEVENLABS",
+    "TTS_ENGINE_SAPI",
     "VALUE_ABOVE_MAXIMUM",
     "VALUE_BELOW_MINIMUM",
     "VALUE_CONFIRM_HINT",
@@ -146,6 +190,12 @@ CONTEXT_MODEL_SEPARATOR: Final[str] = ": "
 
 CONTEXT_MODE_AUTO: Final[str] = "Auto"
 """Mode the context line reports while Auto is the default workflow."""
+
+CONTEXT_MODE_DEMO: Final[str] = "Demo"
+"""Mode the context line reports while the session simulates every workflow."""
+
+DEMO_TITLE: Final[str] = "AniShift Demo"
+"""Terminal title of a session that simulates every workflow."""
 
 CONTEXT_PROVIDER: Final[str] = "Foundry"
 """Provider the context line reports for the primary model."""
@@ -380,3 +430,129 @@ REORDER_NOTHING_TO_ADD: Final[str] = "Every item is already on the list"
 
 REORDER_DELETE_PROMPT: Final[str] = "Press delete again to remove: {item}"
 """Reason shown while the removal of one member waits for its second key."""
+
+GROUP_SELECTED_GLYPH: Final[str] = "✓"
+"""Marker of a source group the next workflow acts on."""
+
+GROUP_UNSELECTED_GLYPH: Final[str] = "·"
+"""Marker of a source group the next workflow leaves alone."""
+
+GROUP_READY_GLYPH: Final[str] = "●"
+"""Glyph of a group whose source needs no decision before a run."""
+
+GROUP_CONFLICT_GLYPH: Final[str] = "▲"
+"""Glyph of a group whose sources disagree with one another."""
+
+GROUP_MISSING_GLYPH: Final[str] = "○"
+"""Glyph of a group whose expected companion file is absent."""
+
+GROUP_STATE_READY: Final[str] = "Ready"
+"""State of a group whose source needs no decision before a run."""
+
+GROUP_STATE_CONFLICT: Final[str] = "Conflict"
+"""State of a group whose sources disagree with one another."""
+
+GROUP_STATE_NO_SIDECAR: Final[str] = "No sidecar"
+"""State of a group whose expected companion subtitle file is absent."""
+
+GROUP_COLUMN_GAP: Final[str] = "  "
+"""Separator between two columns of one group row."""
+
+SELECTION_SUMMARY: Final[str] = "{selected} of {total} selected"
+"""Row saying how many of the listed groups the next workflow acts on."""
+
+STATUS_GLYPH: Final[str] = "●"
+"""Bullet in front of the run status, so the row reads as a state."""
+
+RUN_PLANNING: Final[str] = "Building plan…"
+"""Base state shown while a plan is being built and nothing runs yet."""
+
+RUN_WORKING: Final[str] = "Working"
+"""Base state shown while a run is active."""
+
+RUN_STEP_SPEECH: Final[str] = "Rendering speech"
+"""Operation the running state names while speech is being produced."""
+
+RUN_DONE: Final[str] = "Done"
+"""Terminal state of a run that finished every group it admitted."""
+
+DEMO_GROUP_ONE: Final[str] = "youjo-senki-ii-01"
+"""Name of the first simulated source group."""
+
+DEMO_GROUP_TWO: Final[str] = "youjo-senki-ii-02"
+"""Name of the second simulated source group."""
+
+DEMO_GROUP_THREE: Final[str] = "mushoku-tensei-s3-03"
+"""Name of the third simulated source group."""
+
+DEMO_GROUP_FOUR: Final[str] = "frieren-01"
+"""Name of the fourth simulated source group."""
+
+DEMO_GROUP_FIVE: Final[str] = "frieren-02"
+"""Name of the fifth simulated source group."""
+
+THEME_DARK_TITLE: Final[str] = "Dark"
+"""Title of the dark theme row."""
+
+THEME_DARK_DESCRIPTION: Final[str] = "Dark surfaces for a dim room"
+"""Description of the dark theme row."""
+
+THEME_LIGHT_TITLE: Final[str] = "Light"
+"""Title of the light theme row."""
+
+THEME_LIGHT_DESCRIPTION: Final[str] = "Light surfaces for a bright room"
+"""Description of the light theme row."""
+
+SETTINGS_ON: Final[str] = "On"
+"""Value text of a switch that is turned on."""
+
+SETTINGS_OFF: Final[str] = "Off"
+"""Value text of a switch that is turned off."""
+
+SETTING_ENGINE_TITLE: Final[str] = "Engine"
+"""Title of the speech-engine field."""
+
+SETTING_ENGINE_DESCRIPTION: Final[str] = "Choose the registered speech engine"
+"""Description of the speech-engine field."""
+
+SETTING_TEMPO_TITLE: Final[str] = "Tempo"
+"""Title of the speech-tempo field."""
+
+SETTING_TEMPO_DESCRIPTION: Final[str] = "Adjust the rendered speech tempo"
+"""Description of the speech-tempo field."""
+
+SETTING_GAIN_TITLE: Final[str] = "Voice gain"
+"""Title of the voice-gain field."""
+
+SETTING_GAIN_DESCRIPTION: Final[str] = "Offset this voice against the mix"
+"""Description of the voice-gain field."""
+
+SETTING_CONCURRENCY_TITLE: Final[str] = "Concurrency"
+"""Title of the request-concurrency field."""
+
+SETTING_CONCURRENCY_DESCRIPTION: Final[str] = "Limit simultaneous requests of the engine"
+"""Description of the request-concurrency field."""
+
+SETTING_RETRIES_TITLE: Final[str] = "Retries"
+"""Title of the retry-count field."""
+
+SETTING_RETRIES_DESCRIPTION: Final[str] = "Retry transient speech failures this often"
+"""Description of the retry-count field."""
+
+SETTING_BOOST_TITLE: Final[str] = "Speaker boost"
+"""Title of the speaker-boost field."""
+
+SETTING_BOOST_DESCRIPTION: Final[str] = "Ask the provider to boost the speaker"
+"""Description of the speaker-boost field."""
+
+TTS_ENGINE_EDGE: Final[str] = "edge"
+"""Identifier of the Edge speech engine."""
+
+TTS_ENGINE_ELEVENBYTES: Final[str] = "elevenbytes"
+"""Identifier of the ElevenBytes speech engine."""
+
+TTS_ENGINE_ELEVENLABS: Final[str] = "elevenlabs"
+"""Identifier of the ElevenLabs speech engine."""
+
+TTS_ENGINE_SAPI: Final[str] = "sapi"
+"""Identifier of the Windows SAPI speech engine."""

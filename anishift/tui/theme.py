@@ -25,22 +25,7 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class Palette:
-    """The twelve semantic colour tokens one AniShift theme is built from.
-
-    Attributes:
-        background: Application backdrop behind every surface.
-        surface: Default panel and header background.
-        elevated: Background of dialogs and the status footer.
-        border: Neutral separator and panel border.
-        focus: Highlight used for focus, selection and the brand accent.
-        text: Primary foreground.
-        muted: Secondary foreground for hints and disabled labels.
-        accent_soft: Low-contrast fill for selected rows and badges.
-        success: Terminal success state.
-        warning: Non-blocking problem state.
-        error: Failure state.
-        info: Neutral informational state.
-    """
+    """The twelve semantic colour tokens one AniShift theme is built from."""
 
     background: str
     surface: str

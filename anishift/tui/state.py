@@ -78,12 +78,7 @@ class FeedbackLevel(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class UiFeedback:
-    """One redacted message about the last operation, shown to the user.
-
-    Attributes:
-        level: Severity of the message.
-        message: Redacted text; never a path, a secret or a provider payload.
-    """
+    """One redacted message about the last operation, shown to the user."""
 
     level: FeedbackLevel
     message: str
@@ -96,25 +91,7 @@ class UiFeedback:
 
 @dataclass(slots=True)
 class GroupIntentDraft:
-    """Editable manual decisions of ``GroupIntent`` and ``ProductIntent`` for one group.
-
-    Attributes:
-        group_id: Source group these decisions belong to.
-        products: Durable products requested for the group.
-        subtitle_source_policy: Policy for selecting the subtitle source.
-        translation_action: Explicit translation decision for the source subtitles.
-        preferred_video_artifact_id: Video artifact chosen as the group source.
-        selected_subtitle_artifact_id: Sidecar or external subtitle artifact chosen as the source.
-        selected_audio_artifact_id: External audio artifact chosen as the source.
-        selected_audio_track_id: Embedded audio track chosen as the source.
-        selected_subtitle_track_id: Embedded subtitle track chosen as the source.
-        source_subtitle_language: Declared language of the source subtitles.
-        external_audio_role: Meaning assigned to the selected external audio.
-        subtitle_output_format: Requested serialization format for subtitle products.
-        burn_subtitle_product: Subtitle document burned into a requested video product.
-        mkv_tracks: Optional tracks attached to a requested MKV product.
-        mp4_audio_source: Audio selected for a requested MP4 product.
-    """
+    """Editable manual decisions of ``GroupIntent`` and ``ProductIntent`` for one group."""
 
     group_id: str
     products: set[ProductKind]
@@ -185,25 +162,7 @@ class GroupIntentDraft:
 
 @dataclass(slots=True)
 class SessionState:
-    """The single mutable presentation state of one session.
-
-    Attributes:
-        route: Route the host currently shows.
-        generation: Identity of the current interaction.
-        workspace: Last inspected workspace, if the session loaded one.
-        selected_group_ids: Groups the next workflow acts on.
-        default_preset_id: Auto-preset the auto workflow starts from.
-        auto_draft: Auto decisions being edited, before they are applied.
-        manual_drafts: Manual draft per group, keyed by group id.
-        plan: Last built execution plan awaiting preview or start.
-        active_run_id: Identity of the run while it is not terminal.
-        run_state: Lifecycle state of the one run the session can own.
-        events: Events accepted for the active run.
-        result: Terminal result of the last finished run.
-        feedback: Last redacted message shown to the user.
-        focus_id: Element that should hold focus on the current layer.
-        modal_focus_stack: Focus to restore for every open modal layer.
-    """
+    """The single mutable presentation state of one session."""
 
     route: UiRoute = UiRoute.WORKSPACE
     generation: int = 0

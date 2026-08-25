@@ -30,11 +30,7 @@ _UI_STATE_FILE_NAME: Final[str] = "ui_state.json"
 
 @dataclass(slots=True)
 class UiState:
-    """Presentation preferences of the TUI.
-
-    Attributes:
-        theme: Selected theme id, always one of ``THEME_IDS``.
-    """
+    """Presentation preferences of the TUI."""
 
     theme: str = DEFAULT_THEME_ID
 

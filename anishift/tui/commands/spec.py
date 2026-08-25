@@ -55,12 +55,7 @@ class CommandCategory(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class KeyHint:
-    """One key and the action label a surface renders for it.
-
-    Attributes:
-        key: Textual key name the command answers to.
-        label: Title of the command the key runs.
-    """
+    """One key and the action label a surface renders for it."""
 
     key: str
     label: str
@@ -68,21 +63,7 @@ class KeyHint:
 
 @dataclass(frozen=True, slots=True)
 class CommandSpec:
-    """The only definition of one command the interface can run.
-
-    Attributes:
-        name: Identity the registry stores and ``dispatch`` accepts.
-        title: Short label a palette row, a key hint or a button shows.
-        description: One sentence explaining what the command does.
-        category: Group a surface uses to order and to label the command.
-        run: Callback that performs the command.
-        hidden: Whether surfaces list the command; it stays runnable by key.
-        enabled: Whether the session allows the command; ``None`` means always.
-        suggested: Whether the session makes it the likely next step.
-        slash_name: Slash form of the command, or ``None`` for an action.
-        slash_aliases: Extra forms one query may match, without an extra row.
-        keys: Textual key names that run the command through the registry.
-    """
+    """The only definition of one command the interface can run."""
 
     name: str
     title: str

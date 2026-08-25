@@ -32,15 +32,7 @@ _SLASH_PREFIX: Final[str] = "/"
 
 @dataclass(frozen=True, slots=True)
 class CommandOption:
-    """One selectable row of the palette, projecting one command.
-
-    Attributes:
-        name: Registry name the selected row hands to ``dispatch``.
-        label: Slash form of the command, or the title of a contextual action.
-        description: Sentence the catalogue wrote for the command.
-        keys: Rendered keys of the command, empty when it answers to none.
-        suggested: Whether the session makes this command the likely next step.
-    """
+    """One selectable row of the palette, projecting one command."""
 
     name: str
     label: str
