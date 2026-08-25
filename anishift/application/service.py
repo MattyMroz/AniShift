@@ -30,12 +30,13 @@ from anishift.application.results import RunResult
 from anishift.application.scheduler import GraphScheduler, ResourceLimits
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.sessions import RunSession
-from anishift.config.field_catalog import SettingCatalogContext, SettingSpec, setting_catalog
+from anishift.config.field_access import assign_setting_value, setting_is_active, setting_is_persisted
+from anishift.config.field_catalog import SettingCatalogContext, SettingSpec, SettingValue, setting_catalog
 from anishift.config.presets import AutoPresetFile, load_presets, save_presets
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings, save_user_settings
 from anishift.config.workspace import cleanup_orphaned_temp, run_temp_dir
-from anishift.errors import ErrorCode, ErrorContext, ExecutionError, PlanningError, RunConflictError
+from anishift.errors import ConfigError, ErrorCode, ErrorContext, ExecutionError, PlanningError, RunConflictError
 from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
 from anishift.services.translation.engines import available_engine_ids as available_translation_engine_ids
 from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
@@ -320,6 +321,35 @@ class AppService:
             self._user_settings = deepcopy(validated)
         return deepcopy(validated)
 
+    def update_setting(self, setting_id: str, value: SettingValue) -> UserSettings:
+        """Change one active preference as a single all-or-nothing transaction.
+
+        Args:
+            setting_id: Catalog ID of one editable, currently active preference.
+            value: Replacement value validated against that catalog spec.
+
+        Returns:
+            A detached copy of the settings that were persisted.
+
+        Raises:
+            ConfigError: The ID is unknown, secret, or inactive for the current
+                selections.
+            ValueError: The value is rejected by the catalog spec.
+            TypeError: The value does not match the declared field type.
+
+        Nothing is written and the in-memory settings keep their previous state
+        whenever any of those failures happens.
+        """
+        candidate: UserSettings = self.settings_snapshot()
+        spec: SettingSpec = self._editable_spec(setting_id, candidate)
+        spec.validate_value(value)
+        assign_setting_value(candidate, spec, value)
+        candidate.__post_init__()
+        self._settings_saver(candidate)
+        with self._run_lock:
+            self._user_settings = deepcopy(candidate)
+        return deepcopy(candidate)
+
     def doctor(self) -> tuple[CheckResult, ...]:
         """Return every technical diagnostic through the shared setup API."""
         return tuple(self._doctor_runner(self._settings))
@@ -327,6 +357,27 @@ class AppService:
     def setup(self, *, force: bool = False) -> tuple[ResourceResult, ...]:
         """Install configured external resources without exposing setup internals."""
         return tuple(self._setup_runner(force=force, show_progress=False))
+
+    def _editable_spec(self, setting_id: str, candidate: UserSettings) -> SettingSpec:
+        spec: SettingSpec | None = next(
+            (item for item in self.settings_catalog(candidate) if item.setting_id == setting_id),
+            None,
+        )
+        if spec is None or spec.is_secret or not setting_is_persisted(spec):
+            unknown = ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message=f"Unknown editable setting: {setting_id}",
+                suggestion="Pick one of the settings the catalog reports for the current selections",
+            )
+            raise ConfigError(context=unknown)
+        if not setting_is_active(spec, candidate):
+            inactive = ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message=f"Setting is not active for the current selections: {setting_id}",
+                suggestion="Change the engine or provider this setting depends on first",
+            )
+            raise ConfigError(context=inactive)
+        return spec
 
     def _selected_groups(self, group_ids: Sequence[str]) -> tuple[InspectedSourceGroup, ...]:
         requested: tuple[str, ...] = tuple(group_ids)

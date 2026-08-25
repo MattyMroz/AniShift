@@ -23,6 +23,7 @@ from typing import Any
 
 __all__ = [
     "AniShiftError",
+    "ConfigError",
     "ErrorCode",
     "ErrorContext",
     "ExecutionError",
@@ -177,6 +178,10 @@ class TransientError(AniShiftError):
 
     Engine retry logic should retry on ``isinstance(err, TransientError)``.
     """
+
+
+class ConfigError(AniShiftError):
+    """Base error for rejected configuration requests and invalid settings."""
 
 
 class WorkflowError(AniShiftError):
