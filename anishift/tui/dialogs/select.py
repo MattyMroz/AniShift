@@ -1,30 +1,4 @@
-"""The one list selector every AniShift domain picks a value with.
-
-The palette, the model catalogue, the voices, the prompts and the settings trees
-all reuse ``SelectDialog``: it filters offline, groups by category, marks the
-current value independently of the cursor, offers a multi mode and a row of
-extra actions. It decides nothing on its own — it returns a ``SelectOutcome``
-and the caller performs the effect.
-
-Rows are computed by ``select_rows``, a pure function, so filtering, grouping,
-markers and the empty result are provable without a running application.
-
-Public API:
-    NO_RESULTS_TEXT: Row shown when the filter matches nothing.
-    DISABLED_OPTION_TEXT: Message shown when a disabled row is confirmed.
-    FILTER_PLACEHOLDER: Hint the empty filter box shows.
-    CURRENT_MARKER: Marker of the value the caller currently holds.
-    CHECKED_MARKER: Marker of a row picked in the multi mode.
-    PAGE_STEP: Rows one page key moves the cursor by.
-    SelectOption: One offered value and everything a row shows about it.
-    SelectAction: One extra decision the dialog offers next to picking a row.
-    SelectRow: One rendered row: an option of the dialog, or a heading.
-    SelectOutcomeKind: What kind of decision one outcome carries.
-    SelectOutcome: What the dialog decided, single, multi, action or cancelled.
-    moved_position: Cursor position after moving a number of places.
-    select_rows: Rows one set of options shows for one filter query.
-    SelectDialog: The only list selector of the application.
-"""
+"""The one list selector every AniShift domain picks a value with."""
 
 from __future__ import annotations
 
@@ -40,6 +14,18 @@ from textual.widgets.option_list import Option
 
 from anishift.tui.commands.spec import key_display
 from anishift.tui.dialogs.base import DialogScreen, DialogSize
+from anishift.tui.strings import (
+    DIALOG_CONFIRM_LABEL,
+    DIALOG_DOWN_LABEL,
+    DIALOG_FIRST_LABEL,
+    DIALOG_LAST_LABEL,
+    DIALOG_PAGE_DOWN_LABEL,
+    DIALOG_PAGE_UP_LABEL,
+    DIALOG_UP_LABEL,
+    SELECT_DISABLED_OPTION,
+    SELECT_FILTER_PLACEHOLDER,
+    SELECT_NO_RESULTS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -66,13 +52,13 @@ __all__ = [
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-NO_RESULTS_TEXT: Final[str] = "Brak wyników"
+NO_RESULTS_TEXT: Final[str] = SELECT_NO_RESULTS
 """Row the list shows when the filter matches nothing; the dialog stays closable."""
 
-DISABLED_OPTION_TEXT: Final[str] = "Ta opcja jest niedostępna."
+DISABLED_OPTION_TEXT: Final[str] = SELECT_DISABLED_OPTION
 """Message the dialog shows instead of confirming a disabled row."""
 
-FILTER_PLACEHOLDER: Final[str] = "Filtruj…"
+FILTER_PLACEHOLDER: Final[str] = SELECT_FILTER_PLACEHOLDER
 """Hint the empty filter box shows."""
 
 CURRENT_MARKER: Final[str] = "●"
@@ -163,7 +149,7 @@ class SelectRow:
 
     Attributes:
         label: Text the list shows for this row.
-        index: Option this row stands for, or ``None`` for a heading.
+        index: Option this row stands for, or ``None`` for a heading or the empty-result row.
     """
 
     label: str
@@ -185,7 +171,7 @@ class SelectOutcome[T]:
 
     Attributes:
         kind: Which decision this outcome carries.
-        values: Chosen values, one for single, the whole set for multi.
+        values: The picked value for single or action outcomes, the whole set for multi.
         action: Name of the extra action, empty for every other kind.
     """
 
@@ -236,12 +222,7 @@ def select_rows[T](
     current: T | None = None,
     checked: frozenset[int] | None = None,
 ) -> tuple[SelectRow, ...]:
-    """Rows *options* shows for the filter *query*.
-
-    An empty query keeps the order the caller gave and adds one heading per
-    category; a typed query returns a flat ranking without headings. A query
-    that matches nothing returns exactly one unselectable row.
-    """
+    """Rows *options* shows for *query*: grouped by category when empty, flat when typed."""
     matched: tuple[tuple[int, SelectOption[T]], ...] = _matched(options, query)
     if not matched:
         return (SelectRow(label=NO_RESULTS_TEXT),)
@@ -334,29 +315,20 @@ class _FilterInput(Input):
 class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
     """The only list selector of the application.
 
-    Navigation lives on this screen as priority bindings: the filter box holds
-    the focus, so ``Home``, ``End`` and ``Enter`` would otherwise belong to the
-    text cursor instead of the list.
-
-    A caller that previews the browsed value, such as the live theme preview,
-    passes ``on_highlight``. It is called with the value the cursor rests on:
-    once for the row the dialog opens on, then whenever the cursor moves or the
-    filter changes which option is highlighted. Headings and the empty result
-    announce nothing, and the same option is never announced twice in a row.
-    The dialog still applies nothing itself: the caller previews on highlight
-    and restores its own state when the outcome comes back cancelled.
+    ``on_highlight`` fires for the initial highlight, every cursor move and
+    every filter change; never for a heading or the empty-result row.
     """
 
     AUTO_FOCUS: ClassVar[str | None] = f"#{_FILTER_ID}"
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("up", "cursor_up", "W górę", show=False, priority=True),
-        Binding("down", "cursor_down", "W dół", show=False, priority=True),
-        Binding("pageup", "page_up", "Strona w górę", show=False, priority=True),
-        Binding("pagedown", "page_down", "Strona w dół", show=False, priority=True),
-        Binding("home", "first", "Początek", show=False, priority=True),
-        Binding("end", "last", "Koniec", show=False, priority=True),
-        Binding("enter", "confirm", "Zatwierdź", show=False, priority=True),
+        Binding("up", "cursor_up", DIALOG_UP_LABEL, show=False, priority=True),
+        Binding("down", "cursor_down", DIALOG_DOWN_LABEL, show=False, priority=True),
+        Binding("pageup", "page_up", DIALOG_PAGE_UP_LABEL, show=False, priority=True),
+        Binding("pagedown", "page_down", DIALOG_PAGE_DOWN_LABEL, show=False, priority=True),
+        Binding("home", "first", DIALOG_FIRST_LABEL, show=False, priority=True),
+        Binding("end", "last", DIALOG_LAST_LABEL, show=False, priority=True),
+        Binding("enter", "confirm", DIALOG_CONFIRM_LABEL, show=False, priority=True),
     ]
 
     def __init__(  # noqa: PLR0913 - one selector covers every domain, so its whole contract stays explicit

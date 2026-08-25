@@ -1,22 +1,4 @@
-"""The editor one ordered list is rearranged in.
-
-``ReorderDialog`` edits a copy of the caller's list, so the whole list is either
-committed with ``Enter`` or rolled back with ``Esc``; there is no partial save
-and no way for a half-finished order to reach the caller.
-
-Adding a member reuses the same list in an add mode instead of stacking a second
-modal screen: the dialog contract allows one AniShift dialog at a time, and a
-child screen would also have to rebuild the order edited so far.
-
-Public API:
-    ADD_KEY: Key that starts and ends the add mode.
-    ORDER_HINT: Hint shown while the order is being edited.
-    ADD_HINT: Hint shown while a member is being added.
-    NOTHING_TO_ADD_TEXT: Reason shown when every candidate is already a member.
-    delete_prompt: Reason shown while a removal waits for its second key.
-    moved_items: Members after moving the one at a position by a number of places.
-    ReorderDialog: Editor of one ordered list, committed or rolled back whole.
-"""
+"""The editor one ordered list is rearranged in, committed or rolled back whole."""
 
 from __future__ import annotations
 
@@ -29,6 +11,23 @@ from textual.widgets.option_list import Option
 
 from anishift.tui.dialogs.base import DialogScreen, DialogSize
 from anishift.tui.dialogs.select import NO_RESULTS_TEXT, PAGE_STEP, moved_position
+from anishift.tui.strings import (
+    DIALOG_CONFIRM_LABEL,
+    DIALOG_DOWN_LABEL,
+    DIALOG_FIRST_LABEL,
+    DIALOG_LAST_LABEL,
+    DIALOG_PAGE_DOWN_LABEL,
+    DIALOG_PAGE_UP_LABEL,
+    DIALOG_UP_LABEL,
+    REORDER_ADD_HINT,
+    REORDER_ADD_LABEL,
+    REORDER_DELETE_PROMPT,
+    REORDER_MOVE_DOWN_LABEL,
+    REORDER_MOVE_UP_LABEL,
+    REORDER_NOTHING_TO_ADD,
+    REORDER_ORDER_HINT,
+    REORDER_REMOVE_LABEL,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -51,13 +50,13 @@ __all__ = [
 ADD_KEY: Final[str] = "a"
 """Key that starts the add mode, and leaves it again."""
 
-ORDER_HINT: Final[str] = "Shift+↑/↓ przenosi · A dodaje · Delete usuwa · Enter zatwierdza · Esc wycofuje"
+ORDER_HINT: Final[str] = REORDER_ORDER_HINT
 """Hint shown while the order itself is being edited."""
 
-ADD_HINT: Final[str] = "Enter dodaje wybrany element · Esc wraca do kolejności"
+ADD_HINT: Final[str] = REORDER_ADD_HINT
 """Hint shown while a member is being added."""
 
-NOTHING_TO_ADD_TEXT: Final[str] = "Wszystkie elementy są już na liście."
+NOTHING_TO_ADD_TEXT: Final[str] = REORDER_NOTHING_TO_ADD
 """Reason shown when every candidate is already a member."""
 
 _LIST_ID: Final[str] = "reorder-list"
@@ -75,15 +74,11 @@ _ERROR_CLASS: Final[str] = "dialog-error"
 
 def delete_prompt(item: str) -> str:
     """Reason shown while the removal of *item* waits for its second key."""
-    return f"Naciśnij Delete ponownie, aby usunąć: {item}"
+    return REORDER_DELETE_PROMPT.format(item=item)
 
 
 def moved_items(items: Sequence[str], position: int, delta: int) -> tuple[str, ...]:
-    """Members after moving the one at *position* by *delta* places.
-
-    A move that would leave the list changes nothing, so the ends of the list
-    are never wrapped around.
-    """
+    """Members after moving the one at *position* by *delta*, unchanged when it would leave."""
     target: int = position + delta
     if not 0 <= position < len(items) or not 0 <= target < len(items):
         return tuple(items)
@@ -98,17 +93,17 @@ class ReorderDialog(DialogScreen[tuple[str, ...] | None]):
     AUTO_FOCUS: ClassVar[str | None] = f"#{_LIST_ID}"
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("up", "cursor_up", "W górę", show=False, priority=True),
-        Binding("down", "cursor_down", "W dół", show=False, priority=True),
-        Binding("pageup", "page_up", "Strona w górę", show=False, priority=True),
-        Binding("pagedown", "page_down", "Strona w dół", show=False, priority=True),
-        Binding("home", "first", "Początek", show=False, priority=True),
-        Binding("end", "last", "Koniec", show=False, priority=True),
-        Binding("shift+up", "move_up", "Wyżej", show=False, priority=True),
-        Binding("shift+down", "move_down", "Niżej", show=False, priority=True),
-        Binding("delete", "remove", "Usuń", show=False, priority=True),
-        Binding(ADD_KEY, "add", "Dodaj", show=False, priority=True),
-        Binding("enter", "confirm", "Zatwierdź", show=False, priority=True),
+        Binding("up", "cursor_up", DIALOG_UP_LABEL, show=False, priority=True),
+        Binding("down", "cursor_down", DIALOG_DOWN_LABEL, show=False, priority=True),
+        Binding("pageup", "page_up", DIALOG_PAGE_UP_LABEL, show=False, priority=True),
+        Binding("pagedown", "page_down", DIALOG_PAGE_DOWN_LABEL, show=False, priority=True),
+        Binding("home", "first", DIALOG_FIRST_LABEL, show=False, priority=True),
+        Binding("end", "last", DIALOG_LAST_LABEL, show=False, priority=True),
+        Binding("shift+up", "move_up", REORDER_MOVE_UP_LABEL, show=False, priority=True),
+        Binding("shift+down", "move_down", REORDER_MOVE_DOWN_LABEL, show=False, priority=True),
+        Binding("delete", "remove", REORDER_REMOVE_LABEL, show=False, priority=True),
+        Binding(ADD_KEY, "add", REORDER_ADD_LABEL, show=False, priority=True),
+        Binding("enter", "confirm", DIALOG_CONFIRM_LABEL, show=False, priority=True),
     ]
 
     def __init__(

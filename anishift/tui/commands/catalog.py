@@ -1,27 +1,10 @@
-"""The commands the product froze, and none of their behaviour.
-
-Section 5 of the specification closes the catalogue at fourteen slash commands.
-This module writes those fourteen definitions once and delegates every effect to
-the application shell through ``CommandHost``: nothing here opens a dialog, reads
-a file or talks to the application layer.
-
-Contextual actions never receive a slash name, so the catalogue cannot grow a
-fifteenth command by adding an action. ``palette_command`` is such an action: it
-stays out of every listing so the palette never offers to open itself.
-
-Public API:
-    EXIT_COMMAND_NAME: Name of the one command that leaves the application.
-    PALETTE_COMMAND_NAME: Name of the action that opens the command palette.
-    PALETTE_KEY: Key the specification reserves for the command palette.
-    CommandHost: Behaviour the catalogue delegates to.
-    global_commands: Build the fourteen commands of the frozen catalogue.
-    palette_command: Build the hidden action that opens the command palette.
-"""
+"""The fourteen frozen command definitions, and none of their behaviour."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final, Protocol
 
+from anishift.tui import strings
 from anishift.tui.commands.spec import CommandCategory, CommandSpec
 
 if TYPE_CHECKING:
@@ -29,6 +12,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "EXIT_COMMAND_NAME",
+    "EXIT_KEY",
     "PALETTE_COMMAND_NAME",
     "PALETTE_KEY",
     "CommandHost",
@@ -46,6 +30,9 @@ PALETTE_COMMAND_NAME: Final[str] = "palette"
 
 PALETTE_KEY: Final[str] = "ctrl+p"
 """Key the specification reserves for opening the command palette."""
+
+EXIT_KEY: Final[str] = "ctrl+c"
+"""Key that leaves the application, through the one exit command."""
 
 
 class CommandHost(Protocol):
@@ -99,112 +86,113 @@ def global_commands(host: CommandHost) -> tuple[CommandSpec, ...]:
     return (
         CommandSpec(
             name="init",
-            title="Inicjalizacja",
-            description="Przygotowuje workspace i konfigurację oraz pokazuje dalsze kroki.",
+            title=strings.COMMAND_INIT_TITLE,
+            description=strings.COMMAND_INIT_DESCRIPTION,
             category=CommandCategory.SESSION,
             run=host.open_init,
             slash_name="init",
         ),
         CommandSpec(
             name="connect",
-            title="Połączenie Foundry",
-            description="Konfiguruje połączenie Palantir Foundry i sprawdza jeden model po potwierdzeniu.",
+            title=strings.COMMAND_CONNECT_TITLE,
+            description=strings.COMMAND_CONNECT_DESCRIPTION,
             category=CommandCategory.SESSION,
             run=host.open_connect,
             slash_name="connect",
         ),
         CommandSpec(
             name="status",
-            title="Stan sesji",
-            description="Pokazuje bezpieczne podsumowanie konfiguracji, workspace i aktywnego przebiegu.",
+            title=strings.COMMAND_STATUS_TITLE,
+            description=strings.COMMAND_STATUS_DESCRIPTION,
             category=CommandCategory.DIAGNOSTICS,
             run=host.show_status,
             slash_name="status",
         ),
         CommandSpec(
             name="debug",
-            title="Diagnostyka rozszerzona",
-            description="Pokazuje zredagowaną diagnostykę bez sekretów i bez treści użytkownika.",
+            title=strings.COMMAND_DEBUG_TITLE,
+            description=strings.COMMAND_DEBUG_DESCRIPTION,
             category=CommandCategory.DIAGNOSTICS,
             run=host.show_debug,
             slash_name="debug",
         ),
         CommandSpec(
             name="help",
-            title="Pomoc",
-            description="Wypisuje komendy i aktualne skróty z żywego rejestru.",
+            title=strings.COMMAND_HELP_TITLE,
+            description=strings.COMMAND_HELP_DESCRIPTION,
             category=CommandCategory.SESSION,
             run=host.show_help,
             slash_name="help",
         ),
         CommandSpec(
             name=EXIT_COMMAND_NAME,
-            title="Wyjście",
-            description="Zamyka aplikację; aktywny przebieg wymaga potwierdzenia.",
+            title=strings.COMMAND_EXIT_TITLE,
+            description=strings.COMMAND_EXIT_DESCRIPTION,
             category=CommandCategory.SESSION,
             run=host.exit_app,
             slash_name=EXIT_COMMAND_NAME,
+            keys=(EXIT_KEY,),
         ),
         CommandSpec(
             name="auto",
-            title="Tryb Auto",
-            description="Konfiguruje domyślny tryb Auto i presety; nigdy nie uruchamia przetwarzania.",
+            title=strings.COMMAND_AUTO_TITLE,
+            description=strings.COMMAND_AUTO_DESCRIPTION,
             category=CommandCategory.WORKFLOW,
             run=host.open_auto,
             slash_name="auto",
         ),
         CommandSpec(
             name="manual",
-            title="Tryb Manual",
-            description="Przygotowuje intencje grup i prowadzi przez Preview oraz jawny Start.",
+            title=strings.COMMAND_MANUAL_TITLE,
+            description=strings.COMMAND_MANUAL_DESCRIPTION,
             category=CommandCategory.WORKFLOW,
             run=host.open_manual,
             slash_name="manual",
         ),
         CommandSpec(
             name="model",
-            title="Model główny",
-            description="Wybiera główny model Palantir z lokalnego katalogu modeli.",
+            title=strings.COMMAND_MODEL_TITLE,
+            description=strings.COMMAND_MODEL_DESCRIPTION,
             category=CommandCategory.SETTINGS,
             run=host.open_model,
             slash_name="model",
         ),
         CommandSpec(
             name="translation",
-            title="Tłumaczenie",
-            description="Ustawia tłumaczenie oraz niezależny model LLM do tłumaczenia.",
+            title=strings.COMMAND_TRANSLATION_TITLE,
+            description=strings.COMMAND_TRANSLATION_DESCRIPTION,
             category=CommandCategory.SETTINGS,
             run=host.open_translation,
             slash_name="translation",
         ),
         CommandSpec(
             name="prompts",
-            title="Prompty",
-            description="Wybiera prompt zadania, styl wypowiedzi i moduły promptu.",
+            title=strings.COMMAND_PROMPTS_TITLE,
+            description=strings.COMMAND_PROMPTS_DESCRIPTION,
             category=CommandCategory.SETTINGS,
             run=host.open_prompts,
             slash_name="prompts",
         ),
         CommandSpec(
             name="tts",
-            title="Synteza mowy",
-            description="Ustawia TTS, głosy, profil audio i klucze związane z TTS.",
+            title=strings.COMMAND_TTS_TITLE,
+            description=strings.COMMAND_TTS_DESCRIPTION,
             category=CommandCategory.SETTINGS,
             run=host.open_tts,
             slash_name="tts",
         ),
         CommandSpec(
             name="theme",
-            title="Motyw",
-            description="Wybiera motyw z podglądem na żywo i wycofaniem po Esc.",
+            title=strings.COMMAND_THEME_TITLE,
+            description=strings.COMMAND_THEME_DESCRIPTION,
             category=CommandCategory.SETTINGS,
             run=host.open_theme,
             slash_name="theme",
         ),
         CommandSpec(
             name="doctor",
-            title="Diagnostyka techniczna",
-            description="Uruchamia diagnostykę techniczną bez automatycznej naprawy.",
+            title=strings.COMMAND_DOCTOR_TITLE,
+            description=strings.COMMAND_DOCTOR_DESCRIPTION,
             category=CommandCategory.DIAGNOSTICS,
             run=host.run_doctor,
             slash_name="doctor",
@@ -216,8 +204,8 @@ def palette_command(run: CommandRun) -> CommandSpec:
     """Build the hidden action that opens the palette without listing itself."""
     return CommandSpec(
         name=PALETTE_COMMAND_NAME,
-        title="Paleta komend",
-        description="Otwiera listę dostępnych komend i akcji kontekstowych.",
+        title=strings.COMMAND_PALETTE_TITLE,
+        description=strings.COMMAND_PALETTE_DESCRIPTION,
         category=CommandCategory.ACTION,
         run=run,
         hidden=True,

@@ -62,6 +62,14 @@ from anishift.tui.dialogs.value import (
     toggle_boolean,
 )
 from anishift.tui.state import RunUiState, SessionState, UiRoute
+from anishift.tui.strings import (
+    VALUE_ABOVE_MAXIMUM,
+    VALUE_BELOW_MINIMUM,
+    VALUE_OUT_OF_RANGE,
+    VALUE_RANGE_LABEL,
+    VALUE_RANGE_OPEN_END,
+    VALUE_STEP_LABEL,
+)
 
 _FULL_SIZE: Final[tuple[int, int]] = (100, 30)
 
@@ -218,11 +226,14 @@ def test_a_boolean_row_needs_no_modal_to_change() -> None:
 
 
 def test_a_number_field_always_shows_its_range_and_its_step() -> None:
-    assert range_text(minimum=0.0, maximum=10.0, step=0.5) == "Zakres 0 – 10 · krok 0.5"
-    assert range_text(minimum=None, maximum=None, step=1.0) == "krok 1"
-    assert out_of_range_text(minimum=0.0, maximum=10.0) == "Wartość musi być z zakresu 0 – 10."
-    assert out_of_range_text(minimum=1.0, maximum=None).endswith("1.")
-    assert out_of_range_text(minimum=None, maximum=9.0).endswith("9.")
+    bounded: str = range_text(minimum=0.0, maximum=10.0, step=0.5)
+    assert bounded.startswith(f"{VALUE_RANGE_LABEL} 0")
+    assert bounded.endswith(f"{VALUE_STEP_LABEL} 0.5")
+    assert range_text(minimum=None, maximum=None, step=1.0) == f"{VALUE_STEP_LABEL} 1"
+    assert range_text(minimum=None, maximum=9.0, step=1.0).startswith(f"{VALUE_RANGE_LABEL} {VALUE_RANGE_OPEN_END}")
+    assert out_of_range_text(minimum=0.0, maximum=10.0) == VALUE_OUT_OF_RANGE.format(minimum="0", maximum="10")
+    assert out_of_range_text(minimum=1.0, maximum=None) == VALUE_BELOW_MINIMUM.format(minimum="1")
+    assert out_of_range_text(minimum=None, maximum=9.0) == VALUE_ABOVE_MAXIMUM.format(maximum="9")
     assert out_of_range_text(minimum=None, maximum=None) == ""
 
 
@@ -255,7 +266,8 @@ def test_the_palette_key_opens_the_shared_selector_with_the_registry_rows() -> N
             dialog: Screen[Any] = app.screen
             assert isinstance(dialog, SelectDialog)
             rows: list[str] = [label.strip() for label in _labels(dialog, "select-list")]
-            assert set(app.commands.slash_names()) <= {row.removeprefix("/") for row in rows}
+            named: set[str] = {row.removeprefix("/").split()[0] for row in rows if row.startswith("/")}
+            assert set(app.commands.slash_names()) <= named
             assert app.focused is not None
             assert app.focused.id == "select-filter"
 
@@ -331,7 +343,7 @@ def test_escape_cancels_a_dialog_and_gives_the_focus_back() -> None:
     _run(scenario())
 
 
-def test_the_help_quit_key_cancels_a_dialog_and_gives_the_focus_back() -> None:
+def test_the_exit_key_cancels_a_dialog_instead_of_leaving_the_application() -> None:
     async def scenario() -> None:
         results: list[Any] = []
         app: AniShiftApp = AniShiftApp()
@@ -896,7 +908,7 @@ def test_a_decimal_field_steps_and_refuses_a_value_outside_its_range() -> None:
             open_dialog(app, app.session_state, dialog, results.append)
             await pilot.pause()
             box: Input = dialog.query_one("#value-input", Input)
-            assert "krok 0.5" in _text(dialog, "value-hint")
+            assert f"{VALUE_STEP_LABEL} 0.5" in _text(dialog, "value-hint")
             await pilot.press("up")
             await pilot.pause()
             assert box.value == "1.5"

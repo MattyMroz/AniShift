@@ -1,24 +1,37 @@
-/* Fixed application frame: brand, contextual header, one work area, composer,
-   one-row status footer. Spacing is padding and margin only, never blank rows. */
+/* Application frame: the work area, the start block and the pinned bottom bar. */
 
-#app-brand {
-    height: auto;
-    max-height: 4;
-    padding: 0 2;
+$block-width: 80;
+
+#app-body {
+    height: 1fr;
+    layout: vertical;
     background: $background;
 }
 
-#app-header {
-    height: 1;
-    padding: 0 2;
-    background: $surface;
-    color: $text;
+#app-brand {
+    width: 100%;
+    height: auto;
+    max-height: 4;
+    margin-bottom: 1;
+    text-align: center;
+    background: $background;
 }
 
 #app-content {
+    width: 100%;
     height: 1fr;
+    min-height: 0;
     padding: 1 2;
+    align: center middle;
+    overflow-y: auto;
     background: $background;
+}
+
+#app-content > * {
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    text-align: center;
 }
 
 #app-detail {
@@ -27,21 +40,55 @@
     background: $surface;
 }
 
+#app-spacer {
+    width: 100%;
+    height: 1fr;
+    min-height: 0;
+    background: $background;
+}
+
 #app-composer {
+    width: 100%;
     height: auto;
-    min-height: 1;
-    padding: 0 2;
-    background: $surface;
+    align-horizontal: center;
+    background: $background;
 }
 
 #composer {
+    width: $block-width;
+    max-width: 100%;
     height: auto;
+}
+
+#composer-box {
+    width: 100%;
+    height: 3;
+    background: $elevated;
+}
+
+#composer-accent {
+    width: 2;
+    height: 3;
+    color: $focus;
+    text-style: bold;
+    background: $elevated;
+}
+
+#composer-body {
+    width: 1fr;
+    height: 3;
+}
+
+#composer-field {
+    width: 100%;
+    height: 1;
 }
 
 #composer-prompt {
     width: 2;
     color: $focus;
     text-style: bold;
+    background: $elevated;
 }
 
 #composer-input {
@@ -49,8 +96,15 @@
     height: 1;
     border: none;
     padding: 0;
-    background: $surface;
+    background: $elevated;
     color: $text;
+}
+
+#composer-context {
+    height: 1;
+    margin-top: 1;
+    color: $text-muted;
+    background: $elevated;
 }
 
 #composer-suggestions {
@@ -75,31 +129,56 @@
     color: $text-muted;
 }
 
+#app-hints {
+    width: 100%;
+    height: auto;
+    align-horizontal: center;
+}
+
+#app-keys {
+    width: $block-width;
+    max-width: 100%;
+    height: 1;
+    margin-top: 1;
+    text-align: left;
+    color: $text-muted;
+}
+
+#app-tip {
+    width: $block-width;
+    max-width: 100%;
+    height: 1;
+    margin-top: 1;
+    padding-left: 5;
+    text-align: left;
+    color: $warning;
+}
+
 #app-footer {
     height: 1;
-    padding: 0 2;
-    background: $elevated;
+    padding: 0 1;
+    background: $background;
+    color: $text-muted;
+}
+
+#footer-location {
+    width: 1fr;
+    height: 1;
+    color: $text-muted;
+}
+
+#footer-version {
+    width: auto;
+    height: 1;
+    text-align: right;
     color: $text-muted;
 }
 
 .compact #app-brand {
     max-height: 1;
-    padding: 0 1;
-}
-
-.compact #app-header {
-    padding: 0 1;
 }
 
 .compact #app-content {
-    padding: 0 1;
-}
-
-.compact #app-composer {
-    padding: 0 1;
-}
-
-.compact #app-footer {
     padding: 0 1;
 }
 

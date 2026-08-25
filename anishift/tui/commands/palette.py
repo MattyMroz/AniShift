@@ -1,19 +1,4 @@
-"""Rows the command palette and the composer show for one registry.
-
-The palette owns no command: it projects what the registry already knows, so a
-row can never disagree with the command it runs. Selecting a row hands its
-``name`` back to ``CommandRegistry.dispatch``.
-
-The shared modal selector arrives with the dialog primitives; until then these
-rows are the whole contract between the registry and the palette.
-
-Public API:
-    CommandOption: One selectable row projecting one command.
-    format_keys: Render the keys of one command for a row.
-    option_of: Project one command into the row a surface shows.
-    palette_options: Rows of every command the palette may list.
-    slash_options: Rows of the ranked suggestions for one composer query.
-"""
+"""Rows the command palette and the composer project out of one registry."""
 
 from __future__ import annotations
 

@@ -1,21 +1,4 @@
-"""Typed presentation messages exchanged inside the shell.
-
-Every message a worker can deliver late carries the generation it was created
-for, and every run message also carries its ``run_id``, so the shell can drop
-the answer of an interaction the user already abandoned.
-
-Public API:
-    NavigationRequested: Ask the host to show another route.
-    CommandSubmitted: Composer submission that is not an empty Auto request.
-    AutoRequested: Empty composer submission asking for the Auto workflow.
-    WorkspaceLoaded: Inspection finished for one generation.
-    WorkspaceFailed: Inspection failed for one generation.
-    PlanReady: Plan built for one generation.
-    PlanFailed: Planning failed for one generation.
-    RunProgressed: Batch of events belonging to one run.
-    RunFinished: Terminal result of one run.
-    RunFailed: One run ended without a result.
-"""
+"""Typed presentation messages exchanged inside the shell, generation-stamped."""
 
 from __future__ import annotations
 

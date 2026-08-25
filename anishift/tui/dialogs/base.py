@@ -1,27 +1,4 @@
-"""The one modal frame every AniShift dialog is built on.
-
-A dialog is a decision, not a place. ``DialogScreen`` owns the dim backdrop, the
-panel width, the vertical placement, cancelling and handing the focus back; it
-knows nothing about settings, providers or the domain it decides for. A concrete
-dialog only fills the panel and says what its cancelled result looks like.
-
-``open_dialog`` is the only way in, which is what keeps the contract of at most
-one AniShift dialog at a time: a command that fires again while a dialog is open
-changes nothing. Opening remembers the focus through
-``lifecycle.open_modal``, and every dismiss path restores it through
-``lifecycle.close_modal`` — but only while the remembered element still exists.
-
-Public API:
-    DIALOG_MARGIN_COLUMNS: Columns a panel always leaves free on the terminal.
-    DIALOG_TOP_DIVISOR: Fraction of the terminal height the panel starts at.
-    PANEL_ID: Id of the one panel a dialog draws its content into.
-    TITLE_ID: Id of the single-row heading of the panel.
-    DialogSize: The three panel widths a dialog may claim.
-    dialog_width: Columns one size takes on a terminal of one width.
-    dialog_top: Row the panel's top edge sits at on a terminal of one height.
-    DialogScreen: The shared modal frame: backdrop, size, cancel and refocus.
-    open_dialog: Open one dialog over the current surface, or refuse a second.
-"""
+"""The one modal frame every AniShift dialog is built on, and the only way in."""
 
 from __future__ import annotations
 
@@ -34,6 +11,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from anishift.tui import lifecycle
+from anishift.tui.strings import DIALOG_CANCEL_LABEL
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -85,11 +63,7 @@ class DialogSize(IntEnum):
 
 
 def dialog_width(size: DialogSize, *, terminal_width: int) -> int:
-    """Columns *size* takes on a terminal of *terminal_width*.
-
-    The panel never claims the last two columns, so shrinking the terminal
-    while a dialog is open cannot push the panel off the screen.
-    """
+    """Columns *size* takes on a terminal of *terminal_width*, never the last two."""
     return max(1, min(int(size), terminal_width - DIALOG_MARGIN_COLUMNS))
 
 
@@ -99,17 +73,11 @@ def dialog_top(*, terminal_height: int) -> int:
 
 
 class DialogScreen[T](ModalScreen[T]):
-    """The shared modal frame: backdrop, size, cancelling and refocus.
-
-    ``Esc`` and ``Ctrl+C`` are priority bindings of this screen, not registry
-    commands: a registry key would claim ``Esc`` for the whole application and
-    would add a segment to the status footer, while a screen binding lives and
-    dies with the dialog itself.
-    """
+    """The shared modal frame: backdrop, size, cancelling and refocus."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Anuluj", show=False, priority=True),
-        Binding("ctrl+c", "cancel", "Anuluj", show=False, priority=True),
+        Binding("escape", "cancel", DIALOG_CANCEL_LABEL, show=False, priority=True),
+        Binding("ctrl+c", "cancel", DIALOG_CANCEL_LABEL, show=False, priority=True),
     ]
 
     def __init__(self, *, title: str, size: DialogSize = DialogSize.LARGE) -> None:
@@ -168,12 +136,7 @@ def open_dialog[T](
     dialog: DialogScreen[T],
     callback: Callable[[T | None], None] | None = None,
 ) -> bool:
-    """Open *dialog* over the current surface, or refuse a second one.
-
-    Returns ``True`` when the dialog was pushed. A refused call is not an error:
-    a key or a command that fires while a dialog is already open must change
-    nothing.
-    """
+    """Push *dialog* over the current surface and return whether it opened."""
     if any(isinstance(screen, DialogScreen) for screen in app.screen_stack):
         logger.debug("Second dialog refused", dialog=type(dialog).__name__)
         return False

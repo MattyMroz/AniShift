@@ -1,5 +1,4 @@
-/* Base surfaces, typography, and state classes shared by every screen.
-   Colours only ever arrive through the semantic variables of anishift/tui/theme.py. */
+/* Base surfaces, typography and state classes shared by every screen. */
 
 Screen {
     background: $background;

@@ -1,29 +1,4 @@
-"""The AniShift application shell: one state owner and one fixed frame.
-
-``AniShiftApp`` owns the single ``SessionState`` of a session and hosts the
-fixed frame: brand, contextual header, one route host, a permanent composer
-slot and the one-row status footer. Resizing reflows the frame; it never
-rebuilds the state and never unmounts the composer slot.
-
-The shell has no backend: it applies state transitions and renders. Discovery,
-planning and execution belong to the application layer.
-
-The shell also owns the one ``CommandRegistry``: it registers the frozen
-catalogue once and every key, palette row and button runs through its single
-``dispatch``. The built-in Textual palette stays switched off, so ``Ctrl+P``
-belongs to the registry.
-
-Because the shell owns the state, it is also the only place that may accept an
-empty composer line: ``auto_trigger`` reserves one generation, the shell
-publishes one ``AutoRequested`` for it and clears the field afterwards. The
-shell declares no binding for ``Enter``, so the composer is the only way in.
-
-Public API:
-    FULL_LAYOUT_MIN_WIDTH: Terminal width from which the full layout applies.
-    FULL_LAYOUT_MIN_HEIGHT: Terminal height from which the full layout applies.
-    is_compact: Whether a terminal of one size needs the dense layout.
-    AniShiftApp: The application shell.
-"""
+"""The application shell: the one owner of ``SessionState`` and of the fixed frame."""
 
 from __future__ import annotations
 
@@ -31,7 +6,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 from textual import on
 from textual.app import App
-from textual.containers import Container
+from textual.containers import Container, Vertical
 from textual.widgets import Static
 
 from anishift.tui import auto_trigger, lifecycle
@@ -54,10 +29,17 @@ from anishift.tui.messages import (
 )
 from anishift.tui.screens.workspace import WorkspaceView
 from anishift.tui.state import FeedbackLevel, SessionState, UiFeedback, UiRoute
+from anishift.tui.strings import (
+    MISSING_SURFACE,
+    PALETTE_COMMAND_CATEGORY,
+    PALETTE_SUGGESTED_CATEGORY,
+    PALETTE_TITLE,
+)
 from anishift.tui.theme import register_themes
 from anishift.tui.ui_state import load_ui_state
 from anishift.tui.widgets.composer import Composer
-from anishift.tui.widgets.footer import SessionFooter
+from anishift.tui.widgets.footer import BottomBar
+from anishift.tui.widgets.hints import StartHints, action_hints
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -80,17 +62,23 @@ FULL_LAYOUT_MIN_HEIGHT: Final[int] = 30
 _COMPACT_CLASS: Final[str] = "compact"
 """Class switching every frame region to its dense variant."""
 
-_MISSING_SURFACE_TEXT: Final[str] = "Warstwa okien dialogowych nie jest jeszcze dostępna."
-"""Missing state a command reports while its modal surface is not mounted."""
+BODY_ID: Final[str] = "app-body"
+"""Id of the column holding every region above the bottom bar."""
 
-_PALETTE_TITLE: Final[str] = "Paleta komend"
-"""Heading of the palette dialog."""
+BRAND_ID: Final[str] = "app-brand"
+"""Id of the region holding the static wordmark."""
 
-_SUGGESTED_CATEGORY: Final[str] = "Sugerowane"
-"""Heading the palette groups the likely next steps under."""
+CONTENT_ID: Final[str] = "app-content"
+"""Id of the work area, which takes the free height above the start block."""
 
-_COMMAND_CATEGORY: Final[str] = "Komendy"
-"""Heading the palette groups every remaining command under."""
+COMPOSER_SLOT_ID: Final[str] = "app-composer"
+"""Id of the slot the composer stays mounted in for the whole session."""
+
+SPACER_ID: Final[str] = "app-spacer"
+"""Id of the block balancing the start block, so it sits vertically centred."""
+
+FOOTER_ID: Final[str] = "app-footer"
+"""Id of the one-row bottom bar pinned to the bottom edge."""
 
 
 def is_compact(*, width: int, height: int) -> bool:
@@ -106,44 +94,46 @@ class AniShiftApp(App[None]):
     TITLE: str | None = "AniShift"
 
     def __init__(self) -> None:
-        """Build the frame regions, select the stored theme and register the commands.
-
-        The themes have to be registered before Textual parses the style
-        sheets, because every colour comes from a theme variable. The frozen
-        catalogue is registered exactly once, here.
-        """
+        """Build the frame regions, select the stored theme and register the commands."""
         super().__init__()
         register_themes(self)
         self.theme = load_ui_state().theme
         self._state: SessionState = SessionState()
-        self._brand: Static = Static(id="app-brand")
-        self._header: Static = Static(id="app-header")
-        self._host: Container = Container(id="app-content")
+        self._body: Vertical = Vertical(id=BODY_ID)
+        self._brand: Static = Static(id=BRAND_ID)
+        self._host: Container = Container(id=CONTENT_ID)
         self._workspace_view: WorkspaceView = WorkspaceView()
-        self._composer_slot: Container = Container(id="app-composer")
-        self._footer: SessionFooter = SessionFooter(id="app-footer")
+        self._composer_slot: Container = Container(id=COMPOSER_SLOT_ID)
+        self._hints: StartHints = StartHints()
+        self._spacer: Container = Container(id=SPACER_ID)
+        self._footer: BottomBar = BottomBar(widget_id=FOOTER_ID)
+        self._compact: bool = False
+        self._has_logo: bool = False
+        self._has_work: bool = False
         self._commands: CommandRegistry = CommandRegistry(lambda: self._state)
         self._commands.register((*global_commands(self), palette_command(self._open_palette)))
         self._composer: Composer = Composer(self._commands)
 
     @property
     def session_state(self) -> SessionState:
-        """The state this shell owns; readers never keep a copy of it."""
+        """The session state this shell owns."""
         return self._state
 
     @property
     def commands(self) -> CommandRegistry:
-        """The one registry every surface of this shell reads and runs."""
+        """The command registry this shell owns."""
         return self._commands
 
     def compose(self) -> ComposeResult:
-        """Build the fixed frame around the single route host."""
-        yield self._brand
-        yield self._header
-        with self._host:
-            yield self._workspace_view
-        with self._composer_slot:
-            yield self._composer
+        """Build the work area, the start block under it, then the bottom bar."""
+        with self._body:
+            with self._host:
+                yield self._workspace_view
+            yield self._brand
+            with self._composer_slot:
+                yield self._composer
+            yield self._hints
+            yield self._spacer
         yield self._footer
 
     def on_mount(self) -> None:
@@ -156,22 +146,13 @@ class AniShiftApp(App[None]):
         self._apply_size(event.size)
 
     def on_key(self, event: Key) -> None:
-        """Run the command the registry binds to the pressed key, if it has one.
-
-        A key the registry answered is fully claimed, so no inherited Textual
-        binding may answer it a second time.
-        """
+        """Run the command the registry binds to the pressed key, and claim that key."""
         if self._commands.dispatch_key(event.key):
             event.stop()
             event.prevent_default()
 
     async def action_quit(self) -> None:
-        """Route the inherited quit key through the one registry.
-
-        Textual binds ``Ctrl+Q`` to this action with ``priority=True``, so the
-        key never reaches ``on_key``. Delegating here keeps ``dispatch`` the
-        only point that runs a command, instead of a second way out.
-        """
+        """Route the inherited ``Ctrl+Q`` action through the one registry."""
         self._commands.dispatch(EXIT_COMMAND_NAME)
 
     @on(NavigationRequested)
@@ -213,12 +194,7 @@ class AniShiftApp(App[None]):
 
     @on(Composer.EmptySubmitted)
     def _on_empty_submitted(self, _message: Composer.EmptySubmitted) -> None:
-        """Turn one accepted empty line into exactly one Auto request.
-
-        The reservation is what makes this exactly once: a second submission of
-        the same physical key, an auto-repeat or a duplicated message finds the
-        gate taken and leaves the field, the state and the workflow untouched.
-        """
+        """Turn one accepted empty line into exactly one Auto request."""
         generation: int | None = auto_trigger.reserve(self._state)
         if generation is None:
             return
@@ -251,90 +227,85 @@ class AniShiftApp(App[None]):
         self._render_frame()
 
     def open_init(self) -> None:
-        """Prepare the workspace and the configuration, then show the next steps."""
+        """Report that the session-setup surface is not available yet."""
         self._report_missing_surface()
 
     def open_connect(self) -> None:
-        """Edit the Palantir Foundry connection and probe one model on request."""
+        """Report that the connection surface is not available yet."""
         self._report_missing_surface()
 
     def show_status(self) -> None:
-        """Show the safe summary of configuration, workspace and current run."""
+        """Report that the status surface is not available yet."""
         self._report_missing_surface()
 
     def show_debug(self) -> None:
-        """Show the wider redacted diagnostics of the current session."""
+        """Report that the diagnostics surface is not available yet."""
         self._report_missing_surface()
 
     def show_help(self) -> None:
-        """List the commands and the keys the registry currently holds."""
+        """Report that the help surface is not available yet."""
         self._report_missing_surface()
 
     def exit_app(self) -> None:
-        """Leave the application, confirming first while a run is active."""
+        """Leave the application."""
         self.exit()
 
     def open_auto(self) -> None:
-        """Configure the default automatic mode and its presets."""
+        """Show the automatic-mode route."""
         self.post_message(NavigationRequested(UiRoute.AUTO))
 
     def open_manual(self) -> None:
-        """Prepare the manual intents of the selected groups."""
+        """Show the manual-mode route."""
         self.post_message(NavigationRequested(UiRoute.MANUAL))
 
     def open_model(self) -> None:
-        """Choose the primary Palantir model from the local catalogue."""
+        """Report that the model surface is not available yet."""
         self._report_missing_surface()
 
     def open_translation(self) -> None:
-        """Edit the translation settings and their own model."""
+        """Report that the translation surface is not available yet."""
         self._report_missing_surface()
 
     def open_prompts(self) -> None:
-        """Choose the task prompt, the style and the prompt modules."""
+        """Report that the prompts surface is not available yet."""
         self._report_missing_surface()
 
     def open_tts(self) -> None:
-        """Edit the speech settings, the voices and the audio profile."""
+        """Report that the speech surface is not available yet."""
         self._report_missing_surface()
 
     def open_theme(self) -> None:
-        """Choose the theme with a live preview and a rollback."""
+        """Report that the theme surface is not available yet."""
         self._report_missing_surface()
 
     def run_doctor(self) -> None:
-        """Run the technical diagnostics without repairing anything."""
+        """Report that the doctor surface is not available yet."""
         self._report_missing_surface()
 
     def _open_palette(self) -> None:
-        """Open the palette of every command and action the session allows.
-
-        The rows are the projection ``palette_options`` already built, and the
-        chosen row goes straight back to ``dispatch``: the palette owns no
-        command and no second way of running one.
-        """
+        """Open the palette of every command and action the session allows."""
         options: tuple[SelectOption[str], ...] = tuple(
             SelectOption(
                 value=option.name,
                 title=option.label,
                 description=option.description,
                 footer=option.keys,
-                category=_SUGGESTED_CATEGORY if option.suggested else _COMMAND_CATEGORY,
+                category=PALETTE_SUGGESTED_CATEGORY if option.suggested else PALETTE_COMMAND_CATEGORY,
             )
             for option in palette_options(self._commands)
         )
 
         def chosen(outcome: SelectOutcome[str] | None) -> None:
-            """Run the command of the picked row, and nothing else."""
+            """Run the command of the picked row."""
             if outcome is None or outcome.kind is not SelectOutcomeKind.SINGLE or outcome.value is None:
                 return
             self._commands.dispatch(outcome.value)
 
-        open_dialog(self, self._state, SelectDialog(title=_PALETTE_TITLE, options=options), chosen)
+        open_dialog(self, self._state, SelectDialog(title=PALETTE_TITLE, options=options), chosen)
 
     def _report_missing_surface(self) -> None:
-        """Keep the missing state of a command whose modal surface is absent."""
-        self._state.feedback = UiFeedback(level=FeedbackLevel.INFO, message=_MISSING_SURFACE_TEXT)
+        """Store the feedback of a command whose surface is not available yet."""
+        self._state.feedback = UiFeedback(level=FeedbackLevel.INFO, message=MISSING_SURFACE)
 
     def _accepts(self, generation: int, *, run_id: str | None = None) -> bool:
         """Whether a delivered message still belongs to the current view."""
@@ -345,15 +316,24 @@ class AniShiftApp(App[None]):
 
     def _render_frame(self) -> None:
         """Redraw every region that projects the session state."""
-        self._header.update(self._state.route.value)
-        self._workspace_view.display = self._state.route is UiRoute.WORKSPACE
+        self._has_work = self._state.workspace is not None
+        self._workspace_view.display = self._state.route is UiRoute.WORKSPACE and self._has_work
         self._workspace_view.show(self._state.workspace)
-        self._footer.show(self._state, self._commands.key_hints())
+        self._hints.show(action_hints(self._commands))
+        self._apply_layout()
 
     def _apply_size(self, size: Size) -> None:
-        """Switch the frame between the full and the dense layout."""
-        self.screen.set_class(is_compact(width=size.width, height=size.height), _COMPACT_CLASS)
+        """Pick the wordmark and the density the current terminal has room for."""
+        self._compact = is_compact(width=size.width, height=size.height)
         logo: Content | None = logo_for_size(width=size.width, height=size.height)
-        self._brand.display = logo is not None
+        self._has_logo = logo is not None
         if logo is not None:
             self._brand.update(logo)
+        self._apply_layout()
+
+    def _apply_layout(self) -> None:
+        """Set the density class and hide the start block once the work area has a surface."""
+        self.screen.set_class(self._compact, _COMPACT_CLASS)
+        self._brand.display = self._has_logo and not self._has_work
+        self._spacer.display = not self._has_work
+        self._hints.show_tip(visible=not self._compact and not self._has_work)

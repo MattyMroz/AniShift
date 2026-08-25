@@ -1,40 +1,4 @@
-"""The one always-present input line of the application.
-
-The composer is the primary way into the product: a prompt glyph, one text
-field, and a suggestion list that appears above the field while a slash command
-is being typed. The suggestions are the projection the command registry already
-builds, so the composer can never offer a command that does not exist or is not
-allowed right now.
-
-One completed line has exactly three readings, and ``classify`` decides between
-them without touching anything: blanks ask for the default Auto workflow, a
-leading slash names a command, and any other text runs nothing at all. Only a
-finished ``Input.Submitted`` reaches that decision, so a composition still being
-assembled by an input method never looks like an empty line, and the composer
-declares no binding for ``Enter``.
-
-The composer performs a slash command through ``CommandRegistry.dispatch`` and
-answers plain text with a short message of its own. It never starts a workflow
-itself: an empty line is announced as ``Composer.EmptySubmitted`` and the
-application shell, the single owner of the session state, decides whether that
-submission may reserve a run.
-
-Public API:
-    COMPOSER_ID: Id of the composer itself.
-    INPUT_ID: Id of the one text field of the composer.
-    SUGGESTIONS_ID: Id of the suggestion list above the field.
-    HINT_ID: Id of the one row the composer answers a refused line in.
-    PROMPT_ID: Id of the prompt glyph in front of the field.
-    PROMPT_GLYPH: Glyph shown in front of the text field.
-    PLACEHOLDER: Hint the empty field shows.
-    PLAIN_TEXT_TEXT: Answer to text that names no command.
-    UNKNOWN_COMMAND_TEXT: Answer to a slash command the registry does not hold.
-    UNKNOWN_COMMAND_SUGGESTION: Answer naming the closest known command.
-    ComposerSubmissionKind: The three readings of one submitted line.
-    ComposerSubmission: What one submitted line asks for.
-    classify: Read one submitted line, without touching anything.
-    Composer: The one always-present input line of the application.
-"""
+"""The one always-present input line of the application, box and suggestions."""
 
 from __future__ import annotations
 
@@ -50,6 +14,24 @@ from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from anishift.tui.commands.palette import slash_options
+from anishift.tui.strings import (
+    COMPOSER_ACCENT_GLYPH,
+    COMPOSER_PLACEHOLDER,
+    COMPOSER_PLAIN_TEXT,
+    COMPOSER_PROMPT_GLYPH,
+    COMPOSER_UNKNOWN_COMMAND,
+    COMPOSER_UNKNOWN_COMMAND_SUGGESTION,
+    CONTEXT_MODE_AUTO,
+    CONTEXT_MODEL_SEPARATOR,
+    CONTEXT_MODEL_UNSET,
+    CONTEXT_PROVIDER,
+    CONTEXT_SEPARATOR,
+    SUGGESTION_COMPLETE_LABEL,
+    SUGGESTION_DISMISS_LABEL,
+    SUGGESTION_NEXT_LABEL,
+    SUGGESTION_PREVIOUS_LABEL,
+    SUGGESTION_ROW_GAP,
+)
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -60,26 +42,37 @@ if TYPE_CHECKING:
     from anishift.tui.commands.spec import CommandSpec
 
 __all__ = [
+    "ACCENT_ID",
+    "BODY_ID",
+    "BOX_ID",
+    "BOX_ROWS",
     "COMPOSER_ID",
+    "CONTEXT_ID",
+    "FIELD_ID",
     "HINT_ID",
     "INPUT_ID",
-    "PLACEHOLDER",
-    "PLAIN_TEXT_TEXT",
-    "PROMPT_GLYPH",
     "PROMPT_ID",
     "SUGGESTIONS_ID",
-    "UNKNOWN_COMMAND_SUGGESTION",
-    "UNKNOWN_COMMAND_TEXT",
     "Composer",
     "ComposerSubmission",
     "ComposerSubmissionKind",
     "classify",
+    "context_text",
 ]
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
 COMPOSER_ID: Final[str] = "composer"
 """Id of the composer itself, inside the fixed slot of the frame."""
+
+BOX_ID: Final[str] = "composer-box"
+"""Id of the raised box holding the accent, the field and the context line."""
+
+BODY_ID: Final[str] = "composer-body"
+"""Id of the column the box keeps beside its accent."""
+
+FIELD_ID: Final[str] = "composer-field"
+"""Id of the one row holding the prompt glyph and the text field."""
 
 INPUT_ID: Final[str] = "composer-input"
 """Id of the one text field a submitted line can come from."""
@@ -93,26 +86,20 @@ HINT_ID: Final[str] = "composer-hint"
 PROMPT_ID: Final[str] = "composer-prompt"
 """Id of the prompt glyph in front of the text field."""
 
-PROMPT_GLYPH: Final[str] = "❯"  # noqa: RUF001 - the ornament is the prompt the design system asks for
-"""Glyph the composer shows in front of its text field."""
+ACCENT_ID: Final[str] = "composer-accent"
+"""Id of the accent column drawn on the left edge of the box."""
 
-PLACEHOLDER: Final[str] = "Wpisz /komendę albo naciśnij Enter, aby uruchomić Auto"
-"""Hint the empty text field shows, written once by the specification."""
+CONTEXT_ID: Final[str] = "composer-context"
+"""Id of the faded context line one row below the text field."""
 
-PLAIN_TEXT_TEXT: Final[str] = "Tryb rozmowy nie jest jeszcze dostępny."
-"""Answer to text that names no command; the text stays in the field."""
-
-UNKNOWN_COMMAND_TEXT: Final[str] = "Nieznana komenda."
-"""Answer to a slash command the registry does not hold and cannot guess."""
-
-UNKNOWN_COMMAND_SUGGESTION: Final[str] = "Nieznana komenda. Czy chodziło o {command}?"
-"""Answer naming the one closest known command instead of running anything."""
+BOX_ROWS: Final[int] = 3
+"""Rows the box always has: the field, one blank row and the context line."""
 
 SLASH_PREFIX: Final[str] = "/"
 """Character that turns a submitted line into a command name."""
 
-_SUGGESTION_ROW_GAP: Final[str] = "  "
-"""Separator between the name of a suggested command and its description."""
+_ACCENT_COLUMN: Final[str] = "\n".join([COMPOSER_ACCENT_GLYPH] * BOX_ROWS)
+"""Accent column of the box: the edge glyph once per row of the box."""
 
 _SUGGESTION_ACTIONS: Final[frozenset[str]] = frozenset(
     {"previous_suggestion", "next_suggestion", "complete_suggestion", "dismiss_suggestions"},
@@ -143,17 +130,18 @@ class ComposerSubmission:
 
 
 def classify(text: str) -> ComposerSubmission:
-    """Read the submitted line *text*, without touching anything.
-
-    Blanks ask for the default Auto workflow, a leading slash names a command,
-    and any other text is plain prose that runs nothing.
-    """
+    """Classify *text* as empty-auto, slash command, or plain text."""
     stripped: str = text.strip()
     if not stripped:
         return ComposerSubmission(kind=ComposerSubmissionKind.EMPTY_AUTO)
     if not stripped.startswith(SLASH_PREFIX):
         return ComposerSubmission(kind=ComposerSubmissionKind.PLAIN_TEXT)
     return ComposerSubmission(kind=ComposerSubmissionKind.SLASH, command=_slash_name(stripped))
+
+
+def context_text(*, mode: str, provider: str, model: str) -> str:
+    """Render the context line: which mode, provider and model the next run uses."""
+    return f"{mode}{CONTEXT_SEPARATOR}{provider}{CONTEXT_MODEL_SEPARATOR}{model}"
 
 
 def _slash_name(stripped: str) -> str:
@@ -173,19 +161,14 @@ class _Suggestions(OptionList):
 class Composer(Vertical):
     """The one always-present input line of the application.
 
-    ``Enter`` is deliberately absent from the bindings: the composer reacts to a
-    finished ``Input.Submitted``, which is the only event a terminal produces
-    after an input method has assembled its text. Every other key of the
-    suggestion list is bound here rather than on the field, and stops being
-    claimed the moment the list is gone, so the key keeps its usual meaning
-    while the composer is a plain text field.
+    ``Enter`` is deliberately absent: a line arrives as ``Input.Submitted``.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("up", "previous_suggestion", "Poprzednia podpowiedź", show=False),
-        Binding("down", "next_suggestion", "Następna podpowiedź", show=False),
-        Binding("tab", "complete_suggestion", "Uzupełnij nazwę", show=False),
-        Binding("escape", "dismiss_suggestions", "Schowaj podpowiedzi", show=False),
+        Binding("up", "previous_suggestion", SUGGESTION_PREVIOUS_LABEL, show=False),
+        Binding("down", "next_suggestion", SUGGESTION_NEXT_LABEL, show=False),
+        Binding("tab", "complete_suggestion", SUGGESTION_COMPLETE_LABEL, show=False),
+        Binding("escape", "dismiss_suggestions", SUGGESTION_DISMISS_LABEL, show=False),
     ]
 
     class EmptySubmitted(Message):
@@ -197,17 +180,30 @@ class Composer(Vertical):
         self._registry: CommandRegistry = registry
         self._offered: tuple[CommandOption, ...] = ()
         self._suggestions: _Suggestions = _Suggestions(id=SUGGESTIONS_ID, markup=False)
-        self._prompt: Static = Static(PROMPT_GLYPH, id=PROMPT_ID)
-        self._input: Input = Input(placeholder=PLACEHOLDER, id=INPUT_ID)
+        self._accent: Static = Static(_ACCENT_COLUMN, id=ACCENT_ID)
+        self._prompt: Static = Static(COMPOSER_PROMPT_GLYPH, id=PROMPT_ID)
+        self._input: Input = Input(placeholder=COMPOSER_PLACEHOLDER, id=INPUT_ID)
+        self._context_line: Static = Static(
+            context_text(mode=CONTEXT_MODE_AUTO, provider=CONTEXT_PROVIDER, model=CONTEXT_MODEL_UNSET),
+            id=CONTEXT_ID,
+        )
         self._hint: Static = Static(id=HINT_ID)
 
     def compose(self) -> ComposeResult:
-        """Draw the suggestions above the prompt, the field and the answer row."""
+        """Draw the suggestions above the box, then the box, then the answer row."""
         yield self._suggestions
-        with Horizontal():
-            yield self._prompt
-            yield self._input
+        with Horizontal(id=BOX_ID):
+            yield self._accent
+            with Vertical(id=BODY_ID):
+                with Horizontal(id=FIELD_ID):
+                    yield self._prompt
+                    yield self._input
+                yield self._context_line
         yield self._hint
+
+    def show_context(self, *, mode: str, provider: str, model: str) -> None:
+        """Say which mode, provider and model the next run would use."""
+        self._context_line.update(context_text(mode=mode, provider=provider, model=model))
 
     def on_mount(self) -> None:
         """Start as a plain field: no suggestions and nothing to answer."""
@@ -246,7 +242,7 @@ class Composer(Vertical):
             self.post_message(self.EmptySubmitted())
             return
         if submission.kind is ComposerSubmissionKind.PLAIN_TEXT:
-            self._show_hint(PLAIN_TEXT_TEXT)
+            self._show_hint(COMPOSER_PLAIN_TEXT)
             return
         self._run_slash(submission.command)
 
@@ -286,7 +282,7 @@ class Composer(Vertical):
 
     def _suggestion_row(self, option: CommandOption) -> str:
         """Text one suggested command shows: its slash name and its sentence."""
-        return f"{option.label}{_SUGGESTION_ROW_GAP}{option.description}"
+        return f"{option.label}{SUGGESTION_ROW_GAP}{option.description}"
 
     def _move(self, delta: int) -> None:
         """Move the highlight *delta* suggestions, wrapping at either end."""
@@ -311,7 +307,7 @@ class Composer(Vertical):
         A line that names nothing after the slash never reaches the registry.
         """
         if not command:
-            self._show_hint(UNKNOWN_COMMAND_TEXT)
+            self._show_hint(COMPOSER_UNKNOWN_COMMAND)
             return
         resolved: CommandSpec | None = self._resolved(command)
         if resolved is None:
@@ -327,8 +323,8 @@ class Composer(Vertical):
         """Answer for *command*, naming the closest known command if there is one."""
         nearest: tuple[CommandOption, ...] = slash_options(self._registry, command)
         if not nearest:
-            return UNKNOWN_COMMAND_TEXT
-        return UNKNOWN_COMMAND_SUGGESTION.format(command=nearest[0].label)
+            return COMPOSER_UNKNOWN_COMMAND
+        return COMPOSER_UNKNOWN_COMMAND_SUGGESTION.format(command=nearest[0].label)
 
     def _run(self, name: str) -> None:
         """Run the command called *name* through the one dispatch point."""

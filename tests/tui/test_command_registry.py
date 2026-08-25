@@ -5,6 +5,8 @@ from typing import Final
 import pytest
 
 from anishift.tui.commands.catalog import (
+    EXIT_COMMAND_NAME,
+    EXIT_KEY,
     PALETTE_COMMAND_NAME,
     PALETTE_KEY,
     global_commands,
@@ -176,9 +178,12 @@ def test_every_catalog_command_stays_visible_and_enabled() -> None:
     assert registry.available() == registry.commands()
 
 
-def test_no_catalog_command_owns_a_key_the_footer_would_show() -> None:
+def test_the_exit_command_is_the_one_catalog_command_that_owns_a_key() -> None:
     registry, _ = _catalog()
-    assert registry.key_hints() == ()
+    keyed: tuple[CommandSpec, ...] = tuple(spec for spec in registry.commands() if spec.keys)
+    assert [spec.name for spec in keyed] == [EXIT_COMMAND_NAME]
+    assert keyed[0].keys == (EXIT_KEY,)
+    assert registry.key_hints() == (KeyHint(key=EXIT_KEY, label=keyed[0].title),)
 
 
 def test_the_palette_action_is_hidden_and_owns_the_reserved_key() -> None:

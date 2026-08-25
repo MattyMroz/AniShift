@@ -1,21 +1,4 @@
-"""The one registry of commands and the one point that runs them.
-
-The application registers the global catalogue once; the active screen adds its
-contextual actions under its own scope on mount and drops that scope on unmount.
-Every surface — palette, composer, key hints, buttons — projects this registry
-and runs a command only through ``dispatch``.
-
-Availability is evaluated on every read, never at registration: a predicate
-answers about the state the shell owns at the moment a surface asks.
-
-Public API:
-    GLOBAL_SCOPE: Scope of the commands the application owns for the session.
-    SLASH_SUGGESTION_LIMIT: Most slash suggestions the composer may show.
-    KEY_HINT_LIMIT: Most key hints the one-row status footer may show.
-    PREFIX_BOOST: Factor lifting a prefix match above a scattered match.
-    DESCRIPTION_WEIGHT: Factor keeping a description match below a name match.
-    CommandRegistry: The only registry and the only dispatch point.
-"""
+"""The one registry of commands and the one point that runs them."""
 
 from __future__ import annotations
 
@@ -63,7 +46,7 @@ _SLASH_PREFIX: Final[str] = "/"
 """Character the composer uses to open a slash command."""
 
 _FUZZY: Final[FuzzySearch] = FuzzySearch()
-"""Shared cached matcher; it holds queries only, never session state."""
+"""Shared fuzzy matcher for slash queries."""
 
 
 def _form_score(query: str, candidate: str) -> float:

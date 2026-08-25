@@ -1,28 +1,4 @@
-"""State transitions of one session, free of domain logic and I/O.
-
-Every function moves ``SessionState`` forward or decides whether a late message
-still belongs to the current view. Nothing here plans, executes, reads files or
-talks to a provider: the shell calls these operations, the application layer
-owns the work itself.
-
-Public API:
-    ALLOWED_RUN_TRANSITIONS: The only accepted run-state edges.
-    run_transition_allowed: Whether one run-state edge is accepted.
-    accepts_message: Whether a late message may still change the view.
-    navigate: Show another route without disturbing run or drafts.
-    set_workspace: Store an inspection and keep the surviving selection.
-    report_error: Keep redacted failure feedback that no run owns.
-    begin_planning: Reserve a new generation and start planning.
-    plan_ready: Store a plan awaiting preview or start.
-    abandon_planning: Drop planning and keep its reason.
-    begin_run: Enter the run the planner produced.
-    record_run_events: Append accepted events of the active run.
-    request_cancel: Ask the active run to stop.
-    finish_run: Store the terminal result of the active run.
-    fail_run: End the active run without a result.
-    open_modal: Remember the focus a modal layer must restore.
-    close_modal: Restore the focus of the closing modal layer.
-"""
+"""State transitions of one session, free of domain logic and of I/O."""
 
 from __future__ import annotations
 
@@ -68,7 +44,7 @@ ALLOWED_RUN_TRANSITIONS: Final[Mapping[RunUiState, frozenset[RunUiState]]] = Map
         RunUiState.TERMINAL: frozenset({RunUiState.PLANNING}),
     },
 )
-"""The only accepted run-state edges; every other move is a shell defect."""
+"""The only accepted run-state edges, keyed by the current state."""
 
 
 def run_transition_allowed(current: RunUiState, target: RunUiState) -> bool:
@@ -77,11 +53,7 @@ def run_transition_allowed(current: RunUiState, target: RunUiState) -> bool:
 
 
 def accepts_message(state: SessionState, *, generation: int, run_id: str | None = None) -> bool:
-    """Whether a message of *generation* may still change the current view.
-
-    A message from any other generation, or from a run the session no longer
-    tracks, is late and must be dropped.
-    """
+    """Whether a message of *generation*, and of *run_id* when given, is still current."""
     if generation != state.generation:
         return False
     if run_id is None:
@@ -151,7 +123,7 @@ def record_run_events(state: SessionState, events: Iterable[RunEvent]) -> None:
 
 
 def request_cancel(state: SessionState) -> bool:
-    """Ask the active run to stop; the run stays until it is terminal."""
+    """Move the active run into the cancelling state, keeping it tracked."""
     return _enter(state, RunUiState.CANCELLING)
 
 

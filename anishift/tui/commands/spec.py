@@ -1,22 +1,4 @@
-"""The single definition of one command the interface can run.
-
-The name, title, description, category, slash form, aliases, keys and
-availability predicates of a command live in exactly one ``CommandSpec``. The
-palette, the slash suggestions, the key hints and the buttons only project this
-definition, so a surface can never disagree with the command it runs.
-
-A predicate receives the session state and answers about it; a spec never keeps
-a copy of that state.
-
-Public API:
-    CommandRun: Callback one command runs when it is dispatched.
-    CommandPredicate: Answer of one command about the session state it reads.
-    StateReader: Read-only access to the session state the shell owns.
-    CommandCategory: Group one command belongs to when a surface lists it.
-    KeyHint: One key and the action label a surface renders for it.
-    CommandSpec: The only definition of one command.
-    key_display: Human form of one Textual key name.
-"""
+"""The single definition of one command the interface can run."""
 
 from __future__ import annotations
 
@@ -93,7 +75,7 @@ class CommandSpec:
         title: Short label a palette row, a key hint or a button shows.
         description: One sentence explaining what the command does.
         category: Group a surface uses to order and to label the command.
-        run: Callback that performs the command; the catalog never writes one.
+        run: Callback that performs the command.
         hidden: Whether surfaces list the command; it stays runnable by key.
         enabled: Whether the session allows the command; ``None`` means always.
         suggested: Whether the session makes it the likely next step.

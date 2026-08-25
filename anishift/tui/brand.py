@@ -1,22 +1,4 @@
-"""Static ANISHIFT wordmark drawn with a four-row block font.
-
-The wordmark never animates and never changes width: both variants are built
-from a fixed glyph table, so the same terminal size always yields the same
-render. Colours come from theme variables, never from literals.
-
-Public API:
-    LogoVariant: Which wordmark fits the current terminal.
-    WORDMARK: Product wordmark rendered by both variants.
-    LOGO_ROWS: Row count of the full wordmark.
-    LOGO_WIDTH: Cell width of every full-wordmark row.
-    BRAND_MUTED_STYLE: Theme variable styling the ``ANI`` half.
-    BRAND_ACCENT_STYLE: Theme variable styling the ``SHIFT`` half.
-    full_logo_lines: Plain rows of the full wordmark.
-    full_logo: Styled four-row wordmark.
-    compact_logo: Styled single-row wordmark.
-    logo_variant: Pick a variant from terminal dimensions.
-    logo_for_size: Render the fitting variant, or nothing.
-"""
+"""The static ANISHIFT wordmark, four-row and single-row variants."""
 
 from __future__ import annotations
 
@@ -92,10 +74,10 @@ FULL_LOGO_MIN_HEIGHT: Final[int] = 30
 """Terminal height from which the full four-row wordmark is shown."""
 
 COMPACT_LOGO_MIN_WIDTH: Final[int] = 40
-"""Narrowest terminal that still has room for a wordmark beside the context."""
+"""Narrowest terminal that still shows the single-row wordmark."""
 
 COMPACT_LOGO_MIN_HEIGHT: Final[int] = 10
-"""Shortest terminal that still has room for a wordmark above the controls."""
+"""Shortest terminal that still shows the single-row wordmark."""
 
 
 def full_logo_lines() -> tuple[str, ...]:
@@ -123,11 +105,7 @@ def compact_logo() -> Content:
 
 
 def logo_variant(*, width: int, height: int) -> LogoVariant:
-    """Pick the wordmark variant that fits a ``width`` x ``height`` terminal.
-
-    Below the compact thresholds the wordmark is dropped entirely: the composer,
-    the footer, and the work area always outrank decoration.
-    """
+    """Pick the wordmark variant that fits a ``width`` x ``height`` terminal."""
     if width >= FULL_LOGO_MIN_WIDTH and height >= FULL_LOGO_MIN_HEIGHT:
         return "full"
     if width >= COMPACT_LOGO_MIN_WIDTH and height >= COMPACT_LOGO_MIN_HEIGHT:

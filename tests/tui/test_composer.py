@@ -16,20 +16,27 @@ from anishift.tui.dialogs.base import open_dialog
 from anishift.tui.dialogs.value import PromptDialog
 from anishift.tui.messages import AutoRequested, PlanFailed
 from anishift.tui.state import RunUiState, SessionState
+from anishift.tui.strings import (
+    COMPOSER_PLACEHOLDER,
+    COMPOSER_PLAIN_TEXT,
+    COMPOSER_PROMPT_GLYPH,
+    COMPOSER_UNKNOWN_COMMAND,
+    COMPOSER_UNKNOWN_COMMAND_SUGGESTION,
+    CONTEXT_MODE_AUTO,
+    CONTEXT_MODEL_UNSET,
+    CONTEXT_PROVIDER,
+)
 from anishift.tui.widgets.composer import (
+    CONTEXT_ID,
     HINT_ID,
     INPUT_ID,
-    PLACEHOLDER,
-    PLAIN_TEXT_TEXT,
-    PROMPT_GLYPH,
     PROMPT_ID,
     SUGGESTIONS_ID,
-    UNKNOWN_COMMAND_SUGGESTION,
-    UNKNOWN_COMMAND_TEXT,
     Composer,
     ComposerSubmission,
     ComposerSubmissionKind,
     classify,
+    context_text,
 )
 
 _FULL_SIZE: Final[tuple[int, int]] = (100, 30)
@@ -127,14 +134,43 @@ def test_classifying_the_same_line_twice_gives_the_same_answer() -> None:
     assert classify("/Theme  x") == classify("/Theme  x")
 
 
+def test_the_context_line_names_the_mode_the_provider_and_the_model() -> None:
+    assert context_text(mode="Auto", provider="Foundry", model="m") == "Auto · Foundry: m"
+
+
+def test_the_composer_starts_with_the_default_context_line() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            assert str(app.query_one(f"#{CONTEXT_ID}", Static).content) == context_text(
+                mode=CONTEXT_MODE_AUTO,
+                provider=CONTEXT_PROVIDER,
+                model=CONTEXT_MODEL_UNSET,
+            )
+
+    _run(scenario())
+
+
+def test_the_context_line_follows_what_the_shell_says() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            app.query_one(Composer).show_context(mode="Manual", provider="Foundry", model="claude")
+            await pilot.pause()
+            assert str(app.query_one(f"#{CONTEXT_ID}", Static).content) == "Manual · Foundry: claude"
+
+    _run(scenario())
+
+
 def test_the_composer_shows_the_prompt_and_the_placeholder_of_the_specification() -> None:
     async def scenario() -> None:
         app: AniShiftApp = AniShiftApp()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
-            assert str(app.query_one(f"#{PROMPT_ID}", Static).content) == PROMPT_GLYPH
-            assert _field(app).placeholder == "Wpisz /komendę albo naciśnij Enter, aby uruchomić Auto"
-            assert _field(app).placeholder == PLACEHOLDER
+            assert str(app.query_one(f"#{PROMPT_ID}", Static).content) == COMPOSER_PROMPT_GLYPH
+            assert _field(app).placeholder == COMPOSER_PLACEHOLDER
             assert app.query_one(Composer) is not None
 
     _run(scenario())
@@ -397,7 +433,7 @@ def test_plain_text_stays_in_the_field_and_touches_nothing() -> None:
             assert calls == []
             assert requests == []
             assert _field(app).value == "theme"
-            assert _hint(app) == PLAIN_TEXT_TEXT
+            assert _hint(app) == COMPOSER_PLAIN_TEXT
             assert app.session_state == SessionState()
 
     _run(scenario())
@@ -556,7 +592,7 @@ def test_a_bare_slash_never_reaches_the_registry() -> None:
             await pilot.pause()
             assert calls == []
             assert requests == []
-            assert _hint(app) == UNKNOWN_COMMAND_TEXT
+            assert _hint(app) == COMPOSER_UNKNOWN_COMMAND
             assert _field(app).value == "/"
 
     _run(scenario())
@@ -576,7 +612,7 @@ def test_an_unknown_command_shows_one_close_name_and_runs_nothing() -> None:
             await pilot.press("enter")
             await pilot.pause()
             assert calls == []
-            assert _hint(app) == UNKNOWN_COMMAND_SUGGESTION.format(command="/theme")
+            assert _hint(app) == COMPOSER_UNKNOWN_COMMAND_SUGGESTION.format(command="/theme")
             assert _field(app).value == "/thme"
 
     _run(scenario())
@@ -595,7 +631,7 @@ def test_an_unknown_command_without_a_close_name_names_nothing() -> None:
             await pilot.press("enter")
             await pilot.pause()
             assert calls == []
-            assert _hint(app) == UNKNOWN_COMMAND_TEXT
+            assert _hint(app) == COMPOSER_UNKNOWN_COMMAND
             assert _field(app).value == "/qqqq"
 
     _run(scenario())

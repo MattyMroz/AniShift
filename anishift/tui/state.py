@@ -1,23 +1,4 @@
-"""Presentation-only state of one interactive AniShift session.
-
-The application shell owns exactly one ``SessionState``. Screens and widgets
-receive a projection of it and never keep their own copy of the run state or of
-the active ``run_id``.
-
-Only ``anishift.application.intents`` is imported at runtime: it is a pure
-contract module, so the shell never pulls services, the scheduler or the event
-bus into the process. Everything the session merely stores is imported for type
-checking only, through the public application facade.
-
-Public API:
-    DEFAULT_PRESET_ID: Auto-preset a fresh session starts from.
-    UiRoute: The only routes the shell can show.
-    RunUiState: Explicit lifecycle of the one run a session can own.
-    FeedbackLevel: Severity of one message shown to the user.
-    UiFeedback: One redacted message about the last operation.
-    GroupIntentDraft: Editable manual decisions for one source group.
-    SessionState: The single mutable state of one session.
-"""
+"""Presentation-only state of one interactive AniShift session."""
 
 from __future__ import annotations
 
@@ -62,18 +43,11 @@ __all__ = [
 # ── Constants ──────────────────────────────────────────────────────────────
 
 DEFAULT_PRESET_ID: Final[str] = "default"
-"""Auto-preset a fresh session starts from, before it reads the preset file.
-
-Mirrors ``anishift.config.presets.DEFAULT_PRESET_ID``, which the shell must not
-import: that module reaches the panel preferences and their engine registries.
-"""
+"""Auto-preset a fresh session starts from, mirroring ``config.presets.DEFAULT_PRESET_ID``."""
 
 
 class UiRoute(StrEnum):
-    """The only routes the application host can show.
-
-    Settings are dialogs opened over the current route, never a route.
-    """
+    """The only routes the application host can show."""
 
     WORKSPACE = "workspace"
     AUTO = "auto"
@@ -107,7 +81,7 @@ class UiFeedback:
     """One redacted message about the last operation, shown to the user.
 
     Attributes:
-        level: Severity the frame renders with a glyph and a word, not by colour.
+        level: Severity of the message.
         message: Redacted text; never a path, a secret or a provider payload.
     """
 
@@ -122,11 +96,24 @@ class UiFeedback:
 
 @dataclass(slots=True)
 class GroupIntentDraft:
-    """Editable manual decisions for one source group.
+    """Editable manual decisions of ``GroupIntent`` and ``ProductIntent`` for one group.
 
-    Holds every decision of ``GroupIntent`` plus the container-content
-    decisions of ``ProductIntent``, so a draft can always be materialized into
-    the immutable planner contract.
+    Attributes:
+        group_id: Source group these decisions belong to.
+        products: Durable products requested for the group.
+        subtitle_source_policy: Policy for selecting the subtitle source.
+        translation_action: Explicit translation decision for the source subtitles.
+        preferred_video_artifact_id: Video artifact chosen as the group source.
+        selected_subtitle_artifact_id: Sidecar or external subtitle artifact chosen as the source.
+        selected_audio_artifact_id: External audio artifact chosen as the source.
+        selected_audio_track_id: Embedded audio track chosen as the source.
+        selected_subtitle_track_id: Embedded subtitle track chosen as the source.
+        source_subtitle_language: Declared language of the source subtitles.
+        external_audio_role: Meaning assigned to the selected external audio.
+        subtitle_output_format: Requested serialization format for subtitle products.
+        burn_subtitle_product: Subtitle document burned into a requested video product.
+        mkv_tracks: Optional tracks attached to a requested MKV product.
+        mp4_audio_source: Audio selected for a requested MP4 product.
     """
 
     group_id: str
@@ -207,12 +194,12 @@ class SessionState:
         selected_group_ids: Groups the next workflow acts on.
         default_preset_id: Auto-preset the auto workflow starts from.
         auto_draft: Auto decisions being edited, before they are applied.
-        manual_drafts: Independent manual draft per selected group.
+        manual_drafts: Manual draft per group, keyed by group id.
         plan: Last built execution plan awaiting preview or start.
         active_run_id: Identity of the run while it is not terminal.
         run_state: Lifecycle state of the one run the session can own.
         events: Events accepted for the active run.
-        result: Terminal result kept for the results route.
+        result: Terminal result of the last finished run.
         feedback: Last redacted message shown to the user.
         focus_id: Element that should hold focus on the current layer.
         modal_focus_stack: Focus to restore for every open modal layer.

@@ -1,7 +1,4 @@
-/* Shared modal frame: one borderless elevated panel over the dim backdrop the
-   modal screen already paints. No ornamental border and no large buttons; rows
-   stay one line high. Colours only ever arrive through the semantic variables of
-   anishift/tui/theme.py, and the panel width comes from dialogs/base.py. */
+/* Shared modal frame: one elevated panel over the backdrop. */
 
 DialogScreen {
     align: center top;

@@ -1,20 +1,4 @@
-"""Semantic design tokens and the two AniShift Textual themes.
-
-This module is the only production TUI file that holds literal colours. Every
-other module and every ``.tcss`` file reads colours through the semantic Textual
-CSS variables registered here, so a palette change never touches a widget.
-
-Public API:
-    Palette: The twelve semantic colour tokens of one theme.
-    DARK_PALETTE: Token values of the dark theme.
-    LIGHT_PALETTE: Token values of the light theme.
-    DARK_THEME_ID: Stable id of the dark theme.
-    LIGHT_THEME_ID: Stable id of the light theme.
-    THEME_IDS: Both stable theme ids, dark first.
-    DEFAULT_THEME_ID: Theme selected when no valid preference exists.
-    anishift_themes: Build both Textual themes.
-    register_themes: Register both themes with an application.
-"""
+"""Semantic design tokens and the two AniShift themes; the only owner of colours."""
 
 from __future__ import annotations
 
@@ -48,7 +32,7 @@ class Palette:
         surface: Default panel and header background.
         elevated: Background of dialogs and the status footer.
         border: Neutral separator and panel border.
-        focus: Highlight used for focus, selection, and the brand accent.
+        focus: Highlight used for focus, selection and the brand accent.
         text: Primary foreground.
         muted: Secondary foreground for hints and disabled labels.
         accent_soft: Low-contrast fill for selected rows and badges.
@@ -120,13 +104,7 @@ LIGHT_PALETTE: Final[Palette] = Palette(
 
 
 def _theme_variables(palette: Palette) -> dict[str, str]:
-    """Pin the semantic CSS variables that Textual would otherwise derive.
-
-    Textual computes ``$border``, ``$text`` and ``$text-muted`` from the primary
-    and background colours, and has no variable for the elevated, soft-accent or
-    informational tokens. Overriding them keeps every TCSS rule on exact palette
-    values.
-    """
+    """Pin the semantic CSS variables that Textual would otherwise derive."""
     return {
         "accent-soft": palette.accent_soft,
         "border": palette.border,

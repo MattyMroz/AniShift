@@ -1,15 +1,4 @@
-"""Presentation preferences of the TUI persisted next to ``settings.json``.
-
-Only presentation state lives here — never product preferences, which belong to
-``anishift.config.user_settings``. The file sits in ``<repo>/config/`` beside
-``settings.json`` so the workspace the user drops MKV files into stays clean.
-
-Public API:
-    UiState: Dataclass holding presentation preferences.
-    ui_state_path: Location of ``ui_state.json``.
-    load_ui_state: Read the file (safe defaults when absent / unreadable).
-    save_ui_state: Write the file atomically (creates ``config/`` if needed).
-"""
+"""Presentation preferences of the TUI, persisted next to ``settings.json``."""
 
 from __future__ import annotations
 
@@ -56,11 +45,7 @@ def ui_state_path() -> Path:
 
 
 def load_ui_state() -> UiState:
-    """Load presentation preferences, falling back to safe defaults.
-
-    A missing, unreadable, malformed or unknown-theme file never raises: the
-    dark theme is selected instead.
-    """
+    """Load presentation preferences, falling back to the defaults instead of raising."""
     path: Path = ui_state_path()
     if not path.is_file():
         return UiState()

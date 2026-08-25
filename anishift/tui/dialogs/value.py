@@ -1,28 +1,4 @@
-"""The editors one value is changed with, text, number and confirmation.
-
-Text and numbers are two editors in one module because they share one contract:
-the typed value stays in the box while it is wrong, the reason is shown inline,
-and ``Enter`` closes the editor only for a value that passed. A booleans needs no
-modal at all — ``toggle_boolean`` gives the settings tree the value a row takes
-when it is switched in place.
-
-None of these editors writes anything. Each one returns a value, and the caller
-performs the atomic save.
-
-Public API:
-    REQUIRED_VALUE_TEXT: Reason shown when a required value was left empty.
-    NOT_A_NUMBER_TEXT: Reason shown when the typed text is not a number.
-    OPTIONAL_HINT: Hint telling that an empty value is allowed.
-    CONFIRM_HINT: Hint of the confirmation dialog.
-    NumberKind: Whether a number editor edits whole numbers or decimals.
-    Validator: Caller's own check of one typed text.
-    range_text: Hint one number editor shows about its range and its step.
-    out_of_range_text: Reason shown when a number leaves its range.
-    toggle_boolean: Value a boolean row takes when it is switched in place.
-    PromptDialog: Editor of one text value, optional or required.
-    NumberDialog: Editor of one whole or decimal number.
-    ConfirmDialog: The one yes-or-no dialog of the application.
-"""
+"""The editors one value is changed with: text, number and confirmation."""
 
 from __future__ import annotations
 
@@ -35,6 +11,21 @@ from textual.binding import Binding
 from textual.widgets import Input, Static
 
 from anishift.tui.dialogs.base import DialogScreen, DialogSize
+from anishift.tui.strings import (
+    DIALOG_CONFIRM_LABEL,
+    VALUE_ABOVE_MAXIMUM,
+    VALUE_BELOW_MINIMUM,
+    VALUE_CONFIRM_HINT,
+    VALUE_LESS_LABEL,
+    VALUE_MORE_LABEL,
+    VALUE_NOT_A_NUMBER,
+    VALUE_OPTIONAL_HINT,
+    VALUE_OUT_OF_RANGE,
+    VALUE_RANGE_LABEL,
+    VALUE_RANGE_OPEN_END,
+    VALUE_REQUIRED,
+    VALUE_STEP_LABEL,
+)
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -57,16 +48,16 @@ __all__ = [
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-REQUIRED_VALUE_TEXT: Final[str] = "Wartość jest wymagana."
+REQUIRED_VALUE_TEXT: Final[str] = VALUE_REQUIRED
 """Reason shown when a required value was left empty."""
 
-NOT_A_NUMBER_TEXT: Final[str] = "Podaj liczbę."
+NOT_A_NUMBER_TEXT: Final[str] = VALUE_NOT_A_NUMBER
 """Reason shown when the typed text is not a number at all."""
 
-OPTIONAL_HINT: Final[str] = "Puste pole usuwa wartość."
+OPTIONAL_HINT: Final[str] = VALUE_OPTIONAL_HINT
 """Hint telling that an empty value is allowed."""
 
-CONFIRM_HINT: Final[str] = "Enter potwierdza · Esc anuluje"
+CONFIRM_HINT: Final[str] = VALUE_CONFIRM_HINT
 """Hint of the confirmation dialog."""
 
 Validator = Callable[[str], str | None]
@@ -108,24 +99,21 @@ def range_text(*, minimum: float | None, maximum: float | None, step: float) -> 
     """Hint one number editor shows about its range and its step."""
     parts: list[str] = []
     if minimum is not None or maximum is not None:
-        low: str = "…" if minimum is None else _number_text(minimum)
-        high: str = "…" if maximum is None else _number_text(maximum)
-        parts.append(f"Zakres {low}{_RANGE_DASH}{high}")
-    parts.append(f"krok {_number_text(step)}")
+        low: str = VALUE_RANGE_OPEN_END if minimum is None else _number_text(minimum)
+        high: str = VALUE_RANGE_OPEN_END if maximum is None else _number_text(maximum)
+        parts.append(f"{VALUE_RANGE_LABEL} {low}{_RANGE_DASH}{high}")
+    parts.append(f"{VALUE_STEP_LABEL} {_number_text(step)}")
     return _HINT_JOINER.join(parts)
 
 
 def out_of_range_text(*, minimum: float | None, maximum: float | None) -> str:
-    """Reason shown when a number leaves the range its field allows.
-
-    A field without any bound cannot be out of range, so its reason is empty.
-    """
+    """Reason shown when a number leaves the range its field allows, else nothing."""
     if minimum is not None and maximum is not None:
-        return f"Wartość musi być z zakresu {_number_text(minimum)}{_RANGE_DASH}{_number_text(maximum)}."
+        return VALUE_OUT_OF_RANGE.format(minimum=_number_text(minimum), maximum=_number_text(maximum))
     if minimum is not None:
-        return f"Wartość nie może być mniejsza niż {_number_text(minimum)}."
+        return VALUE_BELOW_MINIMUM.format(minimum=_number_text(minimum))
     if maximum is not None:
-        return f"Wartość nie może być większa niż {_number_text(maximum)}."
+        return VALUE_ABOVE_MAXIMUM.format(maximum=_number_text(maximum))
     return ""
 
 
@@ -140,16 +128,12 @@ def _number_text(value: float) -> str:
 
 
 class PromptDialog(DialogScreen[str | None]):
-    """Editor of one text value, optional or required.
-
-    A refused value stays in the box with its reason below it, so nothing the
-    user typed is ever lost to a failed validation.
-    """
+    """Editor of one text value that keeps any refused text in the box with its reason."""
 
     AUTO_FOCUS: ClassVar[str | None] = f"#{_INPUT_ID}"
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("enter", "confirm", "Zatwierdź", show=False, priority=True),
+        Binding("enter", "confirm", DIALOG_CONFIRM_LABEL, show=False, priority=True),
     ]
 
     def __init__(  # noqa: PLR0913 - one text editor serves every field, so its whole contract stays explicit
@@ -209,19 +193,14 @@ class PromptDialog(DialogScreen[str | None]):
 
 
 class NumberDialog(DialogScreen[int | float | None]):
-    """Editor of one whole or decimal number, typed or stepped.
-
-    ``Up`` and ``Down`` step the value by the amount the caller's field
-    specification gives, clamped to the range; the range and the step are always
-    visible, so no rule is hidden from the user.
-    """
+    """Editor of one number, typed or stepped by ``Up``/``Down`` and clamped to the range."""
 
     AUTO_FOCUS: ClassVar[str | None] = f"#{_INPUT_ID}"
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("enter", "confirm", "Zatwierdź", show=False, priority=True),
-        Binding("up", "step_up", "Więcej", show=False, priority=True),
-        Binding("down", "step_down", "Mniej", show=False, priority=True),
+        Binding("enter", "confirm", DIALOG_CONFIRM_LABEL, show=False, priority=True),
+        Binding("up", "step_up", VALUE_MORE_LABEL, show=False, priority=True),
+        Binding("down", "step_down", VALUE_LESS_LABEL, show=False, priority=True),
     ]
 
     def __init__(  # noqa: PLR0913 - range, step and kind of one number field stay explicit
@@ -331,14 +310,10 @@ class NumberDialog(DialogScreen[int | float | None]):
 
 
 class ConfirmDialog(DialogScreen[bool]):
-    """The one yes-or-no dialog of the application.
-
-    ``Enter`` confirms and ``Esc`` refuses, so a destructive step always has one
-    shape wherever it is asked for.
-    """
+    """The one yes-or-no dialog of the application: ``Enter`` confirms, ``Esc`` refuses."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("enter", "confirm", "Potwierdź", show=False, priority=True),
+        Binding("enter", "confirm", DIALOG_CONFIRM_LABEL, show=False, priority=True),
     ]
 
     def __init__(self, *, title: str, question: str, size: DialogSize = DialogSize.MEDIUM) -> None:
