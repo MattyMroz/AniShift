@@ -206,7 +206,7 @@ PLAIN_TEXT    -> feedback "tekst nie wykonuje akcji"
 RUNNING       -> Enter nie startuje niczego
 ```
 
-- Rezerwacja `auto_trigger_pending=True` następuje synchronicznie przed uruchomieniem wykonawcy planowania.
+- Rezerwacja następuje synchronicznie przed uruchomieniem wykonawcy planowania. Zrealizowana w T-007 jako `lifecycle.begin_planning`, bez osobnej flagi: `ALLOWED_RUN_TRANSITIONS` już odrzuca wejście w `planning` z `planning`, `running` i `cancelling`, więc `run_state` plus `generation` są jedynym źródłem prawdy.
 - Trigger jest zwalniany po terminalnym wyniku plan/run albo po błędzie. Key repeat i drugi event z tą samą generacją są ignorowane.
 - Auto wybiera default preset i zaznaczone grupy. Jeśli selekcja jest pusta, polityka jest jawna i stała: wszystkie gotowe grupy; jeśli nie ma gotowych grup, komunikat bez side effectu.
 - Bezpieczny plan przechodzi do execution. Blocker nie uruchamia runu; nadpisanie/nieodwracalny skutek wymaga ConfirmDialog.
@@ -806,9 +806,9 @@ Każde zadanie kodowe wykonuje najpierw BRAMKĘ-UKIERUNKOWANĄ, potem BRAMKĘ-PE
 
 **Kolejność wykonania:**
 1. Utwórz `ComposerSubmissionKind` i czystą funkcję klasyfikacji po `strip()` oraz pierwszym znaku `/`.
-2. Zbuduj widget composera z prefiksem `❯`, dokładnym placeholderem SPEC i popupem sugestii nad polem. Popup korzysta z `registry.slash_entries`, nie z własnej listy.
+2. Zbuduj widget composera z prefiksem `❯`, dokładnym placeholderem SPEC i popupem sugestii nad polem. Popup korzysta z `palette.slash_options(registry, query)`, nie z własnej listy.
 3. Enter przy widocznym popupie wykonuje highlighted slash; Tab tylko uzupełnia nazwę; Esc chowa popup bez czyszczenia wartości.
-4. W `auto_trigger.py` wprowadź stan `idle/reserved/planning/running/cancelling`; `reserve()` zwraca nową generation tylko dla idle i od razu blokuje kolejne submission.
+4. W `auto_trigger.py` oprzyj rezerwację na maszynie run state z T-004; `reserve()` zwraca nową generation tylko wtedy, gdy bramka jest wolna, i od razu blokuje kolejne submission. Nie dodawaj drugiej maszyny stanu ani flagi obok `run_state`.
 5. Po empty submit App publikuje `AutoRequested(generation)` i czyści pole dopiero po skutecznej rezerwacji.
 6. Slash submit usuwa opcjonalny pierwszy `/`, rozwiązuje tylko `slash_name`, dispatchuje przez registry i czyści pole po rozpoznanej komendzie.
 7. Unknown slash pozostawia aplikację bez side effectu i pokazuje jedną sugestię. Plain text pozostaje lub jest przywrócony w polu i dostaje krótki feedback o braku trybu rozmowy.
