@@ -13,6 +13,11 @@ catalogue once and every key, palette row and button runs through its single
 ``dispatch``. The built-in Textual palette stays switched off, so ``Ctrl+P``
 belongs to the registry.
 
+Because the shell owns the state, it is also the only place that may accept an
+empty composer line: ``auto_trigger`` reserves one generation, the shell
+publishes one ``AutoRequested`` for it and clears the field afterwards. The
+shell declares no binding for ``Enter``, so the composer is the only way in.
+
 Public API:
     FULL_LAYOUT_MIN_WIDTH: Terminal width from which the full layout applies.
     FULL_LAYOUT_MIN_HEIGHT: Terminal height from which the full layout applies.
@@ -29,7 +34,7 @@ from textual.app import App
 from textual.containers import Container
 from textual.widgets import Static
 
-from anishift.tui import lifecycle
+from anishift.tui import auto_trigger, lifecycle
 from anishift.tui.brand import logo_for_size
 from anishift.tui.commands.catalog import EXIT_COMMAND_NAME, global_commands, palette_command
 from anishift.tui.commands.palette import palette_options
@@ -37,6 +42,7 @@ from anishift.tui.commands.registry import CommandRegistry
 from anishift.tui.dialogs.base import open_dialog
 from anishift.tui.dialogs.select import SelectDialog, SelectOption, SelectOutcome, SelectOutcomeKind
 from anishift.tui.messages import (
+    AutoRequested,
     NavigationRequested,
     PlanFailed,
     PlanReady,
@@ -50,6 +56,7 @@ from anishift.tui.screens.workspace import WorkspaceView
 from anishift.tui.state import FeedbackLevel, SessionState, UiFeedback, UiRoute
 from anishift.tui.theme import register_themes
 from anishift.tui.ui_state import load_ui_state
+from anishift.tui.widgets.composer import Composer
 from anishift.tui.widgets.footer import SessionFooter
 from anishift.utils.logger import get_logger
 
@@ -117,6 +124,7 @@ class AniShiftApp(App[None]):
         self._footer: SessionFooter = SessionFooter(id="app-footer")
         self._commands: CommandRegistry = CommandRegistry(lambda: self._state)
         self._commands.register((*global_commands(self), palette_command(self._open_palette)))
+        self._composer: Composer = Composer(self._commands)
 
     @property
     def session_state(self) -> SessionState:
@@ -134,7 +142,8 @@ class AniShiftApp(App[None]):
         yield self._header
         with self._host:
             yield self._workspace_view
-        yield self._composer_slot
+        with self._composer_slot:
+            yield self._composer
         yield self._footer
 
     def on_mount(self) -> None:
@@ -197,10 +206,24 @@ class AniShiftApp(App[None]):
 
     @on(PlanFailed)
     def _on_plan_failed(self, message: PlanFailed) -> None:
-        """Leave planning without a run and keep its reason."""
-        if not self._accepts(message.generation):
+        """Give the Auto reservation back and keep the reason of the failed plan."""
+        if not auto_trigger.release(self._state, generation=message.generation, reason=message.reason):
             return
-        lifecycle.abandon_planning(self._state, message.reason)
+        self._render_frame()
+
+    @on(Composer.EmptySubmitted)
+    def _on_empty_submitted(self, _message: Composer.EmptySubmitted) -> None:
+        """Turn one accepted empty line into exactly one Auto request.
+
+        The reservation is what makes this exactly once: a second submission of
+        the same physical key, an auto-repeat or a duplicated message finds the
+        gate taken and leaves the field, the state and the workflow untouched.
+        """
+        generation: int | None = auto_trigger.reserve(self._state)
+        if generation is None:
+            return
+        self.post_message(AutoRequested(generation))
+        self._composer.clear()
         self._render_frame()
 
     @on(RunProgressed)

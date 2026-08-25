@@ -34,6 +34,47 @@
     background: $surface;
 }
 
+#composer {
+    height: auto;
+}
+
+#composer-prompt {
+    width: 2;
+    color: $focus;
+    text-style: bold;
+}
+
+#composer-input {
+    width: 1fr;
+    height: 1;
+    border: none;
+    padding: 0;
+    background: $surface;
+    color: $text;
+}
+
+#composer-suggestions {
+    height: auto;
+    max-height: 10;
+    border: none;
+    padding: 0;
+    background: $elevated;
+}
+
+#composer-suggestions > .option-list--option {
+    padding: 0;
+}
+
+#composer-suggestions > .option-list--option-highlighted {
+    background: $accent-soft;
+    color: $text;
+}
+
+#composer-hint {
+    height: 1;
+    color: $text-muted;
+}
+
 #app-footer {
     height: 1;
     padding: 0 2;

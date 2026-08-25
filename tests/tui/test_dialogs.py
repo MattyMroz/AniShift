@@ -381,7 +381,8 @@ def test_a_dismiss_never_refocuses_an_element_that_is_gone() -> None:
             await pilot.press("escape")
             await pilot.pause()
             assert app.session_state.focus_id == _PROBE_ID
-            assert app.focused is None
+            assert app.focused is not probe
+            assert app.focused is None or app.focused.id != _PROBE_ID
 
     _run(scenario())
 
