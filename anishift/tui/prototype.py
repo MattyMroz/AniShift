@@ -63,9 +63,9 @@ def demo_rows() -> tuple[GroupRow, ...]:
 
 def production_service() -> AppService:
     """Compose the one application facade this launcher runs the shell on."""
-    from anishift.bootstrap import bootstrap, create_app_service  # noqa: PLC0415 - keeps the backend lazy
+    from anishift import bootstrap  # noqa: PLC0415 - keeps the backend lazy
 
-    return create_app_service(bootstrap())
+    return bootstrap.production_service()
 
 
 def working_status() -> str:

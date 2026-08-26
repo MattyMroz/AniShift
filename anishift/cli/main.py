@@ -1,14 +1,9 @@
-"""CLI entry point — Typer app registered as the ``anishift`` script.
-
-Stage 1 scope: a banner stub (default, when no subcommand is given) and the
-``doctor`` subcommand. Stage 2 replaces the default action with the interactive
-shell (banner + REPL).
-"""
+"""CLI entry point — Typer app registered as the ``anishift`` script."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
@@ -17,6 +12,9 @@ from anishift.errors import AniShiftError
 from anishift.setup.doctor import CheckResult, CheckStatus, run_doctor
 from anishift.setup.installer import run_setup
 from anishift.utils.rich_console import StatusType, console, get_status_icon
+
+if TYPE_CHECKING:
+    from anishift.application import AppService
 
 app = typer.Typer(
     name="anishift",
@@ -45,11 +43,18 @@ def _print_doctor_report(results: list[CheckResult]) -> None:
 
 @app.callback(invoke_without_command=True)
 def _default(ctx: typer.Context) -> None:
-    """Launch the interface when invoked without a subcommand."""
-    if ctx.invoked_subcommand is None:
-        from anishift.tui.prototype import PrototypeApp  # noqa: PLC0415 - keep textual off the Typer import path
+    """Launch the application shell when invoked without a subcommand."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from anishift.bootstrap import production_service  # noqa: PLC0415 - keep the backend off the Typer import path
+    from anishift.tui.app import AniShiftApp  # noqa: PLC0415 - keep textual off the Typer import path
 
-        PrototypeApp().run()
+    try:
+        service: AppService = production_service()
+    except (AniShiftError, OSError) as exc:
+        console.print(f"[error]AniShift cannot start: {exc}[/error]")
+        raise typer.Exit(code=1) from exc
+    AniShiftApp(service=service).run()
 
 
 @app.command()

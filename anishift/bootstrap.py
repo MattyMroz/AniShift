@@ -25,7 +25,7 @@ from anishift.utils.logger import get_logger
 if TYPE_CHECKING:
     from anishift.application.service import AppService
 
-__all__ = ["AppContext", "bootstrap", "create_app_service"]
+__all__ = ["AppContext", "bootstrap", "create_app_service", "production_service"]
 
 logger = get_logger(__name__)
 
@@ -101,3 +101,8 @@ def create_app_service(context: AppContext) -> AppService:
         ),
     )
     return service
+
+
+def production_service() -> AppService:
+    """Compose the one application facade every production entry point runs on."""
+    return create_app_service(bootstrap())
