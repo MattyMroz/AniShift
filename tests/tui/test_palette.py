@@ -37,6 +37,10 @@ _CATALOG_SIZE: Final[int] = 14
 
 _QUIT_KEY: Final[str] = "ctrl+q"
 
+_SLASH_PREFIX: Final[str] = "/"
+
+_REFRESH_SLASH: Final[str] = "refresh"
+
 
 def _run(scenario: Coroutine[Any, Any, None]) -> None:
     asyncio.run(scenario)
@@ -219,9 +223,25 @@ def test_the_shell_registers_the_frozen_catalog_once() -> None:
         app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
-            assert len(app.commands.slash_names()) == _CATALOG_SIZE
+            slashes: tuple[str, ...] = app.commands.slash_names()
+            labels: list[str] = [option.label for option in palette_options(app.commands)]
+            assert len(slashes) == _CATALOG_SIZE
             assert app.commands.command(PALETTE_COMMAND_NAME) is not None
-            assert sorted(option.name for option in palette_options(app.commands)) == sorted(app.commands.slash_names())
+            assert sorted(label for label in labels if label.startswith(_SLASH_PREFIX)) == sorted(
+                f"{_SLASH_PREFIX}{name}" for name in slashes
+            )
+
+    _run(scenario())
+
+
+def test_the_frozen_catalog_offers_no_refresh_slash_command() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            assert _REFRESH_SLASH not in app.commands.slash_names()
+            assert slash_options(app.commands, _REFRESH_SLASH) == ()
+            assert len(app.commands.slash_names()) == _CATALOG_SIZE
 
     _run(scenario())
 

@@ -27,6 +27,8 @@ __all__ = [
     "COMMAND_PALETTE_TITLE",
     "COMMAND_PROMPTS_DESCRIPTION",
     "COMMAND_PROMPTS_TITLE",
+    "COMMAND_REFRESH_DESCRIPTION",
+    "COMMAND_REFRESH_TITLE",
     "COMMAND_STATUS_DESCRIPTION",
     "COMMAND_STATUS_TITLE",
     "COMMAND_THEME_DESCRIPTION",
@@ -69,6 +71,7 @@ __all__ = [
     "DIALOG_PAGE_DOWN_LABEL",
     "DIALOG_PAGE_UP_LABEL",
     "DIALOG_UP_LABEL",
+    "EXIT_ACTIVE_RUN_QUESTION",
     "GLYPH_GAP",
     "GROUP_COLUMN_GAP",
     "GROUP_CONFLICT_GLYPH",
@@ -139,6 +142,9 @@ __all__ = [
     "SETTING_INVALID_VALUE",
     "SETTING_LIST_SEPARATOR",
     "SETTING_UNSET",
+    "SETUP_ACTION_DESCRIPTION",
+    "SETUP_ACTION_TITLE",
+    "SETUP_CONFIRM_QUESTION",
     "STATUS_GLYPH",
     "SUGGESTION_COMPLETE_LABEL",
     "SUGGESTION_DISMISS_LABEL",
@@ -152,6 +158,55 @@ __all__ = [
     "TIP_GLYPH",
     "TIP_LABEL",
     "TIP_TEXT",
+    "TOOLS_CATALOG_LABEL",
+    "TOOLS_CATALOG_SUMMARY",
+    "TOOLS_CHECK_FAIL_GLYPH",
+    "TOOLS_CHECK_FAIL_WORD",
+    "TOOLS_CHECK_OK_GLYPH",
+    "TOOLS_CHECK_OK_WORD",
+    "TOOLS_CHECK_SKIP_GLYPH",
+    "TOOLS_CHECK_SKIP_WORD",
+    "TOOLS_CHECK_WARN_GLYPH",
+    "TOOLS_CHECK_WARN_WORD",
+    "TOOLS_ENCODING_LABEL",
+    "TOOLS_ENGINES_LABEL",
+    "TOOLS_ENGINE_COUNT",
+    "TOOLS_ERRORS_LABEL",
+    "TOOLS_EVENTS_LABEL",
+    "TOOLS_FILES_LABEL",
+    "TOOLS_HELP_ACTIONS_HEADING",
+    "TOOLS_HELP_COMMANDS_HEADING",
+    "TOOLS_HELP_KEYS_HEADING",
+    "TOOLS_INIT_CONNECT_STEP",
+    "TOOLS_INIT_MODEL_STEP",
+    "TOOLS_INIT_READY",
+    "TOOLS_INIT_SETUP_STEP",
+    "TOOLS_LABEL_GAP",
+    "TOOLS_MAIN_MODEL_LABEL",
+    "TOOLS_NONE",
+    "TOOLS_PENDING",
+    "TOOLS_PLATFORM_LABEL",
+    "TOOLS_PRESET_LABEL",
+    "TOOLS_PYTHON_LABEL",
+    "TOOLS_RESULT_COUNT",
+    "TOOLS_RESULT_LABEL",
+    "TOOLS_RUN_CANCELLING",
+    "TOOLS_RUN_IDLE",
+    "TOOLS_RUN_LABEL",
+    "TOOLS_RUN_PLANNING",
+    "TOOLS_RUN_RUNNING",
+    "TOOLS_RUN_TERMINAL",
+    "TOOLS_SELECTION_LABEL",
+    "TOOLS_SUGGESTION_GLYPH",
+    "TOOLS_TRANSLATION_LABEL",
+    "TOOLS_UNKNOWN",
+    "TOOLS_VERSION_LABEL",
+    "TOOLS_WORKERS_DRAINING",
+    "TOOLS_WORKERS_IDLE",
+    "TOOLS_WORKERS_LABEL",
+    "TOOLS_WORKSPACE_GROUPS",
+    "TOOLS_WORKSPACE_LABEL",
+    "TOOLS_WORKSPACE_UNREAD",
     "TRANSLATION_MODEL_SAVED",
     "TRANSLATION_MODEL_TITLE",
     "VALUE_ABOVE_MAXIMUM",
@@ -369,6 +424,12 @@ COMMAND_PALETTE_TITLE: Final[str] = "Commands"
 
 COMMAND_PALETTE_DESCRIPTION: Final[str] = "Open command list"
 """Description of the contextual action that opens the palette."""
+
+COMMAND_REFRESH_TITLE: Final[str] = "Refresh"
+"""Title of the contextual action that inspects the workspace again."""
+
+COMMAND_REFRESH_DESCRIPTION: Final[str] = "Read the workspace again"
+"""Description of the contextual action that inspects the workspace again."""
 
 DIALOG_ALREADY_OPEN: Final[str] = "A dialog is already open, close it before opening another"
 """Message of every refused open while one dialog holds the screen."""
@@ -660,3 +721,162 @@ CONNECT_TEST_VERIFIED: Final[str] = "Connection verified for {alias} in this ses
 
 CONNECT_TEST_FAILED: Final[str] = "Connection test failed for {alias}: {error_class}"
 """Feedback of a test that failed, carrying only the safe error class."""
+
+TOOLS_LABEL_GAP: Final[str] = "  "
+"""Separator between the padded label of one report row and its value."""
+
+TOOLS_PENDING: Final[str] = "Working…"
+"""Row shown while the worker of one report is still collecting its answer."""
+
+TOOLS_UNKNOWN: Final[str] = "unknown"
+"""Value of a diagnostic the terminal itself does not answer."""
+
+TOOLS_NONE: Final[str] = "None"
+"""Value of a diagnostic that holds nothing yet."""
+
+TOOLS_WORKSPACE_LABEL: Final[str] = "Workspace"
+"""Label of the row saying what the last inspection found."""
+
+TOOLS_WORKSPACE_GROUPS: Final[str] = "{groups} groups, {warnings} warnings"
+"""Value saying how much the last inspection found, never naming a path."""
+
+TOOLS_WORKSPACE_UNREAD: Final[str] = "Not read yet"
+"""Value of the workspace row before any inspection has run."""
+
+TOOLS_SELECTION_LABEL: Final[str] = "Selection"
+"""Label of the row saying how many groups the next workflow acts on."""
+
+TOOLS_PRESET_LABEL: Final[str] = "Preset"
+"""Label of the row naming the preset new groups start from."""
+
+TOOLS_MAIN_MODEL_LABEL: Final[str] = "Main model"
+"""Label of the row naming the alias of the main model role."""
+
+TOOLS_TRANSLATION_LABEL: Final[str] = "Translation"
+"""Label of the row naming the translation provider and its model."""
+
+TOOLS_ENGINES_LABEL: Final[str] = "Engines"
+"""Label of the row counting the engines the configuration already allows."""
+
+TOOLS_ENGINE_COUNT: Final[str] = "{domain} {ready} of {total}"
+"""Value counting the ready engines of one domain."""
+
+TOOLS_RUN_LABEL: Final[str] = "Run"
+"""Label of the row naming the run state of this session."""
+
+TOOLS_RUN_IDLE: Final[str] = "Idle"
+"""Word the run state before any work is named by."""
+
+TOOLS_RUN_PLANNING: Final[str] = "Planning"
+"""Word the run state of a plan being built is named by."""
+
+TOOLS_RUN_RUNNING: Final[str] = "Running"
+"""Word the run state of an active run is named by."""
+
+TOOLS_RUN_CANCELLING: Final[str] = "Cancelling"
+"""Word the run state of a run that was asked to stop is named by."""
+
+TOOLS_RUN_TERMINAL: Final[str] = "Finished"
+"""Word the run state of a run that reached its end is named by."""
+
+TOOLS_RESULT_LABEL: Final[str] = "Result"
+"""Label of the row counting how the groups of the last run ended."""
+
+TOOLS_RESULT_COUNT: Final[str] = "{count} {status}"
+"""Value counting the groups of the last run that share one status."""
+
+TOOLS_VERSION_LABEL: Final[str] = "Version"
+"""Label of the row naming the installed version of this application."""
+
+TOOLS_PYTHON_LABEL: Final[str] = "Python"
+"""Label of the row naming the running interpreter version."""
+
+TOOLS_PLATFORM_LABEL: Final[str] = "Platform"
+"""Label of the row naming the operating system and its release."""
+
+TOOLS_ENCODING_LABEL: Final[str] = "Encoding"
+"""Label of the row naming the encoding this session writes with."""
+
+TOOLS_FILES_LABEL: Final[str] = "Files"
+"""Label of the row naming the local configuration files, never their paths."""
+
+TOOLS_CATALOG_LABEL: Final[str] = "Catalog"
+"""Label of the row saying what the local model catalog holds."""
+
+TOOLS_CATALOG_SUMMARY: Final[str] = "{providers} providers, {models} models, {issues} warnings"
+"""Value saying how much the local model catalog holds."""
+
+TOOLS_EVENTS_LABEL: Final[str] = "Events"
+"""Label of the row counting the run events this session received."""
+
+TOOLS_WORKERS_LABEL: Final[str] = "Workers"
+"""Label of the row saying whether run events are still being drained."""
+
+TOOLS_WORKERS_DRAINING: Final[str] = "Draining run events"
+"""Value of the worker row while the event pump is still reading."""
+
+TOOLS_WORKERS_IDLE: Final[str] = "Idle"
+"""Value of the worker row while no event pump is reading."""
+
+TOOLS_ERRORS_LABEL: Final[str] = "Errors"
+"""Label of the row carrying the safe error classes of this session."""
+
+TOOLS_CHECK_OK_GLYPH: Final[str] = "●"
+"""Glyph a finished diagnostic is marked with, ahead of its own word."""
+
+TOOLS_CHECK_OK_WORD: Final[str] = "OK"
+"""Word a finished diagnostic is named by, so the glyph is never alone."""
+
+TOOLS_CHECK_WARN_GLYPH: Final[str] = "▲"
+"""Glyph a diagnostic that only warns is marked with."""
+
+TOOLS_CHECK_WARN_WORD: Final[str] = "Warning"
+"""Word a diagnostic that only warns is named by."""
+
+TOOLS_CHECK_FAIL_GLYPH: Final[str] = "✕"
+"""Glyph a failed diagnostic is marked with."""
+
+TOOLS_CHECK_FAIL_WORD: Final[str] = "Failed"
+"""Word a failed diagnostic is named by."""
+
+TOOLS_CHECK_SKIP_GLYPH: Final[str] = "○"
+"""Glyph a skipped diagnostic is marked with."""
+
+TOOLS_CHECK_SKIP_WORD: Final[str] = "Skipped"
+"""Word a skipped diagnostic is named by."""
+
+TOOLS_SUGGESTION_GLYPH: Final[str] = "→"
+"""Glyph in front of the suggestion one diagnostic offers."""
+
+TOOLS_INIT_READY: Final[str] = "Everything is ready"
+"""Only row shown when no first step is missing any more."""
+
+TOOLS_INIT_CONNECT_STEP: Final[str] = "Connect the provider with /connect"
+"""Step shown while no provider token is configured."""
+
+TOOLS_INIT_MODEL_STEP: Final[str] = "Choose the main model with /model"
+"""Step shown while the main model role holds no alias."""
+
+TOOLS_INIT_SETUP_STEP: Final[str] = "Install the external tools with {action}, from the palette ({key})"
+"""Step naming the action that installs the external tools on request."""
+
+TOOLS_HELP_COMMANDS_HEADING: Final[str] = "Commands"
+"""Heading the help groups the slash commands under."""
+
+TOOLS_HELP_ACTIONS_HEADING: Final[str] = "Actions"
+"""Heading the help groups the contextual actions under."""
+
+TOOLS_HELP_KEYS_HEADING: Final[str] = "Keys"
+"""Heading the help groups the keys of the current context under."""
+
+SETUP_ACTION_TITLE: Final[str] = "Setup"
+"""Title of the contextual action that installs the external tools."""
+
+SETUP_ACTION_DESCRIPTION: Final[str] = "Install the external tools"
+"""Description of the contextual action that installs the external tools."""
+
+SETUP_CONFIRM_QUESTION: Final[str] = "Download and install the external tools now?"
+"""Question the confirmation asks before anything is downloaded."""
+
+EXIT_ACTIVE_RUN_QUESTION: Final[str] = "A run is still active. Leave and stop it?"
+"""Question the confirmation asks before an active run is abandoned."""

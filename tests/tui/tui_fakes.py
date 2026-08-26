@@ -8,7 +8,13 @@ from textual.message import Message
 
 from anishift.application import (
     AppService,
+    Artifact,
+    ArtifactKind,
+    ArtifactLifetime,
+    ArtifactState,
     ExecutionPlan,
+    GroupConflict,
+    GroupConflictKind,
     GroupResult,
     GroupStatus,
     InspectedSourceGroup,
@@ -17,8 +23,10 @@ from anishift.application import (
     RunEventKind,
     RunEventSink,
     RunResult,
+    SourceGroup,
 )
 from anishift.config import Settings, UserSettings
+from anishift.services.media.types import ContainerKind, MediaCatalog, MediaTrack, MediaTrackKind
 from anishift.tui.app import AniShiftApp
 
 OFFLINE_ROOT: Final[Path] = Path(__file__).parent / "_offline_never_created"
@@ -59,6 +67,103 @@ def stub_plan() -> ExecutionPlan:
 
 def stub_group() -> InspectedSourceGroup:
     return cast("InspectedSourceGroup", object())
+
+
+def source_artifact(
+    group_id: str,
+    kind: ArtifactKind,
+    path: Path,
+    *,
+    state: ArtifactState = ArtifactState.READY,
+) -> Artifact:
+    return Artifact(
+        artifact_id=f"artifact-{group_id}-{kind.value}",
+        group_id=group_id,
+        kind=kind,
+        path=path,
+        state=state,
+        lifetime=ArtifactLifetime.SOURCE,
+        planned_destination=path,
+    )
+
+
+def subtitled_catalog(path: Path) -> MediaCatalog:
+    return MediaCatalog(
+        path=path,
+        container=ContainerKind.MKV,
+        duration_us=1,
+        tracks=(
+            MediaTrack(
+                track_id=0,
+                kind=MediaTrackKind.VIDEO,
+                codec_id="V_MPEG4/ISO/AVC",
+                language=None,
+                name=None,
+                is_default=True,
+                is_forced=False,
+            ),
+            MediaTrack(
+                track_id=1,
+                kind=MediaTrackKind.SUBTITLES,
+                codec_id="S_TEXT/ASS",
+                language="eng",
+                name=None,
+                is_default=True,
+                is_forced=False,
+                subtitle_format="ass",
+            ),
+        ),
+    )
+
+
+def inspected_group(
+    stem: str,
+    *,
+    sidecar: str | None = None,
+    usable_sidecar: bool = True,
+    embedded: bool = False,
+    conflict: bool = False,
+) -> InspectedSourceGroup:
+    group_id: str = f"group-{stem}"
+    container: Path = Path(f"{stem}.mkv")
+    artifacts: list[Artifact] = [source_artifact(group_id, ArtifactKind.VIDEO_MKV, container)]
+    if sidecar is not None:
+        artifacts.append(
+            source_artifact(
+                group_id,
+                ArtifactKind.SOURCE_SUBTITLES,
+                Path(f"{stem}.{sidecar}"),
+                state=ArtifactState.READY if usable_sidecar else ArtifactState.INVALID,
+            ),
+        )
+    catalogs: dict[str, MediaCatalog] = {}
+    if embedded:
+        catalogs[artifacts[0].artifact_id] = subtitled_catalog(container)
+    conflicts: tuple[GroupConflict, ...] = ()
+    if conflict:
+        conflicts = (
+            GroupConflict(
+                kind=GroupConflictKind.AMBIGUOUS_PRIMARY,
+                message="Two candidate videos share one stem",
+                paths=(container,),
+            ),
+        )
+    return InspectedSourceGroup(
+        source=SourceGroup(
+            group_id=group_id,
+            stem=stem,
+            directory=Path(),
+            artifacts=tuple(artifacts),
+            conflicts=conflicts,
+        ),
+        artifacts=tuple(artifacts),
+        media_catalogs=catalogs,
+        conflicts=conflicts,
+    )
+
+
+def inspected_workspace(*groups: InspectedSourceGroup) -> InspectedWorkspace:
+    return InspectedWorkspace(groups=groups, warnings=())
 
 
 def stub_result(run_id: str = STUB_RUN_ID) -> RunResult:
