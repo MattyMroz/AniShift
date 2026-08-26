@@ -11,13 +11,15 @@
   //
   // An entry present below is NOT proof that the model is enabled in your
   // enrollment. Availability is verified per session, never stored here.
+  //
+  // The enrollment address is NOT part of this file. It is a panel preference
+  // edited by /connect and stored in config/settings.json, so that nothing ever
+  // writes this file back and loses your comments.
   "schema_version": 1,
 
-  // HTTPS origin of your enrollment, without a proxy path, query or fragment.
-  "enrollment": { "base_url": "https://example.palantirfoundry.com" },
-
-  // Relative proxy routes. The protocol decides how a request is built and
-  // must be one of: openai_chat, anthropic_messages, google_generate, xai_chat.
+  // Relative proxy routes, joined with the enrollment address at request time.
+  // The protocol decides how a request is built and must be one of:
+  // openai_chat, anthropic_messages, google_generate, xai_chat.
   "providers": {
     "foundry-openai": { "protocol": "openai_chat", "path": "/api/v2/llm/proxy/openai/v1" },
     "foundry-anthropic": { "protocol": "anthropic_messages", "path": "/api/v2/llm/proxy/anthropic/v1" },

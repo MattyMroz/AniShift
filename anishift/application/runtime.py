@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import replace
@@ -19,11 +20,17 @@ from anishift.application.handlers import (
     TtsTaskHandler,
 )
 from anishift.application.inspection import InspectedSourceGroup
-from anishift.application.planning import ExecutionPlan, TaskKind
+from anishift.application.planning import ExecutionPlan, RunSettingsSnapshot, TaskKind
 from anishift.application.tts_clips import FfmpegClipService
 from anishift.application.tts_handler import TtsProgressObserver
-from anishift.config.user_settings import config_path
-from anishift.errors import AniShiftError, TransientError
+from anishift.config.model_catalog import ModelCatalog, ModelEntry, ProviderEntry, load_model_catalog
+from anishift.config.user_settings import (
+    PALANTIR_ENROLLMENT_URL_PATTERN,
+    UserSettings,
+    config_path,
+    load_user_settings,
+)
+from anishift.errors import AniShiftError, ConfigError, ErrorCode, ErrorContext, TransientError
 from anishift.platform.binaries import Binary, require_binary
 from anishift.services.audio import (
     AudioConfig,
@@ -58,6 +65,7 @@ from anishift.services.llm import (
     LlmTimeoutError,
     TextPart,
 )
+from anishift.services.llm.engines.palantir import PALANTIR_ENGINE_ID, PalantirModelConfig, palantir_model_config
 from anishift.services.translation import TranslationConfig, TranslationService
 from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
 from anishift.services.translation.engines import create_engine
@@ -89,12 +97,24 @@ if TYPE_CHECKING:
     from anishift.config.settings import Settings
     from anishift.services.subtitles import DisplayedLine, SpokenLine
 
-__all__ = ["ProductionHandlerFactory"]
+__all__ = ["ProductionHandlerFactory", "palantir_llm_config", "probe_palantir_model"]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
 _EXTRACTION_TIMEOUT_S: Final[float] = 120.0
 """Maximum time allowed for one neutral track extraction."""
+
+_PROBE_PROMPT: Final[str] = "ping"
+"""Shortest prompt of the single request one explicit connection test sends."""
+
+_PROBE_MAX_OUTPUT_TOKENS: Final[int] = 16
+"""Output cap of that request, small enough to stay a negligible cost."""
+
+_ENROLLMENT_SETTING_ID: Final[str] = "palantir_enrollment_base_url"
+"""Preference naming the enrollment address in a configuration failure."""
+
+_ENROLLMENT_URL_RE: Final[re.Pattern[str]] = re.compile(PALANTIR_ENROLLMENT_URL_PATTERN)
+"""Compiled form of the enrollment-address rule owned by ``user_settings``."""
 
 _AUDIO_TIMEOUT_S: Final[float] = 30.0
 """Maximum time allowed for one audio validation or conversion process."""
@@ -436,8 +456,119 @@ def _translation_service(settings: Settings, plan: ExecutionPlan) -> _Translatio
     return _TranslationRuntime(service, llm_cancel)
 
 
+def palantir_llm_config(
+    catalog: ModelCatalog,
+    alias: str,
+    *,
+    enrollment_base_url: str,
+    token: str,
+    max_retries: int = 0,
+) -> LlmConfig:
+    """Resolve one catalog alias into a complete Palantir configuration.
+
+    The alias becomes a provider, a wire protocol, the endpoint joining the
+    enrollment address with that provider route, and the exact provider model
+    identifier — everything the engine needs before it may open a connection.
+
+    Args:
+        catalog: Validated local catalog; nothing here writes it.
+        alias: Catalog alias the user selected.
+        enrollment_base_url: ``UserSettings.palantir_enrollment_base_url``.
+        token: ``Settings.palantir_token``, already folded from the environment,
+            the ``.env`` file and the compatibility variable.
+        max_retries: Retries the LLM service may spend on transient failures.
+
+    Returns:
+        The neutral configuration carrying the alias, provider, protocol,
+        endpoint, provider model identifier and the token.
+
+    Raises:
+        ConfigError: The alias is unknown to the catalog, its provider is
+            unusable, or the enrollment address is unset or malformed.
+        LlmAuthError: The token is absent or cannot be sent in a header.
+    """
+    entry: ModelEntry | None = catalog.models.get(alias.strip())
+    if entry is None:
+        raise _alias_error(alias)
+    provider: ProviderEntry | None = catalog.providers.get(entry.provider_id)
+    if provider is None:
+        raise _alias_error(alias)
+    model: PalantirModelConfig = palantir_model_config(
+        alias=entry.alias,
+        provider_id=provider.provider_id,
+        protocol=provider.protocol,
+        enrollment_base_url=_required_enrollment_url(enrollment_base_url),
+        provider_path=provider.path,
+        provider_model_id=entry.model_id,
+        token=token,
+    )
+    return LlmConfig(
+        engine_id=PALANTIR_ENGINE_ID,
+        provider_model_id=model.provider_model_id,
+        api_key=model.token,
+        base_url=model.base_url,
+        max_retries=max_retries,
+        alias=model.alias,
+        provider_id=model.provider_id,
+        protocol=model.protocol,
+    )
+
+
+def probe_palantir_model(config: LlmConfig) -> None:
+    """Send exactly one minimal completion to prove *config* can really run.
+
+    Args:
+        config: Configuration already resolved from a catalog alias.
+
+    Raises:
+        LlmError: The single attempt failed; the caller keeps only a safe error
+            class, never the response body.
+    """
+    service: LlmService = LlmService(replace(config, max_retries=0, max_output_tokens=_PROBE_MAX_OUTPUT_TOKENS))
+    try:
+        service.complete(
+            LlmRequest(messages=(LlmMessage(role=LlmRole.USER, parts=(TextPart(_PROBE_PROMPT),)),)),
+        )
+    finally:
+        service.close()
+
+
+def _alias_error(alias: str) -> ConfigError:
+    """Build the failure of an alias no usable catalog entry serves."""
+    return ConfigError(
+        context=ErrorContext(
+            code=ErrorCode.CONFIG_INVALID,
+            message=f"Model alias is not served by the local catalog: {alias}",
+            suggestion="Select one of the aliases the model catalog defines with a usable provider",
+        ),
+    )
+
+
+def _required_enrollment_url(enrollment_base_url: str) -> str:
+    """Return the configured enrollment address or fail before any request.
+
+    Raises:
+        ConfigError: The address is unset or is not a plain https address. The
+            value itself never reaches the failure, so no company hostname can
+            leak into a message or a log.
+    """
+    candidate: str = enrollment_base_url.strip()
+    if candidate and _ENROLLMENT_URL_RE.fullmatch(candidate) is not None:
+        return candidate
+    code: ErrorCode = ErrorCode.CONFIG_MISSING if not candidate else ErrorCode.CONFIG_INVALID
+    raise ConfigError(
+        context=ErrorContext(
+            code=code,
+            message=f"Palantir enrollment address is not usable: {_ENROLLMENT_SETTING_ID}",
+            suggestion="Set the enrollment address to the https origin of your enrollment in /connect",
+        ),
+    )
+
+
 def _llm_config(settings: Settings, plan: ExecutionPlan) -> LlmConfig:
     snapshot = plan.settings
+    if snapshot.llm_profile_id == PALANTIR_ENGINE_ID:
+        return _palantir_translation_config(settings, snapshot)
     keys: dict[str, str] = {
         "anthropic": settings.anthropic_api_key,
         "gemini": settings.gemini_api_key,
@@ -446,15 +577,40 @@ def _llm_config(settings: Settings, plan: ExecutionPlan) -> LlmConfig:
         "openrouter": settings.openrouter_api_key,
         "openai_compatible": settings.openai_compatible_api_key,
     }
+    # Only the OpenAI-compatible provider is addressed by that base URL; every
+    # other engine, Palantir included, resolves its own endpoint.
+    compatible: bool = snapshot.llm_profile_id == "openai_compatible"
     return LlmConfig(
         engine_id=snapshot.llm_profile_id,
         provider_model_id=snapshot.llm_model_id,
         api_key=keys.get(snapshot.llm_profile_id, ""),
-        base_url=settings.openai_compatible_base_url or None,
+        base_url=(settings.openai_compatible_base_url or None) if compatible else None,
         temperature=snapshot.llm_temperature,
         top_p=snapshot.llm_top_p,
         max_output_tokens=snapshot.llm_max_output_tokens,
         max_retries=snapshot.translation_max_retries,
+    )
+
+
+def _palantir_translation_config(settings: Settings, snapshot: RunSettingsSnapshot) -> LlmConfig:
+    """Resolve the translation alias, reading the enrollment address it needs.
+
+    The address is a panel preference rather than a run-snapshot value, so it is
+    read here, once per constructed engine and always before any request.
+    """
+    preferences: UserSettings = load_user_settings()
+    config: LlmConfig = palantir_llm_config(
+        load_model_catalog(),
+        snapshot.llm_model_id,
+        enrollment_base_url=preferences.palantir_enrollment_base_url,
+        token=settings.palantir_token,
+        max_retries=snapshot.translation_max_retries,
+    )
+    return replace(
+        config,
+        temperature=snapshot.llm_temperature,
+        top_p=snapshot.llm_top_p,
+        max_output_tokens=snapshot.llm_max_output_tokens,
     )
 
 

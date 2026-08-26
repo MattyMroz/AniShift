@@ -48,6 +48,7 @@ from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES
 from anishift.utils.logger import get_logger
 
 __all__ = [
+    "PALANTIR_ENROLLMENT_URL_PATTERN",
     "CompositionQualityPreset",
     "CustomVoiceSetting",
     "JsonScalar",
@@ -119,6 +120,16 @@ TTS_MAX_RETRIES_RANGE: Final[tuple[int, int]] = (0, 10)
 TTS_CONCURRENCY_RANGE: Final[tuple[int, int]] = (1, 100)
 """Allowed inclusive range for persisted per-voice concurrency."""
 
+PALANTIR_ENROLLMENT_URL_PATTERN: Final[str] = r"(?:https://[^\s/?#]+(?:/[^\s?#]*)?)?"
+"""Accepted Palantir enrollment address, or the empty "not configured" value.
+
+An absolute ``https`` address with a host and an optional path prefix, carrying
+neither a query nor a fragment — the rule the model catalog applied before the
+address became a panel preference. This expression is its single owner: the
+settings catalog validates an edit with it and the tolerant loader matches
+persisted text against it, so an editor and the preference file cannot disagree.
+"""
+
 _MODES: Final[frozenset[str]] = frozenset(("auto", "manual"))
 """Accepted values for the ``mode`` field."""
 
@@ -148,6 +159,9 @@ _LOSSY_OUTPUT_PROFILES: Final[frozenset[str]] = frozenset(("aac", "eac3", "mp3",
 
 _BITRATE_PATTERN: Final[re.Pattern[str]] = re.compile(r"[1-9][0-9]*[kKmM]\Z")
 """Accepted FFmpeg bitrate syntax for lossy output profiles."""
+
+_ENROLLMENT_URL_RE: Final[re.Pattern[str]] = re.compile(PALANTIR_ENROLLMENT_URL_PATTERN)
+"""Compiled ``PALANTIR_ENROLLMENT_URL_PATTERN`` used by the tolerant loader."""
 
 _DALLIN_PROFILE_KEY: Final[str] = f"elevenbytes:{DALLIN_VOICE_ID}"
 """Stable profile key for the built-in ElevenBytes voice."""
@@ -255,6 +269,11 @@ class UserSettings:
         llm_style_id: Selected translation style prompt id.
         llm_module_ids: Selected optional prompt module ids.
         llm_max_concurrency: Maximum concurrently translated LLM files.
+        primary_model_alias: Catalog alias of the main model role, independent of
+            the translation model; empty means no main model is selected.
+        palantir_enrollment_base_url: HTTPS address of the Palantir enrollment
+            serving the proxy routes; empty means it is not configured. Owned
+            here, never in the model catalog, because ``/connect`` edits it.
         schema_version: Persisted settings schema.
         tts_engine: Selected text-to-speech engine id.
         tts_provider_model_id: Provider model or endpoint variant.
@@ -293,6 +312,8 @@ class UserSettings:
     llm_style_id: str = "natural_polish_v1"
     llm_module_ids: list[str] = field(default_factory=list)
     llm_max_concurrency: int = 4
+    primary_model_alias: str = ""
+    palantir_enrollment_base_url: str = ""
     tts_engine: str = "elevenbytes"
     tts_provider_model_id: str = "run6"
     tts_voice_id: str = DALLIN_ALIAS
@@ -539,6 +560,24 @@ def _clean_free_string(raw: dict[str, Any], key: str) -> None:
         raw.pop(key, None)
         return
     raw[key] = value.strip()
+
+
+def _clean_enrollment_base_url(raw: dict[str, Any]) -> None:
+    """Keep a valid https enrollment address, or drop the field to its default.
+
+    An empty string is a legal "not configured" value, so it is kept as is; a
+    malformed address is dropped instead of being carried into a request.
+    """
+    key: str = "palantir_enrollment_base_url"
+    value = raw.get(key)
+    if not isinstance(value, str):
+        raw.pop(key, None)
+        return
+    candidate: str = value.strip()
+    if _ENROLLMENT_URL_RE.fullmatch(candidate) is None:
+        raw.pop(key, None)
+        return
+    raw[key] = candidate
 
 
 def _clean_free_str_list(raw: dict[str, Any], key: str) -> None:
@@ -830,6 +869,8 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_free_str_list(filtered, "llm_module_ids")
     _clean_prompt_selection(filtered)
     _clean_number(filtered, "llm_max_concurrency", *LLM_MAX_CONCURRENCY_RANGE)
+    _clean_free_string(filtered, "primary_model_alias")
+    _clean_enrollment_base_url(filtered)
     filtered["schema_version"] = SETTINGS_SCHEMA_VERSION
     _clean_string(filtered, "tts_engine", tts_engine_ids)
     _clean_free_string(filtered, "tts_provider_model_id")

@@ -3,10 +3,18 @@
 The runtime file is ``config/anishift.models.jsonc``: JSONC, so a user can
 comment their own entries. It is gitignored; the repository ships only
 ``config/anishift.models.example.jsonc``. The catalog says WHERE a model lives
-(enrollment address, relative proxy route, protocol) and WHICH provider model
-identifier an alias stands for. It never holds a token — the Palantir secret
-lives in the environment — and it never persists whether a model is really
-enabled in the enrollment, because that answer belongs to one session only.
+(relative proxy route, protocol) and WHICH provider model identifier an alias
+stands for. It never holds a token — the Palantir secret lives in the
+environment — and it never persists whether a model is really enabled in the
+enrollment, because that answer belongs to one session only.
+
+The enrollment address is deliberately NOT here. It is a panel preference,
+``UserSettings.palantir_enrollment_base_url``, because ``/connect`` edits it and
+``json5`` cannot write this file back without destroying the comments and the
+formatting the user wrote by hand. Nothing in the application writes the
+catalog; the file is read-only for AniShift, which is what keeps those comments
+safe. A provider route therefore stays relative and the full endpoint is
+assembled by the Palantir configuration from the preference plus that route.
 
 Validation is deliberately two-tiered:
 
@@ -22,8 +30,8 @@ Loading and filtering are pure local operations; nothing here opens a socket.
 Public API:
     ModelProtocol: The four supported Foundry wire protocols, re-exported from
         ``anishift.services.llm.wire_protocol`` so the vocabulary has one owner.
-    ProviderEntry, ModelEntry, ModelLimits, EnrollmentConfig, CatalogDefaults,
-        CatalogIssue, ModelCatalog: Frozen catalog DTOs.
+    ProviderEntry, ModelEntry, ModelLimits, CatalogDefaults, CatalogIssue,
+        ModelCatalog: Frozen catalog DTOs.
     ModelCatalogError: Typed error raised for an unusable catalog file.
     model_catalog_path, model_catalog_example_path: Runtime and example paths.
     parse_model_catalog: Validate JSONC text into a ``ModelCatalog``.
@@ -55,7 +63,6 @@ __all__ = [
     "CatalogDefaults",
     "CatalogIssue",
     "CatalogSection",
-    "EnrollmentConfig",
     "ModelCatalog",
     "ModelCatalogError",
     "ModelEntry",
@@ -71,7 +78,7 @@ __all__ = [
 
 logger = get_logger(__name__)
 
-CatalogSection = Literal["root", "enrollment", "providers", "models", "defaults"]
+CatalogSection = Literal["root", "providers", "models", "defaults"]
 """Part of the catalog one configuration issue belongs to."""
 
 
@@ -116,12 +123,13 @@ _IDENTIFIER_KEYED_SECTIONS: Final[frozenset[str]] = frozenset({"providers", "mod
 """Root sections whose keys are user-chosen identifiers, not schema fields."""
 
 _ROOT_KEYS: Final[frozenset[str]] = frozenset(
-    {"schema_version", "enrollment", "providers", "models", "defaults"},
+    {"schema_version", "providers", "models", "defaults"},
 )
-"""Keys the catalog schema defines at the top level."""
+"""Keys the catalog schema defines at the top level.
 
-_ENROLLMENT_KEYS: Final[frozenset[str]] = frozenset({"base_url"})
-"""Keys the catalog schema defines inside the enrollment section."""
+``enrollment`` is absent on purpose: the address moved to the panel preferences,
+so a leftover section is reported as an unknown field instead of being read.
+"""
 
 _PROVIDER_KEYS: Final[frozenset[str]] = frozenset({"protocol", "path"})
 """Keys the catalog schema defines inside one provider entry."""
@@ -136,9 +144,6 @@ _LIMIT_KEYS: Final[frozenset[str]] = frozenset({"context", "input", "output"})
 
 _DEFAULT_ROLE_KEYS: Final[frozenset[str]] = frozenset({"primary", "translation"})
 """Model roles the catalog may preselect."""
-
-_ENROLLMENT_SCHEME: Final[str] = "https"
-"""Only URL scheme accepted for the enrollment address."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,17 +161,6 @@ class CatalogIssue:
     key: str
     message: str
     suggestion: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class EnrollmentConfig:
-    """Address of the Palantir enrollment serving the proxy routes.
-
-    Attributes:
-        base_url: HTTPS origin without a trailing slash, empty when invalid.
-    """
-
-    base_url: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,7 +233,6 @@ class ModelCatalog:
 
     Attributes:
         schema_version: Accepted catalog schema.
-        enrollment: Enrollment address serving the proxy routes.
         providers: Usable providers keyed by provider ID.
         models: Usable model entries keyed by alias.
         defaults: Aliases preselected for the model roles.
@@ -247,7 +240,6 @@ class ModelCatalog:
     """
 
     schema_version: int
-    enrollment: EnrollmentConfig
     providers: Mapping[str, ProviderEntry]
     models: Mapping[str, ModelEntry]
     defaults: CatalogDefaults
@@ -286,13 +278,11 @@ def parse_model_catalog(source: str) -> ModelCatalog:
     _reject_secret_fields(raw)
     _require_schema_version(raw)
     issues: list[CatalogIssue] = list(_unknown_key_issues("root", "", raw, _ROOT_KEYS))
-    enrollment: EnrollmentConfig = _parse_enrollment(raw.get("enrollment"), issues)
     providers: dict[str, ProviderEntry] = _parse_providers(raw.get("providers"), issues)
     models: dict[str, ModelEntry] = _parse_models(raw.get("models"), providers, issues)
     defaults: CatalogDefaults = _parse_defaults(raw.get("defaults"), models, issues)
     return ModelCatalog(
         schema_version=CATALOG_SCHEMA_VERSION,
-        enrollment=enrollment,
         providers=MappingProxyType(providers),
         models=MappingProxyType(models),
         defaults=defaults,
@@ -314,7 +304,7 @@ def load_model_catalog() -> ModelCatalog:
         raise _catalog_error(
             ErrorCode.CONFIG_MISSING,
             f"Model catalog is missing: {_CATALOG_LOCATION}",
-            f"Copy {_EXAMPLE_LOCATION} to {_CATALOG_LOCATION} and set your enrollment address",
+            f"Copy {_EXAMPLE_LOCATION} to {_CATALOG_LOCATION} and adjust its providers and model aliases",
         )
     try:
         source: str = path.read_text(encoding="utf-8")
@@ -515,48 +505,6 @@ def _nonempty_string(value: object) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     return value.strip()
-
-
-def _enrollment_problem(value: object) -> str | None:
-    """Describe why *value* is not a usable enrollment address."""
-    base_url: str | None = _nonempty_string(value)
-    if base_url is None:
-        return "Enrollment base URL is missing"
-    parts: SplitResult = urlsplit(base_url)
-    if parts.scheme != _ENROLLMENT_SCHEME:
-        return "Enrollment base URL must use https"
-    if not parts.netloc:
-        return "Enrollment base URL has no host"
-    if parts.query or parts.fragment:
-        return "Enrollment base URL must not carry a query or a fragment"
-    return None
-
-
-def _parse_enrollment(value: object, issues: list[CatalogIssue]) -> EnrollmentConfig:
-    """Read the enrollment section, reporting a defect instead of guessing."""
-    if not isinstance(value, dict):
-        issues.append(
-            CatalogIssue(
-                section="enrollment",
-                key="base_url",
-                message="Enrollment section is missing",
-                suggestion='Add "enrollment": { "base_url": "https://..." }',
-            ),
-        )
-        return EnrollmentConfig()
-    issues.extend(_unknown_key_issues("enrollment", "enrollment.", value, _ENROLLMENT_KEYS))
-    problem: str | None = _enrollment_problem(value.get("base_url"))
-    if problem is not None:
-        issues.append(
-            CatalogIssue(
-                section="enrollment",
-                key="base_url",
-                message=problem,
-                suggestion="Use the https origin of your enrollment, without a proxy path",
-            ),
-        )
-        return EnrollmentConfig()
-    return EnrollmentConfig(base_url=str(value["base_url"]).strip().rstrip("/"))
 
 
 def _relative_route(value: object) -> str | None:

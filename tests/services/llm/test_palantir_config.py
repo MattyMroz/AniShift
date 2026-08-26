@@ -126,7 +126,6 @@ def _catalog_source(providers: dict[str, Any], models: dict[str, Any]) -> str:
     return json.dumps(
         {
             "schema_version": 1,
-            "enrollment": {"base_url": _ENROLLMENT},
             "providers": providers,
             "models": models,
         },

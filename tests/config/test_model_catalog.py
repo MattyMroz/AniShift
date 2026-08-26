@@ -14,7 +14,6 @@ from anishift.config.model_catalog import (
     CATALOG_SCHEMA_VERSION,
     CatalogDefaults,
     CatalogIssue,
-    EnrollmentConfig,
     ModelCatalog,
     ModelCatalogError,
     ModelEntry,
@@ -45,7 +44,6 @@ _SECRET_LIKE_FIELD_NAMES = (
 def _payload(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schema_version": CATALOG_SCHEMA_VERSION,
-        "enrollment": {"base_url": "https://example.palantirfoundry.com"},
         "providers": {
             "foundry-openai": {"protocol": "openai_chat", "path": "/api/v2/llm/proxy/openai/v1"},
             "foundry-anthropic": {"protocol": "anthropic_messages", "path": "/api/v2/llm/proxy/anthropic/v1"},
@@ -79,11 +77,10 @@ def catalog_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_parse_exposes_schema_enrollment_providers_models_and_defaults() -> None:
+def test_parse_exposes_schema_providers_models_and_defaults() -> None:
     catalog = parse_model_catalog(_source())
 
     assert catalog.schema_version == CATALOG_SCHEMA_VERSION
-    assert catalog.enrollment.base_url == "https://example.palantirfoundry.com"
     assert catalog.providers["foundry-openai"] == ProviderEntry(
         provider_id="foundry-openai",
         protocol=ModelProtocol.OPENAI_CHAT,
@@ -127,8 +124,7 @@ def test_parse_reads_jsonc_comments_and_trailing_commas() -> None:
     // Local catalog
     {
       "schema_version": 1,
-      /* enrollment origin only */
-      "enrollment": { "base_url": "https://example.palantirfoundry.com" },
+      /* relative proxy routes only */
       "providers": {
         "foundry-openai": { "protocol": "openai_chat", "path": "/api/v2/llm/proxy/openai/v1" },
       },
@@ -149,7 +145,6 @@ def test_parse_rejects_a_duplicate_model_alias() -> None:
     source = """
     {
       "schema_version": 1,
-      "enrollment": { "base_url": "https://example.palantirfoundry.com" },
       "providers": { "p": { "protocol": "openai_chat", "path": "/v1" } },
       "models": {
         "foundry/gpt-main": { "provider": "p", "model": "id-1" },
@@ -213,18 +208,11 @@ def test_parse_reports_a_provider_path_that_is_not_relative() -> None:
     assert _issue_keys(catalog) == {"foundry-openai"}
 
 
-def test_parse_reports_an_enrollment_url_carrying_a_query() -> None:
-    catalog = parse_model_catalog(_source(enrollment={"base_url": "https://example.palantirfoundry.com/?t=1"}))
+def test_parse_reports_a_leftover_enrollment_section_as_an_unknown_root_key() -> None:
+    catalog = parse_model_catalog(_source(enrollment={"base_url": "https://example.palantirfoundry.com"}))
 
-    assert catalog.enrollment.base_url == ""
-    assert any(issue.section == "enrollment" for issue in catalog.issues)
-
-
-def test_parse_reports_an_enrollment_url_without_https() -> None:
-    catalog = parse_model_catalog(_source(enrollment={"base_url": "http://example.palantirfoundry.com"}))
-
-    assert catalog.enrollment.base_url == ""
-    assert any("https" in issue.message for issue in catalog.issues)
+    assert _issue_keys(catalog) == {"enrollment"}
+    assert set(catalog.models) == {"foundry/gpt-main"}
 
 
 def test_parse_reports_a_default_role_pointing_at_an_unknown_alias() -> None:
@@ -329,7 +317,7 @@ def test_parse_does_not_treat_a_plural_token_count_as_a_secret() -> None:
 
 @pytest.mark.parametrize(
     "dto",
-    [EnrollmentConfig, ProviderEntry, ModelEntry, ModelLimits, CatalogDefaults, CatalogIssue, ModelCatalog],
+    [ProviderEntry, ModelEntry, ModelLimits, CatalogDefaults, CatalogIssue, ModelCatalog],
 )
 def test_catalog_dataclass_declares_no_secret_or_availability_field(dto: Any) -> None:
     forbidden = ("token", "api_key", "apikey", "authorization", "secret", "password", "credential")
@@ -497,7 +485,6 @@ def test_shipped_example_catalog_is_valid_and_free_of_real_identifiers() -> None
     catalog = parse_model_catalog(model_catalog_example_path().read_text(encoding="utf-8"))
 
     assert catalog.issues == ()
-    assert catalog.enrollment.base_url == "https://example.palantirfoundry.com"
     assert {entry.protocol for entry in catalog.providers.values()} == set(ModelProtocol)
     assert catalog.defaults.primary in catalog.models
     assert catalog.defaults.translation in catalog.models

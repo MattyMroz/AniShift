@@ -28,6 +28,7 @@ from anishift.config.user_settings import (
     LLM_TEMPERATURE_RANGE,
     LLM_TOP_P_RANGE,
     MAX_RETRIES_RANGE,
+    PALANTIR_ENROLLMENT_URL_PATTERN,
     TEMPO_RANGE,
     TTS_CONCURRENCY_RANGE,
     TTS_MAX_RETRIES_RANGE,
@@ -320,6 +321,8 @@ USER_SETTING_DISPOSITIONS: Final[MappingProxyType[str, SettingDisposition]] = Ma
         "llm_style_id": SettingDisposition.VISIBLE,
         "llm_module_ids": SettingDisposition.VISIBLE,
         "llm_max_concurrency": SettingDisposition.VISIBLE,
+        "primary_model_alias": SettingDisposition.VISIBLE,
+        "palantir_enrollment_base_url": SettingDisposition.VISIBLE,
         "tts_engine": SettingDisposition.VISIBLE,
         "tts_provider_model_id": SettingDisposition.CONDITIONAL,
         "tts_voice_id": SettingDisposition.CONDITIONAL,
@@ -350,6 +353,7 @@ def setting_catalog(context: SettingCatalogContext | None = None) -> tuple[Setti
         *_workflow_specs(resolved_context),
         *_global_specs(defaults),
         *_translation_specs(defaults, resolved_context, prompt_registry),
+        *_model_specs(defaults),
         *_tts_specs(defaults, resolved_context),
         *_profile_specs(resolved_context),
         *_audio_and_composition_specs(defaults),
@@ -774,6 +778,35 @@ def _translation_specs(
     )
 
 
+def _model_specs(defaults: UserSettings) -> tuple[SettingSpec, ...]:
+    """Build the main model role and the Palantir connection address.
+
+    Neither spec depends on the translation provider. The main model role and the
+    translation model are separate choices, and the enrollment address must stay
+    editable whichever provider translation currently uses.
+    """
+    return (
+        SettingSpec(
+            setting_id="primary_model_alias",
+            label="Main model",
+            description="Select the catalog alias of the main model, independent of the translation model.",
+            value_type=SettingValueType.STRING,
+            default=defaults.primary_model_alias,
+            scope=SettingScope.GLOBAL,
+        ),
+        SettingSpec(
+            setting_id="palantir_enrollment_base_url",
+            label="Palantir enrollment address",
+            description="Configure the https address of the enrollment serving the Foundry proxy routes.",
+            value_type=SettingValueType.STRING,
+            default=defaults.palantir_enrollment_base_url,
+            scope=SettingScope.GLOBAL,
+            validation_pattern=PALANTIR_ENROLLMENT_URL_PATTERN,
+            invalidates=_TRANSLATION_INVALIDATES,
+        ),
+    )
+
+
 def _tts_specs(defaults: UserSettings, context: SettingCatalogContext) -> tuple[SettingSpec, ...]:
     model_values, model_default = _tts_model_values(context)
     voice_values, voice_default = _tts_voice_values(context)
@@ -1192,6 +1225,12 @@ def _environment_specs() -> tuple[SettingSpec, ...]:
                 "openai_compatible_api_key",
                 "OpenAI-compatible API key",
                 "Configure the optional key for an OpenAI-compatible endpoint.",
+                (),
+            ),
+            (
+                "palantir_token",
+                "Palantir token",
+                "Configure the Foundry token used by every Palantir model.",
                 (),
             ),
         )

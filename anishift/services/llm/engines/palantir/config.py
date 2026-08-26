@@ -122,7 +122,7 @@ def palantir_model_config(  # noqa: PLR0913 - one explicit argument per resolved
         alias: Catalog alias the user selected.
         provider_id: Catalog provider of that alias.
         protocol: Wire protocol the provider entry declares.
-        enrollment_base_url: ``enrollment.base_url`` of the catalog.
+        enrollment_base_url: Enrollment address the caller resolved from settings.
         provider_path: Relative proxy route of the provider entry.
         provider_model_id: Provider model identifier or RID of the alias.
         token: Token resolved from the environment or from ``Settings``.
@@ -184,7 +184,7 @@ def _require_base_url(base_url: str) -> None:
         raise_palantir_config_error(
             "Palantir enrollment address must be an https URL without a query or a fragment",
             field_name="base_url",
-            suggestion="Set enrollment.base_url in the model catalog to the https origin of your enrollment.",
+            suggestion="Set the enrollment address to the https origin of your enrollment in /connect.",
         )
 
 

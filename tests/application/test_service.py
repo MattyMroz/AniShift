@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 
@@ -30,6 +30,7 @@ from anishift.application.results import GroupStatus, RunResult
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.service import AppService, AutoPresetDraft
 from anishift.bootstrap import AppContext, bootstrap, create_app_service
+from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
 from anishift.config.presets import AutoPresetFile, default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
@@ -60,6 +61,8 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
     preset_store: list[AutoPresetFile] | None = None,
     inspector: WorkspaceInspector | None = None,
     settings: Settings | None = None,
+    user_settings: UserSettings | None = None,
+    catalog_loader: Callable[[], ModelCatalog] | None = None,
 ) -> AppService:
     stored: list[AutoPresetFile] = preset_store if preset_store is not None else [default_preset_file()]
 
@@ -81,13 +84,25 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
     return AppService(
         workspace_root=tmp_path,
         settings=settings or Settings(_env_file=None),
-        user_settings=UserSettings(),
+        user_settings=user_settings or UserSettings(),
         inspector=inspector or WorkspaceInspector(DefaultMediaProbe()),
         handler_factory=handlers,
         preset_loader=lambda: stored[0],
         preset_saver=lambda value: stored.__setitem__(0, value),
         settings_saver=lambda value: None,
+        catalog_loader=catalog_loader or _catalog,
     )
+
+
+def _catalog() -> ModelCatalog:
+    source = """
+    {
+      "schema_version": 1,
+      "providers": { "foundry-openai": { "protocol": "openai_chat", "path": "/api/v2/llm/proxy/openai/v1" } },
+      "models": { "foundry/gpt-main": { "provider": "foundry-openai", "model": "id-1" } }
+    }
+    """
+    return parse_model_catalog(source)
 
 
 def test_real_service_flows_from_discovery_through_partial_execution(tmp_path: Path) -> None:
@@ -218,11 +233,13 @@ def test_engine_availability_reports_the_palantir_token_in_both_directions(
         if name.startswith("ANISHIFT_"):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("FOUNDRY_API_TOKEN", raising=False)
-    without_token: AppService = _service(tmp_path, FakeTranslationService())
+    connected: UserSettings = UserSettings(palantir_enrollment_base_url="https://example.palantirfoundry.com")
+    without_token: AppService = _service(tmp_path, FakeTranslationService(), user_settings=connected)
     with_token: AppService = _service(
         tmp_path,
         FakeTranslationService(),
         settings=Settings(_env_file=None, palantir_token=_PALANTIR_TOKEN),
+        user_settings=connected,
     )
 
     missing = {(item.domain, item.engine_id): item for item in without_token.engine_availability()}

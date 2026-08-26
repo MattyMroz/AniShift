@@ -11,7 +11,14 @@ if TYPE_CHECKING:
         InspectionWarning,
         WorkspaceInspector,
     )
-    from anishift.application.service import AppService, AutoPresetDraft, ExecutionHandlerFactory, SettingsDraft
+    from anishift.application.service import (
+        AppService,
+        AutoPresetDraft,
+        ExecutionHandlerFactory,
+        ModelAvailability,
+        ModelProbeResult,
+        SettingsDraft,
+    )
 
 from anishift.application.artifacts import (
     Artifact,
@@ -94,6 +101,8 @@ __all__ = [
     "InspectedWorkspace",
     "InspectionWarning",
     "MkvTrackProduct",
+    "ModelAvailability",
+    "ModelProbeResult",
     "Mp4AudioSource",
     "PlanProblem",
     "PlanTask",
@@ -132,6 +141,8 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "InspectedWorkspace": ("anishift.application.inspection", "InspectedWorkspace"),
     "InspectionWarning": ("anishift.application.inspection", "InspectionWarning"),
     "ExecutionHandlerFactory": ("anishift.application.service", "ExecutionHandlerFactory"),
+    "ModelAvailability": ("anishift.application.service", "ModelAvailability"),
+    "ModelProbeResult": ("anishift.application.service", "ModelProbeResult"),
     "SettingsDraft": ("anishift.application.service", "SettingsDraft"),
     "WorkspaceInspector": ("anishift.application.inspection", "WorkspaceInspector"),
 }

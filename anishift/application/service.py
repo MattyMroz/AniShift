@@ -6,9 +6,11 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from secrets import token_hex
-from typing import Protocol
+from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application.cancellation import CancellationToken, EventCancellationToken, NeverCancelledToken
 from anishift.application.discovery import discover_groups
@@ -33,21 +35,84 @@ from anishift.application.sessions import RunSession
 from anishift.config.env_file import env_path, update_env_value
 from anishift.config.field_access import assign_setting_value, setting_is_active, setting_is_persisted
 from anishift.config.field_catalog import SettingCatalogContext, SettingSpec, SettingValue, setting_catalog
+from anishift.config.model_catalog import ModelCatalog, ModelCatalogError, load_model_catalog
 from anishift.config.presets import AutoPresetFile, load_presets, save_presets
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings, save_user_settings
 from anishift.config.workspace import cleanup_orphaned_temp, run_temp_dir
-from anishift.errors import ConfigError, ErrorCode, ErrorContext, ExecutionError, PlanningError, RunConflictError
+from anishift.errors import (
+    AniShiftError,
+    ConfigError,
+    ErrorCode,
+    ErrorContext,
+    ExecutionError,
+    PlanningError,
+    RunConflictError,
+)
 from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
 from anishift.services.translation.engines import available_engine_ids as available_translation_engine_ids
 from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
 from anishift.setup.doctor import CheckResult, run_doctor
 from anishift.setup.installer import ResourceResult, run_setup
+from anishift.utils.logger import get_logger
 
-__all__ = ["AppService", "AutoPresetDraft", "EngineAvailability", "ExecutionHandlerFactory", "SettingsDraft"]
+if TYPE_CHECKING:
+    from anishift.services.llm import LlmConfig
+
+__all__ = [
+    "AppService",
+    "AutoPresetDraft",
+    "EngineAvailability",
+    "ExecutionHandlerFactory",
+    "ModelAvailability",
+    "ModelProbeResult",
+    "ModelProber",
+    "SettingsDraft",
+]
+
+logger = get_logger(__name__)
 
 type SettingsDraft = UserSettings
 """Detached mutable settings copy edited by a frontend before explicit save."""
+
+type ModelProber = Callable[[LlmConfig], None]
+"""Connection test sending at most one minimal request, raising on failure."""
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+_PALANTIR_ENGINE_ID: Final[str] = "palantir"
+"""LLM engine whose readiness needs an enrollment address and a catalog alias."""
+
+
+class ModelAvailability(StrEnum):
+    """Session-only availability vocabulary of one catalog model.
+
+    A catalog entry is never available on its own; only an explicit connection
+    test moves it out of ``UNVERIFIED``, and the answer lives in one session.
+    """
+
+    UNVERIFIED = "unverified"
+    VERIFIED = "verified"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class ModelProbeResult:
+    """Outcome of one explicit connection test, owned by the session alone.
+
+    Attributes:
+        alias: Catalog alias the test addressed.
+        availability: ``VERIFIED`` or ``ERROR``; the test never leaves a model
+            ``UNVERIFIED``.
+        checked_at: Moment the single attempt finished, in UTC.
+        error_class: Safe error class name on failure, empty on success. Never a
+            response body, a header, an address or a token.
+    """
+
+    alias: str
+    availability: ModelAvailability
+    checked_at: datetime
+    error_class: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +179,8 @@ class AppService:
         settings_saver: Callable[[UserSettings], None] = save_user_settings,
         doctor_runner: Callable[[Settings | None], Sequence[CheckResult]] = run_doctor,
         setup_runner: Callable[..., Sequence[ResourceResult]] = run_setup,
+        catalog_loader: Callable[[], ModelCatalog] = load_model_catalog,
+        model_prober: ModelProber | None = None,
         env_file: Path | None = None,
     ) -> None:
         self._workspace_root: Path = workspace_root
@@ -126,6 +193,8 @@ class AppService:
         self._settings_saver: Callable[[UserSettings], None] = settings_saver
         self._doctor_runner: Callable[[Settings | None], Sequence[CheckResult]] = doctor_runner
         self._setup_runner: Callable[..., Sequence[ResourceResult]] = setup_runner
+        self._catalog_loader: Callable[[], ModelCatalog] = catalog_loader
+        self._model_prober: ModelProber | None = model_prober
         self._env_file: Path = env_file if env_file is not None else env_path()
         self._workspace: InspectedWorkspace | None = None
         self._active_run_id: str | None = None
@@ -313,8 +382,65 @@ class AppService:
             secret_id: str | None = configured.get((domain, engine_id))
             available: bool = secret_id is None or bool(getattr(self._settings, secret_id, ""))
             reason: str = "ready" if available else f"missing {secret_id}; configure environment or open Tools"
+            if available and domain == "llm" and engine_id == _PALANTIR_ENGINE_ID:
+                available, reason = self._palantir_readiness()
             statuses.append(EngineAvailability(domain, engine_id, available, reason))
         return tuple(statuses)
+
+    def model_catalog(self) -> ModelCatalog:
+        """Return the validated local catalog of Palantir providers and models.
+
+        The catalog is read on demand, so a hand edit is picked up without a
+        restart, and it is never written back — comments in the file survive
+        because nothing here owns its content.
+
+        Returns:
+            The parsed catalog.
+
+        Raises:
+            ModelCatalogError: The runtime catalog file is missing, unreadable or
+                does not satisfy the catalog contract.
+        """
+        return self._catalog_loader()
+
+    def probe_model(self, alias: str) -> ModelProbeResult:
+        """Run one explicit connection test for one catalog alias.
+
+        At most one minimal request is sent, and only when this method is called:
+        opening a picker, filtering it or reading a status never reaches here.
+        The answer belongs to the caller's session — nothing is written to the
+        catalog, the preferences, a secret or any other file.
+
+        Args:
+            alias: Catalog alias the user confirmed for the test.
+
+        Returns:
+            ``VERIFIED`` with the completion time, or ``ERROR`` with a safe error
+            class when the configuration is unusable or the single attempt failed.
+        """
+        try:
+            config: LlmConfig = self._palantir_config(alias)
+            self._prober()(config)
+        except AniShiftError as error:
+            error_class: str = type(error).__name__
+            logger.warning(
+                "Model probe failed",
+                alias=alias,
+                error_class=error_class,
+                error_code=error.context.code.value,
+            )
+            return ModelProbeResult(
+                alias=alias,
+                availability=ModelAvailability.ERROR,
+                checked_at=datetime.now(UTC),
+                error_class=error_class,
+            )
+        logger.info("Model probe verified", alias=alias)
+        return ModelProbeResult(
+            alias=alias,
+            availability=ModelAvailability.VERIFIED,
+            checked_at=datetime.now(UTC),
+        )
 
     def settings_snapshot(self) -> SettingsDraft:
         """Return a detached mutable copy that cannot affect an active plan."""
@@ -477,6 +603,47 @@ class AppService:
         with self._run_lock:
             preferences: UserSettings = deepcopy(self._user_settings)
         return _run_settings_snapshot(preferences)
+
+    def _palantir_readiness(self) -> tuple[bool, str]:
+        """Report whether a token-configured Palantir provider could really run.
+
+        A token alone is not readiness: without the enrollment address or a
+        catalog alias the run path would fail, so a status must not promise
+        ready. Nothing here sends a request or echoes the address.
+        """
+        preferences: UserSettings = self.settings_snapshot()
+        if not preferences.palantir_enrollment_base_url.strip():
+            return False, "missing palantir_enrollment_base_url; set the enrollment address in Tools"
+        try:
+            catalog: ModelCatalog = self.model_catalog()
+        except ModelCatalogError:
+            return False, "unusable model catalog; fix the catalog file the setup describes"
+        if not catalog.models:
+            return False, "empty model catalog; add one model entry with a usable provider"
+        alias: str = preferences.llm_provider_model_id.strip()
+        if preferences.llm_provider == _PALANTIR_ENGINE_ID and alias not in catalog.models:
+            return False, "translation model alias is absent from the catalog; select one again"
+        return True, "ready"
+
+    def _palantir_config(self, alias: str) -> LlmConfig:
+        """Resolve one alias into the configuration a connection test would use."""
+        from anishift.application.runtime import palantir_llm_config  # noqa: PLC0415 - avoids an import cycle
+
+        preferences: UserSettings = self.settings_snapshot()
+        return palantir_llm_config(
+            self.model_catalog(),
+            alias,
+            enrollment_base_url=preferences.palantir_enrollment_base_url,
+            token=self.current_settings().palantir_token,
+        )
+
+    def _prober(self) -> ModelProber:
+        """Return the injected connection test, or the production one."""
+        if self._model_prober is not None:
+            return self._model_prober
+        from anishift.application.runtime import probe_palantir_model  # noqa: PLC0415 - avoids an import cycle
+
+        return probe_palantir_model
 
     def _claim_run(self, run_id: str, cancel: EventCancellationToken) -> None:
         with self._run_lock:
