@@ -66,6 +66,50 @@ zamknęło się na jednym polu preferencji. Zakres T-011 obejmuje jednak edytor 
 a nie wymienia `application/service.py`, więc te dwie metody powstały jako osobna jednostka
 przed T-011 — luka w zakresowaniu, nie zmiana projektu.
 
+## T-012 — katalog modeli JSONC
+
+Commit: `4120a70`. Bramka: 2517 passed, 8 skipped.
+
+### Rozstrzygnięcia
+
+- **Parser tylko `json5`, dodany przez `uv add`.** Plan wprost zakazywał własnego strippera
+  komentarzy i kazał zatrzymać zadanie, gdyby resolver nie wspierał Pythona 3.14.
+  Sprawdzone przed zleceniem: `json5==0.15.0` rozwiązuje się czysto. Duplikaty kluczy łapie
+  sam parser (`allow_duplicate_keys=False`), więc nie ma na to osobnego kodu.
+- **Dwa poziomy walidacji, nie jeden.** Nieobsługiwany protokół, nieznany provider, puste ID
+  i zła ścieżka wykluczają wpis i zgłaszają zaadresowany `CatalogIssue`, ale zwracają
+  użyteczny katalog. Odrzucenie całego pliku sprawiłoby, że wpis znika — a R-054 wymaga
+  dokładnie odwrotnie: ma zostać widoczny jako błąd konfiguracji. Cały plik odrzuca tylko
+  niejednoznaczność, której nie da się bezpiecznie rozstrzygnąć: powtórzony alias, zły
+  `schema_version`, pole wyglądające na sekret.
+- **Reguła sekretów patrzy wyłącznie na nazwy pól schematu.** Pierwsza wersja przeszukiwała
+  każdy klucz, więc provider nazwany `foundry-oauth` albo alias `nova-key` wysadzał cały
+  katalog komunikatem o sekrecie. Review to zreprodukowało; naprawione przed commitem, mimo
+  że recenzent dopuszczał wypuszczenie tego jako follow-up — plik pisze użytkownik ręcznie,
+  a `foundry-oauth` to naturalna nazwa. Teraz klucze sekcji `providers` i `models` są
+  pomijane, a ich wartości nadal przeszukiwane na dowolnej głębokości.
+- **Dopasowanie po końcówce nazwy, nie po fragmencie.** `apiKey` i `access_token` są łapane,
+  a `max_tokens` zostaje legalne. Znany martwy punkt: sekret z dalszym przyrostkiem
+  (`authorization_header`, `token_id`) przechodzi. Zapisane w docstringu reguły jako
+  ograniczenie, nie zamiecione pod dywan.
+- **Zero pola dostępności w katalogu.** Obecność modelu w pliku to twierdzenie, nie obietnica;
+  czy alias odpowiada, należy do sesji, która o to zapytała.
+- **Klasa błędu zostaje przy module.** `errors.py` trzyma wyłącznie bazy i miksy, a każda
+  domena definiuje swoje liście lokalnie — w samym `config/` jest już precedens
+  (`workspace.py`). Sprawdzone policzalnie w review, nie przyjęte na słowo.
+
+### Odłożone świadomie
+
+- **Brak atomowego writera katalogu**, mimo że krok 7 planu go wymienia. Role modeli zapisują
+  się do `UserSettings` (D-12), więc nic w T-013–T-015 nie zapisuje katalogu z powrotem,
+  a `json5` i tak nie zachowa komentarzy użytkownika przy round-tripie. Konsekwencja do
+  rozstrzygnięcia najpóźniej przy T-015: albo writer powstaje, albo `save_model_catalog`
+  wypada z D-12. Nie może przejść niezauważone.
+- **`CatalogIssue` są dziś tylko logowane na debug.** T-015 musi je pokazać w interfejsie,
+  inaczej „wykluczony z błędem" będzie nieodróżnialny od „nie istnieje".
+- Brak `schema_version` jest czytany jako `1` dla zgodności ze starym plikiem. Przy wersji 2
+  brak tego pola musi stać się błędem, inaczej v2 dostanie po cichu semantykę v1.
+
 ## T-011 — rozstrzygnięcia przed implementacją
 
 Pierwsze podejście do T-011 zatrzymało się na preflighcie, bez zapisanych plików. Nie było to
