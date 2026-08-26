@@ -37,6 +37,13 @@ from anishift.tui.screens.auto import AutoRequest, AutoSession, AutoView, open_a
 from anishift.tui.screens.execution import ExecutionView
 from anishift.tui.screens.manual import ManualView
 from anishift.tui.screens.preview import PreviewSession, PreviewView, start_available
+from anishift.tui.screens.results import (
+    ResultsView,
+    recoverable_groups,
+    recovery_draft,
+    results_action,
+    status_text,
+)
 from anishift.tui.screens.tools import ToolsView
 from anishift.tui.screens.workspace import GroupRow, WorkspaceView
 from anishift.tui.settings.tree import SettingDomain, open_settings_panel
@@ -58,6 +65,7 @@ from anishift.tui.strings import (
     PALETTE_SUGGESTED_CATEGORY,
     PALETTE_TITLE,
     PREVIEW_LEFT,
+    RESULTS_MANUAL_TITLE,
     SETUP_ACTION_TITLE,
     SETUP_CONFIRM_QUESTION,
     THEME_DARK_DESCRIPTION,
@@ -84,7 +92,7 @@ if TYPE_CHECKING:
     from textual.timer import Timer
     from textual.types import CSSPathType
 
-    from anishift.application import AppService, ExecutionPlan, ModelProbeResult
+    from anishift.application import AppService, ExecutionPlan, GroupResult, ModelProbeResult
     from anishift.config.model_catalog import ModelCatalog
 
 logger = get_logger(__name__)
@@ -164,6 +172,7 @@ class AniShiftApp(App[None]):
         self._manual_view: ManualView = ManualView()
         self._preview_view: PreviewView = PreviewView()
         self._execution_view: ExecutionView = ExecutionView()
+        self._results_view: ResultsView = ResultsView()
         self._run_origin: UiRoute = UiRoute.WORKSPACE
         self._preview: PreviewSession = PreviewSession()
         self._auto: AutoSession = AutoSession()
@@ -182,7 +191,12 @@ class AniShiftApp(App[None]):
         self._tools_intent: tools.ToolsIntent | None = None
         self._commands: CommandRegistry = CommandRegistry(lambda: self._state)
         self._commands.register(
-            (*global_commands(self), palette_command(self._open_palette), tools.setup_action(self.run_setup)),
+            (
+                *global_commands(self),
+                palette_command(self._open_palette),
+                tools.setup_action(self.run_setup),
+                results_action(self.open_results),
+            ),
         )
         self._composer: Composer = Composer(self._commands)
 
@@ -230,6 +244,7 @@ class AniShiftApp(App[None]):
                 yield self._manual_view
                 yield self._preview_view
                 yield self._execution_view
+                yield self._results_view
                 yield self._tools_view
             yield self._brand
             with self._composer_slot:
@@ -546,11 +561,15 @@ class AniShiftApp(App[None]):
             self._execution_view.show(self._state)
 
     def _close_run_view(self) -> None:
-        """Paint the last frame of the run that ended, then leave the surface watching it."""
+        """Paint the last frame of the run that ended, then show what the run left behind."""
         if self._state.route is not UiRoute.EXECUTION:
             return
         self._execution_view.show(self._state)
-        lifecycle.navigate(self._state, self._run_origin)
+        lifecycle.navigate(self._state, self._closing_route())
+
+    def _closing_route(self) -> UiRoute:
+        """Return the route a run that ended lands on: its own result, or where it started."""
+        return UiRoute.RESULTS if self._state.result is not None else self._run_origin
 
     def _stop_drain(self) -> None:
         """Stop the drain timer and release the pump of the run that ended."""
@@ -623,6 +642,45 @@ class AniShiftApp(App[None]):
     def open_manual(self) -> None:
         """Show the manual-mode route."""
         self.post_message(NavigationRequested(UiRoute.MANUAL))
+
+    def open_results(self) -> None:
+        """Show what the last run left behind, without touching its result."""
+        lifecycle.navigate(self._state, UiRoute.RESULTS)
+        self._render_frame()
+
+    def leave_results(self) -> None:
+        """Show the workspace again, keeping the result the session holds."""
+        lifecycle.navigate(self._state, UiRoute.WORKSPACE)
+        self._render_frame()
+
+    def recover_in_manual(self) -> bool:
+        """Give one group that did not finish a manual draft of its own, and plan nothing."""
+        groups: tuple[GroupResult, ...] = recoverable_groups(self._state.result)
+        if not groups:
+            logger.debug("Manual recovery refused without a recoverable group")
+            return False
+        if len(groups) == 1:
+            self._recover_group(groups[0].group_id)
+            return True
+        options: tuple[SelectOption[str], ...] = tuple(
+            SelectOption(value=group.group_id, title=group.group_id, description=status_text(group.status))
+            for group in groups
+        )
+
+        def chosen(outcome: SelectOutcome[str] | None) -> None:
+            """Give the picked group its own draft, or leave the result untouched."""
+            if outcome is None or outcome.kind is not SelectOutcomeKind.SINGLE or outcome.value is None:
+                return
+            self._recover_group(outcome.value)
+
+        return open_dialog(self, self._state, SelectDialog(title=RESULTS_MANUAL_TITLE, options=options), chosen)
+
+    def _recover_group(self, group_id: str) -> None:
+        """Select *group_id* alone, give it an independent draft and show the manual route."""
+        self._state.selected_group_ids = {group_id}
+        self._state.manual_drafts[group_id] = recovery_draft(self._state, group_id)
+        logger.info("Manual recovery prepared", generation=self._state.generation)
+        self.open_manual()
 
     def open_model(self) -> None:
         """Offer every configured catalog alias and change only the main model."""
@@ -755,7 +813,10 @@ class AniShiftApp(App[None]):
         on_auto: bool = self._state.route is UiRoute.AUTO
         on_preview: bool = self._state.route is UiRoute.PREVIEW
         on_execution: bool = self._state.route is UiRoute.EXECUTION
-        self._has_work = has_groups or on_auto or on_preview or on_execution or self._tools_report is not None
+        on_results: bool = self._state.route is UiRoute.RESULTS and self._state.result is not None
+        self._has_work = (
+            has_groups or on_auto or on_preview or on_execution or on_results or self._tools_report is not None
+        )
         self._workspace_view.display = self._state.route is UiRoute.WORKSPACE and has_groups
         self._auto_view.display = on_auto
         self._auto_view.show(self._state, self._auto)
@@ -766,6 +827,9 @@ class AniShiftApp(App[None]):
         self._execution_view.display = on_execution
         if on_execution:
             self._execution_view.show(self._state)
+        self._results_view.display = on_results
+        if on_results:
+            self._results_view.show(self._state, root=self.workspace_root)
         self._tools_view.display = self._state.route is UiRoute.TOOLS and self._tools_report is not None
         self._tools_view.show(self._tools_report)
         if self._group_rows:

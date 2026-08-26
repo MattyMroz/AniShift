@@ -25,6 +25,7 @@ from anishift.tui.commands.palette import CommandOption, palette_options, slash_
 from anishift.tui.commands.spec import CommandSpec
 from anishift.tui.lifecycle import begin_planning, begin_run, finish_run, request_cancel
 from anishift.tui.messages import NavigationRequested, WorkspaceLoaded
+from anishift.tui.screens.results import WORKSPACE_COMMAND_NAME as RESULTS_WORKSPACE_COMMAND_NAME
 from anishift.tui.screens.workspace import WORKSPACE_ID, GroupState, WorkspaceView, workspace_body
 from anishift.tui.state import RunUiState, SessionState, UiRoute
 from anishift.tui.strings import (
@@ -667,6 +668,8 @@ def test_no_refresh_replaces_the_projection_while_the_run_the_user_watches_is_ac
             assert _DELTA not in _body(app)
             gate.set()
             await _until(pilot, lambda: app.session_state.run_state is RunUiState.TERMINAL)
+            assert app.commands.dispatch(RESULTS_WORKSPACE_COMMAND_NAME) is True
+            await _settle(pilot)
             assert _refresh_row(app) is not None
             assert app.commands.dispatch_key(REFRESH_KEY) is True
             await _until(pilot, lambda: _DELTA in _body(app))

@@ -19,6 +19,7 @@ from anishift.application import (
     GroupStatus,
     InspectedSourceGroup,
     InspectedWorkspace,
+    ProducedArtifact,
     RunEventEmitter,
     RunEventKind,
     RunEventSink,
@@ -171,6 +172,31 @@ def stub_result(run_id: str = STUB_RUN_ID) -> RunResult:
         run_id=run_id,
         groups=(GroupResult(group_id=STUB_GROUP_ID, status=GroupStatus.SUCCEEDED),),
     )
+
+
+def produced_artifact(artifact_id: str, path: Path) -> ProducedArtifact:
+    return ProducedArtifact(artifact_id=artifact_id, path=path, metadata={})
+
+
+def group_result(
+    group_id: str,
+    status: GroupStatus,
+    *,
+    products: tuple[ProducedArtifact, ...] = (),
+    preserved: tuple[ProducedArtifact, ...] = (),
+    errors: tuple[str, ...] = (),
+) -> GroupResult:
+    return GroupResult(
+        group_id=group_id,
+        status=status,
+        products=products,
+        preserved_products=preserved,
+        error_messages=errors,
+    )
+
+
+def mixed_result(*groups: GroupResult, run_id: str = STUB_RUN_ID, warnings: tuple[str, ...] = ()) -> RunResult:
+    return RunResult(run_id=run_id, groups=groups, warnings=warnings)
 
 
 def emit_full_run(sink: RunEventSink, run_id: str = STUB_RUN_ID, progress: int = 3) -> None:

@@ -625,7 +625,7 @@ def test_a_run_that_ended_paints_its_last_frame_and_then_leaves_the_screen(stub:
             await _start(app, pilot)
             gate.set()
             await _until(pilot, lambda: app.session_state.run_state is RunUiState.TERMINAL)
-            assert app.session_state.route is UiRoute.WORKSPACE
+            assert app.session_state.route is UiRoute.RESULTS
             assert _view(app).display is False
             body: str = _body(app)
             assert EXECUTION_STATE_RUNNING not in body

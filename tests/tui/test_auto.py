@@ -47,6 +47,7 @@ from anishift.tui.screens.auto import (
     resolve_request,
     run_group_ids,
 )
+from anishift.tui.screens.results import WORKSPACE_COMMAND_NAME as RESULTS_WORKSPACE_COMMAND_NAME
 from anishift.tui.settings.editors import EditorKind, editor_for
 from anishift.tui.state import RunUiState, SessionState, UiRoute
 from anishift.tui.strings import (
@@ -290,10 +291,12 @@ def test_a_started_auto_run_shows_the_groups_and_no_stale_problem(service: AppSe
             await _until(pilot, lambda: _top_dialog(app) == "ConfirmDialog")
             await pilot.press("enter")
             await _until(pilot, lambda: app.session_state.result is not None)
-            assert _route(app) is UiRoute.WORKSPACE
+            assert _route(app) is UiRoute.RESULTS
             assert _session_of(app).verdict is None
             assert _BLOCKER_MESSAGE not in "\n".join(_rendered(app))
             assert _OVERWRITE_MESSAGE not in "\n".join(_rendered(app))
+            assert app.commands.dispatch(RESULTS_WORKSPACE_COMMAND_NAME) is True
+            await _settle(pilot)
             assert _ALPHA in "\n".join(_rendered(app))
 
     _run(scenario())

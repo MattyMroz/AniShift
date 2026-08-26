@@ -234,6 +234,21 @@ __all__ = [
     "REORDER_NOTHING_TO_ADD",
     "REORDER_ORDER_HINT",
     "REORDER_REMOVE_LABEL",
+    "RESULTS_BACK_DESCRIPTION",
+    "RESULTS_BACK_TITLE",
+    "RESULTS_EMPTY",
+    "RESULTS_ERROR_LABEL",
+    "RESULTS_MANUAL_DESCRIPTION",
+    "RESULTS_MANUAL_TITLE",
+    "RESULTS_OPEN_DESCRIPTION",
+    "RESULTS_PARTIAL_GLYPH",
+    "RESULTS_PRESERVED_LABEL",
+    "RESULTS_RECOVERY_HINT",
+    "RESULTS_STATUS_PARTIAL",
+    "RESULTS_STATUS_SUCCEEDED",
+    "RESULTS_SUMMARY",
+    "RESULTS_TITLE",
+    "RESULTS_WARNINGS_LABEL",
     "RUN_DONE",
     "RUN_PLANNING",
     "RUN_STEP_SPEECH",
@@ -1352,3 +1367,50 @@ EXECUTION_DETAILS_TITLE: Final[str] = "Details"
 
 EXECUTION_DETAILS_DESCRIPTION: Final[str] = "Open the details of every group"
 """Description of the details action, shown in the palette."""
+
+# ── Results ────────────────────────────────────────────────────────────────
+
+RESULTS_TITLE: Final[str] = "Results"
+"""Heading of the screen showing what the run that ended left behind."""
+
+RESULTS_EMPTY: Final[str] = "There is no finished run to show yet"
+"""Body shown where a results screen has no terminal result to render."""
+
+RESULTS_SUMMARY: Final[str] = "{succeeded} of {total} groups succeeded"
+"""Row saying how many groups of the finished run reached every product."""
+
+RESULTS_STATUS_SUCCEEDED: Final[str] = "Succeeded"
+"""Word a group that produced everything it was asked for is named by."""
+
+RESULTS_STATUS_PARTIAL: Final[str] = "Partial"
+"""Word a group that kept products but did not finish is named by."""
+
+RESULTS_PARTIAL_GLYPH: Final[str] = "◑"
+"""Glyph a group that kept products but did not finish is marked with."""
+
+RESULTS_PRESERVED_LABEL: Final[str] = "Preserved"
+"""Label of the block naming the products one group kept from an earlier run."""
+
+RESULTS_WARNINGS_LABEL: Final[str] = "Warnings"
+"""Label of the block carrying the redacted warnings of the whole run."""
+
+RESULTS_ERROR_LABEL: Final[str] = "Error"
+"""Label of the block carrying the redacted errors of one group."""
+
+RESULTS_RECOVERY_HINT: Final[str] = "Nothing resumes on its own; plan a group again from what it kept"
+"""Note promising no automatic resume, shown while a group could be planned again."""
+
+RESULTS_OPEN_DESCRIPTION: Final[str] = "Show what the last run left behind"
+"""Description of the action that shows the result the session holds."""
+
+RESULTS_MANUAL_TITLE: Final[str] = "Manual draft"
+"""Title of the action and of the picker that prepare one manual draft."""
+
+RESULTS_MANUAL_DESCRIPTION: Final[str] = "Prepare a manual draft for an unfinished group"
+"""Description of the action preparing one manual draft, shown in the palette."""
+
+RESULTS_BACK_TITLE: Final[str] = "Workspace"
+"""Title of the action leaving the results for the workspace."""
+
+RESULTS_BACK_DESCRIPTION: Final[str] = "Leave the results for the workspace"
+"""Description of the action leaving the results, shown in the palette."""
