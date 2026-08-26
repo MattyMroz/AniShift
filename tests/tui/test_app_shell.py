@@ -42,14 +42,12 @@ from anishift.tui.state import GroupIntentDraft, RunUiState, SessionState, UiFee
 from anishift.tui.strings import (
     COMPOSER_ACCENT_GLYPH,
     COMPOSER_PLACEHOLDER,
-    COMPOSER_TAIL_EDGE_GLYPH,
-    COMPOSER_TAIL_GLYPH,
     CONTEXT_MODE_AUTO,
     LOCATION_SEPARATOR,
     PATH_ELLIPSIS,
     WORKSPACE_EMPTY,
 )
-from anishift.tui.widgets.composer import BOX_ID, BOX_ROWS, TAIL_ID, TAIL_ROWS
+from anishift.tui.widgets.composer import BOX_ID, BOX_ROWS
 from anishift.tui.widgets.footer import (
     LOCATION_ID,
     VERSION_ID,
@@ -381,7 +379,7 @@ def test_a_work_surface_taller_than_the_terminal_keeps_the_composer_on_screen(si
             composer: Region = app.query_one(f"#{COMPOSER_SLOT_ID}").region
             bar: Region = app.query_one(f"#{FOOTER_ID}").region
             assert work_area.height > 0
-            assert composer.height >= BOX_ROWS + TAIL_ROWS
+            assert composer.height >= BOX_ROWS
             assert bar.y + bar.height == size[1]
 
     _run(scenario())
@@ -458,18 +456,16 @@ def test_the_start_block_keeps_the_gaps_of_the_specification(size: tuple[int, in
     _run(scenario())
 
 
-def test_the_accent_edge_reaches_the_half_row_closing_the_box() -> None:
+def test_the_box_is_the_last_row_the_composer_paints() -> None:
     async def scenario() -> None:
         app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             box: Region = app.query_one(f"#{BOX_ID}").region
-            tail: Region = app.query_one(f"#{TAIL_ID}").region
+            keys: Region = app.query_one(f"#{KEYS_ID}").region
             lines: list[str] = _rendered(app)
-            assert tail.y == box.y + box.height
-            assert lines[tail.y].index(COMPOSER_TAIL_EDGE_GLYPH) == box.x
-            assert COMPOSER_TAIL_GLYPH in lines[tail.y]
-            assert COMPOSER_ACCENT_GLYPH not in lines[tail.y]
+            assert keys.y == box.y + box.height
+            assert COMPOSER_ACCENT_GLYPH not in lines[keys.y]
 
     _run(scenario())
 

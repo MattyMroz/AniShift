@@ -18,8 +18,6 @@ from anishift.tui.commands.palette import slash_options
 from anishift.tui.strings import (
     COMPOSER_PLACEHOLDER,
     COMPOSER_PLAIN_TEXT,
-    COMPOSER_TAIL_EDGE_GLYPH,
-    COMPOSER_TAIL_GLYPH,
     COMPOSER_UNKNOWN_COMMAND,
     COMPOSER_UNKNOWN_COMMAND_SUGGESTION,
     CONTEXT_MODE_AUTO,
@@ -55,7 +53,6 @@ __all__ = [
     "INPUT_ID",
     "SUGGESTIONS_ID",
     "SUGGESTION_MAX_ROWS",
-    "TAIL_ID",
     "Composer",
     "ComposerSubmission",
     "ComposerSubmissionKind",
@@ -84,14 +81,8 @@ HINT_ID: Final[str] = "composer-hint"
 CONTEXT_ID: Final[str] = "composer-context"
 """Id of the faded context line one row below the text field."""
 
-TAIL_ID: Final[str] = "composer-tail"
-"""Id of the half row closing the box below its context line."""
-
-BOX_ROWS: Final[int] = 4
-"""Rows the box always has: a blank edge, the field, a blank row, the context line."""
-
-TAIL_ROWS: Final[int] = 1
-"""Rows the closing half row takes under the box."""
+BOX_ROWS: Final[int] = 5
+"""Rows the box always has: a blank edge, the field, a blank row, the context line, a blank edge."""
 
 SUGGESTION_MAX_ROWS: Final[int] = 10
 """Rows the suggestion overlay grows to before it starts scrolling instead."""
@@ -101,12 +92,6 @@ SLASH_PREFIX: Final[str] = "/"
 
 _MODE_STYLE: Final[str] = "bold $secondary"
 """Style of the mode word, matching the accent edge of the box."""
-
-_ACCENT_STYLE: Final[str] = "$secondary"
-"""Style of the accent edge, carried through the upper half of the closing row."""
-
-_TAIL_STYLE: Final[str] = "$background-element"
-"""Style painting the closing half row in the raised colour of the box."""
 
 _PROVIDER_STYLE: Final[str] = "bold $text"
 """Style of the provider the context line names."""
@@ -266,18 +251,16 @@ class Composer(Vertical):
             context_content(mode=CONTEXT_MODE_AUTO, provider=CONTEXT_PROVIDER, model=CONTEXT_MODEL_UNSET),
             id=CONTEXT_ID,
         )
-        self._tail: Static = Static(id=TAIL_ID)
         self._hint: Static = Static(id=HINT_ID)
 
     def compose(self) -> ComposeResult:
-        """Draw the box and its closing half row, then the answer row.
+        """Draw the box, then the answer row.
 
         The suggestions live on their own layer, mounted on the screen.
         """
         with self._box:
             yield self._input
             yield self._context_line
-        yield self._tail
         yield self._hint
 
     def show_context(self, *, mode: str, provider: str, model: str) -> None:
@@ -289,11 +272,6 @@ class Composer(Vertical):
         self.screen.mount(self._suggestions)
         self._hide_suggestions()
         self._clear_hint()
-        self._paint_tail()
-
-    def on_resize(self) -> None:
-        """Redraw the closing half row across the width the box just took."""
-        self._paint_tail()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Claim the suggestion keys only while the suggestion list is on screen."""
@@ -379,18 +357,6 @@ class Composer(Vertical):
         """Run the command a click picked out of the overlay."""
         if 0 <= index < len(self._offered):
             self._run(self._offered[index].name)
-
-    def _paint_tail(self) -> None:
-        """Close the box with one half row, the accent edge ending flush with it."""
-        width: int = self._box.region.width
-        if width < 1:
-            return
-        self._tail.update(
-            Content.assemble(
-                (COMPOSER_TAIL_EDGE_GLYPH, _ACCENT_STYLE),
-                (COMPOSER_TAIL_GLYPH * (width - 1), _TAIL_STYLE),
-            )
-        )
 
     def _place(self) -> None:
         """Pin the overlay to the rows directly above the box, drawing over the work area."""
