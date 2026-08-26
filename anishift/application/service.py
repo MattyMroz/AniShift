@@ -201,6 +201,11 @@ class AppService:
         self._active_cancel: EventCancellationToken | None = None
         self._run_lock: threading.Lock = threading.Lock()
 
+    @property
+    def workspace_root(self) -> Path:
+        """The directory every discovered group and planned product lives under."""
+        return self._workspace_root
+
     def discover(self, *, cancel: CancellationToken | None = None) -> InspectedWorkspace:
         """Discover and fully inspect the current workspace without starting work."""
         token: CancellationToken = cancel or NeverCancelledToken()

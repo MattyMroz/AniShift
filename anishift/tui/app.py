@@ -35,6 +35,7 @@ from anishift.tui.models.connect import open_connect_surface
 from anishift.tui.models.picker import load_catalog, open_model_picker
 from anishift.tui.screens.auto import AutoRequest, AutoSession, AutoView, open_auto_presets, resolve_request
 from anishift.tui.screens.manual import ManualView
+from anishift.tui.screens.preview import PreviewSession, PreviewView, start_available
 from anishift.tui.screens.tools import ToolsView
 from anishift.tui.screens.workspace import GroupRow, WorkspaceView
 from anishift.tui.settings.tree import SettingDomain, open_settings_panel
@@ -53,6 +54,7 @@ from anishift.tui.strings import (
     PALETTE_COMMAND_CATEGORY,
     PALETTE_SUGGESTED_CATEGORY,
     PALETTE_TITLE,
+    PREVIEW_LEFT,
     SETUP_ACTION_TITLE,
     SETUP_CONFIRM_QUESTION,
     THEME_DARK_DESCRIPTION,
@@ -70,6 +72,7 @@ from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
     from textual.app import ComposeResult
     from textual.content import Content
@@ -153,6 +156,8 @@ class AniShiftApp(App[None]):
         self._workspace_view: WorkspaceView = WorkspaceView()
         self._auto_view: AutoView = AutoView()
         self._manual_view: ManualView = ManualView()
+        self._preview_view: PreviewView = PreviewView()
+        self._preview: PreviewSession = PreviewSession()
         self._auto: AutoSession = AutoSession()
         self._tools_view: ToolsView = ToolsView()
         self._composer_slot: Container = Container(id=COMPOSER_SLOT_ID)
@@ -194,6 +199,11 @@ class AniShiftApp(App[None]):
         return self._commands
 
     @property
+    def workspace_root(self) -> Path:
+        """The directory every location this shell renders stays inside of."""
+        return self._service.workspace_root
+
+    @property
     def tools_report(self) -> tools.ToolsReport | None:
         """The report the work area shows, while one tools command asked for it."""
         return self._tools_report
@@ -210,6 +220,7 @@ class AniShiftApp(App[None]):
                 yield self._workspace_view
                 yield self._auto_view
                 yield self._manual_view
+                yield self._preview_view
                 yield self._tools_view
             yield self._brand
             with self._composer_slot:
@@ -276,6 +287,8 @@ class AniShiftApp(App[None]):
         if message.generation == self._auto.generation:
             self._decide_auto(message.plan, message.generation)
             return
+        self._preview.origin = self._state.route
+        lifecycle.navigate(self._state, UiRoute.PREVIEW)
         self._render_frame()
 
     @on(PlanFailed)
@@ -324,8 +337,14 @@ class AniShiftApp(App[None]):
         )
         self._render_frame()
 
-    def _decide_auto(self, plan: ExecutionPlan, generation: int) -> None:
-        """Start, confirm or refuse this Auto run from the one verdict of its plan."""
+    def _decide_auto(
+        self,
+        plan: ExecutionPlan,
+        generation: int,
+        *,
+        blocked_route: UiRoute = UiRoute.AUTO,
+    ) -> None:
+        """Start, confirm or refuse this planned run from the one verdict of its plan."""
         verdict: auto_trigger.AutoVerdict = auto_trigger.classify(
             plan,
             accepted=self._auto.accepted_artifact_ids,
@@ -334,13 +353,29 @@ class AniShiftApp(App[None]):
         self._auto.generation = None
         if verdict.kind is auto_trigger.AutoVerdictKind.BLOCKED:
             auto_trigger.release(self._state, generation=generation, reason=AUTO_PLAN_BLOCKED)
-            lifecycle.navigate(self._state, UiRoute.AUTO)
+            lifecycle.navigate(self._state, blocked_route)
             self._render_frame()
             return
         if verdict.kind is auto_trigger.AutoVerdictKind.CONFIRM:
             self._confirm_auto(plan, generation, verdict)
             return
         self._start_auto_run(plan)
+
+    def start_previewed_run(self) -> bool:
+        """Run the previewed plan through the one gate that decides it may start."""
+        plan: ExecutionPlan | None = self._state.plan
+        if plan is None or not start_available(self._state):
+            logger.debug("Previewed start refused", run_state=self._state.run_state.value)
+            return False
+        self._decide_auto(plan, self._state.generation, blocked_route=UiRoute.PREVIEW)
+        return True
+
+    def leave_preview(self, route: UiRoute) -> None:
+        """Give the reservation back and show the screen that prepared the plan."""
+        auto_trigger.release(self._state, generation=self._state.generation, reason=PREVIEW_LEFT)
+        self._auto.verdict = None
+        lifecycle.navigate(self._state, route)
+        self._render_frame()
 
     def _start_auto_run(self, plan: ExecutionPlan) -> None:
         """Show the groups of the accepted Auto plan and enter its run."""
@@ -657,11 +692,15 @@ class AniShiftApp(App[None]):
         """Redraw every region that projects the session state."""
         has_groups: bool = bool(self._group_rows) or self._state.workspace is not None
         on_auto: bool = self._state.route is UiRoute.AUTO
-        self._has_work = has_groups or on_auto or self._tools_report is not None
+        on_preview: bool = self._state.route is UiRoute.PREVIEW
+        self._has_work = has_groups or on_auto or on_preview or self._tools_report is not None
         self._workspace_view.display = self._state.route is UiRoute.WORKSPACE and has_groups
         self._auto_view.display = on_auto
         self._auto_view.show(self._state, self._auto)
         self._manual_view.display = self._state.route is UiRoute.MANUAL and has_groups
+        self._preview_view.display = on_preview
+        if on_preview:
+            self._preview_view.show(self._state, self._preview, root=self.workspace_root)
         self._tools_view.display = self._state.route is UiRoute.TOOLS and self._tools_report is not None
         self._tools_view.show(self._tools_report)
         if self._group_rows:

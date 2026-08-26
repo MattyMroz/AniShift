@@ -185,6 +185,7 @@ class StubService:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.error: Exception | None = None
+        self.workspace_root: Path = OFFLINE_ROOT
         self.workspace: InspectedWorkspace = empty_workspace()
         self.group: InspectedSourceGroup = stub_group()
         self.plan: ExecutionPlan = stub_plan()

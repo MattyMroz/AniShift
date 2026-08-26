@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Final
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 __all__ = [
     "AUTO_CANCELLED",
@@ -65,8 +69,6 @@ __all__ = [
     "COMPOSER_ACCENT_GLYPH",
     "COMPOSER_PLACEHOLDER",
     "COMPOSER_PLAIN_TEXT",
-    "COMPOSER_TAIL_EDGE_GLYPH",
-    "COMPOSER_TAIL_GLYPH",
     "COMPOSER_UNKNOWN_COMMAND",
     "COMPOSER_UNKNOWN_COMMAND_SUGGESTION",
     "CONNECT_ADDRESS_CONFIGURED",
@@ -173,6 +175,31 @@ __all__ = [
     "PALETTE_SUGGESTED_CATEGORY",
     "PALETTE_TITLE",
     "PATH_ELLIPSIS",
+    "PLAN_BLOCKED_WORD",
+    "PLAN_EMPTY",
+    "PLAN_GROUP_GLYPH",
+    "PLAN_INDENT",
+    "PLAN_KEPT_WORD",
+    "PLAN_NONE",
+    "PLAN_OPERATIONS_LABEL",
+    "PLAN_OPERATION_LABELS",
+    "PLAN_OUTSIDE_WORKSPACE",
+    "PLAN_PRODUCTS_LABEL",
+    "PLAN_PROFILES_LABEL",
+    "PLAN_PROFILE_MODEL_LABEL",
+    "PLAN_PROFILE_SPEECH_LABEL",
+    "PLAN_PROFILE_TRANSLATION_LABEL",
+    "PLAN_REPLACES_WORD",
+    "PLAN_SOURCES_LABEL",
+    "PLAN_WARNING_WORD",
+    "PREVIEW_BACK_DESCRIPTION",
+    "PREVIEW_BACK_TITLE",
+    "PREVIEW_LEFT",
+    "PREVIEW_NO_PLAN",
+    "PREVIEW_START_BLOCKED",
+    "PREVIEW_START_DESCRIPTION",
+    "PREVIEW_START_TITLE",
+    "PREVIEW_TITLE",
     "REORDER_ADD_HINT",
     "REORDER_ADD_LABEL",
     "REORDER_DELETE_PROMPT",
@@ -295,12 +322,6 @@ COMPOSER_PLACEHOLDER: Final[str] = "Press enter to dub, or type / for commands"
 
 COMPOSER_ACCENT_GLYPH: Final[str] = "▌"
 """Glyph drawing the vertical accent on the left edge of the composer box."""
-
-COMPOSER_TAIL_GLYPH: Final[str] = "▀"
-"""Glyph closing the composer box with the upper half of one row."""
-
-COMPOSER_TAIL_EDGE_GLYPH: Final[str] = "▘"
-"""Glyph carrying the accent edge through the upper half of the closing row."""
 
 COMPOSER_PLAIN_TEXT: Final[str] = "Chat mode is not available yet"
 """Answer to text that names no command; the text stays in the field."""
@@ -1134,3 +1155,94 @@ AUTO_OVERWRITE_QUESTION: Final[str] = "{products}\nStart anyway?"
 
 AUTO_PROBLEM_SEPARATOR: Final[str] = "\n"
 """Separator between two problems one plan reported."""
+
+# ── Preview ────────────────────────────────────────────────────────────────
+
+PLAN_GROUP_GLYPH: Final[str] = "▪"
+"""Glyph opening the block one group owns in a rendered plan."""
+
+PLAN_INDENT: Final[str] = "  "
+"""Indent shifting one detail line under the group heading that owns it."""
+
+PLAN_SOURCES_LABEL: Final[str] = "Sources"
+"""Label of the line naming the files one planned group reads."""
+
+PLAN_OPERATIONS_LABEL: Final[str] = "Operations"
+"""Label of the line naming the planned operations in execution order."""
+
+PLAN_PRODUCTS_LABEL: Final[str] = "Products"
+"""Label of the block naming the durable products one group would leave."""
+
+PLAN_PROFILES_LABEL: Final[str] = "Profiles"
+"""Heading of the block naming the engines and models one plan would use."""
+
+PLAN_PROFILE_TRANSLATION_LABEL: Final[str] = "Translation"
+"""Label of the translation profile one plan would run."""
+
+PLAN_PROFILE_MODEL_LABEL: Final[str] = "Model"
+"""Label of the language-model profile one plan would run."""
+
+PLAN_PROFILE_SPEECH_LABEL: Final[str] = "Speech"
+"""Label of the speech profile one plan would run."""
+
+PLAN_BLOCKED_WORD: Final[str] = "Blocked"
+"""Word naming a problem that stops a plan, shown beside its glyph."""
+
+PLAN_WARNING_WORD: Final[str] = "Warning"
+"""Word naming a problem a plan survives, shown beside its glyph."""
+
+PLAN_REPLACES_WORD: Final[str] = "replaces an existing file"
+"""Note marking a planned product that would take the place of another."""
+
+PLAN_KEPT_WORD: Final[str] = "already there"
+"""Note marking a product a plan found and would leave untouched."""
+
+PLAN_NONE: Final[str] = "none"
+"""Value shown where a plan lists nothing at all."""
+
+PLAN_EMPTY: Final[str] = "There is no plan to preview yet"
+"""Body shown where a preview has no plan to render."""
+
+PLAN_OUTSIDE_WORKSPACE: Final[str] = "outside the workspace"
+"""Stand-in for a location the preview refuses to spell out."""
+
+PLAN_OPERATION_LABELS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "extract_audio": "Extract audio",
+        "extract_subtitles": "Extract subtitles",
+        "normalize_subtitles": "Normalize subtitles",
+        "translate_subtitles": "Translate subtitles",
+        "split_subtitles": "Split subtitles",
+        "synthesize_speech": "Synthesize speech",
+        "transcode_audio": "Transcode audio",
+        "mix_narration": "Mix narration",
+        "compose_mkv": "Compose MKV",
+        "compose_mp4": "Compose MP4",
+        "publish_artifact": "Publish product",
+    },
+)
+"""Human label of every planned operation, keyed by the value of its task kind."""
+
+PREVIEW_TITLE: Final[str] = "Preview"
+"""Heading of the screen showing what a planned run would do."""
+
+PREVIEW_START_TITLE: Final[str] = "Start"
+"""Title of the action running the previewed plan."""
+
+PREVIEW_START_DESCRIPTION: Final[str] = "Run the previewed plan"
+"""Description of the start action, shown in the palette."""
+
+PREVIEW_BACK_TITLE: Final[str] = "Back"
+"""Title of the action leaving the preview for the screen that opened it."""
+
+PREVIEW_BACK_DESCRIPTION: Final[str] = "Return without starting"
+"""Description of the back action, shown in the palette."""
+
+PREVIEW_NO_PLAN: Final[str] = "Plan something before previewing it"
+"""Reason a preview refuses to open with nothing planned."""
+
+PREVIEW_START_BLOCKED: Final[str] = "This plan cannot start while a problem blocks it"
+"""Reason the start action refuses a plan carrying a blocking problem."""
+
+PREVIEW_LEFT: Final[str] = "The plan was left without starting"
+"""Reason a previewed plan ended at the back action instead of at a start."""
