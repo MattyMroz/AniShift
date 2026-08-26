@@ -203,3 +203,65 @@ Commit: `b99807e`. Bramka: 2455 passed, 8 skipped.
 - **Zmienna wyeksportowana w środowisku procesu wygrywa nad `.env`.** Zachowanie istniejące
   i przetestowane. `update_secret` poprawnie zapisze plik, ale status pokaże wartość z shella.
   Docstring mówi to wprost; TUI powinno to komunikować, gdy wystąpi.
+
+## T-013 — konfiguracja, token i router protokołów Foundry
+
+Commit `0e41585`. Warstwa poprzedzająca żądanie: konfiguracja modelu, odczyt tokenu
+i router builderów. Sam silnik oraz normalizacja odpowiedzi należą do T-014.
+
+### Rozstrzygnięcia
+
+- **Jeden algorytm precedencji tokenu, nie dwa.** Pierwsza wersja miała `AliasChoices`
+  w `Settings` i osobną pętlę w `resolve_palantir_token`. Review pokazało realną
+  rozbieżność: przy `ANISHIFT_PALANTIR_TOKEN="   "` i ustawionym `FOUNDRY_API_TOKEN`
+  `Settings` zwracało `"   "`, a adapter `"compat-value"` — `AliasChoices` bierze pierwszą
+  obecną wartość, nawet pustą, adapter trymuje i schodzi dalej. Testem pilnującym była
+  tylko równość krotki nazw, więc semantyka mogła się rozjechać bez alarmu. Teraz
+  `Settings` deleguje wybór do adaptera, a test porównuje wynik rozwiązania dla tego
+  samego środowiska. Kierunek `config` → `services` jest tu zgodny z już istniejącym
+  (`user_settings` woła rejestr silników tłumaczenia).
+- **Skutek uboczny: zamknięta pułapka nieaktualnej zmiennej.** Skoro nazwa zgodnościowa
+  jest czytana dopiero wtedy, gdy kanoniczna jest pusta, świeży token w `.env` wygrywa
+  z wyeksportowanym `FOUNDRY_API_TOKEN`. Poprzednia sekcja opisywała to jako odłożone.
+- **`AliasChoices` i globalne `populate_by_name` usunięte.** Istniały tylko po to, by
+  utrzymać zduplikowaną precedencję. Przy zwykłej nazwie pola prefiks pydantic sam daje
+  `ANISHIFT_PALANTIR_TOKEN`, a arytmetyka `_env_variable()` i allowlista `update_secret`
+  działają bez zmian.
+- **`ModelProtocol` przeniesiony do `services/llm/wire_protocol.py`.** Reużycie enuma
+  z katalogu było słuszne — jedno słownictwo nie może się rozjechać — ale zrobiło z tego
+  jedyny w repo import `services` → `anishift.config`. Katalog re-eksportuje enum, więc
+  jego publiczna powierzchnia i testy T-012 zostały nietknięte. T-027 domyka granice
+  architektury; lepiej odwrócić kierunek teraz niż budować na nim T-014 i T-015.
+- **Brak importu między silnikami.** Sięgnięcie po jedną stałą do `engines/anthropic/
+  constants.py` ciągnęło `anthropic/__init__.py` → `service` → SDK, czyli 25 modułów
+  z `httpx` włącznie. To łamie regułę z `services/llm/AGENTS.md` o leniwym ładowaniu
+  providerów. Stała jest lokalna, a dowodem jest sonda w podprocesie mierząca `sys.modules`
+  — poprzednie `not hasattr(module, "httpx")` sprawdzało tylko brak rebindu.
+- **Brak tokenu to błąd auth, nie konfiguracji.** Kryterium mówiło „typowany błąd
+  konfiguracji", ale to proza planu, nie nazwa klasy; jej sens to szybkie, typowane
+  odrzucenie przed siecią. Cztery istniejące silniki podnoszą `LlmAuthError` przy braku
+  klucza, więc reguła brzmi: token (brak, pusty, niewysyłalny) → `LlmAuthError`; URL,
+  protokół, alias, provider, model → `LlmConfigError`.
+- **Zero nowych klas błędów.** Istniejąca taksonomia 13 klas pokrywa całe R-059. Podział
+  429 na `LlmQuotaError` (fatalny) i `LlmRateLimitError` (przejściowy) idzie po markerach
+  strukturalnych, nie po prozie komunikatu.
+
+### Odłożone świadomie
+
+- **`palantir_token_compat` jako osobne pole `Settings`.** Utrzymuje nazwę zgodnościową
+  także w `.env`, nie tylko w środowisku procesu. Czytanie `os.environ` w walidatorze
+  byłoby prostsze, ale cicho przestałoby honorować `.env` — a to główne miejsce, gdzie ten
+  projekt trzyma sekrety. Pole jest wykluczone z dumpów, `repr=False` i czyszczone po
+  rozwiązaniu. Świadomie odwracalne jedną linią, gdy zgodność przestanie być potrzebna.
+- **`anthropic-version: 2023-06-01` niesprawdzone wobec dokumentacji proxy.** Stała pod
+  ręką, T-014 zweryfikuje ją pierwszym realnym żądaniem.
+- **Zapis tokenu wciąż niemożliwy.** `/connect` potrzebuje `SettingSpec` z `is_secret`
+  w `_environment_specs()`; samo pole `Settings` nie wystarcza. Należy do T-015.
+
+### Obserwacje
+
+- **`anishift.config.model_catalog` ładuje `httpx` — defekt wcześniejszy niż ten etap.**
+  Łańcuch: `config/__init__.py` → `field_catalog` → `user_settings` → `services/tts/engines/
+  elevenbytes/__init__.py` → `.service` → `.api_backend`. Dokładnie ten sam wzorzec, co
+  naprawiony wyżej, tylko w domenie TTS. Poza zakresem T-013; kandydat na strażnika
+  leniwości w T-027.
