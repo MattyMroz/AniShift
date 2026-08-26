@@ -32,7 +32,7 @@ from pydantic_settings import (
 )
 from pydantic_settings.sources.utils import parse_env_vars
 
-from anishift.services.llm.engines.palantir.auth import (
+from anishift.services.llm.palantir_token import (
     PALANTIR_TOKEN_COMPAT_ENV_VAR,
     PALANTIR_TOKEN_ENV_VAR,
     resolve_palantir_token,

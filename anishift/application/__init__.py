@@ -33,7 +33,6 @@ from anishift.application.artifacts import (
 )
 from anishift.application.cancellation import CancellationToken, EventCancellationToken
 from anishift.application.events import (
-    EventBuffer,
     RunEvent,
     RunEventEmitter,
     RunEventKind,
@@ -89,7 +88,6 @@ __all__ = [
     "CheckResult",
     "DiscoveryResult",
     "DiscoveryWarning",
-    "EventBuffer",
     "EventCancellationToken",
     "ExecutionHandlerFactory",
     "ExecutionPlan",

@@ -1,17 +1,16 @@
-"""Palantir token retrieval and the single Authorization header builder.
+"""Palantir token requirements and the single Authorization header builder.
 
 The canonical secret is ``ANISHIFT_PALANTIR_TOKEN``. ``FOUNDRY_API_TOKEN`` is
 read only for compatibility with an older setup and only when the canonical
 variable holds nothing; a writer such as ``/connect`` always targets the
 canonical name.
 
-``resolve_palantir_token`` is the ONE algorithm that implements this precedence:
-strip, skip a blank value, canonical before compatibility.
-``Settings.palantir_token`` delegates to it with the values pydantic-settings
-gathered from the environment and from ``.env`` instead of re-implementing the
-order, because two mechanisms for one rule drift apart — a blank canonical value
-being the case that breaks first. This module therefore stays free of any
-``anishift.config`` import; the dependency runs the other way.
+The precedence rule and its variable names live in
+``anishift.services.llm.palantir_token`` — a leaf module that pulls no provider
+package — so ``anishift.config.settings`` can delegate to that rule without
+importing the Palantir engine. This module re-exports the same names for every
+caller that already reaches through the ``palantir`` package, and adds the
+header allowlist and secret-safe rendering on top.
 
 Every request header is built here, from an allowlist: exactly one
 ``Authorization: Bearer <token>`` plus the JSON negotiation headers. The token
@@ -30,12 +29,16 @@ Public API:
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from typing import Final
 
 from anishift.services.llm.engines.palantir.errors import raise_palantir_auth_error
-from anishift.utils.logger import get_logger
+from anishift.services.llm.palantir_token import (
+    PALANTIR_TOKEN_COMPAT_ENV_VAR,
+    PALANTIR_TOKEN_ENV_VAR,
+    PALANTIR_TOKEN_ENV_VARS,
+    resolve_palantir_token,
+)
 
 __all__ = [
     "PALANTIR_TOKEN_COMPAT_ENV_VAR",
@@ -49,26 +52,7 @@ __all__ = [
     "validated_palantir_token",
 ]
 
-logger = get_logger(__name__)
-
 # ── Constants ────────────────────────────────────────────────────────────────
-
-PALANTIR_TOKEN_ENV_VAR: Final[str] = "ANISHIFT_PALANTIR_TOKEN"  # noqa: S105
-"""Canonical environment variable; the only name any writer may target."""
-
-PALANTIR_TOKEN_COMPAT_ENV_VAR: Final[str] = "FOUNDRY_API_TOKEN"  # noqa: S105
-"""Legacy environment variable read only when the canonical one is empty."""
-
-PALANTIR_TOKEN_ENV_VARS: Final[tuple[str, ...]] = (
-    PALANTIR_TOKEN_ENV_VAR,
-    PALANTIR_TOKEN_COMPAT_ENV_VAR,
-)
-"""Read order of the token variables, canonical first.
-
-``resolve_palantir_token`` walks this order, and ``Settings`` reaches the same
-result by delegating to that function, so a process environment and a ``.env``
-file cannot resolve the token differently.
-"""
 
 REDACTED_HEADER_VALUE: Final[str] = "<redacted>"
 """Placeholder rendered instead of a secret header value."""
@@ -78,28 +62,6 @@ _SECRET_HEADER_NAMES: Final[frozenset[str]] = frozenset({"authorization", "proxy
 
 _JSON_MEDIA_TYPE: Final[str] = "application/json"
 """Only media type the proxy protocols exchange."""
-
-
-def resolve_palantir_token(environ: Mapping[str, str] | None = None) -> str:
-    """Return the configured token, preferring the canonical variable.
-
-    Args:
-        environ: Environment mapping to read; the process environment by
-            default.
-
-    Returns:
-        The stripped token of the first variable that holds a visible value, or
-        ``""`` when neither variable is configured.
-    """
-    source: Mapping[str, str] = os.environ if environ is None else environ
-    for variable in PALANTIR_TOKEN_ENV_VARS:
-        token: str = source.get(variable, "").strip()
-        if not token:
-            continue
-        if variable != PALANTIR_TOKEN_ENV_VAR:
-            logger.debug("Palantir token read from the compatibility variable", variable=variable)
-        return token
-    return ""
 
 
 def require_palantir_token(environ: Mapping[str, str] | None = None) -> str:

@@ -12,7 +12,6 @@ from anishift.application.planning import TaskState
 from anishift.utils.logger import get_logger
 
 __all__ = [
-    "EventBuffer",
     "RunEvent",
     "RunEventEmitter",
     "RunEventKind",
@@ -149,41 +148,6 @@ class RunEventEmitter:
         except Exception:  # noqa: BLE001
             logger.warning("Run event observer failed", observer_type=type(self._sink).__name__)
         return event
-
-
-class EventBuffer:
-    """Bounded-progress, lossless-state buffer shared by workers and a frontend."""
-
-    __slots__ = ("_lock", "_progress", "_state_events")
-
-    def __init__(self) -> None:
-        """Create an empty thread-safe buffer."""
-        self._lock: threading.Lock = threading.Lock()
-        self._state_events: list[RunEvent] = []
-        self._progress: dict[tuple[str, str], RunEvent] = {}
-
-    def push(self, event: RunEvent) -> None:
-        """Keep every state event and only the latest progress per task and run."""
-        with self._lock:
-            if event.kind is RunEventKind.TASK_PROGRESS and event.task_id is not None:
-                key: tuple[str, str] = (event.run_id, event.task_id)
-                current: RunEvent | None = self._progress.get(key)
-                if current is None or event.sequence > current.sequence:
-                    self._progress[key] = event
-                return
-            self._state_events.append(event)
-
-    def emit(self, event: RunEvent) -> None:
-        """Accept the event-sink protocol used by the application facade."""
-        self.push(event)
-
-    def drain(self) -> tuple[RunEvent, ...]:
-        """Atomically return buffered events in per-run sequence order and clear them."""
-        with self._lock:
-            events: tuple[RunEvent, ...] = (*self._state_events, *self._progress.values())
-            self._state_events.clear()
-            self._progress.clear()
-        return tuple(sorted(events, key=lambda event: (event.run_id, event.sequence)))
 
 
 def sanitize_event_message(message: str | None) -> str | None:
