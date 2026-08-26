@@ -269,7 +269,7 @@ class Composer(Vertical):
             placeholder=COMPOSER_PLACEHOLDER,
             widget_id=INPUT_ID,
         )
-        self._written: str = ""
+        self._written: str | None = None
         self._context_line: Static = Static(
             context_content(mode=CONTEXT_MODE_AUTO, provider=CONTEXT_PROVIDER, model=CONTEXT_MODEL_UNSET),
             id=CONTEXT_ID,
@@ -320,8 +320,8 @@ class Composer(Vertical):
         """Offer the commands the typed line could mean, and drop the last answer."""
         event.stop()
         self._clear_hint()
-        if event.value == self._written:
-            self._written = ""
+        if self._written is not None and event.value == self._written:
+            self._written = None
             return
         self._offer(event.value)
 

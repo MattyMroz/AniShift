@@ -769,6 +769,38 @@ def test_escape_hides_the_suggestions_and_keeps_the_typed_line() -> None:
     _run(scenario())
 
 
+@pytest.mark.parametrize("line", ["/", "/th"])
+def test_deleting_the_typed_line_hides_the_suggestions(line: str) -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press(*line)
+            await pilot.pause()
+            assert _suggestions(app).display is True
+            await pilot.press(*["backspace"] * len(line))
+            await pilot.pause()
+            assert _field(app).value == ""
+            assert _suggestions(app).display is False
+
+    _run(scenario())
+
+
+def test_completing_a_suggestion_keeps_the_list_closed() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = AniShiftApp()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press(*"/th")
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            assert _suggestions(app).display is False
+            assert _field(app).value.startswith("/")
+
+    _run(scenario())
+
+
 def test_a_bare_slash_never_reaches_the_registry() -> None:
     async def scenario() -> None:
         calls: list[str] = []
