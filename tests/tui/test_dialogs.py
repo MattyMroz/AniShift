@@ -823,7 +823,7 @@ def test_a_click_on_the_dim_backdrop_cancels_the_dialog() -> None:
     _run(scenario())
 
 
-def test_the_pointer_moves_neither_the_cursor_nor_the_scroll_of_a_long_selector() -> None:
+def test_the_pointer_carries_the_cursor_of_a_long_selector_to_the_row_it_rests_on() -> None:
     async def scenario() -> None:
         app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
@@ -838,12 +838,12 @@ def test_the_pointer_moves_neither_the_cursor_nor_the_scroll_of_a_long_selector(
             for offset in _POINTER_OFFSETS:
                 await pilot.hover(listing, offset=offset)
                 await pilot.pause()
-                assert (listing.highlighted, listing.scroll_offset.y) == parked
+                assert (listing.highlighted, listing.scroll_offset.y) == (parked[1] + offset[1], parked[1])
 
     _run(scenario())
 
 
-def test_repeated_pointer_moves_at_one_offset_leave_a_long_selector_exactly_where_it_was() -> None:
+def test_repeated_pointer_moves_at_one_offset_leave_the_scroll_of_a_long_selector_exactly_where_it_was() -> None:
     async def scenario() -> None:
         app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
@@ -859,7 +859,78 @@ def test_repeated_pointer_moves_at_one_offset_leave_a_long_selector_exactly_wher
                 await pilot.hover(listing, offset=_FIXED_POINTER)
                 await pilot.pause()
                 seen.append((listing.highlighted, listing.scroll_offset.y))
-            assert seen == [parked] * _POINTER_REPEATS
+            assert seen == [(parked[1] + _FIXED_POINTER[1], parked[1])] * _POINTER_REPEATS
+
+    _run(scenario())
+
+
+def test_the_pointer_leaves_the_cursor_of_a_selector_be_on_a_heading_or_a_disabled_row() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: SelectDialog[str] = SelectDialog(
+                title="Wybór",
+                options=(
+                    _option("a", category="Grupa"),
+                    _option("b", category="Grupa", disabled=True),
+                    _option("c", category="Grupa"),
+                ),
+            )
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            listing: OptionList = dialog.query_one("#select-list", OptionList)
+            assert _labels(dialog, "select-list")[0] == "Grupa"
+            assert listing.highlighted == 1
+            for dead in (0, 2):
+                await pilot.hover(listing, offset=(4, dead))
+                await pilot.pause()
+                assert listing.highlighted == 1
+            await pilot.hover(listing, offset=(4, 3))
+            await pilot.pause()
+            assert listing.highlighted == 3
+
+    _run(scenario())
+
+
+def test_the_pointer_leaves_the_cursor_of_an_empty_selector_be_on_the_placeholder_row() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: SelectDialog[str] = _selector()
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            await pilot.press(*"zzz")
+            await pilot.pause()
+            listing: OptionList = dialog.query_one("#select-list", OptionList)
+            assert _labels(dialog, "select-list") == [NO_RESULTS_TEXT]
+            assert listing.highlighted is None
+            await pilot.hover(listing, offset=(4, 0))
+            await pilot.pause()
+            assert listing.highlighted is None
+
+    _run(scenario())
+
+
+def test_the_keyboard_still_scrolls_a_long_selector_to_an_off_screen_row() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: SelectDialog[str] = _long_selector()
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            listing: OptionList = dialog.query_one("#select-list", OptionList)
+            assert listing.max_scroll_y > 0
+            assert (listing.highlighted, listing.scroll_offset.y) == (0, 0)
+            await pilot.press("end")
+            await pilot.pause()
+            assert listing.highlighted == _LONG_ROWS - 1
+            assert listing.scroll_offset.y == listing.max_scroll_y
+            await pilot.press("home")
+            await pilot.pause()
+            assert (listing.highlighted, listing.scroll_offset.y) == (0, 0)
 
     _run(scenario())
 
@@ -1187,15 +1258,12 @@ def test_escape_leaves_the_add_mode_before_it_leaves_the_dialog() -> None:
     _run(scenario())
 
 
-def test_the_pointer_moves_neither_the_cursor_nor_the_scroll_of_a_long_reorder() -> None:
+def test_the_pointer_carries_the_cursor_of_a_long_reorder_to_the_row_it_rests_on() -> None:
     async def scenario() -> None:
         app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
-            dialog: ReorderDialog = ReorderDialog(
-                title="Kolejność",
-                items=tuple(f"a{index}" for index in range(_LONG_ROWS)),
-            )
+            dialog: ReorderDialog = _long_reorder()
             open_dialog(app, app.session_state, dialog)
             await pilot.pause()
             listing: OptionList = dialog.query_one("#reorder-list", OptionList)
@@ -1205,7 +1273,91 @@ def test_the_pointer_moves_neither_the_cursor_nor_the_scroll_of_a_long_reorder()
             for offset in _POINTER_OFFSETS:
                 await pilot.hover(listing, offset=offset)
                 await pilot.pause()
-                assert (listing.highlighted, listing.scroll_offset.y) == parked
+                assert (listing.highlighted, listing.scroll_offset.y) == (parked[1] + offset[1], parked[1])
+
+    _run(scenario())
+
+
+def test_repeated_pointer_moves_at_one_offset_leave_the_scroll_of_a_long_reorder_exactly_where_it_was() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: ReorderDialog = _long_reorder()
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            listing: OptionList = dialog.query_one("#reorder-list", OptionList)
+            parked: tuple[int | None, int] = await _park_deep(pilot, listing)
+            assert parked[1] > 0
+            seen: list[tuple[int | None, int]] = []
+            for _ in range(_POINTER_REPEATS):
+                await pilot.hover(listing, offset=_FIXED_POINTER)
+                await pilot.pause()
+                seen.append((listing.highlighted, listing.scroll_offset.y))
+            assert seen == [(parked[1] + _FIXED_POINTER[1], parked[1])] * _POINTER_REPEATS
+
+    _run(scenario())
+
+
+def test_the_pointer_leaves_the_cursor_of_an_empty_reorder_be_on_the_placeholder_row() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: ReorderDialog = ReorderDialog(title="Kolejność", items=())
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            listing: OptionList = dialog.query_one("#reorder-list", OptionList)
+            assert _labels(dialog, "reorder-list") == [NO_RESULTS_TEXT]
+            assert listing.highlighted is None
+            await pilot.hover(listing, offset=(4, 0))
+            await pilot.pause()
+            assert listing.highlighted is None
+
+    _run(scenario())
+
+
+def test_the_keyboard_still_scrolls_a_long_reorder_to_an_off_screen_row() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: ReorderDialog = _long_reorder()
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            listing: OptionList = dialog.query_one("#reorder-list", OptionList)
+            assert listing.max_scroll_y > 0
+            assert (listing.highlighted, listing.scroll_offset.y) == (0, 0)
+            await pilot.press("end")
+            await pilot.pause()
+            assert listing.highlighted == _LONG_ROWS - 1
+            assert listing.scroll_offset.y == listing.max_scroll_y
+            await pilot.press("home")
+            await pilot.pause()
+            assert (listing.highlighted, listing.scroll_offset.y) == (0, 0)
+
+    _run(scenario())
+
+
+def test_a_click_on_a_row_of_a_long_reorder_still_takes_that_row_as_the_current_one() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: ReorderDialog = _long_reorder()
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            listing: OptionList = dialog.query_one("#reorder-list", OptionList)
+            await pilot.press("end")
+            await pilot.pause()
+            row: int = listing.scroll_offset.y + _CLICK_ROW
+            assert 0 < row < _LONG_ROWS - 1
+            await pilot.click(listing, offset=(4, _CLICK_ROW))
+            await pilot.pause()
+            assert listing.highlighted == row
+            await pilot.press("delete")
+            await pilot.pause()
+            assert _text(dialog, "reorder-message") == delete_prompt(f"a{row}")
 
     _run(scenario())
 
@@ -1236,6 +1388,10 @@ def _selector() -> SelectDialog[str]:
 
 def _long_selector() -> SelectDialog[str]:
     return SelectDialog(title="Wybór", options=tuple(_option(f"a{index}") for index in range(_LONG_ROWS)))
+
+
+def _long_reorder() -> ReorderDialog:
+    return ReorderDialog(title="Kolejność", items=tuple(f"a{index}" for index in range(_LONG_ROWS)))
 
 
 async def _park_deep(pilot: Any, listing: OptionList) -> tuple[int | None, int]:

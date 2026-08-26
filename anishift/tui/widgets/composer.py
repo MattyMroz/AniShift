@@ -10,7 +10,6 @@ from textual import on
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.content import Content
-from textual.events import MouseMove
 from textual.message import Message
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
@@ -34,6 +33,7 @@ from anishift.tui.strings import (
     SUGGESTION_PREVIOUS_LABEL,
     SUGGESTION_ROW_GAP,
 )
+from anishift.tui.widgets.lists import HoverList, move_highlight
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -181,7 +181,7 @@ def _slash_name(stripped: str) -> str:
     return body.split(maxsplit=1)[0].casefold()
 
 
-class _Suggestions(OptionList):
+class _Suggestions(HoverList):
     """Suggestion overlay that never takes the focus away from the text field.
 
     It hangs on the screen layer, so a click cannot bubble to the composer on its own.
@@ -191,22 +191,14 @@ class _Suggestions(OptionList):
 
     def __init__(self, pick: Callable[[int], None], hover: Callable[[int], None], *, widget_id: str) -> None:
         """Offer rows reporting the picked position through *pick* and the pointed one through *hover*."""
-        super().__init__(id=widget_id, markup=False)
+        super().__init__(hover, widget_id=widget_id)
         self._pick: Callable[[int], None] = pick
-        self._hover: Callable[[int], None] = hover
 
     @on(OptionList.OptionSelected)
     def _on_option_selected(self, event: OptionList.OptionSelected) -> None:
         """Report the clicked row, and let nothing else act on that click."""
         event.stop()
         self._pick(event.option_index)
-
-    def _on_mouse_move(self, event: MouseMove) -> None:
-        """Report the row the pointer rests on, so it carries the one highlight."""
-        super()._on_mouse_move(event)
-        pointed: object = event.style.meta.get("option")
-        if isinstance(pointed, int):
-            self._hover(pointed)
 
 
 class _ComposerInput(Input):
@@ -413,15 +405,12 @@ class Composer(Vertical):
         return max((len(option.label) for option in self._offered), default=0)
 
     def _paint(self, highlighted: int) -> None:
-        """Re-render the offered rows so the highlighted one carries the contrast colour."""
+        """Re-render the offered rows unselected, then rest the highlight on *highlighted*."""
         width: int = self._name_width()
         self._suggestions.set_options(
-            [
-                Option(self._suggestion_content(option, width=width, selected=index == highlighted))
-                for index, option in enumerate(self._offered)
-            ]
+            [Option(self._suggestion_content(option, width=width, selected=False)) for option in self._offered]
         )
-        self._suggestions.highlighted = highlighted
+        move_highlight(self._suggestions, highlighted, self._prompt)
 
     def _suggestion_row(self, option: CommandOption) -> str:
         """Text one suggested command shows: its slash name and its sentence."""
@@ -435,6 +424,10 @@ class Composer(Vertical):
             (option.description, _SELECTED_SENTENCE_STYLE if selected else _SENTENCE_STYLE),
         )
 
+    def _prompt(self, index: int, selected: bool) -> Content:
+        """Suggestion *index* rendered for a highlight that rests on it or does not."""
+        return self._suggestion_content(self._offered[index], width=self._name_width(), selected=selected)
+
     def _move(self, delta: int) -> None:
         """Move the highlight *delta* suggestions, wrapping at either end."""
         count: int = len(self._offered)
@@ -445,22 +438,9 @@ class Composer(Vertical):
 
     def _highlight(self, index: int) -> None:
         """Rest the one highlight on *index*, repainting only the two rows that change."""
-        if not 0 <= index < len(self._offered):
+        if not 0 <= index < len(self._offered) or self._suggestions.highlighted == index:
             return
-        current: int | None = self._suggestions.highlighted
-        if current == index:
-            return
-        width: int = self._name_width()
-        if current is not None and 0 <= current < len(self._offered):
-            self._suggestions.replace_option_prompt_at_index(
-                current,
-                self._suggestion_content(self._offered[current], width=width, selected=False),
-            )
-        self._suggestions.replace_option_prompt_at_index(
-            index,
-            self._suggestion_content(self._offered[index], width=width, selected=True),
-        )
-        self._suggestions.highlighted = index
+        move_highlight(self._suggestions, index, self._prompt)
 
     def _highlighted(self) -> CommandOption | None:
         """Suggestion the list rests on, or ``None`` while there is no list."""

@@ -27,6 +27,7 @@ from anishift.tui.strings import (
     SELECT_FILTER_PLACEHOLDER,
     SELECT_NO_RESULTS,
 )
+from anishift.tui.widgets.lists import HoverList, move_highlight
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -337,7 +338,8 @@ class _FilterInput(Input):
 class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
     """The only list selector of the application.
 
-    The keyboard owns the cursor; the pointer decides only by clicking a row.
+    The cursor follows both the keyboard and the pointer, and never rests on a
+    heading, the empty-result row or a row the caller disabled.
 
     ``on_highlight`` fires for the initial highlight, every cursor move and
     every filter change; never for a heading or the empty-result row.
@@ -388,7 +390,7 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
             placeholder=placeholder,
             widget_id=_FILTER_ID,
         )
-        self._list: OptionList = OptionList(id=_LIST_ID, markup=False)
+        self._list: HoverList = HoverList(self._hover, widget_id=_LIST_ID)
         self._detail: Static = Static(id=_DETAIL_ID, classes="dialog-detail")
         self._action_row: Static = Static(self._actions_text(), id=_ACTIONS_ID, classes="dialog-hint")
         self._bind_extra_keys()
@@ -504,17 +506,18 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
         self._paint()
 
     def _paint(self) -> None:
-        """Re-render every prompt so the cursor row carries the contrast colour."""
+        """Re-render the whole row set unselected; the cursor row gains its contrast on the move."""
         width: int = label_width(self._rows)
         self._list.set_options(
             [
-                Option(
-                    row_content(row, selected=index == self._cursor, width=width),
-                    disabled=self._row_is_dead(row),
-                )
-                for index, row in enumerate(self._rows)
+                Option(row_content(row, selected=False, width=width), disabled=self._row_is_dead(row))
+                for row in self._rows
             ]
         )
+
+    def _prompt(self, index: int, selected: bool) -> Content:
+        """Row *index* rendered for a cursor that rests on it or does not."""
+        return row_content(self._rows[index], selected=selected, width=label_width(self._rows))
 
     def _row_is_dead(self, row: SelectRow) -> bool:
         """Whether a row is a heading, a placeholder or an option the caller disabled."""
@@ -543,6 +546,13 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
             self._first_selectable(),
         )
 
+    def _hover(self, index: int) -> None:
+        """Carry the cursor to the pointed row, leaving it be on a row no cursor may rest on."""
+        if not 0 <= index < len(self._rows) or index == self._cursor or self._row_is_dead(self._rows[index]):
+            return
+        self._cursor = index
+        self._sync_cursor()
+
     def _move(self, delta: int, *, wrap: bool) -> None:
         """Move the cursor *delta* selectable rows, wrapping only when asked."""
         places: tuple[int, ...] = self._selectable()
@@ -556,14 +566,10 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
         """Show the cursor on the list, describe its row and announce the option."""
         self._detail.set_class(False, _ERROR_CLASS)
         option: SelectOption[T] | None = self._highlighted()
-        self._paint()
-        if option is None:
-            self._list.highlighted = None
-            self._detail.update("")
-            return
-        self._list.highlighted = self._cursor
-        self._list.scroll_to_highlight()
+        move_highlight(self._list, None if option is None else self._cursor, self._prompt)
         self._detail.update("")
+        if option is None:
+            return
         self._announce(option)
 
     def _announce(self, option: SelectOption[T]) -> None:

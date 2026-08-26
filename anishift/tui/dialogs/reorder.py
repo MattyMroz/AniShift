@@ -28,6 +28,7 @@ from anishift.tui.strings import (
     REORDER_ORDER_HINT,
     REORDER_REMOVE_LABEL,
 )
+from anishift.tui.widgets.lists import HoverList, move_highlight
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -88,7 +89,10 @@ def moved_items(items: Sequence[str], position: int, delta: int) -> tuple[str, .
 
 
 class ReorderDialog(DialogScreen[tuple[str, ...] | None]):
-    """Editor of one ordered list, committed or rolled back as a whole."""
+    """Editor of one ordered list, committed or rolled back as a whole.
+
+    The cursor follows both the keyboard and the pointer.
+    """
 
     AUTO_FOCUS: ClassVar[str | None] = f"#{_LIST_ID}"
 
@@ -123,7 +127,7 @@ class ReorderDialog(DialogScreen[tuple[str, ...] | None]):
         self._adding: bool = False
         self._pending_removal: str | None = None
         self._cursor: int = 0
-        self._list: OptionList = OptionList(id=_LIST_ID, markup=False)
+        self._list: HoverList = HoverList(self._hover, widget_id=_LIST_ID)
         self._hint: Static = Static(ORDER_HINT, id=_HINT_ID, classes="dialog-hint")
         self._message: Static = Static(id=_MESSAGE_ID, classes="dialog-detail")
 
@@ -249,13 +253,24 @@ class ReorderDialog(DialogScreen[tuple[str, ...] | None]):
         rows: tuple[str, ...] = self._rows()
         return rows[self._cursor] if 0 <= self._cursor < len(rows) else None
 
+    def _hover(self, index: int) -> None:
+        """Carry the cursor to the pointed row, leaving the view exactly where it is."""
+        rows: tuple[str, ...] = self._rows()
+        if index == self._cursor or not 0 <= index < len(rows):
+            return
+        self._take_cursor(index)
+
     def _move_cursor(self, delta: int, *, wrap: bool) -> None:
         """Move the cursor *delta* rows, wrapping only when asked."""
         rows: tuple[str, ...] = self._rows()
         if not rows:
             return
+        self._take_cursor(moved_position(self._cursor, delta, len(rows), wrap=wrap))
+
+    def _take_cursor(self, index: int) -> None:
+        """Take *index* as the current row, dropping any pending removal with it."""
         self._pending_removal = None
-        self._cursor = moved_position(self._cursor, delta, len(rows), wrap=wrap)
+        self._cursor = index
         self._show_message("", refused=False)
         self._show_cursor()
 
@@ -281,12 +296,8 @@ class ReorderDialog(DialogScreen[tuple[str, ...] | None]):
         self._show_cursor()
 
     def _show_cursor(self) -> None:
-        """Put the list cursor where this dialog holds it."""
-        if not self._rows():
-            self._list.highlighted = None
-            return
-        self._list.highlighted = self._cursor
-        self._list.scroll_to_highlight()
+        """Put the list cursor where this dialog holds it, redrawing no row for it."""
+        move_highlight(self._list, self._cursor if self._rows() else None)
 
     def _show_message(self, text: str, *, refused: bool) -> None:
         """Show one message under the list, marking a refusal as such."""
