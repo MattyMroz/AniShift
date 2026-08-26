@@ -36,7 +36,8 @@ Zastąpić odrzuconą warstwę prezentacji AniShift jednym szybkim, zwartym i kl
 - dialogi i edycja pełnego katalogu ustawień;
 - konfiguracja kluczy, Palantir Foundry, lokalny katalog modeli i dwa niezależne wybory modelu;
 - workspace, Auto, Manual, Preview, Execution, Results i narzędzia diagnostyczne;
-- Windows Terminal, kodowanie konsoli, responsywność, testy, parytet i usunięcie starej ścieżki po bramce akceptacji.
+- Windows Terminal, kodowanie konsoli, responsywność, testy, parytet i usunięcie starej ścieżki po bramce akceptacji;
+- wykończenie po parytecie: R-110 do R-114, realizowane dopiero po T-027 i każde z osobnym potwierdzeniem zakresu.
 
 ### Odłożone
 
@@ -648,6 +649,26 @@ Prompt-toolkit shell, stary panel i `anishift/pipeline/` są usuwane dopiero po 
 ### R-109 - Windows CI
 
 Repo uruchamia skupiony smoke TUI/CLI/launcher na Windows oraz dotychczasowe pełne bramki repo.
+
+### R-110 - Czytelne liczby TTS
+
+Liczbowe ustawienia TTS pokazują się w panelu, podsumowaniach i podpowiedziach w formie czytelnej dla człowieka, bez artefaktów zapisu zmiennoprzecinkowego. Wartość przechowywana nie zmienia się przez sposób jej wyświetlenia.
+
+### R-111 - Minimalistyczny wariant motywu jasnego
+
+Obok kanonicznego motywu jasnego z sekcji 6.147 istnieje opcjonalny wariant o ograniczonej dekoracji. Kanoniczny motyw pozostaje domyślny, a wariant nie zmienia tokenów semantycznych ani kontraktu I-015 i I-017.
+
+### R-112 - Plik upuszczony na terminal
+
+Ścieżka pliku wklejona do composera przez upuszczenie na okno terminala jest rozpoznawana jako źródło workspace, a nie jako zwykły tekst. Stanowi to jawny wyjątek od R-025 i wymaga, by nierozpoznana ścieżka nadal zachowywała się jak zwykły tekst.
+
+### R-113 - Dostawca i model w stopce
+
+Stopka ekranu pokazuje aktualnego dostawcę i model. Wymaganie obejmuje najpierw ustalenie, czego brakuje wobec linii kontekstu composera, która już niesie tryb, dostawcę i model, żeby nie powstały dwa niezależne miejsca prawdy.
+
+### R-114 - Edycja długiego tekstu w terminalu
+
+Prompty i inne pola wielolinijkowe są edytowalne wewnątrz TUI w powierzchni wielolinijkowej, bez uruchamiania zewnętrznego edytora. Kontrakt R-044 o tym, że Esc nie zapisuje, obowiązuje bez zmian.
 
 ## 8. Inwarianty
 

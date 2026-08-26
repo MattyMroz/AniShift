@@ -1456,6 +1456,219 @@
         "Nie twórz nowych raportów walidacji, ledgerów, CSV ani schematów planistycznych.",
         "Nie zamykaj całego Etapu 9, jeśli jego pozostałe backendowe wymagania są nadal otwarte."
       ]
+    },
+    {
+      "id": "T-028",
+      "title": "Poprawić czytelność liczbowych ustawień TTS",
+      "goal": "Pokazywać liczbowe wartości TTS w formie czytelnej dla człowieka, nie zmieniając wartości przechowywanej.",
+      "depends_on": [
+        "T-027"
+      ],
+      "spec_refs": [
+        "R-110",
+        "R-042"
+      ],
+      "plan_refs": [
+        "D-08"
+      ],
+      "scope": [
+        "anishift/tui/settings/editors.py",
+        "anishift/tui/strings.py",
+        "tests/tui/test_settings.py"
+      ],
+      "context": [
+        "`value_summary` i edytory liczbowe istnieją po T-011; to zmiana prezentacji, nie modelu danych.",
+        "Tempo, pitch i bitrate mają różne jednostki; pitch jest przechowywany jako tekst w rodzaju `+0Hz`.",
+        "`read_setting_value` podstawia default, gdy pole opcjonalne trzyma `None` — format nie może tego maskować."
+      ],
+      "acceptance": [
+        "Wartość pokazana w panelu, podsumowaniu i podpowiedzi jest identycznie sformatowana w każdym z tych miejsc.",
+        "Otwarcie i zamknięcie edytora bez zmiany nie modyfikuje pliku ustawień.",
+        "Test pokrywa wartość całkowitą, wartość z częścią dziesiętną i wartość opcjonalną niewypełnioną."
+      ],
+      "verify": [
+        "uv run pytest tests/tui -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie zmieniaj typów ani zakresów w katalogu ustawień.",
+        "Nie formatuj wartości w warstwie domenowej ani przy zapisie."
+      ]
+    },
+    {
+      "id": "T-029",
+      "title": "Dodać minimalistyczny wariant motywu jasnego",
+      "goal": "Udostępnić opcjonalny wariant motywu jasnego o ograniczonej dekoracji, zachowując kanoniczny motyw jako domyślny.",
+      "depends_on": [
+        "T-027"
+      ],
+      "spec_refs": [
+        "R-111",
+        "R-005",
+        "R-047"
+      ],
+      "plan_refs": [
+        "D-02"
+      ],
+      "scope": [
+        "anishift/tui/theme.py",
+        "anishift/tui/ui_state.py",
+        "tests/tui/test_theme.py"
+      ],
+      "context": [
+        "Sekcja 6.147 spec definiuje kanoniczny motyw jasny; ten wariant go nie zastępuje.",
+        "I-017 wymaga, by literalne kolory należały do jednego modułu motywu, a TCSS używało zmiennych semantycznych.",
+        "I-015 wymaga, by stan nie był komunikowany wyłącznie kolorem — ograniczenie dekoracji nie może tego złamać.",
+        "Potwierdź zakres z użytkownikiem przed implementacją; zadanie jest zapisane grubo, nie doprecyzowane. Wariant jest świadomym odejściem od mandatu odwzorowania OpenCode 1:1, więc wymaga zgody na gramatykę wizualną."
+      ],
+      "acceptance": [
+        "Kanoniczny motyw jasny pozostaje domyślny; wariant wybiera się jawnie i wybór przetrwa restart.",
+        "Wariant nie wprowadza nowego tokenu semantycznego ani literalnego koloru poza modułem motywu.",
+        "Żaden stan nie traci znacznika tekstowego przez ograniczenie dekoracji."
+      ],
+      "verify": [
+        "uv run pytest tests/tui -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie zmieniaj kanonicznego motywu jasnego ani ciemnego.",
+        "Nie wprowadzaj trzeciego zestawu tokenów."
+      ]
+    },
+    {
+      "id": "T-030",
+      "title": "Przyjmować plik MKV upuszczony na okno terminala",
+      "goal": "Rozpoznawać ścieżkę pliku wklejoną przez upuszczenie jako źródło workspace, zachowując zwykły tekst jako zwykły tekst.",
+      "depends_on": [
+        "T-027"
+      ],
+      "spec_refs": [
+        "R-112",
+        "R-025",
+        "R-076"
+      ],
+      "plan_refs": [
+        "D-03"
+      ],
+      "scope": [
+        "anishift/tui/widgets/composer.py",
+        "anishift/tui/screens/workspace.py",
+        "tests/tui/test_composer.py"
+      ],
+      "context": [
+        "Terminal realizuje upuszczenie jako wklejenie tekstu, więc nośnikiem jest zdarzenie `Paste`, nie osobne API.",
+        "Windows wkleja ścieżki w cudzysłowach, a wiele plików może przyjść w jednym wklejeniu.",
+        "R-025 mówi, że zwykły tekst zostaje w composerze; to wymaganie jest jawnym wyjątkiem i nie może go rozmyć.",
+        "Potwierdź zakres z użytkownikiem przed implementacją; zadanie jest zapisane grubo, nie doprecyzowane."
+      ],
+      "acceptance": [
+        "Wklejona ścieżka istniejącego MKV rejestruje źródło bez uruchamiania przebiegu.",
+        "Ścieżka nieistniejąca, plik innego typu i zwykłe zdanie zostają w composerze jak dotychczas.",
+        "Wklejenie wielu ścieżek naraz daje przewidywalny wynik opisany testem."
+      ],
+      "verify": [
+        "uv run pytest tests/tui -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie uruchamiaj przebiegu ani planowania na skutek wklejenia.",
+        "Nie dotykaj plików użytkownika przy rozpoznawaniu ścieżki poza sprawdzeniem istnienia."
+      ]
+    },
+    {
+      "id": "T-031",
+      "title": "Pokazać dostawcę i model w stopce",
+      "goal": "Ustalić, czego brakuje wobec linii kontekstu composera, i pokazać dostawcę oraz model bez tworzenia drugiego źródła prawdy.",
+      "depends_on": [
+        "T-027"
+      ],
+      "spec_refs": [
+        "R-113",
+        "R-014"
+      ],
+      "plan_refs": [
+        "D-02"
+      ],
+      "scope": [
+        "anishift/tui/widgets/footer.py",
+        "anishift/tui/widgets/composer.py",
+        "tests/tui/test_composer.py"
+      ],
+      "context": [
+        "Composer ma już linię kontekstu niosącą tryb, dostawcę i model — patrz `context_text` w `composer.py`.",
+        "Pierwszym krokiem jest rozstrzygnięcie, czy stopka ma to powtarzać, przenieść, czy uzupełnić o brakującą wartość.",
+        "Sekcja 6.1 spec ustala kanoniczny układ dużego terminala; dodanie treści do stopki jest zmianą tego układu.",
+        "Potwierdź zakres z użytkownikiem przed implementacją; zadanie jest zapisane grubo, nie doprecyzowane. Zadanie może się okazać zbędne, jeśli linia kontekstu już pokrywa potrzebę."
+      ],
+      "acceptance": [
+        "Dostawca i model mają dokładnie jedno źródło prawdy w warstwie widoku.",
+        "Układ pozostaje bez nakładania się tekstów w 100x30 i 80x24.",
+        "Brak skonfigurowanego modelu daje czytelny stan pusty, nie puste miejsce."
+      ],
+      "verify": [
+        "uv run pytest tests/tui -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie duplikuj stanu dostawcy i modelu w dwóch widgetach.",
+        "Nie wykonuj żadnego zapytania sieciowego dla wyświetlenia nazwy modelu."
+      ]
+    },
+    {
+      "id": "T-032",
+      "title": "Edytować długi tekst w powierzchni wielolinijkowej",
+      "goal": "Umożliwić edycję promptów i innych długich pól wewnątrz TUI, bez zewnętrznego edytora.",
+      "depends_on": [
+        "T-027"
+      ],
+      "spec_refs": [
+        "R-114",
+        "R-032",
+        "R-044"
+      ],
+      "plan_refs": [
+        "D-05",
+        "D-08"
+      ],
+      "scope": [
+        "anishift/tui/dialogs/value.py",
+        "anishift/tui/settings/editors.py",
+        "tests/tui/test_dialogs.py"
+      ],
+      "context": [
+        "Prompty zadania, stylu i modułów są dłuższe niż jedna linia, a dzisiejszy `PromptDialog` jest jednolinijkowy.",
+        "R-044 wymaga, by Esc nie zapisywał; przy edycji wielolinijkowej Esc koliduje z nawigacją i trzeba to rozstrzygnąć.",
+        "Opcjonalne pola skalarne nadal nie odróżniają wyczyszczenia od anulowania — patrz odłożony punkt z T-011.",
+        "Potwierdź zakres z użytkownikiem przed implementacją; zadanie jest zapisane grubo, nie doprecyzowane. Kontrakt klawiszy zapisu i anulowania wymaga decyzji użytkownika."
+      ],
+      "acceptance": [
+        "Zatwierdzenie zapisuje pełną treść wielolinijkową jednym atomowym zapisem.",
+        "Esc nie zapisuje i nie gubi treści w sposób niezamierzony, zgodnie z rozstrzygniętym kontraktem klawiszy.",
+        "Dialog działa w 80x24 i nie wypycha composera ani stopki z ekranu."
+      ],
+      "verify": [
+        "uv run pytest tests/tui -q",
+        "uv run ruff check anishift/ tests/",
+        "uv run ruff format --check anishift/ tests/",
+        "uv run mypy anishift/ tests/",
+        "uv run pytest"
+      ],
+      "forbidden": [
+        "Nie uruchamiaj zewnętrznego edytora ani nie zapisuj treści do pliku tymczasowego.",
+        "Nie zmieniaj kontraktu Esc dla pozostałych dialogów."
+      ]
     }
   ]
 }
