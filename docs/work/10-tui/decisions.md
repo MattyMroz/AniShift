@@ -265,3 +265,65 @@ i router builderów. Sam silnik oraz normalizacja odpowiedzi należą do T-014.
   elevenbytes/__init__.py` → `.service` → `.api_backend`. Dokładnie ten sam wzorzec, co
   naprawiony wyżej, tylko w domenie TTS. Poza zakresem T-013; kandydat na strażnika
   leniwości w T-027.
+
+## T-014 — silnik Palantir w neutralnej warstwie LLM
+
+Commit `da6917c`. Silnik, warstwa HTTP i normalizacja odpowiedzi dla czterech protokołów.
+
+### Rozstrzygnięcia
+
+- **Token jedzie w `LlmConfig.api_key`, nie przez `os.environ`.** Pierwsza wersja czytała
+  środowisko wewnątrz silnika i opisywała to jako zaletę („token nigdy nie przechodzi przez
+  `LlmConfig`"). To rozrywało ścieżkę end-to-end: nic w `anishift/` nie ładuje `.env` do
+  środowiska procesu, `resolve_palantir_token` widzi tylko `os.environ`, a `/connect` pisze
+  token właśnie do `.env`. Użytkownik ustawiłby token przez UI produktu i dostał „brak
+  tokenu". `api_key` to ustalony nośnik z `repr=False`, wypełniany z `Settings` w composition
+  root — Palantir nie potrzebuje wyjątku. Naprawa usunęła kod: cały diff w
+  `services/llm/service.py` zniknął razem z dwoma lokalnymi importami i ich `# noqa`.
+- **Blokada treści wygrywa nad defektem kształtu.** Trzy najczęstsze realne kształty
+  (`content_filter` z `content: null`, `finishReason: SAFETY` bez `content`, `stop_reason:
+  refusal` z pustą listą) lądowały jako `unexpected_shape`/`missing_choice`, więc UI kazało
+  sprawdzać trasę providera przy blokadzie bezpieczeństwa. Sonda blokady czyta finish reason
+  przed wymaganiem poprawnego tekstu, a jedna tabela `_READERS` trzyma parę
+  `block_signal`/`extract`, żeby precedencja nie mogła się cicho odwrócić. Testy pinują oba
+  kierunki: blokada wygrywa, ale ciało zepsute bez sygnału blokady nadal daje typowany defekt.
+- **Bez streamingu, świadomie.** Kryterium mówiło o „zebraniu" odpowiedzi strumieniowej, ale
+  R-058 nie wymaga strumienia tokenów, `LlmEngine.complete` jest synchroniczne i nic
+  w AniShift nie konsumuje delt. Silnik nie prosi o strumień i wysyła
+  `Accept: application/json`; ciało w kształcie SSE nie przechodzi `json.loads` i staje się
+  typowanym `UNREADABLE_BODY`. Poprawiona podpowiedź wprost wymienia strumieniowe lub
+  nie-JSON ciało jako możliwą przyczynę, żeby diagnoza wskazywała realne miejsce.
+  Kryterium 3 zostaje zawężone do tej treści.
+- **Rejestr wskazuje submoduł `.service`, nie pakiet.** Każdy inny wpis wskazuje pakiet, ale
+  `palantir/__init__.py` re-eksportuje całą warstwę przed-wire, więc wskazanie pakietu
+  ładowałoby silnik i `httpx` przy każdym odpytaniu rejestru. Asymetria jest opisana w
+  docstringu `_REGISTRY`, a `httpx` w `service.py` siedzi pod `TYPE_CHECKING`, żeby
+  niezmiennik był strukturalny, nie deklaratywny. Sondy w podprocesie mierzą oba kierunki.
+- **`engine_availability` zna token Palantira.** Brak wiersza w `secret_by_engine` znaczył
+  „silnik nie potrzebuje sekretu", więc panel raportował gotowość bez tokenu. To ta sama
+  klasa defektu, co wcześniejsza nieaktualna migawka ustawień, i była osiągalna od razu —
+  naprawiona tu, nie w T-015.
+- **Zero nowych klas błędów, kolejność wyjątków `httpx` sprawdzona.**
+  `httpx.TimeoutException` jest podklasą `TransportError`, więc łapanie szerszej klasy
+  pierwszej zamieniłoby timeout w „provider unavailable". Kolejność jest odwrotna i pinowana
+  testem na `ReadTimeout`.
+
+### Odłożone świadomie
+
+- **`cli/settings_panel._provider_availability` zawsze pokazuje „missing key".** Under-report,
+  czyli awaria w bezpieczną stronę, w przeciwieństwie do poprzedniego punktu. Do T-015.
+- **`LlmConfig` bez walidacji międzypolowej.** `protocol`/`alias` ustawione na silniku innym
+  niż Palantir są cicho ignorowane; brak `protocol` przy Palantirze daje widoczny błąd.
+- **Google filtruje części po obecności `text`, nie po wykluczeniu `thought`.** Gdyby proxy
+  zwróciło reasoning, wpadłby do napisów. Ścieżka Anthropic filtruje poprawnie.
+- **`require_palantir_token` bez produkcyjnego wołacza** po zmianie źródła tokenu.
+- **Klasa błędu zamkniętego silnika** (`LlmRequestError`) różni się od `LlmService`
+  (`LlmConfigError`) dla tego samego warunku.
+
+### Obserwacje
+
+- **„Ready" nadal nie znaczy „zadziała".** Po naprawie Palantir znaczy to samo, co każdy inny
+  silnik: sekret jest obecny. Run i tak padnie, dopóki `runtime.py` nie wypełni
+  `alias`/`provider_id`/`protocol` i właściwego `base_url` z katalogu — dziś przypisuje
+  `openai_compatible_base_url` każdemu silnikowi. T-015 nie może traktować dostępności
+  silników jako zamkniętej: musi wpiąć rozwiązywanie katalogu w tej samej zmianie.
