@@ -394,3 +394,83 @@ Zadanie poszło dwoma dostawami: warstwa danych i aplikacji, potem ekrany.
 - **Kolejność `pop` i callbacku w Textualu jest założeniem, nie kontraktem.** Wzorzec
   synchronicznego otwarcia z callbacku dismissu działa, bo ekran jest już zdjęty ze stosu.
   Gdyby Textual to odwrócił, pękłby ten wzorzec — starszy od tego etapu — a nie sama odmowa.
+
+## T-016 — prawdziwy serwis poza wątkiem UI, bramka generacji i pompa zdarzeń
+
+### Rozstrzygnięcia
+
+- **`service` jest wymagany, trzy gałęzie `None` wycięte.** Powłoka przyjmowała `None`, a trzy
+  powierzchnie odpowiadały wtedy „niedostępne". Tak właśnie zachowywał się realnie uruchomiony
+  produkt: panel ustawień, picker modelu i `/connect` były nieosiągalne, mimo że gotowe.
+  Powłoka bez serwisu nie jest stanem tego produktu, więc argument jest obowiązkowy.
+  Podmiana konstruktora w czterech plikach testowych to wymuszone następstwo, nie osobna zmiana.
+- **Bramka działa przy dostarczeniu, nie przy wyruszeniu.** Sprawdzanie generacji przed pracą
+  nie chroni przed niczym — odpowiedź zdąży się zestarzeć w trakcie. Każdy handler pyta
+  `_accepts`/`_accepts_run` przed czymkolwiek, a spóźniona odpowiedź nie rusza stanu, feedbacku,
+  ekranu ani timera. Osobno pinowany jest run obcy przy zgodnej generacji.
+- **Terminalna wiadomość adoptuje swój run.** Wcześniej wiadomość końcowa runu, który nigdy nie
+  zdążył się zgłosić, była odrzucana, więc timer drenażu nie miał kto zatrzymać, a stan wisiał
+  w `PLANNING`. Adopcja jest jedną regułą używaną przez wszystkie trzy handlery runu.
+- **`start_execution` odmawia poza `PLANNING`.** Publiczna metoda zależała od niepisanego
+  warunku: bez `begin_planning` uzbrajała timer i tworzyła pompę, a potem gubiła i zgłoszenie
+  runu, i odpowiedź końcową, więc nic nigdy nie gasiło timera. Odtworzone sondą: timer tykał
+  200 obrotów pętli po zakończeniu, przeżywał teardown i wywalał niepowiązane testy
+  (`ScreenStackError`). Odmowa to jedna reguła; wewnętrzne wołanie `begin_planning` dałoby
+  cyklowi życia runu dwa wejścia, czyli dokładnie tę klasę błędu, która wraca w tym etapie.
+  Odmowa idzie do logu, nie do feedbacku — użytkownik nie ma jak jej wywołać, a zapis feedbacku
+  przeczyłby gwarancji „stan bez zmian", której ten guard ma pilnować.
+- **Pompa ma trzy pasy, nie jeden z regułami.** Zdarzenia stanu w ograniczonej kolejce, postęp
+  koalescowany po zadaniu, zdarzenia terminalne w pasie, którego limit nie może wyrzucić.
+  Drenaż sortuje po `(run_id, sequence)`, więc terminal nie wyprzedzi swojego postępu.
+- **Kryterium 5 bez `except Exception`.** Nieoczekiwany wyjątek nie jest łapany w workerze —
+  idzie przez stan błędu workera Textuala i wraca jako krótki, zredagowany powód. Kryterium
+  spełnione bez blanket catcha i bez zawieszonego UI.
+- **`CheckResult` i `ResourceResult` eksportuje fasada.** `AppService.doctor()` i `setup()` i tak
+  je zwracają, więc brak re-eksportu był defektem fasady, a nie powodem, by TUI sięgało do
+  `anishift.setup`. Pierwotnie kazałem usunąć te dwie wiadomości — to była moja pomyłka,
+  bo wywracała kryterium akceptacji 2, które wprost wymienia doctor i setup.
+
+### Odłożone świadomie
+
+- **Słownik postępu w pompie bez własnego limitu.** Ograniczony liczbą zadań w planie; rośnie
+  tylko przy emiterze wymyślającym nowy `task_id` na każde zdarzenie.
+- **Postęp nie odrysowuje ramki.** Stan rośnie, ale nic nie widać do wiadomości końcowej.
+  Ekran wykonania należy do T-021.
+- **Dwa testy sięgają do wnętrzności Textuala** (`app._timers`, `render_strips`). Publicznego
+  API nie ma; przy podniesieniu Textuala to pęknie pierwsze.
+- **`WORKER_FAILED` jest komunikatem puszkowanym.** Bezpieczne, ale nieaktywne — użytkownik nie
+  dostaje nic, co mógłby zrobić. Świadomy wybór, nie przeoczenie.
+
+### Obserwacje
+
+- **`EventBuffer` w `application/events.py` nie ma produkcyjnego wołacza** i stoi teraz obok
+  `RunEventPump` jako drugie wcielenie tego samego pojęcia. Pompa nie mogła go użyć, bo TUI
+  potrzebuje bezpiecznego wątkowo `emit`, koalescencji postępu po `(run_id, task_id)` i pasa
+  terminalnego, którego limit nie tyka; doklejenie tego do wspólnej klasy dałoby jednej klasie
+  dwie polityki odrzucania. `RunEventPump` powinien zostać, a `EventBuffer` zniknąć, gdy drugi
+  konsument się nie pojawi — trzymanie obu to jedno pojęcie z dwiema implementacjami i bez
+  testu mówiącego, która jest wiążąca.
+- **`config/settings.py` ładuje cały backend na poziomie modułu.** Import samego
+  `anishift.config.settings` ciągnie 664 moduły, w tym 93 z `anishift.services`. Przyczyną jest
+  moja własna decyzja z T-013: `Settings.palantir_token` deleguje do
+  `services.llm.engines.palantir.auth`, a ten import jest zwykły, nie leniwy. W praktyce
+  unieważnia to pracę nad leniwym ładowaniem silników z T-013 i T-014 — sondy w podprocesie
+  nadal przechodzą, bo mierzą import pakietu Palantira, nie configu. Lekarstwo jest to samo, co
+  wtedy zastosowane dla `ModelProtocol`: wynieść trzy potrzebne nazwy do modułu-liścia bez SDK.
+  Do T-027 razem z granicami architektury.
+
+## Poprawka wskaźnika myszy w liście wyboru
+
+- **Wskaźnik nie prowadzi już kursora.** Zgłoszone przez użytkownika: ruch myszy przewijał listę
+  w górę, a drobne ruchy dowoziły ją do pierwszego wiersza. Wskaźnik ustawiał kursor, kursor
+  przewijał widok, a przewinięcie podstawiało inny wiersz pod nieruchomy wskaźnik, więc następne
+  zdarzenie ruszało kursor znowu. Zmierzone: na liście 60 wierszy zaparkowanej klawiaturą na
+  41, drgnięcie o jeden znak zeszło na wiersz 2 i na samą górę widoku.
+- **Wzmacniaczem jest `_paint()` przy zmianie kursora.** `OptionList.set_options` zeruje
+  przewinięcie, a `scroll_to_highlight()` przywraca pozycję *poprawną*, nie *poprzednią* —
+  dosuwa wiersz do dołu. Dlatego composer, który przemalowuje dwa wiersze przez
+  `replace_option_prompt_at_index`, ma identyczny hover nad przewijalną listą i nie wpada
+  w zapadkę. Klikanie nigdy nie szło przez hover, więc wycięcie hovera nie zabrało myszki.
+- **Nic tego nie zamawiało.** Ani spec, ani ten dziennik nie mówią o myszy, a żaden test nie
+  pinował zachowania wskaźnika dla `SelectDialog`. Zapadka żyła w kodzie, którego nikt nie
+  zamówił i nikt nie sprawdzał; teraz reorder i composer są zmierzone i przypięte.
