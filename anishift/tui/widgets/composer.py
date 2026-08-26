@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, ClassVar, Final
+from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast
 
 from textual import on
 from textual.binding import Binding
@@ -23,7 +23,7 @@ from anishift.tui.strings import (
     CONTEXT_MODE_AUTO,
     CONTEXT_MODEL_SEPARATOR,
     CONTEXT_MODEL_UNSET,
-    CONTEXT_PROVIDER,
+    CONTEXT_PROVIDER_UNSET,
     CONTEXT_SEPARATOR,
     SUGGESTION_COMPLETE_LABEL,
     SUGGESTION_DISMISS_LABEL,
@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from textual.binding import BindingType
     from textual.geometry import Region
 
+    from anishift.application import AppService, SettingsDraft
     from anishift.tui.commands.palette import CommandOption
     from anishift.tui.commands.registry import CommandRegistry
     from anishift.tui.commands.spec import CommandSpec
@@ -54,10 +55,13 @@ __all__ = [
     "SUGGESTIONS_ID",
     "SUGGESTION_MAX_ROWS",
     "Composer",
+    "ComposerHost",
     "ComposerSubmission",
     "ComposerSubmissionKind",
+    "ContextNames",
     "classify",
     "context_content",
+    "context_names",
     "context_text",
 ]
 
@@ -133,6 +137,23 @@ class ComposerSubmission:
     command: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class ContextNames:
+    """The provider and the model the context line names, each ready to render."""
+
+    provider: str
+    model: str
+
+
+class ComposerHost(Protocol):
+    """The shell capabilities this composer reaches for, and nothing more."""
+
+    @property
+    def service(self) -> AppService:
+        """The one application facade every workflow of the shell goes through."""
+        ...
+
+
 def classify(text: str) -> ComposerSubmission:
     """Classify *text* as empty-auto, slash command, or plain text."""
     stripped: str = text.strip()
@@ -155,6 +176,14 @@ def context_content(*, mode: str, provider: str, model: str) -> Content:
         CONTEXT_SEPARATOR,
         (f"{provider}{CONTEXT_MODEL_SEPARATOR}", _PROVIDER_STYLE),
         (model, _SENTENCE_STYLE if model == CONTEXT_MODEL_UNSET else _MODEL_STYLE),
+    )
+
+
+def context_names(settings: SettingsDraft) -> ContextNames:
+    """Name the provider and the model of the next run, each in words while unset."""
+    return ContextNames(
+        provider=settings.llm_provider.strip() or CONTEXT_PROVIDER_UNSET,
+        model=settings.llm_provider_model_id.strip() or CONTEXT_MODEL_UNSET,
     )
 
 
@@ -247,10 +276,8 @@ class Composer(Vertical):
             widget_id=INPUT_ID,
         )
         self._written: str | None = None
-        self._context_line: Static = Static(
-            context_content(mode=CONTEXT_MODE_AUTO, provider=CONTEXT_PROVIDER, model=CONTEXT_MODEL_UNSET),
-            id=CONTEXT_ID,
-        )
+        self._mode: str = CONTEXT_MODE_AUTO
+        self._context_line: Static = Static(id=CONTEXT_ID)
         self._hint: Static = Static(id=HINT_ID)
 
     def compose(self) -> ComposeResult:
@@ -265,13 +292,27 @@ class Composer(Vertical):
 
     def show_context(self, *, mode: str, provider: str, model: str) -> None:
         """Say which mode, provider and model the next run would use."""
+        self._mode = mode
         self._context_line.update(context_content(mode=mode, provider=provider, model=model))
+
+    def refresh_context(self) -> None:
+        """Read the saved preferences again and name the provider and model they hold."""
+        host: ComposerHost | None = self._host()
+        if host is None:
+            return
+        names: ContextNames = context_names(host.service.settings_snapshot())
+        self.show_context(mode=self._mode, provider=names.provider, model=names.model)
 
     def on_mount(self) -> None:
         """Hang the suggestion overlay on the screen, then start as a plain field."""
         self.screen.mount(self._suggestions)
         self._hide_suggestions()
         self._clear_hint()
+        self.refresh_context()
+
+    def on_descendant_focus(self) -> None:
+        """Name the current provider and model again, whenever the field takes the focus back."""
+        self.refresh_context()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Claim the suggestion keys only while the suggestion list is on screen."""
@@ -447,6 +488,12 @@ class Composer(Vertical):
         self._hide_suggestions()
         if self._registry.dispatch(name):
             self.clear()
+
+    def _host(self) -> ComposerHost | None:
+        """The shell around this composer, or ``None`` while it is not mounted."""
+        if not self.is_attached:
+            return None
+        return cast("ComposerHost", self.app)
 
     def _hide_suggestions(self) -> None:
         """Take the suggestion list off the screen and forget what it offered."""

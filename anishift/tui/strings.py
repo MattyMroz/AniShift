@@ -82,6 +82,7 @@ __all__ = [
     "CONTEXT_MODE_AUTO",
     "CONTEXT_MODE_DEMO",
     "CONTEXT_PROVIDER",
+    "CONTEXT_PROVIDER_UNSET",
     "CONTEXT_SEPARATOR",
     "DEMO_GROUP_FIVE",
     "DEMO_GROUP_FOUR",
@@ -408,6 +409,9 @@ DEMO_TITLE: Final[str] = "AniShift Demo"
 
 CONTEXT_PROVIDER: Final[str] = "Foundry"
 """Provider the context line reports for the primary model."""
+
+CONTEXT_PROVIDER_UNSET: Final[str] = "no provider selected"
+"""Provider segment of the context line while the preferences name none."""
 
 CONTEXT_MODEL_UNSET: Final[str] = "no model selected"
 """Model segment of the context line while no catalogue entry is chosen."""

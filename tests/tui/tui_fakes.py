@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -212,6 +213,7 @@ class StubService:
         self.calls: list[str] = []
         self.cancelled: list[str] = []
         self.error: Exception | None = None
+        self.user_settings: UserSettings = UserSettings()
         self.workspace_root: Path = OFFLINE_ROOT
         self.workspace: InspectedWorkspace = empty_workspace()
         self.group: InspectedSourceGroup = stub_group()
@@ -267,6 +269,9 @@ class StubService:
     def cancel(self, run_id: str) -> bool:
         self.cancelled.append(run_id)
         return True
+
+    def settings_snapshot(self) -> UserSettings:
+        return deepcopy(self.user_settings)
 
     def as_service(self) -> AppService:
         return cast("AppService", self)

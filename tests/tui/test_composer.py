@@ -7,13 +7,15 @@ from typing import Any, Final
 import pytest
 from textual.app import App
 from textual.events import Paste
+from textual.geometry import Region
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.input import Selection
 from tui_fakes import shell
 
-from anishift.tui.app import AniShiftApp
+from anishift.config import UserSettings
+from anishift.tui.app import FOOTER_ID, AniShiftApp
 from anishift.tui.commands.catalog import EXIT_COMMAND_NAME, PALETTE_COMMAND_NAME
 from anishift.tui.commands.palette import CommandOption, slash_options
 from anishift.tui.dialogs.base import open_dialog
@@ -27,7 +29,7 @@ from anishift.tui.strings import (
     COMPOSER_UNKNOWN_COMMAND_SUGGESTION,
     CONTEXT_MODE_AUTO,
     CONTEXT_MODEL_UNSET,
-    CONTEXT_PROVIDER,
+    CONTEXT_PROVIDER_UNSET,
 )
 from anishift.tui.widgets.composer import (
     BOX_ID,
@@ -38,11 +40,20 @@ from anishift.tui.widgets.composer import (
     Composer,
     ComposerSubmission,
     ComposerSubmissionKind,
+    ContextNames,
     classify,
+    context_names,
     context_text,
 )
+from anishift.tui.widgets.footer import LOCATION_ID, VERSION_ID, app_version
 
 _FULL_SIZE: Final[tuple[int, int]] = (100, 30)
+
+_SMALL_SIZE: Final[tuple[int, int]] = (80, 24)
+
+_TINY_SIZE: Final[tuple[int, int]] = (70, 20)
+
+_EVERY_SIZE: Final[tuple[tuple[int, int], ...]] = (_FULL_SIZE, _SMALL_SIZE, _TINY_SIZE)
 
 _EDGE_COLUMNS: Final[int] = 3
 
@@ -92,6 +103,15 @@ def _field(app: AniShiftApp) -> Input:
 
 def _hint(app: AniShiftApp) -> str:
     return str(app.query_one(f"#{HINT_ID}", Static).content)
+
+
+def _context(app: AniShiftApp) -> str:
+    return str(app.query_one(f"#{CONTEXT_ID}", Static).content)
+
+
+def _bottom_bar(app: AniShiftApp) -> str:
+    location: str = str(app.query_one(f"#{LOCATION_ID}", Static).content)
+    return f"{location} {app.query_one(f'#{VERSION_ID}', Static).content}"
 
 
 def _suggestions(app: AniShiftApp) -> OptionList:
@@ -148,15 +168,44 @@ def test_the_context_line_names_the_mode_the_provider_and_the_model() -> None:
     assert context_text(mode="Auto", provider="Foundry", model="m") == "Auto · Foundry: m"
 
 
-def test_the_composer_starts_with_the_default_context_line() -> None:
+def test_the_names_of_the_context_line_come_from_the_saved_preferences() -> None:
+    settings: UserSettings = UserSettings()
+    assert context_names(settings) == ContextNames(
+        provider=settings.llm_provider,
+        model=settings.llm_provider_model_id,
+    )
+
+
+def test_an_unnamed_provider_and_model_are_reported_in_words() -> None:
+    settings: UserSettings = UserSettings()
+    settings.llm_provider = ""
+    settings.llm_provider_model_id = "   "
+    assert context_names(settings) == ContextNames(
+        provider=CONTEXT_PROVIDER_UNSET,
+        model=CONTEXT_MODEL_UNSET,
+    )
+
+
+def test_the_names_of_the_context_line_carry_no_other_preference() -> None:
+    settings: UserSettings = UserSettings()
+    names: ContextNames = context_names(settings)
+    assert names.provider == settings.llm_provider
+    assert names.model == settings.llm_provider_model_id
+    assert context_text(mode=CONTEXT_MODE_AUTO, provider=names.provider, model=names.model) == (
+        f"{CONTEXT_MODE_AUTO} · {settings.llm_provider}: {settings.llm_provider_model_id}"
+    )
+
+
+def test_the_composer_starts_by_naming_the_provider_and_model_of_the_one_facade() -> None:
     async def scenario() -> None:
         app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
-            assert str(app.query_one(f"#{CONTEXT_ID}", Static).content) == context_text(
+            names: ContextNames = context_names(app.service.settings_snapshot())
+            assert _context(app) == context_text(
                 mode=CONTEXT_MODE_AUTO,
-                provider=CONTEXT_PROVIDER,
-                model=CONTEXT_MODEL_UNSET,
+                provider=names.provider,
+                model=names.model,
             )
 
     _run(scenario())
@@ -169,7 +218,78 @@ def test_the_context_line_follows_what_the_shell_says() -> None:
             await pilot.pause()
             app.query_one(Composer).show_context(mode="Manual", provider="Foundry", model="claude")
             await pilot.pause()
-            assert str(app.query_one(f"#{CONTEXT_ID}", Static).content) == "Manual · Foundry: claude"
+            assert _context(app) == "Manual · Foundry: claude"
+
+    _run(scenario())
+
+
+def test_a_changed_model_reaches_the_context_line_when_the_field_takes_the_focus_back() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            app.query_one(Composer).show_context(mode="Manual", provider="stale", model="stale")
+            draft: UserSettings = app.service.settings_snapshot()
+            draft.llm_provider_model_id = "gemini-3.6-pro"
+            app.service.save_settings(draft)
+            app.set_focus(None)
+            await pilot.pause()
+            _field(app).focus()
+            await pilot.pause()
+            assert _context(app) == context_text(
+                mode="Manual",
+                provider=draft.llm_provider,
+                model="gemini-3.6-pro",
+            )
+
+    _run(scenario())
+
+
+def test_a_model_the_preferences_no_longer_name_becomes_words_again() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            draft: UserSettings = app.service.settings_snapshot()
+            draft.llm_provider_model_id = ""
+            app.service.save_settings(draft)
+            app.query_one(Composer).refresh_context()
+            await pilot.pause()
+            assert CONTEXT_MODEL_UNSET in _context(app)
+            assert _context(app).endswith(f": {CONTEXT_MODEL_UNSET}")
+
+    _run(scenario())
+
+
+@pytest.mark.parametrize("size", _EVERY_SIZE)
+def test_the_bottom_bar_repeats_no_provider_and_no_model_at_any_size(size: tuple[int, int]) -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            names: ContextNames = context_names(app.service.settings_snapshot())
+            bar: str = _bottom_bar(app)
+            assert names.provider not in bar
+            assert names.model not in bar
+            assert CONTEXT_MODEL_UNSET not in bar
+            assert CONTEXT_PROVIDER_UNSET not in bar
+
+    _run(scenario())
+
+
+@pytest.mark.parametrize("size", _EVERY_SIZE)
+def test_the_context_line_and_the_bottom_bar_both_stay_on_screen(size: tuple[int, int]) -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            line: Region = app.query_one(f"#{CONTEXT_ID}", Static).region
+            bar: Region = app.query_one(f"#{FOOTER_ID}").region
+            assert line.x >= 0
+            assert line.right <= size[0]
+            assert line.bottom <= bar.y
+            assert bar.y + bar.height == size[1]
+            assert str(app.query_one(f"#{VERSION_ID}", Static).content) == app_version()
 
     _run(scenario())
 
