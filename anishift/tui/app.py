@@ -27,6 +27,8 @@ from anishift.tui.messages import (
     WorkspaceFailed,
     WorkspaceLoaded,
 )
+from anishift.tui.models.connect import open_connect_surface
+from anishift.tui.models.picker import open_model_picker
 from anishift.tui.screens.workspace import GroupRow, WorkspaceView
 from anishift.tui.settings.tree import SettingDomain, open_settings_panel
 from anishift.tui.state import FeedbackLevel, SessionState, UiFeedback, UiRoute
@@ -57,7 +59,7 @@ if TYPE_CHECKING:
     from textual.geometry import Size
     from textual.types import CSSPathType
 
-    from anishift.application import AppService
+    from anishift.application import AppService, ModelProbeResult
 
 logger = get_logger(__name__)
 
@@ -117,6 +119,7 @@ class AniShiftApp(App[None]):
         self.theme = load_ui_state().theme
         self._service: AppService | None = service
         self._state: SessionState = SessionState()
+        self._model_availability: dict[str, ModelProbeResult] = {}
         self._body: Vertical = Vertical(id=BODY_ID)
         self._brand: Static = Static(id=BRAND_ID)
         self._host: Container = Container(id=CONTENT_ID)
@@ -144,6 +147,11 @@ class AniShiftApp(App[None]):
     def commands(self) -> CommandRegistry:
         """The command registry this shell owns."""
         return self._commands
+
+    @property
+    def model_availability(self) -> dict[str, ModelProbeResult]:
+        """Availability answers of this session alone, never written anywhere."""
+        return self._model_availability
 
     def compose(self) -> ComposeResult:
         """Build the work area, the start block under it, then the bottom bar."""
@@ -260,8 +268,11 @@ class AniShiftApp(App[None]):
         self._report_missing_surface()
 
     def open_connect(self) -> None:
-        """Report that the connection surface is not available yet."""
-        self._report_missing_surface()
+        """Offer the enrollment address, the token and one confirmed connection test."""
+        if self._service is None:
+            self._report_missing_surface()
+            return
+        open_connect_surface(self, self._state, self._service, self._model_availability)
 
     def show_status(self) -> None:
         """Report that the status surface is not available yet."""
@@ -288,8 +299,11 @@ class AniShiftApp(App[None]):
         self.post_message(NavigationRequested(UiRoute.MANUAL))
 
     def open_model(self) -> None:
-        """Report that the model surface is not available yet."""
-        self._report_missing_surface()
+        """Offer every configured catalog alias and change only the main model."""
+        if self._service is None:
+            self._report_missing_surface()
+            return
+        open_model_picker(self, self._state, self._service, self._model_availability)
 
     def open_translation(self) -> None:
         """Offer the translation settings, each with the editor it needs."""

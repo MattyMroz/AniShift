@@ -11,7 +11,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from anishift.tui import lifecycle
-from anishift.tui.strings import DIALOG_CANCEL_LABEL
+from anishift.tui.state import FeedbackLevel, SessionState, UiFeedback
+from anishift.tui.strings import DIALOG_ALREADY_OPEN, DIALOG_CANCEL_LABEL
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -23,8 +24,6 @@ if TYPE_CHECKING:
     from textual.geometry import Size
     from textual.widget import Widget
 
-    from anishift.tui.state import SessionState
-
 __all__ = [
     "DIALOG_MARGIN_COLUMNS",
     "DIALOG_TOP_DIVISOR",
@@ -35,6 +34,7 @@ __all__ = [
     "dialog_top",
     "dialog_width",
     "open_dialog",
+    "refuse_second_dialog",
 ]
 
 logger = get_logger(__name__)
@@ -130,6 +130,15 @@ class DialogScreen[T](ModalScreen[T]):
         self._panel.styles.margin = (dialog_top(terminal_height=size.height), 0, 0, 0)
 
 
+def refuse_second_dialog(app: App[Any], state: SessionState) -> bool:
+    """Tell the user one dialog is already open, and report that nothing may open now."""
+    if not any(isinstance(screen, DialogScreen) for screen in app.screen_stack):
+        return False
+    logger.debug("Second dialog refused")
+    state.feedback = UiFeedback(level=FeedbackLevel.WARNING, message=DIALOG_ALREADY_OPEN)
+    return True
+
+
 def open_dialog[T](
     app: App[Any],
     state: SessionState,
@@ -137,8 +146,7 @@ def open_dialog[T](
     callback: Callable[[T | None], None] | None = None,
 ) -> bool:
     """Push *dialog* over the current surface and return whether it opened."""
-    if any(isinstance(screen, DialogScreen) for screen in app.screen_stack):
-        logger.debug("Second dialog refused", dialog=type(dialog).__name__)
+    if refuse_second_dialog(app, state):
         return False
     focused: Widget | None = app.focused
     lifecycle.open_modal(state, None if focused is None else focused.id)

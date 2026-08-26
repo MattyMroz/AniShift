@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from anishift.tui.dialogs.base import open_dialog
 from anishift.tui.dialogs.select import SelectAction, SelectDialog, SelectOption, SelectOutcomeKind
+from anishift.tui.models.picker import open_alias_selection
 from anishift.tui.settings.editors import open_field_editor, value_summary
 from anishift.tui.settings.secrets import open_secret_editor, open_secret_removal, secret_status
 from anishift.tui.strings import (
@@ -191,6 +192,8 @@ def _edit(
         return
     if not setting_is_persisted(spec):
         reopen()
+        return
+    if open_alias_selection(app, state, service, spec, reopen):
         return
     draft = service.settings_snapshot()
     open_field_editor(app, state, service, spec, read_setting_value(draft, spec), reopen)

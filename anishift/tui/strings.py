@@ -42,6 +42,12 @@ __all__ = [
     "COMPOSER_TAIL_GLYPH",
     "COMPOSER_UNKNOWN_COMMAND",
     "COMPOSER_UNKNOWN_COMMAND_SUGGESTION",
+    "CONNECT_ADDRESS_CONFIGURED",
+    "CONNECT_TEST_FAILED",
+    "CONNECT_TEST_QUESTION",
+    "CONNECT_TEST_TITLE",
+    "CONNECT_TEST_VERIFIED",
+    "CONNECT_TEST_WARNING",
     "CONTEXT_MODEL_SEPARATOR",
     "CONTEXT_MODEL_UNSET",
     "CONTEXT_MODE_AUTO",
@@ -54,6 +60,7 @@ __all__ = [
     "DEMO_GROUP_THREE",
     "DEMO_GROUP_TWO",
     "DEMO_TITLE",
+    "DIALOG_ALREADY_OPEN",
     "DIALOG_CANCEL_LABEL",
     "DIALOG_CONFIRM_LABEL",
     "DIALOG_DOWN_LABEL",
@@ -79,6 +86,19 @@ __all__ = [
     "HOME_MARK",
     "LOCATION_SEPARATOR",
     "MISSING_SURFACE",
+    "MODEL_CATALOG_EMPTY",
+    "MODEL_CATALOG_UNUSABLE",
+    "MODEL_EXPERIMENTAL",
+    "MODEL_ISSUES_CATEGORY",
+    "MODEL_PICKER_TITLE",
+    "MODEL_REFRESH_LABEL",
+    "MODEL_ROW_SEPARATOR",
+    "MODEL_SAVED",
+    "MODEL_STATE_ERROR",
+    "MODEL_STATE_UNVERIFIED",
+    "MODEL_STATE_VERIFIED",
+    "MODEL_TEST_TITLE",
+    "MODEL_TIME_FORMAT",
     "OBJECT_ADD_LABEL",
     "OBJECT_REMOVE_LABEL",
     "OBJECT_REMOVE_QUESTION",
@@ -132,6 +152,8 @@ __all__ = [
     "TIP_GLYPH",
     "TIP_LABEL",
     "TIP_TEXT",
+    "TRANSLATION_MODEL_SAVED",
+    "TRANSLATION_MODEL_TITLE",
     "VALUE_ABOVE_MAXIMUM",
     "VALUE_BELOW_MINIMUM",
     "VALUE_CONFIRM_HINT",
@@ -343,6 +365,9 @@ COMMAND_PALETTE_TITLE: Final[str] = "Commands"
 
 COMMAND_PALETTE_DESCRIPTION: Final[str] = "Open command list"
 """Description of the contextual action that opens the palette."""
+
+DIALOG_ALREADY_OPEN: Final[str] = "A dialog is already open, close it before opening another"
+"""Message of every refused open while one dialog holds the screen."""
 
 DIALOG_CANCEL_LABEL: Final[str] = "Cancel"
 """Action label of the key that leaves a dialog without a decision."""
@@ -568,3 +593,66 @@ OBJECT_REMOVE_TITLE: Final[str] = "Remove voice"
 
 OBJECT_REMOVE_QUESTION: Final[str] = "Remove {alias}?"
 """Question the object-list removal dialog asks before dropping an item."""
+
+MODEL_PICKER_TITLE: Final[str] = "Main model"
+"""Heading of the picker that changes the main model role and nothing else."""
+
+MODEL_TEST_TITLE: Final[str] = "Test model"
+"""Heading of the picker that chooses the one alias a connection test uses."""
+
+MODEL_ROW_SEPARATOR: Final[str] = " · "
+"""Separator between the provider, the protocol and the state of one model row."""
+
+MODEL_EXPERIMENTAL: Final[str] = "experimental"
+"""Mark of a catalog entry the user wrote down as experimental."""
+
+MODEL_STATE_UNVERIFIED: Final[str] = "Unverified"
+"""State of an alias no connection test has confirmed in this session."""
+
+MODEL_STATE_VERIFIED: Final[str] = "Verified {time}"
+"""State of an alias one connection test confirmed, with the time it finished."""
+
+MODEL_STATE_ERROR: Final[str] = "Failed {error_class}"
+"""State of an alias whose single connection test failed, by safe error class."""
+
+MODEL_CATALOG_UNUSABLE: Final[str] = "The model catalog cannot be read"
+"""Row shown instead of any model when the catalog file cannot be used."""
+
+MODEL_CATALOG_EMPTY: Final[str] = "The model catalog defines no usable model"
+"""Row shown when the catalog is readable but holds no usable entry."""
+
+MODEL_ISSUES_CATEGORY: Final[str] = "Catalog warnings"
+"""Heading the picker groups every rejected catalog entry under."""
+
+MODEL_REFRESH_LABEL: Final[str] = "Reload catalog"
+"""Action label of the key that reads the catalog file again."""
+
+MODEL_SAVED: Final[str] = "Main model set to {alias}"
+"""Feedback shown after the main model role was changed."""
+
+MODEL_TIME_FORMAT: Final[str] = "%H:%M"
+"""Format of the moment one connection test finished."""
+
+TRANSLATION_MODEL_TITLE: Final[str] = "Translation model"
+"""Title of the alias selection the translation panel opens for the catalog provider."""
+
+TRANSLATION_MODEL_SAVED: Final[str] = "Translation model set to {alias}"
+"""Feedback shown after the translation model role alone was changed."""
+
+CONNECT_ADDRESS_CONFIGURED: Final[str] = "Configured"
+"""Status of an enrollment address that is set; the address itself is never shown."""
+
+CONNECT_TEST_TITLE: Final[str] = "Connection test"
+"""Title of the row and of the dialog that run one confirmed connection test."""
+
+CONNECT_TEST_WARNING: Final[str] = "One minimal request is sent only after you confirm, and it may use provider quota"
+"""Warning shown before anything is sent, both on the row and in the question."""
+
+CONNECT_TEST_QUESTION: Final[str] = "Test {alias}? {warning}"
+"""Question the confirmation asks before the single request is allowed."""
+
+CONNECT_TEST_VERIFIED: Final[str] = "Connection verified for {alias} in this session only"
+"""Feedback of a test that succeeded; the answer is never written anywhere."""
+
+CONNECT_TEST_FAILED: Final[str] = "Connection test failed for {alias}: {error_class}"
+"""Feedback of a test that failed, carrying only the safe error class."""
