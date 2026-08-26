@@ -327,3 +327,70 @@ Commit `da6917c`. Silnik, warstwa HTTP i normalizacja odpowiedzi dla czterech pr
   `alias`/`provider_id`/`protocol` i właściwego `base_url` z katalogu — dziś przypisuje
   `openai_compatible_base_url` każdemu silnikowi. T-015 nie może traktować dostępności
   silników jako zamkniętej: musi wpiąć rozwiązywanie katalogu w tej samej zmianie.
+
+## T-015 — rola modelu głównego, adres enrollmentu i powierzchnie TUI
+
+Zadanie poszło dwoma dostawami: warstwa danych i aplikacji, potem ekrany.
+
+### Rozstrzygnięcia
+
+- **Adres enrollmentu wyprowadzony z katalogu do `UserSettings`.** R-057 wymaga, żeby
+  `/connect` edytował adres, a `json5` czyta JSONC, ale nie umie go zapisać bez zniszczenia
+  komentarzy użytkownika. Zapis w miejscu oznaczałby albo utratę komentarzy, albo pozorne
+  spełnienie wymagania. Adres jest teraz preferencją panelu w `config/settings.json`, czyli
+  w pliku, który aplikacja i tak posiada i zapisuje, a katalog staje się na zawsze tylko do
+  czytania — nic go nie pisze, więc komentarze są bezpieczne strukturalnie, nie z uprzejmości.
+  Ubocznie hostname organizacji wychodzi z pliku, który bywa wklejany i współdzielony (R-103).
+  Kosztem jest wycięty `EnrollmentConfig` razem z testami i sekcją `enrollment` w przykładzie;
+  katalog z osieroconym kluczem nadal się ładuje z widocznym `CatalogIssue`, nie odpada.
+- **`save_model_catalog` z D-12 świadomie nie powstał.** Skoro nic nie pisze katalogu, zapis
+  byłby kodem bez wołacza i jedyną furtką do zniszczenia komentarzy.
+- **Dwie role modelu, niezależne w obie strony.** `primary_model_alias` obsługuje run główny,
+  `llm_provider_model_id` wyłącznie tłumaczenie. Oba kierunki są pinowane testami, bo
+  „niezależne" łatwo zepsuć jednym wspólnym zapisem.
+- **Kontrakt sondy.** Najwyżej jedno żądanie, tylko na jawne wywołanie: nigdy przy wejściu do
+  `/model`, `/translation` czy `/status`, nigdy przy filtrowaniu. `max_retries=0`
+  i `max_output_tokens=16` są narzucane wewnątrz sondy, nie przez wołacza. Trzy stany i tylko
+  trzy: `unverified`, `verified`, `error`. Wynik nie ląduje na dysku i nie przeżywa sesji.
+  Sonda nie rzuca — zwraca wynik błędu, bo picker nie ma się wywalać na nieudanym teście.
+- **Gotowość Palantira mówi prawdę.** Wymaga tokenu, adresu, czytelnego katalogu i — gdy
+  tłumaczenie idzie przez Palantir — rozwiązywalnego aliasu. `runtime.py` rozwiązuje alias na
+  protokół, `base_url` i realny model ID przed zbudowaniem `LlmConfig`, co zamyka obserwację
+  z T-014: `openai_compatible_base_url` nie trafia już do każdego silnika.
+- **Wolny tekst nie jest wyborem.** Model tłumaczeniowy to `STRING` bez `allowed_values`, więc
+  przy Palantirze użytkownik wpisywałby alias katalogu z palca, bez walidacji, podczas gdy
+  model główny miał picker; literówka wychodziła dopiero przy runie. Ten jeden wiersz otwiera
+  teraz ten sam wybór aliasu, zbudowany tą samą funkcją. Przechwycenie siedzi w jedynym
+  miejscu, gdzie wiersz panelu zamienia się w edytor, i sprowadza się do pytania i uszanowania
+  boolean — `field_catalog.py` nie dowiaduje się o katalogu, bo warstwa konfiguracji nie ma
+  i nie powinna mieć tej zależności. Każdy inny provider zostaje przy wolnym tekście.
+- **Odmowa drugiego dialogu przestała być niewidzialna.** Niezmiennik „jeden dialog naraz"
+  zostaje, ale dotąd odmowa logowała się na DEBUG i zwracała `False`, które każdy wołacz
+  wyrzucał — użytkownik wciskał klawisz i nie dostawał nic. Komunikat powstaje na granicy,
+  w `open_dialog`, więc żadne z osiemnastu miejsc nie musi o tym pamiętać. Powierzchnie, które
+  najpierw czytają katalog, pytają przed pracą, żeby odmowa nie zostawiła ostrzeżenia
+  o katalogu bez żadnego dialogu na ekranie.
+- **`/translation` i `/prompts` bez własnych ekranów.** Panel ustawień ma już każdy potrzebny
+  wiersz i własne testy; nowa powierzchnia byłaby duplikatem dispatchu.
+
+### Odłożone świadomie
+
+- **`primary_model_alias` nie jest sprawdzany z katalogiem przy zapisie.** Wybór z pickera jest
+  zawsze poprawny, ale wartość ustawiona inaczej przeżyje do runu albo do sondy.
+- **Strażnik `CATALOG_PROVIDER` łapie zmianę nazwy, nie dodanie.** Drugi provider oparty
+  o katalog, o którym TUI nie wie, cicho zdegraduje swój wiersz modelu do wolnego tekstu.
+- **`_availability_of` czyta atrybut powłoki przez `getattr`.** Fałszywy host dostaje `{}`,
+  czyli awarię w bezpieczną stronę. Nazwa atrybutu jest stałą i pinuje ją test, więc zmiana
+  nazwy pęka na teście, a nie na ekranie; Protokół dla jednego atrybutu byłby przesadą.
+- **`runtime.py` powtarza walidację adresu**, żeby własny błąd mógł wskazać `/connect`.
+- **Test commitu promptów sprawdza trasę, nie zmienioną wartość** — te pola mają po jednej
+  dozwolonej wartości, więc nie ma czego wybrać innego.
+- **`cli/settings_panel._provider_availability` z T-013 nie został naprawiony.** Ta powłoka
+  odpada razem z prompt-toolkit w zadaniu usuwającym legacy, więc naprawa dotyczyłaby kodu
+  do wycięcia.
+
+### Obserwacje
+
+- **Kolejność `pop` i callbacku w Textualu jest założeniem, nie kontraktem.** Wzorzec
+  synchronicznego otwarcia z callbacku dismissu działa, bo ekran jest już zdjęty ze stosu.
+  Gdyby Textual to odwrócił, pękłby ten wzorzec — starszy od tego etapu — a nie sama odmowa.
