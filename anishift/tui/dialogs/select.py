@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, ClassVar, Final
 from textual import on
 from textual.binding import Binding
 from textual.content import Content
-from textual.events import MouseMove
 from textual.fuzzy import FuzzySearch
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
@@ -335,24 +334,10 @@ class _FilterInput(Input):
         return super().check_consume_key(key, character)
 
 
-class _HoverList(OptionList):
-    """Row list whose one cursor follows the pointer as it moves over the rows."""
-
-    def __init__(self, hover: Callable[[int], None], *, widget_id: str) -> None:
-        """Report the row the pointer rests on through *hover*."""
-        super().__init__(id=widget_id, markup=False)
-        self._hover: Callable[[int], None] = hover
-
-    def _on_mouse_move(self, event: MouseMove) -> None:
-        """Report the pointed row, so the cursor rests where the pointer does."""
-        super()._on_mouse_move(event)
-        pointed: object = event.style.meta.get("option")
-        if isinstance(pointed, int):
-            self._hover(pointed)
-
-
 class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
     """The only list selector of the application.
+
+    The keyboard owns the cursor; the pointer decides only by clicking a row.
 
     ``on_highlight`` fires for the initial highlight, every cursor move and
     every filter change; never for a heading or the empty-result row.
@@ -403,7 +388,7 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
             placeholder=placeholder,
             widget_id=_FILTER_ID,
         )
-        self._list: _HoverList = _HoverList(self._hover, widget_id=_LIST_ID)
+        self._list: OptionList = OptionList(id=_LIST_ID, markup=False)
         self._detail: Static = Static(id=_DETAIL_ID, classes="dialog-detail")
         self._action_row: Static = Static(self._actions_text(), id=_ACTIONS_ID, classes="dialog-hint")
         self._bind_extra_keys()
@@ -557,13 +542,6 @@ class SelectDialog[T](DialogScreen[SelectOutcome[T]]):
             (index for index, row in enumerate(self._rows) if row.index == wanted),
             self._first_selectable(),
         )
-
-    def _hover(self, index: int) -> None:
-        """Carry the cursor to the pointed row, ignoring rows a cursor may not stop on."""
-        if index == self._cursor or index not in self._selectable():
-            return
-        self._cursor = index
-        self._sync_cursor()
 
     def _move(self, delta: int, *, wrap: bool) -> None:
         """Move the cursor *delta* selectable rows, wrapping only when asked."""
