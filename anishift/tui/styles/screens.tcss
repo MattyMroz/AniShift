@@ -55,6 +55,13 @@ Screen {
     text-align: left;
 }
 
+#app-content > #auto-view {
+    width: $block-width;
+    max-width: 100%;
+    height: auto;
+    text-align: left;
+}
+
 #app-detail {
     width: 40;
     padding: 1 2;

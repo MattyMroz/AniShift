@@ -119,6 +119,7 @@ def _spy_auto_requests(app: AniShiftApp, generations: list[int]) -> None:
     def post_message(message: Message) -> bool:
         if isinstance(message, AutoRequested):
             generations.append(message.generation)
+            return True
         return original(message)
 
     app.post_message = post_message  # type: ignore[method-assign]

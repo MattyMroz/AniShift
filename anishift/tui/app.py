@@ -33,11 +33,18 @@ from anishift.tui.messages import (
 )
 from anishift.tui.models.connect import open_connect_surface
 from anishift.tui.models.picker import load_catalog, open_model_picker
+from anishift.tui.screens.auto import AutoRequest, AutoSession, AutoView, open_auto_presets, resolve_request
+from anishift.tui.screens.manual import ManualView
 from anishift.tui.screens.tools import ToolsView
 from anishift.tui.screens.workspace import GroupRow, WorkspaceView
 from anishift.tui.settings.tree import SettingDomain, open_settings_panel
 from anishift.tui.state import RunUiState, SessionState, UiRoute
 from anishift.tui.strings import (
+    AUTO_CANCELLED,
+    AUTO_OVERWRITE_QUESTION,
+    AUTO_OVERWRITE_TITLE,
+    AUTO_PLAN_BLOCKED,
+    AUTO_PROBLEM_SEPARATOR,
     COMMAND_DOCTOR_TITLE,
     COMMAND_EXIT_TITLE,
     COMMAND_INIT_TITLE,
@@ -144,6 +151,9 @@ class AniShiftApp(App[None]):
         self._brand: Static = Static(id=BRAND_ID)
         self._host: Container = Container(id=CONTENT_ID)
         self._workspace_view: WorkspaceView = WorkspaceView()
+        self._auto_view: AutoView = AutoView()
+        self._manual_view: ManualView = ManualView()
+        self._auto: AutoSession = AutoSession()
         self._tools_view: ToolsView = ToolsView()
         self._composer_slot: Container = Container(id=COMPOSER_SLOT_ID)
         self._hints: StartHints = StartHints()
@@ -198,6 +208,8 @@ class AniShiftApp(App[None]):
         with self._body:
             with self._host:
                 yield self._workspace_view
+                yield self._auto_view
+                yield self._manual_view
                 yield self._tools_view
             yield self._brand
             with self._composer_slot:
@@ -261,6 +273,9 @@ class AniShiftApp(App[None]):
         if not self._accepts(message.generation):
             return
         lifecycle.plan_ready(self._state, message.plan)
+        if message.generation == self._auto.generation:
+            self._decide_auto(message.plan, message.generation)
+            return
         self._render_frame()
 
     @on(PlanFailed)
@@ -268,6 +283,7 @@ class AniShiftApp(App[None]):
         """Give the Auto reservation back and keep the reason of the failed plan."""
         if not auto_trigger.release(self._state, generation=message.generation, reason=message.reason):
             return
+        self._auto.generation = None
         self._stop_drain()
         self._render_frame()
 
@@ -279,6 +295,81 @@ class AniShiftApp(App[None]):
             return
         self.post_message(AutoRequested(generation))
         self._composer.clear()
+        self._render_frame()
+
+    @on(AutoRequested)
+    def _on_auto_requested(self, message: AutoRequested) -> None:
+        """Hand one still-current Auto request to the workflow that answers it."""
+        if not self._accepts(message.generation):
+            return
+        self.plan_auto_request(message.generation)
+
+    def plan_auto_request(self, generation: int) -> None:
+        """Resolve the default Auto run of *generation* and plan it off the UI thread."""
+        request: AutoRequest = resolve_request(self._state, self._service, self._auto)
+        if request.preset is None:
+            auto_trigger.release(self._state, generation=generation, reason=request.refusal)
+            self._auto.verdict = None
+            lifecycle.navigate(self._state, UiRoute.AUTO)
+            self._render_frame()
+            return
+        self._auto.generation = generation
+        self._auto.verdict = None
+        workers.plan_auto(
+            self,
+            self._service,
+            generation=generation,
+            group_ids=request.group_ids,
+            preset=request.preset,
+        )
+        self._render_frame()
+
+    def _decide_auto(self, plan: ExecutionPlan, generation: int) -> None:
+        """Start, confirm or refuse this Auto run from the one verdict of its plan."""
+        verdict: auto_trigger.AutoVerdict = auto_trigger.classify(
+            plan,
+            accepted=self._auto.accepted_artifact_ids,
+        )
+        self._auto.verdict = verdict
+        self._auto.generation = None
+        if verdict.kind is auto_trigger.AutoVerdictKind.BLOCKED:
+            auto_trigger.release(self._state, generation=generation, reason=AUTO_PLAN_BLOCKED)
+            lifecycle.navigate(self._state, UiRoute.AUTO)
+            self._render_frame()
+            return
+        if verdict.kind is auto_trigger.AutoVerdictKind.CONFIRM:
+            self._confirm_auto(plan, generation, verdict)
+            return
+        self._start_auto_run(plan)
+
+    def _start_auto_run(self, plan: ExecutionPlan) -> None:
+        """Show the groups of the accepted Auto plan and enter its run."""
+        lifecycle.navigate(self._state, UiRoute.WORKSPACE)
+        self.start_execution(plan)
+        self._render_frame()
+
+    def _confirm_auto(self, plan: ExecutionPlan, generation: int, verdict: auto_trigger.AutoVerdict) -> None:
+        """Ask before the accepted plan replaces the products it names, and start only then."""
+
+        def answered(accepted: bool | None) -> None:
+            """Start the run the user accepted, or give the reservation back."""
+            if not accepted:
+                auto_trigger.release(self._state, generation=generation, reason=AUTO_CANCELLED)
+                self._render_frame()
+                return
+            self._auto.accepted_artifact_ids |= verdict.artifact_ids
+            self._auto.verdict = None
+            self._start_auto_run(plan)
+
+        question: str = AUTO_OVERWRITE_QUESTION.format(products=AUTO_PROBLEM_SEPARATOR.join(verdict.problems))
+        opened: bool = open_dialog(
+            self,
+            self._state,
+            ConfirmDialog(title=AUTO_OVERWRITE_TITLE, question=question),
+            answered,
+        )
+        if not opened:
+            auto_trigger.release(self._state, generation=generation, reason=AUTO_CANCELLED)
         self._render_frame()
 
     @on(RunProgressed)
@@ -428,8 +519,10 @@ class AniShiftApp(App[None]):
         )
 
     def open_auto(self) -> None:
-        """Show the automatic-mode route."""
-        self.post_message(NavigationRequested(UiRoute.AUTO))
+        """Offer every stored automatic preset, planning and starting nothing."""
+        lifecycle.navigate(self._state, UiRoute.AUTO)
+        self._render_frame()
+        open_auto_presets(self, self._state, self._service, self._auto)
 
     def open_manual(self) -> None:
         """Show the manual-mode route."""
@@ -563,8 +656,12 @@ class AniShiftApp(App[None]):
     def _render_frame(self) -> None:
         """Redraw every region that projects the session state."""
         has_groups: bool = bool(self._group_rows) or self._state.workspace is not None
-        self._has_work = has_groups or self._tools_report is not None
+        on_auto: bool = self._state.route is UiRoute.AUTO
+        self._has_work = has_groups or on_auto or self._tools_report is not None
         self._workspace_view.display = self._state.route is UiRoute.WORKSPACE and has_groups
+        self._auto_view.display = on_auto
+        self._auto_view.show(self._state, self._auto)
+        self._manual_view.display = self._state.route is UiRoute.MANUAL and has_groups
         self._tools_view.display = self._state.route is UiRoute.TOOLS and self._tools_report is not None
         self._tools_view.show(self._tools_report)
         if self._group_rows:

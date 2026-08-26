@@ -5,6 +5,31 @@ from __future__ import annotations
 from typing import Final
 
 __all__ = [
+    "AUTO_CANCELLED",
+    "AUTO_DEFAULT_MARKER",
+    "AUTO_DEFAULT_REFUSED",
+    "AUTO_DEFAULT_SAVED",
+    "AUTO_EDIT_LABEL",
+    "AUTO_FIELDS_TITLE",
+    "AUTO_FIELD_REFUSED",
+    "AUTO_GROUPS_LABEL",
+    "AUTO_LABEL_GAP",
+    "AUTO_NO_CHANGES",
+    "AUTO_NO_GROUPS",
+    "AUTO_NO_PRESET",
+    "AUTO_NO_WORKSPACE",
+    "AUTO_OVERWRITE_QUESTION",
+    "AUTO_OVERWRITE_TITLE",
+    "AUTO_PLAN_BLOCKED",
+    "AUTO_PRESET_LABEL",
+    "AUTO_PRESET_SAVED",
+    "AUTO_PROBLEMS_LABEL",
+    "AUTO_PROBLEM_SEPARATOR",
+    "AUTO_PRODUCTS_LABEL",
+    "AUTO_READY_GROUPS",
+    "AUTO_RESET_LABEL",
+    "AUTO_SAVE_LABEL",
+    "AUTO_UNSAVED_MARKER",
     "COMMAND_AUTO_DESCRIPTION",
     "COMMAND_AUTO_TITLE",
     "COMMAND_CONNECT_DESCRIPTION",
@@ -88,6 +113,44 @@ __all__ = [
     "HINT_PAIR_GAP",
     "HOME_MARK",
     "LOCATION_SEPARATOR",
+    "MANUAL_AUDIO_DESCRIPTION",
+    "MANUAL_AUDIO_TITLE",
+    "MANUAL_COPIED",
+    "MANUAL_COPY_DESCRIPTION",
+    "MANUAL_COPY_TITLE",
+    "MANUAL_EDIT_TITLE",
+    "MANUAL_EMPTY",
+    "MANUAL_NO_SELECTION",
+    "MANUAL_PATH_HINT",
+    "MANUAL_POLICY_AUTO",
+    "MANUAL_POLICY_EMBEDDED",
+    "MANUAL_POLICY_EXTERNAL",
+    "MANUAL_POLICY_NONE",
+    "MANUAL_POLICY_READY_POLISH",
+    "MANUAL_POLICY_SIDECAR",
+    "MANUAL_POLICY_TITLE",
+    "MANUAL_PREVIEW_DESCRIPTION",
+    "MANUAL_PREVIEW_INCOMPLETE",
+    "MANUAL_PREVIEW_TITLE",
+    "MANUAL_PRODUCTS_TITLE",
+    "MANUAL_PRODUCT_DISPLAYED_PL",
+    "MANUAL_PRODUCT_FULL_PL",
+    "MANUAL_PRODUCT_MKV",
+    "MANUAL_PRODUCT_MP4",
+    "MANUAL_PRODUCT_NARRATION_AUDIO",
+    "MANUAL_PRODUCT_SOURCE_SUBTITLES",
+    "MANUAL_PRODUCT_SPOKEN_PL",
+    "MANUAL_ROLE_NARRATION_MIX",
+    "MANUAL_ROLE_SOURCE_AUDIO",
+    "MANUAL_ROLE_TITLE",
+    "MANUAL_STATE_INVALID",
+    "MANUAL_SUBTITLE_DESCRIPTION",
+    "MANUAL_SUBTITLE_TITLE",
+    "MANUAL_SUMMARY",
+    "MANUAL_TRANSLATION_AUTO",
+    "MANUAL_TRANSLATION_DO_NOT_TRANSLATE",
+    "MANUAL_TRANSLATION_TITLE",
+    "MANUAL_TRANSLATION_TRANSLATE",
     "MISSING_SURFACE",
     "MODEL_CATALOG_EMPTY",
     "MODEL_CATALOG_UNUSABLE",
@@ -880,3 +943,194 @@ SETUP_CONFIRM_QUESTION: Final[str] = "Download and install the external tools no
 
 EXIT_ACTIVE_RUN_QUESTION: Final[str] = "A run is still active. Leave and stop it?"
 """Question the confirmation asks before an active run is abandoned."""
+
+# ── Manual ──────────────────────────────────────────────────────────────────
+
+MANUAL_EMPTY: Final[str] = "No groups selected for manual setup"
+"""Base state shown while no selected group holds a manual draft."""
+
+MANUAL_SUMMARY: Final[str] = "{count} groups in manual setup"
+"""Row saying how many drafts the manual view currently prepares."""
+
+MANUAL_STATE_INVALID: Final[str] = "Incomplete"
+"""Word a draft that cannot yet be materialised is named by."""
+
+MANUAL_PREVIEW_TITLE: Final[str] = "Preview"
+"""Title of the contextual action that builds the manual plan."""
+
+MANUAL_PREVIEW_DESCRIPTION: Final[str] = "Build the manual plan"
+"""Description of the contextual action that builds the manual plan."""
+
+MANUAL_PREVIEW_INCOMPLETE: Final[str] = "Every selected group needs a valid intent"
+"""Reason a preview refuses while any draft cannot be materialised."""
+
+MANUAL_NO_SELECTION: Final[str] = "Select at least one group first"
+"""Reason a preview refuses while no draft is selected."""
+
+MANUAL_COPY_TITLE: Final[str] = "Copy"
+"""Title of the contextual action that copies one draft into the others."""
+
+MANUAL_COPY_DESCRIPTION: Final[str] = "Copy this group into the others"
+"""Description of the contextual action that copies one draft into the others."""
+
+MANUAL_COPIED: Final[str] = "Copied into the other selected groups"
+"""Feedback shown after one draft was copied into every other selection."""
+
+MANUAL_SUBTITLE_TITLE: Final[str] = "External subtitle"
+"""Title of the contextual action and the dialog that register a subtitle."""
+
+MANUAL_SUBTITLE_DESCRIPTION: Final[str] = "Register an external subtitle"
+"""Description of the contextual action that registers an external subtitle."""
+
+MANUAL_AUDIO_TITLE: Final[str] = "External audio"
+"""Title of the contextual action and the dialog that register an audio source."""
+
+MANUAL_AUDIO_DESCRIPTION: Final[str] = "Register an external audio source"
+"""Description of the contextual action that registers external audio."""
+
+MANUAL_PATH_HINT: Final[str] = "Type the full path to the file"
+"""Hint the external-source path editor shows."""
+
+MANUAL_EDIT_TITLE: Final[str] = "Edit group"
+"""Heading of the menu that opens one editable facet of a draft."""
+
+MANUAL_PRODUCTS_TITLE: Final[str] = "Products"
+"""Heading of the picker that chooses the requested products of a draft."""
+
+MANUAL_POLICY_TITLE: Final[str] = "Subtitle source"
+"""Heading of the picker that chooses the subtitle source policy of a draft."""
+
+MANUAL_TRANSLATION_TITLE: Final[str] = "Translation"
+"""Heading of the picker that chooses the translation decision of a draft."""
+
+MANUAL_ROLE_TITLE: Final[str] = "Audio role"
+"""Heading of the picker that chooses the role of a registered audio source."""
+
+MANUAL_PRODUCT_SOURCE_SUBTITLES: Final[str] = "Source subtitles"
+"""Label of the source-subtitles product."""
+
+MANUAL_PRODUCT_FULL_PL: Final[str] = "Full Polish dub"
+"""Label of the full Polish dub product."""
+
+MANUAL_PRODUCT_SPOKEN_PL: Final[str] = "Spoken Polish"
+"""Label of the spoken Polish product."""
+
+MANUAL_PRODUCT_DISPLAYED_PL: Final[str] = "Displayed Polish"
+"""Label of the displayed Polish product."""
+
+MANUAL_PRODUCT_NARRATION_AUDIO: Final[str] = "Narration audio"
+"""Label of the narration audio product."""
+
+MANUAL_PRODUCT_MKV: Final[str] = "MKV"
+"""Label of the MKV container product."""
+
+MANUAL_PRODUCT_MP4: Final[str] = "MP4"
+"""Label of the MP4 container product."""
+
+MANUAL_POLICY_AUTO: Final[str] = "Auto"
+"""Label of the automatic subtitle source policy."""
+
+MANUAL_POLICY_SIDECAR: Final[str] = "Sidecar"
+"""Label of the sidecar subtitle source policy."""
+
+MANUAL_POLICY_EMBEDDED: Final[str] = "Embedded"
+"""Label of the embedded subtitle source policy."""
+
+MANUAL_POLICY_EXTERNAL: Final[str] = "External"
+"""Label of the external subtitle source policy."""
+
+MANUAL_POLICY_READY_POLISH: Final[str] = "Ready Polish"
+"""Label of the ready-Polish subtitle source policy."""
+
+MANUAL_POLICY_NONE: Final[str] = "None"
+"""Label of the subtitle source policy that requests no subtitles."""
+
+MANUAL_TRANSLATION_AUTO: Final[str] = "Auto"
+"""Label of the automatic translation decision."""
+
+MANUAL_TRANSLATION_TRANSLATE: Final[str] = "Translate"
+"""Label of the translation decision that always translates."""
+
+MANUAL_TRANSLATION_DO_NOT_TRANSLATE: Final[str] = "Do not translate"
+"""Label of the translation decision that never translates."""
+
+MANUAL_ROLE_SOURCE_AUDIO: Final[str] = "Source audio"
+"""Label of the external audio role that supplies the source audio."""
+
+MANUAL_ROLE_NARRATION_MIX: Final[str] = "Narration mix"
+"""Label of the external audio role that supplies a narration mix."""
+
+AUTO_PRESET_LABEL: Final[str] = "Preset"
+"""Label of the row naming the automatic preset a run would use."""
+
+AUTO_PRODUCTS_LABEL: Final[str] = "Products"
+"""Label of the row listing the products the preset asks for."""
+
+AUTO_GROUPS_LABEL: Final[str] = "Groups"
+"""Label of the row counting the groups a default run would take."""
+
+AUTO_PROBLEMS_LABEL: Final[str] = "Problems"
+"""Label of the row listing what the last plan reported."""
+
+AUTO_LABEL_GAP: Final[str] = "  "
+"""Gap between a label of the automatic route and its value."""
+
+AUTO_READY_GROUPS: Final[str] = "{ready} of {total} ready"
+"""Value of the group row: groups a run may take out of every inspected one."""
+
+AUTO_DEFAULT_MARKER: Final[str] = "default"
+"""Word marking the preset an empty Enter would use."""
+
+AUTO_UNSAVED_MARKER: Final[str] = "unsaved"
+"""Word marking a preset whose draft holds changes nothing stored yet."""
+
+AUTO_EDIT_LABEL: Final[str] = "Edit fields"
+"""Label of the key that opens the fields of the highlighted preset."""
+
+AUTO_SAVE_LABEL: Final[str] = "Save preset"
+"""Label of the key that stores the edited draft."""
+
+AUTO_RESET_LABEL: Final[str] = "Reset changes"
+"""Label of the key that drops every unsaved change of the draft."""
+
+AUTO_FIELDS_TITLE: Final[str] = "Preset fields"
+"""Heading of the list holding every field of one automatic preset."""
+
+AUTO_DEFAULT_SAVED: Final[str] = "Default preset is now {name}"
+"""Feedback of one stored change of the default preset."""
+
+AUTO_DEFAULT_REFUSED: Final[str] = "The default preset could not be saved"
+"""Feedback of a default preset the preset file refused to keep."""
+
+AUTO_PRESET_SAVED: Final[str] = "Preset {name} saved"
+"""Feedback of one stored preset."""
+
+AUTO_NO_CHANGES: Final[str] = "This preset has no unsaved changes"
+"""Feedback of a save or a reset asked for while no draft holds a change."""
+
+AUTO_FIELD_REFUSED: Final[str] = "This value does not fit the rest of the preset"
+"""Feedback of one field value the preset contract refused."""
+
+AUTO_NO_WORKSPACE: Final[str] = "Read the workspace first, nothing is inspected yet"
+"""Reason a default run is refused while no inspection is held."""
+
+AUTO_NO_GROUPS: Final[str] = "No inspected group is ready for a run"
+"""Reason a default run is refused while every group needs attention first."""
+
+AUTO_NO_PRESET: Final[str] = "No automatic preset is stored"
+"""Reason a default run is refused while no preset can be resolved."""
+
+AUTO_PLAN_BLOCKED: Final[str] = "The plan cannot run yet"
+"""Reason a planned run is refused, shown next to the problems that block it."""
+
+AUTO_CANCELLED: Final[str] = "The automatic run was not started"
+"""Reason a planned run ended at the confirmation instead of at a start."""
+
+AUTO_OVERWRITE_TITLE: Final[str] = "Replace products"
+"""Heading of the confirmation asked before existing products are replaced."""
+
+AUTO_OVERWRITE_QUESTION: Final[str] = "{products}\nStart anyway?"
+"""Question carrying every product one accepted start would replace."""
+
+AUTO_PROBLEM_SEPARATOR: Final[str] = "\n"
+"""Separator between two problems one plan reported."""

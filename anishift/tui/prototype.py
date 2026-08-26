@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
-from textual import on
-
 from anishift.application import GroupResult, GroupStatus, RunResult
 from anishift.tui import lifecycle
 from anishift.tui.app import AniShiftApp
-from anishift.tui.messages import AutoRequested, RunFinished
+from anishift.tui.messages import RunFinished
 from anishift.tui.screens.workspace import GroupRow, GroupState
 from anishift.tui.strings import (
     CONTEXT_MODE_DEMO,
@@ -92,11 +90,10 @@ class PrototypeApp(AniShiftApp):
             model=CONTEXT_MODEL_UNSET,
         )
 
-    @on(AutoRequested)
-    def _on_auto_requested(self, message: AutoRequested) -> None:
+    def plan_auto_request(self, generation: int) -> None:
         """Enter the simulated plan of the one reserved generation."""
         self.show_groups(self._rows, status=RUN_PLANNING)
-        self.set_timer(self._step, lambda: self._begin(message.generation))
+        self.set_timer(self._step, lambda: self._begin(generation))
 
     def _begin(self, generation: int) -> None:
         """Enter the run the simulated plan produced."""
