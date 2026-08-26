@@ -6,14 +6,13 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Static
 
 from anishift.tui import ui_state
 from anishift.tui.app import THEME_ROWS, AniShiftApp
 from anishift.tui.dialogs.base import DialogScreen
 from anishift.tui.prototype import PrototypeApp, demo_rows, working_status
 from anishift.tui.screens.workspace import WORKSPACE_ID, GroupState, group_line, groups_body, state_text
-from anishift.tui.settings.tree import FieldKind, speech_fields, speech_values, value_text
 from anishift.tui.state import RunUiState
 from anishift.tui.strings import (
     CONTEXT_MODE_DEMO,
@@ -41,16 +40,6 @@ _PAUSE_LIMIT: Final[int] = 400
 _SETTLE_PAUSES: Final[int] = 30
 
 _ON_SCREEN_IDS: Final[tuple[str, ...]] = ("#app-body", "#app-content", "#app-composer", "#app-footer")
-
-_TEMPO_ROW: Final[int] = 1
-
-_SELECT_LIST: Final[str] = "#select-list"
-
-_VALUE_INPUT: Final[str] = "#value-input"
-
-_TEMPO_START: Final[str] = "1"
-
-_TEMPO_STEPPED: Final[str] = "1.05"
 
 
 @pytest.fixture
@@ -159,68 +148,6 @@ def test_the_status_line_names_the_operation_the_run_is_on() -> None:
     assert working_status() in body
 
 
-def test_the_speech_surface_offers_every_kind_of_editor() -> None:
-    fields = speech_fields()
-    values = speech_values()
-    assert {field.kind for field in fields} == set(FieldKind)
-    assert len({field.name for field in fields}) == len(fields)
-    assert all(field.name in values for field in fields)
-    assert all(field.step is not None for field in fields if field.kind is FieldKind.NUMBER)
-    assert all(field.choices for field in fields if field.kind is FieldKind.CHOICE)
-
-
-def test_a_row_reads_the_value_the_editor_opens_on() -> None:
-    assert value_text(1.0) == _TEMPO_START
-    assert value_text(1.05) == _TEMPO_STEPPED
-
-
-def test_editing_a_speech_number_keeps_the_confirmed_value() -> None:
-    async def scenario() -> None:
-        app: PrototypeApp = PrototypeApp(step=_HELD_STEP)
-        async with app.run_test(size=_FULL_SIZE) as pilot:
-            await pilot.pause()
-            app.commands.dispatch("tts")
-            await _settle(pilot)
-            assert _rows(app) == len(speech_fields())
-            assert _TEMPO_START in _labels(app)[_TEMPO_ROW]
-            await pilot.press("down")
-            await pilot.pause()
-            await pilot.press("enter")
-            await _settle(pilot)
-            assert app.screen.query_one(_VALUE_INPUT, Input).value == _TEMPO_START
-            await pilot.press("up")
-            await pilot.pause()
-            await pilot.press("enter")
-            await _settle(pilot)
-            assert _TEMPO_STEPPED in _labels(app)[_TEMPO_ROW]
-            assert app.screen.query_one(_SELECT_LIST, OptionList).highlighted == _TEMPO_ROW
-
-    _run(scenario())
-
-
-def test_leaving_a_speech_editor_keeps_the_value_the_row_had() -> None:
-    async def scenario() -> None:
-        app: PrototypeApp = PrototypeApp(step=_HELD_STEP)
-        async with app.run_test(size=_FULL_SIZE) as pilot:
-            await pilot.pause()
-            app.commands.dispatch("tts")
-            await _settle(pilot)
-            await pilot.press("down")
-            await pilot.pause()
-            await pilot.press("enter")
-            await _settle(pilot)
-            await pilot.press("up")
-            await pilot.pause()
-            await pilot.press("escape")
-            await _settle(pilot)
-            assert _TEMPO_START in _labels(app)[_TEMPO_ROW]
-            await pilot.press("escape")
-            await _settle(pilot)
-            assert _dialogs(app) == []
-
-    _run(scenario())
-
-
 def test_every_registered_theme_has_a_row_of_its_own() -> None:
     assert tuple(theme_id for theme_id, _, _ in THEME_ROWS) == THEME_IDS
     assert len({title for _, title, _ in THEME_ROWS}) == len(THEME_ROWS)
@@ -285,15 +212,6 @@ async def _settle(pilot: Any) -> None:
 
 def _text(app: AniShiftApp, selector: str) -> str:
     return str(app.query_one(selector, Static).content)
-
-
-def _labels(app: AniShiftApp) -> list[str]:
-    listing: OptionList = app.screen.query_one(_SELECT_LIST, OptionList)
-    return [str(option.prompt) for option in listing.options]
-
-
-def _rows(app: AniShiftApp) -> int:
-    return len(_labels(app))
 
 
 def _dialogs(app: AniShiftApp) -> list[str]:

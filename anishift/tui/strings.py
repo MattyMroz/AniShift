@@ -79,6 +79,10 @@ __all__ = [
     "HOME_MARK",
     "LOCATION_SEPARATOR",
     "MISSING_SURFACE",
+    "OBJECT_ADD_LABEL",
+    "OBJECT_REMOVE_LABEL",
+    "OBJECT_REMOVE_QUESTION",
+    "OBJECT_REMOVE_TITLE",
     "PALETTE_COMMAND_CATEGORY",
     "PALETTE_SUGGESTED_CATEGORY",
     "PALETTE_TITLE",
@@ -95,24 +99,26 @@ __all__ = [
     "RUN_PLANNING",
     "RUN_STEP_SPEECH",
     "RUN_WORKING",
+    "SECRET_CONFIGURED",
+    "SECRET_HINT",
+    "SECRET_MISSING",
+    "SECRET_OVERRIDDEN",
+    "SECRET_REMOVED",
+    "SECRET_REMOVE_LABEL",
+    "SECRET_REMOVE_QUESTION",
+    "SECRET_REMOVE_TITLE",
+    "SECRET_STORED",
     "SELECTION_SUMMARY",
     "SELECT_DISABLED_OPTION",
     "SELECT_FILTER_PLACEHOLDER",
     "SELECT_NO_RESULTS",
     "SETTINGS_OFF",
     "SETTINGS_ON",
-    "SETTING_BOOST_DESCRIPTION",
-    "SETTING_BOOST_TITLE",
-    "SETTING_CONCURRENCY_DESCRIPTION",
-    "SETTING_CONCURRENCY_TITLE",
-    "SETTING_ENGINE_DESCRIPTION",
-    "SETTING_ENGINE_TITLE",
-    "SETTING_GAIN_DESCRIPTION",
-    "SETTING_GAIN_TITLE",
-    "SETTING_RETRIES_DESCRIPTION",
-    "SETTING_RETRIES_TITLE",
-    "SETTING_TEMPO_DESCRIPTION",
-    "SETTING_TEMPO_TITLE",
+    "SETTING_EMPTY_VALUE",
+    "SETTING_ENV_READONLY",
+    "SETTING_INVALID_VALUE",
+    "SETTING_LIST_SEPARATOR",
+    "SETTING_UNSET",
     "STATUS_GLYPH",
     "SUGGESTION_COMPLETE_LABEL",
     "SUGGESTION_DISMISS_LABEL",
@@ -126,10 +132,6 @@ __all__ = [
     "TIP_GLYPH",
     "TIP_LABEL",
     "TIP_TEXT",
-    "TTS_ENGINE_EDGE",
-    "TTS_ENGINE_ELEVENBYTES",
-    "TTS_ENGINE_ELEVENLABS",
-    "TTS_ENGINE_SAPI",
     "VALUE_ABOVE_MAXIMUM",
     "VALUE_BELOW_MINIMUM",
     "VALUE_CONFIRM_HINT",
@@ -513,50 +515,56 @@ SETTINGS_ON: Final[str] = "On"
 SETTINGS_OFF: Final[str] = "Off"
 """Value text of a switch that is turned off."""
 
-SETTING_ENGINE_TITLE: Final[str] = "Engine"
-"""Title of the speech-engine field."""
+SETTING_UNSET: Final[str] = "Not set"
+"""Value text of an optional field that holds no value."""
 
-SETTING_ENGINE_DESCRIPTION: Final[str] = "Choose the registered speech engine"
-"""Description of the speech-engine field."""
+SETTING_EMPTY_VALUE: Final[str] = "Empty"
+"""Value text of a list or set field that holds no members."""
 
-SETTING_TEMPO_TITLE: Final[str] = "Tempo"
-"""Title of the speech-tempo field."""
+SETTING_LIST_SEPARATOR: Final[str] = ", "
+"""Separator between the members a list or set field shows."""
 
-SETTING_TEMPO_DESCRIPTION: Final[str] = "Adjust the rendered speech tempo"
-"""Description of the speech-tempo field."""
+SETTING_INVALID_VALUE: Final[str] = "This value is not accepted here"
+"""Reason shown when a typed value fails the field's own format."""
 
-SETTING_GAIN_TITLE: Final[str] = "Voice gain"
-"""Title of the voice-gain field."""
+SETTING_ENV_READONLY: Final[str] = "From the environment"
+"""Footer of a setting only the environment can supply, shown read-only."""
 
-SETTING_GAIN_DESCRIPTION: Final[str] = "Offset this voice against the mix"
-"""Description of the voice-gain field."""
+SECRET_CONFIGURED: Final[str] = "Configured"  # noqa: S105
+"""Status of a secret the environment already holds a value for."""
 
-SETTING_CONCURRENCY_TITLE: Final[str] = "Concurrency"
-"""Title of the request-concurrency field."""
+SECRET_MISSING: Final[str] = "Missing"  # noqa: S105
+"""Status of a secret the environment holds no value for."""
 
-SETTING_CONCURRENCY_DESCRIPTION: Final[str] = "Limit simultaneous requests of the engine"
-"""Description of the request-concurrency field."""
+SECRET_HINT: Final[str] = "Type a value to store it; the stored value is never shown"  # noqa: S105
+"""Hint of the secret editor, promising the value stays hidden."""
 
-SETTING_RETRIES_TITLE: Final[str] = "Retries"
-"""Title of the retry-count field."""
+SECRET_STORED: Final[str] = "Stored in .env; the next run uses it"  # noqa: S105
+"""Feedback shown after one secret was written to the environment file."""
 
-SETTING_RETRIES_DESCRIPTION: Final[str] = "Retry transient speech failures this often"
-"""Description of the retry-count field."""
+SECRET_OVERRIDDEN: Final[str] = "Stored in .env, but a shell variable overrides it until you restart the shell"  # noqa: S105
+"""Feedback shown when an exported variable still shadows the stored secret."""
 
-SETTING_BOOST_TITLE: Final[str] = "Speaker boost"
-"""Title of the speaker-boost field."""
+SECRET_REMOVED: Final[str] = "Removed from .env"  # noqa: S105
+"""Feedback shown after one secret was cleared from the environment file."""
 
-SETTING_BOOST_DESCRIPTION: Final[str] = "Ask the provider to boost the speaker"
-"""Description of the speaker-boost field."""
+SECRET_REMOVE_LABEL: Final[str] = "Clear secret"  # noqa: S105
+"""Action label of the key that clears the highlighted secret."""
 
-TTS_ENGINE_EDGE: Final[str] = "edge"
-"""Identifier of the Edge speech engine."""
+SECRET_REMOVE_TITLE: Final[str] = "Clear secret"  # noqa: S105
+"""Heading of the dialog confirming a secret removal."""
 
-TTS_ENGINE_ELEVENBYTES: Final[str] = "elevenbytes"
-"""Identifier of the ElevenBytes speech engine."""
+SECRET_REMOVE_QUESTION: Final[str] = "Remove {label} from .env?"  # noqa: S105
+"""Question the secret-removal dialog asks before clearing the key."""
 
-TTS_ENGINE_ELEVENLABS: Final[str] = "elevenlabs"
-"""Identifier of the ElevenLabs speech engine."""
+OBJECT_ADD_LABEL: Final[str] = "Add"
+"""Action label of the key that adds one item to an object list."""
 
-TTS_ENGINE_SAPI: Final[str] = "sapi"
-"""Identifier of the Windows SAPI speech engine."""
+OBJECT_REMOVE_LABEL: Final[str] = "Remove"
+"""Action label of the key that removes the highlighted object-list item."""
+
+OBJECT_REMOVE_TITLE: Final[str] = "Remove voice"
+"""Heading of the dialog confirming an object-list removal."""
+
+OBJECT_REMOVE_QUESTION: Final[str] = "Remove {alias}?"
+"""Question the object-list removal dialog asks before dropping an item."""

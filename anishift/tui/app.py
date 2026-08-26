@@ -28,7 +28,7 @@ from anishift.tui.messages import (
     WorkspaceLoaded,
 )
 from anishift.tui.screens.workspace import GroupRow, WorkspaceView
-from anishift.tui.settings.tree import open_speech_panel, speech_values
+from anishift.tui.settings.tree import SettingDomain, open_settings_panel
 from anishift.tui.state import FeedbackLevel, SessionState, UiFeedback, UiRoute
 from anishift.tui.strings import (
     COMMAND_THEME_TITLE,
@@ -56,6 +56,8 @@ if TYPE_CHECKING:
     from textual.events import Key, Resize
     from textual.geometry import Size
     from textual.types import CSSPathType
+
+    from anishift.application import AppService
 
 logger = get_logger(__name__)
 
@@ -108,11 +110,12 @@ class AniShiftApp(App[None]):
     ALLOW_SELECT: ClassVar[bool] = False
     TITLE: str | None = "AniShift"
 
-    def __init__(self) -> None:
+    def __init__(self, *, service: AppService | None = None) -> None:
         """Build the frame regions, select the stored theme and register the commands."""
         super().__init__()
         register_themes(self)
         self.theme = load_ui_state().theme
+        self._service: AppService | None = service
         self._state: SessionState = SessionState()
         self._body: Vertical = Vertical(id=BODY_ID)
         self._brand: Static = Static(id=BRAND_ID)
@@ -128,7 +131,6 @@ class AniShiftApp(App[None]):
         self._has_work: bool = False
         self._group_rows: tuple[GroupRow, ...] = ()
         self._run_status: str = ""
-        self._speech_values: dict[str, object] = speech_values()
         self._commands: CommandRegistry = CommandRegistry(lambda: self._state)
         self._commands.register((*global_commands(self), palette_command(self._open_palette)))
         self._composer: Composer = Composer(self._commands)
@@ -290,16 +292,23 @@ class AniShiftApp(App[None]):
         self._report_missing_surface()
 
     def open_translation(self) -> None:
-        """Report that the translation surface is not available yet."""
-        self._report_missing_surface()
+        """Offer the translation settings, each with the editor it needs."""
+        self._open_settings(SettingDomain.TRANSLATION)
 
     def open_prompts(self) -> None:
-        """Report that the prompts surface is not available yet."""
-        self._report_missing_surface()
+        """Offer the prompt settings, each with the editor it needs."""
+        self._open_settings(SettingDomain.PROMPTS)
 
     def open_tts(self) -> None:
-        """Offer the representative speech fields, each with the editor it needs."""
-        open_speech_panel(self, self._state, self._speech_values)
+        """Offer the speech settings, each with the editor it needs."""
+        self._open_settings(SettingDomain.TTS)
+
+    def _open_settings(self, domain: SettingDomain) -> None:
+        """Open the settings panel of *domain*, or report a missing backend."""
+        if self._service is None:
+            self._report_missing_surface()
+            return
+        open_settings_panel(self, self._state, self._service, domain)
 
     def open_theme(self) -> None:
         """Offer both themes, previewing every row and keeping only a confirmed one."""
