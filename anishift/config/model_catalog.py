@@ -20,7 +20,8 @@ Validation is deliberately two-tiered:
 Loading and filtering are pure local operations; nothing here opens a socket.
 
 Public API:
-    ModelProtocol: The four supported Foundry wire protocols.
+    ModelProtocol: The four supported Foundry wire protocols, re-exported from
+        ``anishift.services.llm.wire_protocol`` so the vocabulary has one owner.
     ProviderEntry, ModelEntry, ModelLimits, EnrollmentConfig, CatalogDefaults,
         CatalogIssue, ModelCatalog: Frozen catalog DTOs.
     ModelCatalogError: Typed error raised for an unusable catalog file.
@@ -35,7 +36,6 @@ from __future__ import annotations
 import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, Literal
@@ -45,6 +45,7 @@ import json5
 
 from anishift.errors import ConfigError, ErrorCode, ErrorContext
 from anishift.paths import config_path
+from anishift.services.llm.wire_protocol import ModelProtocol
 from anishift.utils.logger import get_logger
 
 __all__ = [
@@ -72,15 +73,6 @@ logger = get_logger(__name__)
 
 CatalogSection = Literal["root", "enrollment", "providers", "models", "defaults"]
 """Part of the catalog one configuration issue belongs to."""
-
-
-class ModelProtocol(StrEnum):
-    """Wire protocol a Foundry proxy provider speaks."""
-
-    OPENAI_CHAT = "openai_chat"
-    ANTHROPIC_MESSAGES = "anthropic_messages"
-    GOOGLE_GENERATE = "google_generate"
-    XAI_CHAT = "xai_chat"
 
 
 # ── Constants ────────────────────────────────────────────────────────────────

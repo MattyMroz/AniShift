@@ -4,6 +4,11 @@ Type-safe API-key configuration via pydantic-settings. Every field maps to an
 ``ANISHIFT_``-prefixed env var (or the same key in ``.env``). All keys are
 optional — a missing key only disables the engine that needs it, not the app.
 
+The single exception is the legacy, unprefixed ``FOUNDRY_API_TOKEN``, read as a
+compatibility source of the Palantir token. Which of the two variables wins is
+decided by ``resolve_palantir_token`` in the LLM adapter, so the rule has one
+implementation for both this class and a plain process environment.
+
 Usage:
     >>> from anishift.config.settings import Settings
     >>> s = Settings()
@@ -15,9 +20,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Self
 
 from dotenv import dotenv_values
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     DotEnvSettingsSource,
@@ -25,6 +31,12 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 from pydantic_settings.sources.utils import parse_env_vars
+
+from anishift.services.llm.engines.palantir.auth import (
+    PALANTIR_TOKEN_COMPAT_ENV_VAR,
+    PALANTIR_TOKEN_ENV_VAR,
+    resolve_palantir_token,
+)
 
 __all__ = ["Settings"]
 
@@ -76,6 +88,14 @@ class Settings(BaseSettings):
         openai_compatible_api_key: LLM provider ``openai_compatible``.
         openai_compatible_base_url: Base URL for the ``openai_compatible``
             provider (self-hosted / gateway endpoint).
+        palantir_token: Palantir Foundry token (LLM provider ``palantir``), read
+            from ``ANISHIFT_PALANTIR_TOKEN``. When that value is absent or
+            blank, the unprefixed ``FOUNDRY_API_TOKEN`` fills it for
+            compatibility with an older setup; a writer always targets the
+            canonical name.
+        palantir_token_compat: Raw compatibility value of the token, folded into
+            ``palantir_token`` and cleared during validation. Never read it
+            directly.
         workspace_root: Optional workspace path override.
     """
 
@@ -113,9 +133,42 @@ class Settings(BaseSettings):
         description="OpenAI-compatible endpoint base URL",
         repr=False,
     )
+    palantir_token: str = Field(default="", description="Palantir Foundry token", repr=False)
+    # The compatibility name carries no ``ANISHIFT_`` prefix, so it needs an
+    # explicit alias. It is a raw input of the precedence rule, not a setting.
+    palantir_token_compat: str = Field(
+        default="",
+        description="Compatibility source of the Palantir Foundry token",
+        repr=False,
+        exclude=True,
+        validation_alias=PALANTIR_TOKEN_COMPAT_ENV_VAR,
+    )
 
     # Workspace
     workspace_root: str = Field(default="", description="Workspace root override", repr=False)
+
+    @model_validator(mode="after")
+    def _resolve_palantir_token(self) -> Self:
+        """Apply the single token precedence rule owned by the LLM adapter.
+
+        Both variables are collected by the normal source chain, so a value may
+        come from the environment or from ``.env``. Choosing between them is
+        delegated to ``resolve_palantir_token`` instead of being re-implemented
+        here, which is what keeps a blank canonical value from resolving
+        differently in the two call paths.
+
+        Returns:
+            The settings instance with ``palantir_token`` holding the resolved
+            token and the compatibility field cleared.
+        """
+        self.palantir_token = resolve_palantir_token(
+            {
+                PALANTIR_TOKEN_ENV_VAR: self.palantir_token,
+                PALANTIR_TOKEN_COMPAT_ENV_VAR: self.palantir_token_compat,
+            },
+        )
+        self.palantir_token_compat = ""
+        return self
 
     @classmethod
     def settings_customise_sources(
