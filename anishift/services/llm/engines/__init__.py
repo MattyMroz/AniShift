@@ -27,6 +27,7 @@ LlmEngineId = Literal[
     "openai",
     "openai_compatible",
     "openrouter",
+    "palantir",
 ]
 """Stable registry identifiers for supported LLM providers."""
 
@@ -67,8 +68,19 @@ _REGISTRY: Final[dict[LlmEngineId, _RegistryEntry]] = {
         "OpenrouterService",
         "anishift.services.llm.engines.openrouter.constants",
     ),
+    "palantir": (
+        "anishift.services.llm.engines.palantir.service",
+        "PalantirService",
+        None,
+    ),
 }
-"""Provider module, service class, and optional suggestions module by engine id."""
+"""Provider module, service class, and optional suggestions module by engine id.
+
+Every entry names a provider package except ``palantir``, which names its
+``.service`` submodule: that package re-exports its configuration, token and
+routing layer, so importing the package here would evaluate the engine module
+and load an HTTP client on every registry lookup.
+"""
 
 
 def available_engine_ids() -> tuple[LlmEngineId, ...]:

@@ -298,6 +298,7 @@ class AppService:
             ("llm", "openai", "openai_api_key"),
             ("llm", "openai_compatible", "openai_compatible_api_key"),
             ("llm", "openrouter", "openrouter_api_key"),
+            ("llm", "palantir", "palantir_token"),
         )
         configured: dict[tuple[str, str], str] = {
             (domain, engine_id): secret_id for domain, engine_id, secret_id in secret_by_engine

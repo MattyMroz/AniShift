@@ -263,10 +263,22 @@ def palantir_response_error(*, alias: str, defect: PalantirResponseDefect) -> Ll
             ErrorCode.LLM_REQUEST_FAILED,
             alias=alias,
             message=f"Palantir proxy returned an unusable response: {defect.value}",
-            suggestion="Check that the provider route matches the protocol declared in the catalog.",
+            suggestion=_defect_suggestion(defect),
             defect=defect.value,
         ),
     )
+
+
+def _defect_suggestion(defect: PalantirResponseDefect) -> str:
+    """Return the fix hint that matches the kind of response defect.
+
+    A body that did not decode at all is usually a streamed or non-JSON
+    response rather than a mismatched protocol, so it names that cause instead
+    of sending the user to the catalog. No fragment of the body is included.
+    """
+    if defect is PalantirResponseDefect.UNREADABLE_BODY:
+        return "Check whether the route answered with a streamed or non-JSON body; these protocols send one object."
+    return "Check that the provider route matches the protocol declared in the catalog."
 
 
 def palantir_blocked_error(*, alias: str, finish_reason: object = None) -> LlmError:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Mapping
 from dataclasses import replace
@@ -36,6 +37,8 @@ from anishift.errors import RunConflictError
 from anishift.services.extraction import ExtractionRequest, ExtractionResult
 from anishift.services.media import DefaultMediaProbe
 
+_PALANTIR_TOKEN = "palantir-token-sentinel-deadbeef"  # noqa: S105
+
 
 class _UnusedExtraction:
     def extract(
@@ -49,13 +52,14 @@ class _UnusedExtraction:
         raise AssertionError("TXT flow must not extract media tracks")
 
 
-def _service(
+def _service(  # noqa: PLR0913 - one builder for every service variant the tests need
     tmp_path: Path,
     translation: FakeTranslationService,
     *,
     fail_group_id: str | None = None,
     preset_store: list[AutoPresetFile] | None = None,
     inspector: WorkspaceInspector | None = None,
+    settings: Settings | None = None,
 ) -> AppService:
     stored: list[AutoPresetFile] = preset_store if preset_store is not None else [default_preset_file()]
 
@@ -76,7 +80,7 @@ def _service(
 
     return AppService(
         workspace_root=tmp_path,
-        settings=Settings(_env_file=None),
+        settings=settings or Settings(_env_file=None),
         user_settings=UserSettings(),
         inspector=inspector or WorkspaceInspector(DefaultMediaProbe()),
         handler_factory=handlers,
@@ -204,6 +208,31 @@ def test_engine_availability_exposes_reasons_without_secret_values(tmp_path: Pat
     assert statuses["translation", "google"].is_available
     assert not statuses["translation", "deepl"].is_available
     assert statuses["translation", "deepl"].reason == "missing deepl_api_key; configure environment or open Tools"
+
+
+def test_engine_availability_reports_the_palantir_token_in_both_directions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in tuple(os.environ):
+        if name.startswith("ANISHIFT_"):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("FOUNDRY_API_TOKEN", raising=False)
+    without_token: AppService = _service(tmp_path, FakeTranslationService())
+    with_token: AppService = _service(
+        tmp_path,
+        FakeTranslationService(),
+        settings=Settings(_env_file=None, palantir_token=_PALANTIR_TOKEN),
+    )
+
+    missing = {(item.domain, item.engine_id): item for item in without_token.engine_availability()}
+    ready = {(item.domain, item.engine_id): item for item in with_token.engine_availability()}
+
+    assert not missing["llm", "palantir"].is_available
+    assert missing["llm", "palantir"].reason == "missing palantir_token; configure environment or open Tools"
+    assert ready["llm", "palantir"].is_available
+    assert ready["llm", "palantir"].reason == "ready"
+    assert _PALANTIR_TOKEN not in str(ready["llm", "palantir"])
 
 
 def test_bootstrap_builds_the_shared_service_without_creating_provider_clients(tmp_path: Path) -> None:
