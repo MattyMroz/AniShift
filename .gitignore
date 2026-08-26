@@ -290,6 +290,7 @@ workspace/**
 external/bin/*
 config/settings.json
 config/ui_state.json
+config/anishift.models.jsonc
 config/.shell_history
 config/prompts/**/*.txt
 

@@ -1,0 +1,64 @@
+{
+  // Local catalog of Palantir providers and model aliases.
+  //
+  // Copy this file to config/anishift.models.jsonc and adjust it to your own
+  // enrollment. The runtime file is gitignored, comments are preserved, and
+  // AniShift reads it locally: loading the catalog performs no network call.
+  //
+  // NEVER put a token, API key or Authorization header here. The catalog is
+  // rejected as invalid when any field name looks like a secret. The Palantir
+  // token belongs in the ANISHIFT_PALANTIR_TOKEN environment variable.
+  //
+  // An entry present below is NOT proof that the model is enabled in your
+  // enrollment. Availability is verified per session, never stored here.
+  "schema_version": 1,
+
+  // HTTPS origin of your enrollment, without a proxy path, query or fragment.
+  "enrollment": { "base_url": "https://example.palantirfoundry.com" },
+
+  // Relative proxy routes. The protocol decides how a request is built and
+  // must be one of: openai_chat, anthropic_messages, google_generate, xai_chat.
+  "providers": {
+    "foundry-openai": { "protocol": "openai_chat", "path": "/api/v2/llm/proxy/openai/v1" },
+    "foundry-anthropic": { "protocol": "anthropic_messages", "path": "/api/v2/llm/proxy/anthropic/v1" },
+    "foundry-google": { "protocol": "google_generate", "path": "/api/v2/llm/proxy/google/v1" },
+    "foundry-xai": { "protocol": "xai_chat", "path": "/api/v2/llm/proxy/xai/v1" }
+  },
+
+  // Alias -> provider model identifier. The alias is your stable ID; "model" is
+  // the exact identifier or RID sent to the proxy. Limits are optional safe
+  // metadata: a positive integer or null.
+  "models": {
+    "foundry/gpt-main": {
+      "provider": "foundry-openai",
+      "model": "replace-with-openai-model-id",
+      "label": "Foundry: model główny",
+      "experimental": false,
+      "limits": { "context": null, "input": null, "output": null }
+    },
+    "foundry/claude-main": {
+      "provider": "foundry-anthropic",
+      "model": "replace-with-anthropic-model-id",
+      "label": "Foundry: Claude",
+      "experimental": false,
+      "limits": { "context": null, "input": null, "output": null }
+    },
+    "foundry/gemini-main": {
+      "provider": "foundry-google",
+      "model": "replace-with-google-model-id",
+      "label": "Foundry: Gemini",
+      "experimental": false,
+      "limits": { "context": null, "input": null, "output": null }
+    },
+    "foundry/grok-main": {
+      "provider": "foundry-xai",
+      "model": "replace-with-xai-model-id",
+      "label": "Foundry: Grok",
+      "experimental": false,
+      "limits": { "context": null, "input": null, "output": null }
+    }
+  },
+
+  // Roles preselected on a fresh install. Both point at aliases defined above.
+  "defaults": { "primary": "foundry/gpt-main", "translation": "foundry/gpt-main" }
+}
