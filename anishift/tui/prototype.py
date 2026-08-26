@@ -1,8 +1,8 @@
-"""Temporary visual prototype of the shell, dropped together with its command in T-016."""
+"""Temporary visual prototype of the shell, launched on the production application facade."""
 
 from __future__ import annotations
 
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from textual import on
 
@@ -29,11 +29,15 @@ from anishift.tui.strings import (
 )
 from anishift.tui.widgets.composer import Composer
 
+if TYPE_CHECKING:
+    from anishift.application import AppService
+
 __all__ = [
     "DEMO_RUN_ID",
     "DEMO_STEP_SECONDS",
     "PrototypeApp",
     "demo_rows",
+    "production_service",
     "working_status",
 ]
 
@@ -57,6 +61,13 @@ def demo_rows() -> tuple[GroupRow, ...]:
     )
 
 
+def production_service() -> AppService:
+    """Compose the one application facade this launcher runs the shell on."""
+    from anishift.bootstrap import bootstrap, create_app_service  # noqa: PLC0415 - keeps the backend lazy
+
+    return create_app_service(bootstrap())
+
+
 def working_status() -> str:
     """Return the running state together with the operation it is on."""
     return f"{RUN_WORKING}{GROUP_COLUMN_GAP}{RUN_STEP_SPEECH}"
@@ -65,9 +76,9 @@ def working_status() -> str:
 class PrototypeApp(AniShiftApp):
     """The shell with one simulated sequence in place of every workflow needing a backend."""
 
-    def __init__(self, *, step: float = DEMO_STEP_SECONDS) -> None:
-        """Build the shell and hold the pace the simulated sequence advances at."""
-        super().__init__()
+    def __init__(self, *, service: AppService | None = None, step: float = DEMO_STEP_SECONDS) -> None:
+        """Compose the production facade unless one is given, then hold the simulated pace."""
+        super().__init__(service=service if service is not None else production_service())
         self._step: float = step
         self._rows: tuple[GroupRow, ...] = demo_rows()
 

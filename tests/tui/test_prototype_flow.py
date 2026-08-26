@@ -7,6 +7,7 @@ from typing import Any, Final
 
 import pytest
 from textual.widgets import Static
+from tui_fakes import offline_service
 
 from anishift.tui import ui_state
 from anishift.tui.app import THEME_ROWS, AniShiftApp
@@ -51,7 +52,7 @@ def state_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 def test_the_launcher_injects_the_simulated_sequence() -> None:
     async def scenario() -> None:
-        app: PrototypeApp = PrototypeApp(step=_HELD_STEP)
+        app: PrototypeApp = PrototypeApp(service=offline_service(), step=_HELD_STEP)
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             assert app.title == DEMO_TITLE
@@ -63,7 +64,7 @@ def test_the_launcher_injects_the_simulated_sequence() -> None:
 @pytest.mark.parametrize("size", _BOTH_SIZES)
 def test_the_prototype_opens_on_the_start_screen(size: tuple[int, int]) -> None:
     async def scenario() -> None:
-        app: PrototypeApp = PrototypeApp(step=_HELD_STEP)
+        app: PrototypeApp = PrototypeApp(service=offline_service(), step=_HELD_STEP)
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
             assert app.query_one("#app-brand").display
@@ -76,7 +77,7 @@ def test_the_prototype_opens_on_the_start_screen(size: tuple[int, int]) -> None:
 @pytest.mark.parametrize("size", _BOTH_SIZES)
 def test_one_empty_enter_walks_the_work_screen_to_a_result(size: tuple[int, int]) -> None:
     async def scenario() -> None:
-        app: PrototypeApp = PrototypeApp(step=_FAST_STEP)
+        app: PrototypeApp = PrototypeApp(service=offline_service(), step=_FAST_STEP)
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
             await pilot.press("enter")
@@ -93,7 +94,7 @@ def test_one_empty_enter_walks_the_work_screen_to_a_result(size: tuple[int, int]
 
 def test_the_result_covers_every_selected_group() -> None:
     async def scenario() -> None:
-        app: PrototypeApp = PrototypeApp(step=_FAST_STEP)
+        app: PrototypeApp = PrototypeApp(service=offline_service(), step=_FAST_STEP)
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             await pilot.press("enter")
@@ -107,7 +108,7 @@ def test_the_result_covers_every_selected_group() -> None:
 
 def test_a_second_enter_during_the_sequence_starts_no_second_run() -> None:
     async def scenario() -> None:
-        app: PrototypeApp = PrototypeApp(step=_HELD_STEP)
+        app: PrototypeApp = PrototypeApp(service=offline_service(), step=_HELD_STEP)
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             for _ in range(4):
@@ -156,7 +157,7 @@ def test_every_registered_theme_has_a_row_of_its_own() -> None:
 @pytest.mark.usefixtures("state_file")
 def test_the_theme_surface_previews_the_highlighted_theme_and_reverts() -> None:
     async def scenario() -> None:
-        app: PrototypeApp = PrototypeApp(step=_HELD_STEP)
+        app: PrototypeApp = PrototypeApp(service=offline_service(), step=_HELD_STEP)
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             assert app.theme == DARK_THEME_ID
@@ -176,7 +177,7 @@ def test_the_theme_surface_previews_the_highlighted_theme_and_reverts() -> None:
 @pytest.mark.usefixtures("state_file")
 def test_the_theme_surface_keeps_and_stores_a_confirmed_theme() -> None:
     async def scenario() -> None:
-        app: PrototypeApp = PrototypeApp(step=_HELD_STEP)
+        app: PrototypeApp = PrototypeApp(service=offline_service(), step=_HELD_STEP)
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             app.commands.dispatch("theme")

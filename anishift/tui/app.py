@@ -8,8 +8,9 @@ from textual import on
 from textual.app import App
 from textual.containers import Container, Vertical
 from textual.widgets import Static
+from textual.worker import Worker, WorkerState
 
-from anishift.tui import auto_trigger, lifecycle
+from anishift.tui import auto_trigger, lifecycle, workers
 from anishift.tui.brand import logo_for_size
 from anishift.tui.commands.catalog import EXIT_COMMAND_NAME, global_commands, palette_command
 from anishift.tui.commands.palette import palette_options
@@ -31,7 +32,7 @@ from anishift.tui.models.connect import open_connect_surface
 from anishift.tui.models.picker import open_model_picker
 from anishift.tui.screens.workspace import GroupRow, WorkspaceView
 from anishift.tui.settings.tree import SettingDomain, open_settings_panel
-from anishift.tui.state import FeedbackLevel, SessionState, UiFeedback, UiRoute
+from anishift.tui.state import FeedbackLevel, RunUiState, SessionState, UiFeedback, UiRoute
 from anishift.tui.strings import (
     COMMAND_THEME_TITLE,
     MISSING_SURFACE,
@@ -42,6 +43,7 @@ from anishift.tui.strings import (
     THEME_DARK_TITLE,
     THEME_LIGHT_DESCRIPTION,
     THEME_LIGHT_TITLE,
+    WORKER_FAILED,
 )
 from anishift.tui.theme import DARK_THEME_ID, LIGHT_THEME_ID, register_themes
 from anishift.tui.ui_state import UiState, load_ui_state, save_ui_state
@@ -57,9 +59,10 @@ if TYPE_CHECKING:
     from textual.content import Content
     from textual.events import Key, Resize
     from textual.geometry import Size
+    from textual.timer import Timer
     from textual.types import CSSPathType
 
-    from anishift.application import AppService, ModelProbeResult
+    from anishift.application import AppService, ExecutionPlan, ModelProbeResult
 
 logger = get_logger(__name__)
 
@@ -112,12 +115,14 @@ class AniShiftApp(App[None]):
     ALLOW_SELECT: ClassVar[bool] = False
     TITLE: str | None = "AniShift"
 
-    def __init__(self, *, service: AppService | None = None) -> None:
+    def __init__(self, *, service: AppService) -> None:
         """Build the frame regions, select the stored theme and register the commands."""
         super().__init__()
         register_themes(self)
         self.theme = load_ui_state().theme
-        self._service: AppService | None = service
+        self._service: AppService = service
+        self._pump: workers.RunEventPump | None = None
+        self._drain_timer: Timer | None = None
         self._state: SessionState = SessionState()
         self._model_availability: dict[str, ModelProbeResult] = {}
         self._body: Vertical = Vertical(id=BODY_ID)
@@ -139,9 +144,19 @@ class AniShiftApp(App[None]):
         self._composer: Composer = Composer(self._commands)
 
     @property
+    def service(self) -> AppService:
+        """The one application facade every workflow of this shell goes through."""
+        return self._service
+
+    @property
     def session_state(self) -> SessionState:
         """The session state this shell owns."""
         return self._state
+
+    @property
+    def is_draining(self) -> bool:
+        """Whether the shell currently drains the events of an active run."""
+        return self._pump is not None
 
     @property
     def commands(self) -> CommandRegistry:
@@ -227,6 +242,7 @@ class AniShiftApp(App[None]):
         """Give the Auto reservation back and keep the reason of the failed plan."""
         if not auto_trigger.release(self._state, generation=message.generation, reason=message.reason):
             return
+        self._stop_drain()
         self._render_frame()
 
     @on(Composer.EmptySubmitted)
@@ -242,26 +258,86 @@ class AniShiftApp(App[None]):
     @on(RunProgressed)
     def _on_run_progressed(self, message: RunProgressed) -> None:
         """Append events of the run the session currently tracks."""
-        if not self._accepts(message.generation, run_id=message.run_id):
+        if not self._accepts_run(message.generation, message.run_id, announced=message.announces_run):
             return
         lifecycle.record_run_events(self._state, message.events)
 
     @on(RunFinished)
     def _on_run_finished(self, message: RunFinished) -> None:
         """Store the terminal result of the run the session started."""
-        if not self._accepts(message.generation, run_id=message.run_id):
+        if not self._accepts_run(message.generation, message.run_id, announced=True):
             return
         lifecycle.finish_run(self._state, message.result)
+        self._stop_drain()
         self._render_frame()
 
     @on(RunFailed)
     def _on_run_failed(self, message: RunFailed) -> None:
         """End the tracked run without a result and keep its reason."""
-        if not self._accepts(message.generation, run_id=message.run_id):
+        if not self._accepts_run(message.generation, message.run_id, announced=True):
             return
         lifecycle.fail_run(self._state, message.reason)
+        self._stop_drain()
         logger.warning("Run ended without a result", generation=message.generation)
         self._render_frame()
+
+    @on(Worker.StateChanged)
+    def _on_worker_state_changed(self, message: Worker.StateChanged) -> None:
+        """Report the redacted failure of a worker that ended outside its own contract."""
+        if message.state is not WorkerState.ERROR:
+            return
+        generation: int | None = workers.worker_generation(message.worker.name)
+        if generation is None or not self._accepts(generation):
+            return
+        logger.error("Worker ended unexpectedly", operation=message.worker.group, generation=generation)
+        self._report_worker_failure()
+        self._stop_drain()
+        self._render_frame()
+
+    def start_execution(self, plan: ExecutionPlan) -> bool:
+        """Run *plan* off the UI thread, draining its events until it ends.
+
+        Refuses every view that has not reserved a generation through
+        ``begin_planning``, because only a planned view can enter the run its
+        events belong to. A refusal starts no worker and leaves the state
+        untouched.
+        """
+        if self._pump is not None or self._state.run_state is not RunUiState.PLANNING:
+            logger.error(
+                "Execution refused outside a planned view",
+                run_state=self._state.run_state.value,
+                draining=self._pump is not None,
+            )
+            return False
+        pump: workers.RunEventPump = workers.RunEventPump(self._state.generation)
+        self._pump = pump
+        self._drain_timer = self.set_interval(workers.DRAIN_INTERVAL_SECONDS, self.drain_run_events)
+        workers.execute(self, self._service, plan=plan, pump=pump)
+        return True
+
+    def drain_run_events(self) -> None:
+        """Deliver the events the active run buffered since the previous drain."""
+        pump: workers.RunEventPump | None = self._pump
+        if pump is None:
+            return
+        workers.flush(self, pump)
+
+    def _stop_drain(self) -> None:
+        """Stop the drain timer and release the pump of the run that ended."""
+        if self._drain_timer is not None:
+            self._drain_timer.stop()
+            self._drain_timer = None
+        self._pump = None
+
+    def _report_worker_failure(self) -> None:
+        """Leave the run or the reservation the crashed worker held, with a safe reason."""
+        if self._state.run_state in {RunUiState.RUNNING, RunUiState.CANCELLING}:
+            lifecycle.fail_run(self._state, WORKER_FAILED)
+            return
+        if self._state.run_state is RunUiState.PLANNING:
+            lifecycle.abandon_planning(self._state, WORKER_FAILED)
+            return
+        lifecycle.report_error(self._state, WORKER_FAILED)
 
     def open_init(self) -> None:
         """Report that the session-setup surface is not available yet."""
@@ -269,9 +345,6 @@ class AniShiftApp(App[None]):
 
     def open_connect(self) -> None:
         """Offer the enrollment address, the token and one confirmed connection test."""
-        if self._service is None:
-            self._report_missing_surface()
-            return
         open_connect_surface(self, self._state, self._service, self._model_availability)
 
     def show_status(self) -> None:
@@ -300,9 +373,6 @@ class AniShiftApp(App[None]):
 
     def open_model(self) -> None:
         """Offer every configured catalog alias and change only the main model."""
-        if self._service is None:
-            self._report_missing_surface()
-            return
         open_model_picker(self, self._state, self._service, self._model_availability)
 
     def open_translation(self) -> None:
@@ -318,10 +388,7 @@ class AniShiftApp(App[None]):
         self._open_settings(SettingDomain.TTS)
 
     def _open_settings(self, domain: SettingDomain) -> None:
-        """Open the settings panel of *domain*, or report a missing backend."""
-        if self._service is None:
-            self._report_missing_surface()
-            return
+        """Open the settings panel of *domain*."""
         open_settings_panel(self, self._state, self._service, domain)
 
     def open_theme(self) -> None:
@@ -390,6 +457,14 @@ class AniShiftApp(App[None]):
             return True
         logger.debug("Late message dropped", generation=generation)
         return False
+
+    def _accepts_run(self, generation: int, run_id: str, *, announced: bool) -> bool:
+        """Whether a run message is current, entering the run it authoritatively names."""
+        if not self._accepts(generation):
+            return False
+        if announced and self._state.active_run_id is None:
+            lifecycle.begin_run(self._state, run_id)
+        return self._accepts(generation, run_id=run_id)
 
     def _render_frame(self) -> None:
         """Redraw every region that projects the session state."""

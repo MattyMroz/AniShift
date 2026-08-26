@@ -166,6 +166,7 @@ __all__ = [
     "VALUE_RANGE_OPEN_END",
     "VALUE_REQUIRED",
     "VALUE_STEP_LABEL",
+    "WORKER_FAILED",
     "WORKSPACE_EMPTY",
 ]
 
@@ -266,6 +267,9 @@ WORKSPACE_EMPTY: Final[str] = "No supported files in workspace"
 
 MISSING_SURFACE: Final[str] = "This surface is not available yet"
 """Missing state a command reports while its own surface is not built."""
+
+WORKER_FAILED: Final[str] = "The operation could not be completed"
+"""Redacted reason of an operation that ended outside its own failure contract."""
 
 PALETTE_TITLE: Final[str] = "Commands"
 """Heading of the palette dialog."""

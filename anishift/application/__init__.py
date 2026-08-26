@@ -19,6 +19,8 @@ if TYPE_CHECKING:
         ModelProbeResult,
         SettingsDraft,
     )
+    from anishift.setup.doctor import CheckResult
+    from anishift.setup.installer import ResourceResult
 
 from anishift.application.artifacts import (
     Artifact,
@@ -84,6 +86,7 @@ __all__ = [
     "AutoPresetDraft",
     "BurnSubtitleProduct",
     "CancellationToken",
+    "CheckResult",
     "DiscoveryResult",
     "DiscoveryWarning",
     "EventBuffer",
@@ -110,6 +113,7 @@ __all__ = [
     "ProducedArtifact",
     "ProductIntent",
     "ProductKind",
+    "ResourceResult",
     "RunEvent",
     "RunEventEmitter",
     "RunEventKind",
@@ -135,6 +139,7 @@ __all__ = [
 _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "AppService": ("anishift.application.service", "AppService"),
     "AutoPresetDraft": ("anishift.application.service", "AutoPresetDraft"),
+    "CheckResult": ("anishift.setup.doctor", "CheckResult"),
     "DiscoveryResult": ("anishift.application.discovery", "DiscoveryResult"),
     "DiscoveryWarning": ("anishift.application.discovery", "DiscoveryWarning"),
     "InspectedSourceGroup": ("anishift.application.inspection", "InspectedSourceGroup"),
@@ -143,6 +148,7 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "ExecutionHandlerFactory": ("anishift.application.service", "ExecutionHandlerFactory"),
     "ModelAvailability": ("anishift.application.service", "ModelAvailability"),
     "ModelProbeResult": ("anishift.application.service", "ModelProbeResult"),
+    "ResourceResult": ("anishift.setup.installer", "ResourceResult"),
     "SettingsDraft": ("anishift.application.service", "SettingsDraft"),
     "WorkspaceInspector": ("anishift.application.inspection", "WorkspaceInspector"),
 }

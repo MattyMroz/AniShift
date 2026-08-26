@@ -7,19 +7,32 @@ from typing import TYPE_CHECKING
 
 from textual.message import Message
 
+from anishift.application import RunEventKind
+
 if TYPE_CHECKING:
-    from anishift.application import ExecutionPlan, InspectedWorkspace, RunEvent, RunResult
+    from anishift.application import (
+        CheckResult,
+        ExecutionPlan,
+        InspectedSourceGroup,
+        InspectedWorkspace,
+        ResourceResult,
+        RunEvent,
+        RunResult,
+    )
     from anishift.tui.state import UiRoute
 
 __all__ = [
     "AutoRequested",
     "CommandSubmitted",
+    "DoctorReported",
+    "GroupRegistered",
     "NavigationRequested",
     "PlanFailed",
     "PlanReady",
     "RunFailed",
     "RunFinished",
     "RunProgressed",
+    "SetupReported",
     "WorkspaceFailed",
     "WorkspaceLoaded",
 ]
@@ -63,6 +76,30 @@ class WorkspaceFailed(Message):
 
 
 @dataclass
+class GroupRegistered(Message):
+    """One external file was validated and its inspected group replaced."""
+
+    group: InspectedSourceGroup
+    generation: int
+
+
+@dataclass
+class DoctorReported(Message):
+    """Every technical diagnostic finished for the generation that asked for it."""
+
+    checks: tuple[CheckResult, ...]
+    generation: int
+
+
+@dataclass
+class SetupReported(Message):
+    """Installation of the configured external resources finished."""
+
+    resources: tuple[ResourceResult, ...]
+    generation: int
+
+
+@dataclass
 class PlanReady(Message):
     """Plan built for the generation that asked for it."""
 
@@ -85,6 +122,11 @@ class RunProgressed(Message):
     events: tuple[RunEvent, ...]
     run_id: str
     generation: int
+
+    @property
+    def announces_run(self) -> bool:
+        """Whether this batch carries the event that opens its own run."""
+        return any(event.kind is RunEventKind.RUN_STARTED for event in self.events)
 
 
 @dataclass

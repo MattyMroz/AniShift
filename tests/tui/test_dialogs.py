@@ -10,6 +10,7 @@ import pytest
 from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static
+from tui_fakes import shell
 
 import anishift.tui.dialogs
 from anishift.tui.app import AniShiftApp
@@ -80,6 +81,16 @@ _PROBE_ID: Final[str] = "focus-probe"
 _OTHER_ID: Final[str] = "focus-other"
 
 _ACTION_KEY: Final[str] = "ctrl+d"
+
+_LONG_ROWS: Final[int] = 60
+
+_POINTER_OFFSETS: Final[tuple[tuple[int, int], ...]] = ((4, 0), (4, 1), (4, 3), (4, 11))
+
+_FIXED_POINTER: Final[tuple[int, int]] = (4, 1)
+
+_POINTER_REPEATS: Final[int] = 5
+
+_CLICK_ROW: Final[int] = 2
 
 _FORBIDDEN_DIALOG_IMPORTS: Final[tuple[str, ...]] = (
     "anishift.application",
@@ -258,7 +269,7 @@ def test_a_move_that_would_leave_the_list_changes_nothing(
 
 def test_the_palette_key_opens_the_shared_selector_with_the_registry_rows() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             await pilot.press(PALETTE_KEY)
@@ -276,7 +287,7 @@ def test_the_palette_key_opens_the_shared_selector_with_the_registry_rows() -> N
 
 def test_a_second_palette_key_never_opens_a_second_dialog() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             await pilot.press(PALETTE_KEY)
@@ -291,7 +302,7 @@ def test_a_second_palette_key_never_opens_a_second_dialog() -> None:
 
 def test_open_dialog_refuses_a_second_dialog_and_says_so() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             first: bool = open_dialog(app, app.session_state, ConfirmDialog(title="A", question="A?"))
@@ -307,7 +318,7 @@ def test_open_dialog_refuses_a_second_dialog_and_says_so() -> None:
 def test_the_palette_runs_the_picked_command_through_the_one_registry() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             await pilot.press(PALETTE_KEY)
@@ -326,7 +337,7 @@ def test_the_palette_runs_the_picked_command_through_the_one_registry() -> None:
 def test_escape_cancels_a_dialog_and_gives_the_focus_back() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             probe: Input = await _mount_probe(app, pilot)
@@ -346,7 +357,7 @@ def test_escape_cancels_a_dialog_and_gives_the_focus_back() -> None:
 def test_the_exit_key_cancels_a_dialog_instead_of_leaving_the_application() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             probe: Input = await _mount_probe(app, pilot)
@@ -363,7 +374,7 @@ def test_the_exit_key_cancels_a_dialog_instead_of_leaving_the_application() -> N
 
 def test_a_dismiss_focuses_whatever_now_carries_the_remembered_id() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             slot: Widget = app.query_one("#app-composer")
@@ -383,7 +394,7 @@ def test_a_dismiss_focuses_whatever_now_carries_the_remembered_id() -> None:
 
 def test_a_dismiss_never_refocuses_an_element_that_is_gone() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             probe: Input = await _mount_probe(app, pilot)
@@ -402,7 +413,7 @@ def test_a_dismiss_never_refocuses_an_element_that_is_gone() -> None:
 def test_a_disabled_row_is_never_confirmed() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(
@@ -428,7 +439,7 @@ def test_a_selector_returns_its_decision_without_performing_it() -> None:
     async def scenario() -> None:
         stored: dict[str, str] = {"theme": "anishift-dark"}
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(
@@ -458,7 +469,7 @@ def test_the_highlight_hook_announces_the_row_the_dialog_opens_on(
 ) -> None:
     async def scenario() -> None:
         seen: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(
@@ -478,7 +489,7 @@ def test_the_highlight_hook_announces_the_row_the_dialog_opens_on(
 def test_the_highlight_hook_announces_every_move_of_the_cursor() -> None:
     async def scenario() -> None:
         seen: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(
@@ -500,7 +511,7 @@ def test_the_highlight_hook_announces_every_move_of_the_cursor() -> None:
 def test_the_highlight_hook_announces_what_the_filter_leaves_highlighted() -> None:
     async def scenario() -> None:
         seen: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(
@@ -521,7 +532,7 @@ def test_the_highlight_hook_announces_what_the_filter_leaves_highlighted() -> No
 def test_the_highlight_hook_stays_silent_on_a_heading_and_on_an_empty_result() -> None:
     async def scenario() -> None:
         seen: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(
@@ -552,7 +563,7 @@ def test_a_live_preview_built_on_the_hook_can_roll_back_after_escape() -> None:
         before: str = "anishift-dark"
         previewed: list[str] = []
         results: list[SelectOutcome[str] | None] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(
@@ -581,7 +592,7 @@ def test_a_live_preview_built_on_the_hook_can_roll_back_after_escape() -> None:
 
 def test_a_dialog_without_a_caller_callback_changes_nothing_at_all() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             state: SessionState = app.session_state
@@ -624,7 +635,7 @@ def test_the_dialog_import_guard_flags_every_way_to_persist(source: str) -> None
 
 def test_the_cursor_starts_on_the_current_value_or_where_the_caller_asked() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             current: SelectDialog[str] = SelectDialog(
@@ -652,7 +663,7 @@ def test_the_cursor_starts_on_the_current_value_or_where_the_caller_asked() -> N
 
 def test_the_cursor_skips_headings_and_wraps_around_the_list() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(
@@ -674,7 +685,7 @@ def test_the_cursor_skips_headings_and_wraps_around_the_list() -> None:
 
 def test_the_list_keys_beat_the_text_cursor_of_the_filter_box() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(
@@ -700,7 +711,7 @@ def test_the_list_keys_beat_the_text_cursor_of_the_filter_box() -> None:
 
 def test_a_page_key_moves_ten_rows_without_wrapping() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(
@@ -723,7 +734,7 @@ def test_a_page_key_moves_ten_rows_without_wrapping() -> None:
 def test_an_empty_result_stays_closable() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(title="Wybór", options=(_option("alpha"),))
@@ -745,7 +756,7 @@ def test_an_empty_result_stays_closable() -> None:
 def test_the_multi_mode_toggles_with_space_and_confirms_the_whole_set() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(
@@ -773,7 +784,7 @@ def test_the_multi_mode_toggles_with_space_and_confirms_the_whole_set() -> None:
 def test_an_action_key_returns_the_action_with_the_highlighted_value() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(
@@ -799,7 +810,7 @@ def test_an_action_key_returns_the_action_with_the_highlighted_value() -> None:
 def test_a_click_on_the_dim_backdrop_cancels_the_dialog() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = _selector()
@@ -812,9 +823,72 @@ def test_a_click_on_the_dim_backdrop_cancels_the_dialog() -> None:
     _run(scenario())
 
 
+def test_the_pointer_moves_neither_the_cursor_nor_the_scroll_of_a_long_selector() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: SelectDialog[str] = _long_selector()
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            listing: OptionList = dialog.query_one("#select-list", OptionList)
+            parked: tuple[int | None, int] = await _park_deep(pilot, listing)
+            assert listing.max_scroll_y > 0
+            assert parked[1] > 0
+            for offset in _POINTER_OFFSETS:
+                await pilot.hover(listing, offset=offset)
+                await pilot.pause()
+                assert (listing.highlighted, listing.scroll_offset.y) == parked
+
+    _run(scenario())
+
+
+def test_repeated_pointer_moves_at_one_offset_leave_a_long_selector_exactly_where_it_was() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: SelectDialog[str] = _long_selector()
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            listing: OptionList = dialog.query_one("#select-list", OptionList)
+            parked: tuple[int | None, int] = await _park_deep(pilot, listing)
+            assert parked[1] > 0
+            seen: list[tuple[int | None, int]] = []
+            for _ in range(_POINTER_REPEATS):
+                await pilot.hover(listing, offset=_FIXED_POINTER)
+                await pilot.pause()
+                seen.append((listing.highlighted, listing.scroll_offset.y))
+            assert seen == [parked] * _POINTER_REPEATS
+
+    _run(scenario())
+
+
+def test_a_click_on_a_row_of_a_long_selector_still_confirms_that_row() -> None:
+    async def scenario() -> None:
+        results: list[Any] = []
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: SelectDialog[str] = _long_selector()
+            open_dialog(app, app.session_state, dialog, results.append)
+            await pilot.pause()
+            listing: OptionList = dialog.query_one("#select-list", OptionList)
+            await pilot.press("end")
+            await pilot.pause()
+            assert listing.scroll_offset.y > 0
+            row: int = listing.scroll_offset.y + _CLICK_ROW
+            assert 0 < row < _LONG_ROWS - 1
+            await pilot.click(listing, offset=(4, _CLICK_ROW))
+            await pilot.pause()
+            assert results == [SelectOutcome.single(f"a{row}")]
+
+    _run(scenario())
+
+
 def test_shrinking_the_terminal_never_pushes_the_panel_off_the_screen() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: SelectDialog[str] = SelectDialog(title="Wybór", options=(_option("a"),), size=DialogSize.XLARGE)
@@ -832,7 +906,7 @@ def test_shrinking_the_terminal_never_pushes_the_panel_off_the_screen() -> None:
 def test_a_refused_text_stays_in_the_editor_with_its_reason() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: PromptDialog = PromptDialog(
@@ -861,7 +935,7 @@ def test_a_refused_text_stays_in_the_editor_with_its_reason() -> None:
 def test_a_required_text_refuses_an_empty_value() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: PromptDialog = PromptDialog(title="Nazwa")
@@ -878,7 +952,7 @@ def test_a_required_text_refuses_an_empty_value() -> None:
 def test_an_optional_text_returns_nothing_when_it_is_left_empty() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: PromptDialog = PromptDialog(title="Nazwa", optional=True)
@@ -895,7 +969,7 @@ def test_an_optional_text_returns_nothing_when_it_is_left_empty() -> None:
 def test_a_decimal_field_steps_and_refuses_a_value_outside_its_range() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: NumberDialog = NumberDialog(
@@ -934,7 +1008,7 @@ def test_a_decimal_field_steps_and_refuses_a_value_outside_its_range() -> None:
 def test_a_whole_field_refuses_a_decimal_and_returns_an_integer() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: NumberDialog = NumberDialog(title="Liczba", value=2, kind=NumberKind.WHOLE, minimum=0.0)
@@ -962,7 +1036,7 @@ def test_a_whole_field_refuses_a_decimal_and_returns_an_integer() -> None:
 def test_a_confirmation_answers_yes_on_enter_and_no_on_escape() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             first: ConfirmDialog = ConfirmDialog(title="Wyjście", question="Zamknąć aplikację?")
@@ -986,7 +1060,7 @@ def test_a_reorder_commits_the_whole_moved_list() -> None:
     async def scenario() -> None:
         results: list[Any] = []
         items: list[str] = ["a", "b", "c"]
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: ReorderDialog = ReorderDialog(title="Kolejność", items=items)
@@ -1009,7 +1083,7 @@ def test_a_reorder_rolls_the_whole_list_back_on_escape() -> None:
     async def scenario() -> None:
         results: list[Any] = []
         items: list[str] = ["a", "b", "c"]
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: ReorderDialog = ReorderDialog(title="Kolejność", items=items)
@@ -1028,7 +1102,7 @@ def test_a_reorder_rolls_the_whole_list_back_on_escape() -> None:
 
 def test_a_removal_needs_its_confirmation() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: ReorderDialog = ReorderDialog(title="Kolejność", items=("a", "b"))
@@ -1054,7 +1128,7 @@ def test_a_removal_needs_its_confirmation() -> None:
 
 def test_a_reorder_adds_a_candidate_without_stacking_a_second_dialog() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: ReorderDialog = ReorderDialog(title="Kolejność", items=("a",), candidates=("a", "b", "c"))
@@ -1077,7 +1151,7 @@ def test_a_reorder_adds_a_candidate_without_stacking_a_second_dialog() -> None:
 
 def test_a_reorder_says_when_there_is_nothing_left_to_add() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: ReorderDialog = ReorderDialog(title="Kolejność", items=("a",), candidates=("a",))
@@ -1094,7 +1168,7 @@ def test_a_reorder_says_when_there_is_nothing_left_to_add() -> None:
 def test_escape_leaves_the_add_mode_before_it_leaves_the_dialog() -> None:
     async def scenario() -> None:
         results: list[Any] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             dialog: ReorderDialog = ReorderDialog(title="Kolejność", items=("a",), candidates=("a", "b"))
@@ -1109,6 +1183,29 @@ def test_escape_leaves_the_add_mode_before_it_leaves_the_dialog() -> None:
             await pilot.press("escape")
             await pilot.pause()
             assert results == [None]
+
+    _run(scenario())
+
+
+def test_the_pointer_moves_neither_the_cursor_nor_the_scroll_of_a_long_reorder() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: ReorderDialog = ReorderDialog(
+                title="Kolejność",
+                items=tuple(f"a{index}" for index in range(_LONG_ROWS)),
+            )
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            listing: OptionList = dialog.query_one("#reorder-list", OptionList)
+            parked: tuple[int | None, int] = await _park_deep(pilot, listing)
+            assert listing.max_scroll_y > 0
+            assert parked[1] > 0
+            for offset in _POINTER_OFFSETS:
+                await pilot.hover(listing, offset=offset)
+                await pilot.pause()
+                assert (listing.highlighted, listing.scroll_offset.y) == parked
 
     _run(scenario())
 
@@ -1135,6 +1232,18 @@ def _dialog_sources() -> list[Path]:
 
 def _selector() -> SelectDialog[str]:
     return SelectDialog(title="Wybór", options=(_option("a"), _option("b")))
+
+
+def _long_selector() -> SelectDialog[str]:
+    return SelectDialog(title="Wybór", options=tuple(_option(f"a{index}") for index in range(_LONG_ROWS)))
+
+
+async def _park_deep(pilot: Any, listing: OptionList) -> tuple[int | None, int]:
+    await pilot.press("end")
+    await pilot.press("pageup")
+    await pilot.press("pageup")
+    await pilot.pause()
+    return (listing.highlighted, listing.scroll_offset.y)
 
 
 def _spy_dispatch(app: AniShiftApp, calls: list[str]) -> None:

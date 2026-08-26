@@ -7,6 +7,7 @@ from typing import Any, Final
 
 from textual.app import App
 from textual.widgets import Input, Static
+from tui_fakes import shell
 
 from anishift.tui.app import AniShiftApp
 from anishift.tui.commands.catalog import (
@@ -215,7 +216,7 @@ def test_the_shell_switches_off_the_built_in_textual_palette() -> None:
 
 def test_the_shell_registers_the_frozen_catalog_once() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             assert len(app.commands.slash_names()) == _CATALOG_SIZE
@@ -227,7 +228,7 @@ def test_the_shell_registers_the_frozen_catalog_once() -> None:
 
 def test_the_reserved_key_runs_the_palette_command_through_the_registry() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             assert not isinstance(app.screen, SelectDialog)
@@ -241,7 +242,7 @@ def test_the_reserved_key_runs_the_palette_command_through_the_registry() -> Non
 def test_a_screen_scope_key_runs_and_stops_running_with_its_scope() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             app.commands.register(
@@ -261,7 +262,7 @@ def test_a_screen_scope_key_runs_and_stops_running_with_its_scope() -> None:
 
 def test_the_shell_hint_row_takes_its_labels_from_the_registry() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             keys: Static = app.query_one(f"#{KEYS_ID}", Static)
@@ -277,7 +278,7 @@ def test_the_shell_hint_row_takes_its_labels_from_the_registry() -> None:
 def test_the_inherited_quit_key_runs_the_exit_command_through_the_registry() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -290,7 +291,7 @@ def test_the_inherited_quit_key_runs_the_exit_command_through_the_registry() -> 
 
 def test_the_inherited_quit_key_still_closes_the_application() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             assert app.is_running is True
@@ -304,7 +305,7 @@ def test_the_inherited_quit_key_still_closes_the_application() -> None:
 def test_the_exit_key_leaves_through_the_one_exit_command() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -318,7 +319,7 @@ def test_the_exit_key_leaves_through_the_one_exit_command() -> None:
 
 def test_the_exit_key_answers_before_textual_notifies_about_it() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _field(app).focus()

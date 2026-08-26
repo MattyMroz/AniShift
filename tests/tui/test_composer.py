@@ -11,6 +11,7 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.input import Selection
+from tui_fakes import shell
 
 from anishift.tui.app import AniShiftApp
 from anishift.tui.commands.catalog import EXIT_COMMAND_NAME, PALETTE_COMMAND_NAME
@@ -52,6 +53,10 @@ _DIALOG_INPUT_ID: Final[str] = "value-input"
 _REPEAT: Final[int] = 12
 
 _SUGGESTION_LIMIT: Final[int] = 20
+
+_OVERLAY_ROW: Final[int] = 1
+
+_POINTER_REPEATS: Final[int] = 5
 
 _REASON: Final[str] = "Nie ukończono"
 
@@ -144,7 +149,7 @@ def test_the_context_line_names_the_mode_the_provider_and_the_model() -> None:
 
 def test_the_composer_starts_with_the_default_context_line() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             assert str(app.query_one(f"#{CONTEXT_ID}", Static).content) == context_text(
@@ -158,7 +163,7 @@ def test_the_composer_starts_with_the_default_context_line() -> None:
 
 def test_the_context_line_follows_what_the_shell_says() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             app.query_one(Composer).show_context(mode="Manual", provider="Foundry", model="claude")
@@ -170,7 +175,7 @@ def test_the_context_line_follows_what_the_shell_says() -> None:
 
 def test_the_composer_shows_the_placeholder_of_the_specification() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             assert _field(app).placeholder == COMPOSER_PLACEHOLDER
@@ -181,7 +186,7 @@ def test_the_composer_shows_the_placeholder_of_the_specification() -> None:
 
 def test_only_the_accent_edge_and_its_padding_stand_in_front_of_the_text_field() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             box: Widget = app.query_one(f"#{BOX_ID}")
@@ -192,7 +197,7 @@ def test_only_the_accent_edge_and_its_padding_stand_in_front_of_the_text_field()
 
 def test_the_field_holds_the_focus_as_soon_as_the_shell_mounts() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             assert app.focused is _field(app)
@@ -205,7 +210,7 @@ def test_the_field_holds_the_focus_as_soon_as_the_shell_mounts() -> None:
 def test_one_empty_enter_publishes_exactly_one_auto_request() -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)
@@ -221,7 +226,7 @@ def test_one_empty_enter_publishes_exactly_one_auto_request() -> None:
 def test_two_enters_in_one_burst_publish_one_auto_request() -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)
@@ -236,7 +241,7 @@ def test_two_enters_in_one_burst_publish_one_auto_request() -> None:
 def test_two_enters_separated_by_a_full_turn_still_publish_one_auto_request() -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)
@@ -253,7 +258,7 @@ def test_two_enters_separated_by_a_full_turn_still_publish_one_auto_request() ->
 def test_a_repeated_enter_key_publishes_one_auto_request() -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)
@@ -268,7 +273,7 @@ def test_a_repeated_enter_key_publishes_one_auto_request() -> None:
 def test_blanks_and_enter_publish_one_auto_request_and_clear_the_field() -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)
@@ -287,7 +292,7 @@ def test_blanks_and_enter_publish_one_auto_request_and_clear_the_field() -> None
 def test_no_empty_enter_starts_anything_while_the_session_is_busy(busy: RunUiState) -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)
@@ -304,7 +309,7 @@ def test_no_empty_enter_starts_anything_while_the_session_is_busy(busy: RunUiSta
 def test_the_field_keeps_its_blanks_when_the_reservation_is_refused() -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)
@@ -323,7 +328,7 @@ def test_the_field_keeps_its_blanks_when_the_reservation_is_refused() -> None:
 def test_an_open_dialog_takes_the_focus_and_no_enter_starts_auto() -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)
@@ -343,7 +348,7 @@ def test_an_open_dialog_takes_the_focus_and_no_enter_starts_auto() -> None:
 def test_only_the_field_of_the_composer_can_start_auto() -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)
@@ -363,7 +368,7 @@ def test_only_the_field_of_the_composer_can_start_auto() -> None:
 def test_the_shell_answers_no_enter_of_its_own() -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)
@@ -386,7 +391,7 @@ def test_the_shell_declares_no_bindings_of_its_own() -> None:
 def test_shift_enter_is_never_read_as_an_empty_line() -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)
@@ -401,7 +406,7 @@ def test_shift_enter_is_never_read_as_an_empty_line() -> None:
 def test_pasting_blanks_never_submits_anything() -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)
@@ -418,7 +423,7 @@ def test_pasting_a_command_and_a_newline_never_runs_it() -> None:
     async def scenario() -> None:
         calls: list[str] = []
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -436,7 +441,7 @@ def test_plain_text_stays_in_the_field_and_touches_nothing() -> None:
     async def scenario() -> None:
         calls: list[str] = []
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -455,7 +460,7 @@ def test_plain_text_stays_in_the_field_and_touches_nothing() -> None:
 
 def test_plain_text_offers_no_suggestions() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             await pilot.press(*"theme")
@@ -467,7 +472,7 @@ def test_plain_text_offers_no_suggestions() -> None:
 
 def test_a_slash_line_offers_the_rows_of_the_one_registry() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             await pilot.press("/")
@@ -485,7 +490,7 @@ def test_a_slash_line_offers_the_rows_of_the_one_registry() -> None:
 def test_enter_writes_the_highlighted_suggestion_and_runs_nothing() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -505,7 +510,7 @@ def test_enter_writes_the_highlighted_suggestion_and_runs_nothing() -> None:
 def test_ctrl_p_walks_the_suggestions_while_they_are_offered() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -525,7 +530,7 @@ def test_ctrl_p_walks_the_suggestions_while_they_are_offered() -> None:
 def test_ctrl_p_opens_the_command_list_while_no_suggestion_is_offered() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -540,7 +545,7 @@ def test_ctrl_p_opens_the_command_list_while_no_suggestion_is_offered() -> None:
 def test_ctrl_c_empties_a_field_that_holds_something() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -558,7 +563,7 @@ def test_ctrl_c_empties_a_field_that_holds_something() -> None:
 def test_ctrl_c_leaves_the_application_once_the_field_holds_nothing() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -573,7 +578,7 @@ def test_ctrl_c_leaves_the_application_once_the_field_holds_nothing() -> None:
 def test_ctrl_d_leaves_the_application() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -586,7 +591,7 @@ def test_ctrl_d_leaves_the_application() -> None:
 
 def test_the_word_keys_of_the_reference_walk_and_delete_backwards() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             field: Input = _field(app)
@@ -611,7 +616,7 @@ def test_the_word_keys_of_the_reference_walk_and_delete_backwards() -> None:
 
 def test_the_pointer_carries_the_one_highlight_to_the_row_it_rests_on() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             await pilot.press("/")
@@ -625,9 +630,32 @@ def test_the_pointer_carries_the_one_highlight_to_the_row_it_rests_on() -> None:
     _run(scenario())
 
 
+def test_the_pointer_carries_the_highlight_without_ever_scrolling_the_overlay() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("/")
+            await pilot.pause()
+            listing: OptionList = _suggestions(app)
+            assert listing.max_scroll_y > 0
+            await pilot.press("up")
+            await pilot.pause()
+            scrolled: int = listing.scroll_offset.y
+            assert scrolled > 0
+            seen: list[tuple[int | None, int]] = []
+            for _ in range(_POINTER_REPEATS):
+                await pilot.hover(listing, offset=(4, _OVERLAY_ROW))
+                await pilot.pause()
+                seen.append((listing.highlighted, listing.scroll_offset.y))
+            assert seen == [(scrolled + _OVERLAY_ROW, scrolled)] * _POINTER_REPEATS
+
+    _run(scenario())
+
+
 def test_only_the_text_field_lets_one_select_what_it_holds() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             await pilot.press(*"/theme")
@@ -645,7 +673,7 @@ def test_only_the_text_field_lets_one_select_what_it_holds() -> None:
 def test_a_second_enter_runs_the_name_the_first_one_wrote() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -664,7 +692,7 @@ def test_a_second_enter_runs_the_name_the_first_one_wrote() -> None:
 def test_a_click_runs_the_suggestion_it_lands_on() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -683,7 +711,7 @@ def test_a_click_runs_the_suggestion_it_lands_on() -> None:
 def test_moving_the_highlight_changes_which_name_enter_writes() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -704,7 +732,7 @@ def test_moving_the_highlight_changes_which_name_enter_writes() -> None:
 
 def test_the_highlight_wraps_at_the_first_suggestion() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             await pilot.press(*"/th")
@@ -721,7 +749,7 @@ def test_the_highlight_wraps_at_the_first_suggestion() -> None:
 def test_tab_completes_the_name_and_runs_nothing() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -740,7 +768,7 @@ def test_tab_completes_the_name_and_runs_nothing() -> None:
 
 def test_tab_keeps_moving_the_focus_while_no_suggestion_is_offered() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             probe: Input = Input(id=_PROBE_ID)
@@ -756,7 +784,7 @@ def test_tab_keeps_moving_the_focus_while_no_suggestion_is_offered() -> None:
 
 def test_escape_hides_the_suggestions_and_keeps_the_typed_line() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             await pilot.press(*"/th")
@@ -772,7 +800,7 @@ def test_escape_hides_the_suggestions_and_keeps_the_typed_line() -> None:
 @pytest.mark.parametrize("line", ["/", "/th"])
 def test_deleting_the_typed_line_hides_the_suggestions(line: str) -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             await pilot.press(*line)
@@ -788,7 +816,7 @@ def test_deleting_the_typed_line_hides_the_suggestions(line: str) -> None:
 
 def test_completing_a_suggestion_keeps_the_list_closed() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             await pilot.press(*"/th")
@@ -805,7 +833,7 @@ def test_a_bare_slash_never_reaches_the_registry() -> None:
     async def scenario() -> None:
         calls: list[str] = []
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -827,7 +855,7 @@ def test_a_bare_slash_never_reaches_the_registry() -> None:
 def test_an_unknown_command_shows_one_close_name_and_runs_nothing() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -847,7 +875,7 @@ def test_an_unknown_command_shows_one_close_name_and_runs_nothing() -> None:
 def test_an_unknown_command_without_a_close_name_names_nothing() -> None:
     async def scenario() -> None:
         calls: list[str] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -867,7 +895,7 @@ def test_a_command_that_opens_a_route_clears_the_field() -> None:
     async def scenario() -> None:
         calls: list[str] = []
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -889,7 +917,7 @@ def test_the_auto_command_never_starts_a_run() -> None:
     async def scenario() -> None:
         calls: list[str] = []
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
@@ -910,7 +938,7 @@ def test_the_auto_command_never_starts_a_run() -> None:
 def test_a_failed_plan_gives_the_gate_back_to_the_next_empty_enter() -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)
@@ -929,7 +957,7 @@ def test_a_failed_plan_gives_the_gate_back_to_the_next_empty_enter() -> None:
 def test_a_plan_failure_of_a_replaced_generation_never_reopens_the_gate() -> None:
     async def scenario() -> None:
         requests: list[int] = []
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_auto_requests(app, requests)

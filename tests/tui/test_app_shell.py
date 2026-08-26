@@ -13,6 +13,7 @@ import pytest
 from textual.containers import Container
 from textual.geometry import Region
 from textual.widgets import Static
+from tui_fakes import shell
 
 import anishift.tui
 from anishift.application import InspectedWorkspace, RunEvent, RunEventKind
@@ -283,7 +284,7 @@ def test_the_import_guard_flags_a_backend_import() -> None:
 
 def test_shell_mounts_the_fixed_frame_without_a_backend() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             for frame_id in _FRAME_IDS:
@@ -296,7 +297,7 @@ def test_shell_mounts_the_fixed_frame_without_a_backend() -> None:
 
 def test_the_start_screen_keeps_the_work_area_empty() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             assert app.query_one(WorkspaceView).display is False
@@ -307,7 +308,7 @@ def test_the_start_screen_keeps_the_work_area_empty() -> None:
 
 def test_an_inspection_without_sources_shows_the_base_state_in_the_work_area() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             app.post_message(WorkspaceLoaded(workspace=_empty_workspace(), generation=app.session_state.generation))
@@ -323,7 +324,7 @@ def test_an_inspection_without_sources_shows_the_base_state_in_the_work_area() -
 
 def test_a_work_area_with_a_surface_outranks_the_start_block() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             app.post_message(WorkspaceLoaded(workspace=_empty_workspace(), generation=app.session_state.generation))
@@ -338,7 +339,7 @@ def test_a_work_area_with_a_surface_outranks_the_start_block() -> None:
 
 def test_shell_shows_the_full_wordmark_and_no_header_bar() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             assert app.screen.has_class("compact") is False
@@ -351,7 +352,7 @@ def test_shell_shows_the_full_wordmark_and_no_header_bar() -> None:
 @pytest.mark.parametrize("size", [_FULL_SIZE, _SMALL_SIZE])
 def test_every_fixed_region_stays_inside_the_visible_screen(size: tuple[int, int]) -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
             height: int = size[1]
@@ -369,7 +370,7 @@ def test_every_fixed_region_stays_inside_the_visible_screen(size: tuple[int, int
 @pytest.mark.parametrize("size", [_FULL_SIZE, _SMALL_SIZE])
 def test_a_work_surface_taller_than_the_terminal_keeps_the_composer_on_screen(size: tuple[int, int]) -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
             host: Container = app.query_one(f"#{CONTENT_ID}", Container)
@@ -388,7 +389,7 @@ def test_a_work_surface_taller_than_the_terminal_keeps_the_composer_on_screen(si
 
 def test_a_work_surface_taller_than_the_terminal_scrolls_inside_the_work_area() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             host: Container = app.query_one(f"#{CONTENT_ID}", Container)
@@ -402,7 +403,7 @@ def test_a_work_surface_taller_than_the_terminal_scrolls_inside_the_work_area() 
 
 def test_shrinking_the_terminal_keeps_every_fixed_region_on_screen() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             regions: dict[str, object] = {frame_id: app.query_one(frame_id) for frame_id in _FRAME_IDS}
@@ -420,7 +421,7 @@ def test_shrinking_the_terminal_keeps_every_fixed_region_on_screen() -> None:
 
 def test_the_start_screen_renders_the_canonical_block_in_order() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             lines: list[str] = _rendered(app)
@@ -441,7 +442,7 @@ def test_the_start_screen_renders_the_canonical_block_in_order() -> None:
 @pytest.mark.parametrize("size", [_FULL_SIZE, _SMALL_SIZE])
 def test_the_start_block_keeps_the_gaps_of_the_specification(size: tuple[int, int]) -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
             lines: list[str] = _rendered(app)
@@ -459,7 +460,7 @@ def test_the_start_block_keeps_the_gaps_of_the_specification(size: tuple[int, in
 
 def test_the_accent_edge_reaches_the_half_row_closing_the_box() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             box: Region = app.query_one(f"#{BOX_ID}").region
@@ -476,7 +477,7 @@ def test_the_accent_edge_reaches_the_half_row_closing_the_box() -> None:
 @pytest.mark.parametrize("size", [_FULL_SIZE, _SMALL_SIZE])
 def test_the_key_hints_hang_on_the_left_edge_of_the_composer_box(size: tuple[int, int]) -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
             box: Region = app.query_one(f"#{BOX_ID}").region
@@ -494,7 +495,7 @@ def test_the_key_hints_hang_on_the_left_edge_of_the_composer_box(size: tuple[int
 
 def test_the_start_block_sits_vertically_centred_between_the_free_rows() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             above: int = app.query_one(f"#{CONTENT_ID}").region.height
@@ -507,7 +508,7 @@ def test_the_start_block_sits_vertically_centred_between_the_free_rows() -> None
 
 def test_only_the_composer_edge_owns_a_border_on_the_start_screen() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             bordered: list[str] = [
@@ -520,7 +521,7 @@ def test_only_the_composer_edge_owns_a_border_on_the_start_screen() -> None:
 
 def test_the_bottom_bar_shows_the_location_and_the_version() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             bar: BottomBar = app.query_one(BottomBar)
@@ -534,7 +535,7 @@ def test_the_bottom_bar_shows_the_location_and_the_version() -> None:
 
 def test_the_tip_outlives_the_wordmark_as_the_terminal_shrinks() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             assert app.query_one(f"#{TIP_ID}", Static).display is True
@@ -555,7 +556,7 @@ def test_the_tip_outlives_the_wordmark_as_the_terminal_shrinks() -> None:
 
 def test_shrinking_the_terminal_never_shrinks_the_wordmark() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             brand: Static = app.query_one("#app-brand", Static)
@@ -570,7 +571,7 @@ def test_shrinking_the_terminal_never_shrinks_the_wordmark() -> None:
 
 def test_growing_the_terminal_restores_the_full_layout() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_SMALL_SIZE) as pilot:
             await pilot.pause()
             assert app.screen.has_class("compact") is True
@@ -583,7 +584,7 @@ def test_growing_the_terminal_restores_the_full_layout() -> None:
 
 def test_navigation_moves_the_route_and_hides_the_workspace_view() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             app.post_message(NavigationRequested(UiRoute.AUTO))
@@ -596,7 +597,7 @@ def test_navigation_moves_the_route_and_hides_the_workspace_view() -> None:
 
 def test_navigation_keeps_the_drafts_of_the_session() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             draft: GroupIntentDraft = GroupIntentDraft(group_id="ep01", products=set())
@@ -612,7 +613,7 @@ def test_navigation_keeps_the_drafts_of_the_session() -> None:
 
 def test_a_late_run_event_of_an_old_generation_changes_nothing() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             generation: int | None = begin_planning(app.session_state)
@@ -630,7 +631,7 @@ def test_a_late_run_event_of_an_old_generation_changes_nothing() -> None:
 
 def test_a_run_event_of_another_run_changes_nothing() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             generation: int | None = begin_planning(app.session_state)
@@ -645,7 +646,7 @@ def test_a_run_event_of_another_run_changes_nothing() -> None:
 
 def test_a_late_failure_of_an_old_generation_never_reaches_the_state() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             app.post_message(WorkspaceFailed(reason="Skanowanie nie powiodło się", generation=-1))
@@ -660,7 +661,7 @@ def test_a_late_failure_of_an_old_generation_never_reaches_the_state() -> None:
 
 def test_a_failure_of_the_current_generation_reaches_the_state() -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             generation: int = app.session_state.generation
@@ -674,7 +675,7 @@ def test_a_failure_of_the_current_generation_reaches_the_state() -> None:
 @pytest.mark.parametrize("size", [_FULL_SIZE, _SMALL_SIZE])
 def test_shell_mounts_at_both_canonical_sizes(size: tuple[int, int]) -> None:
     async def scenario() -> None:
-        app: AniShiftApp = AniShiftApp()
+        app: AniShiftApp = shell()
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
             assert app.query_one("#app-composer") is not None
