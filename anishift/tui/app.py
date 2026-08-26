@@ -10,35 +10,44 @@ from textual.containers import Container, Vertical
 from textual.widgets import Static
 from textual.worker import Worker, WorkerState
 
-from anishift.tui import auto_trigger, lifecycle, workers
+from anishift.tui import auto_trigger, lifecycle, tools, workers
 from anishift.tui.brand import logo_for_size
 from anishift.tui.commands.catalog import EXIT_COMMAND_NAME, global_commands, palette_command
 from anishift.tui.commands.palette import palette_options
 from anishift.tui.commands.registry import CommandRegistry
 from anishift.tui.dialogs.base import open_dialog
 from anishift.tui.dialogs.select import SelectDialog, SelectOption, SelectOutcome, SelectOutcomeKind
+from anishift.tui.dialogs.value import ConfirmDialog
 from anishift.tui.messages import (
     AutoRequested,
+    DoctorReported,
     NavigationRequested,
     PlanFailed,
     PlanReady,
     RunFailed,
     RunFinished,
     RunProgressed,
+    SetupReported,
     WorkspaceFailed,
     WorkspaceLoaded,
 )
 from anishift.tui.models.connect import open_connect_surface
-from anishift.tui.models.picker import open_model_picker
+from anishift.tui.models.picker import load_catalog, open_model_picker
+from anishift.tui.screens.tools import ToolsView
 from anishift.tui.screens.workspace import GroupRow, WorkspaceView
 from anishift.tui.settings.tree import SettingDomain, open_settings_panel
-from anishift.tui.state import FeedbackLevel, RunUiState, SessionState, UiFeedback, UiRoute
+from anishift.tui.state import RunUiState, SessionState, UiRoute
 from anishift.tui.strings import (
+    COMMAND_DOCTOR_TITLE,
+    COMMAND_EXIT_TITLE,
+    COMMAND_INIT_TITLE,
     COMMAND_THEME_TITLE,
-    MISSING_SURFACE,
+    EXIT_ACTIVE_RUN_QUESTION,
     PALETTE_COMMAND_CATEGORY,
     PALETTE_SUGGESTED_CATEGORY,
     PALETTE_TITLE,
+    SETUP_ACTION_TITLE,
+    SETUP_CONFIRM_QUESTION,
     THEME_DARK_DESCRIPTION,
     THEME_DARK_TITLE,
     THEME_LIGHT_DESCRIPTION,
@@ -63,6 +72,7 @@ if TYPE_CHECKING:
     from textual.types import CSSPathType
 
     from anishift.application import AppService, ExecutionPlan, ModelProbeResult
+    from anishift.config.model_catalog import ModelCatalog
 
 logger = get_logger(__name__)
 
@@ -101,6 +111,11 @@ THEME_ROWS: Final[tuple[tuple[str, str, str], ...]] = (
 )
 """Id, title and description of every theme the shell offers a user."""
 
+BUSY_RUN_STATES: Final[frozenset[RunUiState]] = frozenset(
+    {RunUiState.PLANNING, RunUiState.RUNNING, RunUiState.CANCELLING},
+)
+"""Run states holding work in flight, which an exit has to confirm first."""
+
 
 def is_compact(*, width: int, height: int) -> bool:
     """Whether a terminal of this size has to use the dense layout."""
@@ -129,6 +144,7 @@ class AniShiftApp(App[None]):
         self._brand: Static = Static(id=BRAND_ID)
         self._host: Container = Container(id=CONTENT_ID)
         self._workspace_view: WorkspaceView = WorkspaceView()
+        self._tools_view: ToolsView = ToolsView()
         self._composer_slot: Container = Container(id=COMPOSER_SLOT_ID)
         self._hints: StartHints = StartHints()
         self._spacer: Container = Container(id=SPACER_ID)
@@ -139,8 +155,12 @@ class AniShiftApp(App[None]):
         self._has_work: bool = False
         self._group_rows: tuple[GroupRow, ...] = ()
         self._run_status: str = ""
+        self._tools_report: tools.ToolsReport | None = None
+        self._tools_intent: tools.ToolsIntent | None = None
         self._commands: CommandRegistry = CommandRegistry(lambda: self._state)
-        self._commands.register((*global_commands(self), palette_command(self._open_palette)))
+        self._commands.register(
+            (*global_commands(self), palette_command(self._open_palette), tools.setup_action(self.run_setup)),
+        )
         self._composer: Composer = Composer(self._commands)
 
     @property
@@ -164,6 +184,11 @@ class AniShiftApp(App[None]):
         return self._commands
 
     @property
+    def tools_report(self) -> tools.ToolsReport | None:
+        """The report the work area shows, while one tools command asked for it."""
+        return self._tools_report
+
+    @property
     def model_availability(self) -> dict[str, ModelProbeResult]:
         """Availability answers of this session alone, never written anywhere."""
         return self._model_availability
@@ -173,6 +198,7 @@ class AniShiftApp(App[None]):
         with self._body:
             with self._host:
                 yield self._workspace_view
+                yield self._tools_view
             yield self._brand
             with self._composer_slot:
                 yield self._composer
@@ -281,6 +307,23 @@ class AniShiftApp(App[None]):
         logger.warning("Run ended without a result", generation=message.generation)
         self._render_frame()
 
+    @on(DoctorReported)
+    def _on_doctor_reported(self, message: DoctorReported) -> None:
+        """Show the diagnostics in the form the command that asked for them expects."""
+        if not self._accepts(message.generation):
+            return
+        if self._tools_intent is tools.ToolsIntent.INIT:
+            self._show_tools(tools.init_report(message.checks, self._session_facts(), self._commands))
+            return
+        self._show_tools(tools.doctor_report(message.checks))
+
+    @on(SetupReported)
+    def _on_setup_reported(self, message: SetupReported) -> None:
+        """Show the answer of every resource the confirmed installation touched."""
+        if not self._accepts(message.generation):
+            return
+        self._show_tools(tools.setup_report(message.resources))
+
     @on(Worker.StateChanged)
     def _on_worker_state_changed(self, message: Worker.StateChanged) -> None:
         """Report the redacted failure of a worker that ended outside its own contract."""
@@ -340,28 +383,49 @@ class AniShiftApp(App[None]):
         lifecycle.report_error(self._state, WORKER_FAILED)
 
     def open_init(self) -> None:
-        """Report that the session-setup surface is not available yet."""
-        self._report_missing_surface()
+        """Ask for every diagnostic, then propose the first steps that are still missing."""
+        self._collect_diagnostics(tools.ToolsIntent.INIT, COMMAND_INIT_TITLE)
 
     def open_connect(self) -> None:
         """Offer the enrollment address, the token and one confirmed connection test."""
         open_connect_surface(self, self._state, self._service, self._model_availability)
 
     def show_status(self) -> None:
-        """Report that the status surface is not available yet."""
-        self._report_missing_surface()
+        """Show the safe summary of this session, holding no secret and no path."""
+        self._show_tools(tools.status_report(self._session_facts()))
 
     def show_debug(self) -> None:
-        """Report that the diagnostics surface is not available yet."""
-        self._report_missing_surface()
+        """Show the wider diagnostics, which extend the rows of the status report."""
+        catalog: ModelCatalog | None = load_catalog(self._state, self._service)
+        runtime: tools.RuntimeFacts = tools.runtime_facts(
+            self._state,
+            self._model_availability,
+            catalog,
+            draining=self.is_draining,
+        )
+        self._show_tools(tools.debug_report(self._session_facts(), runtime))
 
     def show_help(self) -> None:
-        """Report that the help surface is not available yet."""
-        self._report_missing_surface()
+        """Show every command, action and key the registry holds right now."""
+        self._show_tools(tools.help_report(self._commands))
 
     def exit_app(self) -> None:
-        """Leave the application."""
-        self.exit()
+        """Leave the application, asking first while work is still in flight."""
+        if self._state.run_state not in BUSY_RUN_STATES:
+            self.exit()
+            return
+
+        def confirmed(accepted: bool | None) -> None:
+            """Leave only once the user accepts abandoning the work in flight."""
+            if accepted:
+                self.exit()
+
+        open_dialog(
+            self,
+            self._state,
+            ConfirmDialog(title=COMMAND_EXIT_TITLE, question=EXIT_ACTIVE_RUN_QUESTION),
+            confirmed,
+        )
 
     def open_auto(self) -> None:
         """Show the automatic-mode route."""
@@ -423,8 +487,42 @@ class AniShiftApp(App[None]):
         open_dialog(self, self._state, dialog, chosen)
 
     def run_doctor(self) -> None:
-        """Report that the doctor surface is not available yet."""
-        self._report_missing_surface()
+        """Ask for every diagnostic and show all of it, with every suggestion it carries."""
+        self._collect_diagnostics(tools.ToolsIntent.DOCTOR, COMMAND_DOCTOR_TITLE)
+
+    def run_setup(self) -> None:
+        """Install the external tools, but only after the user confirms the download."""
+
+        def confirmed(accepted: bool | None) -> None:
+            """Start the installation the user confirmed, or leave everything alone."""
+            if not accepted:
+                return
+            self._tools_intent = tools.ToolsIntent.SETUP
+            self._show_tools(tools.pending_report(SETUP_ACTION_TITLE))
+            workers.run_setup(self, self._service, generation=self._state.generation)
+
+        open_dialog(
+            self,
+            self._state,
+            ConfirmDialog(title=SETUP_ACTION_TITLE, question=SETUP_CONFIRM_QUESTION),
+            confirmed,
+        )
+
+    def _collect_diagnostics(self, intent: tools.ToolsIntent, title: str) -> None:
+        """Collect every diagnostic off the UI thread, showing *title* while it runs."""
+        self._tools_intent = intent
+        self._show_tools(tools.pending_report(title))
+        workers.run_doctor(self, self._service, generation=self._state.generation)
+
+    def _session_facts(self) -> tools.SessionFacts:
+        """Collect the facts of this session from the state and the one facade."""
+        return tools.session_facts(self._state, self._service, self._model_availability)
+
+    def _show_tools(self, report: tools.ToolsReport) -> None:
+        """Show *report* in the work area, on the route the tools commands share."""
+        self._tools_report = report
+        lifecycle.navigate(self._state, UiRoute.TOOLS)
+        self._render_frame()
 
     def _open_palette(self) -> None:
         """Open the palette of every command and action the session allows."""
@@ -447,10 +545,6 @@ class AniShiftApp(App[None]):
 
         open_dialog(self, self._state, SelectDialog(title=PALETTE_TITLE, options=options), chosen)
 
-    def _report_missing_surface(self) -> None:
-        """Store the feedback of a command whose surface is not available yet."""
-        self._state.feedback = UiFeedback(level=FeedbackLevel.INFO, message=MISSING_SURFACE)
-
     def _accepts(self, generation: int, *, run_id: str | None = None) -> bool:
         """Whether a delivered message still belongs to the current view."""
         if lifecycle.accepts_message(self._state, generation=generation, run_id=run_id):
@@ -468,8 +562,11 @@ class AniShiftApp(App[None]):
 
     def _render_frame(self) -> None:
         """Redraw every region that projects the session state."""
-        self._has_work = bool(self._group_rows) or self._state.workspace is not None
-        self._workspace_view.display = self._state.route is UiRoute.WORKSPACE and self._has_work
+        has_groups: bool = bool(self._group_rows) or self._state.workspace is not None
+        self._has_work = has_groups or self._tools_report is not None
+        self._workspace_view.display = self._state.route is UiRoute.WORKSPACE and has_groups
+        self._tools_view.display = self._state.route is UiRoute.TOOLS and self._tools_report is not None
+        self._tools_view.show(self._tools_report)
         if self._group_rows:
             self._workspace_view.show_groups(self._group_rows, status=self._run_status)
         else:
