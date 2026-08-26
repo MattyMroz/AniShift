@@ -344,7 +344,9 @@ __all__ = [
     "VALUE_ABOVE_MAXIMUM",
     "VALUE_BELOW_MINIMUM",
     "VALUE_CONFIRM_HINT",
+    "VALUE_DISCARD_PROMPT",
     "VALUE_LESS_LABEL",
+    "VALUE_LONG_TEXT_HINT",
     "VALUE_MORE_LABEL",
     "VALUE_NOT_A_NUMBER",
     "VALUE_OPTIONAL_HINT",
@@ -352,6 +354,7 @@ __all__ = [
     "VALUE_RANGE_LABEL",
     "VALUE_RANGE_OPEN_END",
     "VALUE_REQUIRED",
+    "VALUE_SAVE_LABEL",
     "VALUE_STEP_LABEL",
     "WORKER_FAILED",
     "WORKSPACE_EMPTY",
@@ -631,6 +634,15 @@ VALUE_MORE_LABEL: Final[str] = "More"
 
 VALUE_LESS_LABEL: Final[str] = "Less"
 """Action label of the key lowering a number by one step."""
+
+VALUE_SAVE_LABEL: Final[str] = "Save"
+"""Action label of the key committing a whole multiline value."""
+
+VALUE_LONG_TEXT_HINT: Final[str] = "Enter adds a line  Ctrl+S saves  Esc discards"
+"""Hint of the multiline editor, naming the key of every way out of it."""
+
+VALUE_DISCARD_PROMPT: Final[str] = "Press Esc again to discard the changes"
+"""Reason shown while a discard of edited lines waits for its second key."""
 
 REORDER_MOVE_UP_LABEL: Final[str] = "Move up"
 """Action label of the key moving the highlighted member one place up."""

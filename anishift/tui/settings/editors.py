@@ -8,7 +8,14 @@ from typing import TYPE_CHECKING, Any, Final
 from anishift.tui.dialogs.base import open_dialog
 from anishift.tui.dialogs.reorder import ReorderDialog
 from anishift.tui.dialogs.select import SelectAction, SelectDialog, SelectOption, SelectOutcomeKind
-from anishift.tui.dialogs.value import ConfirmDialog, NumberDialog, NumberKind, PromptDialog, toggle_boolean
+from anishift.tui.dialogs.value import (
+    ConfirmDialog,
+    LongTextDialog,
+    NumberDialog,
+    NumberKind,
+    PromptDialog,
+    toggle_boolean,
+)
 from anishift.tui.state import FeedbackLevel, UiFeedback
 from anishift.tui.strings import (
     OBJECT_ADD_LABEL,
@@ -30,6 +37,7 @@ if TYPE_CHECKING:
 
     from anishift.application import AppService
     from anishift.config.field_catalog import SettingSpec, SettingValue
+    from anishift.tui.dialogs.base import DialogScreen
     from anishift.tui.dialogs.select import SelectOutcome
     from anishift.tui.dialogs.value import Validator
     from anishift.tui.state import SessionState
@@ -56,6 +64,7 @@ class EditorKind(StrEnum):
 
     SELECT = "select"
     TEXT = "text"
+    LONG_TEXT = "long_text"
     NUMBER = "number"
     TOGGLE = "toggle"
     MULTI_SELECT = "multi_select"
@@ -69,7 +78,7 @@ def editor_for(spec: SettingSpec) -> EditorKind:
 
     value_type = spec.value_type
     if value_type in {SettingValueType.STRING, SettingValueType.OPTIONAL_STRING}:
-        return EditorKind.SELECT if spec.allowed_values else EditorKind.TEXT
+        return _text_editor(spec)
     if value_type in {
         SettingValueType.INTEGER,
         SettingValueType.OPTIONAL_INTEGER,
@@ -122,7 +131,7 @@ def open_field_editor(  # noqa: PLR0913 - one editor threads the full editing co
     if kind is EditorKind.SELECT:
         _open_select(app, state, service, spec, current, on_committed)
         return
-    if kind is EditorKind.TEXT:
+    if kind in {EditorKind.TEXT, EditorKind.LONG_TEXT}:
         _open_text(app, state, service, spec, current, on_committed)
         return
     if kind is EditorKind.NUMBER:
@@ -135,6 +144,18 @@ def open_field_editor(  # noqa: PLR0913 - one editor threads the full editing co
         _open_reorder(app, state, service, spec, current, on_committed)
         return
     _open_object_wizard(app, state, service, spec, current, on_committed)
+
+
+def _text_editor(spec: SettingSpec) -> EditorKind:
+    """Return the editor one textual setting opens: a choice, one line or many lines."""
+    if spec.allowed_values:
+        return EditorKind.SELECT
+    return EditorKind.LONG_TEXT if _spans_lines(spec) else EditorKind.TEXT
+
+
+def _spans_lines(spec: SettingSpec) -> bool:
+    """Whether *spec* holds a value that spans lines, which no secret ever does here."""
+    return not spec.is_secret and isinstance(spec.default, str) and "\n" in spec.default
 
 
 def _open_select(  # noqa: PLR0913 - one editor threads the full editing context
@@ -179,12 +200,14 @@ def _open_text(  # noqa: PLR0913 - one editor threads the full editing context
             _commit(state, service, spec, value)
         on_committed()
 
-    open_dialog(
-        app,
-        state,
-        PromptDialog(title=spec.label, value=text, optional=optional, validate=_text_validator(spec)),
-        keep,
-    )
+    open_dialog(app, state, _text_dialog(spec, text, optional=optional), keep)
+
+
+def _text_dialog(spec: SettingSpec, text: str, *, optional: bool) -> DialogScreen[str | None]:
+    """Return the one editor *spec* changes its text in, over as many lines as it takes."""
+    if editor_for(spec) is EditorKind.LONG_TEXT:
+        return LongTextDialog(title=spec.label, value=text, optional=optional, validate=_text_validator(spec))
+    return PromptDialog(title=spec.label, value=text, optional=optional, validate=_text_validator(spec))
 
 
 def _open_number(  # noqa: PLR0913 - one editor threads the full editing context

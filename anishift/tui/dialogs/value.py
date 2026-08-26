@@ -1,4 +1,4 @@
-"""The editors one value is changed with: text, number and confirmation."""
+"""The editors one value is changed with: text, multiline text, number and confirmation."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 from textual import on
 from textual.binding import Binding
-from textual.widgets import Input, Static
+from textual.widgets import Input, Static, TextArea
 
 from anishift.tui.dialogs.base import DialogScreen, DialogSize
 from anishift.tui.strings import (
@@ -16,7 +16,9 @@ from anishift.tui.strings import (
     VALUE_ABOVE_MAXIMUM,
     VALUE_BELOW_MINIMUM,
     VALUE_CONFIRM_HINT,
+    VALUE_DISCARD_PROMPT,
     VALUE_LESS_LABEL,
+    VALUE_LONG_TEXT_HINT,
     VALUE_MORE_LABEL,
     VALUE_NOT_A_NUMBER,
     VALUE_OPTIONAL_HINT,
@@ -24,6 +26,7 @@ from anishift.tui.strings import (
     VALUE_RANGE_LABEL,
     VALUE_RANGE_OPEN_END,
     VALUE_REQUIRED,
+    VALUE_SAVE_LABEL,
     VALUE_STEP_LABEL,
 )
 
@@ -33,10 +36,14 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CONFIRM_HINT",
+    "DISCARD_PROMPT",
+    "LONG_TEXT_HINT",
+    "LONG_TEXT_SAVE_KEY",
     "NOT_A_NUMBER_TEXT",
     "OPTIONAL_HINT",
     "REQUIRED_VALUE_TEXT",
     "ConfirmDialog",
+    "LongTextDialog",
     "NumberDialog",
     "NumberKind",
     "PromptDialog",
@@ -60,6 +67,15 @@ OPTIONAL_HINT: Final[str] = VALUE_OPTIONAL_HINT
 CONFIRM_HINT: Final[str] = VALUE_CONFIRM_HINT
 """Hint of the confirmation dialog."""
 
+LONG_TEXT_HINT: Final[str] = VALUE_LONG_TEXT_HINT
+"""Hint of the multiline editor, naming the key of every way out of it."""
+
+DISCARD_PROMPT: Final[str] = VALUE_DISCARD_PROMPT
+"""Reason shown while a discard of edited lines waits for its second key."""
+
+LONG_TEXT_SAVE_KEY: Final[str] = "ctrl+s"
+"""Key committing a multiline value, kept off the lines ``Enter`` adds."""
+
 Validator = Callable[[str], str | None]
 """Caller's own check of one typed text: a reason, or ``None`` when it passed."""
 
@@ -80,6 +96,12 @@ _ERROR_ID: Final[str] = "value-error"
 
 _MESSAGE_ID: Final[str] = "confirm-message"
 """Id of the question the confirmation dialog asks."""
+
+_AREA_ID: Final[str] = "value-area"
+"""Id of the surface a multiline value is edited in."""
+
+_ERROR_CLASS: Final[str] = "dialog-error"
+"""Class marking the message row of the multiline editor as a refusal."""
 
 _RANGE_DASH: Final[str] = " – "
 """Separator between the two ends of a range."""
@@ -125,6 +147,18 @@ def toggle_boolean(current: bool) -> bool:
 def _number_text(value: float) -> str:
     """Shortest honest text of one number, without a trailing ``.0``."""
     return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def _refusal(text: str, *, optional: bool, validate: Validator | None) -> str | None:
+    """Why *text* cannot be accepted by a text editor, or ``None`` when it can."""
+    if not text:
+        return None if optional else REQUIRED_VALUE_TEXT
+    return None if validate is None else validate(text)
+
+
+def _hint_row(*parts: str) -> str:
+    """One hint row built from the parts a text editor has something to say about."""
+    return _HINT_JOINER.join(part for part in parts if part)
 
 
 class PromptDialog(DialogScreen[str | None]):
@@ -182,14 +216,89 @@ class PromptDialog(DialogScreen[str | None]):
 
     def _reason(self, text: str) -> str | None:
         """Why *text* cannot be accepted, or ``None`` when it can."""
-        if not text:
-            return None if self._optional else REQUIRED_VALUE_TEXT
-        return None if self._validate is None else self._validate(text)
+        return _refusal(text, optional=self._optional, validate=self._validate)
 
     def _hint_text(self, hint: str) -> str:
         """Hint row of this editor, including the empty-value rule."""
-        parts: list[str] = [part for part in (hint, OPTIONAL_HINT if self._optional else "") if part]
-        return _HINT_JOINER.join(parts)
+        return _hint_row(hint, OPTIONAL_HINT if self._optional else "")
+
+
+class LongTextDialog(DialogScreen[str | None]):
+    """Editor of one value spanning lines: ``Enter`` adds one, ``ctrl+s`` saves, a second ``Esc`` discards."""
+
+    AUTO_FOCUS: ClassVar[str | None] = f"#{_AREA_ID}"
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding(LONG_TEXT_SAVE_KEY, "confirm", VALUE_SAVE_LABEL, show=False, priority=True),
+    ]
+
+    def __init__(  # noqa: PLR0913 - one multiline editor serves every long field, so its whole contract stays explicit
+        self,
+        *,
+        title: str,
+        value: str = "",
+        hint: str = "",
+        optional: bool = False,
+        validate: Validator | None = None,
+        size: DialogSize = DialogSize.LARGE,
+    ) -> None:
+        """Edit the lines of *value*, letting the caller check them through *validate*."""
+        super().__init__(title=title, size=size)
+        self._initial: str = value
+        self._optional: bool = optional
+        self._validate: Validator | None = validate
+        self._discarding: bool = False
+        self._area: TextArea = TextArea(value, id=_AREA_ID)
+        self._hint: Static = Static(
+            _hint_row(hint, LONG_TEXT_HINT, OPTIONAL_HINT if optional else ""),
+            id=_HINT_ID,
+            classes="dialog-hint",
+        )
+        self._message: Static = Static(id=_ERROR_ID, classes="dialog-detail")
+
+    @property
+    def text(self) -> str:
+        """Lines edited so far; the caller's value only changes on a save."""
+        return self._area.text
+
+    def compose_dialog(self) -> ComposeResult:
+        """Draw the lines, the keys that leave the editor and its messages."""
+        yield self._area
+        yield self._hint
+        yield self._message
+
+    def cancel_result(self) -> str | None:
+        """A discarded multiline editor changes nothing."""
+        return None
+
+    def action_confirm(self) -> None:
+        """Save every line at once, but only for a text that passed every check."""
+        text: str = self.text
+        reason: str | None = _refusal(text, optional=self._optional, validate=self._validate)
+        if reason is not None:
+            self._show(reason, refused=True)
+            return
+        self.dismiss(None if self._optional and not text else text)
+
+    def action_cancel(self) -> None:
+        """Ask before edited lines are dropped, and drop them on the second key."""
+        if self.text != self._initial and not self._discarding:
+            self._discarding = True
+            self._show(DISCARD_PROMPT, refused=False)
+            return
+        super().action_cancel()
+
+    @on(TextArea.Changed)
+    def _on_changed(self, event: TextArea.Changed) -> None:
+        """Show the reason the lines are wrong, and take back a pending discard."""
+        event.stop()
+        self._discarding = False
+        self._show(_refusal(self.text, optional=self._optional, validate=self._validate) or "", refused=True)
+
+    def _show(self, text: str, *, refused: bool) -> None:
+        """Show one message under the lines, marking a refusal as such."""
+        self._message.set_class(refused, _ERROR_CLASS)
+        self._message.update(text)
 
 
 class NumberDialog(DialogScreen[int | float | None]):

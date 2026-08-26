@@ -4,15 +4,16 @@ import ast
 import asyncio
 from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import pytest
 from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Input, OptionList, Static, TextArea
 from tui_fakes import shell
 
 import anishift.tui.dialogs
+from anishift.config.field_catalog import SettingScope, SettingSpec, SettingValueType
 from anishift.tui.app import AniShiftApp
 from anishift.tui.commands.catalog import PALETTE_KEY
 from anishift.tui.dialogs.base import (
@@ -51,10 +52,13 @@ from anishift.tui.dialogs.select import (
 )
 from anishift.tui.dialogs.value import (
     CONFIRM_HINT,
+    DISCARD_PROMPT,
+    LONG_TEXT_SAVE_KEY,
     NOT_A_NUMBER_TEXT,
     OPTIONAL_HINT,
     REQUIRED_VALUE_TEXT,
     ConfirmDialog,
+    LongTextDialog,
     NumberDialog,
     NumberKind,
     PromptDialog,
@@ -62,6 +66,7 @@ from anishift.tui.dialogs.value import (
     range_text,
     toggle_boolean,
 )
+from anishift.tui.settings.editors import EditorKind, editor_for, open_field_editor
 from anishift.tui.state import RunUiState, SessionState, UiRoute
 from anishift.tui.strings import (
     VALUE_ABOVE_MAXIMUM,
@@ -72,9 +77,24 @@ from anishift.tui.strings import (
     VALUE_STEP_LABEL,
 )
 
+if TYPE_CHECKING:
+    from anishift.application import AppService
+
 _FULL_SIZE: Final[tuple[int, int]] = (100, 30)
 
 _SMALL_SIZE: Final[tuple[int, int]] = (50, 20)
+
+_TIGHT_SIZE: Final[tuple[int, int]] = (80, 24)
+
+_FIRST_LINE: Final[str] = "first line"
+
+_ADDED_LINE: Final[str] = "second"
+
+_EDITED_TEXT: Final[str] = f"{_FIRST_LINE}\n{_ADDED_LINE}"
+
+_AREA_ID: Final[str] = "value-area"
+
+_LONG_SETTING_ID: Final[str] = "probe_prompt"
 
 _PROBE_ID: Final[str] = "focus-probe"
 
@@ -127,6 +147,37 @@ def _highlighted(dialog: DialogScreen[Any], list_id: str) -> int | None:
 
 def _text(dialog: DialogScreen[Any], widget_id: str) -> str:
     return str(dialog.query_one(f"#{widget_id}", Static).content)
+
+
+def _spec(default: str, *, secret: bool = False) -> SettingSpec:
+    return SettingSpec(
+        setting_id=_LONG_SETTING_ID,
+        label="Prompt",
+        description="Prompt setting.",
+        value_type=SettingValueType.STRING,
+        default=default,
+        scope=SettingScope.SECRET if secret else SettingScope.GLOBAL,
+        is_secret=secret,
+    )
+
+
+class _Saves:
+    def __init__(self) -> None:
+        self.values: list[tuple[str, Any]] = []
+
+    def update_setting(self, setting_id: str, value: Any) -> Any:
+        self.values.append((setting_id, value))
+        return None
+
+    def as_service(self) -> AppService:
+        return cast("AppService", self)
+
+
+async def _add_a_line(pilot: Any) -> None:
+    await pilot.press("end")
+    await pilot.press("enter")
+    await pilot.press(*_ADDED_LINE)
+    await pilot.pause()
 
 
 def test_the_three_panel_widths_are_the_frozen_visual_grammar() -> None:
@@ -1033,6 +1084,222 @@ def test_an_optional_text_returns_nothing_when_it_is_left_empty() -> None:
             await pilot.press("enter")
             await pilot.pause()
             assert results == [None]
+
+    _run(scenario())
+
+
+def test_a_multiline_editor_saves_every_line_it_holds_in_one_step() -> None:
+    async def scenario() -> None:
+        results: list[Any] = []
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: LongTextDialog = LongTextDialog(title="Prompt", value=_FIRST_LINE)
+            open_dialog(app, app.session_state, dialog, results.append)
+            await pilot.pause()
+            assert dialog.query_one(f"#{_AREA_ID}", TextArea).has_focus
+            await _add_a_line(pilot)
+            assert results == []
+            assert dialog.text == _EDITED_TEXT
+            await pilot.press(LONG_TEXT_SAVE_KEY)
+            await pilot.pause()
+            assert results == [_EDITED_TEXT]
+
+    _run(scenario())
+
+
+def test_the_first_escape_over_edited_lines_saves_nothing_and_keeps_them_all() -> None:
+    async def scenario() -> None:
+        results: list[Any] = []
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: LongTextDialog = LongTextDialog(title="Prompt", value=_FIRST_LINE)
+            open_dialog(app, app.session_state, dialog, results.append)
+            await pilot.pause()
+            await _add_a_line(pilot)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert results == []
+            assert app.screen is dialog
+            assert dialog.text == _EDITED_TEXT
+            assert _text(dialog, "value-error") == DISCARD_PROMPT
+
+    _run(scenario())
+
+
+def test_a_second_escape_discards_the_edited_lines_and_returns_no_value() -> None:
+    async def scenario() -> None:
+        results: list[Any] = []
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: LongTextDialog = LongTextDialog(title="Prompt", value=_FIRST_LINE)
+            open_dialog(app, app.session_state, dialog, results.append)
+            await pilot.pause()
+            await _add_a_line(pilot)
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert results == [None]
+
+    _run(scenario())
+
+
+def test_typing_again_takes_back_a_pending_discard() -> None:
+    async def scenario() -> None:
+        results: list[Any] = []
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: LongTextDialog = LongTextDialog(title="Prompt", value=_FIRST_LINE)
+            open_dialog(app, app.session_state, dialog, results.append)
+            await pilot.pause()
+            await _add_a_line(pilot)
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("x")
+            await pilot.pause()
+            assert _text(dialog, "value-error") == ""
+            await pilot.press("escape")
+            await pilot.pause()
+            assert results == []
+            assert _text(dialog, "value-error") == DISCARD_PROMPT
+
+    _run(scenario())
+
+
+def test_a_multiline_editor_nobody_changed_closes_on_the_first_escape() -> None:
+    async def scenario() -> None:
+        results: list[Any] = []
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            open_dialog(app, app.session_state, LongTextDialog(title="Prompt", value=_FIRST_LINE), results.append)
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert results == [None]
+
+    _run(scenario())
+
+
+def test_refused_lines_stay_in_the_multiline_editor_with_their_reason() -> None:
+    async def scenario() -> None:
+        results: list[Any] = []
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: LongTextDialog = LongTextDialog(
+                title="Prompt",
+                value=_FIRST_LINE,
+                validate=lambda text: None if "\n" in text else "Za mało linii.",
+            )
+            open_dialog(app, app.session_state, dialog, results.append)
+            await pilot.pause()
+            await pilot.press(LONG_TEXT_SAVE_KEY)
+            await pilot.pause()
+            assert results == []
+            assert dialog.text == _FIRST_LINE
+            assert _text(dialog, "value-error") == "Za mało linii."
+            await _add_a_line(pilot)
+            await pilot.press(LONG_TEXT_SAVE_KEY)
+            await pilot.pause()
+            assert results == [_EDITED_TEXT]
+
+    _run(scenario())
+
+
+def test_a_required_multiline_value_refuses_an_empty_text() -> None:
+    async def scenario() -> None:
+        results: list[Any] = []
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            dialog: LongTextDialog = LongTextDialog(title="Prompt")
+            open_dialog(app, app.session_state, dialog, results.append)
+            await pilot.pause()
+            await pilot.press(LONG_TEXT_SAVE_KEY)
+            await pilot.pause()
+            assert results == []
+            assert _text(dialog, "value-error") == REQUIRED_VALUE_TEXT
+
+    _run(scenario())
+
+
+def test_a_multiline_editor_keeps_its_whole_panel_on_a_small_terminal() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_TIGHT_SIZE) as pilot:
+            await pilot.pause()
+            dialog: LongTextDialog = LongTextDialog(title="Prompt", value=_EDITED_TEXT)
+            open_dialog(app, app.session_state, dialog)
+            await pilot.pause()
+            panel: Widget = dialog.query_one(f"#{PANEL_ID}")
+            assert panel.outer_size.width == _TIGHT_SIZE[0] - DIALOG_MARGIN_COLUMNS
+            assert panel.region.bottom <= _TIGHT_SIZE[1]
+            assert dialog.query_one(f"#{_AREA_ID}", TextArea).region.height > 0
+            assert _text(dialog, TITLE_ID) == "Prompt"
+
+    _run(scenario())
+
+
+def test_only_a_setting_whose_value_spans_lines_opens_the_multiline_editor() -> None:
+    assert editor_for(_spec(_EDITED_TEXT)) is EditorKind.LONG_TEXT
+    assert editor_for(_spec(_FIRST_LINE)) is EditorKind.TEXT
+    assert editor_for(_spec(_EDITED_TEXT, secret=True)) is EditorKind.TEXT
+
+
+def test_saving_a_setting_that_spans_lines_writes_the_whole_text_once() -> None:
+    async def scenario() -> None:
+        saves: _Saves = _Saves()
+        returns: list[bool] = []
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            open_field_editor(
+                app,
+                app.session_state,
+                saves.as_service(),
+                _spec(_EDITED_TEXT),
+                _FIRST_LINE,
+                lambda: returns.append(True),
+            )
+            await pilot.pause()
+            assert isinstance(app.screen, LongTextDialog)
+            await _add_a_line(pilot)
+            await pilot.press(LONG_TEXT_SAVE_KEY)
+            await pilot.pause()
+            assert saves.values == [(_LONG_SETTING_ID, _EDITED_TEXT)]
+            assert returns == [True]
+
+    _run(scenario())
+
+
+def test_discarding_a_setting_that_spans_lines_writes_nothing() -> None:
+    async def scenario() -> None:
+        saves: _Saves = _Saves()
+        returns: list[bool] = []
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            open_field_editor(
+                app,
+                app.session_state,
+                saves.as_service(),
+                _spec(_EDITED_TEXT),
+                _FIRST_LINE,
+                lambda: returns.append(True),
+            )
+            await pilot.pause()
+            await _add_a_line(pilot)
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert saves.values == []
+            assert returns == [True]
 
     _run(scenario())
 

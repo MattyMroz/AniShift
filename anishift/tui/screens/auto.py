@@ -483,7 +483,7 @@ def _open_field_editor(  # noqa: PLR0913 - one editor threads the full editing c
     if kind is EditorKind.MULTI_SELECT:
         _open_choices(app, state, spec, current, committed, reopen)
         return
-    if kind is EditorKind.TEXT:
+    if kind in {EditorKind.TEXT, EditorKind.LONG_TEXT}:
         _open_text(app, state, spec, current, committed, reopen)
         return
     state.feedback = UiFeedback(level=FeedbackLevel.WARNING, message=AUTO_FIELD_REFUSED)

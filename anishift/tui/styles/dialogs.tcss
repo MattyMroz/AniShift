@@ -90,3 +90,30 @@ DialogScreen Input > .input--cursor {
 DialogScreen Input > .input--placeholder {
     color: $text-muted;
 }
+
+DialogScreen TextArea {
+    height: 10;
+    border: none;
+    padding: 0;
+    background: $background-panel;
+    color: $text;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: $background-panel;
+    scrollbar-color: $border;
+    scrollbar-color-hover: $border-active;
+    scrollbar-color-active: $border-active;
+}
+
+DialogScreen TextArea > .text-area--cursor {
+    background: $primary;
+    color: $on-primary;
+}
+
+DialogScreen TextArea > .text-area--cursor-line {
+    background: $background-panel;
+}
+
+DialogScreen TextArea > .text-area--selection {
+    background: $primary;
+    color: $on-primary;
+}
