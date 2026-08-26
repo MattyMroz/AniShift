@@ -98,6 +98,32 @@ __all__ = [
     "DIALOG_PAGE_DOWN_LABEL",
     "DIALOG_PAGE_UP_LABEL",
     "DIALOG_UP_LABEL",
+    "EXECUTION_CANCELLED_GLYPH",
+    "EXECUTION_CANCEL_DESCRIPTION",
+    "EXECUTION_CANCEL_QUESTION",
+    "EXECUTION_CANCEL_TITLE",
+    "EXECUTION_DETAILS_DESCRIPTION",
+    "EXECUTION_DETAILS_TITLE",
+    "EXECUTION_DONE_GLYPH",
+    "EXECUTION_EMPTY",
+    "EXECUTION_FAILED_GLYPH",
+    "EXECUTION_FALLBACK_WORD",
+    "EXECUTION_FILTER_ALL",
+    "EXECUTION_FILTER_DESCRIPTION",
+    "EXECUTION_FILTER_DONE",
+    "EXECUTION_FILTER_LABEL",
+    "EXECUTION_FILTER_TITLE",
+    "EXECUTION_PERCENT",
+    "EXECUTION_RETRY_WORD",
+    "EXECUTION_RUNNING_GLYPH",
+    "EXECUTION_STATE_CANCELLED",
+    "EXECUTION_STATE_DONE",
+    "EXECUTION_STATE_FAILED",
+    "EXECUTION_STATE_RUNNING",
+    "EXECUTION_STATE_WAITING",
+    "EXECUTION_SUMMARY",
+    "EXECUTION_TITLE",
+    "EXECUTION_WAITING_GLYPH",
     "EXIT_ACTIVE_RUN_QUESTION",
     "GLYPH_GAP",
     "GROUP_COLUMN_GAP",
@@ -1246,3 +1272,83 @@ PREVIEW_START_BLOCKED: Final[str] = "This plan cannot start while a problem bloc
 
 PREVIEW_LEFT: Final[str] = "The plan was left without starting"
 """Reason a previewed plan ended at the back action instead of at a start."""
+
+# ── Execution ──────────────────────────────────────────────────────────────
+
+EXECUTION_TITLE: Final[str] = "Execution"
+"""Heading of the screen watching the run that is under way."""
+
+EXECUTION_EMPTY: Final[str] = "There is no run to watch yet"
+"""Body shown where an execution screen has no run to follow."""
+
+EXECUTION_SUMMARY: Final[str] = "{done} of {total} groups finished"
+"""Row saying how much of the watched run is already behind it."""
+
+EXECUTION_WAITING_GLYPH: Final[str] = "○"
+"""Glyph a group that has not started yet is marked with."""
+
+EXECUTION_RUNNING_GLYPH: Final[str] = "◐"
+"""Glyph a group that is working right now is marked with."""
+
+EXECUTION_DONE_GLYPH: Final[str] = "●"
+"""Glyph a group that finished its work is marked with."""
+
+EXECUTION_FAILED_GLYPH: Final[str] = "✕"
+"""Glyph a group that ended in a failure is marked with."""
+
+EXECUTION_CANCELLED_GLYPH: Final[str] = "▪"
+"""Glyph a group that ended on a cancel is marked with."""
+
+EXECUTION_STATE_WAITING: Final[str] = "Waiting"
+"""Word a group that has not started yet is named by."""
+
+EXECUTION_STATE_RUNNING: Final[str] = "Running"
+"""Word a group that is working right now is named by."""
+
+EXECUTION_STATE_DONE: Final[str] = "Done"
+"""Word a group that finished its work is named by."""
+
+EXECUTION_STATE_FAILED: Final[str] = "Failed"
+"""Word a group that ended in a failure is named by."""
+
+EXECUTION_STATE_CANCELLED: Final[str] = "Cancelled"
+"""Word a group that ended on a cancel is named by."""
+
+EXECUTION_PERCENT: Final[str] = "{percent}%"
+"""Progress of one group, shown at the end of its row."""
+
+EXECUTION_RETRY_WORD: Final[str] = "Retry"
+"""Word opening the detail line that reports a repeated attempt."""
+
+EXECUTION_FALLBACK_WORD: Final[str] = "Fallback"
+"""Word opening the detail line that reports a swapped engine."""
+
+EXECUTION_FILTER_LABEL: Final[str] = "Filter"
+"""Label of the row naming which groups the table currently lists."""
+
+EXECUTION_FILTER_ALL: Final[str] = "All"
+"""Name of the filter that hides no group at all."""
+
+EXECUTION_FILTER_DONE: Final[str] = "Finished"
+"""Name of the filter keeping only the groups that ended."""
+
+EXECUTION_CANCEL_TITLE: Final[str] = "Cancel"
+"""Title of the action asking the watched run to stop."""
+
+EXECUTION_CANCEL_DESCRIPTION: Final[str] = "Stop the run under way"
+"""Description of the cancel action, shown in the palette."""
+
+EXECUTION_CANCEL_QUESTION: Final[str] = "Stop the run under way? Finished work is kept."
+"""Question the confirmation asks before a run is asked to stop."""
+
+EXECUTION_FILTER_TITLE: Final[str] = "Filter"
+"""Title of the action narrowing the table to some groups."""
+
+EXECUTION_FILTER_DESCRIPTION: Final[str] = "List only some groups"
+"""Description of the filter action, shown in the palette."""
+
+EXECUTION_DETAILS_TITLE: Final[str] = "Details"
+"""Title of the action opening the details under every row."""
+
+EXECUTION_DETAILS_DESCRIPTION: Final[str] = "Open the details of every group"
+"""Description of the details action, shown in the palette."""

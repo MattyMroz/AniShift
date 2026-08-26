@@ -184,6 +184,7 @@ def emit_full_run(sink: RunEventSink, run_id: str = STUB_RUN_ID, progress: int =
 class StubService:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.cancelled: list[str] = []
         self.error: Exception | None = None
         self.workspace_root: Path = OFFLINE_ROOT
         self.workspace: InspectedWorkspace = empty_workspace()
@@ -236,6 +237,10 @@ class StubService:
         if self.error is not None:
             raise self.error
         return self.result
+
+    def cancel(self, run_id: str) -> bool:
+        self.cancelled.append(run_id)
+        return True
 
     def as_service(self) -> AppService:
         return cast("AppService", self)

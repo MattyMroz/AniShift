@@ -34,6 +34,7 @@ from anishift.tui.messages import (
 from anishift.tui.models.connect import open_connect_surface
 from anishift.tui.models.picker import load_catalog, open_model_picker
 from anishift.tui.screens.auto import AutoRequest, AutoSession, AutoView, open_auto_presets, resolve_request
+from anishift.tui.screens.execution import ExecutionView
 from anishift.tui.screens.manual import ManualView
 from anishift.tui.screens.preview import PreviewSession, PreviewView, start_available
 from anishift.tui.screens.tools import ToolsView
@@ -50,6 +51,8 @@ from anishift.tui.strings import (
     COMMAND_EXIT_TITLE,
     COMMAND_INIT_TITLE,
     COMMAND_THEME_TITLE,
+    EXECUTION_CANCEL_QUESTION,
+    EXECUTION_CANCEL_TITLE,
     EXIT_ACTIVE_RUN_QUESTION,
     PALETTE_COMMAND_CATEGORY,
     PALETTE_SUGGESTED_CATEGORY,
@@ -121,6 +124,9 @@ THEME_ROWS: Final[tuple[tuple[str, str, str], ...]] = (
 )
 """Id, title and description of every theme the shell offers a user."""
 
+CANCEL_WORKER_GROUP: Final[str] = "cancel"
+"""Group the one worker asking the facade to stop a run is launched under."""
+
 BUSY_RUN_STATES: Final[frozenset[RunUiState]] = frozenset(
     {RunUiState.PLANNING, RunUiState.RUNNING, RunUiState.CANCELLING},
 )
@@ -157,6 +163,8 @@ class AniShiftApp(App[None]):
         self._auto_view: AutoView = AutoView()
         self._manual_view: ManualView = ManualView()
         self._preview_view: PreviewView = PreviewView()
+        self._execution_view: ExecutionView = ExecutionView()
+        self._run_origin: UiRoute = UiRoute.WORKSPACE
         self._preview: PreviewSession = PreviewSession()
         self._auto: AutoSession = AutoSession()
         self._tools_view: ToolsView = ToolsView()
@@ -221,6 +229,7 @@ class AniShiftApp(App[None]):
                 yield self._auto_view
                 yield self._manual_view
                 yield self._preview_view
+                yield self._execution_view
                 yield self._tools_view
             yield self._brand
             with self._composer_slot:
@@ -413,6 +422,7 @@ class AniShiftApp(App[None]):
         if not self._accepts_run(message.generation, message.run_id, announced=message.announces_run):
             return
         lifecycle.record_run_events(self._state, message.events)
+        self._paint_run()
 
     @on(RunFinished)
     def _on_run_finished(self, message: RunFinished) -> None:
@@ -421,6 +431,7 @@ class AniShiftApp(App[None]):
             return
         lifecycle.finish_run(self._state, message.result)
         self._stop_drain()
+        self._close_run_view()
         self._render_frame()
 
     @on(RunFailed)
@@ -430,6 +441,7 @@ class AniShiftApp(App[None]):
             return
         lifecycle.fail_run(self._state, message.reason)
         self._stop_drain()
+        self._close_run_view()
         logger.warning("Run ended without a result", generation=message.generation)
         self._render_frame()
 
@@ -461,6 +473,7 @@ class AniShiftApp(App[None]):
         logger.error("Worker ended unexpectedly", operation=message.worker.group, generation=generation)
         self._report_worker_failure()
         self._stop_drain()
+        self._close_run_view()
         self._render_frame()
 
     def start_execution(self, plan: ExecutionPlan) -> bool:
@@ -478,11 +491,47 @@ class AniShiftApp(App[None]):
                 draining=self._pump is not None,
             )
             return False
+        self._run_origin = self._state.route
         pump: workers.RunEventPump = workers.RunEventPump(self._state.generation)
         self._pump = pump
         self._drain_timer = self.set_interval(workers.DRAIN_INTERVAL_SECONDS, self.drain_run_events)
         workers.execute(self, self._service, plan=plan, pump=pump)
+        lifecycle.navigate(self._state, UiRoute.EXECUTION)
+        self._render_frame()
         return True
+
+    def cancel_run(self) -> bool:
+        """Ask the active run to stop, once the user confirms leaving its remaining work."""
+        run_id: str | None = self._state.active_run_id
+        if run_id is None or self._state.run_state is not RunUiState.RUNNING:
+            logger.debug("Cancel refused outside an active run", run_state=self._state.run_state.value)
+            return False
+
+        def confirmed(accepted: bool | None) -> None:
+            """Stop the run the user gave up, or leave it running untouched."""
+            if accepted:
+                self._request_cancel(run_id)
+
+        return open_dialog(
+            self,
+            self._state,
+            ConfirmDialog(title=EXECUTION_CANCEL_TITLE, question=EXECUTION_CANCEL_QUESTION),
+            confirmed,
+        )
+
+    def _request_cancel(self, run_id: str) -> None:
+        """Enter the cancelling state and ask the facade to stop *run_id* exactly once."""
+        if self._state.active_run_id != run_id or not lifecycle.request_cancel(self._state):
+            logger.debug("Cancel request dropped", run_state=self._state.run_state.value)
+            return
+
+        def work() -> None:
+            """Ask the facade to stop the run, which never blocks on its tasks."""
+            self._service.cancel(run_id)
+
+        logger.info("Run cancel requested", generation=self._state.generation)
+        self.run_worker(work, group=CANCEL_WORKER_GROUP, exit_on_error=False, thread=True)
+        self._paint_run()
 
     def drain_run_events(self) -> None:
         """Deliver the events the active run buffered since the previous drain."""
@@ -490,6 +539,18 @@ class AniShiftApp(App[None]):
         if pump is None:
             return
         workers.flush(self, pump)
+
+    def _paint_run(self) -> None:
+        """Repaint the watched run once per drained batch, and never once per event."""
+        if self._state.route is UiRoute.EXECUTION:
+            self._execution_view.show(self._state)
+
+    def _close_run_view(self) -> None:
+        """Paint the last frame of the run that ended, then leave the surface watching it."""
+        if self._state.route is not UiRoute.EXECUTION:
+            return
+        self._execution_view.show(self._state)
+        lifecycle.navigate(self._state, self._run_origin)
 
     def _stop_drain(self) -> None:
         """Stop the drain timer and release the pump of the run that ended."""
@@ -693,7 +754,8 @@ class AniShiftApp(App[None]):
         has_groups: bool = bool(self._group_rows) or self._state.workspace is not None
         on_auto: bool = self._state.route is UiRoute.AUTO
         on_preview: bool = self._state.route is UiRoute.PREVIEW
-        self._has_work = has_groups or on_auto or on_preview or self._tools_report is not None
+        on_execution: bool = self._state.route is UiRoute.EXECUTION
+        self._has_work = has_groups or on_auto or on_preview or on_execution or self._tools_report is not None
         self._workspace_view.display = self._state.route is UiRoute.WORKSPACE and has_groups
         self._auto_view.display = on_auto
         self._auto_view.show(self._state, self._auto)
@@ -701,6 +763,9 @@ class AniShiftApp(App[None]):
         self._preview_view.display = on_preview
         if on_preview:
             self._preview_view.show(self._state, self._preview, root=self.workspace_root)
+        self._execution_view.display = on_execution
+        if on_execution:
+            self._execution_view.show(self._state)
         self._tools_view.display = self._state.route is UiRoute.TOOLS and self._tools_report is not None
         self._tools_view.show(self._tools_report)
         if self._group_rows:
