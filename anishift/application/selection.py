@@ -1,10 +1,21 @@
-"""Pure deterministic source-selection policies shared by discovery and planning."""
+"""Pure deterministic source-selection policies shared by discovery, planning and every frontend."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, Final
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactState
+
+if TYPE_CHECKING:
+    from anishift.application.inspection import InspectedSourceGroup
+
+# ── Constants ──────────────────────────────────────────────────────────────
+
+_TEXT_SOURCE_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
+    {ArtifactKind.SOURCE_SUBTITLES, ArtifactKind.STANDALONE_TEXT},
+)
+"""Artifact kinds already carrying the text one group needs before any run."""
 
 
 def choose_primary_video(candidates: Sequence[Artifact]) -> Artifact | None:
@@ -44,7 +55,33 @@ def choose_auto_sidecar(candidates: Sequence[Artifact]) -> Artifact | None:
     )
 
 
+def group_is_ready(group: InspectedSourceGroup) -> bool:
+    """Whether one inspected group may be run: free of conflicts and already holding text."""
+    if group.conflicts:
+        return False
+    return _has_text_source(group) or _has_embedded_text(group)
+
+
+def ready_group_ids(groups: Sequence[InspectedSourceGroup]) -> tuple[str, ...]:
+    """Return the ID of every group a run may take, in the order the caller listed them."""
+    return tuple(group.group_id for group in groups if group_is_ready(group))
+
+
 def _artifact_path_key(artifact: Artifact) -> tuple[str, str]:
     if artifact.path is None:
         return "", ""
     return artifact.path.name.casefold(), artifact.path.name
+
+
+def _has_text_source(group: InspectedSourceGroup) -> bool:
+    """Whether one validated sidecar or text file already belongs to the group."""
+    return any(
+        artifact.kind in _TEXT_SOURCE_KINDS and artifact.state is ArtifactState.READY for artifact in group.artifacts
+    )
+
+
+def _has_embedded_text(group: InspectedSourceGroup) -> bool:
+    """Whether an identified container of the group carries a subtitle track."""
+    return any(
+        track.subtitle_format is not None for catalog in group.media_catalogs.values() for track in catalog.tracks
+    )

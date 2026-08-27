@@ -77,6 +77,7 @@ from anishift.application.results import (
     RunResult,
     TaskResult,
 )
+from anishift.application.selection import group_is_ready, ready_group_ids
 
 __all__ = [
     "PRIMARY_SOURCE_SUFFIXES",
@@ -135,8 +136,10 @@ __all__ = [
     "WorkerNotification",
     "WorkerNotificationKind",
     "WorkspaceInspector",
+    "group_is_ready",
     "plan_auto",
     "plan_manual",
+    "ready_group_ids",
 ]
 
 _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {

@@ -12,12 +12,24 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from anishift import bootstrap
-from anishift.application import AppService
+from anishift.application import (
+    AppService,
+    Artifact,
+    ArtifactKind,
+    ArtifactLifetime,
+    ArtifactState,
+    InspectedSourceGroup,
+    InspectedWorkspace,
+    SourceGroup,
+    ready_group_ids,
+)
 from anishift.application.planning import PlanProblem
 from anishift.application.results import GroupResult, GroupStatus, ProducedArtifact, RunResult
 from anishift.errors import ConfigError, ErrorCode, ErrorContext, ExecutionError, PlanningError
 from anishift.tui import ui_state
 from anishift.tui.app import AniShiftApp
+from anishift.tui.screens.auto import run_group_ids
+from anishift.tui.state import SessionState
 
 cli_main = importlib.import_module("anishift.cli.main")
 
@@ -38,6 +50,7 @@ from typer.testing import CliRunner
 
 bootstrap = importlib.import_module("anishift.bootstrap")
 cli_main = importlib.import_module("anishift.cli.main")
+application = importlib.import_module("anishift.application")
 results = importlib.import_module("anishift.application.results")
 
 plan = SimpleNamespace(can_execute=True, problems=(), tasks=())
@@ -45,9 +58,20 @@ result = results.RunResult(
     run_id="run-probe",
     groups=(results.GroupResult(group_id="anime-01", status=results.GroupStatus.SUCCEEDED),),
 )
+group = SimpleNamespace(
+    group_id="anime-01",
+    conflicts=(),
+    artifacts=(
+        SimpleNamespace(
+            kind=application.ArtifactKind.SOURCE_SUBTITLES,
+            state=application.ArtifactState.READY,
+        ),
+    ),
+    media_catalogs={},
+)
 facade = SimpleNamespace(
     workspace_root=Path("workspace"),
-    discover=lambda: SimpleNamespace(groups=(SimpleNamespace(group_id="anime-01"),)),
+    discover=lambda: SimpleNamespace(groups=(group,)),
     get_preset=lambda preset_id: preset_id,
     plan_auto=lambda group_ids, preset: plan,
     execute=lambda plan, sink: result,
@@ -59,14 +83,41 @@ print(json.dumps({"code": code, "loaded": sorted(n for n in sys.modules if n.sta
 """
 
 
-@dataclass(frozen=True, slots=True)
-class _Group:
-    group_id: str
+def _source_artifact(group_id: str, kind: ArtifactKind, path: Path) -> Artifact:
+    return Artifact(
+        artifact_id=f"artifact-{group_id}-{kind.value}",
+        group_id=group_id,
+        kind=kind,
+        path=path,
+        state=ArtifactState.READY,
+        lifetime=ArtifactLifetime.SOURCE,
+        planned_destination=path,
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class _Workspace:
-    groups: tuple[_Group, ...]
+def _inspected_group(group_id: str, *, ready: bool = True) -> InspectedSourceGroup:
+    artifacts: list[Artifact] = [_source_artifact(group_id, ArtifactKind.VIDEO_MKV, Path(f"{group_id}.mkv"))]
+    if ready:
+        artifacts.append(_source_artifact(group_id, ArtifactKind.SOURCE_SUBTITLES, Path(f"{group_id}.ass")))
+    return InspectedSourceGroup(
+        source=SourceGroup(
+            group_id=group_id,
+            stem=group_id,
+            directory=Path(),
+            artifacts=tuple(artifacts),
+            conflicts=(),
+        ),
+        artifacts=tuple(artifacts),
+        media_catalogs={},
+        conflicts=(),
+    )
+
+
+def _discovery(*group_ids: str, unready: tuple[str, ...] = ()) -> InspectedWorkspace:
+    return InspectedWorkspace(
+        groups=tuple(_inspected_group(group_id, ready=group_id not in unready) for group_id in group_ids),
+        warnings=(),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +136,7 @@ class _Facade:
         *,
         root: Path,
         group_ids: tuple[str, ...] = ("anime-01",),
+        unready: tuple[str, ...] = (),
         preset_ids: tuple[str, ...] = ("default",),
         plan: _Plan | None = None,
         result: RunResult | None = None,
@@ -94,15 +146,15 @@ class _Facade:
         self.calls: list[str] = []
         self.planned: list[tuple[tuple[str, ...], object]] = []
         self.executed: list[object] = []
-        self._group_ids: tuple[str, ...] = group_ids
+        self.workspace: InspectedWorkspace = _discovery(*group_ids, unready=unready)
         self._preset_ids: tuple[str, ...] = preset_ids
         self._plan: _Plan = _Plan() if plan is None else plan
         self._result: RunResult | None = result
         self._failure: BaseException | None = failure
 
-    def discover(self) -> _Workspace:
+    def discover(self) -> InspectedWorkspace:
         self.calls.append("discover")
-        return _Workspace(tuple(_Group(group_id) for group_id in self._group_ids))
+        return self.workspace
 
     def get_preset(self, preset_id: str) -> str:
         self.calls.append("get_preset")
@@ -279,6 +331,69 @@ def test_a_workspace_without_sources_is_refused_before_planning(
     assert "The workspace holds no source group to run." in result.output
     assert facade.planned == []
     assert facade.executed == []
+
+
+def test_only_the_groups_the_application_layer_reports_ready_reach_the_planner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    facade: _Facade = _Facade(
+        root=tmp_path,
+        group_ids=("anime-01", "anime-02", "anime-03"),
+        unready=("anime-02",),
+        result=RunResult(
+            run_id="run-8",
+            groups=(
+                GroupResult(group_id="anime-01", status=GroupStatus.SUCCEEDED),
+                GroupResult(group_id="anime-03", status=GroupStatus.SUCCEEDED),
+            ),
+        ),
+    )
+
+    result: Result = _invoke_run(monkeypatch, facade)
+
+    assert result.exit_code == cli_main.EXIT_SUCCESS
+    assert facade.planned == [(ready_group_ids(facade.workspace.groups), "preset:default")]
+    assert "anime-02" not in [group_id for planned, _ in facade.planned for group_id in planned]
+
+
+def test_a_workspace_whose_every_group_is_unready_is_refused_before_planning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    facade: _Facade = _Facade(root=tmp_path, group_ids=("anime-01", "anime-02"), unready=("anime-01", "anime-02"))
+
+    result: Result = _invoke_run(monkeypatch, facade)
+
+    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert "No discovered source group is ready to run." in result.output
+    assert "The workspace holds no source group to run." not in result.output
+    assert facade.planned == []
+    assert facade.executed == []
+
+
+def test_the_command_line_and_the_auto_surface_take_the_same_groups_from_one_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    facade: _Facade = _Facade(
+        root=tmp_path,
+        group_ids=("anime-01", "anime-02", "anime-03"),
+        unready=("anime-02",),
+        result=RunResult(
+            run_id="run-9",
+            groups=(GroupResult(group_id="anime-01", status=GroupStatus.SUCCEEDED),),
+        ),
+    )
+    state: SessionState = SessionState()
+    state.workspace = facade.workspace
+
+    result: Result = _invoke_run(monkeypatch, facade)
+
+    assert result.exit_code == cli_main.EXIT_SUCCESS
+    assert facade.planned[0][0] == run_group_ids(state)
+    assert facade.planned[0][0] == ready_group_ids(facade.workspace.groups)
+    assert len(facade.planned[0][0]) < len(facade.workspace.groups)
 
 
 def test_a_blocked_plan_states_every_blocker_and_is_never_executed(

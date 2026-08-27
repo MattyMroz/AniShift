@@ -48,6 +48,12 @@ _NO_SOURCES: Final[str] = "The workspace holds no source group to run."
 _NO_SOURCES_HINT: Final[str] = "Put a video or a subtitle file in the workspace and run the preset again."
 """Suggestion offered beside an empty workspace."""
 
+_NO_READY_SOURCES: Final[str] = "No discovered source group is ready to run."
+"""Refusal stated when discovery finds only groups the automatic route would skip."""
+
+_NO_READY_SOURCES_HINT: Final[str] = "Give every group usable text, resolve its conflict, then run the preset again."
+"""Suggestion offered when every discovered group is unready."""
+
 _PLAN_BLOCKED: Final[str] = "The plan cannot run because of a blocking problem."
 """Refusal stated when the planner reports a problem that forbids execution."""
 
@@ -157,15 +163,19 @@ def _composed_service() -> AppService:
 
 
 def _preset_plan(service: AppService, preset_id: str) -> ExecutionPlan:
-    """Plan every discovered group from the stored preset through the shared facade."""
+    """Plan the groups the application layer reports ready, from the stored preset through the shared facade."""
+    from anishift.application import ready_group_ids  # noqa: PLC0415 - keep the backend off the Typer import path
+
     try:
         workspace: InspectedWorkspace = service.discover()
         preset: AutoPreset = service.get_preset(preset_id)
     except (AniShiftError, OSError) as problem:
         _refuse_problem(problem)
-    group_ids: tuple[str, ...] = tuple(group.group_id for group in workspace.groups)
-    if not group_ids:
+    if not workspace.groups:
         _refuse_sentence(_NO_SOURCES, _NO_SOURCES_HINT)
+    group_ids: tuple[str, ...] = ready_group_ids(workspace.groups)
+    if not group_ids:
+        _refuse_sentence(_NO_READY_SOURCES, _NO_READY_SOURCES_HINT)
     try:
         plan: ExecutionPlan = service.plan_auto(group_ids, preset)
     except (AniShiftError, OSError) as problem:

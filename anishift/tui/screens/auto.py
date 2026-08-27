@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from textual.widgets import Static
 
+from anishift.application import ready_group_ids
 from anishift.application.intents import (
     BurnSubtitleProduct,
     MkvTrackProduct,
@@ -46,7 +47,6 @@ from anishift.tui.strings import (
     COMMAND_AUTO_TITLE,
     SETTING_UNSET,
 )
-from anishift.tui.widgets.group_table import GroupState, group_state
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -198,7 +198,7 @@ def run_group_ids(state: SessionState) -> tuple[str, ...]:
     )
     if selected:
         return selected
-    return tuple(group.group_id for group in workspace.groups if group_state(group) is GroupState.READY)
+    return ready_group_ids(workspace.groups)
 
 
 def refresh_presets(state: SessionState, service: AppService, session: AutoSession) -> None:

@@ -18,7 +18,7 @@ from tui_fakes import (
     stub_result,
 )
 
-from anishift.application import InspectedWorkspace
+from anishift.application import InspectedSourceGroup, InspectedWorkspace, group_is_ready
 from anishift.tui import ui_state
 from anishift.tui.app import CONTENT_ID, AniShiftApp
 from anishift.tui.commands.palette import CommandOption, palette_options, slash_options
@@ -180,6 +180,19 @@ def test_a_group_without_any_usable_text_is_reported_as_missing_its_sidecar() ->
     assert group_state(inspected_group(_ALPHA, sidecar="ass")) is GroupState.READY
     assert group_state(inspected_group(_ALPHA, embedded=True)) is GroupState.READY
     assert group_state(inspected_group(_ALPHA, sidecar="ass", conflict=True)) is GroupState.CONFLICT
+
+
+def test_the_table_calls_a_group_ready_exactly_when_the_application_layer_does() -> None:
+    shapes: tuple[InspectedSourceGroup, ...] = (
+        inspected_group(_ALPHA),
+        inspected_group(_ALPHA, sidecar="ass"),
+        inspected_group(_ALPHA, sidecar="ass", usable_sidecar=False),
+        inspected_group(_ALPHA, embedded=True),
+        inspected_group(_ALPHA, sidecar="ass", conflict=True),
+        inspected_group(_ALPHA, conflict=True),
+    )
+    assert [group_state(group) is GroupState.READY for group in shapes] == [group_is_ready(group) for group in shapes]
+    assert [group_is_ready(group) for group in shapes] == [False, True, False, True, False, False]
 
 
 def test_a_warning_about_one_artifact_is_marked_in_the_artifact_column() -> None:

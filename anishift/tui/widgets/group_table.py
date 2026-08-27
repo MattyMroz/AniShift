@@ -11,7 +11,7 @@ from textual.binding import Binding
 from textual.widget import Widget
 from textual.widgets import Static
 
-from anishift.application import ArtifactKind, ArtifactState
+from anishift.application import ArtifactKind, ArtifactState, group_is_ready
 from anishift.tui import workers
 from anishift.tui.commands.spec import CommandCategory, CommandSpec
 from anishift.tui.state import RunUiState
@@ -101,11 +101,6 @@ _HEADER_ROWS: Final[int] = 4
 
 _VIDEO_KINDS: Final[tuple[ArtifactKind, ...]] = (ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4)
 """Container kinds a group names its main source with, the preferred one first."""
-
-_TEXT_SOURCE_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
-    {ArtifactKind.SOURCE_SUBTITLES, ArtifactKind.STANDALONE_TEXT},
-)
-"""Artifact kinds already carrying the text a group needs before any run."""
 
 _DIGIT_RUN: Final[re.Pattern[str]] = re.compile(r"(\d+)")
 """Split of one name into its alternating text and number parts."""
@@ -201,10 +196,10 @@ def state_text(state: GroupState) -> str:
 
 
 def group_state(group: InspectedSourceGroup) -> GroupState:
-    """Return the state one inspected group reports about its own sources."""
+    """Return the word and glyph state of one group, asking the application for its readiness."""
     if group.conflicts:
         return GroupState.CONFLICT
-    if _has_text_source(group) or _has_embedded_text(group):
+    if group_is_ready(group):
         return GroupState.READY
     return GroupState.NO_SIDECAR
 
@@ -348,20 +343,6 @@ def _natural_key(name: str) -> str:
     """Return the key ordering *name* so the numbers inside it compare as numbers."""
     return "".join(
         part.rjust(_DIGIT_WIDTH, _DIGIT_PAD) if part.isdigit() else part for part in _DIGIT_RUN.split(name.casefold())
-    )
-
-
-def _has_text_source(group: InspectedSourceGroup) -> bool:
-    """Whether one validated sidecar or text file already belongs to the group."""
-    return any(
-        artifact.kind in _TEXT_SOURCE_KINDS and artifact.state is ArtifactState.READY for artifact in group.artifacts
-    )
-
-
-def _has_embedded_text(group: InspectedSourceGroup) -> bool:
-    """Whether an identified container of the group carries a subtitle track."""
-    return any(
-        track.subtitle_format is not None for catalog in group.media_catalogs.values() for track in catalog.tracks
     )
 
 
