@@ -1,7 +1,7 @@
 """Panel preferences persisted to ``config/settings.json`` next to the code.
 
-These are the choices the /settings panel edits (mode, engines, voice, output
-placement...). They live in ``<repo>/config/settings.json`` — OUTSIDE the
+These are the choices the settings screens of the shell edit (mode, engines,
+voice, output placement...). They live in ``<repo>/config/settings.json`` — OUTSIDE the
 workspace, so the folder the user drops MKV files into stays clean, while the
 file stays visible and hand-editable. The file is created on first save.
 

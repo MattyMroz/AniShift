@@ -37,6 +37,6 @@ Neutralna ekstrakcja pojedynczej ścieżki z MKV/MP4 do jawnej ścieżki celu or
 - Ścieżki signs/song/forced dostają karę -200 — praktycznie nigdy nie wybrane. `tracks.py:43,52`
 - `already_polish` (pol/pl) liczone po wyborze napisów, by pipeline mógł pominąć tłumaczenie. `tracks.py:55,155`
 - Przy remisie scoringu wybierana niższa `id` (klucz `-int(id)`). `tracks.py:119,128`
-- Wagi języków to LISTA priorytetów (`DEFAULT_AUDIO_PRIORITY`, `DEFAULT_SUBTITLE_PRIORITY`), podawana z `/settings`; pozycja na liście daje 100, 90, 80..., spoza listy 0. `tracks.py`
+- Wagi języków to LISTA priorytetów (`DEFAULT_AUDIO_PRIORITY`, `DEFAULT_SUBTITLE_PRIORITY`), podawana z preferencji (`config/settings.json`); pozycja na liście daje 100, 90, 80..., spoza listy 0. `tracks.py`
 - Bonus za ścieżkę domyślną (1) MUSI być mniejszy niż krok priorytetu (10) — przy równych wartościach ścieżka domyślna przebijała preferowany język. `tracks.py`
 - `MediaInfo.attachments` niesie nazwy plików załączników (czcionki) z `mkvmerge -J`; domyślnie pusta krotka. `types.py`, `service.py`

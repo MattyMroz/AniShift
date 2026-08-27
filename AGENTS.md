@@ -62,9 +62,9 @@ Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit
 
 - **pre-commit:** ruff `--fix` + ruff-format; `check_test_comments.py` (zero docstringów/komentarzy w testach, dyrektywy `# noqa`/`# type:` OK); `check_const_docstrings.py` (docstring pod każdą stałą `Final`/aliasem).
 - **commit-msg:** `check_commit_msg.py` — `typ(scope): opis`, scope obowiązkowy z listy.
-- **pre-push:** mypy + pytest (łapią błędy lokalnie zanim pójdą do CI).
+- **pre-push:** mypy dla bieżącej platformy, mypy `--platform linux` i pytest (łapią błędy lokalnie zanim pójdą do CI).
 - **ruff select** wymusza m.in.: typy param/zwrot (`ANN`), `from __future__` (`FA`), `X | None` zamiast `Optional` (`UP`), docstringi modułów/klas/funkcji (`D`), zakaz `except Exception` (`BLE`).
-- **CI:** `.github/workflows/ci.yml` — powtarza wszystkie powyższe na całym repo.
+- **CI:** `.github/workflows/ci.yml` — powtarza wszystkie powyższe na całym repo: ruff, hooki i pip-audit na Ubuntu, mypy na Ubuntu w obu targetach (`--platform win32` obok domyślnego), a pytest plus smoke `anishift --help` na Ubuntu I Windowsie, bo produkt jedzie na Windowsa.
 - `testpaths` obejmuje też `anishift/utils/{logger,rich_console,timer}/tests` — samo `pytest tests/` je pomija.
 
 ## Dane runtime

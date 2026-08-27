@@ -18,6 +18,7 @@ Pakiet aplikacji. Composition root i hierarchia błędów tutaj; reszta w moduł
 
 - `bootstrap.py` — composition root
 - `errors.py` — hierarchia błędów
+- `paths.py` — `config_path()`; poza `config/`, bo import `anishift.config` wciąga rejestry silników
 
 ## Fakty
 

@@ -1,6 +1,6 @@
 # plany etapów AniShift — spis
 
-> źródło prawdy dla etapów 1–8: [`plan-anishift.md`](plan-anishift.md) (legacy roadmap). wzorce: `mangashift-architecture-ref/` (engine-factory-standard, engine-standard, naming-glossary).
+> źródło prawdy dla etapów 1–8: [`plan-anishift.md`](plan-anishift.md) (legacy roadmap). wzorce: [`../reference/mangashift-architecture/`](../reference/mangashift-architecture/) (engine-factory-standard, engine-standard, naming-glossary).
 > zasady wspólne: recykling MangaShift 1:1, prostota (KISS/YAGNI), rejestr silników TYLKO w tts/translation/llm, fasady sync, zero kodu poza planem etapu.
 > artefakty aktywnego workstreamu etapu 10 (wymagania, plan, graf zadań) leżą w [`../work/10-tui/`](../work/10-tui/), nie w `docs/plans/`.
 
@@ -18,7 +18,7 @@
 | 7 | [etap-7-wymagania.md](etap-7-wymagania.md) + [etap-7-plan.md](etap-7-plan.md) | **ZROBIONE** — składanie players/MKV/MP4, `/compose` i pełny pipeline. | 6 |
 | 8 | [wymagania](etap-8-wymagania.md) + [plan](etap-8-dystrybucja-binarek.md) | **ZROBIONE** — launcher Windows, audyt legacy, walidacja i zamknięcie roadmapu. | 7 |
 | 9 | [produkt](etap-9-wymagania.md) + [interfejs](etap-9-interfejs-wymagania.md) + [plan](etap-9-plan.md) | **CZĘŚCIOWO** — dostarczono model artefaktów, strumieniowy scheduler i application API (`AppService`); warstwa Textual TUI odrzucona, przepisywana w etapie 10. issue #38 otwarte, nie zmergowane do `main`. | 8 |
-| 10 | [wymagania](../work/10-tui/spec.md) + [plan](../work/10-tui/plan.md) + [zadania](../work/10-tui/tasks.json) | **PLAN** — silnik LLM Palantir, format `anishift.models.jsonc`, przepisanie Textual TUI, likwidacja `anishift/pipeline/` i `prompt-toolkit`, nowy job CI Windows. | 9 |
+| 10 | [wymagania](../work/10-tui/spec.md) + [plan](../work/10-tui/plan.md) + [zadania](../work/10-tui/tasks.json) | **W TOKU** — dostarczono silnik LLM Palantir, format `anishift.models.jsonc`, Textual TUI jako domyślne wejście, usunięcie `anishift/pipeline/` i powłoki prompt-toolkit oraz pytest Windows w CI. Zależność `prompt-toolkit` wciąż jest w `pyproject.toml` (do zdjęcia przez `uv remove`). Etap oznaczamy jako ZROBIONE dopiero po zielonym CI i akceptacji użytkownika. | 9 |
 
 ## graf zależności
 

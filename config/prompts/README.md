@@ -7,7 +7,7 @@ Create UTF-8 text files in:
 - `modules/` for optional reusable instructions.
 
 The filename becomes the prompt ID. For example,
-`styles/my_anime_style.txt` appears as `my_anime_style` in `/settings`.
+`styles/my_anime_style.txt` appears as `my_anime_style` in `/prompts`.
 
 AniShift reads all `.txt` files automatically. Other extensions are ignored.
 Do not copy API keys or subtitle content into prompt filenames.

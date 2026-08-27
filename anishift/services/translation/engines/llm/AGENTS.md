@@ -4,8 +4,8 @@ Silnik tłumaczenia przez wstrzyknięty `LlmCompleter` (provider-agnostic). Reje
 
 ## Pułapki
 
-- Świadomie NIE importuje `anishift.services.llm` — completer dostaje przez wstrzyknięcie (`__init__` wymaga go), realny podłącza dopiero etap 5. `service.py:1-8,53-61`
-- Konstruktor przyjmuje wyłącznie `LlmTranslateConfig`; zwykły `TranslationConfig` jest błędem zamiast cichego użycia ustawień domyślnych. Pipeline zawsze buduje jawny config LLM. `service.py`, `pipeline/llm_runtime.py`
+- Świadomie NIE importuje `anishift.services.llm` — completer dostaje przez wstrzyknięcie (`__init__` wymaga go), a realny podłącza runtime boundary. `service.py:1-8,53-61`
+- Konstruktor przyjmuje wyłącznie `LlmTranslateConfig`; zwykły `TranslationConfig` jest błędem zamiast cichego użycia ustawień domyślnych. Jawny config LLM buduje `application/runtime.py`. `service.py`, `anishift/application/runtime.py:442`
 - `_parse_numbered` zwraca `None` (odrzuca CAŁĄ partię) przy jakimkolwiek zdublowanym, brakującym lub spoza zakresu indeksie — nie tylko przy złej liczbie linii. `service.py:40-45`
 - Porażka pojedynczej linii rzuca `TranslationEngineError`; źródło nigdy nie jest zwracane jako udane tłumaczenie. `service.py`
 - `TranslationContextLengthError`, output limit i błędny format uruchamiają stabilny podział na połowy; inne błędy transportu propagują bez shrink. `service.py`

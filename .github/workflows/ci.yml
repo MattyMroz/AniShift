@@ -65,12 +65,23 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev
       - run: uv run mypy anishift/ tests/
+      # mypy resolves sys.platform for the platform it targets, so a Linux-only run
+      # never analyses the Windows branches (config/workspace.py, platform/binaries.py).
+      # This mirrors the mypy-linux pre-push hook, which does the same the other way.
+      - name: Type check the Windows target
+        run: uv run mypy --platform win32 anishift/ tests/
 
   test:
-    name: Test (pytest) [ubuntu-latest]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    # Windows off the matrix: local pre-push pytest covers OS bugs, GHA Windows = 2x minutes.
+    name: Test (pytest) [${{ matrix.os }}]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # AniShift ships to Windows, so the suite has to pass there, not only on the
+        # cheap runner: paths, file locks, the console code page, the ctypes process
+        # probe and Textual itself only answer for real on the shipping platform.
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,4 +92,6 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev
+      - name: Entry point smoke
+        run: uv run anishift --help
       - run: uv run pytest
