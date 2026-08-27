@@ -27,7 +27,7 @@ Ustawienia i `Settings` (pydantic-settings, prefix `ANISHIFT_`, z `.env`), prefe
 
 ## Konwencje
 
-- `settings.json`, `presets.json`, `ui_state.json` i `anishift.models.jsonc` leżą w `<repo>/config/`, celowo POZA `workspace/`, by folder na MKV został czysty. `anishift/paths.py:38`
+- `settings.json`, `presets.json` i `anishift.models.jsonc` leżą w `<repo>/config/`, celowo POZA `workspace/`, by folder na MKV został czysty. Wszystkie trzy są gitignorowane i edytowane ręcznie. `anishift/paths.py:38`
 - Override workspace czyta się bezpośrednio z `os.environ["ANISHIFT_WORKSPACE_ROOT"]`, nie przez `Settings` (który by go pominął przez `extra="ignore"`). `workspace.py:43,77`
 - System env ma pierwszeństwo nad `.env`; nieznane klucze ignorowane (`extra="ignore"`, `case_sensitive=False`). `settings.py:102-107`
 - Zapis preferencji i presetów atomowy: `<name>.tmp` + `replace`. `user_settings.py:908-910`, `presets.py:122-124`
