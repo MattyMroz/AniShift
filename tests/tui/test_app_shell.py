@@ -12,6 +12,7 @@ from typing import Any, Final
 import pytest
 from textual.containers import Container
 from textual.geometry import Region
+from textual.widget import Widget
 from textual.widgets import Static
 from tui_fakes import shell
 
@@ -47,7 +48,7 @@ from anishift.tui.strings import (
     PATH_ELLIPSIS,
     WORKSPACE_EMPTY,
 )
-from anishift.tui.widgets.composer import BOX_ID, BOX_ROWS
+from anishift.tui.widgets.composer import BOX_ID, BOX_ROWS, SUGGESTIONS_ID
 from anishift.tui.widgets.footer import (
     LOCATION_ID,
     VERSION_ID,
@@ -506,10 +507,18 @@ def test_only_the_composer_edge_owns_a_border_on_the_start_screen() -> None:
         app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
-            bordered: list[str] = [
-                str(widget.id or type(widget).__name__) for widget in app.screen.query("*") if widget.styles.border
-            ]
-            assert bordered == [BOX_ID]
+            bordered: list[Widget] = [widget for widget in app.screen.query("*") if widget.styles.border]
+            named: list[str] = [str(widget.id or type(widget).__name__) for widget in bordered]
+            boxed: set[tuple[str, str, str]] = {
+                (widget.styles.border_top[0], widget.styles.border_right[0], widget.styles.border_bottom[0])
+                for widget in bordered
+            }
+            edges: set[str] = {widget.styles.border_left[0] for widget in bordered}
+            colours: set[object] = {widget.styles.border_left[1] for widget in bordered}
+            assert named == [BOX_ID, SUGGESTIONS_ID]
+            assert boxed == {("", "", "")}
+            assert edges == {app.query_one(f"#{BOX_ID}").styles.border_left[0]}
+            assert len(colours) == len(bordered)
 
     _run(scenario())
 

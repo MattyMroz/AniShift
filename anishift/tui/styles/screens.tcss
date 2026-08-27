@@ -139,6 +139,12 @@ Screen {
     color: $background;
 }
 
+#composer-input > .input--cursor-blurred {
+    background: $background-element;
+    color: $text;
+    text-style: underline;
+}
+
 #composer-input > .input--placeholder {
     color: $text-muted;
 }
@@ -161,6 +167,7 @@ Screen {
     width: $block-width;
     height: 10;
     border: none;
+    border-left: outer $border;
     padding: 0;
     background: $background-element;
     color: $text;
@@ -172,7 +179,7 @@ Screen {
 }
 
 #composer-suggestions > .option-list--option {
-    padding: 0;
+    padding: 0 0 0 2;
 }
 
 #composer-suggestions > .option-list--option-hover {
