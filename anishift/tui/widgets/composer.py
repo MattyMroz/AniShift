@@ -14,8 +14,13 @@ from textual.message import Message
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
+from anishift.tui import workers
 from anishift.tui.commands.palette import slash_options
+from anishift.tui.dropped_files import DropKind, DropVerdict, inspect_drop
+from anishift.tui.state import UiFeedback
 from anishift.tui.strings import (
+    COMPOSER_DROP_BUSY,
+    COMPOSER_DROP_READING,
     COMPOSER_PLACEHOLDER,
     COMPOSER_PLAIN_TEXT,
     COMPOSER_UNKNOWN_COMMAND,
@@ -31,19 +36,24 @@ from anishift.tui.strings import (
     SUGGESTION_PREVIOUS_LABEL,
     SUGGESTION_ROW_GAP,
 )
+from anishift.tui.widgets.group_table import refresh_available
 from anishift.tui.widgets.lists import HoverList, move_highlight
+from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from textual.app import ComposeResult
     from textual.binding import BindingType
+    from textual.events import Paste
     from textual.geometry import Region
 
     from anishift.application import AppService, SettingsDraft
     from anishift.tui.commands.palette import CommandOption
     from anishift.tui.commands.registry import CommandRegistry
     from anishift.tui.commands.spec import CommandSpec
+    from anishift.tui.state import SessionState
 
 __all__ = [
     "BOX_ID",
@@ -64,6 +74,8 @@ __all__ = [
     "context_names",
     "context_text",
 ]
+
+logger = get_logger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -145,12 +157,22 @@ class ContextNames:
     model: str
 
 
-class ComposerHost(Protocol):
+class ComposerHost(workers.WorkerHost, Protocol):
     """The shell capabilities this composer reaches for, and nothing more."""
 
     @property
     def service(self) -> AppService:
         """The one application facade every workflow of the shell goes through."""
+        ...
+
+    @property
+    def session_state(self) -> SessionState:
+        """The single session state the shell owns."""
+        ...
+
+    @property
+    def workspace_root(self) -> Path:
+        """The directory every source this shell can act on lives in."""
         ...
 
 
@@ -227,11 +249,26 @@ class _ComposerInput(Input):
         Binding("ctrl+c", "clear_or_quit", show=False),
     ]
 
-    def __init__(self, clear: Callable[[], None], *, placeholder: str, widget_id: str) -> None:
-        """Empty the composer through *clear* while there is anything left to empty."""
+    def __init__(
+        self,
+        clear: Callable[[], None],
+        drop: Callable[[str], bool],
+        *,
+        placeholder: str,
+        widget_id: str,
+    ) -> None:
+        """Empty the composer through *clear*, and offer every paste to *drop* first."""
         super().__init__(placeholder=placeholder, id=widget_id)
         self.cursor_blink = False
         self._clear: Callable[[], None] = clear
+        self._drop: Callable[[str], bool] = drop
+
+    def on_paste(self, event: Paste) -> None:
+        """Let a dropped file become work, and leave every other paste to the field."""
+        if not self._drop(event.text):
+            return
+        event.stop()
+        event.prevent_default()
 
     async def action_clear_or_quit(self) -> None:
         """Empty a field that holds something, and leave the application when it holds nothing."""
@@ -272,10 +309,12 @@ class Composer(Vertical):
         self._box: Vertical = Vertical(id=BOX_ID)
         self._input: _ComposerInput = _ComposerInput(
             self.clear,
+            self._take_drop,
             placeholder=COMPOSER_PLACEHOLDER,
             widget_id=INPUT_ID,
         )
         self._written: str | None = None
+        self._answer: str | None = None
         self._mode: str = CONTEXT_MODE_AUTO
         self._context_line: Static = Static(id=CONTEXT_ID)
         self._hint: Static = Static(id=HINT_ID)
@@ -330,7 +369,7 @@ class Composer(Vertical):
     def _on_input_changed(self, event: Input.Changed) -> None:
         """Offer the commands the typed line could mean, and drop the last answer."""
         event.stop()
-        self._clear_hint()
+        self._keep_answer()
         if self._written is not None and event.value == self._written:
             self._written = None
             return
@@ -489,6 +528,36 @@ class Composer(Vertical):
         if self._registry.dispatch(name):
             self.clear()
 
+    def _take_drop(self, text: str) -> bool:
+        """Read the workspace again for the file *text* drops, or answer why not.
+
+        Answers ``True`` only for a drop this composer turned into work, which is
+        the one case the pasted text never reaches the field.
+        """
+        host: ComposerHost | None = self._host()
+        if host is None:
+            return False
+        verdict: DropVerdict = inspect_drop(text, root=host.workspace_root)
+        if verdict.kind is DropKind.NOT_A_DROP:
+            return False
+        if verdict.kind is DropKind.REFUSED:
+            self._refuse_drop(host, text, verdict.reason)
+            return False
+        if not refresh_available(host.session_state):
+            self._refuse_drop(host, text, COMPOSER_DROP_BUSY)
+            return False
+        logger.info("Dropped sources accepted", files=len(verdict.paths))
+        self._show_hint(COMPOSER_DROP_READING)
+        workers.discover(host, host.service, generation=host.session_state.generation)
+        return True
+
+    def _refuse_drop(self, host: ComposerHost, text: str, reason: str) -> None:
+        """State one refused drop on the session, leaving the pasted text in the field."""
+        logger.info("Dropped path refused", lines=len(text.splitlines()))
+        host.session_state.feedback = UiFeedback.error(reason)
+        self._show_hint(reason)
+        self._answer = reason if next(iter(text.splitlines()), "") else None
+
     def _host(self) -> ComposerHost | None:
         """The shell around this composer, or ``None`` while it is not mounted."""
         if not self.is_attached:
@@ -505,6 +574,14 @@ class Composer(Vertical):
         """Answer the last line with *text*, leaving that line in the field."""
         self._hint.update(text)
         self._hint.display = True
+
+    def _keep_answer(self) -> None:
+        """Keep the answer a refused drop left on the line it arrived with."""
+        if self._answer is None:
+            self._clear_hint()
+            return
+        self._show_hint(self._answer)
+        self._answer = None
 
     def _clear_hint(self) -> None:
         """Take the last answer off the screen."""

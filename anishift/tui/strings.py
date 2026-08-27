@@ -67,6 +67,11 @@ __all__ = [
     "COMMAND_TTS_DESCRIPTION",
     "COMMAND_TTS_TITLE",
     "COMPOSER_ACCENT_GLYPH",
+    "COMPOSER_DROP_BUSY",
+    "COMPOSER_DROP_MISSING",
+    "COMPOSER_DROP_OUTSIDE",
+    "COMPOSER_DROP_READING",
+    "COMPOSER_DROP_UNSUPPORTED",
     "COMPOSER_PLACEHOLDER",
     "COMPOSER_PLAIN_TEXT",
     "COMPOSER_UNKNOWN_COMMAND",
@@ -378,6 +383,21 @@ COMPOSER_UNKNOWN_COMMAND: Final[str] = "Unknown command"
 
 COMPOSER_UNKNOWN_COMMAND_SUGGESTION: Final[str] = "Unknown command, did you mean {command}?"
 """Answer naming the one closest known command instead of running anything."""
+
+COMPOSER_DROP_READING: Final[str] = "Reading the workspace again"
+"""Answer to an accepted drop, which starts the one scan and no run."""
+
+COMPOSER_DROP_MISSING: Final[str] = "Dropped file no longer exists"
+"""Answer to a dropped path that names nothing on this machine."""
+
+COMPOSER_DROP_UNSUPPORTED: Final[str] = "Dropped file is not a supported source"
+"""Answer to a dropped file the workspace scan groups no work under."""
+
+COMPOSER_DROP_OUTSIDE: Final[str] = "Dropped file is outside the workspace"
+"""Answer to a dropped file no scan of the workspace ever reads."""
+
+COMPOSER_DROP_BUSY: Final[str] = "The workspace cannot be read right now"
+"""Answer to a drop arriving while a run owns the workspace projection."""
 
 SUGGESTION_PREVIOUS_LABEL: Final[str] = "Previous suggestion"
 """Action label of the key moving the suggestion popup one row up."""

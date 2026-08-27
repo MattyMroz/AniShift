@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Coroutine
+from pathlib import Path
 from typing import Any, Final
 
 import pytest
@@ -12,17 +13,25 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.input import Selection
-from tui_fakes import shell
+from tui_fakes import StubService, shell
 
 from anishift.config import UserSettings
+from anishift.tui import workers
 from anishift.tui.app import FOOTER_ID, AniShiftApp
 from anishift.tui.commands.catalog import EXIT_COMMAND_NAME, PALETTE_COMMAND_NAME
 from anishift.tui.commands.palette import CommandOption, slash_options
 from anishift.tui.dialogs.base import open_dialog
 from anishift.tui.dialogs.value import PromptDialog
+from anishift.tui.dropped_files import DropKind, DropVerdict, dropped_paths, inspect_drop
 from anishift.tui.messages import AutoRequested, PlanFailed
-from anishift.tui.state import RunUiState, SessionState
+from anishift.tui.screens.workspace import WorkspaceView
+from anishift.tui.state import RunUiState, SessionState, UiFeedback
 from anishift.tui.strings import (
+    COMPOSER_DROP_BUSY,
+    COMPOSER_DROP_MISSING,
+    COMPOSER_DROP_OUTSIDE,
+    COMPOSER_DROP_READING,
+    COMPOSER_DROP_UNSUPPORTED,
     COMPOSER_PLACEHOLDER,
     COMPOSER_PLAIN_TEXT,
     COMPOSER_UNKNOWN_COMMAND,
@@ -131,6 +140,25 @@ def _spy_dispatch(app: AniShiftApp, calls: list[str]) -> None:
         return original(name)
 
     app.commands.dispatch = dispatch  # type: ignore[method-assign]
+
+
+def _spy_discover(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[object, object, int]]) -> None:
+    def discover(host: object, service: object, *, generation: int) -> None:
+        calls.append((host, service, generation))
+
+    monkeypatch.setattr(workers, "discover", discover)
+
+
+def _dropping_shell(root: Path) -> AniShiftApp:
+    service: StubService = StubService()
+    service.workspace_root = root
+    return shell(service.as_service())
+
+
+def _source_file(root: Path, name: str) -> Path:
+    path: Path = root / name
+    path.write_bytes(b"")
+    return path
 
 
 def _spy_auto_requests(app: AniShiftApp, generations: list[int]) -> None:
@@ -1096,5 +1124,187 @@ def test_a_plan_failure_of_a_replaced_generation_never_reopens_the_gate() -> Non
             await pilot.press("enter")
             await pilot.pause()
             assert requests == [1, 2]
+
+    _run(scenario())
+
+
+def test_a_drop_is_recognised_in_every_shape_a_terminal_quotes_it_with() -> None:
+    assert dropped_paths("C:\\anime\\ep1.mkv") == (Path("C:\\anime\\ep1.mkv"),)
+    assert dropped_paths('"C:\\anime\\ep 1.mkv"') == (Path("C:\\anime\\ep 1.mkv"),)
+    assert dropped_paths("'/home/u/ep 1.mkv'") == (Path("/home/u/ep 1.mkv"),)
+    assert dropped_paths('  "C:\\a\\1.mkv" "C:\\a\\2.mkv"  ') == (Path("C:\\a\\1.mkv"), Path("C:\\a\\2.mkv"))
+    assert dropped_paths("/home/u/1.mkv\n/home/u/2.mkv\n") == (Path("/home/u/1.mkv"), Path("/home/u/2.mkv"))
+
+
+@pytest.mark.parametrize(
+    "pasted",
+    ["", "witaj", "a/b", "/theme\ndalej", "see docs/plan.md now", "https://example.com/ep1.mkv"],
+)
+def test_text_that_merely_holds_a_slash_drops_no_file(pasted: str) -> None:
+    assert dropped_paths(pasted) == ()
+
+
+def test_a_dropped_source_of_the_workspace_is_accepted(tmp_path: Path) -> None:
+    source: Path = _source_file(tmp_path, "ep1.mkv")
+    assert inspect_drop(f'"{source}"', root=tmp_path) == DropVerdict(kind=DropKind.ACCEPTED, paths=(source,))
+
+
+def test_a_dropped_path_that_names_nothing_is_refused(tmp_path: Path) -> None:
+    verdict: DropVerdict = inspect_drop(str(tmp_path / "ep1.mkv"), root=tmp_path)
+    assert verdict.kind is DropKind.REFUSED
+    assert verdict.reason == COMPOSER_DROP_MISSING
+
+
+def test_a_dropped_file_of_another_type_is_refused(tmp_path: Path) -> None:
+    sidecar: Path = _source_file(tmp_path, "ep1.srt")
+    verdict: DropVerdict = inspect_drop(str(sidecar), root=tmp_path)
+    assert verdict.kind is DropKind.REFUSED
+    assert verdict.reason == COMPOSER_DROP_UNSUPPORTED
+
+
+def test_a_dropped_file_no_workspace_scan_reads_is_refused(tmp_path: Path) -> None:
+    root: Path = tmp_path / "workspace"
+    season: Path = root / "season"
+    season.mkdir(parents=True)
+    assert inspect_drop(str(_source_file(tmp_path, "ep1.mkv")), root=root).reason == COMPOSER_DROP_OUTSIDE
+    assert inspect_drop(str(_source_file(season, "ep2.mkv")), root=root).reason == COMPOSER_DROP_OUTSIDE
+
+
+def test_dropping_several_files_at_once_is_refused_when_one_of_them_is_unusable(tmp_path: Path) -> None:
+    usable: Path = _source_file(tmp_path, "ep1.mkv")
+    missing: Path = tmp_path / "ep2.mkv"
+    assert inspect_drop(f'"{usable}" "{missing}"', root=tmp_path) == DropVerdict(
+        kind=DropKind.REFUSED,
+        paths=(usable, missing),
+        reason=COMPOSER_DROP_MISSING,
+    )
+
+
+def test_a_dropped_source_asks_for_the_same_workspace_scan_the_refresh_action_uses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        calls: list[tuple[object, object, int]] = []
+        source: Path = _source_file(tmp_path, "ep1.mkv")
+        app: AniShiftApp = _dropping_shell(tmp_path)
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_discover(monkeypatch, calls)
+            _field(app).post_message(Paste(f'"{source}"'))
+            await pilot.pause()
+            app.query_one(WorkspaceView).action_refresh()
+            await pilot.pause()
+            assert len(calls) == 2
+            assert calls[0] == calls[1]
+
+    _run(scenario())
+
+
+def test_an_accepted_drop_leaves_the_field_empty_and_starts_no_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        calls: list[tuple[object, object, int]] = []
+        requests: list[int] = []
+        source: Path = _source_file(tmp_path, "ep1.mkv")
+        app: AniShiftApp = _dropping_shell(tmp_path)
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_discover(monkeypatch, calls)
+            _spy_auto_requests(app, requests)
+            _field(app).post_message(Paste(f'"{source}"'))
+            await pilot.pause()
+            assert len(calls) == 1
+            assert requests == []
+            assert _field(app).value == ""
+            assert _hint(app) == COMPOSER_DROP_READING
+            assert app.session_state.run_state is RunUiState.IDLE
+            assert app.session_state.feedback is None
+
+    _run(scenario())
+
+
+def test_dropping_two_usable_sources_at_once_asks_for_one_workspace_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        calls: list[tuple[object, object, int]] = []
+        first: Path = _source_file(tmp_path, "ep1.mkv")
+        second: Path = _source_file(tmp_path, "ep 2.mkv")
+        app: AniShiftApp = _dropping_shell(tmp_path)
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_discover(monkeypatch, calls)
+            _field(app).post_message(Paste(f'"{first}" "{second}"'))
+            await pilot.pause()
+            assert len(calls) == 1
+            assert _field(app).value == ""
+
+    _run(scenario())
+
+
+def test_a_refused_drop_answers_in_the_composer_and_keeps_the_pasted_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        calls: list[tuple[object, object, int]] = []
+        missing: Path = tmp_path / "ep1.mkv"
+        app: AniShiftApp = _dropping_shell(tmp_path)
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_discover(monkeypatch, calls)
+            _field(app).post_message(Paste(str(missing)))
+            await pilot.pause()
+            assert calls == []
+            assert _field(app).value == str(missing)
+            assert _hint(app) == COMPOSER_DROP_MISSING
+            assert app.session_state.feedback == UiFeedback.error(COMPOSER_DROP_MISSING)
+            assert app.session_state.run_state is RunUiState.IDLE
+
+    _run(scenario())
+
+
+def test_a_pasted_sentence_still_lands_in_the_field_without_any_answer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        calls: list[tuple[object, object, int]] = []
+        app: AniShiftApp = _dropping_shell(tmp_path)
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_discover(monkeypatch, calls)
+            _field(app).post_message(Paste("witaj"))
+            await pilot.pause()
+            assert calls == []
+            assert _field(app).value == "witaj"
+            assert _hint(app) == ""
+            assert app.session_state.feedback is None
+
+    _run(scenario())
+
+
+def test_a_drop_is_refused_while_a_run_owns_the_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        calls: list[tuple[object, object, int]] = []
+        source: Path = _source_file(tmp_path, "ep1.mkv")
+        app: AniShiftApp = _dropping_shell(tmp_path)
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_discover(monkeypatch, calls)
+            app.session_state.run_state = RunUiState.RUNNING
+            _field(app).post_message(Paste(str(source)))
+            await pilot.pause()
+            assert calls == []
+            assert _field(app).value == str(source)
+            assert _hint(app) == COMPOSER_DROP_BUSY
+            assert app.session_state.feedback == UiFeedback.error(COMPOSER_DROP_BUSY)
 
     _run(scenario())
