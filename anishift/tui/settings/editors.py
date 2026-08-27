@@ -16,6 +16,7 @@ from anishift.tui.dialogs.value import (
     PromptDialog,
     toggle_boolean,
 )
+from anishift.tui.numbers import number_text
 from anishift.tui.state import FeedbackLevel, UiFeedback
 from anishift.tui.strings import (
     OBJECT_ADD_LABEL,
@@ -42,7 +43,7 @@ if TYPE_CHECKING:
     from anishift.tui.dialogs.value import Validator
     from anishift.tui.state import SessionState
 
-__all__ = ["EditorKind", "editor_for", "open_field_editor", "value_summary"]
+__all__ = ["EditorKind", "editor_for", "number_text", "open_field_editor", "value_summary"]
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -105,7 +106,7 @@ def value_summary(value: SettingValue) -> str:
     if value is None:
         return SETTING_UNSET
     if isinstance(value, (int, float)):
-        return str(int(value)) if float(value).is_integer() else str(value)
+        return number_text(value)
     if isinstance(value, str):
         return value or SETTING_UNSET
     if isinstance(value, frozenset):

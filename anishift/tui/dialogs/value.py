@@ -11,6 +11,7 @@ from textual.binding import Binding
 from textual.widgets import Input, Static, TextArea
 
 from anishift.tui.dialogs.base import DialogScreen, DialogSize
+from anishift.tui.numbers import number_text
 from anishift.tui.strings import (
     DIALOG_CONFIRM_LABEL,
     VALUE_ABOVE_MAXIMUM,
@@ -121,21 +122,21 @@ def range_text(*, minimum: float | None, maximum: float | None, step: float) -> 
     """Hint one number editor shows about its range and its step."""
     parts: list[str] = []
     if minimum is not None or maximum is not None:
-        low: str = VALUE_RANGE_OPEN_END if minimum is None else _number_text(minimum)
-        high: str = VALUE_RANGE_OPEN_END if maximum is None else _number_text(maximum)
+        low: str = VALUE_RANGE_OPEN_END if minimum is None else number_text(minimum)
+        high: str = VALUE_RANGE_OPEN_END if maximum is None else number_text(maximum)
         parts.append(f"{VALUE_RANGE_LABEL} {low}{_RANGE_DASH}{high}")
-    parts.append(f"{VALUE_STEP_LABEL} {_number_text(step)}")
+    parts.append(f"{VALUE_STEP_LABEL} {number_text(step)}")
     return _HINT_JOINER.join(parts)
 
 
 def out_of_range_text(*, minimum: float | None, maximum: float | None) -> str:
     """Reason shown when a number leaves the range its field allows, else nothing."""
     if minimum is not None and maximum is not None:
-        return VALUE_OUT_OF_RANGE.format(minimum=_number_text(minimum), maximum=_number_text(maximum))
+        return VALUE_OUT_OF_RANGE.format(minimum=number_text(minimum), maximum=number_text(maximum))
     if minimum is not None:
-        return VALUE_BELOW_MINIMUM.format(minimum=_number_text(minimum))
+        return VALUE_BELOW_MINIMUM.format(minimum=number_text(minimum))
     if maximum is not None:
-        return VALUE_ABOVE_MAXIMUM.format(maximum=_number_text(maximum))
+        return VALUE_ABOVE_MAXIMUM.format(maximum=number_text(maximum))
     return ""
 
 
@@ -144,8 +145,8 @@ def toggle_boolean(current: bool) -> bool:
     return not current
 
 
-def _number_text(value: float) -> str:
-    """Shortest honest text of one number, without a trailing ``.0``."""
+def _stored_number_text(value: float) -> str:
+    """Text of one number exactly as it is stored, so reopening an editor rewrites nothing."""
     return str(int(value)) if float(value).is_integer() else str(value)
 
 
@@ -331,7 +332,7 @@ class NumberDialog(DialogScreen[int | float | None]):
         self._maximum: float | None = maximum
         self._step: float = self._default_step() if step is None else step
         self._optional: bool = optional
-        self._input: Input = Input(value="" if value is None else _number_text(value), id=_INPUT_ID)
+        self._input: Input = Input(value="" if value is None else _stored_number_text(value), id=_INPUT_ID)
         self._hint: Static = Static(self._hint_text(), id=_HINT_ID, classes="dialog-hint")
         self._error: Static = Static(id=_ERROR_ID, classes="dialog-error")
 
@@ -415,7 +416,7 @@ class NumberDialog(DialogScreen[int | float | None]):
             moved = max(moved, self._minimum)
         if self._maximum is not None:
             moved = min(moved, self._maximum)
-        self._input.value = _number_text(int(moved) if self._kind is NumberKind.WHOLE else moved)
+        self._input.value = _stored_number_text(int(moved) if self._kind is NumberKind.WHOLE else moved)
 
 
 class ConfirmDialog(DialogScreen[bool]):
