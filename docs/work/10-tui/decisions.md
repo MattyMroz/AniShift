@@ -474,3 +474,180 @@ Zadanie poszło dwoma dostawami: warstwa danych i aplikacji, potem ekrany.
 - **Nic tego nie zamawiało.** Ani spec, ani ten dziennik nie mówią o myszy, a żaden test nie
   pinował zachowania wskaźnika dla `SelectDialog`. Zapadka żyła w kodzie, którego nikt nie
   zamówił i nikt nie sprawdzał; teraz reorder i composer są zmierzone i przypięte.
+
+## Akcje ekranowe nie są komendami ukośnikowymi
+
+Wspólna reguła dla wszystkich ekranów tego etapu, ustalona przy T-017 i obowiązująca do końca.
+
+- **Katalog ukośnika ma dokładnie 14 pozycji i nie rośnie.** Odświeżenie, Start, Powrót,
+  Anulowanie, filtr, szczegóły, otwarcie w Manualu — to `CommandCategory.ACTION` rejestrowane
+  na `on_show` i zdejmowane na `on_hide` przez `register(..., scope=...)` / `unregister(scope)`.
+  Gdyby każda z nich dostała nazwę z ukośnikiem, lista komend rosłaby z liczbą ekranów i
+  przestałaby być listą rzeczy, które użytkownik może zrobić zawsze.
+- **Skróty są ograniczone przez widget wejścia.** `Input` rezerwuje `ctrl+c/d/e/a/w/k/x/v`,
+  więc pozostały zakres jest wąski i przydzielany świadomie: `ctrl+r` odświeżenie,
+  `ctrl+s`/`ctrl+b` Start i Powrót, `ctrl+t`/`ctrl+f`/`ctrl+o` na wykonaniu,
+  `ctrl+l` powrót do Manuala z wyników.
+
+## T-020 — podgląd planu przed uruchomieniem
+
+### Rozstrzygnięcia
+
+- **Podgląd rysuje się tylko, gdy jest na wierzchu.** `_render_frame` wołało `show()` bezwarunkowo,
+  co wymagało od serwisu atrybutu potrzebnego wyłącznie temu ekranowi i wywalało ~21 testów.
+  Warunek na trasie jest jedną regułą; dosypywanie atrybutów do atrap byłoby leczeniem objawu.
+- **Problem grupy stoi pod swoją grupą.** Lista problemów oderwana od grup zmuszałaby do
+  łączenia identyfikatorów wzrokiem. Blokada i ostrzeżenie mają glif i słowo, nigdy sam kolor.
+- **Odmowa nadpisania zwalnia rezerwację.** Inaczej kolejna próba trafiałaby na własny ślad
+  poprzedniej odmowy.
+
+### Obserwacje
+
+- **Stopka nie pokazuje skrótów zakresowanych na ekran.** Renderuje ją `action_hints()`
+  (komendy + syntetyczny `enter`), a `key_hints()` jest osobnym źródłem tej samej wiedzy i nie
+  ma produkcyjnego wołacza. Próba przestawienia kolejności w `key_hints()` była martwym kodem
+  i została wycofana. `ctrl+s`/`ctrl+b` i odświeżenie są odkrywalne wyłącznie przez `ctrl+p`.
+  To jedna wiedza w dwóch miejscach i należy ją zredukować do jednego — otwarte.
+
+## Zamknięcie ramki composera
+
+- **Pół wiersza zastąpione prawdziwym wierszem.** Element domykający był rysowany osobno i
+  czytał `region.width` w chwili, gdy szerokość wynosiła zero, więc nigdy się nie przemalowywał.
+  Kolejne próby naprawy narożnika kończyły się albo czarną szczeliną (przezroczysty ćwiartkowy
+  glif odsłania 3/4 komórki terminala), albo zwisem pod ramką — czyli dokładnie tym błędem,
+  który wcześniej naprawiono. Ostatecznie `#composer-box` ma 5 wierszy zamiast 4, a lewa szyna
+  biegnie przez wszystkie, więc dolny pas jest ciągły bez żadnego glifu narożnika.
+  Rzeczy syntetycznej nie da się zestroić z ramką, która sama się układa; dodanie wiersza do
+  ramki jest jedną prawdą zamiast dwóch.
+
+## T-021 — ekran wykonania
+
+### Rozstrzygnięcia
+
+- **Postęp jest zwinięciem `state.events`, nie drugim stanem.** `progress_rows` liczy wiersze
+  z listy zdarzeń przy każdym rysowaniu. Równoległa mutowalna tabela rozjechałaby się ze
+  zdarzeniami dokładnie w chwili, w której zależy na prawdzie.
+- **Anulowanie jest idempotentne.** Jedno potwierdzenie, jedna wysyłka, powtórzone wciśnięcie
+  nic nie robi.
+
+### Obserwacje
+
+- **`WorkerNotificationKind.RETRY` i `FALLBACK` nie mają w repo producenta.**
+  `WorkerNotification(...)` nie jest nigdzie konstruowany, a `RunEvent` nie ma pól `attempt`
+  ani `engine` — tylko zredagowaną wiadomość. Ekran renderuje je jako tekst, jeśli przyjdą,
+  i nie wymyśla numeru próby ani nazwy silnika. Realne raportowanie retry i fallbacku wymaga
+  producenta w `application`/`services` i jest osobną pracą.
+
+## T-022 — wyniki i odzyskiwanie
+
+- **Częściowy sukces nie jest spłaszczany do porażki.** Cztery stany mają glif i słowo.
+- **„Otwórz w Manualu" tworzy niezależny szkic dla jednej grupy.** Identyfikatory zależne od
+  źródła są czyszczone, a szkic idzie normalną ścieżką planowania. Automatyczne dokończenie
+  obiecywałoby wznowienie, którego nie ma.
+- **Wyniki są dostępne przez predykat `enabled`, nie przez ukrytą flagę.** Trasa wymaga, by
+  sesja trzymała rezultat.
+
+## T-024 — zbieg całej drogi
+
+### Rozstrzygnięcia
+
+- **Jeden test idzie całą drogę.** Każdy ekran miał testy, więc każdy krok był sprawdzony, a
+  podróż nie. Piloty jadą na realnym serwisie, plannerze i schedulerze, z atrapami tylko na
+  granicach procesu, i sprawdzają, że pliki `.pl.srt` naprawdę powstały.
+- **Limit ścienny „100 grup < 5 s" zastąpiony niezmiennikiem skalowania.** Zmierzony koszt
+  klawisza: 56,9 / 66,6 / 65,8 / 55,7 ms dla 5/25/50/100 grup — płasko. To narzut `pilot.press`,
+  który czeka na klatkę, nie koszt tabeli. Test ściennego czasu mierzyłby harness; asercja
+  „100 grup nie kosztuje więcej na klawisz niż 5, z tolerancją 3×" łapie regresję O(n),
+  o którą naprawdę chodzi.
+- **Bezczynna powłoka nie trzyma timera drenażu.** Przypięte przed runem, po dropie i po
+  wiadomości terminalnej.
+
+## T-026 — usunięcie starego pipeline'u i powłoki
+
+### Rozstrzygnięcia
+
+- **Dowód przed cięciem, nie po.** Każda zdolność starego kodu została dopasowana do miejsca,
+  w którym żyje teraz, i do testu, który ją tam trzyma. Trzy nie miały testu — testy powstały
+  pierwsze. Tymczasowy test porównywał bajt w bajt `.pl.srt` ze starego runnera i nowego
+  schedulera, przeszedł, i został usunięty razem z kodem, który oceniał.
+- **Spadek liczby testów jest rozliczony do sztuki.** 3175 → 3209 (+34 na łatanie luk) → 2980
+  (−133 `tests/pipeline`, −76 stare CLI, −13 prototyp, −2 wiring, −5 test tymczasowy).
+  Nierozliczony spadek byłby nie do odróżnienia od regresji.
+- **Zdolności zmienione świadomie** (heurystyka „displayed gdy jest lektor", limit workerów,
+  guard dodatniego czasu) są decyzjami planu, nie zgubami cięcia.
+
+## T-027 — CI, granice i dokumentacja
+
+### Rozstrzygnięcia
+
+- **Pełny `pytest` na Windowsie, nie wycinek.** Produkt jedzie na Windowsa; suite dowodzony
+  wyłącznie na Linuksie niczego o nim nie mówi.
+- **Drugi target mypy zamiast drugiego runnera.** mypy zawęża gałęzie `sys.platform` pod target,
+  więc przebieg na Linuksie nigdy nie analizował windowsowej gałęzi `ctypes.WinDLL`
+  w `config/workspace.py`. Dodatkowe wywołanie `--platform win32` kosztuje sekundy.
+- **Granica warstw wyprowadzana z fasady, nie z czarnej listy.** Zbiór modułów wewnętrznych to
+  wszystkie pliki `application/` minus to, co `__init__.py` faktycznie wystawia, czytane przez
+  AST. Czarna lista rośnie tylko wtedy, gdy ktoś pamięta ją uzupełnić — i właśnie dlatego miała
+  dziurę: import `anishift.application.discovery` z TUI przechodził. Teraz modułu dodanego jutro
+  nie trzeba nikomu zgłaszać, jest zamknięty domyślnie.
+
+### Obserwacje
+
+- **Trzy testy pomijane lokalnie wykonają się na Windowsie w CI pierwszy raz** (symlinki wymagają
+  podniesionych uprawnień, których runnery GHA mają, a ta maszyna nie).
+- **`doctor` nie wchodzi do CI** — bez `mkvmerge`/`ffmpeg` wywaliłby joba. Został smoke `--help`.
+
+## Jedna prawda: powtórzenia usunięte w tej rundzie
+
+Dominująca klasa defektów tego etapu to jedna wiedza zapisana dwa razy. Znalezione i zamknięte:
+
+- **Formatowanie liczby.** `_number_text` w `dialogs/value.py` i `number_text`
+  w `settings/editors.py` — dwie różne implementacje tego samego pojęcia. Wspólna trafiła do
+  `tui/numbers.py`. Prefill edytora **celowo** został przy formie zapisanej, pod nazwą, która
+  to mówi: podstawienie liczby wyczyszczonej pozwoliłoby zwykłemu Enterowi zapisać inną wartość
+  niż ta, która tam była.
+- **Sufiksy plików źródłowych.** `DROPPED_SUFFIXES` w powłoce obok wiedzy `discovery`. Rozjazd
+  objawiłby się plikiem, który pipeline przyjmuje, a okno odrzuca. Fakt należy do `discovery`,
+  fasada go podaje, a test wylicza oczekiwanie z tej jednej stałej.
+- **Gotowość grupy.** Decyzja siedziała w widgecie tabeli, więc CLI nie mogło zapytać i podawało
+  plannerowi wszystkie grupy. Jedna niegotowa grupa z pięciu odmawiała skryptowi całego biegu,
+  gdy ten sam workspace na ekranie proponował zdubbingowanie czterech. Werdykt jest w czystej
+  polityce `application/selection.py`, widget dalej wybiera glif i słowo. Test przepuszcza jedną
+  dyskrecję przez oba wejścia i wymaga tego samego zbioru grup.
+
+## T-028 do T-032 — praca po osiągnięciu parytetu
+
+- **T-028.** Formatowanie jest wyłącznie wyświetlaniem. Katalog `SettingSpec` pozostaje jedynym
+  właścicielem jednostek i zakresów; formater widzi samą liczbę i nigdy nie zmienia tego, co
+  zapisane.
+- **T-029.** R-111 nie opisuje wyglądu, opisuje ograniczenie dekoracji przy nietkniętej
+  semantyce. Wariant minimalny bierze dosłownie zdanie ze specu „jeden nasycony akcent na
+  wariant": `secondary` i `accent` zwijają się do `primary`, kolory stanu i cała skala neutralna
+  zostają identyczne z kanonicznym jasnym. Paleta jest zapisana jako pochodna `LIGHT_PALETTE`,
+  nie jako nowe literały, więc nie może się z nim rozjechać. **Nie** spłaszczyłem powierzchni
+  ani nie zrównałem krawędzi: tint panelu jest jedyną granicą modala, a `border-active` jedynym
+  sygnałem focusu — spec prosi o mniej dekoracji, nie o mniej struktury.
+- **T-030.** Rozpoznanie upuszczonej ścieżki jest czystą funkcją nad wklejonym tekstem, w module
+  liściu, nie w metodzie widgetu — inaczej nie da się go sprawdzić bez terminala. Zdanie, które
+  tylko zawiera ukośnik, zostaje zdaniem. Plik nie do użycia mówi dlaczego. Nic nie jest czytane,
+  kopiowane, przenoszone ani usuwane, a przyjęty plik wchodzi tą samą dyskrecją co skan ręczny.
+- **T-031.** Stopka **nie** dostała dostawcy ani modelu: R-020 i §6.1 przypinają je do linii
+  kontekstu composera i zabraniają duplikatu w dolnym pasku. Prawdziwy defekt był inny — linia
+  kontekstu była literałem, którego nie karmiło nic; `show_context()` nie miało przed tą naprawą
+  ani jednego produkcyjnego wołacza.
+- **T-032.** Routing edycji zostaje jednościeżkowy: `LONG_TEXT` dostaje pole tylko wtedy, gdy nie
+  jest sekretem i jego własna domyślna wartość w katalogu zawiera znak nowej linii. Esc przy
+  zmienionym tekście używa idiomu podwójnego wciśnięcia, który już istniał w `ReorderDialog`.
+
+## Otwarte, wymaga decyzji użytkownika
+
+- **`prompt-toolkit>=3.0.52` jest w `pyproject.toml` i nie ma ani jednego importu w źródłach.**
+  R-108 wymaga zdjęcia; zależności zmienia się tylko przez `uv remove`, za zgodą.
+- **`config/presets.json` nie jest w `.gitignore`**, choć jest plikiem runtime jak
+  `settings.json` i `ui_state.json`. Leży nieśledzony i grozi przypadkowym commitem.
+- **Kolor lewej szyny composera to `secondary` (`#5c9cf5`), a spec mówi `primary` (`#fab283`).**
+  Rozbieżność zgłoszona, nie naprawiona.
+- **Stopka a skróty ekranowe** — jedna wiedza w `action_hints()` i `key_hints()`, opisane wyżej.
+- **Strażnik na drugą listę sufiksów** — skan AST zabraniający literału sufiksu w `anishift/tui/**`
+  przeszedłby dziś i uczyniłby drugą listę niemożliwą, nie tylko wykrywalną. Strażnika nie
+  instaluje się bez zgody.
