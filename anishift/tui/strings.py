@@ -85,16 +85,9 @@ __all__ = [
     "CONTEXT_MODEL_SEPARATOR",
     "CONTEXT_MODEL_UNSET",
     "CONTEXT_MODE_AUTO",
-    "CONTEXT_MODE_DEMO",
     "CONTEXT_PROVIDER",
     "CONTEXT_PROVIDER_UNSET",
     "CONTEXT_SEPARATOR",
-    "DEMO_GROUP_FIVE",
-    "DEMO_GROUP_FOUR",
-    "DEMO_GROUP_ONE",
-    "DEMO_GROUP_THREE",
-    "DEMO_GROUP_TWO",
-    "DEMO_TITLE",
     "DIALOG_ALREADY_OPEN",
     "DIALOG_CANCEL_LABEL",
     "DIALOG_CONFIRM_LABEL",
@@ -426,12 +419,6 @@ CONTEXT_MODEL_SEPARATOR: Final[str] = ": "
 CONTEXT_MODE_AUTO: Final[str] = "Auto"
 """Mode the context line reports while Auto is the default workflow."""
 
-CONTEXT_MODE_DEMO: Final[str] = "Demo"
-"""Mode the context line reports while the session simulates every workflow."""
-
-DEMO_TITLE: Final[str] = "AniShift Demo"
-"""Terminal title of a session that simulates every workflow."""
-
 CONTEXT_PROVIDER: Final[str] = "Foundry"
 """Provider the context line reports for the primary model."""
 
@@ -734,21 +721,6 @@ RUN_STEP_SPEECH: Final[str] = "Rendering speech"
 
 RUN_DONE: Final[str] = "Done"
 """Terminal state of a run that finished every group it admitted."""
-
-DEMO_GROUP_ONE: Final[str] = "youjo-senki-ii-01"
-"""Name of the first simulated source group."""
-
-DEMO_GROUP_TWO: Final[str] = "youjo-senki-ii-02"
-"""Name of the second simulated source group."""
-
-DEMO_GROUP_THREE: Final[str] = "mushoku-tensei-s3-03"
-"""Name of the third simulated source group."""
-
-DEMO_GROUP_FOUR: Final[str] = "frieren-01"
-"""Name of the fourth simulated source group."""
-
-DEMO_GROUP_FIVE: Final[str] = "frieren-02"
-"""Name of the fifth simulated source group."""
 
 THEME_DARK_TITLE: Final[str] = "Dark"
 """Title of the dark theme row."""

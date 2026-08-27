@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from pathlib import Path
@@ -27,8 +28,30 @@ from anishift.application import (
     RunResult,
     SourceGroup,
 )
+from anishift.application.artifacts import create_group_id
+from anishift.application.cancellation import CancellationToken
+from anishift.application.events import WorkerNotification, WorkerNotificationKind
+from anishift.application.handlers import (
+    ExecutionHandlers,
+    ExtractionTaskHandler,
+    PublishTaskHandler,
+    SubtitleTaskHandler,
+    TranslationTaskHandler,
+)
+from anishift.application.inspection import WorkspaceInspector
+from anishift.application.planning import PlanTask, TaskKind
+from anishift.application.results import ArtifactSnapshot, TaskResult
+from anishift.application.scheduler_contracts import TaskHandler, TaskProgressSink
 from anishift.config import Settings, UserSettings
+from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
+from anishift.config.presets import AutoPresetFile, default_preset_file
+from anishift.errors import ExecutionError
+from anishift.services.extraction import ExtractionRequest, ExtractionResult
 from anishift.services.media.types import ContainerKind, MediaCatalog, MediaTrack, MediaTrackKind
+from anishift.services.subtitles import DisplayedLine, SpokenLine
+from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
+from anishift.services.translation.types import FileTranslation, TranslatedLine
+from anishift.setup.doctor import CheckResult, CheckStatus
 from anishift.tui.app import AniShiftApp
 
 OFFLINE_ROOT: Final[Path] = Path(__file__).parent / "_offline_never_created"
@@ -38,6 +61,20 @@ STUB_RUN_ID: Final[str] = "run-stub"
 STUB_TASK_ID: Final[str] = "task-1"
 
 STUB_GROUP_ID: Final[str] = "group-1"
+
+PILOT_CATALOG_ALIAS: Final[str] = "foundry/gpt-main"
+
+_PILOT_CATALOG_SOURCE: Final[str] = """
+{
+  "schema_version": 1,
+  "providers": { "foundry-openai": { "protocol": "openai_chat", "path": "/api/v2/llm/proxy/openai/v1" } },
+  "models": { "foundry/gpt-main": { "provider": "foundry-openai", "model": "id-1" } }
+}
+"""
+
+_PILOT_SUBTITLE: Final[str] = "1\n00:00:00,000 --> 00:00:01,000\nHello\n\n2\n00:00:01,000 --> 00:00:02,000\nWorld\n"
+
+_PILOT_GATE_SECONDS: Final[float] = 30.0
 
 
 def offline_service(root: Path | None = None) -> AppService:
@@ -309,3 +346,167 @@ class RecordingHost:
     def run_all(self) -> None:
         for launch in tuple(self.launched):
             cast("Callable[[], None]", launch["work"])()
+
+
+def write_source_group(root: Path, stem: str) -> Path:
+    container: Path = root / f"{stem}.mkv"
+    container.write_bytes(b"fake media")
+    container.with_suffix(".srt").write_text(_PILOT_SUBTITLE, encoding="utf-8")
+    return container
+
+
+def pilot_catalog() -> ModelCatalog:
+    return parse_model_catalog(_PILOT_CATALOG_SOURCE)
+
+
+def pilot_checks() -> tuple[CheckResult, ...]:
+    return (
+        CheckResult(name="python_version", status=CheckStatus.OK, message="Python is recent enough"),
+        CheckResult(
+            name="binaries",
+            status=CheckStatus.WARN,
+            message="One external tool is missing",
+            suggestion="Install the external tools",
+        ),
+    )
+
+
+class PilotMediaProbe:
+    def identify(self, path: Path, *, cancel: CancellationToken, timeout_s: float) -> MediaCatalog:
+        del cancel, timeout_s
+        return MediaCatalog(
+            path=path,
+            container=ContainerKind(path.suffix.casefold().lstrip(".")),
+            duration_us=10_000_000,
+            tracks=(
+                MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False),
+                MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", None, True, False),
+            ),
+        )
+
+
+class RefusedExtraction:
+    def extract(self, request: ExtractionRequest, *, cancel: object, timeout_s: float) -> ExtractionResult:
+        del request, cancel, timeout_s
+        message: str = "A usable sidecar must never be extracted from the container"
+        raise AssertionError(message)
+
+
+class PilotTranslation:
+    def __init__(self) -> None:
+        self.entered: threading.Event = threading.Event()
+        self.release: threading.Event = threading.Event()
+        self.holds: bool = False
+
+    def translate_file(  # noqa: PLR0913 - mirrors the translation service signature
+        self,
+        spoken: list[SpokenLine],
+        displayed: list[DisplayedLine],
+        *,
+        source_lang: str = "auto",
+        target_lang: str = "pl",
+        cancel: TranslationCancellation | None = None,
+        observer: TranslationObserver | None = None,
+    ) -> FileTranslation:
+        del displayed, source_lang, target_lang, observer
+        self.entered.set()
+        if self.holds:
+            assert self.release.wait(timeout=_PILOT_GATE_SECONDS)
+        if cancel is not None and cancel.is_set():
+            return FileTranslation(engine_id="pilot", error="cancelled")
+        translated: tuple[TranslatedLine, ...] = tuple(
+            TranslatedLine(line.start, line.end, line.text, f"PL {line.text}", (f"PL {line.text}",), line.style)
+            for line in spoken
+        )
+        return FileTranslation(
+            spoken=translated,
+            engine_id="pilot",
+            unique_lines=len(translated),
+            total_lines=len(translated),
+            api_calls=1,
+        )
+
+
+class PilotHandler:
+    def __init__(self, delegate: TaskHandler, *, failing_group_id: str | None, progress_updates: int) -> None:
+        self._delegate: TaskHandler = delegate
+        self._failing_group_id: str | None = failing_group_id
+        self._progress_updates: int = progress_updates
+
+    def execute(
+        self,
+        task: PlanTask,
+        artifacts: ArtifactSnapshot,
+        cancel: CancellationToken,
+        progress: TaskProgressSink,
+    ) -> TaskResult:
+        for step in range(self._progress_updates):
+            percent: int = 1 + step * 99 // max(self._progress_updates, 1)
+            progress.emit(
+                WorkerNotification(
+                    kind=WorkerNotificationKind.PROGRESS,
+                    task_id=task.task_id,
+                    progress_percent=min(percent, 99),
+                )
+            )
+        if task.group_id == self._failing_group_id and task.kind is TaskKind.TRANSLATE_SUBTITLES:
+            message: str = "Pilot translation failure"
+            raise ExecutionError(message)
+        return self._delegate.execute(task, artifacts, cancel, progress)
+
+    def close(self) -> None:
+        close: object = getattr(self._delegate, "close", None)
+        if callable(close):
+            close()
+
+
+def pilot_service(  # noqa: PLR0913 - one knob per boundary the pilot replaces
+    root: Path,
+    *,
+    translation: PilotTranslation | None = None,
+    failing_stem: str | None = None,
+    checks: tuple[CheckResult, ...] = (),
+    prober: Callable[[Any], None] | None = None,
+    progress_updates: int = 0,
+) -> AppService:
+    engine: PilotTranslation = translation if translation is not None else PilotTranslation()
+    failing_group_id: str | None = None if failing_stem is None else create_group_id(Path(), failing_stem)
+    stored: list[AutoPresetFile] = [default_preset_file()]
+    env_file: Path = root / ".env"
+
+    def handlers(
+        run_root: Path,
+        plan: ExecutionPlan,
+        source_groups: Mapping[str, InspectedSourceGroup],
+    ) -> TaskHandler:
+        del plan
+        delegate: ExecutionHandlers = ExecutionHandlers(
+            ExtractionTaskHandler(RefusedExtraction(), run_root=run_root, timeout_s=30.0),
+            SubtitleTaskHandler(run_root=run_root),
+            TranslationTaskHandler(engine, run_root=run_root),
+            publish=PublishTaskHandler(
+                run_root=run_root,
+                source_groups={group_id: group.source for group_id, group in source_groups.items()},
+            ),
+        )
+        return PilotHandler(
+            delegate,
+            failing_group_id=failing_group_id,
+            progress_updates=progress_updates,
+        )
+
+    return AppService(
+        workspace_root=root,
+        settings=Settings(_env_file=env_file),
+        user_settings=UserSettings(),
+        inspector=WorkspaceInspector(PilotMediaProbe()),
+        handler_factory=handlers,
+        preset_loader=lambda: stored[0],
+        preset_saver=lambda value: stored.__setitem__(0, value),
+        settings_saver=lambda draft: None,
+        doctor_runner=lambda settings: checks,
+        setup_runner=lambda **kwargs: (),
+        catalog_loader=pilot_catalog,
+        model_prober=cast("Any", prober),
+        env_file=env_file,
+    )
