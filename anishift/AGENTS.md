@@ -4,9 +4,8 @@ Pakiet aplikacji. Composition root i hierarchia błędów tutaj; reszta w moduł
 
 ## Moduły (każdy ma własny AGENTS.md)
 
-- `application/` — czysty model produktu, planowanie i wykonawcze use case'y dla wszystkich UI
-- `cli/` — Typer entry point, subkomendy techniczne i nieinteraktywne `run --preset`
-- `tui/` — interaktywna powłoka Textual (domyślne wejście aplikacji)
+- `application/` — czysty model produktu, planowanie i wykonawcze use case'y
+- `cli/` — Typer entry point, jedyne wejście: subkomendy techniczne i `run --preset`
 - `services/` — domeny audio, extraction, llm, subtitles, translation i tts
 - `text/` — bezdomenowe granice Unicode, skróty i segmentacja grafemów
 - `setup/` — pobieranie i instalacja zewnętrznych binarek

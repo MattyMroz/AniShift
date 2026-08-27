@@ -1,6 +1,6 @@
 # config
 
-Ustawienia i `Settings` (pydantic-settings, prefix `ANISHIFT_`, z `.env`), preferencje edytowane przez ekrany ustawień TUI, katalog modeli oraz bootstrap workspace.
+Ustawienia i `Settings` (pydantic-settings, prefix `ANISHIFT_`, z `.env`), preferencje trwałe w `config/settings.json` edytowane wprost w pliku, katalog modeli oraz bootstrap workspace.
 
 ## Pliki
 

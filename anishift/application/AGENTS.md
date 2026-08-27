@@ -1,14 +1,14 @@
 # application
 
-Czysta warstwa produktu i use case'ów współdzielona przez TUI, CLI i testy.
+Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 
 ## Kierunek zależności
 
 - `artifacts.py`, `intents.py`, `planning.py`, `selection.py` i `planner.py` nie importują I/O,
-  `anishift.services`, `anishift.config`, CLI ani TUI.
+  `anishift.services`, `anishift.config` ani CLI.
 - Kontrolowane I/O należy wyłącznie do `discovery.py`, `inspection.py`,
   `publisher.py`, `sessions.py` i handlerów; decyzje produktowe pozostają w plannerze.
-- TUI i CLI używają publicznej fasady `anishift.application`; nie importują
+- CLI używa publicznej fasady `anishift.application`; nie importuje
   wewnętrznych helperów I/O ani schedulera.
 - Oczekiwany konflikt wejścia jest `PlanProblem`. `PlanningError` oznacza uszkodzony
   kontrakt albo graf, nie zwykłą decyzję użytkownika.

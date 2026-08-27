@@ -260,6 +260,10 @@ class AppService:
         """Return all stored automatic presets without mutating persistence."""
         return self._preset_loader().presets
 
+    def default_preset_id(self) -> str:
+        """Return the stable ID of the preset a run applies when none is named."""
+        return self._preset_loader().default_preset_id
+
     def get_preset(self, preset_id: str) -> AutoPreset:
         """Return one stored preset by stable ID."""
         for preset in self.list_presets():

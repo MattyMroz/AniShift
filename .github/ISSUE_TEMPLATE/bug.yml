@@ -24,7 +24,7 @@ body:
     attributes:
       label: Context
       description: Files, paths, logs, screenshots, commit where it appeared.
-      placeholder: "anishift/tui/settings/tree.py, since commit abc123"
+      placeholder: "anishift/cli/main.py, since commit abc123"
     validations:
       required: false
   - type: dropdown

@@ -79,8 +79,8 @@ jobs:
       fail-fast: false
       matrix:
         # AniShift ships to Windows, so the suite has to pass there, not only on the
-        # cheap runner: paths, file locks, the console code page, the ctypes process
-        # probe and Textual itself only answer for real on the shipping platform.
+        # cheap runner: paths, file locks, the console code page and the ctypes
+        # process probe only answer for real on the shipping platform.
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4

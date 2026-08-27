@@ -19,7 +19,6 @@ dependencies = [
     "loguru>=0.7.3",
     "natsort>=8.4.0",
     "openai>=2.45.0",
-    "prompt-toolkit>=3.0.52",
     "pyasstosrt>=1.5.0",
     "pydantic-settings>=2.14.2",
     "pysrt>=1.1.2",
@@ -27,7 +26,6 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "regex>=2026.7.19",
     "rich>=15.0.0",
-    "textual>=8.2.8",
     "typer>=0.26.8",
 ]
 

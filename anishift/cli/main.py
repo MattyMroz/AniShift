@@ -102,18 +102,11 @@ def _print_setup_report(results: list[ResourceResult]) -> None:
 
 @app.callback(invoke_without_command=True)
 def _default(ctx: typer.Context) -> None:
-    """Launch the application shell when invoked without a subcommand."""
+    """Run the preset stored as the default when invoked without a subcommand."""
     if ctx.invoked_subcommand is not None:
         return
-    from anishift.bootstrap import production_service  # noqa: PLC0415 - keep the backend off the Typer import path
-    from anishift.tui.app import AniShiftApp  # noqa: PLC0415 - keep textual off the Typer import path
-
-    try:
-        service: AppService = production_service()
-    except (AniShiftError, OSError) as exc:
-        console.print(f"[error]AniShift cannot start: {exc}[/error]")
-        raise typer.Exit(code=1) from exc
-    AniShiftApp(service=service).run()
+    service: AppService = _composed_service()
+    _run_preset(service, service.default_preset_id())
 
 
 @app.command()
@@ -151,7 +144,11 @@ def run(
     ],
 ) -> None:
     """Run one stored automatic preset over the workspace and report the outcome as text."""
-    service: AppService = _composed_service()
+    _run_preset(_composed_service(), preset)
+
+
+def _run_preset(service: AppService, preset: str) -> NoReturn:
+    """Plan and execute one named preset, then leave with the code of its outcome."""
     plan: ExecutionPlan = _preset_plan(service, preset)
     result: RunResult = _executed_run(service, plan)
     _print_run_report(result, service.workspace_root)

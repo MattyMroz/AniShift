@@ -26,14 +26,10 @@ from anishift.application import (
 from anishift.application.planning import PlanProblem
 from anishift.application.results import GroupResult, GroupStatus, ProducedArtifact, RunResult
 from anishift.errors import ConfigError, ErrorCode, ErrorContext, ExecutionError, PlanningError
-from anishift.tui import ui_state
-from anishift.tui.app import AniShiftApp
-from anishift.tui.screens.auto import run_group_ids
-from anishift.tui.state import SessionState
 
 cli_main = importlib.import_module("anishift.cli.main")
 
-_UI_MODULE_PREFIXES: Final[tuple[str, ...]] = ("textual", "anishift.tui")
+_UI_MODULE_PREFIXES: Final[tuple[str, ...]] = ("textual", "prompt_toolkit", "anishift.tui")
 
 _PROBE_TIMEOUT: Final[int] = 300
 
@@ -138,6 +134,7 @@ class _Facade:
         group_ids: tuple[str, ...] = ("anime-01",),
         unready: tuple[str, ...] = (),
         preset_ids: tuple[str, ...] = ("default",),
+        default_preset: str = "default",
         plan: _Plan | None = None,
         result: RunResult | None = None,
         failure: BaseException | None = None,
@@ -147,14 +144,19 @@ class _Facade:
         self.planned: list[tuple[tuple[str, ...], object]] = []
         self.executed: list[object] = []
         self.workspace: InspectedWorkspace = _discovery(*group_ids, unready=unready)
+        self.plan: _Plan = _Plan() if plan is None else plan
         self._preset_ids: tuple[str, ...] = preset_ids
-        self._plan: _Plan = _Plan() if plan is None else plan
+        self._default_preset: str = default_preset
         self._result: RunResult | None = result
         self._failure: BaseException | None = failure
 
     def discover(self) -> InspectedWorkspace:
         self.calls.append("discover")
         return self.workspace
+
+    def default_preset_id(self) -> str:
+        self.calls.append("default_preset_id")
+        return self._default_preset
 
     def get_preset(self, preset_id: str) -> str:
         self.calls.append("get_preset")
@@ -165,7 +167,7 @@ class _Facade:
     def plan_auto(self, group_ids: tuple[str, ...], preset: object) -> _Plan:
         self.calls.append("plan_auto")
         self.planned.append((tuple(group_ids), preset))
-        return self._plan
+        return self.plan
 
     def execute(self, plan: _Plan, sink: object) -> RunResult:
         self.calls.append("execute")
@@ -174,13 +176,6 @@ class _Facade:
             raise self._failure
         assert self._result is not None
         return self._result
-
-
-@pytest.fixture
-def isolated_ui_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    target: Path = tmp_path / "ui_state.json"
-    monkeypatch.setattr(ui_state, "ui_state_path", lambda: target)
-    return target
 
 
 def test_a_run_where_every_group_succeeds_reports_them_and_exits_zero(
@@ -372,7 +367,7 @@ def test_a_workspace_whose_every_group_is_unready_is_refused_before_planning(
     assert facade.executed == []
 
 
-def test_the_command_line_and_the_auto_surface_take_the_same_groups_from_one_discovery(
+def test_the_run_takes_its_groups_from_one_discovery_of_the_workspace(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -385,13 +380,11 @@ def test_the_command_line_and_the_auto_surface_take_the_same_groups_from_one_dis
             groups=(GroupResult(group_id="anime-01", status=GroupStatus.SUCCEEDED),),
         ),
     )
-    state: SessionState = SessionState()
-    state.workspace = facade.workspace
 
     result: Result = _invoke_run(monkeypatch, facade)
 
     assert result.exit_code == cli_main.EXIT_SUCCESS
-    assert facade.planned[0][0] == run_group_ids(state)
+    assert facade.calls.count("discover") == 1
     assert facade.planned[0][0] == ready_group_ids(facade.workspace.groups)
     assert len(facade.planned[0][0]) < len(facade.workspace.groups)
 
@@ -538,25 +531,58 @@ def test_a_missing_preset_option_is_a_usage_error_that_keeps_two_reserved() -> N
     assert cli_main.EXIT_CANCELLED != 2
 
 
-@pytest.mark.usefixtures("isolated_ui_state")
-def test_the_default_invocation_still_opens_the_shell_and_starts_no_run(
+def test_the_bare_invocation_runs_the_preset_the_store_holds_as_the_default(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    facade: _Facade = _Facade(root=tmp_path)
-    launched: list[AniShiftApp] = []
-
-    def launch(app: AniShiftApp) -> None:
-        launched.append(app)
+    facade: _Facade = _Facade(
+        root=tmp_path,
+        preset_ids=("evening",),
+        default_preset="evening",
+        result=RunResult(
+            run_id="run-11",
+            groups=(GroupResult(group_id="anime-01", status=GroupStatus.SUCCEEDED),),
+        ),
+    )
 
     monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", facade))
-    monkeypatch.setattr(AniShiftApp, "run", launch)
-
     result: Result = CliRunner().invoke(cli_main.app, [])
 
-    assert result.exit_code == 0
-    assert len(launched) == 1
-    assert facade.calls == []
+    assert result.exit_code == cli_main.EXIT_SUCCESS
+    assert facade.planned == [(("anime-01",), "preset:evening")]
+    assert facade.executed == [facade.plan]
+
+
+def test_the_bare_invocation_and_the_named_run_take_the_same_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def facade() -> _Facade:
+        return _Facade(
+            root=tmp_path,
+            result=RunResult(
+                run_id="run-12",
+                groups=(
+                    GroupResult(
+                        group_id="anime-01",
+                        status=GroupStatus.FAILED,
+                        error_messages=("The speech engine refused the request.",),
+                    ),
+                ),
+            ),
+        )
+
+    bare: _Facade = facade()
+    named: _Facade = facade()
+
+    monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", bare))
+    bare_result: Result = CliRunner().invoke(cli_main.app, [])
+    monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", named))
+    named_result: Result = CliRunner().invoke(cli_main.app, ["run", "--preset", "default"])
+
+    assert bare_result.exit_code == named_result.exit_code == cli_main.EXIT_INCOMPLETE
+    assert bare_result.output == named_result.output
+    assert bare.planned == named.planned
 
 
 def test_the_run_command_loads_no_textual_module() -> None:
