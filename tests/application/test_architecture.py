@@ -24,7 +24,6 @@ def test_application_contracts_do_not_depend_on_ui_io_or_domain_services() -> No
     forbidden = (
         "anishift.cli",
         "anishift.config",
-        "anishift.pipeline",
         "anishift.services",
         "anishift.tui",
         "os",

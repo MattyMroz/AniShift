@@ -116,7 +116,6 @@ _FORBIDDEN_DIALOG_IMPORTS: Final[tuple[str, ...]] = (
     "anishift.application",
     "anishift.config",
     "anishift.paths",
-    "anishift.pipeline",
     "anishift.services",
     "json",
     "pathlib",

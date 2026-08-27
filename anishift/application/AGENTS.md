@@ -5,7 +5,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez TUI, CLI i testy.
 ## Kierunek zależności
 
 - `artifacts.py`, `intents.py`, `planning.py`, `selection.py` i `planner.py` nie importują I/O,
-  `anishift.services`, `anishift.config`, `anishift.pipeline`, CLI ani TUI.
+  `anishift.services`, `anishift.config`, CLI ani TUI.
 - Kontrolowane I/O należy wyłącznie do `discovery.py`, `inspection.py`,
   `publisher.py`, `sessions.py` i handlerów; decyzje produktowe pozostają w plannerze.
 - TUI i CLI używają publicznej fasady `anishift.application`; nie importują

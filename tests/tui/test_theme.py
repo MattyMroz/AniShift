@@ -17,7 +17,7 @@ from tui_fakes import shell
 
 import anishift.tui
 from anishift.tui import ui_state
-from anishift.tui.app import AniShiftApp
+from anishift.tui.app import THEME_ROWS, AniShiftApp
 from anishift.tui.theme import (
     DARK_PALETTE,
     DARK_THEME_ID,
@@ -353,6 +353,11 @@ def test_theme_ids_are_exactly_the_three_stable_ids() -> None:
 
 def test_every_registered_theme_is_held_to_the_contract_of_this_module() -> None:
     assert _VARIANT_IDS == THEME_IDS
+
+
+def test_every_registered_theme_has_a_row_of_its_own_in_the_theme_surface() -> None:
+    assert tuple(theme_id for theme_id, _, _ in THEME_ROWS) == THEME_IDS
+    assert len({title for _, title, _ in THEME_ROWS}) == len(THEME_ROWS)
 
 
 def test_exactly_three_themes_are_built_in_id_order() -> None:

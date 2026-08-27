@@ -18,7 +18,6 @@ identyfikatory; nie zna formatu ani cyklu życia plików źródłowych.
 ## Zakazane zależności
 
 - `pysubs2`
-- `anishift.pipeline`
 - `anishift.services.audio`
 - `anishift.services.subtitles`
 - `anishift.services.translation`

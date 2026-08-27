@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Annotated, Final, NoReturn
 
 import typer
 
-from anishift.cli.commands import print_setup_report
 from anishift.errors import AniShiftError
 from anishift.setup.doctor import CheckResult, CheckStatus, run_doctor
 from anishift.setup.installer import run_setup
@@ -18,6 +17,7 @@ if TYPE_CHECKING:
     from anishift.application import AppService, AutoPreset, ExecutionPlan, InspectedWorkspace, RunResult
     from anishift.application.events import RunEvent
     from anishift.application.planning import PlanProblem
+    from anishift.setup.installer import ResourceResult
 
 app = typer.Typer(
     name="anishift",
@@ -74,6 +74,15 @@ _STATUS_ICON: dict[CheckStatus, StatusType] = {
 }
 """Maps a check outcome to a ``rich_console`` status-icon name."""
 
+_OUTCOME_ICON: dict[str, StatusType] = {
+    "installed": "success",
+    "skipped": "info",
+    "unavailable": "warning",
+    "cancelled": "warning",
+    "failed": "error",
+}
+"""Maps a setup outcome to a ``rich_console`` status-icon name."""
+
 
 def _print_doctor_report(results: list[CheckResult]) -> None:
     """Render doctor results as an icon + message list."""
@@ -82,6 +91,13 @@ def _print_doctor_report(results: list[CheckResult]) -> None:
         console.print(f"{icon} [bold]{result.name}[/bold]: {result.message}")
         if result.suggestion and result.status in (CheckStatus.FAIL, CheckStatus.WARN):
             console.print(f"   [gray]-> {result.suggestion}[/gray]")
+
+
+def _print_setup_report(results: list[ResourceResult]) -> None:
+    """Render setup results as an icon + message list."""
+    for result in results:
+        icon = get_status_icon(_OUTCOME_ICON.get(result.outcome, "info"))
+        console.print(f"{icon} [bold]{result.name}[/bold]: {result.detail}")
 
 
 @app.callback(invoke_without_command=True)
@@ -122,7 +138,7 @@ def setup(
     except AniShiftError as exc:
         console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1) from exc
-    print_setup_report(results)
+    _print_setup_report(results)
     if any(result.outcome == "failed" for result in results):
         raise typer.Exit(code=1)
 

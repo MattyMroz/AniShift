@@ -92,7 +92,6 @@ _TIP_LESS_HEIGHT: Final[int] = 11
 
 _FORBIDDEN_IMPORTS: Final[tuple[str, ...]] = (
     "anishift.services",
-    "anishift.pipeline",
     "anishift.application.service",
     "anishift.application.runtime",
 )

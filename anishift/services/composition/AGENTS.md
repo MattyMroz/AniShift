@@ -8,13 +8,13 @@ jeden zweryfikowany plik wynikowy.
 - Composition przyjmuje `CompositionPlan` ze ścieżkami plików i decyzją, co dołożyć.
 - NIE zna ASS/SRT jako formatu, `pysubs2`, `SubtitleSplit`, `FileTranslation`
   ani `SpeechBatch`.
-- Decyzję „co dołożyć" podejmuje `pipeline/composition_runtime.py`; composition
-  odpowiada wyłącznie za „jak to złożyć".
+- Decyzję „co dołożyć" podejmuje `application/planner.py`, a request buduje
+  `application/composition_handler.py`; composition odpowiada wyłącznie za
+  „jak to złożyć".
 
 ## Zakazane zależności
 
 - `pysubs2`
-- `anishift.pipeline`
 - `anishift.services.subtitles`
 - `anishift.services.translation`
 - `anishift.services.tts`

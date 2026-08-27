@@ -10,7 +10,6 @@ import pytest
 from tui_fakes import (
     RecordingHost,
     StubService,
-    offline_service,
     shell,
     stub_plan,
     stub_result,
@@ -21,7 +20,7 @@ from anishift.bootstrap import AppContext, create_app_service
 from anishift.config import Settings, UserSettings
 from anishift.errors import ConfigError, ErrorCode, ErrorContext, PlanningError
 from anishift.tui import app as app_module
-from anishift.tui import prototype, ui_state, workers
+from anishift.tui import ui_state, workers
 from anishift.tui.app import AniShiftApp
 from anishift.tui.lifecycle import begin_planning, begin_run
 from anishift.tui.messages import (
@@ -36,7 +35,6 @@ from anishift.tui.messages import (
     WorkspaceFailed,
     WorkspaceLoaded,
 )
-from anishift.tui.prototype import DEMO_STEP_SECONDS, PrototypeApp
 from anishift.tui.state import RunUiState, UiFeedback
 from anishift.tui.strings import MISSING_SURFACE, WORKER_FAILED
 
@@ -83,26 +81,6 @@ def test_the_composition_root_builds_one_facade_from_one_context(isolated: Path)
     second: AppService = create_app_service(context)
     assert first is not second
     assert first.current_settings() is context.settings
-
-
-def test_the_launcher_composes_one_facade_and_hands_it_to_the_shell(
-    isolated: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    service: AppService = offline_service(isolated)
-    composed: list[AppService] = []
-
-    def compose() -> AppService:
-        composed.append(service)
-        return service
-
-    monkeypatch.setattr(prototype, "production_service", compose)
-    app: PrototypeApp = PrototypeApp(step=_HELD_STEP)
-    assert app.service is service
-    assert composed == [service]
-
-
-def test_the_launcher_keeps_the_production_pace_of_the_simulated_sequence() -> None:
-    assert DEMO_STEP_SECONDS > 0
 
 
 def test_the_shell_constructor_requires_a_service() -> None:

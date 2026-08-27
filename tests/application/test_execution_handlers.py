@@ -5,6 +5,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from pysubs2 import SSAEvent, SSAFile
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState, SourceGroup
 from anishift.application.cancellation import CancellationToken, NeverCancelledToken
@@ -33,6 +34,7 @@ from anishift.application.scheduler import GraphScheduler, ResourceLimits
 from anishift.application.sessions import RunSession
 from anishift.application.subtitle_handler import LegacySubtitleAdapter
 from anishift.application.task_paths import task_staging_path
+from anishift.application.translation_handler import displayed_lines
 from anishift.errors import ExecutionError
 from anishift.services.extraction import (
     ExtractionRequest,
@@ -44,6 +46,7 @@ from anishift.services.extraction import (
 from anishift.services.subtitles import (
     DisplayedLine,
     SpokenLine,
+    SubtitleSplit,
     load_subtitles,
     split_subtitles,
     write_displayed,
@@ -52,6 +55,12 @@ from anishift.services.subtitles import (
 )
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
+
+
+def _ass_split(events: list[SSAEvent]) -> SubtitleSplit:
+    subs = SSAFile()
+    subs.events.extend(events)
+    return split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
 
 
 class _ProgressSink:
@@ -367,6 +376,28 @@ def test_legacy_subtitle_adapter_keeps_split_and_product_parity(tmp_path: Path) 
     assert tuple(path.read_text(encoding="utf-8") if path is not None else None for path in adapted_paths) == tuple(
         path.read_text(encoding="utf-8") if path is not None else None for path in direct
     )
+
+
+def test_displayed_lines_keep_their_source_file_order() -> None:
+    events = [
+        SSAEvent(start=0, end=1000, style="Dialog", text="Spoken line"),
+        SSAEvent(start=1000, end=2000, style="Sign", text="{\\pos(1,2)}On screen"),
+    ]
+
+    lines = displayed_lines(_ass_split(events))
+
+    assert [line.text for line in lines] == ["On screen"]
+    assert [line.order for line in lines] == [1]
+
+
+def test_displayed_lines_never_send_a_vector_drawing_to_the_translator() -> None:
+    events = [
+        SSAEvent(start=0, end=1000, style="Sign", text=r"{\p1}m 0 0 l 10 10"),
+        SSAEvent(start=1000, end=2000, style="Sign", text="Translate me"),
+        SSAEvent(start=2000, end=3000, style="Dialog", text="Spoken"),
+    ]
+
+    assert [line.text for line in displayed_lines(_ass_split(events))] == ["Translate me"]
 
 
 def test_translation_handler_writes_complete_polish_staging(tmp_path: Path) -> None:

@@ -1,55 +1,45 @@
 # cli
 
-REPL prompt_toolkit, komendy `/`, panel `/settings`, banner. Typer entry point `anishift` (default = shell).
+Nieinteraktywna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia powłokę TUI (`anishift.tui`), która jest jedynym interaktywnym UI.
 
 ## Pliki
 
-- `main.py` — Typer entry point, subkomendy `doctor`/`setup`, default = shell
-- `shell.py` — REPL prompt_toolkit routujący linie do komend/pipeline
-- `commands.py` — rejestr `/komend`, opcji, dispatch i walidacja
-- `completer.py` — completer prompt_toolkit dla `/komend`
-- `pipeline_ui.py` — render pipeline na Enter i `/compose`: prompty, progres, raport
-- `settings_panel.py` — pełnoekranowy panel `/settings` sterowany strzałkami, auto-save
-- `banner.py` — startowy banner ASCII + linia statusu
+- `main.py` — Typer app, `main()` (console script), subkomendy `doctor`/`setup`/`run --preset`, default = TUI
+- `console.py` — jedyny właściciel rekonfiguracji stdout/stderr na UTF-8 + check dla doctora
 
 ## Pułapki
 
-- Pusta linia w REPL (nie `/`-komenda) uruchamia pipeline — jawnego triggera brak, samo Enter przetwarza workspace. `shell.py:61-69`
-- Opcje `/komend` to gołe tokeny w stylu Claude-Code (`/setup force`), NIE uniksowe flagi; ten sam efekt w CLI Typer to jednak `--force`. `commands.py:125,162-165` vs `main.py:66-69`
-- `dispatch` traktuje wszystkie tokeny po nazwie jako opcje przez `frozenset` — duplikaty i kolejność tracone; nieznana opcja tylko ostrzega i utrzymuje REPL. `commands.py:178-187`
+- `main()` woła `configure_utf8_streams()` PRZED jakimkolwiek outputem, a dopiero
+  potem konfiguruje logger; nie odwracaj tej kolejności. `main.py`
 - `main()` konfiguruje publiczne `utils/logger` przez `setup_mode_from_env()` z
   wyłączonym sinkiem terminalowym i zawsze zamyka kolejkę przez
-  `shutdown_logger()`. Nie dodawaj sinka konsolowego obok Rich Live; diagnostyka
+  `shutdown_logger()`. Nie dodawaj sinka konsolowego obok Textuala; diagnostyka
   aplikacji trafia do `logs/anishift.log.jsonl`. `main.py`
-- `_ensure_binaries` sprawdza MKVToolNix tylko gdy w inputach jest `.mkv`, i musi wykonać się PRZED startem Rich Live (inaczej prompt instalatora zderzy się z Live). `pipeline_ui.py:54-67`
-- W panelu `/settings` `Enter` NIE zatwierdza/wychodzi — działa jak `→` (cykluje wartość); wyjście to tylko `Esc`/`q`. `settings_panel.py:193-201`
-- Każda zmiana w panelu jest natychmiast zapisywana na dysk (`save_user_settings` po każdym kroku) — brak anulowania. `settings_panel.py:184-196`
-- Panel zawsze pokazuje `llm` i wszystkich providerów; brak sekretu jest markerem `missing key`/`missing base URL`, nie powodem ukrycia lub resetu wyboru. `settings_panel.py`
-- Panel pokazuje wszystkie silniki TTS również gdy są niedostępne. Brak klucza,
-  SDK, hosta albo głosu jest stanem availability przy pozycji, nie powodem jej
-  ukrycia. `tts_settings.py`, `settings_panel.py`
-- TTS fields są zależne od silnika: run7/ElevenLabs pokazuje voice options, Edge
-  native controls, SAPI architecture/rate/volume. Zmiana głosu przywraca jego
-  zapisany profil. `settings_panel.py`, `tts_settings.py`
-- W automatycznym pipeline trwała awaria LLM lub TTS zamyka Live przed promptem
-  i wymaga `retry`, `settings` albo `finish`; `finish` zachowuje gotowe wyniki i
-  oznacza resztę `not_processed`. `pipeline_ui.py`
-- Automatyczny pipeline daje każdemu inputowi jeden prealokowany wiersz
-  `natsorted`: extraction → translation → rzeczywisty procent TTS → spinner
-  audio → stan terminalny. Retry ponownie otwiera ten sam wiersz zamiast dodawać
-  nowy. Manualny wybór stylów nie używa `_PipelineProgressRows`. `pipeline_ui.py`
-- Manualny prompt stylów: Enter (pusto) zwraca `None` = akceptacja klasyfikatora, nie pusty zbiór. `pipeline_ui.py:149-161`
-- `/compose` składa z tego, co leży na dysku, i NIE zmienia żadnego ustawienia — tryb wyjścia i preset jakości nadal pochodzą z `/settings`. `commands.py`, `pipeline_ui.py`
-- Postęp składania to zwykłe linie tekstu co 10%, nie pasek Live — `/compose` działa poza fazami pipeline'u. `pipeline_ui.py`
+- `run --preset` ma stabilny kontrakt kodów wyjścia: `0` sukces, `1` odmowa startu,
+  `3` run niepełny/failed, `4` anulowany. `2` jest zarezerwowane dla błędów użycia
+  Typera — nie używaj go. `main.py`
+- `run --preset` odmawia PRZED wykonaniem, gdy workspace jest pusty, żadna grupa
+  nie jest gotowa albo plan ma blokujący `PlanProblem`. Odmowa to zdanie + hint,
+  nigdy traceback. `main.py`
+- Cały output nieinteraktywny przechodzi przez `_safe()` → `sanitize_event_message`;
+  nie echuj `str(exc)` ani ścieżek bezpośrednio. `main.py`
+- `_QuietRunEvents` celowo gubi wszystkie eventy postępu — raport ma być
+  parsowalny, bez przeplotu. Nie dodawaj tam renderowania. `main.py`
+- `configure_utf8_streams()` musi znosić `None`, `StringIO` i strumienie bez
+  `reconfigure`; jest idempotentne. `console.py`
 
 ## Konwencje
 
-- Completer aktywuje się wyłącznie po wiodącym `/`. `completer.py:31-40`
-- `COMMANDS` jest jedynym źródłem prawdy — completer, `/help`, sugestie i walidacja z niego wynikają. `commands.py:1-7,84-88`
-- Ciężkie importy odraczane lokalnie (`noqa: PLC0415`) — prompt_toolkit/loguru/bootstrap poza ścieżką importu do użycia. `main.py:49-51,84`
-- Shell trzyma `.shell_history` obok `config/settings.json` (poza `workspace/`). `shell.py:25-33`
-- Domyślna akcja Typera (bez subkomendy) odpala shell przez `invoke_without_command=True` + `no_args_is_help=False`. `main.py:20-25`
-- Panel czerpie zakresy z `config.user_settings`, rejestr tłumaczeń z
-  `services.translation.engines`, a katalog TTS z leniwego registry i pasywnych
-  availability probes. Budowa katalogu nie może wykonywać płatnej syntezy ani
-  live network probe. `settings_panel.py`, `tts_settings.py`
+- Ciężkie importy odraczane lokalnie (`noqa: PLC0415`) — `bootstrap`, `textual`,
+  `anishift.application` poza ścieżką importu Typera. Subkomendy techniczne
+  (`doctor`, `setup`) nie mogą ładować żadnego modułu Textuala; pilnuje tego
+  `tests/cli/test_main.py`. `main.py`
+- Jest dokładnie jedna droga budowy fasady: `bootstrap.production_service()`.
+  Entry point nie ma drugiej ścieżki konstrukcji. `main.py`
+- Opcje CLI to uniksowe flagi (`--force`, `--preset`), nie gołe tokeny. `main.py`
+
+## Testy
+
+```bash
+uv run pytest tests/cli -v
+```
