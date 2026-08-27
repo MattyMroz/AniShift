@@ -34,7 +34,7 @@
     "foundry/gpt-main": {
       "provider": "foundry-openai",
       "model": "replace-with-openai-model-id",
-      "label": "Foundry: model główny",
+      "label": "Foundry: GPT",
       "experimental": false,
       "limits": { "context": null, "input": null, "output": null }
     },

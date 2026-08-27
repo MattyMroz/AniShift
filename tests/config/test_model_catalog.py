@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -27,6 +28,13 @@ from anishift.config.model_catalog import (
     parse_model_catalog,
 )
 from anishift.errors import ErrorCode
+
+_POLISH_LETTERS: Final[re.Pattern[str]] = re.compile(
+    r"[\u0104-\u0107\u0118\u0119\u0141\u0142\u0143\u0144"
+    r"\u00d3\u00f3\u015a\u015b\u0179-\u017c]"
+)
+
+_POLISH_LABEL: Final[str] = "Foundry: model główny"
 
 _SECRET_LIKE_FIELD_NAMES = (
     "token",
@@ -490,3 +498,18 @@ def test_shipped_example_catalog_is_valid_and_free_of_real_identifiers() -> None
     assert catalog.defaults.translation in catalog.models
     assert all(entry.model_id.startswith("replace-with-") for entry in catalog.models.values())
     assert all(entry.path.startswith("/api/v2/llm/proxy/") for entry in catalog.providers.values())
+
+
+def test_shipped_example_catalog_names_every_model_in_english() -> None:
+    source: str = model_catalog_example_path().read_text(encoding="utf-8")
+    catalog: ModelCatalog = parse_model_catalog(source)
+    labels: list[str] = [entry.label for entry in catalog.models.values()]
+
+    assert labels
+    assert [label for label in labels if _POLISH_LETTERS.search(label)] == []
+    assert [number for number, line in enumerate(source.splitlines(), 1) if _POLISH_LETTERS.search(line)] == []
+
+
+def test_the_catalog_language_guard_flags_a_polish_label() -> None:
+    assert _POLISH_LETTERS.search(_POLISH_LABEL) is not None
+    assert _POLISH_LETTERS.search("Foundry: main model") is None
