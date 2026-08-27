@@ -6,11 +6,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast
 
+from rich.segment import Segment
 from textual import on
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.content import Content
 from textual.message import Message
+from textual.strip import Strip
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
@@ -44,6 +46,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from rich.style import Style
     from textual.app import ComposeResult
     from textual.binding import BindingType
     from textual.events import Paste
@@ -56,6 +59,7 @@ if TYPE_CHECKING:
     from anishift.tui.state import SessionState
 
 __all__ = [
+    "BLURRED_CURSOR_CLASS",
     "BOX_ID",
     "BOX_ROWS",
     "COMPOSER_ID",
@@ -131,6 +135,12 @@ _SUGGESTION_ACTIONS: Final[frozenset[str]] = frozenset(
     {"previous_suggestion", "next_suggestion", "complete_suggestion", "dismiss_suggestions"},
 )
 """Actions that exist only while the suggestion list is on screen."""
+
+BLURRED_CURSOR_CLASS: Final[str] = "input--cursor-blurred"
+"""Component class the theme draws the cursor of the field with while the focus is elsewhere."""
+
+_FIELD_ROW: Final[int] = 0
+"""The one row a single-line text field ever draws."""
 
 
 class ComposerSubmissionKind(StrEnum):
@@ -209,6 +219,14 @@ def context_names(settings: SettingsDraft) -> ContextNames:
     )
 
 
+def _outlined(strip: Strip, *, cell: int, style: Style) -> Strip:
+    """Return *strip* with the one cell at *cell* redrawn in *style*, or unchanged when it holds none."""
+    if not 0 <= cell < strip.cell_length:
+        return strip
+    head, marked, tail = strip.divide((cell, cell + 1, strip.cell_length))
+    return Strip.join((head, Strip([Segment(marked.text, style)], marked.cell_length), tail))
+
+
 def _slash_name(stripped: str) -> str:
     """Name one slash line asks for: the first word after the slash, folded."""
     body: str = stripped.removeprefix(SLASH_PREFIX).strip()
@@ -238,7 +256,12 @@ class _Suggestions(HoverList):
 
 
 class _ComposerInput(Input):
-    """Text field holding the editing keys of the reference, and its exit reading of ``Ctrl+C``."""
+    """Text field holding the editing keys of the reference, and its exit reading of ``Ctrl+C``.
+
+    Textual paints the cursor only for a focused field, so an unfocused one draws its own outline.
+    """
+
+    COMPONENT_CLASSES: ClassVar[set[str]] = {BLURRED_CURSOR_CLASS}
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+backspace", "delete_left_word", show=False),
@@ -262,6 +285,17 @@ class _ComposerInput(Input):
         self.cursor_blink = False
         self._clear: Callable[[], None] = clear
         self._drop: Callable[[str], bool] = drop
+
+    def render_line(self, y: int) -> Strip:
+        """Draw the field, marking the cursor cell as an outline while the focus rests elsewhere."""
+        strip: Strip = super().render_line(y)
+        if self.has_focus or y != _FIELD_ROW:
+            return strip
+        return _outlined(
+            strip,
+            cell=self._position_to_cell(self.cursor_position) - self.scroll_offset.x,
+            style=self.get_component_rich_style(BLURRED_CURSOR_CLASS),
+        )
 
     def on_paste(self, event: Paste) -> None:
         """Let a dropped file become work, and leave every other paste to the field."""
@@ -377,11 +411,11 @@ class Composer(Vertical):
 
     @on(Input.Submitted, f"#{INPUT_ID}")
     def _on_input_submitted(self, event: Input.Submitted) -> None:
-        """Act on one finished line, and never on the text of another widget."""
+        """Run the highlighted suggestion, or act on the line the field holds."""
         event.stop()
         highlighted: CommandOption | None = self._highlighted()
         if highlighted is not None:
-            self._write(highlighted)
+            self._run(highlighted.name)
             return
         submission: ComposerSubmission = classify(event.value)
         if submission.kind is ComposerSubmissionKind.EMPTY_AUTO:
@@ -408,7 +442,7 @@ class Composer(Vertical):
         self._write(highlighted)
 
     def _write(self, option: CommandOption) -> None:
-        """Write the name of *option* into the field, ready for one more Enter to run it."""
+        """Write the name of *option* into the field, leaving the line for the user to finish."""
         text: str = f"{option.label} "
         self._written = text
         self._input.value = text

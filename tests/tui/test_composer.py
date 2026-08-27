@@ -6,10 +6,14 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from rich.segment import Segment
+from rich.style import Style
 from textual.app import App
+from textual.color import Color
 from textual.events import Paste
 from textual.geometry import Region
 from textual.message import Message
+from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.input import Selection
@@ -23,11 +27,12 @@ from anishift.tui.app import FOOTER_ID, AniShiftApp
 from anishift.tui.commands.catalog import EXIT_COMMAND_NAME, PALETTE_COMMAND_NAME
 from anishift.tui.commands.palette import CommandOption, slash_options
 from anishift.tui.dialogs.base import open_dialog
+from anishift.tui.dialogs.select import SelectDialog
 from anishift.tui.dialogs.value import PromptDialog
 from anishift.tui.dropped_files import DropKind, DropVerdict, dropped_paths, inspect_drop
-from anishift.tui.messages import AutoRequested, PlanFailed
+from anishift.tui.messages import AutoRequested, NavigationRequested, PlanFailed
 from anishift.tui.screens.workspace import WorkspaceView
-from anishift.tui.state import RunUiState, SessionState, UiFeedback
+from anishift.tui.state import RunUiState, SessionState, UiFeedback, UiRoute
 from anishift.tui.strings import (
     COMPOSER_DROP_BUSY,
     COMPOSER_DROP_MISSING,
@@ -43,6 +48,7 @@ from anishift.tui.strings import (
     CONTEXT_PROVIDER_UNSET,
 )
 from anishift.tui.widgets.composer import (
+    BLURRED_CURSOR_CLASS,
     BOX_ID,
     CONTEXT_ID,
     HINT_ID,
@@ -68,6 +74,8 @@ _EVERY_SIZE: Final[tuple[tuple[int, int], ...]] = (_FULL_SIZE, _SMALL_SIZE, _TIN
 
 _EDGE_COLUMNS: Final[int] = 3
 
+_EDGE_VARIABLE: Final[str] = "border"
+
 _PROBE_ID: Final[str] = "composer-probe"
 
 _DIALOG_INPUT_ID: Final[str] = "value-input"
@@ -81,6 +89,12 @@ _OVERLAY_ROW: Final[int] = 1
 _POINTER_REPEATS: Final[int] = 5
 
 _REASON: Final[str] = "Nie ukończono"
+
+_MANUAL_COMMAND: Final[str] = "manual"
+
+_MANUAL_LINE: Final[str] = "/manual"
+
+_MANUAL_PREFIX: Final[str] = "/manua"
 
 _BLANK_LINES: Final[tuple[str, ...]] = ("", " ", "   ", "\t", "\n", " \t \n ")
 
@@ -138,6 +152,21 @@ def _rows(app: AniShiftApp) -> list[str]:
     return [str(listing.get_option_at_index(index).prompt) for index in range(listing.option_count)]
 
 
+def _cell(app: AniShiftApp, x: int, y: int) -> Segment:
+    strip: Strip = app.screen._compositor.render_strips()[y]
+    return next(iter(strip.divide((x, x + 1, strip.cell_length))[1]))
+
+
+def _cell_style(app: AniShiftApp, x: int, y: int) -> Style:
+    style: Style | None = _cell(app, x, y).style
+    assert style is not None
+    return style
+
+
+def _row_inset(app: AniShiftApp) -> int:
+    return _suggestions(app).get_component_styles("option-list--option").padding.left
+
+
 def _spy_dispatch(app: AniShiftApp, calls: list[str]) -> None:
     original: Callable[[str], bool] = app.commands.dispatch
 
@@ -174,6 +203,17 @@ def _spy_auto_requests(app: AniShiftApp, generations: list[int]) -> None:
         if isinstance(message, AutoRequested):
             generations.append(message.generation)
             return True
+        return original(message)
+
+    app.post_message = post_message  # type: ignore[method-assign]
+
+
+def _spy_navigations(app: AniShiftApp, routes: list[UiRoute]) -> None:
+    original: Callable[[Message], bool] = app.post_message
+
+    def post_message(message: Message) -> bool:
+        if isinstance(message, NavigationRequested):
+            routes.append(message.route)
         return original(message)
 
     app.post_message = post_message  # type: ignore[method-assign]
@@ -350,6 +390,67 @@ def test_only_the_accent_edge_and_its_padding_stand_in_front_of_the_text_field()
     _run(scenario())
 
 
+def test_the_suggestion_list_and_the_box_share_one_left_column_and_one_text_inset() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("/")
+            await pilot.pause()
+            box: Widget = app.query_one(f"#{BOX_ID}")
+            listing: OptionList = _suggestions(app)
+            assert listing.region.x == box.region.x
+            assert listing.region.width == box.region.width
+            assert listing.styles.border_left[0] == box.styles.border_left[0]
+            assert listing.content_region.x + _row_inset(app) == _field(app).region.x
+
+    _run(scenario())
+
+
+def test_the_list_edge_is_muted_while_the_box_edge_carries_the_accent() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("/")
+            await pilot.pause()
+            box: Widget = app.query_one(f"#{BOX_ID}")
+            listing: OptionList = _suggestions(app)
+            muted: object = Color.parse(app.get_css_variables()[_EDGE_VARIABLE])
+            assert listing.styles.border_left[1] == muted
+            assert box.styles.border_left[1] != muted
+
+    _run(scenario())
+
+
+def test_each_left_edge_runs_unbroken_down_its_own_element_without_the_highlight_taking_it() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("/")
+            await pilot.pause()
+            box: Widget = app.query_one(f"#{BOX_ID}")
+            listing: OptionList = _suggestions(app)
+            edge: int = box.region.x
+            listed: list[Segment] = [_cell(app, edge, row) for row in range(listing.region.y, box.region.y)]
+            framed: list[Segment] = [
+                _cell(app, edge, row) for row in range(box.region.y, box.region.y + box.region.height)
+            ]
+            assert listing.region.y + listing.region.height == box.region.y
+            assert listed == [listed[0]] * len(listed)
+            assert framed == [framed[0]] * len(framed)
+            assert listed[0] != framed[0]
+            highlighted: int = listing.region.y
+            inset: Style = _cell_style(app, edge + 1, highlighted)
+            text: Style = _cell_style(app, _field(app).region.x, highlighted)
+            below: Style = _cell_style(app, edge + 1, highlighted + 1)
+            assert inset.bgcolor == text.bgcolor
+            assert inset.bgcolor != below.bgcolor
+
+    _run(scenario())
+
+
 def test_the_field_holds_the_focus_as_soon_as_the_shell_mounts() -> None:
     async def scenario() -> None:
         app: AniShiftApp = shell()
@@ -358,6 +459,30 @@ def test_the_field_holds_the_focus_as_soon_as_the_shell_mounts() -> None:
             assert app.focused is _field(app)
             assert _suggestions(app).display is False
             assert _hint(app) == ""
+
+    _run(scenario())
+
+
+def test_the_cursor_of_the_unfocused_field_stays_visible_as_an_outline() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.pause()
+            field: Input = _field(app)
+            column: int = field.region.x + field.cursor_position
+            row: int = field.region.y
+            focused: Style = _cell_style(app, column, row)
+            app.set_focus(None)
+            await pilot.pause()
+            blurred: Style = _cell_style(app, column, row)
+            assert app.focused is None
+            assert blurred == field.get_component_rich_style(BLURRED_CURSOR_CLASS)
+            assert blurred != _cell_style(app, column + 1, row)
+            assert blurred.underline is True
+            assert blurred != focused
+            assert blurred.bgcolor != focused.bgcolor
 
     _run(scenario())
 
@@ -642,22 +767,50 @@ def test_a_slash_line_offers_the_rows_of_the_one_registry() -> None:
     _run(scenario())
 
 
-def test_enter_writes_the_highlighted_suggestion_and_runs_nothing() -> None:
+def test_one_enter_runs_the_highlighted_suggestion_exactly_once() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        routes: list[UiRoute] = []
+        requests: list[int] = []
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_dispatch(app, calls)
+            _spy_navigations(app, routes)
+            _spy_auto_requests(app, requests)
+            await pilot.press(*_MANUAL_LINE)
+            await pilot.pause()
+            assert _suggestions(app).display is True
+            assert _suggestions(app).highlighted == 0
+            assert app.focused is _field(app)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert calls == [_MANUAL_COMMAND]
+            assert routes == [UiRoute.MANUAL]
+            assert app.session_state.route is UiRoute.MANUAL
+            assert requests == []
+            assert _field(app).value == ""
+            assert _suggestions(app).display is False
+
+    _run(scenario())
+
+
+def test_one_enter_opens_the_dialog_of_the_highlighted_suggestion() -> None:
     async def scenario() -> None:
         calls: list[str] = []
         app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
-            await pilot.press(*"/th")
+            await pilot.press(*"/theme")
             await pilot.pause()
-            expected: CommandOption = slash_options(app.commands, "/th")[0]
-            assert _suggestions(app).highlighted == 0
+            assert _suggestions(app).display is True
+            assert isinstance(app.screen, SelectDialog) is False
             await pilot.press("enter")
             await pilot.pause()
-            assert calls == []
-            assert _field(app).value == f"{expected.label} "
-            assert _suggestions(app).display is False
+            assert calls == ["theme"]
+            assert isinstance(app.screen, SelectDialog) is True
+            assert _field(app).value == ""
 
     _run(scenario())
 
@@ -825,21 +978,24 @@ def test_only_the_text_field_lets_one_select_what_it_holds() -> None:
     _run(scenario())
 
 
-def test_a_second_enter_runs_the_name_the_first_one_wrote() -> None:
+def test_the_enter_after_a_tab_runs_the_name_the_tab_completed() -> None:
     async def scenario() -> None:
         calls: list[str] = []
         app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
-            await pilot.press(*"/th")
+            await pilot.press(*_MANUAL_PREFIX)
             await pilot.pause()
-            expected: CommandOption = slash_options(app.commands, "/th")[0]
-            await pilot.press("enter")
+            expected: CommandOption = slash_options(app.commands, _MANUAL_PREFIX)[0]
+            await pilot.press("tab")
             await pilot.pause()
+            assert calls == []
+            assert _field(app).value == f"{expected.label} "
             await pilot.press("enter")
             await pilot.pause()
             assert calls == [expected.name]
+            assert app.session_state.route is UiRoute.MANUAL
 
     _run(scenario())
 
@@ -863,24 +1019,26 @@ def test_a_click_runs_the_suggestion_it_lands_on() -> None:
     _run(scenario())
 
 
-def test_moving_the_highlight_changes_which_name_enter_writes() -> None:
+def test_moving_the_highlight_changes_which_command_enter_runs() -> None:
     async def scenario() -> None:
         calls: list[str] = []
         app: AniShiftApp = shell()
         async with app.run_test(size=_FULL_SIZE) as pilot:
             await pilot.pause()
             _spy_dispatch(app, calls)
-            await pilot.press(*"/th")
+            await pilot.press("/")
             await pilot.pause()
-            offered: tuple[CommandOption, ...] = slash_options(app.commands, "/th")
+            offered: tuple[CommandOption, ...] = slash_options(app.commands, "/")
             await pilot.press("down")
             await pilot.pause()
             assert _suggestions(app).highlighted == 1
             await pilot.press("enter")
             await pilot.pause()
-            assert calls == []
-            assert _field(app).value == f"{offered[1].label} "
-            assert offered[1].label != offered[0].label
+            assert calls == [offered[1].name]
+            assert offered[1].name != offered[0].name
+            assert isinstance(app.screen, SelectDialog) is True
+            assert _field(app).value == ""
+            assert _suggestions(app).display is False
 
     _run(scenario())
 
@@ -933,6 +1091,34 @@ def test_tab_keeps_moving_the_focus_while_no_suggestion_is_offered() -> None:
             await pilot.press("tab")
             await pilot.pause()
             assert app.focused is probe
+
+    _run(scenario())
+
+
+def test_escape_leaves_the_highlighted_command_unrun() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        routes: list[UiRoute] = []
+        requests: list[int] = []
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_dispatch(app, calls)
+            _spy_navigations(app, routes)
+            _spy_auto_requests(app, requests)
+            await pilot.press("/")
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            assert _suggestions(app).highlighted == 1
+            await pilot.press("escape")
+            await pilot.pause()
+            assert calls == []
+            assert routes == []
+            assert requests == []
+            assert _suggestions(app).display is False
+            assert _field(app).value == "/"
+            assert app.session_state == SessionState()
 
     _run(scenario())
 
@@ -1046,7 +1232,7 @@ def test_an_unknown_command_without_a_close_name_names_nothing() -> None:
     _run(scenario())
 
 
-def test_a_command_that_opens_a_route_clears_the_field() -> None:
+def test_a_command_that_opens_a_route_clears_the_field_on_the_one_enter_that_ran_it() -> None:
     async def scenario() -> None:
         calls: list[str] = []
         requests: list[int] = []
@@ -1055,15 +1241,36 @@ def test_a_command_that_opens_a_route_clears_the_field() -> None:
             await pilot.pause()
             _spy_dispatch(app, calls)
             _spy_auto_requests(app, requests)
-            await pilot.press(*"/manual")
+            await pilot.press(*_MANUAL_LINE)
             await pilot.press("enter")
             await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            assert calls == ["manual"]
+            assert calls == [_MANUAL_COMMAND]
             assert _field(app).value == ""
             assert requests == []
             assert app.session_state.run_state is RunUiState.IDLE
+
+    _run(scenario())
+
+
+def test_the_enter_after_a_command_ran_is_read_as_the_empty_line_it_now_is() -> None:
+    async def scenario() -> None:
+        calls: list[str] = []
+        requests: list[int] = []
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            _spy_dispatch(app, calls)
+            _spy_auto_requests(app, requests)
+            await pilot.press(*_MANUAL_LINE)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert requests == []
+            await pilot.press("enter")
+            await pilot.pause()
+            assert calls == [_MANUAL_COMMAND]
+            assert requests == [1]
+            assert app.session_state.run_state is RunUiState.PLANNING
+            assert app.session_state.generation == 1
 
     _run(scenario())
 
@@ -1078,8 +1285,6 @@ def test_the_auto_command_never_starts_a_run() -> None:
             _spy_dispatch(app, calls)
             _spy_auto_requests(app, requests)
             await pilot.press(*"/auto")
-            await pilot.press("enter")
-            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
             assert calls == ["auto"]
