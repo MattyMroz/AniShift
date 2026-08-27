@@ -4,7 +4,11 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
-    from anishift.application.discovery import DiscoveryResult, DiscoveryWarning
+    from anishift.application.discovery import (
+        PRIMARY_SOURCE_SUFFIXES,
+        DiscoveryResult,
+        DiscoveryWarning,
+    )
     from anishift.application.inspection import (
         InspectedSourceGroup,
         InspectedWorkspace,
@@ -75,6 +79,7 @@ from anishift.application.results import (
 )
 
 __all__ = [
+    "PRIMARY_SOURCE_SUFFIXES",
     "AppService",
     "Artifact",
     "ArtifactKind",
@@ -135,6 +140,7 @@ __all__ = [
 ]
 
 _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "PRIMARY_SOURCE_SUFFIXES": ("anishift.application.discovery", "PRIMARY_SOURCE_SUFFIXES"),
     "AppService": ("anishift.application.service", "AppService"),
     "AutoPresetDraft": ("anishift.application.service", "AutoPresetDraft"),
     "CheckResult": ("anishift.setup.doctor", "CheckResult"),

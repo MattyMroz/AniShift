@@ -8,6 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Final
 
+from anishift.application import PRIMARY_SOURCE_SUFFIXES
 from anishift.tui.strings import (
     COMPOSER_DROP_MISSING,
     COMPOSER_DROP_OUTSIDE,
@@ -15,7 +16,6 @@ from anishift.tui.strings import (
 )
 
 __all__ = [
-    "DROPPED_SUFFIXES",
     "DropKind",
     "DropVerdict",
     "dropped_paths",
@@ -23,9 +23,6 @@ __all__ = [
 ]
 
 # ── Constants ──────────────────────────────────────────────────────────────
-
-DROPPED_SUFFIXES: Final[frozenset[str]] = frozenset({".mkv", ".mp4", ".txt"})
-"""Suffixes of the primary sources a workspace scan can group a dropped file under."""
 
 _RUNS: Final[re.Pattern[str]] = re.compile(r'"([^"]*)"|\'([^\']*)\'|(\S+)')
 """One dropped line split into its double-quoted, single-quoted and bare runs."""
@@ -94,7 +91,7 @@ def _refusal(path: Path, root: Path) -> str:
     """Return why *path* cannot become work, or nothing at all when it can."""
     if not _is_file(path):
         return COMPOSER_DROP_MISSING
-    if path.suffix.casefold() not in DROPPED_SUFFIXES:
+    if path.suffix.casefold() not in PRIMARY_SOURCE_SUFFIXES:
         return COMPOSER_DROP_UNSUPPORTED
     if not _is_scanned(path, root):
         return COMPOSER_DROP_OUTSIDE

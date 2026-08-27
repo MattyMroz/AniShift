@@ -15,6 +15,8 @@ from textual.widgets import Input, OptionList, Static
 from textual.widgets.input import Selection
 from tui_fakes import StubService, shell
 
+from anishift.application import PRIMARY_SOURCE_SUFFIXES
+from anishift.application.discovery import is_primary_source
 from anishift.config import UserSettings
 from anishift.tui import workers
 from anishift.tui.app import FOOTER_ID, AniShiftApp
@@ -94,6 +96,10 @@ _SLASH_LINES: Final[tuple[tuple[str, str], ...]] = (
     ("/", ""),
     ("/   ", ""),
 )
+
+_FOREIGN_SUFFIXES: Final[frozenset[str]] = frozenset({".ass", ".srt", ".mp3", ".eac3", ".json", ".nfo"})
+
+_PROBED_SUFFIXES: Final[tuple[str, ...]] = tuple(sorted(PRIMARY_SOURCE_SUFFIXES | _FOREIGN_SUFFIXES))
 
 _BUSY_STATES: Final[tuple[RunUiState, ...]] = (
     RunUiState.PLANNING,
@@ -1160,6 +1166,18 @@ def test_a_dropped_file_of_another_type_is_refused(tmp_path: Path) -> None:
     verdict: DropVerdict = inspect_drop(str(sidecar), root=tmp_path)
     assert verdict.kind is DropKind.REFUSED
     assert verdict.reason == COMPOSER_DROP_UNSUPPORTED
+
+
+@pytest.mark.parametrize("suffix", _PROBED_SUFFIXES)
+def test_the_drop_recogniser_accepts_exactly_what_the_domain_calls_a_primary_source(
+    suffix: str,
+    tmp_path: Path,
+) -> None:
+    source: Path = _source_file(tmp_path, f"ep1{suffix}")
+    accepted: bool = inspect_drop(str(source), root=tmp_path).kind is DropKind.ACCEPTED
+    assert accepted is (suffix in PRIMARY_SOURCE_SUFFIXES)
+    assert accepted is is_primary_source(source)
+    assert _FOREIGN_SUFFIXES.isdisjoint(PRIMARY_SOURCE_SUFFIXES)
 
 
 def test_a_dropped_file_no_workspace_scan_reads_is_refused(tmp_path: Path) -> None:

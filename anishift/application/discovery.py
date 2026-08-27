@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
+from typing import Final
 
 from anishift.application.artifacts import (
     Artifact,
@@ -19,6 +21,23 @@ from anishift.application.artifacts import (
     create_artifact_id,
     create_group_id,
 )
+
+# ── Constants ──────────────────────────────────────────────────────────────
+
+_PRIMARY_SOURCE_KINDS: Final[Mapping[str, ArtifactKind]] = MappingProxyType(
+    {
+        ".mkv": ArtifactKind.VIDEO_MKV,
+        ".mp4": ArtifactKind.VIDEO_MP4,
+        ".txt": ArtifactKind.STANDALONE_TEXT,
+    }
+)
+"""The one statement of which filename suffix names a primary source, and of which kind."""
+
+_PRIMARY_KINDS: Final[frozenset[ArtifactKind]] = frozenset(_PRIMARY_SOURCE_KINDS.values())
+"""Artifact kinds a primary source can carry, read off the suffixes that name them."""
+
+PRIMARY_SOURCE_SUFFIXES: Final[frozenset[str]] = frozenset(_PRIMARY_SOURCE_KINDS)
+"""Folded suffixes of every primary source, for any caller judging one filename."""
 
 
 class DiscoveryWarningKind(StrEnum):
@@ -186,12 +205,7 @@ def _classify_audio_product(path: Path, lowered: str) -> ArtifactName | None:
 
 
 def _classify_primary_source(path: Path, lowered: str) -> ArtifactName | None:
-    kinds: tuple[tuple[str, ArtifactKind], ...] = (
-        (".mkv", ArtifactKind.VIDEO_MKV),
-        (".mp4", ArtifactKind.VIDEO_MP4),
-        (".txt", ArtifactKind.STANDALONE_TEXT),
-    )
-    for suffix, kind in kinds:
+    for suffix, kind in _PRIMARY_SOURCE_KINDS.items():
         if lowered.endswith(suffix):
             return _artifact_name(path, path.stem, kind)
     return None
@@ -212,7 +226,7 @@ def _artifact_name(
         path=path,
         stem=normalized_stem,
         kind=kind,
-        is_primary=kind in {ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4, ArtifactKind.STANDALONE_TEXT},
+        is_primary=kind in _PRIMARY_KINDS,
         is_derived=kind
         in {
             ArtifactKind.FULL_PL,
