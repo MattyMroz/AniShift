@@ -287,6 +287,8 @@ __all__ = [
     "THEME_DARK_TITLE",
     "THEME_LIGHT_DESCRIPTION",
     "THEME_LIGHT_TITLE",
+    "THEME_MINIMAL_DESCRIPTION",
+    "THEME_MINIMAL_TITLE",
     "TIP_GLYPH",
     "TIP_LABEL",
     "TIP_TEXT",
@@ -739,6 +741,12 @@ THEME_LIGHT_TITLE: Final[str] = "Light"
 
 THEME_LIGHT_DESCRIPTION: Final[str] = "Light surfaces for a bright room"
 """Description of the light theme row."""
+
+THEME_MINIMAL_TITLE: Final[str] = "Light Minimal"
+"""Title of the minimal light variant row."""
+
+THEME_MINIMAL_DESCRIPTION: Final[str] = "Light surfaces with one accent only"
+"""Description of the minimal light variant row."""
 
 SETTINGS_ON: Final[str] = "On"
 """Value text of a switch that is turned on."""

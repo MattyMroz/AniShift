@@ -1,4 +1,4 @@
-"""Semantic design tokens and the two AniShift themes; the only owner of colours."""
+"""Semantic design tokens and every AniShift theme; the only owner of colours."""
 
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ __all__ = [
     "DEFAULT_THEME_ID",
     "LIGHT_PALETTE",
     "LIGHT_THEME_ID",
+    "MINIMAL_PALETTE",
+    "MINIMAL_THEME_ID",
     "THEME_IDS",
     "Palette",
     "anishift_themes",
@@ -55,8 +57,11 @@ DARK_THEME_ID: Final[str] = "anishift-dark"
 LIGHT_THEME_ID: Final[str] = "anishift-light"
 """Stable id of the light theme."""
 
-THEME_IDS: Final[tuple[str, str]] = (DARK_THEME_ID, LIGHT_THEME_ID)
-"""The only theme ids AniShift registers, dark first."""
+MINIMAL_THEME_ID: Final[str] = "anishift-light-minimal"
+"""Stable id of the minimal light variant."""
+
+THEME_IDS: Final[tuple[str, str, str]] = (DARK_THEME_ID, LIGHT_THEME_ID, MINIMAL_THEME_ID)
+"""The only theme ids AniShift registers, dark first and the canonical pair before the variant."""
 
 DEFAULT_THEME_ID: Final[str] = DARK_THEME_ID
 """Theme selected when the persisted preference is missing or unknown."""
@@ -98,6 +103,25 @@ LIGHT_PALETTE: Final[Palette] = Palette(
     border_subtle="#d4d4d4",
 )
 """Token values of the light theme."""
+
+MINIMAL_PALETTE: Final[Palette] = Palette(
+    primary=LIGHT_PALETTE.primary,
+    secondary=LIGHT_PALETTE.primary,
+    accent=LIGHT_PALETTE.primary,
+    error=LIGHT_PALETTE.error,
+    warning=LIGHT_PALETTE.warning,
+    success=LIGHT_PALETTE.success,
+    info=LIGHT_PALETTE.info,
+    text=LIGHT_PALETTE.text,
+    text_muted=LIGHT_PALETTE.text_muted,
+    background=LIGHT_PALETTE.background,
+    background_panel=LIGHT_PALETTE.background_panel,
+    background_element=LIGHT_PALETTE.background_element,
+    border=LIGHT_PALETTE.border,
+    border_active=LIGHT_PALETTE.border_active,
+    border_subtle=LIGHT_PALETTE.border_subtle,
+)
+"""Token values of the minimal light variant: the light theme reduced to its single accent."""
 
 _BLACK: Final[str] = "#000000"
 """Text drawn on a selection background bright enough to carry it."""
@@ -158,15 +182,16 @@ def _build_theme(theme_id: str, palette: Palette, *, dark: bool) -> Theme:
     )
 
 
-def anishift_themes() -> tuple[Theme, Theme]:
-    """Return both AniShift themes in ``THEME_IDS`` order."""
+def anishift_themes() -> tuple[Theme, Theme, Theme]:
+    """Return every AniShift theme in ``THEME_IDS`` order."""
     return (
         _build_theme(DARK_THEME_ID, DARK_PALETTE, dark=True),
         _build_theme(LIGHT_THEME_ID, LIGHT_PALETTE, dark=False),
+        _build_theme(MINIMAL_THEME_ID, MINIMAL_PALETTE, dark=False),
     )
 
 
 def register_themes(app: App[Any]) -> None:
-    """Register both AniShift themes with ``app``."""
+    """Register every AniShift theme with ``app``."""
     for theme in anishift_themes():
         app.register_theme(theme)

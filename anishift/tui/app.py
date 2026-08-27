@@ -72,9 +72,11 @@ from anishift.tui.strings import (
     THEME_DARK_TITLE,
     THEME_LIGHT_DESCRIPTION,
     THEME_LIGHT_TITLE,
+    THEME_MINIMAL_DESCRIPTION,
+    THEME_MINIMAL_TITLE,
     WORKER_FAILED,
 )
-from anishift.tui.theme import DARK_THEME_ID, LIGHT_THEME_ID, register_themes
+from anishift.tui.theme import DARK_THEME_ID, LIGHT_THEME_ID, MINIMAL_THEME_ID, register_themes
 from anishift.tui.ui_state import UiState, load_ui_state, save_ui_state
 from anishift.tui.widgets.composer import Composer
 from anishift.tui.widgets.footer import BottomBar
@@ -129,6 +131,7 @@ FOOTER_ID: Final[str] = "app-footer"
 THEME_ROWS: Final[tuple[tuple[str, str, str], ...]] = (
     (DARK_THEME_ID, THEME_DARK_TITLE, THEME_DARK_DESCRIPTION),
     (LIGHT_THEME_ID, THEME_LIGHT_TITLE, THEME_LIGHT_DESCRIPTION),
+    (MINIMAL_THEME_ID, THEME_MINIMAL_TITLE, THEME_MINIMAL_DESCRIPTION),
 )
 """Id, title and description of every theme the shell offers a user."""
 
@@ -703,7 +706,7 @@ class AniShiftApp(App[None]):
         open_settings_panel(self, self._state, self._service, domain)
 
     def open_theme(self) -> None:
-        """Offer both themes, previewing every row and keeping only a confirmed one."""
+        """Offer every theme, previewing every row and keeping only a confirmed one."""
         previous: str = self.theme
         options: tuple[SelectOption[str], ...] = tuple(
             SelectOption(value=theme_id, title=title, description=description)

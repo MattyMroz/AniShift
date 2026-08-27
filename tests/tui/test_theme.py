@@ -24,13 +24,15 @@ from anishift.tui.theme import (
     DEFAULT_THEME_ID,
     LIGHT_PALETTE,
     LIGHT_THEME_ID,
+    MINIMAL_PALETTE,
+    MINIMAL_THEME_ID,
     THEME_IDS,
     Palette,
     anishift_themes,
     on_primary,
     register_themes,
 )
-from anishift.tui.ui_state import UiState, save_ui_state
+from anishift.tui.ui_state import UiState, load_ui_state, save_ui_state
 from anishift.tui.widgets.composer import BOX_ID, HINT_ID
 
 _STYLED_SUFFIXES: Final[frozenset[str]] = frozenset((".py", ".tcss"))
@@ -135,6 +137,30 @@ _SPEC_TOKEN_COUNT: Final[int] = 15
 _HEX_COLOUR: Final[re.Pattern[str]] = re.compile(r"\A#[0-9a-f]{6}\Z")
 
 _SEMANTIC_TOKEN_NAMES: Final[tuple[str, ...]] = ("error", "warning", "success", "info")
+
+_SURFACE_TOKEN_NAMES: Final[tuple[str, ...]] = ("background", "background_panel", "background_element")
+
+_DECORATIVE_TOKEN_NAMES: Final[tuple[str, ...]] = ("secondary", "accent")
+
+_VARIANTS: Final[Mapping[str, Palette]] = {
+    DARK_THEME_ID: DARK_PALETTE,
+    LIGHT_THEME_ID: LIGHT_PALETTE,
+    MINIMAL_THEME_ID: MINIMAL_PALETTE,
+}
+
+_VARIANT_IDS: Final[tuple[str, ...]] = tuple(_VARIANTS)
+
+_SURFACE_ROWS: Final[tuple[tuple[str, str], ...]] = tuple(
+    (theme_id, token) for theme_id in _VARIANTS for token in _SURFACE_TOKEN_NAMES
+)
+
+_SURFACE_ROW_IDS: Final[tuple[str, ...]] = tuple(f"{theme_id}-{token}" for theme_id, token in _SURFACE_ROWS)
+
+_TOKENS_THE_MINIMAL_VARIANT_TAKES_FROM_THE_LIGHT_THEME: Final[tuple[str, ...]] = tuple(
+    sorted(_SPEC_TOKEN_NAMES - frozenset(_DECORATIVE_TOKEN_NAMES)),
+)
+
+_OUTER_EDGE: Final[str] = "outer"
 
 _SEMANTIC_VARIABLE: Final[re.Pattern[str]] = re.compile(r"\$(?:error|warning|success|info)\b")
 
@@ -276,8 +302,8 @@ def _token_values(palette: Palette) -> dict[str, str]:
     return {field.name: getattr(palette, field.name) for field in fields(palette)}
 
 
-def _surfaces(palette: Palette) -> tuple[str, str, str]:
-    return (palette.background, palette.background_panel, palette.background_element)
+def _theme_of(theme_id: str) -> Theme:
+    return next(theme for theme in anishift_themes() if theme.name == theme_id)
 
 
 def _semantic_values(palette: Palette) -> frozenset[str]:
@@ -317,17 +343,22 @@ def state_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return target
 
 
-def test_theme_ids_are_exactly_the_two_stable_ids() -> None:
+def test_theme_ids_are_exactly_the_three_stable_ids() -> None:
     assert DARK_THEME_ID == "anishift-dark"
     assert LIGHT_THEME_ID == "anishift-light"
-    assert THEME_IDS == ("anishift-dark", "anishift-light")
+    assert MINIMAL_THEME_ID == "anishift-light-minimal"
+    assert THEME_IDS == ("anishift-dark", "anishift-light", "anishift-light-minimal")
     assert DEFAULT_THEME_ID == DARK_THEME_ID
 
 
-def test_exactly_two_themes_are_built_in_id_order() -> None:
-    themes: tuple[Theme, Theme] = anishift_themes()
+def test_every_registered_theme_is_held_to_the_contract_of_this_module() -> None:
+    assert _VARIANT_IDS == THEME_IDS
+
+
+def test_exactly_three_themes_are_built_in_id_order() -> None:
+    themes: tuple[Theme, Theme, Theme] = anishift_themes()
     assert tuple(theme.name for theme in themes) == THEME_IDS
-    assert (themes[0].dark, themes[1].dark) == (True, False)
+    assert (themes[0].dark, themes[1].dark, themes[2].dark) == (True, False, False)
 
 
 def test_dark_palette_matches_the_visual_grammar() -> None:
@@ -376,50 +407,73 @@ def test_light_palette_matches_the_visual_grammar() -> None:
     )
 
 
-def test_the_neutral_scale_carries_exactly_one_accent_hue() -> None:
-    for palette in (DARK_PALETTE, LIGHT_PALETTE):
-        neutrals: tuple[str, ...] = (
-            palette.text,
-            palette.text_muted,
-            palette.background,
-            palette.background_panel,
-            palette.background_element,
-            palette.border,
-            palette.border_active,
-            palette.border_subtle,
-        )
-        for colour in neutrals:
-            digits: str = colour.lstrip("#")
-            assert digits[0:2] == digits[2:4] == digits[4:6]
+def test_the_minimal_variant_takes_every_other_token_from_the_canonical_light_theme() -> None:
+    assert set(_TOKENS_THE_MINIMAL_VARIANT_TAKES_FROM_THE_LIGHT_THEME) | set(_DECORATIVE_TOKEN_NAMES) == (
+        _SPEC_TOKEN_NAMES
+    )
+    for token in _TOKENS_THE_MINIMAL_VARIANT_TAKES_FROM_THE_LIGHT_THEME:
+        assert getattr(MINIMAL_PALETTE, token) == getattr(LIGHT_PALETTE, token)
 
 
-def test_every_palette_token_is_reachable_from_tcss() -> None:
-    for theme, palette in zip(anishift_themes(), (DARK_PALETTE, LIGHT_PALETTE), strict=True):
-        assert theme.background == palette.background
-        assert theme.surface == palette.background_panel
-        assert theme.panel == palette.background_element
-        assert theme.foreground == palette.text
-        assert theme.primary == palette.primary
-        assert theme.secondary == palette.secondary
-        assert theme.accent == palette.accent
-        assert theme.success == palette.success
-        assert theme.warning == palette.warning
-        assert theme.error == palette.error
-        for field in fields(palette):
-            assert theme.variables[field.name.replace("_", "-")] == getattr(palette, field.name)
-        assert theme.variables["border-blurred"] == palette.border
-        assert theme.variables["on-primary"] == on_primary(palette)
+def test_the_minimal_variant_reduces_the_decorative_hues_to_the_single_accent() -> None:
+    assert {getattr(MINIMAL_PALETTE, token) for token in _DECORATIVE_TOKEN_NAMES} == {MINIMAL_PALETTE.primary}
+    assert {getattr(LIGHT_PALETTE, token) for token in (*_DECORATIVE_TOKEN_NAMES, "primary")} != {
+        LIGHT_PALETTE.primary,
+    }
+
+
+def test_the_minimal_variant_keeps_every_semantic_colour_of_the_canonical_light_theme() -> None:
+    assert _semantic_values(MINIMAL_PALETTE) == _semantic_values(LIGHT_PALETTE)
+
+
+@pytest.mark.parametrize("theme_id", _VARIANT_IDS)
+def test_the_neutral_scale_carries_exactly_one_accent_hue(theme_id: str) -> None:
+    palette: Palette = _VARIANTS[theme_id]
+    neutrals: tuple[str, ...] = (
+        palette.text,
+        palette.text_muted,
+        palette.background,
+        palette.background_panel,
+        palette.background_element,
+        palette.border,
+        palette.border_active,
+        palette.border_subtle,
+    )
+    for colour in neutrals:
+        digits: str = colour.lstrip("#")
+        assert digits[0:2] == digits[2:4] == digits[4:6]
+
+
+@pytest.mark.parametrize("theme_id", _VARIANT_IDS)
+def test_every_palette_token_is_reachable_from_tcss(theme_id: str) -> None:
+    palette: Palette = _VARIANTS[theme_id]
+    theme: Theme = _theme_of(theme_id)
+    assert theme.background == palette.background
+    assert theme.surface == palette.background_panel
+    assert theme.panel == palette.background_element
+    assert theme.foreground == palette.text
+    assert theme.primary == palette.primary
+    assert theme.secondary == palette.secondary
+    assert theme.accent == palette.accent
+    assert theme.success == palette.success
+    assert theme.warning == palette.warning
+    assert theme.error == palette.error
+    for field in fields(palette):
+        assert theme.variables[field.name.replace("_", "-")] == getattr(palette, field.name)
+    assert theme.variables["border-blurred"] == palette.border
+    assert theme.variables["on-primary"] == on_primary(palette)
 
 
 def test_selection_text_is_black_on_the_bright_dark_accent() -> None:
     assert on_primary(DARK_PALETTE) == "#000000"
 
 
-def test_selection_text_is_white_on_the_deep_light_accent() -> None:
+def test_selection_text_is_white_on_the_deep_accent_of_both_light_variants() -> None:
     assert on_primary(LIGHT_PALETTE) == "#ffffff"
+    assert on_primary(MINIMAL_PALETTE) == "#ffffff"
 
 
-def test_register_themes_registers_both_ids() -> None:
+def test_register_themes_registers_every_id() -> None:
     app: App[None] = App()
     register_themes(app)
     registered: list[Theme] = []
@@ -475,7 +529,7 @@ def test_colour_guard_ignores_tokens_that_are_not_colours(token: str) -> None:
     assert not _token_is_a_colour(token)
 
 
-def test_style_sheets_resolve_every_variable_from_both_themes() -> None:
+def test_style_sheets_resolve_every_variable_from_every_theme() -> None:
     styles: list[Path] = sorted((Path(anishift.tui.__file__).parent / "styles").glob("*.tcss"))
     assert [path.name for path in styles] == ["base.tcss", "dialogs.tcss", "screens.tcss"]
     for theme in anishift_themes():
@@ -493,25 +547,23 @@ def test_theme_module_actually_contains_colour_literals() -> None:
     assert _colour_literals(theme_source.read_text(encoding="utf-8"), suffix=".py")
 
 
-def test_both_variants_define_the_same_fifteen_tokens_with_none_missing_and_none_extra() -> None:
-    dark: dict[str, str] = _token_values(DARK_PALETTE)
-    light: dict[str, str] = _token_values(LIGHT_PALETTE)
-    assert frozenset(dark) == frozenset(light) == _SPEC_TOKEN_NAMES
-    assert len(dark) == len(light) == _SPEC_TOKEN_COUNT
+@pytest.mark.parametrize("theme_id", _VARIANT_IDS)
+def test_every_variant_defines_the_same_fifteen_tokens_with_none_missing_and_none_extra(theme_id: str) -> None:
+    tokens: dict[str, str] = _token_values(_VARIANTS[theme_id])
+    assert frozenset(tokens) == _SPEC_TOKEN_NAMES
+    assert len(tokens) == _SPEC_TOKEN_COUNT
 
 
-def test_neither_variant_exposes_a_tcss_variable_the_other_one_lacks() -> None:
-    dark: Theme
-    light: Theme
-    dark, light = anishift_themes()
-    assert set(dark.variables) == set(light.variables)
-    assert {name.replace("-", "_") for name in dark.variables} >= _SPEC_TOKEN_NAMES
+def test_no_variant_exposes_a_tcss_variable_another_variant_lacks() -> None:
+    exposed: set[frozenset[str]] = {frozenset(theme.variables) for theme in anishift_themes()}
+    assert len(exposed) == 1
+    assert {name.replace("-", "_") for name in next(iter(exposed))} >= _SPEC_TOKEN_NAMES
 
 
-def test_every_token_of_both_variants_is_a_six_digit_lowercase_hex_colour() -> None:
-    for palette in (DARK_PALETTE, LIGHT_PALETTE):
-        for value in _token_values(palette).values():
-            assert _HEX_COLOUR.match(value)
+@pytest.mark.parametrize("theme_id", _VARIANT_IDS)
+def test_every_token_of_every_variant_is_a_six_digit_lowercase_hex_colour(theme_id: str) -> None:
+    for value in _token_values(_VARIANTS[theme_id]).values():
+        assert _HEX_COLOUR.match(value)
 
 
 def test_the_contrast_helper_reproduces_the_wcag_reference_extremes() -> None:
@@ -520,40 +572,59 @@ def test_the_contrast_helper_reproduces_the_wcag_reference_extremes() -> None:
     assert _contrast_ratio("#000000", "#ffffff") == _contrast_ratio("#ffffff", "#000000")
 
 
-def test_primary_text_clears_the_wcag_aa_body_ratio_over_every_surface_of_both_variants() -> None:
-    for palette in (DARK_PALETTE, LIGHT_PALETTE):
-        for surface in _surfaces(palette):
-            assert _contrast_ratio(palette.text, surface) >= _AA_BODY_TEXT_RATIO
+@pytest.mark.parametrize(("theme_id", "surface_token"), _SURFACE_ROWS, ids=_SURFACE_ROW_IDS)
+def test_primary_text_clears_the_wcag_aa_body_ratio_over_every_surface_of_every_variant(
+    theme_id: str,
+    surface_token: str,
+) -> None:
+    palette: Palette = _VARIANTS[theme_id]
+    assert _contrast_ratio(palette.text, getattr(palette, surface_token)) >= _AA_BODY_TEXT_RATIO
 
 
-def test_muted_text_clears_the_wcag_aa_large_text_ratio_over_every_surface_of_both_variants() -> None:
-    for palette in (DARK_PALETTE, LIGHT_PALETTE):
-        for surface in _surfaces(palette):
-            assert _contrast_ratio(palette.text_muted, surface) >= _AA_LARGE_TEXT_RATIO
+@pytest.mark.parametrize(("theme_id", "surface_token"), _SURFACE_ROWS, ids=_SURFACE_ROW_IDS)
+def test_muted_text_clears_the_wcag_aa_large_text_ratio_over_every_surface_of_every_variant(
+    theme_id: str,
+    surface_token: str,
+) -> None:
+    palette: Palette = _VARIANTS[theme_id]
+    assert _contrast_ratio(palette.text_muted, getattr(palette, surface_token)) >= _AA_LARGE_TEXT_RATIO
 
 
-def test_muted_text_stays_fainter_than_primary_text_over_every_surface_of_both_variants() -> None:
-    for palette in (DARK_PALETTE, LIGHT_PALETTE):
-        for surface in _surfaces(palette):
-            assert _contrast_ratio(palette.text_muted, surface) < _contrast_ratio(palette.text, surface)
+@pytest.mark.parametrize(("theme_id", "surface_token"), _SURFACE_ROWS, ids=_SURFACE_ROW_IDS)
+def test_muted_text_stays_fainter_than_primary_text_over_every_surface_of_every_variant(
+    theme_id: str,
+    surface_token: str,
+) -> None:
+    palette: Palette = _VARIANTS[theme_id]
+    surface: str = getattr(palette, surface_token)
+    assert _contrast_ratio(palette.text_muted, surface) < _contrast_ratio(palette.text, surface)
 
 
-def test_selection_text_clears_the_wcag_aa_large_text_ratio_over_the_single_accent() -> None:
-    for palette in (DARK_PALETTE, LIGHT_PALETTE):
-        assert _contrast_ratio(on_primary(palette), palette.primary) >= _AA_LARGE_TEXT_RATIO
+@pytest.mark.parametrize("theme_id", _VARIANT_IDS)
+def test_selection_text_clears_the_wcag_aa_large_text_ratio_over_the_single_accent(theme_id: str) -> None:
+    palette: Palette = _VARIANTS[theme_id]
+    assert _contrast_ratio(on_primary(palette), palette.primary) >= _AA_LARGE_TEXT_RATIO
 
 
-def test_no_semantic_colour_is_the_single_accent_of_either_variant() -> None:
-    for palette in (DARK_PALETTE, LIGHT_PALETTE):
-        assert palette.primary not in _semantic_values(palette)
+@pytest.mark.parametrize("theme_id", _VARIANT_IDS)
+def test_no_semantic_colour_is_the_single_accent_of_any_variant(theme_id: str) -> None:
+    palette: Palette = _VARIANTS[theme_id]
+    assert palette.primary not in _semantic_values(palette)
 
 
-def test_no_selection_or_focus_variable_of_either_variant_resolves_to_a_semantic_colour() -> None:
-    for theme, palette in zip(anishift_themes(), (DARK_PALETTE, LIGHT_PALETTE), strict=True):
-        resolved: dict[str, str] = _resolved_variables(theme)
-        semantic: frozenset[Color] = frozenset(Color.parse(value) for value in _semantic_values(palette))
-        for name in _SELECTION_AND_FOCUS_VARIABLES:
-            assert Color.parse(resolved[name]) not in semantic
+@pytest.mark.parametrize("theme_id", _VARIANT_IDS)
+def test_every_variant_keeps_the_active_border_apart_from_the_resting_one(theme_id: str) -> None:
+    palette: Palette = _VARIANTS[theme_id]
+    assert palette.border_active != palette.border
+
+
+@pytest.mark.parametrize("theme_id", _VARIANT_IDS)
+def test_no_selection_or_focus_variable_of_any_variant_resolves_to_a_semantic_colour(theme_id: str) -> None:
+    palette: Palette = _VARIANTS[theme_id]
+    resolved: dict[str, str] = _resolved_variables(_theme_of(theme_id))
+    semantic: frozenset[Color] = frozenset(Color.parse(value) for value in _semantic_values(palette))
+    for name in _SELECTION_AND_FOCUS_VARIABLES:
+        assert Color.parse(resolved[name]) not in semantic
 
 
 def test_the_style_sheets_reference_semantic_colours_only_as_text_colour() -> None:
@@ -575,6 +646,21 @@ def test_a_stored_light_variant_opens_the_next_shell_on_the_light_variant(state_
     assert sorted(path.name for path in state_file.parent.iterdir()) == [state_file.name]
 
 
+def test_a_stored_minimal_variant_opens_the_next_shell_on_the_minimal_variant(state_file: Path) -> None:
+    save_ui_state(UiState(theme=MINIMAL_THEME_ID))
+    app: AniShiftApp = shell()
+    assert app.theme == MINIMAL_THEME_ID
+    assert sorted(path.name for path in state_file.parent.iterdir()) == [state_file.name]
+
+
+@pytest.mark.parametrize("theme_id", _VARIANT_IDS)
+@pytest.mark.usefixtures("state_file")
+def test_every_variant_survives_a_restart_through_the_one_ui_state_path(theme_id: str) -> None:
+    save_ui_state(UiState(theme=theme_id))
+    assert load_ui_state().theme == theme_id
+    assert shell().theme == theme_id
+
+
 @pytest.mark.usefixtures("state_file")
 def test_switching_to_the_light_variant_repaints_the_running_shell_without_a_restart() -> None:
     async def scenario() -> None:
@@ -590,6 +676,34 @@ def test_switching_to_the_light_variant_repaints_the_running_shell_without_a_res
             assert app.screen.styles.background == Color.parse(LIGHT_PALETTE.background)
             assert app.query_one(f"#{BOX_ID}").styles.background == Color.parse(LIGHT_PALETTE.background_element)
             assert app.query_one(f"#{HINT_ID}").styles.color == Color.parse(LIGHT_PALETTE.text_muted)
+
+    _run(scenario())
+
+
+@pytest.mark.usefixtures("state_file")
+def test_switching_to_the_minimal_variant_repaints_the_running_shell_without_a_restart() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            app.theme = LIGHT_THEME_ID
+            for _ in range(_SETTLE_PAUSES):
+                await pilot.pause()
+            assert app.query_one(f"#{BOX_ID}").styles.border_left == (
+                _OUTER_EDGE,
+                Color.parse(LIGHT_PALETTE.secondary),
+            )
+            app.theme = MINIMAL_THEME_ID
+            for _ in range(_SETTLE_PAUSES):
+                await pilot.pause()
+            assert app.is_running
+            assert app.screen.styles.background == Color.parse(MINIMAL_PALETTE.background)
+            assert app.query_one(f"#{BOX_ID}").styles.background == Color.parse(MINIMAL_PALETTE.background_element)
+            assert app.query_one(f"#{HINT_ID}").styles.color == Color.parse(MINIMAL_PALETTE.text_muted)
+            assert app.query_one(f"#{BOX_ID}").styles.border_left == (
+                _OUTER_EDGE,
+                Color.parse(MINIMAL_PALETTE.primary),
+            )
 
     _run(scenario())
 
