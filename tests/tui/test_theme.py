@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import re
-from collections.abc import Mapping
+from collections.abc import Coroutine, Mapping
 from dataclasses import fields
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pytest
 from textual.app import App
 from textual.color import Color, ColorParseError
 from textual.css.stylesheet import Stylesheet
 from textual.theme import Theme
+from tui_fakes import shell
 
 import anishift.tui
+from anishift.tui import ui_state
+from anishift.tui.app import AniShiftApp
 from anishift.tui.theme import (
     DARK_PALETTE,
     DARK_THEME_ID,
@@ -26,6 +30,8 @@ from anishift.tui.theme import (
     on_primary,
     register_themes,
 )
+from anishift.tui.ui_state import UiState, save_ui_state
+from anishift.tui.widgets.composer import BOX_ID, HINT_ID
 
 _STYLED_SUFFIXES: Final[frozenset[str]] = frozenset((".py", ".tcss"))
 
@@ -103,6 +109,78 @@ _NON_COLOUR_TOKENS: Final[tuple[str, ...]] = (
     "app-brand",
     "text-muted",
 )
+
+_SPEC_TOKEN_NAMES: Final[frozenset[str]] = frozenset(
+    (
+        "primary",
+        "secondary",
+        "accent",
+        "error",
+        "warning",
+        "success",
+        "info",
+        "text",
+        "text_muted",
+        "background",
+        "background_panel",
+        "background_element",
+        "border",
+        "border_active",
+        "border_subtle",
+    ),
+)
+
+_SPEC_TOKEN_COUNT: Final[int] = 15
+
+_HEX_COLOUR: Final[re.Pattern[str]] = re.compile(r"\A#[0-9a-f]{6}\Z")
+
+_SEMANTIC_TOKEN_NAMES: Final[tuple[str, ...]] = ("error", "warning", "success", "info")
+
+_SEMANTIC_VARIABLE: Final[re.Pattern[str]] = re.compile(r"\$(?:error|warning|success|info)\b")
+
+_TCSS_DECLARATION: Final[re.Pattern[str]] = re.compile(r"([\w-]+)\s*:\s*([^;{}]*);")
+
+_STATE_ONLY_PROPERTY: Final[str] = "color"
+
+_SELECTION_AND_FOCUS_VARIABLES: Final[tuple[str, ...]] = (
+    "primary",
+    "on-primary",
+    "block-cursor-background",
+    "block-cursor-foreground",
+    "block-hover-background",
+    "input-cursor-background",
+    "input-selection-background",
+    "border",
+    "border-active",
+    "border-blurred",
+    "border-subtle",
+)
+
+_CHANNEL_MAX: Final[float] = 255.0
+
+_SRGB_KNEE: Final[float] = 0.04045
+
+_SRGB_LOW_SLOPE: Final[float] = 12.92
+
+_SRGB_OFFSET: Final[float] = 0.055
+
+_SRGB_EXPONENT: Final[float] = 2.4
+
+_WCAG_WEIGHTS: Final[tuple[float, float, float]] = (0.2126, 0.7152, 0.0722)
+
+_CONTRAST_OFFSET: Final[float] = 0.05
+
+_AA_BODY_TEXT_RATIO: Final[float] = 4.5
+
+_AA_LARGE_TEXT_RATIO: Final[float] = 3.0
+
+_WCAG_MAX_RATIO: Final[float] = 21.0
+
+_WCAG_MIN_RATIO: Final[float] = 1.0
+
+_FULL_SIZE: Final[tuple[int, int]] = (100, 30)
+
+_SETTLE_PAUSES: Final[int] = 5
 
 
 def _token_is_a_colour(token: str) -> bool:
@@ -192,6 +270,51 @@ def _colour_literals(source: str, *, suffix: str) -> list[str]:
     if suffix != ".tcss":
         literals.extend(_colour_constructor_calls(source))
     return literals
+
+
+def _token_values(palette: Palette) -> dict[str, str]:
+    return {field.name: getattr(palette, field.name) for field in fields(palette)}
+
+
+def _surfaces(palette: Palette) -> tuple[str, str, str]:
+    return (palette.background, palette.background_panel, palette.background_element)
+
+
+def _semantic_values(palette: Palette) -> frozenset[str]:
+    return frozenset(getattr(palette, name) for name in _SEMANTIC_TOKEN_NAMES)
+
+
+def _relative_luminance(colour: str) -> float:
+    digits: str = colour.lstrip("#")
+    channels: list[float] = [int(digits[start : start + 2], 16) / _CHANNEL_MAX for start in (0, 2, 4)]
+    linear: list[float] = [
+        channel / _SRGB_LOW_SLOPE
+        if channel <= _SRGB_KNEE
+        else ((channel + _SRGB_OFFSET) / (1.0 + _SRGB_OFFSET)) ** _SRGB_EXPONENT
+        for channel in channels
+    ]
+    return sum(weight * value for weight, value in zip(_WCAG_WEIGHTS, linear, strict=True))
+
+
+def _contrast_ratio(one: str, other: str) -> float:
+    first: float = _relative_luminance(one)
+    second: float = _relative_luminance(other)
+    return (max(first, second) + _CONTRAST_OFFSET) / (min(first, second) + _CONTRAST_OFFSET)
+
+
+def _resolved_variables(theme: Theme) -> dict[str, str]:
+    return {**theme.to_color_system().generate(), **theme.variables}
+
+
+def _run(scenario: Coroutine[Any, Any, None]) -> None:
+    asyncio.run(scenario)
+
+
+@pytest.fixture
+def state_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    target: Path = tmp_path / "ui_state.json"
+    monkeypatch.setattr(ui_state, "ui_state_path", lambda: target)
+    return target
 
 
 def test_theme_ids_are_exactly_the_two_stable_ids() -> None:
@@ -368,3 +491,118 @@ def test_style_sheets_resolve_every_variable_from_both_themes() -> None:
 def test_theme_module_actually_contains_colour_literals() -> None:
     theme_source: Path = Path(anishift.tui.__file__).with_name("theme.py")
     assert _colour_literals(theme_source.read_text(encoding="utf-8"), suffix=".py")
+
+
+def test_both_variants_define_the_same_fifteen_tokens_with_none_missing_and_none_extra() -> None:
+    dark: dict[str, str] = _token_values(DARK_PALETTE)
+    light: dict[str, str] = _token_values(LIGHT_PALETTE)
+    assert frozenset(dark) == frozenset(light) == _SPEC_TOKEN_NAMES
+    assert len(dark) == len(light) == _SPEC_TOKEN_COUNT
+
+
+def test_neither_variant_exposes_a_tcss_variable_the_other_one_lacks() -> None:
+    dark: Theme
+    light: Theme
+    dark, light = anishift_themes()
+    assert set(dark.variables) == set(light.variables)
+    assert {name.replace("-", "_") for name in dark.variables} >= _SPEC_TOKEN_NAMES
+
+
+def test_every_token_of_both_variants_is_a_six_digit_lowercase_hex_colour() -> None:
+    for palette in (DARK_PALETTE, LIGHT_PALETTE):
+        for value in _token_values(palette).values():
+            assert _HEX_COLOUR.match(value)
+
+
+def test_the_contrast_helper_reproduces_the_wcag_reference_extremes() -> None:
+    assert _contrast_ratio("#000000", "#ffffff") == pytest.approx(_WCAG_MAX_RATIO)
+    assert _contrast_ratio("#ffffff", "#ffffff") == pytest.approx(_WCAG_MIN_RATIO)
+    assert _contrast_ratio("#000000", "#ffffff") == _contrast_ratio("#ffffff", "#000000")
+
+
+def test_primary_text_clears_the_wcag_aa_body_ratio_over_every_surface_of_both_variants() -> None:
+    for palette in (DARK_PALETTE, LIGHT_PALETTE):
+        for surface in _surfaces(palette):
+            assert _contrast_ratio(palette.text, surface) >= _AA_BODY_TEXT_RATIO
+
+
+def test_muted_text_clears_the_wcag_aa_large_text_ratio_over_every_surface_of_both_variants() -> None:
+    for palette in (DARK_PALETTE, LIGHT_PALETTE):
+        for surface in _surfaces(palette):
+            assert _contrast_ratio(palette.text_muted, surface) >= _AA_LARGE_TEXT_RATIO
+
+
+def test_muted_text_stays_fainter_than_primary_text_over_every_surface_of_both_variants() -> None:
+    for palette in (DARK_PALETTE, LIGHT_PALETTE):
+        for surface in _surfaces(palette):
+            assert _contrast_ratio(palette.text_muted, surface) < _contrast_ratio(palette.text, surface)
+
+
+def test_selection_text_clears_the_wcag_aa_large_text_ratio_over_the_single_accent() -> None:
+    for palette in (DARK_PALETTE, LIGHT_PALETTE):
+        assert _contrast_ratio(on_primary(palette), palette.primary) >= _AA_LARGE_TEXT_RATIO
+
+
+def test_no_semantic_colour_is_the_single_accent_of_either_variant() -> None:
+    for palette in (DARK_PALETTE, LIGHT_PALETTE):
+        assert palette.primary not in _semantic_values(palette)
+
+
+def test_no_selection_or_focus_variable_of_either_variant_resolves_to_a_semantic_colour() -> None:
+    for theme, palette in zip(anishift_themes(), (DARK_PALETTE, LIGHT_PALETTE), strict=True):
+        resolved: dict[str, str] = _resolved_variables(theme)
+        semantic: frozenset[Color] = frozenset(Color.parse(value) for value in _semantic_values(palette))
+        for name in _SELECTION_AND_FOCUS_VARIABLES:
+            assert Color.parse(resolved[name]) not in semantic
+
+
+def test_the_style_sheets_reference_semantic_colours_only_as_text_colour() -> None:
+    styles: list[Path] = sorted((Path(anishift.tui.__file__).parent / "styles").glob("*.tcss"))
+    properties: list[str] = [
+        match.group(1)
+        for path in styles
+        for match in _TCSS_DECLARATION.finditer(_TCSS_COMMENT.sub(" ", path.read_text(encoding="utf-8")))
+        if _SEMANTIC_VARIABLE.search(match.group(2))
+    ]
+    assert properties
+    assert set(properties) == {_STATE_ONLY_PROPERTY}
+
+
+def test_a_stored_light_variant_opens_the_next_shell_on_the_light_variant(state_file: Path) -> None:
+    save_ui_state(UiState(theme=LIGHT_THEME_ID))
+    app: AniShiftApp = shell()
+    assert app.theme == LIGHT_THEME_ID
+    assert sorted(path.name for path in state_file.parent.iterdir()) == [state_file.name]
+
+
+@pytest.mark.usefixtures("state_file")
+def test_switching_to_the_light_variant_repaints_the_running_shell_without_a_restart() -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            assert app.theme == DARK_THEME_ID
+            assert app.screen.styles.background == Color.parse(DARK_PALETTE.background)
+            app.theme = LIGHT_THEME_ID
+            for _ in range(_SETTLE_PAUSES):
+                await pilot.pause()
+            assert app.is_running
+            assert app.screen.styles.background == Color.parse(LIGHT_PALETTE.background)
+            assert app.query_one(f"#{BOX_ID}").styles.background == Color.parse(LIGHT_PALETTE.background_element)
+            assert app.query_one(f"#{HINT_ID}").styles.color == Color.parse(LIGHT_PALETTE.text_muted)
+
+    _run(scenario())
+
+
+@pytest.mark.usefixtures("state_file")
+def test_a_runtime_switch_alone_does_not_persist_the_light_variant(state_file: Path) -> None:
+    async def scenario() -> None:
+        app: AniShiftApp = shell()
+        async with app.run_test(size=_FULL_SIZE) as pilot:
+            await pilot.pause()
+            app.theme = LIGHT_THEME_ID
+            for _ in range(_SETTLE_PAUSES):
+                await pilot.pause()
+            assert not state_file.exists()
+
+    _run(scenario())
