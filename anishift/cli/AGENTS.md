@@ -1,11 +1,13 @@
 # cli
 
-Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia preset zapisany jako domyślny. Aplikacja nie ma interaktywnego UI.
+Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia Interactive CLI; techniczne subkomendy pozostają nieinteraktywne.
 
 ## Pliki
 
-- `main.py` — Typer app, `main()` (console script), subkomendy `doctor`/`setup`/`run --preset`, default = domyślny preset
+- `main.py` — Typer app, `main()` (console script), subkomendy `doctor`/`setup`/`run --preset`, bare = Interactive CLI
 - `console.py` — jedyny właściciel rekonfiguracji stdout/stderr na UTF-8 + check dla doctora
+- `run.py` — wspólny, UI-neutralny preflight i wykonanie Auto
+- `interactive/` — lazy-loaded Home, prompty Questionary, maskotka, Rich progress i pętla Auto
 
 ## Pułapki
 
@@ -15,9 +17,13 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia p
   wyłączonym sinkiem terminalowym i zawsze zamyka kolejkę przez
   `shutdown_logger()`. Nie dodawaj sinka konsolowego obok raportu; diagnostyka
   aplikacji trafia do `logs/anishift.log.jsonl`. `main.py`
-- Gołe `anishift` i `anishift run --preset` dzielą jedno ciało `_run_preset()`;
-  goła komenda tylko bierze ID z `service.default_preset_id()`. Nie dubluj tam
-  planowania ani raportowania. `main.py`
+- Gołe `anishift` otwiera Interactive CLI. Interactive Auto i `anishift run --preset`
+  dzielą `prepare_auto_run()` oraz `execute_auto_run()`; nie dubluj discovery,
+  planowania ani wykonania. `main.py`, `run.py`, `interactive/app.py`
+- `QuestionaryPrompts` jest jedynym ownerem natywnego outputu Prompt Toolkit i
+  utrzymuje jeden alternate screen przez całą sesję. Nie zastępuj go `console.screen()`:
+  Rich pomija alternate screen na części konfiguracji `legacy_windows`. Home, Auto i
+  wynik czyszczą ten sam output. `interactive/prompts.py`, `interactive/app.py`
 - `run --preset` ma stabilny kontrakt kodów wyjścia: `0` sukces, `1` odmowa startu,
   `3` run niepełny/failed, `4` anulowany. `2` jest zarezerwowane dla błędów użycia
   Typera — nie używaj go. `main.py`
@@ -28,15 +34,27 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia p
   nie echuj `str(exc)` ani ścieżek bezpośrednio. `main.py`
 - `_QuietRunEvents` celowo gubi wszystkie eventy postępu — raport ma być
   parsowalny, bez przeplotu. Nie dodawaj tam renderowania. `main.py`
+- `RichRunProgress` prealokuje jeden wyrównany pasek na grupę i reużywa domyślnych
+  przejść kolorów `MultiProgressManager`. Każdy realny procent aktualizuje pasek;
+  fazy audio bez licznika przełączają ten sam wiersz na spinner.
+  `interactive/progress.py`
+- Home ma dokładnie `Auto`, `Ręczny`, `Ustawienia`, `Wyjście`; w pierwszym etapie
+  Ręczny i Ustawienia pokazują wyłącznie komunikat tymczasowy. `interactive/home.py`,
+  `interactive/app.py`
+- Marka Home ma stały rozmiar: slime 20×14 po lewej, sześciowierszowy wordmark po
+  prawej, paletę cyjan–fiolet–róż i jeden wspólny offset środka. Resize otwartego
+  promptu wywołuje czysty rerender; nie rozciągaj elementów wraz z terminalem.
+  `interactive/home.py`,
+  `interactive/prompts.py`
 - `configure_utf8_streams()` musi znosić `None`, `StringIO` i strumienie bez
   `reconfigure`; jest idempotentne. `console.py`
 
 ## Konwencje
 
-- Ciężkie importy odraczane lokalnie (`noqa: PLC0415`) — `bootstrap` i
-  `anishift.application` poza ścieżką importu Typera. Subkomendy techniczne
-  (`doctor`, `setup`) nie mogą ładować żadnego toolkitu terminalowego; pilnuje
-  tego `tests/cli/test_main.py`. `main.py`
+- Ciężkie importy odraczane lokalnie (`noqa: PLC0415`) — `bootstrap`,
+  `anishift.application` i `anishift.cli.interactive` poza ścieżką importu Typera.
+  Subkomendy techniczne (`doctor`, `setup`, `run --preset`) nie mogą ładować
+  Questionary, prompt_toolkit ani Interactive CLI; pilnują tego testy CLI. `main.py`
 - Jest dokładnie jedna droga budowy fasady: `bootstrap.production_service()`.
   Entry point nie ma drugiej ścieżki konstrukcji. `main.py`
 - Opcje CLI to uniksowe flagi (`--force`, `--preset`), nie gołe tokeny. `main.py`

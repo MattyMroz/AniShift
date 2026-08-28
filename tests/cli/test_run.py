@@ -29,7 +29,13 @@ from anishift.errors import ConfigError, ErrorCode, ErrorContext, ExecutionError
 
 cli_main = importlib.import_module("anishift.cli.main")
 
-_UI_MODULE_PREFIXES: Final[tuple[str, ...]] = ("textual", "prompt_toolkit", "anishift.tui")
+_UI_MODULE_PREFIXES: Final[tuple[str, ...]] = (
+    "textual",
+    "questionary",
+    "prompt_toolkit",
+    "anishift.tui",
+    "anishift.cli.interactive",
+)
 
 _PROBE_TIMEOUT: Final[int] = 300
 
@@ -531,7 +537,7 @@ def test_a_missing_preset_option_is_a_usage_error_that_keeps_two_reserved() -> N
     assert cli_main.EXIT_CANCELLED != 2
 
 
-def test_the_bare_invocation_runs_the_preset_the_store_holds_as_the_default(
+def test_the_bare_invocation_lazily_launches_interactive_with_one_service(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -545,44 +551,38 @@ def test_the_bare_invocation_runs_the_preset_the_store_holds_as_the_default(
         ),
     )
 
+    interactive = importlib.import_module("anishift.cli.interactive")
+    launched: list[AppService] = []
     monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", facade))
+    monkeypatch.setattr(interactive, "run_interactive", launched.append)
     result: Result = CliRunner().invoke(cli_main.app, [])
 
     assert result.exit_code == cli_main.EXIT_SUCCESS
-    assert facade.planned == [(("anime-01",), "preset:evening")]
-    assert facade.executed == [facade.plan]
+    assert launched == [cast("AppService", facade)]
+    assert facade.calls == []
 
 
-def test_the_bare_invocation_and_the_named_run_take_the_same_path(
+def test_the_named_run_does_not_launch_the_interactive_frontend(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    def facade() -> _Facade:
-        return _Facade(
-            root=tmp_path,
-            result=RunResult(
-                run_id="run-12",
-                groups=(
-                    GroupResult(
-                        group_id="anime-01",
-                        status=GroupStatus.FAILED,
-                        error_messages=("The speech engine refused the request.",),
-                    ),
-                ),
-            ),
-        )
+    facade: _Facade = _Facade(
+        root=tmp_path,
+        result=RunResult(
+            run_id="run-12",
+            groups=(GroupResult(group_id="anime-01", status=GroupStatus.SUCCEEDED),),
+        ),
+    )
+    interactive = importlib.import_module("anishift.cli.interactive")
+    launched: list[AppService] = []
+    monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", facade))
+    monkeypatch.setattr(interactive, "run_interactive", launched.append)
 
-    bare: _Facade = facade()
-    named: _Facade = facade()
+    result: Result = CliRunner().invoke(cli_main.app, ["run", "--preset", "default"])
 
-    monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", bare))
-    bare_result: Result = CliRunner().invoke(cli_main.app, [])
-    monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", named))
-    named_result: Result = CliRunner().invoke(cli_main.app, ["run", "--preset", "default"])
-
-    assert bare_result.exit_code == named_result.exit_code == cli_main.EXIT_INCOMPLETE
-    assert bare_result.output == named_result.output
-    assert bare.planned == named.planned
+    assert result.exit_code == cli_main.EXIT_SUCCESS
+    assert launched == []
+    assert facade.calls == ["discover", "get_preset", "plan_auto", "execute"]
 
 
 def test_the_run_command_loads_no_textual_module() -> None:

@@ -18,7 +18,13 @@ from anishift.errors import ErrorCode, ErrorContext
 
 cli_main = importlib.import_module("anishift.cli.main")
 
-_UI_MODULE_PREFIXES: Final[tuple[str, ...]] = ("textual", "prompt_toolkit", "anishift.tui")
+_UI_MODULE_PREFIXES: Final[tuple[str, ...]] = (
+    "textual",
+    "questionary",
+    "prompt_toolkit",
+    "anishift.tui",
+    "anishift.cli.interactive",
+)
 
 _PROBE_TIMEOUT: Final[int] = 300
 

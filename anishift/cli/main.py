@@ -14,9 +14,9 @@ from anishift.utils.logger import get_logger
 from anishift.utils.rich_console import StatusType, console, get_status_icon
 
 if TYPE_CHECKING:
-    from anishift.application import AppService, AutoPreset, ExecutionPlan, InspectedWorkspace, RunResult
+    from anishift.application import AppService, RunResult
     from anishift.application.events import RunEvent
-    from anishift.application.planning import PlanProblem
+    from anishift.cli.run import AutoRunRefusal, PreparedAutoRun
     from anishift.setup.installer import ResourceResult
 
 app = typer.Typer(
@@ -28,7 +28,7 @@ app = typer.Typer(
 
 logger = get_logger(__name__)
 
-# ── Constants ────────────────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 EXIT_SUCCESS: Final[int] = 0
 """Every group of a non-interactive run reached a successful terminal state."""
@@ -41,24 +41,6 @@ EXIT_INCOMPLETE: Final[int] = 3
 
 EXIT_CANCELLED: Final[int] = 4
 """Cancellation reached the run before every group succeeded."""
-
-_NO_SOURCES: Final[str] = "The workspace holds no source group to run."
-"""Refusal stated when discovery finds nothing the preset could be applied to."""
-
-_NO_SOURCES_HINT: Final[str] = "Put a video or a subtitle file in the workspace and run the preset again."
-"""Suggestion offered beside an empty workspace."""
-
-_NO_READY_SOURCES: Final[str] = "No discovered source group is ready to run."
-"""Refusal stated when discovery finds only groups the automatic route would skip."""
-
-_NO_READY_SOURCES_HINT: Final[str] = "Give every group usable text, resolve its conflict, then run the preset again."
-"""Suggestion offered when every discovered group is unready."""
-
-_PLAN_BLOCKED: Final[str] = "The plan cannot run because of a blocking problem."
-"""Refusal stated when the planner reports a problem that forbids execution."""
-
-_PLAN_SCOPE: Final[str] = "plan"
-"""Name a blocking problem is attributed to while it belongs to no single group."""
 
 _RUN_CANCELLED: Final[str] = "The run was cancelled before it finished."
 """Sentence stated when the process is interrupted while the run is executing."""
@@ -102,11 +84,13 @@ def _print_setup_report(results: list[ResourceResult]) -> None:
 
 @app.callback(invoke_without_command=True)
 def _default(ctx: typer.Context) -> None:
-    """Run the preset stored as the default when invoked without a subcommand."""
+    """Open the interactive command line when invoked without a subcommand."""
     if ctx.invoked_subcommand is not None:
         return
     service: AppService = _composed_service()
-    _run_preset(service, service.default_preset_id())
+    from anishift.cli.interactive import run_interactive  # noqa: PLC0415 - keep prompts off technical commands
+
+    run_interactive(service)
 
 
 @app.command()
@@ -149,8 +133,18 @@ def run(
 
 def _run_preset(service: AppService, preset: str) -> NoReturn:
     """Plan and execute one named preset, then leave with the code of its outcome."""
-    plan: ExecutionPlan = _preset_plan(service, preset)
-    result: RunResult = _executed_run(service, plan)
+    from anishift.cli.run import (  # noqa: PLC0415 - keep application planning off the Typer import path
+        AutoRunRefusal,
+        prepare_auto_run,
+    )
+
+    try:
+        prepared: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(service, preset)
+    except (AniShiftError, OSError) as problem:
+        _refuse_problem(problem)
+    if isinstance(prepared, AutoRunRefusal):
+        _refuse_preparation(prepared)
+    result: RunResult = _executed_run(service, prepared)
     _print_run_report(result, service.workspace_root)
     code: int = _run_exit_code(result)
     logger.info("Non-interactive run finished", groups=len(result.groups), exit_code=code)
@@ -175,34 +169,12 @@ def _composed_service() -> AppService:
     return service
 
 
-def _preset_plan(service: AppService, preset_id: str) -> ExecutionPlan:
-    """Plan the groups the application layer reports ready, from the stored preset through the shared facade."""
-    from anishift.application import ready_group_ids  # noqa: PLC0415 - keep the backend off the Typer import path
-
-    try:
-        workspace: InspectedWorkspace = service.discover()
-        preset: AutoPreset = service.get_preset(preset_id)
-    except (AniShiftError, OSError) as problem:
-        _refuse_problem(problem)
-    if not workspace.groups:
-        _refuse_sentence(_NO_SOURCES, _NO_SOURCES_HINT)
-    group_ids: tuple[str, ...] = ready_group_ids(workspace.groups)
-    if not group_ids:
-        _refuse_sentence(_NO_READY_SOURCES, _NO_READY_SOURCES_HINT)
-    try:
-        plan: ExecutionPlan = service.plan_auto(group_ids, preset)
-    except (AniShiftError, OSError) as problem:
-        _refuse_problem(problem)
-    if not plan.can_execute:
-        _refuse_blocked(plan)
-    logger.info("Non-interactive run planned", preset_id=preset_id, groups=len(group_ids), tasks=len(plan.tasks))
-    return plan
-
-
-def _executed_run(service: AppService, plan: ExecutionPlan) -> RunResult:
+def _executed_run(service: AppService, prepared: PreparedAutoRun) -> RunResult:
     """Execute the accepted plan through the one facade call every frontend uses."""
+    from anishift.cli.run import execute_auto_run  # noqa: PLC0415 - keep application execution lazy
+
     try:
-        result: RunResult = service.execute(plan, _QuietRunEvents())
+        result: RunResult = execute_auto_run(service, prepared, _QuietRunEvents())
     except KeyboardInterrupt:
         logger.info("Non-interactive run interrupted")
         typer.echo(_RUN_CANCELLED)
@@ -248,21 +220,14 @@ def _refuse_problem(problem: AniShiftError | OSError) -> NoReturn:
     raise typer.Exit(code=EXIT_REFUSED)
 
 
-def _refuse_sentence(sentence: str, hint: str) -> NoReturn:
-    """State one known refusal and its suggestion, then leave with the refusal code."""
-    logger.warning("Non-interactive run refused", reason=sentence)
-    typer.echo(sentence)
-    typer.echo(f"  {hint}")
-    raise typer.Exit(code=EXIT_REFUSED)
-
-
-def _refuse_blocked(plan: ExecutionPlan) -> NoReturn:
-    """State every blocking problem of the plan and never execute it."""
-    blockers: tuple[PlanProblem, ...] = tuple(problem for problem in plan.problems if problem.is_blocking)
-    logger.warning("Non-interactive run refused, the plan is blocked", blockers=len(blockers))
-    typer.echo(_PLAN_BLOCKED)
-    for problem in blockers:
-        typer.echo(f"  {problem.group_id or _PLAN_SCOPE}: {_safe(problem.message)}")
+def _refuse_preparation(refusal: AutoRunRefusal) -> NoReturn:
+    """Render one shared Auto refusal and leave with the refusal code."""
+    logger.warning("Non-interactive run refused", reason=refusal.message, blockers=len(refusal.blockers))
+    typer.echo(refusal.message)
+    for blocker in refusal.blockers:
+        typer.echo(f"  {blocker.scope}: {_safe(blocker.message)}")
+    if refusal.suggestion:
+        typer.echo(f"  {refusal.suggestion}")
     raise typer.Exit(code=EXIT_REFUSED)
 
 
