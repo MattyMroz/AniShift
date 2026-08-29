@@ -185,6 +185,16 @@ class TerminalRenderer:
             del event
             self._key_handler("enter")
 
+        @bindings.add(" ")
+        def toggle(event: KeyPressEvent) -> None:
+            del event
+            self._key_handler("space")
+
+        @bindings.add(Keys.Backspace)
+        def backspace(event: KeyPressEvent) -> None:
+            del event
+            self._key_handler("backspace")
+
         @bindings.add(Keys.Escape)
         def escape(event: KeyPressEvent) -> None:
             del event
@@ -197,7 +207,10 @@ class TerminalRenderer:
 
         @bindings.add(Keys.Any)
         def any_key(event: KeyPressEvent) -> None:
-            del event
+            data: str = event.data
+            if data and data.isprintable():
+                self._key_handler(f"text:{data}")
+                return
             self._key_handler("any")
 
         return bindings

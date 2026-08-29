@@ -18,10 +18,12 @@ if TYPE_CHECKING:
     from anishift.application.service import (
         AppService,
         AutoPresetDraft,
+        EnvironmentSettingStatus,
         ExecutionHandlerFactory,
         ModelAvailability,
         ModelProbeResult,
         SettingsDraft,
+        TranslationModelOption,
     )
     from anishift.setup.doctor import CheckResult
     from anishift.setup.installer import ResourceResult
@@ -94,6 +96,7 @@ __all__ = [
     "CheckResult",
     "DiscoveryResult",
     "DiscoveryWarning",
+    "EnvironmentSettingStatus",
     "EventCancellationToken",
     "ExecutionHandlerFactory",
     "ExecutionPlan",
@@ -133,6 +136,7 @@ __all__ = [
     "TaskResult",
     "TaskState",
     "TranslationAction",
+    "TranslationModelOption",
     "WorkerNotification",
     "WorkerNotificationKind",
     "WorkspaceInspector",
@@ -146,6 +150,7 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "PRIMARY_SOURCE_SUFFIXES": ("anishift.application.discovery", "PRIMARY_SOURCE_SUFFIXES"),
     "AppService": ("anishift.application.service", "AppService"),
     "AutoPresetDraft": ("anishift.application.service", "AutoPresetDraft"),
+    "EnvironmentSettingStatus": ("anishift.application.service", "EnvironmentSettingStatus"),
     "CheckResult": ("anishift.setup.doctor", "CheckResult"),
     "DiscoveryResult": ("anishift.application.discovery", "DiscoveryResult"),
     "DiscoveryWarning": ("anishift.application.discovery", "DiscoveryWarning"),
@@ -157,6 +162,7 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "ModelProbeResult": ("anishift.application.service", "ModelProbeResult"),
     "ResourceResult": ("anishift.setup.installer", "ResourceResult"),
     "SettingsDraft": ("anishift.application.service", "SettingsDraft"),
+    "TranslationModelOption": ("anishift.application.service", "TranslationModelOption"),
     "WorkspaceInspector": ("anishift.application.inspection", "WorkspaceInspector"),
 }
 """I/O exports loaded only when requested, avoiding eager package import cycles."""

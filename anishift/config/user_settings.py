@@ -318,7 +318,7 @@ class UserSettings:
     tts_provider_model_id: str = "run6"
     tts_voice_id: str = DALLIN_ALIAS
     tts_max_retries: int = 3
-    elevenbytes_vpn_enabled: bool = True
+    elevenbytes_vpn_enabled: bool = False
     tts_output_profile: str = AudioCodecProfile.EAC3.value
     tts_output_bitrate: str | None = None
     tts_timeline_policy: str = TimelinePolicy.SERIALIZE.value

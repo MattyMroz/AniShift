@@ -50,7 +50,13 @@ from anishift.errors import (
     PlanningError,
     RunConflictError,
 )
-from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
+from anishift.services.llm.engines import (
+    available_engine_ids as available_llm_engine_ids,
+)
+from anishift.services.llm.engines import (
+    suggested_model_ids,
+)
+from anishift.services.llm.palantir_token import PALANTIR_TOKEN_COMPAT_ENV_VAR
 from anishift.services.translation.engines import available_engine_ids as available_translation_engine_ids
 from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
 from anishift.setup.doctor import CheckResult, run_doctor
@@ -64,11 +70,13 @@ __all__ = [
     "AppService",
     "AutoPresetDraft",
     "EngineAvailability",
+    "EnvironmentSettingStatus",
     "ExecutionHandlerFactory",
     "ModelAvailability",
     "ModelProbeResult",
     "ModelProber",
     "SettingsDraft",
+    "TranslationModelOption",
 ]
 
 logger = get_logger(__name__)
@@ -155,6 +163,32 @@ class EngineAvailability:
     engine_id: str
     is_available: bool
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class EnvironmentSettingStatus:
+    """Safe configuration status for one environment-backed setting."""
+
+    setting_id: str
+    is_configured: bool
+    is_system_override: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TranslationModelOption:
+    """One configured-provider model that an interface may select.
+
+    Attributes:
+        provider_id: Registered LLM engine selected together with the model.
+        model_id: Direct provider ID, or a local catalog alias for Palantir.
+        label: Exact user-facing model identity.
+        group_id: Stable provider or Palantir protocol group for sectioned UIs.
+    """
+
+    provider_id: str
+    model_id: str
+    label: str
+    group_id: str
 
 
 class ExecutionHandlerFactory(Protocol):
@@ -375,6 +409,18 @@ class AppService:
             if spec.is_secret or not hasattr(self._user_settings, spec.setting_id)
         }
 
+    def environment_setting_statuses(self) -> tuple[EnvironmentSettingStatus, ...]:
+        """Return safe source-aware statuses for environment-backed settings."""
+        statuses: Mapping[str, bool] = self.environment_statuses()
+        return tuple(
+            EnvironmentSettingStatus(
+                setting_id=setting_id,
+                is_configured=is_configured,
+                is_system_override=_has_system_override(setting_id),
+            )
+            for setting_id, is_configured in statuses.items()
+        )
+
     def engine_availability(self) -> tuple[EngineAvailability, ...]:
         """Describe configured engine readiness without creating provider clients."""
         secret_by_engine: tuple[tuple[str, str, str], ...] = (
@@ -384,7 +430,6 @@ class AppService:
             ("llm", "deepseek", "deepseek_api_key"),
             ("llm", "gemini", "gemini_api_key"),
             ("llm", "openai", "openai_api_key"),
-            ("llm", "openai_compatible", "openai_compatible_api_key"),
             ("llm", "openrouter", "openrouter_api_key"),
             ("llm", "palantir", "palantir_token"),
         )
@@ -401,10 +446,48 @@ class AppService:
             secret_id: str | None = configured.get((domain, engine_id))
             available: bool = secret_id is None or bool(getattr(self._settings, secret_id, ""))
             reason: str = "ready" if available else f"missing {secret_id}; configure environment or open Tools"
+            if domain == "llm" and engine_id == "openai_compatible":
+                available = bool(self._settings.openai_compatible_base_url.strip())
+                reason = (
+                    "ready" if available else "missing openai_compatible_base_url; configure environment or open Tools"
+                )
             if available and domain == "llm" and engine_id == _PALANTIR_ENGINE_ID:
                 available, reason = self._palantir_readiness()
             statuses.append(EngineAvailability(domain, engine_id, available, reason))
         return tuple(statuses)
+
+    def translation_model_options(self) -> tuple[TranslationModelOption, ...]:
+        """Return exact model choices grouped by configured LLM provider.
+
+        Provider suggestions are lightweight local identifiers. Palantir choices
+        come only from usable, non-placeholder catalog entries because Foundry
+        model RIDs are enrollment-specific and cannot be invented by the app.
+        Nothing in this method sends a network request.
+        """
+        available: frozenset[str] = frozenset(
+            status.engine_id for status in self.engine_availability() if status.domain == "llm" and status.is_available
+        )
+        preferences: UserSettings = self.settings_snapshot()
+        options: list[TranslationModelOption] = []
+        for provider_id in available_llm_engine_ids():
+            if provider_id not in available or provider_id == _PALANTIR_ENGINE_ID:
+                continue
+            model_ids: tuple[str, ...] = suggested_model_ids(provider_id)
+            if not model_ids and preferences.llm_provider == provider_id:
+                current: str = preferences.llm_provider_model_id.strip()
+                model_ids = (current,) if current else ()
+            options.extend(
+                TranslationModelOption(
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    label=model_id,
+                    group_id=provider_id,
+                )
+                for model_id in model_ids
+            )
+        if _PALANTIR_ENGINE_ID in available:
+            options.extend(self._palantir_model_options())
+        return tuple(options)
 
     def model_catalog(self) -> ModelCatalog:
         """Return the validated local catalog of Palantir providers and models.
@@ -504,6 +587,35 @@ class AppService:
             self._user_settings = deepcopy(candidate)
         return deepcopy(candidate)
 
+    def select_translation_model(self, provider_id: str, model_id: str) -> UserSettings:
+        """Select one currently usable provider and model atomically."""
+        choices: frozenset[tuple[str, str]] = frozenset(
+            (option.provider_id, option.model_id) for option in self.translation_model_options()
+        )
+        if (provider_id, model_id) not in choices:
+            context = ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message=f"Unavailable translation model: {provider_id}/{model_id}",
+                suggestion="Pick one of the models exposed for a configured provider",
+            )
+            raise ConfigError(context=context)
+        candidate: UserSettings = self.settings_snapshot()
+        candidate.llm_provider = provider_id
+        candidate.llm_provider_model_id = model_id
+        candidate.__post_init__()
+        self._settings_saver(candidate)
+        with self._run_lock:
+            self._user_settings = deepcopy(candidate)
+        return deepcopy(candidate)
+
+    def reset_settings(self) -> UserSettings:
+        """Restore persisted panel preferences without touching secrets or presets."""
+        defaults: UserSettings = UserSettings()
+        self._settings_saver(defaults)
+        with self._run_lock:
+            self._user_settings = deepcopy(defaults)
+        return deepcopy(defaults)
+
     def update_secret(self, setting_id: str, value: str | None) -> None:
         """Store, clear, or remove one environment secret in the ``.env`` file.
 
@@ -521,6 +633,14 @@ class AppService:
         environment keeps overriding the stored value.
         """
         spec: SettingSpec = self._secret_spec(setting_id)
+        update_env_value(_env_variable(spec.setting_id), value, path=self._env_file)
+        self._reload_settings()
+
+    def update_environment_setting(self, setting_id: str, value: str | None) -> None:
+        """Persist one non-secret environment-backed setting atomically."""
+        spec: SettingSpec = self._environment_setting_spec(setting_id)
+        if value is not None:
+            spec.validate_value(value)
         update_env_value(_env_variable(spec.setting_id), value, path=self._env_file)
         self._reload_settings()
 
@@ -575,6 +695,27 @@ class AppService:
                 suggestion="Pick one of the secret settings the catalog reports",
             )
             raise ConfigError(context=unknown)
+        return spec
+
+    def _environment_setting_spec(self, setting_id: str) -> SettingSpec:
+        spec: SettingSpec | None = next(
+            (
+                item
+                for item in self.settings_catalog()
+                if item.setting_id == setting_id
+                and not item.is_secret
+                and not setting_is_persisted(item)
+                and item.setting_id in Settings.model_fields
+            ),
+            None,
+        )
+        if spec is None:
+            context = ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message=f"Unknown environment setting: {setting_id}",
+                suggestion="Pick one of the environment settings reported by the catalog",
+            )
+            raise ConfigError(context=context)
         return spec
 
     def _reload_settings(self) -> None:
@@ -644,6 +785,26 @@ class AppService:
             return False, "translation model alias is absent from the catalog; select one again"
         return True, "ready"
 
+    def _palantir_model_options(self) -> tuple[TranslationModelOption, ...]:
+        """Return configured Foundry aliases while rejecting example placeholders."""
+        catalog: ModelCatalog = self.model_catalog()
+        options: list[TranslationModelOption] = []
+        for entry in catalog.models.values():
+            if _is_placeholder_model_id(entry.model_id):
+                continue
+            provider = catalog.providers.get(entry.provider_id)
+            if provider is None:
+                continue
+            options.append(
+                TranslationModelOption(
+                    provider_id=_PALANTIR_ENGINE_ID,
+                    model_id=entry.alias,
+                    label=f"{entry.label} · {entry.model_id}",
+                    group_id=f"palantir:{provider.protocol.value}",
+                ),
+            )
+        return tuple(options)
+
     def _palantir_config(self, alias: str) -> LlmConfig:
         """Resolve one alias into the configuration a connection test would use."""
         from anishift.application.runtime import palantir_llm_config  # noqa: PLC0415 - avoids an import cycle
@@ -685,6 +846,18 @@ class AppService:
 def _env_variable(setting_id: str) -> str:
     prefix: str = Settings.model_config.get("env_prefix", "")
     return f"{prefix}{setting_id}".upper()
+
+
+def _has_system_override(setting_id: str) -> bool:
+    if _env_variable(setting_id) in os.environ:
+        return True
+    return setting_id == "palantir_token" and PALANTIR_TOKEN_COMPAT_ENV_VAR in os.environ
+
+
+def _is_placeholder_model_id(model_id: str) -> bool:
+    """Reject example tokens that cannot identify a real provider model."""
+    normalized: str = model_id.strip().casefold()
+    return normalized.startswith("replace-with-") or normalized.startswith("<select-")
 
 
 def _extraction_worker_count(plan: ExecutionPlan) -> int:

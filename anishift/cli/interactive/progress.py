@@ -96,7 +96,7 @@ _COMPLETE_LABEL: Final[dict[str, str]] = {
 """Labels shown after extraction and translation complete."""
 
 _AUDIO_LABEL: Final[dict[str, str]] = {
-    "normalizing": "Audio normalize",
+    "normalizing": "Normalizing",
     "timeline": "Audio timeline",
     "mixing": "Audio mixing",
     "narration_resume": "Audio resume",

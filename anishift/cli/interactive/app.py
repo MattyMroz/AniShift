@@ -22,6 +22,7 @@ from anishift.cli.interactive.prompts import (
     resolve_home_geometry,
     status_line,
 )
+from anishift.cli.interactive.settings import SettingsController, SettingsResult
 from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, execute_auto_run, prepare_auto_run
 from anishift.errors import AniShiftError
 from anishift.utils.logger import get_logger
@@ -50,24 +51,23 @@ _HOME_POINTER: Final[str] = "\u276f"
 """Pointer glyph shown beside the active Home choice."""
 
 _TEMPORARY_ACTIONS: Final[dict[HomeAction, str]] = {
-    HomeAction.MANUAL: "Tryb ręczny pojawi się w następnym etapie.",
-    HomeAction.SETTINGS: "Ustawienia pojawią się w następnym etapie.",
+    HomeAction.MANUAL: "Tryb ręczny pojawi się w następnym etapie",
 }
 """Neutral messages for actions deferred beyond the current plan."""
 
 _REFUSAL_MESSAGES: Final[dict[str, str]] = {
-    "The workspace holds no source group to run.": "Workspace nie zawiera materiału do uruchomienia.",
-    "No discovered source group is ready to run.": "Żadna wykryta grupa nie jest gotowa do uruchomienia.",
-    "The plan cannot run because of a blocking problem.": "Plan nie może zostać uruchomiony.",
+    "The workspace holds no source group to run.": "Workspace nie zawiera materiału do uruchomienia",
+    "No discovered source group is ready to run.": "Żadna wykryta grupa nie jest gotowa do uruchomienia",
+    "The plan cannot run because of a blocking problem.": "Plan nie może zostać uruchomiony",
 }
 """Polish presentation of stable UI-neutral Auto refusals."""
 
 _REFUSAL_SUGGESTIONS: Final[dict[str, str]] = {
     "Put a video or a subtitle file in the workspace and run the preset again.": (
-        "Umieść plik wideo lub napisów w workspace i spróbuj ponownie."
+        "Umieść plik wideo lub napisów w workspace i spróbuj ponownie"
     ),
     "Give every group usable text, resolve its conflict, then run the preset again.": (
-        "Usuń konflikty i zapewnij każdej grupie użyteczne napisy."
+        "Usuń konflikty i zapewnij każdej grupie użyteczne napisy"
     ),
 }
 """Polish presentation of stable UI-neutral Auto suggestions."""
@@ -80,6 +80,7 @@ class _ViewMode(StrEnum):
     PREPARING = "preparing"
     AUTO = "auto"
     AUTO_DONE = "auto_done"
+    SETTINGS = "settings"
     MESSAGE = "message"
 
 
@@ -93,6 +94,7 @@ class _InteractiveApplication:
         self._selected: int = 0
         self._message: Text = Text()
         self._progress: RichRunProgress | None = None
+        self._settings: SettingsController | None = None
         self._cancel_requested: bool = False
         self._preflight_cancel: EventCancellationToken | None = None
         self._generation: int = 0
@@ -107,6 +109,9 @@ class _InteractiveApplication:
     def _handle_key(self, key: str) -> None:
         with self._lock:
             mode: _ViewMode = self._mode
+        if mode is _ViewMode.SETTINGS:
+            self._handle_settings_key(key)
+            return
         if key == "interrupt":
             self._interrupt(mode)
             return
@@ -135,8 +140,22 @@ class _InteractiveApplication:
             self._renderer.exit()
         elif action is HomeAction.AUTO:
             self._start_auto()
+        elif action is HomeAction.SETTINGS:
+            self._show_settings()
         else:
             self._show_message(Text(_TEMPORARY_ACTIONS[action]))
+
+    def _handle_settings_key(self, key: str) -> None:
+        with self._lock:
+            controller: SettingsController | None = self._settings
+        if controller is None:
+            self._show_home()
+            return
+        result: SettingsResult = controller.handle_key(key)
+        if result is SettingsResult.BACK_HOME:
+            self._show_home()
+            return
+        self._renderer.invalidate()
 
     def _interrupt(self, mode: _ViewMode) -> None:
         if mode is _ViewMode.HOME:
@@ -261,11 +280,20 @@ class _InteractiveApplication:
             self._mode = _ViewMode.MESSAGE
         self._renderer.invalidate()
 
+    def _show_settings(self) -> None:
+        controller: SettingsController = SettingsController(self._service, self._renderer.invalidate)
+        with self._lock:
+            self._settings = controller
+            self._mode = _ViewMode.SETTINGS
+            self._message = Text()
+        self._renderer.invalidate()
+
     def _show_home(self) -> None:
         with self._lock:
             self._mode = _ViewMode.HOME
             self._message = Text()
             self._progress = None
+            self._settings = None
             self._cancel_requested = False
         self._renderer.invalidate()
 
@@ -275,12 +303,15 @@ class _InteractiveApplication:
             selected: int = self._selected
             message: Text = self._message
             progress: RichRunProgress | None = self._progress
+            settings: SettingsController | None = self._settings
         if mode is _ViewMode.HOME:
             content: Text = _home_content(columns, rows, selected)
         elif mode is _ViewMode.PREPARING:
             content = _preparing_content(columns, rows)
         elif mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
             content = _auto_content(columns, rows, progress)
+        elif mode is _ViewMode.SETTINGS and settings is not None:
+            content = settings.render(columns, rows)
         else:
             content = _message_content(columns, rows, message)
         return _fit_frame(content, __version__, self._directory, columns, rows)
@@ -372,4 +403,4 @@ def _problem_text(problem: AniShiftError | OSError) -> Text:
 
 
 def _safe(text: str) -> str:
-    return sanitize_event_message(text) or ""
+    return (sanitize_event_message(text) or "").rstrip(".")

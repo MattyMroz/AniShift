@@ -7,7 +7,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `main.py` — Typer app, `main()` (console script), subkomendy `doctor`/`setup`/`run --preset`, bare = Interactive CLI
 - `console.py` — jedyny właściciel rekonfiguracji stdout/stderr na UTF-8 + check dla doctora
 - `run.py` — wspólny, UI-neutralny preflight i wykonanie Auto
-- `interactive/` — lazy-loaded Home, prompty Questionary, maskotka, Rich progress i pętla Auto
+- `interactive/` — lazy-loaded Home, jeden renderer Prompt Toolkit, maskotka, Settings i postęp Auto
 
 ## Pułapki
 
@@ -20,8 +20,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Gołe `anishift` otwiera Interactive CLI. Interactive Auto i `anishift run --preset`
   dzielą `prepare_auto_run()` oraz `execute_auto_run()`; nie dubluj discovery,
   planowania ani wykonania. `main.py`, `run.py`, `interactive/app.py`
-- `QuestionaryPrompts` jest jedynym ownerem natywnego outputu Prompt Toolkit i
-  utrzymuje jeden alternate screen przez całą sesję. Nie zastępuj go `console.screen()`:
+- `TerminalRenderer` jest jedynym ownerem aplikacji Prompt Toolkit, klawiszy i
+  alternate screen przez całą sesję. Nie zastępuj go `console.screen()`:
   Rich pomija alternate screen na części konfiguracji `legacy_windows`. Home, Auto i
   wynik czyszczą ten sam output. `interactive/prompts.py`, `interactive/app.py`
 - Auto usuwa menu, ale zachowuje markę oraz esencjonalną stopkę z cwd/version.
@@ -46,9 +46,14 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   otrzymują osobnych wierszy. Etykieta zachowuje konkretną nazwę źródła wraz z
   rozszerzeniem; procent ekstrakcji i TTS pochodzi wyłącznie z eventu backendu.
   `interactive/progress.py`
-- Home ma dokładnie `Auto`, `Ręczny`, `Ustawienia`, `Wyjście`; w pierwszym etapie
-  Ręczny i Ustawienia pokazują wyłącznie komunikat tymczasowy. `interactive/home.py`,
-  `interactive/app.py`
+- Home ma dokładnie `Auto`, `Ręczny`, `Ustawienia`, `Wyjście`; tylko Ręczny pokazuje
+  komunikat tymczasowy. Settings działa w tym samym rendererze, a mutacje
+  `settings.json`, `presets.json` i `.env` przechodzą przez `AppService`.
+  `interactive/app.py`, `interactive/settings.py`
+- `SettingsController.render()` korzysta wyłącznie z lokalnego, odświeżonego snapshotu;
+  nie wykonuj w nim I/O ani wywołań sieciowych, bo renderer odświeża klatkę cyklicznie.
+  Katalog modeli jest tylko do odczytu, a probe działa wyłącznie po jawnej akcji.
+  `interactive/settings.py`
 - Home ma slime 20×14, sześciowierszowy wordmark, cztery akcje, hint i esencjonalną
   stopkę z cwd/version. Resize otwartego promptu wywołuje czysty rerender; nie
   rozciągaj elementów wraz z terminalem.
@@ -62,7 +67,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Ciężkie importy odraczane lokalnie (`noqa: PLC0415`) — `bootstrap`,
   `anishift.application` i `anishift.cli.interactive` poza ścieżką importu Typera.
   Subkomendy techniczne (`doctor`, `setup`, `run --preset`) nie mogą ładować
-  Questionary, prompt_toolkit ani Interactive CLI; pilnują tego testy CLI. `main.py`
+  prompt_toolkit ani Interactive CLI; pilnują tego testy CLI. `main.py`
 - Jest dokładnie jedna droga budowy fasady: `bootstrap.production_service()`.
   Entry point nie ma drugiej ścieżki konstrukcji. `main.py`
 - Opcje CLI to uniksowe flagi (`--force`, `--preset`), nie gołe tokeny. `main.py`

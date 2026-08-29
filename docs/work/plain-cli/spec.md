@@ -102,10 +102,10 @@ przywraca poprzedni bufor powłoki.
 Warstwa prezentacji korzysta z:
 
 ```text
-Questionary  -> wybór, checkbox, input, password, confirm
-Rich         -> tekst, kolor, status, spinner, progress, podsumowanie
-Typer        -> techniczne subkomendy i entrypoint procesu
-Pillow       -> kompaktowe renderowanie dostarczonej maskotki jako półbloki terminalowe
+Prompt Toolkit -> jeden event loop, klawisze i alternate screen
+Rich           -> tekst, kolor, status i paski renderowane do wspólnej klatki
+Typer          -> techniczne subkomendy i entrypoint procesu
+Pillow         -> kompaktowe renderowanie dostarczonej maskotki jako półbloki terminalowe
 ```
 
 ### 1.3. Główny cel projektowy
@@ -309,10 +309,12 @@ Nie zawiera `Pomoc`, `Doctor`, `Debug`, `Status`, `Connect` ani `Setup`.
 Menu Ustawienia zawiera docelowo:
 
 ```text
+Ogólne
 Tłumaczenie
 Lektor
 Wynik
 Połączenia
+Przywróć domyślne
 Wróć
 ```
 
@@ -430,7 +432,7 @@ z nowym wycentrowaniem.
 
 Przed wejściem na Home poprzedni widok jest czyszczony.
 
-Nie pozostawiamy pod Home starego progresu, odpowiedzi Questionary ani tracebacka.
+Nie pozostawiamy pod Home starego progresu, poprzedniego widoku ani tracebacka.
 
 ### R-111 — powrót z podmenu
 
@@ -571,13 +573,12 @@ Każde podmenu ma jawną pozycję:
 Wróć
 ```
 
-Pierwsza wersja nie wymaga własnego keybindingu `Esc`, który obchodziłby publiczne
-API Questionary.
+`Esc` korzysta ze wspólnego keybindingu pojedynczej aplikacji Prompt Toolkit.
 
 ### R-210 — listy długie
 
 Długie listy, przede wszystkim modele i duża lista odcinków, mogą używać filtrowania
-Questionary.
+w tym samym rendererze.
 
 ### R-211 — krótkie listy bez wyszukiwania
 
@@ -630,11 +631,11 @@ Rich korzysta z istniejących semantycznych styli projektu.
 
 Plan 01 nie przebudowuje całego `anishift/utils/rich_console/theme.py`.
 
-### R-305 — styl Questionary lokalny
+### R-305 — styl interakcji lokalny
 
-Questionary otrzymuje mały styl należący do Interactive CLI.
+Interactive CLI korzysta z jednej małej palety należącej do wspólnego renderera.
 
-Nie monkeypatchujemy Questionary i nie forkamy biblioteki.
+Nie monkeypatchujemy ani nie forkujemy Prompt Toolkit.
 
 ### R-306 — czytelność bez koloru
 
@@ -664,13 +665,10 @@ poprzedni bufor powłoki i kursor.
 
 ### R-309 — redraw kontrolowany przez komponent
 
-Questionary odświeża aktywny prompt, a Rich Progress/Live odświeża postęp w miejscu.
-Zmiana widoku zaczyna się od wyczyszczenia alternate screen. Nie istnieje globalna
-pętla UI. Krótko żyjący watcher rozmiaru działa wyłącznie podczas Home lub Auto,
-scala serię szybkich zmian do najnowszych stabilnych wymiarów i wykonuje jeden redraw
+Jedna aplikacja Prompt Toolkit odświeża aktywny widok, a Rich buduje tekst i paski
+wchodzące do tej samej klatki. Zmiana widoku zastępuje zawartość alternate screen.
+Nie istnieje drugi renderer ani osobna pętla UI. Resize przelicza najnowszą geometrię
 bez odkładania kolejki poprzednich rozmiarów.
-
-Zatwierdzona odpowiedź Questionary jest usuwana przed renderem następnego widoku.
 
 ### R-310 — polskie znaki
 
@@ -1233,6 +1231,17 @@ Pola zależne od silnika są widoczne tylko wtedy, gdy mają znaczenie.
 
 O tym, które pola trafiają do produktu, decyduje jawna allowlista Interactive CLI.
 
+### R-807 — reset preferencji
+
+`Przywróć domyślne` wymaga potwierdzenia i odtwarza `UserSettings()` bez usuwania
+sekretów ani presetów. W sekcji Wynik osobny reset przywraca lokalny wybór dwóch
+produktów domyślnych; zapis następuje dopiero przez jawne `Zapisz`.
+
+### R-808 — sekcje i niski terminal
+
+Dłuższe listy są dzielone nagłówkami domenowymi i przewijane wokół aktywnej pozycji.
+Zmiana wysokości terminala nie może ukryć kursora poza widocznym oknem.
+
 ---
 
 ## 14. Ustawienia — Tłumaczenie
@@ -1244,8 +1253,17 @@ Docelowa sekcja może zawierać:
 ```text
 Silnik tłumaczenia
 Model tłumaczenia
+Silniki awaryjne
+Linii na zapytanie
+Partii jednocześnie
+Ponowienia
+Plików LLM jednocześnie
+Temperatura
+Top-p
+Limit tokenów odpowiedzi
 Prompt
 Styl
+Moduły promptu
 Wróć
 ```
 
@@ -1257,15 +1275,16 @@ Wartości pochodzą z istniejącego rejestru translation engines.
 
 `Model tłumaczenia` jest widoczny, gdy wybrany silnik wymaga LLM.
 
-### R-823 — model jako alias
+### R-823 — model jako para provider/model
 
-Użytkownik wybiera czytelną etykietę modelu z katalogu. UI zapisuje alias/ID wymagany
-przez backend.
+Użytkownik wybiera dokładny identyfikator modelu w sekcji skonfigurowanego providera.
+UI zapisuje atomowo provider i model. Dla Palantir wartością modelu pozostaje lokalny
+alias prowadzący do enrollment-specific RID.
 
 ### R-824 — provider pochodny
 
-Provider wynika z katalogu modelu. Użytkownik nie musi osobno zestawiać providera i
-modelu, jeśli prowadziłoby to do niepoprawnej pary.
+Provider wynika z wybranej pozycji. Użytkownik nie zestawia osobno providera i modelu,
+więc nie może utworzyć niepoprawnej pary.
 
 ### R-825 — Prompt
 
@@ -1275,9 +1294,9 @@ Prompt pochodzi z istniejącego `PromptRegistry`.
 
 Styl pochodzi z istniejącego `PromptRegistry`.
 
-### R-827 — ukryte parametry
+### R-827 — ustawienia wydajności i modelu
 
-Nie pokazujemy:
+Poniższe ustawienia są widoczne w nazwanych sekcjach i walidowane przez `SettingSpec`:
 
 ```text
 translation_fallback_chain
@@ -1291,7 +1310,7 @@ llm_max_concurrency
 llm_module_ids
 ```
 
-chyba że późniejsze realne użycie wykaże potrzebę.
+Picker kolekcji używa Space do zmiany wielu wartości i Enter do jednego zapisu.
 
 ---
 
@@ -1301,8 +1320,15 @@ chyba że późniejsze realne użycie wykaże potrzebę.
 
 ```text
 Silnik
+Model / endpoint
 Głos
-Tempo
+Syntez jednocześnie
+Ponowienia
+VPN ElevenBytes
+Tempo końcowe
+Korekta głośności głosu
+Ustawienia natywne aktywnego silnika
+Kodek i bitrate lektora
 Głośność lektora
 Głośność oryginału
 Wróć
@@ -1328,14 +1354,13 @@ Tempo edytuje `tts_profile.postprocess_tempo` i respektuje istniejący zakres.
 
 `Głośność oryginału` mapuje na `original_gain_db`.
 
-### R-846 — kalibracja głosu ukryta
+### R-846 — kalibracja głosu
 
-`voice_mix_offset_db` pozostaje kalibracją profilu i nie jest domyślnym polem
-użytkownika.
+`voice_mix_offset_db` jest widoczną kalibracją aktywnego profilu głosu.
 
-### R-847 — provider-native tuning ukryty
+### R-847 — provider-native tuning warunkowy
 
-Nie pokazujemy domyślnie:
+Pola aktywnego providera są widoczne tylko wtedy, gdy istnieją w bieżącym katalogu:
 
 - stability;
 - similarity_boost;
@@ -1351,8 +1376,8 @@ Nie pokazujemy domyślnie:
 
 ### R-848 — model TTS
 
-Model/endpoint TTS jest dobierany przez konfigurację silnika, chyba że pojawi się
-realna potrzeba produktowa jego wyboru.
+Model/endpoint TTS jest wybierany z wartości dostarczonych przez katalog aktywnego
+silnika; wolny identyfikator jest dozwolony tylko tam, gdzie backend go wspiera.
 
 ---
 
@@ -1404,6 +1429,9 @@ Są wyliczane według jawnej polityki backendu/default preset.
 ### R-865 — zapis
 
 Wybór produktów aktualizuje domyślny preset workflow w `presets.json` atomowo.
+
+Enter i Space przełączają aktywny produkt. `Zapisz` jest osobnym wierszem, a `Wróć`
+nie zapisuje lokalnych zmian.
 
 ### R-866 — jedna spójna konfiguracja
 
@@ -1637,13 +1665,12 @@ pozostają.
 
 ### R-1101 — noninteractive
 
-`run --preset` pozostaje maszynowo czytelny i nie uruchamia Questionary.
+`run --preset` pozostaje maszynowo czytelny i nie uruchamia Interactive CLI.
 
 ### R-1102 — brak importu toolkitu
 
 `doctor`, `setup` i `run --preset` nie importują:
 
-- Questionary;
 - prompt_toolkit;
 - Textual;
 - interactive package.
@@ -1721,12 +1748,11 @@ Python 3.14+.
 
 Nowe zależności wyłącznie przez `uv add`.
 
-### R-1302 — Questionary
+### R-1302 — pojedynczy renderer Prompt Toolkit
 
-Questionary jest jedynym wysokopoziomowym właścicielem promptów interaktywnych.
-
-Nie używamy bezpośrednio `prompt_toolkit` poza ewentualnym minimalnym adapterem
-wymuszonym przez udowodniony blocker i zaakceptowany replan.
+`interactive/prompts.py::TerminalRenderer` jest jedynym właścicielem aplikacji Prompt
+Toolkit, alternate screen i klawiszy. Pozostałe moduły Interactive dostarczają stan
+i `Rich Text`; nie tworzą kolejnej aplikacji, renderera ani pętli odświeżania.
 
 ### R-1303 — testowalność
 
@@ -1869,7 +1895,7 @@ uv run anishift
 
 Zawiera:
 
-- Questionary;
+- pojedynczą aplikację Prompt Toolkit;
 - Home;
 - transparentną maskotkę renderowaną przez Pillow;
 - wspólny auto-run flow;
@@ -1951,7 +1977,7 @@ Nieinteraktywny `run --preset` zachowuje output i exit codes.
 
 ### AC-008
 
-Doctor/setup/run nie ładują Questionary ani prompt_toolkit.
+Doctor/setup/run nie ładują prompt_toolkit ani Interactive CLI.
 
 ### AC-009
 
