@@ -341,13 +341,17 @@ def test_audio_for_one_group_overlaps_tts_for_the_next_group(tmp_path: Path) -> 
 
 
 def test_scheduler_respects_provider_and_sapi_worker_limits(tmp_path: Path) -> None:
-    specs: tuple[_TaskSpec, ...] = tuple(_TaskSpec("group-1", f"translate-{index}") for index in range(6)) + tuple(
-        _TaskSpec(
-            "group-1",
-            f"sapi-{index}",
-            resource_key="tts:sapi" if index % 2 == 0 else "tts:SAPI",
-        )
-        for index in range(3)
+    specs: tuple[_TaskSpec, ...] = (
+        *(_TaskSpec("group-1", f"translate-{index}") for index in range(6)),
+        *(_TaskSpec("group-1", f"llm-{index}", resource_key="llm:gemini") for index in range(6)),
+        *(
+            _TaskSpec(
+                "group-1",
+                f"sapi-{index}",
+                resource_key="tts:sapi" if index % 2 == 0 else "tts:SAPI",
+            )
+            for index in range(3)
+        ),
     )
     plan: ExecutionPlan = _plan(tmp_path, specs)
 
@@ -362,6 +366,7 @@ def test_scheduler_respects_provider_and_sapi_worker_limits(tmp_path: Path) -> N
 
     assert result.succeeded is True
     assert handler.max_active["translation:google"] == 2
+    assert handler.max_active["llm:gemini"] == 4
     assert handler.max_active["tts:sapi"] == 1
 
 

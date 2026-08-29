@@ -24,7 +24,17 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `AUTO` nie zawiera ręcznych artifact/track ID. `MANUAL` może wskazać artefakt albo
   embedded track danego rodzaju, nigdy oba jednocześnie.
 - `ExecutionPlan.tasks` musi wejść już w porządku zwróconym przez
-  `stable_topological_order()`; każdy produkowany artefakt ma jednego producenta.
+  `stable_topological_order()`. Porządek jest stabilny względem naturalnie ułożonego
+  wejścia, więc niezależne taski grupy `2` nie mogą przeskoczyć za grupę `10` przez
+  hash w `task_id`. Każdy produkowany artefakt ma jednego producenta.
+- Auto wymagające osadzonego audio i napisów z jednego MKV planuje jeden
+  `EXTRACT_TRACKS`. Produkcyjny handler uruchamia jeden istniejący
+  `mkvextract --gui-mode`, a każde prawdziwe `#GUI#progress N%` przekazuje bez
+  uśredniania. Pula ekstrakcji ma rozmiar
+  `min(file_count, round(sqrt(cpu_count)) + 2)`.
+- LLM może wykonywać cztery gotowe pliki zgodnie z `llm_max_concurrency`. TTS
+  syntetyzuje jeden plik naraz, ale `tts_request_concurrency` aktywnego profilu nie
+  jest zmniejszane; audio może pracować równolegle z następną syntezą.
 - Wykonywalny plan nie zawiera `MISSING` bez producenta. Task produkuje wyłącznie
   `MISSING` o lifetime `INTERMEDIATE` albo `DURABLE`, a parametry odpowiadają jego
   `TaskKind`.

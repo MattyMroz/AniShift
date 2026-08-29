@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Final
 
 from rich.markup import escape
 
 from anishift import __version__
-from anishift.application import AppService, GroupStatus, RunResult
+from anishift.application import AppService
 from anishift.application.events import sanitize_event_message
-from anishift.cli.interactive.home import HomeAction, ask_home_action
+from anishift.cli.interactive.home import (
+    HomeAction,
+    ask_home_action,
+    brand_for_geometry,
+    working_directory_label,
+)
 from anishift.cli.interactive.progress import RichRunProgress
-from anishift.cli.interactive.prompts import InteractivePrompts, QuestionaryPrompts
+from anishift.cli.interactive.prompts import (
+    AutoGeometry,
+    InteractivePrompts,
+    QuestionaryPrompts,
+    resolve_auto_geometry,
+)
 from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, execute_auto_run, prepare_auto_run
 from anishift.errors import AniShiftError
 from anishift.utils.logger import get_logger
@@ -53,14 +62,6 @@ _REFUSAL_SUGGESTIONS: Final[dict[str, str]] = {
 }
 """Polish presentation of stable UI-neutral Auto suggestions."""
 
-_GROUP_STATUS_LABELS: Final[dict[GroupStatus, str]] = {
-    GroupStatus.SUCCEEDED: "gotowe",
-    GroupStatus.PARTIAL: "częściowo",
-    GroupStatus.FAILED: "błąd",
-    GroupStatus.CANCELLED: "anulowano",
-}
-"""Polish labels for terminal group outcomes."""
-
 
 def run_interactive(service: AppService, prompts: InteractivePrompts | None = None) -> None:
     """Run Home and its Plan 01 actions until the user exits."""
@@ -86,42 +87,72 @@ def _run_interactive_loop(service: AppService, prompts: InteractivePrompts) -> N
 
 
 def _run_auto(service: AppService, prompts: InteractivePrompts) -> None:
-    """Prepare, execute and report one automatic run before returning Home."""
-    prompts.clear_screen()
+    """Prepare and execute one automatic run before returning Home."""
+    prompts.render_footer(__version__, working_directory_label())
     try:
-        with console.status("[info]Skanowanie workspace[/info]", spinner="dots"):
-            preset_id: str = service.default_preset_id()
-            preparation: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(service, preset_id)
+        preset_id: str = service.default_preset_id()
+        preparation: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(service, preset_id)
     except (AniShiftError, OSError) as problem:
+        _clear_with_footer(prompts)
         _show_problem(problem)
         prompts.pause(_RETURN_PROMPT)
         return
     if isinstance(preparation, AutoRunRefusal):
+        _clear_with_footer(prompts)
         _show_refusal(preparation)
         prompts.pause(_RETURN_PROMPT)
         return
+
+    def render_auto_view() -> None:
+        _render_auto_view(prompts, len(preparation.plan.groups))
+
     try:
-        with RichRunProgress(preparation) as progress:
-            result: RunResult = execute_auto_run(service, preparation, progress)
+        with (
+            RichRunProgress(preparation, layout=render_auto_view) as progress,
+            prompts.watch_resize(progress.relayout),
+        ):
+            execute_auto_run(service, preparation, progress)
     except KeyboardInterrupt:
         logger.info("Interactive automatic run interrupted")
-        console.print("\n[warning]Anulowano[/warning]")
+        _clear_with_footer(prompts)
+        console.print("[warning]Anulowano[/warning]")
         prompts.pause(_RETURN_PROMPT)
         return
     except (AniShiftError, OSError) as problem:
         logger.warning("Interactive automatic run failed", error_class=type(problem).__name__)
+        _clear_with_footer(prompts)
         _show_problem(problem)
         prompts.pause(_RETURN_PROMPT)
         return
-    _show_result(result, preparation, service.workspace_root)
-    prompts.pause(_RETURN_PROMPT)
+    prompts.pause("")
 
 
 def _show_temporary_action(action: HomeAction, prompts: InteractivePrompts) -> None:
     """Show one deliberately deferred Home action and return to the menu."""
-    prompts.clear_screen()
+    _clear_with_footer(prompts)
     console.print(_TEMPORARY_ACTIONS[action])
     prompts.pause(_RETURN_PROMPT)
+
+
+def _clear_with_footer(prompts: InteractivePrompts) -> None:
+    """Clear the active view and restore the essential terminal footer."""
+    prompts.clear_screen()
+    prompts.render_footer(__version__, working_directory_label())
+
+
+def _render_auto_view(prompts: InteractivePrompts, progress_rows: int) -> None:
+    """Render responsive Auto chrome around the persistent progress rows."""
+    geometry: AutoGeometry = resolve_auto_geometry(
+        prompts.terminal_columns(),
+        prompts.terminal_rows(),
+        progress_rows,
+    )
+    prompts.clear_screen()
+    if geometry.top_padding:
+        console.print("\n" * geometry.top_padding, end="")
+    console.print(brand_for_geometry(geometry))
+    prompts.render_footer(__version__, working_directory_label())
+    prompts.position_cursor(geometry.progress_row)
 
 
 def _show_refusal(refusal: AutoRunRefusal) -> None:
@@ -141,48 +172,6 @@ def _show_problem(problem: AniShiftError | OSError) -> None:
     if suggestion:
         console.print(f"  [gray]{escape(_safe(suggestion))}[/gray]")
     console.print(f"[gray]Szczegóły: {_LOG_LOCATION}[/gray]")
-
-
-def _show_result(result: RunResult, prepared: PreparedAutoRun, workspace_root: Path) -> None:
-    """Render one safe terminal summary after progress has stopped."""
-    labels: dict[str, str] = {group.group_id: group.source.stem for group in prepared.workspace.groups}
-    heading: str = _result_heading(result)
-    console.print(f"\n{heading}\n")
-    has_errors: bool = False
-    for group in result.groups:
-        label: str = escape(labels.get(group.group_id, group.group_id))
-        status: str = _GROUP_STATUS_LABELS[group.status]
-        console.print(f"[bold]{label}[/bold] · {status}")
-        for product in group.products:
-            console.print(f"  produkt: {escape(_located(product.path, workspace_root))}")
-        for product in group.preserved_products:
-            console.print(f"  zachowano: {escape(_located(product.path, workspace_root))}")
-        for message in group.error_messages:
-            has_errors = True
-            console.print(f"  powód: {escape(_safe(message))}")
-    for warning in result.warnings:
-        console.print(f"  ostrzeżenie: {escape(_safe(warning))}")
-    if has_errors or not result.succeeded:
-        console.print(f"\n[gray]Szczegóły: {_LOG_LOCATION}[/gray]")
-
-
-def _result_heading(result: RunResult) -> str:
-    """Return the aggregate heading for one terminal run result."""
-    if result.cancelled:
-        return "[warning]Anulowano[/warning]"
-    if result.succeeded:
-        return "[success]✓ Gotowe[/success]"
-    if any(group.status is GroupStatus.PARTIAL for group in result.groups):
-        return "[warning]! Zakończono częściowo[/warning]"
-    return "[error]✗ Zakończono z błędem[/error]"
-
-
-def _located(path: Path, root: Path) -> str:
-    """Return a workspace-relative product location or only its name."""
-    try:
-        return path.relative_to(root).as_posix()
-    except ValueError:
-        return path.name
 
 
 def _safe(text: str) -> str:

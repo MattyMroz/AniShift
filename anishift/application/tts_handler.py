@@ -99,15 +99,26 @@ class NarrationTiming:
 
 
 class _ProgressObserver:
-    __slots__ = ("_progress", "_task_id")
+    __slots__ = ("_progress", "_task_id", "_visible_required")
 
     def __init__(self, task_id: str, progress: TaskProgressSink) -> None:
         self._task_id: str = task_id
         self._progress: TaskProgressSink = progress
+        self._visible_required: int = 0
 
     def on_batch_state(self, state: SpeechBatchProgress) -> None:
-        total: int = state.total_required_requests
-        percent: int = 100 if total == 0 else state.committed_required_requests * 100 // total
+        required: int = state.total_required_requests
+        committed: int = state.committed_required_requests
+        self._visible_required = max(
+            self._visible_required,
+            state.received_required_requests,
+            committed,
+        )
+        percent: int = (
+            100
+            if required == 0 or committed >= required
+            else min(99, (self._visible_required * 100 + required - 1) // required)
+        )
         self._progress.emit(WorkerNotification(WorkerNotificationKind.PROGRESS, self._task_id, percent))
 
     def on_request_committed(self, update: SpeechRequestProgress) -> None:

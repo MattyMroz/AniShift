@@ -29,6 +29,7 @@ from anishift.services.tts import (
     AudioFormat,
     ClipExpectation,
     SpeechBatch,
+    SpeechBatchProgress,
     SpeechBatchResult,
     SpeechBatchStats,
     SpeechBatchStatus,
@@ -87,6 +88,15 @@ class _Tts:
         self.close_calls += 1
 
 
+class _ProgressTts(_Tts):
+    def synthesize(self, batch: SpeechBatch, *, callbacks: TtsProgressObserver) -> SpeechBatchResult:
+        callbacks.on_batch_state(SpeechBatchProgress(batch.scope_id, 0, 4, 0, 4, SpeechBatchStatus.PARTIAL, 1))
+        callbacks.on_batch_state(SpeechBatchProgress(batch.scope_id, 1, 4, 1, 4, SpeechBatchStatus.PARTIAL, 3))
+        callbacks.on_batch_state(SpeechBatchProgress(batch.scope_id, 1, 4, 1, 4, SpeechBatchStatus.PARTIAL, 2))
+        callbacks.on_batch_state(SpeechBatchProgress(batch.scope_id, 4, 4, 4, 4, SpeechBatchStatus.COMPLETED, 4))
+        return super().synthesize(batch, callbacks=callbacks)
+
+
 def test_tts_handler_writes_timed_clip_manifest(tmp_path: Path) -> None:
     source_path = tmp_path / "episode.spoken.pl.srt"
     source_path.write_text(
@@ -126,6 +136,38 @@ def test_tts_handler_writes_timed_clip_manifest(tmp_path: Path) -> None:
     assert manifest.clips[0].path.read_bytes() == b"audio"
     assert service.batches[0].batch_rank == 0
     assert len(service.batches[0].requests) == 1
+
+
+def test_tts_handler_forwards_legacy_visible_required_percentages(tmp_path: Path) -> None:
+    source_path = tmp_path / "episode.spoken.pl.srt"
+    source_path.write_text("1\n00:00:01,000 --> 00:00:02,000\nCześć\n", encoding="utf-8")
+    source = Artifact(
+        "spoken",
+        "group-1",
+        ArtifactKind.SPOKEN_PL,
+        source_path,
+        ArtifactState.READY,
+        ArtifactLifetime.SOURCE,
+        source_path,
+    )
+    output = Artifact(
+        "manifest", "group-1", ArtifactKind.TTS_MANIFEST, None, ArtifactState.MISSING, ArtifactLifetime.INTERMEDIATE
+    )
+    task = PlanTask("tts", "group-1", TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",), (), "tts:edge")
+    progress = _Progress()
+
+    TtsTaskHandler(
+        _ProgressTts(tmp_path),
+        run_root=tmp_path / "run",
+        group_ranks={"group-1": 0},
+    ).execute(
+        task,
+        ArtifactSnapshot({"spoken": source}, {"manifest": output}),
+        NeverCancelledToken(),
+        progress,
+    )
+
+    assert [notification.progress_percent for notification in progress.notifications] == [25, 75, 75, 100]
 
 
 def test_tts_handler_reuses_service_and_closes_only_at_run_boundary(tmp_path: Path) -> None:

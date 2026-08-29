@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from anishift.application.audio_handler import AudioTaskHandler
 from anishift.application.cancellation import CancellationToken
 from anishift.application.composition_handler import CompositionTaskHandler, build_composition_request
-from anishift.application.extraction_handler import ExtractionTaskHandler
+from anishift.application.extraction_handler import ExtractionTaskHandler, LegacyExtractionAdapter
 from anishift.application.planning import PlanTask, TaskKind
 from anishift.application.publish_handler import PublishTaskHandler
 from anishift.application.results import ArtifactSnapshot, TaskResult
@@ -22,6 +22,7 @@ __all__ = [
     "CompositionTaskHandler",
     "ExecutionHandlers",
     "ExtractionTaskHandler",
+    "LegacyExtractionAdapter",
     "PublishTaskHandler",
     "SubtitleTaskHandler",
     "TranslationTaskHandler",
@@ -52,7 +53,7 @@ class ExecutionHandlers:
         """Dispatch a task by its closed operation kind without a plugin registry."""
         handler: TaskHandler | None
         match task.kind:
-            case TaskKind.EXTRACT_AUDIO | TaskKind.EXTRACT_SUBTITLES:
+            case TaskKind.EXTRACT_AUDIO | TaskKind.EXTRACT_SUBTITLES | TaskKind.EXTRACT_TRACKS:
                 handler = self.media
             case TaskKind.NORMALIZE_SUBTITLES | TaskKind.SPLIT_SUBTITLES:
                 handler = self.subtitles

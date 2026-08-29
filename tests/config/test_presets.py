@@ -51,6 +51,12 @@ def test_missing_preset_file_returns_defaults_without_writing(preset_file: Path)
     assert not preset_file.exists()
 
 
+def test_default_preset_requests_polish_subtitles_and_narration() -> None:
+    preset = default_preset_file().presets[0]
+
+    assert preset.products.requested_products == frozenset({ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO})
+
+
 def test_presets_round_trip_atomically(preset_file: Path) -> None:
     document = AutoPresetFile(
         schema_version=1, presets=(default_preset_file().presets[0], _full_preset()), default_preset_id="full"

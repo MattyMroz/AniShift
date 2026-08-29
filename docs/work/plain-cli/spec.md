@@ -31,7 +31,7 @@ finalne domknięcie
 ```
 
 Szczegółowa kolejność implementacji pierwszego pionowego wycinka znajduje się w
-`PLAN_01_INTERACTIVE_HOME_AUTO.md`.
+`01-plain-cli.md`.
 
 Nie tworzymy dla tego workstreamu:
 
@@ -270,6 +270,7 @@ Normalny interfejs użytkownika jest po polsku.
 
 Dozwolone wyjątki:
 
+- historyczne publiczne etapy progressu z R-603;
 - nazwy providerów;
 - nazwy modeli;
 - identyfikatory głosów;
@@ -332,20 +333,14 @@ Nie jest dashboardem ani trwałym edytorem konfiguracji.
 
 ### 4.4. Przebieg
 
-Podczas wykonania menu Home nie pozostaje na ekranie.
-
-Powierzchnię przejmuje prosty widok przebiegu Rich.
+Po wyborze Auto znika menu Home, ale marka pozostaje widoczna. Pod nią działa jeden
+prosty widok przebiegu Rich. Esencjonalna stopka z katalogiem i wersją pozostaje
+w ostatnim bezpiecznym wierszu bez przywracania osobnego viewportu.
 
 ### 4.5. Wynik
 
-Po zakończeniu przebiegu użytkownik widzi:
-
-- ogólny stan;
-- liczbę grup;
-- wynik każdej grupy;
-- produkty;
-- krótkie błędy;
-- akcję powrotu.
+Po sukcesie użytkownik widzi ukończone wiersze postępu do naciśnięcia klawisza.
+Przy błędzie lub anulowaniu widzi bezpieczny komunikat i może wrócić do Home.
 
 ---
 
@@ -359,7 +354,7 @@ Home ma kolejność:
 2. odstęp;
 3. cztery akcje;
 4. hint sterowania pod listą;
-5. status z katalogiem i wersją przy dolnej krawędzi terminala.
+5. stopkę z katalogiem po lewej i wersją po prawej.
 
 ### R-101 — tytuł
 
@@ -374,8 +369,8 @@ zbyt małym terminalu przechodzi do jednoliniowego `ANISHIFT`.
 
 ### R-102 — kolor tytułu
 
-Wordmark używa jasnego wypełnienia i ciemniejszego obrysu w kontrolowanej palecie
-cyjan–fiolet–róż pochodzącej ze slime'a. Nie używa ramki ani dodatkowego panelu.
+Wordmark używa biało-srebrnego wypełnienia oraz kontrolowanego obrysu
+cyjan–fiolet–róż pochodzącego ze slime'a. Nie używa ramki ani dodatkowego panelu.
 
 Jeżeli terminal nie obsługuje koloru, całość pozostaje czytelna jako zwykły tekst.
 
@@ -414,7 +409,7 @@ Home nie pokazuje:
 - czasu ostatniego przebiegu;
 - logów.
 
-### R-107 — hint i dolny status
+### R-107 — hint i stopka
 
 Hint sterowania znajduje się bezpośrednio pod listą:
 
@@ -423,20 +418,9 @@ Hint sterowania znajduje się bezpośrednio pod listą:
 ```
 
 Ostatni bezpieczny wiersz pokazuje bieżący katalog względem katalogu domowego po
-lewej i wersję po prawej, np.:
-
-```text
-~\Desktop\PROJECTS\AniShift                                      v0.1.0
-```
-
-### R-108 — wersja
-
-Wersja pochodzi z jednego istniejącego źródła wersji aplikacji, nie jest wpisana
-na sztywno w rendererze Home.
+lewej i wersję aplikacji po prawej. Stopka jest elementem esencjonalnym Home i Auto.
 
 ### R-109 — wąski terminal
-
-Przy zbyt małej szerokości ścieżka w dolnym statusie jest skracana od lewej.
 
 Rozmiar jest odczytywany przy każdym renderze. Resize otwartego promptu kończy tylko
 bieżące pytanie techniczne, czyści powierzchnię i natychmiast renderuje Home ponownie
@@ -471,9 +455,8 @@ wyłącznie po rzeczywistej zmianie wymiarów terminala.
 
 ### R-116 — wycentrowany blok Home
 
-Maskotka z wordmarkiem i menu tworzą zwarty blok wycentrowany poziomo i pionowo w
-przestrzeni nad dolnym statusem. Wszystkie wiersze bloku marki korzystają z jednego
-wspólnego przesunięcia. Dolny status zajmuje osobno pełną bezpieczną szerokość terminala.
+Maskotka z wordmarkiem i menu tworzą zwarty blok wycentrowany poziomo i pionowo nad
+stopką. Wszystkie wiersze bloku marki korzystają z jednego wspólnego przesunięcia.
 
 ### R-117 — wyrównanie menu
 
@@ -494,7 +477,7 @@ Gdy terminal jest wąski lub niski:
 1. zmniejsz boczny padding;
 2. ukryj maskotkę, zachowując pełny wordmark;
 3. przełącz wordmark na jednoliniowy, jeśli pełny nie mieści się bez zawijania;
-4. skróć ścieżkę od lewej;
+4. skróć katalog od lewej, zachowując wersję;
 5. nie obcinaj czterech głównych akcji.
 
 ---
@@ -526,7 +509,7 @@ Użytkownik nie wpisuje:
 Home używa wskaźnika po lewej:
 
 ```text
-▶ Auto
+❯ Auto
   Ręczny
   Ustawienia
   Wyjście
@@ -620,7 +603,7 @@ Interfejs używa przede wszystkim:
 
 ### R-301 — akcent
 
-Kolor akcentu Home to OpenCode secondary `#5c9cf5` i odpowiada za:
+Kolor akcentu Home to fiolet slime'a `#a855f7` i odpowiada za:
 
 - aktywny wiersz;
 - informację neutralną;
@@ -632,7 +615,8 @@ Kolor akcentu Home to OpenCode secondary `#5c9cf5` i odpowiada za:
 zielony   -> sukces
 żółty     -> ostrzeżenie / retry
 czerwony  -> błąd
-niebieski -> aktywność / informacja
+fioletowy -> aktywny wybór Home
+niebieski -> informacja
 szary     -> tekst pomocniczy
 ```
 
@@ -681,8 +665,10 @@ poprzedni bufor powłoki i kursor.
 ### R-309 — redraw kontrolowany przez komponent
 
 Questionary odświeża aktywny prompt, a Rich Progress/Live odświeża postęp w miejscu.
-Zmiana widoku zaczyna się od wyczyszczenia alternate screen. Nie istnieje osobna
-pętla pollingowa ani własny wątek UI.
+Zmiana widoku zaczyna się od wyczyszczenia alternate screen. Nie istnieje globalna
+pętla UI. Krótko żyjący watcher rozmiaru działa wyłącznie podczas Home lub Auto,
+scala serię szybkich zmian do najnowszych stabilnych wymiarów i wykonuje jeden redraw
+bez odkładania kolejki poprzednich rozmiarów.
 
 Zatwierdzona odpowiedź Questionary jest usuwana przed renderem następnego widoku.
 
@@ -787,6 +773,18 @@ nie każdy element osobno, pozostaje wycentrowany.
 
 Wybór `Auto` uruchamia domyślny preset wskazany przez backend.
 
+Domyślny preset produktu żąda polskich napisów oraz narration audio, dlatego normalny
+Auto obejmuje prawdziwe tłumaczenie, split, TTS, miks audio i publikację. Wybrany silnik
+TTS nadal pochodzi z aktywnych ustawień użytkownika.
+
+Auto zachowuje zapisane limity i politykę wykonania użytkownika. Dla `ready_first`
+gotowa grupa natychmiast przechodzi do następnego etapu, a niezależne grupy mogą
+przepływać między kolejkami ekstrakcji, LLM, TTS i audio. Naturalny porządek dotyczy
+stabilnego układu wierszy i wyboru następnego oczekującego pliku, nie sztucznej
+serializacji całego backendu. Dla obecnego limitu `llm_max_concurrency=4` mogą być
+aktywne cztery pliki LLM jednocześnie. Synteza TTS pozostaje wyłączna dla jednego
+odcinka, jak w legacy, przy zachowaniu współbieżności requestów providera.
+
 ### R-501 — wspólny backend
 
 Auto używa publicznego `AppService`.
@@ -848,8 +846,11 @@ Istniejąca ochrona `AppService` przed drugim równoległym runem pozostaje.
 
 ### R-510 — po zakończeniu
 
-Po sukcesie, wyniku częściowym, błędzie lub anulowaniu użytkownik może wrócić do Home
-bez restartu procesu.
+Po sukcesie ukończone zielone paski `Done` pozostają do naciśnięcia klawisza. Nie
+pojawia się osobny tekst sukcesu ani lista produktów.
+
+Wynik częściowy, błąd lub anulowanie nadal pokazują bezpieczne szczegóły. Po każdym
+stanie terminalnym użytkownik może wrócić do Home bez restartu procesu.
 
 ### R-511 — brak automatycznego kolejnego runu
 
@@ -875,29 +876,56 @@ Etapy zmieniają opis tego wiersza.
 
 Wiersze są tworzone w naturalnej kolejności planu i nie przeskakują podczas runu.
 
+### R-602A — brak własnego viewportu
+
+Renderer przekazuje wszystkie stabilne wiersze jednemu `MultiProgressManager`.
+Nie implementuje własnego okna, przewijania ani ukrywania wierszy.
+
+Marka, postęp i stopka przeliczają swoje położenie po zmianie szerokości lub wysokości
+terminala. Seria zmian podczas przeciągania krawędzi jest scalana do ostatniego
+stabilnego rozmiaru, bez wielokrotnego przebudowywania tego samego managera. Krótko
+żyjący watcher należy do granicy promptów i nie tworzy drugiego renderera ani historii
+kolejnych ekranów.
+
 ### R-603 — etapy
 
-Mapowanie `TaskKind` na polskie etykiety:
+UI odtwarza etapy pliku z legacy `_PipelineProgressRows`:
 
-| TaskKind | Etykieta |
-|---|---|
-| `EXTRACT_AUDIO` | Ekstrakcja audio |
-| `EXTRACT_SUBTITLES` | Ekstrakcja napisów |
-| `NORMALIZE_SUBTITLES` | Normalizacja napisów |
-| `TRANSLATE_SUBTITLES` | Tłumaczenie |
-| `SPLIT_SUBTITLES` | Podział napisów |
-| `SYNTHESIZE_SPEECH` | Lektor |
-| `TRANSCODE_AUDIO` | Kodowanie audio |
-| `MIX_NARRATION` | Miksowanie |
-| `COMPOSE_MKV` | Składanie MKV |
-| `COMPOSE_MP4` | Składanie MP4 |
-| `PUBLISH_ARTIFACT` | Zapisywanie |
+```text
+Extracting
+Extracted
+Translating
+Translated
+Synthesizing
+Retrying
+Audio normalize
+Audio timeline
+Audio mixing
+Audio resume
+Audio skipped
+Done
+Failed
+Cancelled
+Not processed
+```
+
+Techniczne `TaskKind` nie są osobnymi wierszami prezentacji. Normalizacja napisów,
+split, transkodowanie, kompozycja i publikowanie zachowują istniejący wiersz.
+Fazy audio zmieniają jego etykietę zgodnie z legacy.
 
 ### R-604 — pasek dla etapów zadaniowych
 
-Etap zadaniowy pokazuje blokowy pasek Rich. Pasek zaczyna od `0%` i aktualizuje się
-wyłącznie na podstawie prawdziwych eventów `TASK_PROGRESS`. Faza audio bez licznika
-przełącza ten sam wiersz na spinner i czas.
+`Extracting` od pierwszej klatki pokazuje zwykły pasek, procent i elapsed time.
+`Translating` i `Synthesizing` resetują ten sam pasek. Spinner jest dozwolony
+wyłącznie dla niedeterministycznych faz audio, dokładnie jak w legacy.
+
+Na wąskim terminalu opis jest skracany, a elapsed time ukrywany przed dopuszczeniem do
+zawinięcia jednego zadania na dwa wiersze. Procent pozostaje widoczny.
+
+Szerokość wszystkich widocznych pasków wynika z geometrii terminala. Opis jest
+ograniczony do historycznych 72 znaków, a manager dopasowuje pasek ponownie po resize.
+Wyłączone kolumny nie rezerwują pustych odstępów. Między paskiem, procentem i czasem
+znajduje się po jednym odstępie przed kolejnym separatorem `|`.
 
 ### R-605 — tłumaczenie całego pliku
 
@@ -906,7 +934,7 @@ Obecny handler tłumaczenia wysyła cały plik do silnika i zwraca wynik jako ca
 Dlatego normalny widok podczas pracy wygląda np.:
 
 ```text
-Tłumaczenie · Odcinek 06  █░░░░░░░░░░░░░  |   0%  | 00:00:18
+Tłumaczenie · Odcinek 06 █░░░░░░░░░░░░░ | 0% | 00:00:18
 ```
 
 Nie:
@@ -923,27 +951,36 @@ Końcowy event `100` z handlera tłumaczenia domyka istniejący pasek. UI nie wy
 wartości pośrednich; wiersz przechodzi bezpośrednio z `0%` do `100%`, jeżeli tylko
 takie zdarzenia dostarczył backend.
 
-### R-607 — ekstrakcja i składanie
+### R-607 — ekstrakcja 1:1 z legacy
 
-Jeżeli adapter wysyła tylko `100` po ukończeniu, etap zachowuje widoczny pasek
-`0%`, a następnie domyka go do `100%`.
+Dla MKV ekstrakcja zachowuje cały historyczny kontrakt, a nie tylko wygląd wiersza:
+
+1. jeden plik uruchamia jeden `mkvextract --gui-mode`;
+2. wybrane audio i napisy są przekazywane do tego samego procesu;
+3. każde rzeczywiste `#GUI#progress N%` trafia do istniejącego wiersza bez
+   interpolacji, uśredniania ani zastępowania wartością sztuczną;
+4. wszystkie pliki, które wymagają ekstrakcji, korzystają z historycznej puli
+   `min(liczba_plików, round(sqrt(cpu_count)) + 2)`;
+5. kolejność przyjęcia i wierszy jest naturalna (`2` przed `10`).
+
+Końcowe `100%` domyka ten sam pasek jako `Extracted`. Neutralna ścieżka MP4 może
+pozostać bez procentów pośrednich, jeżeli używane narzędzie ich nie dostarcza.
 
 ### R-608 — TTS
 
-TTS może używać rzeczywistego procentu opartego na liczbie wymaganych requestów.
+TTS używa rzeczywistego, monotonicznego procentu legacy opartego na liczbie
+wymaganych requestów: widoczny licznik jest maksimum z odebranych i zatwierdzonych
+requestów, wartości niepełne są zaokrąglane w górę i ograniczone do `99%`, a `100%`
+pojawia się dopiero po zatwierdzeniu wszystkich wymaganych requestów.
 
-### R-609 — audio phases
+Na poziomie plików syntetyzuje się jeden odcinek naraz. Współbieżność requestów
+wewnątrz aktywnego odcinka nadal pochodzi z profilu silnika, a audio ukończonego TTS
+może pracować równolegle z syntezą następnego pliku.
 
-Komunikaty faz audio mogą zmieniać opis wiersza:
+### R-609 — fazy audio legacy
 
-```text
-Normalizacja audio
-Oś czasu
-Miksowanie
-Wznawianie audio
-```
-
-Nie są traktowane jako procent.
+Komunikaty faz audio zmieniają ten sam wiersz na `Audio normalize`, `Audio timeline`,
+`Audio mixing`, `Audio resume` albo `Audio skipped`. Używają spinnera bez procentu.
 
 ### R-610 — brak treści napisów
 
@@ -982,10 +1019,10 @@ Przejście etapu:
 Po zakończeniu grupy wiersz zostaje zamrożony jako:
 
 ```text
-Gotowe
-Częściowo
-Błąd
-Anulowano
+Done            nazwa grupy
+Failed          nazwa grupy
+Cancelled       nazwa grupy
+Not processed   nazwa grupy
 ```
 
 ### R-616 — callback po zamknięciu
@@ -1003,9 +1040,11 @@ Interactive CLI nie dodaje drugiego event busa ani EventBuffer, jeżeli synchron
 
 ### R-619 — kolory i wiele pasków
 
-Renderer używa istniejącego `MultiProgressManager` w trybie wyrównanym. Każda grupa
-ma własny pasek, a prawdziwy procent steruje istniejącym przejściem kolorów
-czerwony → pomarańczowy → żółty → zielony.
+Renderer używa istniejącego `MultiProgressManager`. Każda grupa ma własny pasek, a
+prawdziwy procent steruje istniejącym przejściem kolorów czerwony → pomarańczowy →
+żółty → zielony. Opisy są dopełniane do wspólnej szerokości, natomiast sam wiersz
+korzysta z układu niezależnego, aby pomiędzy paskiem, `| procent` i `| czas` zawsze
+pozostawała dokładnie jedna komórka odstępu.
 
 ---
 
@@ -1019,26 +1058,16 @@ UI nie pyta użytkownika przed każdą automatyczną ponowną próbą.
 
 ### R-701 — retry w tym samym wierszu
 
-`TASK_RETRY` zmienia opis aktywnego wiersza, np.:
-
-```text
-Ponowna próba · Gemini · 2/3
-```
-
-Nie dopisuje nowego log line.
+`TASK_RETRY` nie tworzy nowego wiersza i nie zastępuje publicznej fazy technicznym
+opisem. Autorytatywny procent pozostaje bez zmian.
 
 ### R-702 — fallback w tym samym wierszu
 
-`TASK_FALLBACK` pokazuje:
-
-```text
-Fallback · Gemini -> DeepL
-```
+`TASK_FALLBACK` nie tworzy nowego wiersza i nie zastępuje publicznej fazy.
 
 ### R-703 — brak utraty realnego procentu
 
-Jeżeli retry następuje podczas TTS, UI może chwilowo pokazać spinner i opis retry, ale
-nie resetuje autorytatywnego licznika bez eventu backendu.
+Retry i fallback nie resetują autorytatywnego licznika bez eventu backendu.
 
 ### R-704 — błąd jednej grupy
 
@@ -1115,8 +1144,8 @@ kontraktem anulowania.
 
 Pierwsza wersja nie dodaje osobnej akcji `Ponów nieudane`.
 
-Automatyczne retry/fallback są widoczne. Ręczne wznowienie może zostać dodane po
-realnych testach awarii.
+Automatyczne retry/fallback pozostają decyzją backendu. Ręczne wznowienie może zostać
+dodane po realnych testach awarii.
 
 ---
 
@@ -1135,16 +1164,13 @@ anulowanie
 
 ### R-751 — grupy
 
-Każda grupa ma:
-
-- nazwę;
-- status;
-- produkty;
-- bezpieczne komunikaty błędów.
+Każda grupa ma jeden terminalny wiersz z nazwą i statusem. Błąd wykonania może dodać
+krótki bezpieczny komunikat poniżej zakończonego progressu.
 
 ### R-752 — produkty
 
-Produkty są pokazywane nazwą pliku lub ścieżką względną względem workspace.
+Sukces nie pokazuje osobnej listy produktów. Jeżeli wynik nieskuteczny wymaga wskazania
+zachowanego produktu, używa nazwy pliku lub ścieżki względnej względem workspace.
 
 ### R-753 — brak absolutnych ścieżek
 
@@ -1152,7 +1178,8 @@ Nie pokazujemy pełnego `C:\Users\...`.
 
 ### R-754 — powrót
 
-Po przeczytaniu wyniku użytkownik naciska klawisz i wraca do Home.
+Po obejrzeniu ukończonych pasków albo komunikatu błędu użytkownik naciska klawisz
+i wraca do Home. Nie powstaje osobny ekran końcowy ani lista produktów.
 
 ### R-755 — brak automatycznego wyjścia
 
@@ -1836,7 +1863,7 @@ uv run anishift
 -> plan_auto
 -> execute
 -> Rich progress
--> wynik
+-> ukończone paski albo wynik błędu
 -> powrót do Home
 ```
 
@@ -1908,6 +1935,7 @@ Home ma dokładnie cztery pozycje w wymaganej kolejności.
 ### AC-004
 
 Home nie pokazuje modelu, głosu, presetu ani workspace.
+Stopka pokazuje bieżący katalog i wersję.
 
 ### AC-005
 
@@ -1941,6 +1969,16 @@ domyka go do `100%`.
 ### AC-012
 
 TTS pokazuje rzeczywisty procent.
+
+### AC-012A
+
+Każdy plik ma jeden stabilny wiersz ograniczony do publicznych faz z R-603.
+
+### AC-012B
+
+Auto zachowuje `ready_first` oraz zapisane limity współbieżności. Cztery gotowe pliki
+LLM mogą być widoczne równocześnie, a ukończenie jednego natychmiast zwalnia miejsce
+dla kolejnego.
 
 ### AC-013
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
@@ -27,7 +28,7 @@ from anishift.application.intents import (
 )
 from anishift.application.planner import plan_auto as build_auto_plan
 from anishift.application.planner import plan_manual as build_manual_plan
-from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
+from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot, TaskKind
 from anishift.application.results import RunResult
 from anishift.application.scheduler import GraphScheduler, ResourceLimits
 from anishift.application.scheduler_contracts import TaskHandler
@@ -82,6 +83,12 @@ type ModelProber = Callable[[LlmConfig], None]
 
 _PALANTIR_ENGINE_ID: Final[str] = "palantir"
 """LLM engine whose readiness needs an enrollment address and a catalog alias."""
+
+_EXTRACTION_IO_HEADROOM: Final[int] = 2
+"""Legacy number of extraction workers added above the CPU-count square root."""
+
+_TTS_GROUP_JOBS: Final[int] = 1
+"""Legacy file-level limit keeping one episode in synthesis at a time."""
 
 
 class ModelAvailability(StrEnum):
@@ -325,7 +332,10 @@ class AppService:
                 handler: TaskHandler = self._handler_factory(run_root, plan, source_groups)
                 scheduler = GraphScheduler(
                     handler,
-                    limits=ResourceLimits.from_settings(plan.settings),
+                    limits=ResourceLimits.from_settings(
+                        plan.settings,
+                        extraction=_extraction_worker_count(plan),
+                    ),
                     run_id=run_id,
                     session=session,
                 )
@@ -677,12 +687,23 @@ def _env_variable(setting_id: str) -> str:
     return f"{prefix}{setting_id}".upper()
 
 
+def _extraction_worker_count(plan: ExecutionPlan) -> int:
+    """Return the exact legacy I/O pool size for groups requiring extraction."""
+    extraction_kinds: frozenset[TaskKind] = frozenset(
+        {TaskKind.EXTRACT_AUDIO, TaskKind.EXTRACT_SUBTITLES, TaskKind.EXTRACT_TRACKS}
+    )
+    group_ids: frozenset[str] = frozenset(task.group_id for task in plan.tasks if task.kind in extraction_kinds)
+    cores: int = os.cpu_count() or 1
+    scaled_workers: int = round(cores**0.5) + _EXTRACTION_IO_HEADROOM
+    return max(1, min(len(group_ids), scaled_workers))
+
+
 def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
     fallback: tuple[str, ...] = tuple(
         engine for engine in preferences.translation_fallback_chain if engine != preferences.translation_engine
     )
     profile = preferences.active_tts_profile
-    tts_jobs: int = profile.concurrency or 1
+    request_concurrency: int = profile.concurrency or 1
     return RunSettingsSnapshot(
         translation_profile_id=preferences.translation_engine,
         translation_fallback_chain=fallback,
@@ -692,8 +713,8 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         llm_max_concurrency=preferences.llm_max_concurrency,
         tts_profile_id=preferences.tts_engine,
         tts_max_retries=preferences.tts_max_retries,
-        tts_group_jobs=4,
-        tts_request_concurrency=tts_jobs,
+        tts_group_jobs=_TTS_GROUP_JOBS,
+        tts_request_concurrency=request_concurrency,
         audio_profile_id=preferences.tts_output_profile,
         composition_profile_id=preferences.composition_quality_preset,
         processing_order_policy=ProcessingOrderPolicy(preferences.processing_order_policy),

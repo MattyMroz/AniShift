@@ -191,12 +191,61 @@ def test_auto_embedded_subtitles_translate_and_burn_to_mp4() -> None:
     assert _task_kinds(plan) == (
         TaskKind.EXTRACT_SUBTITLES,
         TaskKind.TRANSLATE_SUBTITLES,
-        TaskKind.COMPOSE_MP4,
         TaskKind.PUBLISH_ARTIFACT,
+        TaskKind.COMPOSE_MP4,
     )
     extraction = _task(plan, TaskKind.EXTRACT_SUBTITLES)
     assert dict(extraction.parameters)["track_id"] == 2
     assert video.artifact_id in extraction.requires
+
+
+def test_auto_narration_uses_one_legacy_bulk_extraction_task_per_mkv() -> None:
+    video = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    products = ProductIntent(frozenset({ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO}))
+
+    plan: ExecutionPlan = plan_auto((_group(video),), _preset(products), _settings())
+
+    kinds: tuple[TaskKind, ...] = _task_kinds(plan)
+    extraction: PlanTask = _task(plan, TaskKind.EXTRACT_TRACKS)
+    produced_kinds: set[ArtifactKind] = {
+        artifact.kind for artifact in plan.artifacts if artifact.artifact_id in extraction.produces
+    }
+    assert kinds == (
+        TaskKind.EXTRACT_TRACKS,
+        TaskKind.TRANSLATE_SUBTITLES,
+        TaskKind.SPLIT_SUBTITLES,
+        TaskKind.SYNTHESIZE_SPEECH,
+        TaskKind.MIX_NARRATION,
+        TaskKind.PUBLISH_ARTIFACT,
+        TaskKind.PUBLISH_ARTIFACT,
+    )
+    assert TaskKind.EXTRACT_AUDIO not in kinds
+    assert TaskKind.EXTRACT_SUBTITLES not in kinds
+    assert produced_kinds == {ArtifactKind.SOURCE_AUDIO, ArtifactKind.SOURCE_SUBTITLES}
+    assert dict(extraction.parameters) == {
+        "audio_codec": "aac",
+        "audio_track_id": 1,
+        "subtitle_format": "ass",
+        "subtitle_track_id": 2,
+    }
+
+
+def test_auto_groups_and_extraction_tasks_use_legacy_natural_order() -> None:
+    episode_10 = _artifact(ArtifactKind.VIDEO_MKV, "Episode 10.mkv", group_id="episode-10")
+    episode_2 = _artifact(ArtifactKind.VIDEO_MKV, "Episode 2.mkv", group_id="episode-2")
+    groups: tuple[InspectedSourceGroup, ...] = (
+        _group(episode_10, group_id="episode-10", stem="Episode 10"),
+        _group(episode_2, group_id="episode-2", stem="Episode 2"),
+    )
+    products = ProductIntent(frozenset({ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO}))
+
+    plan: ExecutionPlan = plan_auto(groups, _preset(products), _settings())
+
+    assert tuple(group.group_id for group in plan.groups) == ("episode-2", "episode-10")
+    assert tuple(task.group_id for task in plan.tasks if task.kind is TaskKind.EXTRACT_TRACKS) == (
+        "episode-2",
+        "episode-10",
+    )
 
 
 def test_auto_can_burn_source_without_translation() -> None:

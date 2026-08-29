@@ -542,7 +542,7 @@ def _workflow_specs(context: SettingCatalogContext) -> tuple[SettingSpec, ...]:
             label="Products",
             description="Select independent subtitle, narration, MKV, and MP4 products.",
             value_type=SettingValueType.STRING_SET,
-            default=frozenset({ProductKind.FULL_PL.value}),
+            default=frozenset({ProductKind.FULL_PL.value, ProductKind.NARRATION_AUDIO.value}),
             scope=shared_scope,
             allowed_values=tuple(product.value for product in ProductKind),
             invalidates=_COMPOSITION_INVALIDATES,

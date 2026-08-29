@@ -10,6 +10,7 @@ from rich.text import Text
 
 from anishift.cli.interactive.mascot import mascot_art
 from anishift.cli.interactive.prompts import (
+    AutoGeometry,
     HomeGeometry,
     InteractivePrompts,
     PromptChoice,
@@ -22,6 +23,8 @@ from anishift.utils.rich_console import console
 __all__ = [
     "HomeAction",
     "ask_home_action",
+    "brand_for_geometry",
+    "working_directory_label",
 ]
 
 
@@ -55,24 +58,24 @@ _LOGO_ROWS: Final[tuple[str, ...]] = (
 """Established six-row ANISHIFT wordmark reused without Textual dependencies."""
 
 _LOGO_FILL_PALETTE: Final[tuple[str, ...]] = (
-    "#45e7ff",
-    "#4f9dff",
-    "#745cff",
-    "#b44cff",
-    "#f24fc7",
-    "#ff527f",
+    "#f7f7fa",
+    "#f0f0f5",
+    "#e7e7ef",
+    "#d9dae5",
+    "#c7c9d8",
+    "#b4b7c9",
 )
-"""Slime-derived colors used across the filled wordmark glyphs."""
+"""White-to-silver colors used across the filled wordmark glyphs."""
 
 _LOGO_OUTLINE_PALETTE: Final[tuple[str, ...]] = (
-    "#176478",
-    "#24508a",
-    "#392d83",
-    "#5d267d",
-    "#7c286a",
-    "#842b49",
+    "#2fbad3",
+    "#3488c7",
+    "#5748bd",
+    "#853fb6",
+    "#b43c8a",
+    "#d24670",
 )
-"""Dark companion colors used by the wordmark outline glyphs."""
+"""Slime-derived cyan-to-pink colors used by the wordmark outline."""
 
 _LOGO_FILL_GLYPH: Final[str] = "█"
 """Solid glyph receiving the bright part of the wordmark palette."""
@@ -91,21 +94,24 @@ def ask_home_action(prompts: InteractivePrompts, *, version: str) -> HomeAction:
         prompts.clear_screen()
         if geometry.top_padding:
             console.print("\n" * geometry.top_padding, end="")
-        mascot: Text | None = (
-            mascot_art(geometry.mascot_columns, geometry.mascot_rows) if geometry.show_mascot else None
-        )
-        brand: Text = _home_brand(mascot, show_full_wordmark=geometry.show_full_wordmark)
-        console.print(_centered_brand(brand, geometry.terminal_columns))
+        console.print(brand_for_geometry(geometry))
         try:
             selected: str = prompts.select(
                 _HOME_CHOICES,
                 default=None,
-                footer=home_footer(version, _working_directory_label(), geometry),
+                footer=home_footer(version, working_directory_label(), geometry),
                 geometry=geometry,
             )
         except _TerminalResizedError:
             continue
         return HomeAction(selected)
+
+
+def brand_for_geometry(geometry: HomeGeometry | AutoGeometry) -> Text:
+    """Build the centered brand selected for one terminal geometry."""
+    mascot: Text | None = mascot_art(geometry.mascot_columns, geometry.mascot_rows) if geometry.show_mascot else None
+    brand: Text = _home_brand(mascot, show_full_wordmark=geometry.show_full_wordmark)
+    return _centered_brand(brand, geometry.terminal_columns)
 
 
 def _home_brand(mascot: Text | None, *, show_full_wordmark: bool) -> Text:
@@ -193,7 +199,7 @@ def _centered_brand(brand: Text, terminal_columns: int) -> Text:
     return result
 
 
-def _working_directory_label(cwd: Path | None = None, home: Path | None = None) -> str:
+def working_directory_label(cwd: Path | None = None, home: Path | None = None) -> str:
     """Format the current directory like OpenCode without exposing an absolute path."""
     current: Path = Path.cwd() if cwd is None else cwd
     home_directory: Path = Path.home() if home is None else home

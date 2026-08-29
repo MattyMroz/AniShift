@@ -75,3 +75,29 @@ def test_public_event_message_redacts_unc_posix_and_quoted_secret() -> None:
     assert "/secret.txt" not in event.message
     assert "abc" not in event.message
     assert "def" not in event.message
+
+
+def test_public_event_message_preserves_retry_ratio() -> None:
+    event = RunEvent(
+        run_id="run-1",
+        sequence=1,
+        kind=RunEventKind.TASK_RETRY,
+        task_id="task-1",
+        message="TTS retry 2/3",
+    )
+
+    assert event.message == "TTS retry 2/3"
+
+
+def test_public_event_message_redacts_posix_path_after_punctuation_without_redacting_ratio() -> None:
+    event = RunEvent(
+        run_id="run-1",
+        sequence=1,
+        kind=RunEventKind.TASK_RETRY,
+        task_id="task-1",
+        message="failed (/private/file) after retry 2/3",
+    )
+
+    assert event.message is not None
+    assert "/private/file" not in event.message
+    assert "2/3" in event.message

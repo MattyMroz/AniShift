@@ -24,6 +24,11 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   utrzymuje jeden alternate screen przez całą sesję. Nie zastępuj go `console.screen()`:
   Rich pomija alternate screen na części konfiguracji `legacy_windows`. Home, Auto i
   wynik czyszczą ten sam output. `interactive/prompts.py`, `interactive/app.py`
+- Auto usuwa menu, ale zachowuje markę oraz esencjonalną stopkę z cwd/version.
+  Jeden `MultiProgressManager` renderuje postęp pod marką. Resize przebudowuje
+  wyłącznie ten widok przez publiczne API; nie dodawaj viewportu, wrappera `Live`,
+  ukrywania wierszy ani technicznych ekranów pośrednich.
+  `interactive/app.py`, `interactive/progress.py`, `interactive/prompts.py`
 - `run --preset` ma stabilny kontrakt kodów wyjścia: `0` sukces, `1` odmowa startu,
   `3` run niepełny/failed, `4` anulowany. `2` jest zarezerwowane dla błędów użycia
   Typera — nie używaj go. `main.py`
@@ -34,16 +39,19 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   nie echuj `str(exc)` ani ścieżek bezpośrednio. `main.py`
 - `_QuietRunEvents` celowo gubi wszystkie eventy postępu — raport ma być
   parsowalny, bez przeplotu. Nie dodawaj tam renderowania. `main.py`
-- `RichRunProgress` prealokuje jeden wyrównany pasek na grupę i reużywa domyślnych
-  przejść kolorów `MultiProgressManager`. Każdy realny procent aktualizuje pasek;
-  fazy audio bez licznika przełączają ten sam wiersz na spinner.
+- `RichRunProgress` prealokuje jeden pasek na plik w naturalnej kolejności i odtwarza przejścia
+  legacy `_PipelineProgressRows`: `Extracting` od razu ma pasek i procent,
+  `Extracted`, `Translating`, `Translated` i `Synthesizing` reużywają ten sam
+  wiersz, a spinner jest dozwolony wyłącznie dla faz audio. Techniczne taski nie
+  otrzymują osobnych wierszy. Etykieta zachowuje konkretną nazwę źródła wraz z
+  rozszerzeniem; procent ekstrakcji i TTS pochodzi wyłącznie z eventu backendu.
   `interactive/progress.py`
 - Home ma dokładnie `Auto`, `Ręczny`, `Ustawienia`, `Wyjście`; w pierwszym etapie
   Ręczny i Ustawienia pokazują wyłącznie komunikat tymczasowy. `interactive/home.py`,
   `interactive/app.py`
-- Marka Home ma stały rozmiar: slime 20×14 po lewej, sześciowierszowy wordmark po
-  prawej, paletę cyjan–fiolet–róż i jeden wspólny offset środka. Resize otwartego
-  promptu wywołuje czysty rerender; nie rozciągaj elementów wraz z terminalem.
+- Home ma slime 20×14, sześciowierszowy wordmark, cztery akcje, hint i esencjonalną
+  stopkę z cwd/version. Resize otwartego promptu wywołuje czysty rerender; nie
+  rozciągaj elementów wraz z terminalem.
   `interactive/home.py`,
   `interactive/prompts.py`
 - `configure_utf8_streams()` musi znosić `None`, `StringIO` i strumienie bez

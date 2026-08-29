@@ -8,6 +8,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from natsort import os_sorted
+
 from anishift.application.artifacts import (
     Artifact,
     ArtifactKind,
@@ -123,11 +125,11 @@ def _ordered_unique_groups(groups: Sequence[InspectedSourceGroup]) -> tuple[Insp
         msg = "Planning groups must have unique IDs"
         raise PlanningError(msg)
     return tuple(
-        sorted(
+        os_sorted(
             groups,
             key=lambda group: (
-                group.source.directory.as_posix().casefold(),
-                group.source.stem.casefold(),
+                group.source.directory.as_posix(),
+                group.source.stem,
                 group.group_id,
             ),
         )
@@ -200,6 +202,7 @@ class _GroupPlanner:
         self._full_pl: Artifact | None = None
         self._spoken_pl: Artifact | None = None
         self._displayed_pl: Artifact | None = None
+        self._source_audio: Artifact | None = None
         self._narration: Artifact | None = None
 
     def build(self) -> tuple[GroupPlan, tuple[Artifact, ...], tuple[PlanTask, ...]]:
@@ -333,6 +336,7 @@ class _GroupPlanner:
 
         if needs_any_subtitles:
             self._select_subtitle_input()
+        self._prepare_bulk_extraction(needs_generated_narration=needs_generated_narration)
         if needs_source:
             self._ensure_source_subtitles()
         if needs_full:
@@ -543,6 +547,46 @@ class _GroupPlanner:
         )
         self._source_subtitles = extracted
         return extracted
+
+    def _prepare_bulk_extraction(self, *, needs_generated_narration: bool) -> None:
+        """Plan one legacy MKV extraction when subtitles and source audio are both required."""
+        selected: Artifact | _EmbeddedTrack | None = self._subtitle_input
+        if (
+            not needs_generated_narration
+            or not isinstance(selected, _EmbeddedTrack)
+            or selected.subtitle_format is None
+            or selected.video.kind is not ArtifactKind.VIDEO_MKV
+        ):
+            return
+        audio: _EmbeddedTrack | None = self._select_embedded_track("audio")
+        if audio is None or audio.video.artifact_id != selected.video.artifact_id:
+            return
+        subtitles: Artifact = self._intermediate(
+            ArtifactKind.SOURCE_SUBTITLES,
+            f"embedded-{selected.video.artifact_id}-{selected.track_id}",
+            subtitle_format=selected.subtitle_format,
+            language=self._source_language(selected.language),
+        )
+        source_audio: Artifact = self._intermediate(
+            ArtifactKind.SOURCE_AUDIO,
+            f"embedded-{audio.video.artifact_id}-{audio.track_id}",
+            audio_codec=audio.codec_id,
+        )
+        self._add_task(
+            TaskKind.EXTRACT_TRACKS,
+            requires=(selected.video,),
+            produces=(source_audio, subtitles),
+            variant=f"tracks-{audio.track_id}-{selected.track_id}",
+            resource_key="extraction",
+            parameters=(
+                ("audio_codec", audio.codec_id),
+                ("audio_track_id", audio.track_id),
+                ("subtitle_format", selected.subtitle_format),
+                ("subtitle_track_id", selected.track_id),
+            ),
+        )
+        self._source_audio = source_audio
+        self._source_subtitles = subtitles
 
     def _ensure_full_pl(  # noqa: PLR0911 - each compatible manual starting point terminates independently
         self,
@@ -763,12 +807,15 @@ class _GroupPlanner:
             self._narration = selected
 
     def _select_source_audio(self) -> Artifact | None:
+        if self._source_audio is not None:
+            return self._source_audio
         if self.intent.mode is RunMode.MANUAL and self.intent.selected_audio_artifact_id is not None:
             selected: Artifact | None = self.artifacts.get(self.intent.selected_audio_artifact_id)
             if selected is not None and (
                 selected.kind is ArtifactKind.SOURCE_AUDIO
                 or self.intent.external_audio_role is ExternalAudioRole.SOURCE_AUDIO
             ):
+                self._source_audio = selected
                 return selected
         embedded: _EmbeddedTrack | None = self._select_embedded_track("audio")
         if embedded is None:
@@ -791,6 +838,7 @@ class _GroupPlanner:
                 ("target_format", "audio_copy"),
             ),
         )
+        self._source_audio = source_audio
         return source_audio
 
     def _publish_source_subtitles(self, source: Artifact) -> Artifact | None:

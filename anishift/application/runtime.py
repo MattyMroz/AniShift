@@ -14,6 +14,7 @@ from anishift.application.handlers import (
     CompositionTaskHandler,
     ExecutionHandlers,
     ExtractionTaskHandler,
+    LegacyExtractionAdapter,
     PublishTaskHandler,
     SubtitleTaskHandler,
     TranslationTaskHandler,
@@ -43,7 +44,7 @@ from anishift.services.audio.commands import SubprocessRunner
 from anishift.services.audio.service import AudioProgressSink
 from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
 from anishift.services.composition import CompositionConfig, CompositionService, QualityPreset
-from anishift.services.extraction import ExtractionService
+from anishift.services.extraction import ExtractionService, extract_tracks, identify
 from anishift.services.llm import (
     LlmAuthError,
     LlmCancelledError,
@@ -172,7 +173,12 @@ class ProductionHandlerFactory:
                 source_groups={group_id: group.source for group_id, group in source_groups.items()},
             )
         return ExecutionHandlers(
-            ExtractionTaskHandler(ExtractionService(), run_root=run_root, timeout_s=_EXTRACTION_TIMEOUT_S),
+            ExtractionTaskHandler(
+                ExtractionService(),
+                run_root=run_root,
+                timeout_s=_EXTRACTION_TIMEOUT_S,
+                legacy=LegacyExtractionAdapter(identify, extract_tracks),
+            ),
             SubtitleTaskHandler(run_root=run_root),
             TranslationTaskHandler(
                 _translation_service(settings, plan),

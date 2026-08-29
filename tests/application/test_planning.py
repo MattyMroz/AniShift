@@ -101,6 +101,13 @@ def test_topological_order_is_stable_for_shuffled_input() -> None:
     assert stable_topological_order((extract, translate)) == (extract, translate)
 
 
+def test_topological_order_preserves_input_order_for_independent_tasks() -> None:
+    episode_2 = _task("episode-2", produces=("episode-2-result",))
+    episode_10 = _task("episode-10", produces=("episode-10-result",))
+
+    assert stable_topological_order((episode_2, episode_10)) == (episode_2, episode_10)
+
+
 def test_topological_order_rejects_cycle() -> None:
     first = _task("first", depends_on=("second",), produces=("first-output",))
     second = _task("second", depends_on=("first",), produces=("second-output",))

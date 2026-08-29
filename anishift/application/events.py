@@ -169,7 +169,7 @@ def sanitize_event_message(message: str | None) -> str | None:
     sanitized = re.sub(r"(?i)\bsk-[A-Za-z0-9_-]+", "<redacted>", sanitized)
     sanitized = re.sub(r"\\\\[^\\\s]+\\[^\s]+", "<path>", sanitized)
     sanitized = re.sub(r"\b[A-Za-z]:[\\/][^\s]+", "<path>", sanitized)
-    sanitized = re.sub(r"(?<![:/\\])/(?:[^/\s]+/)*[^/\s]+", "<path>", sanitized)
+    sanitized = re.sub(r"(?<![\w:/\\])/(?:[^/\s]+/)*[^/\s]+", "<path>", sanitized)
     return sanitized[:500]
 
 

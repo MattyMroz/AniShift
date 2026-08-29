@@ -303,6 +303,69 @@ def test_legacy_extraction_adapter_preserves_bulk_operation_contract(tmp_path: P
     assert progress == [100]
 
 
+def test_mkv_bulk_handler_extracts_both_tracks_once_and_forwards_every_percent(tmp_path: Path) -> None:
+    media = tmp_path / "episode.mkv"
+    media.write_bytes(b"mkv")
+    source = _ready("video", ArtifactKind.VIDEO_MKV, media)
+    audio = _output("source-audio", ArtifactKind.SOURCE_AUDIO, audio_codec="aac")
+    subtitles = _output("source-subtitles", ArtifactKind.SOURCE_SUBTITLES, subtitle_format="ass")
+    task = _task(
+        TaskKind.EXTRACT_TRACKS,
+        (source.artifact_id,),
+        (audio.artifact_id, subtitles.artifact_id),
+        (
+            ("audio_codec", "aac"),
+            ("audio_track_id", 1),
+            ("subtitle_format", "ass"),
+            ("subtitle_track_id", 2),
+        ),
+    )
+    selections: list[TrackSelection] = []
+
+    def extract(
+        info: MediaInfo,
+        selection: TrackSelection,
+        dest_dir: Path,
+        *,
+        on_progress: Callable[[int], None] | None = None,
+        cancel: threading.Event | None = None,
+    ) -> LegacyExtractionResult:
+        del info
+        assert cancel is not None
+        selections.append(selection)
+        audio_path = dest_dir / "episode.aac"
+        subtitle_path = dest_dir / "episode.ass"
+        audio_path.write_bytes(b"audio")
+        _write_ass(subtitle_path)
+        if on_progress is not None:
+            for percent in (12, 56, 100):
+                on_progress(percent)
+        return LegacyExtractionResult(audio_path, subtitle_path)
+
+    legacy = LegacyExtractionAdapter(lambda path: MediaInfo(path, ()), extract)
+    progress = _ProgressSink()
+    handler = ExtractionTaskHandler(
+        _ExtractionService(),
+        run_root=tmp_path / "run",
+        timeout_s=30.0,
+        legacy=legacy,
+    )
+
+    result: TaskResult = handler.execute(
+        task,
+        ArtifactSnapshot(
+            {source.artifact_id: source},
+            {audio.artifact_id: audio, subtitles.artifact_id: subtitles},
+        ),
+        NeverCancelledToken(),
+        progress,
+    )
+
+    assert selections == [TrackSelection(1, 2, False)]
+    assert tuple(output.path.suffix for output in result.outputs) == (".aac", ".ass")
+    assert [notification.progress_percent for notification in progress.notifications] == [12, 56, 100]
+
+
 def test_subtitle_handler_normalizes_srt_to_ass(tmp_path: Path) -> None:
     source_path = tmp_path / "episode.srt"
     _write_srt(source_path)

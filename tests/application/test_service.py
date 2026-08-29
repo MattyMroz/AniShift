@@ -5,6 +5,8 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from fakes import (
@@ -16,6 +18,7 @@ from fakes import (
     write_text_source,
 )
 
+import anishift.application.service as service_module
 from anishift.application.handlers import (
     ExecutionHandlers,
     ExtractionTaskHandler,
@@ -25,9 +28,9 @@ from anishift.application.handlers import (
 )
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.intents import ProductIntent, ProductKind
-from anishift.application.planning import ExecutionPlan
+from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, TaskKind
 from anishift.application.results import GroupStatus, RunResult
-from anishift.application.scheduler_contracts import TaskHandler
+from anishift.application.scheduler_contracts import ResourceLimits, TaskHandler
 from anishift.application.service import AppService, AutoPresetDraft
 from anishift.bootstrap import AppContext, bootstrap, create_app_service
 from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
@@ -209,10 +212,58 @@ def test_settings_draft_and_plan_snapshot_are_detached(tmp_path: Path) -> None:
     service.save_settings(draft)
 
     assert plan.settings.translation_concurrency == 1
+    assert plan.settings.llm_max_concurrency == 4
     assert plan.settings.tts_postprocess_tempo == 1.25
-    assert plan.settings.tts_group_jobs == 4
+    assert plan.settings.tts_group_jobs == 1
     assert plan.settings.tts_request_concurrency == 100
+    assert plan.settings.processing_order_policy is ProcessingOrderPolicy.READY_FIRST
     assert service.settings_snapshot().translation_concurrency == 3
+
+
+def test_auto_plan_preserves_ready_first_four_file_llm_queue(tmp_path: Path) -> None:
+    write_text_source(tmp_path / "Episode.txt", "Text")
+    preferences = UserSettings(
+        translation_engine="llm",
+        llm_max_concurrency=4,
+        processing_order_policy="ready_first",
+    )
+    service: AppService = _service(tmp_path, FakeTranslationService(), user_settings=preferences)
+    group_id: str = service.discover().groups[0].group_id
+    plan: ExecutionPlan = service.plan_auto(
+        (group_id,),
+        AutoPresetDraft("preview", "Preview", ProductIntent(frozenset({ProductKind.FULL_PL}))),
+    )
+    limits: ResourceLimits = ResourceLimits.from_settings(plan.settings)
+
+    assert plan.settings.processing_order_policy is ProcessingOrderPolicy.READY_FIRST
+    assert limits.worker_limit("llm:gemini", plan.settings) == 4
+
+
+def test_auto_keeps_legacy_single_episode_tts_with_provider_request_concurrency(tmp_path: Path) -> None:
+    write_text_source(tmp_path / "Episode.txt", "Text")
+    service: AppService = _service(tmp_path, FakeTranslationService())
+    group_id: str = service.discover().groups[0].group_id
+
+    plan: ExecutionPlan = service.plan_auto(
+        (group_id,),
+        AutoPresetDraft("preview", "Preview", ProductIntent(frozenset({ProductKind.FULL_PL}))),
+    )
+    limits: ResourceLimits = ResourceLimits.from_settings(plan.settings)
+
+    assert limits.worker_limit(f"tts:{plan.settings.tts_profile_id}", plan.settings) == 1
+    assert plan.settings.tts_request_concurrency == 100
+
+
+def test_auto_uses_the_legacy_extraction_pool_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tasks: tuple[SimpleNamespace, ...] = tuple(
+        SimpleNamespace(group_id=f"group-{index}", kind=TaskKind.EXTRACT_TRACKS) for index in range(6)
+    )
+    plan: ExecutionPlan = cast("ExecutionPlan", SimpleNamespace(tasks=tasks))
+    monkeypatch.setattr(os, "cpu_count", lambda: 16)
+
+    assert service_module._extraction_worker_count(plan) == 6
 
 
 def test_engine_availability_exposes_reasons_without_secret_values(tmp_path: Path) -> None:

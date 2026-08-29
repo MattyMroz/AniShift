@@ -23,6 +23,7 @@ class TaskKind(StrEnum):
 
     EXTRACT_AUDIO = "extract_audio"
     EXTRACT_SUBTITLES = "extract_subtitles"
+    EXTRACT_TRACKS = "extract_tracks"
     NORMALIZE_SUBTITLES = "normalize_subtitles"
     TRANSLATE_SUBTITLES = "translate_subtitles"
     SPLIT_SUBTITLES = "split_subtitles"
@@ -312,13 +313,15 @@ class ExecutionPlan:
 
 
 def stable_topological_order(tasks: Sequence[PlanTask]) -> tuple[PlanTask, ...]:
-    """Return a deterministic topological order or raise for an invalid graph."""
+    """Return an input-stable topological order or raise for an invalid graph."""
     task_by_id: dict[str, PlanTask] = {}
-    for task in tasks:
+    order_by_id: dict[str, int] = {}
+    for index, task in enumerate(tasks):
         if task.task_id in task_by_id:
             msg = f"Duplicate task ID: {task.task_id}"
             raise PlanningError(msg)
         task_by_id[task.task_id] = task
+        order_by_id[task.task_id] = index
 
     indegree: dict[str, int] = dict.fromkeys(task_by_id, 0)
     dependants: dict[str, list[str]] = {task_id: [] for task_id in task_by_id}
@@ -330,16 +333,16 @@ def stable_topological_order(tasks: Sequence[PlanTask]) -> tuple[PlanTask, ...]:
             indegree[task.task_id] += 1
             dependants[dependency_id].append(task.task_id)
 
-    ready: list[str] = sorted(task_id for task_id, degree in indegree.items() if degree == 0)
+    ready: list[str] = [task_id for task_id, degree in indegree.items() if degree == 0]
     ordered: list[PlanTask] = []
     while ready:
         task_id: str = ready.pop(0)
         ordered.append(task_by_id[task_id])
-        for dependant_id in sorted(dependants[task_id]):
+        for dependant_id in sorted(dependants[task_id], key=order_by_id.__getitem__):
             indegree[dependant_id] -= 1
             if indegree[dependant_id] == 0:
                 ready.append(dependant_id)
-        ready.sort()
+        ready.sort(key=order_by_id.__getitem__)
 
     if len(ordered) != len(task_by_id):
         msg = "Execution plan contains a dependency cycle"
@@ -460,6 +463,10 @@ def _validate_task_parameter_names(kind: TaskKind, names: frozenset[str]) -> Non
         TaskKind.EXTRACT_SUBTITLES: (
             frozenset({"track_id", "target_format"}),
             frozenset({"track_id", "target_format"}),
+        ),
+        TaskKind.EXTRACT_TRACKS: (
+            frozenset({"audio_codec", "audio_track_id", "subtitle_format", "subtitle_track_id"}),
+            frozenset({"audio_codec", "audio_track_id", "subtitle_format", "subtitle_track_id"}),
         ),
         TaskKind.NORMALIZE_SUBTITLES: (frozenset({"output_format"}), frozenset({"output_format"})),
         TaskKind.TRANSLATE_SUBTITLES: (
