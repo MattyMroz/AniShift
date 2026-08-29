@@ -91,7 +91,7 @@ def _prepared(
     *,
     tts_profile_id: str = "edge",
     tts_model_id: str = "default",
-    tts_voice_id: str = "pl-PL-MarekNeural",
+    tts_voice_label: str = "Marek",
 ) -> PreparedAutoRun:
     workspace_groups: tuple[SimpleNamespace, ...] = tuple(
         SimpleNamespace(
@@ -108,7 +108,7 @@ def _prepared(
     settings: SimpleNamespace = SimpleNamespace(
         tts_profile_id=tts_profile_id,
         tts_model_id=tts_model_id,
-        tts_voice_id=tts_voice_id,
+        tts_voice_label=tts_voice_label,
     )
     value: SimpleNamespace = SimpleNamespace(
         preset_id="default",
@@ -250,6 +250,25 @@ def test_bulk_extraction_forwards_every_legacy_percent_without_averaging() -> No
     assert manager.updates == [(TaskID(0), 12), (TaskID(0), 56), (TaskID(0), 100)]
     assert manager.descriptions[-1] == (TaskID(0), "Extracted      Odcinek 01.mkv")
     assert all(not presentation[3] for presentation in manager.presentations)
+
+
+def test_elevenbytes_progress_uses_the_legacy_human_voice_label() -> None:
+    manager: _FakeManager = _FakeManager()
+    prepared: PreparedAutoRun = _prepared(
+        (("group-1", "Odcinek 01"),),
+        (("tts", "group-1", TaskKind.SYNTHESIZE_SPEECH),),
+        tts_profile_id="elevenbytes",
+        tts_model_id="run6",
+        tts_voice_label="Dallin",
+    )
+
+    with RichRunProgress(prepared, manager) as progress:
+        progress.emit(_event(1, RunEventKind.TASK_STARTED, task_id="tts", state=TaskState.RUNNING))
+
+    assert manager.descriptions[-1] == (
+        TaskID(0),
+        "Synthesizing   elevenbytes/run6 · Dallin · Odcinek 01.mkv",
+    )
 
 
 def test_bulk_extraction_does_not_replace_a_real_backend_percent() -> None:

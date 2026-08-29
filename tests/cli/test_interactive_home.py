@@ -88,6 +88,9 @@ class _Prompts:
     def pause(self, message: str) -> None:
         del message
 
+    def wait_for_key(self) -> None:
+        pass
+
 
 class _RecordingOutput(DummyOutput):
     def __init__(self) -> None:
@@ -184,6 +187,56 @@ def test_resize_watcher_coalesces_rapid_dimension_changes() -> None:
         time.sleep(0.05)
 
     assert callbacks == [(100, 30)]
+
+
+def test_home_resize_exits_the_active_prompt_only_once() -> None:
+    size: list[tuple[int, int]] = [(80, 24)]
+    exited: threading.Event = threading.Event()
+
+    class _Hooks:
+        def __init__(self) -> None:
+            self.callbacks: list[Callable[[object], None]] = []
+
+        def __iadd__(self, callback: Callable[[object], None]) -> _Hooks:
+            self.callbacks.append(callback)
+            return self
+
+    class _Application:
+        def __init__(self) -> None:
+            self.after_render: _Hooks = _Hooks()
+            self.is_done: bool = False
+            self.exits: int = 0
+
+        def invalidate(self) -> None:
+            for callback in self.after_render.callbacks:
+                callback(self)
+                callback(self)
+
+        def exit(
+            self,
+            result: object | None = None,
+            exception: BaseException | type[BaseException] | None = None,
+            style: str = "",
+        ) -> None:
+            del result, exception, style
+            self.exits += 1
+            self.is_done = True
+            exited.set()
+
+    class _Question:
+        def __init__(self) -> None:
+            self.application: _Application = _Application()
+
+    question: _Question = _Question()
+    with prompts_module._register_resize_rerender(
+        cast("questionary.Question", question),
+        initial_size=size[0],
+        size_provider=lambda: size[0],
+    ):
+        size[0] = (100, 30)
+        assert exited.wait(timeout=1.0)
+
+    assert question.application.exits == 1
 
 
 def test_home_geometry_preserves_fixed_brand_and_compact_fallback() -> None:

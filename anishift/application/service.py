@@ -735,6 +735,7 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         llm_module_ids=tuple(preferences.llm_module_ids),
         tts_model_id=preferences.tts_provider_model_id,
         tts_voice_id=preferences.resolved_tts_voice_id,
+        tts_voice_label=preferences.tts_voice_label,
         tts_native_rate=profile.native_rate,
         tts_native_volume=profile.native_volume,
         tts_native_pitch=profile.native_pitch,

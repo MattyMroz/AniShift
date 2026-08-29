@@ -18,9 +18,11 @@ from anishift.cli.interactive.home import (
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.prompts import (
     AutoGeometry,
+    HomeGeometry,
     InteractivePrompts,
     QuestionaryPrompts,
     resolve_auto_geometry,
+    resolve_home_geometry,
 )
 from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, execute_auto_run, prepare_auto_run
 from anishift.errors import AniShiftError
@@ -88,10 +90,15 @@ def _run_interactive_loop(service: AppService, prompts: InteractivePrompts) -> N
 
 def _run_auto(service: AppService, prompts: InteractivePrompts) -> None:
     """Prepare and execute one automatic run before returning Home."""
-    prompts.render_footer(__version__, working_directory_label())
+
+    def render_preflight_view() -> None:
+        _render_preflight_view(prompts)
+
+    render_preflight_view()
     try:
-        preset_id: str = service.default_preset_id()
-        preparation: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(service, preset_id)
+        with prompts.watch_resize(render_preflight_view):
+            preset_id: str = service.default_preset_id()
+            preparation: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(service, preset_id)
     except (AniShiftError, OSError) as problem:
         _clear_with_footer(prompts)
         _show_problem(problem)
@@ -112,6 +119,7 @@ def _run_auto(service: AppService, prompts: InteractivePrompts) -> None:
             prompts.watch_resize(progress.relayout),
         ):
             execute_auto_run(service, preparation, progress)
+            prompts.wait_for_key()
     except KeyboardInterrupt:
         logger.info("Interactive automatic run interrupted")
         _clear_with_footer(prompts)
@@ -124,7 +132,6 @@ def _run_auto(service: AppService, prompts: InteractivePrompts) -> None:
         _show_problem(problem)
         prompts.pause(_RETURN_PROMPT)
         return
-    prompts.pause("")
 
 
 def _show_temporary_action(action: HomeAction, prompts: InteractivePrompts) -> None:
@@ -153,6 +160,16 @@ def _render_auto_view(prompts: InteractivePrompts, progress_rows: int) -> None:
     console.print(brand_for_geometry(geometry))
     prompts.render_footer(__version__, working_directory_label())
     prompts.position_cursor(geometry.progress_row)
+
+
+def _render_preflight_view(prompts: InteractivePrompts) -> None:
+    """Keep the accepted Home brand responsive while Auto is prepared."""
+    geometry: HomeGeometry = resolve_home_geometry(prompts.terminal_columns(), prompts.terminal_rows())
+    prompts.clear_screen()
+    if geometry.top_padding:
+        console.print("\n" * geometry.top_padding, end="")
+    console.print(brand_for_geometry(geometry))
+    prompts.render_footer(__version__, working_directory_label())
 
 
 def _show_refusal(refusal: AutoRunRefusal) -> None:

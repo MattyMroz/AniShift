@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import threading
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
@@ -11,6 +12,9 @@ from types import TracebackType
 from typing import Final, Protocol, cast
 
 import questionary
+from prompt_toolkit.input import Input, create_input
+from prompt_toolkit.key_binding import KeyPress
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import Output, create_output
 
 __all__ = [
@@ -71,6 +75,9 @@ _RESIZE_POLL_SECONDS: Final[float] = 0.01
 
 _RESIZE_SETTLE_POLLS: Final[int] = 3
 """Unchanged samples required before one coalesced resize redraw."""
+
+_KEY_POLL_SECONDS: Final[float] = 0.01
+"""Interval used by the silent final-screen key waiter."""
 
 _QUESTIONARY_STYLE: Final[questionary.Style] = questionary.Style(
     [
@@ -172,9 +179,18 @@ class InteractivePrompts(Protocol):
         """Wait until the user presses a key."""
         ...
 
+    def wait_for_key(self) -> None:
+        """Wait for one key without rendering another terminal application."""
+        ...
+
 
 class _PromptApplication(Protocol):
     """Describe the application action needed by the resize callback."""
+
+    @property
+    def is_done(self) -> bool:
+        """Return whether the prompt already has a result."""
+        ...
 
     def exit(
         self,
@@ -387,6 +403,21 @@ class QuestionaryPrompts:
         )
         question.unsafe_ask()
 
+    def wait_for_key(self) -> None:
+        """Wait silently while the existing Rich display remains active."""
+        terminal_input: Input = create_input(always_prefer_tty=True)
+        try:
+            with terminal_input.raw_mode():
+                while not terminal_input.closed:
+                    key_presses: list[KeyPress] = terminal_input.read_keys()
+                    if any(key_press.key == Keys.ControlC for key_press in key_presses):
+                        raise KeyboardInterrupt
+                    if key_presses:
+                        return
+                    time.sleep(_KEY_POLL_SECONDS)
+        finally:
+            terminal_input.close()
+
 
 @contextmanager
 def _terminal_screen(output: Output) -> Iterator[None]:
@@ -429,7 +460,10 @@ def _register_resize_rerender(
     def rerender_on_resize(application: object) -> None:
         if not resize_requested.is_set():
             return
+        resize_requested.clear()
         prompt_application: _PromptApplication = cast("_PromptApplication", application)
+        if prompt_application.is_done:
+            return
         prompt_application.exit(exception=_TerminalResizedError())
 
     question.application.after_render += rerender_on_resize

@@ -59,6 +59,8 @@ class _FakePrompts:
         self.footers: list[tuple[str, str]] = []
         self.cursor_positions: list[tuple[int, int]] = []
         self.resize_callbacks: list[Callable[[], None]] = []
+        self.waits: int = 0
+        self.wait_hook: Callable[[], None] | None = None
 
     def screen(self) -> _FakeScreen:
         return _FakeScreen(self)
@@ -95,6 +97,11 @@ class _FakePrompts:
 
     def pause(self, message: str) -> None:
         self.pauses.append(message)
+
+    def wait_for_key(self) -> None:
+        self.waits += 1
+        if self.wait_hook is not None:
+            self.wait_hook()
 
     def next_action(self) -> HomeAction:
         return self.actions.pop(0)
@@ -217,6 +224,38 @@ def test_auto_refusal_is_silent_during_preflight_and_returns_home(
     assert all("Skanowanie" not in line and "Przygotowanie" not in line for line in console.lines)
 
 
+def test_auto_preflight_renders_and_resizes_before_discovery_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    console: _FakeConsole = _FakeConsole()
+    prompts: _FakePrompts = _FakePrompts((HomeAction.AUTO, HomeAction.EXIT))
+    service: _FakeService = _FakeService(tmp_path)
+    prepared: PreparedAutoRun = _prepared()
+    progress: _FakeProgress = _FakeProgress()
+
+    def prepare(service: AppService, preset_id: str) -> PreparedAutoRun:
+        del service, preset_id
+        assert prompts.clears == 1
+        assert len(prompts.resize_callbacks) == 1
+        prompts.resize_callbacks[0]()
+        return prepared
+
+    _install_frontend(monkeypatch, console, progress)
+    monkeypatch.setattr(interactive_app, "prepare_auto_run", prepare)
+    monkeypatch.setattr(
+        interactive_app,
+        "execute_auto_run",
+        lambda service, value, sink: _result(GroupStatus.SUCCEEDED),
+    )
+
+    interactive_app.run_interactive(cast("AppService", service), prompts)
+
+    assert prompts.clears == 3
+    assert len(prompts.footers) == 3
+    assert prompts.waits == 1
+
+
 def test_auto_success_keeps_progress_and_footer_until_silent_return(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -230,10 +269,15 @@ def test_auto_success_keeps_progress_and_footer_until_silent_return(
 
     def execute(service: AppService, value: PreparedAutoRun, sink: RunEventSink) -> RunResult:
         received.append((service, value, sink))
-        prompts.resize_callbacks[-1]()
         return _result(GroupStatus.SUCCEEDED)
 
+    def wait_while_progress_is_live() -> None:
+        assert progress.entered == 1
+        assert progress.exited == 0
+        prompts.resize_callbacks[-1]()
+
     _install_frontend(monkeypatch, console, progress)
+    prompts.wait_hook = wait_while_progress_is_live
     monkeypatch.setattr(interactive_app, "prepare_auto_run", lambda service, preset_id: prepared)
     monkeypatch.setattr(interactive_app, "execute_auto_run", execute)
 
@@ -244,7 +288,8 @@ def test_auto_success_keeps_progress_and_footer_until_silent_return(
     assert received == [(expected_service, prepared, expected_sink)]
     assert progress.entered == progress.exited == 1
     assert progress.relayouts == 1
-    assert prompts.pauses == [""]
+    assert prompts.pauses == []
+    assert prompts.waits == 1
     assert len(prompts.footers) == 3
     assert len(prompts.cursor_positions) == 2
     assert any("ANISHIFT" in line or "█" in line for line in console.lines)
@@ -269,7 +314,8 @@ def test_auto_partial_result_does_not_print_products_or_success_screen(
 
     interactive_app.run_interactive(cast("AppService", service), prompts)
 
-    assert prompts.pauses == [""]
+    assert prompts.pauses == []
+    assert prompts.waits == 1
     assert all("produkt:" not in line and "Gotowe" not in line for line in console.lines)
 
 

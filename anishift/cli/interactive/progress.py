@@ -47,15 +47,6 @@ _PHASE_WIDTH: Final[int] = 14
 _COMPLETE: Final[int] = 100
 """Completed percentage used by determinate legacy rows."""
 
-_DALLIN_ALIAS: Final[str] = "dallin"
-"""ElevenBytes voice alias rendered with the historical human label."""
-
-_MAREK_VOICE_ID: Final[str] = "pl-PL-MarekNeural"
-"""Edge voice ID rendered as Marek in legacy progress."""
-
-_ZOFIA_VOICE_ID: Final[str] = "pl-PL-ZofiaNeural"
-"""Edge voice ID rendered as Zofia in legacy progress."""
-
 _STAGE_RANK: Final[dict[str, int]] = {
     "extracting": 0,
     "translating": 1,
@@ -623,18 +614,7 @@ def _tts_progress_label(prepared: PreparedAutoRun) -> str:
     settings = prepared.plan.settings
     engine_id: str = settings.tts_profile_id
     model_id: str = settings.tts_model_id
-    voice_id: str = settings.tts_voice_id
-    if engine_id == "elevenbytes" and voice_id.casefold() == _DALLIN_ALIAS:
-        voice_label: str = "Dallin"
-    elif engine_id == "edge":
-        voice_label = {
-            _MAREK_VOICE_ID: "Marek",
-            _ZOFIA_VOICE_ID: "Zofia",
-        }.get(voice_id, voice_id)
-    elif engine_id == "sapi":
-        voice_label = voice_id.title()
-    else:
-        voice_label = voice_id
+    voice_label: str = settings.tts_voice_label
     engine_label: str = f"{engine_id}/{model_id}" if engine_id in {"elevenbytes", "elevenlabs"} else engine_id
     return f"{engine_label} · {voice_label}"
 

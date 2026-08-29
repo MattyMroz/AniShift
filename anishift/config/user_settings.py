@@ -377,6 +377,27 @@ class UserSettings:
         return self._active_tts_profile()
 
     @property
+    def tts_voice_label(self) -> str:
+        """Return the human voice label used by legacy progress rows."""
+        voice_id: str = self.tts_voice_id
+        if self.tts_engine == "elevenbytes":
+            if voice_id.casefold() == DALLIN_ALIAS:
+                return "Dallin"
+            custom: CustomVoiceSetting | None = next(
+                (item for item in self.elevenbytes_custom_voices if item.alias.casefold() == voice_id.casefold()),
+                None,
+            )
+            return custom.label if custom is not None else voice_id
+        if self.tts_engine == "edge":
+            return {
+                MAREK_VOICE_ID: "Marek",
+                ZOFIA_VOICE_ID: "Zofia",
+            }.get(voice_id, voice_id)
+        if self.tts_engine == "sapi":
+            return voice_id.title()
+        return voice_id
+
+    @property
     def resolved_tts_voice_id(self) -> str:
         """Resolve a built-in or custom alias to the engine-facing voice id."""
         voice_id: str = self.tts_voice_id

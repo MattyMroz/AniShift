@@ -165,6 +165,7 @@ class RunSettingsSnapshot:
     llm_module_ids: tuple[str, ...] = ()
     tts_model_id: str = "default"
     tts_voice_id: str = "default"
+    tts_voice_label: str = "default"
     tts_native_rate: str | float | None = None
     tts_native_volume: str | float | None = None
     tts_native_pitch: str | float | None = None
@@ -224,6 +225,7 @@ def _validate_runtime_settings(settings: RunSettingsSnapshot) -> None:
         settings.llm_style_id,
         settings.tts_model_id,
         settings.tts_voice_id,
+        settings.tts_voice_label,
     )
     if any(not value.strip() for value in runtime_ids):
         msg = "Run setting runtime IDs cannot be empty"

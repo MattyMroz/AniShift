@@ -57,6 +57,7 @@ class _FakeHandler:
         modes: dict[str, str] | None = None,
         notifications: dict[str, tuple[WorkerNotificationKind, ...]] | None = None,
         ignore_cancel: frozenset[str] = frozenset(),
+        barriers: dict[str, threading.Barrier] | None = None,
     ) -> None:
         self.run_root: Path = run_root
         self.delays: dict[str, float] = delays or {}
@@ -64,6 +65,7 @@ class _FakeHandler:
         self.modes: dict[str, str] = modes or {}
         self.notifications: dict[str, tuple[WorkerNotificationKind, ...]] = notifications or {}
         self.ignore_cancel: frozenset[str] = ignore_cancel
+        self.barriers: dict[str, threading.Barrier] = barriers or {}
         self.calls: list[str] = []
         self.started: dict[str, float] = {}
         self.finished: dict[str, float] = {}
@@ -88,6 +90,9 @@ class _FakeHandler:
             self.max_active[resource_bucket] = max(self.max_active.get(resource_bucket, 0), active)
         self.entered.set()
         try:
+            barrier: threading.Barrier | None = self.barriers.get(task.task_id)
+            if barrier is not None:
+                barrier.wait(timeout=5)
             for kind in self.notifications.get(task.task_id, ()):
                 percentage: int | None = 50 if kind is WorkerNotificationKind.PROGRESS else None
                 progress.emit(WorkerNotification(kind, task.task_id, percentage, "worker update"))
@@ -307,11 +312,15 @@ def test_dependent_task_streams_before_another_group_finishes(tmp_path: Path) ->
         _TaskSpec("group-2", "fast-second", ("fast-first",)),
     )
     plan: ExecutionPlan = _plan(tmp_path, specs)
+    overlap_barrier: threading.Barrier = threading.Barrier(2)
 
     result, handler, _ = _run(
         tmp_path,
         plan,
-        lambda run_root: _FakeHandler(run_root, delays={"slow-first": 0.08, "fast-first": 0.01}),
+        lambda run_root: _FakeHandler(
+            run_root,
+            barriers={"slow-first": overlap_barrier, "fast-second": overlap_barrier},
+        ),
     )
 
     assert result.succeeded is True
@@ -354,13 +363,23 @@ def test_scheduler_respects_provider_and_sapi_worker_limits(tmp_path: Path) -> N
         ),
     )
     plan: ExecutionPlan = _plan(tmp_path, specs)
+    translation_barrier: threading.Barrier = threading.Barrier(2)
+    llm_barrier: threading.Barrier = threading.Barrier(4)
+    barriers: dict[str, threading.Barrier] = {
+        "translate-0": translation_barrier,
+        "translate-1": translation_barrier,
+        "llm-0": llm_barrier,
+        "llm-1": llm_barrier,
+        "llm-2": llm_barrier,
+        "llm-3": llm_barrier,
+    }
 
     result, handler, _ = _run(
         tmp_path,
         plan,
         lambda run_root: _FakeHandler(
             run_root,
-            delays={spec.task_id: 0.02 for spec in specs},
+            barriers=barriers,
         ),
     )
 

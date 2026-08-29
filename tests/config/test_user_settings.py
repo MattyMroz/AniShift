@@ -468,4 +468,9 @@ def test_custom_elevenbytes_alias_resolves_profile_by_provider_voice_id() -> Non
     )
 
     assert settings.resolved_tts_voice_id == "provider-voice-id"
+    assert settings.tts_voice_label == "Reader"
     assert settings.active_tts_profile.postprocess_tempo == 1.4
+
+
+def test_default_elevenbytes_voice_keeps_the_legacy_human_label() -> None:
+    assert UserSettings().tts_voice_label == "Dallin"
