@@ -14,6 +14,7 @@ from anishift.application import (
     RunResult,
     ready_group_ids,
 )
+from anishift.application.cancellation import CancellationToken, NeverCancelledToken
 from anishift.utils.logger import get_logger
 
 __all__ = [
@@ -74,16 +75,25 @@ class PreparedAutoRun:
     plan: ExecutionPlan
 
 
-def prepare_auto_run(service: AppService, preset_id: str) -> PreparedAutoRun | AutoRunRefusal:
+def prepare_auto_run(
+    service: AppService,
+    preset_id: str,
+    *,
+    cancel: CancellationToken | None = None,
+) -> PreparedAutoRun | AutoRunRefusal:
     """Discover, validate and plan one automatic run without rendering UI."""
-    workspace: InspectedWorkspace = service.discover()
+    token: CancellationToken = cancel or NeverCancelledToken()
+    workspace: InspectedWorkspace = service.discover(cancel=token)
+    token.raise_if_cancelled()
     if not workspace.groups:
         return AutoRunRefusal(_NO_SOURCES, _NO_SOURCES_HINT)
     preset: AutoPreset = service.get_preset(preset_id)
+    token.raise_if_cancelled()
     group_ids: tuple[str, ...] = ready_group_ids(workspace.groups)
     if not group_ids:
         return AutoRunRefusal(_NO_READY_SOURCES, _NO_READY_SOURCES_HINT)
     plan: ExecutionPlan = service.plan_auto(group_ids, preset)
+    token.raise_if_cancelled()
     blockers: tuple[AutoRunBlocker, ...] = tuple(
         AutoRunBlocker(problem.group_id or _PLAN_SCOPE, problem.message)
         for problem in plan.problems

@@ -3,26 +3,17 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
 from typing import Final
 
 from rich.text import Text
 
 from anishift.cli.interactive.mascot import mascot_art
-from anishift.cli.interactive.prompts import (
-    AutoGeometry,
-    HomeGeometry,
-    InteractivePrompts,
-    PromptChoice,
-    _TerminalResizedError,
-    home_footer,
-    resolve_home_geometry,
-)
-from anishift.utils.rich_console import console
+from anishift.cli.interactive.prompts import AutoGeometry, HomeGeometry
 
 __all__ = [
     "HomeAction",
-    "ask_home_action",
     "brand_for_geometry",
     "working_directory_label",
 ]
@@ -38,14 +29,6 @@ class HomeAction(StrEnum):
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-
-_HOME_CHOICES: Final[tuple[PromptChoice, ...]] = (
-    PromptChoice("Auto", HomeAction.AUTO),
-    PromptChoice("Ręczny", HomeAction.MANUAL),
-    PromptChoice("Ustawienia", HomeAction.SETTINGS),
-    PromptChoice("Wyjście", HomeAction.EXIT),
-)
-"""Home actions in their product-defined display order."""
 
 _LOGO_ROWS: Final[tuple[str, ...]] = (
     " █████╗ ███╗   ██╗██╗███████╗██╗  ██╗██╗███████╗████████╗",
@@ -87,26 +70,7 @@ _BRAND_GAP: Final[str] = "  "
 """Fixed separation between the mascot and wordmark."""
 
 
-def ask_home_action(prompts: InteractivePrompts, *, version: str) -> HomeAction:
-    """Render Home and return the selected action."""
-    while True:
-        geometry: HomeGeometry = resolve_home_geometry(prompts.terminal_columns(), prompts.terminal_rows())
-        prompts.clear_screen()
-        if geometry.top_padding:
-            console.print("\n" * geometry.top_padding, end="")
-        console.print(brand_for_geometry(geometry))
-        try:
-            selected: str = prompts.select(
-                _HOME_CHOICES,
-                default=None,
-                footer=home_footer(version, working_directory_label(), geometry),
-                geometry=geometry,
-            )
-        except _TerminalResizedError:
-            continue
-        return HomeAction(selected)
-
-
+@lru_cache(maxsize=32)
 def brand_for_geometry(geometry: HomeGeometry | AutoGeometry) -> Text:
     """Build the centered brand selected for one terminal geometry."""
     mascot: Text | None = mascot_art(geometry.mascot_columns, geometry.mascot_rows) if geometry.show_mascot else None
@@ -122,6 +86,7 @@ def _home_brand(mascot: Text | None, *, show_full_wordmark: bool) -> Text:
     return _beside(mascot, wordmark)
 
 
+@lru_cache(maxsize=1)
 def _full_wordmark() -> Text:
     """Render the established block wordmark with a shaded slime palette."""
     wordmark: Text = Text()
@@ -135,6 +100,7 @@ def _full_wordmark() -> Text:
     return wordmark
 
 
+@lru_cache(maxsize=1)
 def _compact_wordmark() -> Text:
     """Render a one-row wordmark when the full header cannot fit."""
     wordmark: Text = Text()
