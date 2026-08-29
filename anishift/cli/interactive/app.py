@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import threading
+import time
 from enum import StrEnum
 from typing import Final
 
 from rich.text import Text
 
 from anishift import __version__
-from anishift.application import AppService
+from anishift.application import AppService, AutoPreset, InspectedWorkspace
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import sanitize_event_message
 from anishift.cli.interactive.home import HomeAction, brand_for_geometry, working_directory_label
+from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.prompts import (
     AutoGeometry,
@@ -23,7 +25,7 @@ from anishift.cli.interactive.prompts import (
     status_line,
 )
 from anishift.cli.interactive.settings import SettingsController, SettingsResult
-from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, execute_auto_run, prepare_auto_run
+from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, execute_plan, prepare_auto_run
 from anishift.errors import AniShiftError
 from anishift.utils.logger import get_logger
 
@@ -50,11 +52,6 @@ _HOME_HINT: Final[str] = "↑↓ · Enter"
 _HOME_POINTER: Final[str] = "\u276f"
 """Pointer glyph shown beside the active Home choice."""
 
-_TEMPORARY_ACTIONS: Final[dict[HomeAction, str]] = {
-    HomeAction.MANUAL: "Tryb ręczny pojawi się w następnym etapie",
-}
-"""Neutral messages for actions deferred beyond the current plan."""
-
 _REFUSAL_MESSAGES: Final[dict[str, str]] = {
     "The workspace holds no source group to run.": "Workspace nie zawiera materiału do uruchomienia",
     "No discovered source group is ready to run.": "Żadna wykryta grupa nie jest gotowa do uruchomienia",
@@ -78,6 +75,8 @@ class _ViewMode(StrEnum):
 
     HOME = "home"
     PREPARING = "preparing"
+    MANUAL_PREPARING = "manual_preparing"
+    MANUAL = "manual"
     AUTO = "auto"
     AUTO_DONE = "auto_done"
     SETTINGS = "settings"
@@ -95,6 +94,7 @@ class _InteractiveApplication:
         self._message: Text = Text()
         self._progress: RichRunProgress | None = None
         self._settings: SettingsController | None = None
+        self._manual: ManualController | None = None
         self._cancel_requested: bool = False
         self._preflight_cancel: EventCancellationToken | None = None
         self._generation: int = 0
@@ -117,6 +117,9 @@ class _InteractiveApplication:
             return
         if mode is _ViewMode.HOME:
             self._handle_home_key(key)
+            return
+        if mode is _ViewMode.MANUAL:
+            self._handle_manual_key(key)
             return
         if mode in {_ViewMode.AUTO_DONE, _ViewMode.MESSAGE}:
             self._show_home()
@@ -143,7 +146,7 @@ class _InteractiveApplication:
         elif action is HomeAction.SETTINGS:
             self._show_settings()
         else:
-            self._show_message(Text(_TEMPORARY_ACTIONS[action]))
+            self._start_manual()
 
     def _handle_settings_key(self, key: str) -> None:
         with self._lock:
@@ -157,22 +160,48 @@ class _InteractiveApplication:
             return
         self._renderer.invalidate()
 
+    def _handle_manual_key(self, key: str) -> None:
+        with self._lock:
+            controller: ManualController | None = self._manual
+        if controller is None:
+            self._show_home()
+            return
+        result: ManualResult = controller.handle_key(key)
+        if result is ManualResult.BACK_HOME:
+            self._show_home()
+            return
+        if result is ManualResult.START_RUN:
+            prepared: ManualRun | None = controller.take_ready_run()
+            if prepared is not None:
+                self._start_manual_run(prepared)
+                return
+        self._renderer.invalidate()
+
     def _interrupt(self, mode: _ViewMode) -> None:
         if mode is _ViewMode.HOME:
             logger.info("Interactive session interrupted")
             self._renderer.exit()
             return
-        if mode is _ViewMode.PREPARING:
+        if mode in {_ViewMode.PREPARING, _ViewMode.MANUAL_PREPARING}:
             preflight_cancel: EventCancellationToken | None
             with self._lock:
                 self._generation += 1
                 self._mode = _ViewMode.HOME
                 self._progress = None
+                self._manual = None
                 preflight_cancel = self._preflight_cancel
                 self._preflight_cancel = None
             if preflight_cancel is not None:
                 preflight_cancel.cancel()
             self._renderer.invalidate()
+            return
+        if mode is _ViewMode.MANUAL:
+            with self._lock:
+                self._generation += 1
+                manual: ManualController | None = self._manual
+            if manual is not None:
+                manual.cancel()
+            self._show_home()
             return
         if mode is _ViewMode.AUTO:
             progress: RichRunProgress | None
@@ -210,6 +239,78 @@ class _InteractiveApplication:
         self._renderer.invalidate()
         worker.start()
 
+    def _start_manual(self) -> None:
+        with self._lock:
+            if self._worker is not None and self._worker.is_alive():
+                return
+            self._generation += 1
+            generation: int = self._generation
+            self._mode = _ViewMode.MANUAL_PREPARING
+            self._manual = None
+            self._message = Text()
+            self._preflight_cancel = EventCancellationToken()
+            self._worker = threading.Thread(
+                target=self._prepare_manual,
+                args=(generation,),
+                name="anishift-manual-discovery",
+                daemon=True,
+            )
+            worker: threading.Thread = self._worker
+        self._renderer.invalidate()
+        worker.start()
+
+    def _prepare_manual(self, generation: int) -> None:
+        try:
+            with self._lock:
+                preflight_cancel: EventCancellationToken | None = self._preflight_cancel
+            if preflight_cancel is None:
+                return
+            workspace: InspectedWorkspace = self._service.discover(cancel=preflight_cancel)
+            preflight_cancel.raise_if_cancelled()
+            if not workspace.groups:
+                self._finish_with_message(
+                    generation, Text("Nie znaleziono materiału do przetworzenia", style="warning")
+                )
+                return
+            preset: AutoPreset = self._service.get_preset(self._service.default_preset_id())
+            controller: ManualController = ManualController(
+                self._service,
+                workspace,
+                preset,
+                self._renderer.invalidate,
+            )
+            with self._lock:
+                if generation != self._generation:
+                    return
+                self._preflight_cancel = None
+                self._manual = controller
+                self._mode = _ViewMode.MANUAL
+                self._worker = None
+            self._renderer.invalidate()
+        except (AniShiftError, OSError) as problem:
+            with self._lock:
+                if generation != self._generation:
+                    return
+            logger.warning("Interactive manual discovery failed", error_class=type(problem).__name__)
+            self._finish_with_message(generation, _problem_text(problem))
+
+    def _start_manual_run(self, prepared: ManualRun) -> None:
+        with self._lock:
+            if self._worker is not None and self._worker.is_alive():
+                return
+            self._generation += 1
+            generation: int = self._generation
+            self._manual = None
+            self._cancel_requested = False
+            self._worker = threading.Thread(
+                target=self._execute_run,
+                args=(generation, prepared),
+                name="anishift-manual",
+                daemon=True,
+            )
+            worker: threading.Thread = self._worker
+        worker.start()
+
     def _prepare_and_run(self, generation: int) -> None:
         try:
             with self._lock:
@@ -229,8 +330,18 @@ class _InteractiveApplication:
             if isinstance(preparation, AutoRunRefusal):
                 self._finish_with_message(generation, _refusal_text(preparation))
                 return
-            progress = RichRunProgress(
-                preparation,
+            self._execute_run(generation, preparation)
+        except (AniShiftError, OSError) as problem:
+            with self._lock:
+                if generation != self._generation:
+                    return
+            logger.warning("Interactive automatic run failed", error_class=type(problem).__name__)
+            self._finish_with_message(generation, _problem_text(problem))
+
+    def _execute_run(self, generation: int, prepared: PreparedAutoRun | ManualRun) -> None:
+        try:
+            progress: RichRunProgress = RichRunProgress(
+                prepared,
                 self._renderer.invalidate,
                 self._on_run_started,
             )
@@ -241,7 +352,7 @@ class _InteractiveApplication:
                 self._mode = _ViewMode.AUTO
             self._renderer.invalidate()
             with progress:
-                execute_auto_run(self._service, preparation, progress)
+                execute_plan(self._service, prepared.plan, progress)
             with self._lock:
                 if generation != self._generation:
                     return
@@ -253,7 +364,7 @@ class _InteractiveApplication:
             with self._lock:
                 if generation != self._generation:
                     return
-            logger.warning("Interactive automatic run failed", error_class=type(problem).__name__)
+            logger.warning("Interactive run failed", error_class=type(problem).__name__)
             self._finish_with_message(generation, _problem_text(problem))
 
     def _on_run_started(self, run_id: str) -> None:
@@ -269,15 +380,10 @@ class _InteractiveApplication:
             self._message = message
             self._mode = _ViewMode.MESSAGE
             self._progress = None
+            self._manual = None
             self._cancel_requested = False
             self._preflight_cancel = None
             self._worker = None
-        self._renderer.invalidate()
-
-    def _show_message(self, message: Text) -> None:
-        with self._lock:
-            self._message = message
-            self._mode = _ViewMode.MESSAGE
         self._renderer.invalidate()
 
     def _show_settings(self) -> None:
@@ -294,6 +400,7 @@ class _InteractiveApplication:
             self._message = Text()
             self._progress = None
             self._settings = None
+            self._manual = None
             self._cancel_requested = False
         self._renderer.invalidate()
 
@@ -304,10 +411,15 @@ class _InteractiveApplication:
             message: Text = self._message
             progress: RichRunProgress | None = self._progress
             settings: SettingsController | None = self._settings
+            manual: ManualController | None = self._manual
         if mode is _ViewMode.HOME:
             content: Text = _home_content(columns, rows, selected)
         elif mode is _ViewMode.PREPARING:
             content = _preparing_content(columns, rows)
+        elif mode is _ViewMode.MANUAL_PREPARING:
+            content = _manual_preparing_content(columns, rows)
+        elif mode is _ViewMode.MANUAL and manual is not None:
+            content = manual.render(columns, rows)
         elif mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
             content = _auto_content(columns, rows, progress)
         elif mode is _ViewMode.SETTINGS and settings is not None:
@@ -344,6 +456,16 @@ def _preparing_content(columns: int, rows: int) -> Text:
     geometry: AutoGeometry = resolve_auto_geometry(columns, rows, 1)
     content = Text("\n" * geometry.top_padding)
     content.append_text(brand_for_geometry(geometry))
+    return content
+
+
+def _manual_preparing_content(columns: int, rows: int) -> Text:
+    geometry: AutoGeometry = resolve_auto_geometry(columns, rows, 1)
+    content = Text("\n" * geometry.top_padding)
+    content.append_text(brand_for_geometry(geometry))
+    spinner: str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(time.monotonic() * 10) % 10]
+    label: str = f"{spinner} Skanowanie plików…"
+    content.append(f"\n\n{' ' * max((columns - len(label)) // 2, 0)}{label}", style="purple_bold")
     return content
 
 

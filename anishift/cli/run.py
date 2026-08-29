@@ -22,6 +22,7 @@ __all__ = [
     "AutoRunRefusal",
     "PreparedAutoRun",
     "execute_auto_run",
+    "execute_plan",
     "prepare_auto_run",
 ]
 
@@ -107,4 +108,9 @@ def prepare_auto_run(
 
 def execute_auto_run(service: AppService, prepared: PreparedAutoRun, sink: RunEventSink) -> RunResult:
     """Execute one accepted automatic plan through the application facade."""
-    return service.execute(prepared.plan, sink)
+    return execute_plan(service, prepared.plan, sink)
+
+
+def execute_plan(service: AppService, plan: ExecutionPlan, sink: RunEventSink) -> RunResult:
+    """Execute one accepted plan through the shared application facade."""
+    return service.execute(plan, sink)

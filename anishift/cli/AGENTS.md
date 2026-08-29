@@ -6,8 +6,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 
 - `main.py` — Typer app, `main()` (console script), subkomendy `doctor`/`setup`/`run --preset`, bare = Interactive CLI
 - `console.py` — jedyny właściciel rekonfiguracji stdout/stderr na UTF-8 + check dla doctora
-- `run.py` — wspólny, UI-neutralny preflight i wykonanie Auto
-- `interactive/` — lazy-loaded Home, jeden renderer Prompt Toolkit, maskotka, Settings i postęp Auto
+- `run.py` — wspólny, UI-neutralny preflight Auto oraz wykonanie zaakceptowanego planu
+- `interactive/` — lazy-loaded Home, jeden renderer Prompt Toolkit, maskotka, Settings, Manual i wspólny postęp
 
 ## Pułapki
 
@@ -18,8 +18,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `shutdown_logger()`. Nie dodawaj sinka konsolowego obok raportu; diagnostyka
   aplikacji trafia do `logs/anishift.log.jsonl`. `main.py`
 - Gołe `anishift` otwiera Interactive CLI. Interactive Auto i `anishift run --preset`
-  dzielą `prepare_auto_run()` oraz `execute_auto_run()`; nie dubluj discovery,
-  planowania ani wykonania. `main.py`, `run.py`, `interactive/app.py`
+  dzielą `prepare_auto_run()`, a `execute_auto_run()` deleguje do wspólnego
+  `execute_plan()` używanego także przez Manual. Nie dubluj discovery, planowania
+  ani wykonania. `main.py`, `run.py`, `interactive/app.py`
 - `TerminalRenderer` jest jedynym ownerem aplikacji Prompt Toolkit, klawiszy i
   alternate screen przez całą sesję. Nie zastępuj go `console.screen()`:
   Rich pomija alternate screen na części konfiguracji `legacy_windows`. Home, Auto i
@@ -46,10 +47,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   otrzymują osobnych wierszy. Etykieta zachowuje konkretną nazwę źródła wraz z
   rozszerzeniem; procent ekstrakcji i TTS pochodzi wyłącznie z eventu backendu.
   `interactive/progress.py`
-- Home ma dokładnie `Auto`, `Ręczny`, `Ustawienia`, `Wyjście`; tylko Ręczny pokazuje
-  komunikat tymczasowy. Settings działa w tym samym rendererze, a mutacje
-  `settings.json`, `presets.json` i `.env` przechodzą przez `AppService`.
-  `interactive/app.py`, `interactive/settings.py`
+- Home ma dokładnie `Auto`, `Ręczny`, `Ustawienia`, `Wyjście`. Settings działa w tym
+  samym rendererze, a mutacje `settings.json`, `presets.json` i `.env` przechodzą
+  przez `AppService`. Manual przechowuje drafty wyłącznie lokalnie, rejestruje pliki
+  zewnętrzne przez `AppService`, waliduje przez `plan_manual()` i przekazuje zaakceptowany
+  plan do tej samej ścieżki wykonania oraz postępu co Auto.
+  `interactive/app.py`, `interactive/settings.py`, `interactive/manual.py`, `run.py`
 - `SettingsController.render()` korzysta wyłącznie z lokalnego, odświeżonego snapshotu;
   nie wykonuj w nim I/O ani wywołań sieciowych, bo renderer odświeża klatkę cyklicznie.
   Katalog modeli jest tylko do odczytu, a probe działa wyłącznie po jawnej akcji.

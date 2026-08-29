@@ -8,12 +8,20 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
-from typing import Final, Literal
+from typing import Final, Literal, Protocol
 
 from rich.text import Text
 
-from anishift.application import ArtifactKind, InspectedSourceGroup, RunEvent, RunEventKind, TaskKind, TaskState
-from anishift.cli.run import PreparedAutoRun
+from anishift.application import (
+    ArtifactKind,
+    ExecutionPlan,
+    InspectedSourceGroup,
+    InspectedWorkspace,
+    RunEvent,
+    RunEventKind,
+    TaskKind,
+    TaskState,
+)
 from anishift.utils.rich_console.progress.manager import ProgressBarBuilder
 
 __all__ = ["RichRunProgress"]
@@ -131,12 +139,20 @@ class _RenderRow:
     elapsed_seconds: float
 
 
+class _PreparedRunView(Protocol):
+    @property
+    def workspace(self) -> InspectedWorkspace: ...
+
+    @property
+    def plan(self) -> ExecutionPlan: ...
+
+
 class RichRunProgress:
     """Reduce run events to Rich rows without owning terminal rendering."""
 
     def __init__(
         self,
-        prepared: PreparedAutoRun,
+        prepared: _PreparedRunView,
         invalidate: Callable[[], None],
         on_run_started: Callable[[str], None] | None = None,
     ) -> None:
@@ -447,7 +463,7 @@ def _truncate(value: str, width: int) -> str:
     return f"{value[: width - 1]}…"
 
 
-def _index_stage_tasks(prepared: PreparedAutoRun) -> dict[tuple[str, str], tuple[str, ...]]:
+def _index_stage_tasks(prepared: _PreparedRunView) -> dict[tuple[str, str], tuple[str, ...]]:
     grouped: dict[tuple[str, str], list[str]] = {}
     for task in prepared.plan.tasks:
         stage: str | None = _DETERMINATE_STAGE.get(task.kind)
