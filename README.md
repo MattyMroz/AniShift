@@ -1,55 +1,62 @@
 # AniShift
 
-Terminal-based anime lector for Polish.
+Terminal-based Polish voice-over pipeline for anime.
 
-Drop MKV files into `workspace/`, run `anishift` — AniShift extracts subtitles, translates them, generates a TTS voice-over (lector), and merges the result. Durable products are written beside their source; one run keeps its working files in `workspace/temp/`.
+AniShift turns MKV sources into Polish subtitles or a Polish lector track through
+subtitle extraction, translation, TTS, audio processing, and final media composition.
+Durable products are written beside their source; temporary run data stays in
+`workspace/temp/`.
 
-Sister project of MangaShift. There is no interactive interface: one command runs the pipeline and reports the outcome as text.
+## Quick start
 
-## Usage
-
-```
+```bash
 uv sync
 uv run anishift
 ```
 
-`anishift` without a subcommand runs the preset stored as the default over every ready group in the workspace, then reports one line per group.
+Running `anishift` without a subcommand opens the interactive interface:
 
-## Commands
+- **Auto** processes every ready workspace group with the default preset.
+- **Manual** lets you choose sources, output, and per-run overrides before execution.
+- **Settings** edits supported preferences and provides a read-only model catalogue.
+- **Exit** closes the interface immediately.
 
+The interface uses one responsive terminal renderer. Its packaged slime mascot has
+static states derived from real pipeline work; if the image cannot be decoded or the
+terminal is too small, it falls back to compact ASCII or no mascot without blocking
+the run.
+
+## Technical commands
+
+```bash
+uv run anishift run --preset ID   # run one stored preset without interaction
+uv run anishift doctor            # inspect tools, credentials, workspace, and encoding
+uv run anishift setup [--force]   # download and verify tools in external/bin/
 ```
-uv run anishift                   # run the default preset over the workspace
-uv run anishift run --preset ID   # run one named stored preset instead
-uv run anishift doctor            # report binaries, keys, workspace, console encoding
-uv run anishift setup [--force]   # download and verify external tools into external/bin/
-```
 
-Every run exits with `0` for a full success, `1` when it refuses to start, `3` for a failed or partial run and `4` when cancelled. A refusal is a sentence and a hint, never a traceback.
+Non-interactive runs exit with `0` for full success, `1` when refused before start,
+`3` for a failed or partial run, and `4` when cancelled. User-facing refusals and
+errors remain concise; developer diagnostics are written to the structured log.
 
 ## Configuration
 
-Everything is a file next to the code; edit it directly and run again.
+Interactive Settings persists individual supported values immediately. Configuration
+files remain available for advanced or initial setup:
 
-| file | what it holds |
+| File | Contents |
 |---|---|
-| `config/presets.json` | the automatic presets and which one is the default |
-| `config/settings.json` | workflow and engine preferences |
-| `config/anishift.models.jsonc` | the local catalogue of usable models |
+| `config/presets.json` | Automatic presets and the default preset |
+| `config/settings.json` | Workflow and engine preferences |
+| `config/anishift.models.jsonc` | Local catalogue of selectable models |
 | `.env` | API keys and tokens |
 
-## Models
-
-The LLM provider is Palantir Foundry. The list of usable models is a local file, `config/anishift.models.jsonc`; `config/anishift.models.example.jsonc` is the tracked example to copy.
-
-The token is read from the environment or from `.env`, never from a JSON file:
-
-- `ANISHIFT_PALANTIR_TOKEN` — the token AniShift asks for;
-- `FOUNDRY_API_TOKEN` — unprefixed compatibility source, used when the prefixed one is absent or blank.
-
-Secrets are never displayed: a report states `configured` or `missing`, nothing more.
+The LLM provider is Palantir Foundry. Its token is read from
+`ANISHIFT_PALANTIR_TOKEN`, or from `FOUNDRY_API_TOKEN` when the prefixed value is
+absent. Secrets are never displayed; diagnostics only report whether one is
+configured.
 
 ## Requirements
 
 - Python 3.14+
-- External binaries in `external/bin/`: mkvtoolnix (mkvextract, mkvmerge), ffmpeg — `anishift setup` fetches them
-- API keys in `.env` (optional per engine): DeepL, ElevenLabs, LLM providers
+- MKVToolNix and FFmpeg in `external/bin/` (`anishift setup` installs them)
+- API credentials required by the selected translation or TTS engines

@@ -874,7 +874,7 @@ class SettingsController:
         left: int = _menu_left_padding(columns, visible)
         content: Text = Text("\n" * max((max(rows - 1, 1) - body_rows) // 2, 0))
         content.append(" " * left)
-        content.append(title, style="white_bold")
+        content.append(_truncate_right(title, max(columns - left, 1)), style="white_bold")
         content.append("\n\n")
         if has_above:
             content.append(" " * left)
@@ -883,20 +883,24 @@ class SettingsController:
         for index, item in enumerate(visible, start=start):
             if item.section and item.section != previous_section:
                 content.append(" " * left)
-                content.append(f"{item.section}\n", style="gray")
+                content.append(f"{_truncate_right(item.section, max(columns - left, 1))}\n", style="gray")
                 previous_section = item.section
             content.append(" " * left)
             content.append(f"{_POINTER} " if index == self._selected else "  ", style="purple_bold")
-            content.append(item.label, style="purple_bold" if index == self._selected else "white_bold")
-            if item.current:
-                content.append(
-                    f" · {_truncate_right(item.current, max(columns - left - len(item.label) - 6, 1))}", style="gray"
-                )
+            available: int = max(columns - left - 2, 1)
+            current: str = _truncate_right(item.current, max(available // 2, 1)) if item.current else ""
+            label_width: int = max(available - len(current) - (3 if current else 0), 1)
+            content.append(
+                _truncate_right(item.label, label_width),
+                style="purple_bold" if index == self._selected else "white_bold",
+            )
+            if current:
+                content.append(f" · {current}", style="gray")
             content.append("\n")
         if has_below:
             content.append(" " * left)
             content.append("↓ więcej\n", style="gray")
-        self._append_feedback(content, left)
+        self._append_feedback(content, left, columns)
         content.append(" " * left)
         content.append(_MENU_HINT, style="gray")
         return content
@@ -932,7 +936,7 @@ class SettingsController:
             content.append(f"{_POINTER} " if self._selected == index else "  ", style="purple_bold")
             content.append(label, style="purple_bold" if self._selected == index else "white_bold")
             content.append("\n")
-        self._append_feedback(content, left)
+        self._append_feedback(content, left, columns)
         content.append(" " * left)
         content.append(_MULTI_HINT, style="gray")
         return content
@@ -951,7 +955,7 @@ class SettingsController:
         left: int = max((columns - min(width, columns)) // 2, 0)
         content: Text = Text("\n" * max((max(rows - 1, 1) - body_rows) // 2, 0))
         content.append(" " * left)
-        content.append(editor.title, style="white_bold")
+        content.append(_truncate_right(editor.title, max(columns - left, 1)), style="white_bold")
         content.append("\n\n")
         if editor.options:
             if has_above:
@@ -961,7 +965,7 @@ class SettingsController:
             for index, option in enumerate(visible, start=start):
                 if option.group and option.group != previous_group:
                     content.append(" " * left)
-                    content.append(f"{option.group}\n", style="gray")
+                    content.append(f"{_truncate_right(option.group, max(columns - left, 1))}\n", style="gray")
                     previous_group = option.group
                 content.append(" " * left)
                 content.append(f"{_POINTER} " if index == editor.selected else "  ", style="purple_bold")
@@ -991,7 +995,7 @@ class SettingsController:
             content.append(_truncate_left(shown, available), style="white_bold")
             content.append("█", style="purple_bold")
             content.append("\n")
-        self._append_feedback(content, left)
+        self._append_feedback(content, left, columns)
         content.append(" " * left)
         hint: str = _INPUT_HINT if not editor.options else _MENU_HINT
         if editor.kind is _EditorKind.MULTI_SELECT:
@@ -999,11 +1003,11 @@ class SettingsController:
         content.append(hint, style="gray")
         return content
 
-    def _append_feedback(self, content: Text, left: int) -> None:
+    def _append_feedback(self, content: Text, left: int, columns: int) -> None:
         if self._feedback is None:
             return
         content.append(" " * left)
-        content.append(self._feedback.text, style=self._feedback.style)
+        content.append(_truncate_right(self._feedback.text, max(columns - left, 1)), style=self._feedback.style)
         content.append("\n")
 
 

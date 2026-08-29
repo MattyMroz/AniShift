@@ -22,6 +22,7 @@ from anishift.application import (
     TaskKind,
     TaskState,
 )
+from anishift.cli.interactive.mascot import MascotController
 from anishift.utils.rich_console.progress.manager import ProgressBarBuilder
 
 __all__ = ["RichRunProgress"]
@@ -155,6 +156,8 @@ class RichRunProgress:
         prepared: _PreparedRunView,
         invalidate: Callable[[], None],
         on_run_started: Callable[[str], None] | None = None,
+        *,
+        mascot: MascotController | None = None,
     ) -> None:
         labels: dict[str, str] = {group.group_id: _source_label(group) for group in prepared.workspace.groups}
         self._files: dict[str, _FileProgressState] = {
@@ -168,6 +171,7 @@ class RichRunProgress:
         self._stage_tasks: dict[tuple[str, str], tuple[str, ...]] = _index_stage_tasks(prepared)
         self._invalidate: Callable[[], None] = invalidate
         self._on_run_started: Callable[[str], None] | None = on_run_started
+        self._mascot: MascotController | None = mascot
         self._lock: threading.Lock = threading.Lock()
         self._run_id: str | None = None
         self._last_sequence: int = 0
@@ -219,6 +223,7 @@ class RichRunProgress:
             changed = self._apply_event(event)
         if started_run_id is not None and self._on_run_started is not None:
             self._on_run_started(started_run_id)
+        self._update_mascot(event)
         if changed:
             self._invalidate()
 
@@ -376,6 +381,24 @@ class RichRunProgress:
                 state.style = "error"
             changed = True
         return changed
+
+    def _update_mascot(self, event: RunEvent) -> None:
+        mascot: MascotController | None = self._mascot
+        if mascot is None:
+            return
+        if event.kind is RunEventKind.RUN_FINISHED:
+            mascot.run_finished(event.state)
+            return
+        if event.task_id is None:
+            return
+        if event.kind is RunEventKind.TASK_FINISHED:
+            mascot.task_finished(event.task_id, event.state)
+            return
+        if event.kind is not RunEventKind.TASK_STARTED:
+            return
+        kind: TaskKind | None = self._task_kind.get(event.task_id)
+        if kind is not None:
+            mascot.task_started(event.task_id, kind)
 
 
 def _render_rows(rows: tuple[_RenderRow, ...], columns: int) -> Text:

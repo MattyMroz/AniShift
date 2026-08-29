@@ -842,14 +842,15 @@ class ManualController:
     def _render_groups(self, columns: int, rows: int) -> Text:
         labels: tuple[str, ...] = tuple(self._labels[group_id] for group_id in self._group_ids)
         entries: tuple[str, ...] = (*labels, "Dalej", "Anuluj")
+        shown: tuple[str, ...] = _fit_entries(entries, columns)
         start, end = _visible_window(len(entries), self._selected, rows)
         content: Text = _header("WYBIERZ ODCINKI", columns, rows, end - start)
-        left: int = _left_padding(columns, entries)
+        left: int = _left_padding(columns, shown)
         for index in range(start, end):
             marker: str = (
                 f"{'●' if self._group_ids[index] in self._selected_groups else '○'} " if index < len(labels) else "  "
             )
-            _append_row(content, left, entries[index], index == self._selected, marker)
+            _append_row(content, left, shown[index], index == self._selected, marker)
         return self._finish(content, left, _MULTI_HINT)
 
     def _render_group_action(self, columns: int, rows: int) -> Text:
@@ -866,13 +867,14 @@ class ManualController:
 
     def _render_products(self, columns: int, rows: int) -> Text:
         entries: tuple[str, ...] = (*(label for _product, label in _PRODUCTS), "Zapisz", "Wróć")
+        shown: tuple[str, ...] = _fit_entries(entries, columns)
         content: Text = _header("WYNIK ODCINKA", columns, rows, len(entries))
-        left: int = _left_padding(columns, entries)
-        for index, label in enumerate(entries):
+        left: int = _left_padding(columns, shown)
+        for index, _label in enumerate(entries):
             marker: str = (
                 f"{'●' if _PRODUCTS[index][0] in self._product_selection else '○'} " if index < len(_PRODUCTS) else "  "
             )
-            _append_row(content, left, label, index == self._selected, marker)
+            _append_row(content, left, shown[index], index == self._selected, marker)
         return self._finish(content, left, _MULTI_HINT)
 
     def _render_sources(self, columns: int, rows: int) -> Text:
@@ -882,9 +884,10 @@ class ManualController:
             _Screen.VIDEO: "WIDEO ŹRÓDŁOWE",
         }[self._screen]
         entries: tuple[str, ...] = tuple(choice.label for choice in self._source_choices)
+        shown: tuple[str, ...] = _fit_entries(entries, columns)
         start, end = _visible_window(len(entries), self._selected, rows)
         content: Text = _header(title, columns, rows, end - start)
-        left: int = _left_padding(columns, entries)
+        left: int = _left_padding(columns, shown)
         current: int = self._source_selection_index()
         for index in range(start, end):
             marker: str = (
@@ -892,28 +895,31 @@ class ManualController:
                 if self._source_choices[index].kind is _ChoiceKind.EXTERNAL
                 else f"{'●' if index == current else '○'} "
             )
-            _append_row(content, left, entries[index], index == self._selected, marker)
+            _append_row(content, left, shown[index], index == self._selected, marker)
         return self._finish(content, left, _MENU_HINT)
 
     def _render_preview(self, columns: int, rows: int) -> Text:
         plan: ExecutionPlan | None = self._plan
-        content: Text = _header("TRYB RĘCZNY", columns, rows, 9)
-        summary: tuple[str, ...] = self._preview_summary(plan)
-        left: int = _left_padding(columns, summary)
-        for line in summary:
-            content.append(f"{' ' * left}{line}\n", style="white_bold")
-        blockers: tuple[str, ...] = self._blocker_lines(plan)
-        for line in blockers:
-            content.append(f"{' ' * left}{line}\n", style="error")
-        warnings: tuple[str, ...] = self._warning_lines(plan)
-        for line in warnings:
-            content.append(f"{' ' * left}{line}\n", style="warning")
-        content.append("\n")
+        summary: tuple[str, ...] = _fit_entries(self._preview_summary(plan), columns)
+        blockers: tuple[str, ...] = _fit_entries(self._blocker_lines(plan), columns)
+        warnings: tuple[str, ...] = _fit_entries(self._warning_lines(plan), columns)
         entries: tuple[str, ...] = (
             ("Uruchom", "Wróć do zmian", "Anuluj")
             if plan is not None and plan.can_execute
             else ("Wróć do zmian", "Anuluj")
         )
+        problem_budget: int = max(rows - len(summary) - len(entries) - 8, 0)
+        blockers, warnings = _limit_problems(blockers, warnings, problem_budget)
+        content_rows: int = len(summary) + len(blockers) + len(warnings) + len(entries) + 2
+        content: Text = _header("TRYB RĘCZNY", columns, rows, content_rows)
+        left: int = _left_padding(columns, (*summary, *blockers, *warnings, *entries))
+        for line in summary:
+            content.append(f"{' ' * left}{line}\n", style="white_bold")
+        for line in blockers:
+            content.append(f"{' ' * left}{line}\n", style="error")
+        for line in warnings:
+            content.append(f"{' ' * left}{line}\n", style="warning")
+        content.append("\n")
         for index, label in enumerate(entries):
             _append_row(content, left, label, index == self._selected)
         return self._finish(content, left, _MENU_HINT)
@@ -966,11 +972,12 @@ class ManualController:
         return self._finish(content, left, "Esc anuluj")
 
     def _render_menu(self, title: str, entries: tuple[str, ...], columns: int, rows: int) -> Text:
+        shown: tuple[str, ...] = _fit_entries(entries, columns)
         start, end = _visible_window(len(entries), self._selected, rows)
         content: Text = _header(title, columns, rows, end - start)
-        left: int = _left_padding(columns, entries)
+        left: int = _left_padding(columns, shown)
         for index in range(start, end):
-            _append_row(content, left, entries[index], index == self._selected)
+            _append_row(content, left, shown[index], index == self._selected)
         return self._finish(content, left, _MENU_HINT)
 
     def _finish(self, content: Text, left: int, hint: str) -> Text:
@@ -982,9 +989,10 @@ class ManualController:
 
 def _header(title: str, columns: int, rows: int, content_rows: int) -> Text:
     top: int = max((rows - content_rows - 5) // 2, 0)
-    left: int = max((columns - len(title)) // 2, 0)
+    shown: str = _truncate_right(title, max(columns - 2, 1))
+    left: int = max((columns - len(shown)) // 2, 0)
     content = Text("\n" * top)
-    content.append(f"{' ' * left}{title}\n\n", style="white_bold")
+    content.append(f"{' ' * left}{shown}\n\n", style="white_bold")
     return content
 
 
@@ -999,6 +1007,39 @@ def _append_row(content: Text, left: int, label: str, active: bool, marker: str 
 def _left_padding(columns: int, entries: Sequence[str]) -> int:
     width: int = max((len(entry) for entry in entries), default=1) + 4
     return max((columns - min(width, columns)) // 2, 0)
+
+
+def _fit_entries(entries: Sequence[str], columns: int) -> tuple[str, ...]:
+    width: int = max(columns - 8, 1)
+    return tuple(_truncate_right(entry, width) for entry in entries)
+
+
+def _limit_problems(
+    blockers: tuple[str, ...],
+    warnings: tuple[str, ...],
+    budget: int,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    total: int = len(blockers) + len(warnings)
+    if total <= budget:
+        return blockers, warnings
+    if budget < 1:
+        return (), ()
+    visible_blockers: tuple[str, ...] = blockers[:budget]
+    remaining: int = budget - len(visible_blockers)
+    visible_warnings: tuple[str, ...] = warnings[:remaining]
+    hidden: int = total - len(visible_blockers) - len(visible_warnings)
+    marker: str = f"… jeszcze {hidden}"
+    if visible_warnings:
+        return visible_blockers, (*visible_warnings[:-1], marker)
+    return (*visible_blockers[:-1], marker), ()
+
+
+def _truncate_right(value: str, width: int) -> str:
+    if len(value) <= width:
+        return value
+    if width <= 1:
+        return "…"
+    return f"{value[: width - 1]}…"
 
 
 def _visible_window(count: int, selected: int, rows: int) -> tuple[int, int]:

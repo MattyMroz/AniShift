@@ -15,6 +15,7 @@ from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import sanitize_event_message
 from anishift.cli.interactive.home import HomeAction, brand_for_geometry, working_directory_label
 from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
+from anishift.cli.interactive.mascot import MascotController, MascotState
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.prompts import (
     AutoGeometry,
@@ -101,10 +102,14 @@ class _InteractiveApplication:
         self._worker: threading.Thread | None = None
         self._directory: str = working_directory_label()
         self._renderer: TerminalRenderer = TerminalRenderer(self._render_frame, self._handle_key)
+        self._mascot: MascotController = MascotController(self._renderer.invalidate)
 
     def run(self) -> None:
         """Run the interactive session until Home exits."""
-        self._renderer.run()
+        try:
+            self._renderer.run()
+        finally:
+            self._mascot.close()
 
     def _handle_key(self, key: str) -> None:
         with self._lock:
@@ -193,6 +198,7 @@ class _InteractiveApplication:
                 self._preflight_cancel = None
             if preflight_cancel is not None:
                 preflight_cancel.cancel()
+            self._mascot.reset()
             self._renderer.invalidate()
             return
         if mode is _ViewMode.MANUAL:
@@ -214,6 +220,7 @@ class _InteractiveApplication:
             run_id: str | None = progress.run_id if progress is not None else None
             if run_id is not None:
                 self._service.cancel(run_id)
+            self._mascot.reset()
             self._renderer.invalidate()
             return
         self._show_home()
@@ -237,6 +244,7 @@ class _InteractiveApplication:
             )
             worker: threading.Thread = self._worker
         self._renderer.invalidate()
+        self._mascot.show(MascotState.DISCOVER)
         worker.start()
 
     def _start_manual(self) -> None:
@@ -257,6 +265,7 @@ class _InteractiveApplication:
             )
             worker: threading.Thread = self._worker
         self._renderer.invalidate()
+        self._mascot.show(MascotState.DISCOVER)
         worker.start()
 
     def _prepare_manual(self, generation: int) -> None:
@@ -286,6 +295,7 @@ class _InteractiveApplication:
                 self._manual = controller
                 self._mode = _ViewMode.MANUAL
                 self._worker = None
+            self._mascot.reset()
             self._renderer.invalidate()
         except (AniShiftError, OSError) as problem:
             with self._lock:
@@ -301,6 +311,8 @@ class _InteractiveApplication:
             self._generation += 1
             generation: int = self._generation
             self._manual = None
+            self._mode = _ViewMode.PREPARING
+            self._progress = None
             self._cancel_requested = False
             self._worker = threading.Thread(
                 target=self._execute_run,
@@ -309,6 +321,8 @@ class _InteractiveApplication:
                 daemon=True,
             )
             worker: threading.Thread = self._worker
+        self._mascot.reset()
+        self._renderer.invalidate()
         worker.start()
 
     def _prepare_and_run(self, generation: int) -> None:
@@ -330,6 +344,7 @@ class _InteractiveApplication:
             if isinstance(preparation, AutoRunRefusal):
                 self._finish_with_message(generation, _refusal_text(preparation))
                 return
+            self._mascot.reset()
             self._execute_run(generation, preparation)
         except (AniShiftError, OSError) as problem:
             with self._lock:
@@ -344,6 +359,7 @@ class _InteractiveApplication:
                 prepared,
                 self._renderer.invalidate,
                 self._on_run_started,
+                mascot=self._mascot,
             )
             with self._lock:
                 if generation != self._generation:
@@ -384,10 +400,12 @@ class _InteractiveApplication:
             self._cancel_requested = False
             self._preflight_cancel = None
             self._worker = None
+        self._mascot.show(MascotState.ERROR)
         self._renderer.invalidate()
 
     def _show_settings(self) -> None:
         controller: SettingsController = SettingsController(self._service, self._renderer.invalidate)
+        self._mascot.reset()
         with self._lock:
             self._settings = controller
             self._mode = _ViewMode.SETTINGS
@@ -395,6 +413,7 @@ class _InteractiveApplication:
         self._renderer.invalidate()
 
     def _show_home(self) -> None:
+        self._mascot.reset()
         with self._lock:
             self._mode = _ViewMode.HOME
             self._message = Text()
@@ -412,20 +431,21 @@ class _InteractiveApplication:
             progress: RichRunProgress | None = self._progress
             settings: SettingsController | None = self._settings
             manual: ManualController | None = self._manual
+        mascot_state: MascotState = self._mascot.state
         if mode is _ViewMode.HOME:
-            content: Text = _home_content(columns, rows, selected)
+            content: Text = _home_content(columns, rows, selected, mascot_state)
         elif mode is _ViewMode.PREPARING:
-            content = _preparing_content(columns, rows)
+            content = _preparing_content(columns, rows, mascot_state)
         elif mode is _ViewMode.MANUAL_PREPARING:
-            content = _manual_preparing_content(columns, rows)
+            content = _manual_preparing_content(columns, rows, mascot_state)
         elif mode is _ViewMode.MANUAL and manual is not None:
             content = manual.render(columns, rows)
         elif mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
-            content = _auto_content(columns, rows, progress)
+            content = _auto_content(columns, rows, progress, mascot_state)
         elif mode is _ViewMode.SETTINGS and settings is not None:
             content = settings.render(columns, rows)
         else:
-            content = _message_content(columns, rows, message)
+            content = _message_content(columns, rows, message, mascot_state)
         return _fit_frame(content, __version__, self._directory, columns, rows)
 
 
@@ -434,10 +454,10 @@ def run_interactive(service: AppService) -> None:
     _InteractiveApplication(service).run()
 
 
-def _home_content(columns: int, rows: int, selected: int) -> Text:
+def _home_content(columns: int, rows: int, selected: int, mascot_state: MascotState) -> Text:
     geometry: HomeGeometry = resolve_home_geometry(columns, rows)
     content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry))
+    content.append_text(brand_for_geometry(geometry, mascot_state))
     content.append("\n\n")
     for index, (label, _action) in enumerate(_HOME_CHOICES):
         content.append(" " * geometry.left_padding)
@@ -452,17 +472,17 @@ def _home_content(columns: int, rows: int, selected: int) -> Text:
     return content
 
 
-def _preparing_content(columns: int, rows: int) -> Text:
+def _preparing_content(columns: int, rows: int, mascot_state: MascotState) -> Text:
     geometry: AutoGeometry = resolve_auto_geometry(columns, rows, 1)
     content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry))
+    content.append_text(brand_for_geometry(geometry, mascot_state))
     return content
 
 
-def _manual_preparing_content(columns: int, rows: int) -> Text:
+def _manual_preparing_content(columns: int, rows: int, mascot_state: MascotState) -> Text:
     geometry: AutoGeometry = resolve_auto_geometry(columns, rows, 1)
     content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry))
+    content.append_text(brand_for_geometry(geometry, mascot_state))
     spinner: str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(time.monotonic() * 10) % 10]
     label: str = f"{spinner} Skanowanie plików…"
     content.append(f"\n\n{' ' * max((columns - len(label)) // 2, 0)}{label}", style="purple_bold")
@@ -473,19 +493,20 @@ def _auto_content(
     columns: int,
     rows: int,
     progress: RichRunProgress,
+    mascot_state: MascotState,
 ) -> Text:
     geometry: AutoGeometry = resolve_auto_geometry(columns, rows, progress.row_count)
     content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry))
+    content.append_text(brand_for_geometry(geometry, mascot_state))
     content.append("\n")
     content.append_text(progress.render(columns))
     return content
 
 
-def _message_content(columns: int, rows: int, message: Text) -> Text:
+def _message_content(columns: int, rows: int, message: Text, mascot_state: MascotState) -> Text:
     geometry: HomeGeometry = resolve_home_geometry(columns, rows)
     content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry))
+    content.append_text(brand_for_geometry(geometry, mascot_state))
     content.append("\n\n")
     content.append_text(message)
     content.append("\n\nNaciśnij dowolny klawisz, aby wrócić", style="gray")

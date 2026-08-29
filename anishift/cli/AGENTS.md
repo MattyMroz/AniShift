@@ -58,10 +58,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Katalog modeli jest tylko do odczytu, a probe działa wyłącznie po jawnej akcji.
   `interactive/settings.py`
 - Home ma slime 20×14, sześciowierszowy wordmark, cztery akcje, hint i esencjonalną
-  stopkę z cwd/version. Resize otwartego promptu wywołuje czysty rerender; nie
-  rozciągaj elementów wraz z terminalem.
-  `interactive/home.py`,
-  `interactive/prompts.py`
+  stopkę z cwd/version. `MascotController` mapuje zaakceptowane eventy pracy na
+  statyczne stany; nie ma własnego workera ani bezpośredniego zapisu do terminala.
+  Asset PNG renderuje się jako półbloki, a błąd dekodowania lub zbyt mały terminal
+  degraduje widok do ASCII albo braku maskotki. Resize otwartego promptu wywołuje
+  czysty rerender; nie rozciągaj elementów wraz z terminalem.
+  `interactive/home.py`, `interactive/mascot.py`, `interactive/prompts.py`
 - `configure_utf8_streams()` musi znosić `None`, `StringIO` i strumienie bez
   `reconfigure`; jest idempotentne. `console.py`
 

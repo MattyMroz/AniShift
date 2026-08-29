@@ -9,7 +9,7 @@ from typing import Final
 
 from rich.text import Text
 
-from anishift.cli.interactive.mascot import mascot_art
+from anishift.cli.interactive.mascot import MascotState, mascot_art
 from anishift.cli.interactive.prompts import AutoGeometry, HomeGeometry
 
 __all__ = [
@@ -70,10 +70,15 @@ _BRAND_GAP: Final[str] = "  "
 """Fixed separation between the mascot and wordmark."""
 
 
-@lru_cache(maxsize=32)
-def brand_for_geometry(geometry: HomeGeometry | AutoGeometry) -> Text:
+@lru_cache(maxsize=64)
+def brand_for_geometry(
+    geometry: HomeGeometry | AutoGeometry,
+    state: MascotState = MascotState.IDLE,
+) -> Text:
     """Build the centered brand selected for one terminal geometry."""
-    mascot: Text | None = mascot_art(geometry.mascot_columns, geometry.mascot_rows) if geometry.show_mascot else None
+    mascot: Text | None = (
+        mascot_art(geometry.mascot_columns, geometry.mascot_rows, state) if geometry.show_mascot else None
+    )
     brand: Text = _home_brand(mascot, show_full_wordmark=geometry.show_full_wordmark)
     return _centered_brand(brand, geometry.terminal_columns)
 
