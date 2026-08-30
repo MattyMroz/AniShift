@@ -4,9 +4,8 @@ This module creates the client, and only the engine imports it. What keeps the
 Palantir package free of ``httpx`` is not this split but ``__init__.py``, which
 imports neither this module nor ``service``; the registry reaches the engine
 through the ``.service`` submodule, so an HTTP client is loaded only once an
-engine is actually created. One request is sent, its full body is read before
-anything is parsed — the engine never consumes a stream — and the outcome is
-either a decoded mapping or a typed LLM error.
+engine is actually created. Ordinary responses are decoded as one mapping;
+Google streaming responses are decoded one SSE event at a time.
 
 The failure mapping mirrors the taxonomy the four native engines use: a timeout
 becomes a transient timeout, an unreachable enrollment becomes a transient
@@ -18,12 +17,13 @@ Public API:
     build_palantir_client: Create the synchronous client the engine owns.
     send_palantir_request: Send one described request and return its decoded
         body or raise a typed failure.
+    stream_palantir_request: Consume one SSE response as decoded JSON events.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from http import HTTPStatus
 from typing import Any
 
@@ -39,7 +39,7 @@ from anishift.services.llm.engines.palantir.errors import (
 from anishift.services.llm.engines.palantir.protocols import PalantirHttpRequest
 from anishift.utils.logger import get_logger
 
-__all__ = ["build_palantir_client", "send_palantir_request"]
+__all__ = ["build_palantir_client", "send_palantir_request", "stream_palantir_request"]
 
 logger = get_logger(__name__)
 
@@ -94,6 +94,40 @@ def send_palantir_request(
     return payload
 
 
+def stream_palantir_request(
+    client: httpx.Client,
+    built: PalantirHttpRequest,
+    *,
+    alias: str,
+) -> tuple[Mapping[str, Any], ...]:
+    """Consume one SSE response and return its decoded JSON events."""
+    try:
+        with client.stream(
+            built.method,
+            built.url,
+            headers=dict(built.headers),
+            content=json.dumps(dict(built.body)).encode("utf-8"),
+        ) as response:
+            if response.status_code >= HTTPStatus.BAD_REQUEST:
+                response.read()
+                payload: dict[str, Any] | None = _decode(response.text)
+                logger.debug("Palantir proxy returned an error status", alias=alias, status=response.status_code)
+                raise palantir_status_error(
+                    response.status_code,
+                    alias=alias,
+                    payload=payload,
+                    retry_after_s=_retry_after(response.headers),
+                )
+            events: tuple[Mapping[str, Any], ...] = tuple(_sse_events(response.iter_lines(), alias=alias))
+    except httpx.TimeoutException as error:
+        raise palantir_timeout_error(alias=alias) from error
+    except httpx.TransportError as error:
+        raise palantir_unavailable_error(alias=alias) from error
+    if not events:
+        raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.UNREADABLE_BODY)
+    return events
+
+
 def _send(client: httpx.Client, built: PalantirHttpRequest, *, alias: str) -> httpx.Response:
     """Send the request, mapping transport failures onto transient errors."""
     try:
@@ -116,6 +150,31 @@ def _decode(body: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _sse_events(lines: Iterator[str], *, alias: str) -> Iterator[Mapping[str, Any]]:
+    """Yield JSON objects carried by SSE data fields."""
+    data_lines: list[str] = []
+    for line in lines:
+        if line:
+            if line.startswith("data:"):
+                data_lines.append(line.removeprefix("data:").lstrip())
+            continue
+        yield from _decode_sse_data(data_lines, alias=alias)
+        data_lines.clear()
+    yield from _decode_sse_data(data_lines, alias=alias)
+
+
+def _decode_sse_data(data_lines: list[str], *, alias: str) -> Iterator[Mapping[str, Any]]:
+    if not data_lines:
+        return
+    data: str = "\n".join(data_lines)
+    if data == "[DONE]":
+        return
+    payload: dict[str, Any] | None = _decode(data)
+    if payload is None:
+        raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.UNREADABLE_BODY)
+    yield payload
 
 
 def _retry_after(headers: Mapping[str, str]) -> float | None:

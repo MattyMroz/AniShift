@@ -27,7 +27,7 @@ class LlmConfig:
     temperature: float | None = None
     top_p: float | None = None
     max_output_tokens: int | None = None
-    timeout_s: float = 60.0
+    timeout_s: float = 300.0
     max_retries: int = 2
     alias: str = ""
     provider_id: str = ""

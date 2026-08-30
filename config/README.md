@@ -1,38 +1,27 @@
 # config/
 
-Preferences and hand-written runtime files live here — **not** in `workspace/`.
+Preferences and hand-written runtime files live here, not in `workspace/`.
 
-This directory holds every hand-editable runtime file AniShift keeps next to the
-code:
+This directory holds every hand-editable runtime file AniShift keeps next to
+the code:
 
-- `settings.json` — workflow and engine preferences (processing mode,
-  translation/TTS engine, voice, tempo, volume, engine options);
-- `presets.json` — the stored presets a run applies, and which one is the
-  default `anishift` takes without `--preset`;
-- `anishift.models.jsonc` — the local model catalogue; copy it from the tracked
-  `anishift.models.example.jsonc` and comment it freely, AniShift only reads it.
+- `settings.json` stores workflow and engine preferences;
+- `presets.json` stores reusable run presets and the default preset;
+- `anishift.models.jsonc` is the local model catalog copied from
+  `anishift.models.example.jsonc`.
 
-Each of them is created with its defaults on first run. Durable products are
-always written beside their source, never here.
+Durable products are always written beside their source, never here.
+Per-machine files are gitignored; only this README and the model-catalog
+example are tracked.
 
-## Why here and not in workspace
+## LLM translation prompts
 
-`workspace/` is for runtime data only — the folder the user drops MKV files
-into. Keeping these files next to the code leaves that folder clean while they
-stay visible and hand-editable. They are per-machine and never committed:
-`.gitignore` covers `settings.json`, `presets.json`, `anishift.models.jsonc` and
-the custom prompts. Only this README and the model-catalogue example are tracked.
+Translation prompts are versioned application resources under
+`anishift/services/translation/engines/llm/prompts/`, not runtime config.
+The fixed files are `system.md`, `translation.md` and `retry.md`; selectable
+styles are immediate `styles/*.md` files.
 
-## Custom LLM prompts
-
-Optional user prompts live in:
-
-- `prompts/tasks/*.txt` — complete translation tasks;
-- `prompts/styles/*.txt` — Polish-language style instructions;
-- `prompts/modules/*.txt` — optional reusable instruction modules.
-
-The filename without `.txt` is the prompt ID a preference stores. AniShift
-rescans the directory every time it loads the preferences and forgets a selected
-ID whose file is gone. Custom files use version `1`; empty files and duplicate
-IDs are rejected with a clear configuration error. User-authored `.txt` prompts
-are gitignored.
+`settings.json` stores only the selected style name in
+`llm_translation_style`. To add a style, add and ship another UTF-8 Markdown
+file in the module's `styles/` directory. Missing, empty or invalid packaged
+resources are configuration errors.

@@ -10,7 +10,7 @@ from anishift.services._base import EngineInfo
 if TYPE_CHECKING:
     from anishift.services.llm.types import LlmRequest, LlmResponse
 
-__all__ = ["LlmAttemptObserver", "LlmEngine"]
+__all__ = ["LlmAttemptObserver", "LlmEngine", "StreamingLlmEngine"]
 
 
 @runtime_checkable
@@ -23,6 +23,15 @@ class LlmEngine(EngineInfo, Protocol):
 
     def close(self) -> None:
         """Release resources held by the provider client."""
+        ...
+
+
+@runtime_checkable
+class StreamingLlmEngine(Protocol):
+    """Optional engine capability for incrementally received completions."""
+
+    def complete_stream(self, request: LlmRequest) -> LlmResponse:
+        """Run one completion while consuming provider chunks incrementally."""
         ...
 
 

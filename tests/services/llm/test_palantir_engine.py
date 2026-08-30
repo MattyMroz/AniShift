@@ -239,6 +239,50 @@ def test_google_generate_maps_the_request_and_normalizes_the_response() -> None:
     assert result.usage.total_tokens == 9
 
 
+def test_google_generate_streams_sse_chunks_and_assembles_the_response() -> None:
+    captured: list[httpx.Request] = []
+    chunks = [
+        {"candidates": [{"content": {"role": "model", "parts": [{"text": '{"translations":'}]}}]},
+        {
+            "candidates": [
+                {
+                    "content": {"role": "model", "parts": [{"text": "[]}"}]},
+                    "finishReason": "STOP",
+                }
+            ],
+            "usageMetadata": {"promptTokenCount": 6, "candidatesTokenCount": 3, "totalTokenCount": 9},
+        },
+    ]
+    stream_body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+    response = httpx.Response(200, text=stream_body, headers={"content-type": "text/event-stream"})
+    config = _config(
+        protocol=ModelProtocol.GOOGLE_GENERATE,
+        provider_path=_GOOGLE_ROUTE,
+        provider_model_id="ri.models.main:gemini-3.7-flash",
+    )
+    engine = _engine(_recording_transport(response, captured), config)
+
+    result = engine.complete_stream(_request())
+
+    assert str(captured[0].url) == (
+        f"{_ENROLLMENT}{_GOOGLE_ROUTE}/models/ri.models.main%3Agemini-3.7-flash:streamGenerateContent?alt=sse"
+    )
+    assert result.text == '{"translations":[]}'
+    assert result.finish_reason == "stop"
+    assert result.usage.total_tokens == 9
+
+
+def test_google_stream_rejects_a_malformed_sse_event() -> None:
+    response = httpx.Response(200, text="data: not-json\n\n", headers={"content-type": "text/event-stream"})
+    config = _config(protocol=ModelProtocol.GOOGLE_GENERATE, provider_path=_GOOGLE_ROUTE)
+    engine = _engine(httpx.MockTransport(lambda request: response), config)
+
+    with pytest.raises(LlmRequestError) as rejected:
+        engine.complete_stream(_request())
+
+    assert rejected.value.context.details["defect"] == PalantirResponseDefect.UNREADABLE_BODY.value
+
+
 def test_a_stream_shaped_body_is_rejected_as_a_typed_defect_without_leaking_chunks() -> None:
     captured: list[str] = []
     handler_id = loguru_logger.add(captured.append, format="{message} {extra}", level="DEBUG")

@@ -24,7 +24,7 @@ Public API:
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Final
 from urllib.parse import quote
@@ -88,6 +88,9 @@ _MESSAGES_ROUTE: Final[str] = "/messages"
 _GENERATE_CONTENT_ROUTE: Final[str] = "/models/{model}:generateContent"
 """Route template of the Google generateContent protocol."""
 
+_STREAM_GENERATE_CONTENT_ROUTE: Final[str] = "/models/{model}:streamGenerateContent?alt=sse"
+"""SSE route template of the Google streaming generateContent protocol."""
+
 _ANTHROPIC_VERSION_HEADER: Final[str] = "anthropic-version"
 """Header the Anthropic Messages API requires on every request."""
 
@@ -149,6 +152,8 @@ def build_palantir_request(
     config: PalantirModelConfig,
     request: LlmRequest,
     options: PalantirGenerationOptions | None = None,
+    *,
+    stream: bool = False,
 ) -> PalantirHttpRequest:
     """Build the request one configuration and one neutral prompt describe.
 
@@ -156,6 +161,7 @@ def build_palantir_request(
         config: Configuration whose protocol selects the builder.
         request: Neutral ordered messages of one completion.
         options: Already validated generation limits, none by default.
+        stream: Whether to select Google's SSE endpoint.
 
     Returns:
         The described request, ready for an engine to send.
@@ -166,6 +172,15 @@ def build_palantir_request(
     """
     builder: PalantirRequestBuilder = request_builder(config.protocol)
     built: PalantirHttpRequest = builder(config, request, options or PalantirGenerationOptions())
+    if stream:
+        if config.protocol is not ModelProtocol.GOOGLE_GENERATE:
+            raise_palantir_config_error(
+                "Palantir streaming is available only for the Google generate protocol",
+                field_name="protocol",
+                suggestion="Use the normal completion path for this provider protocol.",
+            )
+        route: str = _STREAM_GENERATE_CONTENT_ROUTE.format(model=quote(config.provider_model_id, safe=""))
+        built = replace(built, url=f"{config.base_url}{route}")
     logger.debug(
         "Palantir request built",
         alias=config.alias,

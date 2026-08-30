@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+import threading
+from typing import Any, cast
 
 import pytest
 
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
-from anishift.application.runtime import _audio_config, _raise_translation_error, _tts_config
+from anishift.application.runtime import _audio_config, _LlmCompleter, _raise_translation_error, _tts_config
 from anishift.config.settings import Settings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
@@ -21,8 +22,13 @@ from anishift.services.llm import (
     LlmProviderUnavailableError,
     LlmQuotaError,
     LlmRateLimitError,
+    LlmRequest,
     LlmRequestError,
+    LlmResponse,
+    LlmRole,
+    LlmService,
     LlmTimeoutError,
+    LlmUsage,
 )
 from anishift.services.translation.errors import (
     TranslationAuthError,
@@ -32,6 +38,7 @@ from anishift.services.translation.errors import (
     TranslationQuotaError,
     TranslationRateLimitError,
 )
+from anishift.services.translation.protocols import LlmCompletionRequest
 from anishift.services.tts.config import DEFAULT_RETRY_BACKOFF_SECONDS
 
 
@@ -56,6 +63,23 @@ def _snapshot(**overrides: Any) -> RunSettingsSnapshot:
 
 def _plan(**overrides: Any) -> ExecutionPlan:
     return ExecutionPlan((), (), (), _snapshot(**overrides), ())
+
+
+class _RecordingLlmService:
+    def __init__(self) -> None:
+        self.request: LlmRequest | None = None
+
+    def complete(self, request: LlmRequest, *, cancel: threading.Event) -> LlmResponse:
+        del cancel
+        self.request = request
+        return LlmResponse(
+            text="result",
+            engine_id="fake",
+            provider_model_id="fake-model",
+            finish_reason="stop",
+            latency_ms=1.0,
+            usage=LlmUsage(),
+        )
 
 
 def test_the_run_snapshot_becomes_the_speech_configuration() -> None:
@@ -84,6 +108,31 @@ def test_the_run_snapshot_becomes_the_speech_configuration() -> None:
     assert config.elevenlabs_api_key == "unused-by-elevenbytes"
     assert config.metadata_cache_root is not None
     assert config.metadata_cache_root.name == "config"
+
+
+def test_llm_completer_preserves_system_and_separate_user_parts() -> None:
+    service = _RecordingLlmService()
+    completer = _LlmCompleter(cast("LlmService", service), threading.Event())
+
+    result = completer.complete(
+        LlmCompletionRequest(
+            system="system",
+            user_parts=("translation", "style", '{"subtitles":[]}'),
+        )
+    )
+
+    assert result.text == "result"
+    assert service.request is not None
+    assert tuple(message.role for message in service.request.messages) == (
+        LlmRole.SYSTEM,
+        LlmRole.USER,
+    )
+    assert tuple(part.text for part in service.request.messages[0].parts) == ("system",)
+    assert tuple(part.text for part in service.request.messages[1].parts) == (
+        "translation",
+        "style",
+        '{"subtitles":[]}',
+    )
 
 
 def test_the_elevenbytes_profile_keeps_its_own_deadline_and_retry_delays() -> None:

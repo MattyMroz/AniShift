@@ -17,12 +17,12 @@ to debug the provider route instead of the content. The probe recognizes only
 blocking reasons, so a body that is genuinely malformed still yields its typed
 defect.
 
-The body is always a fully read mapping here; this module never touches the
-network and never reassembles a stream. A chunked or event-stream body has
-already failed to decode into a mapping before reaching this module and is
-reported as an unreadable body.
+This module never touches the network. The HTTP boundary decodes SSE events,
+then this module assembles Google text deltas before applying the same strict
+normalization as a non-streaming response.
 
 Public API:
+    merge_google_stream: Assemble decoded Google SSE events.
     normalize_palantir_response: Map one decoded proxy body onto an
         ``LlmResponse`` or raise a typed failure.
 """
@@ -45,7 +45,7 @@ from anishift.services.llm.types import LlmResponse, LlmUsage
 from anishift.services.llm.wire_protocol import ModelProtocol
 from anishift.utils.logger import get_logger
 
-__all__ = ["normalize_palantir_response"]
+__all__ = ["merge_google_stream", "normalize_palantir_response"]
 
 logger = get_logger(__name__)
 
@@ -95,6 +95,53 @@ _BLOCKED_FINISH_REASONS: Final[frozenset[str]] = frozenset(
     },
 )
 """Normalized finish reasons that mean the provider withheld the completion."""
+
+
+def merge_google_stream(events: tuple[Mapping[str, Any], ...]) -> Mapping[str, Any]:
+    """Assemble Google SSE events into one normalizable response mapping."""
+    texts: list[str] = []
+    finish_reason: object = None
+    usage: object = None
+    prompt_feedback: object = None
+    for event in events:
+        if "usageMetadata" in event:
+            usage = event["usageMetadata"]
+        if "promptFeedback" in event:
+            prompt_feedback = event["promptFeedback"]
+        candidate: Mapping[str, Any] | None = _optional_first(event, key="candidates")
+        if candidate is None:
+            continue
+        if "finishReason" in candidate:
+            finish_reason = candidate["finishReason"]
+        texts.extend(_google_stream_texts(candidate))
+    payload: dict[str, Any] = {}
+    if prompt_feedback is not None:
+        payload["promptFeedback"] = prompt_feedback
+    if texts or finish_reason is not None:
+        candidate = {"content": {"role": "model", "parts": [{"text": "".join(texts)}]}}
+        if finish_reason is not None:
+            candidate["finishReason"] = finish_reason
+        payload["candidates"] = [candidate]
+    if usage is not None:
+        payload["usageMetadata"] = usage
+    return payload
+
+
+def _google_stream_texts(candidate: Mapping[str, Any]) -> list[str]:
+    content: object = candidate.get("content")
+    if not isinstance(content, Mapping):
+        return []
+    parts: object = content.get("parts")
+    if not isinstance(parts, (list, tuple)):
+        return []
+    texts: list[str] = []
+    for part in parts:
+        if not isinstance(part, Mapping) or part.get("thought"):
+            continue
+        text: object = part.get("text")
+        if isinstance(text, str):
+            texts.append(text)
+    return texts
 
 
 def normalize_palantir_response(  # noqa: PLR0913 - one explicit argument per response coordinate

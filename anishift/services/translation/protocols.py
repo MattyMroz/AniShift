@@ -24,9 +24,6 @@ TranslationInputPolicy = Literal["deduplicate", "preserve"]
 TranslationStream = Literal["spoken", "displayed"]
 """Subtitle text stream translated by an engine."""
 
-PromptPurpose = Literal["translation", "translation_repair"]
-"""Stable purpose identifier attached to a translation LLM request."""
-
 type TranslationEngineFactory = Callable[
     [str, TranslationConfig],
     TranslationEngine,
@@ -35,32 +32,11 @@ type TranslationEngineFactory = Callable[
 
 
 @dataclass(frozen=True, slots=True)
-class PromptIdentity:
-    """Identity of the static prompt assets used for a completion.
-
-    Attributes:
-        prompt_id: Selected translation task identifier.
-        prompt_version: Version of the selected task.
-        style_id: Selected translation style identifier.
-        fingerprint: SHA-256 fingerprint of all static prompt assets.
-        purpose: Translation or output-format repair.
-    """
-
-    prompt_id: str
-    prompt_version: int
-    style_id: str
-    fingerprint: str
-    purpose: PromptPurpose
-
-
-@dataclass(frozen=True, slots=True)
 class LlmCompletionRequest:
     """Translation-owned LLM completion input."""
 
     system: str
-    user: str
-    identity: PromptIdentity
-    omitted_context_items: int = 0
+    user_parts: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,9 +85,19 @@ class TranslationCancellation(Protocol):
 
 
 class TranslationObserver(Protocol):
-    """Observer of provider retry and engine fallback decisions."""
+    """Observer of translation progress, retry and fallback decisions."""
 
-    def retry(self, engine_id: str, attempt: int, max_attempts: int) -> None:
+    def progress(self, engine_id: str, completed: int, total: int) -> None:
+        """Observe completed provider input lines."""
+        ...
+
+    def retry(
+        self,
+        engine_id: str,
+        attempt: int,
+        max_attempts: int,
+        reason: str | None = None,
+    ) -> None:
         """Observe one provider request being scheduled again."""
         ...
 
@@ -137,8 +123,6 @@ __all__ = [
     "LlmCompleter",
     "LlmCompletionRequest",
     "LlmCompletionResult",
-    "PromptIdentity",
-    "PromptPurpose",
     "TranslationCancellation",
     "TranslationEngine",
     "TranslationEngineFactory",

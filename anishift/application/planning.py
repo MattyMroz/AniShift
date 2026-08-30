@@ -160,9 +160,7 @@ class RunSettingsSnapshot:
     llm_temperature: float | None = None
     llm_top_p: float | None = None
     llm_max_output_tokens: int | None = None
-    llm_prompt_id: str = "anime_translation_v1"
-    llm_style_id: str = "natural_polish_v1"
-    llm_module_ids: tuple[str, ...] = ()
+    llm_translation_style: str = "neutral"
     tts_model_id: str = "default"
     tts_voice_id: str = "default"
     tts_voice_label: str = "default"
@@ -221,8 +219,7 @@ def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
 def _validate_runtime_settings(settings: RunSettingsSnapshot) -> None:
     runtime_ids: tuple[str, ...] = (
         settings.llm_model_id,
-        settings.llm_prompt_id,
-        settings.llm_style_id,
+        settings.llm_translation_style,
         settings.tts_model_id,
         settings.tts_voice_id,
         settings.tts_voice_label,
@@ -230,7 +227,6 @@ def _validate_runtime_settings(settings: RunSettingsSnapshot) -> None:
     if any(not value.strip() for value in runtime_ids):
         msg = "Run setting runtime IDs cannot be empty"
         raise ValueError(msg)
-    _require_unique(settings.llm_module_ids, "LLM prompt module IDs")
     option_names: tuple[str, ...] = tuple(name for name, _ in settings.tts_engine_options)
     _require_unique(option_names, "TTS engine option names")
     if settings.llm_temperature is not None and not 0 <= settings.llm_temperature <= _MAX_LLM_TEMPERATURE:

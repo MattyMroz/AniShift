@@ -59,7 +59,7 @@ def _with_custom_voice(alias: str, *, active: bool) -> UserSettings:
     return settings
 
 
-def test_field_access_covers_every_setting_value_type_of_the_catalog() -> None:
+def test_field_access_covers_every_persisted_setting_value_type() -> None:
     covered: set[SettingValueType] = set()
 
     for settings in _engine_selections():
@@ -71,7 +71,7 @@ def test_field_access_covers_every_setting_value_type_of_the_catalog() -> None:
             assert read_setting_value(settings, spec) == value
             covered.add(spec.value_type)
 
-    assert covered == set(SettingValueType)
+    assert covered == set(SettingValueType) - {SettingValueType.STRING_SET}
 
 
 def test_unsupported_value_type_fails_loudly_instead_of_guessing() -> None:
@@ -179,16 +179,6 @@ def test_string_list_keeps_the_container_of_each_persisted_field() -> None:
     assert settings.audio_language_priority == ("jpn", "eng")
     assert read_setting_value(settings, fallback_spec) == ("google", "deepl")
     assert read_setting_value(settings, language_spec) == ("jpn", "eng")
-
-
-def test_string_set_is_persisted_in_a_stable_order() -> None:
-    settings: UserSettings = UserSettings()
-    module_spec: SettingSpec = _spec(settings, "llm_module_ids")
-
-    assign_setting_value(settings, module_spec, frozenset({"second", "first", "third"}))
-
-    assert settings.llm_module_ids == ["first", "second", "third"]
-    assert read_setting_value(settings, module_spec) == frozenset({"first", "second", "third"})
 
 
 def test_object_list_roundtrips_custom_voices() -> None:

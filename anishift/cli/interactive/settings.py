@@ -90,9 +90,7 @@ _TRANSLATION_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("llm_temperature", "Temperatura", "MODEL LLM"),
     ("llm_top_p", "Top-p", "MODEL LLM"),
     ("llm_max_output_tokens", "Limit tokenów odpowiedzi", "MODEL LLM"),
-    ("llm_prompt_id", "Prompt", "PROMPT"),
-    ("llm_style_id", "Styl", "PROMPT"),
-    ("llm_module_ids", "Moduły promptu", "PROMPT"),
+    ("llm_translation_style", "Styl", "PROMPT"),
 )
 """Persisted translation fields exposed by the product."""
 
@@ -504,8 +502,6 @@ class SettingsController:
         for setting_id, label, section in fields:
             spec: SettingSpec | None = snapshot.specs.get(setting_id)
             if spec is None or not setting_is_active(spec, snapshot.settings):
-                continue
-            if setting_id == "llm_module_ids" and not spec.allowed_values:
                 continue
             items.append(self._setting_item(snapshot, setting_id, label, section))
         return tuple(items)

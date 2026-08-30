@@ -127,6 +127,7 @@ class _TranslationService:
         assert cancel is not None
         assert cancel.is_set() is False
         if observer is not None and self.emit_provider_events:
+            observer.progress("llm", 1, 2)
             observer.retry("deepl", 2, 3)
             observer.fallback("deepl", "google")
         self.spoken = spoken
@@ -535,10 +536,12 @@ def test_translation_handler_maps_provider_events_to_worker_notifications(tmp_pa
     )
 
     assert tuple(notification.kind.value for notification in progress.notifications) == (
+        "progress",
         "retry",
         "fallback",
         "progress",
     )
+    assert [notification.progress_percent for notification in progress.notifications] == [50, None, None, 100]
 
 
 def test_execution_handlers_rejects_family_not_available_in_increment_10a(tmp_path: Path) -> None:

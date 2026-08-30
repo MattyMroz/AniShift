@@ -72,14 +72,30 @@ class _CancellationView:
 
 
 class _ProgressObserver:
-    __slots__ = ("_progress", "_task_id")
+    __slots__ = ("_completed", "_progress", "_task_id")
 
     def __init__(self, task_id: str, progress: TaskProgressSink) -> None:
         self._task_id: str = task_id
         self._progress: TaskProgressSink = progress
+        self._completed: int = 0
 
-    def retry(self, engine_id: str, attempt: int, max_attempts: int) -> None:
-        message: str = f"{engine_id} retry {attempt}/{max_attempts}"
+    def progress(self, engine_id: str, completed: int, total: int) -> None:
+        del engine_id
+        percent: int = 100 if total <= 0 else min(100, max(0, completed * 100 // total))
+        self._completed = max(self._completed, percent)
+        self._progress.emit(
+            WorkerNotification(WorkerNotificationKind.PROGRESS, self._task_id, self._completed),
+        )
+
+    def retry(
+        self,
+        engine_id: str,
+        attempt: int,
+        max_attempts: int,
+        reason: str | None = None,
+    ) -> None:
+        label: str = reason.replace("_", " ").title() if reason else engine_id.upper()
+        message: str = f"{label} - retry {attempt}/{max_attempts}"
         self._progress.emit(WorkerNotification(WorkerNotificationKind.RETRY, self._task_id, message=message))
 
     def fallback(self, failed_engine_id: str, next_engine_id: str) -> None:

@@ -1,3 +1,0 @@
-Repair only the output format while producing the requested translations.
-Return exactly one non-empty "[N] translation" line for every input number, in order.
-Do not add any other text.

@@ -28,8 +28,8 @@ from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
 from anishift.services.extraction.tracks import DEFAULT_AUDIO_PRIORITY, DEFAULT_SUBTITLE_PRIORITY
 from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
 from anishift.services.translation.engines import available_engine_ids
-from anishift.services.translation.engines.llm.prompts import PromptRegistry
-from anishift.services.translation.errors import TranslationConfigError
+from anishift.services.translation.engines.llm.constants import DEFAULT_STYLE_NAME
+from anishift.services.translation.engines.llm.prompts import available_style_names
 from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
 from anishift.services.tts.engines.edge.constants import (
     DEFAULT_RATE,
@@ -84,7 +84,7 @@ type JsonScalar = str | int | float | bool | None
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-SETTINGS_SCHEMA_VERSION: Final[int] = 2
+SETTINGS_SCHEMA_VERSION: Final[int] = 3
 """Current persisted user-settings schema."""
 
 TEMPO_RANGE: Final[tuple[float, float]] = (0.5, 2.0)
@@ -265,9 +265,7 @@ class UserSettings:
         llm_temperature: Optional LLM sampling temperature.
         llm_top_p: Optional LLM nucleus-sampling top-p.
         llm_max_output_tokens: Optional explicit provider output limit.
-        llm_prompt_id: Selected translation task prompt id.
-        llm_style_id: Selected translation style prompt id.
-        llm_module_ids: Selected optional prompt module ids.
+        llm_translation_style: Selected packaged translation style name.
         llm_max_concurrency: Maximum concurrently translated LLM files.
         primary_model_alias: Catalog alias of the main model role, independent of
             the translation model; empty means no main model is selected.
@@ -308,9 +306,7 @@ class UserSettings:
     llm_temperature: float | None = None
     llm_top_p: float | None = None
     llm_max_output_tokens: int | None = None
-    llm_prompt_id: str = "anime_translation_v1"
-    llm_style_id: str = "natural_polish_v1"
-    llm_module_ids: list[str] = field(default_factory=list)
+    llm_translation_style: str = DEFAULT_STYLE_NAME
     llm_max_concurrency: int = 4
     primary_model_alias: str = ""
     palantir_enrollment_base_url: str = ""
@@ -611,21 +607,14 @@ def _clean_free_str_list(raw: dict[str, Any], key: str) -> None:
 
 
 def _clean_prompt_selection(raw: dict[str, Any]) -> None:
-    """Drop persisted prompt IDs that are absent from the combined registry."""
-    try:
-        registry = PromptRegistry(custom_root=config_path().parent / "prompts")
-    except TranslationConfigError:
-        for key in ("llm_prompt_id", "llm_style_id", "llm_module_ids"):
-            raw.pop(key, None)
+    """Normalize a style selection against packaged prompt resources."""
+    available_styles = available_style_names()
+    selected: object = raw.get("llm_translation_style")
+    if isinstance(selected, str) and selected.strip() in available_styles:
+        raw["llm_translation_style"] = selected.strip()
         return
-    allowed_by_key: dict[str, frozenset[str]] = {
-        "llm_prompt_id": frozenset(registry.list_ids("task")),
-        "llm_style_id": frozenset(registry.list_ids("style")),
-        "llm_module_ids": frozenset(registry.list_ids("module")),
-    }
-    _clean_string(raw, "llm_prompt_id", allowed_by_key["llm_prompt_id"])
-    _clean_string(raw, "llm_style_id", allowed_by_key["llm_style_id"])
-    _clean_str_list(raw, "llm_module_ids", allowed_by_key["llm_module_ids"])
+    fallback = DEFAULT_STYLE_NAME if DEFAULT_STYLE_NAME in available_styles else available_styles[0]
+    raw["llm_translation_style"] = fallback
 
 
 def _clean_finite_number(raw: dict[str, Any], key: str) -> None:
@@ -827,7 +816,7 @@ def _is_sapi_voice(value: str) -> bool:
 
 def _migrate_schema(raw: dict[str, Any]) -> bool:
     version: object = raw.get("schema_version", 1)
-    if type(version) is not int or version not in {1, SETTINGS_SCHEMA_VERSION}:
+    if type(version) is not int or version not in {1, 2, SETTINGS_SCHEMA_VERSION}:
         warnings.warn(
             "Unsupported settings schema; safe defaults were loaded",
             SettingsSchemaWarning,
@@ -841,6 +830,9 @@ def _migrate_schema(raw: dict[str, Any]) -> bool:
     raw["schema_version"] = SETTINGS_SCHEMA_VERSION
     raw.pop("tempo", None)
     raw.pop("volume", None)
+    raw.pop("llm_prompt_id", None)
+    raw.pop("llm_style_id", None)
+    raw.pop("llm_module_ids", None)
     return True
 
 
@@ -885,9 +877,7 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_optional_number(filtered, "llm_temperature", *LLM_TEMPERATURE_RANGE)
     _clean_optional_number(filtered, "llm_top_p", *LLM_TOP_P_RANGE)
     _clean_optional_number(filtered, "llm_max_output_tokens", *LLM_MAX_TOKENS_RANGE)
-    _clean_free_string(filtered, "llm_prompt_id")
-    _clean_free_string(filtered, "llm_style_id")
-    _clean_free_str_list(filtered, "llm_module_ids")
+    _clean_free_string(filtered, "llm_translation_style")
     _clean_prompt_selection(filtered)
     _clean_number(filtered, "llm_max_concurrency", *LLM_MAX_CONCURRENCY_RANGE)
     _clean_free_string(filtered, "primary_model_alias")

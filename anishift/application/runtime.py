@@ -71,8 +71,6 @@ from anishift.services.translation import TranslationConfig, TranslationService
 from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
 from anishift.services.translation.engines import create_engine
 from anishift.services.translation.engines.llm import LlmTranslateConfig, LlmTranslateService
-from anishift.services.translation.engines.llm.prompts import PromptRegistry
-from anishift.services.translation.engines.llm.prompts.types import PromptContext
 from anishift.services.translation.errors import (
     TranslationAuthError,
     TranslationContextLengthError,
@@ -366,7 +364,6 @@ class _LlmTranslationEngine:
         engine = LlmTranslateService(
             self._llm_config,
             completer=_LlmCompleter(service, self._cancel),
-            prompt_registry=PromptRegistry(custom_root=config_path().parent / "prompts"),
         )
         self._service = service
         self._engine = engine
@@ -390,7 +387,10 @@ class _LlmCompleter:
         llm_request = LlmRequest(
             messages=(
                 LlmMessage(role=LlmRole.SYSTEM, parts=(TextPart(request.system),)),
-                LlmMessage(role=LlmRole.USER, parts=(TextPart(request.user),)),
+                LlmMessage(
+                    role=LlmRole.USER,
+                    parts=tuple(TextPart(part) for part in request.user_parts),
+                ),
             ),
         )
         try:
@@ -412,9 +412,13 @@ class _LlmRetryObserver:
         self._attempt += 1
 
     def on_transient_failure(self, error: TransientError) -> None:
-        del error
         if self._delegate is not None:
-            self._delegate.retry("llm", self._attempt, self._max_retries + 1)
+            self._delegate.retry(
+                "llm",
+                min(self._attempt + 1, self._max_retries + 1),
+                self._max_retries + 1,
+                error.context.code.value,
+            )
 
     def on_success(self) -> None: ...
 
@@ -446,10 +450,9 @@ def _translation_service(settings: Settings, plan: ExecutionPlan) -> _Translatio
         return _LlmTranslationEngine(
             _llm_config(settings, plan),
             LlmTranslateConfig(
-                prompt_id=snapshot.llm_prompt_id,
-                style_id=snapshot.llm_style_id,
-                module_ids=snapshot.llm_module_ids,
-                context=PromptContext(),
+                max_batch_lines=engine_config.batch_size,
+                style_name=snapshot.llm_translation_style,
+                max_contract_retries=snapshot.translation_max_retries,
             ),
             cancel=llm_cancel,
         )

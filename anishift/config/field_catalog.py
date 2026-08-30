@@ -41,7 +41,7 @@ from anishift.config.user_settings import (
 from anishift.services.audio.types import AudioCodecProfile
 from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
 from anishift.services.translation.engines import available_engine_ids as available_translation_engine_ids
-from anishift.services.translation.engines.llm.prompts import PromptRegistry
+from anishift.services.translation.engines.llm.prompts import available_style_names
 from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
 from anishift.services.tts.engines.edge.constants import (
     DEFAULT_PITCH,
@@ -317,9 +317,7 @@ USER_SETTING_DISPOSITIONS: Final[MappingProxyType[str, SettingDisposition]] = Ma
         "llm_temperature": SettingDisposition.VISIBLE,
         "llm_top_p": SettingDisposition.VISIBLE,
         "llm_max_output_tokens": SettingDisposition.VISIBLE,
-        "llm_prompt_id": SettingDisposition.VISIBLE,
-        "llm_style_id": SettingDisposition.VISIBLE,
-        "llm_module_ids": SettingDisposition.VISIBLE,
+        "llm_translation_style": SettingDisposition.VISIBLE,
         "llm_max_concurrency": SettingDisposition.VISIBLE,
         "primary_model_alias": SettingDisposition.VISIBLE,
         "palantir_enrollment_base_url": SettingDisposition.VISIBLE,
@@ -348,11 +346,10 @@ def setting_catalog(context: SettingCatalogContext | None = None) -> tuple[Setti
     """Build the complete stable catalog without network access or synthesis."""
     resolved_context: SettingCatalogContext = context or SettingCatalogContext()
     defaults = UserSettings()
-    prompt_registry = PromptRegistry()
     catalog: tuple[SettingSpec, ...] = (
         *_workflow_specs(resolved_context),
         *_global_specs(defaults),
-        *_translation_specs(defaults, resolved_context, prompt_registry),
+        *_translation_specs(defaults, resolved_context),
         *_model_specs(defaults),
         *_tts_specs(defaults, resolved_context),
         *_profile_specs(resolved_context),
@@ -618,7 +615,6 @@ def _global_specs(defaults: UserSettings) -> tuple[SettingSpec, ...]:
 def _translation_specs(
     defaults: UserSettings,
     context: SettingCatalogContext,
-    prompt_registry: PromptRegistry,
 ) -> tuple[SettingSpec, ...]:
     llm_condition = (SettingCondition("translation_engine", ("llm",)),)
     return (
@@ -732,35 +728,13 @@ def _translation_specs(
             invalidates=_TRANSLATION_INVALIDATES,
         ),
         SettingSpec(
-            setting_id="llm_prompt_id",
-            label="Translation prompt",
-            description="Select the task prompt used for subtitle translation.",
-            value_type=SettingValueType.STRING,
-            default=defaults.llm_prompt_id,
-            scope=SettingScope.GLOBAL,
-            allowed_values=tuple(prompt_registry.list_ids("task")),
-            depends_on=llm_condition,
-            invalidates=_TRANSLATION_INVALIDATES,
-        ),
-        SettingSpec(
-            setting_id="llm_style_id",
+            setting_id="llm_translation_style",
             label="Translation style",
             description="Select the style prompt used for subtitle translation.",
             value_type=SettingValueType.STRING,
-            default=defaults.llm_style_id,
+            default=defaults.llm_translation_style,
             scope=SettingScope.GLOBAL,
-            allowed_values=tuple(prompt_registry.list_ids("style")),
-            depends_on=llm_condition,
-            invalidates=_TRANSLATION_INVALIDATES,
-        ),
-        SettingSpec(
-            setting_id="llm_module_ids",
-            label="Prompt modules",
-            description="Select optional prompt modules included in translation requests.",
-            value_type=SettingValueType.STRING_SET,
-            default=frozenset(defaults.llm_module_ids),
-            scope=SettingScope.GLOBAL,
-            allowed_values=tuple(prompt_registry.list_ids("module")),
+            allowed_values=available_style_names(),
             depends_on=llm_condition,
             invalidates=_TRANSLATION_INVALIDATES,
         ),

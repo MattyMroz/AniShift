@@ -16,6 +16,7 @@ from anishift.config.user_settings import (
     save_user_settings,
     tts_profile_key,
 )
+from anishift.services.translation.errors import TranslationConfigError
 from anishift.services.tts.engines.elevenbytes.constants import DALLIN_VOICE_ID
 from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES
 
@@ -99,7 +100,7 @@ def test_load_non_utf8_file_returns_defaults(config_file: Path) -> None:
 def test_defaults_include_all_panel_fields() -> None:
     s = UserSettings()
     assert s.translation_engine == "google"
-    assert s.schema_version == 2
+    assert s.schema_version == 3
     assert s.tts_engine == "elevenbytes"
     assert s.tts_provider_model_id == "run6"
     assert s.tts_voice_id == "dallin"
@@ -116,21 +117,12 @@ def test_defaults_include_all_panel_fields() -> None:
     assert s.subtitle_language_priority == ("pol", "eng")
     assert s.llm_provider == "gemini"
     assert s.llm_provider_model_id == "gemini-3.5-flash-lite"
+    assert s.llm_translation_style == "neutral"
     assert s.llm_max_concurrency == 4
 
 
 @pytest.mark.usefixtures("config_file")
 def test_full_roundtrip_preserves_every_field() -> None:
-    prompt_root = user_settings.config_path().parent / "prompts"
-    for directory, name in (
-        ("tasks", "custom_task.txt"),
-        ("styles", "custom_style.txt"),
-        ("modules", "honorifics.txt"),
-        ("modules", "names.txt"),
-    ):
-        path = prompt_root / directory / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(name, encoding="utf-8")
     profiles = default_tts_voice_profiles()
     profiles["elevenlabs:custom-voice-id"] = TtsVoiceProfileSettings(
         postprocess_tempo=1.1,
@@ -168,22 +160,18 @@ def test_full_roundtrip_preserves_every_field() -> None:
         llm_temperature=0.2,
         llm_top_p=0.9,
         llm_max_output_tokens=4096,
-        llm_prompt_id="custom_task",
-        llm_style_id="custom_style",
-        llm_module_ids=["honorifics", "names"],
+        llm_translation_style="neutral",
         llm_max_concurrency=3,
     )
     save_user_settings(original)
     assert load_user_settings() == original
 
 
-def test_load_stale_prompt_selection_falls_back_to_defaults(config_file: Path) -> None:
+def test_load_stale_style_selection_falls_back_to_default(config_file: Path) -> None:
     config_file.write_text(
         json.dumps(
             {
-                "llm_prompt_id": "missing_task",
-                "llm_style_id": "missing_style",
-                "llm_module_ids": ["missing_module"],
+                "llm_translation_style": "missing_style",
             }
         ),
         encoding="utf-8",
@@ -191,9 +179,62 @@ def test_load_stale_prompt_selection_falls_back_to_defaults(config_file: Path) -
 
     loaded = load_user_settings()
 
-    assert loaded.llm_prompt_id == UserSettings().llm_prompt_id
-    assert loaded.llm_style_id == UserSettings().llm_style_id
-    assert loaded.llm_module_ids == []
+    assert loaded.llm_translation_style == UserSettings().llm_translation_style
+
+
+def test_load_stale_style_uses_first_packaged_style_without_neutral(
+    monkeypatch: pytest.MonkeyPatch,
+    config_file: Path,
+) -> None:
+    monkeypatch.setattr(user_settings, "available_style_names", lambda: ("dramatic", "horror"))
+    config_file.write_text(
+        json.dumps({"schema_version": 3, "llm_translation_style": "missing"}),
+        encoding="utf-8",
+    )
+
+    assert load_user_settings().llm_translation_style == "dramatic"
+
+
+def test_load_does_not_hide_missing_packaged_styles(
+    monkeypatch: pytest.MonkeyPatch,
+    config_file: Path,
+) -> None:
+    def fail_styles() -> tuple[str, ...]:
+        raise TranslationConfigError("broken package")
+
+    monkeypatch.setattr(user_settings, "available_style_names", fail_styles)
+    config_file.write_text(json.dumps({"schema_version": 3}), encoding="utf-8")
+
+    with pytest.raises(TranslationConfigError, match="broken package"):
+        load_user_settings()
+
+
+def test_load_schema_v2_removes_legacy_prompt_selection(config_file: Path) -> None:
+    config_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "llm_prompt_id": "anime_translation_v1",
+                "llm_style_id": "natural_polish_v1",
+                "llm_module_ids": ["names"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_user_settings()
+
+    assert loaded.schema_version == 3
+    assert loaded.llm_translation_style == "neutral"
+    assert not hasattr(loaded, "llm_prompt_id")
+    assert not hasattr(loaded, "llm_style_id")
+    assert not hasattr(loaded, "llm_module_ids")
+
+    save_user_settings(loaded)
+    saved = json.loads(config_file.read_text(encoding="utf-8"))
+    assert saved["schema_version"] == 3
+    assert saved["llm_translation_style"] == "neutral"
+    assert {"llm_prompt_id", "llm_style_id", "llm_module_ids"}.isdisjoint(saved)
 
 
 def test_load_does_not_migrate_legacy_tempo(config_file: Path) -> None:
@@ -230,7 +271,7 @@ def test_load_migrates_legacy_voice_without_tempo_or_volume(config_file: Path) -
 
     loaded = load_user_settings()
 
-    assert loaded.schema_version == 2
+    assert loaded.schema_version == 3
     assert loaded.tts_engine == "edge"
     assert loaded.tts_voice_id == "pl-PL-ZofiaNeural"
     assert loaded.tempo == 1.0
@@ -303,7 +344,7 @@ def test_dropped_legacy_output_switch_is_ignored(config_file: Path) -> None:
     assert not hasattr(load_user_settings(), "move_results_to_output")
 
 
-def test_save_writes_schema_v2_without_legacy_tts_placeholders(config_file: Path) -> None:
+def test_save_writes_schema_v3_without_legacy_placeholders(config_file: Path) -> None:
     settings = UserSettings()
     settings.tempo = 1.4
     settings.volume = 50
@@ -311,14 +352,17 @@ def test_save_writes_schema_v2_without_legacy_tts_placeholders(config_file: Path
     save_user_settings(settings)
 
     payload = json.loads(config_file.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["tts_voice_id"] == "dallin"
     assert "voice" not in payload
     assert "tempo" not in payload
     assert "volume" not in payload
+    assert "llm_prompt_id" not in payload
+    assert "llm_style_id" not in payload
+    assert "llm_module_ids" not in payload
 
 
-@pytest.mark.parametrize("schema_version", [3, 999, "2", None])
+@pytest.mark.parametrize("schema_version", [4, 999, "2", None])
 def test_unknown_schema_returns_safe_defaults_with_warning(
     config_file: Path,
     schema_version: object,

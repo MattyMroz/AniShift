@@ -35,6 +35,16 @@ class FakeEngine:
         self.close_calls += 1
 
 
+class FakeStreamingEngine(FakeEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stream_calls: int = 0
+
+    def complete_stream(self, request: LlmRequest) -> LlmResponse:
+        self.stream_calls += 1
+        return _response(request.messages[0].parts[0].text)
+
+
 class RecordingObserver:
     def __init__(self) -> None:
         self.events: list[str] = []
@@ -176,6 +186,12 @@ def test_service_requires_compatible_base_url_but_not_key() -> None:
     assert exc_info.value.context.code is ErrorCode.LLM_CONFIG_INVALID
 
 
+def test_default_completion_timeout_allows_multi_minute_generation() -> None:
+    config = LlmConfig(engine_id="gemini", provider_model_id="gemini-3.7-flash")
+
+    assert config.timeout_s == 300.0
+
+
 def test_service_forwards_attempt_observer(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = FakeEngine()
     observer = RecordingObserver()
@@ -185,6 +201,17 @@ def test_service_forwards_attempt_observer(monkeypatch: pytest.MonkeyPatch) -> N
     service.complete(_request("text"))
 
     assert observer.events == ["before", "success"]
+
+
+def test_service_prefers_streaming_when_the_engine_supports_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = FakeStreamingEngine()
+    monkeypatch.setattr("anishift.services.llm.service.create_engine", lambda config: engine)
+
+    result = LlmService(_config()).complete(_request("text"))
+
+    assert result.text == "text"
+    assert engine.stream_calls == 1
+    assert engine.complete_calls == 0
 
 
 def _config() -> LlmConfig:

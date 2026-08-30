@@ -11,6 +11,9 @@ engine has a single source of truth and never reads the environment itself. It
 carries no retry of its own — that stays in the LLM domain retry policy — and no
 cancellation, which the retry policy checks between attempts.
 
+Google generateContent calls use the provider SSE route when invoked through
+``LlmService``; the other proxy protocols retain their ordinary completion path.
+
 Laziness is deliberate and structural: ``palantir/__init__.py`` imports neither
 this module nor its HTTP module, and the registry names this submodule instead
 of the package, so an HTTP client is loaded only when an engine is created. The
@@ -26,8 +29,9 @@ Public API:
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from types import TracebackType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from anishift.services.llm.config import LlmConfig
 from anishift.services.llm.engines._sdk_helpers import raise_request_error
@@ -36,10 +40,15 @@ from anishift.services.llm.engines.palantir.config import (
     PalantirModelConfig,
 )
 from anishift.services.llm.engines.palantir.errors import PALANTIR_ENGINE_ID, raise_palantir_config_error
-from anishift.services.llm.engines.palantir.http import build_palantir_client, send_palantir_request
-from anishift.services.llm.engines.palantir.normalize import normalize_palantir_response
+from anishift.services.llm.engines.palantir.http import (
+    build_palantir_client,
+    send_palantir_request,
+    stream_palantir_request,
+)
+from anishift.services.llm.engines.palantir.normalize import merge_google_stream, normalize_palantir_response
 from anishift.services.llm.engines.palantir.protocols import PalantirHttpRequest, build_palantir_request
 from anishift.services.llm.types import LlmRequest, LlmResponse
+from anishift.services.llm.wire_protocol import ModelProtocol
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -119,6 +128,38 @@ class PalantirService:
         return normalize_palantir_response(
             self._model_config.protocol,
             payload,
+            alias=self._model_config.alias,
+            engine_id=PALANTIR_ENGINE_ID,
+            provider_model_id=self._model_config.provider_model_id,
+            latency_ms=latency_ms,
+        )
+
+    def complete_stream(self, request: LlmRequest) -> LlmResponse:
+        """Stream Google completions and use the normal path for other protocols."""
+        if self._model_config.protocol is not ModelProtocol.GOOGLE_GENERATE:
+            return self.complete(request)
+        if self._closed:
+            raise_request_error(
+                "Palantir engine is already closed",
+                suggestion="Create a new engine before sending another request.",
+                engine_id=PALANTIR_ENGINE_ID,
+            )
+        built: PalantirHttpRequest = build_palantir_request(
+            self._model_config,
+            request,
+            self._generation_options(),
+            stream=True,
+        )
+        started_at: float = time.perf_counter()
+        events: tuple[Mapping[str, Any], ...] = stream_palantir_request(
+            self._ensure_client(),
+            built,
+            alias=self._model_config.alias,
+        )
+        latency_ms: float = (time.perf_counter() - started_at) * 1000
+        return normalize_palantir_response(
+            self._model_config.protocol,
+            merge_google_stream(events),
             alias=self._model_config.alias,
             engine_id=PALANTIR_ENGINE_ID,
             provider_model_id=self._model_config.provider_model_id,

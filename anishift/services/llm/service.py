@@ -11,7 +11,7 @@ from anishift.services.llm._retry import retry_transient
 from anishift.services.llm.config import LlmConfig
 from anishift.services.llm.engines import create_engine
 from anishift.services.llm.errors import LlmAuthError, LlmConfigError
-from anishift.services.llm.protocols import LlmAttemptObserver, LlmEngine
+from anishift.services.llm.protocols import LlmAttemptObserver, LlmEngine, StreamingLlmEngine
 from anishift.services.llm.types import LlmRequest, LlmResponse
 from anishift.utils.logger import get_logger
 
@@ -81,7 +81,7 @@ class LlmService:
             max_retries=self.config.max_retries,
         )
         response = retry_transient(
-            lambda: self._get_or_create_engine().complete(request),
+            lambda: self._complete_once(request),
             max_retries=self.config.max_retries,
             observer=self._observer,
             cancel=cancel,
@@ -97,6 +97,12 @@ class LlmService:
             total_tokens=response.usage.total_tokens,
         )
         return response
+
+    def _complete_once(self, request: LlmRequest) -> LlmResponse:
+        engine: LlmEngine = self._get_or_create_engine()
+        if isinstance(engine, StreamingLlmEngine):
+            return engine.complete_stream(request)
+        return engine.complete(request)
 
     def close(self) -> None:
         """Close the provider engine once and permanently close the facade."""

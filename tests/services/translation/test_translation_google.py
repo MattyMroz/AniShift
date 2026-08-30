@@ -22,7 +22,17 @@ class _Observer:
     def __init__(self) -> None:
         self.retries: list[tuple[str, int, int]] = []
 
-    def retry(self, engine_id: str, attempt: int, max_attempts: int) -> None:
+    def progress(self, engine_id: str, completed: int, total: int) -> None:
+        del engine_id, completed, total
+
+    def retry(
+        self,
+        engine_id: str,
+        attempt: int,
+        max_attempts: int,
+        reason: str | None = None,
+    ) -> None:
+        del reason
         self.retries.append((engine_id, attempt, max_attempts))
 
     def fallback(self, failed_engine_id: str, next_engine_id: str) -> None:
