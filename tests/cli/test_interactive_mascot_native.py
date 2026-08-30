@@ -14,18 +14,18 @@ from anishift.cli.interactive.prompts import HomeGeometry, TerminalRenderer, _na
 
 
 def test_native_mascot_loads_one_valid_sixel_payload(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(native_module, "_supports_sixel", lambda: True)
+    monkeypatch.setattr(native_module, "_is_windows", lambda: True)
 
     image: NativeMascotImage | None = native_module.load_native_mascot()
 
     assert image is not None
-    assert image.payload.startswith('\x1bP0;1;0q"1;1;128;128')
+    assert image.payload.startswith('\x1bP9;1;0q"1;1;128;128')
     assert image.payload.endswith("\x1b\\")
     assert image.row_offset == 0
 
 
 def test_native_mascot_is_disabled_outside_supported_terminals(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(native_module, "_supports_sixel", lambda: False)
+    monkeypatch.setattr(native_module, "_is_windows", lambda: False)
 
     assert native_module.load_native_mascot() is None
 
@@ -56,6 +56,6 @@ def test_native_mascot_is_redrawn_at_an_unchanged_position() -> None:
 
 
 def test_native_encoder_does_not_require_chafa(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(native_module, "_supports_sixel", lambda: True)
+    monkeypatch.setattr(native_module, "_is_windows", lambda: True)
 
     assert native_module.load_native_mascot() is not None
