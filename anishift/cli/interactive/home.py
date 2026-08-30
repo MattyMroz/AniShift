@@ -10,6 +10,7 @@ from typing import Final
 from rich.text import Text
 
 from anishift.cli.interactive.mascot import MascotState, mascot_art
+from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.prompts import AutoGeometry, HomeGeometry
 
 __all__ = [
@@ -74,13 +75,29 @@ _BRAND_GAP: Final[str] = "  "
 def brand_for_geometry(
     geometry: HomeGeometry | AutoGeometry,
     state: MascotState = MascotState.IDLE,
+    *,
+    native_mascot: bool = False,
 ) -> Text:
     """Build the centered brand selected for one terminal geometry."""
-    mascot: Text | None = (
-        mascot_art(geometry.mascot_columns, geometry.mascot_rows, state) if geometry.show_mascot else None
-    )
+    mascot: Text | None = None
+    if geometry.show_mascot:
+        mascot = (
+            _native_mascot_placeholder(geometry.mascot_columns, geometry.mascot_rows)
+            if native_mascot
+            else mascot_art(geometry.mascot_columns, geometry.mascot_rows, state)
+        )
     brand: Text = _home_brand(mascot, show_full_wordmark=geometry.show_full_wordmark)
     return _centered_brand(brand, geometry.terminal_columns)
+
+
+@lru_cache(maxsize=4)
+def _native_mascot_placeholder(columns: int, rows: int) -> Text:
+    """Reserve the mascot area and expose one private native-image anchor."""
+    if columns < 1 or rows < 1:
+        return Text()
+    first_row: str = f"{NATIVE_MASCOT_ANCHOR}{' ' * (columns - 1)}"
+    remaining_rows: tuple[str, ...] = tuple(" " * columns for _ in range(rows - 1))
+    return Text("\n".join((first_row, *remaining_rows)))
 
 
 def _home_brand(mascot: Text | None, *, show_full_wordmark: bool) -> Text:

@@ -19,48 +19,146 @@
 
   // Relative proxy routes, joined with the enrollment address at request time.
   // The protocol decides how a request is built and must be one of:
-  // openai_chat, anthropic_messages, google_generate, xai_chat.
+  // openai_chat, anthropic_messages, google_generate, xai_responses.
   "providers": {
     "foundry-openai": { "protocol": "openai_chat", "path": "/api/v2/llm/proxy/openai/v1" },
     "foundry-anthropic": { "protocol": "anthropic_messages", "path": "/api/v2/llm/proxy/anthropic/v1" },
     "foundry-google": { "protocol": "google_generate", "path": "/api/v2/llm/proxy/google/v1" },
-    "foundry-xai": { "protocol": "xai_chat", "path": "/api/v2/llm/proxy/xai/v1" }
+    "foundry-xai": { "protocol": "xai_responses", "path": "/api/v2/llm/proxy/xai/v1" }
   },
 
   // Alias -> provider model identifier. The alias is your stable ID; "model" is
   // the exact identifier or RID sent to the proxy. Limits are optional safe
   // metadata: a positive integer or null.
   "models": {
-    "foundry/gpt-main": {
+    "foundry/gpt-5.5": {
       "provider": "foundry-openai",
-      "model": "replace-with-openai-model-id",
-      "label": "Foundry: GPT",
+      "model": "gpt-5.5",
+      "label": "Foundry: GPT-5.5",
       "experimental": false,
-      "limits": { "context": null, "input": null, "output": null }
+      "limits": { "context": 1050000, "input": 300000, "output": 128000 }
     },
-    "foundry/claude-main": {
+    "foundry/gpt-5.6-sol": {
+      "provider": "foundry-openai",
+      "model": "gpt-5.6-sol",
+      "label": "Foundry: GPT-5.6 Sol",
+      "experimental": false,
+      "limits": { "context": 1050000, "input": 300000, "output": 128000 }
+    },
+    "foundry/gpt-5.6-terra": {
+      "provider": "foundry-openai",
+      "model": "gpt-5.6-terra",
+      "label": "Foundry: GPT-5.6 Terra",
+      "experimental": false,
+      "limits": { "context": 1050000, "input": 300000, "output": 128000 }
+    },
+    "foundry/gpt-5.6-luna": {
+      "provider": "foundry-openai",
+      "model": "gpt-5.6-luna",
+      "label": "Foundry: GPT-5.6 Luna",
+      "experimental": false,
+      "limits": { "context": 1050000, "input": 300000, "output": 128000 }
+    },
+    "foundry-anthropic/claude-opus-5": {
       "provider": "foundry-anthropic",
-      "model": "replace-with-anthropic-model-id",
-      "label": "Foundry: Claude",
+      "model": "claude-opus-5",
+      "label": "Foundry: Claude Opus 5",
       "experimental": false,
-      "limits": { "context": null, "input": null, "output": null }
+      "limits": { "context": 1000000, "input": 300000, "output": 128000 }
     },
-    "foundry/gemini-main": {
+    "foundry-anthropic/claude-opus-4-8": {
+      "provider": "foundry-anthropic",
+      "model": "claude-opus-4-8",
+      "label": "Foundry: Claude Opus 4.8",
+      "experimental": false,
+      "limits": { "context": 1000000, "input": 300000, "output": 128000 }
+    },
+    "foundry-anthropic/claude-opus-4-7": {
+      "provider": "foundry-anthropic",
+      "model": "claude-opus-4-7",
+      "label": "Foundry: Claude Opus 4.7",
+      "experimental": false,
+      "limits": { "context": 1000000, "input": 300000, "output": 128000 }
+    },
+    "foundry-anthropic/claude-opus-4-6": {
+      "provider": "foundry-anthropic",
+      "model": "claude-opus-4-6",
+      "label": "Foundry: Claude Opus 4.6",
+      "experimental": false,
+      "limits": { "context": 1000000, "input": 300000, "output": 128000 }
+    },
+    "foundry-anthropic/claude-opus-4-5": {
+      "provider": "foundry-anthropic",
+      "model": "claude-opus-4-5",
+      "label": "Foundry: Claude Opus 4.5",
+      "experimental": false,
+      "limits": { "context": 200000, "input": 130000, "output": 64000 }
+    },
+    "foundry-anthropic/claude-sonnet-5": {
+      "provider": "foundry-anthropic",
+      "model": "claude-sonnet-5",
+      "label": "Foundry: Claude Sonnet 5",
+      "experimental": false,
+      "limits": { "context": 1000000, "input": 300000, "output": 128000 }
+    },
+    "foundry-anthropic/claude-sonnet-4-6": {
+      "provider": "foundry-anthropic",
+      "model": "claude-sonnet-4-6",
+      "label": "Foundry: Claude Sonnet 4.6",
+      "experimental": false,
+      "limits": { "context": 1000000, "input": 300000, "output": 64000 }
+    },
+    "foundry-google/gemini-3.1-pro-preview": {
       "provider": "foundry-google",
-      "model": "replace-with-google-model-id",
-      "label": "Foundry: Gemini",
+      "model": "gemini-3.1-pro-preview",
+      "label": "Foundry: Gemini 3.1 Pro Preview",
       "experimental": false,
-      "limits": { "context": null, "input": null, "output": null }
+      "limits": { "context": 1048576, "input": 300000, "output": 65536 }
     },
-    "foundry/grok-main": {
-      "provider": "foundry-xai",
-      "model": "replace-with-xai-model-id",
-      "label": "Foundry: Grok",
+    "foundry-google/gemini-3.7-flash": {
+      "provider": "foundry-google",
+      "model": "gemini-3.7-flash",
+      "label": "Foundry: Gemini 3.7 Flash",
       "experimental": false,
-      "limits": { "context": null, "input": null, "output": null }
+      "limits": { "context": 1048576, "input": 300000, "output": 65536 }
+    },
+    "foundry-google/gemini-3.6-flash": {
+      "provider": "foundry-google",
+      "model": "gemini-3.6-flash",
+      "label": "Foundry: Gemini 3.6 Flash",
+      "experimental": false,
+      "limits": { "context": 1048576, "input": 300000, "output": 65536 }
+    },
+    "foundry-google/gemini-3.5-flash": {
+      "provider": "foundry-google",
+      "model": "gemini-3.5-flash",
+      "label": "Foundry: Gemini 3.5 Flash",
+      "experimental": false,
+      "limits": { "context": 1048576, "input": 300000, "output": 65536 }
+    },
+    "foundry-google/gemini-3.5-flash-lite": {
+      "provider": "foundry-google",
+      "model": "gemini-3.5-flash-lite",
+      "label": "Foundry: Gemini 3.5 Flash-Lite",
+      "experimental": false,
+      "limits": { "context": 1048576, "input": 300000, "output": 65536 }
+    },
+    "foundry-xai/grok-4.5": {
+      "provider": "foundry-xai",
+      "model": "grok-4.5",
+      "label": "Foundry: Grok 4.5",
+      "experimental": false,
+      "limits": { "context": 500000, "input": 300000, "output": 100000 }
+    },
+    "foundry-xai/grok-4.6": {
+      "provider": "foundry-xai",
+      "model": "grok-4.6",
+      "label": "Foundry: Grok 4.6",
+      "experimental": false,
+      "limits": { "context": 500000, "input": 300000, "output": 100000 }
     }
   },
 
   // Roles preselected on a fresh install. Both point at aliases defined above.
-  "defaults": { "primary": "foundry/gpt-main", "translation": "foundry/gpt-main" }
+  "defaults": { "primary": "foundry/gpt-5.6-sol", "translation": "foundry-google/gemini-3.5-flash-lite" }
 }

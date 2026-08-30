@@ -432,20 +432,25 @@ class _InteractiveApplication:
             settings: SettingsController | None = self._settings
             manual: ManualController | None = self._manual
         mascot_state: MascotState = self._mascot.state
-        if mode is _ViewMode.HOME:
-            content: Text = _home_content(columns, rows, selected, mascot_state)
-        elif mode is _ViewMode.PREPARING:
-            content = _preparing_content(columns, rows, mascot_state)
+        native_mascot: bool = getattr(self._renderer, "has_native_mascot", False)
+        if mode in {_ViewMode.HOME, _ViewMode.PREPARING}:
+            content: Text = _home_content(
+                columns,
+                rows,
+                selected,
+                mascot_state,
+                native_mascot=native_mascot,
+            )
         elif mode is _ViewMode.MANUAL_PREPARING:
-            content = _manual_preparing_content(columns, rows, mascot_state)
+            content = _manual_preparing_content(columns, rows, mascot_state, native_mascot=native_mascot)
         elif mode is _ViewMode.MANUAL and manual is not None:
             content = manual.render(columns, rows)
         elif mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
-            content = _auto_content(columns, rows, progress, mascot_state)
+            content = _auto_content(columns, rows, progress, mascot_state, native_mascot=native_mascot)
         elif mode is _ViewMode.SETTINGS and settings is not None:
             content = settings.render(columns, rows)
         else:
-            content = _message_content(columns, rows, message, mascot_state)
+            content = _message_content(columns, rows, message, mascot_state, native_mascot=native_mascot)
         return _fit_frame(content, __version__, self._directory, columns, rows)
 
 
@@ -454,10 +459,17 @@ def run_interactive(service: AppService) -> None:
     _InteractiveApplication(service).run()
 
 
-def _home_content(columns: int, rows: int, selected: int, mascot_state: MascotState) -> Text:
+def _home_content(
+    columns: int,
+    rows: int,
+    selected: int,
+    mascot_state: MascotState,
+    *,
+    native_mascot: bool = False,
+) -> Text:
     geometry: HomeGeometry = resolve_home_geometry(columns, rows)
     content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry, mascot_state))
+    content.append_text(brand_for_geometry(geometry, mascot_state, native_mascot=native_mascot))
     content.append("\n\n")
     for index, (label, _action) in enumerate(_HOME_CHOICES):
         content.append(" " * geometry.left_padding)
@@ -472,17 +484,16 @@ def _home_content(columns: int, rows: int, selected: int, mascot_state: MascotSt
     return content
 
 
-def _preparing_content(columns: int, rows: int, mascot_state: MascotState) -> Text:
+def _manual_preparing_content(
+    columns: int,
+    rows: int,
+    mascot_state: MascotState,
+    *,
+    native_mascot: bool = False,
+) -> Text:
     geometry: AutoGeometry = resolve_auto_geometry(columns, rows, 1)
     content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry, mascot_state))
-    return content
-
-
-def _manual_preparing_content(columns: int, rows: int, mascot_state: MascotState) -> Text:
-    geometry: AutoGeometry = resolve_auto_geometry(columns, rows, 1)
-    content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry, mascot_state))
+    content.append_text(brand_for_geometry(geometry, mascot_state, native_mascot=native_mascot))
     spinner: str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(time.monotonic() * 10) % 10]
     label: str = f"{spinner} Skanowanie plików…"
     content.append(f"\n\n{' ' * max((columns - len(label)) // 2, 0)}{label}", style="purple_bold")
@@ -494,19 +505,28 @@ def _auto_content(
     rows: int,
     progress: RichRunProgress,
     mascot_state: MascotState,
+    *,
+    native_mascot: bool = False,
 ) -> Text:
     geometry: AutoGeometry = resolve_auto_geometry(columns, rows, progress.row_count)
     content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry, mascot_state))
+    content.append_text(brand_for_geometry(geometry, mascot_state, native_mascot=native_mascot))
     content.append("\n")
     content.append_text(progress.render(columns))
     return content
 
 
-def _message_content(columns: int, rows: int, message: Text, mascot_state: MascotState) -> Text:
+def _message_content(
+    columns: int,
+    rows: int,
+    message: Text,
+    mascot_state: MascotState,
+    *,
+    native_mascot: bool = False,
+) -> Text:
     geometry: HomeGeometry = resolve_home_geometry(columns, rows)
     content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry, mascot_state))
+    content.append_text(brand_for_geometry(geometry, mascot_state, native_mascot=native_mascot))
     content.append("\n\n")
     content.append_text(message)
     content.append("\n\nNaciśnij dowolny klawisz, aby wrócić", style="gray")

@@ -77,7 +77,10 @@ _HTTP_METHOD: Final[str] = "POST"
 """Only method the four completion protocols use."""
 
 _CHAT_COMPLETIONS_ROUTE: Final[str] = "/chat/completions"
-"""Route of the OpenAI-compatible and xAI chat protocols."""
+"""Route of the OpenAI Chat Completions protocol."""
+
+_RESPONSES_ROUTE: Final[str] = "/responses"
+"""Route used by the Foundry xAI proxy for Grok models."""
 
 _MESSAGES_ROUTE: Final[str] = "/messages"
 """Route of the Anthropic Messages protocol."""
@@ -186,17 +189,31 @@ def _build_openai_chat(
     )
 
 
-def _build_xai_chat(
+def _build_xai_responses(
     config: PalantirModelConfig,
     request: LlmRequest,
     options: PalantirGenerationOptions,
 ) -> PalantirHttpRequest:
-    """Shape one xAI Chat Completions request."""
-    return _chat_completions_request(
-        config,
-        request,
-        options,
-        max_tokens_key=_COMPATIBLE_MAX_TOKENS_KEY,
+    """Shape one non-streaming xAI Responses request."""
+    input_items: list[dict[str, str]] = [
+        {"role": message.role.value, "content": _joined_text(message)} for message in request.messages
+    ]
+    body: dict[str, Any] = {
+        "model": config.provider_model_id,
+        "input": input_items,
+        "stream": False,
+    }
+    if options.temperature is not None:
+        body["temperature"] = options.temperature
+    if options.top_p is not None:
+        body["top_p"] = options.top_p
+    if options.max_output_tokens is not None:
+        body["max_output_tokens"] = options.max_output_tokens
+    return PalantirHttpRequest(
+        method=_HTTP_METHOD,
+        url=f"{config.base_url}{_RESPONSES_ROUTE}",
+        headers=authorization_headers(config.token),
+        body=body,
     )
 
 
@@ -334,7 +351,7 @@ _BUILDERS: Final[Mapping[ModelProtocol, PalantirRequestBuilder]] = MappingProxyT
         ModelProtocol.OPENAI_CHAT: _build_openai_chat,
         ModelProtocol.ANTHROPIC_MESSAGES: _build_anthropic_messages,
         ModelProtocol.GOOGLE_GENERATE: _build_google_generate,
-        ModelProtocol.XAI_CHAT: _build_xai_chat,
+        ModelProtocol.XAI_RESPONSES: _build_xai_responses,
     },
 )
 """Builder of every supported protocol, defined after the builders it names.

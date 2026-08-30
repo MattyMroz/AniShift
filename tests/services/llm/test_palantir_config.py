@@ -321,18 +321,23 @@ def test_openai_chat_request_posts_to_chat_completions_with_the_openai_output_li
     assert "max_tokens" not in built.body
 
 
-def test_xai_chat_request_uses_the_compatible_output_limit_keyword() -> None:
+def test_xai_responses_request_uses_the_foundry_compatible_shape() -> None:
     config = _config(
-        protocol=ModelProtocol.XAI_CHAT,
+        protocol=ModelProtocol.XAI_RESPONSES,
         provider_path="/api/v2/llm/proxy/xai/v1",
         provider_model_id="grok-4",
     )
 
     built = build_palantir_request(config, _request(), PalantirGenerationOptions(max_output_tokens=256))
 
-    assert built.url == f"{_ENROLLMENT}/api/v2/llm/proxy/xai/v1/chat/completions"
-    assert built.body["max_tokens"] == 256
-    assert "max_completion_tokens" not in built.body
+    assert built.url == f"{_ENROLLMENT}/api/v2/llm/proxy/xai/v1/responses"
+    assert built.body["input"] == [
+        {"role": "system", "content": "You translate subtitles."},
+        {"role": "user", "content": "First line.\nSecond line."},
+        {"role": "assistant", "content": "Ready."},
+    ]
+    assert built.body["stream"] is False
+    assert built.body["max_output_tokens"] == 256
 
 
 def test_chat_completions_request_omits_generation_limits_that_are_unset() -> None:

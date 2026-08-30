@@ -141,26 +141,37 @@ def test_openai_chat_maps_the_request_and_normalizes_the_response() -> None:
     assert result.usage.total_tokens == 15
 
 
-def test_xai_chat_maps_the_request_and_normalizes_the_response() -> None:
+def test_xai_responses_maps_the_request_and_normalizes_the_response() -> None:
     captured: list[httpx.Request] = []
     response = httpx.Response(
         200,
         json={
-            "choices": [{"message": {"content": "Odpowiedź xAI."}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+            "status": "completed",
+            "output": [
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "hidden"}]},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Odpowiedź xAI."}],
+                },
+            ],
+            "usage": {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6},
         },
     )
-    config = _config(protocol=ModelProtocol.XAI_CHAT, provider_path=_XAI_ROUTE, provider_model_id="grok-4")
+    config = _config(protocol=ModelProtocol.XAI_RESPONSES, provider_path=_XAI_ROUTE, provider_model_id="grok-4")
     engine = _engine(_recording_transport(response, captured), config)
 
     result = engine.complete(_request())
 
     body = json.loads(captured[0].content)
-    assert str(captured[0].url) == f"{_ENROLLMENT}{_XAI_ROUTE}/chat/completions"
-    assert body["max_tokens"] == 256
-    assert "max_completion_tokens" not in body
+    assert str(captured[0].url) == f"{_ENROLLMENT}{_XAI_ROUTE}/responses"
+    assert body["stream"] is False
+    assert body["max_output_tokens"] == 256
     assert result.text == "Odpowiedź xAI."
-    assert result.finish_reason == "stop"
+    assert result.finish_reason == "completed"
+    assert result.usage.input_tokens == 4
+    assert result.usage.output_tokens == 2
+    assert result.usage.total_tokens == 6
 
 
 def test_anthropic_messages_maps_the_request_and_normalizes_the_response() -> None:

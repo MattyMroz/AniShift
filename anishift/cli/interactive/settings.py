@@ -1113,7 +1113,7 @@ def _model_group_label(group_id: str) -> str:
         "palantir:openai_chat": "PALANTIR FOUNDRY · OPENAI",
         "palantir:anthropic_messages": "PALANTIR FOUNDRY · ANTHROPIC",
         "palantir:google_generate": "PALANTIR FOUNDRY · GOOGLE",
-        "palantir:xai_chat": "PALANTIR FOUNDRY · XAI",
+        "palantir:xai_responses": "PALANTIR FOUNDRY · XAI",
     }
     return labels.get(group_id, group_id.upper())
 

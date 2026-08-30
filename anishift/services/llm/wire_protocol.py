@@ -23,4 +23,4 @@ class ModelProtocol(StrEnum):
     OPENAI_CHAT = "openai_chat"
     ANTHROPIC_MESSAGES = "anthropic_messages"
     GOOGLE_GENERATE = "google_generate"
-    XAI_CHAT = "xai_chat"
+    XAI_RESPONSES = "xai_responses"

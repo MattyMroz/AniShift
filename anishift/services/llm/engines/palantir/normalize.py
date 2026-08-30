@@ -184,6 +184,36 @@ def _google_block_signal(payload: Mapping[str, Any]) -> str:
     return _blocking_reason(candidate.get("finishReason"))
 
 
+def _responses_block_signal(payload: Mapping[str, Any]) -> str:
+    """Probe a Responses body for an incomplete or explicit refusal result."""
+    incomplete_details: object = payload.get("incomplete_details")
+    if isinstance(incomplete_details, Mapping):
+        reason: str = _blocking_reason(incomplete_details.get("reason"))
+        if reason:
+            return reason
+    output: object = payload.get("output")
+    if not isinstance(output, (list, tuple)):
+        return ""
+    for item in output:
+        if _responses_item_refuses(item):
+            return "refusal"
+    return ""
+
+
+def _responses_item_refuses(item: object) -> bool:
+    if not isinstance(item, Mapping) or item.get("type") != "message":
+        return False
+    content: object = item.get("content")
+    if not isinstance(content, (list, tuple)):
+        return False
+    return any(
+        isinstance(part, Mapping)
+        and part.get("type") == "refusal"
+        and (_is_visible_text(part.get("refusal")) or _is_visible_text(part.get("text")))
+        for part in content
+    )
+
+
 def _prompt_block_reason(payload: Mapping[str, Any]) -> str:
     """Return the Google prompt-level block reason, whatever value it carries.
 
@@ -261,6 +291,28 @@ def _extract_google_generate(payload: Mapping[str, Any], alias: str) -> _Extract
     )
 
 
+def _extract_xai_responses(payload: Mapping[str, Any], alias: str) -> _Extracted:
+    """Read message text, status and usage from an xAI Responses body."""
+    output: object = payload.get("output")
+    if not isinstance(output, (list, tuple)) or not output:
+        raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.MISSING_CHOICE)
+    texts: list[str] = []
+    for item in output:
+        if not isinstance(item, Mapping):
+            raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.UNEXPECTED_SHAPE)
+        if item.get("type") != "message":
+            continue
+        content: object = item.get("content")
+        if not isinstance(content, (list, tuple)):
+            raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.UNEXPECTED_SHAPE)
+        texts.extend(_responses_text_parts(content, alias))
+    return _Extracted(
+        text="".join(texts),
+        finish_reason=normalize_finish_reason(payload.get("status")),
+        usage=_responses_usage(payload.get("usage")),
+    )
+
+
 def _first_choice(payload: Mapping[str, Any], alias: str, *, key: str) -> Mapping[str, Any]:
     """Return the first completion candidate, or a typed defect when absent."""
     choices: object = payload.get(key)
@@ -303,6 +355,17 @@ def _joined_text_parts(parts: list[Any] | tuple[Any, ...], alias: str) -> str:
     return "".join(texts)
 
 
+def _responses_text_parts(parts: list[Any] | tuple[Any, ...], alias: str) -> list[str]:
+    texts: list[str] = []
+    for part in parts:
+        if not isinstance(part, Mapping):
+            raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.UNEXPECTED_SHAPE)
+        if part.get("type") != "output_text":
+            continue
+        texts.append(_string_field(part.get("text"), alias))
+    return texts
+
+
 def _chat_usage(usage: object) -> LlmUsage:
     """Read Chat Completions usage counters, tolerating a missing block."""
     if not isinstance(usage, Mapping):
@@ -335,12 +398,22 @@ def _google_usage(usage: object) -> LlmUsage:
     )
 
 
+def _responses_usage(usage: object) -> LlmUsage:
+    if not isinstance(usage, Mapping):
+        return LlmUsage()
+    return LlmUsage(
+        input_tokens=optional_int(usage.get("input_tokens")),
+        output_tokens=optional_int(usage.get("output_tokens")),
+        total_tokens=optional_int(usage.get("total_tokens")),
+    )
+
+
 # ── Constants ────────────────────────────────────────────────────────────────
 
 _READERS: Final[Mapping[ModelProtocol, _ProtocolReader]] = MappingProxyType(
     {
         ModelProtocol.OPENAI_CHAT: _ProtocolReader(_chat_block_signal, _extract_chat_completions),
-        ModelProtocol.XAI_CHAT: _ProtocolReader(_chat_block_signal, _extract_chat_completions),
+        ModelProtocol.XAI_RESPONSES: _ProtocolReader(_responses_block_signal, _extract_xai_responses),
         ModelProtocol.ANTHROPIC_MESSAGES: _ProtocolReader(_anthropic_block_signal, _extract_anthropic_messages),
         ModelProtocol.GOOGLE_GENERATE: _ProtocolReader(_google_block_signal, _extract_google_generate),
     },

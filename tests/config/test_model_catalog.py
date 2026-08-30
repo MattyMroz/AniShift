@@ -118,7 +118,7 @@ def test_parse_accepts_the_four_supported_protocols() -> None:
         "foundry-openai": {"protocol": "openai_chat", "path": "/api/v2/llm/proxy/openai/v1"},
         "foundry-anthropic": {"protocol": "anthropic_messages", "path": "/api/v2/llm/proxy/anthropic/v1"},
         "foundry-google": {"protocol": "google_generate", "path": "/api/v2/llm/proxy/google/v1"},
-        "foundry-xai": {"protocol": "xai_chat", "path": "/api/v2/llm/proxy/xai/v1"},
+        "foundry-xai": {"protocol": "xai_responses", "path": "/api/v2/llm/proxy/xai/v1"},
     }
 
     catalog = parse_model_catalog(_source(providers=providers))

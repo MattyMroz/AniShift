@@ -16,6 +16,7 @@ from prompt_toolkit.output import ColorDepth
 from rich.console import Console
 from rich.text import Text
 
+from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR, NativeMascotImage, load_native_mascot
 from anishift.utils.rich_console.theme import RICH_THEME
 
 __all__ = [
@@ -68,6 +69,12 @@ _TERMINAL_SIZE_POLL_SECONDS: Final[float] = 0.005
 _AUTO_REFRESH_SECONDS: Final[float] = 0.1
 """Interval used by the single event loop to advance visible elapsed time."""
 
+_SAVE_CURSOR: Final[str] = "\x1b7"
+"""VT sequence preserving Prompt Toolkit's current cursor position."""
+
+_RESTORE_CURSOR: Final[str] = "\x1b8"
+"""VT sequence restoring Prompt Toolkit's current cursor position."""
+
 
 @dataclass(frozen=True, slots=True)
 class HomeGeometry:
@@ -112,6 +119,10 @@ class TerminalRenderer:
         self._render_width: int = 0
         self._render_stream: StringIO | None = None
         self._rich_console: Console | None = None
+        self._native_mascot: NativeMascotImage | None = load_native_mascot()
+        self._native_position: tuple[int, int] | None = None
+        self._native_drawn_position: tuple[int, int] | None = None
+        self._terminal_size: tuple[int, int] | None = None
         bindings: KeyBindings = self._key_bindings()
         control = FormattedTextControl(self._formatted_frame, focusable=False, show_cursor=False)
         window = Window(content=control, always_hide_cursor=True, wrap_lines=False)
@@ -126,11 +137,20 @@ class TerminalRenderer:
             max_render_postpone_time=0,
             refresh_interval=_AUTO_REFRESH_SECONDS,
             terminal_size_polling_interval=_TERMINAL_SIZE_POLL_SECONDS,
+            after_render=self._draw_native_mascot,
         )
+
+    @property
+    def has_native_mascot(self) -> bool:
+        """Return whether this session has a native terminal image payload."""
+        return self._native_mascot is not None
 
     def run(self) -> None:
         """Run the terminal event loop until the user exits."""
-        self._application.run()
+        try:
+            self._application.run()
+        finally:
+            self._erase_native_mascot()
 
     def invalidate(self) -> None:
         """Request one coalesced redraw from any thread."""
@@ -145,11 +165,47 @@ class TerminalRenderer:
         columns: int = max(size.columns, 1)
         rows: int = max(size.rows, 1)
         frame: Text = self._frame_provider(columns, rows)
+        anchor: tuple[int, int] | None = _native_anchor(frame.plain)
+        position: tuple[int, int] | None = None
+        if anchor is not None and self._native_mascot is not None:
+            position = (anchor[0] + self._native_mascot.row_offset, anchor[1])
+            frame = frame.copy()
+            frame.plain = frame.plain.replace(NATIVE_MASCOT_ANCHOR, " ")
+        size_changed: bool = self._terminal_size != (columns, rows)
+        position_changed: bool = self._native_drawn_position != position
+        if self._native_drawn_position is not None and (size_changed or position_changed):
+            self._erase_native_mascot()
+        self._terminal_size = (columns, rows)
+        self._native_position = position
         render_console, stream = self._render_target(columns)
         stream.seek(0)
         stream.truncate(0)
         render_console.print(frame, end="", soft_wrap=True)
         return ANSI(stream.getvalue())
+
+    def _draw_native_mascot(self, _application: Application[None]) -> None:
+        image: NativeMascotImage | None = self._native_mascot
+        position: tuple[int, int] | None = self._native_position
+        if image is None or position is None or position == self._native_drawn_position:
+            return
+        row, column = position
+        output = self._application.output
+        output.write_raw(f"{_SAVE_CURSOR}\x1b[{row + 1};{column + 1}H{image.payload}{_RESTORE_CURSOR}")
+        output.flush()
+        self._native_drawn_position = position
+
+    def _erase_native_mascot(self) -> None:
+        position: tuple[int, int] | None = self._native_drawn_position
+        if position is None:
+            return
+        row, column = position
+        lines: list[str] = [
+            f"\x1b[{row + offset + 1};{column + 1}H{' ' * _MASCOT_COLUMNS}" for offset in range(_MASCOT_ROWS)
+        ]
+        output = self._application.output
+        output.write_raw(f"{_SAVE_CURSOR}{''.join(lines)}{_RESTORE_CURSOR}")
+        output.flush()
+        self._native_drawn_position = None
 
     def _render_target(self, columns: int) -> tuple[Console, StringIO]:
         if self._rich_console is not None and self._render_stream is not None and columns == self._render_width:
@@ -214,6 +270,16 @@ class TerminalRenderer:
             self._key_handler("any")
 
         return bindings
+
+
+def _native_anchor(frame: str) -> tuple[int, int] | None:
+    marker_index: int = frame.find(NATIVE_MASCOT_ANCHOR)
+    if marker_index < 0:
+        return None
+    prefix: str = frame[:marker_index]
+    row: int = prefix.count("\n")
+    column: int = len(prefix.rsplit("\n", maxsplit=1)[-1])
+    return row, column
 
 
 def resolve_home_geometry(columns: int, rows: int = 24) -> HomeGeometry:
