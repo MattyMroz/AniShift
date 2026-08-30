@@ -183,13 +183,13 @@ class TerminalRenderer:
         render_console.print(frame, end="", soft_wrap=True)
         return ANSI(stream.getvalue())
 
-    def _draw_native_mascot(self, _application: Application[None]) -> None:
+    def _draw_native_mascot(self, application: Application[None]) -> None:
         image: NativeMascotImage | None = self._native_mascot
         position: tuple[int, int] | None = self._native_position
-        if image is None or position is None or position == self._native_drawn_position:
+        if image is None or position is None:
             return
         row, column = position
-        output = self._application.output
+        output = application.output
         output.write_raw(f"{_SAVE_CURSOR}\x1b[{row + 1};{column + 1}H{image.payload}{_RESTORE_CURSOR}")
         output.flush()
         self._native_drawn_position = position
