@@ -291,7 +291,6 @@ external/bin/*
 config/settings.json
 config/presets.json
 config/anishift.models.jsonc
-config/prompts/**/*.txt
 
 # ── Re-includes ──────────────────────────────────────────────────────────────
 # Every keeper lives HERE, not next to the rule it escapes — a template pasted
