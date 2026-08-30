@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from importlib.resources import files
 from typing import Final
 
-from PIL import Image
+from PIL import Image, ImageSequence
 
 from anishift.utils.logger import get_logger
 
@@ -23,8 +23,8 @@ NATIVE_MASCOT_ANCHOR: Final[str] = "\ue000"
 _ASSET_PACKAGE: Final[str] = "anishift.cli.interactive.assets"
 """Package containing runtime presentation assets."""
 
-_ASSET_PARTS: Final[tuple[str, ...]] = ("mascot", "idle", "01.png")
-"""Package-relative path of the approved mascot still."""
+_ASSET_PARTS: Final[tuple[str, ...]] = ("mascot", "idle", "01.gif")
+"""Package-relative path of the approved mascot animation."""
 
 _SIXEL_COLORS: Final[int] = 255
 """Maximum opaque colors retained by the SIXEL palette."""
@@ -41,13 +41,37 @@ _DATA_OFFSET: Final[int] = 63
 _RLE_THRESHOLD: Final[int] = 4
 """Shortest repeated character sequence encoded with SIXEL RLE."""
 
+_ROW_OFFSET: Final[int] = 3
+"""Terminal rows centering the native image inside its reserved area."""
+
+_COLUMN_OFFSET: Final[int] = 3
+"""Terminal columns centering the native image inside its reserved area."""
+
+_DEFAULT_FRAME_SECONDS: Final[float] = 0.1
+"""Fallback duration used when an animation frame omits timing metadata."""
+
+_FRAME_SIZE: Final[tuple[int, int]] = (128, 128)
+"""Native screen-pixel size of every rendered animation frame."""
+
 
 @dataclass(frozen=True, slots=True)
 class NativeMascotImage:
-    """Hold one cached terminal image and its vertical layout offset."""
+    """Hold cached animation frames and their terminal placement."""
 
-    payload: str
+    payloads: tuple[str, ...]
+    frame_seconds: tuple[float, ...]
+    cycle_seconds: float
     row_offset: int
+    column_offset: int
+
+    def payload_at(self, elapsed_seconds: float) -> str:
+        """Return the animation frame active at the given elapsed time."""
+        position: float = elapsed_seconds % self.cycle_seconds
+        for payload, duration in zip(self.payloads, self.frame_seconds, strict=True):
+            if position < duration:
+                return payload
+            position -= duration
+        return self.payloads[-1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,8 +91,20 @@ def load_native_mascot() -> NativeMascotImage | None:
     asset = files(_ASSET_PACKAGE).joinpath(*_ASSET_PARTS)
     try:
         with asset.open("rb") as stream, Image.open(stream) as source:
-            image: Image.Image = source.convert("RGBA")
-            return NativeMascotImage(payload=_encode_sixel(image), row_offset=0)
+            palette_source: Image.Image = _palette_source(source)
+            payloads: list[str] = []
+            frame_seconds: list[float] = []
+            for frame in ImageSequence.Iterator(source):
+                resized: Image.Image = frame.convert("RGBA").resize(_FRAME_SIZE, Image.Resampling.NEAREST)
+                payloads.append(_encode_sixel(resized, palette_source))
+                frame_seconds.append(_frame_duration(frame))
+            return NativeMascotImage(
+                payloads=tuple(payloads),
+                frame_seconds=tuple(frame_seconds),
+                cycle_seconds=sum(frame_seconds),
+                row_offset=_ROW_OFFSET,
+                column_offset=_COLUMN_OFFSET,
+            )
     except OSError, ValueError:
         logger.warning("Native mascot encoder failed")
         return None
@@ -79,13 +115,33 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
-def _encode_sixel(image: Image.Image) -> str:
+def _palette_source(image: Image.Image) -> Image.Image:
+    """Build one reusable palette from the GIF global color table."""
+    palette: list[int] | None = image.getpalette()
+    if palette is None:
+        message: str = "Mascot animation does not contain a global palette"
+        raise ValueError(message)
+    palette_source: Image.Image = Image.new("P", (1, 1))
+    palette_source.putpalette(palette)
+    return palette_source
+
+
+def _frame_duration(frame: Image.Image) -> float:
+    """Return one positive GIF frame duration in seconds."""
+    milliseconds: int = int(frame.info.get("duration", round(_DEFAULT_FRAME_SECONDS * 1000)))
+    return max(milliseconds / 1000, _DEFAULT_FRAME_SECONDS / 10)
+
+
+def _encode_sixel(image: Image.Image, palette_source: Image.Image | None = None) -> str:
     """Encode every source pixel with a square 1:1 SIXEL aspect ratio."""
     rgba: Image.Image = image.convert("RGBA")
-    indexed: Image.Image = rgba.convert("RGB").quantize(
-        colors=_SIXEL_COLORS,
-        method=Image.Quantize.MEDIANCUT,
-    )
+    if palette_source is None:
+        indexed: Image.Image = rgba.convert("RGB").quantize(
+            colors=_SIXEL_COLORS,
+            method=Image.Quantize.MEDIANCUT,
+        )
+    else:
+        indexed = rgba.convert("RGB").quantize(palette=palette_source, dither=Image.Dither.NONE)
     palette: list[int] | None = indexed.getpalette()
     if palette is None:
         message: str = "SIXEL quantization did not produce a palette"

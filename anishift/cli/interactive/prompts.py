@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from io import StringIO
@@ -66,7 +67,7 @@ _COMPACT_BRAND_ROWS: Final[int] = 1
 _TERMINAL_SIZE_POLL_SECONDS: Final[float] = 0.005
 """Fallback resize polling interval inside the Prompt Toolkit event loop."""
 
-_AUTO_REFRESH_SECONDS: Final[float] = 0.1
+_AUTO_REFRESH_SECONDS: Final[float] = 0.06
 """Interval used by the single event loop to advance visible elapsed time."""
 
 _SAVE_CURSOR: Final[str] = "\x1b7"
@@ -74,6 +75,12 @@ _SAVE_CURSOR: Final[str] = "\x1b7"
 
 _RESTORE_CURSOR: Final[str] = "\x1b8"
 """VT sequence restoring Prompt Toolkit's current cursor position."""
+
+_NATIVE_IMAGE_COLUMNS: Final[int] = 14
+"""Terminal columns covered by a 128-pixel native image."""
+
+_NATIVE_IMAGE_ROWS: Final[int] = 8
+"""Terminal rows covered by a 128-pixel native image."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +127,7 @@ class TerminalRenderer:
         self._render_stream: StringIO | None = None
         self._rich_console: Console | None = None
         self._native_mascot: NativeMascotImage | None = load_native_mascot()
+        self._native_animation_started_at: float = time.monotonic()
         self._native_position: tuple[int, int] | None = None
         self._native_drawn_position: tuple[int, int] | None = None
         self._terminal_size: tuple[int, int] | None = None
@@ -131,8 +139,8 @@ class TerminalRenderer:
             key_bindings=bindings,
             full_screen=True,
             color_depth=ColorDepth.TRUE_COLOR,
-            mouse_support=False,
-            erase_when_done=False,
+            mouse_support=True,
+            erase_when_done=True,
             min_redraw_interval=None,
             max_render_postpone_time=0,
             refresh_interval=_AUTO_REFRESH_SECONDS,
@@ -147,10 +155,7 @@ class TerminalRenderer:
 
     def run(self) -> None:
         """Run the terminal event loop until the user exits."""
-        try:
-            self._application.run()
-        finally:
-            self._erase_native_mascot()
+        self._application.run()
 
     def invalidate(self) -> None:
         """Request one coalesced redraw from any thread."""
@@ -158,6 +163,7 @@ class TerminalRenderer:
 
     def exit(self) -> None:
         """Finish the active interactive application."""
+        self._erase_native_mascot()
         self._application.exit()
 
     def _formatted_frame(self) -> AnyFormattedText:
@@ -168,7 +174,10 @@ class TerminalRenderer:
         anchor: tuple[int, int] | None = _native_anchor(frame.plain)
         position: tuple[int, int] | None = None
         if anchor is not None and self._native_mascot is not None:
-            position = (anchor[0] + self._native_mascot.row_offset, anchor[1])
+            position = (
+                anchor[0] + self._native_mascot.row_offset,
+                anchor[1] + self._native_mascot.column_offset,
+            )
             frame = frame.copy()
             frame.plain = frame.plain.replace(NATIVE_MASCOT_ANCHOR, " ")
         size_changed: bool = self._terminal_size != (columns, rows)
@@ -190,7 +199,10 @@ class TerminalRenderer:
             return
         row, column = position
         output = application.output
-        output.write_raw(f"{_SAVE_CURSOR}\x1b[{row + 1};{column + 1}H{image.payload}{_RESTORE_CURSOR}")
+        elapsed_seconds: float = time.monotonic() - self._native_animation_started_at
+        payload: str = image.payload_at(elapsed_seconds)
+        clear: str = _native_clear_sequence(position)
+        output.write_raw(f"{_SAVE_CURSOR}{clear}\x1b[{row + 1};{column + 1}H{payload}{_RESTORE_CURSOR}")
         output.flush()
         self._native_drawn_position = position
 
@@ -198,12 +210,8 @@ class TerminalRenderer:
         position: tuple[int, int] | None = self._native_drawn_position
         if position is None:
             return
-        row, column = position
-        lines: list[str] = [
-            f"\x1b[{row + offset + 1};{column + 1}H{' ' * _MASCOT_COLUMNS}" for offset in range(_MASCOT_ROWS)
-        ]
         output = self._application.output
-        output.write_raw(f"{_SAVE_CURSOR}{''.join(lines)}{_RESTORE_CURSOR}")
+        output.write_raw(f"{_SAVE_CURSOR}{_native_clear_sequence(position)}{_RESTORE_CURSOR}")
         output.flush()
         self._native_drawn_position = None
 
@@ -280,6 +288,14 @@ def _native_anchor(frame: str) -> tuple[int, int] | None:
     row: int = prefix.count("\n")
     column: int = len(prefix.rsplit("\n", maxsplit=1)[-1])
     return row, column
+
+
+def _native_clear_sequence(position: tuple[int, int]) -> str:
+    """Build terminal writes covering the previous native image frame."""
+    row, column = position
+    return "".join(
+        f"\x1b[{row + offset + 1};{column + 1}H{' ' * _NATIVE_IMAGE_COLUMNS}" for offset in range(_NATIVE_IMAGE_ROWS)
+    )
 
 
 def resolve_home_geometry(columns: int, rows: int = 24) -> HomeGeometry:
