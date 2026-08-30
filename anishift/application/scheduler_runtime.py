@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import queue
 import re
+import time
 from collections import defaultdict, deque
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Final
+from typing import Final, Never
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
 from anishift.application.cancellation import CommitCancellationToken
@@ -24,7 +25,10 @@ from anishift.application.results import (
     TaskResult,
 )
 from anishift.application.scheduler_contracts import NaturalOrderGate, normalize_resource_key
-from anishift.errors import AniShiftError, ExecutionError
+from anishift.errors import AniShiftError, ErrorCode, ErrorContext, ExecutionError
+from anishift.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -35,6 +39,15 @@ TERMINAL_TASK_STATES: Final[frozenset[TaskState]] = frozenset(
 
 _VALIDATED_STAGING_KEY: Final[str] = "validated"
 """Produced-artifact metadata flag allowing coordinator-owned publication."""
+
+_PUBLICATION_LOCK_RETRIES: Final[int] = 40
+"""Additional atomic publication attempts allowed for a locked Windows target."""
+
+_PUBLICATION_LOCK_RETRY_DELAY_S: Final[float] = 0.25
+"""Delay between atomic publication attempts without holding cancellation locks."""
+
+_WINDOWS_LOCK_ERRORS: Final[frozenset[int]] = frozenset({32, 33})
+"""Windows sharing and lock violations that can disappear after a handle closes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,15 +212,12 @@ class ArtifactStore:
             msg = "Durable artifact staging file lacks validation confirmation"
             raise ExecutionError(msg)
         destination.parent.mkdir(parents=True, exist_ok=True)
-
-        def publish() -> None:
-            output.path.replace(destination)
-
-        try:
-            committed: bool = commit_if_current(publish)
-        except OSError as error:
-            msg = "Durable artifact could not be published atomically"
-            raise ExecutionError(msg) from error
+        committed: bool = _publish_durable(
+            output.path,
+            destination,
+            commit_if_current,
+            artifact_kind=planned.kind.value,
+        )
         if not committed:
             msg = "Durable artifact publication was cancelled"
             raise ExecutionError(msg)
@@ -273,6 +283,14 @@ def commit_success(task: PlanTask, result: TaskResult, runtime: SchedulerRuntime
 def finish_failed(task: PlanTask, error: BaseException, runtime: SchedulerRuntime) -> None:
     """Fail one task and block only its same-group dependency descendants."""
     message: str = public_error(error)
+    error_code: str = error.context.code.value if isinstance(error, AniShiftError) else "UNEXPECTED"
+    logger.error(
+        "Workflow task failed",
+        group_id=task.group_id,
+        task_kind=task.kind.value,
+        error_class=type(error).__name__,
+        error_code=error_code,
+    )
     runtime.state.errors[task.group_id].append(message)
     runtime.state.task_states[task.task_id] = TaskState.FAILED
     runtime.emitter.emit(
@@ -402,6 +420,65 @@ def public_error(error: BaseException) -> str:
     else:
         message = str(error) or "Task handler failed unexpectedly"
     return sanitize_event_message(message) or "Task failed"
+
+
+def _publish_durable(
+    staging: Path,
+    destination: Path,
+    commit_if_current: Callable[[Callable[[], None]], bool],
+    *,
+    artifact_kind: str,
+) -> bool:
+    retries: int = 0
+
+    def publish() -> None:
+        staging.replace(destination)
+
+    while True:
+        try:
+            committed: bool = commit_if_current(publish)
+        except OSError as error:
+            if not _is_windows_lock_error(error):
+                _raise_publication_error(error)
+            if retries >= _PUBLICATION_LOCK_RETRIES:
+                _raise_locked_destination(error)
+            if retries == 0:
+                logger.warning(
+                    "Durable publication waiting for a locked destination",
+                    artifact_kind=artifact_kind,
+                )
+            retries += 1
+            time.sleep(_PUBLICATION_LOCK_RETRY_DELAY_S)
+            continue
+        if retries:
+            logger.info(
+                "Durable publication resumed after destination lock",
+                artifact_kind=artifact_kind,
+                retries=retries,
+            )
+        return committed
+
+
+def _is_windows_lock_error(error: OSError) -> bool:
+    return getattr(error, "winerror", None) in _WINDOWS_LOCK_ERRORS
+
+
+def _raise_locked_destination(error: OSError) -> Never:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.IO_ERROR,
+        message="Destination file is in use by another application",
+        suggestion="Close the player or preview using the existing product, then run Auto again.",
+    )
+    raise ExecutionError(context=context) from error
+
+
+def _raise_publication_error(error: OSError) -> Never:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.IO_ERROR,
+        message="Durable artifact could not be published atomically",
+        suggestion="Check the destination permissions and available disk space, then run Auto again.",
+    )
+    raise ExecutionError(context=context) from error
 
 
 def thread_prefix(resource_key: str) -> str:

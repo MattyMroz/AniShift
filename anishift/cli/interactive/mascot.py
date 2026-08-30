@@ -1,4 +1,4 @@
-"""Static, event-driven terminal mascot for the interactive command line."""
+"""Static terminal mascot state prepared for approved frame animation."""
 
 from __future__ import annotations
 
@@ -23,20 +23,20 @@ _ASSET_PACKAGE: Final[str] = "anishift.cli.interactive.assets"
 """Package containing runtime presentation assets."""
 
 _ASSET_PARTS: Final[tuple[str, ...]] = ("mascot", "idle", "01.png")
-"""Package-relative path of the optimized runtime mascot."""
+"""Package-relative path of the approved 128-pixel mascot."""
 
-_ALPHA_THRESHOLD: Final[int] = 32
-"""Minimum alpha retained as visible terminal color."""
+_ALPHA_THRESHOLD: Final[int] = 128
+"""Alpha cutoff that keeps the pixel-art edge crisp."""
 
 _REFERENCE_BACKGROUND: Final[tuple[int, int, int]] = (10, 10, 10)
-"""Dark reference color used only to antialias translucent edge pixels."""
+"""Dark reference color used only for unexpected translucent pixels."""
 
 _ASCII_ROWS: Final[tuple[str, ...]] = ("  ╭╮  ", " (••) ", "  ╰╯  ")
 """Small renderer-independent fallback used when the PNG cannot be decoded."""
 
 
 class MascotState(StrEnum):
-    """Identify one presentation state derived from real application work."""
+    """Identify one application state reserved for future approved frames."""
 
     IDLE = "idle"
     DISCOVER = "discover"
@@ -74,22 +74,9 @@ _STATE_PRIORITY: Final[tuple[MascotState, ...]] = (
 )
 """Stable priority used while independent task kinds overlap."""
 
-_STATE_MARKERS: Final[dict[MascotState, tuple[str, str]]] = {
-    MascotState.IDLE: (" ", ""),
-    MascotState.DISCOVER: ("◌", "purple_bold"),
-    MascotState.EXTRACT: ("↓", "blue_bold"),
-    MascotState.TRANSLATE: ("文", "purple_bold"),
-    MascotState.TTS: ("♪", "magenta_bold"),
-    MascotState.AUDIO: ("≋", "orange_bold"),
-    MascotState.COMPOSE: ("◆", "yellow_bold"),
-    MascotState.SUCCESS: ("✓", "success"),
-    MascotState.ERROR: ("✗", "error"),
-}
-"""Static state decorations that retain the mascot's fixed geometry."""
-
 
 class MascotController:
-    """Own one thread-safe static mascot state without terminal I/O or workers."""
+    """Own thread-safe future frame state without terminal I/O or workers."""
 
     def __init__(self, invalidate: Callable[[], None]) -> None:
         self._invalidate: Callable[[], None] = invalidate
@@ -106,7 +93,7 @@ class MascotController:
             return self._state
 
     def show(self, state: MascotState) -> None:
-        """Show an explicit lifecycle state and clear obsolete task activity."""
+        """Store an explicit lifecycle state for future approved frames."""
         with self._lock:
             if self._closed:
                 return
@@ -117,7 +104,7 @@ class MascotController:
             self._invalidate()
 
     def task_started(self, task_id: str, kind: TaskKind) -> None:
-        """Add one active task and derive the highest-priority visible state."""
+        """Add one active task and derive the highest-priority state."""
         with self._lock:
             if self._closed:
                 return
@@ -138,7 +125,7 @@ class MascotController:
             self._invalidate()
 
     def run_finished(self, state: TaskState | None) -> None:
-        """Freeze the mascot in the terminal result state."""
+        """Store the terminal result state."""
         if state is TaskState.SUCCEEDED:
             final_state: MascotState = MascotState.SUCCESS
         elif state is TaskState.CANCELLED:
@@ -174,13 +161,14 @@ class MascotController:
 
 @lru_cache(maxsize=32)
 def mascot_art(columns: int, rows: int, state: MascotState = MascotState.IDLE) -> Text | None:
-    """Render the packaged slime or a small ASCII fallback at fixed geometry."""
+    """Render the approved still or a small ASCII fallback."""
+    del state
     if columns < 1 or rows < 1:
         return None
     pixels: Image.Image | None = _mascot_pixels(columns, rows)
     if pixels is None:
-        return _ascii_art(columns, rows, state)
-    return _terminal_blocks(pixels, rows, state)
+        return _ascii_art(columns, rows)
+    return _terminal_blocks(pixels, rows)
 
 
 @lru_cache(maxsize=4)
@@ -190,7 +178,8 @@ def _mascot_pixels(columns: int, rows: int) -> Image.Image | None:
         with asset.open("rb") as stream, Image.open(stream) as source:
             image: Image.Image = source.convert("RGBA")
             cropped: Image.Image = _crop_visible(image)
-            return _fit_pixels(cropped, columns, rows * 2)
+            hardened: Image.Image = _harden_alpha(cropped)
+            return _fit_pixels(hardened, columns, rows * 2)
     except OSError, ValueError:
         return None
 
@@ -202,22 +191,26 @@ def _crop_visible(image: Image.Image) -> Image.Image:
     return image if bounds is None else image.crop(bounds)
 
 
+def _harden_alpha(image: Image.Image) -> Image.Image:
+    hardened: Image.Image = image.copy()
+    alpha: Image.Image = hardened.getchannel("A")
+    mask: Image.Image = alpha.point(lambda value: 255 if value >= _ALPHA_THRESHOLD else 0)
+    hardened.putalpha(mask)
+    return hardened
+
+
 def _fit_pixels(image: Image.Image, columns: int, pixel_rows: int) -> Image.Image:
-    contained: Image.Image = ImageOps.contain(image, (columns, pixel_rows), Image.Resampling.LANCZOS)
+    contained: Image.Image = ImageOps.contain(image, (columns, pixel_rows), Image.Resampling.NEAREST)
     canvas: Image.Image = Image.new("RGBA", (columns, pixel_rows), (0, 0, 0, 0))
     offset: tuple[int, int] = ((columns - contained.width) // 2, (pixel_rows - contained.height) // 2)
     canvas.alpha_composite(contained, offset)
     return canvas
 
 
-def _terminal_blocks(image: Image.Image, rows: int, state: MascotState) -> Text:
+def _terminal_blocks(image: Image.Image, rows: int) -> Text:
     result = Text()
     for row in range(rows):
         for column in range(image.width):
-            if row == 0 and column == 0 and state is not MascotState.IDLE:
-                marker, style = _STATE_MARKERS[state]
-                result.append(marker, style=style)
-                continue
             top: tuple[int, int, int, int] = _rgba(image, column, row * 2)
             bottom: tuple[int, int, int, int] = _rgba(image, column, row * 2 + 1)
             _append_cell(result, top, bottom)
@@ -226,21 +219,16 @@ def _terminal_blocks(image: Image.Image, rows: int, state: MascotState) -> Text:
     return result
 
 
-def _ascii_art(columns: int, rows: int, state: MascotState) -> Text | None:
+def _ascii_art(columns: int, rows: int) -> Text | None:
     width: int = max(len(line) for line in _ASCII_ROWS)
     if columns < width or rows < len(_ASCII_ROWS):
         return None
-    marker, style = _STATE_MARKERS[state]
     top: int = (rows - len(_ASCII_ROWS)) // 2
     left: int = (columns - width) // 2
     result = Text("\n" * top)
     for index, line in enumerate(_ASCII_ROWS):
         result.append(" " * left)
-        if index == 0 and state is not MascotState.IDLE:
-            result.append(marker, style=style)
-            result.append(line[1:])
-        else:
-            result.append(line)
+        result.append(line)
         if index < len(_ASCII_ROWS) - 1:
             result.append("\n")
     return result

@@ -178,7 +178,7 @@ widocznością czasu. Musi być sprawdzone dla 80, 100 i 140 kolumn.
 ```text
 Home
   → wybór Auto
-  → usunięcie menu przez Questionary przy zachowaniu marki
+  → zastąpienie menu przez wspólny renderer przy zachowaniu marki
   → odtworzenie stopki w ostatnim bezpiecznym wierszu
   → ciche przygotowanie
   → refusal albo jeden pełny redraw widoku postępu pod marką
@@ -301,9 +301,9 @@ Gate: brak osieroconego importu, testu, komentarza lub wymagania dokumentacyjneg
 ### P-003 — odbudowa Home
 
 1. Złożyć minimalny Home zgodnie z D-001 i D-008.
-2. Użyć standardowego selecta Questionary.
+2. Użyć wyboru obsługiwanego przez pojedynczą aplikację Prompt Toolkit.
 3. Zachować marker `❯`, kolor tekstu aktywnej opcji i brak tła.
-4. Centrować przez publiczne API Rich/Questionary.
+4. Centrować przez publiczne API Rich/Prompt Toolkit.
 5. Nie implementować logiki Auto w tym kroku.
 
 Gate HOME: ręczny PASS przy 80, 100 i 140 kolumnach oraz po kilku resize'ach.
@@ -376,7 +376,7 @@ Testy mają wykrywać:
 - przycięty procent przy 80 kolumnach;
 - powrót `viewport.py`, dodatkowego `Live` lub prywatnego dostępu do Rich;
 - nadpisanie zapisanych limitów Auto lub trybu ręcznego;
-- ładowanie toolkitu przez techniczne komendy CLI;
+[text](../../../../../../Downloads/PLAN_04_MASCOT_POLISH_CLEANUP.md) [text](../../../../../../Downloads/PLAN_03_MANUAL.md) [text](../../../../../../Downloads/PLAN_02_SETTINGS.md)- ładowanie toolkitu przez techniczne komendy CLI;
 - traceback lub pozostawiony kursor po expected error i `Ctrl+C`.
 
 Test runtime używa prawdziwego publicznego konstruktora managera. Mock akceptujący

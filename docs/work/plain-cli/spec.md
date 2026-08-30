@@ -684,9 +684,10 @@ Granica procesu wymusza bezpieczne UTF-8 zgodnie z istniejącym CLI.
 
 ### R-400 — rola maskotki
 
-Slime jest towarzyszem użytkownika i elementem marki.
+Slime jest ruchomym towarzyszem użytkownika w stylu tamagotchi i elementem marki.
 
-Nie jest kontrolką ani źródłem informacji koniecznej do obsługi produktu.
+Może przyjmować proste interakcje na Home, ale nie jest źródłem informacji koniecznej
+do obsługi pipeline’u.
 
 ### R-401 — niezależność od pipeline’u
 
@@ -704,36 +705,43 @@ Awaria maskotki nie może:
 PLAN 01 używa dostarczonego transparentnego assetu i renderuje go przez Pillow jako
 true-color terminal half blocks. Nie uruchamia Chafa ani subprocessu.
 
-### R-403 — jeden źródłowy asset w Planie 01
+### R-403 — zatwierdzony wygląd
 
-PLAN 01 zawiera wyłącznie dostarczony `slime_transparent_4k.png`. Nie kopiuje:
+Finalny Interactive CLI używa zatwierdzonego przez użytkownika transparentnego slime'a
+zapisanego jako `anishift-slime-pixel-grid-128-transparent.png`.
 
-- `slime_4k.png`;
-- ikony iOS;
-- wielomegabajtowych grafik roboczych.
+Runtime może zawierać zoptymalizowaną kopię tego assetu, jeżeli nie zmienia jego
+rozpoznawalnego kształtu, kolorów, oczu ani orbitującej kuli.
+
+Każda animacja używa jawnych bitmapowych klatek na jednej siatce 128×128. Sekwencja
+może celowo obracać, spłaszczać, rozciągać, powiększać albo podrzucać slime'a,
+ale runtime nie generuje stanów pośrednich ani nie skaluje ich filtrem wygładzającym.
 
 ### R-404 — docelowy renderer
 
-Późniejsza animacja lub większy renderer może używać Chafa/Sixel w Windows Terminal.
+Maskotka animuje się wewnątrz istniejącego właściciela ekranu. Nie tworzy drugiego
+renderera terminalowego ani niezabezpieczonego strumienia outputu.
 
 ### R-405 — fallback maskotki
 
 Kolejność degradacji:
 
 ```text
-Chafa/Sixel
--> statyczny tekst/ASCII
+animowany slime
+-> statyczny slime
+-> ASCII
 -> brak maskotki
 ```
 
 W każdym wariancie menu pozostaje działające.
 
-### R-406 — przyszłe stany
+### R-406 — stany reaktywne
 
-Docelowe stany maskotki:
+Maskotka ma odrębną animację dla stanów:
 
 ```text
 idle
+eat
 discover
 extract
 translate
@@ -746,8 +754,8 @@ error
 
 ### R-407 — przyszła animacja
 
-Animacja jest osobnym etapem. Nie jest warunkiem ukończenia Home, Auto, Settings ani
-Manual.
+Animacja jest wymaganą częścią finalnego Home i widoku wykonywania. `idle` porusza się
+również wtedy, gdy pipeline nie pracuje; stany robocze wynikają z prawdziwych eventów.
 
 ### R-408 — brak animacji w scrollbacku
 
@@ -762,6 +770,37 @@ menu poza typowy terminal 80×24.
 
 Wariant bazowy umieszcza maskotkę po lewej stronie wordmarku. Cały połączony blok,
 nie każdy element osobno, pozostaje wycentrowany.
+
+### R-411 — karmienie
+
+Użytkownik może nakarmić maskotkę bezpośrednio z Home. Akcja natychmiast uruchamia
+krótką animację `eat`, po której maskotka wraca do `idle`.
+
+### R-412 — brak oderwanych markerów
+
+Stan maskotki jest widoczny przez jej ruch. Renderer nie dodaje osobnych glifów takich
+jak `♪`, `◆` albo `↓` poza jej sylwetką.
+
+### R-413 — responsywność
+
+Animacja nie może zauważalnie opóźniać klawiszy, resize ani `Ctrl+C`. Zatrzymanie
+Interactive CLI kończy mechanizm odświeżania maskotki.
+
+### R-414 — zakres tamagotchi
+
+Finalny workstream obejmuje reaktywne animacje i karmienie. Trwały głód, śmierć,
+waluta, sklep i kary za nieobecność pozostają poza zakresem do osobnej decyzji.
+
+### R-415 — dwa profile każdej animacji
+
+Każda zaakceptowana sekwencja powstaje równocześnie jako:
+
+- `icon` — ciasny kwadrat 128×128 do małego widoku;
+- `full` — większy przezroczysty kadr, w którym sylwetka i wszystkie ruchome elementy
+  pozostają widoczne przez całą animację.
+
+Oba profile mają tę samą liczbę klatek, kolejność ruchu i czas. Profil `full` nie może
+polegać na powiększeniu już uciętych klatek `icon`.
 
 ---
 
@@ -2090,6 +2129,25 @@ Manual przechodzi osobny HITL na prawdziwym materiale.
 
 Pełne bramki repo przechodzą przed każdym końcowym commitem.
 
+### AC-034
+
+Home pokazuje zatwierdzonego slime’a, który animuje się w stanie `idle` bez pozostawiania
+klatek w scrollbacku.
+
+### AC-035
+
+Discovery, ekstrakcja, tłumaczenie, TTS, audio, compose, sukces i błąd mają wizualnie
+odróżnialny ruch wynikający z bieżącego stanu pipeline’u.
+
+### AC-036
+
+Karmienie na Home pokazuje pełną animację `eat` i samoczynnie wraca do `idle`.
+
+### AC-037
+
+Maskotka nie pokazuje oderwanych glifów stanu, a klawisze, resize i `Ctrl+C` pozostają
+responsywne podczas animacji.
+
 ---
 
 ## 27. Rzeczy świadomie poza zakresem
@@ -2122,5 +2180,4 @@ Pełne bramki repo przechodzą przed każdym końcowym commitem.
 
 Brak pytań blokujących rozpoczęcie PLANU 01.
 
-Finalny wygląd, miejsce i zestaw klatek maskotki pozostają świadomie odłożone do
-PLANU 04.
+Wygląd, miejsce i animowany charakter maskotki zostały rozstrzygnięte dla PLANU 04.

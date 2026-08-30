@@ -3,13 +3,13 @@
 ## 0. Status dokumentu
 
 ```text
-STATUS: IMPLEMENTED — STATIC VERIFIED; RUNTIME HITL DEFERRED BY USER
-MODE: EXECUTION OUTCOME / REPLAN
+STATUS: DUAL-PROFILE MOTION V2 CORRECTED READY FOR HITL — TAMAGOTCHI CORRECTION
+MODE: UPDATE / PIXEL ANIMATION
 SPEC AUTHORITY: spec.md
 PREDECESSOR: PLAN 03 — Manual
 BASELINE BRANCH: work/interactive-cli/03-manual
-BASELINE COMMIT: 979491aa9b40d0f55cdf21bff86107d3d1b295b4
-VERIFIED PREDECESSOR HEAD: 979491aa9b40d0f55cdf21bff86107d3d1b295b4
+BASELINE COMMIT: 9a79982900b86e6ea2fa48d31226b004494e0395
+VERIFIED PREDECESSOR HEAD: 9a79982900b86e6ea2fa48d31226b004494e0395
 TARGET BRANCH: work/interactive-cli/04-mascot-polish
 FINAL COMMIT: feat(cli): finish interactive experience
 ```
@@ -40,6 +40,72 @@ Plan został wykonany jako `STATIC_STATE_FALLBACK`:
   drugi renderer zwiększałby ryzyko regresji kursora i resize;
 - nie uruchomiono aplikacji ani testów zgodnie z poleceniem użytkownika; końcowy HITL
   pozostaje po stronie użytkownika.
+
+### 0.2. Korekta po HITL — tamagotchi
+
+Ta sekcja zastępuje wariant `STATIC_STATE_FALLBACK` z 0.1 w zakresie maskotki.
+
+Current gap:
+
+- Home używa niezatwierdzonego runtime assetu;
+- stany różnią się wyłącznie oderwanym glifem w lewym górnym rogu;
+- maskotka nie porusza się i nie ma interakcji karmienia;
+- `Image.Resampling.LANCZOS` tworzy półprzezroczyste defekty na pixelowej krawędzi.
+
+Technical design:
+
+- źródłem wyglądu jest zatwierdzony
+  `anishift-slime-pixel-grid-128-transparent.png`;
+- runtime zawiera jego mechanicznie zoptymalizowaną kopię;
+- do czasu akceptacji zestawu klatek runtime pozostaje statyczny i nie udaje animacji
+  proceduralnym przesuwaniem, skakaniem ani filtrowaniem jednego obrazka;
+- biblioteka emocji powstaje najpierw jako osobne pixel-artowe pozy, a zaakceptowane
+  emocje dostaną potem dedykowane klatki przejściowe;
+- model generatywny służy do referencji pozy kluczowej, nie do produkcji kolejnych
+  klatek runtime;
+- każda klatka runtime powstaje deterministycznie na jednej mapie 128×128 z twardym
+  alpha i `nearest-neighbor`; obrót, squash, skok i wzrost są jawnie narysowanym ruchem;
+- istniejący `TerminalRenderer.refresh_interval` jest jedynym zegarem animacji;
+- po akceptacji `MascotController` zwróci atomowy snapshot `state + frame` bez workera;
+- finalne sekwencje obejmą `idle`, interakcję karmienia, pracę, sukces i błąd,
+  z przejściami zbudowanymi z zaakceptowanych klatek;
+- karmienie zostanie podłączone dopiero razem z pełną sekwencją `eat`;
+- wszystkie glify stanu poza sylwetką zostają usunięte;
+- błąd assetu nadal degraduje widok do statycznego ASCII albo braku maskotki.
+
+Execution:
+
+1. Podmienić runtime PNG na zatwierdzonego slime'a i potwierdzić limit paczki.
+2. Wybrać docelowe emocje i przygotować dla nich spójne klatki przejściowe.
+3. Dopiero po akceptacji podłączyć cache klatek, karmienie i snapshot czasu.
+4. Zaktualizować current docs, uruchomić statyczne bramki i `uv build`.
+
+Motion study outcome:
+
+- baza: `source/anishift-slime-pixel-grid-128-transparent.png`;
+- jedyny wariant `v1` zawiera 46 klatek: obrót lewo/prawo → squash → wybicie → skok
+  → lądowanie → settle, w pętli 46 × 60 ms;
+- PNG 128×128, spritesheet, APNG i GIF profili `icon` oraz `full` znajdują się w
+  `C:\Users\MattyMroz\Pictures\MangaShiftSlime\main\animations\spin-squash-jump\v1`;
+- profil `smooth-4k` odtwarza ten sam ruch na bazie `slime_transparent_4k.png` jako
+  46 klatek PNG 4096×4096, APNG 4K oraz WebP 1024×1024 do szybkiego podglądu;
+- deformacja 4K używa ciągłej siatki obrazu i premultiplikowanej alfy, aby nie tworzyć
+  pasów ani kolorowych obwódek na półprzezroczystych krawędziach;
+- kulka porusza się stałym tempem po eliptycznej orbicie: przednia część omija oczy,
+  tylna jest zasłaniana przez ciało, a nieczytelne fragmenty i miękka alfa są usuwane;
+- każdy build tworzy równocześnie ciasny profil `icon` 128×128 oraz przezroczysty
+  profil `full` 640×640, którego żadna klatka nie dotyka krawędzi;
+- źródłem obu profili jest wersjonowany generator `scripts/slime_animation.py`, a
+  manifest zapisuje czas, liczbę klatek, marginesy i usunięte artefakty;
+- `source/`, `splash-art/` i `animations/` rozdzielają materiały bazowe, referencje
+  wygenerowane oraz kolejne rodziny klatek;
+- sekwencja pozostaje poza runtime do wizualnej akceptacji użytkownika.
+
+Verification:
+
+- Ruff, format, mypy, `git diff --check` i package asset gate;
+- bez pytest i bez uruchomienia aplikacji zgodnie z poleceniem użytkownika;
+- finalny ruch, karmienie, resize i `Ctrl+C` wymagają ręcznego HITL użytkownika.
 
 PLAN 04 nie dodaje kolejnego modułu produktu.
 

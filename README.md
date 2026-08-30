@@ -21,10 +21,10 @@ Running `anishift` without a subcommand opens the interactive interface:
 - **Settings** edits supported preferences and provides a read-only model catalogue.
 - **Exit** closes the interface immediately.
 
-The interface uses one responsive terminal renderer. Its packaged slime mascot has
-static states derived from real pipeline work; if the image cannot be decoded or the
-terminal is too small, it falls back to compact ASCII or no mascot without blocking
-the run.
+The interface uses one responsive terminal renderer. Its packaged pixel-art slime
+uses the approved transparent still while dedicated animation frames are prepared. If
+the image cannot be decoded or the terminal is too small, it falls back to compact
+ASCII or no mascot without blocking the run.
 
 ## Technical commands
 
