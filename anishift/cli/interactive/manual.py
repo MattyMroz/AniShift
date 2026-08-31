@@ -968,7 +968,7 @@ class ManualController:
         line: str = f"{spinner} Sprawdzanie pliku…"
         content: Text = _header("TRYB RĘCZNY", columns, rows, 2)
         left: int = max((columns - len(line)) // 2, 0)
-        content.append(f"{' ' * left}{line}", style="purple_bold")
+        content.append(f"{' ' * left}{line}", style="brand_accent")
         return self._finish(content, left, "Esc anuluj")
 
     def _render_menu(self, title: str, entries: tuple[str, ...], columns: int, rows: int) -> Text:
@@ -998,9 +998,9 @@ def _header(title: str, columns: int, rows: int, content_rows: int) -> Text:
 
 def _append_row(content: Text, left: int, label: str, active: bool, marker: str = "  ") -> None:
     content.append(" " * left)
-    content.append(f"{_POINTER} " if active else "  ", style="purple_bold" if active else "white_bold")
-    content.append(marker, style="purple_bold" if active else "white_bold")
-    content.append(label, style="purple_bold" if active else "white_bold")
+    content.append(f"{_POINTER} " if active else "  ", style="brand_accent" if active else "white_bold")
+    content.append(marker, style="brand_accent" if active else "white_bold")
+    content.append(label, style="brand_accent" if active else "white_bold")
     content.append("\n")
 
 

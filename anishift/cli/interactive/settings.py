@@ -1138,13 +1138,13 @@ class SettingsController:
                 content.append(f"{_truncate_right(item.section, max(columns - left, 1))}\n", style="gray")
                 previous_section = item.section
             content.append(" " * left)
-            content.append(f"{_POINTER} " if index == self._selected else "  ", style="purple_bold")
+            content.append(f"{_POINTER} " if index == self._selected else "  ", style="brand_accent")
             available: int = max(columns - left - 2, 1)
             current: str = _truncate_right(item.current, max(available // 2, 1)) if item.current else ""
             label_width: int = max(available - len(current) - (3 if current else 0), 1)
             content.append(
                 _truncate_right(item.label, label_width),
-                style="purple_bold" if index == self._selected else "white_bold",
+                style="brand_accent" if index == self._selected else "white_bold",
             )
             if current:
                 content.append(f" · {current}", style="gray")
@@ -1155,10 +1155,10 @@ class SettingsController:
         if back is not None:
             selected_back: bool = self._selected == len(self._items) - 1
             content.append(" " * left)
-            content.append(f"{_POINTER} " if selected_back else "  ", style="purple_bold")
+            content.append(f"{_POINTER} " if selected_back else "  ", style="brand_accent")
             content.append(
                 _truncate_right(back.label, max(columns - left - 2, 1)),
-                style="purple_bold" if selected_back else "white_bold",
+                style="brand_accent" if selected_back else "white_bold",
             )
             content.append("\n")
         self._append_feedback(content, left, columns)
@@ -1184,9 +1184,9 @@ class SettingsController:
         content.append("\n\n")
         for index, (product, label) in enumerate(_PRODUCTS):
             content.append(" " * left)
-            content.append(f"{_POINTER} " if index == self._selected else "  ", style="purple_bold")
-            content.append("● " if product in self._output_products else "○ ", style="purple_bold")
-            content.append(label, style="purple_bold" if index == self._selected else "white_bold")
+            content.append(f"{_POINTER} " if index == self._selected else "  ", style="brand_accent")
+            content.append("● " if product in self._output_products else "○ ", style="brand_accent")
+            content.append(label, style="brand_accent" if index == self._selected else "white_bold")
             content.append("\n")
         for index, label in (
             (save_index, "Zapisz"),
@@ -1194,8 +1194,8 @@ class SettingsController:
             (back_index, _BACK_LABEL),
         ):
             content.append(" " * left)
-            content.append(f"{_POINTER} " if self._selected == index else "  ", style="purple_bold")
-            content.append(label, style="purple_bold" if self._selected == index else "white_bold")
+            content.append(f"{_POINTER} " if self._selected == index else "  ", style="brand_accent")
+            content.append(label, style="brand_accent" if self._selected == index else "white_bold")
             content.append("\n")
         self._append_feedback(content, left, columns)
         content.append(" " * left)
@@ -1232,12 +1232,12 @@ class SettingsController:
                     content.append(f"{_truncate_right(option.group, max(columns - left, 1))}\n", style="gray")
                     previous_group = option.group
                 content.append(" " * left)
-                content.append(f"{_POINTER} " if index == editor.selected else "  ", style="purple_bold")
-                content.append(f"{_option_marker(editor, option, index)} ", style="purple_bold")
+                content.append(f"{_POINTER} " if index == editor.selected else "  ", style="brand_accent")
+                content.append(f"{_option_marker(editor, option, index)} ", style="brand_accent")
                 option_width: int = max(columns - left - 4, 1)
                 content.append(
                     _truncate_right(option.label, option_width),
-                    style="purple_bold" if index == editor.selected else "white_bold",
+                    style="brand_accent" if index == editor.selected else "white_bold",
                 )
                 content.append("\n")
             if has_below:
@@ -1247,9 +1247,9 @@ class SettingsController:
             shown: str = "•" * len(editor.buffer) if editor.kind is _EditorKind.PASSWORD else editor.buffer
             available: int = max(columns - left - 4, 1)
             content.append(" " * left)
-            content.append(f"{_POINTER} ", style="purple_bold")
+            content.append(f"{_POINTER} ", style="brand_accent")
             content.append(_truncate_left(shown, available), style="white_bold")
-            content.append("█", style="purple_bold")
+            content.append("█", style="brand_accent")
             content.append("\n")
         self._append_feedback(content, left, columns)
         content.append(" " * left)

@@ -11,6 +11,7 @@ from rich.text import Text
 
 from anishift.cli.interactive.mascot import MascotState, mascot_art
 from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR
+from anishift.cli.interactive.palette import hex_color, mix, rim_color
 from anishift.cli.interactive.prompts import BRAND_GAP_COLUMNS, AutoGeometry, HomeGeometry
 
 __all__ = [
@@ -47,17 +48,6 @@ _LOGO_WIDTH: Final[int] = max(len(row) for row in _LOGO_ROWS)
 _LOGO_FILL_GLYPH: Final[str] = "█"
 """Solid glyph carrying the lit face of a wordmark letter."""
 
-_RIM_LEFT: Final[tuple[int, int, int]] = (0x00, 0x62, 0xFA)
-"""Azure measured on the mascot's left rim, where the outline gradient starts."""
-
-_RIM_BODY: Final[tuple[int, int, int]] = (0x4C, 0x03, 0xD9)
-"""Violet measured inside the mascot, which the outline passes through."""
-
-_RIM_RIGHT: Final[tuple[int, int, int]] = (0xF9, 0x01, 0x1A)
-"""Red measured on the mascot's right rim, where the outline gradient ends."""
-
-_RIM_MIDPOINT: Final[float] = 0.5
-"""Position where the outline gradient passes through the mascot's violet body."""
 
 _SILVER_TOP: Final[tuple[int, int, int]] = (0xFA, 0xFA, 0xFD)
 """Near-white face of the topmost wordmark row, lit from above."""
@@ -114,10 +104,10 @@ def _full_wordmark() -> Text:
     for index, line in enumerate(_LOGO_ROWS):
         for column, glyph in enumerate(line):
             if glyph == _LOGO_FILL_GLYPH:
-                face: str = _hex(_mix(_SILVER_TOP, _SILVER_BOTTOM, index / max(len(_LOGO_ROWS) - 1, 1)))
+                face: str = hex_color(mix(_SILVER_TOP, _SILVER_BOTTOM, index / max(len(_LOGO_ROWS) - 1, 1)))
                 wordmark.append(glyph, style=f"bold {face}")
                 continue
-            wordmark.append(glyph, style=_hex(_rim_color(column / max(_LOGO_WIDTH - 1, 1))))
+            wordmark.append(glyph, style=hex_color(rim_color(column / max(_LOGO_WIDTH - 1, 1))))
         if index < len(_LOGO_ROWS) - 1:
             wordmark.append("\n")
     return wordmark
@@ -129,31 +119,9 @@ def _compact_wordmark() -> Text:
     wordmark: Text = Text()
     letters: str = "ANISHIFT"
     for column, glyph in enumerate(letters):
-        color: str = _hex(_rim_color(column / max(len(letters) - 1, 1)))
+        color: str = hex_color(rim_color(column / max(len(letters) - 1, 1)))
         wordmark.append(glyph, style=f"bold {color}")
     return wordmark
-
-
-def _rim_color(position: float) -> tuple[int, int, int]:
-    """Read the mascot rim gradient, azure through violet to red, at one position."""
-    clamped: float = min(max(position, 0.0), 1.0)
-    if clamped <= _RIM_MIDPOINT:
-        return _mix(_RIM_LEFT, _RIM_BODY, clamped / _RIM_MIDPOINT)
-    return _mix(_RIM_BODY, _RIM_RIGHT, (clamped - _RIM_MIDPOINT) / (1.0 - _RIM_MIDPOINT))
-
-
-def _mix(start: tuple[int, int, int], end: tuple[int, int, int], weight: float) -> tuple[int, int, int]:
-    """Blend two colors by a normalized weight."""
-    return (
-        round(start[0] + (end[0] - start[0]) * weight),
-        round(start[1] + (end[1] - start[1]) * weight),
-        round(start[2] + (end[2] - start[2]) * weight),
-    )
-
-
-def _hex(color: tuple[int, int, int]) -> str:
-    """Format one color as a Rich hex style."""
-    return f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
 
 
 def _beside(left: Text, right: Text) -> Text:

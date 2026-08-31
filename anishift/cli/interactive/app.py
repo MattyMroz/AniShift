@@ -511,8 +511,8 @@ def _home_content(
     for index, (label, _action) in enumerate(_HOME_CHOICES):
         content.append(" " * geometry.left_padding)
         if index == selected:
-            content.append(f"{_HOME_POINTER} ", style="purple_bold")
-            content.append(label, style="purple_bold")
+            content.append(f"{_HOME_POINTER} ", style="brand_accent")
+            content.append(label, style="brand_accent")
         else:
             content.append(f"  {label}", style="white_bold")
         content.append("\n")

@@ -19,6 +19,7 @@ from rich.console import Console
 from rich.text import Text
 
 from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR, NativeMascotImage, load_native_mascot
+from anishift.cli.interactive.palette import BRAND_THEME
 from anishift.utils.rich_console.theme import RICH_THEME
 
 __all__ = [
@@ -305,6 +306,7 @@ class TerminalRenderer:
             legacy_windows=False,
             highlight=False,
         )
+        self._rich_console.push_theme(BRAND_THEME)
         return self._rich_console, self._render_stream
 
     def _key_bindings(self) -> KeyBindings:

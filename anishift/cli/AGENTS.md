@@ -116,6 +116,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   wyskoku. `interactive/mascot_native.py`
 - Marka jest wyśrodkowana na szerokości terminala, a maskotka wyrównana DOŁEM do
   wordmarku (`_beside`). Nie przesuwaj bloku marki poza środek. `interactive/home.py`
+- Trzy kolory marki (azure, fiolet, czerwień maskotki) mają JEDNO źródło:
+  `interactive/palette.py`. Wordmark bierze z niego gradient, a panel styl
+  `brand_accent` doklejany do konsoli przez `push_theme(BRAND_THEME)` — generyczny
+  `purple_bold` z motywu `rich_console` nie występuje już w żadnym widoku i test tego
+  pilnuje. Czerwień marki nie oznacza błędu; stany zostają na `success`/`warning`/`error`.
+  `interactive/palette.py`, `interactive/prompts.py`, `interactive/home.py`
 - Dwa różne kasowania maskotki, nie zamieniaj ich rolami: klatka-do-klatki nadpisuje
   spacjami sam prostokąt obrazu (tanie, bez migotania przy ~17 fps), a ZNIKNIĘCIE
   (Ustawienia, Auto, Ręczny, wyjście) robi `\x1b[2J` plus `renderer.reset()` i
