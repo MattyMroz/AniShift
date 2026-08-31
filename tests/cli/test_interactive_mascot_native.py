@@ -12,7 +12,9 @@ from rich.text import Text
 
 import anishift.cli.interactive.mascot_native as native_module
 import anishift.cli.interactive.prompts as prompts_module
+from anishift.cli.interactive.app import _home_content
 from anishift.cli.interactive.home import brand_for_geometry
+from anishift.cli.interactive.mascot import MascotState
 from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR, NativeMascotImage
 from anishift.cli.interactive.prompts import HomeGeometry, TerminalRenderer, _native_anchor, resolve_home_geometry
 
@@ -24,12 +26,13 @@ def test_native_mascot_loads_one_valid_sixel_payload(monkeypatch: pytest.MonkeyP
 
     assert image is not None
     assert len(image.payloads) == 46
-    assert all(payload.startswith('\x1bP9;0;0q"1;1;128;128') for payload in image.payloads)
+    assert all(payload.startswith('\x1bP9;0;0q"1;1;160;160') for payload in image.payloads)
     assert all(payload.endswith("\x1b\\") for payload in image.payloads)
     assert image.frame_seconds == (0.06,) * 46
     assert image.cycle_seconds == pytest.approx(2.76)
-    assert image.row_offset == 3
-    assert image.column_offset == 3
+    assert image.erase_payload == '\x1bP9;0;0q"1;1;160;160?\x1b\\'
+    assert image.row_offset == 0
+    assert image.column_offset == 0
 
 
 def test_native_mascot_is_disabled_outside_supported_terminals(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -49,6 +52,14 @@ def test_native_brand_reserves_layout_and_exposes_one_anchor() -> None:
     assert len(brand.split("\n")) == geometry.mascot_rows
 
 
+def test_home_places_brand_at_top_and_menu_at_center() -> None:
+    content: Text = _home_content(120, 40, 0, MascotState.IDLE, native_mascot=True)
+    lines: list[str] = [line.plain for line in content.split("\n")]
+
+    assert next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line) == 1
+    assert next(index for index, line in enumerate(lines) if "Auto" in line) == 17
+
+
 def test_terminal_renderer_captures_normal_mouse_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(prompts_module, "load_native_mascot", lambda: None)
     with create_app_session(input=DummyInput(), output=DummyOutput()):
@@ -66,6 +77,7 @@ def test_native_mascot_is_redrawn_at_an_unchanged_position(monkeypatch: pytest.M
         payloads=("first", "second"),
         frame_seconds=(0.06, 0.06),
         cycle_seconds=0.12,
+        erase_payload="erase",
         row_offset=0,
         column_offset=0,
     )
@@ -76,7 +88,8 @@ def test_native_mascot_is_redrawn_at_an_unchanged_position(monkeypatch: pytest.M
 
     renderer._draw_native_mascot(application)
 
-    assert writes == ["\x1b7\x1b[3;4Hsecond\x1b8"]
+    erase: str = "".join(f"\x1b[{row};4H\x1b[18X" for row in range(3, 13))
+    assert writes == [f"\x1b7{erase}\x1b[3;4Hsecond\x1b8"]
 
 
 def test_terminal_is_cleared_after_renderer_exits() -> None:
@@ -97,12 +110,20 @@ def test_native_mascot_is_erased_before_a_view_without_it() -> None:
     application = cast("Application[None]", SimpleNamespace(output=output))
     renderer = object.__new__(TerminalRenderer)
     renderer._application = application
+    renderer._native_mascot = NativeMascotImage(
+        payloads=("frame",),
+        frame_seconds=(0.1,),
+        cycle_seconds=0.1,
+        erase_payload="blank",
+        row_offset=0,
+        column_offset=0,
+    )
     renderer._native_drawn_position = (2, 3)
 
     renderer._erase_native_mascot()
 
-    erase: str = "".join(f"\x1b[{row};4H\x1b[2K" for row in range(3, 11))
-    assert writes == [f"\x1b7{erase}\x1b8"]
+    erase: str = "".join(f"\x1b[{row};4H\x1b[18X" for row in range(3, 13))
+    assert writes == [f"\x1b7{erase}\x1b[3;4Hblank\x1b8"]
     assert renderer._native_drawn_position is None
 
 

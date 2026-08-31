@@ -244,7 +244,7 @@ def test_home_geometry_preserves_fixed_brand_and_compact_fallback() -> None:
     medium: HomeGeometry = resolve_home_geometry(60, 16)
     narrow: HomeGeometry = resolve_home_geometry(50, 12)
 
-    assert (wide.mascot_columns, wide.mascot_rows) == (20, 14)
+    assert (wide.mascot_columns, wide.mascot_rows) == (18, 10)
     assert wide.show_mascot is True
     assert wide.show_full_wordmark is True
     assert medium.show_mascot is False

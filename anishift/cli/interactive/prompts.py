@@ -37,10 +37,10 @@ _HOME_MENU_WIDTH: Final[int] = 13
 _HOME_MENU_ROWS: Final[int] = 6
 """Rows occupied by the choices and keyboard hint."""
 
-_MASCOT_COLUMNS: Final[int] = 20
+_MASCOT_COLUMNS: Final[int] = 18
 """Fixed mascot width that does not stretch between renders."""
 
-_MASCOT_ROWS: Final[int] = 14
+_MASCOT_ROWS: Final[int] = 10
 """Fixed mascot height that does not stretch between renders."""
 
 _FULL_WORDMARK_COLUMNS: Final[int] = 57
@@ -67,7 +67,7 @@ _COMPACT_BRAND_ROWS: Final[int] = 1
 _TERMINAL_SIZE_POLL_SECONDS: Final[float] = 0.005
 """Fallback resize polling interval inside the Prompt Toolkit event loop."""
 
-_AUTO_REFRESH_SECONDS: Final[float] = 0.06
+_AUTO_REFRESH_SECONDS: Final[float] = 0.1
 """Interval used by the single event loop to advance visible elapsed time."""
 
 _SAVE_CURSOR: Final[str] = "\x1b7"
@@ -76,8 +76,11 @@ _SAVE_CURSOR: Final[str] = "\x1b7"
 _RESTORE_CURSOR: Final[str] = "\x1b8"
 """VT sequence restoring Prompt Toolkit's current cursor position."""
 
-_NATIVE_IMAGE_ROWS: Final[int] = 8
-"""Terminal rows covered by a 128-pixel native image."""
+_NATIVE_IMAGE_COLUMNS: Final[int] = 18
+"""Terminal columns covered by a 160-pixel native image."""
+
+_NATIVE_IMAGE_ROWS: Final[int] = 10
+"""Terminal rows covered by a 160-pixel native image."""
 
 _CLEAR_TERMINAL: Final[str] = "\x1b[2J\x1b[3J\x1b[H"
 """VT sequence clearing the visible terminal, scrollback and cursor origin."""
@@ -206,16 +209,20 @@ class TerminalRenderer:
         output = application.output
         elapsed_seconds: float = time.monotonic() - self._native_animation_started_at
         payload: str = image.payload_at(elapsed_seconds)
-        output.write_raw(f"{_SAVE_CURSOR}\x1b[{row + 1};{column + 1}H{payload}{_RESTORE_CURSOR}")
+        erase: str = _native_erase_sequence(position)
+        output.write_raw(f"{_SAVE_CURSOR}{erase}\x1b[{row + 1};{column + 1}H{payload}{_RESTORE_CURSOR}")
         output.flush()
         self._native_drawn_position = position
 
     def _erase_native_mascot(self) -> None:
+        image: NativeMascotImage | None = self._native_mascot
         position: tuple[int, int] | None = self._native_drawn_position
-        if position is None:
+        if image is None or position is None:
             return
+        row, column = position
         output = self._application.output
-        output.write_raw(f"{_SAVE_CURSOR}{_native_erase_sequence(position)}{_RESTORE_CURSOR}")
+        erase: str = _native_erase_sequence(position)
+        output.write_raw(f"{_SAVE_CURSOR}{erase}\x1b[{row + 1};{column + 1}H{image.erase_payload}{_RESTORE_CURSOR}")
         output.flush()
         self._native_drawn_position = None
 
@@ -295,9 +302,11 @@ def _native_anchor(frame: str) -> tuple[int, int] | None:
 
 
 def _native_erase_sequence(position: tuple[int, int]) -> str:
-    """Build line erases removing a native image before the next view."""
+    """Erase only terminal cells occupied by the previous native frame."""
     row, column = position
-    return "".join(f"\x1b[{row + offset + 1};{column + 1}H\x1b[2K" for offset in range(_NATIVE_IMAGE_ROWS))
+    return "".join(
+        f"\x1b[{row + offset + 1};{column + 1}H\x1b[{_NATIVE_IMAGE_COLUMNS}X" for offset in range(_NATIVE_IMAGE_ROWS)
+    )
 
 
 def resolve_home_geometry(columns: int, rows: int = 24) -> HomeGeometry:

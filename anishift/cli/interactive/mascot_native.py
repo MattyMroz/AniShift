@@ -41,16 +41,16 @@ _DATA_OFFSET: Final[int] = 63
 _RLE_THRESHOLD: Final[int] = 4
 """Shortest repeated character sequence encoded with SIXEL RLE."""
 
-_ROW_OFFSET: Final[int] = 3
+_ROW_OFFSET: Final[int] = 0
 """Terminal rows centering the native image inside its reserved area."""
 
-_COLUMN_OFFSET: Final[int] = 3
+_COLUMN_OFFSET: Final[int] = 0
 """Terminal columns centering the native image inside its reserved area."""
 
 _DEFAULT_FRAME_SECONDS: Final[float] = 0.1
 """Fallback duration used when an animation frame omits timing metadata."""
 
-_FRAME_SIZE: Final[tuple[int, int]] = (128, 128)
+_FRAME_SIZE: Final[tuple[int, int]] = (160, 160)
 """Native screen-pixel size of every rendered animation frame."""
 
 
@@ -61,6 +61,7 @@ class NativeMascotImage:
     payloads: tuple[str, ...]
     frame_seconds: tuple[float, ...]
     cycle_seconds: float
+    erase_payload: str
     row_offset: int
     column_offset: int
 
@@ -102,6 +103,7 @@ def load_native_mascot() -> NativeMascotImage | None:
                 payloads=tuple(payloads),
                 frame_seconds=tuple(frame_seconds),
                 cycle_seconds=sum(frame_seconds),
+                erase_payload=_blank_sixel(*_FRAME_SIZE),
                 row_offset=_ROW_OFFSET,
                 column_offset=_COLUMN_OFFSET,
             )
@@ -130,6 +132,11 @@ def _frame_duration(frame: Image.Image) -> float:
     """Return one positive GIF frame duration in seconds."""
     milliseconds: int = int(frame.info.get("duration", round(_DEFAULT_FRAME_SECONDS * 1000)))
     return max(milliseconds / 1000, _DEFAULT_FRAME_SECONDS / 10)
+
+
+def _blank_sixel(width: int, height: int) -> str:
+    """Build an opaque empty image replacing the previous native frame."""
+    return f'\x1bP9;0;0q"1;1;{width};{height}?\x1b\\'
 
 
 def _encode_sixel(image: Image.Image, palette_source: Image.Image | None = None) -> str:

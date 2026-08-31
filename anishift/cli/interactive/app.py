@@ -468,9 +468,17 @@ def _home_content(
     native_mascot: bool = False,
 ) -> Text:
     geometry: HomeGeometry = resolve_home_geometry(columns, rows)
-    content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry, mascot_state, native_mascot=native_mascot))
-    content.append("\n\n")
+    brand: Text = brand_for_geometry(geometry, mascot_state, native_mascot=native_mascot)
+    brand_rows: int = len(brand.split("\n"))
+    brand_top: int = 1 if rows > brand_rows + len(_HOME_CHOICES) + 3 else 0
+    menu_rows: int = len(_HOME_CHOICES) + 1
+    body_rows: int = max(rows - 1, 1)
+    centered_menu_top: int = max((body_rows - menu_rows) // 2, 0)
+    menu_top: int = max(centered_menu_top, brand_top + brand_rows + 1)
+    brand_bottom: int = brand_top + brand_rows - 1
+    content = Text("\n" * brand_top)
+    content.append_text(brand)
+    content.append("\n" * max(menu_top - brand_bottom, 1))
     for index, (label, _action) in enumerate(_HOME_CHOICES):
         content.append(" " * geometry.left_padding)
         if index == selected:
