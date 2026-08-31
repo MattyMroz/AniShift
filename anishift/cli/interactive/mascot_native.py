@@ -61,7 +61,6 @@ class NativeMascotImage:
     payloads: tuple[str, ...]
     frame_seconds: tuple[float, ...]
     cycle_seconds: float
-    erase_payload: str
     row_offset: int
     column_offset: int
 
@@ -103,7 +102,6 @@ def load_native_mascot() -> NativeMascotImage | None:
                 payloads=tuple(payloads),
                 frame_seconds=tuple(frame_seconds),
                 cycle_seconds=sum(frame_seconds),
-                erase_payload=_blank_sixel(*_FRAME_SIZE),
                 row_offset=_ROW_OFFSET,
                 column_offset=_COLUMN_OFFSET,
             )
@@ -134,11 +132,6 @@ def _frame_duration(frame: Image.Image) -> float:
     return max(milliseconds / 1000, _DEFAULT_FRAME_SECONDS / 10)
 
 
-def _blank_sixel(width: int, height: int) -> str:
-    """Build an opaque empty image replacing the previous native frame."""
-    return f'\x1bP9;0;0q"1;1;{width};{height}?\x1b\\'
-
-
 def _encode_sixel(image: Image.Image, palette_source: Image.Image | None = None) -> str:
     """Encode every source pixel with a square 1:1 SIXEL aspect ratio."""
     rgba: Image.Image = image.convert("RGBA")
@@ -164,7 +157,7 @@ def _encode_sixel(image: Image.Image, palette_source: Image.Image | None = None)
             {color for color, opacity in zip(pixels.indices, pixels.alpha, strict=True) if opacity >= _ALPHA_THRESHOLD}
         )
     )
-    output: list[str] = [f'\x1bP9;0;0q"1;1;{pixels.width};{pixels.height}']
+    output: list[str] = [f'\x1bP9;1;0q"1;1;{pixels.width};{pixels.height}']
     output.extend(_palette_register(color, palette) for color in colors)
     output.extend(_bands(pixels, colors))
     output.append("\x1b\\")

@@ -219,14 +219,12 @@ class TerminalRenderer:
         self._native_drawn_payload = payload
 
     def _erase_native_mascot(self) -> None:
-        image: NativeMascotImage | None = self._native_mascot
         position: tuple[int, int] | None = self._native_drawn_position
-        if image is None or position is None:
+        if position is None:
             return
-        row, column = position
         output = self._application.output
         erase: str = _native_erase_sequence(position)
-        output.write_raw(f"{_SAVE_CURSOR}{erase}\x1b[{row + 1};{column + 1}H{image.erase_payload}{_RESTORE_CURSOR}")
+        output.write_raw(f"{_SAVE_CURSOR}{erase}{_RESTORE_CURSOR}")
         output.flush()
         self._native_drawn_position = None
         self._native_drawn_payload = None

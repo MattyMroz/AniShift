@@ -26,11 +26,10 @@ def test_native_mascot_loads_one_valid_sixel_payload(monkeypatch: pytest.MonkeyP
 
     assert image is not None
     assert len(image.payloads) == 46
-    assert all(payload.startswith('\x1bP9;0;0q"1;1;160;160') for payload in image.payloads)
+    assert all(payload.startswith('\x1bP9;1;0q"1;1;160;160') for payload in image.payloads)
     assert all(payload.endswith("\x1b\\") for payload in image.payloads)
     assert image.frame_seconds == (0.06,) * 46
     assert image.cycle_seconds == pytest.approx(2.76)
-    assert image.erase_payload == '\x1bP9;0;0q"1;1;160;160?\x1b\\'
     assert image.row_offset == 1
     assert image.column_offset == 0
 
@@ -78,7 +77,6 @@ def test_native_mascot_is_redrawn_at_an_unchanged_position(monkeypatch: pytest.M
         payloads=("first", "second"),
         frame_seconds=(0.06, 0.06),
         cycle_seconds=0.12,
-        erase_payload="erase",
         row_offset=0,
         column_offset=0,
     )
@@ -116,7 +114,6 @@ def test_native_mascot_is_erased_before_a_view_without_it() -> None:
         payloads=("frame",),
         frame_seconds=(0.1,),
         cycle_seconds=0.1,
-        erase_payload="blank",
         row_offset=0,
         column_offset=0,
     )
@@ -126,7 +123,7 @@ def test_native_mascot_is_erased_before_a_view_without_it() -> None:
     renderer._erase_native_mascot()
 
     erase: str = "".join(f"\x1b[{row};4H\x1b[18X" for row in range(3, 13))
-    assert writes == [f"\x1b7{erase}\x1b[3;4Hblank\x1b8"]
+    assert writes == [f"\x1b7{erase}\x1b8"]
     assert renderer._native_drawn_position is None
     assert renderer._native_drawn_payload is None
 
@@ -140,7 +137,6 @@ def test_unchanged_animation_frame_is_not_sent_again(monkeypatch: pytest.MonkeyP
         payloads=("frame",),
         frame_seconds=(0.1,),
         cycle_seconds=0.1,
-        erase_payload="blank",
         row_offset=0,
         column_offset=0,
     )
