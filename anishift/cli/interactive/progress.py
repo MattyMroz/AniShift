@@ -222,8 +222,17 @@ class RichRunProgress:
         if changed:
             self._invalidate()
 
-    def render(self, columns: int) -> Text:
-        """Render a width-fitted snapshot through shared Rich bar utilities."""
+    @property
+    def active_row(self) -> int:
+        """Return the row index of the earliest file still doing work."""
+        with self._lock:
+            for index, state in enumerate(self._files.values()):
+                if state.started_at is not None and not state.terminal:
+                    return index
+            return max(len(self._files) - 1, 0)
+
+    def render(self, columns: int, *, offset: int = 0, limit: int | None = None) -> Text:
+        """Render one width-fitted window of the queue through shared Rich bars."""
         now: float = time.monotonic()
         with self._lock:
             rows: tuple[_RenderRow, ...] = tuple(
@@ -235,7 +244,9 @@ class RichRunProgress:
                 )
                 for state in self._files.values()
             )
-        return _render_rows(rows, columns)
+        start: int = min(max(offset, 0), max(len(rows) - 1, 0))
+        end: int = len(rows) if limit is None else start + max(limit, 0)
+        return _render_rows(rows[start:end], columns)
 
     def _apply(self, event: RunEvent) -> bool:
         changed: bool = False

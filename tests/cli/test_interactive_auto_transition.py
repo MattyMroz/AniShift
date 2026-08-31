@@ -40,7 +40,7 @@ def test_first_auto_execution_frame_contains_real_extraction_rows() -> None:
     )
     progress = RichRunProgress(prepared, lambda: None)
 
-    frame = interactive_app._auto_content(120, 40, progress, MascotState.EXTRACT)
+    frame = interactive_app._auto_content((120, 40), progress, MascotState.EXTRACT, interactive_app._QueueView())
 
     assert "Extracting" in frame.plain
     assert "episode-01" in frame.plain

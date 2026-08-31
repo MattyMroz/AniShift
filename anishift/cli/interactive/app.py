@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
@@ -59,6 +60,15 @@ _HOME_BRAND_TOP_PADDING_ROWS: Final[int] = 2
 _HOME_MENU_REGION_GAP_ROWS: Final[int] = 2
 """Rows separating the Home brand from the lower menu region."""
 
+_QUEUE_SCROLL_KEYS: Final[frozenset[str]] = frozenset({"up", "down", "pageup", "pagedown", "home", "end"})
+"""Keys that move the Auto queue instead of leaving the view."""
+
+_QUEUE_WHEEL_ROWS: Final[int] = 3
+"""Queue rows one wheel notch moves."""
+
+_QUEUE_MARKER_ROWS: Final[int] = 2
+"""Rows reserved above and below the queue for the hidden-row markers."""
+
 _REFUSAL_MESSAGES: Final[dict[str, str]] = {
     "The workspace holds no source group to run.": "Workspace nie zawiera materiału do uruchomienia",
     "No discovered source group is ready to run.": "Żadna wykryta grupa nie jest gotowa do uruchomienia",
@@ -75,6 +85,42 @@ _REFUSAL_SUGGESTIONS: Final[dict[str, str]] = {
     ),
 }
 """Polish presentation of stable UI-neutral Auto suggestions."""
+
+
+@dataclass(slots=True)
+class _QueueView:
+    """Own the scroll position of the Auto queue without touching its row order."""
+
+    offset: int = 0
+    visible: int = 1
+    following: bool = True
+
+    def navigate(self, key: str, total: int) -> None:
+        """Move the view by one keyboard step, page or edge."""
+        stride: int = max(self.visible - 1, 1)
+        moves: dict[str, int] = {
+            "up": -1,
+            "down": 1,
+            "pageup": -stride,
+            "pagedown": stride,
+            "home": -total,
+            "end": total,
+        }
+        self.move(moves.get(key, 0), total)
+
+    def move(self, rows: int, total: int) -> None:
+        """Shift the view by a signed row count and resume following at the end."""
+        last: int = _last_offset(total, self.visible)
+        self.offset = min(max(self.offset + rows, 0), last)
+        self.following = self.offset >= last
+
+    def fit(self, row: int, total: int, visible: int) -> None:
+        """Adopt the row budget known only at render time and follow active work."""
+        self.visible = max(visible, 1)
+        last: int = _last_offset(total, self.visible)
+        self.offset = min(self.offset, last)
+        if self.following:
+            self.offset = min(max(row - self.visible + 1, 0), last)
 
 
 class _ViewMode(StrEnum):
@@ -100,6 +146,7 @@ class _InteractiveApplication:
         self._selected: int = 0
         self._message: Text = Text()
         self._progress: RichRunProgress | None = None
+        self._queue: _QueueView = _QueueView()
         self._settings: SettingsController | None = None
         self._manual: ManualController | None = None
         self._cancel_requested: bool = False
@@ -148,6 +195,9 @@ class _InteractiveApplication:
         if mode is _ViewMode.MANUAL:
             self._handle_manual_key(key)
             return
+        if mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and key in _QUEUE_SCROLL_KEYS:
+            self._navigate_queue(key)
+            return
         if mode in {_ViewMode.AUTO_DONE, _ViewMode.MESSAGE}:
             self._show_home()
 
@@ -159,10 +209,24 @@ class _InteractiveApplication:
 
     def _handle_scroll(self, direction: int) -> None:
         with self._lock:
-            controller: SettingsController | None = self._settings if self._mode is _ViewMode.SETTINGS else None
+            mode: _ViewMode = self._mode
+            controller: SettingsController | None = self._settings if mode is _ViewMode.SETTINGS else None
+            progress: RichRunProgress | None = self._progress
+        if mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
+            self._queue.move(direction * _QUEUE_WHEEL_ROWS, progress.row_count)
+            self._renderer.invalidate()
+            return
         if controller is None:
             return
         controller.scroll(direction)
+        self._renderer.invalidate()
+
+    def _navigate_queue(self, key: str) -> None:
+        with self._lock:
+            progress: RichRunProgress | None = self._progress
+        if progress is None:
+            return
+        self._queue.navigate(key, progress.row_count)
         self._renderer.invalidate()
 
     def _handle_home_key(self, key: str) -> None:
@@ -474,7 +538,7 @@ class _InteractiveApplication:
         elif mode is _ViewMode.MANUAL and manual is not None:
             content = manual.render(columns, rows)
         elif mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
-            content = _auto_content(columns, rows, progress, mascot_state)
+            content = _auto_content((columns, rows), progress, mascot_state, self._queue, native_size=native_size)
         elif mode is _ViewMode.SETTINGS and settings is not None:
             content = settings.render(columns, rows)
         else:
@@ -522,17 +586,41 @@ def _home_content(
 
 
 def _auto_content(
-    columns: int,
-    rows: int,
+    size: tuple[int, int],
     progress: RichRunProgress,
     mascot_state: MascotState,
+    view: _QueueView,
+    *,
+    native_size: tuple[int, int] | None = None,
 ) -> Text:
-    geometry: AutoGeometry = resolve_auto_geometry(columns, rows, progress.row_count)
+    columns, rows = size
+    geometry: AutoGeometry = resolve_auto_geometry(columns, rows, progress.row_count, native_size or TEXT_MASCOT_SIZE)
+    brand: Text = brand_for_geometry(geometry, mascot_state, native_mascot=native_size is not None)
+    budget: int = max(rows - 1 - geometry.top_padding - len(brand.split("\n")) - 1, 1)
+    total: int = progress.row_count
+    paged: bool = total > budget
+    visible: int = max(budget - _QUEUE_MARKER_ROWS, 1) if paged else total
+    view.fit(progress.active_row, total, visible)
     content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry, mascot_state, show_mascot=False))
+    content.append_text(brand)
     content.append("\n")
-    content.append_text(progress.render(columns))
+    if paged:
+        content.append_text(_queue_marker("↑", view.offset))
+    content.append_text(progress.render(columns, offset=view.offset, limit=visible))
+    if paged:
+        content.append("\n")
+        content.append_text(_queue_marker("↓", total - view.offset - visible))
     return content
+
+
+def _queue_marker(arrow: str, hidden: int) -> Text:
+    if hidden <= 0:
+        return Text("\n")
+    return Text(f"{arrow} {hidden} poza widokiem\n", style="gray")
+
+
+def _last_offset(total: int, visible: int) -> int:
+    return max(total - visible, 0)
 
 
 def _message_content(
@@ -553,6 +641,10 @@ def _message_content(
 def _fit_frame(content: Text, version: str, directory: str, columns: int, rows: int) -> Text:
     body_rows: int = max(rows - 1, 0)
     lines: list[Text] = list(content.split("\n"))[:body_rows]
+    for line in lines:
+        # A line wider than the terminal would wrap, push every later row down and
+        # move the screen row the native mascot is anchored to.
+        line.truncate(max(columns, 1), overflow="crop")
     lines.extend(Text() for _ in range(body_rows - len(lines)))
     lines.append(Text(status_line(version, directory, columns), style="gray"))
     frame = Text()

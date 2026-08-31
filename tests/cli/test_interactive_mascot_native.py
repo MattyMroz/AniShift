@@ -15,7 +15,7 @@ from rich.text import Text
 import anishift.cli.interactive.mascot_native as native_module
 import anishift.cli.interactive.prompts as prompts_module
 from anishift.cli.interactive import app as interactive_app
-from anishift.cli.interactive.app import _auto_content, _home_content, _message_content
+from anishift.cli.interactive.app import _auto_content, _home_content, _message_content, _QueueView
 from anishift.cli.interactive.home import brand_for_geometry
 from anishift.cli.interactive.mascot import MascotController, MascotState
 from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR, NativeMascotImage
@@ -32,9 +32,10 @@ from anishift.cli.interactive.settings import SettingsController
 
 class _Progress:
     row_count = 1
+    active_row = 0
 
-    def render(self, columns: int) -> Text:
-        del columns
+    def render(self, columns: int, *, offset: int = 0, limit: int | None = None) -> Text:
+        del columns, offset, limit
         return Text("Progress")
 
 
@@ -241,15 +242,42 @@ def test_home_places_brand_at_top_and_menu_at_center() -> None:
     assert next(index for index, line in enumerate(lines) if "Auto" in line) == 24
 
 
-def test_auto_neither_renders_nor_reserves_mascot_space() -> None:
+def test_auto_reserves_the_mascot_beside_its_brand() -> None:
     geometry = resolve_auto_geometry(120, 40, 1)
 
-    content: Text = _auto_content(120, 40, cast("RichRunProgress", _Progress()), MascotState.TTS)
+    content: Text = _auto_content(
+        (120, 40),
+        cast("RichRunProgress", _Progress()),
+        MascotState.TTS,
+        _QueueView(),
+        native_size=(18, 10),
+    )
+
+    assert geometry.show_mascot
+    assert (geometry.mascot_columns, geometry.mascot_rows) == (18, 10)
+    assert NATIVE_MASCOT_ANCHOR in content.plain
+    assert "Progress" in content.plain
+
+
+def test_auto_drops_the_mascot_before_it_eats_the_queue() -> None:
+    geometry = resolve_auto_geometry(120, 12, 1)
 
     assert not geometry.show_mascot
     assert (geometry.mascot_columns, geometry.mascot_rows) == (0, 0)
-    assert NATIVE_MASCOT_ANCHOR not in content.plain
-    assert "Progress" in content.plain
+
+
+def test_auto_drops_the_mascot_in_a_narrow_terminal() -> None:
+    assert not resolve_auto_geometry(60, 40, 1).show_mascot
+
+
+def test_the_auto_queue_keeps_the_mascot_anchor_on_one_screen_row() -> None:
+    view = _QueueView()
+    progress = cast("RichRunProgress", _Progress())
+    first = _auto_content((120, 40), progress, MascotState.TTS, view, native_size=(18, 10))
+    view.move(5, 40)
+    second = _auto_content((120, 40), progress, MascotState.TTS, view, native_size=(18, 10))
+
+    assert _native_anchor(first.plain) == _native_anchor(second.plain)
 
 
 def test_message_view_does_not_render_the_mascot() -> None:

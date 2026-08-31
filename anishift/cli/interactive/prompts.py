@@ -65,6 +65,9 @@ _FULL_WORDMARK_TERMINAL_ROWS: Final[int] = _FULL_WORDMARK_ROWS + _HOME_MENU_ROWS
 _COMPACT_BRAND_ROWS: Final[int] = 1
 """Rows occupied by the compact title."""
 
+_MINIMUM_QUEUE_ROWS: Final[int] = 3
+"""Queue rows that must survive before Auto spends height on the brand."""
+
 _TERMINAL_SIZE_POLL_SECONDS: Final[float] = 0.005
 """Fallback resize polling interval inside the Prompt Toolkit event loop."""
 
@@ -391,17 +394,30 @@ def resolve_home_geometry(
     )
 
 
-def resolve_auto_geometry(columns: int, rows: int, progress_rows: int) -> AutoGeometry:
-    """Place a responsive brand above progress while reserving the footer."""
+def resolve_auto_geometry(
+    columns: int,
+    rows: int,
+    progress_rows: int,
+    mascot: tuple[int, int] = TEXT_MASCOT_SIZE,
+) -> AutoGeometry:
+    """Place a responsive brand above the queue while reserving the footer."""
     terminal_columns: int = max(columns, 1)
     terminal_rows: int = max(rows, 1)
     row_count: int = max(progress_rows, 1)
     available_rows: int = max(terminal_rows - 1, 1)
-    show_mascot: bool = False
+    brand_columns: int = mascot[0] + BRAND_GAP_COLUMNS + _FULL_WORDMARK_COLUMNS
     show_full_wordmark: bool = (
-        terminal_columns >= _FULL_WORDMARK_COLUMNS and available_rows >= _FULL_WORDMARK_ROWS + 1 + row_count
+        terminal_columns >= _FULL_WORDMARK_COLUMNS and available_rows >= _FULL_WORDMARK_ROWS + 1 + _MINIMUM_QUEUE_ROWS
     )
-    brand_rows: int = _FULL_WORDMARK_ROWS if show_full_wordmark else _COMPACT_BRAND_ROWS
+    # The queue outranks the mascot, so the image only appears once the shortest
+    # useful queue still fits beside the tallest brand.
+    show_mascot: bool = (
+        show_full_wordmark
+        and terminal_columns >= brand_columns
+        and available_rows >= mascot[1] + 1 + _MINIMUM_QUEUE_ROWS
+    )
+    wordmark_rows: int = _FULL_WORDMARK_ROWS if show_full_wordmark else _COMPACT_BRAND_ROWS
+    brand_rows: int = max(mascot[1], wordmark_rows) if show_mascot else wordmark_rows
     content_rows: int = brand_rows + 1 + row_count
     top_padding: int = max((available_rows - content_rows) // 2, 0)
     progress_row: int = min(top_padding + brand_rows + 1, max(available_rows - row_count, 0))
@@ -412,8 +428,8 @@ def resolve_auto_geometry(columns: int, rows: int, progress_rows: int) -> AutoGe
         progress_row=progress_row,
         show_mascot=show_mascot,
         show_full_wordmark=show_full_wordmark,
-        mascot_columns=0,
-        mascot_rows=0,
+        mascot_columns=mascot[0] if show_mascot else 0,
+        mascot_rows=mascot[1] if show_mascot else 0,
     )
 
 

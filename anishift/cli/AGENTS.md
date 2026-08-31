@@ -25,6 +25,17 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   alternate screen przez całą sesję. Nie zastępuj go `console.screen()`:
   Rich pomija alternate screen na części konfiguracji `legacy_windows`. Home, Auto i
   wynik czyszczą ten sam output. `interactive/prompts.py`, `interactive/app.py`
+- Auto ma trzy regiony: przyklejony nagłówek z marką i maskotką, przewijana kolejka,
+  przyklejona stopka. Maskotka NIE MOŻE wejść w region przewijany — rastra SIXEL nie
+  da się przyciąć, a wiersz kotwicy `\ue000` musi być stały. Budżet kolejki liczy się
+  z realnej wysokości marki, nie z `AutoGeometry`, i żaden ukryty wiersz nie znika bez
+  licznika „poza widokiem". `interactive/app.py`, `interactive/prompts.py`
+- `_QueueView.following` znaczy „widok jest na żywo": kolejka trzyma się aktywnej
+  pracy, dowolne przewinięcie ją odczepia, a `End` (albo dojście do końca) wraca do
+  żywej pracy — NIE do ostatniego pliku. `visible` znany jest dopiero w renderze,
+  więc ustawia go `fit()`, tak jak `_visible_count` w Ustawieniach. `interactive/app.py`
+- `_fit_frame` obcina KAŻDY wiersz do szerokości terminala. Wiersz szerszy zawinąłby
+  się, zepchnął resztę w dół i przesunął wiersz ekranowy maskotki. `interactive/app.py`
 - Auto usuwa menu, ale zachowuje markę oraz esencjonalną stopkę z cwd/version.
   Jeden `MultiProgressManager` renderuje postęp pod marką. Resize przebudowuje
   wyłącznie ten widok przez publiczne API; nie dodawaj viewportu, wrappera `Live`,
@@ -130,8 +141,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   bezpieczne; NIE dodawaj `RIS` (`\x1bc`) ani `\x1b[3J`, bo te kasują historię terminala
   usera. Kasowanie wołaj z `after_render`, nigdy z callbacku treści — `renderer.reset()`
   w trakcie renderu jest reentrantny. `interactive/prompts.py`
-- Maskotkę widzi wyłącznie Home; Auto, Manual, Settings i komunikaty nie rezerwują
-  dla niej miejsca. `MascotController` nie ma własnego workera ani bezpośredniego
+- Maskotkę widzą Home i Auto; Manual, Settings i komunikaty nie rezerwują dla niej
+  miejsca. `MascotController` nie ma własnego workera ani bezpośredniego
   zapisu do terminala. Brak obsługi obrazu lub zbyt mały terminal degraduje widok do
   fallbacku albo braku maskotki. Resize wywołuje czysty rerender bez rozciągania layoutu.
   `interactive/home.py`, `interactive/prompts.py`
