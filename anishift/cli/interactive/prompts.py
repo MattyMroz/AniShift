@@ -129,7 +129,7 @@ class TerminalRenderer:
         self._render_width: int = 0
         self._render_stream: StringIO | None = None
         self._rich_console: Console | None = None
-        self._native_mascot: NativeMascotImage | None = load_native_mascot()
+        self._native_mascot: NativeMascotImage | None = load_native_mascot(_MASCOT_COLUMNS, _MASCOT_ROWS)
         self._native_animation_started_at: float = time.monotonic()
         self._native_position: tuple[int, int] | None = None
         self._native_drawn_position: tuple[int, int] | None = None

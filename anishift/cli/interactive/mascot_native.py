@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-import os
+import sys
+from ctypes import Structure, byref, sizeof
+from ctypes.wintypes import DWORD, HANDLE, SHORT, UINT, ULONG, WCHAR
 from dataclasses import dataclass
 from importlib.resources import files
 from typing import Final
@@ -10,6 +12,11 @@ from typing import Final
 from PIL import Image, ImageSequence
 
 from anishift.utils.logger import get_logger
+
+if sys.platform == "win32":
+    from ctypes import windll
+else:
+    windll = None
 
 __all__ = ["NATIVE_MASCOT_ANCHOR", "NativeMascotImage", "load_native_mascot"]
 
@@ -50,8 +57,36 @@ _COLUMN_OFFSET: Final[int] = 0
 _DEFAULT_FRAME_SECONDS: Final[float] = 0.1
 """Fallback duration used when an animation frame omits timing metadata."""
 
-_FRAME_SIZE: Final[tuple[int, int]] = (160, 160)
-"""Native screen-pixel size of every rendered animation frame."""
+_FALLBACK_FRAME_SIZE: Final[tuple[int, int]] = (160, 160)
+"""Native frame size used when terminal cell pixels are unavailable."""
+
+_STD_OUTPUT_HANDLE: Final[int] = -11
+"""Windows standard-output handle identifier."""
+
+_CONSOLE_FACE_NAME_LENGTH: Final[int] = 32
+"""Character capacity of the Windows console font face name."""
+
+
+class _Coordinate(Structure):
+    """Represent one Windows console coordinate."""
+
+    _fields_ = (
+        ("X", SHORT),
+        ("Y", SHORT),
+    )
+
+
+class _ConsoleFontInfo(Structure):
+    """Receive the active Windows console font metrics."""
+
+    _fields_ = (
+        ("cbSize", ULONG),
+        ("nFont", DWORD),
+        ("dwFontSize", _Coordinate),
+        ("FontFamily", UINT),
+        ("FontWeight", UINT),
+        ("FaceName", WCHAR * _CONSOLE_FACE_NAME_LENGTH),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,10 +119,11 @@ class _IndexedImage:
     height: int
 
 
-def load_native_mascot() -> NativeMascotImage | None:
+def load_native_mascot(columns: int, rows: int) -> NativeMascotImage | None:
     """Encode the packaged image on Windows without a text-cell fallback."""
     if not _is_windows():
         return None
+    frame_size: tuple[int, int] = _frame_size(columns, rows)
     asset = files(_ASSET_PACKAGE).joinpath(*_ASSET_PARTS)
     try:
         with asset.open("rb") as stream, Image.open(stream) as source:
@@ -95,7 +131,7 @@ def load_native_mascot() -> NativeMascotImage | None:
             payloads: list[str] = []
             frame_seconds: list[float] = []
             for frame in ImageSequence.Iterator(source):
-                resized: Image.Image = frame.convert("RGBA").resize(_FRAME_SIZE, Image.Resampling.NEAREST)
+                resized: Image.Image = frame.convert("RGBA").resize(frame_size, Image.Resampling.NEAREST)
                 payloads.append(_encode_sixel(resized, palette_source))
                 frame_seconds.append(_frame_duration(frame))
             return NativeMascotImage(
@@ -112,7 +148,33 @@ def load_native_mascot() -> NativeMascotImage | None:
 
 def _is_windows() -> bool:
     """Return whether the active process can target the Windows terminal."""
-    return os.name == "nt"
+    return sys.platform == "win32"
+
+
+def _frame_size(columns: int, rows: int) -> tuple[int, int]:
+    """Fit a square native frame into the reserved terminal-cell area."""
+    cell_size: tuple[int, int] | None = _console_cell_size()
+    if cell_size is None:
+        return _FALLBACK_FRAME_SIZE
+    width: int = max(columns, 1) * cell_size[0]
+    height: int = max(rows, 1) * cell_size[1]
+    side: int = min(width, height)
+    return side, side
+
+
+def _console_cell_size() -> tuple[int, int] | None:
+    """Return the active CMD cell size in screen pixels when available."""
+    if not _is_windows() or windll is None:
+        return None
+    info = _ConsoleFontInfo()
+    info.cbSize = sizeof(_ConsoleFontInfo)
+    handle = HANDLE(windll.kernel32.GetStdHandle(_STD_OUTPUT_HANDLE))
+    succeeded: int = windll.kernel32.GetCurrentConsoleFontEx(handle, False, byref(info))
+    width: int = int(info.dwFontSize.X)
+    height: int = int(info.dwFontSize.Y)
+    if not succeeded or width < 1 or height < 1:
+        return None
+    return width, height
 
 
 def _palette_source(image: Image.Image) -> Image.Image:

@@ -21,8 +21,9 @@ from anishift.cli.interactive.prompts import HomeGeometry, TerminalRenderer, _na
 
 def test_native_mascot_loads_one_valid_sixel_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(native_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(native_module, "_console_cell_size", lambda: None)
 
-    image: NativeMascotImage | None = native_module.load_native_mascot()
+    image: NativeMascotImage | None = native_module.load_native_mascot(18, 10)
 
     assert image is not None
     assert len(image.payloads) == 46
@@ -37,7 +38,13 @@ def test_native_mascot_loads_one_valid_sixel_payload(monkeypatch: pytest.MonkeyP
 def test_native_mascot_is_disabled_outside_supported_terminals(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(native_module, "_is_windows", lambda: False)
 
-    assert native_module.load_native_mascot() is None
+    assert native_module.load_native_mascot(18, 10) is None
+
+
+def test_native_mascot_matches_the_reserved_console_cell_area(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(native_module, "_console_cell_size", lambda: (11, 22))
+
+    assert native_module._frame_size(18, 10) == (198, 198)
 
 
 def test_native_brand_reserves_layout_and_exposes_one_anchor() -> None:
@@ -61,7 +68,7 @@ def test_home_places_brand_at_top_and_menu_at_center() -> None:
 
 
 def test_terminal_renderer_captures_normal_mouse_selection(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(prompts_module, "load_native_mascot", lambda: None)
+    monkeypatch.setattr(prompts_module, "load_native_mascot", lambda _columns, _rows: None)
     with create_app_session(input=DummyInput(), output=DummyOutput()):
         renderer = TerminalRenderer(lambda _columns, _rows: Text(), lambda _key: None)
 
@@ -153,5 +160,6 @@ def test_unchanged_animation_frame_is_not_sent_again(monkeypatch: pytest.MonkeyP
 
 def test_native_encoder_does_not_require_chafa(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(native_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(native_module, "_console_cell_size", lambda: None)
 
-    assert native_module.load_native_mascot() is not None
+    assert native_module.load_native_mascot(18, 10) is not None
