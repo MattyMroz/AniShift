@@ -43,7 +43,7 @@ niezwiązany z tym etapem.
   fałszywe — zmierzono 55 pól w katalogu, 35 w układzie, 9 poprawnie nieaktywnych,
   5 celowo obsługiwanych inaczej i 1 realną lukę, więc etap sprowadza się do
   postawienia strażnika, nie do przebudowy
-- **status:** current
+- **status:** done
 
 Uwaga do zakresu: pierwotnie ten etap miał zastąpić trzy krotki jedną strukturą i
 przenieść polskie teksty do katalogu. Pomiar i weryfikacja `SettingSpec` unieważniły
@@ -68,7 +68,7 @@ katalogu są celowo UI-neutralne po angielsku. Etap zmniejszył się do strażni
 - **ryzyko:** rozszerzenie kontraktu klawiszy dotyka jedynego właściciela
   interakcji, więc może wpłynąć na Home i Ręczny; klawisze specjalne na Windowsie
   przychodzą z pustym `data`, co wymaga bindingów per klawisz, nie przez `Any`
-- **status:** planned
+- **status:** done
 
 ## E3 — Brakujące pokrętła jakości i trzy naprawy
 
@@ -86,7 +86,7 @@ katalogu są celowo UI-neutralne po angielsku. Etap zmniejszył się do strażni
 - **zależności:** E1
 - **ryzyko:** pola INTENCJI wymagają zaprojektowania odwzorowania wybór → liczby;
   złe odwzorowanie jest gorsze niż brak pola, bo daje złudzenie kontroli
-- **status:** planned
+- **status:** done
 
 ## E4 — Paleta maskotki w całym panelu
 
@@ -102,7 +102,7 @@ katalogu są celowo UI-neutralne po angielsku. Etap zmniejszył się do strażni
 - **zależności:** E2, E3
 - **ryzyko:** ocena estetyczna wymaga iteracji z człowiekiem, więc etap ma
   wbudowany punkt kontrolny, nie warunek automatyczny
-- **status:** planned
+- **status:** done
 
 ## E5 — Auto: maskotka i przewijana kolejka
 
@@ -120,7 +120,7 @@ katalogu są celowo UI-neutralne po angielsku. Etap zmniejszył się do strażni
 - **ryzyko:** największe w całym etapie — raster SIXEL nie da się przyciąć, więc
   maskotka nie może wejść w region przewijany; unieważnia zakaz przewijania
   pilnowany testami regresyjnymi, które trzeba przepisać razem z unieważnieniem
-- **status:** planned
+- **status:** done
 
 ---
 
