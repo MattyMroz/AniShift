@@ -58,6 +58,9 @@ _BACK_KEY: Final[str] = "back"
 _RESET_KEY: Final[str] = "reset-settings"
 """Stable action key restoring non-secret panel preferences."""
 
+_BACK_LABEL: Final[str] = "Cofnij"
+"""Label of the row that collapses one level."""
+
 _ROOT_ITEMS: Final[tuple[tuple[str, str], ...]] = (
     ("Ogólne", "category:general"),
     ("Tłumaczenie", "category:translation"),
@@ -65,7 +68,7 @@ _ROOT_ITEMS: Final[tuple[tuple[str, str], ...]] = (
     ("Wynik", "category:output"),
     ("Połączenia", "category:connections"),
     ("Przywróć domyślne", _RESET_KEY),
-    ("Wróć", _BACK_KEY),
+    (_BACK_LABEL, _BACK_KEY),
 )
 """Settings root entries in product-defined order."""
 
@@ -463,7 +466,7 @@ class SettingsController:
         try:
             self._items = self._build_menu_items()
         except AniShiftError, OSError, TypeError, ValueError:
-            self._items = (_MenuItem(_BACK_KEY, "Wróć"),)
+            self._items = (_MenuItem(_BACK_KEY, _BACK_LABEL),)
             self._selected = 0
             self._feedback = _Feedback("✗ Nie można wczytać ustawień", "error")
         self._selected = min(self._selected, max(len(self._items) - 1, 0))
@@ -498,13 +501,13 @@ class SettingsController:
                 ),
             )
         items.extend(self._active_setting_items(snapshot, _TRANSLATION_FIELDS[1:]))
-        items.append(_MenuItem(_BACK_KEY, "Wróć"))
+        items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
         return tuple(items)
 
     def _setting_items(self, fields: tuple[_SettingField, ...]) -> tuple[_MenuItem, ...]:
         snapshot: _CatalogSnapshot = self._catalog_snapshot()
         items: list[_MenuItem] = list(self._active_setting_items(snapshot, fields))
-        items.append(_MenuItem(_BACK_KEY, "Wróć"))
+        items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
         return tuple(items)
 
     def _active_setting_items(
@@ -540,7 +543,7 @@ class SettingsController:
             status: EnvironmentSettingStatus | None = statuses.get(connection.secret_id)
             current: str = _connection_status(status)
             items.append(_MenuItem(f"connection:{connection.key}", connection.label, current))
-        items.append(_MenuItem(_BACK_KEY, "Wróć"))
+        items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
         return tuple(items)
 
     def _connection_menu_items(self, connection: _Connection) -> tuple[_MenuItem, ...]:
@@ -550,7 +553,7 @@ class SettingsController:
         items.append(_MenuItem("connection-remove", "Usuń klucz"))
         if connection.can_probe:
             items.append(_MenuItem("connection-probe", "Testuj połączenie"))
-        items.append(_MenuItem(_BACK_KEY, "Wróć"))
+        items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
         return tuple(items)
 
     def _connection_address(self, connection: _Connection) -> str:
@@ -924,7 +927,7 @@ class SettingsController:
         actions: tuple[_MenuItem, ...] = (
             _MenuItem("", "Zapisz"),
             _MenuItem("", "Przywróć domyślne"),
-            _MenuItem("", "Wróć"),
+            _MenuItem("", _BACK_LABEL),
         )
         left: int = _menu_left_padding(columns, (*labels, *actions))
         content: Text = Text("\n" * max((max(rows - 1, 1) - body_rows) // 2, 0))
@@ -940,7 +943,7 @@ class SettingsController:
         for index, label in (
             (save_index, "Zapisz"),
             (reset_index, "Przywróć domyślne"),
-            (back_index, "Wróć"),
+            (back_index, _BACK_LABEL),
         ):
             content.append(" " * left)
             content.append(f"{_POINTER} " if self._selected == index else "  ", style="purple_bold")
