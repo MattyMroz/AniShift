@@ -7,7 +7,7 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Never, Protocol
+from typing import Final, Never, Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
@@ -37,6 +37,11 @@ __all__ = [
     "build_narration_manifest",
     "load_narration_manifest",
 ]
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_MINIMUM_WINDOW_MS: Final[int] = 1
+"""Shortest placement window kept for a subtitle that carries no duration."""
 
 
 class TtsExecutor(Protocol):
@@ -176,7 +181,8 @@ class TtsTaskHandler:
                 continue
             request_id: str = f"{task.group_id}-{line.order}"
             requests.append(SpeechRequest(request_id, line.text, len(requests)))
-            timings.append(NarrationTiming(request_id, line.start, line.end, line.order))
+            start, end = _placement_window(line.start, line.end)
+            timings.append(NarrationTiming(request_id, start, end, line.order))
         batch_rank: int | None = self._group_ranks.get(task.group_id)
         if batch_rank is None:
             _raise_execution("TTS task group is missing its natural-order rank")
@@ -298,13 +304,20 @@ def _manifest_json(manifest: NarrationManifest) -> dict[str, object]:
     }
 
 
+def _placement_window(start_ms: int, end_ms: int) -> tuple[int, int]:
+    """Return a positive window, because a subtitle may carry no duration at all."""
+    start: int = max(start_ms, 0)
+    return start, max(end_ms, start + _MINIMUM_WINDOW_MS)
+
+
 def _manifest_clip(value: object) -> NarrationManifestClip:
     if not isinstance(value, dict):
         raise TypeError
+    start, end = _placement_window(int(value["start_ms"]), int(value["end_ms"]))
     return NarrationManifestClip(
         request_id=str(value["request_id"]),
-        start_ms=int(value["start_ms"]),
-        end_ms=int(value["end_ms"]),
+        start_ms=start,
+        end_ms=end,
         source_order=int(value["source_order"]),
         path=Path(str(value["path"])),
         format=str(value["format"]),

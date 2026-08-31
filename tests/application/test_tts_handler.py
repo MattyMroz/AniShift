@@ -138,6 +138,72 @@ def test_tts_handler_writes_timed_clip_manifest(tmp_path: Path) -> None:
     assert len(service.batches[0].requests) == 1
 
 
+def test_a_subtitle_without_duration_still_gets_a_placement_window(tmp_path: Path) -> None:
+    source_path = tmp_path / "episode.spoken.pl.srt"
+    source_path.write_text(
+        "1\n00:11:18,240 --> 00:11:18,240\nSzybko!\n",
+        encoding="utf-8",
+    )
+    source = Artifact(
+        "spoken",
+        "group-1",
+        ArtifactKind.SPOKEN_PL,
+        source_path,
+        ArtifactState.READY,
+        ArtifactLifetime.SOURCE,
+        source_path,
+    )
+    output = Artifact(
+        "manifest", "group-1", ArtifactKind.TTS_MANIFEST, None, ArtifactState.MISSING, ArtifactLifetime.INTERMEDIATE
+    )
+    task = PlanTask("tts", "group-1", TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",), (), "tts:edge")
+
+    result: TaskResult = TtsTaskHandler(
+        _Tts(tmp_path),
+        run_root=tmp_path / "run",
+        group_ranks={"group-1": 0},
+    ).execute(
+        task,
+        ArtifactSnapshot({"spoken": source}, {"manifest": output}),
+        NeverCancelledToken(),
+        _Progress(),
+    )
+
+    manifest = load_narration_manifest(result.outputs[0].path)
+    assert manifest.clips[0].start_ms == 678240
+    assert manifest.clips[0].end_ms == 678241
+
+
+def test_a_stored_manifest_window_without_duration_is_repaired_on_load(tmp_path: Path) -> None:
+    path = tmp_path / "manifest.json"
+    path.write_text(
+        json.dumps(
+            {
+                "scope_id": "group-1",
+                "clips": [
+                    {
+                        "request_id": "group-1-214",
+                        "start_ms": 678240,
+                        "end_ms": 678240,
+                        "source_order": 214,
+                        "path": str(tmp_path / "clip.wav"),
+                        "format": "wav",
+                        "sample_rate": 24000,
+                        "channels": 1,
+                        "duration_ms": 900,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = load_narration_manifest(path)
+
+    assert manifest.clips[0].start_ms == 678240
+    assert manifest.clips[0].end_ms == 678241
+
+
 def test_tts_handler_forwards_legacy_visible_required_percentages(tmp_path: Path) -> None:
     source_path = tmp_path / "episode.spoken.pl.srt"
     source_path.write_text("1\n00:00:01,000 --> 00:00:02,000\nCześć\n", encoding="utf-8")
