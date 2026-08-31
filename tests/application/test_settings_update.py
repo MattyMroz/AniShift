@@ -188,6 +188,18 @@ def test_changing_the_engine_materializes_the_new_voice_profile(tmp_path: Path) 
     assert saved[-1].tts_voice_id == MAREK_VOICE_ID
 
 
+def test_changing_from_sapi_to_elevenbytes_selects_dallin(tmp_path: Path) -> None:
+    initial: UserSettings = UserSettings(tts_engine="sapi", tts_voice_id="agnieszka")
+    saved: list[UserSettings] = []
+    service: AppService = _service(tmp_path, initial, saved.append)
+
+    switched: UserSettings = service.update_setting("tts_engine", "elevenbytes")
+
+    assert switched.tts_voice_id == DALLIN_ALIAS
+    assert switched.resolved_tts_voice_id == DALLIN_VOICE_ID
+    assert saved[-1].tts_voice_id == DALLIN_ALIAS
+
+
 def test_removing_the_active_custom_voice_leaves_no_dangling_selection(tmp_path: Path) -> None:
     initial: UserSettings = UserSettings(tts_engine="elevenbytes")
     initial.add_elevenbytes_voice(alias="reader", label="Reader", voice_id="provider-id")

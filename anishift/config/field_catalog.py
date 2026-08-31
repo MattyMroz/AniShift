@@ -223,7 +223,7 @@ class SettingCatalogContext:
     tts_engine: str = "elevenbytes"
     tts_provider_model_id: str = "run6"
     tts_voice_id: str = DALLIN_ALIAS
-    elevenbytes_vpn_enabled: bool = False
+    elevenbytes_vpn_enabled: bool = True
     elevenbytes_custom_voice_aliases: tuple[str, ...] = ()
 
     @classmethod

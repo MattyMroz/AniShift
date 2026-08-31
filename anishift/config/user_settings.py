@@ -314,7 +314,7 @@ class UserSettings:
     tts_provider_model_id: str = "run6"
     tts_voice_id: str = DALLIN_ALIAS
     tts_max_retries: int = 3
-    elevenbytes_vpn_enabled: bool = False
+    elevenbytes_vpn_enabled: bool = True
     tts_output_profile: str = AudioCodecProfile.EAC3.value
     tts_output_bitrate: str | None = None
     tts_timeline_policy: str = TimelinePolicy.SERIALIZE.value
@@ -491,6 +491,8 @@ class UserSettings:
         if self.tts_engine == "elevenbytes":
             if self.tts_provider_model_id not in ENDPOINTS:
                 self.tts_provider_model_id = "run6"
+            if _is_sapi_voice(self.tts_voice_id) or self.tts_voice_id in {MAREK_VOICE_ID, ZOFIA_VOICE_ID}:
+                self.tts_voice_id = DALLIN_ALIAS
             return
         if self.tts_engine == "edge":
             self.tts_provider_model_id = EDGE_PROVIDER_MODEL_ID
