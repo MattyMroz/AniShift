@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -60,6 +61,27 @@ _RESET_KEY: Final[str] = "reset-settings"
 
 _BACK_LABEL: Final[str] = "Cofnij"
 """Label of the row that collapses one level."""
+
+_SAVE_DELAY_SECONDS: Final[float] = 0.4
+"""Idle time that coalesces a run of arrow presses into one saved transaction."""
+
+_COARSE_INTEGER_SPAN: Final[int] = 1000
+"""Range above which whole numbers step by hundreds instead of by one."""
+
+_FINE_FLOAT_SPAN: Final[float] = 2.0
+"""Range up to which fractional values step by hundredths."""
+
+_MEDIUM_FLOAT_SPAN: Final[float] = 20.0
+"""Range up to which fractional values step by halves."""
+
+_FINE_FLOAT_STEP: Final[float] = 0.05
+"""Step used by probabilities, temperatures and other narrow fractions."""
+
+_COARSE_FLOAT_STEP: Final[float] = 0.5
+"""Step used by tempo multipliers and decibel gains."""
+
+_COARSE_INTEGER_STEP: Final[int] = 100
+"""Step used by token limits and other wide whole-number ranges."""
 
 _ROOT_ITEMS: Final[tuple[tuple[str, str], ...]] = (
     ("Ogólne", "category:general"),
@@ -235,6 +257,13 @@ class _Editor:
     selected_values: set[str] = field(default_factory=set)
 
 
+@dataclass(slots=True)
+class _PendingEdit:
+    setting_id: str
+    value: SettingValue
+    deadline: float
+
+
 @dataclass(frozen=True, slots=True)
 class _CatalogSnapshot:
     settings: UserSettings
@@ -278,6 +307,7 @@ class SettingsController:
         self._selected: int = 0
         self._offset: int = 0
         self._visible_count: int = 0
+        self._pending: _PendingEdit | None = None
         self._follow_cursor: bool = True
         self._editor: _Editor | None = None
         self._output_products: set[ProductKind] = set()
@@ -289,6 +319,8 @@ class SettingsController:
 
     def handle_key(self, key: str) -> SettingsResult:
         """Apply one normalized terminal key without performing render-time I/O."""
+        if key not in {"left", "right"}:
+            self._commit_pending()
         if self._busy:
             return self._handle_busy_key(key)
         if self._editor is not None:
@@ -300,6 +332,56 @@ class SettingsController:
             self._handle_output_key(key)
             return SettingsResult.STAY
         return self._handle_menu_key(key)
+
+    def flush_pending(self) -> None:
+        """Persist a delayed edit once the user has stopped pressing arrows."""
+        pending: _PendingEdit | None = self._pending
+        if pending is None or time.monotonic() < pending.deadline:
+            return
+        self._commit_pending()
+        self._invalidate()
+
+    def _commit_pending(self) -> None:
+        pending: _PendingEdit | None = self._pending
+        if pending is None:
+            return
+        self._pending = None
+        try:
+            self._service.update_setting(pending.setting_id, pending.value)
+        except AniShiftError, OSError:
+            self._feedback = _Feedback("✗ Nie udało się zapisać ustawienia", "error")
+        except TypeError, ValueError:
+            self._feedback = _Feedback(self._validation_message(pending.setting_id), "error")
+        else:
+            self._feedback = _Feedback(_SAVED_MESSAGE, "success")
+        self._refresh_menu()
+
+    def _adjust_selected(self, direction: int) -> None:
+        if not self._items:
+            return
+        key: str = self._items[self._selected].key
+        if not key.startswith("setting:"):
+            return
+        setting_id: str = key.removeprefix("setting:")
+        try:
+            snapshot: _CatalogSnapshot = self._catalog_snapshot()
+        except AniShiftError, OSError:
+            return
+        spec: SettingSpec | None = snapshot.specs.get(setting_id)
+        if spec is None:
+            return
+        current: SettingValue = self._effective_value(snapshot, spec)
+        stepped: tuple[SettingValue] | None = _stepped_value(spec, current, direction)
+        if stepped is None:
+            return
+        self._pending = _PendingEdit(setting_id, stepped[0], time.monotonic() + _SAVE_DELAY_SECONDS)
+        self._feedback = None
+
+    def _effective_value(self, snapshot: _CatalogSnapshot, spec: SettingSpec) -> SettingValue:
+        pending: _PendingEdit | None = self._pending
+        if pending is not None and pending.setting_id == spec.setting_id:
+            return pending.value
+        return read_setting_value(snapshot.settings, spec)
 
     def render(self, columns: int, rows: int) -> Text:
         """Render the cached current menu or editor for one terminal geometry."""
@@ -338,6 +420,9 @@ class SettingsController:
 
     def _handle_menu_key(self, key: str) -> SettingsResult:
         if self._apply_navigation(key, len(self._items)):
+            return SettingsResult.STAY
+        if key in {"left", "right"}:
+            self._adjust_selected(1 if key == "right" else -1)
             return SettingsResult.STAY
         if key != "enter" or not self._items:
             return SettingsResult.STAY
@@ -557,7 +642,7 @@ class SettingsController:
         section: str,
     ) -> _MenuItem:
         spec: SettingSpec = _required_spec(snapshot.specs, setting_id)
-        value: SettingValue = read_setting_value(snapshot.settings, spec)
+        value: SettingValue = self._effective_value(snapshot, spec)
         return _MenuItem(f"setting:{setting_id}", label, _format_value(setting_id, value), section)
 
     def _connection_items(self) -> tuple[_MenuItem, ...]:
@@ -1198,6 +1283,83 @@ def _sectioned_row_count(sections: tuple[str, ...]) -> int:
             rows += 1
             previous = section
     return rows
+
+
+def _numeric_step(spec: SettingSpec) -> float:
+    """Return the increment one arrow press applies to a numeric field."""
+    span: float | None = None
+    if spec.minimum is not None and spec.maximum is not None:
+        span = float(spec.maximum) - float(spec.minimum)
+    if spec.value_type in {SettingValueType.INTEGER, SettingValueType.OPTIONAL_INTEGER}:
+        return _COARSE_INTEGER_STEP if span is not None and span > _COARSE_INTEGER_SPAN else 1
+    if span is not None and span <= _FINE_FLOAT_SPAN:
+        return _FINE_FLOAT_STEP
+    if span is not None and span <= _MEDIUM_FLOAT_SPAN:
+        return _COARSE_FLOAT_STEP
+    return _COARSE_FLOAT_STEP
+
+
+def _stepped_number(spec: SettingSpec, current: SettingValue, direction: int) -> tuple[SettingValue] | None:
+    """Wrap the neighbouring number, or return ``None`` when the field cannot step.
+
+    The result is wrapped because clearing an optional field is itself a valid step
+    towards ``None``, which a bare return could not tell from "not applicable".
+    """
+    optional: bool = spec.value_type in {
+        SettingValueType.OPTIONAL_INTEGER,
+        SettingValueType.OPTIONAL_FLOAT,
+    }
+    integral: bool = spec.value_type in {SettingValueType.INTEGER, SettingValueType.OPTIONAL_INTEGER}
+    step: float = _numeric_step(spec)
+    if current is None:
+        start: SettingValue = spec.default if spec.default is not None else spec.minimum
+        if not isinstance(start, (int, float)) or isinstance(start, bool):
+            return None
+        return (int(start) if integral else round(float(start), 2),)
+    if not isinstance(current, (int, float)) or isinstance(current, bool):
+        return None
+    raw: float = float(current) + direction * step
+    if spec.minimum is not None and raw < float(spec.minimum):
+        if optional:
+            return (None,)
+        return (int(spec.minimum) if integral else float(spec.minimum),)
+    if spec.maximum is not None and raw > float(spec.maximum):
+        raw = float(spec.maximum)
+    return (round(raw) if integral else round(raw, 2),)
+
+
+def _stepped_choice(spec: SettingSpec, current: SettingValue, direction: int) -> tuple[SettingValue] | None:
+    """Wrap the neighbouring allowed value, never wrapping past either end."""
+    values: tuple[SettingValue, ...] = spec.allowed_values
+    if not values:
+        return None
+    texts: list[str] = [str(value) for value in values]
+    try:
+        position: int = texts.index(str(current))
+    except ValueError:
+        position = 0
+    target: int = min(max(position + direction, 0), len(values) - 1)
+    if target == position:
+        return None
+    return (values[target],)
+
+
+def _stepped_value(spec: SettingSpec, current: SettingValue, direction: int) -> tuple[SettingValue] | None:
+    """Wrap the value one arrow press away, or return ``None`` when arrows do not apply."""
+    if spec.value_type is SettingValueType.BOOLEAN:
+        return (not current if isinstance(current, bool) else True,)
+    if spec.value_type in {SettingValueType.STRING_LIST, SettingValueType.STRING_SET, SettingValueType.OBJECT_LIST}:
+        return None
+    if spec.allowed_values:
+        return _stepped_choice(spec, current, direction)
+    if spec.value_type in {
+        SettingValueType.INTEGER,
+        SettingValueType.OPTIONAL_INTEGER,
+        SettingValueType.FLOAT,
+        SettingValueType.OPTIONAL_FLOAT,
+    }:
+        return _stepped_number(spec, current, direction)
+    return None
 
 
 def _navigate_editor(editor: _Editor, key: str) -> bool:

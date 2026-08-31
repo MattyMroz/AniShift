@@ -140,9 +140,11 @@ class TerminalRenderer:
         self,
         frame_provider: Callable[[int, int], Text],
         key_handler: Callable[[str], None],
+        idle_handler: Callable[[], None] | None = None,
     ) -> None:
         self._frame_provider: Callable[[int, int], Text] = frame_provider
         self._key_handler: Callable[[str], None] = key_handler
+        self._idle_handler: Callable[[], None] | None = idle_handler
         self._render_width: int = 0
         self._render_stream: StringIO | None = None
         self._rich_console: Console | None = None
@@ -166,7 +168,7 @@ class TerminalRenderer:
             max_render_postpone_time=0,
             refresh_interval=_AUTO_REFRESH_SECONDS,
             terminal_size_polling_interval=_TERMINAL_SIZE_POLL_SECONDS,
-            after_render=self._draw_native_mascot,
+            after_render=self._after_render,
         )
 
     @property
@@ -212,6 +214,13 @@ class TerminalRenderer:
         stream.truncate(0)
         render_console.print(frame, end="", soft_wrap=True)
         return ANSI(stream.getvalue())
+
+    def _after_render(self, application: Application[None]) -> None:
+        self._draw_native_mascot(application)
+        # The loop refreshes on its own interval, so this is the only place a
+        # deferred write can run without doing I/O inside frame construction.
+        if self._idle_handler is not None:
+            self._idle_handler()
 
     def _draw_native_mascot(self, application: Application[None]) -> None:
         image: NativeMascotImage | None = self._native_mascot

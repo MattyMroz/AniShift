@@ -17,7 +17,7 @@ def test_auto_preflight_has_no_visible_intermediate_screen(monkeypatch: pytest.M
     monkeypatch.setattr(
         interactive_app,
         "TerminalRenderer",
-        lambda frame_provider, key_handler: SimpleNamespace(invalidate=lambda: None),
+        lambda frame_provider, key_handler, idle_handler: SimpleNamespace(invalidate=lambda: None),
     )
     application = interactive_app._InteractiveApplication(cast("AppService", SimpleNamespace()))
     application._mode = interactive_app._ViewMode.PREPARING

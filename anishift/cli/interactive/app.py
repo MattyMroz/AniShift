@@ -107,7 +107,7 @@ class _InteractiveApplication:
         self._generation: int = 0
         self._worker: threading.Thread | None = None
         self._directory: str = working_directory_label()
-        self._renderer: TerminalRenderer = TerminalRenderer(self._render_frame, self._handle_key)
+        self._renderer: TerminalRenderer = TerminalRenderer(self._render_frame, self._handle_key, self._handle_idle)
         self._mascot: MascotController = MascotController(self._renderer.invalidate)
 
     def run(self) -> None:
@@ -145,6 +145,12 @@ class _InteractiveApplication:
             return
         if mode in {_ViewMode.AUTO_DONE, _ViewMode.MESSAGE}:
             self._show_home()
+
+    def _handle_idle(self) -> None:
+        with self._lock:
+            controller: SettingsController | None = self._settings if self._mode is _ViewMode.SETTINGS else None
+        if controller is not None:
+            controller.flush_pending()
 
     def _handle_home_key(self, key: str) -> None:
         if key == "up":

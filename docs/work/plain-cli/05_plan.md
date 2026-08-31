@@ -285,7 +285,7 @@ Po kroku 6:
 uruchom      uv run anishift  ->  Ustawienia  ->  Lektor
 zrób         przejdź listę strzałkami, zmień tempo ←→, przewiń kółkiem,
              wróć strzałką, zejdź na Cofnij i naciśnij Enter
-oczekuj      kursor zawsze widoczny, tempo zmienia się o 0.5 od razu na liście,
+oczekuj      kursor zawsze widoczny, tempo zmienia się o 0.05 od razu na liście,
              kółko przewija bez zmiany zaznaczenia, Cofnij zawsze na dole
 zwróć uwagę  czy maskotka nie zostawia rastra przy przewijaniu,
              czy trzymanie strzałki jest płynne i czy wartość utrzymuje się
