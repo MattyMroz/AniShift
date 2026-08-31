@@ -62,6 +62,9 @@ _RESET_KEY: Final[str] = "reset-settings"
 _BACK_LABEL: Final[str] = "Cofnij"
 """Label of the row that collapses one level."""
 
+_WHEEL_ROWS: Final[int] = 3
+"""Rows one wheel notch moves the view."""
+
 _SAVE_DELAY_SECONDS: Final[float] = 0.4
 """Idle time that coalesces a run of arrow presses into one saved transaction."""
 
@@ -332,6 +335,21 @@ class SettingsController:
             self._handle_output_key(key)
             return SettingsResult.STAY
         return self._handle_menu_key(key)
+
+    def scroll(self, direction: int) -> None:
+        """Move the view by one wheel notch without moving the selection."""
+        if self._editor is not None or self._category is _Category.OUTPUT:
+            return
+        length: int = self._scrollable_length()
+        if not length:
+            return
+        self._follow_cursor = False
+        self._offset = min(max(self._offset + direction * _WHEEL_ROWS, 0), max(length - 1, 0))
+
+    def _scrollable_length(self) -> int:
+        if self._items and self._items[-1].key == _BACK_KEY:
+            return len(self._items) - 1
+        return len(self._items)
 
     def flush_pending(self) -> None:
         """Persist a delayed edit once the user has stopped pressing arrows."""

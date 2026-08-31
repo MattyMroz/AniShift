@@ -107,7 +107,12 @@ class _InteractiveApplication:
         self._generation: int = 0
         self._worker: threading.Thread | None = None
         self._directory: str = working_directory_label()
-        self._renderer: TerminalRenderer = TerminalRenderer(self._render_frame, self._handle_key, self._handle_idle)
+        self._renderer: TerminalRenderer = TerminalRenderer(
+            self._render_frame,
+            self._handle_key,
+            self._handle_idle,
+            self._handle_scroll,
+        )
         self._mascot: MascotController = MascotController(self._renderer.invalidate)
 
     def run(self) -> None:
@@ -151,6 +156,14 @@ class _InteractiveApplication:
             controller: SettingsController | None = self._settings if self._mode is _ViewMode.SETTINGS else None
         if controller is not None:
             controller.flush_pending()
+
+    def _handle_scroll(self, direction: int) -> None:
+        with self._lock:
+            controller: SettingsController | None = self._settings if self._mode is _ViewMode.SETTINGS else None
+        if controller is None:
+            return
+        controller.scroll(direction)
+        self._renderer.invalidate()
 
     def _handle_home_key(self, key: str) -> None:
         if key == "up":

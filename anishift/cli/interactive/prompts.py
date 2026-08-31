@@ -13,6 +13,7 @@ from prompt_toolkit.formatted_text import ANSI, AnyFormattedText
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import FormattedTextControl, Layout, Window
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.output import ColorDepth
 from rich.console import Console
 from rich.text import Text
@@ -133,6 +134,31 @@ class AutoGeometry:
     mascot_rows: int
 
 
+class _WheelControl(FormattedTextControl):
+    """Turn wheel events into scroll requests the surrounding window cannot serve.
+
+    The frame is always exactly as tall as the window, so the default scroller sees
+    nothing to scroll and drops the event. Claiming it here is the only way a list
+    that pages its own content can react to the wheel.
+    """
+
+    def __init__(self, scroll_handler: Callable[[int], None] | None, **arguments: object) -> None:
+        super().__init__(**arguments)  # type: ignore[arg-type]
+        self._scroll_handler: Callable[[int], None] | None = scroll_handler
+
+    def mouse_handler(self, mouse_event: MouseEvent) -> object:
+        """Consume wheel events and delegate everything else to the base control."""
+        wheel: dict[MouseEventType, int] = {
+            MouseEventType.SCROLL_UP: -1,
+            MouseEventType.SCROLL_DOWN: 1,
+        }
+        direction: int | None = wheel.get(mouse_event.event_type)
+        if direction is None or self._scroll_handler is None:
+            return super().mouse_handler(mouse_event)
+        self._scroll_handler(direction)
+        return None
+
+
 class TerminalRenderer:
     """Render the entire interactive session through one Prompt Toolkit application."""
 
@@ -141,6 +167,7 @@ class TerminalRenderer:
         frame_provider: Callable[[int, int], Text],
         key_handler: Callable[[str], None],
         idle_handler: Callable[[], None] | None = None,
+        scroll_handler: Callable[[int], None] | None = None,
     ) -> None:
         self._frame_provider: Callable[[int, int], Text] = frame_provider
         self._key_handler: Callable[[str], None] = key_handler
@@ -155,7 +182,12 @@ class TerminalRenderer:
         self._native_drawn_payload: str | None = None
         self._terminal_size: tuple[int, int] | None = None
         bindings: KeyBindings = self._key_bindings()
-        control = FormattedTextControl(self._formatted_frame, focusable=False, show_cursor=False)
+        control = _WheelControl(
+            scroll_handler,
+            text=self._formatted_frame,
+            focusable=False,
+            show_cursor=False,
+        )
         window = Window(content=control, always_hide_cursor=True, wrap_lines=False)
         self._application: Application[None] = Application(
             layout=Layout(window),
