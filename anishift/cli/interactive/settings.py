@@ -119,6 +119,20 @@ _TTS_FIELDS: Final[tuple[_SettingField, ...]] = (
 )
 """Persisted narration fields exposed by the product."""
 
+_FIELDS_COVERED_ELSEWHERE: Final[dict[str, str]] = {
+    "llm_provider": "chosen atomically together with the model",
+    "llm_provider_model_id": "chosen atomically together with the provider",
+    "openai_compatible_base_url": "edited inside the connections category",
+    "palantir_enrollment_base_url": "edited inside the connections category",
+    "primary_model_alias": "deliberately hidden from the product surface",
+}
+"""Editable fields intentionally absent from the section layout, with the reason."""
+
+_KNOWN_LAYOUT_GAPS: Final[dict[str, str]] = {
+    "elevenbytes_custom_voices": "object lists have no editor yet",
+}
+"""Editable fields still unreachable, tracked so the shortfall stays counted."""
+
 _PRODUCTS: Final[tuple[tuple[ProductKind, str], ...]] = (
     (ProductKind.FULL_PL, "Polskie napisy"),
     (ProductKind.NARRATION_AUDIO, "Polski lektor"),
