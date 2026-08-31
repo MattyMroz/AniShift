@@ -76,11 +76,11 @@ _SAVE_CURSOR: Final[str] = "\x1b7"
 _RESTORE_CURSOR: Final[str] = "\x1b8"
 """VT sequence restoring Prompt Toolkit's current cursor position."""
 
-_NATIVE_IMAGE_COLUMNS: Final[int] = 14
-"""Terminal columns covered by a 128-pixel native image."""
-
 _NATIVE_IMAGE_ROWS: Final[int] = 8
 """Terminal rows covered by a 128-pixel native image."""
+
+_CLEAR_TERMINAL: Final[str] = "\x1b[2J\x1b[3J\x1b[H"
+"""VT sequence clearing the visible terminal, scrollback and cursor origin."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,7 +155,12 @@ class TerminalRenderer:
 
     def run(self) -> None:
         """Run the terminal event loop until the user exits."""
-        self._application.run()
+        try:
+            self._application.run()
+        finally:
+            output = self._application.output
+            output.write_raw(_CLEAR_TERMINAL)
+            output.flush()
 
     def invalidate(self) -> None:
         """Request one coalesced redraw from any thread."""
@@ -201,8 +206,7 @@ class TerminalRenderer:
         output = application.output
         elapsed_seconds: float = time.monotonic() - self._native_animation_started_at
         payload: str = image.payload_at(elapsed_seconds)
-        clear: str = _native_clear_sequence(position)
-        output.write_raw(f"{_SAVE_CURSOR}{clear}\x1b[{row + 1};{column + 1}H{payload}{_RESTORE_CURSOR}")
+        output.write_raw(f"{_SAVE_CURSOR}\x1b[{row + 1};{column + 1}H{payload}{_RESTORE_CURSOR}")
         output.flush()
         self._native_drawn_position = position
 
@@ -211,7 +215,7 @@ class TerminalRenderer:
         if position is None:
             return
         output = self._application.output
-        output.write_raw(f"{_SAVE_CURSOR}{_native_clear_sequence(position)}{_RESTORE_CURSOR}")
+        output.write_raw(f"{_SAVE_CURSOR}{_native_erase_sequence(position)}{_RESTORE_CURSOR}")
         output.flush()
         self._native_drawn_position = None
 
@@ -290,12 +294,10 @@ def _native_anchor(frame: str) -> tuple[int, int] | None:
     return row, column
 
 
-def _native_clear_sequence(position: tuple[int, int]) -> str:
-    """Build terminal writes covering the previous native image frame."""
+def _native_erase_sequence(position: tuple[int, int]) -> str:
+    """Build line erases removing a native image before the next view."""
     row, column = position
-    return "".join(
-        f"\x1b[{row + offset + 1};{column + 1}H{' ' * _NATIVE_IMAGE_COLUMNS}" for offset in range(_NATIVE_IMAGE_ROWS)
-    )
+    return "".join(f"\x1b[{row + offset + 1};{column + 1}H\x1b[2K" for offset in range(_NATIVE_IMAGE_ROWS))
 
 
 def resolve_home_geometry(columns: int, rows: int = 24) -> HomeGeometry:

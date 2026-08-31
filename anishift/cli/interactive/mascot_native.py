@@ -157,7 +157,7 @@ def _encode_sixel(image: Image.Image, palette_source: Image.Image | None = None)
             {color for color, opacity in zip(pixels.indices, pixels.alpha, strict=True) if opacity >= _ALPHA_THRESHOLD}
         )
     )
-    output: list[str] = [f'\x1bP9;1;0q"1;1;{pixels.width};{pixels.height}']
+    output: list[str] = [f'\x1bP9;0;0q"1;1;{pixels.width};{pixels.height}']
     output.extend(_palette_register(color, palette) for color in colors)
     output.extend(_bands(pixels, colors))
     output.append("\x1b\\")

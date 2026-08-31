@@ -24,7 +24,7 @@ def test_native_mascot_loads_one_valid_sixel_payload(monkeypatch: pytest.MonkeyP
 
     assert image is not None
     assert len(image.payloads) == 46
-    assert all(payload.startswith('\x1bP9;1;0q"1;1;128;128') for payload in image.payloads)
+    assert all(payload.startswith('\x1bP9;0;0q"1;1;128;128') for payload in image.payloads)
     assert all(payload.endswith("\x1b\\") for payload in image.payloads)
     assert image.frame_seconds == (0.06,) * 46
     assert image.cycle_seconds == pytest.approx(2.76)
@@ -76,8 +76,34 @@ def test_native_mascot_is_redrawn_at_an_unchanged_position(monkeypatch: pytest.M
 
     renderer._draw_native_mascot(application)
 
-    clear: str = "".join(f"\x1b[{row};4H{' ' * 14}" for row in range(3, 11))
-    assert writes == [f"\x1b7{clear}\x1b[3;4Hsecond\x1b8"]
+    assert writes == ["\x1b7\x1b[3;4Hsecond\x1b8"]
+
+
+def test_terminal_is_cleared_after_renderer_exits() -> None:
+    writes: list[str] = []
+    output = SimpleNamespace(write_raw=writes.append, flush=lambda: None)
+    application = cast("Application[None]", SimpleNamespace(run=lambda: None, output=output))
+    renderer = object.__new__(TerminalRenderer)
+    renderer._application = application
+
+    renderer.run()
+
+    assert writes == ["\x1b[2J\x1b[3J\x1b[H"]
+
+
+def test_native_mascot_is_erased_before_a_view_without_it() -> None:
+    writes: list[str] = []
+    output = SimpleNamespace(write_raw=writes.append, flush=lambda: None)
+    application = cast("Application[None]", SimpleNamespace(output=output))
+    renderer = object.__new__(TerminalRenderer)
+    renderer._application = application
+    renderer._native_drawn_position = (2, 3)
+
+    renderer._erase_native_mascot()
+
+    erase: str = "".join(f"\x1b[{row};4H\x1b[2K" for row in range(3, 11))
+    assert writes == [f"\x1b7{erase}\x1b8"]
+    assert renderer._native_drawn_position is None
 
 
 def test_native_encoder_does_not_require_chafa(monkeypatch: pytest.MonkeyPatch) -> None:
