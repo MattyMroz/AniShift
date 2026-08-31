@@ -97,5 +97,5 @@ def test_layout_only_names_settings_the_catalog_can_produce() -> None:
     assert set(_layout_ids()) <= known
 
 
-def test_tracked_gap_stays_unreachable_until_it_gains_an_editor() -> None:
-    assert set(_KNOWN_LAYOUT_GAPS) == {"elevenbytes_custom_voices"}
+def test_every_editable_field_is_reachable_so_no_gap_is_tracked() -> None:
+    assert _KNOWN_LAYOUT_GAPS == {}

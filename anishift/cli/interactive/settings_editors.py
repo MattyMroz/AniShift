@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
-from anishift.config.field_catalog import SettingSpec, SettingValue, SettingValueType
+from typing import Final
 
-__all__ = ["parse_setting_input"]
+from anishift.config.field_catalog import SettingSpec, SettingValue, SettingValueType
+from anishift.config.user_settings import CustomVoiceSetting
+
+__all__ = ["VOICE_SEPARATOR", "format_voice_input", "parse_setting_input", "parse_voice_input"]
+
+VOICE_SEPARATOR: Final[str] = "|"
+"""Separator between the three parts of one custom voice in the text editor."""
+
+_VOICE_PART_COUNT: Final[int] = 3
+"""Number of parts one custom voice line carries: alias, label and provider ID."""
 
 
 def parse_setting_input(spec: SettingSpec, raw_value: str) -> SettingValue:
@@ -35,6 +44,21 @@ def parse_setting_input(spec: SettingSpec, raw_value: str) -> SettingValue:
             raise TypeError(msg)
     spec.validate_value(value)
     return value
+
+
+def parse_voice_input(raw_value: str) -> CustomVoiceSetting:
+    """Convert one ``alias | label | provider ID`` line into a custom voice."""
+    parts: list[str] = [part.strip() for part in raw_value.split(VOICE_SEPARATOR)]
+    if len(parts) != _VOICE_PART_COUNT or not all(parts):
+        msg = f"Custom voice needs alias {VOICE_SEPARATOR} label {VOICE_SEPARATOR} provider ID"
+        raise ValueError(msg)
+    alias, label, voice_id = parts
+    return CustomVoiceSetting(alias=alias, label=label, voice_id=voice_id)
+
+
+def format_voice_input(voice: CustomVoiceSetting) -> str:
+    """Render one custom voice as the editable line accepted back by the parser."""
+    return f" {VOICE_SEPARATOR} ".join((voice.alias, voice.label, voice.voice_id))
 
 
 def _parse_boolean(value: str) -> bool:

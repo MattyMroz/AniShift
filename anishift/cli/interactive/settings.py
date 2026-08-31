@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
@@ -24,11 +24,11 @@ from anishift.application import (
     ProductKind,
     TranslationModelOption,
 )
-from anishift.cli.interactive.settings_editors import parse_setting_input
+from anishift.cli.interactive.settings_editors import format_voice_input, parse_setting_input, parse_voice_input
 from anishift.config.field_access import read_setting_value, setting_is_active
 from anishift.config.field_catalog import SettingSpec, SettingValue, SettingValueType
 from anishift.config.model_catalog import ModelCatalog, ModelEntry
-from anishift.config.user_settings import UserSettings
+from anishift.config.user_settings import CustomVoiceSetting, UserSettings
 from anishift.errors import AniShiftError
 
 __all__ = ["SettingsController", "SettingsResult"]
@@ -49,6 +49,21 @@ _MULTI_SELECT_HINT: Final[str] = "↑↓ · Space zmień · Enter zapisz · Esc 
 
 _INPUT_HINT: Final[str] = "Enter zapisz · Esc anuluj"
 """Keyboard hint used by scalar and password editors."""
+
+_VOICE_HINT: Final[str] = "alias | nazwa | ID głosu · Enter zapisz · puste usuwa · Esc anuluj"
+"""Keyboard hint used by the custom voice editor, including its line format."""
+
+_VOICES_SETTING_ID: Final[str] = "elevenbytes_custom_voices"
+"""Setting holding the list of user-defined ElevenBytes voices."""
+
+_VOICES_TITLE: Final[str] = "WŁASNE GŁOSY"
+"""Heading shown above the custom voice list."""
+
+_ADD_VOICE_KEY: Final[str] = "voice-add"
+"""Stable action key opening an empty custom voice editor."""
+
+_ADD_VOICE_LABEL: Final[str] = "Dodaj głos"
+"""Label of the row that creates one custom voice."""
 
 _SAVED_MESSAGE: Final[str] = "✓ Zapisano"
 """Confirmation shown after one successful transaction."""
@@ -134,6 +149,7 @@ _TTS_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("tts_engine", "Silnik", "PODSTAWOWE"),
     ("tts_provider_model_id", "Model / endpoint", "PODSTAWOWE"),
     ("tts_voice_id", "Głos", "PODSTAWOWE"),
+    ("elevenbytes_custom_voices", "Własne głosy", "PODSTAWOWE"),
     ("tts_profile.concurrency", "Syntez jednocześnie", "WYDAJNOŚĆ"),
     ("tts_max_retries", "Ponowienia", "WYDAJNOŚĆ"),
     ("elevenbytes_vpn_enabled", "VPN ElevenBytes", "WYDAJNOŚĆ"),
@@ -164,9 +180,8 @@ _FIELDS_COVERED_ELSEWHERE: Final[dict[str, str]] = {
 }
 """Editable fields intentionally absent from the section layout, with the reason."""
 
-_KNOWN_LAYOUT_GAPS: Final[dict[str, str]] = {
-    "elevenbytes_custom_voices": "object lists have no editor yet",
-}
+_KNOWN_LAYOUT_GAPS: Final[dict[str, str]] = {}
+
 """Editable fields still unreachable, tracked so the shortfall stays counted."""
 
 _PRODUCTS: Final[tuple[tuple[ProductKind, str], ...]] = (
@@ -217,11 +232,13 @@ class _EditorKind(StrEnum):
     MULTI_SELECT = "multi_select"
     TEXT = "text"
     PASSWORD = "password"  # noqa: S105 - editor kind, never a credential
+    VOICE = "voice"
     CONFIRM = "confirm"
 
 
 class _EditorAction(StrEnum):
     UPDATE_SETTING = "update_setting"
+    UPDATE_VOICE = "update_voice"
     SELECT_MODEL = "select_model"
     UPDATE_SECRET = "update_secret"  # noqa: S105 - operation name, never a credential
     UPDATE_ENVIRONMENT = "update_environment"
@@ -315,6 +332,7 @@ class SettingsController:
         self._invalidate: Callable[[], None] = invalidate
         self._category: _Category | None = None
         self._connection: _Connection | None = None
+        self._voices_open: bool = False
         self._items: tuple[_MenuItem, ...] = ()
         self._selected: int = 0
         self._offset: int = 0
@@ -545,33 +563,53 @@ class SettingsController:
         self._feedback = None
         if key == _BACK_KEY:
             return self._go_back()
-        if key == _RESET_KEY:
-            self._open_reset_confirmation()
+
+        action: Callable[[], None] | None = self._exact_actions().get(key)
+        if action is not None:
+            action()
             return SettingsResult.STAY
-        if key.startswith("category:"):
-            self._enter_category(_Category(key.removeprefix("category:")))
-        elif key.startswith("setting:"):
-            self._open_setting_editor(key.removeprefix("setting:"))
-        elif key == "translation-model":
-            self._open_model_editor()
-        elif key.startswith("connection:"):
-            self._connection = _connection_by_key(key.removeprefix("connection:"))
-            self._selected = 0
-            self._offset = 0
-            self._refresh_menu()
-        elif key == "connection-secret":
-            self._open_password_editor()
-        elif key == "connection-address":
-            self._open_address_editor()
-        elif key == "connection-remove":
-            self._open_remove_confirmation()
-        elif key == "connection-probe":
-            self._start_probe()
+        for prefix, handler in self._prefixed_actions():
+            if key.startswith(prefix):
+                handler(key.removeprefix(prefix))
+                break
         return SettingsResult.STAY
+
+    def _exact_actions(self) -> dict[str, Callable[[], None]]:
+        return {
+            _RESET_KEY: self._open_reset_confirmation,
+            _ADD_VOICE_KEY: lambda: self._open_voice_editor(None),
+            f"setting:{_VOICES_SETTING_ID}": self._enter_voices,
+            "translation-model": self._open_model_editor,
+            "connection-secret": self._open_password_editor,
+            "connection-address": self._open_address_editor,
+            "connection-remove": self._open_remove_confirmation,
+            "connection-probe": self._start_probe,
+        }
+
+    def _prefixed_actions(self) -> tuple[tuple[str, Callable[[str], None]], ...]:
+        return (
+            ("category:", lambda value: self._enter_category(_Category(value))),
+            ("voice:", self._open_voice_editor),
+            ("setting:", self._open_setting_editor),
+            ("connection:", self._enter_connection),
+        )
+
+    def _enter_connection(self, key: str) -> None:
+        self._connection = _connection_by_key(key)
+        self._selected = 0
+        self._offset = 0
+        self._refresh_menu()
+
+    def _enter_voices(self) -> None:
+        self._voices_open = True
+        self._selected = 0
+        self._offset = 0
+        self._refresh_menu()
 
     def _enter_category(self, category: _Category) -> None:
         self._category = category
         self._connection = None
+        self._voices_open = False
         self._selected = 0
         self._offset = 0
         if category is _Category.OUTPUT:
@@ -586,6 +624,12 @@ class SettingsController:
             return SettingsResult.STAY
         if self._connection is not None:
             self._connection = None
+            self._selected = 0
+            self._offset = 0
+            self._refresh_menu()
+            return SettingsResult.STAY
+        if self._voices_open:
+            self._voices_open = False
             self._selected = 0
             self._offset = 0
             self._refresh_menu()
@@ -614,6 +658,8 @@ class SettingsController:
             return tuple(_MenuItem(key, label) for label, key in _ROOT_ITEMS)
         if self._connection is not None:
             return self._connection_menu_items(self._connection)
+        if self._voices_open:
+            return self._voice_menu_items()
         if self._category is _Category.GENERAL:
             items: tuple[_MenuItem, ...] = self._setting_items(_GENERAL_FIELDS)
         elif self._category is _Category.SUBTITLES:
@@ -673,6 +719,32 @@ class SettingsController:
         spec: SettingSpec = _required_spec(snapshot.specs, setting_id)
         value: SettingValue = self._effective_value(snapshot, spec)
         return _MenuItem(f"setting:{setting_id}", label, _format_value(setting_id, value), section)
+
+    def _voice_menu_items(self) -> tuple[_MenuItem, ...]:
+        items: list[_MenuItem] = [
+            _MenuItem(f"voice:{voice.alias}", voice.label, voice.voice_id, "WŁASNE GŁOSY")
+            for voice in self._custom_voices()
+        ]
+        items.append(_MenuItem(_ADD_VOICE_KEY, _ADD_VOICE_LABEL))
+        items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
+        return tuple(items)
+
+    def _custom_voices(self) -> tuple[CustomVoiceSetting, ...]:
+        return tuple(self._service.settings_snapshot().elevenbytes_custom_voices)
+
+    def _open_voice_editor(self, alias: str | None) -> None:
+        voice: CustomVoiceSetting | None = next(
+            (item for item in self._custom_voices() if item.alias == alias),
+            None,
+        )
+        self._editor = _Editor(
+            title=voice.alias.upper() if voice is not None else _ADD_VOICE_LABEL.upper(),
+            kind=_EditorKind.VOICE,
+            action=_EditorAction.UPDATE_VOICE,
+            setting_id=_VOICES_SETTING_ID,
+            current_value=voice.alias if voice is not None else "",
+            buffer=format_voice_input(voice) if voice is not None else "",
+        )
 
     def _connection_items(self) -> tuple[_MenuItem, ...]:
         statuses: dict[str, EnvironmentSettingStatus] = {
@@ -781,6 +853,16 @@ class SettingsController:
             setting_id=setting_id,
             buffer=_format_input(current),
         )
+
+    def _voices_after_edit(self, editor: _Editor, raw_value: str) -> tuple[CustomVoiceSetting, ...]:
+        current: tuple[CustomVoiceSetting, ...] = self._custom_voices()
+        cleaned: str = raw_value.strip()
+        if not cleaned:
+            return tuple(item for item in current if item.alias != editor.current_value)
+        voice: CustomVoiceSetting = parse_voice_input(cleaned)
+        if not editor.current_value:
+            return (*current, voice)
+        return tuple(voice if item.alias == editor.current_value else item for item in current)
 
     def _open_model_editor(self) -> None:
         try:
@@ -900,6 +982,9 @@ class SettingsController:
             value: SettingValue = parse_setting_input(spec, raw_value)
             self._service.update_setting(editor.setting_id, value)
             return
+        if editor.action is _EditorAction.UPDATE_VOICE:
+            self._service.update_setting(_VOICES_SETTING_ID, self._voices_after_edit(editor, raw_value))
+            return
         if editor.action is _EditorAction.SELECT_MODEL:
             option: _Option = editor.options[editor.selected]
             self._service.select_translation_model(option.provider_id, option.value)
@@ -1016,7 +1101,7 @@ class SettingsController:
         self._invalidate()
 
     def _render_menu(self, columns: int, rows: int) -> Text:
-        title: str = _menu_title(self._category, self._connection)
+        title: str = _VOICES_TITLE if self._voices_open else _menu_title(self._category, self._connection)
         back: _MenuItem | None = self._items[-1] if self._items and self._items[-1].key == _BACK_KEY else None
         scrollable: tuple[_MenuItem, ...] = self._items[:-1] if back is not None else self._items
         feedback_rows: int = 1 if self._feedback is not None else 0
@@ -1171,6 +1256,8 @@ class SettingsController:
         hint: str = _INPUT_HINT if not editor.options else _MENU_HINT
         if editor.kind is _EditorKind.MULTI_SELECT:
             hint = _MULTI_SELECT_HINT
+        elif editor.kind is _EditorKind.VOICE:
+            hint = _VOICE_HINT
         content.append(hint, style="gray")
         return content
 
@@ -1259,8 +1346,18 @@ def _format_value(setting_id: str, value: SettingValue) -> str:
     if isinstance(value, str):
         return _choice_label(setting_id, value)
     if isinstance(value, (tuple, frozenset)):
-        return ", ".join(str(item) for item in value) or "brak"
+        return _format_collection(setting_id, value)
     return str(value)
+
+
+def _format_collection(setting_id: str, value: Iterable[object]) -> str:
+    if setting_id == _VOICES_SETTING_ID:
+        return ", ".join(_voice_alias(item) for item in value) or "brak"
+    return ", ".join(str(item) for item in value) or "brak"
+
+
+def _voice_alias(voice: object) -> str:
+    return voice.alias if isinstance(voice, CustomVoiceSetting) else str(voice)
 
 
 def _format_input(value: SettingValue) -> str:

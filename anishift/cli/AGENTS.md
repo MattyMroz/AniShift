@@ -80,6 +80,15 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Ostatnim wierszem każdego poziomu Ustawień jest `Cofnij` i jest przyklejony poza
   przewijaną listą. Nie wciągaj go z powrotem do okna przewijania.
   `interactive/settings.py`
+- Lista własnych głosów jest osobnym poziomem nawigacji (`_voices_open`), tak jak
+  `_connection`, a nie edytorem skalarnym: jeden głos to jedna linia
+  `alias | nazwa | ID`, puste pole usuwa głos, a `parse_setting_input` NADAL odrzuca
+  `OBJECT_LIST` — kolekcję składa panel i zapisuje jednym `update_setting`, bo
+  `assign_setting_value` sam wycofuje wybór usuniętego aliasu.
+  `interactive/settings.py`, `interactive/settings_editors.py`
+- `_KNOWN_LAYOUT_GAPS` jest puste i test tego pilnuje: każde nowe pole edytowalne
+  MUSI być osiągalne z panelu albo mieć wpis z powodem w `_FIELDS_COVERED_ELSEWHERE`.
+  `interactive/settings.py`
 - Home ma zatwierdzonego skaczącego slime'a z `assets/mascot/idle/01.gif`,
   sześciowierszowy wordmark, cztery akcje, hint i stopkę z cwd/version. GIF ma być
   animowany: `TerminalRenderer.after_render` wysyła kolejne klatki SIXEL; nie zastępuj
