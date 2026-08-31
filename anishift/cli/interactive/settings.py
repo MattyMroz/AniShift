@@ -38,7 +38,7 @@ __all__ = ["SettingsController", "SettingsResult"]
 _POINTER: Final[str] = "\u276f"
 """Marker placed before the active interactive row."""
 
-_MENU_HINT: Final[str] = "↑↓ · Enter · Esc"
+_MENU_HINT: Final[str] = "↑↓ ←→ · Enter · Esc"
 """Keyboard hint used by settings menus."""
 
 _MULTI_HINT: Final[str] = "↑↓ · Enter/Space zmień · Esc wróć"

@@ -56,6 +56,29 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `SettingsController.render()` korzysta wyłącznie z lokalnego, odświeżonego snapshotu;
   nie wykonuj w nim I/O ani wywołań sieciowych, bo renderer odświeża klatkę cyklicznie.
   Katalog modeli jest tylko do odczytu, a probe działa wyłącznie po jawnej akcji.
+  Wyjątkiem są `_offset` i `_visible_count`: budżet wierszy znany jest dopiero w
+  renderze, więc tam zapisywany jest skorygowany offset dla następnego klawisza.
+  `interactive/settings.py`
+- Klawisze mają jedną tabelę: `_NORMALISED_KEYS` w `prompts.py`. Na Windowsie każdy
+  klawisz specjalny przychodzi z pustym `data`, więc `Keys.Any` zlepia je w
+  nierozróżnialne `"any"` — nowy klawisz MUSI dostać własny binding, inaczej nie da
+  się go odróżnić. `interactive/prompts.py`
+- Przewijanie listy ma własny `_offset`, niezależny od kursora. Klawiatura zawsze
+  dociąga widok do kursora (`_follow_cursor`), kółko myszy odczepia widok i nie
+  rusza zaznaczenia, a pierwszy klawisz nawigacji dociąga go z powrotem. Wyznaczanie
+  okna jest liniowe (`_visible_window`); nie wracaj do przeszukiwania par
+  `(start, end)`. `interactive/settings.py`
+- Kółko myszy wymaga `_WheelControl`, bo klatka ma dokładnie tyle wierszy co okno i
+  domyślny scroller Prompt Toolkit gubi zdarzenie. Nie zastępuj tego
+  `ScrollablePane` ani drugim oknem. `interactive/prompts.py`
+- Zmiana liczby strzałką NIE zapisuje od razu: ląduje w `_pending` i utrwala się po
+  `_SAVE_DELAY_SECONDS` bezczynności, sprawdzanych w `after_render` (nie w
+  `render()`, bo tam I/O jest zabronione). Każdy inny klawisz, zejście z wiersza,
+  wyjście z kategorii i zamknięcie panelu utrwalają natychmiast — żadne wyjście nie
+  może zgubić zmiany. Lista pokazuje wartość oczekującą, nie zapisaną.
+  `interactive/settings.py`, `interactive/prompts.py`, `interactive/app.py`
+- Ostatnim wierszem każdego poziomu Ustawień jest `Cofnij` i jest przyklejony poza
+  przewijaną listą. Nie wciągaj go z powrotem do okna przewijania.
   `interactive/settings.py`
 - Home ma zatwierdzonego skaczącego slime'a z `assets/mascot/idle/01.gif`,
   sześciowierszowy wordmark, cztery akcje, hint i stopkę z cwd/version. GIF ma być
