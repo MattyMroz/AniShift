@@ -229,6 +229,7 @@ class _Editor:
     options: tuple[_Option, ...] = ()
     selected: int = 0
     offset: int = 0
+    visible_count: int = 0
     current_value: str = ""
     buffer: str = ""
     selected_values: set[str] = field(default_factory=set)
@@ -276,6 +277,7 @@ class SettingsController:
         self._items: tuple[_MenuItem, ...] = ()
         self._selected: int = 0
         self._offset: int = 0
+        self._visible_count: int = 0
         self._follow_cursor: bool = True
         self._editor: _Editor | None = None
         self._output_products: set[ProductKind] = set()
@@ -317,12 +319,25 @@ class SettingsController:
             self._feedback = _Feedback("Anulowano", "warning")
         return SettingsResult.STAY
 
-    def _handle_menu_key(self, key: str) -> SettingsResult:
+    def _apply_navigation(self, key: str, length: int) -> bool:
         if key == "up":
-            self._move(-1, len(self._items))
-            return SettingsResult.STAY
-        if key == "down":
-            self._move(1, len(self._items))
+            self._move(-1, length)
+        elif key == "down":
+            self._move(1, length)
+        elif key == "pageup":
+            self._jump(self._selected - self._page_stride(), length)
+        elif key == "pagedown":
+            self._jump(self._selected + self._page_stride(), length)
+        elif key == "home":
+            self._jump(0, length)
+        elif key == "end":
+            self._jump(length - 1, length)
+        else:
+            return False
+        return True
+
+    def _handle_menu_key(self, key: str) -> SettingsResult:
+        if self._apply_navigation(key, len(self._items)):
             return SettingsResult.STAY
         if key != "enter" or not self._items:
             return SettingsResult.STAY
@@ -333,11 +348,7 @@ class SettingsController:
         reset_index: int = save_index + 1
         back_index: int = reset_index + 1
         row_count: int = back_index + 1
-        if key == "up":
-            self._move(-1, row_count)
-            return
-        if key == "down":
-            self._move(1, row_count)
+        if self._apply_navigation(key, row_count):
             return
         if key in {"space", "enter"} and self._selected < len(_PRODUCTS):
             self._toggle_output_product(self._selected)
@@ -390,11 +401,7 @@ class SettingsController:
             self._submit_editor(editor)
 
     def _handle_choice_editor(self, editor: _Editor, key: str) -> None:
-        if key == "up":
-            editor.selected = (editor.selected - 1) % len(editor.options)
-            return
-        if key == "down":
-            editor.selected = (editor.selected + 1) % len(editor.options)
+        if _navigate_editor(editor, key):
             return
         if key == "space" and editor.kind is _EditorKind.MULTI_SELECT:
             value: str = editor.options[editor.selected].value
@@ -412,6 +419,15 @@ class SettingsController:
             self._selected = (self._selected + delta) % length
         self._follow_cursor = True
         self._feedback = None
+
+    def _jump(self, index: int, length: int) -> None:
+        if length:
+            self._selected = min(max(index, 0), length - 1)
+        self._follow_cursor = True
+        self._feedback = None
+
+    def _page_stride(self) -> int:
+        return max(self._visible_count - 1, 1)
 
     def _activate(self, key: str) -> SettingsResult:
         self._feedback = None
@@ -899,6 +915,7 @@ class SettingsController:
         # The row budget is only known here, so this is where a corrected offset
         # has to be kept for the next key press to scroll from.
         self._offset = start
+        self._visible_count = end - start
         visible: tuple[_MenuItem, ...] = self._items[start:end]
         has_above: bool = start > 0
         has_below: bool = end < len(self._items)
@@ -983,6 +1000,7 @@ class SettingsController:
             self._feedback is not None,
         )
         editor.offset = start
+        editor.visible_count = end - start
         visible: tuple[_Option, ...] = editor.options[start:end]
         has_above: bool = bool(editor.options) and start > 0
         has_below: bool = bool(editor.options) and end < len(editor.options)
@@ -1180,6 +1198,29 @@ def _sectioned_row_count(sections: tuple[str, ...]) -> int:
             rows += 1
             previous = section
     return rows
+
+
+def _navigate_editor(editor: _Editor, key: str) -> bool:
+    """Move an editor cursor for one navigation key, reporting whether it applied."""
+    length: int = len(editor.options)
+    if not length:
+        return False
+    stride: int = max(editor.visible_count - 1, 1)
+    if key == "up":
+        editor.selected = (editor.selected - 1) % length
+    elif key == "down":
+        editor.selected = (editor.selected + 1) % length
+    elif key == "pageup":
+        editor.selected = max(editor.selected - stride, 0)
+    elif key == "pagedown":
+        editor.selected = min(editor.selected + stride, length - 1)
+    elif key == "home":
+        editor.selected = 0
+    elif key == "end":
+        editor.selected = length - 1
+    else:
+        return False
+    return True
 
 
 def _option_marker(editor: _Editor, option: _Option, index: int) -> str:
