@@ -228,6 +228,7 @@ class _Editor:
     setting_id: str
     options: tuple[_Option, ...] = ()
     selected: int = 0
+    offset: int = 0
     current_value: str = ""
     buffer: str = ""
     selected_values: set[str] = field(default_factory=set)
@@ -274,6 +275,8 @@ class SettingsController:
         self._connection: _Connection | None = None
         self._items: tuple[_MenuItem, ...] = ()
         self._selected: int = 0
+        self._offset: int = 0
+        self._follow_cursor: bool = True
         self._editor: _Editor | None = None
         self._output_products: set[ProductKind] = set()
         self._feedback: _Feedback | None = None
@@ -407,6 +410,7 @@ class SettingsController:
     def _move(self, delta: int, length: int) -> None:
         if length:
             self._selected = (self._selected + delta) % length
+        self._follow_cursor = True
         self._feedback = None
 
     def _activate(self, key: str) -> SettingsResult:
@@ -425,6 +429,7 @@ class SettingsController:
         elif key.startswith("connection:"):
             self._connection = _connection_by_key(key.removeprefix("connection:"))
             self._selected = 0
+            self._offset = 0
             self._refresh_menu()
         elif key == "connection-secret":
             self._open_password_editor()
@@ -440,6 +445,7 @@ class SettingsController:
         self._category = category
         self._connection = None
         self._selected = 0
+        self._offset = 0
         if category is _Category.OUTPUT:
             self._load_output()
             return
@@ -453,11 +459,13 @@ class SettingsController:
         if self._connection is not None:
             self._connection = None
             self._selected = 0
+            self._offset = 0
             self._refresh_menu()
             return SettingsResult.STAY
         if self._category is not None:
             self._category = None
             self._selected = 0
+            self._offset = 0
             self._refresh_menu()
             return SettingsResult.STAY
         return SettingsResult.BACK_HOME
@@ -468,8 +476,10 @@ class SettingsController:
         except AniShiftError, OSError, TypeError, ValueError:
             self._items = (_MenuItem(_BACK_KEY, _BACK_LABEL),)
             self._selected = 0
+            self._offset = 0
             self._feedback = _Feedback("✗ Nie można wczytać ustawień", "error")
         self._selected = min(self._selected, max(len(self._items) - 1, 0))
+        self._offset = min(self._offset, self._selected)
 
     def _build_menu_items(self) -> tuple[_MenuItem, ...]:
         if self._category is None:
@@ -830,6 +840,7 @@ class SettingsController:
         self._feedback = _Feedback(_SAVED_MESSAGE, "success")
         self._category = None
         self._selected = 0
+        self._offset = 0
         self._refresh_menu()
 
     def _default_preset(self) -> AutoPreset:
@@ -878,7 +889,16 @@ class SettingsController:
         title: str = _menu_title(self._category, self._connection)
         row_budget: int = max(rows - 6 - (1 if self._feedback is not None else 0), 1)
         sections: tuple[str, ...] = tuple(item.section for item in self._items)
-        start, end = _sectioned_window(sections, self._selected, row_budget)
+        start, end = _visible_window(
+            sections,
+            self._selected,
+            self._offset,
+            row_budget,
+            follow_cursor=self._follow_cursor,
+        )
+        # The row budget is only known here, so this is where a corrected offset
+        # has to be kept for the next key press to scroll from.
+        self._offset = start
         visible: tuple[_MenuItem, ...] = self._items[start:end]
         has_above: bool = start > 0
         has_below: bool = end < len(self._items)
@@ -958,9 +978,11 @@ class SettingsController:
         start, end, body_rows = _editor_window(
             tuple(option.group for option in editor.options),
             editor.selected,
+            editor.offset,
             rows,
             self._feedback is not None,
         )
+        editor.offset = start
         visible: tuple[_Option, ...] = editor.options[start:end]
         has_above: bool = bool(editor.options) and start > 0
         has_below: bool = bool(editor.options) and end < len(editor.options)
@@ -982,15 +1004,7 @@ class SettingsController:
                     previous_group = option.group
                 content.append(" " * left)
                 content.append(f"{_POINTER} " if index == editor.selected else "  ", style="purple_bold")
-                selected_value: bool = option.value == editor.current_value
-                if editor.action is _EditorAction.SELECT_MODEL:
-                    selected_value = f"{option.provider_id}\x1f{option.value}" == editor.current_value
-                if editor.kind is _EditorKind.MULTI_SELECT:
-                    selected_value = option.value in editor.selected_values
-                marker: str = "●" if selected_value else "○"
-                if editor.kind is _EditorKind.CONFIRM:
-                    marker = "●" if index == editor.selected else "○"
-                content.append(f"{marker} ", style="purple_bold")
+                content.append(f"{_option_marker(editor, option, index)} ", style="purple_bold")
                 option_width: int = max(columns - left - 4, 1)
                 content.append(
                     _truncate_right(option.label, option_width),
@@ -1168,36 +1182,69 @@ def _sectioned_row_count(sections: tuple[str, ...]) -> int:
     return rows
 
 
-def _sectioned_window(sections: tuple[str, ...], selected: int, row_budget: int) -> tuple[int, int]:
-    """Fit a contiguous selectable window while retaining visible section labels."""
+def _option_marker(editor: _Editor, option: _Option, index: int) -> str:
+    """Return the filled or hollow marker one editor row shows."""
+    if editor.kind is _EditorKind.CONFIRM:
+        return "●" if index == editor.selected else "○"
+    if editor.kind is _EditorKind.MULTI_SELECT:
+        return "●" if option.value in editor.selected_values else "○"
+    if editor.action is _EditorAction.SELECT_MODEL:
+        return "●" if f"{option.provider_id}\x1f{option.value}" == editor.current_value else "○"
+    return "●" if option.value == editor.current_value else "○"
+
+
+def _window_end(sections: tuple[str, ...], start: int, row_budget: int) -> int:
+    """Return the first index past the rows that still fit below ``start``."""
+    used: int = int(start > 0)
+    previous: str = ""
+    end: int = start
+    while end < len(sections):
+        section: str = sections[end]
+        cost: int = 1 + int(bool(section) and section != previous)
+        if used + cost + int(end + 1 < len(sections)) > row_budget:
+            break
+        used += cost
+        previous = section or previous
+        end += 1
+    return max(end, start + 1)
+
+
+def _visible_window(
+    sections: tuple[str, ...],
+    cursor: int,
+    offset: int,
+    row_budget: int,
+    *,
+    follow_cursor: bool,
+) -> tuple[int, int]:
+    """Return the visible slice for one scroll offset, honouring section labels.
+
+    The walk is linear because the offset only ever moves forward until the cursor
+    fits, unlike the earlier brute force over every start and end pair.
+    """
     if not sections:
         return 0, 0
-    selected = min(max(selected, 0), len(sections) - 1)
-    best_start: int = selected
-    best_end: int = selected + 1
-    best_score: tuple[int, int] = (1, 0)
-    for start in range(selected + 1):
-        for end in range(selected + 1, len(sections) + 1):
-            indicators: int = int(start > 0) + int(end < len(sections))
-            used_rows: int = _sectioned_row_count(sections[start:end]) + indicators
-            if used_rows > row_budget:
-                continue
-            item_count: int = end - start
-            balance: int = -abs((selected - start) - (end - selected - 1))
-            score: tuple[int, int] = (item_count, balance)
-            if score > best_score:
-                best_start, best_end, best_score = start, end, score
-    return best_start, best_end
+    offset = min(max(offset, 0), len(sections) - 1)
+    if not follow_cursor:
+        return offset, _window_end(sections, offset, row_budget)
+    cursor = min(max(cursor, 0), len(sections) - 1)
+    offset = min(offset, cursor)
+    end: int = _window_end(sections, offset, row_budget)
+    while cursor >= end and offset < len(sections) - 1:
+        offset += 1
+        end = _window_end(sections, offset, row_budget)
+    return offset, end
 
 
 def _editor_window(
     groups: tuple[str, ...],
     selected: int,
+    offset: int,
     rows: int,
     has_feedback: bool,
 ) -> tuple[int, int, int]:
     row_budget: int = max(rows - 6 - int(has_feedback), 1)
-    start, end = _sectioned_window(groups, selected, row_budget)
+    start, end = _visible_window(groups, selected, offset, row_budget, follow_cursor=True)
     visible_groups: tuple[str, ...] = groups[start:end]
     option_rows: int = _sectioned_row_count(visible_groups) if visible_groups else 1
     body_rows: int = option_rows + int(start > 0) + int(end < len(groups)) + 4 + int(has_feedback)
