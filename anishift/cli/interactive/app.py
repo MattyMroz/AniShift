@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from enum import StrEnum
 from typing import Final
 
@@ -18,6 +17,7 @@ from anishift.cli.interactive.manual import ManualController, ManualResult, Manu
 from anishift.cli.interactive.mascot import MascotController, MascotState
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.prompts import (
+    TEXT_MASCOT_SIZE,
     AutoGeometry,
     HomeGeometry,
     TerminalRenderer,
@@ -112,10 +112,21 @@ class _InteractiveApplication:
 
     def run(self) -> None:
         """Run the interactive session until Home exits."""
+        self._start_prewarm()
         try:
             self._renderer.run()
         finally:
             self._mascot.close()
+
+    def _start_prewarm(self) -> None:
+        """Inspect the workspace while Home is idle so Auto and Manual start at once."""
+        threading.Thread(target=self._prewarm_workspace, name="anishift-prewarm", daemon=True).start()
+
+    def _prewarm_workspace(self) -> None:
+        try:
+            self._service.discover()
+        except (AniShiftError, OSError) as problem:
+            logger.info("Workspace prewarm skipped", error_class=type(problem).__name__)
 
     def _handle_key(self, key: str) -> None:
         with self._lock:
@@ -438,25 +449,17 @@ class _InteractiveApplication:
             settings: SettingsController | None = self._settings
             manual: ManualController | None = self._manual
         mascot_state: MascotState = self._mascot.state
-        native_mascot: bool = getattr(self._renderer, "has_native_mascot", False)
-        if mode in {_ViewMode.HOME, _ViewMode.PREPARING}:
-            content: Text = _home_content(
-                columns,
-                rows,
-                selected,
-                mascot_state,
-                native_mascot=native_mascot,
-            )
-        elif mode is _ViewMode.MANUAL_PREPARING:
-            content = _manual_preparing_content(columns, rows, mascot_state, native_mascot=native_mascot)
+        native_size: tuple[int, int] | None = getattr(self._renderer, "native_mascot_size", None)
+        if mode in {_ViewMode.HOME, _ViewMode.PREPARING, _ViewMode.MANUAL_PREPARING}:
+            content: Text = _home_content(columns, rows, selected, mascot_state, native_size=native_size)
         elif mode is _ViewMode.MANUAL and manual is not None:
             content = manual.render(columns, rows)
         elif mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
-            content = _auto_content(columns, rows, progress, mascot_state, native_mascot=native_mascot)
+            content = _auto_content(columns, rows, progress, mascot_state)
         elif mode is _ViewMode.SETTINGS and settings is not None:
             content = settings.render(columns, rows)
         else:
-            content = _message_content(columns, rows, message, mascot_state, native_mascot=native_mascot)
+            content = _message_content(columns, rows, message, mascot_state)
         return _fit_frame(content, __version__, self._directory, columns, rows)
 
 
@@ -471,10 +474,10 @@ def _home_content(
     selected: int,
     mascot_state: MascotState,
     *,
-    native_mascot: bool = False,
+    native_size: tuple[int, int] | None = None,
 ) -> Text:
-    geometry: HomeGeometry = resolve_home_geometry(columns, rows)
-    brand: Text = brand_for_geometry(geometry, mascot_state, native_mascot=native_mascot)
+    geometry: HomeGeometry = resolve_home_geometry(columns, rows, native_size or TEXT_MASCOT_SIZE)
+    brand: Text = brand_for_geometry(geometry, mascot_state, native_mascot=native_size is not None)
     brand_rows: int = len(brand.split("\n"))
     menu_rows: int = len(_HOME_CHOICES) + 1
     body_rows: int = max(rows - 1, 1)
@@ -499,33 +502,15 @@ def _home_content(
     return content
 
 
-def _manual_preparing_content(
-    columns: int,
-    rows: int,
-    mascot_state: MascotState,
-    *,
-    native_mascot: bool = False,
-) -> Text:
-    geometry: AutoGeometry = resolve_auto_geometry(columns, rows, 1)
-    content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry, mascot_state, native_mascot=native_mascot))
-    spinner: str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(time.monotonic() * 10) % 10]
-    label: str = f"{spinner} Skanowanie plików…"
-    content.append(f"\n\n{' ' * max((columns - len(label)) // 2, 0)}{label}", style="purple_bold")
-    return content
-
-
 def _auto_content(
     columns: int,
     rows: int,
     progress: RichRunProgress,
     mascot_state: MascotState,
-    *,
-    native_mascot: bool = False,
 ) -> Text:
     geometry: AutoGeometry = resolve_auto_geometry(columns, rows, progress.row_count)
     content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry, mascot_state, native_mascot=native_mascot))
+    content.append_text(brand_for_geometry(geometry, mascot_state, show_mascot=False))
     content.append("\n")
     content.append_text(progress.render(columns))
     return content
@@ -536,12 +521,10 @@ def _message_content(
     rows: int,
     message: Text,
     mascot_state: MascotState,
-    *,
-    native_mascot: bool = False,
 ) -> Text:
     geometry: HomeGeometry = resolve_home_geometry(columns, rows)
     content = Text("\n" * geometry.top_padding)
-    content.append_text(brand_for_geometry(geometry, mascot_state, native_mascot=native_mascot))
+    content.append_text(brand_for_geometry(geometry, mascot_state, show_mascot=False))
     content.append("\n\n")
     content.append_text(message)
     content.append("\n\nNaciśnij dowolny klawisz, aby wrócić", style="gray")

@@ -21,6 +21,8 @@ from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR, NativeM
 from anishift.utils.rich_console.theme import RICH_THEME
 
 __all__ = [
+    "BRAND_GAP_COLUMNS",
+    "TEXT_MASCOT_SIZE",
     "AutoGeometry",
     "HomeGeometry",
     "TerminalRenderer",
@@ -37,11 +39,8 @@ _HOME_MENU_WIDTH: Final[int] = 13
 _HOME_MENU_ROWS: Final[int] = 6
 """Rows occupied by the choices and keyboard hint."""
 
-_MASCOT_COLUMNS: Final[int] = 18
-"""Fixed mascot width that does not stretch between renders."""
-
-_MASCOT_ROWS: Final[int] = 10
-"""Fixed mascot height that does not stretch between renders."""
+TEXT_MASCOT_SIZE: Final[tuple[int, int]] = (18, 10)
+"""Cells covered by the half-block mascot used without a native image."""
 
 _FULL_WORDMARK_COLUMNS: Final[int] = 57
 """Width of the six-row ANISHIFT wordmark."""
@@ -49,14 +48,14 @@ _FULL_WORDMARK_COLUMNS: Final[int] = 57
 _FULL_WORDMARK_ROWS: Final[int] = 6
 """Height of the six-row ANISHIFT wordmark."""
 
-_FULL_BRAND_COLUMNS: Final[int] = _MASCOT_COLUMNS + 2 + _FULL_WORDMARK_COLUMNS
-"""Width required to place the mascot and wordmark beside each other."""
+BRAND_GAP_COLUMNS: Final[int] = 2
+"""Columns separating the mascot from the wordmark."""
 
-_FULL_BRAND_ROWS: Final[int] = _MASCOT_ROWS
-"""Height of the mascot and wordmark composition."""
+_MASCOT_NUDGE_COLUMNS: Final[int] = 2
+"""Columns the native image is drawn right of its reserved area, inside the gap."""
 
-_FULL_BRAND_TERMINAL_ROWS: Final[int] = 21
-"""Minimum height that leaves room for the full brand and menu."""
+_HOME_CHROME_ROWS: Final[int] = 11
+"""Rows Home spends on top padding, the menu gap, the menu and the footer."""
 
 _FULL_WORDMARK_TERMINAL_ROWS: Final[int] = _FULL_WORDMARK_ROWS + _HOME_MENU_ROWS + 1
 """Minimum height that leaves room for the wordmark, menu and footer."""
@@ -76,14 +75,11 @@ _SAVE_CURSOR: Final[str] = "\x1b7"
 _RESTORE_CURSOR: Final[str] = "\x1b8"
 """VT sequence restoring Prompt Toolkit's current cursor position."""
 
-_NATIVE_IMAGE_COLUMNS: Final[int] = 18
-"""Terminal columns covered by a 160-pixel native image."""
+_ERASE_ROW: Final[str] = "\x1b[{row};{column}H\x1b[m{blanks}"
+"""Row erase that overwrites cells, because ECH leaves the image raster behind."""
 
-_NATIVE_IMAGE_ROWS: Final[int] = 10
-"""Terminal rows covered by a 160-pixel native image."""
-
-_CLEAR_TERMINAL: Final[str] = "\x1bc\x1b[2J\x1b[3J\x1b[H"
-"""VT reset followed by clearing the screen, scrollback and cursor origin."""
+_CLEAR_SCREEN: Final[str] = "\x1b[2J"
+"""Alternate screen clear, the only sequence that drops the image raster."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,7 +125,7 @@ class TerminalRenderer:
         self._render_width: int = 0
         self._render_stream: StringIO | None = None
         self._rich_console: Console | None = None
-        self._native_mascot: NativeMascotImage | None = load_native_mascot(_MASCOT_COLUMNS, _MASCOT_ROWS)
+        self._native_mascot: NativeMascotImage | None = load_native_mascot()
         self._native_animation_started_at: float = time.monotonic()
         self._native_position: tuple[int, int] | None = None
         self._native_drawn_position: tuple[int, int] | None = None
@@ -153,18 +149,16 @@ class TerminalRenderer:
         )
 
     @property
-    def has_native_mascot(self) -> bool:
-        """Return whether this session has a native terminal image payload."""
-        return self._native_mascot is not None
+    def native_mascot_size(self) -> tuple[int, int] | None:
+        """Return the cells this session reserves for its native image, if any."""
+        image: NativeMascotImage | None = self._native_mascot
+        if image is None:
+            return None
+        return image.cell_columns, image.layout_rows
 
     def run(self) -> None:
         """Run the terminal event loop until the user exits."""
-        try:
-            self._application.run()
-        finally:
-            output = self._application.output
-            output.write_raw(_CLEAR_TERMINAL)
-            output.flush()
+        self._application.run()
 
     def invalidate(self) -> None:
         """Request one coalesced redraw from any thread."""
@@ -172,7 +166,11 @@ class TerminalRenderer:
 
     def exit(self) -> None:
         """Finish the active interactive application."""
-        self._erase_native_mascot()
+        self._native_position = None
+        if self._native_drawn_position is not None:
+            self._clear_screen()
+            self._native_drawn_position = None
+            self._native_drawn_payload = None
         self._application.exit()
 
     def _formatted_frame(self) -> AnyFormattedText:
@@ -183,16 +181,9 @@ class TerminalRenderer:
         anchor: tuple[int, int] | None = _native_anchor(frame.plain)
         position: tuple[int, int] | None = None
         if anchor is not None and self._native_mascot is not None:
-            position = (
-                anchor[0] + self._native_mascot.row_offset,
-                anchor[1] + self._native_mascot.column_offset,
-            )
+            position = (anchor[0], anchor[1] + _MASCOT_NUDGE_COLUMNS)
             frame = frame.copy()
             frame.plain = frame.plain.replace(NATIVE_MASCOT_ANCHOR, " ")
-        size_changed: bool = self._terminal_size != (columns, rows)
-        position_changed: bool = self._native_drawn_position != position
-        if self._native_drawn_position is not None and (size_changed or position_changed):
-            self._erase_native_mascot()
         self._terminal_size = (columns, rows)
         self._native_position = position
         render_console, stream = self._render_target(columns)
@@ -204,7 +195,10 @@ class TerminalRenderer:
     def _draw_native_mascot(self, application: Application[None]) -> None:
         image: NativeMascotImage | None = self._native_mascot
         position: tuple[int, int] | None = self._native_position
-        if image is None or position is None:
+        if image is None:
+            return
+        if position is None:
+            self._erase_native_mascot()
             return
         row, column = position
         output = application.output
@@ -212,22 +206,28 @@ class TerminalRenderer:
         payload: str = image.payload_at(elapsed_seconds)
         if payload == self._native_drawn_payload and position == self._native_drawn_position:
             return
-        erase: str = _native_erase_sequence(position)
+        previous: tuple[int, int] | None = self._native_drawn_position
+        erase: str = _native_erase_sequence(position, image.cell_columns, image.cell_rows)
+        if previous is not None and previous != position:
+            erase = _native_erase_sequence(previous, image.cell_columns, image.cell_rows) + erase
         output.write_raw(f"{_SAVE_CURSOR}{erase}\x1b[{row + 1};{column + 1}H{payload}{_RESTORE_CURSOR}")
         output.flush()
         self._native_drawn_position = position
         self._native_drawn_payload = payload
 
     def _erase_native_mascot(self) -> None:
-        position: tuple[int, int] | None = self._native_drawn_position
-        if position is None:
+        if self._native_drawn_position is None:
             return
-        output = self._application.output
-        erase: str = _native_erase_sequence(position)
-        output.write_raw(f"{_SAVE_CURSOR}{erase}{_RESTORE_CURSOR}")
-        output.flush()
+        self._clear_screen()
         self._native_drawn_position = None
         self._native_drawn_payload = None
+        self._application.renderer.reset()
+        self._application.invalidate()
+
+    def _clear_screen(self) -> None:
+        output = self._application.output
+        output.write_raw(_CLEAR_SCREEN)
+        output.flush()
 
     def _render_target(self, columns: int) -> tuple[Console, StringIO]:
         if self._rich_console is not None and self._render_stream is not None and columns == self._render_width:
@@ -304,28 +304,34 @@ def _native_anchor(frame: str) -> tuple[int, int] | None:
     return row, column
 
 
-def _native_erase_sequence(position: tuple[int, int]) -> str:
-    """Erase only terminal cells occupied by the previous native frame."""
+def _native_erase_sequence(position: tuple[int, int], columns: int, rows: int) -> str:
+    """Overwrite only terminal cells occupied by the previous native frame."""
     row, column = position
+    blanks: str = " " * max(columns, 1)
     return "".join(
-        f"\x1b[{row + offset + 1};{column + 1}H\x1b[{_NATIVE_IMAGE_COLUMNS}X" for offset in range(_NATIVE_IMAGE_ROWS)
+        _ERASE_ROW.format(row=row + offset + 1, column=column + 1, blanks=blanks) for offset in range(max(rows, 1))
     )
 
 
-def resolve_home_geometry(columns: int, rows: int = 24) -> HomeGeometry:
-    """Resolve the responsive Home block for one terminal snapshot."""
+def resolve_home_geometry(
+    columns: int,
+    rows: int = 24,
+    mascot: tuple[int, int] = TEXT_MASCOT_SIZE,
+) -> HomeGeometry:
+    """Resolve the responsive Home block around one measured mascot size."""
     terminal_columns: int = max(columns, 1)
     terminal_rows: int = max(rows, 1)
     content_width: int = min(_HOME_MENU_WIDTH, terminal_columns)
     left_padding: int = max((terminal_columns - content_width) // 2, 0)
+    brand_columns: int = mascot[0] + BRAND_GAP_COLUMNS + _FULL_WORDMARK_COLUMNS
     show_full_wordmark: bool = (
         terminal_columns >= _FULL_WORDMARK_COLUMNS and terminal_rows >= _FULL_WORDMARK_TERMINAL_ROWS
     )
-    show_mascot: bool = terminal_columns >= _FULL_BRAND_COLUMNS and terminal_rows >= _FULL_BRAND_TERMINAL_ROWS
-    mascot_rows: int = _MASCOT_ROWS if show_mascot else 0
-    mascot_columns: int = _MASCOT_COLUMNS if show_mascot else 0
+    show_mascot: bool = terminal_columns >= brand_columns and terminal_rows >= mascot[1] + _HOME_CHROME_ROWS
+    mascot_columns: int = mascot[0] if show_mascot else 0
+    mascot_rows: int = mascot[1] if show_mascot else 0
     if show_mascot:
-        brand_rows: int = _FULL_BRAND_ROWS
+        brand_rows: int = max(mascot_rows, _FULL_WORDMARK_ROWS)
     elif show_full_wordmark:
         brand_rows = _FULL_WORDMARK_ROWS
     else:
@@ -353,16 +359,11 @@ def resolve_auto_geometry(columns: int, rows: int, progress_rows: int) -> AutoGe
     terminal_rows: int = max(rows, 1)
     row_count: int = max(progress_rows, 1)
     available_rows: int = max(terminal_rows - 1, 1)
-    show_mascot: bool = terminal_columns >= _FULL_BRAND_COLUMNS and available_rows >= _FULL_BRAND_ROWS + 1 + row_count
-    show_full_wordmark: bool = show_mascot or (
+    show_mascot: bool = False
+    show_full_wordmark: bool = (
         terminal_columns >= _FULL_WORDMARK_COLUMNS and available_rows >= _FULL_WORDMARK_ROWS + 1 + row_count
     )
-    if show_mascot:
-        brand_rows: int = _FULL_BRAND_ROWS
-    elif show_full_wordmark:
-        brand_rows = _FULL_WORDMARK_ROWS
-    else:
-        brand_rows = _COMPACT_BRAND_ROWS
+    brand_rows: int = _FULL_WORDMARK_ROWS if show_full_wordmark else _COMPACT_BRAND_ROWS
     content_rows: int = brand_rows + 1 + row_count
     top_padding: int = max((available_rows - content_rows) // 2, 0)
     progress_row: int = min(top_padding + brand_rows + 1, max(available_rows - row_count, 0))
@@ -373,8 +374,8 @@ def resolve_auto_geometry(columns: int, rows: int, progress_rows: int) -> AutoGe
         progress_row=progress_row,
         show_mascot=show_mascot,
         show_full_wordmark=show_full_wordmark,
-        mascot_columns=_MASCOT_COLUMNS if show_mascot else 0,
-        mascot_rows=_MASCOT_ROWS if show_mascot else 0,
+        mascot_columns=0,
+        mascot_rows=0,
     )
 
 

@@ -11,7 +11,7 @@ from rich.text import Text
 
 from anishift.cli.interactive.mascot import MascotState, mascot_art
 from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR
-from anishift.cli.interactive.prompts import AutoGeometry, HomeGeometry
+from anishift.cli.interactive.prompts import BRAND_GAP_COLUMNS, AutoGeometry, HomeGeometry
 
 __all__ = [
     "HomeAction",
@@ -67,8 +67,8 @@ _LOGO_FILL_GLYPH: Final[str] = "█"
 _LOGO_ROW_BRIGHTNESS: Final[tuple[float, ...]] = (1.0, 0.94, 0.86, 0.78, 0.7, 0.62)
 """Top-to-bottom shading that gives the wordmark visible depth."""
 
-_BRAND_GAP: Final[str] = "  "
-"""Fixed separation between the mascot and wordmark."""
+_BRAND_GAP: Final[str] = " " * BRAND_GAP_COLUMNS
+"""Fixed separation between the mascot and wordmark, sized by the layout."""
 
 
 @lru_cache(maxsize=64)
@@ -76,11 +76,12 @@ def brand_for_geometry(
     geometry: HomeGeometry | AutoGeometry,
     state: MascotState = MascotState.IDLE,
     *,
+    show_mascot: bool = True,
     native_mascot: bool = False,
 ) -> Text:
     """Build the centered brand selected for one terminal geometry."""
     mascot: Text | None = None
-    if geometry.show_mascot:
+    if show_mascot and geometry.show_mascot:
         mascot = (
             _native_mascot_placeholder(geometry.mascot_columns, geometry.mascot_rows)
             if native_mascot
@@ -149,7 +150,7 @@ def _wordmark_color(
 
 
 def _beside(left: Text, right: Text) -> Text:
-    """Place two multiline renderables beside each other without rescaling either."""
+    """Place two multiline renderables beside each other, level at the bottom."""
     left_lines: list[Text] = list(left.split("\n"))
     right_lines: list[Text] = list(right.split("\n"))
     left_width: int = max(line.cell_len for line in left_lines)

@@ -57,15 +57,51 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   nie wykonuj w nim I/O ani wywołań sieciowych, bo renderer odświeża klatkę cyklicznie.
   Katalog modeli jest tylko do odczytu, a probe działa wyłącznie po jawnej akcji.
   `interactive/settings.py`
-- Home ma zatwierdzonego pixel-artowego slime'a 20×14, sześciowierszowy wordmark,
-  cztery akcje, hint i esencjonalną stopkę z cwd/version. Dopóki dedykowane klatki
-  nie są zatwierdzone, renderer pokazuje jedną statyczną pozę bez glifów stanu;
-  nie zastępuj klatek przesuwaniem całego sprite'a. `MascotController` nie ma własnego
-  workera ani bezpośredniego zapisu do terminala. Asset PNG renderuje się jako
-  półbloki z `nearest-neighbor`, a błąd dekodowania lub zbyt mały terminal degraduje
-  widok do ASCII albo braku maskotki. Resize otwartego promptu wywołuje czysty
-  rerender; nie rozciągaj elementów wraz z terminalem.
-  `interactive/home.py`, `interactive/mascot.py`, `interactive/prompts.py`
+- Home ma zatwierdzonego skaczącego slime'a z `assets/mascot/idle/01.gif`,
+  sześciowierszowy wordmark, cztery akcje, hint i stopkę z cwd/version. GIF ma być
+  animowany: `TerminalRenderer.after_render` wysyła kolejne klatki SIXEL; nie zastępuj
+  go statycznym PNG ani półblokami. VS Code korzysta z tracked
+  `terminal.integrated.enableImages=true`.
+  `interactive/home.py`, `interactive/mascot_native.py`, `interactive/prompts.py`
+- Wielkość maskotki jest wyrażona w WIERSZACH TEKSTU (`_FRAME_ROWS`), nie w pikselach:
+  `side = _FRAME_ROWS * wysokość_komórki`. Stała liczba pikseli wygląda na mniejszą w
+  terminalu o większym foncie (Windows Terminal 10×20 px) niż w VS Code (7×17 px), bo
+  obok stoi większy wordmark — user porównuje maskotkę do tekstu, nie do ekranu.
+  Skalowanie do rezerwacji w komórkach też jest złe: daje wielkość zależną od szerokości
+  komórki. `terminal_cell_size()` pyta o `CSI 16 t`, w razie braku odpowiedzi o
+  `CSI 14 t`, a bez odpowiedzi zostaje `_ASSUMED_CELL`. Zapytanie działa tylko na realnej
+  konsoli (`isatty`), przywraca poprzedni `ConsoleMode` i ma 250 ms budżetu.
+  `interactive/mascot_native.py`
+- `NativeMascotImage` rozdziela DWA różne rozmiary i nie wolno ich mieszać: `layout_rows`
+  (= `_FRAME_ROWS`) rezerwuje miejsce w layoucie, a `cell_rows`/`cell_columns` opisują to,
+  co realnie namalowane, i tylko one sterują kasowaniem. Rozjazd bierze się z
+  `_TOP_PAD_DIVISOR`: pół komórki przezroczystego paddingu nad maskotką opuszcza ją o pół
+  wiersza, więc obraz zajmuje jeden wiersz więcej niż rezerwacja i zwisa w puste miejsce
+  pod marką. `interactive/mascot_native.py`, `interactive/prompts.py`
+- Przesunięcie maskotki w prawo wewnątrz klatki jest WSPÓLNE dla całej animacji
+  (`_shared_right_shift`, ograniczone najszerszą klatką). Dosuwanie każdej klatki osobno
+  do krawędzi wygląda jak rozciąganie w lewo, bo klatki przysiadu są szersze od klatek
+  wyskoku. `interactive/mascot_native.py`
+- Marka jest wyśrodkowana na szerokości terminala, a maskotka wyrównana DOŁEM do
+  wordmarku (`_beside`). Nie przesuwaj bloku marki poza środek. `interactive/home.py`
+- Dwa różne kasowania maskotki, nie zamieniaj ich rolami: klatka-do-klatki nadpisuje
+  spacjami sam prostokąt obrazu (tanie, bez migotania przy ~17 fps), a ZNIKNIĘCIE
+  (Ustawienia, Auto, Ręczny, wyjście) robi `\x1b[2J` plus `renderer.reset()` i
+  `invalidate()`. Ani ECH (`\x1b[X`), ani nadpisanie spacjami nie usuwa rastra SIXEL —
+  obraz nie żyje w buforze tekstu. `\x1b[2J` czyści tylko ekran alternatywny, więc jest
+  bezpieczne; NIE dodawaj `RIS` (`\x1bc`) ani `\x1b[3J`, bo te kasują historię terminala
+  usera. Kasowanie wołaj z `after_render`, nigdy z callbacku treści — `renderer.reset()`
+  w trakcie renderu jest reentrantny. `interactive/prompts.py`
+- Maskotkę widzi wyłącznie Home; Auto, Manual, Settings i komunikaty nie rezerwują
+  dla niej miejsca. `MascotController` nie ma własnego workera ani bezpośredniego
+  zapisu do terminala. Brak obsługi obrazu lub zbyt mały terminal degraduje widok do
+  fallbacku albo braku maskotki. Resize wywołuje czysty rerender bez rozciągania layoutu.
+  `interactive/home.py`, `interactive/prompts.py`
+- Auto i Ręczny nie mają ekranu pośredniego: `PREPARING` i `MANUAL_PREPARING`
+  renderują dokładnie klatkę Home, bez spinnera i bez komunikatu skanowania. Skan
+  workspace startuje w tle przy wejściu do Home (`_prewarm_workspace`), więc pierwszy
+  widok po Enterze to już postęp albo lista Ręcznego. Nie dodawaj tam ekranu ładowania.
+  `interactive/app.py`
 - `configure_utf8_streams()` musi znosić `None`, `StringIO` i strumienie bez
   `reconfigure`; jest idempotentne. `console.py`
 
