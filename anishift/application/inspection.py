@@ -22,6 +22,7 @@ from anishift.application.artifacts import (
 from anishift.application.cancellation import CancellationToken
 from anishift.application.discovery import DiscoveryResult
 from anishift.application.intents import ExternalAudioRole
+from anishift.application.planning import DEFAULT_AUDIO_TOLERANCE_US
 from anishift.application.selection import choose_primary_video
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, MediaProbeError
 from anishift.platform.binaries import Binary, require_binary
@@ -39,8 +40,6 @@ from anishift.services.subtitles.service import load_subtitles
 _DEFAULT_PROBE_TIMEOUT_SECONDS: Final[float] = 120.0
 """Default upper bound for one media or audio inspection subprocess."""
 
-_DEFAULT_AUDIO_TOLERANCE_US: Final[int] = 1_000_000
-"""Default accepted duration difference between external audio and video."""
 
 _MAX_INSPECTION_WORKERS: Final[int] = 8
 """Upper bound on groups probed at once, because probing waits on subprocesses."""
@@ -103,7 +102,7 @@ class WorkspaceInspector:
         runner: ProcessRunner | None = None,
         ffmpeg: Path | None = None,
         timeout_s: float = _DEFAULT_PROBE_TIMEOUT_SECONDS,
-        audio_tolerance_us: int = _DEFAULT_AUDIO_TOLERANCE_US,
+        audio_tolerance_us: int = DEFAULT_AUDIO_TOLERANCE_US,
     ) -> None:
         if timeout_s <= 0 or audio_tolerance_us < 0:
             msg = "Inspection timeout must be positive and audio tolerance non-negative"

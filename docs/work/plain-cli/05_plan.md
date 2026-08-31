@@ -301,3 +301,114 @@ krok liczby nieintuicyjny w praktyce   zmień tabelę kroków, to nie zmienia pr
 kółko wymaga zmiany layoutu            zatrzymaj się, przeplanuj E2
 opóźnienie 400 ms wyczuwalne jak lag   zmień samą stałą, projekt zostaje
 ```
+
+---
+
+# E3 — Pokrętła jakości i jedno źródło prawdy
+
+## Zakres po weryfikacji
+
+Rozpoznanie odrzuciło trzy z czterech napraw zapisanych w wymaganiach (patrz
+sekcja 2.3 wymagań: `narrator_sample_rate`, dwa progi tolerancji, cap backoffu).
+Zostaje jedna prawdziwa, plus trzy pokrętła i jeden brakujący edytor.
+
+- **w zakresie:** maks. znaków w linii, maks. linii na event, rozmiar kontekstu
+  tłumaczenia, kategoria `Napisy`, edytor `OBJECT_LIST` dla własnych głosów, jedno
+  źródło prawdy dla tolerancji długości audio
+- **poza zakresem:** zakres czytania napisów — to INTENCJA nad dziesięcioma progami
+  i wagami klasyfikatora (`subtitles/classifier.py:65-80,161-173`), wymaga własnego
+  projektu i idzie do osobnego etapu; ujednolicenie ośmiu backoffów
+- **zabronione:** wystawianie surowych progów klasyfikatora, dodawanie pola bez
+  ścieżki do serwisu, zmiana domyślnych wartości pipeline'u
+
+## Główna przeszkoda
+
+`TranslationTaskHandler` nie ma dostępu do żadnej konfiguracji:
+
+```text
+UserSettings -> RunSettingsSnapshot -> plan.settings -> runtime._translation_service
+                                                            \-> TranslationConfig -> TranslationService
+    TranslationTaskHandler(service, run_root=...)   <- runtime.py:181-184 ma plan
+        __slots__ = ("_run_root", "_service")        <- ale go nie zatrzymuje
+            translation_verses(split, result)        <- translation_handler.py:258
+                split_for_layout(text, verses)       <- bez max_chars
+                split_line(line.text)                <- bez max_chars
+            text_spoken_lines(text)                  <- translation_handler.py:235
+                chunk_text(text)                     <- bez char_limit
+```
+
+`TranslationConfig` (`services/translation/config.py:25-51`) dociera tylko do
+`TranslationService`, nie do handlera. `MAX_LINES` (`linebreak.py:30`) nie ma dziś
+żadnego override — jest wstrzykiwane na sztywno w `linebreak.py:285`.
+
+## Projekt
+
+Nowy, mały nośnik układu tekstu przekazywany handlerowi przy konstrukcji, wzorem
+`AudioConfig` i `TtsConfig`:
+
+```text
+LayoutConfig (frozen, slots)
+    max_chars_per_line: int = DEFAULT_MAX_CHARS
+    max_lines_per_event: int = MAX_LINES
+    chunk_chars: int = DEFAULT_CHAR_LIMIT
+```
+
+`chunk_limit` NIE jest osobnym polem. Zachowujemy dzisiejszą proporcję 750/250,
+czyli dokładnie 3:1, i wyliczamy `chunk_limit = chunk_chars // 3`. Jedno pokrętło
+zamiast dwóch, a domyślne zachowanie bit w bit takie samo jak dziś.
+
+`split_for_layout` i `split_line` zyskują `max_lines` jako parametr keyword-only z
+dzisiejszym defaultem, więc żadne istniejące wywołanie się nie zmienia.
+
+## Mapa plików
+
+```text
+MODIFY  anishift/config/user_settings.py          trzy pola + docstringi
+MODIFY  anishift/config/field_catalog.py          trzy specy + dyspozycje
+MODIFY  anishift/application/planning.py          trzy pola snapshotu + walidacja
+MODIFY  anishift/application/service.py           przepisanie do snapshotu
+MODIFY  anishift/application/runtime.py           budowa LayoutConfig, wstrzyknięcie
+MODIFY  anishift/application/translation_handler.py  przyjęcie configu, przekazanie dalej
+MODIFY  anishift/services/translation/linebreak.py   parametr max_lines
+CREATE  anishift/services/translation/layout_config.py  LayoutConfig
+MODIFY  anishift/cli/interactive/settings.py      kategoria Napisy + trzy pozycje
+MODIFY  anishift/cli/interactive/settings_editors.py  parsowanie OBJECT_LIST
+MODIFY  anishift/application/inspection.py        tolerancja z jednego miejsca
+MODIFY  anishift/application/planning.py          to samo źródło tolerancji
+```
+
+## Kroki
+
+1. **Jedno źródło prawdy dla tolerancji.** `application/inspection.py:42` i
+   `application/planning.py:149` trzymają tę samą wielkość osobno. Jedna stała,
+   oba miejsca ją importują.
+   Sprawdzenie: test, że obie wartości pochodzą z jednej stałej.
+2. **`LayoutConfig` i ścieżka do handlera.** Nowy nośnik, pola snapshotu, budowa w
+   `runtime.py`, przyjęcie w handlerze, przekazanie do `linebreak` i `chunking`.
+   Bez nowych pól `UserSettings` — na razie same defaulty, więc zachowanie się nie
+   zmienia.
+   Sprawdzenie: testy pipeline'u przechodzą bez zmian; test, że handler przekazuje
+   podane wartości do splittera.
+3. **`max_lines` w splitterze.** Parametr keyword-only z dzisiejszym defaultem.
+   Sprawdzenie: test dla 1, 2 i 3 linii budżetu.
+4. **Trzy pola w konfiguracji.** `UserSettings`, katalog, dyspozycje, snapshot.
+   Sprawdzenie: strażnik kompletności z E1 wymusi obecność w układzie panelu.
+5. **Kategoria `Napisy`.** Nowa pozycja w `_ROOT_ITEMS`, nowa krotka pól, dwa pola
+   układu tekstu; rozmiar kontekstu ląduje w `Tłumaczenie`.
+   Sprawdzenie: test kompletności, test renderu kategorii.
+6. **Edytor `OBJECT_LIST`.** Własne głosy stają się osiągalne, a
+   `_KNOWN_LAYOUT_GAPS` pustoszeje.
+   Sprawdzenie: test dodania, zmiany i usunięcia głosu; test, że słownik luk jest
+   pusty.
+7. **Bramki.** Pełny zestaw, baseline bez zmian.
+
+## Weryfikacja
+
+| twierdzenie | dowód |
+|---|---|
+| defaulty nie zmieniają zachowania | testy pipeline'u bez zmian po kroku 2 |
+| wartość z panelu dociera do splittera | test handlera z niestandardowym configem |
+| budżet linii działa | test dla 1, 2 i 3 |
+| proporcja 750/250 zachowana | test, że `chunk_chars=750` daje `chunk_limit=250` |
+| własne głosy są osiągalne | test edytora + pusty słownik luk |
+| tolerancja ma jedno źródło | test równości obu miejsc |

@@ -17,6 +17,13 @@ from anishift.errors import PlanningError
 _MAX_LLM_TEMPERATURE: Final[float] = 2.0
 """Maximum provider-neutral LLM sampling temperature."""
 
+DEFAULT_AUDIO_TOLERANCE_US: Final[int] = 1_000_000
+"""Accepted duration difference between supplied audio and the selected video.
+
+Workspace inspection and run planning both compare the same two durations, so the
+number lives here once instead of drifting between two independent definitions.
+"""
+
 
 class TaskKind(StrEnum):
     """Operations that can appear in an AniShift execution graph."""
@@ -146,7 +153,7 @@ class RunSettingsSnapshot:
     processing_order_policy: ProcessingOrderPolicy
     tts_request_concurrency: int = 1
     audio_output_profile: str = "eac3"
-    audio_duration_tolerance_us: int = 1_000_000
+    audio_duration_tolerance_us: int = DEFAULT_AUDIO_TOLERANCE_US
     subtitle_language_priority: tuple[str, ...] = ("eng",)
     audio_language_priority: tuple[str, ...] = ("jpn",)
     translation_is_network: bool = True

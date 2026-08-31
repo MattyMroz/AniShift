@@ -55,7 +55,35 @@ Zweryfikowany w kodzie na `4b03ce2`, nie z pamięci dokumentów.
 | maskotka nigdy nie jest widoczna w Auto | `show_mascot: bool = False` na sztywno w `resolve_auto_geometry`, `prompts.py` | kod łamie R-407 starej specyfikacji |
 | nadmiar wierszy postępu jest ucinany | `_fit_frame` obcina body do `rows-1`, `app.py:534-544` | przy 19 grupach na ekranie 24 wiersze część kolejki jest niewidoczna bez ostrzeżenia |
 | kółko myszy jest no-opem | `Window._scroll_down` wymaga `content_height > window_height`, treść ma dokładnie `rows` | zdarzenie dochodzi i jest gubione |
-| `narrator_sample_rate` jest martwym polem | `AudioConfig` budowany w `runtime.py:654` nie przekazuje go | wartość z configu nie ma wpływu |
+| tolerancja długości audio ma dwie niezależne definicje | `application/inspection.py:42` i `application/planning.py:149`, obie `1_000_000` µs | ta sama wielkość w dwóch miejscach, zmiana jednej nie rusza drugiej |
+
+### 2.3 Trzy zarzuty, które weryfikacja odrzuciła
+
+Zapisane, żeby nikt nie „naprawiał" ich ponownie.
+
+- **`narrator_sample_rate` nie jest martwym polem.** Jest czytane w ośmiu miejscach
+  (`audio/output.py:156,181,196`, `audio/normalize.py:77,206`, `audio/transcode.py:63`,
+  `audio/service.py:404`, `audio/fingerprint.py:52,136`) i wchodzi do fingerprintu
+  resume. Martwa jest jego konfigurowalność: `_audio_config` (`runtime.py:652-661`)
+  go nie przekazuje, więc zawsze wynosi 48 kHz. To poprawna wartość dla E-AC-3, a
+  częstotliwość próbkowania nie jest pokrętłem jakości dla użytkownika. Nie ruszamy.
+- **Dwa progi tolerancji długości nie są niespójne, bo mierzą dwie różne rzeczy.**
+  `audio/output.py:43` to 64 ms tolerancji między wyrenderowanym plikiem a jego
+  własną oczekiwaną długością, wynikającej z paddingu ramki E-AC-3 do 1536 próbek i
+  podwójnego zaokrąglenia do milisekund; jest per-kodek (WAV 2, FLAC 2, MP3 80,
+  Opus 40, AAC 50). Progu „1 s" nie ma w `services/audio` — to
+  `application/inspection.py:42` w mikrosekundach, opisujący zgodność dostarczonego
+  audio z wideo. Inna warstwa, inna jednostka, inne obiekty, inny skutek.
+  Ujednolicanie ich byłoby błędem.
+- **Cap backoffu LLM leży w innym pliku i nie jest pokrętłem użytkownika.** To
+  `services/llm/_retry.py:23` (`RETRY_BACKOFF_CAP_S = 4.0`), nie
+  `translation/engines/llm/_retry.py`. Wystawianie go nic nie poprawia w jakości
+  wyniku. Rzeczywisty problem jest inny i większy: repozytorium ma osiem
+  niezależnych schematów backoffu (`services/llm/_retry.py`,
+  `services/translation/_retry.py`, `engines/deepl/constants.py`,
+  `engines/google/constants.py`, `services/tts/config.py`, `audio/service.py:66-70`,
+  `tts/artifacts.py:27`, `utils/_retry.py`), z których tylko TTS jest
+  konfigurowalny. To zadanie na osobny etap ujednolicenia, nie na pole w panelu.
 
 ## 3. Drzewo ustawień
 
@@ -101,7 +129,7 @@ woła splitter bez możliwości override.
 | równoległość, retry | `translation_concurrency`, `translation_max_retries` | wystawione | zostaje |
 | temperatura, top_p, limit tokenów, styl | `llm_*` | wystawione | zostaje |
 | retry kontraktu JSON | `llm/config.py:28` = `3` | sztywne | ZOSTAW |
-| cap backoffu | `llm/_retry.py:23` = `4.0` s | sztywne | **NAPRAW** |
+| cap backoffu | `services/llm/_retry.py:23` = `4.0` s | sztywne, ale nie jest pokrętłem jakości; osiem niespójnych backoffów to osobny etap | **ZOSTAW** |
 | timeout LLM | `llm/config.py:30` = `300` s | sztywne | ZOSTAW |
 
 Uzasadnienie INTENCJI: te trzy liczby razem odpowiadają na jedno pytanie — jak
@@ -109,8 +137,10 @@ duży kawałek odcinka model widzi naraz. Większy kawałek to spójniejsze zaim
 terminologia, ale wyższe ryzyko złamania kontraktu odpowiedzi. Wystawiamy jedno
 pole rozmiaru kontekstu; trzy liczby są jego pochodną.
 
-Uzasadnienie NAPRAW dla backoffu: cap 4 s przy odpowiedzi 429 od dostawcy pali
-dwie próby w osiem sekund i gubi batch. To defekt niezawodności, nie preferencja.
+Pierwotne uzasadnienie NAPRAW dla backoffu brzmiało: cap 4 s przy odpowiedzi 429
+pali dwie próby w osiem sekund i gubi batch. Weryfikacja je odrzuciła —
+`_retry_delay` (`services/llm/_retry.py:99-104`) przy `LlmRateLimitError` używa
+serwerowego `retry_after_s` i wtedy cap NIE obowiązuje. Zarzut był fałszywy.
 
 ### 3.3 Lektor i dźwięk
 
@@ -125,7 +155,7 @@ dwie próby w osiem sekund i gubi batch. To defekt niezawodności, nie preferenc
 | sufit jakości Edge 24 kHz/96 kbps | `tts/engines/edge/constants.py:29` | sztywne | ZOSTAW |
 | sample rate narratora | `audio/config.py:44` = `48000`, nieprzekazywany | martwe pole | **NAPRAW** |
 | współczynniki downmiksu 5.1→stereo | `audio/channels.py:42` | sztywne | ZOSTAW |
-| tolerancja długości EAC3 vs tolerancja inspekcji | `audio/output.py:43` = 64 ms, `inspection.py:42` = 1 s | dwa niespójne progi | **NAPRAW** |
+| tolerancja długości audio | `application/inspection.py:42` i `application/planning.py:149`, obie `1_000_000` µs | ta sama wielkość zdefiniowana dwa razy | **NAPRAW** |
 | cięcie tekstu na fragmenty TTS | `tts/chunking.py:22,25`, `text/boundaries.py` | sztywne | ZOSTAW |
 
 Uzasadnienie ZOSTAW dla Edge: format jest własnością silnika, a nie preferencją;
@@ -150,8 +180,9 @@ liczbowym w panelu nie dodaje wartości.
 **Nowe pola w panelu:** zakres czytania napisów, maks. znaków w linii, maks.
 linii na event, rozmiar kontekstu tłumaczenia, własne głosy ElevenBytes.
 
-**Naprawy bez nowego pola:** cap backoffu LLM, martwy `narrator_sample_rate`,
-niespójne progi tolerancji długości.
+**Naprawy bez nowego pola:** jedno źródło prawdy dla tolerancji długości audio
+(`application/inspection.py:42` i `application/planning.py:149`). Trzy pozostałe
+zarzuty odrzucone — patrz sekcja 2.3.
 
 Pięć nowych pól, nie pięćdziesiąt. Reszta zostaje na sztywno z powodem zapisanym
 wyżej.
