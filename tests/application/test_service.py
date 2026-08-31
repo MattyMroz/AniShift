@@ -19,6 +19,7 @@ from fakes import (
 )
 
 import anishift.application.service as service_module
+from anishift.application.cancellation import CancellationToken
 from anishift.application.handlers import (
     ExecutionHandlers,
     ExtractionTaskHandler,
@@ -40,6 +41,7 @@ from anishift.config.user_settings import UserSettings
 from anishift.errors import RunConflictError
 from anishift.services.extraction import ExtractionRequest, ExtractionResult
 from anishift.services.media import DefaultMediaProbe
+from anishift.services.media.types import MediaCatalog
 
 _PALANTIR_TOKEN = "palantir-token-sentinel-deadbeef"  # noqa: S105
 
@@ -315,3 +317,62 @@ def test_bootstrap_builds_the_shared_service_without_creating_provider_clients(t
 
     assert isinstance(service, AppService)
     assert not workspace_root.exists()
+
+
+class _CountingProbe(FakeMediaProbe):
+    def __init__(self) -> None:
+        self.calls: int = 0
+
+    def identify(self, path: Path, *, cancel: CancellationToken, timeout_s: float) -> MediaCatalog:
+        self.calls += 1
+        return super().identify(path, cancel=cancel, timeout_s=timeout_s)
+
+
+def test_discovery_of_unchanged_files_reuses_the_previous_inspection(tmp_path: Path) -> None:
+    write_media_source(tmp_path / "Episode 1.mkv")
+    probe = _CountingProbe()
+    service: AppService = _service(
+        tmp_path,
+        FakeTranslationService(),
+        inspector=WorkspaceInspector(cast("DefaultMediaProbe", probe)),
+    )
+
+    first = service.discover()
+    second = service.discover()
+
+    assert probe.calls == 1
+    assert second is first
+
+
+def test_a_changed_workspace_file_forces_a_new_inspection(tmp_path: Path) -> None:
+    source: Path = tmp_path / "Episode 1.mkv"
+    write_media_source(source)
+    probe = _CountingProbe()
+    service: AppService = _service(
+        tmp_path,
+        FakeTranslationService(),
+        inspector=WorkspaceInspector(cast("DefaultMediaProbe", probe)),
+    )
+    service.discover()
+
+    source.write_bytes(b"fake media with a different size")
+    service.discover()
+
+    assert probe.calls == 2
+
+
+def test_a_new_workspace_file_forces_a_new_inspection(tmp_path: Path) -> None:
+    write_media_source(tmp_path / "Episode 1.mkv")
+    probe = _CountingProbe()
+    service: AppService = _service(
+        tmp_path,
+        FakeTranslationService(),
+        inspector=WorkspaceInspector(cast("DefaultMediaProbe", probe)),
+    )
+    service.discover()
+
+    write_media_source(tmp_path / "Episode 2.mkv")
+    workspace = service.discover()
+
+    assert probe.calls == 3
+    assert len(workspace.groups) == 2

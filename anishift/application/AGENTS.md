@@ -41,6 +41,15 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Worker otrzymuje w `ArtifactSnapshot` gotowe wejścia i niezmienne deskryptory
   planowanych wyjść, po czym zwraca `TaskResult`; mutable store pozostaje prywatny
   dla schedulera.
+- `WorkspaceInspector.inspect()` probuje grupy równolegle (`_MAX_INSPECTION_WORKERS`),
+  bo każda grupa to osobny `mkvmerge`. Kolejność grup i ostrzeżeń pozostaje
+  kolejnością discovery — nie zbieraj wyników w kolejności ukończenia.
+  `inspection.py`
+- `AppService.discover()` jest serializowane (`_discover_lock`) i reużywa poprzednią
+  inspekcję, gdy odcisk workspace (ścieżka + rozmiar + mtime każdego odkrytego pliku)
+  jest identyczny. Dzięki temu wielokrotne `discover()` w jednej sesji nie powtarza
+  probowania, a zmiana pliku wymusza pełną inspekcję. Nie omijaj tego przez własny
+  cache w UI. `service.py`
 
 ## Testy
 

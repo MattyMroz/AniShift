@@ -14,7 +14,7 @@ from secrets import token_hex
 from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application.cancellation import CancellationToken, EventCancellationToken, NeverCancelledToken
-from anishift.application.discovery import discover_groups
+from anishift.application.discovery import DiscoveryResult, discover_groups
 from anishift.application.events import RunEventSink
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
 from anishift.application.intents import (
@@ -86,6 +86,9 @@ type SettingsDraft = UserSettings
 
 type ModelProber = Callable[[LlmConfig], None]
 """Connection test sending at most one minimal request, raising on failure."""
+
+type WorkspaceFingerprint = tuple[tuple[str, int, int], ...]
+"""Path, size and modification time of every discovered file in scan order."""
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -238,9 +241,11 @@ class AppService:
         self._model_prober: ModelProber | None = model_prober
         self._env_file: Path = env_file if env_file is not None else env_path()
         self._workspace: InspectedWorkspace | None = None
+        self._workspace_fingerprint: WorkspaceFingerprint | None = None
         self._active_run_id: str | None = None
         self._active_cancel: EventCancellationToken | None = None
         self._run_lock: threading.Lock = threading.Lock()
+        self._discover_lock: threading.Lock = threading.Lock()
 
     @property
     def workspace_root(self) -> Path:
@@ -248,14 +253,18 @@ class AppService:
         return self._workspace_root
 
     def discover(self, *, cancel: CancellationToken | None = None) -> InspectedWorkspace:
-        """Discover and fully inspect the current workspace without starting work."""
+        """Inspect the workspace once, reusing the last inspection of unchanged files."""
         token: CancellationToken = cancel or NeverCancelledToken()
-        inspected: InspectedWorkspace = self._inspector.inspect(
-            discover_groups(self._workspace_root),
-            cancel=token,
-        )
-        _commit_if_active(token, lambda: self._cache_workspace(inspected))
-        return inspected
+        with self._discover_lock:
+            discovery: DiscoveryResult = discover_groups(self._workspace_root)
+            fingerprint: WorkspaceFingerprint = _workspace_fingerprint(discovery)
+            unchanged: InspectedWorkspace | None = self._unchanged_workspace(fingerprint)
+            if unchanged is not None:
+                token.raise_if_cancelled()
+                return unchanged
+            inspected: InspectedWorkspace = self._inspector.inspect(discovery, cancel=token)
+            _commit_if_active(token, lambda: self._cache_workspace(inspected, fingerprint))
+            return inspected
 
     def register_external_subtitle(
         self,
@@ -755,9 +764,16 @@ class AppService:
         with self._run_lock:
             self._workspace = replace(workspace, groups=groups)
 
-    def _cache_workspace(self, inspected: InspectedWorkspace) -> None:
+    def _cache_workspace(self, inspected: InspectedWorkspace, fingerprint: WorkspaceFingerprint) -> None:
         with self._run_lock:
             self._workspace = inspected
+            self._workspace_fingerprint = fingerprint
+
+    def _unchanged_workspace(self, fingerprint: WorkspaceFingerprint) -> InspectedWorkspace | None:
+        with self._run_lock:
+            if self._workspace_fingerprint != fingerprint:
+                return None
+            return self._workspace
 
     def _settings_snapshot(self) -> RunSettingsSnapshot:
         with self._run_lock:
@@ -925,6 +941,20 @@ def _close_handler(handler: TaskHandler) -> None:
     close: object = getattr(handler, "close", None)
     if callable(close):
         close()
+
+
+def _workspace_fingerprint(discovery: DiscoveryResult) -> WorkspaceFingerprint:
+    return tuple(_file_identity(artifact.path) for group in discovery.groups for artifact in group.artifacts)
+
+
+def _file_identity(path: Path | None) -> tuple[str, int, int]:
+    if path is None:
+        return "", 0, 0
+    try:
+        status: os.stat_result = path.stat()
+    except OSError:
+        return path.as_posix(), -1, -1
+    return path.as_posix(), status.st_size, status.st_mtime_ns
 
 
 def _commit_if_active(token: CancellationToken, action: Callable[[], None]) -> None:

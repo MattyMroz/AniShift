@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -265,3 +266,32 @@ def test_invalid_media_is_retained_for_manual_diagnostics(tmp_path: Path) -> Non
     )
     assert workspace.groups[0].artifacts[0].state is ArtifactState.INVALID
     assert workspace.warnings[0].code == "media_invalid"
+
+
+class _BarrierProbe:
+    def __init__(self, catalogs: dict[Path, MediaCatalog], parties: int) -> None:
+        self.catalogs: dict[Path, MediaCatalog] = catalogs
+        self.barrier: threading.Barrier = threading.Barrier(parties, timeout=10)
+
+    def identify(self, path: Path, *, cancel: CancellationToken, timeout_s: float) -> MediaCatalog:
+        del cancel, timeout_s
+        self.barrier.wait()
+        return self.catalogs[path]
+
+
+def test_groups_are_probed_at_once_and_keep_the_discovery_order(tmp_path: Path) -> None:
+    names: tuple[str, ...] = ("1", "2", "3", "4")
+    catalogs: dict[Path, MediaCatalog] = {}
+    for name in names:
+        video = tmp_path / f"{name}.mkv"
+        video.write_bytes(b"video")
+        catalogs[video] = _catalog(video)
+    discovery = discover_groups(tmp_path)
+
+    workspace = WorkspaceInspector(_BarrierProbe(catalogs, len(names))).inspect(
+        discovery,
+        cancel=NeverCancelledToken(),
+    )
+
+    assert tuple(group.group_id for group in workspace.groups) == tuple(group.group_id for group in discovery.groups)
+    assert all(group.artifacts[0].state is ArtifactState.READY for group in workspace.groups)

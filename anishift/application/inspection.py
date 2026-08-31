@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -40,6 +41,9 @@ _DEFAULT_PROBE_TIMEOUT_SECONDS: Final[float] = 120.0
 
 _DEFAULT_AUDIO_TOLERANCE_US: Final[int] = 1_000_000
 """Default accepted duration difference between external audio and video."""
+
+_MAX_INSPECTION_WORKERS: Final[int] = 8
+"""Upper bound on groups probed at once, because probing waits on subprocesses."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,15 +120,22 @@ class WorkspaceInspector:
         *,
         cancel: CancellationToken,
     ) -> InspectedWorkspace:
-        """Probe containers and validate local artifact contents."""
-        inspected_groups: list[InspectedSourceGroup] = []
-        warnings: list[InspectionWarning] = []
-        for source in discovery.groups:
-            cancel.raise_if_cancelled()
-            group, group_warnings = self._inspect_group(source, cancel=cancel)
-            inspected_groups.append(group)
-            warnings.extend(group_warnings)
-        return InspectedWorkspace(groups=tuple(inspected_groups), warnings=tuple(warnings))
+        """Probe containers and validate local artifact contents group by group."""
+        cancel.raise_if_cancelled()
+        sources: tuple[SourceGroup, ...] = discovery.groups
+        if not sources:
+            return InspectedWorkspace(groups=(), warnings=())
+        with ThreadPoolExecutor(
+            max_workers=min(len(sources), _MAX_INSPECTION_WORKERS),
+            thread_name_prefix="anishift-inspect",
+        ) as pool:
+            inspected: tuple[tuple[InspectedSourceGroup, tuple[InspectionWarning, ...]], ...] = tuple(
+                pool.map(lambda source: self._inspect_group(source, cancel=cancel), sources)
+            )
+        return InspectedWorkspace(
+            groups=tuple(group for group, _ in inspected),
+            warnings=tuple(warning for _, group_warnings in inspected for warning in group_warnings),
+        )
 
     def register_external_subtitle(
         self,
@@ -192,6 +203,7 @@ class WorkspaceInspector:
         *,
         cancel: CancellationToken,
     ) -> tuple[InspectedSourceGroup, tuple[InspectionWarning, ...]]:
+        cancel.raise_if_cancelled()
         catalogs: dict[str, MediaCatalog] = {}
         artifacts: list[Artifact] = []
         warnings: list[InspectionWarning] = []
