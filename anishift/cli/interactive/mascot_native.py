@@ -41,7 +41,7 @@ _DATA_OFFSET: Final[int] = 63
 _RLE_THRESHOLD: Final[int] = 4
 """Shortest repeated character sequence encoded with SIXEL RLE."""
 
-_ROW_OFFSET: Final[int] = 0
+_ROW_OFFSET: Final[int] = 1
 """Terminal rows centering the native image inside its reserved area."""
 
 _COLUMN_OFFSET: Final[int] = 0

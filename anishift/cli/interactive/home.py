@@ -155,8 +155,8 @@ def _beside(left: Text, right: Text) -> Text:
     left_width: int = max(line.cell_len for line in left_lines)
     right_width: int = max(line.cell_len for line in right_lines)
     row_count: int = max(len(left_lines), len(right_lines))
-    left_offset: int = (row_count - len(left_lines)) // 2
-    right_offset: int = (row_count - len(right_lines)) // 2
+    left_offset: int = row_count - len(left_lines)
+    right_offset: int = row_count - len(right_lines)
     result: Text = Text()
     for index in range(row_count):
         left_index: int = index - left_offset

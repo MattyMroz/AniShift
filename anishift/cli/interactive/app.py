@@ -53,6 +53,12 @@ _HOME_HINT: Final[str] = "↑↓ · Enter"
 _HOME_POINTER: Final[str] = "\u276f"
 """Pointer glyph shown beside the active Home choice."""
 
+_HOME_BRAND_TOP_PADDING_ROWS: Final[int] = 2
+"""Fixed terminal padding above the Home brand."""
+
+_HOME_MENU_REGION_GAP_ROWS: Final[int] = 2
+"""Rows separating the Home brand from the lower menu region."""
+
 _REFUSAL_MESSAGES: Final[dict[str, str]] = {
     "The workspace holds no source group to run.": "Workspace nie zawiera materiału do uruchomienia",
     "No discovered source group is ready to run.": "Żadna wykryta grupa nie jest gotowa do uruchomienia",
@@ -470,11 +476,12 @@ def _home_content(
     geometry: HomeGeometry = resolve_home_geometry(columns, rows)
     brand: Text = brand_for_geometry(geometry, mascot_state, native_mascot=native_mascot)
     brand_rows: int = len(brand.split("\n"))
-    brand_top: int = 1 if rows > brand_rows + len(_HOME_CHOICES) + 3 else 0
     menu_rows: int = len(_HOME_CHOICES) + 1
     body_rows: int = max(rows - 1, 1)
-    centered_menu_top: int = max((body_rows - menu_rows) // 2, 0)
-    menu_top: int = max(centered_menu_top, brand_top + brand_rows + 1)
+    brand_top: int = _HOME_BRAND_TOP_PADDING_ROWS
+    menu_region_top: int = brand_top + brand_rows + _HOME_MENU_REGION_GAP_ROWS
+    menu_region_rows: int = max(body_rows - menu_region_top, menu_rows)
+    menu_top: int = menu_region_top + max((menu_region_rows - menu_rows) // 2, 0)
     brand_bottom: int = brand_top + brand_rows - 1
     content = Text("\n" * brand_top)
     content.append_text(brand)

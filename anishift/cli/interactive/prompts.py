@@ -82,8 +82,8 @@ _NATIVE_IMAGE_COLUMNS: Final[int] = 18
 _NATIVE_IMAGE_ROWS: Final[int] = 10
 """Terminal rows covered by a 160-pixel native image."""
 
-_CLEAR_TERMINAL: Final[str] = "\x1b[2J\x1b[3J\x1b[H"
-"""VT sequence clearing the visible terminal, scrollback and cursor origin."""
+_CLEAR_TERMINAL: Final[str] = "\x1bc\x1b[2J\x1b[3J\x1b[H"
+"""VT reset followed by clearing the screen, scrollback and cursor origin."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +133,7 @@ class TerminalRenderer:
         self._native_animation_started_at: float = time.monotonic()
         self._native_position: tuple[int, int] | None = None
         self._native_drawn_position: tuple[int, int] | None = None
+        self._native_drawn_payload: str | None = None
         self._terminal_size: tuple[int, int] | None = None
         bindings: KeyBindings = self._key_bindings()
         control = FormattedTextControl(self._formatted_frame, focusable=False, show_cursor=False)
@@ -209,10 +210,13 @@ class TerminalRenderer:
         output = application.output
         elapsed_seconds: float = time.monotonic() - self._native_animation_started_at
         payload: str = image.payload_at(elapsed_seconds)
+        if payload == self._native_drawn_payload and position == self._native_drawn_position:
+            return
         erase: str = _native_erase_sequence(position)
         output.write_raw(f"{_SAVE_CURSOR}{erase}\x1b[{row + 1};{column + 1}H{payload}{_RESTORE_CURSOR}")
         output.flush()
         self._native_drawn_position = position
+        self._native_drawn_payload = payload
 
     def _erase_native_mascot(self) -> None:
         image: NativeMascotImage | None = self._native_mascot
@@ -225,6 +229,7 @@ class TerminalRenderer:
         output.write_raw(f"{_SAVE_CURSOR}{erase}\x1b[{row + 1};{column + 1}H{image.erase_payload}{_RESTORE_CURSOR}")
         output.flush()
         self._native_drawn_position = None
+        self._native_drawn_payload = None
 
     def _render_target(self, columns: int) -> tuple[Console, StringIO]:
         if self._rich_console is not None and self._render_stream is not None and columns == self._render_width:
