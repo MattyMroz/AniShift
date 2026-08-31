@@ -153,10 +153,27 @@ Wartość jest klampowana do `minimum`/`maximum`, gdy istnieją. Pole `OPTIONAL_
 o wartości `None` przy pierwszym `→` przyjmuje `default` ze spec, a przy `←` z
 `minimum` wraca do `None`.
 
-Każda zmiana strzałką jest osobną transakcją, tak jak dziś każda zmiana w modalu.
-Świadomy kompromis: dwadzieścia naciśnięć to dwadzieścia atomowych zapisów
-`settings.json`. Plik ma kilka kilobajtów, zapis jest atomowy, a alternatywa —
-bufor i globalny `Save` — łamie obowiązujące ustalenie o braku globalnego zapisu.
+### Zapis opóźniony
+
+Naciśnięcie strzałki **nie** zapisuje od razu. Zmiana ląduje w oczekującej edycji
+i utrwala się po 400 ms bezczynności. Dwadzieścia naciśnięć to jeden zapis.
+
+To nie jest globalny `Save` i nie łamie ustalenia o jego braku: użytkownik nie
+zatwierdza niczego ręcznie, nie ma przycisku, a zmiana zapisuje się sama.
+Opóźnienie jest wyłącznie sklejeniem serii naciśnięć w jedną transakcję.
+
+Miejsce wykonania zapisu wynika z ograniczenia: `render()` nie może robić I/O, bo
+renderer odświeża klatkę cyklicznie. Aplikacja ma `refresh_interval` 0.1 s i
+wywołuje `after_render` nawet bez wejścia użytkownika, więc to tam sprawdzany jest
+termin oczekującej edycji. `TerminalRenderer` zyskuje callback bezczynności obok
+istniejącego rysowania maskotki.
+
+Oczekująca edycja utrwala się także natychmiast, gdy użytkownik zejdzie z wiersza,
+otworzy modal, wyjdzie z kategorii, naciśnie `Esc` albo zamknie panel. Żadne
+wyjście nie może zgubić zmiany.
+
+Dopóki edycja czeka, lista pokazuje wartość oczekującą, nie zapisaną — inaczej
+strzałka wyglądałaby przez 400 ms jak brak reakcji.
 
 ### Pola wyboru
 
@@ -231,11 +248,13 @@ MODIFY  tests/cli/test_interactive_prompts.py  nowe znormalizowane klawisze
    zachowanie identyczne jak przed zmianą przy samych `↑↓`.
 3. **Strony i skoki.** `pageup`, `pagedown`, `home`, `end`.
    Sprawdzenie: test skoków na liście 22 pól.
-4. **Krok liczby i przechodzenie po wyborach.** Funkcja kroku z `SettingSpec`,
-   klamp, obsługa `OPTIONAL_*`.
+4. **Krok liczby, przechodzenie po wyborach i zapis opóźniony.** Funkcja kroku z
+   `SettingSpec`, klamp, obsługa `OPTIONAL_*`, oczekująca edycja z terminem oraz
+   callback bezczynności w rendererze.
    Sprawdzenie: test kroku dla `llm_temperature` (0–2), `llm_max_output_tokens`
    (1–32000), `narrator_mix_base_gain_db` (bez zakresu), `tts_output_bitrate`
-   (`OPTIONAL_STRING` — nie może reagować na strzałki).
+   (`OPTIONAL_STRING` — nie może reagować na strzałki); test, że dwadzieścia
+   naciśnięć daje jeden zapis; test, że każde wyjście utrwala oczekującą edycję.
 5. **Przyklejony Cofnij.** Wyjęcie wiersza powrotu z przewijanej listy.
    Sprawdzenie: test, że wiersz jest ostatni przy każdej pozycji offsetu.
 6. **Mysz.** Podklasa kontrolki, callback scrolla.
@@ -252,6 +271,8 @@ MODIFY  tests/cli/test_interactive_prompts.py  nowe znormalizowane klawisze
 | kursor nigdy nie ucieka z widoku przy klawiaturze | test dla trzech wysokości |
 | przewinięcie myszą nie zmienia zaznaczenia | test podklasy + ręcznie |
 | krok respektuje zakres i typ | test czterech reprezentatywnych pól |
+| seria naciśnięć to jeden zapis | licznik wywołań zapisu w teście |
+| żadne wyjście nie gubi zmiany | test dla zejścia z wiersza, `Esc`, wyjścia z kategorii i zamknięcia panelu |
 | `Cofnij` jest zawsze widoczny | test przy skrajnych offsetach |
 | wyznaczanie okna jest liniowe | brak podwójnej pętli po parach; test wydajności nie jest potrzebny |
 | Home i Ręczny bez regresji | istniejące testy CLI |
@@ -264,10 +285,11 @@ Po kroku 6:
 uruchom      uv run anishift  ->  Ustawienia  ->  Lektor
 zrób         przejdź listę strzałkami, zmień tempo ←→, przewiń kółkiem,
              wróć strzałką, zejdź na Cofnij i naciśnij Enter
-oczekuj      kursor zawsze widoczny, tempo zmienia się o 0.5,
+oczekuj      kursor zawsze widoczny, tempo zmienia się o 0.5 od razu na liście,
              kółko przewija bez zmiany zaznaczenia, Cofnij zawsze na dole
 zwróć uwagę  czy maskotka nie zostawia rastra przy przewijaniu,
-             czy zapis po każdej strzałce nie zacina listy
+             czy trzymanie strzałki jest płynne i czy wartość utrzymuje się
+             po wyjściu i powrocie do kategorii
 przekaż      jedno zdanie: co działa, co nie
 ```
 
@@ -277,5 +299,5 @@ przekaż      jedno zdanie: co działa, co nie
 błąd lokalny zgodny z projektem        popraw w tej iteracji i sprawdź ponownie
 krok liczby nieintuicyjny w praktyce   zmień tabelę kroków, to nie zmienia projektu
 kółko wymaga zmiany layoutu            zatrzymaj się, przeplanuj E2
-zapis po każdej strzałce zacina        wróć po decyzję: debounce kontra transakcja
+opóźnienie 400 ms wyczuwalne jak lag   zmień samą stałą, projekt zostaje
 ```

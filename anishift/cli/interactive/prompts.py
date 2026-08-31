@@ -69,6 +69,27 @@ _TERMINAL_SIZE_POLL_SECONDS: Final[float] = 0.005
 _AUTO_REFRESH_SECONDS: Final[float] = 0.1
 """Interval used by the single event loop to advance visible elapsed time."""
 
+_NORMALISED_KEYS: Final[tuple[tuple[Keys | str, str], ...]] = (
+    (Keys.Up, "up"),
+    (Keys.Down, "down"),
+    (Keys.Left, "left"),
+    (Keys.Right, "right"),
+    (Keys.PageUp, "pageup"),
+    (Keys.PageDown, "pagedown"),
+    (Keys.Home, "home"),
+    (Keys.End, "end"),
+    (Keys.Enter, "enter"),
+    (" ", "space"),
+    (Keys.Backspace, "backspace"),
+    (Keys.Escape, "escape"),
+    (Keys.ControlC, "interrupt"),
+)
+"""Terminal keys the session forwards under a stable name.
+
+Windows delivers every special key with empty ``data``, so ``Keys.Any`` collapses
+them into one indistinguishable event. Each key needs its own binding to survive.
+"""
+
 _SAVE_CURSOR: Final[str] = "\x1b7"
 """VT sequence preserving Prompt Toolkit's current cursor position."""
 
@@ -247,41 +268,8 @@ class TerminalRenderer:
 
     def _key_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
-
-        @bindings.add(Keys.Up)
-        def move_up(event: KeyPressEvent) -> None:
-            del event
-            self._key_handler("up")
-
-        @bindings.add(Keys.Down)
-        def move_down(event: KeyPressEvent) -> None:
-            del event
-            self._key_handler("down")
-
-        @bindings.add(Keys.Enter)
-        def accept(event: KeyPressEvent) -> None:
-            del event
-            self._key_handler("enter")
-
-        @bindings.add(" ")
-        def toggle(event: KeyPressEvent) -> None:
-            del event
-            self._key_handler("space")
-
-        @bindings.add(Keys.Backspace)
-        def backspace(event: KeyPressEvent) -> None:
-            del event
-            self._key_handler("backspace")
-
-        @bindings.add(Keys.Escape)
-        def escape(event: KeyPressEvent) -> None:
-            del event
-            self._key_handler("escape")
-
-        @bindings.add(Keys.ControlC)
-        def interrupt(event: KeyPressEvent) -> None:
-            del event
-            self._key_handler("interrupt")
+        for key, name in _NORMALISED_KEYS:
+            bindings.add(key)(self._forward(name))
 
         @bindings.add(Keys.Any)
         def any_key(event: KeyPressEvent) -> None:
@@ -292,6 +280,13 @@ class TerminalRenderer:
             self._key_handler("any")
 
         return bindings
+
+    def _forward(self, name: str) -> Callable[[KeyPressEvent], None]:
+        def handler(event: KeyPressEvent) -> None:
+            del event
+            self._key_handler(name)
+
+        return handler
 
 
 def _native_anchor(frame: str) -> tuple[int, int] | None:
