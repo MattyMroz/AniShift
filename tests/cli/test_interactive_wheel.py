@@ -22,7 +22,14 @@ from anishift.config.field_catalog import (
 )
 from anishift.config.user_settings import UserSettings
 
-_TTS_INDEX = 2
+
+def _enter(panel: SettingsController, category: str) -> None:
+    for index, item in enumerate(panel._items):
+        if item.key == f"category:{category}":
+            panel._selected = index
+            panel.handle_key("enter")
+            return
+    raise AssertionError(f"category {category} is missing")
 
 
 class FakeSettingsService:
@@ -53,8 +60,7 @@ def service() -> FakeSettingsService:
 @pytest.fixture
 def panel(service: FakeSettingsService) -> SettingsController:
     controller = SettingsController(cast("AppService", service), lambda: None)
-    controller._selected = _TTS_INDEX
-    controller.handle_key("enter")
+    _enter(controller, "tts")
     return controller
 
 

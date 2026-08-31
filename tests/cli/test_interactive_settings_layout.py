@@ -6,6 +6,7 @@ from anishift.cli.interactive.settings import (
     _FIELDS_COVERED_ELSEWHERE,
     _GENERAL_FIELDS,
     _KNOWN_LAYOUT_GAPS,
+    _SUBTITLE_FIELDS,
     _TRANSLATION_FIELDS,
     _TTS_FIELDS,
     _SettingField,
@@ -26,7 +27,7 @@ _TRANSLATION_ENGINES = ("llm", "deepl", "google")
 
 
 def _layout_fields() -> tuple[_SettingField, ...]:
-    return (*_GENERAL_FIELDS, *_TRANSLATION_FIELDS, *_TTS_FIELDS)
+    return (*_GENERAL_FIELDS, *_SUBTITLE_FIELDS, *_TRANSLATION_FIELDS, *_TTS_FIELDS)
 
 
 def _layout_ids() -> tuple[str, ...]:

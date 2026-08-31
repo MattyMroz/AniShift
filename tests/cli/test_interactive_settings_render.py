@@ -46,14 +46,20 @@ def panel(service: FakeSettingsService) -> SettingsController:
     return SettingsController(cast("AppService", service), lambda: None)
 
 
-_TTS_INDEX = 2
+def _enter(panel: SettingsController, category: str) -> None:
+    for index, item in enumerate(panel._items):
+        if item.key == f"category:{category}":
+            panel._selected = index
+            panel.handle_key("enter")
+            return
+    raise AssertionError(f"category {category} is missing")
+
 
 _HEIGHTS = [12, 16, 24, 60]
 
 
 def _open_narration(panel: SettingsController) -> None:
-    panel._selected = _TTS_INDEX
-    panel.handle_key("enter")
+    _enter(panel, "tts")
 
 
 def _lines(panel: SettingsController, rows: int) -> list[str]:

@@ -88,6 +88,7 @@ _COARSE_INTEGER_STEP: Final[int] = 100
 
 _ROOT_ITEMS: Final[tuple[tuple[str, str], ...]] = (
     ("Ogólne", "category:general"),
+    ("Napisy", "category:subtitles"),
     ("Tłumaczenie", "category:translation"),
     ("Lektor", "category:tts"),
     ("Wynik", "category:output"),
@@ -108,9 +109,16 @@ _GENERAL_FIELDS: Final[tuple[_SettingField, ...]] = (
 )
 """General persisted preferences exposed by the product."""
 
+_SUBTITLE_FIELDS: Final[tuple[_SettingField, ...]] = (
+    ("subtitle_max_chars_per_line", "Znaków w linii", "UKŁAD TEKSTU"),
+    ("subtitle_max_lines_per_event", "Linii na napis", "UKŁAD TEKSTU"),
+)
+"""Persisted subtitle layout fields exposed by the product."""
+
 _TRANSLATION_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("translation_engine", "Silnik tłumaczenia", "PODSTAWOWE"),
     ("translation_fallback_chain", "Silniki awaryjne", "PODSTAWOWE"),
+    ("translation_chunk_chars", "Rozmiar kontekstu", "WYDAJNOŚĆ"),
     ("translation_batch_size", "Linii na zapytanie", "WYDAJNOŚĆ"),
     ("translation_concurrency", "Partii jednocześnie", "WYDAJNOŚĆ"),
     ("translation_max_retries", "Ponowienia", "WYDAJNOŚĆ"),
@@ -197,6 +205,7 @@ class SettingsResult(StrEnum):
 
 class _Category(StrEnum):
     GENERAL = "general"
+    SUBTITLES = "subtitles"
     TRANSLATION = "translation"
     TTS = "tts"
     OUTPUT = "output"
@@ -607,6 +616,8 @@ class SettingsController:
             return self._connection_menu_items(self._connection)
         if self._category is _Category.GENERAL:
             items: tuple[_MenuItem, ...] = self._setting_items(_GENERAL_FIELDS)
+        elif self._category is _Category.SUBTITLES:
+            items = self._setting_items(_SUBTITLE_FIELDS)
         elif self._category is _Category.TRANSLATION:
             items = self._translation_items()
         elif self._category is _Category.TTS:
@@ -1290,6 +1301,7 @@ def _menu_title(category: _Category | None, connection: _Connection | None) -> s
     titles: dict[_Category | None, str] = {
         None: "USTAWIENIA",
         _Category.GENERAL: "OGÓLNE",
+        _Category.SUBTITLES: "NAPISY",
         _Category.TRANSLATION: "TŁUMACZENIE",
         _Category.TTS: "LEKTOR",
         _Category.CONNECTIONS: "POŁĄCZENIA",
