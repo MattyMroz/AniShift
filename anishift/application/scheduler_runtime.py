@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import re
 import time
@@ -46,8 +47,8 @@ _PUBLICATION_LOCK_RETRIES: Final[int] = 40
 _PUBLICATION_LOCK_RETRY_DELAY_S: Final[float] = 0.25
 """Delay between atomic publication attempts without holding cancellation locks."""
 
-_WINDOWS_LOCK_ERRORS: Final[frozenset[int]] = frozenset({32, 33})
-"""Windows sharing and lock violations that can disappear after a handle closes."""
+_WINDOWS_TRANSIENT_ERRORS: Final[frozenset[int]] = frozenset({5, 32, 33})
+"""Windows denials that disappear once a scanner, mapping or reader handle closes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,14 +439,15 @@ def _publish_durable(
         try:
             committed: bool = commit_if_current(publish)
         except OSError as error:
-            if not _is_windows_lock_error(error):
-                _raise_publication_error(error)
+            if not _is_windows_transient_error(error):
+                _raise_publication_error(error, artifact_kind)
             if retries >= _PUBLICATION_LOCK_RETRIES:
-                _raise_locked_destination(error)
+                _raise_locked_destination(error, artifact_kind, retries, staging, destination)
             if retries == 0:
                 logger.warning(
                     "Durable publication waiting for a locked destination",
                     artifact_kind=artifact_kind,
+                    winerror=getattr(error, "winerror", None),
                 )
             retries += 1
             time.sleep(_PUBLICATION_LOCK_RETRY_DELAY_S)
@@ -459,11 +461,35 @@ def _publish_durable(
         return committed
 
 
-def _is_windows_lock_error(error: OSError) -> bool:
-    return getattr(error, "winerror", None) in _WINDOWS_LOCK_ERRORS
+def _write_denied(path: Path) -> bool:
+    """Tell whether a publication path currently refuses to open for writing."""
+    try:
+        handle: int = os.open(path, os.O_RDWR)
+    except OSError:
+        return True
+    os.close(handle)
+    return False
 
 
-def _raise_locked_destination(error: OSError) -> Never:
+def _is_windows_transient_error(error: OSError) -> bool:
+    return getattr(error, "winerror", None) in _WINDOWS_TRANSIENT_ERRORS
+
+
+def _raise_locked_destination(
+    error: OSError,
+    artifact_kind: str,
+    attempts: int,
+    staging: Path,
+    destination: Path,
+) -> Never:
+    logger.error(
+        "Durable publication gave up on a locked destination",
+        artifact_kind=artifact_kind,
+        winerror=getattr(error, "winerror", None),
+        attempts=attempts,
+        staging_denied=_write_denied(staging),
+        destination_denied=_write_denied(destination),
+    )
     context: ErrorContext = ErrorContext(
         code=ErrorCode.IO_ERROR,
         message="Destination file is in use by another application",
@@ -472,7 +498,13 @@ def _raise_locked_destination(error: OSError) -> Never:
     raise ExecutionError(context=context) from error
 
 
-def _raise_publication_error(error: OSError) -> Never:
+def _raise_publication_error(error: OSError, artifact_kind: str) -> Never:
+    logger.error(
+        "Durable publication failed",
+        artifact_kind=artifact_kind,
+        winerror=getattr(error, "winerror", None),
+        errno=error.errno,
+    )
     context: ErrorContext = ErrorContext(
         code=ErrorCode.IO_ERROR,
         message="Durable artifact could not be published atomically",
