@@ -41,28 +41,29 @@ _LOGO_ROWS: Final[tuple[str, ...]] = (
 )
 """Established six-row ANISHIFT wordmark reused without Textual dependencies."""
 
-_SLIME_RAMP: Final[tuple[tuple[int, int, int], ...]] = (
-    (0x18, 0x5C, 0xFF),
-    (0x76, 0x11, 0xFF),
-    (0xBE, 0x00, 0xFA),
-    (0xFF, 0x07, 0x8B),
-)
-"""Blue, violet, magenta and pink sampled from the slime artwork, left to right."""
-
 _LOGO_WIDTH: Final[int] = max(len(row) for row in _LOGO_ROWS)
-"""Widest wordmark row, which anchors the horizontal color ramp."""
+"""Widest wordmark row, which anchors the horizontal outline gradient."""
 
 _LOGO_FILL_GLYPH: Final[str] = "█"
 """Solid glyph carrying the lit face of a wordmark letter."""
 
-_FILL_HIGHLIGHT: Final[tuple[float, ...]] = (0.58, 0.50, 0.44, 0.38, 0.34, 0.30)
-"""White share mixed into each filled row, so light reads as coming from above."""
+_RIM_LEFT: Final[tuple[int, int, int]] = (0x00, 0x62, 0xFA)
+"""Azure measured on the mascot's left rim, where the outline gradient starts."""
 
-_OUTLINE_SHADE: Final[float] = 0.72
-"""Brightness the outline keeps, deep enough to read as the letter's own shadow."""
+_RIM_BODY: Final[tuple[int, int, int]] = (0x4C, 0x03, 0xD9)
+"""Violet measured inside the mascot, which the outline passes through."""
 
-_WHITE: Final[tuple[int, int, int]] = (0xFF, 0xFF, 0xFF)
-"""Highlight color mixed into the top of the wordmark as the only white accent."""
+_RIM_RIGHT: Final[tuple[int, int, int]] = (0xF9, 0x01, 0x1A)
+"""Red measured on the mascot's right rim, where the outline gradient ends."""
+
+_RIM_MIDPOINT: Final[float] = 0.5
+"""Position where the outline gradient passes through the mascot's violet body."""
+
+_SILVER_TOP: Final[tuple[int, int, int]] = (0xFA, 0xFA, 0xFD)
+"""Near-white face of the topmost wordmark row, lit from above."""
+
+_SILVER_BOTTOM: Final[tuple[int, int, int]] = (0xA8, 0xAB, 0xBE)
+"""Grey face of the lowest wordmark row, furthest from the light."""
 
 _BRAND_GAP: Final[str] = " " * BRAND_GAP_COLUMNS
 """Fixed separation between the mascot and wordmark, sized by the layout."""
@@ -108,13 +109,15 @@ def _home_brand(mascot: Text | None, *, show_full_wordmark: bool) -> Text:
 
 @lru_cache(maxsize=1)
 def _full_wordmark() -> Text:
-    """Render the established block wordmark with a shaded slime palette."""
+    """Render the block wordmark as silver faces inside a mascot-colored outline."""
     wordmark: Text = Text()
     for index, line in enumerate(_LOGO_ROWS):
         for column, glyph in enumerate(line):
-            fill: bool = glyph == _LOGO_FILL_GLYPH
-            color: str = _wordmark_color(column, index, width=_LOGO_WIDTH, fill=fill)
-            wordmark.append(glyph, style=f"bold {color}" if fill else color)
+            if glyph == _LOGO_FILL_GLYPH:
+                face: str = _hex(_mix(_SILVER_TOP, _SILVER_BOTTOM, index / max(len(_LOGO_ROWS) - 1, 1)))
+                wordmark.append(glyph, style=f"bold {face}")
+                continue
+            wordmark.append(glyph, style=_hex(_rim_color(column / max(_LOGO_WIDTH - 1, 1))))
         if index < len(_LOGO_ROWS) - 1:
             wordmark.append("\n")
     return wordmark
@@ -122,35 +125,25 @@ def _full_wordmark() -> Text:
 
 @lru_cache(maxsize=1)
 def _compact_wordmark() -> Text:
-    """Render a one-row wordmark when the full header cannot fit."""
+    """Render a one-row wordmark that carries the mascot colors without an outline."""
     wordmark: Text = Text()
     letters: str = "ANISHIFT"
     for column, glyph in enumerate(letters):
-        color: str = _wordmark_color(column, 0, width=len(letters), fill=True)
+        color: str = _hex(_rim_color(column / max(len(letters) - 1, 1)))
         wordmark.append(glyph, style=f"bold {color}")
     return wordmark
 
 
-def _wordmark_color(column: int, row: int, *, width: int, fill: bool) -> str:
-    """Blend one wordmark cell from the slime ramp and its row lighting."""
-    red, green, blue = _ramp_color(column / max(width - 1, 1))
-    if not fill:
-        return _hex(round(red * _OUTLINE_SHADE), round(green * _OUTLINE_SHADE), round(blue * _OUTLINE_SHADE))
-    share: float = _FILL_HIGHLIGHT[min(row, len(_FILL_HIGHLIGHT) - 1)]
-    return _hex(
-        round(red + (_WHITE[0] - red) * share),
-        round(green + (_WHITE[1] - green) * share),
-        round(blue + (_WHITE[2] - blue) * share),
-    )
+def _rim_color(position: float) -> tuple[int, int, int]:
+    """Read the mascot rim gradient, azure through violet to red, at one position."""
+    clamped: float = min(max(position, 0.0), 1.0)
+    if clamped <= _RIM_MIDPOINT:
+        return _mix(_RIM_LEFT, _RIM_BODY, clamped / _RIM_MIDPOINT)
+    return _mix(_RIM_BODY, _RIM_RIGHT, (clamped - _RIM_MIDPOINT) / (1.0 - _RIM_MIDPOINT))
 
 
-def _ramp_color(position: float) -> tuple[int, int, int]:
-    """Interpolate the slime ramp at a normalized horizontal position."""
-    span: float = min(max(position, 0.0), 1.0) * (len(_SLIME_RAMP) - 1)
-    index: int = min(int(span), len(_SLIME_RAMP) - 2)
-    weight: float = span - index
-    start: tuple[int, int, int] = _SLIME_RAMP[index]
-    end: tuple[int, int, int] = _SLIME_RAMP[index + 1]
+def _mix(start: tuple[int, int, int], end: tuple[int, int, int], weight: float) -> tuple[int, int, int]:
+    """Blend two colors by a normalized weight."""
     return (
         round(start[0] + (end[0] - start[0]) * weight),
         round(start[1] + (end[1] - start[1]) * weight),
@@ -158,9 +151,9 @@ def _ramp_color(position: float) -> tuple[int, int, int]:
     )
 
 
-def _hex(red: int, green: int, blue: int) -> str:
-    """Format one color channel triple as a Rich hex style."""
-    return f"#{red:02x}{green:02x}{blue:02x}"
+def _hex(color: tuple[int, int, int]) -> str:
+    """Format one color as a Rich hex style."""
+    return f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
 
 
 def _beside(left: Text, right: Text) -> Text:
