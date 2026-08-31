@@ -41,7 +41,7 @@ TERMINAL_TASK_STATES: Final[frozenset[TaskState]] = frozenset(
 _VALIDATED_STAGING_KEY: Final[str] = "validated"
 """Produced-artifact metadata flag allowing coordinator-owned publication."""
 
-_PUBLICATION_LOCK_RETRIES: Final[int] = 40
+_PUBLICATION_LOCK_RETRIES: Final[int] = 240
 """Additional atomic publication attempts allowed for a locked Windows target."""
 
 _PUBLICATION_LOCK_RETRY_DELAY_S: Final[float] = 0.25
@@ -492,8 +492,11 @@ def _raise_locked_destination(
     )
     context: ErrorContext = ErrorContext(
         code=ErrorCode.IO_ERROR,
-        message="Destination file is in use by another application",
-        suggestion="Close the player or preview using the existing product, then run Auto again.",
+        message="The existing product cannot be replaced because a program still holds it",
+        suggestion=(
+            "Close the player, and the workspace folder in the file explorer, then run Auto again. "
+            "A preview or search indexer can map a finished product and block replacing it."
+        ),
     )
     raise ExecutionError(context=context) from error
 
