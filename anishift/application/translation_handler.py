@@ -30,6 +30,7 @@ from anishift.services.subtitles import (
     write_translated,
 )
 from anishift.services.translation.errors import TranslationError
+from anishift.services.translation.layout_config import LayoutConfig
 from anishift.services.translation.linebreak import split_for_layout, split_line
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation
@@ -114,12 +115,19 @@ class TranslationVerses:
 class TranslationTaskHandler:
     """Translate one subtitle artifact and write a complete Polish staging file."""
 
-    __slots__ = ("_run_root", "_service")
+    __slots__ = ("_layout", "_run_root", "_service")
 
-    def __init__(self, service: TranslationExecutor, *, run_root: Path) -> None:
+    def __init__(
+        self,
+        service: TranslationExecutor,
+        *,
+        run_root: Path,
+        layout: LayoutConfig | None = None,
+    ) -> None:
         """Bind one configured translation facade to the run scope."""
         self._service: TranslationExecutor = service
         self._run_root: Path = run_root
+        self._layout: LayoutConfig = layout if layout is not None else LayoutConfig()
 
     def execute(
         self,
@@ -177,7 +185,7 @@ class TranslationTaskHandler:
         if parameters.get("source_kind") != "txt" or output.subtitle_format != "srt" or source.path is None:
             msg = "Text translation requires source_kind=txt and an SRT output"
             raise ExecutionError(msg)
-        spoken: tuple[SpokenLine, ...] = text_spoken_lines(read_txt(source.path))
+        spoken: tuple[SpokenLine, ...] = text_spoken_lines(read_txt(source.path), self._layout)
         result: FileTranslation = self._service.translate_file(
             list(spoken),
             [],
@@ -208,7 +216,7 @@ class TranslationTaskHandler:
         result: FileTranslation = translate_subtitle_split(self._service, split, cancel, observer=observer)
         if not result.is_success:
             return result, None
-        verses: TranslationVerses = translation_verses(split, result)
+        verses: TranslationVerses = translation_verses(split, result, self._layout)
         output_split: SubtitleSplit = replace(split, kind=output_kind)
         destination: Path = task_staging_path(self._run_root, task, output, f".{output_kind}")
         written: Path | None = write_translated(output_split, verses.displayed, verses.spoken, destination)
@@ -232,11 +240,13 @@ def translate_subtitle_split(
     )
 
 
-def text_spoken_lines(text: str) -> tuple[SpokenLine, ...]:
+def text_spoken_lines(text: str, layout: LayoutConfig | None = None) -> tuple[SpokenLine, ...]:
     """Chunk plain text hierarchically and wrap each chunk as a narrator line."""
     from anishift.services.translation.chunking import chunk_text  # noqa: PLC0415 - keep engines lazy
 
-    flattened = (" ".join(chunk.split()) for chunk in chunk_text(text))
+    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
+    chunks = chunk_text(text, char_limit=limits.chunk_chars, chunk_limit=limits.chunk_pieces)
+    flattened = (" ".join(chunk.split()) for chunk in chunks)
     return tuple(SpokenLine(start=0, end=0, text=chunk, style="") for chunk in flattened if chunk)
 
 
@@ -255,8 +265,13 @@ def displayed_lines(split: SubtitleSplit) -> tuple[DisplayedLine, ...]:
     )
 
 
-def translation_verses(split: SubtitleSplit, result: FileTranslation) -> TranslationVerses:
+def translation_verses(
+    split: SubtitleSplit,
+    result: FileTranslation,
+    layout: LayoutConfig | None = None,
+) -> TranslationVerses:
     """Build authored displayed layout and readable spoken line breaks."""
+    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
     dialogue = [event for event in split.subs.events if event.type == "Dialogue"]
     displayed_events = [
         event
@@ -264,10 +279,18 @@ def translation_verses(split: SubtitleSplit, result: FileTranslation) -> Transla
         if decision == "displayed" and not is_drawing(event.text)
     ]
     displayed: tuple[tuple[str, ...], ...] = tuple(
-        split_for_layout(text, visible_verses(event.text))
+        split_for_layout(
+            text,
+            visible_verses(event.text),
+            max_chars=limits.max_chars_per_line,
+            max_lines=limits.max_lines_per_event,
+        )
         for event, text in zip(displayed_events, result.displayed, strict=True)
     )
-    spoken: tuple[tuple[str, ...], ...] = tuple(split_line(line.text) for line in result.spoken)
+    spoken: tuple[tuple[str, ...], ...] = tuple(
+        split_line(line.text, max_chars=limits.max_chars_per_line, max_lines=limits.max_lines_per_event)
+        for line in result.spoken
+    )
     return TranslationVerses(displayed, spoken)
 
 

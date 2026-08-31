@@ -267,7 +267,7 @@ _RE_SPACES: Final[re.Pattern[str]] = re.compile(r"\s+")
 """Whitespace run, collapsed to a single space before splitting."""
 
 
-def split_line(text: str, *, max_chars: int = DEFAULT_MAX_CHARS) -> tuple[str, ...]:
+def split_line(text: str, *, max_chars: int = DEFAULT_MAX_CHARS, max_lines: int = MAX_LINES) -> tuple[str, ...]:
     """Split ``text`` into readable verses; return one entry when it fits.
 
     Verses over ``max_chars`` are split again, but never past :data:`MAX_LINES`
@@ -277,12 +277,13 @@ def split_line(text: str, *, max_chars: int = DEFAULT_MAX_CHARS) -> tuple[str, .
     Args:
         text: Single-line text to split.
         max_chars: Preferred maximum length of one verse.
+        max_lines: Maximum number of verses one line may occupy.
 
     Returns:
         One or more verses; a single-entry tuple when the text already fits.
     """
     text = _RE_SPACES.sub(" ", text).strip()
-    return _split(text, max_chars, MAX_LINES)
+    return _split(text, max_chars, max_lines)
 
 
 def split_for_layout(
@@ -290,6 +291,7 @@ def split_for_layout(
     source_verses: tuple[str, ...],
     *,
     max_chars: int = DEFAULT_MAX_CHARS,
+    max_lines: int = MAX_LINES,
 ) -> tuple[str, ...]:
     """Split displayed text using authored verse count as the layout contract.
 
@@ -300,7 +302,7 @@ def split_for_layout(
     """
     normalised = _RE_SPACES.sub(" ", text).strip()
     if len(source_verses) <= 1:
-        return split_line(normalised, max_chars=max_chars)
+        return split_line(normalised, max_chars=max_chars, max_lines=max_lines)
     words = normalised.split()
     if len(words) < len(source_verses):
         return tuple(words) if words else ("",)

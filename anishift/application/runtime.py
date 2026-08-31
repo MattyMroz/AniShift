@@ -79,6 +79,7 @@ from anishift.services.translation.errors import (
     TranslationQuotaError,
     TranslationRateLimitError,
 )
+from anishift.services.translation.layout_config import LayoutConfig
 from anishift.services.translation.protocols import (
     LlmCompletionRequest,
     LlmCompletionResult,
@@ -181,6 +182,7 @@ class ProductionHandlerFactory:
             TranslationTaskHandler(
                 _translation_service(settings, plan),
                 run_root=run_root,
+                layout=_layout_config(plan),
             ),
             tts=tts_handler,
             audio=audio_handler,
@@ -658,6 +660,15 @@ def _audio_config(plan: ExecutionPlan) -> AudioConfig:
         voice_mix_offset_db=snapshot.voice_mix_offset_db,
         original_gain_db=snapshot.original_gain_db,
         timeline_policy=TimelinePolicy(snapshot.tts_timeline_policy),
+    )
+
+
+def _layout_config(plan: ExecutionPlan) -> LayoutConfig:
+    snapshot = plan.settings
+    return LayoutConfig(
+        max_chars_per_line=snapshot.subtitle_max_chars_per_line,
+        max_lines_per_event=snapshot.subtitle_max_lines_per_event,
+        chunk_chars=snapshot.translation_chunk_chars,
     )
 
 
