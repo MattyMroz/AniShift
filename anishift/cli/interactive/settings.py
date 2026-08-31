@@ -988,11 +988,14 @@ class SettingsController:
 
     def _render_menu(self, columns: int, rows: int) -> Text:
         title: str = _menu_title(self._category, self._connection)
-        row_budget: int = max(rows - 6 - (1 if self._feedback is not None else 0), 1)
-        sections: tuple[str, ...] = tuple(item.section for item in self._items)
+        back: _MenuItem | None = self._items[-1] if self._items and self._items[-1].key == _BACK_KEY else None
+        scrollable: tuple[_MenuItem, ...] = self._items[:-1] if back is not None else self._items
+        feedback_rows: int = 1 if self._feedback is not None else 0
+        row_budget: int = max(rows - 6 - feedback_rows - int(back is not None), 1)
+        sections: tuple[str, ...] = tuple(item.section for item in scrollable)
         start, end = _visible_window(
             sections,
-            self._selected,
+            min(self._selected, max(len(scrollable) - 1, 0)),
             self._offset,
             row_budget,
             follow_cursor=self._follow_cursor,
@@ -1001,12 +1004,12 @@ class SettingsController:
         # has to be kept for the next key press to scroll from.
         self._offset = start
         self._visible_count = end - start
-        visible: tuple[_MenuItem, ...] = self._items[start:end]
+        visible: tuple[_MenuItem, ...] = scrollable[start:end]
         has_above: bool = start > 0
-        has_below: bool = end < len(self._items)
+        has_below: bool = end < len(scrollable)
         option_rows: int = _sectioned_row_count(tuple(item.section for item in visible))
-        body_rows: int = option_rows + int(has_above) + int(has_below) + 4 + (1 if self._feedback is not None else 0)
-        left: int = _menu_left_padding(columns, visible)
+        body_rows: int = option_rows + int(has_above) + int(has_below) + int(back is not None) + 4 + feedback_rows
+        left: int = _menu_left_padding(columns, visible if back is None else (*visible, back))
         content: Text = Text("\n" * max((max(rows - 1, 1) - body_rows) // 2, 0))
         content.append(" " * left)
         content.append(_truncate_right(title, max(columns - left, 1)), style="white_bold")
@@ -1035,6 +1038,15 @@ class SettingsController:
         if has_below:
             content.append(" " * left)
             content.append("↓ więcej\n", style="gray")
+        if back is not None:
+            selected_back: bool = self._selected == len(self._items) - 1
+            content.append(" " * left)
+            content.append(f"{_POINTER} " if selected_back else "  ", style="purple_bold")
+            content.append(
+                _truncate_right(back.label, max(columns - left - 2, 1)),
+                style="purple_bold" if selected_back else "white_bold",
+            )
+            content.append("\n")
         self._append_feedback(content, left, columns)
         content.append(" " * left)
         content.append(_MENU_HINT, style="gray")

@@ -15,12 +15,8 @@ from anishift.config.field_catalog import (
 )
 from anishift.config.user_settings import UserSettings
 
-_TTS_INDEX = 2
 
-_TRANSLATION_INDEX = 1
-
-
-class _FakeService:
+class FakeSettingsService:
     def __init__(self) -> None:
         self.settings = UserSettings()
         self.saves: list[tuple[str, SettingValue]] = []
@@ -41,13 +37,18 @@ class _FakeService:
 
 
 @pytest.fixture
-def service() -> _FakeService:
-    return _FakeService()
+def service() -> FakeSettingsService:
+    return FakeSettingsService()
 
 
 @pytest.fixture
-def panel(service: _FakeService) -> SettingsController:
+def panel(service: FakeSettingsService) -> SettingsController:
     return SettingsController(cast("AppService", service), lambda: None)
+
+
+_TTS_INDEX = 2
+
+_TRANSLATION_INDEX = 1
 
 
 def _open(panel: SettingsController, index: int) -> None:
@@ -70,12 +71,21 @@ def _value_shown(panel: SettingsController, setting_id: str) -> str:
     raise AssertionError(f"{setting_id} is not on this screen")
 
 
-def _current(service: _FakeService, setting_id: str) -> SettingValue:
+def _current(service: FakeSettingsService, setting_id: str) -> float:
     specs = {spec.setting_id: spec for spec in service.settings_catalog()}
-    return read_setting_value(service.settings, specs[setting_id])
+    value = read_setting_value(service.settings, specs[setting_id])
+    assert isinstance(value, (int, float))
+    return value
 
 
-def _use_llm(service: _FakeService) -> None:
+def _current_flag(service: FakeSettingsService, setting_id: str) -> bool:
+    specs = {spec.setting_id: spec for spec in service.settings_catalog()}
+    value = read_setting_value(service.settings, specs[setting_id])
+    assert isinstance(value, bool)
+    return value
+
+
+def _use_llm(service: FakeSettingsService) -> None:
     service.settings.translation_engine = "llm"
     service.settings.translation_fallback_chain = ["llm"]
     service.settings.__post_init__()
@@ -87,7 +97,7 @@ def _flush(panel: SettingsController) -> None:
     panel.flush_pending()
 
 
-def test_an_arrow_defers_the_write(panel: SettingsController, service: _FakeService) -> None:
+def test_an_arrow_defers_the_write(panel: SettingsController, service: FakeSettingsService) -> None:
     _open(panel, _TTS_INDEX)
     _focus(panel, "tts_profile.postprocess_tempo")
     panel.handle_key("right")
@@ -95,7 +105,7 @@ def test_an_arrow_defers_the_write(panel: SettingsController, service: _FakeServ
     assert panel._pending is not None
 
 
-def test_a_run_of_arrows_becomes_one_write(panel: SettingsController, service: _FakeService) -> None:
+def test_a_run_of_arrows_becomes_one_write(panel: SettingsController, service: FakeSettingsService) -> None:
     _open(panel, _TTS_INDEX)
     _focus(panel, "tts_profile.postprocess_tempo")
     for _press in range(20):
@@ -115,7 +125,7 @@ def test_the_deferred_value_is_visible_before_it_is_written(panel: SettingsContr
     assert _value_shown(panel, "tts_profile.postprocess_tempo") != before
 
 
-def test_leaving_the_row_writes_at_once(panel: SettingsController, service: _FakeService) -> None:
+def test_leaving_the_row_writes_at_once(panel: SettingsController, service: FakeSettingsService) -> None:
     _open(panel, _TTS_INDEX)
     _focus(panel, "tts_profile.postprocess_tempo")
     panel.handle_key("right")
@@ -123,7 +133,7 @@ def test_leaving_the_row_writes_at_once(panel: SettingsController, service: _Fak
     assert len(service.saves) == 1
 
 
-def test_escaping_the_category_writes_at_once(panel: SettingsController, service: _FakeService) -> None:
+def test_escaping_the_category_writes_at_once(panel: SettingsController, service: FakeSettingsService) -> None:
     _open(panel, _TTS_INDEX)
     _focus(panel, "tts_profile.postprocess_tempo")
     panel.handle_key("right")
@@ -131,7 +141,7 @@ def test_escaping_the_category_writes_at_once(panel: SettingsController, service
     assert len(service.saves) == 1
 
 
-def test_opening_an_editor_writes_at_once(panel: SettingsController, service: _FakeService) -> None:
+def test_opening_an_editor_writes_at_once(panel: SettingsController, service: FakeSettingsService) -> None:
     _open(panel, _TTS_INDEX)
     _focus(panel, "tts_profile.postprocess_tempo")
     panel.handle_key("right")
@@ -139,7 +149,7 @@ def test_opening_an_editor_writes_at_once(panel: SettingsController, service: _F
     assert len(service.saves) == 1
 
 
-def test_a_fine_range_steps_by_hundredths(panel: SettingsController, service: _FakeService) -> None:
+def test_a_fine_range_steps_by_hundredths(panel: SettingsController, service: FakeSettingsService) -> None:
     _open(panel, _TTS_INDEX)
     _focus(panel, "tts_profile.postprocess_tempo")
     start = _current(service, "tts_profile.postprocess_tempo")
@@ -148,7 +158,7 @@ def test_a_fine_range_steps_by_hundredths(panel: SettingsController, service: _F
     assert service.saves[0][1] == pytest.approx(start + 0.05)
 
 
-def test_a_wide_whole_range_steps_by_hundreds(panel: SettingsController, service: _FakeService) -> None:
+def test_a_wide_whole_range_steps_by_hundreds(panel: SettingsController, service: FakeSettingsService) -> None:
     _use_llm(service)
     _open(panel, _TRANSLATION_INDEX)
     _focus(panel, "llm_max_output_tokens")
@@ -158,7 +168,7 @@ def test_a_wide_whole_range_steps_by_hundreds(panel: SettingsController, service
     assert service.saves[0][1] == 101
 
 
-def test_an_unbounded_gain_steps_by_halves(panel: SettingsController, service: _FakeService) -> None:
+def test_an_unbounded_gain_steps_by_halves(panel: SettingsController, service: FakeSettingsService) -> None:
     _open(panel, _TTS_INDEX)
     _focus(panel, "narrator_mix_base_gain_db")
     start = _current(service, "narrator_mix_base_gain_db")
@@ -167,7 +177,7 @@ def test_an_unbounded_gain_steps_by_halves(panel: SettingsController, service: _
     assert service.saves[0][1] == pytest.approx(start + 0.5)
 
 
-def test_a_narrow_whole_range_steps_by_one(panel: SettingsController, service: _FakeService) -> None:
+def test_a_narrow_whole_range_steps_by_one(panel: SettingsController, service: FakeSettingsService) -> None:
     _open(panel, _TRANSLATION_INDEX)
     _focus(panel, "translation_batch_size")
     start = _current(service, "translation_batch_size")
@@ -176,16 +186,16 @@ def test_a_narrow_whole_range_steps_by_one(panel: SettingsController, service: _
     assert service.saves[0][1] == start + 1
 
 
-def test_a_boolean_flips(panel: SettingsController, service: _FakeService) -> None:
+def test_a_boolean_flips(panel: SettingsController, service: FakeSettingsService) -> None:
     _open(panel, _TTS_INDEX)
     _focus(panel, "elevenbytes_vpn_enabled")
-    start = _current(service, "elevenbytes_vpn_enabled")
+    start = _current_flag(service, "elevenbytes_vpn_enabled")
     panel.handle_key("right")
     _flush(panel)
     assert service.saves[0][1] is not start
 
 
-def test_a_choice_walks_its_allowed_values(panel: SettingsController, service: _FakeService) -> None:
+def test_a_choice_walks_its_allowed_values(panel: SettingsController, service: FakeSettingsService) -> None:
     _open(panel, _TTS_INDEX)
     _focus(panel, "tts_output_profile")
     panel.handle_key("right")
@@ -193,7 +203,7 @@ def test_a_choice_walks_its_allowed_values(panel: SettingsController, service: _
     assert service.saves[0][1] != "eac3"
 
 
-def test_free_text_ignores_arrows(panel: SettingsController, service: _FakeService) -> None:
+def test_free_text_ignores_arrows(panel: SettingsController, service: FakeSettingsService) -> None:
     _open(panel, _TTS_INDEX)
     _focus(panel, "tts_output_bitrate")
     panel.handle_key("right")
@@ -202,7 +212,7 @@ def test_free_text_ignores_arrows(panel: SettingsController, service: _FakeServi
     assert service.saves == []
 
 
-def test_a_value_never_passes_its_maximum(panel: SettingsController, service: _FakeService) -> None:
+def test_a_value_never_passes_its_maximum(panel: SettingsController, service: FakeSettingsService) -> None:
     _open(panel, _TTS_INDEX)
     _focus(panel, "tts_profile.postprocess_tempo")
     for _press in range(200):
@@ -213,7 +223,7 @@ def test_a_value_never_passes_its_maximum(panel: SettingsController, service: _F
 
 def test_an_optional_value_falls_back_to_nothing_below_its_minimum(
     panel: SettingsController,
-    service: _FakeService,
+    service: FakeSettingsService,
 ) -> None:
     _use_llm(service)
     _open(panel, _TRANSLATION_INDEX)
@@ -227,7 +237,7 @@ def test_an_optional_value_falls_back_to_nothing_below_its_minimum(
     assert service.saves[1][1] is None
 
 
-def test_a_row_that_is_not_a_setting_ignores_arrows(panel: SettingsController, service: _FakeService) -> None:
+def test_a_row_that_is_not_a_setting_ignores_arrows(panel: SettingsController, service: FakeSettingsService) -> None:
     panel.handle_key("right")
     assert panel._pending is None
     assert service.saves == []
@@ -235,7 +245,7 @@ def test_a_row_that_is_not_a_setting_ignores_arrows(panel: SettingsController, s
 
 def test_an_idle_window_that_has_not_passed_keeps_the_edit_pending(
     panel: SettingsController,
-    service: _FakeService,
+    service: FakeSettingsService,
 ) -> None:
     _open(panel, _TTS_INDEX)
     _focus(panel, "tts_profile.postprocess_tempo")
