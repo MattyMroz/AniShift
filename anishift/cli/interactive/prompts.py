@@ -122,6 +122,7 @@ class HomeGeometry:
     show_full_wordmark: bool
     mascot_columns: int
     mascot_rows: int
+    brand_rows: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +137,7 @@ class AutoGeometry:
     show_full_wordmark: bool
     mascot_columns: int
     mascot_rows: int
+    brand_rows: int
 
 
 class _WheelControl(FormattedTextControl):
@@ -372,13 +374,16 @@ def resolve_home_geometry(
     show_full_wordmark: bool = (
         terminal_columns >= _FULL_WORDMARK_COLUMNS and terminal_rows >= _FULL_WORDMARK_TERMINAL_ROWS
     )
-    show_mascot: bool = terminal_columns >= brand_columns and terminal_rows >= mascot[1] + _HOME_CHROME_ROWS
+    mascot_room: bool = terminal_rows >= mascot[1] + _HOME_CHROME_ROWS
+    show_mascot: bool = terminal_columns >= brand_columns and mascot_room
     mascot_columns: int = mascot[0] if show_mascot else 0
     mascot_rows: int = mascot[1] if show_mascot else 0
     if show_mascot:
         brand_rows: int = max(mascot_rows, _FULL_WORDMARK_ROWS)
     elif show_full_wordmark:
-        brand_rows = _FULL_WORDMARK_ROWS
+        # A terminal too narrow for the mascot still holds the wordmark at the
+        # height it has beside one, so the name does not jump when it hides.
+        brand_rows = max(mascot[1], _FULL_WORDMARK_ROWS) if mascot_room else _FULL_WORDMARK_ROWS
     else:
         brand_rows = _COMPACT_BRAND_ROWS
     content_rows: int = brand_rows + _HOME_MENU_ROWS
@@ -395,6 +400,7 @@ def resolve_home_geometry(
         show_full_wordmark=show_full_wordmark,
         mascot_columns=mascot_columns,
         mascot_rows=mascot_rows,
+        brand_rows=brand_rows,
     )
 
 
@@ -420,6 +426,7 @@ def resolve_auto_geometry(columns: int, rows: int, progress_rows: int) -> AutoGe
         show_full_wordmark=show_full_wordmark,
         mascot_columns=0,
         mascot_rows=0,
+        brand_rows=brand_rows,
     )
 
 

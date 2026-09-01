@@ -75,7 +75,11 @@ def brand_for_geometry(
             if native_mascot
             else mascot_art(geometry.mascot_columns, geometry.mascot_rows, state)
         )
-    brand: Text = _home_brand(mascot, show_full_wordmark=geometry.show_full_wordmark)
+    brand: Text = _home_brand(
+        mascot,
+        show_full_wordmark=geometry.show_full_wordmark,
+        reserved_rows=geometry.brand_rows if show_mascot else 0,
+    )
     return _centered_brand(brand, geometry.terminal_columns)
 
 
@@ -89,12 +93,26 @@ def _native_mascot_placeholder(columns: int, rows: int) -> Text:
     return Text("\n".join((first_row, *remaining_rows)))
 
 
-def _home_brand(mascot: Text | None, *, show_full_wordmark: bool) -> Text:
-    """Build one centered fixed-size wordmark and optional left mascot."""
+def _home_brand(mascot: Text | None, *, show_full_wordmark: bool, reserved_rows: int = 0) -> Text:
+    """Build one centered fixed-size wordmark and optional left mascot.
+
+    Without a mascot the wordmark still sinks to the bottom of ``reserved_rows``,
+    so a terminal too narrow to draw one keeps the name where it already sits.
+    """
     wordmark: Text = _full_wordmark() if show_full_wordmark else _compact_wordmark()
     if mascot is None:
-        return wordmark
+        return _lowered(wordmark, reserved_rows)
     return _beside(mascot, wordmark)
+
+
+def _lowered(block: Text, reserved_rows: int) -> Text:
+    """Prepend blank rows until ``block`` ends at the bottom of the reservation."""
+    missing: int = reserved_rows - len(block.split("\n"))
+    if missing < 1:
+        return block
+    lowered: Text = Text("\n" * missing)
+    lowered.append_text(block)
+    return lowered
 
 
 @lru_cache(maxsize=1)
