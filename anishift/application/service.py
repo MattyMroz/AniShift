@@ -618,8 +618,14 @@ class AppService:
         return deepcopy(candidate)
 
     def reset_settings(self) -> UserSettings:
-        """Restore persisted panel preferences without touching secrets or presets."""
+        """Restore persisted panel preferences without touching secrets or presets.
+
+        The Palantir enrollment address survives. It is one half of a credential
+        whose other half is an environment secret, so wiping it here would leave
+        a token addressing nothing and silently hide every catalog model.
+        """
         defaults: UserSettings = UserSettings()
+        defaults.palantir_enrollment_base_url = self.settings_snapshot().palantir_enrollment_base_url
         self._settings_saver(defaults)
         with self._run_lock:
             self._user_settings = deepcopy(defaults)
