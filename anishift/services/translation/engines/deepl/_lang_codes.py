@@ -17,7 +17,7 @@ _OVERRIDES: Final[dict[str, str]] = {
 
 
 def to_deepl_code(code: str) -> str | None:
-    """Map a caller-facing language code to DeepL's expected form.
+    """Map a caller-facing language code to DeepL's expected target form.
 
     Args:
         code: Caller code (lowercase ISO, e.g. ``pl``, or ``auto``).
@@ -34,4 +34,23 @@ def to_deepl_code(code: str) -> str | None:
     return normalized.upper()
 
 
-__all__ = ["to_deepl_code"]
+def to_deepl_source_code(code: str) -> str | None:
+    """Map a caller-facing language code to DeepL's expected source form.
+
+    Args:
+        code: Caller code (lowercase ISO, e.g. ``en``, or ``auto``).
+
+    Returns:
+        Bare uppercase code, or ``None`` for ``auto`` and for a missing code so
+        the caller omits source_lang.
+
+    DeepL requires a regional variant for a few target languages but rejects one
+    for the source, so ``en`` must travel as ``EN`` and never as ``EN-US``.
+    """
+    normalized = code.lower().strip()
+    if not normalized or normalized == "auto":
+        return None
+    return normalized.split("-", 1)[0].upper()
+
+
+__all__ = ["to_deepl_code", "to_deepl_source_code"]

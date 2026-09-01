@@ -12,7 +12,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from anishift.services.translation._retry import call_with_retry
-from anishift.services.translation.engines.deepl._lang_codes import to_deepl_code
+from anishift.services.translation.engines.deepl._lang_codes import to_deepl_code, to_deepl_source_code
 from anishift.services.translation.engines.deepl.config import DeeplConfig
 from anishift.services.translation.engines.deepl.constants import (
     MAX_PAYLOAD_BYTES,
@@ -133,7 +133,7 @@ class DeeplService:
             return []
         self._ensure_client()
         target = to_deepl_code(target_lang) or "EN-US"
-        source = to_deepl_code(source_lang)
+        source = to_deepl_source_code(source_lang)
         max_attempts = self._config.max_retries + 1
         out: list[BatchedLine] = []
         for chunk in _chunk_batches(texts, self._config.batch_size, MAX_PAYLOAD_BYTES):
