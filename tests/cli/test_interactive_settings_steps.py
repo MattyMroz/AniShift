@@ -86,7 +86,6 @@ def _current_flag(service: FakeSettingsService, setting_id: str) -> bool:
 
 def _use_llm(service: FakeSettingsService) -> None:
     service.settings.translation_engine = "llm"
-    service.settings.translation_fallback_chain = ["llm"]
     service.settings.__post_init__()
 
 

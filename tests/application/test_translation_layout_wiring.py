@@ -12,7 +12,6 @@ from anishift.services.translation.layout_config import LayoutConfig
 def _snapshot(**changes: object) -> RunSettingsSnapshot:
     defaults: dict[str, object] = {
         "translation_profile_id": "google",
-        "translation_fallback_chain": ("deepl",),
         "translation_max_retries": 3,
         "translation_concurrency": 2,
         "llm_profile_id": "gemini",

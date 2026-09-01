@@ -507,7 +507,6 @@ TŁUMACZENIE
 
 ● Silnik tłumaczenia
   Model tłumaczenia
-  Silniki awaryjne
   Linii na zapytanie
   Partii jednocześnie
   Plików LLM jednocześnie

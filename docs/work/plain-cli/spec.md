@@ -1292,7 +1292,6 @@ Docelowa sekcja może zawierać:
 ```text
 Silnik tłumaczenia
 Model tłumaczenia
-Silniki awaryjne
 Linii na zapytanie
 Partii jednocześnie
 Ponowienia

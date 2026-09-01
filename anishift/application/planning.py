@@ -140,7 +140,6 @@ class RunSettingsSnapshot:
     """Validated non-secret settings consumed by planning and scheduling."""
 
     translation_profile_id: str
-    translation_fallback_chain: tuple[str, ...]
     translation_max_retries: int
     translation_concurrency: int
     llm_profile_id: str
@@ -203,10 +202,6 @@ def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
     )
     if any(not profile_id.strip() for profile_id in profile_ids):
         msg = "Run setting profile IDs cannot be empty"
-        raise ValueError(msg)
-    _require_unique(settings.translation_fallback_chain, "translation fallback profiles")
-    if settings.translation_profile_id in settings.translation_fallback_chain:
-        msg = "Primary translation profile cannot repeat in its fallback chain"
         raise ValueError(msg)
     _require_range(settings.translation_max_retries, 0, 10, "translation retries")
     _require_range(settings.translation_concurrency, 1, 16, "translation concurrency")

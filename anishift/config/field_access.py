@@ -188,9 +188,7 @@ def _assign_preference(settings: UserSettings, spec: SettingSpec, value: Setting
     if spec.setting_id == _CUSTOM_VOICES_FIELD:
         _assign_custom_voices(settings, spec, value)
         return
-    items: tuple[object, ...] = _ordered_items(_collection_value(spec, value))
-    current: object = getattr(settings, spec.setting_id)
-    setattr(settings, spec.setting_id, list(items) if isinstance(current, list) else items)
+    setattr(settings, spec.setting_id, _ordered_items(_collection_value(spec, value)))
 
 
 def _assign_custom_voices(settings: UserSettings, spec: SettingSpec, value: SettingValue) -> None:

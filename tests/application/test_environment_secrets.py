@@ -54,7 +54,6 @@ def _service(tmp_path: Path, env_file: Path | None) -> AppService:
 def _empty_plan() -> ExecutionPlan:
     snapshot = RunSettingsSnapshot(
         translation_profile_id="deepl",
-        translation_fallback_chain=("google",),
         translation_max_retries=3,
         translation_concurrency=2,
         llm_profile_id="gemini",

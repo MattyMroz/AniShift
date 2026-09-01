@@ -163,7 +163,6 @@ _SUBTITLE_FIELDS: Final[tuple[_SettingField, ...]] = (
 
 _TRANSLATION_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("translation_engine", "Silnik tłumaczenia", "PODSTAWOWE"),
-    ("translation_fallback_chain", "Silniki awaryjne", "PODSTAWOWE"),
     ("translation_chunk_chars", "Rozmiar kontekstu", "WYDAJNOŚĆ"),
     ("translation_batch_size", "Linii na zapytanie", "WYDAJNOŚĆ"),
     ("translation_concurrency", "Partii jednocześnie", "WYDAJNOŚĆ"),

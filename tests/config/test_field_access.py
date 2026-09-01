@@ -167,18 +167,18 @@ def test_optional_preference_keeps_none_instead_of_its_default() -> None:
     assert settings.llm_temperature == 0.4
 
 
-def test_string_list_keeps_the_container_of_each_persisted_field() -> None:
+def test_string_list_persists_every_ordered_field_as_a_tuple() -> None:
     settings: UserSettings = UserSettings()
-    fallback_spec: SettingSpec = _spec(settings, "translation_fallback_chain")
-    language_spec: SettingSpec = _spec(settings, "audio_language_priority")
+    audio_spec: SettingSpec = _spec(settings, "audio_language_priority")
+    subtitle_spec: SettingSpec = _spec(settings, "subtitle_language_priority")
 
-    assign_setting_value(settings, fallback_spec, ("google", "deepl"))
-    assign_setting_value(settings, language_spec, ("jpn", "eng"))
+    assign_setting_value(settings, audio_spec, ("jpn", "eng"))
+    assign_setting_value(settings, subtitle_spec, ("eng", "pol"))
 
-    assert settings.translation_fallback_chain == ["google", "deepl"]
     assert settings.audio_language_priority == ("jpn", "eng")
-    assert read_setting_value(settings, fallback_spec) == ("google", "deepl")
-    assert read_setting_value(settings, language_spec) == ("jpn", "eng")
+    assert settings.subtitle_language_priority == ("eng", "pol")
+    assert read_setting_value(settings, audio_spec) == ("jpn", "eng")
+    assert read_setting_value(settings, subtitle_spec) == ("eng", "pol")
 
 
 def test_object_list_roundtrips_custom_voices() -> None:
@@ -249,20 +249,21 @@ def test_setting_is_active_follows_the_selected_engines() -> None:
     assert setting_is_active(_spec(llm_settings, "translation_engine"), llm_settings)
 
 
-def test_setting_is_active_matches_a_condition_against_a_stored_list() -> None:
+def test_setting_is_active_matches_a_condition_against_a_stored_sequence() -> None:
     settings: UserSettings = UserSettings()
     spec: SettingSpec = SettingSpec(
         setting_id="translation_batch_size",
-        label="Fallback detail",
-        description="Active only while DeepL is one of the fallbacks.",
+        label="English audio detail",
+        description="Active only while English is one of the preferred audio languages.",
         value_type=SettingValueType.INTEGER,
         default=0,
         scope=SettingScope.GLOBAL,
-        depends_on=(SettingCondition("translation_fallback_chain", ("deepl",)),),
+        depends_on=(SettingCondition("audio_language_priority", ("eng",)),),
     )
+    settings.audio_language_priority = ("jpn",)
 
     assert not setting_is_active(spec, settings)
 
-    settings.translation_fallback_chain = ["google", "deepl"]
+    settings.audio_language_priority = ("jpn", "eng")
 
     assert setting_is_active(spec, settings)

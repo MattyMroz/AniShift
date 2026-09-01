@@ -267,7 +267,6 @@ class UserSettings:
         mode: ``"auto"`` (Enter processes everything) or ``"manual"``.
         processing_order_policy: Ready-first throughput or strict natural order.
         translation_engine: Selected translation engine id.
-        translation_fallback_chain: Ordered fallback engine ids.
         subtitle_max_chars_per_line: Characters one displayed verse may hold.
         subtitle_max_lines_per_event: Verses one subtitle event may occupy.
         translation_chunk_chars: Characters packed into one translation request.
@@ -311,7 +310,6 @@ class UserSettings:
     mode: Mode = "auto"
     processing_order_policy: ProcessingOrderPolicy = "ready_first"
     translation_engine: str = "google"
-    translation_fallback_chain: list[str] = field(default_factory=lambda: ["google"])
     subtitle_max_chars_per_line: int = DEFAULT_MAX_CHARS
     subtitle_max_lines_per_event: int = MAX_LINES
     translation_chunk_chars: int = DEFAULT_CHAR_LIMIT
@@ -571,13 +569,6 @@ def _clean_optional_number(raw: dict[str, Any], key: str, low: float, high: floa
     if raw.get(key) is None:
         return
     _clean_number(raw, key, low, high)
-
-
-def _clean_str_list(raw: dict[str, Any], key: str, allowed: frozenset[str]) -> None:
-    """Drop ``key`` from ``raw`` when it is not a list of allowed strings."""
-    value = raw.get(key)
-    if not isinstance(value, list) or any(item not in allowed for item in value):
-        raw.pop(key, None)
 
 
 def _clean_language_tuple(raw: dict[str, Any], key: str) -> None:
@@ -887,7 +878,6 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_string(filtered, "processing_order_policy", _PROCESSING_ORDER_POLICIES)
     _clean_string(filtered, "output_variant", _OUTPUT_VARIANTS)
     _clean_string(filtered, "translation_engine", engine_ids)
-    _clean_str_list(filtered, "translation_fallback_chain", engine_ids)
     _clean_number(filtered, "subtitle_max_chars_per_line", *LINE_CHARS_RANGE)
     _clean_number(filtered, "subtitle_max_lines_per_event", *EVENT_LINES_RANGE)
     _clean_number(filtered, "translation_chunk_chars", *CHUNK_CHARS_RANGE)

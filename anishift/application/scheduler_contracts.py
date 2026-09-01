@@ -81,11 +81,7 @@ class ResourceLimits:
         max_pending_per_resource: int = 1,
     ) -> ResourceLimits:
         """Build default scheduler limits from one immutable settings snapshot."""
-        providers: tuple[str, ...] = (
-            settings.translation_profile_id,
-            *settings.translation_fallback_chain,
-        )
-        translation: dict[str, int] = dict.fromkeys(providers, settings.translation_concurrency)
+        translation: dict[str, int] = {settings.translation_profile_id: settings.translation_concurrency}
         return cls(
             extraction=extraction,
             translation=translation,

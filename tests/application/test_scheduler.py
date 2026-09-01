@@ -155,7 +155,6 @@ class _FakeHandler:
 def _settings(policy: ProcessingOrderPolicy = ProcessingOrderPolicy.READY_FIRST) -> RunSettingsSnapshot:
     return RunSettingsSnapshot(
         translation_profile_id="google",
-        translation_fallback_chain=("deepl",),
         translation_max_retries=3,
         translation_concurrency=2,
         llm_profile_id="gemini",

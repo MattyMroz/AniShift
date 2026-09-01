@@ -44,7 +44,6 @@ from anishift.services.media.types import ContainerKind, MediaCatalog, MediaTrac
 def _settings() -> RunSettingsSnapshot:
     return RunSettingsSnapshot(
         translation_profile_id="google",
-        translation_fallback_chain=("deepl",),
         translation_max_retries=2,
         translation_concurrency=4,
         llm_profile_id="gemini",

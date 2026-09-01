@@ -105,7 +105,6 @@ def _connected(tmp_path: Path, prober: _RecordingProber) -> AppService:
 def _snapshot(**overrides: object) -> RunSettingsSnapshot:
     base: dict[str, object] = {
         "translation_profile_id": "llm",
-        "translation_fallback_chain": (),
         "translation_max_retries": 3,
         "translation_concurrency": 2,
         "llm_profile_id": "palantir",

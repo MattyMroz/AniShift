@@ -226,7 +226,6 @@ def _write_ass(path: Path) -> None:
 def _settings() -> RunSettingsSnapshot:
     return RunSettingsSnapshot(
         translation_profile_id="google",
-        translation_fallback_chain=("deepl",),
         translation_max_retries=3,
         translation_concurrency=2,
         llm_profile_id="gemini",

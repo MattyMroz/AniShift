@@ -96,7 +96,6 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
         "translation_chunk_chars",
         "translation_concurrency",
         "translation_engine",
-        "translation_fallback_chain",
         "translation_max_retries",
         "tts_engine",
         "tts_max_retries",

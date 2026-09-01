@@ -459,11 +459,7 @@ def _translation_service(settings: Settings, plan: ExecutionPlan) -> _Translatio
             cancel=llm_cancel,
         )
 
-    service = TranslationService(
-        config,
-        engine_factory=engine_factory,
-        fallback_chain=snapshot.translation_fallback_chain,
-    )
+    service = TranslationService(config, engine_factory=engine_factory)
     return _TranslationRuntime(service, llm_cancel)
 
 

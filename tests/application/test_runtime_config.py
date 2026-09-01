@@ -45,7 +45,6 @@ from anishift.services.tts.config import DEFAULT_RETRY_BACKOFF_SECONDS
 def _snapshot(**overrides: Any) -> RunSettingsSnapshot:
     fields: dict[str, Any] = {
         "translation_profile_id": "llm",
-        "translation_fallback_chain": (),
         "translation_max_retries": 3,
         "translation_concurrency": 2,
         "llm_profile_id": "gemini",

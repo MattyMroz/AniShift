@@ -888,14 +888,10 @@ def _extraction_worker_count(plan: ExecutionPlan) -> int:
 
 
 def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
-    fallback: tuple[str, ...] = tuple(
-        engine for engine in preferences.translation_fallback_chain if engine != preferences.translation_engine
-    )
     profile = preferences.active_tts_profile
     request_concurrency: int = profile.concurrency or 1
     return RunSettingsSnapshot(
         translation_profile_id=preferences.translation_engine,
-        translation_fallback_chain=fallback,
         translation_max_retries=preferences.translation_max_retries,
         translation_concurrency=preferences.translation_concurrency,
         llm_profile_id=preferences.llm_provider,
