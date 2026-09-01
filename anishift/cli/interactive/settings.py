@@ -314,6 +314,7 @@ class _Editor:
     visible_count: int = 0
     current_value: str = ""
     buffer: str = ""
+    pristine: bool = True
     selected_values: set[str] = field(default_factory=set)
 
 
@@ -431,6 +432,10 @@ class SettingsController:
         if pending is None:
             return
         self._pending = None
+        if self._already_stored(pending):
+            # Landing back on the stored value is not an edit, so it must neither
+            # write a transaction nor claim that anything was saved.
+            return
         try:
             self._persist_pending(pending)
         except AniShiftError, OSError:
@@ -440,6 +445,19 @@ class SettingsController:
         else:
             self._feedback = _Feedback(_SAVED_MESSAGE, "success")
         self._refresh_menu()
+
+    def _already_stored(self, pending: _PendingEdit) -> bool:
+        try:
+            snapshot: _CatalogSnapshot = self._catalog_snapshot()
+        except AniShiftError, OSError:
+            return False
+        if pending.action is _EditorAction.SELECT_MODEL:
+            settings: UserSettings = snapshot.settings
+            return settings.llm_provider == pending.provider_id and settings.llm_provider_model_id == pending.value
+        if pending.action is not _EditorAction.UPDATE_SETTING:
+            return False
+        spec: SettingSpec | None = snapshot.specs.get(pending.setting_id)
+        return spec is not None and read_setting_value(snapshot.settings, spec) == pending.value
 
     def _persist_pending(self, pending: _PendingEdit) -> None:
         if pending.action is _EditorAction.SELECT_MODEL:
@@ -453,6 +471,15 @@ class SettingsController:
     def _schedule(self, pending: _PendingEdit) -> None:
         self._pending = pending
         self._feedback = None
+
+    def _typed(self, editor: _Editor, text: str) -> None:
+        if editor.pristine:
+            # The stored value is shown as the starting point, so the first typed
+            # character replaces it instead of appending a second number to it.
+            editor.buffer = ""
+            editor.pristine = False
+        editor.buffer += text
+        self._schedule_typed_save(editor)
 
     def _schedule_typed_save(self, editor: _Editor) -> None:
         self._feedback = None
@@ -603,16 +630,15 @@ class SettingsController:
             self._handle_choice_editor(editor, key)
             return
         if key == "backspace":
+            editor.pristine = False
             editor.buffer = editor.buffer[:-1]
             self._schedule_typed_save(editor)
             return
         if key == "space":
-            editor.buffer += " "
-            self._schedule_typed_save(editor)
+            self._typed(editor, " ")
             return
         if key.startswith("text:"):
-            editor.buffer += key.removeprefix("text:")
-            self._schedule_typed_save(editor)
+            self._typed(editor, key.removeprefix("text:"))
             return
         if key == "enter":
             self._submit_editor(editor)

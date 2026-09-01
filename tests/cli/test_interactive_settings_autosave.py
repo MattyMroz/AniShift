@@ -138,6 +138,63 @@ def test_a_run_of_moves_lands_as_one_saved_value(panel: SettingsController, serv
     assert len(service.saves) == 1
 
 
+def test_returning_to_the_stored_choice_saves_nothing(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    _open_field(panel, "general", "processing_order_policy")
+    panel.handle_key("down")
+    panel.handle_key("up")
+    _idle(panel)
+
+    assert service.saves == []
+    assert panel._feedback is None
+
+
+def test_only_looking_at_a_choice_reports_nothing(panel: SettingsController, service: FakeSettingsService) -> None:
+    _open_field(panel, "general", "processing_order_policy")
+    _idle(panel)
+
+    assert service.saves == []
+    assert panel._feedback is None
+
+
+def test_walking_the_menu_never_claims_a_save(panel: SettingsController, service: FakeSettingsService) -> None:
+    _activate(panel, "category:subtitles")
+    for _ in range(4):
+        panel.handle_key("down")
+    _idle(panel)
+
+    assert service.saves == []
+    assert panel._feedback is None
+
+
+def test_a_real_change_still_reports_the_save(panel: SettingsController, service: FakeSettingsService) -> None:
+    _open_field(panel, "general", "processing_order_policy")
+    panel.handle_key("down")
+    _idle(panel)
+
+    assert len(service.saves) == 1
+    assert panel._feedback is not None
+    assert panel._feedback.style == "success"
+
+
+def test_stepping_a_number_back_to_its_stored_value_saves_nothing(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    _activate(panel, "category:subtitles")
+    for index, item in enumerate(panel._items):
+        if item.key == "setting:subtitle_max_chars_per_line":
+            panel._selected = index
+    panel.handle_key("right")
+    panel.handle_key("left")
+    _idle(panel)
+
+    assert service.saves == []
+    assert panel._feedback is None
+
+
 def test_the_editor_shows_no_save_action(panel: SettingsController) -> None:
     _open_field(panel, "general", "processing_order_policy")
     frame = panel.render(120, 40).plain
@@ -162,8 +219,6 @@ def test_typing_a_number_saves_itself_once_the_typing_stops(
     service: FakeSettingsService,
 ) -> None:
     _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
-    assert panel._editor is not None
-    panel._editor.buffer = ""
     for character in "60":
         panel.handle_key(f"text:{character}")
     _idle(panel)
@@ -171,13 +226,52 @@ def test_typing_a_number_saves_itself_once_the_typing_stops(
     assert _stored(service, "subtitle_max_chars_per_line") == 60
 
 
+def test_the_first_typed_character_replaces_the_stored_value(panel: SettingsController) -> None:
+    _open_field(panel, "subtitles", "subtitle_max_lines_per_event")
+    assert panel._editor is not None
+    assert panel._editor.buffer == "2"
+    panel.handle_key("text:3")
+
+    assert panel._editor.buffer == "3"
+
+
+def test_typing_over_a_short_range_stays_inside_it(panel: SettingsController, service: FakeSettingsService) -> None:
+    _open_field(panel, "subtitles", "subtitle_max_lines_per_event")
+    panel.handle_key("text:3")
+    _idle(panel)
+
+    assert _stored(service, "subtitle_max_lines_per_event") == 3
+    assert panel._feedback is not None
+    assert panel._feedback.style == "success"
+
+
+def test_an_out_of_range_number_is_not_announced_while_it_is_typed(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    _open_field(panel, "subtitles", "subtitle_max_lines_per_event")
+    panel.handle_key("text:9")
+    _idle(panel)
+
+    assert service.saves == []
+    assert panel._feedback is None
+
+
+def test_backspace_edits_the_stored_value_instead_of_replacing_it(panel: SettingsController) -> None:
+    _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+    assert panel._editor is not None
+    assert panel._editor.buffer == "42"
+    panel.handle_key("backspace")
+    panel.handle_key("text:0")
+
+    assert panel._editor.buffer == "40"
+
+
 def test_an_unfinished_number_is_not_saved_before_the_typing_stops(
     panel: SettingsController,
     service: FakeSettingsService,
 ) -> None:
     _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
-    assert panel._editor is not None
-    panel._editor.buffer = ""
     panel.handle_key("text:6")
     panel.handle_key("text:0")
 
@@ -186,6 +280,7 @@ def test_an_unfinished_number_is_not_saved_before_the_typing_stops(
 
 def test_a_toggled_multi_choice_saves_on_the_toggle(panel: SettingsController, service: FakeSettingsService) -> None:
     _open_field(panel, "general", "audio_language_priority")
+    panel.handle_key("down")
     panel.handle_key("space")
     _idle(panel)
 
