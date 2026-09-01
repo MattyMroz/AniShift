@@ -222,6 +222,74 @@ def test_leaving_home_erases_the_native_image() -> None:
     assert renderer._native_drawn_position is None
 
 
+def test_a_moved_native_image_is_erased_instead_of_left_behind() -> None:
+    writes: list[str] = []
+    renderer: TerminalRenderer = _renderer_with(_image(), writes)
+    renderer._application = cast(
+        "Application[None]",
+        SimpleNamespace(
+            output=SimpleNamespace(
+                get_size=lambda: SimpleNamespace(columns=80, rows=24),
+                write_raw=writes.append,
+                flush=lambda: None,
+            ),
+            invalidate=lambda: None,
+            renderer=SimpleNamespace(reset=lambda: None),
+        ),
+    )
+    renderer._render_width = 0
+    renderer._render_stream = None
+    renderer._rich_console = None
+    renderer._terminal_size = None
+    renderer._native_drawn_position = None
+    renderer._native_drawn_payload = None
+    renderer._native_animation_started_at = time.monotonic()
+    renderer._frame_provider = lambda _columns, _rows: Text(f"\n  {NATIVE_MASCOT_ANCHOR}   ")
+    renderer._formatted_frame()
+    renderer._draw_native_mascot(renderer._application)
+    home_position = renderer._native_drawn_position
+
+    renderer._frame_provider = lambda _columns, _rows: Text(f"\n\n\n\n     {NATIVE_MASCOT_ANCHOR}   ")
+    renderer._formatted_frame()
+    renderer._draw_native_mascot(renderer._application)
+
+    assert home_position != renderer._native_position
+    assert "\x1b[2J" in writes[-1]
+    assert renderer._native_drawn_position is None
+
+
+def test_a_native_image_that_stayed_in_place_is_not_erased() -> None:
+    writes: list[str] = []
+    renderer: TerminalRenderer = _renderer_with(_image(payloads=("one", "two")), writes)
+    renderer._application = cast(
+        "Application[None]",
+        SimpleNamespace(
+            output=SimpleNamespace(
+                get_size=lambda: SimpleNamespace(columns=80, rows=24),
+                write_raw=writes.append,
+                flush=lambda: None,
+            ),
+            invalidate=lambda: None,
+            renderer=SimpleNamespace(reset=lambda: None),
+        ),
+    )
+    renderer._render_width = 0
+    renderer._render_stream = None
+    renderer._rich_console = None
+    renderer._terminal_size = None
+    renderer._native_drawn_position = None
+    renderer._native_drawn_payload = None
+    renderer._native_animation_started_at = time.monotonic()
+    renderer._frame_provider = lambda _columns, _rows: Text(f"\n  {NATIVE_MASCOT_ANCHOR}   ")
+    renderer._formatted_frame()
+    renderer._draw_native_mascot(renderer._application)
+    renderer._native_drawn_payload = "stale"
+    renderer._draw_native_mascot(renderer._application)
+
+    assert "\x1b[2J" not in "".join(writes)
+    assert renderer._native_drawn_position is not None
+
+
 def test_the_renderer_reports_the_cells_its_native_mascot_needs() -> None:
     renderer: TerminalRenderer = _renderer_with(_image(cell_columns=23, cell_rows=10), [])
 

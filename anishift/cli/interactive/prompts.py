@@ -273,9 +273,13 @@ class TerminalRenderer:
         if payload == self._native_drawn_payload and position == self._native_drawn_position:
             return
         previous: tuple[int, int] | None = self._native_drawn_position
-        erase: str = _native_erase_sequence(position, image.cell_columns, image.cell_rows)
         if previous is not None and previous != position:
-            erase = _native_erase_sequence(previous, image.cell_columns, image.cell_rows) + erase
+            # Spaces never remove a SIXEL raster; only redrawing over the very same
+            # rectangle hides it. A moved image therefore needs the full erase used
+            # when the mascot disappears, or the old copy stays on screen forever.
+            self._erase_native_mascot()
+            return
+        erase: str = _native_erase_sequence(position, image.cell_columns, image.cell_rows)
         output.write_raw(f"{_SAVE_CURSOR}{erase}\x1b[{row + 1};{column + 1}H{payload}{_RESTORE_CURSOR}")
         output.flush()
         self._native_drawn_position = position
