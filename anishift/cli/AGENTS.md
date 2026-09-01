@@ -82,12 +82,23 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Kółko myszy wymaga `_WheelControl`, bo klatka ma dokładnie tyle wierszy co okno i
   domyślny scroller Prompt Toolkit gubi zdarzenie. Nie zastępuj tego
   `ScrollablePane` ani drugim oknem. `interactive/prompts.py`
+- Panel NIE MA akcji „Zapisz" ani potwierdzania zapisu. Wybór, przełącznik i wpisana
+  wartość utrwalają się same przez `_pending` po `_SAVE_DELAY_SECONDS` bezczynności;
+  `Esc` wychodzi, a nie anuluje. Wyjątki są dwa i mają powód: sekret (pół klucza nie
+  może trafić do `.env`) oraz linia własnego głosu (pół linii nie jest głosem) —
+  te zostają na `Enter`. Ekran WYNIK odmawia odznaczenia ostatniego produktu, żeby
+  znaczniki nie kłamały o zapisanym stanie. `interactive/settings.py`
 - Zmiana liczby strzałką NIE zapisuje od razu: ląduje w `_pending` i utrwala się po
   `_SAVE_DELAY_SECONDS` bezczynności, sprawdzanych w `after_render` (nie w
   `render()`, bo tam I/O jest zabronione). Każdy inny klawisz, zejście z wiersza,
   wyjście z kategorii i zamknięcie panelu utrwalają natychmiast — żadne wyjście nie
   może zgubić zmiany. Lista pokazuje wartość oczekującą, nie zapisaną.
   `interactive/settings.py`, `interactive/prompts.py`, `interactive/app.py`
+- Każdy ekran Ustawień ma `Przywróć domyślne` nad `Cofnij`, zakresowo dla swoich pól
+  (`_SCOPE_FIELDS`); root przywraca wszystko. Reset idzie polami w kolejności ekranu i
+  pomija te, które po drodze przestały być aktywne, bo zmiana silnika przebudowuje
+  resztę. Połączenia go nie mają — tam rolę domyślnego stanu pełni `Usuń klucz`.
+  `interactive/settings.py`
 - Ostatnim wierszem każdego poziomu Ustawień jest `Cofnij` i jest przyklejony poza
   przewijaną listą. Nie wciągaj go z powrotem do okna przewijania.
   `interactive/settings.py`

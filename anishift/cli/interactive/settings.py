@@ -44,13 +44,16 @@ _MENU_HINT: Final[str] = "↑↓ ←→ · Enter · Esc"
 _MULTI_HINT: Final[str] = "↑↓ · Enter/Space zmień · Esc wróć"
 """Keyboard hint used by the output product selector."""
 
-_MULTI_SELECT_HINT: Final[str] = "↑↓ · Space zmień · Enter zapisz · Esc anuluj"
+_MULTI_SELECT_HINT: Final[str] = "↑↓ · Space zmień · Esc wróć"
 """Keyboard hint used by multi-choice setting editors."""
 
-_INPUT_HINT: Final[str] = "Enter zapisz · Esc anuluj"
-"""Keyboard hint used by scalar and password editors."""
+_SECRET_HINT: Final[str] = "Enter zatwierdź · Esc anuluj"  # noqa: S105 - keyboard hint, never a credential
+"""Keyboard hint used by the secret editor, the only value not saved on its own."""
 
-_VOICE_HINT: Final[str] = "alias | nazwa | ID głosu · Enter zapisz · puste usuwa · Esc anuluj"
+_INPUT_HINT: Final[str] = "Wpisz wartość · Esc wróć"
+"""Keyboard hint used by editors that persist what was typed on their own."""
+
+_VOICE_HINT: Final[str] = "alias | nazwa | ID głosu · Enter zatwierdź · puste usuwa · Esc wróć"
 """Keyboard hint used by the custom voice editor, including its line format."""
 
 _VOICES_SETTING_ID: Final[str] = "elevenbytes_custom_voices"
@@ -77,11 +80,25 @@ _RESET_KEY: Final[str] = "reset-settings"
 _BACK_LABEL: Final[str] = "Cofnij"
 """Label of the row that collapses one level."""
 
+_RESET_LABEL: Final[str] = "Przywróć domyślne"
+"""Label of the row that restores the defaults of the screen it sits on."""
+
+_RESET_SCOPE_PREFIX: Final[str] = "reset-scope:"
+"""Action key prefix naming which screen a reset row restores."""
+
+_VOICES_SCOPE: Final[str] = "voices"
+"""Reset scope covering the user-defined voice list."""
+
 _WHEEL_ROWS: Final[int] = 3
 """Rows one wheel notch moves the view."""
 
 _SAVE_DELAY_SECONDS: Final[float] = 0.4
 """Idle time that coalesces a run of arrow presses into one saved transaction."""
+
+_EDITOR_DEFERRING_KEYS: Final[frozenset[str]] = frozenset(
+    {"up", "down", "pageup", "pagedown", "home", "end", "space", "backspace"},
+)
+"""Editor keys that build the value further, so they postpone its save."""
 
 _COARSE_INTEGER_SPAN: Final[int] = 1000
 """Range above which whole numbers step by hundreds instead of by one."""
@@ -108,7 +125,7 @@ _ROOT_ITEMS: Final[tuple[tuple[str, str], ...]] = (
     ("Lektor", "category:tts"),
     ("Wynik", "category:output"),
     ("Połączenia", "category:connections"),
-    ("Przywróć domyślne", _RESET_KEY),
+    (_RESET_LABEL, _RESET_KEY),
     (_BACK_LABEL, _BACK_KEY),
 )
 """Settings root entries in product-defined order."""
@@ -171,6 +188,7 @@ _TTS_FIELDS: Final[tuple[_SettingField, ...]] = (
 )
 """Persisted narration fields exposed by the product."""
 
+
 _FIELDS_COVERED_ELSEWHERE: Final[dict[str, str]] = {
     "llm_provider": "chosen atomically together with the model",
     "llm_provider_model_id": "chosen atomically together with the provider",
@@ -191,6 +209,9 @@ _PRODUCTS: Final[tuple[tuple[ProductKind, str], ...]] = (
     (ProductKind.MP4, "MP4"),
 )
 """Public output products and their labels."""
+
+_DEFAULT_PRODUCTS: Final[frozenset[ProductKind]] = frozenset({ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO})
+"""Products the product ships with selected."""
 
 _ENGINE_LABELS: Final[dict[str, str]] = {
     "anthropic": "Anthropic",
@@ -227,6 +248,15 @@ class _Category(StrEnum):
     CONNECTIONS = "connections"
 
 
+_SCOPE_FIELDS: Final[dict[str, tuple[_SettingField, ...]]] = {
+    _Category.GENERAL.value: _GENERAL_FIELDS,
+    _Category.SUBTITLES.value: _SUBTITLE_FIELDS,
+    _Category.TRANSLATION.value: _TRANSLATION_FIELDS,
+    _Category.TTS.value: _TTS_FIELDS,
+}
+"""Fields each reset row restores, keyed by the screen it sits on."""
+
+
 class _EditorKind(StrEnum):
     SELECT = "select"
     MULTI_SELECT = "multi_select"
@@ -244,6 +274,7 @@ class _EditorAction(StrEnum):
     UPDATE_ENVIRONMENT = "update_environment"
     REMOVE_SECRET = "remove_secret"  # noqa: S105 - operation name, never a credential
     RESET_SETTINGS = "reset_settings"
+    RESET_SCOPE = "reset_scope"
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,6 +322,8 @@ class _PendingEdit:
     setting_id: str
     value: SettingValue
     deadline: float
+    action: _EditorAction = _EditorAction.UPDATE_SETTING
+    provider_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,7 +382,7 @@ class SettingsController:
 
     def handle_key(self, key: str) -> SettingsResult:
         """Apply one normalized terminal key without performing render-time I/O."""
-        if key not in {"left", "right"}:
+        if not self._defers_save(key):
             self._commit_pending()
         if self._busy:
             return self._handle_busy_key(key)
@@ -378,6 +411,13 @@ class SettingsController:
             return len(self._items) - 1
         return len(self._items)
 
+    def _defers_save(self, key: str) -> bool:
+        if key in {"left", "right"}:
+            return True
+        if self._editor is None:
+            return False
+        return key in _EDITOR_DEFERRING_KEYS or key.startswith("text:")
+
     def flush_pending(self) -> None:
         """Persist a delayed edit once the user has stopped pressing arrows."""
         pending: _PendingEdit | None = self._pending
@@ -392,7 +432,7 @@ class SettingsController:
             return
         self._pending = None
         try:
-            self._service.update_setting(pending.setting_id, pending.value)
+            self._persist_pending(pending)
         except AniShiftError, OSError:
             self._feedback = _Feedback("✗ Nie udało się zapisać ustawienia", "error")
         except TypeError, ValueError:
@@ -400,6 +440,51 @@ class SettingsController:
         else:
             self._feedback = _Feedback(_SAVED_MESSAGE, "success")
         self._refresh_menu()
+
+    def _persist_pending(self, pending: _PendingEdit) -> None:
+        if pending.action is _EditorAction.SELECT_MODEL:
+            self._service.select_translation_model(pending.provider_id, str(pending.value))
+            return
+        if pending.action is _EditorAction.UPDATE_ENVIRONMENT:
+            self._service.update_environment_setting(pending.setting_id, str(pending.value))
+            return
+        self._service.update_setting(pending.setting_id, pending.value)
+
+    def _schedule(self, pending: _PendingEdit) -> None:
+        self._pending = pending
+        self._feedback = None
+
+    def _schedule_typed_save(self, editor: _Editor) -> None:
+        self._feedback = None
+        if editor.kind is _EditorKind.PASSWORD or editor.action is _EditorAction.UPDATE_VOICE:
+            # A half-typed secret must never reach .env, and half a voice line is not
+            # a voice, so both stay explicit while every other value saves itself.
+            return
+        self._schedule_editor_save(editor)
+
+    def _schedule_editor_save(self, editor: _Editor) -> None:
+        if editor.action is _EditorAction.SELECT_MODEL:
+            option: _Option = editor.options[editor.selected]
+            self._schedule(
+                _PendingEdit(
+                    editor.setting_id,
+                    option.value,
+                    time.monotonic() + _SAVE_DELAY_SECONDS,
+                    _EditorAction.SELECT_MODEL,
+                    option.provider_id,
+                ),
+            )
+            return
+        raw_value: str = self._editor_raw_value(editor)
+        try:
+            spec: SettingSpec = _required_spec(self._catalog_snapshot().specs, editor.setting_id)
+            value: SettingValue = parse_setting_input(spec, raw_value)
+        except AniShiftError, OSError, TypeError, ValueError:
+            # An incomplete value is normal while typing; only the deadline decides
+            # when a value is worth persisting, so the row keeps its stored value.
+            self._pending = None
+            return
+        self._schedule(_PendingEdit(editor.setting_id, value, time.monotonic() + _SAVE_DELAY_SECONDS, editor.action))
 
     def _adjust_selected(self, direction: int) -> None:
         if not self._items:
@@ -474,8 +559,7 @@ class SettingsController:
         return self._activate(self._items[self._selected].key)
 
     def _handle_output_key(self, key: str) -> None:
-        save_index: int = len(_PRODUCTS)
-        reset_index: int = save_index + 1
+        reset_index: int = len(_PRODUCTS)
         back_index: int = reset_index + 1
         row_count: int = back_index + 1
         if self._apply_navigation(key, row_count):
@@ -485,12 +569,9 @@ class SettingsController:
             return
         if key != "enter":
             return
-        if self._selected == save_index:
-            self._save_output()
-            return
         if self._selected == reset_index:
-            self._output_products = {ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO}
-            self._feedback = _Feedback("Przywrócono domyślny wybór · Zapisz, aby zatwierdzić", "info")
+            self._output_products = set(_DEFAULT_PRODUCTS)
+            self._save_output()
             return
         if self._selected == back_index:
             self._category = None
@@ -498,11 +579,17 @@ class SettingsController:
 
     def _toggle_output_product(self, index: int) -> None:
         product: ProductKind = _PRODUCTS[index][0]
-        if product in self._output_products:
+        if product not in self._output_products:
+            self._output_products.add(product)
+        elif len(self._output_products) > 1:
             self._output_products.remove(product)
         else:
-            self._output_products.add(product)
+            # The choice saves itself, so refusing the toggle is the only way to keep
+            # the marks on screen equal to what is stored.
+            self._feedback = _Feedback("✗ Wybierz co najmniej jeden wynik", "error")
+            return
         self._feedback = None
+        self._save_output()
 
     def _handle_editor_key(self, key: str) -> None:
         editor: _Editor | None = self._editor
@@ -517,21 +604,23 @@ class SettingsController:
             return
         if key == "backspace":
             editor.buffer = editor.buffer[:-1]
-            self._feedback = None
+            self._schedule_typed_save(editor)
             return
         if key == "space":
             editor.buffer += " "
-            self._feedback = None
+            self._schedule_typed_save(editor)
             return
         if key.startswith("text:"):
             editor.buffer += key.removeprefix("text:")
-            self._feedback = None
+            self._schedule_typed_save(editor)
             return
         if key == "enter":
             self._submit_editor(editor)
 
     def _handle_choice_editor(self, editor: _Editor, key: str) -> None:
         if _navigate_editor(editor, key):
+            if editor.kind is _EditorKind.SELECT:
+                self._schedule_editor_save(editor)
             return
         if key == "space" and editor.kind is _EditorKind.MULTI_SELECT:
             value: str = editor.options[editor.selected].value
@@ -539,7 +628,7 @@ class SettingsController:
                 editor.selected_values.remove(value)
             else:
                 editor.selected_values.add(value)
-            self._feedback = None
+            self._schedule_editor_save(editor)
             return
         if key == "enter":
             self._submit_editor(editor)
@@ -589,6 +678,7 @@ class SettingsController:
     def _prefixed_actions(self) -> tuple[tuple[str, Callable[[str], None]], ...]:
         return (
             ("category:", lambda value: self._enter_category(_Category(value))),
+            (_RESET_SCOPE_PREFIX, self._open_scoped_reset),
             ("voice:", self._open_voice_editor),
             ("setting:", self._open_setting_editor),
             ("connection:", self._enter_connection),
@@ -687,14 +777,20 @@ class SettingsController:
                 ),
             )
         items.extend(self._active_setting_items(snapshot, _TRANSLATION_FIELDS[1:]))
+        items.append(self._scoped_reset_item())
         items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
         return tuple(items)
 
     def _setting_items(self, fields: tuple[_SettingField, ...]) -> tuple[_MenuItem, ...]:
         snapshot: _CatalogSnapshot = self._catalog_snapshot()
         items: list[_MenuItem] = list(self._active_setting_items(snapshot, fields))
+        items.append(self._scoped_reset_item())
         items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
         return tuple(items)
+
+    def _scoped_reset_item(self) -> _MenuItem:
+        category: _Category = self._category if self._category is not None else _Category.GENERAL
+        return _MenuItem(f"{_RESET_SCOPE_PREFIX}{category.value}", _RESET_LABEL)
 
     def _active_setting_items(
         self,
@@ -726,6 +822,7 @@ class SettingsController:
             for voice in self._custom_voices()
         ]
         items.append(_MenuItem(_ADD_VOICE_KEY, _ADD_VOICE_LABEL))
+        items.append(_MenuItem(f"{_RESET_SCOPE_PREFIX}{_VOICES_SCOPE}", _RESET_LABEL))
         items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
         return tuple(items)
 
@@ -896,6 +993,28 @@ class SettingsController:
             current_value=f"{settings.llm_provider}\x1f{settings.llm_provider_model_id}",
         )
 
+    def _open_scoped_reset(self, scope: str) -> None:
+        self._editor = _Editor(
+            title=f"PRZYWRÓCIĆ DOMYŚLNE · {_scope_title(scope)}?",
+            kind=_EditorKind.CONFIRM,
+            action=_EditorAction.RESET_SCOPE,
+            setting_id=scope,
+            options=(_Option("no", "Nie"), _Option("yes", "Tak")),
+        )
+
+    def _reset_scope(self, scope: str) -> None:
+        if scope == _VOICES_SCOPE:
+            self._service.update_setting(_VOICES_SETTING_ID, ())
+            return
+        for setting_id, _label, _section in _SCOPE_FIELDS[scope]:
+            snapshot: _CatalogSnapshot = self._catalog_snapshot()
+            spec: SettingSpec | None = snapshot.specs.get(setting_id)
+            if spec is None or not setting_is_active(spec, snapshot.settings):
+                continue
+            if read_setting_value(snapshot.settings, spec) == spec.default:
+                continue
+            self._service.update_setting(setting_id, spec.default)
+
     def _open_reset_confirmation(self) -> None:
         self._editor = _Editor(
             title="PRZYWRÓCIĆ USTAWIENIA DOMYŚLNE?",
@@ -943,12 +1062,7 @@ class SettingsController:
         )
 
     def _submit_editor(self, editor: _Editor) -> None:
-        if editor.kind is _EditorKind.MULTI_SELECT:
-            raw_value: str = ",".join(
-                option.value for option in editor.options if option.value in editor.selected_values
-            )
-        else:
-            raw_value = editor.options[editor.selected].value if editor.options else editor.buffer
+        raw_value: str = self._editor_raw_value(editor)
         if editor.kind is _EditorKind.PASSWORD and not raw_value.strip():
             self._editor = None
             self._feedback = None
@@ -957,7 +1071,7 @@ class SettingsController:
             self._editor = None
             self._feedback = None
             return
-        if editor.action is _EditorAction.RESET_SETTINGS and raw_value == "no":
+        if editor.action in {_EditorAction.RESET_SETTINGS, _EditorAction.RESET_SCOPE} and raw_value == "no":
             self._editor = None
             self._feedback = None
             return
@@ -971,10 +1085,17 @@ class SettingsController:
             return
         self._editor = None
         message: str = (
-            "✓ Przywrócono ustawienia domyślne" if editor.action is _EditorAction.RESET_SETTINGS else _SAVED_MESSAGE
+            "✓ Przywrócono ustawienia domyślne"
+            if editor.action in {_EditorAction.RESET_SETTINGS, _EditorAction.RESET_SCOPE}
+            else _SAVED_MESSAGE
         )
         self._feedback = _Feedback(message, "success")
         self._refresh_menu()
+
+    def _editor_raw_value(self, editor: _Editor) -> str:
+        if editor.kind is _EditorKind.MULTI_SELECT:
+            return ",".join(option.value for option in editor.options if option.value in editor.selected_values)
+        return editor.options[editor.selected].value if editor.options else editor.buffer
 
     def _apply_editor(self, editor: _Editor, raw_value: str) -> None:
         if editor.action is _EditorAction.UPDATE_SETTING:
@@ -1000,8 +1121,14 @@ class SettingsController:
         if editor.action is _EditorAction.REMOVE_SECRET and raw_value == "yes":
             self._service.update_secret(editor.setting_id, None)
             return
-        if editor.action is _EditorAction.RESET_SETTINGS and raw_value == "yes":
-            self._service.reset_settings()
+        if editor.action in {_EditorAction.RESET_SCOPE, _EditorAction.RESET_SETTINGS}:
+            self._apply_reset(editor)
+
+    def _apply_reset(self, editor: _Editor) -> None:
+        if editor.action is _EditorAction.RESET_SCOPE:
+            self._reset_scope(editor.setting_id)
+            return
+        self._service.reset_settings()
 
     def _validation_message(self, setting_id: str) -> str:
         try:
@@ -1023,9 +1150,6 @@ class SettingsController:
         self._output_products = set(preset.products.requested_products & public)
 
     def _save_output(self) -> None:
-        if not self._output_products:
-            self._feedback = _Feedback("✗ Wybierz co najmniej jeden wynik", "error")
-            return
         try:
             current: AutoPreset = self._default_preset()
             requested: frozenset[ProductKind] = frozenset(self._output_products)
@@ -1053,10 +1177,6 @@ class SettingsController:
             self._feedback = _Feedback("✗ Nie udało się zapisać ustawień wyniku", "error")
             return
         self._feedback = _Feedback(_SAVED_MESSAGE, "success")
-        self._category = None
-        self._selected = 0
-        self._offset = 0
-        self._refresh_menu()
 
     def _default_preset(self) -> AutoPreset:
         return self._service.get_preset(self._service.default_preset_id())
@@ -1167,14 +1287,12 @@ class SettingsController:
         return content
 
     def _render_output(self, columns: int, rows: int) -> Text:
-        save_index: int = len(_PRODUCTS)
-        reset_index: int = save_index + 1
+        reset_index: int = len(_PRODUCTS)
         back_index: int = reset_index + 1
-        body_rows: int = len(_PRODUCTS) + 7 + (1 if self._feedback is not None else 0)
+        body_rows: int = len(_PRODUCTS) + 6 + (1 if self._feedback is not None else 0)
         labels: tuple[_MenuItem, ...] = tuple(_MenuItem("", label) for _product, label in _PRODUCTS)
         actions: tuple[_MenuItem, ...] = (
-            _MenuItem("", "Zapisz"),
-            _MenuItem("", "Przywróć domyślne"),
+            _MenuItem("", _RESET_LABEL),
             _MenuItem("", _BACK_LABEL),
         )
         left: int = _menu_left_padding(columns, (*labels, *actions))
@@ -1188,11 +1306,7 @@ class SettingsController:
             content.append("● " if product in self._output_products else "○ ", style="brand_accent")
             content.append(label, style="brand_accent" if index == self._selected else "white_bold")
             content.append("\n")
-        for index, label in (
-            (save_index, "Zapisz"),
-            (reset_index, "Przywróć domyślne"),
-            (back_index, _BACK_LABEL),
-        ):
+        for index, label in ((reset_index, _RESET_LABEL), (back_index, _BACK_LABEL)):
             content.append(" " * left)
             content.append(f"{_POINTER} " if self._selected == index else "  ", style="brand_accent")
             content.append(label, style="brand_accent" if self._selected == index else "white_bold")
@@ -1258,6 +1372,8 @@ class SettingsController:
             hint = _MULTI_SELECT_HINT
         elif editor.kind is _EditorKind.VOICE:
             hint = _VOICE_HINT
+        elif editor.kind is _EditorKind.PASSWORD:
+            hint = _SECRET_HINT
         content.append(hint, style="gray")
         return content
 
@@ -1405,6 +1521,12 @@ def _menu_title(category: _Category | None, connection: _Connection | None) -> s
         _Category.OUTPUT: "WYNIK",
     }
     return titles[category]
+
+
+def _scope_title(scope: str) -> str:
+    if scope == _VOICES_SCOPE:
+        return _VOICES_TITLE
+    return _menu_title(_Category(scope), None)
 
 
 def _menu_left_padding(columns: int, items: tuple[_MenuItem, ...]) -> int:
