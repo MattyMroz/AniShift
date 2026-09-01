@@ -19,7 +19,7 @@ Warunek sukcesu, obserwowalny:
 
 - każde pokrętło realnie wpływające na jakość jest albo edytowalne z panelu,
   albo świadomie i pisemnie zostawione na sztywno;
-- run 46 plików pokazuje markę, maskotkę, dowolny fragment kolejki i stopkę
+- run 46 plików pokazuje markę, dowolny fragment kolejki i stopkę
   jednocześnie, bez utraty wiersza;
 - nawigacja klawiaturą wystarcza do wszystkiego, mysz jest wygodą.
 
@@ -52,7 +52,7 @@ Zweryfikowany w kodzie na `4b03ce2`, nie z pamięci dokumentów.
 | okno listy to brute force `O(n³)` na klatkę | `_sectioned_window`, `settings.py:1154-1173` | ~2,7 tys. operacji na klatkę przy 10 klatkach/s |
 | brak stanu przewijania | okno jest funkcją kursora | nie da się przewinąć bez zmiany zaznaczenia |
 | ←→, PageUp/PageDown, Home/End nie działają | brak bindingów, `prompts.py:248-294`; na Windowsie wpadają w `"any"` z `data=""` | martwe klawisze |
-| maskotka nigdy nie jest widoczna w Auto | `show_mascot: bool = False` na sztywno w `resolve_auto_geometry`, `prompts.py` | kod łamie R-407 starej specyfikacji |
+| maskotka nigdy nie jest widoczna w Auto | `show_mascot: bool = False` na sztywno w `resolve_auto_geometry`, `prompts.py` | zgodne z R-05-070: właściciel produktu odrzucił maskotkę obok postępu |
 | nadmiar wierszy postępu jest ucinany | `_fit_frame` obcina body do `rows-1`, `app.py:534-544` | przy 19 grupach na ekranie 24 wiersze część kolejki jest niewidoczna bez ostrzeżenia |
 | kółko myszy jest no-opem | `Window._scroll_down` wymaga `content_height > window_height`, treść ma dokładnie `rows` | zdarzenie dochodzi i jest gubione |
 | tolerancja długości audio ma dwie niezależne definicje | `application/inspection.py:42` i `application/planning.py:149`, obie `1_000_000` µs | ta sama wielkość w dwóch miejscach, zmiana jednej nie rusza drugiej |
@@ -309,15 +309,17 @@ przyszłości może zniknąć po cichu, dokładnie jak własne głosy.
 
 ### 6.1 Maskotka
 
-- R-05-070 Marka w Auto zawiera maskotkę, tak jak Home. `show_mascot=False`
-  w `resolve_auto_geometry` przestaje być stałą.
-- R-05-071 Gdy terminal jest zbyt niski albo wąski, maskotka degraduje się tą
-  samą drabiną co na Home. Postęp ma pierwszeństwo przed maskotką.
+- R-05-070 Marka w Auto to sam wordmark, bez maskotki. `show_mascot=False`
+  w `resolve_auto_geometry` zostaje stałą, a wejście w Auto zdejmuje obraz
+  z ekranu. Decyzja właściciela produktu po obejrzeniu widoku na żywo:
+  maskotka obok postępu przeszkadza.
+- R-05-071 Maskotkę widzi wyłącznie Home. Auto, Ręczny i Ustawienia nie
+  rezerwują dla niej ani jednego wiersza.
 
 ### 6.2 Przewijanie kolejki
 
-- R-05-080 Widok Auto składa się z trzech regionów: przyklejony nagłówek z marką
-  i maskotką, przewijana kolejka, przyklejona stopka.
+- R-05-080 Widok Auto składa się z trzech regionów: przyklejony nagłówek z marką,
+  przewijana kolejka, przyklejona stopka.
 - R-05-081 Żaden wiersz kolejki nie jest ucinany bez wskazania. Gdy część
   kolejki jest poza widokiem, widok pokazuje to jawnie.
 - R-05-082 Kolejka przewija się kółkiem myszy oraz `↑↓`, `PageUp`/`PageDown`,
@@ -326,8 +328,8 @@ przyszłości może zniknąć po cichu, dokładnie jak własne głosy.
   pliku pozostaje jednym stabilnym wierszem przez cały run.
 - R-05-084 Domyślnie widok trzyma się aktywnej pracy. Ręczne przewinięcie
   zatrzymuje autopodążanie do powrotu na koniec listy.
-- R-05-085 Maskotka pozostaje w nagłówku, poza przewijanym regionem. Jej wiersz
-  ekranowy nie zmienia się przy przewijaniu.
+- R-05-085 W przewijanym regionie nie ma rastra SIXEL, bo maskotki w Auto nie ma.
+  Gdyby kiedykolwiek wróciła, wolno jej stać tylko w przyklejonym nagłówku.
 
 ### 6.3 Wykonalność — analiza, nie założenie
 
@@ -368,7 +370,7 @@ Realne przeszkody i sposób ich obejścia:
 
 **W zakresie:** panel ustawień oparty na katalogu, pięć nowych pól z sekcji 3.5,
 trzy naprawy, rozszerzony kontrakt klawiszy, przewijanie w Ustawieniach i w Auto,
-maskotka w Auto, paleta z maskotki.
+paleta z maskotki, ale sama maskotka zostaje na Home.
 
 **Poza zakresem:** theme engine, konfiguracja kolorów przez użytkownika, CRUD
 presetów, edytor wszystkich parametrów backendu, format wyjścia Edge, wagi
@@ -404,4 +406,4 @@ kolorowego tła, brak tęczy, brak wymyślonych procentów, marka bez ramki.
 | baseline 47 nieprzechodzących testów | stan zastany, potwierdzony wielokrotnie | naprawić przed etapem albo jawnie odciąć jako niezwiązane |
 | katalog jako źródło etykiet wymaga polskich tekstów | dziś `label`/`description` są angielskie | tłumaczenie etykiet jest częścią etapu, nie osobną pracą |
 | krok strzałek dla pól bez `maximum` | np. `narrator_mix_base_gain_db` nie ma zakresu | krok stały dla typu, klamp tylko gdy zakres istnieje |
-| przewijanie w Auto przy aktywnej animacji | dwa niezależne zapisy do terminala | maskotka poza regionem przewijanym, R-05-085 |
+| przewijanie w Auto przy aktywnej animacji | dwa niezależne zapisy do terminala | brak maskotki w Auto, R-05-070 |

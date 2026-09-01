@@ -25,11 +25,13 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   alternate screen przez całą sesję. Nie zastępuj go `console.screen()`:
   Rich pomija alternate screen na części konfiguracji `legacy_windows`. Home, Auto i
   wynik czyszczą ten sam output. `interactive/prompts.py`, `interactive/app.py`
-- Auto ma trzy regiony: przyklejony nagłówek z marką i maskotką, przewijana kolejka,
-  przyklejona stopka. Maskotka NIE MOŻE wejść w region przewijany — rastra SIXEL nie
-  da się przyciąć, a wiersz kotwicy `\ue000` musi być stały. Budżet kolejki liczy się
-  z realnej wysokości marki, nie z `AutoGeometry`, i żaden ukryty wiersz nie znika bez
-  licznika „poza widokiem". `interactive/app.py`, `interactive/prompts.py`
+- Auto ma trzy regiony: przyklejony nagłówek z marką, przewijana kolejka, przyklejona
+  stopka. Auto NIE MA maskotki (`show_mascot=False` na sztywno) — user ją odrzucił
+  obok postępu; wejście w Auto zdejmuje obraz z ekranu. Gdyby wróciła, wolno jej stać
+  wyłącznie w nagłówku, bo rastra SIXEL nie da się przyciąć, a wiersz kotwicy `\ue000`
+  musi być stały. Budżet kolejki liczy się z realnej wysokości marki, nie z
+  `AutoGeometry`, i żaden ukryty wiersz nie znika bez licznika „poza widokiem".
+  `interactive/app.py`, `interactive/prompts.py`
 - `_QueueView.following` znaczy „widok jest na żywo": kolejka trzyma się aktywnej
   pracy, dowolne przewinięcie ją odczepia, a `End` (albo dojście do końca) wraca do
   żywej pracy — NIE do ostatniego pliku. `visible` znany jest dopiero w renderze,
@@ -87,13 +89,21 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `Esc` wychodzi, a nie anuluje. Wyjątki są dwa i mają powód: sekret (pół klucza nie
   może trafić do `.env`) oraz linia własnego głosu (pół linii nie jest głosem) —
   te zostają na `Enter`. Ekran WYNIK odmawia odznaczenia ostatniego produktu, żeby
-  znaczniki nie kłamały o zapisanym stanie. `interactive/settings.py`
+  znaczniki nie kłamały o zapisanym stanie. Zapis, który nie zmienia wartości, NIE
+  istnieje: `_already_stored` wyrzuca takie `_pending` bez transakcji i bez „✓ Zapisano",
+  bo przelot kursorem po liście ani powrót strzałką do starej liczby nie są edycją.
+  Wartość poza zakresem wpisywana w edytorze też milczy — komunikat błędu należy do
+  jawnego `Enter`, nie do trzeciego znaku w trakcie pisania. `interactive/settings.py`
 - Zmiana liczby strzałką NIE zapisuje od razu: ląduje w `_pending` i utrwala się po
   `_SAVE_DELAY_SECONDS` bezczynności, sprawdzanych w `after_render` (nie w
   `render()`, bo tam I/O jest zabronione). Każdy inny klawisz, zejście z wiersza,
   wyjście z kategorii i zamknięcie panelu utrwalają natychmiast — żadne wyjście nie
   może zgubić zmiany. Lista pokazuje wartość oczekującą, nie zapisaną.
   `interactive/settings.py`, `interactive/prompts.py`, `interactive/app.py`
+- Edytor tekstowy startuje z zapisaną wartością w buforze, więc PIERWSZY wpisany znak
+  ją ZASTĘPUJE (`_Editor.pristine`), a `backspace` ją edytuje. Doklejanie znaku do
+  podpowiedzi robiło z `2` liczbę `23` i przy zakresie 1-4 blokowało wpisywanie samymi
+  błędami. `interactive/settings.py`
 - Każdy ekran Ustawień ma `Przywróć domyślne` nad `Cofnij`, zakresowo dla swoich pól
   (`_SCOPE_FIELDS`); root przywraca wszystko. Reset idzie polami w kolejności ekranu i
   pomija te, które po drodze przestały być aktywne, bo zmiana silnika przebudowuje
@@ -152,8 +162,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   bezpieczne; NIE dodawaj `RIS` (`\x1bc`) ani `\x1b[3J`, bo te kasują historię terminala
   usera. Kasowanie wołaj z `after_render`, nigdy z callbacku treści — `renderer.reset()`
   w trakcie renderu jest reentrantny. `interactive/prompts.py`
-- Maskotkę widzą Home i Auto; Manual, Settings i komunikaty nie rezerwują dla niej
-  miejsca. `MascotController` nie ma własnego workera ani bezpośredniego
+- Maskotkę widzi wyłącznie Home; Auto, Manual, Settings i komunikaty nie rezerwują dla
+  niej miejsca. `MascotController` nie ma własnego workera ani bezpośredniego
   zapisu do terminala. Brak obsługi obrazu lub zbyt mały terminal degraduje widok do
   fallbacku albo braku maskotki. Resize wywołuje czysty rerender bez rozciągania layoutu.
   `interactive/home.py`, `interactive/prompts.py`
