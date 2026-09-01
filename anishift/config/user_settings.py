@@ -233,7 +233,7 @@ def default_tts_voice_profiles() -> dict[str, TtsVoiceProfileSettings]:
         _DALLIN_PROFILE_KEY: TtsVoiceProfileSettings(
             postprocess_tempo=1.25,
             voice_mix_offset_db=-2.0,
-            concurrency=100,
+            concurrency=85,
         ),
         _SAPI_AGNIESZKA_PROFILE_KEY: TtsVoiceProfileSettings(
             voice_mix_offset_db=2.0,
@@ -331,7 +331,7 @@ class UserSettings:
     tts_provider_model_id: str = "run6"
     tts_voice_id: str = DALLIN_ALIAS
     tts_max_retries: int = 3
-    elevenbytes_vpn_enabled: bool = True
+    elevenbytes_vpn_enabled: bool = False
     tts_output_profile: str = AudioCodecProfile.EAC3.value
     tts_output_bitrate: str | None = None
     tts_timeline_policy: str = TimelinePolicy.SERIALIZE.value

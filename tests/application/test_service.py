@@ -218,7 +218,7 @@ def test_settings_draft_and_plan_snapshot_are_detached(tmp_path: Path) -> None:
     assert plan.settings.tts_postprocess_tempo == 1.25
     assert plan.settings.tts_voice_label == "Dallin"
     assert plan.settings.tts_group_jobs == 1
-    assert plan.settings.tts_request_concurrency == 100
+    assert plan.settings.tts_request_concurrency == 85
     assert plan.settings.processing_order_policy is ProcessingOrderPolicy.READY_FIRST
     assert service.settings_snapshot().translation_concurrency == 3
 
@@ -254,7 +254,7 @@ def test_auto_keeps_legacy_single_episode_tts_with_provider_request_concurrency(
     limits: ResourceLimits = ResourceLimits.from_settings(plan.settings)
 
     assert limits.worker_limit(f"tts:{plan.settings.tts_profile_id}", plan.settings) == 1
-    assert plan.settings.tts_request_concurrency == 100
+    assert plan.settings.tts_request_concurrency == 85
 
 
 def test_auto_uses_the_legacy_extraction_pool_size(
