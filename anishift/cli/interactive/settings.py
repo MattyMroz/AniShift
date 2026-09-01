@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -74,6 +75,9 @@ _ADD_VOICE_LABEL: Final[str] = "Dodaj głos"
 
 _STATUS_ROWS: Final[int] = 1
 """Rows every screen spends on its status line, spent whether it says anything or not."""
+
+_ZERO_MEANS_DEFAULT: Final[frozenset[str]] = frozenset({"translation_batch_size"})
+"""Fields where zero is not a quantity but a request for the engine default."""
 
 _BACK_KEY: Final[str] = "back"
 """Stable action key returning to the parent menu."""
@@ -1465,8 +1469,17 @@ def _choice_label(setting_id: str, value: str) -> str:
     return value.replace("_", " ").strip().title()
 
 
-def _format_value(setting_id: str, value: SettingValue) -> str:
+def _asks_for_the_engine_default(setting_id: str, value: SettingValue) -> bool:
+    """Report whether the stored value asks for a default instead of naming one."""
     if value is None:
+        return True
+    if isinstance(value, bool) or not isinstance(value, int):
+        return False
+    return value == 0 and setting_id in _ZERO_MEANS_DEFAULT
+
+
+def _format_value(setting_id: str, value: SettingValue) -> str:
+    if _asks_for_the_engine_default(setting_id, value):
         return "domyślnie"
     if isinstance(value, bool):
         return "tak" if value else "nie"
@@ -1580,6 +1593,20 @@ def _numeric_step(spec: SettingSpec) -> float:
     return _COARSE_FLOAT_STEP
 
 
+def _snapped_number(current: float, step: float, direction: int) -> float:
+    """Return the neighbouring value that sits on the step grid.
+
+    A wide range steps by hundreds, so plain addition would carry the odd part of
+    the current value forever and offer 101 after 1. Landing on the grid keeps
+    every reachable value round.
+    """
+    if step <= 1:
+        return current + direction * step
+    grid: float = current / step
+    target: float = math.floor(grid) + 1 if direction > 0 else math.ceil(grid) - 1
+    return target * step
+
+
 def _stepped_number(spec: SettingSpec, current: SettingValue, direction: int) -> tuple[SettingValue] | None:
     """Wrap the neighbouring number, or return ``None`` when the field cannot step.
 
@@ -1599,7 +1626,7 @@ def _stepped_number(spec: SettingSpec, current: SettingValue, direction: int) ->
         return (int(start) if integral else round(float(start), 2),)
     if not isinstance(current, (int, float)) or isinstance(current, bool):
         return None
-    raw: float = float(current) + direction * step
+    raw: float = _snapped_number(float(current), step, direction)
     if spec.minimum is not None and raw < float(spec.minimum):
         if optional:
             return (None,)

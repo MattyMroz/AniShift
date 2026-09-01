@@ -157,14 +157,34 @@ def test_a_fine_range_steps_by_hundredths(panel: SettingsController, service: Fa
     assert service.saves[0][1] == pytest.approx(start + 0.05)
 
 
-def test_a_wide_whole_range_steps_by_hundreds(panel: SettingsController, service: FakeSettingsService) -> None:
+def test_a_wide_whole_range_lands_on_round_hundreds(panel: SettingsController, service: FakeSettingsService) -> None:
     _use_llm(service)
     _enter(panel, "translation")
     _focus(panel, "llm_max_output_tokens")
     panel.handle_key("right")
     panel.handle_key("right")
+    panel.handle_key("right")
     _flush(panel)
-    assert service.saves[0][1] == 101
+    assert service.saves[0][1] == 200
+
+
+def test_a_wide_whole_range_steps_down_onto_the_grid(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    _use_llm(service)
+    service.settings.llm_max_output_tokens = 250
+    _enter(panel, "translation")
+    _focus(panel, "llm_max_output_tokens")
+    panel.handle_key("left")
+    _flush(panel)
+    assert service.saves[0][1] == 200
+
+
+def test_a_zero_batch_size_is_shown_as_the_engine_default(panel: SettingsController) -> None:
+    _enter(panel, "translation")
+
+    assert _value_shown(panel, "translation_batch_size") == "domyślnie"
 
 
 def test_an_unbounded_gain_steps_by_halves(panel: SettingsController, service: FakeSettingsService) -> None:
