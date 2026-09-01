@@ -184,6 +184,41 @@ def test_a_stepped_number_shows_up_before_it_reaches_storage(
     assert service.saves == []
 
 
+@pytest.mark.parametrize(
+    "keys",
+    [
+        (),
+        ("category:general",),
+        ("category:subtitles",),
+        ("category:output",),
+        ("category:connections",),
+        ("category:connections", "connection:gemini"),
+        ("category:tts", f"setting:{'elevenbytes_custom_voices'}"),
+    ],
+)
+def test_no_screen_moves_when_a_status_appears(panel: SettingsController, keys: tuple[str, ...]) -> None:
+    for key in keys:
+        _activate(panel, key)
+    quiet = panel.render(100, 30).plain
+
+    panel._feedback = _Feedback("✓ Przywrócono ustawienia domyślne", "success")
+    noisy = panel.render(100, 30).plain
+
+    assert quiet.count("\n") == noisy.count("\n")
+    assert quiet.splitlines()[:-2] == noisy.splitlines()[:-2]
+
+
+def test_a_long_status_does_not_wrap_the_screen(panel: SettingsController) -> None:
+    _activate(panel, "category:subtitles")
+    quiet = panel.render(60, 30).plain
+
+    panel._feedback = _Feedback("✗ " + "bardzo długi komunikat " * 12, "error")
+    noisy = panel.render(60, 30).plain
+
+    assert quiet.count("\n") == noisy.count("\n")
+    assert max(len(line) for line in noisy.splitlines()) <= 60
+
+
 def test_the_status_row_is_reserved_whether_it_says_anything_or_not(panel: SettingsController) -> None:
     _activate(panel, "category:subtitles")
     quiet = panel.render(100, 30).plain
