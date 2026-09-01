@@ -84,20 +84,20 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Kółko myszy wymaga `_WheelControl`, bo klatka ma dokładnie tyle wierszy co okno i
   domyślny scroller Prompt Toolkit gubi zdarzenie. Nie zastępuj tego
   `ScrollablePane` ani drugim oknem. `interactive/prompts.py`
-- Panel NIE MA akcji „Zapisz" ani potwierdzania zapisu. Wybór, przełącznik i wpisana
-  wartość utrwalają się same przez `_pending` po `_SAVE_DELAY_SECONDS` bezczynności;
-  `Esc` wychodzi, a nie anuluje. Wyjątki są dwa i mają powód: sekret (pół klucza nie
-  może trafić do `.env`) oraz linia własnego głosu (pół linii nie jest głosem) —
-  te zostają na `Enter`. Ekran WYNIK odmawia odznaczenia ostatniego produktu, żeby
-  znaczniki nie kłamały o zapisanym stanie. Automatyczny zapis NIE MELDUJE sukcesu —
-  user go nie zamawiał i nie chce o nim wiedzieć; zostają tylko błędy oraz jawnie
-  potwierdzony reset. Wiersz statusu jest wydany ZAWSZE (`_STATUS_ROWS`), pusty czy nie:
-  komunikat pojawiający się między dwoma klawiszami nie może przesunąć listy pod
-  kursorem. Zapis, który nie zmienia wartości, NIE
-  istnieje: `_already_stored` wyrzuca takie `_pending` bez transakcji i bez „✓ Zapisano",
-  bo przelot kursorem po liście ani powrót strzałką do starej liczby nie są edycją.
-  Wartość poza zakresem wpisywana w edytorze też milczy — komunikat błędu należy do
-  jawnego `Enter`, nie do trzeciego znaku w trakcie pisania. `interactive/settings.py`
+- Zapis stanu panelu ma dziewięć reguł i JEDNO źródło:
+  `docs/work/plain-cli/06_state_persistence.md`. Cztery łamane najczęściej:
+  (1) nawigacja — `↑↓`, `PageUp`/`PageDown`, `Home`/`End`, kółko — NIGDY nie zmienia
+  stanu; kulka `●` stoi na zapisanej wartości, a wybiera `Enter`;
+  (2) zapis jest cichy, sukces nie ma komunikatu, a wiersz statusu jest wydany ZAWSZE
+  (`_STATUS_ROWS`), więc nic nie skacze między dwoma klawiszami;
+  (3) każde wyjście, także awaryjne, utrwala `_pending` przez `SettingsController.close()`
+  bez czekania na deadline (`app.py: _close_settings`, wołane też z `finally` sesji);
+  (4) zapis bez różnicy nie istnieje (`_already_stored`), a niepoprawna wartość w trakcie
+  pisania milczy — błąd należy do jawnego zatwierdzenia. Panel NIE MA akcji „Zapisz";
+  wyjątki na `Enter` są dwa i mają powód: sekret (pół klucza nie może trafić do `.env`)
+  oraz linia własnego głosu (pół linii nie jest głosem). Ekran WYNIK odmawia odznaczenia
+  ostatniego produktu, żeby znaczniki nie kłamały o zapisanym stanie.
+  `interactive/settings.py`, `interactive/app.py`
 - Wiersz nosi wartość sformatowaną przy BUDOWIE listy, więc każda zmiana widoczna
   natychmiast musi przebudować `_items` (`_refresh_menu`) — inaczej strzałka rusza
   `_pending`, a liczba na ekranie doczeka dopiero opóźnionego zapisu i wygląda na

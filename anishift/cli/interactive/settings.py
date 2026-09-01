@@ -47,6 +47,9 @@ _MULTI_HINT: Final[str] = "↑↓ · Enter/Space zmień · Esc wróć"
 _MULTI_SELECT_HINT: Final[str] = "↑↓ · Space zmień · Esc wróć"
 """Keyboard hint used by multi-choice setting editors."""
 
+_SELECT_HINT: Final[str] = "↑↓ · Enter wybierz · Esc wróć"
+"""Keyboard hint used by single-choice editors, where moving is not choosing."""
+
 _SECRET_HINT: Final[str] = "Enter zatwierdź · Esc anuluj"  # noqa: S105 - keyboard hint, never a credential
 """Keyboard hint used by the secret editor, the only value not saved on its own."""
 
@@ -325,7 +328,6 @@ class _PendingEdit:
     value: SettingValue
     deadline: float
     action: _EditorAction = _EditorAction.UPDATE_SETTING
-    provider_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -420,6 +422,15 @@ class SettingsController:
             return False
         return key in _EDITOR_DEFERRING_KEYS or key.startswith("text:")
 
+    def close(self) -> None:
+        """Persist a delayed edit at once, whatever reason is closing the panel.
+
+        Leaving must never cost a change, so this ignores the coalescing deadline.
+        It reports nothing and raises nothing, because it also runs while the
+        session is already unwinding.
+        """
+        self._commit_pending()
+
     def flush_pending(self) -> None:
         """Persist a delayed edit once the user has stopped pressing arrows."""
         pending: _PendingEdit | None = self._pending
@@ -450,18 +461,12 @@ class SettingsController:
             snapshot: _CatalogSnapshot = self._catalog_snapshot()
         except AniShiftError, OSError:
             return False
-        if pending.action is _EditorAction.SELECT_MODEL:
-            settings: UserSettings = snapshot.settings
-            return settings.llm_provider == pending.provider_id and settings.llm_provider_model_id == pending.value
         if pending.action is not _EditorAction.UPDATE_SETTING:
             return False
         spec: SettingSpec | None = snapshot.specs.get(pending.setting_id)
         return spec is not None and read_setting_value(snapshot.settings, spec) == pending.value
 
     def _persist_pending(self, pending: _PendingEdit) -> None:
-        if pending.action is _EditorAction.SELECT_MODEL:
-            self._service.select_translation_model(pending.provider_id, str(pending.value))
-            return
         if pending.action is _EditorAction.UPDATE_ENVIRONMENT:
             self._service.update_environment_setting(pending.setting_id, str(pending.value))
             return
@@ -489,18 +494,6 @@ class SettingsController:
         self._schedule_editor_save(editor)
 
     def _schedule_editor_save(self, editor: _Editor) -> None:
-        if editor.action is _EditorAction.SELECT_MODEL:
-            option: _Option = editor.options[editor.selected]
-            self._schedule(
-                _PendingEdit(
-                    editor.setting_id,
-                    option.value,
-                    time.monotonic() + _SAVE_DELAY_SECONDS,
-                    _EditorAction.SELECT_MODEL,
-                    option.provider_id,
-                ),
-            )
-            return
         raw_value: str = self._editor_raw_value(editor)
         try:
             spec: SettingSpec = _required_spec(self._catalog_snapshot().specs, editor.setting_id)
@@ -647,8 +640,8 @@ class SettingsController:
 
     def _handle_choice_editor(self, editor: _Editor, key: str) -> None:
         if _navigate_editor(editor, key):
-            if editor.kind is _EditorKind.SELECT:
-                self._schedule_editor_save(editor)
+            # Moving the cursor is not choosing: the bullet marks the stored value, so
+            # walking the list must leave both the value and the file untouched.
             return
         if key == "space" and editor.kind is _EditorKind.MULTI_SELECT:
             value: str = editor.options[editor.selected].value
@@ -1391,7 +1384,7 @@ class SettingsController:
             content.append("\n")
         self._append_feedback(content, left, columns)
         content.append(" " * left)
-        hint: str = _INPUT_HINT if not editor.options else _MENU_HINT
+        hint: str = _INPUT_HINT if not editor.options else _SELECT_HINT
         if editor.kind is _EditorKind.MULTI_SELECT:
             hint = _MULTI_SELECT_HINT
         elif editor.kind is _EditorKind.VOICE:

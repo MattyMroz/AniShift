@@ -168,7 +168,16 @@ class _InteractiveApplication:
         try:
             self._renderer.run()
         finally:
+            self._close_settings()
             self._mascot.close()
+
+    def _close_settings(self) -> None:
+        """Let the settings panel persist a delayed edit before it stops existing."""
+        with self._lock:
+            controller: SettingsController | None = self._settings
+            self._settings = None
+        if controller is not None:
+            controller.close()
 
     def _start_prewarm(self) -> None:
         """Inspect the workspace while Home is idle so Auto and Manual start at once."""
@@ -513,12 +522,12 @@ class _InteractiveApplication:
         self._renderer.invalidate()
 
     def _show_home(self) -> None:
+        self._close_settings()
         self._mascot.reset()
         with self._lock:
             self._mode = _ViewMode.HOME
             self._message = Text()
             self._progress = None
-            self._settings = None
             self._manual = None
             self._cancel_requested = False
         self._renderer.invalidate()

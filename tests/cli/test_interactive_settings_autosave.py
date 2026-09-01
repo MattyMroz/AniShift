@@ -116,39 +116,27 @@ def _stored(service: FakeSettingsService, setting_id: str) -> SettingValue:
     return read_setting_value(service.settings, specs[setting_id])
 
 
-def test_moving_inside_a_choice_editor_saves_without_confirming(
+def test_choosing_in_a_choice_editor_needs_no_confirmation_step(
     panel: SettingsController,
     service: FakeSettingsService,
 ) -> None:
     _open_field(panel, "general", "processing_order_policy")
     before = _stored(service, "processing_order_policy")
     panel.handle_key("down")
-    _idle(panel)
+    panel.handle_key("enter")
 
     assert _stored(service, "processing_order_policy") != before
 
 
-def test_a_run_of_moves_lands_as_one_saved_value(panel: SettingsController, service: FakeSettingsService) -> None:
+def test_a_walked_choice_lands_as_one_saved_value(panel: SettingsController, service: FakeSettingsService) -> None:
     _open_field(panel, "general", "processing_order_policy")
     panel.handle_key("down")
     panel.handle_key("down")
     panel.handle_key("down")
+    panel.handle_key("enter")
     _idle(panel)
 
     assert len(service.saves) == 1
-
-
-def test_returning_to_the_stored_choice_saves_nothing(
-    panel: SettingsController,
-    service: FakeSettingsService,
-) -> None:
-    _open_field(panel, "general", "processing_order_policy")
-    panel.handle_key("down")
-    panel.handle_key("up")
-    _idle(panel)
-
-    assert service.saves == []
-    assert panel._feedback is None
 
 
 def test_only_looking_at_a_choice_reports_nothing(panel: SettingsController, service: FakeSettingsService) -> None:
@@ -175,6 +163,7 @@ def test_a_real_change_is_saved_without_announcing_it(
 ) -> None:
     _open_field(panel, "general", "processing_order_policy")
     panel.handle_key("down")
+    panel.handle_key("enter")
     _idle(panel)
 
     assert len(service.saves) == 1
@@ -231,6 +220,106 @@ def test_stepping_a_number_back_to_its_stored_value_saves_nothing(
     assert panel._feedback is None
 
 
+def test_walking_a_choice_editor_changes_nothing(panel: SettingsController, service: FakeSettingsService) -> None:
+    _open_field(panel, "general", "processing_order_policy")
+    assert panel._editor is not None
+    stored = _stored(service, "processing_order_policy")
+    for _ in range(len(panel._editor.options) + 2):
+        panel.handle_key("down")
+    for _ in range(len(panel._editor.options) + 2):
+        panel.handle_key("up")
+    _idle(panel)
+
+    assert service.saves == []
+    assert _stored(service, "processing_order_policy") == stored
+    assert panel._feedback is None
+
+
+def test_leaving_a_choice_editor_after_walking_it_keeps_the_stored_value(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    _open_field(panel, "general", "processing_order_policy")
+    stored = _stored(service, "processing_order_policy")
+    panel.handle_key("down")
+    panel.handle_key("escape")
+    _idle(panel)
+
+    assert service.saves == []
+    assert _stored(service, "processing_order_policy") == stored
+
+
+def test_the_bullet_stays_on_the_stored_value_while_the_cursor_moves(panel: SettingsController) -> None:
+    _open_field(panel, "general", "processing_order_policy")
+    assert panel._editor is not None
+    marked = panel._editor.current_value
+    panel.handle_key("down")
+
+    assert panel._editor.current_value == marked
+
+
+def test_choosing_in_a_choice_editor_saves_once(panel: SettingsController, service: FakeSettingsService) -> None:
+    _open_field(panel, "general", "processing_order_policy")
+    panel.handle_key("down")
+    panel.handle_key("enter")
+
+    assert len(service.saves) == 1
+    assert panel._editor is None
+    assert panel._feedback is None
+
+
+def test_walking_a_menu_changes_nothing(panel: SettingsController, service: FakeSettingsService) -> None:
+    _activate(panel, "category:subtitles")
+    for _ in range(6):
+        panel.handle_key("down")
+    panel.handle_key("home")
+    panel.handle_key("end")
+    panel.scroll(1)
+    panel.scroll(-1)
+    _idle(panel)
+
+    assert service.saves == []
+
+
+def test_closing_the_panel_saves_a_change_younger_than_the_delay(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    _activate(panel, "category:subtitles")
+    for index, item in enumerate(panel._items):
+        if item.key == "setting:subtitle_max_chars_per_line":
+            panel._selected = index
+    panel.handle_key("right")
+    assert service.saves == []
+
+    panel.close()
+
+    assert _stored(service, "subtitle_max_chars_per_line") == 43
+
+
+def test_closing_the_panel_twice_saves_once(panel: SettingsController, service: FakeSettingsService) -> None:
+    _activate(panel, "category:subtitles")
+    for index, item in enumerate(panel._items):
+        if item.key == "setting:subtitle_max_chars_per_line":
+            panel._selected = index
+    panel.handle_key("right")
+    panel.close()
+    panel.close()
+
+    assert len(service.saves) == 1
+
+
+def test_closing_a_panel_without_a_pending_change_writes_nothing(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    _activate(panel, "category:subtitles")
+    panel.close()
+
+    assert service.saves == []
+    assert panel._feedback is None
+
+
 def test_the_editor_shows_no_save_action(panel: SettingsController) -> None:
     _open_field(panel, "general", "processing_order_policy")
     frame = panel.render(120, 40).plain
@@ -245,6 +334,7 @@ def test_leaving_a_choice_editor_keeps_the_chosen_value(
     _open_field(panel, "general", "processing_order_policy")
     before = _stored(service, "processing_order_policy")
     panel.handle_key("down")
+    panel.handle_key("enter")
     panel.handle_key("escape")
 
     assert _stored(service, "processing_order_policy") != before

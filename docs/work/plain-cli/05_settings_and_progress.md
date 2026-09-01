@@ -305,6 +305,10 @@ przyszłości może zniknąć po cichu, dokładnie jak własne głosy.
   towarzyszy.
 - R-05-065 Nie powstaje theme engine ani konfiguracja kolorów przez użytkownika.
 
+> Reguły utrwalania stanu (co zapisuje, kiedy, jak cicho i co się dzieje przy wyjściu)
+> są w całości w `06_state_persistence.md`. Ten dokument opisuje pola, ekrany i układ;
+> tam jest manifest zachowania zapisu, obowiązujący dla całego panelu.
+
 ## 6. Widok postępu
 
 ### 6.1 Maskotka
