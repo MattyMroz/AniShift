@@ -538,7 +538,7 @@ class _InteractiveApplication:
         elif mode is _ViewMode.MANUAL and manual is not None:
             content = manual.render(columns, rows)
         elif mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
-            content = _auto_content((columns, rows), progress, mascot_state, self._queue, native_size=native_size)
+            content = _auto_content((columns, rows), progress, mascot_state, self._queue)
         elif mode is _ViewMode.SETTINGS and settings is not None:
             content = settings.render(columns, rows)
         else:
@@ -590,12 +590,10 @@ def _auto_content(
     progress: RichRunProgress,
     mascot_state: MascotState,
     view: _QueueView,
-    *,
-    native_size: tuple[int, int] | None = None,
 ) -> Text:
     columns, rows = size
-    geometry: AutoGeometry = resolve_auto_geometry(columns, rows, progress.row_count, native_size or TEXT_MASCOT_SIZE)
-    brand: Text = brand_for_geometry(geometry, mascot_state, native_mascot=native_size is not None)
+    geometry: AutoGeometry = resolve_auto_geometry(columns, rows, progress.row_count)
+    brand: Text = brand_for_geometry(geometry, mascot_state, show_mascot=False)
     budget: int = max(rows - 1 - geometry.top_padding - len(brand.split("\n")) - 1, 1)
     total: int = progress.row_count
     paged: bool = total > budget

@@ -310,42 +310,70 @@ def test_home_places_brand_at_top_and_menu_at_center() -> None:
     assert next(index for index, line in enumerate(lines) if "Auto" in line) == 24
 
 
-def test_auto_reserves_the_mascot_beside_its_brand() -> None:
+def test_auto_neither_renders_nor_reserves_mascot_space() -> None:
     geometry = resolve_auto_geometry(120, 40, 1)
 
-    content: Text = _auto_content(
-        (120, 40),
-        cast("RichRunProgress", _Progress()),
-        MascotState.TTS,
-        _QueueView(),
-        native_size=(18, 10),
-    )
-
-    assert geometry.show_mascot
-    assert (geometry.mascot_columns, geometry.mascot_rows) == (18, 10)
-    assert NATIVE_MASCOT_ANCHOR in content.plain
-    assert "Progress" in content.plain
-
-
-def test_auto_drops_the_mascot_before_it_eats_the_queue() -> None:
-    geometry = resolve_auto_geometry(120, 12, 1)
+    content: Text = _auto_content((120, 40), cast("RichRunProgress", _Progress()), MascotState.TTS, _QueueView())
 
     assert not geometry.show_mascot
     assert (geometry.mascot_columns, geometry.mascot_rows) == (0, 0)
+    assert NATIVE_MASCOT_ANCHOR not in content.plain
+    assert "Progress" in content.plain
 
 
-def test_auto_drops_the_mascot_in_a_narrow_terminal() -> None:
-    assert not resolve_auto_geometry(60, 40, 1).show_mascot
+@pytest.mark.parametrize(("columns", "rows"), [(60, 20), (120, 12), (200, 60)])
+def test_no_terminal_size_brings_the_mascot_back_to_auto(columns: int, rows: int) -> None:
+    geometry = resolve_auto_geometry(columns, rows, 1)
+
+    content: Text = _auto_content(
+        (columns, rows),
+        cast("RichRunProgress", _Progress()),
+        MascotState.TTS,
+        _QueueView(),
+    )
+
+    assert not geometry.show_mascot
+    assert NATIVE_MASCOT_ANCHOR not in content.plain
 
 
-def test_the_auto_queue_keeps_the_mascot_anchor_on_one_screen_row() -> None:
-    view = _QueueView()
+def test_entering_auto_takes_the_image_off_the_screen() -> None:
+    writes: list[str] = []
+    renderer: TerminalRenderer = _renderer_with(_image(), writes)
+    renderer._application = cast(
+        "Application[None]",
+        SimpleNamespace(
+            output=SimpleNamespace(
+                get_size=lambda: SimpleNamespace(columns=120, rows=40),
+                write_raw=writes.append,
+                flush=lambda: None,
+            ),
+            invalidate=lambda: None,
+            renderer=SimpleNamespace(reset=lambda: None),
+        ),
+    )
+    renderer._render_width = 0
+    renderer._render_stream = None
+    renderer._rich_console = None
+    renderer._terminal_size = None
+    renderer._native_drawn_position = None
+    renderer._native_drawn_payload = None
+    renderer._native_animation_started_at = time.monotonic()
+    renderer._frame_provider = lambda _columns, _rows: Text(f"\n  {NATIVE_MASCOT_ANCHOR}   ")
+    renderer._formatted_frame()
+    renderer._draw_native_mascot(renderer._application)
     progress = cast("RichRunProgress", _Progress())
-    first = _auto_content((120, 40), progress, MascotState.TTS, view, native_size=(18, 10))
-    view.move(5, 40)
-    second = _auto_content((120, 40), progress, MascotState.TTS, view, native_size=(18, 10))
+    renderer._frame_provider = lambda columns, rows: _auto_content(
+        (columns, rows),
+        progress,
+        MascotState.TTS,
+        _QueueView(),
+    )
+    renderer._formatted_frame()
+    renderer._draw_native_mascot(renderer._application)
 
-    assert _native_anchor(first.plain) == _native_anchor(second.plain)
+    assert renderer._native_position is None
+    assert renderer._native_drawn_position is None
+    assert "\x1b[2J" in writes[-1]
 
 
 def test_message_view_does_not_render_the_mascot() -> None:
