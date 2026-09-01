@@ -97,6 +97,12 @@ _RESET_SCOPE_PREFIX: Final[str] = "reset-scope:"
 _VOICES_SCOPE: Final[str] = "voices"
 """Reset scope covering the user-defined voice list."""
 
+_ROOT_SCOPE: Final[str] = "all"
+"""Reset scope of the root row, covering everything any screen can restore."""
+
+_ROOT_SCOPE_TITLE: Final[str] = "WSZYSTKO"
+"""Heading naming the root reset scope in its confirmation."""
+
 _WHEEL_ROWS: Final[int] = 3
 """Rows one wheel notch moves the view."""
 
@@ -169,6 +175,12 @@ _TRANSLATION_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("llm_translation_style", "Styl", "PROMPT"),
 )
 """Persisted translation fields exposed by the product."""
+
+_TRANSLATION_MODEL_FIELDS: Final[tuple[_SettingField, ...]] = (
+    ("llm_provider", "Model tłumaczenia", "PODSTAWOWE"),
+    ("llm_provider_model_id", "Model tłumaczenia", "PODSTAWOWE"),
+)
+"""Provider and model behind the single model row, restored with their screen."""
 
 _TTS_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("tts_engine", "Silnik", "PODSTAWOWE"),
@@ -259,7 +271,9 @@ class _Category(StrEnum):
 _SCOPE_FIELDS: Final[dict[str, tuple[_SettingField, ...]]] = {
     _Category.GENERAL.value: _GENERAL_FIELDS,
     _Category.SUBTITLES.value: _SUBTITLE_FIELDS,
-    _Category.TRANSLATION.value: _TRANSLATION_FIELDS,
+    # The model goes before `translation_engine` on purpose: both its fields depend on
+    # the `llm` engine, so restoring the engine first would make the reset skip them.
+    _Category.TRANSLATION.value: _TRANSLATION_MODEL_FIELDS + _TRANSLATION_FIELDS,
     _Category.TTS.value: _TTS_FIELDS,
 }
 """Fields each reset row restores, keyed by the screen it sits on."""
@@ -281,7 +295,6 @@ class _EditorAction(StrEnum):
     UPDATE_SECRET = "update_secret"  # noqa: S105 - operation name, never a credential
     UPDATE_ENVIRONMENT = "update_environment"
     REMOVE_SECRET = "remove_secret"  # noqa: S105 - operation name, never a credential
-    RESET_SETTINGS = "reset_settings"
     RESET_SCOPE = "reset_scope"
 
 
@@ -689,7 +702,7 @@ class SettingsController:
 
     def _exact_actions(self) -> dict[str, Callable[[], None]]:
         return {
-            _RESET_KEY: self._open_reset_confirmation,
+            _RESET_KEY: lambda: self._open_scoped_reset(_ROOT_SCOPE),
             _ADD_VOICE_KEY: lambda: self._open_voice_editor(None),
             f"setting:{_VOICES_SETTING_ID}": self._enter_voices,
             "translation-model": self._open_model_editor,
@@ -1032,14 +1045,19 @@ class SettingsController:
         )
 
     def _reset_scope(self, scope: str) -> None:
+        if scope == _ROOT_SCOPE:
+            # The root row restores every screen, and products live outside the setting
+            # catalog, so they have to be restored next to the catalog defaults.
+            self._service.reset_settings()
+            self._restore_default_products()
+            return
         if scope == _VOICES_SCOPE:
             self._service.update_setting(_VOICES_SETTING_ID, ())
             return
         if scope == _Category.OUTPUT.value:
             # Products live in the preset, not in the setting catalog, so this screen
             # restores its own state instead of walking `_SCOPE_FIELDS`.
-            self._output_products = set(_DEFAULT_PRODUCTS)
-            self._save_output()
+            self._restore_default_products()
             return
         for setting_id, _label, _section in _SCOPE_FIELDS[scope]:
             snapshot: _CatalogSnapshot = self._catalog_snapshot()
@@ -1050,14 +1068,9 @@ class SettingsController:
                 continue
             self._service.update_setting(setting_id, spec.default)
 
-    def _open_reset_confirmation(self) -> None:
-        self._editor = _Editor(
-            title="PRZYWRÓCIĆ USTAWIENIA DOMYŚLNE?",
-            kind=_EditorKind.CONFIRM,
-            action=_EditorAction.RESET_SETTINGS,
-            setting_id="reset-settings",
-            options=(_Option("no", "Nie"), _Option("yes", "Tak")),
-        )
+    def _restore_default_products(self) -> None:
+        self._output_products = set(_DEFAULT_PRODUCTS)
+        self._save_output()
 
     def _open_password_editor(self) -> None:
         connection: _Connection = _required_connection(self._connection)
@@ -1106,7 +1119,7 @@ class SettingsController:
             self._editor = None
             self._feedback = None
             return
-        if editor.action in {_EditorAction.RESET_SETTINGS, _EditorAction.RESET_SCOPE} and raw_value == "no":
+        if editor.action is _EditorAction.RESET_SCOPE and raw_value == "no":
             self._editor = None
             self._feedback = None
             return
@@ -1151,14 +1164,8 @@ class SettingsController:
         if editor.action is _EditorAction.REMOVE_SECRET and raw_value == "yes":
             self._service.update_secret(editor.setting_id, None)
             return
-        if editor.action in {_EditorAction.RESET_SCOPE, _EditorAction.RESET_SETTINGS}:
-            self._apply_reset(editor)
-
-    def _apply_reset(self, editor: _Editor) -> None:
         if editor.action is _EditorAction.RESET_SCOPE:
             self._reset_scope(editor.setting_id)
-            return
-        self._service.reset_settings()
 
     def _validation_message(self, setting_id: str) -> str:
         try:
@@ -1564,6 +1571,8 @@ def _menu_title(category: _Category | None, connection: _Connection | None) -> s
 
 
 def _scope_title(scope: str) -> str:
+    if scope == _ROOT_SCOPE:
+        return _ROOT_SCOPE_TITLE
     if scope == _VOICES_SCOPE:
         return _VOICES_TITLE
     return _menu_title(_Category(scope), None)

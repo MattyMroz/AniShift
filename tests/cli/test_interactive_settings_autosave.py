@@ -540,6 +540,22 @@ def test_a_screen_reset_restores_only_its_own_fields(
     assert _stored(service, "translation_chunk_chars") == 2000
 
 
+def test_the_translation_reset_restores_the_model_row_it_shows(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    service.settings.translation_engine = "llm"
+    service.settings.llm_provider = "openai"
+    service.settings.llm_provider_model_id = "gpt-4o"
+    _activate(panel, "category:translation")
+    _activate(panel, "reset-scope:translation")
+    panel.handle_key("down")
+    panel.handle_key("enter")
+
+    assert service.settings.llm_provider == UserSettings().llm_provider
+    assert service.settings.llm_provider_model_id == UserSettings().llm_provider_model_id
+
+
 def test_a_refused_reset_changes_nothing(panel: SettingsController, service: FakeSettingsService) -> None:
     service.settings.subtitle_max_chars_per_line = 100
     _activate(panel, "category:subtitles")
@@ -563,11 +579,34 @@ def test_the_voice_list_offers_a_reset_that_clears_it(
 
 
 def test_the_root_reset_still_restores_everything(panel: SettingsController, service: FakeSettingsService) -> None:
+    service.products = frozenset({ProductKind.MKV})
     _activate(panel, "reset-settings")
     panel.handle_key("down")
     panel.handle_key("enter")
 
     assert service.resets == 1
+    assert service.products == frozenset({ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO})
+
+
+def test_a_refused_root_reset_changes_nothing(panel: SettingsController, service: FakeSettingsService) -> None:
+    service.products = frozenset({ProductKind.MKV})
+    _activate(panel, "reset-settings")
+    panel.handle_key("enter")
+
+    assert service.resets == 0
+    assert service.products == frozenset({ProductKind.MKV})
+
+
+def test_every_reset_asks_the_same_shape_of_question(panel: SettingsController) -> None:
+    _activate(panel, "reset-settings")
+    root_title = panel._editor.title if panel._editor is not None else ""
+    panel.handle_key("escape")
+    _activate(panel, "category:subtitles")
+    _activate(panel, "reset-scope:subtitles")
+    scoped_title = panel._editor.title if panel._editor is not None else ""
+
+    assert root_title == "PRZYWRÓCIĆ DOMYŚLNE · WSZYSTKO?"
+    assert scoped_title == "PRZYWRÓCIĆ DOMYŚLNE · NAPISY?"
 
 
 def test_the_output_reset_asks_before_it_restores(panel: SettingsController, service: FakeSettingsService) -> None:

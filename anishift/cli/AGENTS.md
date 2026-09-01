@@ -84,7 +84,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Kółko myszy wymaga `_WheelControl`, bo klatka ma dokładnie tyle wierszy co okno i
   domyślny scroller Prompt Toolkit gubi zdarzenie. Nie zastępuj tego
   `ScrollablePane` ani drugim oknem. `interactive/prompts.py`
-- Zapis stanu panelu ma dziewięć reguł i JEDNO źródło:
+- Zapis stanu panelu ma dziesięć reguł i JEDNO źródło:
   `docs/work/plain-cli/06_state_persistence.md`. Cztery łamane najczęściej:
   (1) nawigacja — `↑↓`, `PageUp`/`PageDown`, `Home`/`End`, kółko — NIGDY nie zmienia
   stanu; kulka `●` stoi na zapisanej wartości, a wybiera `Enter`;
@@ -115,9 +115,18 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   podpowiedzi robiło z `2` liczbę `23` i przy zakresie 1-4 blokowało wpisywanie samymi
   błędami. `interactive/settings.py`
 - Każdy ekran Ustawień ma `Przywróć domyślne` nad `Cofnij`, zakresowo dla swoich pól
-  (`_SCOPE_FIELDS`); root przywraca wszystko. Reset idzie polami w kolejności ekranu i
-  pomija te, które po drodze przestały być aktywne, bo zmiana silnika przebudowuje
-  resztę. Połączenia go nie mają — tam rolę domyślnego stanu pełni `Usuń klucz`.
+  (`_SCOPE_FIELDS`). Wiersz ma JEDNĄ ścieżkę na wszystkich ekranach, root włącznie:
+  `_open_scoped_reset` → `_EditorAction.RESET_SCOPE` → `_reset_scope`, a pytanie ma
+  zawsze kształt `PRZYWRÓCIĆ DOMYŚLNE · <ZAKRES>?` (root = scope `all`, tytuł
+  `WSZYSTKO`). Root przywraca wszystko DOSŁOWNIE: obok `reset_settings()` woła
+  `_restore_default_products()`, bo produkty siedzą w presecie, nie w katalogu pól, i
+  bez tego przeżywały reset, który obiecywał całość. Reset idzie polami w kolejności
+  ekranu i pomija te, które po drodze przestały być aktywne, bo zmiana silnika
+  przebudowuje resztę. JEDEN wyjątek od kolejności ekranu: zakres `translation`
+  zaczyna się od `_TRANSLATION_MODEL_FIELDS`, bo `llm_provider` i
+  `llm_provider_model_id` zależą od silnika `llm` — reset `translation_engine`
+  (domyślnie `google`) zdejmuje ten warunek i model zostałby po cichu pominięty.
+  Połączenia resetu nie mają — tam rolę domyślnego stanu pełni `Usuń klucz`.
   `interactive/settings.py`
 - Ostatnim wierszem każdego poziomu Ustawień jest `Cofnij` i jest przyklejony poza
   przewijaną listą. Nie wciągaj go z powrotem do okna przewijania.

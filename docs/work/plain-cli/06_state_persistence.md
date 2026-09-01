@@ -61,7 +61,7 @@ Błędy `mypy` dotyczą wyłącznie nieaktualnych testów `test_interactive_app.
 
 ## 1. Manifest — jak ma się zachowywać zapis stanu
 
-Dziewięć reguł. Każda kolejna zmiana w panelu musi się do nich stosować.
+Dziesięć reguł. Każda kolejna zmiana w panelu musi się do nich stosować.
 
 **Z1. Nawigacja nie jest zmianą stanu.**
 `↑↓`, `PageUp`/`PageDown`, `Home`/`End`, kółko myszy, wejście na ekran i zejście z niego
