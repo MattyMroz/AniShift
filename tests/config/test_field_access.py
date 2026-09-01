@@ -159,7 +159,7 @@ def test_missing_profile_value_falls_back_to_the_spec_default() -> None:
 
 
 def test_optional_preference_keeps_none_instead_of_its_default() -> None:
-    settings: UserSettings = UserSettings(translation_engine="llm")
+    settings: UserSettings = UserSettings(translation_engine="llm", llm_temperature=None)
     temperature_spec: SettingSpec = _spec(settings, "llm_temperature")
 
     assert read_setting_value(settings, temperature_spec) is None

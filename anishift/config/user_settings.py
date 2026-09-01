@@ -122,7 +122,7 @@ LLM_TOP_P_RANGE: Final[tuple[float, float]] = (0.0, 1.0)
 LLM_MAX_TOKENS_RANGE: Final[tuple[int, int]] = (1, 32000)
 """Allowed inclusive range for explicit LLM max output tokens."""
 
-LLM_MAX_CONCURRENCY_RANGE: Final[tuple[int, int]] = (1, 4)
+LLM_MAX_CONCURRENCY_RANGE: Final[tuple[int, int]] = (1, 16)
 """Allowed inclusive range for concurrent LLM file requests."""
 
 TTS_MAX_RETRIES_RANGE: Final[tuple[int, int]] = (0, 10)
@@ -275,9 +275,9 @@ class UserSettings:
         translation_max_retries: Retry attempts per batch.
         llm_provider: Selected LLM provider id.
         llm_provider_model_id: Arbitrary provider model id.
-        llm_temperature: Optional LLM sampling temperature.
-        llm_top_p: Optional LLM nucleus-sampling top-p.
-        llm_max_output_tokens: Optional explicit provider output limit.
+        llm_temperature: LLM sampling temperature; low keeps translation repeatable.
+        llm_top_p: LLM nucleus-sampling top-p; the range maximum filters nothing.
+        llm_max_output_tokens: Explicit provider output limit, in tokens.
         llm_translation_style: Selected packaged translation style name.
         llm_max_concurrency: Maximum concurrently translated LLM files.
         primary_model_alias: Catalog alias of the main model role, independent of
@@ -318,9 +318,9 @@ class UserSettings:
     translation_max_retries: int = 3
     llm_provider: str = "gemini"
     llm_provider_model_id: str = "gemini-3.5-flash-lite"
-    llm_temperature: float | None = None
-    llm_top_p: float | None = None
-    llm_max_output_tokens: int | None = None
+    llm_temperature: float | None = 0.3
+    llm_top_p: float | None = 1.0
+    llm_max_output_tokens: int | None = 8192
     llm_translation_style: str = DEFAULT_STYLE_NAME
     llm_max_concurrency: int = 4
     primary_model_alias: str = ""

@@ -193,7 +193,7 @@ def test_settings_snapshot_validates_runtime_limits() -> None:
     with pytest.raises(ValueError, match="must be between"):
         replace(settings, translation_concurrency=17)
     with pytest.raises(ValueError, match="must be between"):
-        replace(settings, llm_max_concurrency=5)
+        replace(settings, llm_max_concurrency=17)
     with pytest.raises(ValueError, match="must be between"):
         replace(settings, tts_max_retries=-1)
     with pytest.raises(ValueError, match="profile is unsupported"):

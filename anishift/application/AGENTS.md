@@ -32,7 +32,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `mkvextract --gui-mode`, a każde prawdziwe `#GUI#progress N%` przekazuje bez
   uśredniania. Pula ekstrakcji ma rozmiar
   `min(file_count, round(sqrt(cpu_count)) + 2)`.
-- LLM może wykonywać cztery gotowe pliki zgodnie z `llm_max_concurrency`. TTS
+- LLM wykonuje gotowe pliki równolegle dokładnie do `llm_max_concurrency` (1-16);
+  scheduler nie przycina tej liczby drugi raz. TTS
   syntetyzuje jeden plik naraz, ale `tts_request_concurrency` aktywnego profilu nie
   jest zmniejszane; audio może pracować równolegle z następną syntezą.
 - Wykonywalny plan nie zawiera `MISSING` bez producenta. Task produkuje wyłącznie

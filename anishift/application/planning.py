@@ -205,7 +205,7 @@ def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
         raise ValueError(msg)
     _require_range(settings.translation_max_retries, 0, 10, "translation retries")
     _require_range(settings.translation_concurrency, 1, 16, "translation concurrency")
-    _require_range(settings.llm_max_concurrency, 1, 4, "LLM concurrency")
+    _require_range(settings.llm_max_concurrency, 1, 16, "LLM concurrency")
     _require_range(settings.tts_max_retries, 0, 10, "TTS retries")
     _require_range(settings.tts_group_jobs, 1, 100, "TTS group jobs")
     _require_range(settings.tts_request_concurrency, 1, 100, "TTS request concurrency")

@@ -118,7 +118,7 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
     assert catalog["llm_provider"].allowed_values == tuple(available_llm_engine_ids())
     assert catalog["llm_translation_style"].allowed_values == ("neutral",)
     assert catalog["llm_max_concurrency"].default == 4
-    assert catalog["llm_max_concurrency"].maximum == 4
+    assert catalog["llm_max_concurrency"].maximum == 16
     assert catalog["tts_engine"].allowed_values == tuple(available_tts_engine_ids())
 
 

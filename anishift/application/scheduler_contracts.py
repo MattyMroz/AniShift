@@ -98,7 +98,7 @@ class ResourceLimits:
         if family == "translation":
             limit = self.translation.get(provider, settings.translation_concurrency)
         elif family == "llm":
-            limit = min(settings.llm_max_concurrency, 4)
+            limit = settings.llm_max_concurrency
         elif family == "tts":
             limit = 1 if provider.startswith("sapi") else self.tts_group_jobs
         elif family == "audio":

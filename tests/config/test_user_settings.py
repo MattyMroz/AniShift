@@ -315,7 +315,7 @@ def test_load_optional_llm_values_accept_none(config_file: Path) -> None:
     assert loaded.llm_max_output_tokens is None
 
 
-@pytest.mark.parametrize("value", [0, 5, "4", True])
+@pytest.mark.parametrize("value", [0, 17, "4", True])
 def test_load_invalid_llm_concurrency_uses_default(value: object, config_file: Path) -> None:
     config_file.write_text(json.dumps({"llm_max_concurrency": value}), encoding="utf-8")
     assert load_user_settings().llm_max_concurrency == 4
