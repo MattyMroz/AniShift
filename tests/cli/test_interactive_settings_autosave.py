@@ -7,7 +7,7 @@ import pytest
 
 from anishift.application import AppService, AutoPreset, AutoPresetDraft, EnvironmentSettingStatus
 from anishift.application.intents import ProductIntent, ProductKind
-from anishift.cli.interactive.settings import SettingsController
+from anishift.cli.interactive.settings import SettingsController, _Feedback
 from anishift.config.field_access import assign_setting_value, read_setting_value
 from anishift.config.field_catalog import (
     SettingCatalogContext,
@@ -169,14 +169,50 @@ def test_walking_the_menu_never_claims_a_save(panel: SettingsController, service
     assert panel._feedback is None
 
 
-def test_a_real_change_still_reports_the_save(panel: SettingsController, service: FakeSettingsService) -> None:
+def test_a_real_change_is_saved_without_announcing_it(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
     _open_field(panel, "general", "processing_order_policy")
     panel.handle_key("down")
     _idle(panel)
 
     assert len(service.saves) == 1
-    assert panel._feedback is not None
-    assert panel._feedback.style == "success"
+    assert panel._feedback is None
+
+
+def test_a_stepped_number_shows_up_before_it_reaches_storage(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    _activate(panel, "category:subtitles")
+    for index, item in enumerate(panel._items):
+        if item.key == "setting:subtitle_max_chars_per_line":
+            panel._selected = index
+    panel.handle_key("right")
+
+    assert panel._items[panel._selected].current == "43"
+    assert service.saves == []
+
+
+def test_the_status_row_is_reserved_whether_it_says_anything_or_not(panel: SettingsController) -> None:
+    _activate(panel, "category:subtitles")
+    quiet = panel.render(100, 30).plain
+
+    panel._feedback = _Feedback("✗ Nie udało się zapisać ustawienia", "error")
+    noisy = panel.render(100, 30).plain
+
+    assert quiet.count("\n") == noisy.count("\n")
+
+
+def test_an_editor_keeps_its_height_when_a_status_appears(panel: SettingsController) -> None:
+    _open_field(panel, "general", "processing_order_policy")
+    quiet = panel.render(100, 30).plain
+
+    panel._feedback = _Feedback("✗ Nie udało się zapisać ustawienia", "error")
+    noisy = panel.render(100, 30).plain
+
+    assert quiet.count("\n") == noisy.count("\n")
 
 
 def test_stepping_a_number_back_to_its_stored_value_saves_nothing(
@@ -241,8 +277,7 @@ def test_typing_over_a_short_range_stays_inside_it(panel: SettingsController, se
     _idle(panel)
 
     assert _stored(service, "subtitle_max_lines_per_event") == 3
-    assert panel._feedback is not None
-    assert panel._feedback.style == "success"
+    assert panel._feedback is None
 
 
 def test_an_out_of_range_number_is_not_announced_while_it_is_typed(

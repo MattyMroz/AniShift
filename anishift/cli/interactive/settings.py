@@ -68,8 +68,9 @@ _ADD_VOICE_KEY: Final[str] = "voice-add"
 _ADD_VOICE_LABEL: Final[str] = "Dodaj głos"
 """Label of the row that creates one custom voice."""
 
-_SAVED_MESSAGE: Final[str] = "✓ Zapisano"
-"""Confirmation shown after one successful transaction."""
+
+_STATUS_ROWS: Final[int] = 1
+"""Rows every screen spends on its status line, spent whether it says anything or not."""
 
 _BACK_KEY: Final[str] = "back"
 """Stable action key returning to the parent menu."""
@@ -442,8 +443,6 @@ class SettingsController:
             self._feedback = _Feedback("✗ Nie udało się zapisać ustawienia", "error")
         except TypeError, ValueError:
             self._feedback = _Feedback(self._validation_message(pending.setting_id), "error")
-        else:
-            self._feedback = _Feedback(_SAVED_MESSAGE, "success")
         self._refresh_menu()
 
     def _already_stored(self, pending: _PendingEdit) -> bool:
@@ -533,6 +532,9 @@ class SettingsController:
             return
         self._pending = _PendingEdit(setting_id, stepped[0], time.monotonic() + _SAVE_DELAY_SECONDS)
         self._feedback = None
+        # The row carries a formatted value built with the list, so without this the
+        # stepped number would appear only once the delayed save rebuilt the menu.
+        self._refresh_menu()
 
     def _effective_value(self, snapshot: _CatalogSnapshot, spec: SettingSpec) -> SettingValue:
         pending: _PendingEdit | None = self._pending
@@ -1110,12 +1112,10 @@ class SettingsController:
             self._feedback = _Feedback(self._validation_message(editor.setting_id), "error")
             return
         self._editor = None
-        message: str = (
-            "✓ Przywrócono ustawienia domyślne"
-            if editor.action in {_EditorAction.RESET_SETTINGS, _EditorAction.RESET_SCOPE}
-            else _SAVED_MESSAGE
-        )
-        self._feedback = _Feedback(message, "success")
+        if editor.action in {_EditorAction.RESET_SETTINGS, _EditorAction.RESET_SCOPE}:
+            self._feedback = _Feedback("✓ Przywrócono ustawienia domyślne", "success")
+        else:
+            self._feedback = None
         self._refresh_menu()
 
     def _editor_raw_value(self, editor: _Editor) -> str:
@@ -1202,7 +1202,7 @@ class SettingsController:
         except AniShiftError, OSError, TypeError, ValueError:
             self._feedback = _Feedback("✗ Nie udało się zapisać ustawień wyniku", "error")
             return
-        self._feedback = _Feedback(_SAVED_MESSAGE, "success")
+        self._feedback = None
 
     def _default_preset(self) -> AutoPreset:
         return self._service.get_preset(self._service.default_preset_id())
@@ -1250,8 +1250,7 @@ class SettingsController:
         title: str = _VOICES_TITLE if self._voices_open else _menu_title(self._category, self._connection)
         back: _MenuItem | None = self._items[-1] if self._items and self._items[-1].key == _BACK_KEY else None
         scrollable: tuple[_MenuItem, ...] = self._items[:-1] if back is not None else self._items
-        feedback_rows: int = 1 if self._feedback is not None else 0
-        row_budget: int = max(rows - 6 - feedback_rows - int(back is not None), 1)
+        row_budget: int = max(rows - 6 - _STATUS_ROWS - int(back is not None), 1)
         sections: tuple[str, ...] = tuple(item.section for item in scrollable)
         start, end = _visible_window(
             sections,
@@ -1268,7 +1267,7 @@ class SettingsController:
         has_above: bool = start > 0
         has_below: bool = end < len(scrollable)
         option_rows: int = _sectioned_row_count(tuple(item.section for item in visible))
-        body_rows: int = option_rows + int(has_above) + int(has_below) + int(back is not None) + 4 + feedback_rows
+        body_rows: int = option_rows + int(has_above) + int(has_below) + int(back is not None) + 4 + _STATUS_ROWS
         left: int = _menu_left_padding(columns, visible if back is None else (*visible, back))
         content: Text = Text("\n" * max((max(rows - 1, 1) - body_rows) // 2, 0))
         content.append(" " * left)
@@ -1315,7 +1314,7 @@ class SettingsController:
     def _render_output(self, columns: int, rows: int) -> Text:
         reset_index: int = len(_PRODUCTS)
         back_index: int = reset_index + 1
-        body_rows: int = len(_PRODUCTS) + 6 + (1 if self._feedback is not None else 0)
+        body_rows: int = len(_PRODUCTS) + 6 + _STATUS_ROWS
         labels: tuple[_MenuItem, ...] = tuple(_MenuItem("", label) for _product, label in _PRODUCTS)
         actions: tuple[_MenuItem, ...] = (
             _MenuItem("", _RESET_LABEL),
@@ -1348,7 +1347,6 @@ class SettingsController:
             editor.selected,
             editor.offset,
             rows,
-            self._feedback is not None,
         )
         editor.offset = start
         editor.visible_count = end - start
@@ -1404,7 +1402,10 @@ class SettingsController:
         return content
 
     def _append_feedback(self, content: Text, left: int, columns: int) -> None:
+        # The row is always spent, empty or not: a status appearing between two key
+        # presses must never move the list under the cursor.
         if self._feedback is None:
+            content.append("\n")
             return
         content.append(" " * left)
         content.append(_truncate_right(self._feedback.text, max(columns - left, 1)), style=self._feedback.style)
@@ -1731,13 +1732,12 @@ def _editor_window(
     selected: int,
     offset: int,
     rows: int,
-    has_feedback: bool,
 ) -> tuple[int, int, int]:
-    row_budget: int = max(rows - 6 - int(has_feedback), 1)
+    row_budget: int = max(rows - 6 - _STATUS_ROWS, 1)
     start, end = _visible_window(groups, selected, offset, row_budget, follow_cursor=True)
     visible_groups: tuple[str, ...] = groups[start:end]
     option_rows: int = _sectioned_row_count(visible_groups) if visible_groups else 1
-    body_rows: int = option_rows + int(start > 0) + int(end < len(groups)) + 4 + int(has_feedback)
+    body_rows: int = option_rows + int(start > 0) + int(end < len(groups)) + 4 + _STATUS_ROWS
     return start, end, body_rows
 
 
