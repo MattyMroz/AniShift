@@ -89,11 +89,19 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `Esc` wychodzi, a nie anuluje. Wyjątki są dwa i mają powód: sekret (pół klucza nie
   może trafić do `.env`) oraz linia własnego głosu (pół linii nie jest głosem) —
   te zostają na `Enter`. Ekran WYNIK odmawia odznaczenia ostatniego produktu, żeby
-  znaczniki nie kłamały o zapisanym stanie. Zapis, który nie zmienia wartości, NIE
+  znaczniki nie kłamały o zapisanym stanie. Automatyczny zapis NIE MELDUJE sukcesu —
+  user go nie zamawiał i nie chce o nim wiedzieć; zostają tylko błędy oraz jawnie
+  potwierdzony reset. Wiersz statusu jest wydany ZAWSZE (`_STATUS_ROWS`), pusty czy nie:
+  komunikat pojawiający się między dwoma klawiszami nie może przesunąć listy pod
+  kursorem. Zapis, który nie zmienia wartości, NIE
   istnieje: `_already_stored` wyrzuca takie `_pending` bez transakcji i bez „✓ Zapisano",
   bo przelot kursorem po liście ani powrót strzałką do starej liczby nie są edycją.
   Wartość poza zakresem wpisywana w edytorze też milczy — komunikat błędu należy do
   jawnego `Enter`, nie do trzeciego znaku w trakcie pisania. `interactive/settings.py`
+- Wiersz nosi wartość sformatowaną przy BUDOWIE listy, więc każda zmiana widoczna
+  natychmiast musi przebudować `_items` (`_refresh_menu`) — inaczej strzałka rusza
+  `_pending`, a liczba na ekranie doczeka dopiero opóźnionego zapisu i wygląda na
+  zlagowaną. `interactive/settings.py`
 - Zmiana liczby strzałką NIE zapisuje od razu: ląduje w `_pending` i utrwala się po
   `_SAVE_DELAY_SECONDS` bezczynności, sprawdzanych w `after_render` (nie w
   `render()`, bo tam I/O jest zabronione). Każdy inny klawisz, zejście z wiersza,
