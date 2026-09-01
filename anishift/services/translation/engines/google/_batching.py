@@ -20,7 +20,7 @@ from anishift.services.translation.engines.google.constants import LINE_SEPARATO
 from anishift.services.translation.types import BatchedLine
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Callable
 
 
 def _chunks(texts: list[str], batch_size: int, max_chars: int) -> list[list[str]]:
@@ -48,42 +48,42 @@ def _restore(text: str) -> str:
     return text.replace(ZERO_WIDTH, "").strip()
 
 
-async def _per_line(
+def _per_line(
     prepared: list[str],
-    translate_joined: Callable[[str], Awaitable[str]],
+    translate_joined: Callable[[str], str],
 ) -> list[BatchedLine]:
     """Translate each line in its own call; pad source on failure."""
     out: list[BatchedLine] = []
     for line in prepared:
         try:
-            translated = await translate_joined(line)
-        except Exception:  # noqa: BLE001 - googletrans has no stable exception hierarchy
+            translated = translate_joined(line)
+        except Exception:  # noqa: BLE001 - provider boundary: the mobile page has no stable failure shape
             out.append(BatchedLine(text=line, ok=False))
             continue
         out.append(BatchedLine(text=_restore(translated), ok=True))
     return out
 
 
-async def _translate_chunk(
+def _translate_chunk(
     prepared: list[str],
-    translate_joined: Callable[[str], Awaitable[str]],
+    translate_joined: Callable[[str], str],
 ) -> list[BatchedLine]:
     """Translate one chunk via separator -> newline -> per-line ladder."""
     try:
         joined = LINE_SEPARATOR.join(prepared)
-        result = await translate_joined(joined)
+        result = translate_joined(joined)
         parts = result.split(LINE_SEPARATOR)
         if len(parts) == len(prepared):
             return _map_parts(prepared, parts)
 
         joined_nl = "\n".join(prepared)
-        result_nl = await translate_joined(joined_nl)
+        result_nl = translate_joined(joined_nl)
         parts_nl = result_nl.split("\n")
         if len(parts_nl) == len(prepared):
             return _map_parts(prepared, parts_nl)
     except Exception:  # noqa: BLE001, S110 - ladder fallback: retry per-line on any batch failure
         pass
-    return await _per_line(prepared, translate_joined)
+    return _per_line(prepared, translate_joined)
 
 
 def _map_parts(prepared: list[str], parts: list[str]) -> list[BatchedLine]:
@@ -98,12 +98,12 @@ def _map_parts(prepared: list[str], parts: list[str]) -> list[BatchedLine]:
     return out
 
 
-async def translate_lines(
+def translate_lines(
     texts: list[str],
     *,
     batch_size: int,
     max_chars: int,
-    translate_joined: Callable[[str], Awaitable[str]],
+    translate_joined: Callable[[str], str],
 ) -> list[BatchedLine]:
     """Translate lines with index<->index mapping guaranteed by construction.
 
@@ -111,7 +111,7 @@ async def translate_lines(
         texts: Lines to translate, in order.
         batch_size: Max lines per request.
         max_chars: Max characters per request (chunking budget).
-        translate_joined: Async callback translating one already-joined string
+        translate_joined: Callback translating one already-joined string
             and returning the translated string.
 
     Returns:
@@ -122,7 +122,7 @@ async def translate_lines(
         return []
     out: list[BatchedLine] = []
     for chunk in _chunks(texts, batch_size, max_chars):
-        out.extend(await _translate_chunk(chunk, translate_joined))
+        out.extend(_translate_chunk(chunk, translate_joined))
     return out
 
 

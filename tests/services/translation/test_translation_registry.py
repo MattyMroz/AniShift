@@ -45,12 +45,12 @@ def test_config_without_engine_raises() -> None:
 
 
 def test_registry_import_does_not_load_provider_sdks() -> None:
-    for module in ("googletrans", "deepl"):
+    for module in ("httpx", "deepl"):
         sys.modules.pop(module, None)
     import importlib  # noqa: PLC0415 - reload requires a fresh in-function import
 
     import anishift.services.translation.engines as registry  # noqa: PLC0415
 
     importlib.reload(registry)
-    assert "googletrans" not in sys.modules
+    assert "httpx" not in sys.modules
     assert "deepl" not in sys.modules

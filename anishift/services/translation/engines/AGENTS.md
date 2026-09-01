@@ -5,7 +5,7 @@ Fabryka silników tłumaczenia oparta na rejestrze. `create_engine(config)` budu
 ## Silniki (każdy ma własny AGENTS.md)
 
 - `deepl/` — silnik DeepL (oficjalny SDK, batch natywny)
-- `google/` — silnik darmowego Google Translate (googletrans, async pod fasadą)
+- `google/` — silnik darmowego Google Translate (strona mobilna `/m`, synchroniczny)
 - `llm/` — silnik przez wstrzyknięty `LlmCompleter` (provider-agnostic)
 
 ## Rejestr (`__init__.py`)

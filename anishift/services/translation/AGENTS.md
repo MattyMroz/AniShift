@@ -10,7 +10,7 @@ Serwis tłumaczenia: synchroniczna fasada `TranslationService` nad jednym silnik
 - `protocols.py` — kontrakty `TranslationEngine` i `LlmCompleter` (DI z composition root)
 - `chunking.py` — domenowe cięcie dokumentu (`chunk_text`); wspólne granice i grafemy są w `anishift/text/`
 - `linebreak.py` — polski reflow (`split_line`) i odtwarzanie authored layoutu (`split_for_layout`)
-- `_retry.py` — retry z wykładniczym backoffem (sync + async), bez tenacity
+- `_retry.py` — retry z wykładniczym backoffem (sync), bez tenacity
 - `types.py` — dataclassy wartości (`BatchedLine`, `TranslatedLine`, `FileTranslation`)
 - `errors.py` — hierarchia wyjątków domeny
 - `engines/` — rejestr i implementacje silników (deepl/google/llm); ma własny AGENTS.md

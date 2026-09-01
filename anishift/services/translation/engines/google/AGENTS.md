@@ -1,26 +1,36 @@
 # Google engine
 
-Darmowy Google Translate (`googletrans` 4.x, async pod synchroniczną fasadą). Bez klucza. Rejestrowany pod `engine_id = "google"`.
+Darmowy Google Translate przez stronę mobilną `translate.google.com/m`, w pełni synchroniczny. Bez klucza. Rejestrowany pod `engine_id = "google"`.
+
+## Dlaczego strona mobilna, a nie JSON API
+
+Google odpowiada na endpoint `translate_a/single` (którego używała biblioteka `googletrans`) kodem **429 + stroną „Sorry...”**, więc stary klient przestał tłumaczyć — i robił to CICHO, zwracając tekst źródłowy bez wyjątku. Strona `/m` nadal tłumaczy, ale tylko klientom wyglądającym na przeglądarkę: z domyślnym `python-requests`/bez UA wraca HTTP 200 ze stroną BEZ kontenera wyniku. Dlatego `USER_AGENT` jest wymogiem funkcjonalnym, nie kosmetyką. `deep-translator` odpada, bo jego `requests.get` nie przyjmuje nagłówków.
 
 ## Pułapki
 
-- `translate_batch` opakowuje CAŁY plik w jeden `asyncio.run` (jeden event loop i klient na plik, nie na batch) — wołanie z aktywnej pętli asyncio wybuchnie. `service.py:66,70-72`
-- `source_lang` jawnie ignorowany (`del source_lang`) — googletrans sam wykrywa źródło. `service.py:62`
-- `target_lang` pusty/None cicho → `"pl"`. `service.py:65`
-- Przekazanie `TranslationConfig` do konstruktora GUBI `max_chars_per_request` (bierze tylko `batch_size`, `max_retries`; reszta z defaultów `GoogleConfig`). `service.py:36-39`
-- `LINE_SEPARATOR` = `ZERO_WIDTH###ZERO_WIDTH`; jeśli tłumacz zeżre zero-width, split się nie zgadza i drabina schodzi do wolniejszego per-line. `constants.py:18`, `_batching.py:75-86`
+- Kontener wyniku musi istnieć: jego brak to `TranslationEngineError`, NIGDY zwrot źródła. Cicha degradacja jest dokładnie tym, co ukryło zepsuty silnik na długo. `api_backend.py:97-101`
+- Wynik trzeba przepuścić przez `html.unescape` — strona zwraca encje (`&#39;`, `&#324;`), więc bez tego apostrofy i polskie znaki trafiłyby do napisów jako `&#...;`. `api_backend.py:103`
+- `429` i `503` mapują się na `TranslationRateLimitError` (transient, retry z backoffem); pozostałe błędy HTTP na `TranslationEngineError` bez ponowień, bo powtórka przyniesie tę samą pustą stronę. `api_backend.py:78-85`
+- `translate_batch` NIE odpala event loopa — silnik jest synchroniczny zgodnie z engine-standard („nie odpalaj `asyncio.run()` wewnątrz engine'a”). Poprzednia wersja łamała to świadomie tylko dlatego, że `googletrans` był async; ten powód zniknął razem z zależnością.
+- `source_lang` jest przekazywany (`sl`), a pusty cicho staje się `auto`; `target_lang` pusty cicho → `"pl"`. `service.py:78-79`
+- Przekazanie `TranslationConfig` do konstruktora GUBI `max_chars_per_request` (bierze tylko `batch_size`, `max_retries`; reszta z defaultów `GoogleConfig`). `service.py:38-42`
+- `LINE_SEPARATOR` = `ZERO_WIDTH###ZERO_WIDTH`; sprawdzone, że strona mobilna go zachowuje, więc batch 5 linii wraca jako 5 części. Gdy tłumacz go zeżre, drabina schodzi do newline, a potem do per-line. `constants.py:30`, `_batching.py:67-86`
 - Puste wyjście dla niepustego wejścia = porażka: `_map_parts` wstawia źródło z `ok=False`, nie pustą linię. `_batching.py:94-95`
 - Kod zakłada, że każda linia wejścia jest jednoliniowa (stage napisów zwija `\n`/`\N` do spacji przed tłumaczeniem) — złamanie tego rozjedzie split. `_batching.py:8-12`
+- Klient HTTP jest tworzony leniwie przy pierwszym tłumaczeniu i reużywany na cały plik; `close()` jest idempotentny i zeruje referencję. `service.py:56-60,88-92`
 
 ## Konwencje
 
-- Requesty ZAWSZE sekwencyjnie, bez `gather` — świadomie, by unikać rate-limitów darmowego endpointu. `_batching.py:6-7,124`
-- Tylko `httpx.HTTPError` traktowany jako transient i retry'owany; reszta (błędy parsowania) leci w górę i wtedy drabina łapie per-line. `service.py:87-90,96-102`
-- `except Exception` dozwolony z `noqa: BLE001` — googletrans nie ma stabilnej hierarchii wyjątków. `_batching.py:60,84`
-- `Translator` i `httpx` importowane leniwie w metodach (`noqa: PLC0415`). `service.py:70,91`
-- `is_available` zawsze `True` (endpoint bez klucza); `close()` no-op (brak trwałego klienta). `service.py:47-52`
+- Klient zewnętrznego API siedzi w `api_backend.py`, zgodnie z engine-standard; `service.py` trzyma tylko lifecycle i orkiestrację drabiny.
+- Requesty ZAWSZE sekwencyjnie, bez `gather` — świadomie, by unikać rate-limitów darmowego endpointu. `_batching.py:6-7`
+- Retry przez wspólny synchroniczny `call_with_retry` z `translation._retry` (ten sam co DeepL), `retry_on=TRANSIENT_ERRORS`, `max_attempts = max_retries + 1`. `service.py:113-124`
+- `except Exception` w drabinie dozwolony z `noqa: BLE001` — granica providera, strona nie ma stabilnego kształtu awarii. `_batching.py:60,84`
+- `is_available` zawsze `True` (endpoint bez klucza). `service.py:52-54`
+- Silnik nie ma `model_id` ani `provider_model_id` — Google Translate nie wystawia wyboru modelu, więc pole z engine-standard nie ma tu bytu do reprezentowania (tak samo w DeepL).
 
 ## Stałe i odesłania
 
-- `MAX_CHARS_PER_REQUEST` (15000) — SSOT twardego limitu Google. `constants.py:9`
+- `BASE_URL`, `USER_AGENT`, `REQUEST_TIMEOUT_S` — kontrakt transportu strony mobilnej. `constants.py:9-22`
+- `MAX_CHARS_PER_REQUEST` (15000) — SSOT twardego limitu Google. `constants.py:24`
+- `TRANSIENT_ERRORS` — co wolno ponowić; SSOT dla polityki retry silnika. `api_backend.py:39`
 - `batch_size`, `max_retries`, `ZERO_WIDTH` przychodzą z modułów wyżej (`translation.constants`, `translation.chunking`). `config.py:7-11`, `constants.py:7`
