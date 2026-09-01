@@ -88,7 +88,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `docs/work/plain-cli/06_state_persistence.md`. Cztery łamane najczęściej:
   (1) nawigacja — `↑↓`, `PageUp`/`PageDown`, `Home`/`End`, kółko — NIGDY nie zmienia
   stanu; kulka `●` stoi na zapisanej wartości, a wybiera `Enter`;
-  (2) zapis jest cichy, sukces nie ma komunikatu, a wiersz statusu jest wydany ZAWSZE
+  (2) zapis jest cichy, sukces nie ma komunikatu — także reset — a `Przywróć domyślne`
+  jest ZAWSZE wejściem w potwierdzenie, bo akcja wykonana wprost z wiersza wygląda jak
+  wiersz, który nic nie robi; wiersz statusu jest wydany ZAWSZE
   (`_STATUS_ROWS`), więc nic nie skacze między dwoma klawiszami;
   (3) każde wyjście, także awaryjne, utrwala `_pending` przez `SettingsController.close()`
   bez czekania na deadline (`app.py: _close_settings`, wołane też z `finally` sesji);

@@ -7,7 +7,7 @@ import pytest
 
 from anishift.application import AppService, AutoPreset, AutoPresetDraft, EnvironmentSettingStatus
 from anishift.application.intents import ProductIntent, ProductKind
-from anishift.cli.interactive.settings import SettingsController, _Feedback
+from anishift.cli.interactive.settings import _PRODUCTS, SettingsController, _Feedback
 from anishift.config.field_access import assign_setting_value, read_setting_value
 from anishift.config.field_catalog import (
     SettingCatalogContext,
@@ -568,3 +568,62 @@ def test_the_root_reset_still_restores_everything(panel: SettingsController, ser
     panel.handle_key("enter")
 
     assert service.resets == 1
+
+
+def test_the_output_reset_asks_before_it_restores(panel: SettingsController, service: FakeSettingsService) -> None:
+    _activate(panel, "category:output")
+    panel._selected = len(_PRODUCTS)
+    panel._output_products = {ProductKind.MKV}
+    panel.handle_key("enter")
+
+    assert panel._editor is not None
+    assert "WYNIK" in panel._editor.title
+    assert service.preset_saves == 0
+
+
+def test_a_confirmed_output_reset_restores_the_default_products(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    _activate(panel, "category:output")
+    panel._selected = len(_PRODUCTS)
+    panel._output_products = {ProductKind.MKV}
+    panel.handle_key("enter")
+    panel.handle_key("down")
+    panel.handle_key("enter")
+
+    assert service.products == frozenset({ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO})
+    assert panel._editor is None
+    assert panel._feedback is None
+
+
+def test_a_refused_output_reset_changes_nothing(panel: SettingsController, service: FakeSettingsService) -> None:
+    _activate(panel, "category:output")
+    panel._selected = len(_PRODUCTS)
+    panel._output_products = {ProductKind.MKV}
+    panel.handle_key("enter")
+    panel.handle_key("enter")
+
+    assert service.preset_saves == 0
+    assert panel._output_products == {ProductKind.MKV}
+
+
+def test_the_output_reset_leaves_the_cursor_where_it_was(panel: SettingsController) -> None:
+    _activate(panel, "category:output")
+    panel._selected = len(_PRODUCTS)
+    panel.handle_key("enter")
+    panel.handle_key("down")
+    panel.handle_key("enter")
+
+    assert panel._selected == len(_PRODUCTS)
+
+
+def test_a_confirmed_reset_says_nothing(panel: SettingsController, service: FakeSettingsService) -> None:
+    service.settings.subtitle_max_chars_per_line = 100
+    _activate(panel, "category:subtitles")
+    _activate(panel, "reset-scope:subtitles")
+    panel.handle_key("down")
+    panel.handle_key("enter")
+
+    assert _stored(service, "subtitle_max_chars_per_line") == 42
+    assert panel._feedback is None

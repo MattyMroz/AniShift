@@ -596,8 +596,7 @@ class SettingsController:
         if key != "enter":
             return
         if self._selected == reset_index:
-            self._output_products = set(_DEFAULT_PRODUCTS)
-            self._save_output()
+            self._open_scoped_reset(_Category.OUTPUT.value)
             return
         if self._selected == back_index:
             self._category = None
@@ -758,6 +757,11 @@ class SettingsController:
         return SettingsResult.BACK_HOME
 
     def _refresh_menu(self) -> None:
+        if self._category is _Category.OUTPUT:
+            # The output screen owns its rows, so an empty `_items` must not drag its
+            # cursor back to the first product after an editor closes.
+            self._items = ()
+            return
         try:
             self._items = self._build_menu_items()
         except AniShiftError, OSError, TypeError, ValueError:
@@ -1031,6 +1035,12 @@ class SettingsController:
         if scope == _VOICES_SCOPE:
             self._service.update_setting(_VOICES_SETTING_ID, ())
             return
+        if scope == _Category.OUTPUT.value:
+            # Products live in the preset, not in the setting catalog, so this screen
+            # restores its own state instead of walking `_SCOPE_FIELDS`.
+            self._output_products = set(_DEFAULT_PRODUCTS)
+            self._save_output()
+            return
         for setting_id, _label, _section in _SCOPE_FIELDS[scope]:
             snapshot: _CatalogSnapshot = self._catalog_snapshot()
             spec: SettingSpec | None = snapshot.specs.get(setting_id)
@@ -1109,10 +1119,7 @@ class SettingsController:
             self._feedback = _Feedback(self._validation_message(editor.setting_id), "error")
             return
         self._editor = None
-        if editor.action in {_EditorAction.RESET_SETTINGS, _EditorAction.RESET_SCOPE}:
-            self._feedback = _Feedback("✓ Przywrócono ustawienia domyślne", "success")
-        else:
-            self._feedback = None
+        self._feedback = None
         self._refresh_menu()
 
     def _editor_raw_value(self, editor: _Editor) -> str:

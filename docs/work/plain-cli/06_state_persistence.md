@@ -70,10 +70,13 @@ nie zapisują nic. Kursor wskazuje, o czym mówimy; nie wybiera.
 **Z2. Stan zmienia wyłącznie jawna akcja.**
 `Enter` na opcji wyboru, `Space` na przełączniku, `←→` na wierszu z wartością, wpisany
 znak w edytorze tekstu, dodanie lub usunięcie głosu, potwierdzony reset. Nic poza tym.
+`Przywróć domyślne` jest ZAWSZE wejściem w potwierdzenie, na każdym ekranie bez wyjątku —
+akcja, która wykonuje się wprost z wiersza, wygląda jak wiersz, który nic nie robi.
 
 **Z3. Zapis jest cichy.**
-Sukces nie ma komunikatu. Dowodem zapisu jest sama wartość w wierszu i kulka `●`.
-Komunikat należy do błędu i do jawnie potwierdzonej operacji zbiorczej (reset).
+Sukces nie ma komunikatu — także przywrócenie domyślnych. Dowodem zapisu jest sama
+wartość w wierszu i kulka `●`, a dla operacji zbiorczej ekran potwierdzenia, który ją
+poprzedza. Komunikat należy do błędu i do wyniku jawnie zamówionego testu połączenia.
 
 **Z4. Widok wyprzedza dysk.**
 Zmiana jest widoczna w tej samej klatce, w której padł klawisz. Zapis może być
@@ -97,7 +100,13 @@ Błąd należy do jawnego zatwierdzenia, nie do trzeciego znaku w trakcie pisani
 
 **Z9. Status nie rusza layoutu.**
 Wiersz statusu jest wydany zawsze, pusty czy nie. Nic nie może przesunąć listy pod
-kursorem między dwoma klawiszami.
+kursorem między dwoma klawiszami, a komunikat dłuższy od terminala jest ucinany, nie
+zawijany.
+
+**Z10. Krok wartości trafia w okrągłą siatkę.**
+Pole o szerokim zakresie skacze co 100, więc krok liczy się od siatki, nie od bieżącej
+wartości: `1 → 100 → 200`, nigdy `1 → 101`. Wartość, która znaczy „domyślne silnika"
+(`None` albo zero tam, gdzie zero nie jest liczbą), pokazuje się jako `domyślnie`.
 
 ## 2. Stan aktualny
 
