@@ -12,21 +12,37 @@ Rejestrowany pod `engine_id = "llm"`.
   źródłowy nie jest wysyłany do modelu.
 - Nie odzyskuje fragmentów odpowiedzi i nie traktuje tekstu źródłowego jako
   udanego tłumaczenia.
-- Błędny JSON uruchamia ponowienie kontraktu, ale nigdy podział partii. Podział
-  na stabilne połowy dotyczy wyłącznie limitu kontekstu lub wyjścia.
+- Naruszenie kontraktu uruchamia naprawę zawężoną do numerów, ale nigdy podziału
+  partii. Podział na stabilne połowy dotyczy wyłącznie limitu kontekstu lub
+  wyjścia.
 - Porażka pojedynczej linii rzuca `TranslationEngineError`.
+- `max_batch_lines=None` (default) wysyła cały plik w jednym żądaniu. Wartość
+  dodatnia tnie partię; `runtime.py` podaje tu surową preferencję użytkownika, nie
+  default Google.
 
-## Kontrakt JSON
+## Kontrakt numerowanych linii
 
-- Wejście jest osobnym `TextPart` i ma dokładny kształt
-  `{"subtitles":[{"id":0,"text":"..."}]}`.
-- Wyjście musi być jednym dokumentem
-  `{"translations":[{"id":0,"translated":"..."}]}`.
-- `json_contract.py` wymaga dokładnych kluczy, typów, liczby elementów,
-  unikalnych i kolejnych identyfikatorów oraz niepustych tłumaczeń. Odrzuca
-  dodatkowy tekst, Markdown, duplikaty kluczy i liczby niefinitywne.
-- Diagnostyka retry opisuje tylko ostatnie naruszenie. Nie zawiera surowej
-  odpowiedzi ani historii modelu.
+- `line_contract.py` jest JEDYNYM właścicielem formatu: wzorca, ucieczki,
+  serializacji, parsowania i klasyfikacji naruszeń. Prompty opisują ten sam
+  kontrakt słowami, ale niczego nie walidują.
+- Wejście jest osobnym `TextPart`: jedna linia `[N] tekst` na napis, gdzie numer
+  to indeks w żądaniu. Wyjście musi mieć dokładnie jedną linię `[N] tłumaczenie`
+  na każdy żądany numer, w tej samej kolejności.
+- Podział wiersza wewnątrz napisu jedzie jako `\n`; nieuciekniony przesunąłby
+  każdy następny numer. Odwracanie ucieczki jest JEDNOPRZEBIEGOWE (regex), bo
+  dwa kolejne `replace` psują napis z literalnym `\n`.
+- `parse_response` nie rzuca wyjątku dla naruszenia: zwraca zaufane wpisy ORAZ
+  jedno naruszenie z numerami do powtórzenia, bo pętla naprawy potrzebuje obu.
+- Linia niepasująca do wzorca unieważnia numer, który poprzedza — a gdy nie ma
+  otwartego numeru, całą partię. Nigdy nie jest cicho pomijana.
+- Numer spoza żądania unieważnia poprzedni numer; powtórzony i z pustym
+  tłumaczeniem unieważnia siebie; zła kolejność unieważnia całą partię.
+- Kolejność sprawdza się po POZYCJI w żądaniu, nie po wielkości numeru — inaczej
+  naprawa podzbioru (`[12]` przed `[7]` w kolejnym żądaniu) odrzucałaby poprawną
+  odpowiedź.
+- Puste linie i ogrodzenia bloku kodu są pomijane.
+- Diagnostyka retry jest po polsku i nie zawiera treści napisów ani surowej
+  odpowiedzi; powyżej 20 numerów podaje ich liczbę zamiast listy.
 
 ## Prompty
 

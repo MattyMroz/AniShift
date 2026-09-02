@@ -1,12 +1,17 @@
 ---
 kind: outcome
-status: pending-human
+status: superseded
 baseline: c9e8f0e plus accepted docs/work/llm-translation/spec.md
 resulting-state: implementation in working tree, no commit
 completed: 2026-08-30
+superseded-by: docs/work/llm-translation/plan-numbered-lines.md
 ---
 
 # Outcome: JSON contract for LLM translation
+
+Kontrakt JSON opisany niżej został zastąpiony kontraktem numerowanych linii
+(`line_contract.py`), a `json_contract.py` usunięty. Ten dokument pozostaje
+zapisem tego, co ten etap faktycznie dowiózł, nie opisem aktualnego stanu kodu.
 
 ## Status
 
