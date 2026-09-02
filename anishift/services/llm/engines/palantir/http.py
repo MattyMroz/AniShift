@@ -23,7 +23,7 @@ Public API:
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from http import HTTPStatus
 from typing import Any
 
@@ -99,8 +99,13 @@ def stream_palantir_request(
     built: PalantirHttpRequest,
     *,
     alias: str,
+    on_event: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> tuple[Mapping[str, Any], ...]:
-    """Consume one SSE response and return its decoded JSON events."""
+    """Consume one SSE response and return its decoded JSON events.
+
+    Every event is handed to *on_event* the moment it arrives, so a caller can
+    report real progress instead of waiting for the whole completion.
+    """
     try:
         with client.stream(
             built.method,
@@ -118,7 +123,12 @@ def stream_palantir_request(
                     payload=payload,
                     retry_after_s=_retry_after(response.headers),
                 )
-            events: tuple[Mapping[str, Any], ...] = tuple(_sse_events(response.iter_lines(), alias=alias))
+            collected: list[Mapping[str, Any]] = []
+            for event in _sse_events(response.iter_lines(), alias=alias):
+                collected.append(event)
+                if on_event is not None:
+                    on_event(event)
+            events: tuple[Mapping[str, Any], ...] = tuple(collected)
     except httpx.TimeoutException as error:
         raise palantir_timeout_error(alias=alias) from error
     except httpx.TransportError as error:

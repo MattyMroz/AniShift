@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from types import TracebackType
 from typing import Self
 
@@ -56,12 +57,16 @@ class LlmService:
         request: LlmRequest,
         *,
         cancel: threading.Event | None = None,
+        on_text: Callable[[str], None] | None = None,
     ) -> LlmResponse:
         """Complete one request using the lazy engine and central retry policy.
 
         Args:
             request: Provider-neutral completion request.
             cancel: Optional cooperative cancellation event.
+            on_text: Optional sink receiving text as the provider streams it.
+                Providers without a streaming shape never call it, and one retried
+                attempt replays the text of that attempt only.
 
         Returns:
             The normalized provider response.
@@ -81,7 +86,7 @@ class LlmService:
             max_retries=self.config.max_retries,
         )
         response = retry_transient(
-            lambda: self._complete_once(request),
+            lambda: self._complete_once(request, on_text),
             max_retries=self.config.max_retries,
             observer=self._observer,
             cancel=cancel,
@@ -98,10 +103,10 @@ class LlmService:
         )
         return response
 
-    def _complete_once(self, request: LlmRequest) -> LlmResponse:
+    def _complete_once(self, request: LlmRequest, on_text: Callable[[str], None] | None) -> LlmResponse:
         engine: LlmEngine = self._get_or_create_engine()
         if isinstance(engine, StreamingLlmEngine):
-            return engine.complete_stream(request)
+            return engine.complete_stream(request, on_text=on_text)
         return engine.complete(request)
 
     def close(self) -> None:

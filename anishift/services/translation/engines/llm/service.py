@@ -42,6 +42,50 @@ _OUTPUT_LIMIT_REASONS: Final[frozenset[str]] = frozenset(("length", "max_tokens"
 """Normalized finish reasons that require adaptive splitting."""
 
 
+class _StreamProgress:
+    """Report translated lines while the provider is still streaming them.
+
+    Every finished translation ends with a newline, so counting newlines counts
+    finished lines without parsing the partial answer a second time. Repairs
+    stream only the numbers they ask for, which is why an attempt starts from the
+    count the earlier attempts already earned.
+    """
+
+    __slots__ = ("_base", "_counted", "_done", "_engine_id", "_observer", "_total")
+
+    def __init__(
+        self,
+        observer: TranslationObserver | None,
+        engine_id: str,
+        *,
+        done: int,
+        total: int,
+    ) -> None:
+        """Bind one batch to its observer and the file-wide line counters."""
+        self._observer: TranslationObserver | None = observer
+        self._engine_id: str = engine_id
+        self._done: int = done
+        self._total: int = total
+        self._base: int = 0
+        self._counted: int = 0
+
+    def restart(self, trusted: int) -> None:
+        """Begin one attempt, keeping the lines earlier attempts already earned."""
+        self._base = trusted
+        self._counted = 0
+
+    def consume(self, delta: str) -> None:
+        """Fold one arriving text delta into the reported line count."""
+        if self._observer is None:
+            return
+        newlines: int = delta.count("\n")
+        if newlines == 0:
+            return
+        self._counted += newlines
+        completed: int = min(self._done + self._base + self._counted, self._total)
+        self._observer.progress(self._engine_id, completed, self._total)
+
+
 class LlmTranslateService:
     """Translation engine prompting an injected LLM for numbered output lines."""
 
@@ -107,14 +151,17 @@ class LlmTranslateService:
             raise TranslationEngineError(context=context)
         translated: list[BatchedLine] = []
         limit: int = self._config.max_batch_lines or len(texts)
+        done: int = 0
         for start in range(0, len(texts), limit):
             batch = texts[start : start + limit]
-            translated.extend(self._translate_batch(batch))
+            reporter = _StreamProgress(observer, self.engine_id, done=done, total=len(texts))
+            translated.extend(self._translate_batch(batch, reporter))
+            done += len(batch)
             if observer is not None:
-                observer.progress(self.engine_id, min(start + len(batch), len(texts)), len(texts))
+                observer.progress(self.engine_id, done, len(texts))
         return translated
 
-    def _translate_batch(self, texts: list[str]) -> list[BatchedLine]:
+    def _translate_batch(self, texts: list[str], reporter: _StreamProgress) -> list[BatchedLine]:
         """Translate one bounded batch, repairing only the numbers that failed."""
         expected: tuple[int, ...] = tuple(range(len(texts)))
         results: dict[int, str] = {}
@@ -122,9 +169,10 @@ class LlmTranslateService:
         validation_error: str | None = None
         for _attempt in range(self._config.max_contract_retries + 1):
             request_body = serialize_request([(number, texts[number]) for number in pending])
-            response = self._try_complete(request_body, validation_error=validation_error)
+            reporter.restart(len(results))
+            response = self._try_complete(request_body, reporter, validation_error=validation_error)
             if response is None or self._hit_output_limit(response):
-                return self._split(texts)
+                return self._split(texts, reporter)
             parsed = parse_response(response.text, pending)
             results.update(parsed.entries)
             pending = tuple(number for number in expected if number not in results)
@@ -144,16 +192,17 @@ class LlmTranslateService:
     def _try_complete(
         self,
         request_body: str,
+        reporter: _StreamProgress,
         *,
         validation_error: str | None,
     ) -> LlmCompletionResult | None:
         """Return a completion or None when context length requires splitting."""
         try:
-            return self._complete(request_body, validation_error=validation_error)
+            return self._complete(request_body, reporter, validation_error=validation_error)
         except TranslationContextLengthError:
             return None
 
-    def _split(self, texts: list[str]) -> list[BatchedLine]:
+    def _split(self, texts: list[str], reporter: _StreamProgress) -> list[BatchedLine]:
         """Split a size-limited batch into stable halves or fail one line."""
         if len(texts) == 1:
             context = ErrorContext(
@@ -163,13 +212,14 @@ class LlmTranslateService:
             )
             raise TranslationEngineError(context=context)
         mid = len(texts) // 2
-        left = self._translate_batch(texts[:mid])
-        right = self._translate_batch(texts[mid:])
+        left = self._translate_batch(texts[:mid], reporter)
+        right = self._translate_batch(texts[mid:], reporter)
         return left + right
 
     def _complete(
         self,
         request_body: str,
+        reporter: _StreamProgress,
         *,
         validation_error: str | None,
     ) -> LlmCompletionResult:
@@ -186,7 +236,7 @@ class LlmTranslateService:
             system=self._prompts.system,
             user_parts=tuple(user_parts),
         )
-        return self._completer.complete(request)
+        return self._completer.complete(request, on_text=reporter.consume)
 
     @staticmethod
     def _as_lines(expected: Sequence[int], results: Mapping[int, str]) -> list[BatchedLine]:

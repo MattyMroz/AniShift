@@ -385,7 +385,12 @@ class _LlmCompleter:
         self._service: LlmService = service
         self._cancel: threading.Event = cancel
 
-    def complete(self, request: LlmCompletionRequest) -> LlmCompletionResult:
+    def complete(
+        self,
+        request: LlmCompletionRequest,
+        *,
+        on_text: Callable[[str], None] | None = None,
+    ) -> LlmCompletionResult:
         llm_request = LlmRequest(
             messages=(
                 LlmMessage(role=LlmRole.SYSTEM, parts=(TextPart(request.system),)),
@@ -396,7 +401,7 @@ class _LlmCompleter:
             ),
         )
         try:
-            response = self._service.complete(llm_request, cancel=self._cancel)
+            response = self._service.complete(llm_request, cancel=self._cancel, on_text=on_text)
         except LlmError as error:
             _raise_translation_error(error)
         return LlmCompletionResult(response.text, response.finish_reason)
@@ -452,9 +457,10 @@ def _translation_service(settings: Settings, plan: ExecutionPlan) -> _Translatio
         return _LlmTranslationEngine(
             _llm_config(settings, plan),
             LlmTranslateConfig(
-                # A bounded batch keeps the progress bar alive: the engine reports
-                # progress once per batch, so one batch per file would freeze it.
-                max_batch_lines=engine_config.batch_size,
+                # An LLM reads the whole file at once, which keeps the prompts out
+                # of every extra request. Progress comes from the streamed answer,
+                # not from cutting the file up. Zero means no limit at all.
+                max_batch_lines=snapshot.translation_batch_size or None,
                 style_name=snapshot.llm_translation_style,
                 max_contract_retries=snapshot.translation_max_retries,
             ),

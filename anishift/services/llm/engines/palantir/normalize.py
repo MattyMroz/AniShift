@@ -45,7 +45,13 @@ from anishift.services.llm.types import LlmResponse, LlmUsage
 from anishift.services.llm.wire_protocol import ModelProtocol
 from anishift.utils.logger import get_logger
 
-__all__ = ["merge_google_stream", "normalize_palantir_response"]
+__all__ = [
+    "google_stream_delta",
+    "merge_google_stream",
+    "merge_openai_stream",
+    "normalize_palantir_response",
+    "openai_stream_delta",
+]
 
 logger = get_logger(__name__)
 
@@ -125,6 +131,62 @@ def merge_google_stream(events: tuple[Mapping[str, Any], ...]) -> Mapping[str, A
     if usage is not None:
         payload["usageMetadata"] = usage
     return payload
+
+
+def merge_openai_stream(events: tuple[Mapping[str, Any], ...]) -> Mapping[str, Any]:
+    """Assemble Chat Completions SSE events into one normalizable response mapping.
+
+    Every event carries an incremental ``delta`` rather than a whole message, so
+    the deltas are concatenated into the non-streaming shape the extractor reads.
+    """
+    texts: list[str] = []
+    refusals: list[str] = []
+    finish_reason: object = None
+    usage: object = None
+    for event in events:
+        if event.get("usage") is not None:
+            usage = event["usage"]
+        choice: Mapping[str, Any] | None = _optional_first(event, key="choices")
+        if choice is None:
+            continue
+        if choice.get("finish_reason") is not None:
+            finish_reason = choice["finish_reason"]
+        delta: object = choice.get("delta")
+        if not isinstance(delta, Mapping):
+            continue
+        content: object = delta.get("content")
+        if isinstance(content, str):
+            texts.append(content)
+        refusal: object = delta.get("refusal")
+        if isinstance(refusal, str):
+            refusals.append(refusal)
+    message: dict[str, Any] = {"role": "assistant", "content": "".join(texts)}
+    if refusals:
+        message["refusal"] = "".join(refusals)
+    payload: dict[str, Any] = {"choices": [{"message": message, "finish_reason": finish_reason}]}
+    if usage is not None:
+        payload["usage"] = usage
+    return payload
+
+
+def openai_stream_delta(event: Mapping[str, Any]) -> str:
+    """Return the visible text one Chat Completions stream event carries."""
+    choice: Mapping[str, Any] | None = _optional_first(event, key="choices")
+    if choice is None:
+        return ""
+    delta: object = choice.get("delta")
+    if not isinstance(delta, Mapping):
+        return ""
+    content: object = delta.get("content")
+    return content if isinstance(content, str) else ""
+
+
+def google_stream_delta(event: Mapping[str, Any]) -> str:
+    """Return the visible text one generateContent stream event carries."""
+    candidate: Mapping[str, Any] | None = _optional_first(event, key="candidates")
+    if candidate is None:
+        return ""
+    return "".join(_google_stream_texts(candidate))
 
 
 def _google_stream_texts(candidate: Mapping[str, Any]) -> list[str]:

@@ -114,8 +114,18 @@ class LlmCompleter(Protocol):
     protocol, never the concrete LLM service.
     """
 
-    def complete(self, request: LlmCompletionRequest) -> LlmCompletionResult:
-        """Run one completion and return normalized text plus finish reason."""
+    def complete(
+        self,
+        request: LlmCompletionRequest,
+        *,
+        on_text: Callable[[str], None] | None = None,
+    ) -> LlmCompletionResult:
+        """Run one completion and return normalized text plus finish reason.
+
+        Text reaches *on_text* while the provider is still producing it, which is
+        what lets the engine report progress inside one request. A provider that
+        cannot stream simply never calls it.
+        """
         ...
 
 

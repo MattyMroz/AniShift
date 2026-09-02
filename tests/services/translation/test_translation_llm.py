@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import cast
 
 import pytest
@@ -25,11 +25,18 @@ class _FakeCompleter:
         self.responses: list[LlmCompletionResult | TranslationEngineError] = list(responses)
         self.requests: list[LlmCompletionRequest] = []
 
-    def complete(self, request: LlmCompletionRequest) -> LlmCompletionResult:
+    def complete(
+        self,
+        request: LlmCompletionRequest,
+        *,
+        on_text: Callable[[str], None] | None = None,
+    ) -> LlmCompletionResult:
         self.requests.append(request)
         response = self.responses.pop(0)
         if isinstance(response, TranslationEngineError):
             raise response
+        if on_text is not None:
+            on_text(response.text)
         return response
 
 
@@ -267,7 +274,13 @@ def test_translate_batch_honours_an_explicit_line_limit() -> None:
 
     engine.translate_batch(["1", "2", "3", "4", "5"], source_lang="auto", target_lang="pl", observer=observer)
 
-    assert observer.progress_updates == [("llm", 2, 5), ("llm", 4, 5), ("llm", 5, 5)]
+    assert observer.progress_updates == [
+        ("llm", 1, 5),
+        ("llm", 2, 5),
+        ("llm", 3, 5),
+        ("llm", 4, 5),
+        ("llm", 5, 5),
+    ]
     assert [request.user_parts[2] for request in completer.requests] == ["[0] 1\n[1] 2", "[0] 3\n[1] 4", "[0] 5"]
 
 

@@ -173,14 +173,7 @@ def build_palantir_request(
     builder: PalantirRequestBuilder = request_builder(config.protocol)
     built: PalantirHttpRequest = builder(config, request, options or PalantirGenerationOptions())
     if stream:
-        if config.protocol is not ModelProtocol.GOOGLE_GENERATE:
-            raise_palantir_config_error(
-                "Palantir streaming is available only for the Google generate protocol",
-                field_name="protocol",
-                suggestion="Use the normal completion path for this provider protocol.",
-            )
-        route: str = _STREAM_GENERATE_CONTENT_ROUTE.format(model=quote(config.provider_model_id, safe=""))
-        built = replace(built, url=f"{config.base_url}{route}")
+        built = _streaming_variant(config, built)
     logger.debug(
         "Palantir request built",
         alias=config.alias,
@@ -188,6 +181,24 @@ def build_palantir_request(
         messages=len(request.messages),
     )
     return built
+
+
+def _streaming_variant(config: PalantirModelConfig, built: PalantirHttpRequest) -> PalantirHttpRequest:
+    """Turn one built request into the server-sent-events variant of its protocol.
+
+    Google exposes a dedicated SSE route, while Chat Completions keeps its route
+    and asks for a stream in the body.
+    """
+    if config.protocol is ModelProtocol.OPENAI_CHAT:
+        return replace(built, body={**dict(built.body), "stream": True})
+    if config.protocol is not ModelProtocol.GOOGLE_GENERATE:
+        raise_palantir_config_error(
+            "Palantir streaming is not available for this provider protocol",
+            field_name="protocol",
+            suggestion="Use the normal completion path for this provider protocol.",
+        )
+    route: str = _STREAM_GENERATE_CONTENT_ROUTE.format(model=quote(config.provider_model_id, safe=""))
+    return replace(built, url=f"{config.base_url}{route}")
 
 
 def _build_openai_chat(

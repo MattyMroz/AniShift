@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
@@ -68,8 +69,14 @@ class _RecordingLlmService:
     def __init__(self) -> None:
         self.request: LlmRequest | None = None
 
-    def complete(self, request: LlmRequest, *, cancel: threading.Event) -> LlmResponse:
-        del cancel
+    def complete(
+        self,
+        request: LlmRequest,
+        *,
+        cancel: threading.Event,
+        on_text: Callable[[str], None] | None = None,
+    ) -> LlmResponse:
+        del cancel, on_text
         self.request = request
         return LlmResponse(
             text="result",

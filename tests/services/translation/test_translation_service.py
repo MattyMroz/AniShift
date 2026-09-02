@@ -1,4 +1,5 @@
 import threading
+from collections.abc import Callable
 
 import pytest
 
@@ -82,8 +83,13 @@ class _Observer:
 
 
 class _InvalidLlmCompleter:
-    def complete(self, request: LlmCompletionRequest) -> LlmCompletionResult:
-        del request
+    def complete(
+        self,
+        request: LlmCompletionRequest,
+        *,
+        on_text: Callable[[str], None] | None = None,
+    ) -> LlmCompletionResult:
+        del request, on_text
         return LlmCompletionResult(text="invalid response", finish_reason="stop")
 
 

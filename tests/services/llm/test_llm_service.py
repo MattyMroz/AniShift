@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Never
 
 import pytest
@@ -40,9 +41,17 @@ class FakeStreamingEngine(FakeEngine):
         super().__init__()
         self.stream_calls: int = 0
 
-    def complete_stream(self, request: LlmRequest) -> LlmResponse:
+    def complete_stream(
+        self,
+        request: LlmRequest,
+        *,
+        on_text: Callable[[str], None] | None = None,
+    ) -> LlmResponse:
         self.stream_calls += 1
-        return _response(request.messages[0].parts[0].text)
+        response: LlmResponse = _response(request.messages[0].parts[0].text)
+        if on_text is not None:
+            on_text(response.text)
+        return response
 
 
 class RecordingObserver:

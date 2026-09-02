@@ -8,6 +8,8 @@ from anishift.errors import AniShiftError, TransientError
 from anishift.services._base import EngineInfo
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from anishift.services.llm.types import LlmRequest, LlmResponse
 
 __all__ = ["LlmAttemptObserver", "LlmEngine", "StreamingLlmEngine"]
@@ -30,8 +32,17 @@ class LlmEngine(EngineInfo, Protocol):
 class StreamingLlmEngine(Protocol):
     """Optional engine capability for incrementally received completions."""
 
-    def complete_stream(self, request: LlmRequest) -> LlmResponse:
-        """Run one completion while consuming provider chunks incrementally."""
+    def complete_stream(
+        self,
+        request: LlmRequest,
+        *,
+        on_text: Callable[[str], None] | None = None,
+    ) -> LlmResponse:
+        """Run one completion while consuming provider chunks incrementally.
+
+        Text is handed to *on_text* as it arrives, so a caller can report real
+        progress rather than waiting for the completed response.
+        """
         ...
 
 
