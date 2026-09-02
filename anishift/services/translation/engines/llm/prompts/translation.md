@@ -1,1 +1,1 @@
-Przetłumacz każdy element tablicy `subtitles` na naturalny język polski. Nie łącz, nie pomijaj i nie dodawaj elementów. Przepisz `id` bez zmian, a tłumaczenie umieść w polu `translated`.
+Przetłumacz każdą numerowaną linię na naturalny język polski. Przepisz numer bez zmian i umieść tłumaczenie w tej samej linii, po numerze.
