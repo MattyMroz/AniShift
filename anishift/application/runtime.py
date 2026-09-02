@@ -452,9 +452,9 @@ def _translation_service(settings: Settings, plan: ExecutionPlan) -> _Translatio
         return _LlmTranslationEngine(
             _llm_config(settings, plan),
             LlmTranslateConfig(
-                # The raw preference, not the Google/DeepL default: zero means one
-                # request per file, which the numbered-line contract can carry.
-                max_batch_lines=snapshot.translation_batch_size or None,
+                # A bounded batch keeps the progress bar alive: the engine reports
+                # progress once per batch, so one batch per file would freeze it.
+                max_batch_lines=engine_config.batch_size,
                 style_name=snapshot.llm_translation_style,
                 max_contract_retries=snapshot.translation_max_retries,
             ),
