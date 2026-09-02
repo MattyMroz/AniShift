@@ -272,6 +272,66 @@ def test_google_generate_streams_sse_chunks_and_assembles_the_response() -> None
     assert result.usage.total_tokens == 9
 
 
+def test_openai_chat_streams_sse_deltas_and_assembles_the_response() -> None:
+    captured: list[httpx.Request] = []
+    chunks = [
+        {"choices": [{"delta": {"role": "assistant", "content": "[0] Pierwsza"}}]},
+        {"choices": [{"delta": {"content": "\n[1] Druga"}}]},
+        {
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 6, "completion_tokens": 3, "total_tokens": 9},
+        },
+    ]
+    stream_body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+    response = httpx.Response(200, text=stream_body, headers={"content-type": "text/event-stream"})
+    engine = _engine(_recording_transport(response, captured))
+
+    result = engine.complete_stream(_request())
+
+    assert str(captured[0].url) == f"{_ENROLLMENT}{_OPENAI_ROUTE}/chat/completions"
+    assert json.loads(captured[0].content)["stream"] is True
+    assert result.text == "[0] Pierwsza\n[1] Druga"
+    assert result.finish_reason == "stop"
+    assert result.usage.total_tokens == 9
+
+
+def test_openai_chat_stream_hands_over_every_delta_as_it_arrives() -> None:
+    chunks = [
+        {"choices": [{"delta": {"content": "[0] Jeden\n"}}]},
+        {"choices": [{"delta": {"content": "[1] Dwa\n"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    stream_body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+    response = httpx.Response(200, text=stream_body, headers={"content-type": "text/event-stream"})
+    engine = _engine(httpx.MockTransport(lambda request: response))
+    arrived: list[str] = []
+
+    engine.complete_stream(_request(), on_text=arrived.append)
+
+    assert arrived == ["[0] Jeden\n", "[1] Dwa\n"]
+
+
+def test_a_protocol_without_a_stream_shape_uses_the_normal_path_and_never_reports() -> None:
+    captured: list[httpx.Request] = []
+    response = httpx.Response(
+        200,
+        json={
+            "content": [{"type": "text", "text": "Gotowe."}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 2, "output_tokens": 1},
+        },
+    )
+    config = _config(protocol=ModelProtocol.ANTHROPIC_MESSAGES, provider_path=_ANTHROPIC_ROUTE)
+    engine = _engine(_recording_transport(response, captured), config)
+    arrived: list[str] = []
+
+    result = engine.complete_stream(_request(), on_text=arrived.append)
+
+    assert result.text == "Gotowe."
+    assert arrived == []
+    assert "stream" not in json.loads(captured[0].content)
+
+
 def test_google_stream_rejects_a_malformed_sse_event() -> None:
     response = httpx.Response(200, text="data: not-json\n\n", headers={"content-type": "text/event-stream"})
     config = _config(protocol=ModelProtocol.GOOGLE_GENERATE, provider_path=_GOOGLE_ROUTE)

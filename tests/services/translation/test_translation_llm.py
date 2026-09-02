@@ -40,6 +40,25 @@ class _FakeCompleter:
         return response
 
 
+class _ChunkedCompleter:
+    def __init__(self, text: str, chunk: int = 4) -> None:
+        self.text: str = text
+        self.chunk: int = chunk
+        self.requests: list[LlmCompletionRequest] = []
+
+    def complete(
+        self,
+        request: LlmCompletionRequest,
+        *,
+        on_text: Callable[[str], None] | None = None,
+    ) -> LlmCompletionResult:
+        self.requests.append(request)
+        if on_text is not None:
+            for start in range(0, len(self.text), self.chunk):
+                on_text(self.text[start : start + self.chunk])
+        return _result(self.text)
+
+
 class _Observer:
     def __init__(self) -> None:
         self.progress_updates: list[tuple[str, int, int]] = []
@@ -282,6 +301,32 @@ def test_translate_batch_honours_an_explicit_line_limit() -> None:
         ("llm", 5, 5),
     ]
     assert [request.user_parts[2] for request in completer.requests] == ["[0] 1\n[1] 2", "[0] 3\n[1] 4", "[0] 5"]
+
+
+def test_a_whole_file_reports_progress_while_the_answer_still_streams() -> None:
+    texts = [str(number) for number in range(6)]
+    completer = _ChunkedCompleter(_numbered(*texts))
+    observer = _Observer()
+    engine = LlmTranslateService(LlmTranslateConfig(max_batch_lines=None), completer=completer)
+
+    engine.translate_batch(texts, source_lang="auto", target_lang="pl", observer=observer)
+
+    assert len(completer.requests) == 1
+    completed = [update[1] for update in observer.progress_updates]
+    assert completed == sorted(completed)
+    assert completed[-1] == len(texts)
+    assert len(completed) > 1
+    assert {update[2] for update in observer.progress_updates} == {len(texts)}
+
+
+def test_stream_progress_never_runs_past_the_batch_total() -> None:
+    completer = _ChunkedCompleter(_numbered("jeden", "dwa") + "\n\n\n\n\n")
+    observer = _Observer()
+    engine = LlmTranslateService(LlmTranslateConfig(max_batch_lines=None), completer=completer)
+
+    engine.translate_batch(["1", "2"], source_lang="auto", target_lang="pl", observer=observer)
+
+    assert max(update[1] for update in observer.progress_updates) == 2
 
 
 def test_is_available_true_with_completer() -> None:
