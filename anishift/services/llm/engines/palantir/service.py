@@ -11,10 +11,8 @@ engine has a single source of truth and never reads the environment itself. It
 carries no retry of its own — that stays in the LLM domain retry policy — and no
 cancellation, which the retry policy checks between attempts.
 
-Google generateContent and OpenAI Chat Completions both answer over server-sent
-events when invoked through ``LlmService``, which lets a caller watch the text
-grow instead of waiting for the whole answer. Anthropic and xAI have no stream
-shape here, so they quietly fall back to the ordinary completion path.
+Google generateContent calls use the provider SSE route when invoked through
+``LlmService``; the other proxy protocols retain their ordinary completion path.
 
 Laziness is deliberate and structural: ``palantir/__init__.py`` imports neither
 this module nor its HTTP module, and the registry names this submodule instead
