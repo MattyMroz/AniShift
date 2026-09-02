@@ -79,6 +79,9 @@ _STATUS_ROWS: Final[int] = 1
 _ZERO_MEANS_DEFAULT: Final[frozenset[str]] = frozenset({"translation_batch_size"})
 """Fields where zero is not a quantity but a request for the engine default."""
 
+_ALL_LINES_LABEL: Final[str] = "wszystkie"
+"""Shown when one request carries every line of a file, as the LLM engine does."""
+
 _BACK_KEY: Final[str] = "back"
 """Stable action key returning to the parent menu."""
 
@@ -855,7 +858,7 @@ class SettingsController:
     ) -> _MenuItem:
         spec: SettingSpec = _required_spec(snapshot.specs, setting_id)
         value: SettingValue = self._effective_value(snapshot, spec)
-        return _MenuItem(f"setting:{setting_id}", label, _format_value(setting_id, value), section)
+        return _MenuItem(f"setting:{setting_id}", label, _format_value(setting_id, value, snapshot.settings), section)
 
     def _voice_menu_items(self) -> tuple[_MenuItem, ...]:
         items: list[_MenuItem] = [
@@ -1482,17 +1485,29 @@ def _choice_label(setting_id: str, value: str) -> str:
     return value.replace("_", " ").strip().title()
 
 
-def _asks_for_the_engine_default(setting_id: str, value: SettingValue) -> bool:
-    """Report whether the stored value asks for a default instead of naming one."""
-    if value is None:
-        return True
+def _zero_means_engine_default(setting_id: str, value: SettingValue) -> bool:
+    """Report whether zero asks for the engine default instead of naming a count."""
     if isinstance(value, bool) or not isinstance(value, int):
         return False
     return value == 0 and setting_id in _ZERO_MEANS_DEFAULT
 
 
-def _format_value(setting_id: str, value: SettingValue) -> str:
-    if _asks_for_the_engine_default(setting_id, value):
+def _engine_default_label(settings: UserSettings) -> str:
+    """Name what one request carries, when the active engine makes that knowable.
+
+    Only the LLM engine has a knowable answer here: it sends the whole file. The
+    remaining engines keep a batch default owned by the domain layer, which this
+    panel must not import.
+    """
+    if settings.translation_engine == "llm":
+        return _ALL_LINES_LABEL
+    return "domyślnie"
+
+
+def _format_value(setting_id: str, value: SettingValue, settings: UserSettings) -> str:
+    if _zero_means_engine_default(setting_id, value):
+        return _engine_default_label(settings)
+    if value is None:
         return "domyślnie"
     if isinstance(value, bool):
         return "tak" if value else "nie"
@@ -1507,9 +1522,7 @@ def _format_value(setting_id: str, value: SettingValue) -> str:
         return f"{value:g}{suffix}"
     if isinstance(value, str):
         return _choice_label(setting_id, value)
-    if isinstance(value, (tuple, frozenset)):
-        return _format_collection(setting_id, value)
-    return str(value)
+    return _format_collection(setting_id, value) if isinstance(value, (tuple, frozenset)) else str(value)
 
 
 def _format_collection(setting_id: str, value: Iterable[object]) -> str:

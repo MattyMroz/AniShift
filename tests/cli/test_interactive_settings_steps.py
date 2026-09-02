@@ -189,6 +189,16 @@ def test_a_zero_batch_size_is_shown_as_the_engine_default(panel: SettingsControl
     assert _value_shown(panel, "translation_batch_size") == "domyślnie"
 
 
+def test_a_zero_batch_size_is_shown_as_every_line_for_the_llm_engine(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    _use_llm(service)
+    _enter(panel, "translation")
+
+    assert _value_shown(panel, "translation_batch_size") == "wszystkie"
+
+
 def test_an_unbounded_gain_steps_by_halves(panel: SettingsController, service: FakeSettingsService) -> None:
     _enter(panel, "tts")
     _focus(panel, "narrator_mix_base_gain_db")

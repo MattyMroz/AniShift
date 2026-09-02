@@ -320,7 +320,7 @@ class UserSettings:
     llm_provider_model_id: str = "gemini-3.5-flash-lite"
     llm_temperature: float | None = 0.3
     llm_top_p: float | None = 1.0
-    llm_max_output_tokens: int | None = 8192
+    llm_max_output_tokens: int | None = 32000
     llm_translation_style: str = DEFAULT_STYLE_NAME
     llm_max_concurrency: int = 4
     primary_model_alias: str = ""
