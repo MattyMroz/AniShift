@@ -18,6 +18,7 @@ from anishift.application import (
     ArtifactKind,
     ArtifactLifetime,
     ArtifactState,
+    CancellationToken,
     InspectedSourceGroup,
     InspectedWorkspace,
     SourceGroup,
@@ -73,7 +74,7 @@ group = SimpleNamespace(
 )
 facade = SimpleNamespace(
     workspace_root=Path("workspace"),
-    discover=lambda: SimpleNamespace(groups=(group,)),
+    discover=lambda cancel=None: SimpleNamespace(groups=(group,)),
     get_preset=lambda preset_id: preset_id,
     plan_auto=lambda group_ids, preset: plan,
     execute=lambda plan, sink: result,
@@ -156,7 +157,8 @@ class _Facade:
         self._result: RunResult | None = result
         self._failure: BaseException | None = failure
 
-    def discover(self) -> InspectedWorkspace:
+    def discover(self, *, cancel: CancellationToken | None = None) -> InspectedWorkspace:
+        del cancel
         self.calls.append("discover")
         return self.workspace
 

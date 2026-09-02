@@ -489,15 +489,18 @@ def test_loading_and_filtering_the_catalog_performs_no_network_access(
     assert [entry.alias for entry in selected] == ["foundry/gpt-main"]
 
 
-def test_shipped_example_catalog_is_valid_and_free_of_real_identifiers() -> None:
-    catalog = parse_model_catalog(model_catalog_example_path().read_text(encoding="utf-8"))
+def test_shipped_example_catalog_is_valid_and_free_of_secrets() -> None:
+    source: str = model_catalog_example_path().read_text(encoding="utf-8")
+    catalog = parse_model_catalog(source)
+    lowered: str = source.lower()
 
     assert catalog.issues == ()
     assert {entry.protocol for entry in catalog.providers.values()} == set(ModelProtocol)
     assert catalog.defaults.primary in catalog.models
     assert catalog.defaults.translation in catalog.models
-    assert all(entry.model_id.startswith("replace-with-") for entry in catalog.models.values())
     assert all(entry.path.startswith("/api/v2/llm/proxy/") for entry in catalog.providers.values())
+    assert "http" not in lowered
+    assert not any(key in lowered for key in ('"token"', '"api_key"', '"apikey"', '"authorization"'))
 
 
 def test_shipped_example_catalog_names_every_model_in_english() -> None:
