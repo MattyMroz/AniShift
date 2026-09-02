@@ -1,8 +1,10 @@
-"""LLM translation engine using a strict JSON response contract.
+"""LLM translation engine using a strict numbered-line response contract.
 
 The engine is provider-agnostic and never imports ``anishift.services.llm``.
-Invalid model output gets bounded contract retries. Context and output limits
-use deterministic binary splitting; invalid JSON is never hidden by splitting.
+A response that violates the contract is repaired by asking again for the
+affected numbers only, so lines already translated survive between attempts.
+Context and output limits use deterministic binary splitting; a contract
+violation is never hidden by splitting.
 """
 
 from __future__ import annotations
@@ -13,11 +15,7 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.translation.constants import TARGET_LANG
 from anishift.services.translation.engines.llm.config import LlmTranslateConfig
 from anishift.services.translation.engines.llm.constants import RETRY_ERROR_PLACEHOLDER
-from anishift.services.translation.engines.llm.json_contract import (
-    JsonContractError,
-    parse_translation_response,
-    serialize_translation_request,
-)
+from anishift.services.translation.engines.llm.line_contract import parse_response, serialize_request
 from anishift.services.translation.engines.llm.prompts import PromptLoader
 from anishift.services.translation.errors import (
     TranslationConfigError,
@@ -34,6 +32,8 @@ from anishift.services.translation.protocols import (
 from anishift.services.translation.types import BatchedLine
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from anishift.services.translation.protocols import LlmCompleter
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ _OUTPUT_LIMIT_REASONS: Final[frozenset[str]] = frozenset(("length", "max_tokens"
 
 
 class LlmTranslateService:
-    """Translation engine prompting an injected LLM for strict JSON output."""
+    """Translation engine prompting an injected LLM for numbered output lines."""
 
     __slots__ = ("_completer", "_config", "_prompts")
 
@@ -106,47 +106,50 @@ class LlmTranslateService:
             )
             raise TranslationEngineError(context=context)
         translated: list[BatchedLine] = []
-        for start in range(0, len(texts), self._config.max_batch_lines):
-            batch = texts[start : start + self._config.max_batch_lines]
+        limit: int = self._config.max_batch_lines or len(texts)
+        for start in range(0, len(texts), limit):
+            batch = texts[start : start + limit]
             translated.extend(self._translate_batch(batch))
             if observer is not None:
                 observer.progress(self.engine_id, min(start + len(batch), len(texts)), len(texts))
         return translated
 
     def _translate_batch(self, texts: list[str]) -> list[BatchedLine]:
-        """Translate one bounded batch under the strict response contract."""
-        request_json = serialize_translation_request(texts)
+        """Translate one bounded batch, repairing only the numbers that failed."""
+        expected: tuple[int, ...] = tuple(range(len(texts)))
+        results: dict[int, str] = {}
+        pending: tuple[int, ...] = expected
         validation_error: str | None = None
         for _attempt in range(self._config.max_contract_retries + 1):
-            response = self._try_complete(request_json, validation_error=validation_error)
+            request_body = serialize_request([(number, texts[number]) for number in pending])
+            response = self._try_complete(request_body, validation_error=validation_error)
             if response is None or self._hit_output_limit(response):
                 return self._split(texts)
-            try:
-                parsed = parse_translation_response(response.text, len(texts))
-            except JsonContractError as error:
-                validation_error = str(error)
-                continue
-            return self._as_lines(parsed)
+            parsed = parse_response(response.text, pending)
+            results.update(parsed.entries)
+            pending = tuple(number for number in expected if number not in results)
+            if not pending:
+                return self._as_lines(expected, results)
+            if parsed.violation is not None:
+                validation_error = parsed.violation.message
 
         last_violation = validation_error or "No validation diagnosis was available."
         context = ErrorContext(
             code=ErrorCode.TRANSLATION_FAILED,
-            message=(
-                f"LLM did not return a valid translation JSON document. Last contract violation: {last_violation}"
-            ),
+            message=(f"LLM did not return valid numbered translation lines. Last contract violation: {last_violation}"),
             suggestion="Check the selected model and packaged translation prompts.",
         )
         raise TranslationEngineError(context=context)
 
     def _try_complete(
         self,
-        request_json: str,
+        request_body: str,
         *,
         validation_error: str | None,
     ) -> LlmCompletionResult | None:
         """Return a completion or None when context length requires splitting."""
         try:
-            return self._complete(request_json, validation_error=validation_error)
+            return self._complete(request_body, validation_error=validation_error)
         except TranslationContextLengthError:
             return None
 
@@ -166,7 +169,7 @@ class LlmTranslateService:
 
     def _complete(
         self,
-        request_json: str,
+        request_body: str,
         *,
         validation_error: str | None,
     ) -> LlmCompletionResult:
@@ -174,7 +177,7 @@ class LlmTranslateService:
         user_parts: list[str] = [
             self._prompts.translation,
             self._prompts.style,
-            request_json,
+            request_body,
         ]
         if validation_error is not None:
             retry = self._prompts.retry.replace(RETRY_ERROR_PLACEHOLDER, validation_error)
@@ -186,9 +189,9 @@ class LlmTranslateService:
         return self._completer.complete(request)
 
     @staticmethod
-    def _as_lines(texts: list[str]) -> list[BatchedLine]:
-        """Wrap successful translated texts as engine results."""
-        return [BatchedLine(text=text) for text in texts]
+    def _as_lines(expected: Sequence[int], results: Mapping[int, str]) -> list[BatchedLine]:
+        """Wrap trusted translations as engine results, in request order."""
+        return [BatchedLine(text=results[number]) for number in expected]
 
     @staticmethod
     def _hit_output_limit(response: LlmCompletionResult) -> bool:

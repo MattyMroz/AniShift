@@ -18,18 +18,18 @@ class LlmTranslateConfig:
     """Runtime config for the LLM translation engine.
 
     Attributes:
-        max_batch_lines: Maximum non-empty lines sent in one completion.
+        max_batch_lines: Maximum non-empty lines per completion; None sends all.
         style_name: Selected packaged translation style.
-        max_contract_retries: Additional attempts after invalid JSON output.
+        max_contract_retries: Additional attempts after a contract violation.
     """
 
-    max_batch_lines: int = 1000
+    max_batch_lines: int | None = None
     style_name: str = DEFAULT_STYLE_NAME
     max_contract_retries: int = 3
 
     def __post_init__(self) -> None:
         """Validate batching, style and retry limits."""
-        if self.max_batch_lines <= 0:
+        if self.max_batch_lines is not None and self.max_batch_lines <= 0:
             msg = "max_batch_lines must be greater than zero"
             raise ValueError(msg)
         if not self.style_name.strip() or self.style_name != self.style_name.strip():
