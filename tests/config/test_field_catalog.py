@@ -116,7 +116,7 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
     assert all(spec.is_secret is (spec.scope is SettingScope.SECRET) for spec in specs)
     assert catalog["translation_engine"].allowed_values == tuple(available_translation_engine_ids())
     assert catalog["llm_provider"].allowed_values == tuple(available_llm_engine_ids())
-    assert catalog["llm_translation_style"].allowed_values == ("neutral",)
+    assert catalog["llm_translation_style"].allowed_values == ("adult-extreme", "funny", "neutral")
     assert catalog["llm_max_concurrency"].default == 4
     assert catalog["llm_max_concurrency"].maximum == 16
     assert catalog["tts_engine"].allowed_values == tuple(available_tts_engine_ids())

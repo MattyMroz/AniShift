@@ -24,11 +24,13 @@ def _write_required_prompts(root: Path, *, retry: str | None = None) -> None:
 def test_packaged_prompts_load_as_polish_markdown_resources() -> None:
     prompts = PromptLoader().load("neutral")
 
-    assert available_style_names() == ("neutral",)
+    assert available_style_names() == ("adult-extreme", "funny", "neutral")
     assert "polski" in prompts.system
     assert "Przetłumacz" in prompts.translation
     assert "{{validation_error}}" in prompts.retry
     assert "neutralny" in prompts.style
+    assert PromptLoader().load("adult-extreme").style
+    assert PromptLoader().load("funny").style
 
 
 def test_loader_discovers_immediate_markdown_styles_in_stable_order(tmp_path: Path) -> None:
