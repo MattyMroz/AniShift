@@ -24,7 +24,7 @@ from anishift.services.composition.commands import (
 )
 from anishift.services.composition.config import CompositionConfig
 from anishift.services.composition.errors import CompositionConfigError
-from anishift.services.composition.fonts import attachment_font_names, missing_fonts
+from anishift.services.composition.fonts import font_embedding_warnings
 from anishift.services.composition.paths import filter_safe_copy, output_path, temporary_sibling
 from anishift.services.composition.probe import (
     audio_codec_name,
@@ -501,17 +501,16 @@ class CompositionService:
         *,
         cancel: threading.Event | None,
     ) -> tuple[str, ...]:
-        """Return one warning per font referenced but not attached."""
+        """Report absent attachments or unverified font-family coverage."""
         subtitle: Path | None = plan.burn_subtitle or (plan.subtitles[0].path if plan.subtitles else None)
         if subtitle is None:
             return ()
         info: MediaCatalog = source_tracks(plan.source_path, cancel=cancel, runner=self._probe_runner)
-        available: frozenset[str] = attachment_font_names(info.attachments)
-        missing: tuple[str, ...] = missing_fonts(subtitle, available)
-        if not missing:
+        warnings: tuple[str, ...] = font_embedding_warnings(subtitle, info.attachments)
+        if not warnings:
             return ()
-        logger.warning("Composition font missing", scope_id=plan.scope_id, font_count=len(missing))
-        return tuple(f"font not embedded: {name}" for name in missing)
+        logger.warning("Composition font embedding warning", scope_id=plan.scope_id, font_count=len(warnings))
+        return warnings
 
     def _container_font_warnings(
         self,
@@ -519,16 +518,14 @@ class CompositionService:
         *,
         cancel: threading.Event | None,
     ) -> tuple[str, ...]:
-        """Return missing-font warnings for a target-specific request."""
+        """Report font embedding uncertainty for a target-specific request."""
         subtitle: Path | None = request.burn_subtitle
         if subtitle is None and request.attached_subtitles:
             subtitle = request.attached_subtitles[0].path
         if subtitle is None:
             return ()
         info: MediaCatalog = source_tracks(request.source_video, cancel=cancel, runner=self._probe_runner)
-        available: frozenset[str] = attachment_font_names(info.attachments)
-        missing: tuple[str, ...] = missing_fonts(subtitle, available)
-        return tuple(f"font not embedded: {name}" for name in missing)
+        return font_embedding_warnings(subtitle, info.attachments)
 
 
 def _appended_track_names(plan: CompositionPlan) -> tuple[str, ...]:

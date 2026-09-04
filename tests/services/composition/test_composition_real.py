@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -241,3 +242,75 @@ def test_mp4_duration_excludes_original_audio_when_dropped(tmp_path: Path) -> No
     )
 
     assert source_duration_us(result.output_path, ffprobe=service.ffprobe) == pytest.approx(1_000_000, abs=100_000)
+
+
+@pytest.mark.skipif(FFMPEG is None or MKVMERGE is None, reason="bundled tools are unavailable")
+def test_real_font_attachment_survives_merge_without_false_missing_warning(tmp_path: Path) -> None:
+    font: Path = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "segoeui.ttf"
+    if not font.is_file():
+        pytest.skip("The locally installed Segoe UI font is unavailable")
+    video: Path = tmp_path / "video.mkv"
+    _sample_video(video, duration_s=1)
+    source: Path = tmp_path / "Episode.mkv"
+    subprocess.run(  # noqa: S603
+        [
+            str(FFMPEG),
+            "-y",
+            "-i",
+            str(video),
+            "-c",
+            "copy",
+            "-attach",
+            str(font),
+            "-metadata:s:t:0",
+            "mimetype=application/x-truetype-font",
+            "-metadata:s:t:0",
+            "filename=segoeui.ttf",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=15.0,
+    )
+    source_bytes: bytes = source.read_bytes()
+    subtitle: Path = tmp_path / "Episode.pl.ass"
+    subtitle.write_text(_ASS.replace("Arial", "Segoe UI"), encoding="utf-8")
+    service: CompositionService = CompositionService(CompositionConfig())
+
+    result: ContainerCompositionResult = service.compose_container(
+        ContainerCompositionRequest(
+            source_video=source,
+            destination=tmp_path / "Episode.pl.mkv",
+            target=ContainerTarget.MKV,
+            burn_subtitle=None,
+            attached_subtitles=(AttachedSubtitle(subtitle, SubtitleRole.FULL, "pol", "Napisy PL"),),
+            narration_audio=None,
+            keep_original_audio=True,
+        )
+    )
+
+    assert identify(result.output_path).attachments == ("segoeui.ttf",)
+    extracted_font: Path = tmp_path / "extracted-font.ttf"
+    subprocess.run(  # noqa: S603
+        [
+            str(FFMPEG),
+            "-y",
+            "-dump_attachment:t:0",
+            str(extracted_font),
+            "-i",
+            str(result.output_path),
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "0",
+            "-f",
+            "null",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+        timeout=15.0,
+    )
+    assert extracted_font.read_bytes() == font.read_bytes()
+    assert source.read_bytes() == source_bytes
+    assert result.warnings == ("font embedding not verified: Segoe UI",)

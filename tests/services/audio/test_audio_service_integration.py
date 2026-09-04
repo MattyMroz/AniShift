@@ -12,13 +12,14 @@ from anishift.platform.binaries import Binary, resolve_binary
 from anishift.services.audio.commands import CommandResult, SubprocessRunner
 from anishift.services.audio.config import AudioConfig
 from anishift.services.audio.errors import AudioProcessError
-from anishift.services.audio.probe import measure_decoded_duration, probe_audio
+from anishift.services.audio.probe import measure_decoded_duration, probe_audio, probe_pcm_wav
 from anishift.services.audio.service import AudioService, _notify, _replace_output
 from anishift.services.audio.transcode import AudioTranscodeService
 from anishift.services.audio.types import (
     AudioCodecProfile,
     AudioFormat,
     AudioRenderRequest,
+    AudioRenderResult,
     AudioRenderStatus,
     TimedClip,
 )
@@ -39,10 +40,13 @@ class _RecordingRunner:
         *,
         fail_operation: str = "",
         fail_occurrence: int = 1,
+        force_rf64: bool = False,
     ) -> None:
         self._delegate = SubprocessRunner()
         self._fail_operation = fail_operation
         self._fail_occurrence = fail_occurrence
+        self._force_rf64: bool = force_rf64
+        self.rf64_operations: list[str] = []
         self._operation_counts: dict[str, int] = {}
         self.operations: list[str] = []
         self.timeouts: dict[str, float] = {}
@@ -56,6 +60,11 @@ class _RecordingRunner:
         cancel: threading.Event | None = None,
         on_stdout_line: Callable[[str], None] | None = None,
     ) -> CommandResult:
+        if self._force_rf64 and "-rf64" in command:
+            mode_index: int = command.index("-rf64") + 1
+            assert command[mode_index] == "auto"
+            command = (*command[:mode_index], "always", *command[mode_index + 1 :])
+            self.rf64_operations.append(operation)
         self.operations.append(operation)
         self.timeouts[operation] = timeout_s
         occurrence: int = self._operation_counts.get(operation, 0) + 1
@@ -152,6 +161,71 @@ def test_real_transcode_reports_progress_before_publishing_output(tmp_path: Path
     assert progress
     assert progress[-1] == 99
     assert not any(destination_existed)
+
+
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+def test_small_real_rf64_clip_normalizes_and_renders_rf64_narrator_and_sidecar(tmp_path: Path) -> None:
+    assert FFMPEG is not None
+    assert FFPROBE is not None
+    clip_path: Path = tmp_path / "rf64-clip.wav"
+    SubprocessRunner().run(
+        (
+            str(FFMPEG),
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=0.2",
+            "-c:a",
+            "pcm_s16le",
+            "-rf64",
+            "always",
+            "-y",
+            str(clip_path),
+        ),
+        operation="rf64_fixture",
+        timeout_s=15.0,
+    )
+    assert clip_path.read_bytes()[:4] == b"RF64"
+    assert probe_pcm_wav(clip_path) is None
+    runner: _RecordingRunner = _RecordingRunner(force_rf64=True)
+    service: AudioService = AudioService(
+        AudioConfig(codec_profile=AudioCodecProfile.WAV),
+        runner=runner,
+        ffmpeg=FFMPEG,
+        ffprobe=FFPROBE,
+    )
+    request: AudioRenderRequest = AudioRenderRequest(
+        scope_id="rf64-acceptance",
+        source_path=tmp_path / "Episode.mkv",
+        source_audio_path=None,
+        clips=(_timed_clip(clip_path),),
+        temporary_root=tmp_path / "audio-temp",
+    )
+
+    result: AudioRenderResult = service.render(request)
+
+    assert result.status is AudioRenderStatus.COMPLETED
+    assert result.output_path is not None
+    assert result.narrator_path is not None
+    assert result.output_probe is not None
+    assert runner.operations.count("normalize_clip") == 1
+    assert runner.rf64_operations == ["wrap_narrator", "render_output"]
+    assert result.narrator_path.read_bytes()[:4] == b"RF64"
+    assert result.output_path.read_bytes()[:4] == b"RF64"
+    assert result.output_path.stat().st_size < 100_000
+    assert result.output_probe.codec_name == "pcm_s16le"
+    assert result.output_probe.duration_ms == 300
+    assert (
+        measure_decoded_duration(
+            result.output_path,
+            ffmpeg=FFMPEG,
+            runner=SubprocessRunner(),
+            timeout_s=15.0,
+        )
+        == 300
+    )
 
 
 @pytest.mark.skipif(

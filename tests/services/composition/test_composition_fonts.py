@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from anishift.services.composition.fonts import attachment_font_names, font_names, missing_fonts
+import pytest
+
+from anishift.services.composition.fonts import (
+    attachment_font_names,
+    font_embedding_warnings,
+    font_names,
+    missing_fonts,
+)
 
 _ASS = """[Script Info]
 ScriptType: v4.00+
@@ -47,3 +54,28 @@ def test_missing_fonts_reports_only_absent_ones(tmp_path: Path) -> None:
 
     assert "Trebuchet MS" in missing
     assert "Open Sans Semibold" not in missing
+
+
+@pytest.mark.parametrize(
+    ("attachments", "prefix"),
+    [
+        ((), "font not embedded"),
+        (("cover.jpg",), "font not embedded"),
+        (("unrelated.ttf",), "font embedding not verified"),
+        (
+            ("Open Sans Semibold.ttf", "Trebuchet MS.ttf", "Comic Sans MS.ttf"),
+            "font embedding not verified",
+        ),
+    ],
+)
+def test_font_embedding_claims_do_not_infer_families_from_filenames(
+    tmp_path: Path,
+    attachments: tuple[str, ...],
+    prefix: str,
+) -> None:
+    subtitle: Path = tmp_path / "episode.ass"
+    subtitle.write_text(_ASS, encoding="utf-8")
+
+    warnings: tuple[str, ...] = font_embedding_warnings(subtitle, attachments)
+
+    assert warnings == tuple(f"{prefix}: {name}" for name in ("Comic Sans MS", "Open Sans Semibold", "Trebuchet MS"))
