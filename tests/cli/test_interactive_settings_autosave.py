@@ -4,10 +4,11 @@ import time
 from typing import cast
 
 import pytest
+from rich.cells import cell_len
 
 from anishift.application import AppService, AutoPreset, AutoPresetDraft, EnvironmentSettingStatus
 from anishift.application.intents import ProductIntent, ProductKind
-from anishift.cli.interactive.settings import _PRODUCTS, SettingsController, _Feedback
+from anishift.cli.interactive.settings import _PRODUCTS, SettingsController, SettingsResult, _Feedback
 from anishift.config.field_access import assign_setting_value, read_setting_value
 from anishift.config.field_catalog import (
     SettingCatalogContext,
@@ -16,6 +17,7 @@ from anishift.config.field_catalog import (
     setting_catalog,
 )
 from anishift.config.presets import DEFAULT_PRESET_ID
+from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 
 _DELAY = 0.5
@@ -31,6 +33,8 @@ class FakeSettingsService:
             {ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO},
         )
         self.preset_saves = 0
+        self.environment: Settings = Settings.model_construct()
+        self.environment_saves: list[tuple[str, str]] = []
 
     def settings_snapshot(self) -> UserSettings:
         return self.settings
@@ -57,6 +61,13 @@ class FakeSettingsService:
 
     def update_secret(self, setting_id: str, value: str | None) -> None:
         self.secrets.append((setting_id, value))
+
+    def current_settings(self) -> Settings:
+        return self.environment
+
+    def update_environment_setting(self, setting_id: str, value: str) -> None:
+        self.environment_saves.append((setting_id, value))
+        self.environment = self.environment.model_copy(update={setting_id: value})
 
     def reset_settings(self) -> UserSettings:
         self.resets += 1
@@ -666,3 +677,293 @@ def test_a_confirmed_reset_says_nothing(panel: SettingsController, service: Fake
 
     assert _stored(service, "subtitle_max_chars_per_line") == 42
     assert panel._feedback is None
+
+
+def test_output_edit_preserves_every_previously_requested_product(service: FakeSettingsService) -> None:
+    service.products = frozenset(ProductKind) - {ProductKind.NARRATION_AUDIO}
+    panel = SettingsController(cast("AppService", service), lambda: None)
+    _activate(panel, "category:output")
+    panel._selected = next(
+        index for index, (product, _) in enumerate(_PRODUCTS) if product is ProductKind.NARRATION_AUDIO
+    )
+
+    panel.handle_key("space")
+
+    assert service.products == frozenset(ProductKind)
+
+
+def test_every_output_product_is_selectable() -> None:
+    assert {product for product, _label in _PRODUCTS} == set(ProductKind)
+
+
+def test_failed_save_keeps_the_edit_and_blocks_navigation(
+    panel: SettingsController,
+    service: FakeSettingsService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _activate(panel, "category:subtitles")
+    panel.handle_key("right")
+    selected = panel._selected
+
+    def fail_save(setting_id: str, value: SettingValue) -> UserSettings:
+        del setting_id, value
+        raise OSError("synthetic write failure")
+
+    monkeypatch.setattr(service, "update_setting", fail_save)
+    panel.handle_key("down")
+
+    assert panel._selected == selected
+    assert service.settings.subtitle_max_chars_per_line == 42
+    assert panel._pending is not None
+    assert panel._pending.value == 43
+    assert panel._feedback is not None
+    assert "Nie udało się zapisać" in panel._feedback.text
+
+
+def test_retrying_a_failed_save_commits_before_leaving(
+    panel: SettingsController,
+    service: FakeSettingsService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _activate(panel, "category:subtitles")
+    panel.handle_key("right")
+    update = service.update_setting
+
+    def fail_save(setting_id: str, value: SettingValue) -> UserSettings:
+        del setting_id, value
+        raise OSError("synthetic write failure")
+
+    monkeypatch.setattr(service, "update_setting", fail_save)
+    panel.handle_key("escape")
+    assert panel._category is not None
+    monkeypatch.setattr(service, "update_setting", update)
+
+    panel.handle_key("escape")
+
+    assert panel._category is None
+    assert service.settings.subtitle_max_chars_per_line == 43
+    assert len(service.saves) == 1
+
+
+def test_enter_commits_a_typed_value_exactly_once(panel: SettingsController, service: FakeSettingsService) -> None:
+    _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+    panel.handle_key("text:60")
+
+    panel.handle_key("enter")
+
+    assert service.saves == [("subtitle_max_chars_per_line", 60)]
+
+
+@pytest.mark.parametrize("field", ["subtitle_max_chars_per_line", "subtitle_max_lines_per_event"])
+def test_enter_without_editing_writes_nothing(
+    panel: SettingsController,
+    service: FakeSettingsService,
+    field: str,
+) -> None:
+    _open_field(panel, "subtitles", field)
+
+    panel.handle_key("enter")
+
+    assert service.saves == []
+
+
+def test_text_cursor_can_replace_an_internal_character(panel: SettingsController) -> None:
+    _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+    panel.handle_key("home")
+    panel.handle_key("delete")
+    panel.handle_key("text:6")
+
+    assert panel._editor is not None
+    assert panel._editor.buffer == "62"
+
+
+def test_secret_paste_waits_for_enter_and_is_masked(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    _activate(panel, "category:connections")
+    _activate(panel, "connection:gemini")
+    _activate(panel, "connection-secret")
+    secret: str = "synthetic-paste-secret-sentinel"  # noqa: S105
+
+    panel.handle_key(f"paste:{secret}")
+
+    assert service.secrets == []
+    assert secret not in panel.render(100, 30).plain
+    panel.handle_key("enter")
+    assert service.secrets == [("gemini_api_key", secret)]
+
+
+def test_multiline_secret_paste_is_rejected_without_echoing(panel: SettingsController) -> None:
+    _activate(panel, "category:connections")
+    _activate(panel, "connection:gemini")
+    _activate(panel, "connection-secret")
+
+    panel.handle_key("paste:private-sentinel\nsecond-line")
+
+    assert panel._editor is not None
+    assert panel._editor.buffer == ""
+    assert panel._feedback is not None
+    assert "private-sentinel" not in panel.render(100, 30).plain
+
+
+def test_back_returns_to_the_category_that_was_open(panel: SettingsController) -> None:
+    _activate(panel, "category:tts")
+
+    panel.handle_key("escape")
+
+    assert panel._items[panel._selected].key == "category:tts"
+
+
+@pytest.mark.parametrize("back", ["left", "backspace", "escape"])
+def test_menu_back_keys_leave_without_changing_preferences(
+    panel: SettingsController,
+    service: FakeSettingsService,
+    back: str,
+) -> None:
+    panel.handle_key("right")
+    assert panel._category is not None
+    panel.handle_key("end")
+
+    panel.handle_key(back)
+
+    assert panel._category is None
+    assert service.saves == []
+
+
+def test_choice_arrows_confirm_or_cancel_without_saving_navigation(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    _open_field(panel, "general", "processing_order_policy")
+    panel.handle_key("tab")
+    panel.handle_key("left")
+    assert service.saves == []
+    _activate(panel, "setting:processing_order_policy")
+    panel.handle_key("tab")
+
+    panel.handle_key("right")
+
+    assert len(service.saves) == 1
+    assert panel._editor is None
+
+
+@pytest.mark.parametrize("rows", [10, 12, 16])
+def test_all_output_products_remain_reachable_in_a_short_terminal(panel: SettingsController, rows: int) -> None:
+    _activate(panel, "category:output")
+    for index in range(len(_PRODUCTS)):
+        panel._selected = index
+        frame: str = panel.render(60, rows).plain
+        assert _PRODUCTS[index][1] in frame
+        assert "Cofnij" in frame
+        assert len(frame.splitlines()) <= rows
+
+
+def test_output_save_failure_restores_visible_checks(
+    panel: SettingsController,
+    service: FakeSettingsService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _activate(panel, "category:output")
+    before: set[ProductKind] = set(panel._output_products)
+
+    def fail_save(draft: AutoPresetDraft) -> None:
+        del draft
+        raise OSError("synthetic write failure")
+
+    monkeypatch.setattr(service, "save_preset", fail_save)
+    panel.handle_key("space")
+
+    assert panel._output_products == before
+    assert panel._feedback is not None
+
+
+def test_reentering_the_same_address_does_not_write_environment(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    address: str = "https://gateway.example.invalid/v1"
+    service.environment = Settings.model_construct(openai_compatible_base_url=address)
+    _activate(panel, "category:connections")
+    _activate(panel, "connection:openai-compatible")
+    _activate(panel, "connection-address")
+    panel.handle_key(f"paste:{address}")
+
+    panel.handle_key("enter")
+
+    assert service.environment_saves == []
+
+
+def test_free_text_row_opens_with_right_and_returns_with_left(panel: SettingsController) -> None:
+    _activate(panel, "category:general")
+    panel._selected = next(
+        index for index, item in enumerate(panel._items) if item.key == "setting:audio_language_priority"
+    )
+    panel.handle_key("right")
+    assert panel._editor is not None
+    panel.handle_key("escape")
+
+    panel.handle_key("left")
+
+    assert panel._category is None
+
+
+@pytest.mark.parametrize("text", ["漢" * 100, "a\u0301" * 100])
+def test_wide_or_combining_input_fits_the_terminal_with_a_visible_cursor(
+    panel: SettingsController,
+    text: str,
+) -> None:
+    _activate(panel, "category:tts")
+    _activate(panel, "setting:elevenbytes_custom_voices")
+    panel.handle_key("enter")
+    panel.handle_key(f"paste:alias | {text} | id")
+    for key in ("left", "home", "end"):
+        panel.handle_key(key)
+        frame: str = panel.render(60, 20).plain
+        assert max(cell_len(line) for line in frame.splitlines()) <= 60
+        assert "█" in frame
+
+
+def test_repeated_interrupt_can_discard_an_unsaved_edit_after_a_write_failure(
+    panel: SettingsController,
+    service: FakeSettingsService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+    panel.handle_key("text:60")
+
+    def fail_save(setting_id: str, value: SettingValue) -> UserSettings:
+        del setting_id, value
+        raise OSError("synthetic write failure")
+
+    monkeypatch.setattr(service, "update_setting", fail_save)
+    assert panel.handle_key("interrupt") is SettingsResult.STAY
+    assert panel._feedback is not None
+    assert "Ctrl+C" in panel.render(40, 12).plain
+    assert panel._pending is not None
+
+    assert panel.handle_key("interrupt") is SettingsResult.BACK_HOME
+
+    assert panel._pending is None
+    assert panel._editor is None
+    assert service.settings.subtitle_max_chars_per_line == 42
+
+
+def test_another_key_disarms_the_unsaved_edit_discard(
+    panel: SettingsController,
+    service: FakeSettingsService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _activate(panel, "category:subtitles")
+    panel.handle_key("right")
+
+    def fail_save(setting_id: str, value: SettingValue) -> UserSettings:
+        del setting_id, value
+        raise OSError("synthetic write failure")
+
+    monkeypatch.setattr(service, "update_setting", fail_save)
+    panel.handle_key("interrupt")
+    panel.handle_key("any")
+
+    assert panel.handle_key("interrupt") is SettingsResult.STAY
+    assert panel._pending is not None

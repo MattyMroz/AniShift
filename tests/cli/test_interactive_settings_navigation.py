@@ -94,3 +94,10 @@ def test_a_stride_of_one_survives_a_list_never_rendered() -> None:
     panel = SettingsController(cast("AppService", SimpleNamespace()), lambda: None)
     panel.handle_key("pagedown")
     assert panel._selected == 1
+
+
+def test_tab_and_backtab_move_without_editing(controller: SettingsController) -> None:
+    controller.handle_key("tab")
+    assert controller._selected == 1
+    controller.handle_key("backtab")
+    assert controller._selected == 0

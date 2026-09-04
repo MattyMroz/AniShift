@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
 
+from rich.cells import get_character_cell_size, set_cell_size
 from rich.text import Text
 
 from anishift.application import (
@@ -39,7 +40,7 @@ __all__ = ["SettingsController", "SettingsResult"]
 _POINTER: Final[str] = "\u276f"
 """Marker placed before the active interactive row."""
 
-_MENU_HINT: Final[str] = "↑↓ ←→ · Enter · Esc"
+_MENU_HINT: Final[str] = "↑↓/Tab · ←→ · Enter · Esc"
 """Keyboard hint used by settings menus."""
 
 _MULTI_HINT: Final[str] = "↑↓ · Enter/Space zmień · Esc wróć"
@@ -48,13 +49,13 @@ _MULTI_HINT: Final[str] = "↑↓ · Enter/Space zmień · Esc wróć"
 _MULTI_SELECT_HINT: Final[str] = "↑↓ · Space zmień · Esc wróć"
 """Keyboard hint used by multi-choice setting editors."""
 
-_SELECT_HINT: Final[str] = "↑↓ · Enter wybierz · Esc wróć"
+_SELECT_HINT: Final[str] = "↑↓/Tab · Enter/→ wybierz · Esc/← cofnij"
 """Keyboard hint used by single-choice editors, where moving is not choosing."""
 
 _SECRET_HINT: Final[str] = "Enter zatwierdź · Esc anuluj"  # noqa: S105 - keyboard hint, never a credential
 """Keyboard hint used by the secret editor, the only value not saved on its own."""
 
-_INPUT_HINT: Final[str] = "Wpisz wartość · Esc wróć"
+_INPUT_HINT: Final[str] = "←→ kursor · Enter/Esc wróć · zapis automatyczny"
 """Keyboard hint used by editors that persist what was typed on their own."""
 
 _VOICE_HINT: Final[str] = "alias | nazwa | ID głosu · Enter zatwierdź · puste usuwa · Esc wróć"
@@ -226,6 +227,9 @@ _PRODUCTS: Final[tuple[tuple[ProductKind, str], ...]] = (
     (ProductKind.NARRATION_AUDIO, "Polski lektor"),
     (ProductKind.MKV, "MKV"),
     (ProductKind.MP4, "MP4"),
+    (ProductKind.SOURCE_SUBTITLES, "Napisy źródłowe"),
+    (ProductKind.SPOKEN_PL, "Polskie dialogi"),
+    (ProductKind.DISPLAYED_PL, "Polskie napisy ekranowe"),
 )
 """Public output products and their labels."""
 
@@ -291,6 +295,8 @@ class _EditorAction(StrEnum):
     UPDATE_SETTING = "update_setting"
     UPDATE_VOICE = "update_voice"
     SELECT_MODEL = "select_model"
+    SELECT_MODEL_PROVIDER = "select_model_provider"
+    SELECT_CUSTOM_MODEL = "select_custom_model"
     UPDATE_SECRET = "update_secret"  # noqa: S105 - operation name, never a credential
     UPDATE_ENVIRONMENT = "update_environment"
     REMOVE_SECRET = "remove_secret"  # noqa: S105 - operation name, never a credential
@@ -335,6 +341,8 @@ class _Editor:
     current_value: str = ""
     buffer: str = ""
     pristine: bool = True
+    cursor: int | None = None
+    provider_id: str = ""
     selected_values: set[str] = field(default_factory=set)
 
 
@@ -391,9 +399,11 @@ class SettingsController:
         self._offset: int = 0
         self._visible_count: int = 0
         self._pending: _PendingEdit | None = None
+        self._discard_armed: bool = False
         self._follow_cursor: bool = True
         self._editor: _Editor | None = None
         self._output_products: set[ProductKind] = set()
+        self._model_label_cache: tuple[str, str] | None = None
         self._feedback: _Feedback | None = None
         self._busy: bool = False
         self._generation: int = 0
@@ -402,23 +412,39 @@ class SettingsController:
 
     def handle_key(self, key: str) -> SettingsResult:
         """Apply one normalized terminal key without performing render-time I/O."""
-        if not self._defers_save(key):
-            self._commit_pending()
+        if self._discard_armed and key == "interrupt":
+            self._pending = None
+            self._editor = None
+            self._discard_armed = False
+            return SettingsResult.BACK_HOME
+        self._discard_armed = False
+        if not self._defers_save(key) and not self._commit_pending():
+            if key == "interrupt":
+                self._discard_armed = True
+                self._feedback = _Feedback(
+                    "Nie zapisano zmiany. Ctrl+C ponownie: porzuć i wróć; inny klawisz: zostań",
+                    "warning",
+                )
+            return SettingsResult.STAY
         if self._busy:
             return self._handle_busy_key(key)
         if self._editor is not None:
             self._handle_editor_key(key)
-            return SettingsResult.STAY
-        if key in {"escape", "interrupt"}:
+        elif key in {"escape", "interrupt", "backspace"}:
             return self._go_back()
-        if self._category is _Category.OUTPUT:
+        elif self._category is _Category.OUTPUT:
             self._handle_output_key(key)
-            return SettingsResult.STAY
-        return self._handle_menu_key(key)
+        else:
+            return self._handle_menu_key(key)
+        return SettingsResult.STAY
 
     def scroll(self, direction: int) -> None:
         """Move the view by one wheel notch without moving the selection."""
-        if self._editor is not None or self._category is _Category.OUTPUT:
+        if self._editor is not None:
+            if self._editor.options:
+                self._editor.selected = min(
+                    max(self._editor.selected + direction * _WHEEL_ROWS, 0), len(self._editor.options) - 1
+                )
             return
         length: int = self._scrollable_length()
         if not length:
@@ -427,16 +453,20 @@ class SettingsController:
         self._offset = min(max(self._offset + direction * _WHEEL_ROWS, 0), max(length - 1, 0))
 
     def _scrollable_length(self) -> int:
+        if self._category is _Category.OUTPUT:
+            return len(_PRODUCTS) + 1
         if self._items and self._items[-1].key == _BACK_KEY:
             return len(self._items) - 1
         return len(self._items)
 
     def _defers_save(self, key: str) -> bool:
         if key in {"left", "right"}:
-            return True
+            if self._editor is not None:
+                return self._editor.kind not in {_EditorKind.SELECT, _EditorKind.MULTI_SELECT, _EditorKind.CONFIRM}
+            return bool(self._items and self._items[self._selected].key.startswith("setting:"))
         if self._editor is None:
             return False
-        return key in _EDITOR_DEFERRING_KEYS or key.startswith("text:")
+        return key in _EDITOR_DEFERRING_KEYS or key == "delete" or key.startswith(("text:", "paste:"))
 
     def close(self) -> None:
         """Persist a delayed edit at once, whatever reason is closing the panel."""
@@ -450,24 +480,34 @@ class SettingsController:
         self._commit_pending()
         self._invalidate()
 
-    def _commit_pending(self) -> None:
+    def _commit_pending(self) -> bool:
         pending: _PendingEdit | None = self._pending
         if pending is None:
-            return
-        self._pending = None
+            return True
         if self._already_stored(pending):
             # Landing back on the stored value is not an edit, so it must neither
             # write a transaction nor claim that anything was saved.
-            return
+            self._pending = None
+            return True
         try:
             self._persist_pending(pending)
         except AniShiftError, OSError:
             self._feedback = _Feedback("✗ Nie udało się zapisać ustawienia", "error")
         except TypeError, ValueError:
             self._feedback = _Feedback(self._validation_message(pending.setting_id), "error")
+        else:
+            self._pending = None
+            self._refresh_menu()
+            return True
+        # A failed edit remains recoverable, but only a deliberate key press retries it.
+        pending.deadline = math.inf
         self._refresh_menu()
+        return False
 
     def _already_stored(self, pending: _PendingEdit) -> bool:
+        if pending.action is _EditorAction.UPDATE_ENVIRONMENT:
+            current: object = getattr(self._service.current_settings(), pending.setting_id)
+            return current == pending.value
         try:
             snapshot: _CatalogSnapshot = self._catalog_snapshot()
         except AniShiftError, OSError:
@@ -488,17 +528,26 @@ class SettingsController:
         self._feedback = None
 
     def _typed(self, editor: _Editor, text: str) -> None:
+        if text and not text.isprintable():
+            self._feedback = _Feedback("✗ Wpisz jedną linię bez znaków sterujących", "error")
+            return
         if editor.pristine:
             # The stored value is shown as the starting point, so the first typed
             # character replaces it instead of appending a second number to it.
             editor.buffer = ""
             editor.pristine = False
-        editor.buffer += text
+            editor.cursor = 0
+        cursor: int = len(editor.buffer) if editor.cursor is None else editor.cursor
+        editor.buffer = editor.buffer[:cursor] + text + editor.buffer[cursor:]
+        editor.cursor = cursor + len(text)
         self._schedule_typed_save(editor)
 
     def _schedule_typed_save(self, editor: _Editor) -> None:
         self._feedback = None
-        if editor.kind is _EditorKind.PASSWORD or editor.action is _EditorAction.UPDATE_VOICE:
+        if editor.kind is _EditorKind.PASSWORD or editor.action in {
+            _EditorAction.UPDATE_VOICE,
+            _EditorAction.SELECT_CUSTOM_MODEL,
+        }:
             # A half-typed secret must never reach .env, and half a voice line is not
             # a voice, so both stay explicit while every other value saves itself.
             return
@@ -516,29 +565,37 @@ class SettingsController:
             return
         self._schedule(_PendingEdit(editor.setting_id, value, time.monotonic() + _SAVE_DELAY_SECONDS, editor.action))
 
-    def _adjust_selected(self, direction: int) -> None:
+    def _adjust_selected(self, direction: int) -> bool:
         if not self._items:
-            return
+            return False
         key: str = self._items[self._selected].key
         if not key.startswith("setting:"):
-            return
+            return False
         setting_id: str = key.removeprefix("setting:")
         try:
             snapshot: _CatalogSnapshot = self._catalog_snapshot()
         except AniShiftError, OSError:
-            return
+            return True
         spec: SettingSpec | None = snapshot.specs.get(setting_id)
-        if spec is None:
-            return
+        if spec is None or spec.value_type in {
+            SettingValueType.STRING_LIST,
+            SettingValueType.STRING_SET,
+            SettingValueType.OBJECT_LIST,
+        }:
+            return False
         current: SettingValue = self._effective_value(snapshot, spec)
         stepped: tuple[SettingValue] | None = _stepped_value(spec, current, direction)
         if stepped is None:
-            return
+            return bool(spec.allowed_values) or spec.value_type not in {
+                SettingValueType.STRING,
+                SettingValueType.OPTIONAL_STRING,
+            }
         self._pending = _PendingEdit(setting_id, stepped[0], time.monotonic() + _SAVE_DELAY_SECONDS)
         self._feedback = None
         # The row carries a formatted value built with the list, so without this the
         # stepped number would appear only once the delayed save rebuilt the menu.
         self._refresh_menu()
+        return True
 
     def _effective_value(self, snapshot: _CatalogSnapshot, spec: SettingSpec) -> SettingValue:
         pending: _PendingEdit | None = self._pending
@@ -565,9 +622,9 @@ class SettingsController:
         return SettingsResult.STAY
 
     def _apply_navigation(self, key: str, length: int) -> bool:
-        if key == "up":
+        if key in {"up", "backtab"}:
             self._move(-1, length)
-        elif key == "down":
+        elif key in {"down", "tab"}:
             self._move(1, length)
         elif key == "pageup":
             self._jump(self._selected - self._page_stride(), length)
@@ -585,9 +642,11 @@ class SettingsController:
         if self._apply_navigation(key, len(self._items)):
             return SettingsResult.STAY
         if key in {"left", "right"}:
-            self._adjust_selected(1 if key == "right" else -1)
-            return SettingsResult.STAY
-        if key != "enter" or not self._items:
+            if self._adjust_selected(1 if key == "right" else -1):
+                return SettingsResult.STAY
+            if key == "left":
+                return self._go_back()
+        if key not in {"enter", "right"} or not self._items:
             return SettingsResult.STAY
         return self._activate(self._items[self._selected].key)
 
@@ -596,6 +655,9 @@ class SettingsController:
         back_index: int = reset_index + 1
         row_count: int = back_index + 1
         if self._apply_navigation(key, row_count):
+            return
+        if key == "left":
+            self._go_back()
             return
         if key in {"space", "enter"} and self._selected < len(_PRODUCTS):
             self._toggle_output_product(self._selected)
@@ -606,10 +668,10 @@ class SettingsController:
             self._open_scoped_reset(_Category.OUTPUT.value)
             return
         if self._selected == back_index:
-            self._category = None
-            self._refresh_menu()
+            self._go_back()
 
     def _toggle_output_product(self, index: int) -> None:
+        previous: set[ProductKind] = set(self._output_products)
         product: ProductKind = _PRODUCTS[index][0]
         if product not in self._output_products:
             self._output_products.add(product)
@@ -621,7 +683,8 @@ class SettingsController:
             self._feedback = _Feedback("✗ Wybierz co najmniej jeden wynik", "error")
             return
         self._feedback = None
-        self._save_output()
+        if not self._save_output():
+            self._output_products = previous
 
     def _handle_editor_key(self, key: str) -> None:
         editor: _Editor | None = self._editor
@@ -634,21 +697,39 @@ class SettingsController:
         if editor.kind in {_EditorKind.SELECT, _EditorKind.MULTI_SELECT, _EditorKind.CONFIRM}:
             self._handle_choice_editor(editor, key)
             return
-        if key == "backspace":
+        self._handle_text_key(editor, key)
+
+    def _handle_text_key(self, editor: _Editor, key: str) -> None:
+        cursor: int = len(editor.buffer) if editor.cursor is None else editor.cursor
+        if key in {"left", "right", "home", "end"}:
             editor.pristine = False
-            editor.buffer = editor.buffer[:-1]
+            if key in {"home", "end"}:
+                editor.cursor = 0 if key == "home" else len(editor.buffer)
+            else:
+                editor.cursor = min(max(cursor + (1 if key == "right" else -1), 0), len(editor.buffer))
+            return
+        if key in {"backspace", "delete"}:
+            editor.pristine = False
+            start: int = max(cursor - 1, 0) if key == "backspace" else cursor
+            stop: int = cursor if key == "backspace" else min(cursor + 1, len(editor.buffer))
+            editor.buffer = editor.buffer[:start] + editor.buffer[stop:]
+            editor.cursor = start
             self._schedule_typed_save(editor)
             return
         if key == "space":
             self._typed(editor, " ")
             return
-        if key.startswith("text:"):
-            self._typed(editor, key.removeprefix("text:"))
+        if key.startswith(("text:", "paste:")):
+            self._typed(editor, key.partition(":")[2])
             return
         if key == "enter":
             self._submit_editor(editor)
 
     def _handle_choice_editor(self, editor: _Editor, key: str) -> None:
+        if key in {"left", "backspace"}:
+            self._editor = None
+            self._feedback = None
+            return
         if _navigate_editor(editor, key):
             # Moving the cursor is not choosing: the bullet marks the stored value, so
             # walking the list must leave both the value and the file untouched.
@@ -661,7 +742,7 @@ class SettingsController:
                 editor.selected_values.add(value)
             self._schedule_editor_save(editor)
             return
-        if key == "enter":
+        if key in {"enter", "right"}:
             self._submit_editor(editor)
 
     def _move(self, delta: int, length: int) -> None:
@@ -733,6 +814,8 @@ class SettingsController:
         self._voices_open = False
         self._selected = 0
         self._offset = 0
+        if category is _Category.TRANSLATION:
+            self._model_label_cache = None
         if category is _Category.OUTPUT:
             self._load_output()
             return
@@ -744,24 +827,33 @@ class SettingsController:
             self._editor = None
             return SettingsResult.STAY
         if self._connection is not None:
+            key: str = f"connection:{self._connection.key}"
             self._connection = None
             self._selected = 0
             self._offset = 0
             self._refresh_menu()
+            self._select_menu_key(key)
             return SettingsResult.STAY
         if self._voices_open:
             self._voices_open = False
             self._selected = 0
             self._offset = 0
             self._refresh_menu()
+            self._select_menu_key(f"setting:{_VOICES_SETTING_ID}")
             return SettingsResult.STAY
         if self._category is not None:
+            key = f"category:{self._category.value}"
             self._category = None
             self._selected = 0
             self._offset = 0
             self._refresh_menu()
+            self._select_menu_key(key)
             return SettingsResult.STAY
         return SettingsResult.BACK_HOME
+
+    def _select_menu_key(self, key: str) -> None:
+        self._selected = next((index for index, item in enumerate(self._items) if item.key == key), 0)
+        self._follow_cursor = True
 
     def _refresh_menu(self) -> None:
         if self._category is _Category.OUTPUT:
@@ -916,13 +1008,20 @@ class SettingsController:
         if settings.llm_provider != "palantir":
             provider: str = _ENGINE_LABELS.get(settings.llm_provider, settings.llm_provider)
             return f"{provider} · {settings.llm_provider_model_id}"
+        if self._model_label_cache is not None and self._model_label_cache[0] == settings.llm_provider_model_id:
+            return self._model_label_cache[1]
+        label: str = self._palantir_model_label(settings.llm_provider_model_id)
+        self._model_label_cache = (settings.llm_provider_model_id, label)
+        return label
+
+    def _palantir_model_label(self, alias: str) -> str:
         try:
             catalog: ModelCatalog = self._service.model_catalog()
         except AniShiftError:
             return "Palantir · katalog niedostępny"
-        entry: ModelEntry | None = catalog.models.get(settings.llm_provider_model_id)
+        entry: ModelEntry | None = catalog.models.get(alias)
         if entry is None:
-            return f"Palantir · {settings.llm_provider_model_id}"
+            return f"Palantir · {alias}"
         if entry.model_id.casefold().startswith("replace-with-"):
             return "Palantir · model nieustawiony"
         return f"Palantir · {entry.label}"
@@ -998,6 +1097,7 @@ class SettingsController:
         return tuple(voice if item.alias == editor.current_value else item for item in current)
 
     def _open_model_editor(self) -> None:
+        self._model_label_cache = None
         try:
             choices: tuple[TranslationModelOption, ...] = self._service.translation_model_options()
         except AniShiftError:
@@ -1015,6 +1115,8 @@ class SettingsController:
             )
             for choice in choices
         )
+        if self._custom_model_providers():
+            options = (*options, _Option("", "Własny model…", "WŁASNY IDENTYFIKATOR"))
         if not options:
             self._feedback = _Feedback("✗ Brak modeli · Najpierw skonfiguruj dostawcę w Połączeniach", "error")
             return
@@ -1027,6 +1129,37 @@ class SettingsController:
             options=options,
             selected=_selected_model_option(options, settings.llm_provider, settings.llm_provider_model_id),
             current_value=f"{settings.llm_provider}\x1f{settings.llm_provider_model_id}",
+        )
+
+    def _custom_model_providers(self) -> tuple[_Option, ...]:
+        return tuple(
+            _Option(status.engine_id, _ENGINE_LABELS.get(status.engine_id, status.engine_id))
+            for status in self._service.engine_availability()
+            if status.domain == "llm" and status.is_available and status.engine_id != "palantir"
+        )
+
+    def _open_custom_model_provider_editor(self) -> None:
+        options: tuple[_Option, ...] = self._custom_model_providers()
+        if not options:
+            self._feedback = _Feedback("✗ Najpierw skonfiguruj dostawcę w Połączeniach", "error")
+            return
+        self._editor = _Editor(
+            title="WŁASNY MODEL · DOSTAWCA",
+            kind=_EditorKind.SELECT,
+            action=_EditorAction.SELECT_MODEL_PROVIDER,
+            setting_id="llm_provider",
+            options=options,
+        )
+
+    def _open_custom_model_editor(self, provider_id: str) -> None:
+        settings: UserSettings = self._service.settings_snapshot()
+        self._editor = _Editor(
+            title=f"{_ENGINE_LABELS.get(provider_id, provider_id).upper()} · ID MODELU",
+            kind=_EditorKind.TEXT,
+            action=_EditorAction.SELECT_CUSTOM_MODEL,
+            setting_id="llm_provider_model_id",
+            provider_id=provider_id,
+            buffer=settings.llm_provider_model_id if settings.llm_provider == provider_id else "",
         )
 
     def _open_scoped_reset(self, scope: str) -> None:
@@ -1063,8 +1196,12 @@ class SettingsController:
             self._service.update_setting(setting_id, spec.default)
 
     def _restore_default_products(self) -> None:
+        previous: set[ProductKind] = set(self._output_products)
         self._output_products = set(_DEFAULT_PRODUCTS)
-        self._save_output()
+        if not self._save_output():
+            self._output_products = previous
+            msg = "Default products could not be saved"
+            raise OSError(msg)
 
     def _open_password_editor(self) -> None:
         connection: _Connection = _required_connection(self._connection)
@@ -1105,15 +1242,15 @@ class SettingsController:
 
     def _submit_editor(self, editor: _Editor) -> None:
         raw_value: str = self._editor_raw_value(editor)
-        if editor.kind is _EditorKind.PASSWORD and not raw_value.strip():
-            self._editor = None
-            self._feedback = None
+        if editor.action is _EditorAction.SELECT_MODEL and not editor.options[editor.selected].provider_id:
+            self._open_custom_model_provider_editor()
             return
-        if editor.action is _EditorAction.REMOVE_SECRET and raw_value == "no":
-            self._editor = None
-            self._feedback = None
+        if editor.action is _EditorAction.SELECT_MODEL_PROVIDER:
+            self._open_custom_model_editor(raw_value)
             return
-        if editor.action is _EditorAction.RESET_SCOPE and raw_value == "no":
+        if (editor.kind is _EditorKind.PASSWORD and not raw_value.strip()) or (
+            editor.action in {_EditorAction.REMOVE_SECRET, _EditorAction.RESET_SCOPE} and raw_value == "no"
+        ):
             self._editor = None
             self._feedback = None
             return
@@ -1135,31 +1272,41 @@ class SettingsController:
         return editor.options[editor.selected].value if editor.options else editor.buffer
 
     def _apply_editor(self, editor: _Editor, raw_value: str) -> None:
-        if editor.action is _EditorAction.UPDATE_SETTING:
-            spec: SettingSpec = _required_spec(self._catalog_snapshot().specs, editor.setting_id)
-            value: SettingValue = parse_setting_input(spec, raw_value)
-            self._service.update_setting(editor.setting_id, value)
+        if editor.action in {_EditorAction.UPDATE_SETTING, _EditorAction.UPDATE_ENVIRONMENT}:
+            self._save_setting_editor(editor, raw_value)
             return
         if editor.action is _EditorAction.UPDATE_VOICE:
-            self._service.update_setting(_VOICES_SETTING_ID, self._voices_after_edit(editor, raw_value))
+            voices: tuple[CustomVoiceSetting, ...] = self._voices_after_edit(editor, raw_value)
+            if voices != self._custom_voices():
+                self._service.update_setting(_VOICES_SETTING_ID, voices)
             return
-        if editor.action is _EditorAction.SELECT_MODEL:
-            option: _Option = editor.options[editor.selected]
-            self._service.select_translation_model(option.provider_id, option.value)
+        if editor.action in {_EditorAction.SELECT_MODEL, _EditorAction.SELECT_CUSTOM_MODEL}:
+            provider_id: str = editor.provider_id
+            model_id: str = raw_value
+            if editor.action is _EditorAction.SELECT_MODEL:
+                option: _Option = editor.options[editor.selected]
+                provider_id, model_id = option.provider_id, option.value
+            self._service.select_translation_model(provider_id, model_id)
             return
         if editor.action is _EditorAction.UPDATE_SECRET:
             self._service.update_secret(editor.setting_id, raw_value)
-            return
-        if editor.action is _EditorAction.UPDATE_ENVIRONMENT:
-            spec = _required_spec(self._catalog_snapshot().specs, editor.setting_id)
-            value = parse_setting_input(spec, raw_value)
-            self._service.update_environment_setting(editor.setting_id, str(value))
             return
         if editor.action is _EditorAction.REMOVE_SECRET and raw_value == "yes":
             self._service.update_secret(editor.setting_id, None)
             return
         if editor.action is _EditorAction.RESET_SCOPE:
             self._reset_scope(editor.setting_id)
+
+    def _save_setting_editor(self, editor: _Editor, raw_value: str) -> None:
+        snapshot: _CatalogSnapshot = self._catalog_snapshot()
+        spec: SettingSpec = _required_spec(snapshot.specs, editor.setting_id)
+        value: SettingValue = parse_setting_input(spec, raw_value)
+        if editor.action is _EditorAction.UPDATE_SETTING:
+            if read_setting_value(snapshot.settings, spec) != value:
+                self._service.update_setting(editor.setting_id, value)
+            return
+        if getattr(self._service.current_settings(), editor.setting_id) != value:
+            self._service.update_environment_setting(editor.setting_id, str(value))
 
     def _validation_message(self, setting_id: str) -> str:
         try:
@@ -1177,10 +1324,9 @@ class SettingsController:
             self._output_products = set()
             self._feedback = _Feedback("✗ Nie można wczytać ustawień wyniku", "error")
             return
-        public: frozenset[ProductKind] = frozenset(product for product, _label in _PRODUCTS)
-        self._output_products = set(preset.products.requested_products & public)
+        self._output_products = set(preset.products.requested_products)
 
-    def _save_output(self) -> None:
+    def _save_output(self) -> bool:
         try:
             current: AutoPreset = self._default_preset()
             requested: frozenset[ProductKind] = frozenset(self._output_products)
@@ -1194,6 +1340,8 @@ class SettingsController:
                     current.products.mp4_audio_source if ProductKind.MP4 in requested else Mp4AudioSource.AUTO
                 ),
             )
+            if products == current.products:
+                return True
             draft: AutoPresetDraft = AutoPresetDraft(
                 preset_id=current.preset_id,
                 name=current.name,
@@ -1206,8 +1354,9 @@ class SettingsController:
             self._service.save_preset(draft)
         except AniShiftError, OSError, TypeError, ValueError:
             self._feedback = _Feedback("✗ Nie udało się zapisać ustawień wyniku", "error")
-            return
+            return False
         self._feedback = None
+        return True
 
     def _default_preset(self) -> AutoPreset:
         return self._service.get_preset(self._service.default_preset_id())
@@ -1319,7 +1468,18 @@ class SettingsController:
     def _render_output(self, columns: int, rows: int) -> Text:
         reset_index: int = len(_PRODUCTS)
         back_index: int = reset_index + 1
-        body_rows: int = len(_PRODUCTS) + 6 + _STATUS_ROWS
+        start, end = _visible_window(
+            ("",) * back_index,
+            min(self._selected, reset_index),
+            self._offset,
+            max(rows - 7 - _STATUS_ROWS, 1),
+            follow_cursor=self._follow_cursor,
+        )
+        self._offset = start
+        self._visible_count = end - start
+        has_above: bool = start > 0
+        has_below: bool = end < back_index
+        body_rows: int = end - start + int(has_above) + int(has_below) + 6 + _STATUS_ROWS
         labels: tuple[_MenuItem, ...] = tuple(_MenuItem("", label) for _product, label in _PRODUCTS)
         actions: tuple[_MenuItem, ...] = (
             _MenuItem("", _RESET_LABEL),
@@ -1330,20 +1490,33 @@ class SettingsController:
         content.append(" " * left)
         content.append("WYNIK", style="white_bold")
         content.append("\n\n")
-        for index, (product, label) in enumerate(_PRODUCTS):
+        if has_above:
+            content.append(" " * left + "↑ więcej\n", style="gray")
+        for index, (product, label) in enumerate(_PRODUCTS[start : min(end, reset_index)], start=start):
             content.append(" " * left)
             content.append(f"{_POINTER} " if index == self._selected else "  ", style="brand_accent")
             content.append("● " if product in self._output_products else "○ ", style="brand_accent")
-            content.append(label, style="brand_accent" if index == self._selected else "white_bold")
+            content.append(
+                _truncate_right(label, max(columns - left - 4, 1)),
+                style="brand_accent" if index == self._selected else "white_bold",
+            )
             content.append("\n")
-        for index, label in ((reset_index, _RESET_LABEL), (back_index, _BACK_LABEL)):
+        if has_below:
+            content.append(" " * left + "↓ więcej\n", style="gray")
+        visible_actions: tuple[tuple[int, str], ...] = ((back_index, _BACK_LABEL),)
+        if start <= reset_index < end:
+            visible_actions = ((reset_index, _RESET_LABEL), *visible_actions)
+        for index, label in visible_actions:
             content.append(" " * left)
             content.append(f"{_POINTER} " if self._selected == index else "  ", style="brand_accent")
-            content.append(label, style="brand_accent" if self._selected == index else "white_bold")
+            content.append(
+                _truncate_right(label, max(columns - left - 2, 1)),
+                style="brand_accent" if self._selected == index else "white_bold",
+            )
             content.append("\n")
         self._append_feedback(content, left, columns)
         content.append(" " * left)
-        content.append(_MULTI_HINT, style="gray")
+        content.append(_truncate_right(_MULTI_HINT, max(columns - left, 1)), style="gray")
         return content
 
     def _render_editor(self, columns: int, rows: int, editor: _Editor) -> Text:
@@ -1387,13 +1560,7 @@ class SettingsController:
                 content.append(" " * left)
                 content.append("↓ więcej\n", style="gray")
         else:
-            shown: str = "•" * len(editor.buffer) if editor.kind is _EditorKind.PASSWORD else editor.buffer
-            available: int = max(columns - left - 4, 1)
-            content.append(" " * left)
-            content.append(f"{_POINTER} ", style="brand_accent")
-            content.append(_truncate_left(shown, available), style="white_bold")
-            content.append("█", style="brand_accent")
-            content.append("\n")
+            _append_editor_buffer(content, editor, columns, left)
         self._append_feedback(content, left, columns)
         content.append(" " * left)
         hint: str = _INPUT_HINT if not editor.options else _SELECT_HINT
@@ -1403,7 +1570,9 @@ class SettingsController:
             hint = _VOICE_HINT
         elif editor.kind is _EditorKind.PASSWORD:
             hint = _SECRET_HINT
-        content.append(hint, style="gray")
+        elif editor.action is _EditorAction.SELECT_CUSTOM_MODEL:
+            hint = "ID modelu · Enter zatwierdź · Esc anuluj"
+        content.append(_truncate_right(hint, max(columns - left, 1)), style="gray")
         return content
 
     def _append_feedback(self, content: Text, left: int, columns: int) -> None:
@@ -1412,8 +1581,13 @@ class SettingsController:
         if self._feedback is None:
             content.append("\n")
             return
+        feedback: str = self._feedback.text
+        available: int = max(columns - left, 1)
+        if self._discard_armed and len(feedback) > available:
+            compact: str = "Ctrl+C: porzuć · inny klawisz: zostań"
+            feedback = compact if available >= len(compact) else "Ctrl+C: porzuć zmianę"
         content.append(" " * left)
-        content.append(_truncate_right(self._feedback.text, max(columns - left, 1)), style=self._feedback.style)
+        content.append(_truncate_right(feedback, available), style=self._feedback.style)
         content.append("\n")
 
 
@@ -1669,15 +1843,36 @@ def _stepped_value(spec: SettingSpec, current: SettingValue, direction: int) -> 
     return None
 
 
+def _append_editor_buffer(content: Text, editor: _Editor, columns: int, left: int) -> None:
+    """Render one clipped input line with a visible cursor and masked secret."""
+    shown: str = "•" * len(editor.buffer) if editor.kind is _EditorKind.PASSWORD else editor.buffer
+    available: int = max(columns - left - 4, 1)
+    cursor: int = len(shown) if editor.cursor is None else editor.cursor
+    start: int = cursor
+    used: int = 0
+    while start > 0:
+        width: int = get_character_cell_size(shown[start - 1])
+        if used + width > available - 1:
+            break
+        used += width
+        start -= 1
+    content.append(" " * left)
+    content.append(f"{_POINTER} ", style="brand_accent")
+    content.append(shown[start:cursor], style="white_bold")
+    content.append("█", style="brand_accent")
+    content.append(set_cell_size(shown[cursor : cursor + available], available - used - 1), style="white_bold")
+    content.append("\n")
+
+
 def _navigate_editor(editor: _Editor, key: str) -> bool:
     """Move an editor cursor for one navigation key, reporting whether it applied."""
     length: int = len(editor.options)
     if not length:
         return False
     stride: int = max(editor.visible_count - 1, 1)
-    if key == "up":
+    if key in {"up", "backtab"}:
         editor.selected = (editor.selected - 1) % length
-    elif key == "down":
+    elif key in {"down", "tab"}:
         editor.selected = (editor.selected + 1) % length
     elif key == "pageup":
         editor.selected = max(editor.selected - stride, 0)

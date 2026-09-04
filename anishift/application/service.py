@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
@@ -423,7 +424,7 @@ class AppService:
             for setting_id, is_configured in statuses.items()
         )
 
-    def engine_availability(self) -> tuple[EngineAvailability, ...]:
+    def engine_availability(self, *, require_selected_model: bool = True) -> tuple[EngineAvailability, ...]:
         """Describe configured engine readiness without creating provider clients."""
         secret_by_engine: tuple[tuple[str, str, str], ...] = (
             ("translation", "deepl", "deepl_api_key"),
@@ -454,14 +455,16 @@ class AppService:
                     "ready" if available else "missing openai_compatible_base_url; configure environment or open Tools"
                 )
             if available and domain == "llm" and engine_id == _PALANTIR_ENGINE_ID:
-                available, reason = self._palantir_readiness()
+                available, reason = self._palantir_readiness(require_selected_model=require_selected_model)
             statuses.append(EngineAvailability(domain, engine_id, available, reason))
         return tuple(statuses)
 
     def translation_model_options(self) -> tuple[TranslationModelOption, ...]:
         """Return exact model choices grouped by configured LLM provider."""
         available: frozenset[str] = frozenset(
-            status.engine_id for status in self.engine_availability() if status.domain == "llm" and status.is_available
+            status.engine_id
+            for status in self.engine_availability(require_selected_model=False)
+            if status.domain == "llm" and status.is_available
         )
         preferences: UserSettings = self.settings_snapshot()
         options: list[TranslationModelOption] = []
@@ -469,9 +472,10 @@ class AppService:
             if provider_id not in available or provider_id == _PALANTIR_ENGINE_ID:
                 continue
             model_ids: tuple[str, ...] = suggested_model_ids(provider_id)
-            if not model_ids and preferences.llm_provider == provider_id:
+            if preferences.llm_provider == provider_id:
                 current: str = preferences.llm_provider_model_id.strip()
-                model_ids = (current,) if current else ()
+                if self._valid_custom_model_id(current) and current not in model_ids:
+                    model_ids = (*model_ids, current)
             options.extend(
                 TranslationModelOption(
                     provider_id=provider_id,
@@ -542,18 +546,28 @@ class AppService:
         return deepcopy(candidate)
 
     def select_translation_model(self, provider_id: str, model_id: str) -> UserSettings:
-        """Select one currently usable provider and model atomically."""
-        choices: frozenset[tuple[str, str]] = frozenset(
-            (option.provider_id, option.model_id) for option in self.translation_model_options()
+        """Select a configured provider and a catalog alias or explicit model ID atomically."""
+        model_id = model_id.strip()
+        available: frozenset[str] = frozenset(
+            status.engine_id
+            for status in self.engine_availability(require_selected_model=False)
+            if status.domain == "llm" and status.is_available
         )
-        if (provider_id, model_id) not in choices:
+        allowed: bool = provider_id in available and self._valid_custom_model_id(model_id)
+        if provider_id == _PALANTIR_ENGINE_ID:
+            allowed = provider_id in available and model_id in {
+                option.model_id for option in self._palantir_model_options()
+            }
+        if not allowed:
             context = ErrorContext(
                 code=ErrorCode.CONFIG_INVALID,
-                message=f"Unavailable translation model: {provider_id}/{model_id}",
-                suggestion="Pick one of the models exposed for a configured provider",
+                message="Unavailable translation provider or invalid model identifier",
+                suggestion="Configure the provider and select a listed model or enter its model ID",
             )
             raise ConfigError(context=context)
         candidate: UserSettings = self.settings_snapshot()
+        if (candidate.llm_provider, candidate.llm_provider_model_id) == (provider_id, model_id):
+            return candidate
         candidate.llm_provider = provider_id
         candidate.llm_provider_model_id = model_id
         candidate.__post_init__()
@@ -561,6 +575,19 @@ class AppService:
         with self._run_lock:
             self._user_settings = deepcopy(candidate)
         return deepcopy(candidate)
+
+    def _valid_custom_model_id(self, model_id: str) -> bool:
+        """Accept provider identifiers without paths, control characters, or configured secrets."""
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*(?:/[A-Za-z0-9][A-Za-z0-9._:-]*)*", model_id) is None:
+            return False
+        if re.match(r"[A-Za-z]:", model_id) or any(part in {".", ".."} for part in model_id.split("/")):
+            return False
+        settings: Settings = self.current_settings()
+        return not any(
+            model_id == getattr(settings, name)
+            for name in Settings.model_fields
+            if name.endswith("_api_key") or name.startswith("palantir_token")
+        )
 
     def reset_settings(self) -> UserSettings:
         """Restore persisted panel preferences without touching secrets or presets."""
@@ -707,7 +734,7 @@ class AppService:
             preferences: UserSettings = deepcopy(self._user_settings)
         return _run_settings_snapshot(preferences)
 
-    def _palantir_readiness(self) -> tuple[bool, str]:
+    def _palantir_readiness(self, *, require_selected_model: bool = True) -> tuple[bool, str]:
         """Report whether a token-configured Palantir provider could really run."""
         preferences: UserSettings = self.settings_snapshot()
         if not preferences.palantir_enrollment_base_url.strip():
@@ -719,7 +746,7 @@ class AppService:
         if not catalog.models:
             return False, "empty model catalog; add one model entry with a usable provider"
         alias: str = preferences.llm_provider_model_id.strip()
-        if preferences.llm_provider == _PALANTIR_ENGINE_ID and alias not in catalog.models:
+        if require_selected_model and preferences.llm_provider == _PALANTIR_ENGINE_ID and alias not in catalog.models:
             return False, "translation model alias is absent from the catalog; select one again"
         return True, "ready"
 
