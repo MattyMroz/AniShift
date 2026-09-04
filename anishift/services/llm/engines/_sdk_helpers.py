@@ -1,10 +1,4 @@
-"""Shared SDK-neutral helpers for LLM provider adapters.
-
-Provider adapters keep their own error-classification cascades (the mapping
-from SDK errors to typed AniShift errors encodes provider semantics), but the
-mechanical pieces — status extraction, retry-after parsing, payload
-normalization and typed-error construction — are identical and live here.
-"""
+"""Shared SDK-neutral helpers for LLM provider adapters."""
 
 from __future__ import annotations
 

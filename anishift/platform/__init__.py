@@ -1,7 +1,4 @@
-"""Platform layer — OS detection and external-binary resolution.
-
-Detects the OS and locates ``external/bin`` binaries per platform.
-"""
+"""Platform layer — OS detection and external-binary resolution."""
 
 from __future__ import annotations
 

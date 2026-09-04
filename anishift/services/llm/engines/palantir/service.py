@@ -1,30 +1,4 @@
-"""Single synchronous Palantir engine over the four Foundry proxy protocols.
-
-The engine ties the T-013 configuration, authorization and routing to the wire:
-it resolves one catalog alias into an immutable ``PalantirModelConfig``, builds
-the protocol-shaped request, sends it through the owned ``httpx`` client and
-folds the response into the neutral ``LlmResponse``. The token arrives in
-``LlmConfig.api_key`` — the composition root fills it from
-``Settings.palantir_token``, which already folds the process environment, the
-``.env`` file and the compatibility variable into one resolved value — so the
-engine has a single source of truth and never reads the environment itself. It
-carries no retry of its own — that stays in the LLM domain retry policy — and no
-cancellation, which the retry policy checks between attempts.
-
-Google generateContent calls use the provider SSE route when invoked through
-``LlmService``; the other proxy protocols retain their ordinary completion path.
-
-Laziness is deliberate and structural: ``palantir/__init__.py`` imports neither
-this module nor its HTTP module, and the registry names this submodule instead
-of the package, so an HTTP client is loaded only when an engine is created. The
-client itself is then built on the first completion. ``httpx`` appears here only
-in annotations, which is why it stays behind ``TYPE_CHECKING`` — an eager import
-would put an HTTP client back on the path of anything that merely reaches the
-Palantir configuration or routing.
-
-Public API:
-    PalantirService: The lazy engine implementing the synchronous LLM contract.
-"""
+"""Single synchronous Palantir engine over the four Foundry proxy protocols."""
 
 from __future__ import annotations
 
@@ -85,18 +59,7 @@ class PalantirService:
     __slots__ = ("_client", "_closed", "_config", "_model_config")
 
     def __init__(self, config: LlmConfig, *, client: httpx.Client | None = None) -> None:
-        """Resolve the immutable model configuration without opening a socket.
-
-        Args:
-            config: Provider-neutral configuration carrying the resolved alias,
-                provider id, wire protocol, joined base URL, model id and the
-                token in ``api_key``.
-            client: Injected synchronous client, created lazily when absent.
-
-        Raises:
-            LlmAuthError: The token in ``api_key`` is absent or unsendable.
-            LlmConfigError: The alias, provider, protocol or base URL is invalid.
-        """
+        """Resolve the immutable model configuration without opening a socket."""
         self._config: LlmConfig = config
         self._model_config: PalantirModelConfig = _resolve_model_config(config)
         self._client: httpx.Client | None = client
@@ -115,18 +78,7 @@ class PalantirService:
         return bool(self._config.api_key.strip())
 
     def complete(self, request: LlmRequest) -> LlmResponse:
-        """Run one completion and normalize its response.
-
-        Args:
-            request: Provider-neutral ordered messages of one completion.
-
-        Returns:
-            The normalized provider response.
-
-        Raises:
-            LlmRequestError: The engine is closed, or the response is unusable.
-            LlmError: A transport or status failure mapped by the taxonomy.
-        """
+        """Run one completion and normalize its response."""
         if self._closed:
             raise_request_error(
                 "Palantir engine is already closed",
@@ -160,11 +112,7 @@ class PalantirService:
         *,
         on_text: Callable[[str], None] | None = None,
     ) -> LlmResponse:
-        """Stream one completion, handing every arriving text delta to *on_text*.
-
-        Protocols without a streaming shape fall back to the normal path, which
-        simply never calls *on_text*.
-        """
+        """Stream one completion, handing every arriving text delta to *on_text*."""
         merge = _STREAM_MERGERS.get(self._model_config.protocol)
         if merge is None:
             return self.complete(request)
@@ -252,14 +200,7 @@ class PalantirService:
 
 
 def _resolve_model_config(config: LlmConfig) -> PalantirModelConfig:
-    """Build the immutable model configuration from the neutral config.
-
-    The catalog alias has already been resolved to a provider, a wire protocol
-    and a joined base URL before ``LlmConfig`` was built, and the token was
-    folded from the environment and ``.env`` into ``LlmConfig.api_key`` by
-    ``Settings.palantir_token``; a blank value is rejected as an authentication
-    failure by ``PalantirModelConfig``, naming the canonical variable.
-    """
+    """Build the immutable model configuration from the neutral config."""
     if config.protocol is None:
         raise_palantir_config_error(
             "Palantir engine requires a wire protocol",

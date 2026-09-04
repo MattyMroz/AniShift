@@ -13,12 +13,7 @@ __all__ = ["LayoutConfig"]
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 _CHUNK_SPLIT_RATIO: Final[int] = 3
-"""Ratio between a packed request and the natural pieces packed into it.
-
-The shipped defaults are 750 characters per request built from pieces of at most
-250, so one exposed number keeps that proportion instead of asking the user for
-two values that only make sense together.
-"""
+"""Ratio between a packed request and the natural pieces packed into it."""
 
 
 @dataclass(frozen=True, slots=True)

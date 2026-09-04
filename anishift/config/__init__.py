@@ -1,12 +1,4 @@
-"""Application configuration package.
-
-Two layers, both simple:
-
-* :class:`Settings` — API keys / env, loaded from ``.env`` (prefix ``ANISHIFT_``).
-* :class:`UserSettings` — panel preferences persisted to ``config/settings.json``.
-
-Plus workspace root resolution (:func:`resolve_workspace_root`).
-"""
+"""Application configuration package."""
 
 from __future__ import annotations
 

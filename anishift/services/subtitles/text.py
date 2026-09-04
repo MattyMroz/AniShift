@@ -82,11 +82,7 @@ def is_drawing(text: str) -> bool:
 
 
 def visible_text(text: str) -> str:
-    """Return the human-visible text of an event as a single line.
-
-    Removes ``{...}`` override blocks and HTML-style tags, normalises ASS
-    break escapes and whitespace runs to single spaces, and strips the ends.
-    """
+    """Return the human-visible text of an event as a single line."""
     without_tags = _RE_TAG_BLOCK.sub("", text)
     without_html = _RE_HTML_TAG.sub("", without_tags)
     normalised = _RE_SOFT_BREAKS.sub(" ", without_html)
@@ -100,15 +96,7 @@ def visible_verses(text: str) -> tuple[str, ...]:
 
 
 def replace_visible_text(text: str, new_text: str) -> str:
-    """Replace visible text while retaining authored formatting anchors.
-
-    Args:
-        text: Raw event text with formatting and layout metadata.
-        new_text: Replacement for the visible part.
-
-    Returns:
-        Rebuilt text with tags and hard spaces anchored to the translation.
-    """
+    """Replace visible text while retaining authored formatting anchors."""
     if visible_text(text) == visible_text(new_text):
         return text
     source = _parse_layout(text)

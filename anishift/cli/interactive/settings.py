@@ -439,12 +439,7 @@ class SettingsController:
         return key in _EDITOR_DEFERRING_KEYS or key.startswith("text:")
 
     def close(self) -> None:
-        """Persist a delayed edit at once, whatever reason is closing the panel.
-
-        Leaving must never cost a change, so this ignores the coalescing deadline.
-        It reports nothing and raises nothing, because it also runs while the
-        session is already unwinding.
-        """
+        """Persist a delayed edit at once, whatever reason is closing the panel."""
         self._commit_pending()
 
     def flush_pending(self) -> None:
@@ -1607,12 +1602,7 @@ def _numeric_step(spec: SettingSpec) -> float:
 
 
 def _snapped_number(current: float, step: float, direction: int) -> float:
-    """Return the neighbouring value that sits on the step grid.
-
-    A wide range steps by hundreds, so plain addition would carry the odd part of
-    the current value forever and offer 101 after 1. Landing on the grid keeps
-    every reachable value round.
-    """
+    """Return the neighbouring value that sits on the step grid."""
     if step <= 1:
         return current + direction * step
     grid: float = current / step
@@ -1621,11 +1611,7 @@ def _snapped_number(current: float, step: float, direction: int) -> float:
 
 
 def _stepped_number(spec: SettingSpec, current: SettingValue, direction: int) -> tuple[SettingValue] | None:
-    """Wrap the neighbouring number, or return ``None`` when the field cannot step.
-
-    The result is wrapped because clearing an optional field is itself a valid step
-    towards ``None``, which a bare return could not tell from "not applicable".
-    """
+    """Wrap the neighbouring number, or return ``None`` when the field cannot step."""
     optional: bool = spec.value_type in {
         SettingValueType.OPTIONAL_INTEGER,
         SettingValueType.OPTIONAL_FLOAT,
@@ -1741,11 +1727,7 @@ def _visible_window(
     *,
     follow_cursor: bool,
 ) -> tuple[int, int]:
-    """Return the visible slice for one scroll offset, honouring section labels.
-
-    The walk is linear because the offset only ever moves forward until the cursor
-    fits, unlike the earlier brute force over every start and end pair.
-    """
+    """Return the visible slice for one scroll offset, honouring section labels."""
     if not sections:
         return 0, 0
     offset = min(max(offset, 0), len(sections) - 1)

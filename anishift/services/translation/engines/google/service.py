@@ -1,9 +1,4 @@
-"""Free Google Translate engine (mobile page, synchronous).
-
-The client lives in ``api_backend``; this module owns the engine lifecycle and
-hands the batching ladder one callback per request. It is fully synchronous, so
-no event loop is started inside the engine.
-"""
+"""Free Google Translate engine (mobile page, synchronous)."""
 
 from __future__ import annotations
 
@@ -103,12 +98,7 @@ class GoogleService:
         target: str,
         observer: TranslationObserver | None,
     ) -> str:
-        """Translate one string, retrying the failures a retry can fix.
-
-        Rate limits and transport errors are retried with the shared backoff; a
-        response without a usable result raises at once, because repeating it
-        would only earn another empty page.
-        """
+        """Translate one string, retrying the failures a retry can fix."""
         client: MobileTranslateClient = self._ensure_client()
 
         def once() -> str:

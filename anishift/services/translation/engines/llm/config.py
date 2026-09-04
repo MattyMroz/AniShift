@@ -15,13 +15,7 @@ MAX_CONTRACT_RETRIES: Final[int] = 10
 
 @dataclass(frozen=True, slots=True)
 class LlmTranslateConfig:
-    """Runtime config for the LLM translation engine.
-
-    Attributes:
-        max_batch_lines: Maximum non-empty lines per completion; None sends all.
-        style_name: Selected packaged translation style.
-        max_contract_retries: Additional attempts after a contract violation.
-    """
+    """Runtime config for the LLM translation engine."""
 
     max_batch_lines: int | None = None
     style_name: str = DEFAULT_STYLE_NAME

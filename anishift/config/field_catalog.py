@@ -781,12 +781,7 @@ def _translation_specs(
 
 
 def _model_specs(defaults: UserSettings) -> tuple[SettingSpec, ...]:
-    """Build the main model role and the Palantir connection address.
-
-    Neither spec depends on the translation provider. The main model role and the
-    translation model are separate choices, and the enrollment address must stay
-    editable whichever provider translation currently uses.
-    """
+    """Build the main model role and the Palantir connection address."""
     return (
         SettingSpec(
             setting_id="primary_model_alias",

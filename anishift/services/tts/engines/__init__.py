@@ -45,17 +45,7 @@ def available_engine_ids() -> tuple[TtsEngineId, ...]:
 
 
 def create_engine(config: TtsConfig) -> TtsEngine:
-    """Create only the TTS engine selected by the caller.
-
-    Args:
-        config: Validated synthesis configuration.
-
-    Returns:
-        The selected TTS engine.
-
-    Raises:
-        TtsConfigError: The engine id is not registered.
-    """
+    """Create only the TTS engine selected by the caller."""
     module_path, class_name = _get_registry_entry(config.engine_id)
     module = importlib.import_module(module_path)
     factory = cast("_EngineFactory", getattr(module, class_name))

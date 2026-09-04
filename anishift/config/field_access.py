@@ -1,20 +1,4 @@
-"""Mapping between catalog specs and the panel preferences they describe.
-
-``field_catalog`` says what one setting means; ``user_settings`` stores it. This
-module is the only translation between the two, so no frontend needs to know
-that ``tts_profile.engine_options.stability`` lives in the voice profile of the
-currently selected engine and voice.
-
-Only persisted ``UserSettings`` fields are addressable. Workflow scopes
-(``auto_preset``, ``manual_run``), environment secrets and unknown value types
-are rejected loudly instead of being silently ignored.
-
-Public API:
-    read_setting_value: Stored value of one spec, or its default when unset.
-    assign_setting_value: Write one value into mutable settings.
-    setting_is_active: Whether every dependency of one spec is satisfied.
-    setting_is_persisted: Whether one spec addresses the preference file at all.
-"""
+"""Mapping between catalog specs and the panel preferences they describe."""
 
 from __future__ import annotations
 
@@ -75,22 +59,7 @@ _MISSING: Final[object] = object()
 
 
 def read_setting_value(settings: UserSettings, spec: SettingSpec) -> SettingValue:
-    """Return the value *settings* holds for *spec*, or the spec default.
-
-    Args:
-        settings: Panel preferences to read.
-        spec: Catalog contract of one addressable preference.
-
-    Returns:
-        The stored value, normalized to the container the spec declares. An
-        absent value, and a ``None`` under a non-optional type, yield the
-        spec default so every active field has something to render.
-
-    Raises:
-        ValueError: The spec addresses no persisted preference, or declares an
-            unsupported value type.
-        TypeError: The stored value cannot represent the declared type.
-    """
+    """Return the value *settings* holds for *spec*, or the spec default."""
     raw: object = _stored_value(settings, spec.setting_id)
     if raw is _MISSING or (raw is None and spec.value_type not in _OPTIONAL_VALUE_TYPES):
         return spec.default
@@ -100,24 +69,7 @@ def read_setting_value(settings: UserSettings, spec: SettingSpec) -> SettingValu
 
 
 def assign_setting_value(settings: UserSettings, spec: SettingSpec, value: SettingValue) -> None:
-    """Write *value* into *settings* at the location *spec* addresses.
-
-    Validate through :meth:`SettingSpec.validate_value` first; this function
-    only rejects values it physically cannot store. Assigning a voice-profile
-    field materializes the profile of the active engine and voice. Dropping a
-    custom ElevenBytes voice runs through ``remove_elevenbytes_voice``, so the
-    active selection can never point at a retired alias.
-
-    Args:
-        settings: Mutable panel preferences to update in place.
-        spec: Catalog contract of one addressable preference.
-        value: Value already accepted by the spec.
-
-    Raises:
-        ValueError: The spec addresses no persisted preference, or declares an
-            unsupported value type.
-        TypeError: The value cannot be stored under the declared type.
-    """
+    """Write *value* into *settings* at the location *spec* addresses."""
     option_key: str | None = _engine_option_key(spec.setting_id)
     if option_key is not None:
         _reject_collection_type(spec)
@@ -132,34 +84,12 @@ def assign_setting_value(settings: UserSettings, spec: SettingSpec, value: Setti
 
 
 def setting_is_active(spec: SettingSpec, settings: UserSettings) -> bool:
-    """Report whether every dependency of *spec* holds for *settings*.
-
-    Args:
-        spec: Catalog contract whose ``depends_on`` conditions are evaluated.
-        settings: Panel preferences the conditions are read from.
-
-    Returns:
-        ``True`` when the spec has no dependency or all of them match.
-
-    Raises:
-        ValueError: One condition names a field no preference file stores.
-    """
+    """Report whether every dependency of *spec* holds for *settings*."""
     return all(_condition_holds(condition, settings) for condition in spec.depends_on)
 
 
 def setting_is_persisted(spec: SettingSpec) -> bool:
-    """Report whether *spec* addresses a field of the panel preferences.
-
-    Workflow scopes and environment values describe state that lives outside
-    ``UserSettings``; only a persisted spec can be read, assigned, or asked
-    whether its dependencies hold.
-
-    Args:
-        spec: Catalog contract to classify.
-
-    Returns:
-        ``True`` for a persisted preference or a voice-profile field.
-    """
+    """Report whether *spec* addresses a field of the panel preferences."""
     return spec.setting_id.startswith(_PROFILE_PREFIX) or spec.setting_id in UserSettings.__dataclass_fields__
 
 

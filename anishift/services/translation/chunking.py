@@ -1,14 +1,4 @@
-"""Multilingual text chunking for the plain-text (txt) translation path.
-
-Cuts text in any language into translator-sized chunks at natural boundaries.
-Cut points come from characters alone (ASCII plus Unicode punctuation), never
-per-language word lists, so one code path handles EN/JP/PL and the rest. Two
-limits drive it: text is broken into pieces of at most ``chunk_limit`` chars
-(paragraph -> sentence -> phrase -> word), then packed up to ``char_limit``;
-concatenating the chunks restores the input exactly. An ambiguous sentence dot
-is resolved NLTK-Punkt style: heuristic first (lowercase continuation,
-single-letter initial), then an abbreviation list for the ``Dr. Smith`` case.
-"""
+"""Multilingual text chunking for the plain-text (txt) translation path."""
 
 from __future__ import annotations
 
@@ -54,12 +44,7 @@ _RE_SENTENCE_SEP: Final[re.Pattern[str]] = re.compile(
     + ZERO_WIDTH
     + "]*)"
 )
-"""A run of sentence-ending marks, plus the whitespace that follows it.
-
-Latin marks need trailing whitespace (``e.g.`` mid-word dots must not split);
-CJK fullwidth marks end a sentence even with no space, unless a closing quote
-or bracket follows.
-"""
+"""A run of sentence-ending marks, plus the whitespace that follows it."""
 
 _RE_PHRASE_SEP: Final[re.Pattern[str]] = re.compile("([" + re.escape(_PHRASE_CUT_CHARS) + "]+\\s*)")
 """A run of phrase-cut punctuation plus the whitespace that follows it."""
@@ -69,11 +54,7 @@ _RE_WORD_SEP: Final[re.Pattern[str]] = re.compile(r"(\s+)")
 
 
 def _rejoin(tokens: list[str]) -> list[str]:
-    """Merge ``re.split`` capture output back into whole pieces.
-
-    Each captured separator is reattached to the piece on its left, so
-    concatenating the result restores the input exactly.
-    """
+    """Merge ``re.split`` capture output back into whole pieces."""
     pieces: list[str] = []
     for index in range(0, len(tokens), 2):
         separator = tokens[index + 1] if index + 1 < len(tokens) else ""
@@ -124,12 +105,7 @@ _SPLITTERS: Final[tuple[Callable[[str], list[str]], ...]] = (
 
 
 def _break(text: str, limit: int, level: int = 0) -> list[str]:
-    """Break ``text`` into natural pieces of at most ``limit`` characters.
-
-    Tries each splitter in ``_SPLITTERS`` order and recurses one level deeper
-    only into pieces that are still oversized; a word longer than the limit is
-    hard-cut as the last resort.
-    """
+    """Break ``text`` into natural pieces of at most ``limit`` characters."""
     if len(text) <= limit:
         return [text]
     if level == len(_SPLITTERS):
@@ -171,21 +147,7 @@ def chunk_text(
     char_limit: int = DEFAULT_CHAR_LIMIT,
     chunk_limit: int = DEFAULT_CHUNK_LIMIT,
 ) -> list[str]:
-    """Split ``text`` into translator-sized chunks at natural boundaries.
-
-    The text is first broken into pieces no longer than ``chunk_limit``
-    (paragraph -> sentence -> phrase -> word), then consecutive pieces are
-    packed back together up to ``char_limit``, so every chunk boundary falls
-    on a natural cut. A smaller ``chunk_limit`` packs chunks tighter.
-
-    Args:
-        text: Full text in any language.
-        char_limit: Maximum characters of one output chunk.
-        chunk_limit: Maximum characters of the pieces chunks are packed from.
-
-    Returns:
-        Chunks in reading order; concatenating them restores ``text`` exactly.
-    """
+    """Split ``text`` into translator-sized chunks at natural boundaries."""
     if not text:
         return []
     pieces = _break(text, min(chunk_limit, char_limit))

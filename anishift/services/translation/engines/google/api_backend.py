@@ -1,13 +1,4 @@
-"""HTTP client for the free Google Translate mobile page.
-
-Google answers the JSON endpoint the previous client used with ``429`` and
-serves the mobile page only to browser-looking clients, so this backend sets a
-browser User-Agent and reads the translation out of the page's result container.
-
-A missing container is reported as a failure instead of returning the source
-text: silently handing back the input is what made a broken engine look like a
-working one.
-"""
+"""HTTP client for the free Google Translate mobile page."""
 
 from __future__ import annotations
 
@@ -41,11 +32,7 @@ TRANSIENT_ERRORS: Final[tuple[type[Exception], ...]] = (TranslationRateLimitErro
 
 
 class MobileTranslateClient:
-    """Translate one already-joined string through the mobile page.
-
-    The HTTP client is reused across calls so a whole file costs one connection,
-    and it is released by :meth:`close`.
-    """
+    """Translate one already-joined string through the mobile page."""
 
     __slots__ = ("_client",)
 
@@ -58,20 +45,7 @@ class MobileTranslateClient:
         )
 
     def translate(self, text: str, *, source_lang: str, target_lang: str) -> str:
-        """Translate one string and return the page's translated text.
-
-        Args:
-            text: Already-joined string to translate.
-            source_lang: Caller source code, or ``auto`` to let Google detect it.
-            target_lang: Caller target code.
-
-        Returns:
-            The translated text, HTML-unescaped.
-
-        Raises:
-            TranslationRateLimitError: Google asked the caller to slow down.
-            TranslationEngineError: The response carried no usable result.
-        """
+        """Translate one string and return the page's translated text."""
         response: httpx.Response = self._client.get(
             BASE_URL,
             params={"sl": source_lang, "tl": target_lang, "q": text},
@@ -90,12 +64,7 @@ class MobileTranslateClient:
 
 
 def _extract_translation(page: str) -> str:
-    """Return the translated text held by the page's result container.
-
-    Raises:
-        TranslationEngineError: The page carried no result container, which is
-            what Google returns to clients it does not treat as a browser.
-    """
+    """Return the translated text held by the page's result container."""
     match: re.Match[str] | None = _RESULT_PATTERN.search(page)
     if match is None:
         msg = "Google Translate returned a page without a result container"

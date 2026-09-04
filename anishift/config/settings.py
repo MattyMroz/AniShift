@@ -1,20 +1,4 @@
-"""Application settings loaded from environment / ``.env`` file.
-
-Type-safe API-key configuration via pydantic-settings. Every field maps to an
-``ANISHIFT_``-prefixed env var (or the same key in ``.env``). All keys are
-optional — a missing key only disables the engine that needs it, not the app.
-
-The single exception is the legacy, unprefixed ``FOUNDRY_API_TOKEN``, read as a
-compatibility source of the Palantir token. Which of the two variables wins is
-decided by ``resolve_palantir_token`` in the LLM adapter, so the rule has one
-implementation for both this class and a plain process environment.
-
-Usage:
-    >>> from anishift.config.settings import Settings
-    >>> s = Settings()
-    >>> bool(s.deepl_api_key)
-    False
-"""
+"""Application settings loaded from environment / ``.env`` file."""
 
 from __future__ import annotations
 
@@ -69,35 +53,7 @@ class _LiteralDotEnvSettingsSource(DotEnvSettingsSource):
 
 
 class Settings(BaseSettings):
-    """API keys and env-driven settings — loaded from env vars and ``.env``.
-
-    Field names map to env vars with the ``ANISHIFT_`` prefix, e.g.
-    ``deepl_api_key`` <- ``ANISHIFT_DEEPL_API_KEY``. System environment
-    variables take precedence over ``.env``.
-
-    Attributes:
-        deepl_api_key: DeepL API key (translation engine ``deepl``).
-        elevenlabs_api_key: Official ElevenLabs API key (TTS engine
-            ``elevenlabs``). NOT used by ``elevenbytes`` — that proxy engine
-            ships its own built-in key.
-        anthropic_api_key: LLM provider ``anthropic``.
-        gemini_api_key: LLM provider ``gemini``.
-        openai_api_key: LLM provider ``openai``.
-        deepseek_api_key: LLM provider ``deepseek``.
-        openrouter_api_key: LLM provider ``openrouter``.
-        openai_compatible_api_key: LLM provider ``openai_compatible``.
-        openai_compatible_base_url: Base URL for the ``openai_compatible``
-            provider (self-hosted / gateway endpoint).
-        palantir_token: Palantir Foundry token (LLM provider ``palantir``), read
-            from ``ANISHIFT_PALANTIR_TOKEN``. When that value is absent or
-            blank, the unprefixed ``FOUNDRY_API_TOKEN`` fills it for
-            compatibility with an older setup; a writer always targets the
-            canonical name.
-        palantir_token_compat: Raw compatibility value of the token, folded into
-            ``palantir_token`` and cleared during validation. Never read it
-            directly.
-        workspace_root: Optional workspace path override.
-    """
+    """API keys and env-driven settings — loaded from env vars and ``.env``."""
 
     model_config = SettingsConfigDict(
         env_prefix="ANISHIFT_",
@@ -149,18 +105,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _resolve_palantir_token(self) -> Self:
-        """Apply the single token precedence rule owned by the LLM adapter.
-
-        Both variables are collected by the normal source chain, so a value may
-        come from the environment or from ``.env``. Choosing between them is
-        delegated to ``resolve_palantir_token`` instead of being re-implemented
-        here, which is what keeps a blank canonical value from resolving
-        differently in the two call paths.
-
-        Returns:
-            The settings instance with ``palantir_token`` holding the resolved
-            token and the compatibility field cleared.
-        """
+        """Apply the single token precedence rule owned by the LLM adapter."""
         self.palantir_token = resolve_palantir_token(
             {
                 PALANTIR_TOKEN_ENV_VAR: self.palantir_token,

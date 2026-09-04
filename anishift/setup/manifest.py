@@ -1,11 +1,4 @@
-"""Load and validate the external-resource manifest (``bin_hashes.json``).
-
-The manifest is the single source of truth for what the resource installer
-downloads: per resource a ``kind``, a ``source`` (how to fetch it), its SHA256
-and size, and the members to extract. ``source`` is a tagged union keyed by
-``source.type``; today only ``url`` exists, and a future AI model adds a new
-source type plus a fetcher — not a new manifest shape.
-"""
+"""Load and validate the external-resource manifest (``bin_hashes.json``)."""
 
 from __future__ import annotations
 
@@ -56,11 +49,7 @@ class ManifestError(FatalError):
 
 @dataclass(frozen=True, slots=True)
 class UrlSource:
-    """A resource fetched from a direct download URL.
-
-    Attributes:
-        url: Download URL of the archive.
-    """
+    """A resource fetched from a direct download URL."""
 
     type: Literal["url"]
     url: str
@@ -72,12 +61,7 @@ Source = UrlSource
 
 @dataclass(frozen=True, slots=True)
 class Member:
-    """One file to extract from a resource archive.
-
-    Attributes:
-        archive_path: Path of the member inside the archive.
-        dest: Destination relative to the resource's install root (no ``..``).
-    """
+    """One file to extract from a resource archive."""
 
     archive_path: str
     dest: str
@@ -85,17 +69,7 @@ class Member:
 
 @dataclass(frozen=True, slots=True)
 class Resource:
-    """One downloadable resource: a source plus the members to install.
-
-    Attributes:
-        name: Resource name (also the manifest key), e.g. ``"ffmpeg"``.
-        kind: Resource kind; decides the install root (binary -> ``external/bin/``).
-        source: How to fetch the archive.
-        sha256: Expected SHA256 of the downloaded archive (lowercase hex).
-        size_bytes: Expected archive size in bytes.
-        archive: Container format of the download.
-        members: Files to extract from the archive.
-    """
+    """One downloadable resource: a source plus the members to install."""
 
     name: str
     kind: ResourceKind
@@ -199,17 +173,7 @@ def _parse_resource(name: str, raw: Any) -> Resource:
 
 
 def load_manifest(path: Path | None = None) -> tuple[Resource, ...]:
-    """Load and validate the resource manifest.
-
-    Args:
-        path: Manifest file (defaults to :func:`manifest_path`).
-
-    Returns:
-        Parsed resources in manifest order.
-
-    Raises:
-        ManifestError: When the file is missing, unparseable, or malformed.
-    """
+    """Load and validate the resource manifest."""
     target = path if path is not None else manifest_path()
     try:
         raw = json.loads(target.read_text(encoding="utf-8"))

@@ -1,10 +1,4 @@
-"""Write translated narrator lines to an SRT file (txt -> SRT mini-feature).
-
-Plain-text inputs carry no timings, so a readable duration is derived from each
-line's length (reading speed) and the lines are laid out back to back. The file
-is a lector script, not a video overlay, so the exact times only need to be
-monotonic and readable.
-"""
+"""Write translated narrator lines to an SRT file (txt -> SRT mini-feature)."""
 
 from __future__ import annotations
 
@@ -57,18 +51,7 @@ def _event(line: TranslatedLine, cursor: int) -> tuple[SSAEvent, int]:
 
 
 def spoken_to_srt(lines: tuple[TranslatedLine, ...], dest: Path) -> Path | None:
-    """Write translated narrator lines to ``dest`` as SRT; None when empty.
-
-    Args:
-        lines: Translated narrator lines, in reading order.
-        dest: Output ``.srt`` path (written atomically).
-
-    Returns:
-        ``dest`` on success, or ``None`` when there are no lines.
-
-    Raises:
-        SubtitleError: The file could not be written.
-    """
+    """Write translated narrator lines to ``dest`` as SRT; None when empty."""
     if not lines:
         return None
     out = SSAFile()

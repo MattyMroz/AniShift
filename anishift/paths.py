@@ -1,18 +1,4 @@
-"""Location of the panel-preferences file, free of every domain import.
-
-``config_path`` is a trivial path helper that every layer needs, down to the
-terminal shell. It sits outside :mod:`anishift.config` on purpose: that package
-validates engine ids, so its ``__init__`` and its ``user_settings`` module pull
-the audio, translation, LLM and TTS registries into the process. Importing this
-module pulls nothing but :mod:`pathlib`, which keeps the presentation layer free
-of the backend.
-
-:mod:`anishift.config` re-exports ``config_path``, so callers that want the
-configuration facade keep using it.
-
-Public API:
-    config_path: Location of ``<repo>/config/settings.json``.
-"""
+"""Location of the panel-preferences file, free of every domain import."""
 
 from __future__ import annotations
 

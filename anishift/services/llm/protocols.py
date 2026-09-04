@@ -38,11 +38,7 @@ class StreamingLlmEngine(Protocol):
         *,
         on_text: Callable[[str], None] | None = None,
     ) -> LlmResponse:
-        """Run one completion while consuming provider chunks incrementally.
-
-        Text is handed to *on_text* as it arrives, so a caller can report real
-        progress rather than waiting for the completed response.
-        """
+        """Run one completion while consuming provider chunks incrementally."""
         ...
 
 

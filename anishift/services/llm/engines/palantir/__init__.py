@@ -1,15 +1,4 @@
-"""Palantir Foundry proxy adapter: configuration, authorization and routing.
-
-The modules here stay inert on import: they resolve the token, assemble the
-endpoint from the catalog and shape a request per protocol, without creating an
-HTTP client or opening a connection. The engine that sends a request is added on
-top of these contracts.
-
-Importing this package therefore loads no HTTP client, no provider SDK and no
-other engine — reaching into a sibling engine package for a shared value would
-break that, because a package ``__init__`` evaluates its own service module and
-pulls the SDK in with it.
-"""
+"""Palantir Foundry proxy adapter: configuration, authorization and routing."""
 
 from __future__ import annotations
 

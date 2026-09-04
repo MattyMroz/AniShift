@@ -1,25 +1,4 @@
-"""Router mapping one neutral request onto the four Foundry proxy protocols.
-
-The catalog declares exactly one protocol per provider, and the router turns it
-into the builder that shapes the request: the route appended to the configured
-base URL, the headers and the JSON body. There is no fallback — an unsupported
-protocol raises a configuration error instead of silently borrowing another
-provider's shape.
-
-``LlmMessage`` and its text parts are the only source of content. A content part
-the protocol cannot express is rejected instead of being dropped, so nothing
-disappears from a prompt on the way to the wire.
-
-Nothing here performs I/O: a builder returns a ``PalantirHttpRequest``
-description, and sending it is the job of the engine added later.
-
-Public API:
-    PalantirHttpRequest: Frozen description of one request; headers and body
-        stay out of ``repr``.
-    PalantirRequestBuilder: Signature every protocol builder implements.
-    request_builder: Return the builder declared by one protocol.
-    build_palantir_request: Build the request for one configuration.
-"""
+"""Router mapping one neutral request onto the four Foundry proxy protocols."""
 
 from __future__ import annotations
 
@@ -49,15 +28,7 @@ logger = get_logger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class PalantirHttpRequest:
-    """One protocol-shaped request, described without being sent.
-
-    Attributes:
-        method: HTTP method of the proxy route.
-        url: Absolute endpoint assembled from the configured base URL.
-        headers: Allowlisted headers, kept out of ``repr`` because they carry
-            the bearer token.
-        body: JSON body, kept out of ``repr`` because it carries the prompt.
-    """
+    """One protocol-shaped request, described without being sent."""
 
     method: str
     url: str
@@ -98,13 +69,7 @@ _ANTHROPIC_VERSION: Final[str] = "2023-06-01"
 """Anthropic Messages API version this mapper writes."""
 
 _ANTHROPIC_DEFAULT_MAX_TOKENS: Final[int] = 8192
-"""Output limit written when the caller configured none.
-
-The Anthropic Messages protocol rejects a request without ``max_tokens``, so a
-value is mandatory here. What to send through the proxy is a Palantir decision,
-which is why this default is local instead of borrowed from the native Anthropic
-engine: importing that package would load its SDK on a plain import of this one.
-"""
+"""Output limit written when the caller configured none."""
 
 _OPENAI_MAX_TOKENS_KEY: Final[str] = "max_completion_tokens"
 """Output limit keyword of the OpenAI Chat Completions endpoint."""
@@ -118,26 +83,11 @@ _GOOGLE_ROLES: Final[Mapping[LlmRole, str]] = MappingProxyType(
         LlmRole.ASSISTANT: "model",
     },
 )
-"""Google role names of the neutral conversation roles.
-
-A system message has no role of its own there and becomes ``systemInstruction``.
-"""
+"""Google role names of the neutral conversation roles."""
 
 
 def request_builder(protocol: ModelProtocol) -> PalantirRequestBuilder:
-    """Return the request builder the given protocol declares.
-
-    Args:
-        protocol: Wire protocol taken from a validated provider entry.
-
-    Returns:
-        The builder that shapes a request for that protocol.
-
-    Raises:
-        LlmConfigError: The value is outside the four supported protocols, so
-            the failure stays visible instead of falling back to a provider the
-            user did not choose.
-    """
+    """Return the request builder the given protocol declares."""
     builder: PalantirRequestBuilder | None = _BUILDERS.get(protocol)
     if builder is None:
         raise_palantir_config_error(
@@ -155,21 +105,7 @@ def build_palantir_request(
     *,
     stream: bool = False,
 ) -> PalantirHttpRequest:
-    """Build the request one configuration and one neutral prompt describe.
-
-    Args:
-        config: Configuration whose protocol selects the builder.
-        request: Neutral ordered messages of one completion.
-        options: Already validated generation limits, none by default.
-        stream: Whether to select Google's SSE endpoint.
-
-    Returns:
-        The described request, ready for an engine to send.
-
-    Raises:
-        LlmConfigError: The configured protocol is unsupported.
-        LlmRequestError: A message carries no text or an unsupported part.
-    """
+    """Build the request one configuration and one neutral prompt describe."""
     builder: PalantirRequestBuilder = request_builder(config.protocol)
     built: PalantirHttpRequest = builder(config, request, options or PalantirGenerationOptions())
     if stream:
@@ -184,11 +120,7 @@ def build_palantir_request(
 
 
 def _streaming_variant(config: PalantirModelConfig, built: PalantirHttpRequest) -> PalantirHttpRequest:
-    """Turn one built request into the server-sent-events variant of its protocol.
-
-    Google exposes a dedicated SSE route, while Chat Completions keeps its route
-    and asks for a stream in the body.
-    """
+    """Turn one built request into the server-sent-events variant of its protocol."""
     if config.protocol is ModelProtocol.OPENAI_CHAT:
         return replace(built, body={**dict(built.body), "stream": True})
     if config.protocol is not ModelProtocol.GOOGLE_GENERATE:
@@ -380,8 +312,4 @@ _BUILDERS: Final[Mapping[ModelProtocol, PalantirRequestBuilder]] = MappingProxyT
         ModelProtocol.XAI_RESPONSES: _build_xai_responses,
     },
 )
-"""Builder of every supported protocol, defined after the builders it names.
-
-A protocol missing from this table has no request shape and cannot fall back to
-another provider.
-"""
+"""Builder of every supported protocol, defined after the builders it names."""

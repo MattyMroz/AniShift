@@ -1,9 +1,4 @@
-"""Translation service configuration.
-
-Forward-compatible dataclass: unknown keys are warned and ignored rather than
-raising. The DeepL key is injected from :class:`anishift.config.settings.Settings`
-at the composition root into ``api_key`` (google needs none).
-"""
+"""Translation service configuration."""
 
 from __future__ import annotations
 
@@ -24,25 +19,7 @@ logger = get_logger(__name__)
 
 @dataclass(slots=True, init=False)
 class TranslationConfig:
-    """Translation facade configuration.
-
-    The caller decides which engine to use - this config carries no default for
-    ``engine``, so the service never picks one on its own.
-
-    The translation target is always Polish, so this config carries no target
-    language (see ``constants.TARGET_LANG``).
-
-    The per-request character limit is not carried here: it is the engine's own
-    hard limit (Google 15000, DeepL 128 KiB), owned by the engine's constants so
-    the facade can never under-set it.
-
-    Attributes:
-        engine: Engine id from the lazy registry (``google``/``deepl``/``llm``).
-        source_lang: Source language; ``auto`` lets the provider detect it.
-        batch_size: Lines joined per provider request.
-        max_retries: Retry attempts on transient errors.
-        api_key: Provider key (used by deepl; empty for the free google engine).
-    """
+    """Translation facade configuration."""
 
     engine: str
     source_lang: str = DEFAULT_SOURCE_LANG
@@ -51,11 +28,7 @@ class TranslationConfig:
     api_key: str = ""
 
     def __init__(self, **kwargs: Any) -> None:
-        """Assign known fields from kwargs; warn on unknown keys.
-
-        Raises:
-            TranslationConfigError: ``engine`` is missing or empty.
-        """
+        """Assign known fields from kwargs; warn on unknown keys."""
         known = {dc_field.name for dc_field in dataclasses.fields(self)}
         unknown = kwargs.keys() - known
         if unknown:

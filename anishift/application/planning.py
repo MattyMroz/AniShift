@@ -18,11 +18,7 @@ _MAX_LLM_TEMPERATURE: Final[float] = 2.0
 """Maximum provider-neutral LLM sampling temperature."""
 
 DEFAULT_AUDIO_TOLERANCE_US: Final[int] = 1_000_000
-"""Accepted duration difference between supplied audio and the selected video.
-
-Workspace inspection and run planning both compare the same two durations, so the
-number lives here once instead of drifting between two independent definitions.
-"""
+"""Accepted duration difference between supplied audio and the selected video."""
 
 
 class TaskKind(StrEnum):

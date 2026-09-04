@@ -1,8 +1,4 @@
-"""Sole owner of stdout/stderr UTF-8 reconfiguration for the CLI process.
-
-Provides :func:`configure_utf8_streams` (idempotent, safe for any stream
-type) and :func:`console_encoding_check` for the doctor report.
-"""
+"""Sole owner of stdout/stderr UTF-8 reconfiguration for the CLI process."""
 
 from __future__ import annotations
 
@@ -23,11 +19,7 @@ _UTF8_NAMES: Final[frozenset[str]] = frozenset({"utf8", "cp65001", "65001"})
 
 
 def configure_utf8_streams() -> None:
-    """Reconfigure stdout and stderr to UTF-8 with replacement error handling.
-
-    Idempotent: safe to call multiple times. Tolerates ``None`` streams,
-    ``StringIO`` wrappers, and any object lacking the ``reconfigure`` method.
-    """
+    """Reconfigure stdout and stderr to UTF-8 with replacement error handling."""
     for stream in (sys.stdout, sys.stderr):
         if stream is None:
             continue

@@ -1,9 +1,4 @@
-"""Retry helpers shared by the network translation engines.
-
-No tenacity dependency (``anishift.utils`` is untouchable and tenacity is not a
-dependency). Retries a callable on a given exception type with exponential
-backoff, shared by every network translation engine.
-"""
+"""Retry helpers shared by the network translation engines."""
 
 from __future__ import annotations
 
@@ -29,25 +24,7 @@ def call_with_retry[T](  # noqa: PLR0913 - retry policy remains explicit at prov
     cap_s: float = 15.0,
     on_retry: Callable[[int, int], None] | None = None,
 ) -> T:
-    """Call ``func`` up to ``max_attempts`` times, backing off on ``retry_on``.
-
-    Uses exponential backoff (``base_s * 2**(attempt-1)``) capped at ``cap_s``.
-
-    Args:
-        func: Zero-arg callable to invoke.
-        max_attempts: Total number of calls (not extra retries).
-        retry_on: Exception type(s) that trigger a retry; anything else raises.
-        base_s: Base delay in seconds.
-        cap_s: Upper bound on a single wait.
-        on_retry: Optional observer receiving next and maximum attempt numbers.
-
-    Returns:
-        The value returned by ``func``.
-
-    Raises:
-        BaseException: The last ``retry_on`` error when attempts run out, or any
-            non-retryable error immediately.
-    """
+    """Call ``func`` up to ``max_attempts`` times, backing off on ``retry_on``."""
     for attempt in range(1, max_attempts + 1):
         try:
             return func()

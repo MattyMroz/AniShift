@@ -94,11 +94,7 @@ def _native_mascot_placeholder(columns: int, rows: int) -> Text:
 
 
 def _home_brand(mascot: Text | None, *, show_full_wordmark: bool, reserved_rows: int = 0) -> Text:
-    """Build one centered fixed-size wordmark and optional left mascot.
-
-    Without a mascot the wordmark still sinks to the bottom of ``reserved_rows``,
-    so a terminal too narrow to draw one keeps the name where it already sits.
-    """
+    """Build one centered fixed-size wordmark and optional left mascot."""
     wordmark: Text = _full_wordmark() if show_full_wordmark else _compact_wordmark()
     if mascot is None:
         return _lowered(wordmark, reserved_rows)

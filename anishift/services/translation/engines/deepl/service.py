@@ -1,10 +1,4 @@
-"""DeepL engine (official SDK, synchronous).
-
-``translate_text`` accepts a list and returns results in order, so this engine
-uses the SDK's native batch. The key comes from the config (injected from
-Settings). Rate-limit errors retry with backoff; other SDK errors map onto the
-translation error hierarchy so the facade can react (quota -> fallback).
-"""
+"""DeepL engine (official SDK, synchronous)."""
 
 from __future__ import annotations
 
@@ -32,10 +26,7 @@ if TYPE_CHECKING:
 
 
 def _map_sdk_error(exc: Exception) -> Exception:
-    """Map a DeepL SDK exception onto the translation error hierarchy.
-
-    ``deepl`` is imported lazily so the module stays importable without the SDK.
-    """
+    """Map a DeepL SDK exception onto the translation error hierarchy."""
     import deepl  # noqa: PLC0415 - lazy SDK import
 
     if isinstance(exc, deepl.TooManyRequestsException):
@@ -106,11 +97,7 @@ class DeeplService:
         return "deduplicate"
 
     def _ensure_client(self) -> None:
-        """Create the DeepL client from the configured key (idempotent).
-
-        Raises:
-            TranslationAuthError: When no API key is configured.
-        """
+        """Create the DeepL client from the configured key (idempotent)."""
         if self._client is not None:
             return
         if not self._config.api_key:
