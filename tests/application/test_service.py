@@ -19,7 +19,8 @@ from fakes import (
 )
 
 import anishift.application.service as service_module
-from anishift.application.cancellation import CancellationToken
+from anishift.application.cancellation import CancellationToken, EventCancellationToken
+from anishift.application.discovery import DiscoveryResult
 from anishift.application.handlers import (
     ExecutionHandlers,
     ExtractionTaskHandler,
@@ -38,7 +39,7 @@ from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
 from anishift.config.presets import AutoPresetFile, default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
-from anishift.errors import RunConflictError
+from anishift.errors import ErrorCode, ExecutionError, RunConflictError
 from anishift.services.extraction import ExtractionRequest, ExtractionResult
 from anishift.services.media import DefaultMediaProbe
 from anishift.services.media.types import MediaCatalog
@@ -68,6 +69,7 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
     settings: Settings | None = None,
     user_settings: UserSettings | None = None,
     catalog_loader: Callable[[], ModelCatalog] | None = None,
+    prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = None,
 ) -> AppService:
     stored: list[AutoPresetFile] = preset_store if preset_store is not None else [default_preset_file()]
 
@@ -96,6 +98,7 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
         preset_saver=lambda value: stored.__setitem__(0, value),
         settings_saver=lambda value: None,
         catalog_loader=catalog_loader or _catalog,
+        prepare_workspace=prepare_workspace,
     )
 
 
@@ -376,3 +379,40 @@ def test_a_new_workspace_file_forces_a_new_inspection(tmp_path: Path) -> None:
 
     assert probe.calls == 3
     assert len(workspace.groups) == 2
+
+
+def test_discovery_can_cancel_while_prewarm_prepares_tools(tmp_path: Path) -> None:
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    errors: list[ExecutionError] = []
+
+    def prepare(discovery: DiscoveryResult, cancel: CancellationToken) -> None:
+        entered.set()
+        assert release.wait(timeout=2.0)
+
+    service: AppService = _service(tmp_path, FakeTranslationService(), prepare_workspace=prepare)
+    token: EventCancellationToken = EventCancellationToken()
+
+    def discover_cancelled() -> None:
+        try:
+            service.discover(cancel=token)
+        except ExecutionError as error:
+            errors.append(error)
+
+    prewarm: threading.Thread = threading.Thread(target=service.discover)
+    waiting: threading.Thread = threading.Thread(target=discover_cancelled)
+    prewarm.start()
+    try:
+        assert entered.wait(timeout=1.0)
+        waiting.start()
+        token.cancel()
+        waiting.join(timeout=1.0)
+        assert not waiting.is_alive()
+        assert len(errors) == 1
+        assert errors[0].context.code is ErrorCode.CANCELLED
+    finally:
+        release.set()
+        prewarm.join(timeout=1.0)
+        waiting.join(timeout=1.0)
+
+    assert not prewarm.is_alive()

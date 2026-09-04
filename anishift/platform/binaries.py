@@ -1,18 +1,4 @@
-"""External binary resolution — locate mkvtoolnix and ffmpeg per OS.
-
-Binaries live under ``external/bin/<tool>/`` (gitignored). Resolution order:
-
-1. ``external/bin/<tool>/<exe>`` inside the repo checkout.
-2. On non-Windows, fall back to the same executable on ``PATH``.
-
-Public API:
-    Binary: Enum of the binaries the app needs.
-    TOOL_DIR: Subdirectory holding each binary.
-    is_windows: Whether the current OS is Windows.
-    external_bin_root: Root of the bundled-binary tree.
-    resolve_binary: Best-effort path to a binary (repo, then PATH).
-    require_binary: Like ``resolve_binary`` but raises when missing.
-"""
+"""External binary resolution — locate mkvtoolnix and ffmpeg per OS."""
 
 from __future__ import annotations
 
@@ -86,26 +72,15 @@ def _exe_name(binary: Binary) -> str:
 
 
 def resolve_binary(binary: Binary) -> Path | None:
-    """Return the best path for *binary*, or ``None`` if unavailable.
-
-    Looks in ``external/bin/<tool>/`` first, then falls back to ``PATH`` on
-    non-Windows systems. Windows-only binaries always return ``None`` off
-    Windows.
-
-    Args:
-        binary: The executable to locate.
-
-    Returns:
-        Absolute path to the executable, or ``None`` when it cannot be found.
-    """
-    bundled = external_bin_root() / TOOL_DIR[binary] / _exe_name(binary)
-    if bundled.is_file():
+    """Return the best non-empty file for *binary*, or ``None`` if unavailable."""
+    bundled: Path = external_bin_root() / TOOL_DIR[binary] / _exe_name(binary)
+    if _is_nonempty_file(bundled):
         logger.debug("External binary resolved", binary=binary.value, source="bundled")
         return bundled
 
     if not is_windows():
-        found = shutil.which(binary.value)
-        if found is not None:
+        found: str | None = shutil.which(binary.value)
+        if found is not None and _is_nonempty_file(Path(found)):
             logger.debug("External binary resolved", binary=binary.value, source="path")
             return Path(found)
 
@@ -113,18 +88,16 @@ def resolve_binary(binary: Binary) -> Path | None:
     return None
 
 
+def _is_nonempty_file(path: Path) -> bool:
+    """Treat missing, unreadable and empty executable candidates as unavailable."""
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def require_binary(binary: Binary) -> Path:
-    """Return the path for *binary* or raise when it is missing.
-
-    Args:
-        binary: The executable to locate.
-
-    Returns:
-        Absolute path to the executable.
-
-    Raises:
-        BinaryNotFoundError: When the binary cannot be resolved.
-    """
+    """Return the path for *binary* or raise when it is missing."""
     path = resolve_binary(binary)
     if path is not None:
         return path

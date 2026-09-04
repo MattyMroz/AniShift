@@ -98,16 +98,15 @@ _PALANTIR_ENGINE_ID: Final[str] = "palantir"
 _EXTRACTION_IO_HEADROOM: Final[int] = 2
 """Legacy number of extraction workers added above the CPU-count square root."""
 
+_DISCOVERY_LOCK_POLL_S: Final[float] = 0.1
+"""Maximum cancellation delay while another discovery prepares media tools."""
+
 _TTS_GROUP_JOBS: Final[int] = 1
 """Legacy file-level limit keeping one episode in synthesis at a time."""
 
 
 class ModelAvailability(StrEnum):
-    """Session-only availability vocabulary of one catalog model.
-
-    A catalog entry is never available on its own; only an explicit connection
-    test moves it out of ``UNVERIFIED``, and the answer lives in one session.
-    """
+    """Session-only availability vocabulary of one catalog model."""
 
     UNVERIFIED = "unverified"
     VERIFIED = "verified"
@@ -116,16 +115,7 @@ class ModelAvailability(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ModelProbeResult:
-    """Outcome of one explicit connection test, owned by the session alone.
-
-    Attributes:
-        alias: Catalog alias the test addressed.
-        availability: ``VERIFIED`` or ``ERROR``; the test never leaves a model
-            ``UNVERIFIED``.
-        checked_at: Moment the single attempt finished, in UTC.
-        error_class: Safe error class name on failure, empty on success. Never a
-            response body, a header, an address or a token.
-    """
+    """Outcome of one explicit connection test, owned by the session alone."""
 
     alias: str
     availability: ModelAvailability
@@ -179,14 +169,7 @@ class EnvironmentSettingStatus:
 
 @dataclass(frozen=True, slots=True)
 class TranslationModelOption:
-    """One configured-provider model that an interface may select.
-
-    Attributes:
-        provider_id: Registered LLM engine selected together with the model.
-        model_id: Direct provider ID, or a local catalog alias for Palantir.
-        label: Exact user-facing model identity.
-        group_id: Stable provider or Palantir protocol group for sectioned UIs.
-    """
+    """One configured-provider model that an interface may select."""
 
     provider_id: str
     model_id: str
@@ -226,6 +209,7 @@ class AppService:
         catalog_loader: Callable[[], ModelCatalog] = load_model_catalog,
         model_prober: ModelProber | None = None,
         env_file: Path | None = None,
+        prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = None,
     ) -> None:
         self._workspace_root: Path = workspace_root
         self._settings: Settings = settings
@@ -246,6 +230,7 @@ class AppService:
         self._active_cancel: EventCancellationToken | None = None
         self._run_lock: threading.Lock = threading.Lock()
         self._discover_lock: threading.Lock = threading.Lock()
+        self._prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = prepare_workspace
 
     @property
     def workspace_root(self) -> Path:
@@ -255,8 +240,14 @@ class AppService:
     def discover(self, *, cancel: CancellationToken | None = None) -> InspectedWorkspace:
         """Inspect the workspace once, reusing the last inspection of unchanged files."""
         token: CancellationToken = cancel or NeverCancelledToken()
-        with self._discover_lock:
+        while not self._discover_lock.acquire(timeout=_DISCOVERY_LOCK_POLL_S):
+            token.raise_if_cancelled()
+        try:
+            token.raise_if_cancelled()
             discovery: DiscoveryResult = discover_groups(self._workspace_root)
+            if self._prepare_workspace is not None:
+                self._prepare_workspace(discovery, token)
+            token.raise_if_cancelled()
             fingerprint: WorkspaceFingerprint = _workspace_fingerprint(discovery)
             unchanged: InspectedWorkspace | None = self._unchanged_workspace(fingerprint)
             if unchanged is not None:
@@ -265,6 +256,8 @@ class AppService:
             inspected: InspectedWorkspace = self._inspector.inspect(discovery, cancel=token)
             _commit_if_active(token, lambda: self._cache_workspace(inspected, fingerprint))
             return inspected
+        finally:
+            self._discover_lock.release()
 
     def register_external_subtitle(
         self,
@@ -466,13 +459,7 @@ class AppService:
         return tuple(statuses)
 
     def translation_model_options(self) -> tuple[TranslationModelOption, ...]:
-        """Return exact model choices grouped by configured LLM provider.
-
-        Provider suggestions are lightweight local identifiers. Palantir choices
-        come only from usable, non-placeholder catalog entries because Foundry
-        model RIDs are enrollment-specific and cannot be invented by the app.
-        Nothing in this method sends a network request.
-        """
+        """Return exact model choices grouped by configured LLM provider."""
         available: frozenset[str] = frozenset(
             status.engine_id for status in self.engine_availability() if status.domain == "llm" and status.is_available
         )
@@ -499,36 +486,11 @@ class AppService:
         return tuple(options)
 
     def model_catalog(self) -> ModelCatalog:
-        """Return the validated local catalog of Palantir providers and models.
-
-        The catalog is read on demand, so a hand edit is picked up without a
-        restart, and it is never written back — comments in the file survive
-        because nothing here owns its content.
-
-        Returns:
-            The parsed catalog.
-
-        Raises:
-            ModelCatalogError: The runtime catalog file is missing, unreadable or
-                does not satisfy the catalog contract.
-        """
+        """Return the validated local catalog of Palantir providers and models."""
         return self._catalog_loader()
 
     def probe_model(self, alias: str) -> ModelProbeResult:
-        """Run one explicit connection test for one catalog alias.
-
-        At most one minimal request is sent, and only when this method is called:
-        opening a picker, filtering it or reading a status never reaches here.
-        The answer belongs to the caller's session — nothing is written to the
-        catalog, the preferences, a secret or any other file.
-
-        Args:
-            alias: Catalog alias the user confirmed for the test.
-
-        Returns:
-            ``VERIFIED`` with the completion time, or ``ERROR`` with a safe error
-            class when the configuration is unusable or the single attempt failed.
-        """
+        """Run one explicit connection test for one catalog alias."""
         try:
             config: LlmConfig = self._palantir_config(alias)
             self._prober()(config)
@@ -568,24 +530,7 @@ class AppService:
         return deepcopy(validated)
 
     def update_setting(self, setting_id: str, value: SettingValue) -> UserSettings:
-        """Change one active preference as a single all-or-nothing transaction.
-
-        Args:
-            setting_id: Catalog ID of one editable, currently active preference.
-            value: Replacement value validated against that catalog spec.
-
-        Returns:
-            A detached copy of the settings that were persisted.
-
-        Raises:
-            ConfigError: The ID is unknown, secret, or inactive for the current
-                selections.
-            ValueError: The value is rejected by the catalog spec.
-            TypeError: The value does not match the declared field type.
-
-        Nothing is written and the in-memory settings keep their previous state
-        whenever any of those failures happens.
-        """
+        """Change one active preference as a single all-or-nothing transaction."""
         candidate: UserSettings = self.settings_snapshot()
         spec: SettingSpec = self._editable_spec(setting_id, candidate)
         spec.validate_value(value)
@@ -618,12 +563,7 @@ class AppService:
         return deepcopy(candidate)
 
     def reset_settings(self) -> UserSettings:
-        """Restore persisted panel preferences without touching secrets or presets.
-
-        The Palantir enrollment address survives. It is one half of a credential
-        whose other half is an environment secret, so wiping it here would leave
-        a token addressing nothing and silently hide every catalog model.
-        """
+        """Restore persisted panel preferences without touching secrets or presets."""
         defaults: UserSettings = UserSettings()
         defaults.palantir_enrollment_base_url = self.settings_snapshot().palantir_enrollment_base_url
         self._settings_saver(defaults)
@@ -632,21 +572,7 @@ class AppService:
         return deepcopy(defaults)
 
     def update_secret(self, setting_id: str, value: str | None) -> None:
-        """Store, clear, or remove one environment secret in the ``.env`` file.
-
-        Args:
-            setting_id: Catalog ID of one secret-scoped environment setting.
-            value: Replacement secret, ``""`` to keep an empty assignment, or
-                ``None`` to remove the key from the file entirely.
-
-        Raises:
-            ConfigError: The ID is unknown to the catalog or is not a secret.
-
-        The secret is never returned, logged, or rendered; only the environment
-        key name and the performed action are recorded. The file is replaced
-        atomically, yet a same-named variable already exported in the process
-        environment keeps overriding the stored value.
-        """
+        """Store, clear, or remove one environment secret in the ``.env`` file."""
         spec: SettingSpec = self._secret_spec(setting_id)
         update_env_value(_env_variable(spec.setting_id), value, path=self._env_file)
         self._reload_settings()
@@ -660,12 +586,7 @@ class AppService:
         self._reload_settings()
 
     def reload_environment(self) -> Mapping[str, bool]:
-        """Re-read the environment file and report which env settings are configured.
-
-        Returns:
-            Exactly what :meth:`environment_statuses` reports for the reloaded
-            environment, so configured values stay hidden.
-        """
+        """Re-read the environment file and report which env settings are configured."""
         self._reload_settings()
         return self.environment_statuses()
 
@@ -787,12 +708,7 @@ class AppService:
         return _run_settings_snapshot(preferences)
 
     def _palantir_readiness(self) -> tuple[bool, str]:
-        """Report whether a token-configured Palantir provider could really run.
-
-        A token alone is not readiness: without the enrollment address or a
-        catalog alias the run path would fail, so a status must not promise
-        ready. Nothing here sends a request or echoes the address.
-        """
+        """Report whether a token-configured Palantir provider could really run."""
         preferences: UserSettings = self.settings_snapshot()
         if not preferences.palantir_enrollment_base_url.strip():
             return False, "missing palantir_enrollment_base_url; set the enrollment address in Tools"

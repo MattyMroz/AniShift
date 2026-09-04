@@ -1,14 +1,4 @@
-"""Application composition root.
-
-``bootstrap()`` is the single place that resolves settings and the workspace
-and returns an :class:`AppContext`.
-
-Usage:
-    from anishift.bootstrap import bootstrap
-
-    app = bootstrap()                 # production defaults
-    app = bootstrap(create_dirs=False)  # skip workspace creation (tests)
-"""
+"""Application composition root."""
 
 from __future__ import annotations
 
@@ -23,6 +13,8 @@ from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_ro
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from anishift.application.cancellation import CancellationToken
+    from anishift.application.discovery import DiscoveryResult
     from anishift.application.service import AppService
 
 __all__ = ["AppContext", "bootstrap", "create_app_service", "production_service"]
@@ -32,13 +24,7 @@ logger = get_logger(__name__)
 
 @dataclass(slots=True)
 class AppContext:
-    """Wired application context.
-
-    Attributes:
-        settings: Resolved API-key / env settings.
-        user_settings: Panel preferences from ``config/settings.json``.
-        workspace_root: Absolute path to the workspace root.
-    """
+    """Wired application context."""
 
     settings: Settings
     user_settings: UserSettings
@@ -50,17 +36,7 @@ def bootstrap(
     settings: Settings | None = None,
     create_dirs: bool = True,
 ) -> AppContext:
-    """Load config, resolve the workspace, and return an :class:`AppContext`.
-
-    Args:
-        settings: Pre-built :class:`Settings` (skips constructing a new one;
-            environment and ``.env`` resolution are already complete).
-        create_dirs: When ``True`` create the workspace root and its
-            default subdirectories on disk.
-
-    Returns:
-        Fully wired :class:`AppContext`.
-    """
+    """Load config, resolve the workspace, and return an :class:`AppContext`."""
     resolved = settings if settings is not None else Settings(_env_file=env_path())
     user_settings = load_user_settings()
     workspace_root = resolve_workspace_root(
@@ -96,11 +72,41 @@ def create_app_service(context: AppContext) -> AppService:
         settings=context.settings,
         user_settings=context.user_settings,
         inspector=WorkspaceInspector(DefaultMediaProbe()),
+        prepare_workspace=_prepare_workspace_binaries,
         handler_factory=ProductionHandlerFactory(
             lambda: service.current_settings(),  # noqa: PLW0108 - defers the lookup until the service exists
         ),
     )
     return service
+
+
+def _prepare_workspace_binaries(discovery: DiscoveryResult, cancel: CancellationToken) -> None:
+    """Prepare media tools before probing without opening another renderer."""
+    from anishift.application.artifacts import ArtifactKind  # noqa: PLC0415
+    from anishift.errors import ErrorContext, ExecutionError  # noqa: PLC0415
+    from anishift.platform.binaries import Binary, BinaryNotFoundError  # noqa: PLC0415
+    from anishift.setup.installer import InstallerError, ensure_binary  # noqa: PLC0415
+
+    kinds: set[ArtifactKind] = {artifact.kind for group in discovery.groups for artifact in group.artifacts}
+    binaries: list[Binary] = []
+    if ArtifactKind.VIDEO_MKV in kinds:
+        binaries.extend((Binary.MKVMERGE, Binary.MKVEXTRACT))
+    if kinds.intersection({ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4, ArtifactKind.NARRATION_AUDIO}):
+        binaries.extend((Binary.FFMPEG, Binary.FFPROBE))
+    for binary in binaries:
+        cancel.raise_if_cancelled()
+        logger.debug("Preparing workspace media tool", binary=binary.value)
+        try:
+            ensure_binary(binary, show_progress=False, cancel=cancel.is_cancelled)
+        except (InstallerError, BinaryNotFoundError) as error:
+            raise ExecutionError(
+                context=ErrorContext(
+                    code=error.context.code,
+                    message=f"External tool preparation failed: {binary.value}",
+                    suggestion="Check the connection and disk access, then retry or run `anishift setup`.",
+                ),
+            ) from error
+    cancel.raise_if_cancelled()
 
 
 def production_service() -> AppService:
