@@ -31,14 +31,18 @@ jobs:
       - run: uv run ruff check anishift/ tests/
       - run: uv run ruff format --check anishift/ tests/
       - name: No docstrings/comments in tests
-        run: uv run python scripts/hooks/check_test_comments.py $(git ls-files 'tests/**/test_*.py' 'anishift/**/test_*.py')
+        run: uv run python scripts/hooks/check_test_comments.py $(git ls-files ':(glob)tests/**/*.py' ':(glob)anishift/**/tests/**/*.py' ':(glob)**/conftest.py')
       - name: Docstring under every constant
         run: uv run python scripts/hooks/check_const_docstrings.py $(git ls-files 'anishift/**/*.py')
 
   audit:
-    name: Security (pip-audit)
-    runs-on: ubuntu-latest
+    name: Security (pip-audit) [${{ matrix.os }}]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,7 +52,10 @@ jobs:
           version: "latest"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uvx pip-audit
+      - name: Export locked project and development dependencies
+        run: uv export --frozen --all-groups --no-emit-project --format requirements.txt --output-file audit-requirements.txt
+      - name: Audit locked dependencies
+        run: uvx pip-audit --requirement audit-requirements.txt --disable-pip --strict
 
   typecheck:
     name: Type Check (mypy)
