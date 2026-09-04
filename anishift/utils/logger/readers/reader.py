@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .._time_helpers import filter_logs_by_time, resolve_time_window
+from ..log_reader import LogReader as SimpleLogReader
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -46,26 +46,7 @@ class LogReader:
         Returns:
             Self for chaining.
         """
-        self._all_logs = []
-
-        if not self._file.exists():
-            return self
-
-        with self._file.open("r", encoding="utf-8") as f:
-            for raw_line in f:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    log = json.loads(line)
-                    if "record" in log and isinstance(log["record"], dict):
-                        flat_log = self._flatten_loguru_record(log["record"])
-                        self._all_logs.append(flat_log)
-                    else:
-                        self._all_logs.append(log)
-                except json.JSONDecodeError:
-                    continue
-
+        self._all_logs = SimpleLogReader(self._file).read_all()
         self._current = self._all_logs
         return self
 
@@ -234,32 +215,3 @@ class LogReader:
         except ImportError as e:
             msg = "pandas not installed. Install with: uv add pandas"
             raise ImportError(msg) from e
-
-    @staticmethod
-    def _flatten_loguru_record(record: dict[str, Any]) -> dict[str, Any]:
-        """Flatten a nested loguru record into a flat log dict.
-
-        Args:
-            record: Loguru record dict (from ``serialize=True``).
-
-        Returns:
-            Flat log dictionary with standard keys.
-        """
-        time_obj = record.get("time", {})
-        level_obj = record.get("level", {})
-        extra = record.get("extra", {})
-
-        flat_log: dict[str, Any] = {
-            "timestamp": time_obj.get("repr", "") if isinstance(time_obj, dict) else str(time_obj),
-            "level": level_obj.get("name", "") if isinstance(level_obj, dict) else str(level_obj),
-            "logger": extra.get("logger_name", "") if isinstance(extra, dict) else "",
-            "message": record.get("message", ""),
-            "file": record.get("file", {}).get("name", "") if isinstance(record.get("file"), dict) else "",
-            "function": record.get("function", ""),
-            "line": record.get("line", 0),
-        }
-
-        if isinstance(extra, dict):
-            flat_log.update({key: value for key, value in extra.items() if key != "logger_name"})
-
-        return flat_log

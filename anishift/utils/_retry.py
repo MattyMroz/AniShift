@@ -33,8 +33,7 @@ from tenacity import (
 )
 from tenacity.wait import wait_base
 
-from anishift.errors import TransientError
-from anishift.utils.logger import get_logger
+from .logger import get_logger
 
 __all__ = ["NETWORK_RETRY", "build_retry"]
 
@@ -72,11 +71,8 @@ def _is_retryable_network_error(exc: BaseException) -> bool:
     """Return True when *exc* is a retryable network / HTTP error."""
     if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
         return True
-    if isinstance(exc, TransientError):
-        return True
-    # Model-layer DownloadError (but NOT OfflineError — terminal offline state).
-    # Lazy import via __mro__ name check keeps `anishift.models` portable.
-    mro_names = {cls.__name__ for cls in type(exc).__mro__}
+    # Optional download libraries signal terminal offline mode separately.
+    mro_names: set[str] = {cls.__name__ for cls in type(exc).__mro__}
     if "DownloadError" in mro_names and "OfflineError" not in mro_names:
         return True
     if _HTTPX_RETRYABLE and isinstance(exc, _HTTPX_RETRYABLE):

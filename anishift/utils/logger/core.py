@@ -20,6 +20,8 @@ from .scrubber import scrub_patcher
 if TYPE_CHECKING:
     from types import FrameType
 
+    from loguru import Record
+
 __all__ = [
     "InterceptHandler",
     "setup_mode",
@@ -58,10 +60,11 @@ class InterceptHandler(logging.Handler):
         Args:
             record: The stdlib log record to forward.
         """
+        level: str | int
         try:
             level = logger.level(record.levelname).name
         except ValueError:
-            level = str(record.levelno)
+            level = record.levelno
 
         frame: FrameType | None = logging.currentframe()
         depth = 2
@@ -115,7 +118,7 @@ def setup_mode(mode: LoggerMode, **overrides: Any) -> None:
             retention=config.file.retention,
             compression=config.file.compression,
             serialize=True,
-            format="{message}",
+            format=_file_format,
         )
 
         if mode is not LoggerMode.SILENT:
@@ -129,12 +132,19 @@ def setup_mode(mode: LoggerMode, **overrides: Any) -> None:
                 rotation="50 MB",
                 retention="90 days",
                 serialize=True,
-                format="{message}",
+                format=_file_format,
             )
 
     logger.configure(patcher=scrub_patcher)
 
     _install_intercept()
+
+
+def _file_format(record: Record) -> str:
+    """Format file exceptions with source names and no paths, code or locals."""
+    if record["exception"] is None:
+        return "{message}\n"
+    return "{message}\n{extra[_safe_traceback]}\n"
 
 
 def _install_intercept() -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 __all__ = ["filter_logs_by_time", "resolve_time_window"]
@@ -30,7 +30,7 @@ def resolve_time_window(
         Tuple of (start, end) datetimes.
     """
     if minutes or hours or days:
-        now = datetime.now()
+        now: datetime = datetime.now(UTC)
         if minutes:
             start = now - timedelta(minutes=minutes)
         elif hours:
@@ -46,7 +46,7 @@ def filter_logs_by_time(
     start: datetime | None,
     end: datetime | None,
 ) -> list[dict[str, Any]]:
-    """Filter log entries by timestamp range.
+    """Filter log entries by timestamp range; naive times mean local time.
 
     Args:
         logs: Log entries to filter.
@@ -95,9 +95,10 @@ def _in_range(
     Returns:
         True if the entry is within range.
     """
-    ts = _parse_timestamp(log)
+    ts: datetime | None = _parse_timestamp(log)
     if ts is None:
         return False
-    if start and ts < start:
+    ts = ts.astimezone(UTC)
+    if start and ts < start.astimezone(UTC):
         return False
-    return not (end and ts > end)
+    return not (end and ts > end.astimezone(UTC))
