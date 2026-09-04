@@ -1,10 +1,12 @@
 import io
 import json
+import queue
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Never
 
 import pytest
 from conftest import DATA_DIR
@@ -355,6 +357,54 @@ def test_extraction_preserves_existing_target(tmp_path: Path) -> None:
     assert target.read_bytes() == b"existing"
 
 
+def test_extraction_reader_closes_stdout_after_shutdown_grace_expires(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    entered: threading.Event = threading.Event()
+    released: threading.Event = threading.Event()
+    finished: threading.Event = threading.Event()
+
+    class _DelayedEof(io.StringIO):
+        def __next__(self) -> Never:
+            entered.set()
+            assert released.wait(timeout=2)
+            raise StopIteration
+
+    process: _FakeProcess = _FakeProcess([])
+    stream: _DelayedEof = _DelayedEof()
+    process.stdout = stream
+    original_reader: Callable[[subprocess.Popen[str], queue.SimpleQueue[str | OSError | None]], None] = (
+        service._read_output
+    )
+
+    def observe_reader(
+        child: subprocess.Popen[str],
+        output: queue.SimpleQueue[str | OSError | None],
+    ) -> None:
+        try:
+            original_reader(child, output)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(service, "ensure_binary", lambda _: Path("mkvextract.exe"))
+    monkeypatch.setattr(service, "_SHUTDOWN_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr(service, "_read_output", observe_reader)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+
+    try:
+        with pytest.raises(ExtractionError) as captured:
+            service.extract_tracks(_info(), TrackSelection(None, 2, False), tmp_path, timeout_s=0.02)
+        assert captured.value.context.code is ErrorCode.TIMEOUT
+        assert entered.wait(timeout=1)
+        assert not stream.closed
+    finally:
+        released.set()
+        assert finished.wait(timeout=1)
+
+    assert stream.closed
+
+
 @pytest.mark.parametrize("close_stdout", [False, True])
 def test_extraction_deadline_reaps_real_silent_child(
     monkeypatch: pytest.MonkeyPatch,
@@ -362,13 +412,14 @@ def test_extraction_deadline_reaps_real_silent_child(
     close_stdout: bool,
 ) -> None:
     original_popen: type[subprocess.Popen[str]] = subprocess.Popen
+    single_process_python: str = sys._base_executable  # type: ignore[attr-defined]
     processes: list[subprocess.Popen[str]] = []
     script: str = "import time; time.sleep(10)"
     if close_stdout:
         script = "import os, time; os.close(1); time.sleep(10)"
 
     def start_child(command: list[str], **kwargs: Any) -> subprocess.Popen[str]:
-        process: subprocess.Popen[str] = original_popen([sys.executable, "-c", script], **kwargs)
+        process: subprocess.Popen[str] = original_popen([single_process_python, "-c", script], **kwargs)
         processes.append(process)
         return process
 

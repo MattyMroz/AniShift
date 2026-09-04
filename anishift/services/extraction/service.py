@@ -9,6 +9,7 @@ import subprocess
 import threading
 from collections import deque
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 from time import monotonic
 from typing import Any, Final
@@ -242,10 +243,14 @@ def _read_output(
     process: subprocess.Popen[str],
     output: queue.SimpleQueue[str | OSError | None],
 ) -> None:
-    """Drain pipe output without blocking deadline and cancellation checks."""
+    """Drain and close the owned pipe, including EOF after the caller's grace period."""
+    if process.stdout is None:
+        output.put(None)
+        return
     try:
-        for line in process.stdout or ():
-            output.put(line)
+        with closing(process.stdout) as stream:
+            for line in stream:
+                output.put(line)
     except OSError as error:
         output.put(error)
     finally:
