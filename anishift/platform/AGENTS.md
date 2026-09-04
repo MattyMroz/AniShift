@@ -5,7 +5,8 @@ Kod zależny od systemu: wykrycie OS i rozwiązywanie ścieżek do zewnętrznych
 ## Pułapki
 
 - `FFMPEG`/`FFPROBE` dzielą podkatalog `"ffmpeg"`, `MKVEXTRACT`/`MKVMERGE` dzielą `"mkvtoolnix"` — jeden podfolder trzyma po dwie binarki. `binaries.py`
-- Fallback do PATH (`shutil.which`) działa TYLKO poza Windows; na Windows `resolve_binary` przeszukuje wyłącznie `external/bin/` i nigdy nie zajrzy w PATH. `binaries.py`
+- Niepusty plik w `external/bin/` ma pierwszeństwo; fallback `shutil.which` działa
+  także na Windows. Plik 0 B nie jest gotową binarką w żadnym źródle. `binaries.py`
 - `external_bin_root` liczy repo-root jako `parents[2]` — twardo zakłada głębokość `anishift/platform/binaries.py`; przeniesienie modułu zepsuje ścieżkę. `binaries.py`
 
 ## Konwencje

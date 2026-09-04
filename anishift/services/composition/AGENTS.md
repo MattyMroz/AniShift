@@ -5,9 +5,9 @@ jeden zweryfikowany plik wynikowy.
 
 ## Granica
 
-- Composition przyjmuje `CompositionPlan` ze ścieżkami plików i decyzją, co dołożyć.
-- NIE zna ASS/SRT jako formatu, `pysubs2`, `SubtitleSplit`, `FileTranslation`
-  ani `SpeechBatch`.
+- Composition przyjmuje `CompositionPlan` albo `ContainerCompositionRequest` ze ścieżkami i decyzją, co dołożyć.
+- Nie wykonuje podziału ani tłumaczenia napisów; nie zna `pysubs2`, `SubtitleSplit`,
+  `FileTranslation` ani `SpeechBatch`. `fonts.py` tylko odczytuje nazwy fontów ASS do diagnostyki.
 - Decyzję „co dołożyć" podejmuje `application/planner.py`, a request buduje
   `application/composition_handler.py`; composition odpowiada wyłącznie za
   „jak to złożyć".
@@ -52,5 +52,8 @@ jeden zweryfikowany plik wynikowy.
 - Filtr `ass=` dla ASS (pełna wierność stylów), `subtitles=` tylko dla SRT.
 - MP4 nie przyjmuje ASS ani załączników; stylowane napisy istnieją tam wyłącznie
   jako wypalone w obrazie.
+- Nazwa załącznika fontu NIE potwierdza rodziny. Przy obecnych font attachments
+  `fonts.py` raportuje niezweryfikowane osadzenie; nie twierdzi, że fontu brakuje.
+  Pełna walidacja wymaga metadanych rodziny, nie porównania basename.
 - Rozdziały źródła przechodzą do MP4 same, jako ścieżka `bin_data`/`text`
   z handlerem `SubtitleHandler` — to rozdziały QuickTime, nie zabłąkane napisy.

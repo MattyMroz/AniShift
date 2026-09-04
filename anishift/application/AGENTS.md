@@ -6,8 +6,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 
 - `artifacts.py`, `intents.py`, `planning.py`, `selection.py` i `planner.py` nie importują I/O,
   `anishift.services`, `anishift.config` ani CLI.
-- Kontrolowane I/O należy wyłącznie do `discovery.py`, `inspection.py`,
-  `publisher.py`, `sessions.py` i handlerów; decyzje produktowe pozostają w plannerze.
+- Kontrolowane I/O należy do `discovery.py`, `inspection.py`, `publisher.py`,
+  `sessions.py`, handlerów oraz fasady `service.py`; koordynator publikuje zwalidowany
+  staging przez `scheduler_runtime.py`. Decyzje produktowe pozostają w plannerze.
 - CLI używa publicznej fasady `anishift.application`; nie importuje
   wewnętrznych helperów I/O ani schedulera.
 - Oczekiwany konflikt wejścia jest `PlanProblem`. `PlanningError` oznacza uszkodzony
@@ -42,6 +43,12 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Worker otrzymuje w `ArtifactSnapshot` gotowe wejścia i niezmienne deskryptory
   planowanych wyjść, po czym zwraca `TaskResult`; mutable store pozostaje prywatny
   dla schedulera.
+- `GraphScheduler.run()` anuluje własny token powiązany z tokenem wywołującego
+  przed czekaniem na executory, również przy Ctrl+C i błędzie koordynatora.
+- Blokada docelowego produktu odkłada ponowienie atomowego `replace` w koordynatorze.
+  Nie usypiaj całej koordynacji na czas retry: niezależne grupy nadal przekazują
+  postęp i kończą pracę, a każda próba ponownie sprawdza cancellation i generację sesji.
+  `scheduler.py`, `scheduler_runtime.py`
 - `WorkspaceInspector.inspect()` probuje grupy równolegle (`_MAX_INSPECTION_WORKERS`),
   bo każda grupa to osobny `mkvmerge`. Kolejność grup i ostrzeżeń pozostaje
   kolejnością discovery — nie zbieraj wyników w kolejności ukończenia.
@@ -51,6 +58,11 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   jest identyczny. Dzięki temu wielokrotne `discover()` w jednej sesji nie powtarza
   probowania, a zmiana pliku wymusza pełną inspekcję. Nie omijaj tego przez własny
   cache w UI. `service.py`
+- Produkcyjne `discover()` przygotowuje brakujące narzędzia przed probe, przez
+  callback z `bootstrap.py` i istniejący instalator. MKV wymaga MKVToolNix i FFmpeg,
+  MP4/audio — FFmpeg; sam TXT lub napisy nie uruchamiają instalacji. Przygotowanie
+  jest ciche dla terminala; konstruktory i renderer nie pobierają plików.
+  Oczekiwanie na `_discover_lock` sprawdza anulowanie, również podczas Home prewarm.
 
 ## Testy
 

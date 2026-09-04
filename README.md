@@ -21,10 +21,14 @@ Running `anishift` without a subcommand opens the interactive interface:
 - **Settings** edits supported preferences and provides a read-only model catalogue.
 - **Exit** closes the interface immediately.
 
-The interface uses one responsive terminal renderer. Its packaged pixel-art slime
-uses the approved transparent still while dedicated animation frames are prepared. If
-the image cannot be decoded or the terminal is too small, it falls back to compact
-ASCII or no mascot without blocking the run.
+The interface uses one Prompt Toolkit renderer. Home displays the packaged animated
+pixel-art slime on terminals with SIXEL support. The animation is prepared before
+the first interactive frame, so it appears without a startup placeholder. Terminals
+without image support use the available text fallback; small windows can omit the mascot.
+
+Before inspecting media, AniShift prepares missing MKVToolNix and FFmpeg tools from
+the verified manifest. Windows downloads use SHA256 verification and run outside
+the renderer. TXT-only workspaces do not trigger media-tool downloads.
 
 ## Technical commands
 
@@ -58,5 +62,9 @@ configured.
 ## Requirements
 
 - Python 3.14+
-- MKVToolNix and FFmpeg in `external/bin/` (`anishift setup` installs them)
+- MKVToolNix and FFmpeg (`external/bin/` on Windows; installed on demand or by
+  `anishift setup`; non-Windows systems can use tools already on `PATH`)
 - API credentials required by the selected translation or TTS engines
+- Optional Windows SAPI voices must be installed separately with a valid license
+  and be available to the Python process architecture. AniShift does not install
+  or activate commercial voices; an expired voice can display its own vendor dialog.

@@ -2,7 +2,7 @@
 
 Terminalowy lektor anime po polsku: MKV → napisy → tłumaczenie → TTS → merge. Siostra MangaShift.
 
-Zakres i etapy: `docs/plans/plan-anishift.md`.
+Uruchamianie i bieżący interfejs: `README.md`. `docs/plans/plan-anishift.md` jest historyczną roadmapą; aktualny frontend to Prompt Toolkit w `anishift/cli/interactive/`.
 Wzorzec do recyklingu struktury i nazewnictwa: `../MangaShift/mangashift/` — bierz dobre, słabe rób lepiej.
 
 ## Bramki jakości (przed każdym commitem)
@@ -29,14 +29,16 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 
 ## Python
 
-Python 3.14+. Stosuj CAŁY standard ze skilli `python` i `instructions` — w całości, bez wyjątków. Przed pisaniem lub przeglądem kodu przeczytaj pasującą instrukcję. Poniżej tylko rzeczy, których lint NIE wymusza (resztę łapie ruff/mypy — patrz Twarde strażniki).
+Python 3.14+. Standard pracy: `.agents/skills/coding/SKILL.md`; standard Pythona: `.agents/skills/coding/references/python.md`. Przed pisaniem lub przeglądem kodu przeczytaj pasujące referencje tego skilla, w tym `comments-docstrings.md` i `testing.md` dla zmienianych komentarzy i testów. Poniżej tylko rzeczy, których lint NIE wymusza (resztę łapie ruff/mypy — patrz Twarde strażniki).
 
 Reguły bez lintera (agent je łamie, nic ich nie łapie):
+
 - Typuj też zmienne lokalne i atrybuty, nie tylko parametry/zwroty (te wymusza mypy). Puste kolekcje z jawnym typem (`items: list[str] = []`).
 - Docstring stałej `Final` pod nią, nie nad (hook sprawdza że JEST, nie czy pod). Stałe grupuj w sekcji `# ── Constants ──`.
 - Docstring/komentarz mówi CO kod robi, nigdy historii zmian ani planu. Komentarze WHY, nie WHAT. Guard clauses, early return, max 2 poziomy zagnieżdżeń.
 
 Specyfika AniShift:
+
 - Hierarchia błędów: `AniShiftError` → `{Domain}Error`, plus `TransientError` / `FatalError`; definicje w `anishift/errors.py`. Łap precyzyjnie (`except Exception` blokuje ruff `BLE001`).
 - Rejestr silników tylko w domenach z wyborem: `translation`, `tts` i `llm`.
   Reszta to zwykłe moduły.
@@ -47,7 +49,7 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 
 - `anishift/` — pakiet aplikacji (composition root, hierarchia błędów); ma własny AGENTS.md
 - `tests/` — testy pytest; konwencje i markery w jego AGENTS.md
-- `docs/plans/` — plany etapów (`plan-anishift.md` = zakres); `docs/reference/` — audyt mm_avh + wzorzec mangashift
+- `docs/plans/` — historyczne plany etapów; `docs/reference/` — audyt mm_avh + wzorzec mangashift
 - `docs/work/` — artefakty aktywnego workstreamu (spec + plan + graf zadań), poza `docs/plans/`
 - `external/` — pobrane binarki (gitignored) + docs HTML narzędzi; szczegóły w `external/README.md`
 - `config/` — runtime katalog na `settings.json` panelu (gitignored); opis w `config/README.md`
@@ -60,11 +62,11 @@ Filozofia: regułę egzekwuje maszyna (hook / ruff / test), nie pamięć agenta.
 
 Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push`.
 
-- **pre-commit:** ruff `--fix` + ruff-format; `check_test_comments.py` (zero docstringów/komentarzy w testach, dyrektywy `# noqa`/`# type:` OK); `check_const_docstrings.py` (docstring pod każdą stałą `Final`/aliasem).
+- **pre-commit:** ruff `--fix` + ruff-format; `check_test_comments.py` obejmuje także pomocnicze moduły Python w katalogach testów i każdy `conftest.py`: zero opisowych komentarzy i samodzielnych stringów, również docstringów stałych; dyrektywy `# noqa`/`# type:`/`# pragma` są dozwolone. `check_const_docstrings.py` wymaga opisu pod stałą `Final`/aliasem w kodzie aplikacji poza testami.
 - **commit-msg:** `check_commit_msg.py` — `typ(scope): opis`, scope obowiązkowy z listy.
 - **pre-push:** mypy dla bieżącej platformy, mypy `--platform linux` i pytest (łapią błędy lokalnie zanim pójdą do CI).
 - **ruff select** wymusza m.in.: typy param/zwrot (`ANN`), `from __future__` (`FA`), `X | None` zamiast `Optional` (`UP`), docstringi modułów/klas/funkcji (`D`), zakaz `except Exception` (`BLE`).
-- **CI:** `.github/workflows/ci.yml` — powtarza wszystkie powyższe na całym repo: ruff, hooki i pip-audit na Ubuntu, mypy na Ubuntu w obu targetach (`--platform win32` obok domyślnego), a pytest plus smoke `anishift --help` na Ubuntu I Windowsie, bo produkt jedzie na Windowsa.
+- **CI:** `.github/workflows/ci.yml` — ruff i hooki na Ubuntu; pip-audit eksportowanego locka na Ubuntu i Windowsie; mypy na Ubuntu w obu targetach (`--platform win32` obok domyślnego); pytest plus smoke `anishift --help` na Ubuntu i Windowsie.
 - `testpaths` obejmuje też `anishift/utils/{logger,rich_console,timer}/tests` — samo `pytest tests/` je pomija.
 
 ## Dane runtime

@@ -39,9 +39,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `_fit_frame` obcina KAŻDY wiersz do szerokości terminala. Wiersz szerszy zawinąłby
   się, zepchnął resztę w dół i przesunął wiersz ekranowy maskotki. `interactive/app.py`
 - Auto usuwa menu, ale zachowuje markę oraz esencjonalną stopkę z cwd/version.
-  Jeden `MultiProgressManager` renderuje postęp pod marką. Resize przebudowuje
-  wyłącznie ten widok przez publiczne API; nie dodawaj viewportu, wrappera `Live`,
-  ukrywania wierszy ani technicznych ekranów pośrednich.
+  `RichRunProgress` przygotowuje wiersze Rich Text dla tego samego renderera
+  Prompt Toolkit. Paski korzystają z gradientu `palette.py`; nie twórz obok nich
+  osobnego `Live` ani `MultiProgressManager`. Resize przebudowuje wspólny widok.
   `interactive/app.py`, `interactive/progress.py`, `interactive/prompts.py`
 - `run --preset` ma stabilny kontrakt kodów wyjścia: `0` sukces, `1` odmowa startu,
   `3` run niepełny/failed, `4` anulowany. `2` jest zarezerwowane dla błędów użycia
@@ -56,10 +56,15 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `RichRunProgress` prealokuje jeden pasek na plik w naturalnej kolejności i odtwarza przejścia
   legacy `_PipelineProgressRows`: `Extracting` od razu ma pasek i procent,
   `Extracted`, `Translating`, `Translated` i `Synthesizing` reużywają ten sam
-  wiersz, a spinner jest dozwolony wyłącznie dla faz audio. Techniczne taski nie
-  otrzymują osobnych wierszy. Etykieta zachowuje konkretną nazwę źródła wraz z
-  rozszerzeniem; procent ekstrakcji i TTS pochodzi wyłącznie z eventu backendu.
+  wiersz. Procent pochodzi z pomiaru backendu; `progress_percent=None` z komunikatem
+  oznacza aktywność bez znanego procentu. Nie wyliczaj pozornego postępu z upływu czasu.
+  Techniczne taski nie otrzymują osobnych wierszy. Etykieta zachowuje konkretną nazwę
+  źródła wraz z rozszerzeniem. Procent opisuje bieżący task; etykiety `Extracted`
+  i `Translated` wymagają ukończenia wszystkich tasków danego etapu.
   `interactive/progress.py`
+- Run niepełny, anulowany albo z ostrzeżeniami pokazuje przewijany wynik grup:
+  przyczyny błędów, zapisane i zachowane produkty oraz lokalizację logu.
+  Treść przechodzi przez sanitizację i ten sam renderer. `interactive/app.py`
 - Home ma dokładnie `Auto`, `Ręczny`, `Ustawienia`, `Wyjście`. Settings działa w tym
   samym rendererze, a mutacje `settings.json`, `presets.json` i `.env` przechodzą
   przez `AppService`. Manual przechowuje drafty wyłącznie lokalnie, rejestruje pliki
@@ -142,8 +147,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `interactive/settings.py`
 - Home ma zatwierdzonego skaczącego slime'a z `assets/mascot/idle/01.gif`,
   sześciowierszowy wordmark, cztery akcje, hint i stopkę z cwd/version. GIF ma być
-  animowany: `TerminalRenderer.after_render` wysyła kolejne klatki SIXEL; nie zastępuj
-  go statycznym PNG ani półblokami. VS Code korzysta z tracked
+  animowany: `TerminalRenderer.after_render` wysyła kolejne klatki SIXEL. Pierwsza
+  klatka interaktywna ma już gotową maskotkę; nie dodawaj startup placeholdera.
+  Konstruktor renderera nie koduje obrazu. `run()` sprawdza obsługę SIXEL i metryki,
+  przygotowuje animację, dopiero potem uruchamia pętlę wejścia. VS Code korzysta z tracked
   `terminal.integrated.enableImages=true`.
   `interactive/home.py`, `interactive/mascot_native.py`, `interactive/prompts.py`
 - Wielkość maskotki jest wyrażona w WIERSZACH TEKSTU (`_FRAME_ROWS`), nie w pikselach:
@@ -151,9 +158,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   terminalu o większym foncie (Windows Terminal 10×20 px) niż w VS Code (7×17 px), bo
   obok stoi większy wordmark — user porównuje maskotkę do tekstu, nie do ekranu.
   Skalowanie do rezerwacji w komórkach też jest złe: daje wielkość zależną od szerokości
-  komórki. `terminal_cell_size()` pyta o `CSI 16 t`, w razie braku odpowiedzi o
-  `CSI 14 t`, a bez odpowiedzi zostaje `_ASSUMED_CELL`. Zapytanie działa tylko na realnej
-  konsoli (`isatty`), przywraca poprzedni `ConsoleMode` i ma 250 ms budżetu.
+  komórki. Produkcyjne `native_mascot_cell()` sprawdza atrybut `4` odpowiedzi DA
+  i rozmiar komórki przed startem pętli wejścia; brak wsparcia SIXEL pomija kodowanie.
+  Zapytanie działa tylko na realnej konsoli (`isatty`), przywraca poprzedni `ConsoleMode`
+  i ma 250 ms budżetu. Nie odczytuj raportów terminala z workera ani podczas obsługi klawiszy.
   `interactive/mascot_native.py`
 - `NativeMascotImage` rozdziela DWA różne rozmiary i nie wolno ich mieszać: `layout_rows`
   (= `_FRAME_ROWS`) rezerwuje miejsce w layoucie, a `cell_rows`/`cell_columns` opisują to,
@@ -168,7 +176,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Marka jest wyśrodkowana na szerokości terminala, a maskotka wyrównana DOŁEM do
   wordmarku (`_beside`). Nie przesuwaj bloku marki poza środek. `interactive/home.py`
 - Trzy kolory marki (azure, fiolet, czerwień maskotki) mają JEDNO źródło:
-  `interactive/palette.py`. Wordmark bierze z niego gradient, a panel styl
+  `interactive/palette.py`. Wordmark i paski postępu biorą z niego gradient, a panel styl
   `brand_accent` doklejany do konsoli przez `push_theme(BRAND_THEME)` — generyczny
   `purple_bold` z motywu `rich_console` nie występuje już w żadnym widoku i test tego
   pilnuje. Czerwień marki nie oznacza błędu; stany zostają na `success`/`warning`/`error`.
@@ -189,8 +197,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Auto i Ręczny nie mają ekranu pośredniego: `PREPARING` i `MANUAL_PREPARING`
   renderują dokładnie klatkę Home, bez spinnera i bez komunikatu skanowania. Skan
   workspace startuje w tle przy wejściu do Home (`_prewarm_workspace`), więc pierwszy
-  widok po Enterze to już postęp albo lista Ręcznego. Nie dodawaj tam ekranu ładowania.
+  widok po przygotowaniu to postęp albo lista Ręcznego. Prewarm może przygotować
+  brakujące narzędzia; instalator działa bez własnego renderera. Nie dodawaj ekranu ładowania.
   `interactive/app.py`
+- Prompt Toolkit ogranicza redraw do 30 fps, a resize i odświeżanie czasu sprawdza
+  co 100 ms. Zachowaj `mouse_support=True`: kółko przewija kolejkę, ustawienia i wynik.
+  `interactive/prompts.py`
 - `configure_utf8_streams()` musi znosić `None`, `StringIO` i strumienie bez
   `reconfigure`; jest idempotentne. `console.py`
 
