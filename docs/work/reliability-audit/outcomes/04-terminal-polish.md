@@ -13,19 +13,22 @@ completed: 2026-09-05
 - Zmiana widoku i rozmiaru nie opuszcza już alternate screen. Czyszczenie starego
   rastra odbywa się przed nową klatką, z zachowaniem historii konsoli.
 - Końcowy redraw nie maluje maskotki po powrocie do konsoli.
-- Home i Auto mają animowaną maskotkę, pełny/średni/kompaktowy napis oraz wariant
+- Home i Auto mają animowaną maskotkę, nieruchomy pełny napis oraz wariant
   z samym slime'em. Zbyt niski terminal zachowuje sterowanie zamiast dekoracji.
-- Fala napisu po lądowaniu i tekstowy podskok mieszczą się w stałej rezerwacji;
-  nie przesuwają pasków. To próba wizualna do oceny właściciela.
+- Po ocenie właściciela usunięto falę i średni napis. Gdy duże logo nie mieści się
+  obok maskotki, pozostaje sam slime; animacja maskotki nie przesuwa pasków.
 - Pod całą marką, również dodatkowym wierszem natywnego rastra, zostaje odstęp.
-- Krótkie etapy nie mają sztywnej 14-kolumnowej przerwy. Nazwa źródła korzysta
+- Home dzieli wolną wysokość równo nad i pod menu; różnica wynosi najwyżej
+  jeden wiersz. Górny margines marki pozostaje stały, jeśli okno go mieści.
+- Etap ma osobną 14-kolumnową rezerwację. Pasek najpierw rośnie do 40 kolumn,
+  a dopiero potem rozszerza się nazwa źródła. Nazwa korzysta
   z szerokości okna, Unicode jest liczone w komórkach, rozszerzenie zostaje.
 - `✓ Done` zachowuje gradient; procent nadal pochodzi z backendu. Nieznany postęp
   ma poruszający się znacznik. W bardzo wąskim oknie procent ma pierwszeństwo
   przed paskiem i zegarem.
 - Strzałki, PageUp/PageDown i Home przeglądają całą kolejkę. End jawnie wraca do
   śledzenia aktywnego pliku; dojście na dół nie zabiera ostatniego wiersza.
-- Podpowiedzi i stopka są jaśniejsze; tekst akcentu to rozjaśniony azure tej samej palety.
+- Podpowiedzi i stopka są jaśniejsze; tekst akcentu zachowuje oryginalny azure.
 
 ## Ustawienia
 
@@ -69,7 +72,7 @@ Przeglądarka testowa nie była dostępna; obrazy obejrzano lokalnie po renderow
 
 - [Home](../proof/terminal-home.png)
 - [Auto: sukces, procent i aktywność](../proof/terminal-auto.png)
-- [Węższy terminal i próba fali](../proof/terminal-narrow.png)
+- [Węższy terminal z samą maskotką](../proof/terminal-narrow.png)
 - [Ustawienia](../proof/terminal-settings.png)
 - [Dodanie własnego modelu](../proof/terminal-models.png)
 
@@ -78,9 +81,9 @@ Skrypt używa izolowanych fixture'ów i nie odczytuje kluczy użytkownika.
 
 | Klatka | Mediana po rozgrzaniu | P95 | Najwolniejsza z pierwszych 24 faz |
 | --- | --- | --- | --- |
-| 120×40 | 2,30 ms | 2,75 ms | 21,71 ms |
-| 80×24 | 2,31 ms | 3,24 ms | 16,98 ms |
-| 50×20 | 1,04 ms | 1,26 ms | 3,95 ms |
+| 120×40 | 8,78 ms | 24,85 ms | 54,51 ms |
+| 80×24 | 6,08 ms | 16,34 ms | 50,32 ms |
+| 50×20 | 1,70 ms | 7,27 ms | 5,85 ms |
 
 Pomiar: Python 3.14.2, ta maszyna, 120 klatek na wymiar, ostatnie 96 jako rozgrzane;
 złożenie Auto, przycięcie i Rich→ANSI. Nie obejmuje transportu/wyświetlania SIXEL,
@@ -94,10 +97,12 @@ synchroniczne. Nie twierdzimy, że dowolnie wolny dysk nie może opóźnić obs�
 
 ## Testy i review
 
-Pełny suite: **2986 passed, 9 skipped**, 15,26 s; 114 dodatkowych przypadków
-względem poprzedniego wyniku 2872. Pominięcia: 7 opt-in network i 2 niedostępne
-symlinki Windows. Jedno ostrzeżenie pochodzi z upstream Google GenAI i Python 3.14;
-nie zostało wyciszone.
+Pełny suite po korekcie wizualnej: **2999 passed, 9 skipped**, 21,73 s;
+127 dodatkowych przypadków względem poprzedniego wyniku 2872.
+Pominięcia: 7 opt-in network i 2 niedostępne symlinki Windows.
+14 ostrzeżeń pochodzi z upstream Google GenAI i Python 3.14; nie zostały wyciszone.
+Regresje obejmują nieruchomy napis, samą maskotkę w wąskim oknie, szerokość
+paska i równe odstępy menu przy sześciu rozmiarach terminala.
 
 `uv run --no-active ruff check anishift/ tests/` — PASS;
 `ruff format --check anishift/ tests/` — 441 plików PASS;
@@ -133,7 +138,7 @@ AniShift do obcej venv. Zachowanie potwierdza
 
 Status **pending-human**: uruchomić `uv run --no-active anishift`, przejść kilka razy
 Home ↔ Ustawienia, zmienić rozmiar i zoom, przetworzyć materiał, przewinąć kolejkę
-do końca i wrócić End. Sprawdzić odstęp, czytelność, podskok i falę; po zamknięciu
+do końca i wrócić End. Sprawdzić odstęp, czytelność, podskok i nieruchomy napis; po zamknięciu
 poprzednia konsola ma wrócić bez namalowanej na niej maskotki. Testy nie potwierdzają
 subiektywnej jakości ani zachowania wszystkich emulatorów terminala.
 

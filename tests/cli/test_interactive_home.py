@@ -53,7 +53,7 @@ def test_home_geometry_preserves_a_fixed_brand_and_falls_back_to_a_compact_layou
 
     assert (wide.mascot_columns, wide.mascot_rows, wide.brand_rows) == (18, 10, 10)
     assert (wide.show_mascot, wide.show_full_wordmark) == (True, True)
-    assert (medium.show_mascot, medium.show_full_wordmark, medium.brand_rows) == (False, False, 3)
+    assert (medium.show_mascot, medium.show_full_wordmark, medium.brand_rows) == (False, False, 1)
     assert (narrow.show_mascot, narrow.show_full_wordmark, narrow.brand_rows) == (False, False, 1)
 
 
@@ -93,7 +93,7 @@ def test_a_narrow_home_keeps_the_slime_and_uses_a_fitting_wordmark(columns: int)
     assert all(line.cell_len <= columns for line in brand.split("\n"))
 
 
-def test_the_ripple_keeps_the_native_anchor_and_frame_height_fixed() -> None:
+def test_the_wordmark_stays_still_while_the_native_slime_animates() -> None:
     geometry = resolve_home_geometry(120, 30)
     frames: list[Text] = [
         brand_for_geometry(geometry, native_mascot=True, animation_phase=phase) for phase in range(24)
@@ -102,7 +102,17 @@ def test_the_ripple_keeps_the_native_anchor_and_frame_height_fixed() -> None:
 
     assert len(set(positions)) == 1
     assert {len(frame.split("\n")) for frame in frames} == {geometry.brand_rows}
-    assert frames[0].plain != frames[19].plain
+    assert all(frame == frames[0] for frame in frames)
+
+
+@pytest.mark.parametrize("columns", [35, 50, 60, 75])
+def test_only_the_slime_remains_when_the_full_wordmark_cannot_fit(columns: int) -> None:
+    geometry = resolve_home_geometry(columns, 30)
+    brand = brand_for_geometry(geometry, native_mascot=True)
+
+    assert geometry.show_mascot
+    assert not geometry.show_full_wordmark
+    assert brand.plain.strip() == NATIVE_MASCOT_ANCHOR
 
 
 def test_the_text_slime_bounces_without_changing_its_reservation() -> None:
@@ -123,3 +133,22 @@ def test_small_home_always_keeps_the_selected_action_visible(rows: int, selected
     assert "\u276f" in frame.plain
     assert ("Auto", "Ręczny", "Ustawienia", "Wyjście")[selected] in frame.plain
     assert frame.plain.split("\n")[-1].endswith("v1.0.0")
+
+
+@pytest.mark.parametrize("size", [(120, 40), (120, 41), (80, 24), (60, 30), (30, 24), (80, 12)])
+def test_home_balances_the_gaps_above_and_below_the_menu(size: tuple[int, int]) -> None:
+    columns, rows = size
+    content = _home_content(columns, rows, 0, MascotState.IDLE, native_size=(18, 11))
+    frame = _fit_frame(content, "1.0.0", "workspace", columns, rows)
+    lines: list[str] = frame.plain.split("\n")
+    menu_top: int = next(index for index, line in enumerate(lines) if "Auto" in line)
+    menu_bottom: int = next(index for index, line in enumerate(lines) if "↑↓" in line)
+    brand_bottom: int = max(index for index, line in enumerate(lines[:menu_top]) if line.strip())
+    geometry = resolve_home_geometry(columns, rows, (18, 11))
+    if geometry.show_mascot:
+        anchor: int = next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line)
+        brand_bottom = max(brand_bottom, anchor + geometry.mascot_rows - 1)
+    above: int = menu_top - brand_bottom - 1
+    below: int = rows - menu_bottom - 2
+
+    assert abs(above - below) <= 1

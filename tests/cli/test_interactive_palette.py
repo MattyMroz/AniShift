@@ -19,7 +19,7 @@ from anishift.cli.interactive.palette import (
 )
 from anishift.utils.rich_console.theme import RICH_THEME
 
-_AZURE_ANSI = "38;2;89;153;252"
+_AZURE_ANSI = "38;2;0;98;250"
 
 
 def _views() -> tuple[Path, ...]:
@@ -72,7 +72,7 @@ def test_mixing_by_the_edge_weights_returns_the_endpoints() -> None:
     assert (mix(MASCOT_AZURE, MASCOT_RED, 0.0), mix(MASCOT_AZURE, MASCOT_RED, 1.0)) == (MASCOT_AZURE, MASCOT_RED)
 
 
-def test_the_accent_style_lightens_the_mascot_azure_for_readable_text(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_accent_style_preserves_the_original_mascot_azure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("NO_COLOR", raising=False)
     assert _AZURE_ANSI in _rendered("brand_accent")
 

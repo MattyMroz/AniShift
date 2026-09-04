@@ -12,7 +12,7 @@ from rich.text import Text
 from anishift.cli.interactive.mascot import MascotState, mascot_art
 from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.palette import hex_color, mix, rim_color
-from anishift.cli.interactive.prompts import BRAND_GAP_COLUMNS, MEDIUM_WORDMARK_COLUMNS, AutoGeometry, HomeGeometry
+from anishift.cli.interactive.prompts import BRAND_GAP_COLUMNS, AutoGeometry, HomeGeometry
 
 __all__ = [
     "HomeAction",
@@ -45,13 +45,6 @@ _LOGO_ROWS: Final[tuple[str, ...]] = (
 _LOGO_WIDTH: Final[int] = max(len(row) for row in _LOGO_ROWS)
 """Widest wordmark row, which anchors the horizontal outline gradient."""
 
-_MEDIUM_LOGO_ROWS: Final[tuple[str, ...]] = (
-    "▄▀▄ █▄ █ █ ▄▀▀ █ █ █ █▀▀ ▀█▀",
-    "█▀█ █ ▀█ █ ▀▀▄ █▀█ █ █▀   █ ",
-    "▀ ▀ ▀  ▀ ▀ ▀▀  ▀ ▀ ▀ ▀    ▀ ",
-)
-"""Three-row ANISHIFT lettering for a medium-width terminal."""
-
 _LOGO_FILL_GLYPH: Final[str] = "█"
 """Solid glyph carrying the lit face of a wordmark letter."""
 
@@ -67,15 +60,6 @@ _BRAND_GAP: Final[str] = " " * BRAND_GAP_COLUMNS
 
 _BOUNCE_HEIGHTS: Final[tuple[int, ...]] = (*([0] * 9), 1, 2, 2, 2, 2, 1, *([0] * 9))
 """Text fallback lift at each of the shared twenty-four animation phases."""
-
-_LANDING_PHASE: Final[int] = 16
-"""First shared phase after the packaged GIF lands."""
-
-_RIPPLE_PHASES: Final[int] = 6
-"""Animation phases used by the ripple to cross the wordmark."""
-
-_RIPPLE_RADIUS: Final[int] = 4
-"""Columns on either side of the raised ripple crest."""
 
 
 @lru_cache(maxsize=128)
@@ -102,7 +86,6 @@ def brand_for_geometry(
         show_full_wordmark=geometry.show_full_wordmark,
         reserved_rows=geometry.brand_rows if show_mascot else 0,
         wordmark_columns=geometry.wordmark_columns,
-        animation_phase=animation_phase,
     )
     return _centered_brand(brand, geometry.terminal_columns)
 
@@ -123,18 +106,13 @@ def _home_brand(
     show_full_wordmark: bool,
     reserved_rows: int = 0,
     wordmark_columns: int = 8,
-    animation_phase: int = 0,
 ) -> Text:
     """Build one centered fixed-size wordmark and optional left mascot."""
     wordmark: Text = _full_wordmark() if show_full_wordmark else _compact_wordmark()
-    if not show_full_wordmark and wordmark_columns >= MEDIUM_WORDMARK_COLUMNS:
-        wordmark = _medium_wordmark()
     if mascot is not None and wordmark_columns == 0:
         return mascot
     if mascot is None:
         return _lowered(wordmark, reserved_rows)
-    if reserved_rows > len(wordmark.split("\n")):
-        wordmark = _ripple_wordmark(wordmark, animation_phase)
     return _beside(mascot, wordmark)
 
 
@@ -146,24 +124,6 @@ def _bouncing_mascot(mascot: Text, phase: int) -> Text:
     lift: int = min(space, _BOUNCE_HEIGHTS[phase % len(_BOUNCE_HEIGHTS)])
     blank = Text(" " * max(line.cell_len for line in lines))
     return Text("\n").join([*[blank] * (space - lift), *visible, *[blank] * lift])
-
-
-def _ripple_wordmark(wordmark: Text, phase: int) -> Text:
-    """Lift a narrow wave one cell after the packaged slime lands."""
-    lines: list[Text] = list(wordmark.split("\n"))
-    width: int = max(line.cell_len for line in lines)
-    crest: float = (phase - _LANDING_PHASE) / _RIPPLE_PHASES * (width + 2 * _RIPPLE_RADIUS) - _RIPPLE_RADIUS
-    result = Text()
-    for row in range(len(lines) + 1):
-        for column in range(width):
-            raised: bool = (
-                _LANDING_PHASE <= phase <= _LANDING_PHASE + _RIPPLE_PHASES and abs(column - crest) < _RIPPLE_RADIUS
-            )
-            source: int = row if raised else row - 1
-            result.append_text(lines[source][column : column + 1] if 0 <= source < len(lines) else Text(" "))
-        if row < len(lines):
-            result.append("\n")
-    return result
 
 
 def _lowered(block: Text, reserved_rows: int) -> Text:
@@ -190,18 +150,6 @@ def _full_wordmark() -> Text:
         if index < len(_LOGO_ROWS) - 1:
             wordmark.append("\n")
     return wordmark
-
-
-@lru_cache(maxsize=1)
-def _medium_wordmark() -> Text:
-    """Render compact block lettering in the same horizontal brand gradient."""
-    result = Text()
-    for index, line in enumerate(_MEDIUM_LOGO_ROWS):
-        for column, glyph in enumerate(line):
-            result.append(glyph, style=f"bold {hex_color(rim_color(column / (MEDIUM_WORDMARK_COLUMNS - 1)))}")
-        if index < len(_MEDIUM_LOGO_ROWS) - 1:
-            result.append("\n")
-    return result
 
 
 @lru_cache(maxsize=1)

@@ -335,7 +335,7 @@ def test_home_places_brand_at_top_and_menu_at_center() -> None:
     lines: list[str] = [line.plain for line in content.split("\n")]
 
     assert next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line) == 2
-    assert next(index for index, line in enumerate(lines) if "Auto" in line) == 24
+    assert next(index for index, line in enumerate(lines) if "Auto" in line) == 23
 
 
 def test_auto_reserves_mascot_space_above_progress() -> None:

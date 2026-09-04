@@ -185,7 +185,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `interactive/palette.py`. Wordmark i paski postępu biorą z niego gradient, a panel styl
   `brand_accent` doklejany do konsoli przez `push_theme(BRAND_THEME)` — generyczny
   `purple_bold` z motywu `rich_console` nie występuje już w żadnym widoku i test tego
-  pilnuje. Tekst akcentu jest rozjaśnionym azure, a pomoc i stopka mają kontrastowy
+  pilnuje. Tekst akcentu zachowuje oryginalny azure, a pomoc i stopka mają kontrastowy
   szary. Czerwień gradientu nie oznacza błędu; błędy zachowują styl `error`.
   `interactive/palette.py`, `interactive/prompts.py`, `interactive/home.py`
 - Klatka-do-klatki nadpisuje sam prostokąt obrazu. Zniknięcie lub przesunięcie
@@ -200,9 +200,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   zapisu do terminala. Brak obsługi obrazu lub zbyt mały terminal degraduje widok do
   fallbacku albo braku maskotki. Resize wywołuje czysty rerender bez rozciągania layoutu.
   `interactive/home.py`, `interactive/prompts.py`
-- Fala wordmarku i tekstowy podskok korzystają z zegara renderera (24 fazy),
-  cache i stałej rezerwacji. Nowej animacji nie wolno kodować w `render()` ani
-  uzależniać wysokości nagłówka od fazy. `interactive/home.py`
+- Wordmark jest nieruchomy i nie ma średniego wariantu. Gdy pełny napis nie mieści
+  się obok maskotki, pozostaje sama maskotka. Tekstowy podskok korzysta z zegara
+  renderera i stałej rezerwacji; nie koduj obrazów w `render()`. `interactive/home.py`
+- Etap ma osobną 14-kolumnową rezerwację przed nazwą źródła. Pasek rośnie do
+  40 kolumn przed rozszerzaniem długiego tytułu; nazwa wykorzystuje resztę miejsca.
+  `interactive/progress.py`
 - Auto i Ręczny nie mają ekranu pośredniego: `PREPARING` i `MANUAL_PREPARING`
   renderują dokładnie klatkę Home, bez spinnera i bez komunikatu skanowania. Skan
   workspace startuje w tle przy wejściu do Home (`_prewarm_workspace`), więc pierwszy

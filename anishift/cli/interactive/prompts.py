@@ -65,9 +65,6 @@ _MASCOT_NUDGE_COLUMNS: Final[int] = 2
 _HOME_CHROME_ROWS: Final[int] = 11
 """Rows Home spends on top padding, the menu gap, the menu and the footer."""
 
-MEDIUM_WORDMARK_COLUMNS: Final[int] = 28
-"""Width of the three-row wordmark used in narrower terminals."""
-
 _MINIMUM_QUEUE_ROWS: Final[int] = 3
 """Queue rows that must survive before Auto spends height on the brand."""
 
@@ -452,11 +449,9 @@ def _brand_dimensions(columns: int, rows: int, mascot: tuple[int, int]) -> tuple
     """Choose the largest wordmark beside a mascot that leaves controls usable."""
     show_mascot: bool = columns >= mascot[0] + BRAND_GAP_COLUMNS and rows >= mascot[1]
     available: int = columns - mascot[0] - BRAND_GAP_COLUMNS if show_mascot else columns
-    choices: tuple[tuple[int, int], ...] = (
-        (_FULL_WORDMARK_COLUMNS, _FULL_WORDMARK_ROWS),
-        (MEDIUM_WORDMARK_COLUMNS, 3),
-        (8, 1),
-    )
+    choices: tuple[tuple[int, int], ...] = ((_FULL_WORDMARK_COLUMNS, _FULL_WORDMARK_ROWS),)
+    if not show_mascot:
+        choices = (*choices, (8, 1))
     width, height = next(
         ((width, height) for width, height in choices if width <= available and height <= rows), (0, 1)
     )

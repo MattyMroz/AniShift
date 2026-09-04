@@ -98,20 +98,24 @@ nowych niezależnych strażników, np. automatycznego limitu długości docstrin
 ## Kierunek wizualny
 
 Jedna paleta wyprowadzona z istniejącej maskotki ma obejmować wordmark, akcenty
-i postęp. Gradientowe paski oraz subtelna animacja wordmarku są preferencją,
+i postęp. Gradientowe paski są preferencją,
 ocenianą na działającym terminalu po naprawie semantyki postępu. Animacja nie
 może pogarszać reakcji na klawisze, czytelności ani zużycia CPU w bezczynności.
 Maskotka skacze na Home oraz podczas przetwarzania, gdy pozwala na to miejsce.
 Mniejszy terminal zachowuje dostęp do kolejki i sterowania; pełny wordmark może
-ustąpić średniemu napisowi lub samej maskotce. Wersja pozostaje czytelna po prawej.
+ustąpić samej maskotce. Średni wariant i animacja napisu są odrzucone.
+Wersja pozostaje czytelna po prawej.
 Przejścia i resize nie odsłaniają wcześniejszej konsoli ani nie kasują jej historii.
 Logo oddziela od postępu pusta linia. Ukończony wiersz zaczyna się od „✓”, zachowuje
 paletę marki; nazwa pliku korzysta z dostępnej szerokości zamiast stałego limitu.
 Ustawienia obsługują strzałki, Enter i cofanie z podpowiedzią działania. Dostępne
 opcje i modele nie mogą znikać ani nadpisywać innych ustawień przy edycji.
 
-Próba subtelnej fali wordmarku jest preferencją do oceny wizualnej, nie warunkiem
-poprawności przetwarzania. Sugestie poprawy promptów trafiają do osobnego raportu;
+Etap ma osobny odstęp od nazwy pliku. Pasek ma pierwszeństwo przed rozszerzaniem
+tytułu, a akcent zachowuje oryginalny azure, bez rozjaśniania.
+Home zachowuje stały górny margines, o ile wystarcza wysokości. Puste odstępy
+logo–menu i menu–stopka są równe z tolerancją jednego wiersza przy resize.
+Sugestie poprawy promptów trafiają do osobnego raportu;
 aktywne szablony nie są zmieniane bez walidacji jakości. Trzy luźne pliki
 `prompt_helper.txt`, `prompt_helperSS.txt`, `prompt_main.txt` można usunąć po
 sprawdzeniu braku użycia, zachowując kopię odzyskiwalną poza repozytorium.

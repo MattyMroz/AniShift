@@ -80,7 +80,7 @@ do innych dokumentów.
 | ID | Tytuł | Priorytet | Status | Warunek zakończenia / dowód |
 | --- | --- | --- | --- | --- |
 | U01 | Keep terminal ownership across redraw and exit | P1 | pending-human | Real Renderer i Application.run/exit PASS, brak wychodzenia do primary screen przy przejściu; [wynik](outcomes/04-terminal-polish.md) |
-| U02 | Make branding and queue responsive | P2 | pending-human | Trzy rozmiary napisu, animacja Auto, stała wysokość, mały Home, pełna osiągalność kolejki; [wynik](outcomes/04-terminal-polish.md) |
+| U02 | Make branding and queue responsive | P2 | pending-human | Po feedbacku: nieruchome duże logo lub sam slime, bez średniego napisu; pełna osiągalność kolejki; [wynik](outcomes/04-terminal-polish.md) |
 | U03 | Keep completion and progress in one readable palette | P2 | pending-human | Checkmark, gradient, krótkie etapy, dynamiczne nazwy, Unicode i brak overflow; [wynik](outcomes/04-terminal-polish.md) |
 | U04 | Preserve settings edits and all output products | P1 | verified | Siedem produktów, rollback błędnego zapisu, no-op, brak utraty pending, jawne porzucenie; [wynik](outcomes/04-terminal-polish.md) |
 | U05 | Recover model selection without weakening run readiness | P1 | verified | Pierwszy własny model, atomowy zapis, usunięty alias nadal blokuje wykonanie, lecz nie picker; [wynik](outcomes/04-terminal-polish.md) |

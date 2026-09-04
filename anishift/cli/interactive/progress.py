@@ -38,6 +38,12 @@ _COMPLETE: Final[int] = 100
 _MIN_DESCRIPTION_COLUMNS: Final[int] = 5
 """Minimum description space retained beside the full progress fields."""
 
+_PHASE_COLUMNS: Final[int] = 14
+"""Aligned stage column separating the operation from the source filename."""
+
+_DESCRIPTION_RESERVE_COLUMNS: Final[int] = 35
+"""Description budget reserved before growing the bar to its full width."""
+
 _MAX_BAR_COLUMNS: Final[int] = 40
 """Largest shared block bar rendered on one row."""
 
@@ -453,8 +459,13 @@ def _render_rows(rows: tuple[_RenderRow, ...], columns: int) -> Text:
         details_width = 0
         available = columns
     natural_width: int = max(cell_len(row.description) for row in rows)
+    if show_bar:
+        reserved: int = min(natural_width, _DESCRIPTION_RESERVE_COLUMNS)
+        bar_width: int = min(_MAX_BAR_COLUMNS, max(_MIN_BAR_COLUMNS, columns - details_width - reserved - 1))
+        available = columns - details_width - bar_width - 1
+    else:
+        bar_width = 0
     description_width: int = min(natural_width, available)
-    bar_width: int = min(_MAX_BAR_COLUMNS, columns - description_width - details_width - 1) if show_bar else 0
     for index, row in enumerate(rows):
         _append_row(result, row, description_width, bar_width, details[index])
         if index < len(rows) - 1:
@@ -578,4 +589,4 @@ def _short_filename(filename: str, width: int) -> str:
 
 def _description(label: str, phase: str) -> str:
     """Join the compact public phase and complete source filename."""
-    return f"{phase} {label}"
+    return f"{phase:<{_PHASE_COLUMNS}} {label}"

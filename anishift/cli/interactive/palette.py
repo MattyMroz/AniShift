@@ -55,7 +55,7 @@ def rim_color(position: float) -> tuple[int, int, int]:
 
 BRAND_THEME: Final[Theme] = Theme(
     {
-        "brand_accent": f"{hex_color(mix(MASCOT_AZURE, (255, 255, 255), 0.35))} bold",
+        "brand_accent": f"{hex_color(MASCOT_AZURE)} bold",
         "gray": "#8892ad",
         "white_bold": "#e2e7f5 bold",
         "progress_track": "#303a54",

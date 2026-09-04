@@ -58,7 +58,7 @@ _HOME_BRAND_TOP_PADDING_ROWS: Final[int] = 2
 """Fixed terminal padding above the Home brand."""
 
 _HOME_MENU_REGION_GAP_ROWS: Final[int] = 2
-"""Rows separating the Home brand from the lower menu region."""
+"""Minimum combined spacing above and below the Home choices."""
 
 _QUEUE_SCROLL_KEYS: Final[frozenset[str]] = frozenset({"up", "down", "pageup", "pagedown", "home", "end"})
 """Keys that move the Auto queue instead of leaving the view."""
@@ -626,7 +626,7 @@ def _home_content(  # noqa: PLR0913
     body_rows: int = max(rows - 1, 1)
     gap: int = min(_HOME_MENU_REGION_GAP_ROWS, max(body_rows - brand_rows - menu_rows, 0))
     brand_top: int = min(_HOME_BRAND_TOP_PADDING_ROWS, max(body_rows - brand_rows - menu_rows - gap, 0))
-    menu_region_top: int = brand_top + brand_rows + gap
+    menu_region_top: int = brand_top + brand_rows
     menu_region_rows: int = max(body_rows - menu_region_top, menu_rows)
     menu_top: int = menu_region_top + max((menu_region_rows - menu_rows) // 2, 0)
     brand_bottom: int = brand_top + brand_rows - 1

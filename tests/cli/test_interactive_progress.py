@@ -84,7 +84,7 @@ def _parse(plain: str) -> list[tuple[str, int | None]]:
     for line in plain.split("\n"):
         head, percent_text, _ = line.split(" | ")
         percent: int | None = None if percent_text.strip() == "--" else int(percent_text.strip().rstrip("%"))
-        rows.append((head.rstrip("\u2588\u258c\u2591 "), percent))
+        rows.append((" ".join(head.rstrip("\u2588\u258c\u2591 ").split()), percent))
     return rows
 
 
@@ -127,7 +127,7 @@ def test_an_extracting_row_shows_a_bar_percentage_and_elapsed_clock() -> None:
         line: str = _lines(progress)[0]
 
     assert re.fullmatch(
-        r"Extract Odcinek 01\.mkv [\u2588\u258c\u2591]+ \| {3}0% \| \d\d:\d\d:\d\d\.\d\d\d",
+        r"Extract {8}Odcinek 01\.mkv [\u2588\u258c\u2591]+ \| {3}0% \| \d\d:\d\d:\d\d\.\d\d\d",
         line,
     )
 
@@ -230,7 +230,7 @@ def test_a_synthesizing_row_names_only_the_file() -> None:
     assert "\u00b7" not in description
 
 
-def test_a_retry_signals_itself_without_a_counter_or_phase_padding() -> None:
+def test_a_retry_keeps_the_stage_column_separate_from_the_filename() -> None:
     prepared: PreparedAutoRun = _prepared(
         (("group-1", "Odcinek 01"),),
         (("tts", "group-1", TaskKind.SYNTHESIZE_SPEECH),),
@@ -244,8 +244,9 @@ def test_a_retry_signals_itself_without_a_counter_or_phase_padding() -> None:
 
     assert _rows(progress)[0][0] == "Retry Odcinek 01.mkv"
     assert "2/3" not in after
-    assert before.startswith("TTS Odcinek 01.mkv ")
-    assert after.startswith("Retry Odcinek 01.mkv ")
+    assert before.startswith("TTS            Odcinek 01.mkv ")
+    assert after.startswith("Retry          Odcinek 01.mkv ")
+    assert before.index("Odcinek") == after.index("Odcinek") == 15
     assert "warning" in _styles(progress)
 
 
@@ -580,3 +581,14 @@ def test_completed_progress_keeps_the_brand_gradient_and_leading_checkmark() -> 
     assert _rows(progress) == [("✓ Done Episode.mkv", 100)]
     assert "success" not in _styles(progress)
     assert {"#0062fa", "#f9011a"} <= _styles(progress)
+
+
+@pytest.mark.parametrize("columns", [120, 160, 240])
+def test_long_titles_do_not_shrink_the_full_progress_bar(columns: int) -> None:
+    prepared = _prepared((("group-1", "A very long episode title " * 20),), ())
+    with RichRunProgress(prepared, lambda: None) as progress:
+        line: str = progress.render(columns).plain
+
+    assert line.count("░") == 40
+    assert cell_len(line) == columns
+    assert line.index("A very") == 15
