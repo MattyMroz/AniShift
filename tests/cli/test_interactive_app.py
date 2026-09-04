@@ -287,7 +287,7 @@ def test_an_auto_refusal_stays_a_sentence_with_a_hint_and_returns_home(monkeypat
 
     assert "Workspace nie zawiera materiału do uruchomienia" in refused
     assert "Umieść plik wideo lub napisów w workspace i spróbuj ponownie" in refused
-    assert "Naciśnij dowolny klawisz, aby wrócić" in refused
+    assert "dowolny inny klawisz: powrót" in refused
     assert "source group" not in refused
     assert "Traceback" not in refused
 
@@ -322,7 +322,7 @@ def test_a_finished_auto_run_keeps_the_queue_and_footer_until_a_key_returns_home
     assert "Odcinek 01" not in _frame(application)
 
 
-def test_a_partial_run_shows_neither_products_nor_a_success_screen(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_partial_run_shows_its_failure_and_preserved_products(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(interactive_app, "prepare_auto_run", _accept(_prepared()))
     monkeypatch.setattr(interactive_app, "execute_plan", _returns(_result(GroupStatus.PARTIAL)))
     application, _renderer = _application(monkeypatch, _service())
@@ -331,11 +331,29 @@ def test_a_partial_run_shows_neither_products_nor_a_success_screen(monkeypatch: 
     _settle(application)
     finished: str = _frame(application)
 
-    assert _mode(application) is interactive_app._ViewMode.AUTO_DONE
+    assert _mode(application) is interactive_app._ViewMode.MESSAGE
     assert "Odcinek 01" in finished
-    assert "episode.pl.srt" not in finished
-    assert "Composition failed" not in finished
+    assert "episode.pl.srt" in finished
+    assert "Composition failed" in finished
     assert "Gotowe" not in finished
+
+
+def test_result_scrolling_clamps_edges_and_end_reaches_the_last_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    application, _renderer = _application(monkeypatch, _service())
+    application._finish_with_message(0, Text("\n".join(f"result-line-{index:03d}" for index in range(100))))
+    _frame(application)
+
+    application._handle_key("end")
+    assert "result-line-099" in _frame(application)
+    for _ in range(100):
+        application._handle_key("down")
+    at_end: str = _frame(application)
+    application._handle_key("up")
+
+    assert _frame(application) != at_end
+    assert "result-line-099" not in _frame(application)
+    application._handle_key("home")
+    assert "result-line-000" in _frame(application)
 
 
 def test_an_expected_execution_error_is_reported_safely_and_returns_home(monkeypatch: pytest.MonkeyPatch) -> None:

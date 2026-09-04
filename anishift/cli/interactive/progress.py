@@ -6,9 +6,11 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import lru_cache
+from itertools import islice
 from pathlib import Path
 from types import TracebackType
-from typing import Final, Literal, Protocol
+from typing import Final, Protocol
 
 from rich.text import Text
 
@@ -23,7 +25,7 @@ from anishift.application import (
     TaskState,
 )
 from anishift.cli.interactive.mascot import MascotController
-from anishift.utils.rich_console import ProgressBarBuilder, ProgressBarManager
+from anishift.cli.interactive.palette import hex_color, rim_color
 
 __all__ = ["RichRunProgress"]
 
@@ -70,16 +72,25 @@ _STAGE_RANK: Final[dict[str, int]] = {
     "translating": 1,
     "tts": 2,
     "audio": 3,
-    "terminal": 4,
+    "composing": 4,
+    "publishing": 5,
+    "terminal": 6,
 }
 """Public stage order preventing late callbacks from regressing a row."""
 
-_DETERMINATE_STAGE: Final[dict[TaskKind, Literal["extracting", "translating", "tts"]]] = {
+_DETERMINATE_STAGE: Final[dict[TaskKind, str]] = {
     TaskKind.EXTRACT_AUDIO: "extracting",
     TaskKind.EXTRACT_SUBTITLES: "extracting",
     TaskKind.EXTRACT_TRACKS: "extracting",
     TaskKind.TRANSLATE_SUBTITLES: "translating",
     TaskKind.SYNTHESIZE_SPEECH: "tts",
+    TaskKind.NORMALIZE_SUBTITLES: "extracting",
+    TaskKind.SPLIT_SUBTITLES: "translating",
+    TaskKind.TRANSCODE_AUDIO: "audio",
+    TaskKind.MIX_NARRATION: "audio",
+    TaskKind.COMPOSE_MKV: "composing",
+    TaskKind.COMPOSE_MP4: "composing",
+    TaskKind.PUBLISH_ARTIFACT: "publishing",
 }
 """Task kinds owning measurable public stages."""
 
@@ -87,6 +98,9 @@ _ACTIVE_LABEL: Final[dict[str, str]] = {
     "extracting": "Extracting",
     "translating": "Translating",
     "tts": "Synthesizing",
+    "audio": "Audio processing",
+    "composing": "Rendering",
+    "publishing": "Publishing",
 }
 """Labels shown while measurable stages are active."""
 
@@ -102,6 +116,7 @@ _AUDIO_LABEL: Final[dict[str, str]] = {
     "mixing": "Audio mixing",
     "narration_resume": "Audio resume",
     "skipped_no_spoken": "Audio skipped",
+    "wrapping": "Narrator audio",
 }
 """Labels for coarse audio callbacks."""
 
@@ -114,11 +129,13 @@ class _FileState:
     description: str
     stage_rank: int = 0
     progress_by_task: dict[str, int] = field(default_factory=dict)
+    active_tasks: list[str] = field(default_factory=list)
     completed: int = 0
     terminal: bool = False
     style: str | None = None
     started_at: float | None = None
     stopped_at: float | None = None
+    determinate: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +146,7 @@ class _RenderRow:
     completed: int
     style: str | None
     elapsed_seconds: float
+    determinate: bool
 
 
 class _PreparedRun(Protocol):
@@ -234,6 +252,8 @@ class RichRunProgress:
     def render(self, columns: int, *, offset: int = 0, limit: int | None = None) -> Text:
         """Render one width-fitted window of the queue through shared Rich bars."""
         now: float = time.monotonic()
+        start: int = min(max(offset, 0), max(len(self._files) - 1, 0))
+        end: int = len(self._files) if limit is None else start + max(limit, 0)
         with self._lock:
             rows: tuple[_RenderRow, ...] = tuple(
                 _RenderRow(
@@ -241,12 +261,11 @@ class RichRunProgress:
                     state.completed,
                     state.style,
                     _elapsed(state, now),
+                    state.determinate,
                 )
-                for state in self._files.values()
+                for state in islice(self._files.values(), start, end)
             )
-        start: int = min(max(offset, 0), max(len(rows) - 1, 0))
-        end: int = len(rows) if limit is None else start + max(limit, 0)
-        return _render_rows(rows[start:end], columns)
+        return _render_rows(rows, columns)
 
     def _apply(self, event: RunEvent) -> bool:
         changed: bool = False
@@ -275,32 +294,50 @@ class RichRunProgress:
     def _start_task(self, state: _FileState, event: RunEvent) -> bool:
         if event.task_id is None:
             return False
-        stage: str | None = _stage_for(self._task_kinds.get(event.task_id))
+        if event.task_id not in state.active_tasks:
+            state.active_tasks.append(event.task_id)
+        return self._show_active_task(state)
+
+    def _show_active_task(self, state: _FileState) -> bool:
+        """Keep background publication from hiding active media work."""
+        candidates: list[str] = [task_id for task_id in state.active_tasks if _stage_for(self._task_kinds.get(task_id))]
+        if not candidates:
+            return False
+        primary: list[str] = [
+            task_id for task_id in candidates if self._task_kinds[task_id] is not TaskKind.PUBLISH_ARTIFACT
+        ]
+        selected: str = max(
+            primary or candidates,
+            key=lambda task_id: _STAGE_RANK[_stage_for(self._task_kinds[task_id]) or "extracting"],
+        )
+        stage: str | None = _stage_for(self._task_kinds[selected])
         if stage is None:
             return False
-        rank: int = _STAGE_RANK[stage]
-        if rank < state.stage_rank:
-            return False
-        if rank > state.stage_rank:
-            state.progress_by_task.clear()
-            state.completed = 0
-        state.stage_rank = rank
-        state.progress_by_task.setdefault(event.task_id, 0)
+        state.stage_rank = _STAGE_RANK[stage]
+        state.completed = state.progress_by_task.get(selected, 0)
         state.description = _description(state.label, _ACTIVE_LABEL[stage])
         state.style = None
+        state.determinate = selected in state.progress_by_task
         return True
 
     def _update_task(self, group_id: str, state: _FileState, event: RunEvent) -> bool:
-        if event.task_id is None or event.progress_percent is None:
+        if event.task_id is None:
             return False
         kind: TaskKind | None = self._task_kinds.get(event.task_id)
+        if event.progress_percent is None:
+            return self._show_activity(state, kind, event.message)
         if kind in {TaskKind.TRANSCODE_AUDIO, TaskKind.MIX_NARRATION} and event.message in _AUDIO_LABEL:
-            return self._show_audio_phase(state, event.message)
-        stage: str | None = _stage_for(kind)
-        if stage is None or _STAGE_RANK[stage] < state.stage_rank:
+            state.progress_by_task[event.task_id] = event.progress_percent
+            return self._show_audio_phase(state, event.message, event.progress_percent)
+        stage = _stage_for(kind)
+        if stage is None:
             return False
         previous: int = state.progress_by_task.get(event.task_id, 0)
-        state.progress_by_task[event.task_id] = max(previous, event.progress_percent)
+        state.progress_by_task[event.task_id] = (
+            max(previous, event.progress_percent) if stage == "tts" else event.progress_percent
+        )
+        if _STAGE_RANK[stage] != state.stage_rank:
+            return False
         if stage == "tts":
             state.completed = max(state.completed, event.progress_percent)
         else:
@@ -310,41 +347,62 @@ class RichRunProgress:
             phase = _COMPLETE_LABEL[stage]
         state.description = _description(state.label, phase)
         state.style = None
+        state.determinate = True
+        return True
+
+    def _show_activity(self, state: _FileState, kind: TaskKind | None, message: str | None) -> bool:
+        """Display an active phase without inventing a completion percentage."""
+        stage: str | None = _stage_for(kind)
+        if stage is None or _STAGE_RANK[stage] != state.stage_rank:
+            return False
+        state.determinate = False
+        state.description = _description(state.label, _AUDIO_LABEL.get(message or "", _ACTIVE_LABEL[stage]))
         return True
 
     def _retry_task(self, state: _FileState, event: RunEvent) -> bool:
-        if event.task_id is None or self._task_kinds.get(event.task_id) is not TaskKind.SYNTHESIZE_SPEECH:
+        if event.task_id is None or self._task_kinds.get(event.task_id) not in {
+            TaskKind.SYNTHESIZE_SPEECH,
+            TaskKind.TRANSLATE_SUBTITLES,
+        }:
             return False
         state.description = _description(state.label, "Retrying")
         state.style = "warning"
+        state.determinate = False
         return True
 
     def _finish_task(self, group_id: str, state: _FileState, event: RunEvent) -> bool:
+        if event.task_id in state.active_tasks:
+            state.active_tasks.remove(event.task_id)
         if event.task_id is None or event.state is not TaskState.SUCCEEDED:
             return False
-        stage: str | None = _stage_for(self._task_kinds.get(event.task_id))
-        if stage is None or _STAGE_RANK[stage] < state.stage_rank:
-            return False
         state.progress_by_task[event.task_id] = _COMPLETE
+        if state.active_tasks:
+            return self._show_active_task(state)
+        stage: str | None = _stage_for(self._task_kinds.get(event.task_id))
+        if stage is None or _STAGE_RANK[stage] != state.stage_rank:
+            return False
         state.completed = _COMPLETE
         phase: str = _ACTIVE_LABEL[stage]
         if _stage_complete(group_id, stage, state, self._stage_tasks):
             phase = _COMPLETE_LABEL.get(stage, phase)
         state.description = _description(state.label, phase)
         state.style = None
+        state.determinate = True
         return True
 
-    def _show_audio_phase(self, state: _FileState, phase: str) -> bool:
+    def _show_audio_phase(self, state: _FileState, phase: str, percent: int) -> bool:
         if state.stage_rank > _STAGE_RANK["audio"]:
             return False
         state.stage_rank = _STAGE_RANK["audio"]
-        state.completed = 0
+        state.completed = percent
+        state.determinate = percent > 0
         state.description = _description(state.label, _AUDIO_LABEL[phase])
         state.style = None
         return True
 
     def _finish_group(self, state: _FileState, task_state: TaskState | None) -> None:
         state.terminal = True
+        state.determinate = True
         state.stage_rank = _STAGE_RANK["terminal"]
         _stop_timer(state)
         if task_state is TaskState.SUCCEEDED:
@@ -366,6 +424,7 @@ class RichRunProgress:
             if state.terminal:
                 continue
             state.terminal = True
+            state.determinate = True
             state.stage_rank = _STAGE_RANK["terminal"]
             state.completed = 0
             _stop_timer(state)
@@ -418,24 +477,25 @@ def _render_rows(rows: tuple[_RenderRow, ...], columns: int) -> Text:
 
 
 def _append_row(result: Text, row: _RenderRow, description_width: int, bar_width: int) -> None:
-    """Append one row using the shared block-bar builder and defaults."""
-    style: str = row.style or _default_progress_style(row.completed)
+    """Append measured progress or an honest activity indicator."""
+    style: str = row.style or "brand_accent"
     description: str = _truncate(row.description, description_width).ljust(description_width)
     result.append(description, style=style)
     result.append(" ")
-    markup: str = ProgressBarBuilder.blocks(bar_width, row.completed / _COMPLETE, style)
-    result.append_text(Text.from_markup(markup))
-    result.append(f" | {row.completed:>3d}%", style=style)
+    colors: tuple[str, ...] = _bar_colors(bar_width)
+    filled: int = min(bar_width, max(0, row.completed) * bar_width // _COMPLETE)
+    cursor: int = int(row.elapsed_seconds * 8) % bar_width
+    for index, color in enumerate(colors):
+        active: bool = index < filled if row.determinate else index == cursor
+        result.append("█" if active else "░", style=(row.style or color) if active else "gray")
+    result.append(f" | {row.completed:>3d}%" if row.determinate else " |  -- ", style=style)
     result.append(f" | {_format_elapsed(row.elapsed_seconds)}", style=style)
 
 
-def _default_progress_style(completed: int) -> str:
-    """Return the bar style from the shared progress-manager defaults."""
-    percentage: int = min(_COMPLETE, max(0, completed))
-    for threshold, (_text_style, bar_style) in sorted(ProgressBarManager.DEFAULT_COLORS.items()):
-        if percentage <= threshold:
-            return bar_style
-    return next(reversed(ProgressBarManager.DEFAULT_COLORS.values()))[1]
+@lru_cache(maxsize=_MAX_BAR_COLUMNS)
+def _bar_colors(width: int) -> tuple[str, ...]:
+    """Cache the wordmark palette at each bounded bar width."""
+    return tuple(hex_color(rim_color(index / max(width - 1, 1))) for index in range(width))
 
 
 def _description_limit(columns: int) -> int:

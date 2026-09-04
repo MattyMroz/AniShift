@@ -22,6 +22,7 @@ def _application(
     application._mode = mode
     application._selected = 0
     application._message = Text()
+    application._message_view = interactive_app._QueueView(following=False)
     application._progress = None
     application._settings = None
     application._manual = None

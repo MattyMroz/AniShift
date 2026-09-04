@@ -18,7 +18,12 @@ from prompt_toolkit.output import ColorDepth
 from rich.console import Console
 from rich.text import Text
 
-from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR, NativeMascotImage, load_native_mascot
+from anishift.cli.interactive.mascot_native import (
+    NATIVE_MASCOT_ANCHOR,
+    NativeMascotImage,
+    load_native_mascot,
+    native_mascot_cell,
+)
 from anishift.cli.interactive.palette import BRAND_THEME
 from anishift.utils.rich_console.theme import RICH_THEME
 
@@ -68,7 +73,7 @@ _COMPACT_BRAND_ROWS: Final[int] = 1
 _MINIMUM_QUEUE_ROWS: Final[int] = 3
 """Queue rows that must survive before Auto spends height on the brand."""
 
-_TERMINAL_SIZE_POLL_SECONDS: Final[float] = 0.005
+_TERMINAL_SIZE_POLL_SECONDS: Final[float] = 0.1
 """Fallback resize polling interval inside the Prompt Toolkit event loop."""
 
 _AUTO_REFRESH_SECONDS: Final[float] = 0.1
@@ -89,11 +94,7 @@ _NORMALISED_KEYS: Final[tuple[tuple[Keys | str, str], ...]] = (
     (Keys.Escape, "escape"),
     (Keys.ControlC, "interrupt"),
 )
-"""Terminal keys the session forwards under a stable name.
-
-Windows delivers every special key with empty ``data``, so ``Keys.Any`` collapses
-them into one indistinguishable event. Each key needs its own binding to survive.
-"""
+"""Terminal keys the session forwards under a stable name."""
 
 _SAVE_CURSOR: Final[str] = "\x1b7"
 """VT sequence preserving Prompt Toolkit's current cursor position."""
@@ -141,12 +142,7 @@ class AutoGeometry:
 
 
 class _WheelControl(FormattedTextControl):
-    """Turn wheel events into scroll requests the surrounding window cannot serve.
-
-    The frame is always exactly as tall as the window, so the default scroller sees
-    nothing to scroll and drops the event. Claiming it here is the only way a list
-    that pages its own content can react to the wheel.
-    """
+    """Turn wheel events into scroll requests the surrounding window cannot serve."""
 
     def __init__(self, scroll_handler: Callable[[int], None] | None, **arguments: object) -> None:
         super().__init__(**arguments)  # type: ignore[arg-type]
@@ -181,7 +177,7 @@ class TerminalRenderer:
         self._render_width: int = 0
         self._render_stream: StringIO | None = None
         self._rich_console: Console | None = None
-        self._native_mascot: NativeMascotImage | None = load_native_mascot()
+        self._native_mascot: NativeMascotImage | None = None
         self._native_animation_started_at: float = time.monotonic()
         self._native_position: tuple[int, int] | None = None
         self._native_drawn_position: tuple[int, int] | None = None
@@ -202,7 +198,7 @@ class TerminalRenderer:
             color_depth=ColorDepth.TRUE_COLOR,
             mouse_support=True,
             erase_when_done=True,
-            min_redraw_interval=None,
+            min_redraw_interval=1 / 30,
             max_render_postpone_time=0,
             refresh_interval=_AUTO_REFRESH_SECONDS,
             terminal_size_polling_interval=_TERMINAL_SIZE_POLL_SECONDS,
@@ -219,6 +215,10 @@ class TerminalRenderer:
 
     def run(self) -> None:
         """Run the terminal event loop until the user exits."""
+        cell: tuple[int, int] | None = native_mascot_cell()
+        if cell is not None:
+            self._native_mascot = load_native_mascot(cell_size=cell, query_terminal=False)
+            self._native_animation_started_at = time.monotonic()
         self._application.run()
 
     def invalidate(self) -> None:

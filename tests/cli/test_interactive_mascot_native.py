@@ -389,6 +389,7 @@ def test_settings_view_does_not_render_the_mascot() -> None:
     application._mode = interactive_app._ViewMode.SETTINGS
     application._selected = 0
     application._message = Text()
+    application._message_view = interactive_app._QueueView(following=False)
     application._progress = None
     application._settings = cast(
         "SettingsController",
@@ -411,6 +412,36 @@ def test_terminal_renderer_captures_normal_mouse_selection(monkeypatch: pytest.M
         renderer = TerminalRenderer(lambda _columns, _rows: Text(), lambda _key: None)
 
     assert renderer._application.mouse_support()
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        ("", None),
+        ("\x1b[?1;2c", None),
+        ("\x1b[6;20;10t\x1b[?1;4;22c", (10, 20)),
+        ("\x1b[?4c", (8, 17)),
+    ],
+)
+def test_native_mascot_requires_explicit_sixel_support(
+    monkeypatch: pytest.MonkeyPatch,
+    report: str,
+    expected: tuple[int, int] | None,
+) -> None:
+    monkeypatch.setattr(native_module, "_query_terminal", lambda _query: report)
+
+    assert native_module.native_mascot_cell() == expected
+
+
+def test_terminal_construction_never_encodes_animation(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden() -> None:
+        pytest.fail("animation encoding must not block construction")
+
+    monkeypatch.setattr(prompts_module, "load_native_mascot", forbidden)
+    with create_app_session(input=DummyInput(), output=DummyOutput()):
+        renderer = TerminalRenderer(lambda _columns, _rows: Text(), lambda _key: None)
+
+    assert renderer.native_mascot_size is None
 
 
 def test_native_mascot_is_redrawn_at_an_unchanged_position(monkeypatch: pytest.MonkeyPatch) -> None:

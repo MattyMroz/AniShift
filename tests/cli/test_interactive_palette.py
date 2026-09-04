@@ -72,11 +72,18 @@ def test_mixing_by_the_edge_weights_returns_the_endpoints() -> None:
     assert (mix(MASCOT_AZURE, MASCOT_RED, 0.0), mix(MASCOT_AZURE, MASCOT_RED, 1.0)) == (MASCOT_AZURE, MASCOT_RED)
 
 
-def test_the_accent_style_paints_the_mascot_azure() -> None:
+def test_the_accent_style_paints_the_mascot_azure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NO_COLOR", raising=False)
     assert _AZURE_ANSI in _rendered("brand_accent")
 
 
-def test_the_shared_theme_alone_cannot_paint_the_brand_accent() -> None:
+def test_the_accent_style_respects_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert _AZURE_ANSI not in _rendered("brand_accent")
+
+
+def test_the_shared_theme_alone_cannot_paint_the_brand_accent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NO_COLOR", raising=False)
     assert _AZURE_ANSI not in _rendered("purple_bold")
 
 

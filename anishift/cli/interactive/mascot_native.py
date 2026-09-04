@@ -16,7 +16,7 @@ from PIL import Image, ImageSequence
 
 from anishift.utils.logger import get_logger
 
-__all__ = ["NATIVE_MASCOT_ANCHOR", "NativeMascotImage", "load_native_mascot"]
+__all__ = ["NATIVE_MASCOT_ANCHOR", "NativeMascotImage", "load_native_mascot", "native_mascot_cell"]
 
 logger = get_logger(__name__)
 
@@ -126,11 +126,15 @@ class _IndexedImage:
     height: int
 
 
-def load_native_mascot() -> NativeMascotImage | None:
+def load_native_mascot(
+    *,
+    cell_size: tuple[int, int] | None = None,
+    query_terminal: bool = True,
+) -> NativeMascotImage | None:
     """Encode the packaged image once and report the cells it covers here."""
     if not _is_windows():
         return None
-    reported: tuple[int, int] | None = terminal_cell_size()
+    reported: tuple[int, int] | None = terminal_cell_size() if query_terminal else cell_size
     cell: tuple[int, int] = reported or _ASSUMED_CELL
     side: int = _FRAME_ROWS * cell[1]
     top_pad: int = cell[1] // _TOP_PAD_DIVISOR
@@ -194,6 +198,19 @@ def _shared_right_shift(source: Image.Image, side: int) -> int:
 def _opaque_mask(value: int) -> int:
     """Map one alpha value to a fully opaque or fully clear mask value."""
     return 255 if value >= _ALPHA_THRESHOLD else 0
+
+
+def native_mascot_cell() -> tuple[int, int] | None:
+    """Probe SIXEL support and cell metrics before the input loop starts."""
+    report: str = _query_terminal(_CELL_SIZE_QUERY)
+    attributes: re.Match[str] | None = re.search(r"\x1b\[\?([\d;]+)c", report)
+    if attributes is None or "4" not in attributes.group(1).split(";"):
+        return None
+    match: re.Match[str] | None = _CELL_SIZE_REPORT.search(report)
+    if match is None:
+        return _ASSUMED_CELL
+    cell: tuple[int, int] = (int(match.group(2)), int(match.group(1)))
+    return cell if min(cell) > 0 else _ASSUMED_CELL
 
 
 def terminal_cell_size() -> tuple[int, int] | None:

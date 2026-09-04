@@ -10,7 +10,7 @@ from typing import Final
 from rich.text import Text
 
 from anishift import __version__
-from anishift.application import AppService, AutoPreset, InspectedWorkspace
+from anishift.application import AppService, AutoPreset, InspectedWorkspace, RunResult
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import sanitize_event_message
 from anishift.cli.interactive.home import HomeAction, brand_for_geometry, working_directory_label
@@ -145,6 +145,7 @@ class _InteractiveApplication:
         self._mode: _ViewMode = _ViewMode.HOME
         self._selected: int = 0
         self._message: Text = Text()
+        self._message_view: _QueueView = _QueueView(following=False)
         self._progress: RichRunProgress | None = None
         self._queue: _QueueView = _QueueView()
         self._settings: SettingsController | None = None
@@ -168,8 +169,23 @@ class _InteractiveApplication:
         try:
             self._renderer.run()
         finally:
+            self._cancel_active_work()
             self._close_settings()
             self._mascot.close()
+
+    def _cancel_active_work(self) -> None:
+        """Signal every active operation before the terminal owner closes."""
+        with self._lock:
+            self._cancel_requested = True
+            preflight: EventCancellationToken | None = self._preflight_cancel
+            progress: RichRunProgress | None = self._progress
+            manual: ManualController | None = self._manual
+        if preflight is not None:
+            preflight.cancel()
+        if manual is not None:
+            manual.cancel()
+        if progress is not None and progress.run_id is not None:
+            self._service.cancel(progress.run_id)
 
     def _close_settings(self) -> None:
         """Let the settings panel persist a delayed edit before it stops existing."""
@@ -207,6 +223,11 @@ class _InteractiveApplication:
         if mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and key in _QUEUE_SCROLL_KEYS:
             self._navigate_queue(key)
             return
+        if mode is _ViewMode.MESSAGE and key in _QUEUE_SCROLL_KEYS:
+            with self._lock:
+                self._message_view.navigate(key, len(self._message.split("\n")))
+            self._renderer.invalidate()
+            return
         if mode in {_ViewMode.AUTO_DONE, _ViewMode.MESSAGE}:
             self._show_home()
 
@@ -221,6 +242,10 @@ class _InteractiveApplication:
             mode: _ViewMode = self._mode
             controller: SettingsController | None = self._settings if mode is _ViewMode.SETTINGS else None
             progress: RichRunProgress | None = self._progress
+        if mode is _ViewMode.MESSAGE:
+            self._message_view.move(direction * _QUEUE_WHEEL_ROWS, len(self._message.split("\n")))
+            self._renderer.invalidate()
+            return
         if mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
             self._queue.move(direction * _QUEUE_WHEEL_ROWS, progress.row_count)
             self._renderer.invalidate()
@@ -477,7 +502,10 @@ class _InteractiveApplication:
                 self._mode = _ViewMode.AUTO
             self._renderer.invalidate()
             with progress:
-                execute_plan(self._service, prepared.plan, progress)
+                result: RunResult = execute_plan(self._service, prepared.plan, progress)
+            if not result.succeeded or result.warnings:
+                self._finish_with_message(generation, _result_message(result, prepared.workspace))
+                return
             with self._lock:
                 if generation != self._generation:
                     return
@@ -503,6 +531,7 @@ class _InteractiveApplication:
             if generation != self._generation:
                 return
             self._message = message
+            self._message_view = _QueueView(following=False)
             self._mode = _ViewMode.MESSAGE
             self._progress = None
             self._manual = None
@@ -537,6 +566,7 @@ class _InteractiveApplication:
             mode: _ViewMode = self._mode
             selected: int = self._selected
             message: Text = self._message
+            message_view: _QueueView = self._message_view
             progress: RichRunProgress | None = self._progress
             settings: SettingsController | None = self._settings
             manual: ManualController | None = self._manual
@@ -551,7 +581,7 @@ class _InteractiveApplication:
         elif mode is _ViewMode.SETTINGS and settings is not None:
             content = settings.render(columns, rows)
         else:
-            content = _message_content(columns, rows, message, mascot_state)
+            content = _message_content(columns, rows, message, mascot_state, view=message_view)
         return _fit_frame(content, __version__, self._directory, columns, rows)
 
 
@@ -635,14 +665,38 @@ def _message_content(
     rows: int,
     message: Text,
     mascot_state: MascotState,
+    *,
+    view: _QueueView | None = None,
 ) -> Text:
     geometry: HomeGeometry = resolve_home_geometry(columns, rows)
     content = Text("\n" * geometry.top_padding)
     content.append_text(brand_for_geometry(geometry, mascot_state, show_mascot=False))
     content.append("\n\n")
-    content.append_text(message)
-    content.append("\n\nNaciśnij dowolny klawisz, aby wrócić", style="gray")
+    lines: list[Text] = list(message.split("\n"))
+    budget: int = max(rows - len(content.split("\n")) - 3, 1)
+    window: _QueueView = view if view is not None else _QueueView(following=False)
+    window.fit(len(lines) - 1, len(lines), budget)
+    content.append_text(Text("\n").join(lines[window.offset : window.offset + budget]))
+    content.append("\n\n↑↓ przewijanie · dowolny inny klawisz: powrót", style="gray")
     return content
+
+
+def _result_message(result: RunResult, workspace: InspectedWorkspace) -> Text:
+    """Show safe failure causes and products preserved by each source group."""
+    names: dict[str, str] = {group.group_id: group.source.stem for group in workspace.groups}
+    message = Text("Przetwarzanie anulowane" if result.cancelled else "Wynik przetwarzania", style="brand_accent")
+    for group in result.groups:
+        message.append(
+            f"\n\n{_safe(names.get(group.group_id, group.group_id))}: {group.status.value}", style="white_bold"
+        )
+        for error in group.error_messages:
+            message.append(f"\n  {_safe(error)}", style="error")
+        for product in (*group.products, *group.preserved_products):
+            message.append(f"\n  Zachowano: {_safe(product.path.name)}", style="success")
+    for warning in result.warnings:
+        message.append(f"\n{_safe(warning)}", style="warning")
+    message.append(f"\n\nSzczegóły: {_LOG_LOCATION}", style="gray")
+    return message
 
 
 def _fit_frame(content: Text, version: str, directory: str, columns: int, rows: int) -> Text:
