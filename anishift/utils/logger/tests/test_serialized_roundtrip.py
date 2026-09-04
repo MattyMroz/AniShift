@@ -5,7 +5,7 @@ import logging
 import sys
 from datetime import UTC, datetime, timedelta
 from io import StringIO
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -119,6 +119,56 @@ def test_source_metadata_still_formats_in_a_plain_sink(tmp_path: Path) -> None:
     assert output.count(Path(__file__).name) == 2
     assert str(Path(__file__).parent) not in output
     assert "plain-sink-sentinel" in output
+
+
+@pytest.mark.parametrize(
+    "source_path",
+    [
+        Path("/private-directory-sentinel/file.txt"),
+        PurePosixPath("/private-directory-sentinel/file.txt"),
+        PureWindowsPath("C:/private-directory-sentinel/file.txt"),
+    ],
+)
+def test_serialized_paths_are_redacted_in_structured_values_and_keys(tmp_path: Path, source_path: PurePath) -> None:
+    path: Path = tmp_path / "application.jsonl"
+    setup_mode(LoggerMode.PRODUCTION, console_enabled=False, file_path=path)
+    try:
+        get_logger("roundtrip").error(
+            "path-object-proof",
+            source_path=source_path,
+            nested={"items": [source_path], source_path: "preserved-value"},
+        )
+    finally:
+        shutdown_logger()
+
+    for log_path in (path, path.parent / "errors.log.jsonl"):
+        payload: str = log_path.read_text(encoding="utf-8")
+        extra: dict[str, Any] = json.loads(payload)["record"]["extra"]
+        assert "private-directory-sentinel" not in payload
+        assert extra["source_path"] == "file.txt"
+        assert extra["nested"] == {"items": ["file.txt"], "file.txt": "preserved-value"}
+
+
+def test_serialized_mapping_keys_mask_known_secret_values(tmp_path: Path) -> None:
+    path: Path = tmp_path / "application.jsonl"
+    secret: str = "sensitive-value-sentinel"  # noqa: S105
+    setup_mode(LoggerMode.PRODUCTION, console_enabled=False, file_path=path)
+    try:
+        get_logger("roundtrip").error(
+            "token={credential}",
+            credential=secret,
+            nested={secret: "preserved-value"},
+            copied=PurePosixPath(secret),
+        )
+    finally:
+        shutdown_logger()
+
+    for log_path in (path, path.parent / "errors.log.jsonl"):
+        payload: str = log_path.read_text(encoding="utf-8")
+        extra: dict[str, Any] = json.loads(payload)["record"]["extra"]
+        assert secret not in payload
+        assert extra["credential"] == extra["copied"] == "***"
+        assert extra["nested"] == {"***": "preserved-value"}
 
 
 def test_stdlib_custom_numeric_level_reaches_serialized_sink(tmp_path: Path) -> None:

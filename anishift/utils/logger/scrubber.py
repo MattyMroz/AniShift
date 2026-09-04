@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from pathlib import PureWindowsPath
+from pathlib import PurePath, PureWindowsPath
 from traceback import FrameSummary, StackSummary, TracebackException
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -145,13 +145,11 @@ def _scrub_value(  # noqa: PLR0911 — one guard clause per type keeps dispatch 
     """Return a recursively scrubbed structured log value."""
     if key and _SENSITIVE_KEY_PATTERN.search(key) is not None:
         return "***"
-    if isinstance(value, str):
-        if value in sensitive_values:
-            return "***"
-        return scrub_message(value)
+    if isinstance(value, str | PurePath):
+        return _scrub_text(value, sensitive_values=sensitive_values)
     if isinstance(value, Mapping):
         return {
-            str(item_key): _scrub_value(
+            _scrub_text(item_key, sensitive_values=sensitive_values): _scrub_value(
                 item_value,
                 key=str(item_key),
                 sensitive_values=sensitive_values,
@@ -165,6 +163,16 @@ def _scrub_value(  # noqa: PLR0911 — one guard clause per type keeps dispatch 
     if isinstance(value, set):
         return {_scrub_value(item, sensitive_values=sensitive_values) for item in value}
     return value
+
+
+def _scrub_text(value: object, *, sensitive_values: frozenset[str] = frozenset()) -> str:
+    """Sanitize text and retain only the name of rooted path objects."""
+    text: str = str(value)
+    if text in sensitive_values:
+        return "***"
+    if isinstance(value, PurePath) and value.root:
+        text = value.name
+    return scrub_message(text)
 
 
 def _sensitive_values(text: str) -> frozenset[str]:
