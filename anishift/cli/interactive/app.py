@@ -69,6 +69,9 @@ _QUEUE_WHEEL_ROWS: Final[int] = 3
 _QUEUE_MARKER_ROWS: Final[int] = 2
 """Rows reserved above and below the queue for the hidden-row markers."""
 
+_MINIMUM_BRANDED_ROWS: Final[int] = 8
+"""Minimum terminal height for a brand, gap, queue markers and progress."""
+
 _REFUSAL_MESSAGES: Final[dict[str, str]] = {
     "The workspace holds no source group to run.": "Workspace nie zawiera materiału do uruchomienia",
     "No discovered source group is ready to run.": "Żadna wykryta grupa nie jest gotowa do uruchomienia",
@@ -97,6 +100,9 @@ class _QueueView:
 
     def navigate(self, key: str, total: int) -> None:
         """Move the view by one keyboard step, page or edge."""
+        if key == "end":
+            self.following = True
+            return
         stride: int = max(self.visible - 1, 1)
         moves: dict[str, int] = {
             "up": -1,
@@ -104,15 +110,14 @@ class _QueueView:
             "pageup": -stride,
             "pagedown": stride,
             "home": -total,
-            "end": total,
         }
         self.move(moves.get(key, 0), total)
 
     def move(self, rows: int, total: int) -> None:
-        """Shift the view by a signed row count and resume following at the end."""
+        """Scroll independently of active work until End explicitly resumes following."""
         last: int = _last_offset(total, self.visible)
         self.offset = min(max(self.offset + rows, 0), last)
-        self.following = self.offset >= last
+        self.following = False
 
     def fit(self, row: int, total: int, visible: int) -> None:
         """Adopt the row budget known only at render time and follow active work."""
@@ -191,9 +196,10 @@ class _InteractiveApplication:
         """Let the settings panel persist a delayed edit before it stops existing."""
         with self._lock:
             controller: SettingsController | None = self._settings
-            self._settings = None
         if controller is not None:
             controller.close()
+        with self._lock:
+            self._settings = None
 
     def _start_prewarm(self) -> None:
         """Inspect the workspace while Home is idle so Auto and Manual start at once."""
@@ -572,12 +578,22 @@ class _InteractiveApplication:
             manual: ManualController | None = self._manual
         mascot_state: MascotState = self._mascot.state
         native_size: tuple[int, int] | None = getattr(self._renderer, "native_mascot_size", None)
+        animation_phase: int = getattr(self._renderer, "animation_phase", 0)
         if mode in {_ViewMode.HOME, _ViewMode.PREPARING, _ViewMode.MANUAL_PREPARING}:
-            content: Text = _home_content(columns, rows, selected, mascot_state, native_size=native_size)
+            content: Text = _home_content(
+                columns, rows, selected, mascot_state, native_size=native_size, animation_phase=animation_phase
+            )
         elif mode is _ViewMode.MANUAL and manual is not None:
             content = manual.render(columns, rows)
         elif mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
-            content = _auto_content((columns, rows), progress, mascot_state, self._queue)
+            content = _auto_content(
+                (columns, rows),
+                progress,
+                mascot_state,
+                self._queue,
+                native_size=native_size,
+                animation_phase=animation_phase,
+            )
         elif mode is _ViewMode.SETTINGS and settings is not None:
             content = settings.render(columns, rows)
         else:
@@ -590,21 +606,27 @@ def run_interactive(service: AppService) -> None:
     _InteractiveApplication(service).run()
 
 
-def _home_content(
+def _home_content(  # noqa: PLR0913
     columns: int,
     rows: int,
     selected: int,
     mascot_state: MascotState,
     *,
     native_size: tuple[int, int] | None = None,
+    animation_phase: int = 0,
 ) -> Text:
+    if rows < _MINIMUM_BRANDED_ROWS:
+        return _small_home_content(columns, rows, selected)
     geometry: HomeGeometry = resolve_home_geometry(columns, rows, native_size or TEXT_MASCOT_SIZE)
-    brand: Text = brand_for_geometry(geometry, mascot_state, native_mascot=native_size is not None)
+    brand: Text = brand_for_geometry(
+        geometry, mascot_state, native_mascot=native_size is not None, animation_phase=animation_phase
+    )
     brand_rows: int = len(brand.split("\n"))
     menu_rows: int = len(_HOME_CHOICES) + 1
     body_rows: int = max(rows - 1, 1)
-    brand_top: int = _HOME_BRAND_TOP_PADDING_ROWS
-    menu_region_top: int = brand_top + brand_rows + _HOME_MENU_REGION_GAP_ROWS
+    gap: int = min(_HOME_MENU_REGION_GAP_ROWS, max(body_rows - brand_rows - menu_rows, 0))
+    brand_top: int = min(_HOME_BRAND_TOP_PADDING_ROWS, max(body_rows - brand_rows - menu_rows - gap, 0))
+    menu_region_top: int = brand_top + brand_rows + gap
     menu_region_rows: int = max(body_rows - menu_region_top, menu_rows)
     menu_top: int = menu_region_top + max((menu_region_rows - menu_rows) // 2, 0)
     brand_bottom: int = brand_top + brand_rows - 1
@@ -624,15 +646,40 @@ def _home_content(
     return content
 
 
-def _auto_content(
+def _small_home_content(columns: int, rows: int, selected: int) -> Text:
+    """Keep the selected Home action reachable when branding cannot fit."""
+    visible: int = min(len(_HOME_CHOICES), max(rows - 1, 1))
+    start: int = max(selected - visible + 1, 0)
+    content = Text()
+    for index in range(start, min(start + visible, len(_HOME_CHOICES))):
+        label: str = _HOME_CHOICES[index][0]
+        pointer: str = _HOME_POINTER if index == selected else " "
+        content.append(f"{pointer} {label}\n", style="brand_accent" if index == selected else "white_bold")
+    if rows > len(_HOME_CHOICES) + 1:
+        content.append(_HOME_HINT[:columns], style="gray")
+    return content
+
+
+def _auto_content(  # noqa: PLR0913
     size: tuple[int, int],
     progress: RichRunProgress,
     mascot_state: MascotState,
     view: _QueueView,
+    *,
+    native_size: tuple[int, int] | None = None,
+    animation_phase: int = 0,
 ) -> Text:
     columns, rows = size
-    geometry: AutoGeometry = resolve_auto_geometry(columns, rows, progress.row_count)
-    brand: Text = brand_for_geometry(geometry, mascot_state, show_mascot=False)
+    if rows < _MINIMUM_BRANDED_ROWS:
+        visible_rows: int = max(rows - 2, 1)
+        view.fit(progress.active_row, progress.row_count, visible_rows)
+        tiny = Text(f"↑ {view.offset} · ↓ {max(progress.row_count - view.offset - visible_rows, 0)}\n", style="gray")
+        tiny.append_text(progress.render(columns, offset=view.offset, limit=visible_rows))
+        return tiny
+    geometry: AutoGeometry = resolve_auto_geometry(columns, rows, progress.row_count, native_size or TEXT_MASCOT_SIZE)
+    brand: Text = brand_for_geometry(
+        geometry, mascot_state, native_mascot=native_size is not None, animation_phase=animation_phase
+    )
     budget: int = max(rows - 1 - geometry.top_padding - len(brand.split("\n")) - 1, 1)
     total: int = progress.row_count
     paged: bool = total > budget
@@ -640,7 +687,7 @@ def _auto_content(
     view.fit(progress.active_row, total, visible)
     content = Text("\n" * geometry.top_padding)
     content.append_text(brand)
-    content.append("\n")
+    content.append("\n\n")
     if paged:
         content.append_text(_queue_marker("↑", view.offset))
     content.append_text(progress.render(columns, offset=view.offset, limit=visible))
@@ -692,7 +739,7 @@ def _result_message(result: RunResult, workspace: InspectedWorkspace) -> Text:
         for error in group.error_messages:
             message.append(f"\n  {_safe(error)}", style="error")
         for product in (*group.products, *group.preserved_products):
-            message.append(f"\n  Zachowano: {_safe(product.path.name)}", style="success")
+            message.append(f"\n  ✓ Zachowano: {_safe(product.path.name)}", style="brand_accent")
     for warning in result.warnings:
         message.append(f"\n{_safe(warning)}", style="warning")
     message.append(f"\n\nSzczegóły: {_LOG_LOCATION}", style="gray")

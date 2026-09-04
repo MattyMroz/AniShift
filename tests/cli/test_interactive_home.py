@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from rich.text import Text
 
 from anishift.cli.interactive.app import _fit_frame, _home_content
-from anishift.cli.interactive.home import HomeAction, working_directory_label
+from anishift.cli.interactive.home import HomeAction, brand_for_geometry, working_directory_label
 from anishift.cli.interactive.mascot import MascotState, mascot_art
+from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.prompts import (
     AutoGeometry,
     HomeGeometry,
@@ -51,14 +53,14 @@ def test_home_geometry_preserves_a_fixed_brand_and_falls_back_to_a_compact_layou
 
     assert (wide.mascot_columns, wide.mascot_rows, wide.brand_rows) == (18, 10, 10)
     assert (wide.show_mascot, wide.show_full_wordmark) == (True, True)
-    assert (medium.show_mascot, medium.show_full_wordmark) == (False, True)
+    assert (medium.show_mascot, medium.show_full_wordmark, medium.brand_rows) == (False, False, 3)
     assert (narrow.show_mascot, narrow.show_full_wordmark, narrow.brand_rows) == (False, False, 1)
 
 
 def test_auto_geometry_reserves_progress_and_footer_below_the_brand() -> None:
     geometry: AutoGeometry = resolve_auto_geometry(120, 32, 4)
 
-    assert geometry.show_mascot is False
+    assert geometry.show_mascot is True
     assert geometry.show_full_wordmark is True
     assert geometry.progress_row > geometry.top_padding
     assert geometry.progress_row >= geometry.top_padding + geometry.brand_rows
@@ -79,3 +81,45 @@ def test_the_mascot_asset_renders_to_the_requested_terminal_size() -> None:
     assert mascot is not None
     assert len(mascot.split("\n")) == 8
     assert mascot.cell_len > 0
+
+
+@pytest.mark.parametrize("columns", [120, 80, 60, 35, 22])
+def test_a_narrow_home_keeps_the_slime_and_uses_a_fitting_wordmark(columns: int) -> None:
+    geometry = resolve_home_geometry(columns, 30)
+    brand = brand_for_geometry(geometry, native_mascot=True)
+
+    assert geometry.show_mascot
+    assert NATIVE_MASCOT_ANCHOR in brand.plain
+    assert all(line.cell_len <= columns for line in brand.split("\n"))
+
+
+def test_the_ripple_keeps_the_native_anchor_and_frame_height_fixed() -> None:
+    geometry = resolve_home_geometry(120, 30)
+    frames: list[Text] = [
+        brand_for_geometry(geometry, native_mascot=True, animation_phase=phase) for phase in range(24)
+    ]
+    positions: list[int] = [frame.plain.index(NATIVE_MASCOT_ANCHOR) for frame in frames]
+
+    assert len(set(positions)) == 1
+    assert {len(frame.split("\n")) for frame in frames} == {geometry.brand_rows}
+    assert frames[0].plain != frames[19].plain
+
+
+def test_the_text_slime_bounces_without_changing_its_reservation() -> None:
+    geometry = resolve_home_geometry(22, 30)
+    resting = brand_for_geometry(geometry, animation_phase=0)
+    jumping = brand_for_geometry(geometry, animation_phase=11)
+
+    assert resting.plain != jumping.plain
+    assert len(resting.split("\n")) == len(jumping.split("\n")) == geometry.brand_rows
+
+
+@pytest.mark.parametrize("rows", [3, 4, 6, 8, 10, 12, 24])
+@pytest.mark.parametrize("selected", [0, 1, 2, 3])
+def test_small_home_always_keeps_the_selected_action_visible(rows: int, selected: int) -> None:
+    content = _home_content(80, rows, selected, MascotState.IDLE)
+    frame = _fit_frame(content, "1.0.0", "workspace", 80, rows)
+
+    assert "\u276f" in frame.plain
+    assert ("Auto", "Ręczny", "Ustawienia", "Wyjście")[selected] in frame.plain
+    assert frame.plain.split("\n")[-1].endswith("v1.0.0")

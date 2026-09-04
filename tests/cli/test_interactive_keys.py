@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -25,6 +26,9 @@ _EXPECTED_KEYS = [
     (Keys.End, "end"),
     (Keys.Enter, "enter"),
     (Keys.Backspace, "backspace"),
+    (Keys.Delete, "delete"),
+    (Keys.Tab, "tab"),
+    (Keys.BackTab, "backtab"),
     (Keys.Escape, "escape"),
     (Keys.ControlC, "interrupt"),
 ]
@@ -68,3 +72,12 @@ def test_normalised_names_are_all_distinct() -> None:
 def test_space_is_reported_separately_from_printable_text(renderer: TerminalRenderer, seen: list[str]) -> None:
     _press(renderer, " ")
     assert seen == ["space"]
+
+
+def test_bracketed_paste_arrives_as_one_literal_edit(renderer: TerminalRenderer, seen: list[str]) -> None:
+    bindings = renderer._application.key_bindings
+    assert bindings is not None
+    binding = bindings.get_bindings_for_keys((Keys.BracketedPaste,))[-1]
+    binding.handler(cast("KeyPressEvent", SimpleNamespace(data="local/model\nsecond line")))
+
+    assert seen == ["paste:local/model\nsecond line"]

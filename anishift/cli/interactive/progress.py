@@ -12,6 +12,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Final, Protocol
 
+from rich.cells import cell_len, set_cell_size
 from rich.text import Text
 
 from anishift.application import (
@@ -34,38 +35,14 @@ __all__ = ["RichRunProgress"]
 _COMPLETE: Final[int] = 100
 """Percentage representing a completed stage."""
 
-_PHASE_WIDTH: Final[int] = 14
-"""Fixed phase width keeping filenames aligned."""
-
-_DESCRIPTION_LENGTH: Final[int] = 72
-"""Maximum description width on a wide terminal."""
-
-_NARROW_DESCRIPTION_LENGTH: Final[int] = 35
-"""Description width retained on an eighty-column terminal."""
-
-_MAX_FILENAME_COLUMNS: Final[int] = 20
-"""Largest filename rendered inside a progress description."""
+_MIN_DESCRIPTION_COLUMNS: Final[int] = 5
+"""Minimum description space retained beside the full progress fields."""
 
 _MAX_BAR_COLUMNS: Final[int] = 40
 """Largest shared block bar rendered on one row."""
 
 _MIN_BAR_COLUMNS: Final[int] = 3
 """Smallest shared block bar rendered on one row."""
-
-_BASE_INFO_COLUMNS: Final[int] = 23
-"""Columns occupied by separators, percentage and elapsed time."""
-
-_MINIMUM_PROGRESS_COLUMNS: Final[int] = _BASE_INFO_COLUMNS + _MIN_BAR_COLUMNS
-"""Columns required after the description for a complete progress row."""
-
-_DESCRIPTION_GROWTH_RESERVE: Final[int] = 48
-"""Progress columns retained while a wide description grows."""
-
-_WIDE_LAYOUT_COLUMNS: Final[int] = _NARROW_DESCRIPTION_LENGTH + _DESCRIPTION_GROWTH_RESERVE
-"""Terminal width where the description may grow beyond its narrow size."""
-
-_NARROW_LAYOUT_COLUMNS: Final[int] = _NARROW_DESCRIPTION_LENGTH + _MINIMUM_PROGRESS_COLUMNS
-"""Terminal width fitting the narrow description and all progress fields."""
 
 _STAGE_RANK: Final[dict[str, int]] = {
     "extracting": 0,
@@ -95,12 +72,12 @@ _DETERMINATE_STAGE: Final[dict[TaskKind, str]] = {
 """Task kinds owning measurable public stages."""
 
 _ACTIVE_LABEL: Final[dict[str, str]] = {
-    "extracting": "Extracting",
-    "translating": "Translating",
-    "tts": "Synthesizing",
-    "audio": "Audio processing",
-    "composing": "Rendering",
-    "publishing": "Publishing",
+    "extracting": "Extract",
+    "translating": "Translate",
+    "tts": "TTS",
+    "audio": "Audio",
+    "composing": "Render",
+    "publishing": "Save",
 }
 """Labels shown while measurable stages are active."""
 
@@ -111,12 +88,12 @@ _COMPLETE_LABEL: Final[dict[str, str]] = {
 """Labels shown after extraction and translation complete."""
 
 _AUDIO_LABEL: Final[dict[str, str]] = {
-    "normalizing": "Normalizing",
-    "timeline": "Audio timeline",
-    "mixing": "Audio mixing",
-    "narration_resume": "Audio resume",
-    "skipped_no_spoken": "Audio skipped",
-    "wrapping": "Narrator audio",
+    "normalizing": "Normalize",
+    "timeline": "Timeline",
+    "mixing": "Mix",
+    "narration_resume": "Resume",
+    "skipped_no_spoken": "No speech",
+    "wrapping": "Narrator",
 }
 """Labels for coarse audio callbacks."""
 
@@ -365,7 +342,7 @@ class RichRunProgress:
             TaskKind.TRANSLATE_SUBTITLES,
         }:
             return False
-        state.description = _description(state.label, "Retrying")
+        state.description = _description(state.label, "Retry")
         state.style = "warning"
         state.determinate = False
         return True
@@ -406,9 +383,9 @@ class RichRunProgress:
         state.stage_rank = _STAGE_RANK["terminal"]
         _stop_timer(state)
         if task_state is TaskState.SUCCEEDED:
-            state.description = _description(state.label, "Done")
+            state.description = _description(state.label, "✓ Done")
             state.completed = _COMPLETE
-            state.style = "success"
+            state.style = None
             return
         state.completed = 0
         if task_state is TaskState.CANCELLED:
@@ -432,7 +409,7 @@ class RichRunProgress:
                 state.description = _description(state.label, "Cancelled")
                 state.style = "warning"
             else:
-                state.description = _description(state.label, "Not processed")
+                state.description = _description(state.label, "Not run")
                 state.style = "error"
             changed = True
         return changed
@@ -457,7 +434,7 @@ class RichRunProgress:
 
 def _new_file_state(label: str) -> _FileState:
     """Create the initial extracting row for one source label."""
-    return _FileState(label=label, description=_description(label, "Extracting"))
+    return _FileState(label=label, description=_description(label, _ACTIVE_LABEL["extracting"]))
 
 
 def _render_rows(rows: tuple[_RenderRow, ...], columns: int) -> Text:
@@ -465,52 +442,52 @@ def _render_rows(rows: tuple[_RenderRow, ...], columns: int) -> Text:
     result = Text()
     if not rows:
         return result
-    description_limit: int = _description_limit(columns)
-    natural_width: int = max(len(row.description) for row in rows)
-    description_width: int = min(natural_width, description_limit)
-    bar_width: int = _bar_width(columns, description_width)
+    columns = max(columns, 0)
+    full_details_width: int = max(cell_len(_row_details(row, show_elapsed=True)) for row in rows)
+    show_bar: bool = columns >= full_details_width + _MIN_BAR_COLUMNS + _MIN_DESCRIPTION_COLUMNS + 1
+    details: tuple[str, ...] = tuple(_row_details(row, show_elapsed=show_bar) for row in rows)
+    details_width: int = max(cell_len(detail) for detail in details)
+    available: int = columns - details_width - (_MIN_BAR_COLUMNS + 1 if show_bar else 0)
+    if available < 1:
+        details = ("",) * len(rows)
+        details_width = 0
+        available = columns
+    natural_width: int = max(cell_len(row.description) for row in rows)
+    description_width: int = min(natural_width, available)
+    bar_width: int = min(_MAX_BAR_COLUMNS, columns - description_width - details_width - 1) if show_bar else 0
     for index, row in enumerate(rows):
-        _append_row(result, row, description_width, bar_width)
+        _append_row(result, row, description_width, bar_width, details[index])
         if index < len(rows) - 1:
             result.append("\n")
     return result
 
 
-def _append_row(result: Text, row: _RenderRow, description_width: int, bar_width: int) -> None:
+def _append_row(result: Text, row: _RenderRow, description_width: int, bar_width: int, details: str) -> None:
     """Append measured progress or an honest activity indicator."""
     style: str = row.style or "brand_accent"
-    description: str = _truncate(row.description, description_width).ljust(description_width)
+    description: str = set_cell_size(_short_filename(row.description, description_width), description_width)
     result.append(description, style=style)
-    result.append(" ")
+    if bar_width:
+        result.append(" ")
     colors: tuple[str, ...] = _bar_colors(bar_width)
     filled: int = min(bar_width, max(0, row.completed) * bar_width // _COMPLETE)
-    cursor: int = int(row.elapsed_seconds * 8) % bar_width
+    cursor: int = int(row.elapsed_seconds * 8) % max(bar_width, 1)
     for index, color in enumerate(colors):
         active: bool = index < filled if row.determinate else index == cursor
-        result.append("█" if active else "░", style=(row.style or color) if active else "gray")
-    result.append(f" | {row.completed:>3d}%" if row.determinate else " |  -- ", style=style)
-    result.append(f" | {_format_elapsed(row.elapsed_seconds)}", style=style)
+        result.append("█" if active else "░", style=(row.style or color) if active else "progress_track")
+    result.append(details, style=style)
+
+
+def _row_details(row: _RenderRow, *, show_elapsed: bool) -> str:
+    """Keep measured percentage or activity visible before the optional clock."""
+    percent: str = f" | {row.completed:>3d}%" if row.determinate else " |  -- "
+    return f"{percent} | {_format_elapsed(row.elapsed_seconds)}" if show_elapsed else percent
 
 
 @lru_cache(maxsize=_MAX_BAR_COLUMNS)
 def _bar_colors(width: int) -> tuple[str, ...]:
     """Cache the wordmark palette at each bounded bar width."""
     return tuple(hex_color(rim_color(index / max(width - 1, 1))) for index in range(width))
-
-
-def _description_limit(columns: int) -> int:
-    """Resolve a description width that keeps every row on one line."""
-    if columns >= _WIDE_LAYOUT_COLUMNS:
-        return min(_DESCRIPTION_LENGTH, columns - _DESCRIPTION_GROWTH_RESERVE)
-    if columns >= _NARROW_LAYOUT_COLUMNS:
-        return _NARROW_DESCRIPTION_LENGTH
-    return max(5, columns - _MINIMUM_PROGRESS_COLUMNS)
-
-
-def _bar_width(columns: int, description_width: int) -> int:
-    """Resolve the shared bar width from remaining terminal columns."""
-    available: int = columns - description_width - _BASE_INFO_COLUMNS
-    return max(_MIN_BAR_COLUMNS, min(_MAX_BAR_COLUMNS, available))
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -543,15 +520,6 @@ def _elapsed(state: _FileState, now: float) -> float:
     return max((state.stopped_at or now) - state.started_at, 0)
 
 
-def _truncate(value: str, width: int) -> str:
-    """Truncate text with a single ellipsis to the requested width."""
-    if len(value) <= width:
-        return value
-    if width <= 1:
-        return "…"
-    return f"{value[: width - 1]}…"
-
-
 def _stage_for(kind: TaskKind | None) -> str | None:
     """Return the public measurable stage for a task kind."""
     if kind is None:
@@ -581,7 +549,7 @@ def _stage_complete(
 
 
 def _source_label(group: InspectedSourceGroup) -> str:
-    """Return a compact concrete filename for one inspected source group."""
+    """Retain the complete concrete filename until terminal-width rendering."""
     preferred_kinds: tuple[ArtifactKind, ...] = (
         ArtifactKind.VIDEO_MKV,
         ArtifactKind.VIDEO_MP4,
@@ -593,21 +561,21 @@ def _source_label(group: InspectedSourceGroup) -> str:
             None,
         )
         if path is not None:
-            return _short_filename(path.name)
-    return _short_filename(group.source.stem)
+            return path.name
+    return group.source.stem
 
 
-def _short_filename(filename: str) -> str:
-    """Shorten a filename while retaining a compact extension when possible."""
-    if len(filename) <= _MAX_FILENAME_COLUMNS:
+def _short_filename(filename: str, width: int) -> str:
+    """Fit a description to terminal cells, preserving its extension when possible."""
+    if cell_len(filename) <= width:
         return filename
+    if width <= 1:
+        return set_cell_size(filename, max(width, 0))
     suffix: str = Path(filename).suffix
-    if suffix and len(suffix) < _MAX_FILENAME_COLUMNS // 2:
-        stem_width: int = _MAX_FILENAME_COLUMNS - len(suffix) - 1
-        return f"{filename[:stem_width]}…{suffix}"
-    return f"{filename[: _MAX_FILENAME_COLUMNS - 1]}…"
+    ending: str = f"…{suffix}" if suffix and cell_len(suffix) + 2 < width else "…"
+    return f"{set_cell_size(filename, width - cell_len(ending))}{ending}"
 
 
 def _description(label: str, phase: str) -> str:
-    """Build an aligned public phase and source description."""
-    return f"{phase:<{_PHASE_WIDTH}} {label}"
+    """Join the compact public phase and complete source filename."""
+    return f"{phase} {label}"

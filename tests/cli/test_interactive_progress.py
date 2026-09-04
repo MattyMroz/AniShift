@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from rich.cells import cell_len
 
 from anishift.application import ArtifactKind, RunEvent, RunEventKind, TaskKind, TaskState
 from anishift.cli.interactive.progress import RichRunProgress
@@ -113,8 +114,8 @@ def test_progress_preallocates_rows_in_natural_order() -> None:
 
     assert progress.row_count == 2
     assert rows == [
-        ("Extracting     Odcinek 02.mkv", 0),
-        ("Extracting     Odcinek 10.mkv", 0),
+        ("Extract Odcinek 02.mkv", 0),
+        ("Extract Odcinek 10.mkv", 0),
     ]
     assert frames == ["frame", "frame"]
 
@@ -126,7 +127,7 @@ def test_an_extracting_row_shows_a_bar_percentage_and_elapsed_clock() -> None:
         line: str = _lines(progress)[0]
 
     assert re.fullmatch(
-        r"Extracting {5}Odcinek 01\.mkv [\u2588\u258c\u2591]+ \| {3}0% \| \d\d:\d\d:\d\d\.\d\d\d",
+        r"Extract Odcinek 01\.mkv [\u2588\u258c\u2591]+ \| {3}0% \| \d\d:\d\d:\d\d\.\d\d\d",
         line,
     )
 
@@ -153,16 +154,16 @@ def test_file_reuses_one_row_across_every_auto_stage() -> None:
 
     assert progress.row_count == 1
     assert seen == [
-        ("Extracting     Odcinek 01.mkv", None),
-        ("Extracted      Odcinek 01.mkv", 100),
-        ("Translating    Odcinek 01.mkv", None),
-        ("Translated     Odcinek 01.mkv", 100),
-        ("Synthesizing   Odcinek 01.mkv", None),
-        ("Synthesizing   Odcinek 01.mkv", 40),
-        ("Retrying       Odcinek 01.mkv", None),
-        ("Synthesizing   Odcinek 01.mkv", 50),
-        ("Audio mixing   Odcinek 01.mkv", None),
-        ("Done           Odcinek 01.mkv", 100),
+        ("Extract Odcinek 01.mkv", None),
+        ("Extracted Odcinek 01.mkv", 100),
+        ("Translate Odcinek 01.mkv", None),
+        ("Translated Odcinek 01.mkv", 100),
+        ("TTS Odcinek 01.mkv", None),
+        ("TTS Odcinek 01.mkv", 40),
+        ("Retry Odcinek 01.mkv", None),
+        ("TTS Odcinek 01.mkv", 50),
+        ("Mix Odcinek 01.mkv", None),
+        ("✓ Done Odcinek 01.mkv", 100),
     ]
 
 
@@ -180,7 +181,7 @@ def test_bulk_extraction_forwards_every_percent_without_averaging() -> None:
             percents.append(_rows(progress)[0][1])
 
     assert percents == [12, 56, 100]
-    assert _rows(progress)[0][0] == "Extracted      Odcinek 01.mkv"
+    assert _rows(progress)[0][0] == "Extracted Odcinek 01.mkv"
 
 
 def test_extraction_keeps_the_backend_percent_even_when_it_drops() -> None:
@@ -225,11 +226,11 @@ def test_a_synthesizing_row_names_only_the_file() -> None:
         progress.emit(_event(1, RunEventKind.TASK_STARTED, task_id="tts", state=TaskState.RUNNING))
         description: str = _rows(progress)[0][0]
 
-    assert description == "Synthesizing   Odcinek 01.mkv"
+    assert description == "TTS Odcinek 01.mkv"
     assert "\u00b7" not in description
 
 
-def test_a_retry_signals_itself_without_a_counter_or_a_width_change() -> None:
+def test_a_retry_signals_itself_without_a_counter_or_phase_padding() -> None:
     prepared: PreparedAutoRun = _prepared(
         (("group-1", "Odcinek 01"),),
         (("tts", "group-1", TaskKind.SYNTHESIZE_SPEECH),),
@@ -241,20 +242,21 @@ def test_a_retry_signals_itself_without_a_counter_or_a_width_change() -> None:
         progress.emit(_event(2, RunEventKind.TASK_RETRY, task_id="tts", message="TTS retry 2/3"))
         after: str = _lines(progress)[0]
 
-    assert _rows(progress)[0][0] == "Retrying       Odcinek 01.mkv"
+    assert _rows(progress)[0][0] == "Retry Odcinek 01.mkv"
     assert "2/3" not in after
-    assert len(after) == len(before)
+    assert before.startswith("TTS Odcinek 01.mkv ")
+    assert after.startswith("Retry Odcinek 01.mkv ")
     assert "warning" in _styles(progress)
 
 
 @pytest.mark.parametrize(
     ("phase", "label"),
     [
-        ("normalizing", "Normalizing"),
-        ("timeline", "Audio timeline"),
-        ("mixing", "Audio mixing"),
-        ("narration_resume", "Audio resume"),
-        ("skipped_no_spoken", "Audio skipped"),
+        ("normalizing", "Normalize"),
+        ("timeline", "Timeline"),
+        ("mixing", "Mix"),
+        ("narration_resume", "Resume"),
+        ("skipped_no_spoken", "No speech"),
     ],
 )
 def test_every_audio_phase_reuses_the_file_row(phase: str, label: str) -> None:
@@ -267,7 +269,7 @@ def test_every_audio_phase_reuses_the_file_row(phase: str, label: str) -> None:
         progress.emit(_event(1, RunEventKind.TASK_PROGRESS, task_id="mix", progress_percent=0, message=phase))
 
     assert progress.row_count == 1
-    assert _rows(progress) == [(f"{label:<14} Odcinek 01.mkv", None)]
+    assert _rows(progress) == [(f"{label} Odcinek 01.mkv", None)]
     assert "%" not in progress.render(140).plain
 
 
@@ -282,7 +284,7 @@ def test_translation_retry_is_visible_without_a_fabricated_percentage() -> None:
         progress.emit(_event(2, RunEventKind.TASK_RETRY, task_id="translate", message="llm retry 1/3"))
         progress.emit(_event(3, RunEventKind.TASK_FALLBACK, task_id="translate", message="llm fallback"))
 
-    assert _rows(progress) == [("Retrying       Odcinek 01.mkv", None)]
+    assert _rows(progress) == [("Retry Odcinek 01.mkv", None)]
 
 
 def test_render_progress_uses_backend_measurements_and_brand_gradient() -> None:
@@ -292,9 +294,9 @@ def test_render_progress_uses_backend_measurements_and_brand_gradient() -> None:
     )
     with RichRunProgress(prepared, lambda: None) as progress:
         progress.emit(_event(1, RunEventKind.TASK_STARTED, task_id="compose", state=TaskState.RUNNING))
-        assert _rows(progress) == [("Rendering      Episode.mkv", None)]
+        assert _rows(progress) == [("Render Episode.mkv", None)]
         progress.emit(_event(2, RunEventKind.TASK_PROGRESS, task_id="compose", progress_percent=60))
-        assert _rows(progress) == [("Rendering      Episode.mkv", 60)]
+        assert _rows(progress) == [("Render Episode.mkv", 60)]
         colors: set[str] = {style for style in _styles(progress) if style.startswith("#")}
         assert len(colors) > 2
 
@@ -306,10 +308,10 @@ def test_early_publication_does_not_hide_later_speech_work() -> None:
     )
     with RichRunProgress(prepared, lambda: None) as progress:
         progress.emit(_event(1, RunEventKind.TASK_STARTED, task_id="publish", state=TaskState.RUNNING))
-        assert _rows(progress) == [("Publishing     Episode.mkv", None)]
+        assert _rows(progress) == [("Save Episode.mkv", None)]
         progress.emit(_event(2, RunEventKind.TASK_STARTED, task_id="tts", state=TaskState.RUNNING))
         progress.emit(_event(3, RunEventKind.TASK_PROGRESS, task_id="tts", progress_percent=35))
-        assert _rows(progress) == [("Synthesizing   Episode.mkv", 35)]
+        assert _rows(progress) == [("TTS Episode.mkv", 35)]
 
 
 @pytest.mark.parametrize("publish_finishes_first", [False, True])
@@ -322,17 +324,17 @@ def test_background_publication_never_hides_active_speech(publish_finishes_first
     with RichRunProgress(prepared, lambda: None) as progress:
         progress.emit(_event(1, RunEventKind.TASK_STARTED, task_id="tts", state=TaskState.RUNNING))
         phase: str | None = "mixing" if kind is TaskKind.MIX_NARRATION else None
-        label: str = "Audio processing" if phase else "Synthesizing"
+        label: str = "Audio" if phase else "TTS"
         progress.emit(_event(2, RunEventKind.TASK_PROGRESS, task_id="tts", progress_percent=40, message=phase))
         progress.emit(_event(3, RunEventKind.TASK_STARTED, task_id="publish", state=TaskState.RUNNING))
-        assert _rows(progress) == [(f"{label:<14} Episode.mkv", 40)]
+        assert _rows(progress) == [(f"{label} Episode.mkv", 40)]
         finished: str = "publish" if publish_finishes_first else "tts"
         progress.emit(_event(4, RunEventKind.TASK_FINISHED, task_id=finished, state=TaskState.SUCCEEDED))
         if publish_finishes_first:
             progress.emit(_event(5, RunEventKind.TASK_PROGRESS, task_id="tts", progress_percent=60))
-            assert _rows(progress) == [(f"{label:<14} Episode.mkv", 60)]
+            assert _rows(progress) == [(f"{label} Episode.mkv", 60)]
         else:
-            assert _rows(progress) == [("Publishing     Episode.mkv", None)]
+            assert _rows(progress) == [("Save Episode.mkv", None)]
 
 
 def test_terminal_states_label_and_freeze_every_row() -> None:
@@ -352,9 +354,9 @@ def test_terminal_states_label_and_freeze_every_row() -> None:
         )
 
     assert _rows(progress) == [
-        ("Failed         Odcinek 01.mkv", 0),
-        ("Cancelled      Odcinek 02.mkv", 0),
-        ("Cancelled      Odcinek 03.mkv", 0),
+        ("Failed Odcinek 01.mkv", 0),
+        ("Cancelled Odcinek 02.mkv", 0),
+        ("Cancelled Odcinek 03.mkv", 0),
     ]
     assert {"error", "warning"} <= _styles(progress)
 
@@ -365,7 +367,7 @@ def test_a_failed_run_marks_an_unstarted_row_not_processed() -> None:
     with RichRunProgress(prepared, lambda: None) as progress:
         progress.emit(_event(1, RunEventKind.RUN_FINISHED, group_id=None, state=TaskState.FAILED))
 
-    assert _rows(progress) == [("Not processed  Odcinek 01.mkv", 0)]
+    assert _rows(progress) == [("Not run Odcinek 01.mkv", 0)]
     assert "error" in _styles(progress)
 
 
@@ -404,9 +406,10 @@ def test_rendering_at_another_width_refits_rows_without_losing_state() -> None:
         wide: list[tuple[str, int | None]] = _rows(progress, 140)
         narrow: list[tuple[str, int | None]] = _rows(progress, 80)
 
-    assert wide == [("Synthesizing   Odcinek 01.mkv", 40)]
+    assert wide == [("TTS Odcinek 01.mkv", 40)]
     assert narrow == wide
-    assert len(_lines(progress, 140)[0]) > len(_lines(progress, 80)[0])
+    assert cell_len(_lines(progress, 140)[0]) <= 140
+    assert cell_len(_lines(progress, 80)[0]) <= 80
 
 
 def test_rendering_a_shorter_window_keeps_every_row_intact() -> None:
@@ -422,7 +425,7 @@ def test_rendering_a_shorter_window_keeps_every_row_intact() -> None:
         first_only: list[tuple[str, int | None]] = _parse(progress.render(140, limit=1).plain)
         last_only: list[tuple[str, int | None]] = _parse(progress.render(140, offset=1, limit=1).plain)
 
-    assert full == [("Synthesizing   Odcinek 01.mkv", 40), ("Extracting     Odcinek 02.mkv", 0)]
+    assert full == [("TTS Odcinek 01.mkv", 40), ("Extract Odcinek 02.mkv", 0)]
     assert first_only == [full[0]]
     assert last_only == [full[1]]
 
@@ -471,7 +474,7 @@ def test_stale_events_and_events_after_close_are_ignored() -> None:
         progress.emit(_event(1, RunEventKind.TASK_PROGRESS, task_id="translate", progress_percent=50))
     progress.emit(_event(3, RunEventKind.TASK_PROGRESS, task_id="translate", progress_percent=80))
 
-    assert _rows(progress) == [("Translating    Odcinek 01.mkv", None)]
+    assert _rows(progress) == [("Translate Odcinek 01.mkv", None)]
 
 
 def test_events_from_another_run_are_ignored() -> None:
@@ -493,7 +496,7 @@ def test_events_from_another_run_are_ignored() -> None:
         progress.emit(foreign)
 
     assert progress.run_id == "run-1"
-    assert _rows(progress) == [("Translating    Odcinek 01.mkv", None)]
+    assert _rows(progress) == [("Translate Odcinek 01.mkv", None)]
 
 
 def test_concurrent_events_settle_in_sequence_order() -> None:
@@ -522,4 +525,58 @@ def test_concurrent_events_settle_in_sequence_order() -> None:
 
     assert not started.is_alive()
     assert not progressed.is_alive()
-    assert _rows(progress) == [("Synthesizing   Odcinek 01.mkv", 50)]
+    assert _rows(progress) == [("TTS Odcinek 01.mkv", 50)]
+
+
+def test_widening_the_terminal_restores_the_full_source_filename() -> None:
+    stem: str = "[Erai-raws] A Very Long Anime Episode Name - 06 [1080p CR WEB-DL AVC AAC][MultiSub]"
+    prepared: PreparedAutoRun = _prepared((("group-1", stem),), ())
+
+    with RichRunProgress(prepared, lambda: None) as progress:
+        narrow: str = progress.render(80).plain
+        wide: str = progress.render(240).plain
+        narrowed_again: str = progress.render(80).plain
+
+    assert f"{stem}.mkv" not in narrow
+    assert f"{stem}.mkv" in wide
+    assert ".mkv" in narrow
+    assert narrowed_again == narrow
+
+
+@pytest.mark.parametrize("width", [0, 1, 8, 20, 28, 40, 60, 80, 140, 240])
+@pytest.mark.parametrize("stem", ["日本語の長い名前" * 8, "Cafe\u0301 🧑\u200d💻 " * 8])
+def test_unicode_progress_rows_fit_the_available_terminal_cells(width: int, stem: str) -> None:
+    prepared: PreparedAutoRun = _prepared((("group-1", stem),), ())
+
+    with RichRunProgress(prepared, lambda: None) as progress:
+        progress.emit(_event(1, RunEventKind.GROUP_FINISHED, state=TaskState.SUCCEEDED))
+        line: str = progress.render(width).plain
+
+    assert cell_len(line) <= width
+    if width > 0:
+        assert line.startswith("✓")
+    if width >= 40:
+        assert ".mkv" in line
+        assert "100%" in line
+
+
+def test_unicode_filename_widths_keep_bars_aligned_in_terminal_cells() -> None:
+    prepared: PreparedAutoRun = _prepared((("group-1", "日本語"), ("group-2", "Cafe\u0301 🧑\u200d💻")), ())
+
+    with RichRunProgress(prepared, lambda: None) as progress:
+        progress.emit(_event(1, RunEventKind.GROUP_FINISHED, state=TaskState.SUCCEEDED))
+        progress.emit(_event(2, RunEventKind.GROUP_FINISHED, group_id="group-2", state=TaskState.SUCCEEDED))
+        lines: list[str] = _lines(progress, 100)
+
+    assert cell_len(lines[0].split("█", 1)[0]) == cell_len(lines[1].split("█", 1)[0])
+
+
+def test_completed_progress_keeps_the_brand_gradient_and_leading_checkmark() -> None:
+    prepared: PreparedAutoRun = _prepared((("group-1", "Episode"),), ())
+
+    with RichRunProgress(prepared, lambda: None) as progress:
+        progress.emit(_event(1, RunEventKind.GROUP_FINISHED, state=TaskState.SUCCEEDED))
+
+    assert _rows(progress) == [("✓ Done Episode.mkv", 100)]
+    assert "success" not in _styles(progress)
+    assert {"#0062fa", "#f9011a"} <= _styles(progress)

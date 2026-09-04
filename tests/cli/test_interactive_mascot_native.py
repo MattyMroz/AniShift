@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
+from dataclasses import replace
+from io import StringIO
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
 from prompt_toolkit import Application
-from prompt_toolkit.application.current import create_app_session
+from prompt_toolkit.application.current import create_app_session, set_app
+from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input import DummyInput
+from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.text import Text
 
 import anishift.cli.interactive.mascot_native as native_module
@@ -59,7 +65,8 @@ def _renderer_with(image: NativeMascotImage | None, writes: list[str]) -> Termin
             output=output,
             exit=lambda: None,
             invalidate=lambda: None,
-            renderer=SimpleNamespace(reset=lambda: None),
+            is_done=False,
+            renderer=SimpleNamespace(reset=lambda **_kwargs: None),
         ),
     )
     renderer._native_mascot = image
@@ -160,7 +167,7 @@ def test_home_geometry_reserves_the_measured_mascot_footprint() -> None:
 
 
 def test_a_mascot_wider_than_the_terminal_is_dropped() -> None:
-    geometry: HomeGeometry = resolve_home_geometry(70, 40, (16, 8))
+    geometry: HomeGeometry = resolve_home_geometry(15, 40, (16, 8))
 
     assert not geometry.show_mascot
     assert (geometry.mascot_columns, geometry.mascot_rows) == (0, 0)
@@ -196,7 +203,8 @@ def test_leaving_home_erases_the_native_image() -> None:
                 flush=lambda: None,
             ),
             invalidate=lambda: None,
-            renderer=SimpleNamespace(reset=lambda: None),
+            is_done=False,
+            renderer=SimpleNamespace(reset=lambda **_kwargs: None),
         ),
     )
     renderer._render_width = 0
@@ -207,12 +215,12 @@ def test_leaving_home_erases_the_native_image() -> None:
     renderer._native_drawn_payload = None
     renderer._native_animation_started_at = time.monotonic()
     renderer._frame_provider = lambda _columns, _rows: Text(f"\n  {NATIVE_MASCOT_ANCHOR}   ")
-    renderer._formatted_frame()
+    renderer._before_render(renderer._application)
     renderer._draw_native_mascot(renderer._application)
     drawn: int = len(writes)
 
     renderer._frame_provider = lambda _columns, _rows: Text("\nUstawienia")
-    renderer._formatted_frame()
+    renderer._before_render(renderer._application)
     renderer._draw_native_mascot(renderer._application)
 
     assert drawn == 1
@@ -234,7 +242,8 @@ def test_a_moved_native_image_is_erased_instead_of_left_behind() -> None:
                 flush=lambda: None,
             ),
             invalidate=lambda: None,
-            renderer=SimpleNamespace(reset=lambda: None),
+            is_done=False,
+            renderer=SimpleNamespace(reset=lambda **_kwargs: None),
         ),
     )
     renderer._render_width = 0
@@ -245,17 +254,17 @@ def test_a_moved_native_image_is_erased_instead_of_left_behind() -> None:
     renderer._native_drawn_payload = None
     renderer._native_animation_started_at = time.monotonic()
     renderer._frame_provider = lambda _columns, _rows: Text(f"\n  {NATIVE_MASCOT_ANCHOR}   ")
-    renderer._formatted_frame()
+    renderer._before_render(renderer._application)
     renderer._draw_native_mascot(renderer._application)
     home_position = renderer._native_drawn_position
 
     renderer._frame_provider = lambda _columns, _rows: Text(f"\n\n\n\n     {NATIVE_MASCOT_ANCHOR}   ")
-    renderer._formatted_frame()
+    renderer._before_render(renderer._application)
     renderer._draw_native_mascot(renderer._application)
 
     assert home_position != renderer._native_position
-    assert "\x1b[2J" in writes[-1]
-    assert renderer._native_drawn_position is None
+    assert "\x1b[2J" in writes[-2]
+    assert renderer._native_drawn_position == renderer._native_position
 
 
 def test_a_native_image_that_stayed_in_place_is_not_erased() -> None:
@@ -270,7 +279,8 @@ def test_a_native_image_that_stayed_in_place_is_not_erased() -> None:
                 flush=lambda: None,
             ),
             invalidate=lambda: None,
-            renderer=SimpleNamespace(reset=lambda: None),
+            is_done=False,
+            renderer=SimpleNamespace(reset=lambda **_kwargs: None),
         ),
     )
     renderer._render_width = 0
@@ -281,7 +291,7 @@ def test_a_native_image_that_stayed_in_place_is_not_erased() -> None:
     renderer._native_drawn_payload = None
     renderer._native_animation_started_at = time.monotonic()
     renderer._frame_provider = lambda _columns, _rows: Text(f"\n  {NATIVE_MASCOT_ANCHOR}   ")
-    renderer._formatted_frame()
+    renderer._before_render(renderer._application)
     renderer._draw_native_mascot(renderer._application)
     renderer._native_drawn_payload = "stale"
     renderer._draw_native_mascot(renderer._application)
@@ -302,6 +312,24 @@ def test_the_renderer_reports_no_native_mascot_size_without_an_image() -> None:
     assert renderer.native_mascot_size is None
 
 
+def test_the_native_reservation_includes_the_painted_padding_row() -> None:
+    renderer = _renderer_with(replace(_image(cell_rows=11), layout_rows=10), [])
+    content = _auto_content(
+        (120, 30),
+        cast("RichRunProgress", _Progress()),
+        MascotState.TTS,
+        _QueueView(),
+        native_size=renderer.native_mascot_size,
+    )
+    lines: list[str] = content.plain.split("\n")
+    anchor: int = next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line)
+    progress: int = next(index for index, line in enumerate(lines) if "Progress" in line)
+
+    assert renderer.native_mascot_size == (18, 11)
+    assert progress >= anchor + 11 + 1
+    assert not lines[progress - 1].strip()
+
+
 def test_home_places_brand_at_top_and_menu_at_center() -> None:
     content: Text = _home_content(120, 40, 0, MascotState.IDLE, native_size=(18, 10))
     lines: list[str] = [line.plain for line in content.split("\n")]
@@ -310,19 +338,21 @@ def test_home_places_brand_at_top_and_menu_at_center() -> None:
     assert next(index for index, line in enumerate(lines) if "Auto" in line) == 24
 
 
-def test_auto_neither_renders_nor_reserves_mascot_space() -> None:
+def test_auto_reserves_mascot_space_above_progress() -> None:
     geometry = resolve_auto_geometry(120, 40, 1)
 
-    content: Text = _auto_content((120, 40), cast("RichRunProgress", _Progress()), MascotState.TTS, _QueueView())
+    content: Text = _auto_content(
+        (120, 40), cast("RichRunProgress", _Progress()), MascotState.TTS, _QueueView(), native_size=(18, 10)
+    )
 
-    assert not geometry.show_mascot
-    assert (geometry.mascot_columns, geometry.mascot_rows) == (0, 0)
-    assert NATIVE_MASCOT_ANCHOR not in content.plain
+    assert geometry.show_mascot
+    assert (geometry.mascot_columns, geometry.mascot_rows) == (18, 10)
+    assert NATIVE_MASCOT_ANCHOR in content.plain
     assert "Progress" in content.plain
 
 
-@pytest.mark.parametrize(("columns", "rows"), [(60, 20), (120, 12), (200, 60)])
-def test_no_terminal_size_brings_the_mascot_back_to_auto(columns: int, rows: int) -> None:
+@pytest.mark.parametrize(("columns", "rows", "visible"), [(60, 20, True), (120, 12, False), (200, 60, True)])
+def test_auto_keeps_the_mascot_when_controls_fit(columns: int, rows: int, visible: bool) -> None:
     geometry = resolve_auto_geometry(columns, rows, 1)
 
     content: Text = _auto_content(
@@ -330,13 +360,14 @@ def test_no_terminal_size_brings_the_mascot_back_to_auto(columns: int, rows: int
         cast("RichRunProgress", _Progress()),
         MascotState.TTS,
         _QueueView(),
+        native_size=(18, 10),
     )
 
-    assert not geometry.show_mascot
-    assert NATIVE_MASCOT_ANCHOR not in content.plain
+    assert geometry.show_mascot is visible
+    assert (NATIVE_MASCOT_ANCHOR in content.plain) is visible
 
 
-def test_entering_auto_takes_the_image_off_the_screen() -> None:
+def test_entering_auto_keeps_the_native_image_in_the_header() -> None:
     writes: list[str] = []
     renderer: TerminalRenderer = _renderer_with(_image(), writes)
     renderer._application = cast(
@@ -348,7 +379,8 @@ def test_entering_auto_takes_the_image_off_the_screen() -> None:
                 flush=lambda: None,
             ),
             invalidate=lambda: None,
-            renderer=SimpleNamespace(reset=lambda: None),
+            is_done=False,
+            renderer=SimpleNamespace(reset=lambda **_kwargs: None),
         ),
     )
     renderer._render_width = 0
@@ -359,7 +391,7 @@ def test_entering_auto_takes_the_image_off_the_screen() -> None:
     renderer._native_drawn_payload = None
     renderer._native_animation_started_at = time.monotonic()
     renderer._frame_provider = lambda _columns, _rows: Text(f"\n  {NATIVE_MASCOT_ANCHOR}   ")
-    renderer._formatted_frame()
+    renderer._before_render(renderer._application)
     renderer._draw_native_mascot(renderer._application)
     progress = cast("RichRunProgress", _Progress())
     renderer._frame_provider = lambda columns, rows: _auto_content(
@@ -367,13 +399,14 @@ def test_entering_auto_takes_the_image_off_the_screen() -> None:
         progress,
         MascotState.TTS,
         _QueueView(),
+        native_size=(18, 10),
     )
-    renderer._formatted_frame()
+    renderer._before_render(renderer._application)
     renderer._draw_native_mascot(renderer._application)
 
-    assert renderer._native_position is None
-    assert renderer._native_drawn_position is None
-    assert "\x1b[2J" in writes[-1]
+    assert renderer._native_position is not None
+    assert renderer._native_drawn_position == renderer._native_position
+    assert "frame" in writes[-1]
 
 
 def test_message_view_does_not_render_the_mascot() -> None:
@@ -468,7 +501,8 @@ def test_making_the_mascot_vanish_clears_the_screen_and_repaints() -> None:
         SimpleNamespace(
             output=SimpleNamespace(write_raw=writes.append, flush=lambda: None),
             invalidate=lambda: repaints.append("invalidate"),
-            renderer=SimpleNamespace(reset=lambda: repaints.append("reset")),
+            is_done=False,
+            renderer=SimpleNamespace(reset=lambda **kwargs: repaints.append(str(kwargs["leave_alternate_screen"]))),
         ),
     )
     renderer._native_drawn_position = (2, 3)
@@ -477,7 +511,7 @@ def test_making_the_mascot_vanish_clears_the_screen_and_repaints() -> None:
     renderer._erase_native_mascot()
 
     assert writes == ["\x1b[2J"]
-    assert repaints == ["reset", "invalidate"]
+    assert repaints == ["False"]
     assert renderer._native_drawn_position is None
     assert renderer._native_drawn_payload is None
 
@@ -528,3 +562,45 @@ def test_native_encoder_does_not_require_chafa(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(native_module, "terminal_cell_size", lambda: None)
 
     assert native_module.load_native_mascot() is not None
+
+
+@pytest.mark.parametrize("next_frame", [Text("Settings"), Text(f"\n\n  {NATIVE_MASCOT_ANCHOR}")])
+def test_native_repaint_never_exposes_the_primary_screen(next_frame: Text) -> None:
+    stream = StringIO()
+    output = Vt100_Output(stream, lambda: Size(rows=24, columns=80), term="xterm-256color")
+    frames: list[Text] = [Text(NATIVE_MASCOT_ANCHOR), next_frame]
+    with create_app_session(input=DummyInput(), output=output):
+        renderer = TerminalRenderer(lambda _columns, _rows: frames.pop(0), lambda _key: None)
+    renderer._native_mascot = _image()
+    application = renderer._application
+    with set_app(application):
+        for _ in range(2):
+            renderer._before_render(application)
+            application.renderer.render(application, application.layout)
+            renderer._after_render(application)
+
+    assert not frames
+    assert stream.getvalue().count("\x1b[?1049h") == 1
+    assert "\x1b[?1049l" not in stream.getvalue()
+    assert "\x1b[3J" not in stream.getvalue()
+    application.renderer.reset()
+    assert stream.getvalue().count("\x1b[?1049l") == 1
+
+
+def test_real_application_exit_never_paints_on_the_restored_console() -> None:
+    stream = StringIO()
+    output = Vt100_Output(stream, lambda: Size(rows=24, columns=80), term="xterm-256color")
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=output):
+        renderer = TerminalRenderer(lambda _columns, _rows: Text(NATIVE_MASCOT_ANCHOR), lambda _key: None)
+        renderer._native_mascot = _image(payloads=("SIXEL_SENTINEL",))
+
+        def close_after_first_frame() -> None:
+            asyncio.get_running_loop().call_later(0.05, renderer.exit)
+
+        renderer._application.run(pre_run=close_after_first_frame)
+
+    before, separator, after = stream.getvalue().partition("\x1b[?1049l")
+    assert separator
+    assert "SIXEL_SENTINEL" in before
+    assert "SIXEL_SENTINEL" not in after
+    assert "\x1b[2J" not in after

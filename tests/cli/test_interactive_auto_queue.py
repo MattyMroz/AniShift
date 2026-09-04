@@ -173,3 +173,26 @@ def test_a_short_terminal_still_shows_queue_rows() -> None:
     frame = _frame(FakeProgress(), _QueueView(), size=(120, 12))
 
     assert _shown(frame)
+
+
+@pytest.mark.parametrize("size", [(120, 40), (80, 24), (50, 20), (30, 12), (20, 8), (20, 6), (20, 4)])
+def test_every_queue_row_remains_reachable_after_resize(size: tuple[int, int]) -> None:
+    progress = FakeProgress()
+    view = _QueueView(following=False)
+    seen: set[str] = set()
+    for _ in range(progress.row_count):
+        frame = _frame(progress, view, size)
+        seen.update(_shown(frame))
+        assert len(frame.split("\n")) == size[1]
+        assert frame.split("\n")[-1].endswith("v1.0.0")
+        view.move(1, progress.row_count)
+
+    assert seen == {f"plik-{index:02d}" for index in range(progress.row_count)}
+
+
+def test_an_unpaged_queue_has_a_blank_row_below_the_brand() -> None:
+    lines: list[str] = _frame(FakeProgress(row_count=1), _QueueView()).split("\n")
+    first: int = next(index for index, line in enumerate(lines) if "plik-00" in line)
+
+    assert first > 0
+    assert not lines[first - 1].strip()

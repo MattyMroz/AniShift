@@ -18,6 +18,7 @@ from prompt_toolkit.output import ColorDepth
 from rich.console import Console
 from rich.text import Text
 
+from anishift.cli.interactive.mascot import mascot_art
 from anishift.cli.interactive.mascot_native import (
     NATIVE_MASCOT_ANCHOR,
     NativeMascotImage,
@@ -64,14 +65,14 @@ _MASCOT_NUDGE_COLUMNS: Final[int] = 2
 _HOME_CHROME_ROWS: Final[int] = 11
 """Rows Home spends on top padding, the menu gap, the menu and the footer."""
 
-_FULL_WORDMARK_TERMINAL_ROWS: Final[int] = _FULL_WORDMARK_ROWS + _HOME_MENU_ROWS + 1
-"""Minimum height that leaves room for the wordmark, menu and footer."""
-
-_COMPACT_BRAND_ROWS: Final[int] = 1
-"""Rows occupied by the compact title."""
+MEDIUM_WORDMARK_COLUMNS: Final[int] = 28
+"""Width of the three-row wordmark used in narrower terminals."""
 
 _MINIMUM_QUEUE_ROWS: Final[int] = 3
 """Queue rows that must survive before Auto spends height on the brand."""
+
+_AUTO_PADDED_ROWS: Final[int] = 17
+"""Minimum terminal height for a top margin above the queue header."""
 
 _TERMINAL_SIZE_POLL_SECONDS: Final[float] = 0.1
 """Fallback resize polling interval inside the Prompt Toolkit event loop."""
@@ -91,6 +92,9 @@ _NORMALISED_KEYS: Final[tuple[tuple[Keys | str, str], ...]] = (
     (Keys.Enter, "enter"),
     (" ", "space"),
     (Keys.Backspace, "backspace"),
+    (Keys.Delete, "delete"),
+    (Keys.Tab, "tab"),
+    (Keys.BackTab, "backtab"),
     (Keys.Escape, "escape"),
     (Keys.ControlC, "interrupt"),
 )
@@ -124,6 +128,7 @@ class HomeGeometry:
     mascot_columns: int
     mascot_rows: int
     brand_rows: int
+    wordmark_columns: int = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +144,7 @@ class AutoGeometry:
     mascot_columns: int
     mascot_rows: int
     brand_rows: int
+    wordmark_columns: int = 8
 
 
 class _WheelControl(FormattedTextControl):
@@ -183,10 +189,11 @@ class TerminalRenderer:
         self._native_drawn_position: tuple[int, int] | None = None
         self._native_drawn_payload: str | None = None
         self._terminal_size: tuple[int, int] | None = None
+        self._prepared_frame: AnyFormattedText = ""
         bindings: KeyBindings = self._key_bindings()
         control = _WheelControl(
             scroll_handler,
-            text=self._formatted_frame,
+            text=lambda: self._prepared_frame,
             focusable=False,
             show_cursor=False,
         )
@@ -202,6 +209,7 @@ class TerminalRenderer:
             max_render_postpone_time=0,
             refresh_interval=_AUTO_REFRESH_SECONDS,
             terminal_size_polling_interval=_TERMINAL_SIZE_POLL_SECONDS,
+            before_render=self._before_render,
             after_render=self._after_render,
         )
 
@@ -211,14 +219,23 @@ class TerminalRenderer:
         image: NativeMascotImage | None = self._native_mascot
         if image is None:
             return None
-        return image.cell_columns, image.layout_rows
+        return image.cell_columns, image.cell_rows
+
+    @property
+    def animation_phase(self) -> int:
+        """Share one bounded animation clock with the wordmark and text mascot."""
+        cycle: float = self._native_mascot.cycle_seconds if self._native_mascot is not None else 2.76
+        elapsed: float = time.monotonic() - self._native_animation_started_at
+        return int(elapsed % cycle / cycle * 24)
 
     def run(self) -> None:
         """Run the terminal event loop until the user exits."""
         cell: tuple[int, int] | None = native_mascot_cell()
         if cell is not None:
             self._native_mascot = load_native_mascot(cell_size=cell, query_terminal=False)
-            self._native_animation_started_at = time.monotonic()
+        if self._native_mascot is None:
+            mascot_art(TEXT_MASCOT_SIZE[0], TEXT_MASCOT_SIZE[1] - 2)
+        self._native_animation_started_at = time.monotonic()
         self._application.run()
 
     def invalidate(self) -> None:
@@ -233,6 +250,16 @@ class TerminalRenderer:
             self._native_drawn_position = None
             self._native_drawn_payload = None
         self._application.exit()
+
+    def _before_render(self, application: Application[None]) -> None:
+        if application.is_done:
+            self._prepared_frame = ""
+            self._native_position = None
+            self._erase_native_mascot()
+            return
+        self._prepared_frame = self._formatted_frame()
+        if self._native_drawn_position != self._native_position:
+            self._erase_native_mascot()
 
     def _formatted_frame(self) -> AnyFormattedText:
         size = self._application.output.get_size()
@@ -254,6 +281,8 @@ class TerminalRenderer:
         return ANSI(stream.getvalue())
 
     def _after_render(self, application: Application[None]) -> None:
+        if application.is_done:
+            return
         self._draw_native_mascot(application)
         # The loop refreshes on its own interval, so this is the only place a
         # deferred write can run without doing I/O inside frame construction.
@@ -266,20 +295,12 @@ class TerminalRenderer:
         if image is None:
             return
         if position is None:
-            self._erase_native_mascot()
             return
         row, column = position
         output = application.output
         elapsed_seconds: float = time.monotonic() - self._native_animation_started_at
         payload: str = image.payload_at(elapsed_seconds)
         if payload == self._native_drawn_payload and position == self._native_drawn_position:
-            return
-        previous: tuple[int, int] | None = self._native_drawn_position
-        if previous is not None and previous != position:
-            # Spaces never remove a SIXEL raster; only redrawing over the very same
-            # rectangle hides it. A moved image therefore needs the full erase used
-            # when the mascot disappears, or the old copy stays on screen forever.
-            self._erase_native_mascot()
             return
         erase: str = _native_erase_sequence(position, image.cell_columns, image.cell_rows)
         output.write_raw(f"{_SAVE_CURSOR}{erase}\x1b[{row + 1};{column + 1}H{payload}{_RESTORE_CURSOR}")
@@ -290,11 +311,11 @@ class TerminalRenderer:
     def _erase_native_mascot(self) -> None:
         if self._native_drawn_position is None:
             return
-        self._clear_screen()
+        self._application.renderer.reset(leave_alternate_screen=False)
+        # Flush the raster clear together with the next text frame.
+        self._application.output.write_raw(_CLEAR_SCREEN)
         self._native_drawn_position = None
         self._native_drawn_payload = None
-        self._application.renderer.reset()
-        self._application.invalidate()
 
     def _clear_screen(self) -> None:
         output = self._application.output
@@ -322,6 +343,10 @@ class TerminalRenderer:
         bindings = KeyBindings()
         for key, name in _NORMALISED_KEYS:
             bindings.add(key)(self._forward(name))
+
+        @bindings.add(Keys.BracketedPaste)
+        def paste(event: KeyPressEvent) -> None:
+            self._key_handler(f"paste:{event.data}")
 
         @bindings.add(Keys.Any)
         def any_key(event: KeyPressEvent) -> None:
@@ -370,22 +395,12 @@ def resolve_home_geometry(
     terminal_rows: int = max(rows, 1)
     content_width: int = min(_HOME_MENU_WIDTH, terminal_columns)
     left_padding: int = max((terminal_columns - content_width) // 2, 0)
-    brand_columns: int = mascot[0] + BRAND_GAP_COLUMNS + _FULL_WORDMARK_COLUMNS
-    show_full_wordmark: bool = (
-        terminal_columns >= _FULL_WORDMARK_COLUMNS and terminal_rows >= _FULL_WORDMARK_TERMINAL_ROWS
+    show_mascot, wordmark_columns, brand_rows = _brand_dimensions(
+        terminal_columns, max(terminal_rows - _HOME_CHROME_ROWS, 1), mascot
     )
-    mascot_room: bool = terminal_rows >= mascot[1] + _HOME_CHROME_ROWS
-    show_mascot: bool = terminal_columns >= brand_columns and mascot_room
+    show_full_wordmark: bool = wordmark_columns == _FULL_WORDMARK_COLUMNS
     mascot_columns: int = mascot[0] if show_mascot else 0
     mascot_rows: int = mascot[1] if show_mascot else 0
-    if show_mascot:
-        brand_rows: int = max(mascot_rows, _FULL_WORDMARK_ROWS)
-    elif show_full_wordmark:
-        # A terminal too narrow for the mascot still holds the wordmark at the
-        # height it has beside one, so the name does not jump when it hides.
-        brand_rows = max(mascot[1], _FULL_WORDMARK_ROWS) if mascot_room else _FULL_WORDMARK_ROWS
-    else:
-        brand_rows = _COMPACT_BRAND_ROWS
     content_rows: int = brand_rows + _HOME_MENU_ROWS
     top_padding: int = max((terminal_rows - content_rows) // 2, 0)
     footer_padding: int = max(terminal_rows - top_padding - content_rows, 1)
@@ -401,33 +416,51 @@ def resolve_home_geometry(
         mascot_columns=mascot_columns,
         mascot_rows=mascot_rows,
         brand_rows=brand_rows,
+        wordmark_columns=wordmark_columns,
     )
 
 
-def resolve_auto_geometry(columns: int, rows: int, progress_rows: int) -> AutoGeometry:
+def resolve_auto_geometry(
+    columns: int, rows: int, progress_rows: int, mascot: tuple[int, int] = TEXT_MASCOT_SIZE
+) -> AutoGeometry:
     """Place a responsive wordmark above the queue while reserving the footer."""
     terminal_columns: int = max(columns, 1)
     terminal_rows: int = max(rows, 1)
-    row_count: int = max(progress_rows, 1)
+    del progress_rows
     available_rows: int = max(terminal_rows - 1, 1)
-    show_full_wordmark: bool = (
-        terminal_columns >= _FULL_WORDMARK_COLUMNS and available_rows >= _FULL_WORDMARK_ROWS + 1 + _MINIMUM_QUEUE_ROWS
+    top_padding: int = 1 if terminal_rows >= _AUTO_PADDED_ROWS else 0
+    show_mascot, wordmark_columns, brand_rows = _brand_dimensions(
+        terminal_columns, max(available_rows - top_padding - 3 - _MINIMUM_QUEUE_ROWS, 1), mascot
     )
-    brand_rows: int = _FULL_WORDMARK_ROWS if show_full_wordmark else _COMPACT_BRAND_ROWS
-    content_rows: int = brand_rows + 1 + row_count
-    top_padding: int = max((available_rows - content_rows) // 2, 0)
-    progress_row: int = min(top_padding + brand_rows + 1, max(available_rows - row_count, 0))
+    show_full_wordmark: bool = wordmark_columns == _FULL_WORDMARK_COLUMNS
+    progress_row: int = top_padding + brand_rows + 1
     return AutoGeometry(
         terminal_columns=terminal_columns,
         terminal_rows=terminal_rows,
         top_padding=top_padding,
         progress_row=progress_row,
-        show_mascot=False,
+        show_mascot=show_mascot,
         show_full_wordmark=show_full_wordmark,
-        mascot_columns=0,
-        mascot_rows=0,
+        mascot_columns=mascot[0] if show_mascot else 0,
+        mascot_rows=mascot[1] if show_mascot else 0,
         brand_rows=brand_rows,
+        wordmark_columns=wordmark_columns,
     )
+
+
+def _brand_dimensions(columns: int, rows: int, mascot: tuple[int, int]) -> tuple[bool, int, int]:
+    """Choose the largest wordmark beside a mascot that leaves controls usable."""
+    show_mascot: bool = columns >= mascot[0] + BRAND_GAP_COLUMNS and rows >= mascot[1]
+    available: int = columns - mascot[0] - BRAND_GAP_COLUMNS if show_mascot else columns
+    choices: tuple[tuple[int, int], ...] = (
+        (_FULL_WORDMARK_COLUMNS, _FULL_WORDMARK_ROWS),
+        (MEDIUM_WORDMARK_COLUMNS, 3),
+        (8, 1),
+    )
+    width, height = next(
+        ((width, height) for width, height in choices if width <= available and height <= rows), (0, 1)
+    )
+    return show_mascot, width, max(height, mascot[1] if show_mascot else 0)
 
 
 def status_line(version: str, directory: str, columns: int) -> str:
