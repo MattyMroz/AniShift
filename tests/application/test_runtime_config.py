@@ -75,8 +75,9 @@ class _RecordingLlmService:
         *,
         cancel: threading.Event,
         on_text: Callable[[str], None] | None = None,
+        on_start: Callable[[], None] | None = None,
     ) -> LlmResponse:
-        del cancel, on_text
+        del cancel, on_text, on_start
         self.request = request
         return LlmResponse(
             text="result",

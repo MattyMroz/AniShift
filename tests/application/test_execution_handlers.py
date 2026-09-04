@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -107,9 +108,15 @@ class _ExtractionService:
 
 
 class _TranslationService:
-    def __init__(self, *, emit_provider_events: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        emit_provider_events: bool = False,
+        transform: Callable[[FileTranslation], FileTranslation] | None = None,
+    ) -> None:
         self.spoken: list[SpokenLine] = []
         self.emit_provider_events: bool = emit_provider_events
+        self.transform: Callable[[FileTranslation], FileTranslation] | None = transform
 
     def translate_file(  # noqa: PLR0913 - test fake mirrors the domain facade
         self,
@@ -142,7 +149,7 @@ class _TranslationService:
             )
             for line in spoken
         )
-        return FileTranslation(
+        result = FileTranslation(
             spoken=translated,
             engine_id="fake",
             target_lang="pl",
@@ -150,6 +157,7 @@ class _TranslationService:
             total_lines=len(translated),
             api_calls=1,
         )
+        return self.transform(result) if self.transform is not None else result
 
 
 def _ready(artifact_id: str, kind: ArtifactKind, path: Path) -> Artifact:
@@ -278,15 +286,16 @@ def test_legacy_extraction_adapter_preserves_bulk_operation_contract(tmp_path: P
         observed.append(path)
         return media_info
 
-    def extract(
+    def extract(  # noqa: PLR0913
         info: MediaInfo,
         selection: TrackSelection,
         dest_dir: Path,
         *,
         on_progress: Callable[[int], None] | None = None,
         cancel: threading.Event | None = None,
+        timeout_s: float = 3600.0,
     ) -> LegacyExtractionResult:
-        observed.extend((info, selection, dest_dir, cancel))
+        observed.extend((info, selection, dest_dir, cancel, timeout_s))
         if on_progress is not None:
             on_progress(100)
         return LegacyExtractionResult(None, None)
@@ -296,10 +305,10 @@ def test_legacy_extraction_adapter_preserves_bulk_operation_contract(tmp_path: P
     progress: list[int] = []
 
     assert adapter.identify(media) is media_info
-    assert adapter.extract(media_info, selection, tmp_path, on_progress=progress.append, cancel=cancel) == (
-        LegacyExtractionResult(None, None)
-    )
-    assert observed == [media, media_info, selection, tmp_path, cancel]
+    assert adapter.extract(
+        media_info, selection, tmp_path, on_progress=progress.append, cancel=cancel, timeout_s=30.0
+    ) == (LegacyExtractionResult(None, None))
+    assert observed == [media, media_info, selection, tmp_path, cancel, 30.0]
     assert progress == [100]
 
 
@@ -322,16 +331,18 @@ def test_mkv_bulk_handler_extracts_both_tracks_once_and_forwards_every_percent(t
     )
     selections: list[TrackSelection] = []
 
-    def extract(
+    def extract(  # noqa: PLR0913
         info: MediaInfo,
         selection: TrackSelection,
         dest_dir: Path,
         *,
         on_progress: Callable[[int], None] | None = None,
         cancel: threading.Event | None = None,
+        timeout_s: float = 3600.0,
     ) -> LegacyExtractionResult:
         del info
         assert cancel is not None
+        assert timeout_s == 30.0
         selections.append(selection)
         audio_path = dest_dir / "episode.aac"
         subtitle_path = dest_dir / "episode.ass"
@@ -509,6 +520,56 @@ def test_translation_handler_translates_standalone_text_to_srt(tmp_path: Path) -
 
     translated: str = result.outputs[0].path.read_text(encoding="utf-8")
     assert "PL First sentence. Second sentence." in translated
+
+
+@pytest.mark.parametrize("source_kind", ["srt", "txt"])
+@pytest.mark.parametrize("failure", ["flag", "count", "blank", "missing", "position"])
+def test_translation_handler_preserves_existing_output_on_incomplete_translation(
+    tmp_path: Path,
+    source_kind: str,
+    failure: str,
+) -> None:
+    source_path: Path = tmp_path / f"episode.{source_kind}"
+    if source_kind == "srt":
+        _write_srt(source_path)
+    else:
+        source_path.write_text("Hello", encoding="utf-8")
+    kind: ArtifactKind = ArtifactKind.STANDALONE_TEXT if source_kind == "txt" else ArtifactKind.SOURCE_SUBTITLES
+    source: Artifact = _ready("source", kind, source_path)
+    output: Artifact = _output("full", ArtifactKind.FULL_PL, subtitle_format="srt")
+    task: PlanTask = _task(
+        TaskKind.TRANSLATE_SUBTITLES,
+        ("source",),
+        ("full",),
+        (("source_kind", source_kind), ("output_format", "srt")),
+    )
+    run_root: Path = tmp_path / "run"
+    destination: Path = task_staging_path(run_root, task, output, ".srt")
+    destination.write_text("existing product", encoding="utf-8")
+
+    def incomplete(result: FileTranslation) -> FileTranslation:
+        line: TranslatedLine = result.spoken[0]
+        if failure == "count":
+            return replace(result, failed_lines=1)
+        if failure == "missing":
+            return replace(result, spoken=())
+        if failure == "flag":
+            line = replace(line, ok=False)
+        elif failure == "blank":
+            line = replace(line, text=" \n\t ")
+        else:
+            line = replace(line, source_text="different source")
+        return replace(result, spoken=(line,))
+
+    with pytest.raises(ExecutionError, match="incomplete"):
+        TranslationTaskHandler(_TranslationService(transform=incomplete), run_root=run_root).execute(
+            task,
+            ArtifactSnapshot({"source": source}, {"full": output}),
+            NeverCancelledToken(),
+            _ProgressSink(),
+        )
+
+    assert destination.read_text(encoding="utf-8") == "existing product"
 
 
 def test_translation_handler_maps_provider_events_to_worker_notifications(tmp_path: Path) -> None:

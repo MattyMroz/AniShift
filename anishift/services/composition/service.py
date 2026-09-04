@@ -160,6 +160,7 @@ class CompositionService:
         self,
         request: ContainerCompositionRequest,
         *,
+        callbacks: CompositionProgressSink | None = None,
         cancel: threading.Event | None = None,
     ) -> ContainerCompositionResult:
         """Produce exactly one independently addressed MKV or MP4 container."""
@@ -171,14 +172,15 @@ class CompositionService:
             subtitle_count=len(request.attached_subtitles),
         )
         if request.target is ContainerTarget.MKV:
-            return self._compose_container_mkv(request, timer=timer, cancel=cancel)
-        return self._compose_container_mp4(request, timer=timer, cancel=cancel)
+            return self._compose_container_mkv(request, timer=timer, callbacks=callbacks, cancel=cancel)
+        return self._compose_container_mp4(request, timer=timer, callbacks=callbacks, cancel=cancel)
 
     def _compose_container_mkv(
         self,
         request: ContainerCompositionRequest,
         *,
         timer: Timer,
+        callbacks: CompositionProgressSink | None,
         cancel: threading.Event | None,
     ) -> ContainerCompositionResult:
         """Mux one MKV while preserving only the source tracks requested by policy."""
@@ -195,6 +197,7 @@ class CompositionService:
                 operation="merge_container",
                 timeout_s=self._config.operation_timeout_s,
                 progress=parse_mkvmerge_progress,
+                on_percent=lambda percent: _notify(callbacks, "", "merging", percent),
                 cancel=cancel,
                 warning_exit_code=_MKVMERGE_WARNING_EXIT,
             )
@@ -224,16 +227,19 @@ class CompositionService:
         request: ContainerCompositionRequest,
         *,
         timer: Timer,
+        callbacks: CompositionProgressSink | None,
         cancel: threading.Event | None,
     ) -> ContainerCompositionResult:
         """Render or remux one MP4 with independently selected subtitle and audio policy."""
         temporary: Path = temporary_sibling(request.destination)
         ffprobe: Path = self.ffprobe
-        total_us: int = source_duration_us(
+        video_us: int
+        total_us: int
+        video_us, total_us = self._render_durations_us(
             request.source_video,
-            ffprobe=ffprobe,
+            request.narration_audio,
+            keep_original_audio=request.keep_original_audio,
             cancel=cancel,
-            runner=self._probe_runner,
         )
         warnings: tuple[str, ...] = self._container_font_warnings(request, cancel=cancel)
         source_size: int = request.source_video.stat().st_size
@@ -245,7 +251,7 @@ class CompositionService:
                 work_dir = Path(tempfile.mkdtemp(dir=request.destination.parent, prefix=".anishift-compose-"))
                 safe_subtitle: Path = filter_safe_copy(request.burn_subtitle, work_dir)
                 subtitle_argument = subtitle_filter_argument(
-                    safe_subtitle,
+                    Path(safe_subtitle.name),
                     kind=request.burn_subtitle.suffix.removeprefix(".").casefold(),
                 )
             audio_source: Path | None = request.narration_audio
@@ -273,11 +279,14 @@ class CompositionService:
                 operation="render_container",
                 timeout_s=self._config.render_timeout_s,
                 progress=lambda line: parse_ffmpeg_progress(line, total_us=total_us),
+                on_percent=lambda percent: _notify(callbacks, "", "burning", percent),
                 cancel=cancel,
+                cwd=work_dir,
             )
             validate_burned(
                 temporary,
                 expected_duration_us=total_us,
+                expected_video_duration_us=video_us,
                 ffprobe=ffprobe,
                 cancel=cancel,
                 runner=self._probe_runner,
@@ -386,11 +395,13 @@ class CompositionService:
         destination: Path = output_path(plan.source_path, plan.variant, plan.destination_dir)
         temporary: Path = temporary_sibling(destination)
         ffprobe: Path = self.ffprobe
-        total_us: int = source_duration_us(
+        video_us: int
+        total_us: int
+        video_us, total_us = self._render_durations_us(
             plan.source_path,
-            ffprobe=ffprobe,
+            plan.narration_audio,
+            keep_original_audio=plan.narration_audio is None,
             cancel=cancel,
-            runner=self._probe_runner,
         )
         subtitle_argument: str | None = self._burn_filter(plan)
         warnings: tuple[str, ...] = self._font_warnings(plan, cancel=cancel)
@@ -415,10 +426,12 @@ class CompositionService:
                 progress=lambda line: parse_ffmpeg_progress(line, total_us=total_us),
                 on_percent=lambda percent: _notify(callbacks, plan.scope_id, "burning", percent),
                 cancel=cancel,
+                cwd=plan.temporary_root / "composition" if subtitle_argument is not None else None,
             )
             validate_burned(
                 temporary,
                 expected_duration_us=total_us,
+                expected_video_duration_us=video_us,
                 ffprobe=ffprobe,
                 cancel=cancel,
                 runner=self._probe_runner,
@@ -455,7 +468,32 @@ class CompositionService:
             return None
         work_dir: Path = plan.temporary_root / "composition"
         safe_subtitle: Path = filter_safe_copy(plan.burn_subtitle, work_dir)
-        return subtitle_filter_argument(safe_subtitle, kind=plan.source_subtitle_kind)
+        return subtitle_filter_argument(Path(safe_subtitle.name), kind=plan.source_subtitle_kind)
+
+    def _render_durations_us(
+        self,
+        source: Path,
+        narration: Path | None,
+        *,
+        keep_original_audio: bool,
+        cancel: threading.Event | None,
+    ) -> tuple[int, int]:
+        """Return video and product durations for the streams actually retained."""
+        video_us: int = source_duration_us(
+            source,
+            video_only=True,
+            ffprobe=self.ffprobe,
+            cancel=cancel,
+            runner=self._probe_runner,
+        )
+        sources: list[Path] = [source] if keep_original_audio else []
+        if narration is not None:
+            sources.append(narration)
+        durations: list[int] = [video_us]
+        durations.extend(
+            source_duration_us(path, ffprobe=self.ffprobe, cancel=cancel, runner=self._probe_runner) for path in sources
+        )
+        return video_us, max(durations)
 
     def _font_warnings(
         self,
@@ -463,11 +501,7 @@ class CompositionService:
         *,
         cancel: threading.Event | None,
     ) -> tuple[str, ...]:
-        """Return one warning per font referenced but not attached.
-
-        The source is identified only when a subtitle is actually involved, so
-        a lector-only merge never pays for a probe it cannot use.
-        """
+        """Return one warning per font referenced but not attached."""
         subtitle: Path | None = plan.burn_subtitle or (plan.subtitles[0].path if plan.subtitles else None)
         if subtitle is None:
             return ()

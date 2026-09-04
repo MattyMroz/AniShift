@@ -1,33 +1,4 @@
-"""Mapping of Palantir proxy failures onto the existing typed LLM taxonomy.
-
-This module defines no error class of its own. The LLM domain already carries
-the full vocabulary in ``anishift.services.llm.errors`` — auth, model, context,
-blocked output, quota, payment, request, rate limit, timeout and provider
-unavailable — so every Palantir condition is translated into one of those
-classes and keeps its retry semantics (``TransientError`` versus
-``FatalError``).
-
-Redaction is the second responsibility. A response body, a request payload, an
-``Authorization`` header and a signed URL never reach a message, a suggestion
-or ``details``: a malformed response is reported through the safe
-``PalantirResponseDefect`` label, and a provider payload is only ever matched
-against small allowlists of structured markers used for classification.
-
-The split between the two fail-fast raisers is deliberate and follows the four
-existing engines: anything about the token — absent, blank, or a value that
-cannot be sent in a header — is an authentication failure, while a defective
-URL, protocol, alias, provider ID or model ID is a configuration failure. Both
-are fatal and both fire before any network access.
-
-Public API:
-    PALANTIR_ENGINE_ID: Registry ID shared by the Palantir modules.
-    PalantirResponseDefect: Safe labels describing a malformed response.
-    raise_palantir_auth_error: Raise a typed token failure.
-    raise_palantir_config_error: Raise a typed configuration failure.
-    palantir_status_error: Classify one HTTP status into the LLM taxonomy.
-    palantir_timeout_error, palantir_unavailable_error: Transport failures.
-    palantir_response_error, palantir_blocked_error: Response-level failures.
-"""
+"""Mapping of Palantir proxy failures onto the existing typed LLM taxonomy."""
 
 from __future__ import annotations
 
@@ -75,6 +46,7 @@ class PalantirResponseDefect(StrEnum):
     UNEXPECTED_SHAPE = "unexpected_shape"
     MISSING_CHOICE = "missing_choice"
     EMPTY_TEXT = "empty_text"
+    INCOMPLETE_RESPONSE = "incomplete_response"
 
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -93,11 +65,7 @@ _QUOTA_MARKERS: Final[frozenset[str]] = frozenset(
         "quota_exhausted",
     },
 )
-"""Structured markers proving a 429 is an exhausted quota rather than pacing.
-
-A bare 429 — and the generic ``resource_exhausted`` status Google-style
-providers return for pacing — stays a retryable rate limit.
-"""
+"""Structured markers proving a 429 is an exhausted quota rather than pacing."""
 
 _PAYMENT_MARKERS: Final[frozenset[str]] = frozenset(
     {
@@ -141,20 +109,7 @@ _BLOCKED_MARKERS: Final[frozenset[str]] = frozenset(
 
 
 def raise_palantir_auth_error(message: str, *, field_name: str, suggestion: str) -> Never:
-    """Raise a typed token failure before any network access happens.
-
-    Used for an absent, blank or unsendable token, matching what the four
-    existing engines raise for a missing key, so a UI can route every credential
-    problem to the same place.
-
-    Args:
-        message: Safe description naming the defective field, never its value.
-        field_name: Environment variable or configuration field at fault.
-        suggestion: Actionable fix shown to the user.
-
-    Raises:
-        LlmAuthError: Always; the caller has no usable token.
-    """
+    """Raise a typed token failure before any network access happens."""
     context: ErrorContext = ErrorContext(
         code=ErrorCode.LLM_AUTH_FAILED,
         message=message,
@@ -165,19 +120,7 @@ def raise_palantir_auth_error(message: str, *, field_name: str, suggestion: str)
 
 
 def raise_palantir_config_error(message: str, *, field_name: str, suggestion: str) -> Never:
-    """Raise a typed configuration failure before any network access happens.
-
-    Used for a defective URL, protocol, alias, provider ID or model ID. A token
-    problem goes through ``raise_palantir_auth_error`` instead.
-
-    Args:
-        message: Safe description naming the defective field, never its value.
-        field_name: Configuration field or environment variable at fault.
-        suggestion: Actionable fix shown to the user.
-
-    Raises:
-        LlmConfigError: Always; the caller found an unusable configuration.
-    """
+    """Raise a typed configuration failure before any network access happens."""
     context: ErrorContext = ErrorContext(
         code=ErrorCode.LLM_CONFIG_INVALID,
         message=message,
@@ -194,19 +137,7 @@ def palantir_status_error(
     payload: object = None,
     retry_after_s: float | None = None,
 ) -> LlmError:
-    """Classify one proxy HTTP status into the existing LLM taxonomy.
-
-    Args:
-        status_code: HTTP status the proxy returned.
-        alias: Catalog alias whose request failed.
-        payload: Decoded error body used only to match structured markers; its
-            content never reaches the message, the suggestion or ``details``.
-        retry_after_s: Retry hint parsed from the response headers.
-
-    Returns:
-        One instance of the existing typed LLM error classes, transient for
-        pacing and availability failures and fatal for everything else.
-    """
+    """Classify one proxy HTTP status into the existing LLM taxonomy."""
     markers: frozenset[str] = structured_markers(payload)
     error: LlmError = _classify_status(
         status_code,
@@ -249,15 +180,7 @@ def palantir_unavailable_error(*, alias: str, retry_after_s: float | None = None
 
 
 def palantir_response_error(*, alias: str, defect: PalantirResponseDefect) -> LlmError:
-    """Build the fatal error of a response that does not match the protocol.
-
-    Args:
-        alias: Catalog alias whose response was unusable.
-        defect: Safe label of the defect, used instead of the response body.
-
-    Returns:
-        A fatal ``LlmRequestError`` naming only the defect label.
-    """
+    """Build the fatal error of a response that does not match the protocol."""
     return LlmRequestError(
         context=_context(
             ErrorCode.LLM_REQUEST_FAILED,
@@ -270,12 +193,7 @@ def palantir_response_error(*, alias: str, defect: PalantirResponseDefect) -> Ll
 
 
 def _defect_suggestion(defect: PalantirResponseDefect) -> str:
-    """Return the fix hint that matches the kind of response defect.
-
-    A body that did not decode at all is usually a streamed or non-JSON
-    response rather than a mismatched protocol, so it names that cause instead
-    of sending the user to the catalog. No fragment of the body is included.
-    """
+    """Return the fix hint that matches the kind of response defect."""
     if defect is PalantirResponseDefect.UNREADABLE_BODY:
         return "Check whether the route answered with a streamed or non-JSON body; these protocols send one object."
     return "Check that the provider route matches the protocol declared in the catalog."
@@ -398,18 +316,6 @@ def _context(
     suggestion: str,
     **diagnostics: object,
 ) -> ErrorContext:
-    """Build a context carrying the alias plus only safe diagnostic values.
-
-    Args:
-        code: Stable error code of the mapped failure.
-        alias: Catalog alias the failure belongs to.
-        message: Safe UI message without body, headers or token.
-        suggestion: Actionable fix shown to the user.
-        **diagnostics: Extra safe values such as the HTTP status, the response
-            defect label or the finish reason.
-
-    Returns:
-        The structured context attached to the mapped error.
-    """
+    """Build a context carrying the alias plus only safe diagnostic values."""
     details: dict[str, object] = {"engine_id": PALANTIR_ENGINE_ID, "alias": alias, **diagnostics}
     return ErrorContext(code=code, message=message, suggestion=suggestion, details=details)

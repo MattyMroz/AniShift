@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Never, Protocol
+from typing import Final, Never, Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
@@ -29,6 +29,11 @@ from anishift.services.composition import (
 
 __all__ = ["CompositionTaskHandler", "LegacyCompositionAdapter", "build_composition_request"]
 
+# ── Constants ────────────────────────────────────────────────────────────────
+
+_IN_PROGRESS_PERCENT: Final[int] = 99
+"""Highest reported percentage before output validation succeeds."""
+
 
 class ContainerComposer(Protocol):
     """Configured service producing one validated container at a time."""
@@ -37,6 +42,7 @@ class ContainerComposer(Protocol):
         self,
         request: ContainerCompositionRequest,
         *,
+        callbacks: CompositionProgressSink | None = None,
         cancel: threading.Event | None = None,
     ) -> ContainerCompositionResult:
         """Compose one exact MKV or MP4 request."""
@@ -101,7 +107,11 @@ class CompositionTaskHandler:
         watcher = threading.Thread(target=_mirror_cancel, args=(cancel, event, stop), daemon=True)
         watcher.start()
         try:
-            result: ContainerCompositionResult = self._service.compose_container(request, cancel=event)
+            result: ContainerCompositionResult = self._service.compose_container(
+                request,
+                callbacks=_ProgressObserver(task.task_id, progress),
+                cancel=event,
+            )
         finally:
             stop.set()
             watcher.join()
@@ -115,6 +125,24 @@ class CompositionTaskHandler:
             "warning_count": len(result.warnings),
         }
         return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, staging, metadata),))
+
+
+@dataclass(frozen=True, slots=True)
+class _ProgressObserver:
+    task_id: str
+    progress: TaskProgressSink
+
+    def on_composition_phase(self, scope_id: str, phase: str, percent: int) -> None:
+        """Forward measured progress while reserving completion for validated output."""
+        del scope_id
+        self.progress.emit(
+            WorkerNotification(
+                WorkerNotificationKind.PROGRESS,
+                self.task_id,
+                min(percent, _IN_PROGRESS_PERCENT),
+                phase,
+            )
+        )
 
 
 def build_composition_request(task: PlanTask, artifacts: ArtifactSnapshot) -> ContainerCompositionRequest:

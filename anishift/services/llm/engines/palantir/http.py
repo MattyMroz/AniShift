@@ -1,24 +1,4 @@
-"""Synchronous HTTP send for the Palantir proxy, with typed failure mapping.
-
-This module creates the client, and only the engine imports it. What keeps the
-Palantir package free of ``httpx`` is not this split but ``__init__.py``, which
-imports neither this module nor ``service``; the registry reaches the engine
-through the ``.service`` submodule, so an HTTP client is loaded only once an
-engine is actually created. Ordinary responses are decoded as one mapping;
-Google streaming responses are decoded one SSE event at a time.
-
-The failure mapping mirrors the taxonomy the four native engines use: a timeout
-becomes a transient timeout, an unreachable enrollment becomes a transient
-availability error, an HTTP error status is classified through the shared status
-mapper, and a body that is not a JSON object becomes a safe response defect. No
-body fragment, header or signed URL reaches an error message.
-
-Public API:
-    build_palantir_client: Create the synchronous client the engine owns.
-    send_palantir_request: Send one described request and return its decoded
-        body or raise a typed failure.
-    stream_palantir_request: Consume one SSE response as decoded JSON events.
-"""
+"""Synchronous HTTP send for the Palantir proxy, with typed failure mapping."""
 
 from __future__ import annotations
 
@@ -45,15 +25,7 @@ logger = get_logger(__name__)
 
 
 def build_palantir_client(timeout_s: float) -> httpx.Client:
-    """Create the synchronous client the engine owns for its lifetime.
-
-    Args:
-        timeout_s: Per-request timeout applied to every proxy call.
-
-    Returns:
-        A client with SDK-side retries disabled, since retry belongs to the
-        LLM domain retry policy alone.
-    """
+    """Create the synchronous client the engine owns for its lifetime."""
     return httpx.Client(timeout=timeout_s)
 
 
@@ -63,22 +35,7 @@ def send_palantir_request(
     *,
     alias: str,
 ) -> Mapping[str, Any]:
-    """Send one described request and return its decoded JSON body.
-
-    Args:
-        client: Synchronous client owned by the engine.
-        built: Described request carrying the method, URL, headers and body.
-        alias: Catalog alias used only in safe error diagnostics.
-
-    Returns:
-        The decoded response body as a mapping.
-
-    Raises:
-        LlmTimeoutError: The request exceeded its timeout.
-        LlmProviderUnavailableError: The enrollment could not be reached.
-        LlmError: The proxy returned an error status, mapped by the taxonomy.
-        LlmRequestError: The success body was not a readable JSON object.
-    """
+    """Send one described request and return its decoded JSON body."""
     response: httpx.Response = _send(client, built, alias=alias)
     payload: dict[str, Any] | None = _decode(response.text)
     if response.status_code >= HTTPStatus.BAD_REQUEST:
@@ -101,11 +58,7 @@ def stream_palantir_request(
     alias: str,
     on_event: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> tuple[Mapping[str, Any], ...]:
-    """Consume one SSE response and return its decoded JSON events.
-
-    Every event is handed to *on_event* the moment it arrives, so a caller can
-    report real progress instead of waiting for the whole completion.
-    """
+    """Consume one SSE response and return its decoded JSON events."""
     try:
         with client.stream(
             built.method,
@@ -125,6 +78,15 @@ def stream_palantir_request(
                 )
             collected: list[Mapping[str, Any]] = []
             for event in _sse_events(response.iter_lines(), alias=alias):
+                if event.get("error") is not None:
+                    error_payload: object = event["error"]
+                    code: object = error_payload.get("code") if isinstance(error_payload, Mapping) else None
+                    status: int = (
+                        code
+                        if isinstance(code, int) and code in HTTPStatus and code >= HTTPStatus.BAD_REQUEST
+                        else HTTPStatus.BAD_REQUEST
+                    )
+                    raise palantir_status_error(status, alias=alias, payload=event)
                 collected.append(event)
                 if on_event is not None:
                     on_event(event)

@@ -23,6 +23,7 @@ class RecordingRunner:
         operation: str,
         timeout_s: float,
         cancel: object | None = None,
+        on_stdout_line: Callable[[str], None] | None = None,
     ) -> CommandResult:
         self.calls.append((command, operation))
         return self.handler(command, operation)

@@ -82,8 +82,8 @@ class _ProgressObserver:
 
     def progress(self, engine_id: str, completed: int, total: int) -> None:
         del engine_id
-        percent: int = 100 if total <= 0 else min(100, max(0, completed * 100 // total))
-        self._completed = max(self._completed, percent)
+        percent: int = 99 if total <= 0 else min(99, max(0, completed * 100 // total))
+        self._completed = percent
         self._progress.emit(
             WorkerNotification(WorkerNotificationKind.PROGRESS, self._task_id, self._completed),
         )
@@ -193,6 +193,8 @@ class TranslationTaskHandler:
             cancel=_CancellationView(cancel),
             observer=observer,
         )
+        _require_complete_translation(result, spoken, ())
+        cancel.raise_if_cancelled()
         destination: Path = task_staging_path(self._run_root, task, output, ".srt")
         return result, spoken_to_srt(result.spoken, destination) if result.is_success else None
 
@@ -216,11 +218,42 @@ class TranslationTaskHandler:
         result: FileTranslation = translate_subtitle_split(self._service, split, cancel, observer=observer)
         if not result.is_success:
             return result, None
+        _require_complete_translation(result, split.spoken, displayed_lines(split))
+        cancel.raise_if_cancelled()
         verses: TranslationVerses = translation_verses(split, result, self._layout)
         output_split: SubtitleSplit = replace(split, kind=output_kind)
         destination: Path = task_staging_path(self._run_root, task, output, f".{output_kind}")
         written: Path | None = write_translated(output_split, verses.displayed, verses.spoken, destination)
         return result, written
+
+
+def _require_complete_translation(
+    result: FileTranslation,
+    spoken: tuple[SpokenLine, ...],
+    displayed: tuple[DisplayedLine, ...],
+) -> None:
+    """Reject incomplete products before any subtitle writer runs."""
+    if not result.is_success:
+        if result.error_context is not None:
+            raise TranslationError(context=result.error_context)
+        raise ExecutionError(result.error or "Subtitle translation failed")
+    if result.failed_lines or len(result.spoken) != len(spoken) or len(result.displayed) != len(displayed):
+        msg = "Subtitle translation is incomplete"
+        raise ExecutionError(msg)
+    for source, translated in zip(spoken, result.spoken, strict=True):
+        expected: tuple[int, int, str, str] = (source.start, source.end, source.style, source.text)
+        actual: tuple[int, int, str, str] = (
+            translated.start,
+            translated.end,
+            translated.style,
+            translated.source_text,
+        )
+        if expected != actual or not translated.ok or (source.text.strip() and not translated.text.strip()):
+            msg = "Spoken subtitle translation is incomplete"
+            raise ExecutionError(msg)
+    if any(source.text.strip() and not text.strip() for source, text in zip(displayed, result.displayed, strict=True)):
+        msg = "Displayed subtitle translation is incomplete"
+        raise ExecutionError(msg)
 
 
 def translate_subtitle_split(

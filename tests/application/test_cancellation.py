@@ -73,3 +73,20 @@ def test_thread_event_adapter_preserves_legacy_cancellation_signal() -> None:
         token.raise_if_cancelled()
 
     assert captured.value.context.code is ErrorCode.CANCELLED
+
+
+@pytest.mark.parametrize("cancel_parent", [False, True])
+def test_child_token_blocks_commits_after_either_cancellation(cancel_parent: bool) -> None:
+    parent: EventCancellationToken = EventCancellationToken()
+    child: EventCancellationToken = EventCancellationToken(parent=parent)
+    committed: list[bool] = []
+    assert child.commit_if_active(lambda: committed.append(True))
+
+    (parent if cancel_parent else child).cancel()
+
+    assert child.is_cancelled()
+    assert parent.is_cancelled() is cancel_parent
+    assert not child.commit_if_active(lambda: committed.append(False))
+    assert committed == [True]
+    with pytest.raises(ExecutionError):
+        child.raise_if_cancelled()

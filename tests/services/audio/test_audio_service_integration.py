@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from anishift.services.audio.config import AudioConfig
 from anishift.services.audio.errors import AudioProcessError
 from anishift.services.audio.probe import measure_decoded_duration, probe_audio
 from anishift.services.audio.service import AudioService, _notify, _replace_output
+from anishift.services.audio.transcode import AudioTranscodeService
 from anishift.services.audio.types import (
     AudioCodecProfile,
     AudioFormat,
@@ -43,6 +45,7 @@ class _RecordingRunner:
         self._fail_occurrence = fail_occurrence
         self._operation_counts: dict[str, int] = {}
         self.operations: list[str] = []
+        self.timeouts: dict[str, float] = {}
 
     def run(
         self,
@@ -51,8 +54,10 @@ class _RecordingRunner:
         operation: str,
         timeout_s: float,
         cancel: threading.Event | None = None,
+        on_stdout_line: Callable[[str], None] | None = None,
     ) -> CommandResult:
         self.operations.append(operation)
+        self.timeouts[operation] = timeout_s
         occurrence: int = self._operation_counts.get(operation, 0) + 1
         self._operation_counts[operation] = occurrence
         if operation == self._fail_operation and occurrence == self._fail_occurrence:
@@ -67,6 +72,7 @@ class _RecordingRunner:
             operation=operation,
             timeout_s=timeout_s,
             cancel=cancel,
+            on_stdout_line=on_stdout_line,
         )
 
 
@@ -98,7 +104,8 @@ def test_audio_service_renders_and_resumes_real_eac3(tmp_path: Path) -> None:
         ffprobe=FFPROBE,
     )
 
-    first = service.render(request)
+    progress: list[int] = []
+    first = service.render(request, on_percent=progress.append)
     assert runner.operations.count("decode") == 0
     second = service.render(request)
 
@@ -115,6 +122,36 @@ def test_audio_service_renders_and_resumes_real_eac3(tmp_path: Path) -> None:
     assert runner.operations.count("decode") == 2
     assert second.status is AudioRenderStatus.RESUME_HIT
     assert second.output_path == first.output_path
+    assert runner.timeouts["probe"] == 30.0
+    assert {runner.timeouts[operation] for operation in ("wrap_narrator", "render_output", "decode")} == {14_400.0}
+    assert progress
+    assert all(0 <= percent < 100 for percent in progress)
+
+
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+def test_real_transcode_reports_progress_before_publishing_output(tmp_path: Path) -> None:
+    source: Path = tmp_path / "Narration.wav"
+    write_wav(source, frames=96_000)
+    destination: Path = tmp_path / "Narration.m4a"
+    service: AudioTranscodeService = AudioTranscodeService(
+        AudioConfig(codec_profile=AudioCodecProfile.AAC),
+        ffmpeg=FFMPEG,
+        ffprobe=FFPROBE,
+    )
+    progress: list[int] = []
+    destination_existed: list[bool] = []
+
+    def on_percent(percent: int) -> None:
+        progress.append(percent)
+        destination_existed.append(destination.exists())
+
+    result: Path = service.transcode(source, destination, cancel=threading.Event(), on_percent=on_percent)
+
+    assert result == destination
+    assert destination.stat().st_size > 0
+    assert progress
+    assert progress[-1] == 99
+    assert not any(destination_existed)
 
 
 @pytest.mark.skipif(

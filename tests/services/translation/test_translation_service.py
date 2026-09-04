@@ -88,8 +88,9 @@ class _InvalidLlmCompleter:
         request: LlmCompletionRequest,
         *,
         on_text: Callable[[str], None] | None = None,
+        on_start: Callable[[], None] | None = None,
     ) -> LlmCompletionResult:
-        del request, on_text
+        del request, on_text, on_start
         return LlmCompletionResult(text="invalid response", finish_reason="stop")
 
 

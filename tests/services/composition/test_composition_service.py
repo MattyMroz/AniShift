@@ -39,14 +39,19 @@ class _FailingRunner:
 
 
 class _ContainerRunner:
-    def __init__(self) -> None:
+    def __init__(self, *, progress_line: str | None = None) -> None:
         self.commands: list[tuple[str, ...]] = []
+        self._progress_line: str | None = progress_line
 
     def run(self, command: Any, **kwargs: Any) -> CommandOutcome:
         captured = tuple(command)
         self.commands.append(captured)
         destination = Path(captured[captured.index("--output") + 1]) if "--output" in captured else Path(captured[-1])
         destination.write_bytes(b"container")
+        if self._progress_line is not None:
+            percent: int | None = kwargs["progress"](self._progress_line)
+            assert percent is not None
+            kwargs["on_percent"](percent)
         return CommandOutcome(command=captured, returncode=0, stderr="", had_warnings=False)
 
 
@@ -307,3 +312,45 @@ def test_container_request_rejects_source_as_destination(tmp_path: Path) -> None
             narration_audio=None,
             keep_original_audio=True,
         )
+
+
+@pytest.mark.parametrize(
+    ("target", "progress_line", "phase"),
+    [(ContainerTarget.MKV, "#GUI#progress 50%", "merging"), (ContainerTarget.MP4, "out_time_us=500000", "burning")],
+)
+def test_container_composition_reports_measured_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: ContainerTarget,
+    progress_line: str,
+    phase: str,
+) -> None:
+    class _Progress:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, int]] = []
+
+        def on_composition_phase(self, scope_id: str, phase: str, percent: int) -> None:
+            del scope_id
+            self.events.append((phase, percent))
+
+    source: Path = tmp_path / "Episode.mkv"
+    source.write_bytes(b"source")
+    runner: _ContainerRunner = _ContainerRunner(progress_line=progress_line)
+    service: CompositionService = _service(runner, tmp_path)
+    observer: _Progress = _Progress()
+    monkeypatch.setattr("anishift.services.composition.service.source_duration_us", lambda *_args, **_kwargs: 1_000_000)
+    monkeypatch.setattr("anishift.services.composition.service.validate_burned", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("anishift.services.composition.service.validate_merged", lambda *_args, **_kwargs: None)
+    request: ContainerCompositionRequest = ContainerCompositionRequest(
+        source_video=source,
+        destination=tmp_path / f"Episode.pl.{target.value}",
+        target=target,
+        burn_subtitle=None,
+        attached_subtitles=(),
+        narration_audio=None,
+        keep_original_audio=False,
+    )
+
+    service.compose_container(request, callbacks=observer)
+
+    assert observer.events == [(phase, 50)]

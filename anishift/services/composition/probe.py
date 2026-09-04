@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 from pathlib import Path
 from typing import Any, Final, Never
@@ -37,7 +38,7 @@ __all__ = [
 # ── Constants ────────────────────────────────────────────────────────────────
 
 _DURATION_TOLERANCE_MS: Final[int] = 2_000
-"""Accepted difference between source and rendered duration."""
+"""Accepted difference between expected and rendered product duration."""
 
 _PROBE_TIMEOUT_S: Final[float] = 120.0
 """Timeout for one ffprobe invocation."""
@@ -55,11 +56,7 @@ def source_tracks(
     cancel: threading.Event | None = None,
     runner: ProcessRunner | None = None,
 ) -> MediaCatalog:
-    """Return the current track layout of one container.
-
-    Identification runs immediately before assembling, so the result reflects
-    the file on disk rather than a snapshot from an earlier stage.
-    """
+    """Return the current track layout of one container."""
     try:
         return DefaultMediaProbe(runner=runner).identify(
             path,
@@ -79,12 +76,7 @@ def audio_codec_name(
     cancel: threading.Event | None = None,
     runner: ProcessRunner | None = None,
 ) -> str:
-    """Return the codec name of a file's first audio stream.
-
-    The name comes from the file that is actually mapped into the render — the
-    narration sidecar when one exists — so the copy-or-transcode decision is
-    never taken from a different stream.
-    """
+    """Return the codec name of a file's first audio stream."""
     payload: dict[str, Any] = _probe_json(
         path,
         ffprobe=ffprobe,
@@ -104,26 +96,58 @@ def source_duration_us(
     path: Path,
     *,
     ffprobe: Path,
+    video_only: bool = False,
     cancel: threading.Event | None = None,
     runner: ProcessRunner | None = None,
 ) -> int:
-    """Return the container duration in microseconds."""
+    """Return container or video duration in microseconds, including Matroska tags."""
+    arguments: tuple[str, ...] = (
+        ("-select_streams", "v:0", "-show_entries", "format=duration:stream=duration:stream_tags=DURATION")
+        if video_only
+        else ("-show_entries", "format=duration")
+    )
     payload: dict[str, Any] = _probe_json(
         path,
         ffprobe=ffprobe,
-        arguments=("-show_entries", "format=duration"),
+        arguments=arguments,
         cancel=cancel,
         runner=runner,
     )
+    return _first_stream_duration_us(payload) if video_only else _container_duration_us(payload)
+
+
+def _container_duration_us(payload: dict[str, Any]) -> int:
+    """Read the container-level duration from one probe result."""
     container: object = payload.get("format", {})
-    raw: object = container.get("duration") if isinstance(container, dict) else None
+    return _duration_us(container.get("duration")) if isinstance(container, dict) else 0
+
+
+def _first_stream_duration_us(payload: dict[str, Any]) -> int:
+    """Read the selected stream duration or its Matroska duration tag."""
+    streams: object = payload.get("streams")
+    if not isinstance(streams, list) or not streams or not isinstance(streams[0], dict):
+        return 0
+    stream: dict[str, Any] = streams[0]
+    duration_us: int
+    if (duration_us := _duration_us(stream.get("duration"))) > 0:
+        return duration_us
+    tags: object = stream.get("tags")
+    return _duration_us(tags.get("DURATION")) if isinstance(tags, dict) else 0
+
+
+def _duration_us(raw: object) -> int:
+    """Convert finite seconds or an HH:MM:SS timestamp to microseconds."""
     if not isinstance(raw, str):
         return 0
     try:
-        seconds: float = float(raw)
+        parts: list[float] = [float(part) for part in raw.split(":")]
     except ValueError:
         return 0
-    return max(0, round(seconds * _MICROSECONDS_PER_SECOND))
+    if len(parts) not in {1, 3} or not all(math.isfinite(part) and part >= 0 for part in parts):
+        return 0
+    seconds: float = sum(part * 60**index for index, part in enumerate(reversed(parts)))
+    microseconds: float = seconds * _MICROSECONDS_PER_SECOND
+    return round(microseconds) if math.isfinite(microseconds) else 0
 
 
 def validate_merged(
@@ -133,12 +157,7 @@ def validate_merged(
     cancel: threading.Event | None = None,
     runner: ProcessRunner | None = None,
 ) -> None:
-    """Confirm a merged container carries every track this run appended.
-
-    Track names are checked instead of counting Polish tracks: a source that
-    was already Polish would satisfy a count on its own, so a merge that added
-    nothing would pass unnoticed.
-    """
+    """Confirm a merged container carries every track this run appended."""
     _require_non_empty(path)
     info: MediaCatalog = source_tracks(path, cancel=cancel, runner=runner)
     present: frozenset[str] = frozenset(track.name.casefold() for track in info.tracks if track.name is not None)
@@ -150,20 +169,21 @@ def validate_merged(
         )
 
 
-def validate_burned(
+def validate_burned(  # noqa: PLR0913 - separate stream and product duration contracts
     path: Path,
     *,
     expected_duration_us: int,
     ffprobe: Path,
+    expected_video_duration_us: int = 0,
     cancel: threading.Event | None = None,
     runner: ProcessRunner | None = None,
 ) -> None:
-    """Confirm a rendered MP4 decodes and matches the source duration."""
+    """Confirm a rendered MP4 preserves video and its expected product duration."""
     _require_non_empty(path)
     payload: dict[str, Any] = _probe_json(
         path,
         ffprobe=ffprobe,
-        arguments=("-show_entries", "format=duration:stream=codec_type"),
+        arguments=("-select_streams", "v:0", "-show_entries", "format=duration:stream=codec_type,duration"),
         cancel=cancel,
         runner=runner,
     )
@@ -172,15 +192,18 @@ def validate_burned(
         isinstance(stream, dict) and stream.get("codec_type") == "video" for stream in streams
     ):
         _raise_validation("Rendered file carries no video stream", details={})
-    if expected_duration_us <= 0:
-        return
-    actual_us: int = source_duration_us(path, ffprobe=ffprobe, cancel=cancel, runner=runner)
-    drift_ms: int = abs(actual_us - expected_duration_us) // _MICROSECONDS_PER_MILLISECOND
-    if drift_ms > _DURATION_TOLERANCE_MS:
-        _raise_validation(
-            "Rendered duration does not match the source",
-            details={"drift_ms": drift_ms},
-        )
+    for subject, actual_us, expected_us in (
+        ("product", _container_duration_us(payload), expected_duration_us),
+        ("video", _first_stream_duration_us(payload), expected_video_duration_us),
+    ):
+        if expected_us <= 0:
+            continue
+        drift_ms: int = abs(actual_us - expected_us) // _MICROSECONDS_PER_MILLISECOND
+        if drift_ms > _DURATION_TOLERANCE_MS:
+            _raise_validation(
+                f"Rendered duration does not match the expected {subject}",
+                details={"drift_ms": drift_ms},
+            )
 
 
 def _require_non_empty(path: Path) -> None:

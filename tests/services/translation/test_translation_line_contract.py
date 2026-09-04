@@ -71,6 +71,16 @@ def test_parse_response_accepts_a_complete_answer() -> None:
     assert parsed.entries == {0: "Zaczekaj chwilę.", 1: "Chodźmy już."}
 
 
+@pytest.mark.parametrize("body", [r"\n", r"\r", r"\r\n", r" \n \r "])
+def test_parse_response_rejects_decoded_whitespace(body: str) -> None:
+    parsed = parse_response(f"[0] {body}\n[1] Poprawny tekst", [0, 1])
+
+    assert parsed.violation is not None
+    assert parsed.violation.kind is ViolationKind.EMPTY_TRANSLATION
+    assert parsed.violation.numbers == (0,)
+    assert parsed.entries == {1: "Poprawny tekst"}
+
+
 def test_parse_response_ignores_blank_lines_and_code_fences() -> None:
     parsed = parse_response("```text\n\n[0] jeden\n\n[1] dwa\n```\n", [0, 1])
     assert parsed.violation is None

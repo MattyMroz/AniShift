@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ from anishift.services.subtitles.service import (
     write_translated_spoken,
 )
 from anishift.services.subtitles.text import is_drawing, visible_text
-from anishift.services.subtitles.types import SubtitleSplit
+from anishift.services.subtitles.types import SubtitleKind, SubtitleSplit
 
 _REAL_ASS_NAME = "006___shisha__Genjitsu_no_Yohane_-_Sunshine_in_the_Mirror_-_01__1080p_.mkv.ass"
 _REAL_ASS = MM_AVH_TEMP / "dataset_ass" / _REAL_ASS_NAME
@@ -168,6 +169,36 @@ def test_duplicate_spoken_occurrences_keep_distinct_translations(
     after = load_subtitles(translated)
     visible = [visible_text(event.text) for event in after.events if event.type == "Dialogue"]
     assert visible == ["Pierwszy kontekst", "Drugi kontekst"]
+
+
+@pytest.mark.parametrize("second_start", [0, 600])
+@pytest.mark.parametrize("output_kind", ["srt", "ass"])
+def test_repeated_srt_occurrences_keep_individual_translations(
+    tmp_path: Path,
+    second_start: int,
+    output_kind: SubtitleKind,
+) -> None:
+    source: SSAFile = SSAFile()
+    source.events.extend(
+        [
+            SSAEvent(start=0, end=500, text="No!"),
+            SSAEvent(start=second_start, end=second_start + 500, text="No!"),
+        ]
+    )
+    split: SubtitleSplit = split_subtitles(source, kind="srt")
+    split = replace(split, kind=output_kind)
+
+    translated: Path | None = write_translated(
+        split,
+        [],
+        [("Nie!",), ("Nie, nie!",)],
+        tmp_path / f"out.pl.{output_kind}",
+    )
+
+    assert translated is not None
+    after: SSAFile = load_subtitles(translated)
+    assert [event.text for event in after.events] == ["Nie!", "Nie, nie!"]
+    assert [(event.start, event.end) for event in after.events] == [(0, 500), (second_start, second_start + 500)]
 
 
 def test_translated_displayed_file_contains_only_overlay_events(tmp_path: Path) -> None:

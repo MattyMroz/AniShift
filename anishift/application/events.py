@@ -71,8 +71,10 @@ class RunEvent:
         _validate_optional_id(self.group_id)
         _validate_optional_id(self.task_id)
         _validate_progress(self.progress_percent)
-        if self.kind is RunEventKind.TASK_PROGRESS and (self.task_id is None or self.progress_percent is None):
-            msg = "Task progress events require a task ID and percentage"
+        if self.kind is RunEventKind.TASK_PROGRESS and (
+            self.task_id is None or (self.progress_percent is None and not (self.message or "").strip())
+        ):
+            msg = "Task progress events require a task ID and percentage or activity message"
             raise ValueError(msg)
         object.__setattr__(self, "message", sanitize_event_message(self.message))
 
@@ -91,8 +93,12 @@ class WorkerNotification:
             msg = "Worker notification requires a task ID"
             raise ValueError(msg)
         _validate_progress(self.progress_percent)
-        if self.kind is WorkerNotificationKind.PROGRESS and self.progress_percent is None:
-            msg = "Worker progress notification requires a percentage"
+        if (
+            self.kind is WorkerNotificationKind.PROGRESS
+            and self.progress_percent is None
+            and not (self.message or "").strip()
+        ):
+            msg = "Worker progress notification requires a percentage or activity message"
             raise ValueError(msg)
         object.__setattr__(self, "message", sanitize_event_message(self.message))
 

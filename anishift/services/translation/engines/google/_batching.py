@@ -1,15 +1,4 @@
-r"""Index-preserving batched translation for the Google engine.
-
-Free Google Translate mangles structure, so this guarantees input[i] maps to
-output[i] by construction: join lines with a zero-width separator; on a
-segment-count mismatch fall back to newline-join, then to per-line, then pad
-with the source text. Sequential, no gather - that is what avoids Google rate
-limits.
-
-Every input line is single-line: the subtitle stage (``visible_text``) collapses
-all ``\\n``/``\\N`` breaks to spaces before translation ever runs, so there are
-no in-cell newlines to preserve.
-"""
+"""Index-preserving batched translation for the Google engine."""
 
 from __future__ import annotations
 
@@ -60,7 +49,7 @@ def _per_line(
         except Exception:  # noqa: BLE001 - provider boundary: the mobile page has no stable failure shape
             out.append(BatchedLine(text=line, ok=False))
             continue
-        out.append(BatchedLine(text=_restore(translated), ok=True))
+        out.extend(_map_parts([line], [translated]))
     return out
 
 
@@ -105,19 +94,7 @@ def translate_lines(
     max_chars: int,
     translate_joined: Callable[[str], str],
 ) -> list[BatchedLine]:
-    """Translate lines with index<->index mapping guaranteed by construction.
-
-    Args:
-        texts: Lines to translate, in order.
-        batch_size: Max lines per request.
-        max_chars: Max characters per request (chunking budget).
-        translate_joined: Callback translating one already-joined string
-            and returning the translated string.
-
-    Returns:
-        One ``BatchedLine`` per input line, same order; failed lines carry the
-        source text with ``ok=False``.
-    """
+    """Translate lines with index<->index mapping guaranteed by construction."""
     if not texts:
         return []
     out: list[BatchedLine] = []

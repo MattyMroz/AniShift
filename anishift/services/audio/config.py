@@ -50,8 +50,11 @@ class AudioConfig:
     timeline_policy: TimelinePolicy = TimelinePolicy.SERIALIZE
     normalization_concurrency: int = 16
     operation_timeout_s: float = 30.0
+    """Deadline for metadata probes and individual clip normalization."""
     shutdown_grace_s: float = 5.0
     flac_compression_level: int = 5
+    render_timeout_s: float = 14_400.0
+    """Deadline for full-length rendering, packet scans, and decode validation."""
 
     def __post_init__(self) -> None:
         """Reject settings unsupported by the v1 audio contract."""
@@ -67,10 +70,13 @@ class AudioConfig:
             _raise_config("narrator_channels must be mono in v1")
         if self.normalization_concurrency <= 0:
             _raise_config("normalization_concurrency must be positive")
-        if not math.isfinite(self.operation_timeout_s) or self.operation_timeout_s <= 0:
-            _raise_config("operation_timeout_s must be finite and positive")
-        if not math.isfinite(self.shutdown_grace_s) or self.shutdown_grace_s <= 0:
-            _raise_config("shutdown_grace_s must be finite and positive")
+        for name, value in (
+            ("operation_timeout_s", self.operation_timeout_s),
+            ("render_timeout_s", self.render_timeout_s),
+            ("shutdown_grace_s", self.shutdown_grace_s),
+        ):
+            if not math.isfinite(value) or value <= 0:
+                _raise_config(f"{name} must be finite and positive")
         if any(
             not math.isfinite(value)
             for value in (

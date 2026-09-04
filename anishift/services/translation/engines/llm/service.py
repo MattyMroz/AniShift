@@ -1,11 +1,4 @@
-"""LLM translation engine using a strict numbered-line response contract.
-
-The engine is provider-agnostic and never imports ``anishift.services.llm``.
-A response that violates the contract is repaired by asking again for the
-affected numbers only, so lines already translated survive between attempts.
-Context and output limits use deterministic binary splitting; a contract
-violation is never hidden by splitting.
-"""
+"""LLM translation engine using a strict numbered-line response contract."""
 
 from __future__ import annotations
 
@@ -15,7 +8,7 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.translation.constants import TARGET_LANG
 from anishift.services.translation.engines.llm.config import LlmTranslateConfig
 from anishift.services.translation.engines.llm.constants import RETRY_ERROR_PLACEHOLDER
-from anishift.services.translation.engines.llm.line_contract import parse_response, serialize_request
+from anishift.services.translation.engines.llm.line_contract import LINE_PATTERN, parse_response, serialize_request
 from anishift.services.translation.engines.llm.prompts import PromptLoader
 from anishift.services.translation.errors import (
     TranslationConfigError,
@@ -43,15 +36,9 @@ _OUTPUT_LIMIT_REASONS: Final[frozenset[str]] = frozenset(("length", "max_tokens"
 
 
 class _StreamProgress:
-    """Report translated lines while the provider is still streaming them.
+    """Count closed numbered lines within the current provider attempt."""
 
-    Every finished translation ends with a newline, so counting newlines counts
-    finished lines without parsing the partial answer a second time. Repairs
-    stream only the numbers they ask for, which is why an attempt starts from the
-    count the earlier attempts already earned.
-    """
-
-    __slots__ = ("_base", "_counted", "_done", "_engine_id", "_observer", "_total")
+    __slots__ = ("_base", "_buffer", "_done", "_engine_id", "_expected", "_observer", "_seen", "_total")
 
     def __init__(
         self,
@@ -67,23 +54,54 @@ class _StreamProgress:
         self._done: int = done
         self._total: int = total
         self._base: int = 0
-        self._counted: int = 0
+        self._buffer: str = ""
+        self._seen: set[int] = set()
+        self._expected: set[int] = set()
 
-    def restart(self, trusted: int) -> None:
+    def restart(self, trusted: int, pending: tuple[int, ...]) -> None:
         """Begin one attempt, keeping the lines earlier attempts already earned."""
         self._base = trusted
-        self._counted = 0
+        self._expected = set(pending)
+
+    def reset_transport(self) -> None:
+        """Discard provisional text when a transport attempt restarts."""
+        self._buffer = ""
+        self._seen.clear()
+        self._report()
+
+    def branch(self, offset: int) -> _StreamProgress:
+        """Keep the file offset when a size-limited batch splits."""
+        return _StreamProgress(self._observer, self._engine_id, done=self._done + offset, total=self._total)
+
+    def retry(self, attempt: int, maximum: int) -> None:
+        """Expose a numbered-response repair as a distinct retry."""
+        if self._observer is not None:
+            self._observer.retry(self._engine_id, attempt, maximum, "response_contract")
 
     def consume(self, delta: str) -> None:
         """Fold one arriving text delta into the reported line count."""
         if self._observer is None:
             return
-        newlines: int = delta.count("\n")
-        if newlines == 0:
-            return
-        self._counted += newlines
-        completed: int = min(self._done + self._base + self._counted, self._total)
-        self._observer.progress(self._engine_id, completed, self._total)
+        parts: list[str] = (self._buffer + delta).split("\n")
+        self._buffer = parts.pop()
+        for line in parts:
+            match = LINE_PATTERN.match(line.strip())
+            if match is None:
+                continue
+            number: int = int(match.group(1))
+            if (
+                number in self._expected
+                and number not in self._seen
+                and parse_response(line, (number,)).violation is None
+            ):
+                self._seen.add(number)
+                self._report()
+
+    def _report(self) -> None:
+        """Reserve completion for a validated full response."""
+        if self._observer is not None:
+            completed: int = min(self._done + self._base + len(self._seen), self._total - 1)
+            self._observer.progress(self._engine_id, completed, self._total)
 
 
 class LlmTranslateService:
@@ -167,9 +185,11 @@ class LlmTranslateService:
         results: dict[int, str] = {}
         pending: tuple[int, ...] = expected
         validation_error: str | None = None
-        for _attempt in range(self._config.max_contract_retries + 1):
+        for attempt in range(self._config.max_contract_retries + 1):
             request_body = serialize_request([(number, texts[number]) for number in pending])
-            reporter.restart(len(results))
+            if attempt:
+                reporter.retry(attempt + 1, self._config.max_contract_retries + 1)
+            reporter.restart(len(results), pending)
             response = self._try_complete(request_body, reporter, validation_error=validation_error)
             if response is None or self._hit_output_limit(response):
                 return self._split(texts, reporter)
@@ -212,8 +232,8 @@ class LlmTranslateService:
             )
             raise TranslationEngineError(context=context)
         mid = len(texts) // 2
-        left = self._translate_batch(texts[:mid], reporter)
-        right = self._translate_batch(texts[mid:], reporter)
+        left = self._translate_batch(texts[:mid], reporter.branch(0))
+        right = self._translate_batch(texts[mid:], reporter.branch(mid))
         return left + right
 
     def _complete(
@@ -236,7 +256,7 @@ class LlmTranslateService:
             system=self._prompts.system,
             user_parts=tuple(user_parts),
         )
-        return self._completer.complete(request, on_text=reporter.consume)
+        return self._completer.complete(request, on_text=reporter.consume, on_start=reporter.reset_transport)
 
     @staticmethod
     def _as_lines(expected: Sequence[int], results: Mapping[int, str]) -> list[BatchedLine]:

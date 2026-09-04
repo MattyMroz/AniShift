@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import threading
 from pathlib import Path
 
@@ -12,7 +13,17 @@ from anishift.application.events import WorkerNotification
 from anishift.application.planning import PlanTask, TaskKind
 from anishift.application.results import ArtifactSnapshot, TaskResult
 from anishift.errors import ErrorCode, ExecutionError
-from anishift.services.composition import ContainerCompositionRequest, ContainerCompositionResult
+from anishift.platform.binaries import Binary, resolve_binary
+from anishift.services.composition import (
+    CompositionConfig,
+    CompositionProgressSink,
+    CompositionService,
+    ContainerCompositionRequest,
+    ContainerCompositionResult,
+)
+
+FFMPEG = resolve_binary(Binary.FFMPEG)
+FFPROBE = resolve_binary(Binary.FFPROBE)
 
 
 class _Progress:
@@ -24,24 +35,29 @@ class _Progress:
 
 
 class _Composer:
-    def __init__(self) -> None:
+    def __init__(self, *, invalid_output: bool = False) -> None:
         self.requests: list[ContainerCompositionRequest] = []
+        self.invalid_output: bool = invalid_output
 
     def compose_container(
         self,
         request: ContainerCompositionRequest,
         *,
+        callbacks: CompositionProgressSink | None = None,
         cancel: threading.Event | None = None,
     ) -> ContainerCompositionResult:
         assert cancel is not None
         assert cancel.is_set() is False
         self.requests.append(request)
+        if callbacks is not None:
+            callbacks.on_composition_phase("", "burning", 25)
+            callbacks.on_composition_phase("", "burning", 100)
         request.destination.write_bytes(b"container")
         return ContainerCompositionResult(
             request.source_video,
             request.target,
             request.destination,
-            request.destination.stat().st_size,
+            0 if self.invalid_output else request.destination.stat().st_size,
             request.source_video.stat().st_size,
             10.0,
         )
@@ -100,6 +116,23 @@ def test_composition_handler_keeps_final_destination_private_from_worker(tmp_pat
     assert result.outputs[0].path.read_bytes() == b"container"
     assert result.outputs[0].metadata["validated"] is True
     assert progress.notifications[-1].progress_percent == 100
+    assert [event.progress_percent for event in progress.notifications] == [25, 99, 100]
+
+
+def test_composition_handler_does_not_complete_before_validation(tmp_path: Path) -> None:
+    task, snapshot, destination = _snapshot(tmp_path)
+    progress: _Progress = _Progress()
+
+    with pytest.raises(ExecutionError, match="invalid container result"):
+        CompositionTaskHandler(_Composer(invalid_output=True), run_root=tmp_path / "run").execute(
+            task,
+            snapshot,
+            NeverCancelledToken(),
+            progress,
+        )
+
+    assert [event.progress_percent for event in progress.notifications] == [25, 99]
+    assert destination.read_bytes() == b"previous"
 
 
 def test_composition_handler_rejects_cancelled_task_before_service_call(tmp_path: Path) -> None:
@@ -113,3 +146,44 @@ def test_composition_handler_rejects_cancelled_task_before_service_call(tmp_path
 
     assert raised.value.context.code is ErrorCode.CANCELLED
     assert service.requests == []
+
+
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+def test_real_composition_emits_progress_and_keeps_destination_private(tmp_path: Path) -> None:
+    task, snapshot, destination = _snapshot(tmp_path)
+    source: Path | None = snapshot.require_ready("video").path
+    assert source is not None
+    subprocess.run(  # noqa: S603
+        [
+            str(FFMPEG),
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=160x120:rate=10:duration=1",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    progress: _Progress = _Progress()
+    service: CompositionService = CompositionService(CompositionConfig(), ffmpeg=FFMPEG, ffprobe=FFPROBE)
+
+    result: TaskResult = CompositionTaskHandler(service, run_root=tmp_path / "run").execute(
+        task,
+        snapshot,
+        NeverCancelledToken(),
+        progress,
+    )
+
+    assert destination.read_bytes() == b"previous"
+    assert result.outputs[0].path.stat().st_size > 0
+    assert len(progress.notifications) > 1
+    assert all(
+        event.progress_percent is not None and event.progress_percent < 100 for event in progress.notifications[:-1]
+    )
+    assert progress.notifications[-1].progress_percent == 100

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import wave
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -330,6 +331,7 @@ class _ClipRunner:
         operation: str,
         timeout_s: float,
         cancel: threading.Event | None = None,
+        on_stdout_line: Callable[[str], None] | None = None,
     ) -> CommandResult:
         del timeout_s, cancel
         self.operations.append(operation)

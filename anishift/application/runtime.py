@@ -101,7 +101,7 @@ __all__ = ["ProductionHandlerFactory", "palantir_llm_config", "probe_palantir_mo
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-_EXTRACTION_TIMEOUT_S: Final[float] = 120.0
+_EXTRACTION_TIMEOUT_S: Final[float] = 3600.0
 """Maximum time allowed for one neutral track extraction."""
 
 _PROBE_PROMPT: Final[str] = "ping"
@@ -279,10 +279,11 @@ class _ConfiguredAudioService:
         request: AudioRenderRequest,
         *,
         callbacks: AudioProgressSink | None = None,
+        on_percent: Callable[[int], None] | None = None,
         cancel: threading.Event | None = None,
     ) -> AudioRenderResult:
         configured: AudioRenderRequest = replace(request, post_process_tempo=self._post_process_tempo)
-        return self._service.render(configured, callbacks=callbacks, cancel=cancel)
+        return self._service.render(configured, callbacks=callbacks, on_percent=on_percent, cancel=cancel)
 
 
 class _TranslationRuntime:
@@ -390,6 +391,7 @@ class _LlmCompleter:
         request: LlmCompletionRequest,
         *,
         on_text: Callable[[str], None] | None = None,
+        on_start: Callable[[], None] | None = None,
     ) -> LlmCompletionResult:
         llm_request = LlmRequest(
             messages=(
@@ -401,7 +403,7 @@ class _LlmCompleter:
             ),
         )
         try:
-            response = self._service.complete(llm_request, cancel=self._cancel, on_text=on_text)
+            response = self._service.complete(llm_request, cancel=self._cancel, on_text=on_text, on_start=on_start)
         except LlmError as error:
             _raise_translation_error(error)
         return LlmCompletionResult(response.text, response.finish_reason)
@@ -479,29 +481,7 @@ def palantir_llm_config(
     token: str,
     max_retries: int = 0,
 ) -> LlmConfig:
-    """Resolve one catalog alias into a complete Palantir configuration.
-
-    The alias becomes a provider, a wire protocol, the endpoint joining the
-    enrollment address with that provider route, and the exact provider model
-    identifier — everything the engine needs before it may open a connection.
-
-    Args:
-        catalog: Validated local catalog; nothing here writes it.
-        alias: Catalog alias the user selected.
-        enrollment_base_url: ``UserSettings.palantir_enrollment_base_url``.
-        token: ``Settings.palantir_token``, already folded from the environment,
-            the ``.env`` file and the compatibility variable.
-        max_retries: Retries the LLM service may spend on transient failures.
-
-    Returns:
-        The neutral configuration carrying the alias, provider, protocol,
-        endpoint, provider model identifier and the token.
-
-    Raises:
-        ConfigError: The alias is unknown to the catalog, its provider is
-            unusable, or the enrollment address is unset or malformed.
-        LlmAuthError: The token is absent or cannot be sent in a header.
-    """
+    """Resolve one catalog alias into a complete Palantir configuration."""
     entry: ModelEntry | None = catalog.models.get(alias.strip())
     if entry is None:
         raise _alias_error(alias)
@@ -530,15 +510,7 @@ def palantir_llm_config(
 
 
 def probe_palantir_model(config: LlmConfig) -> None:
-    """Send exactly one minimal completion to prove *config* can really run.
-
-    Args:
-        config: Configuration already resolved from a catalog alias.
-
-    Raises:
-        LlmError: The single attempt failed; the caller keeps only a safe error
-            class, never the response body.
-    """
+    """Send exactly one minimal completion to prove *config* can really run."""
     service: LlmService = LlmService(replace(config, max_retries=0, max_output_tokens=_PROBE_MAX_OUTPUT_TOKENS))
     try:
         service.complete(
@@ -560,13 +532,7 @@ def _alias_error(alias: str) -> ConfigError:
 
 
 def _required_enrollment_url(enrollment_base_url: str) -> str:
-    """Return the configured enrollment address or fail before any request.
-
-    Raises:
-        ConfigError: The address is unset or is not a plain https address. The
-            value itself never reaches the failure, so no company hostname can
-            leak into a message or a log.
-    """
+    """Return the configured enrollment address or fail before any request."""
     candidate: str = enrollment_base_url.strip()
     if candidate and _ENROLLMENT_URL_RE.fullmatch(candidate) is not None:
         return candidate
@@ -608,11 +574,7 @@ def _llm_config(settings: Settings, plan: ExecutionPlan) -> LlmConfig:
 
 
 def _palantir_translation_config(settings: Settings, snapshot: RunSettingsSnapshot) -> LlmConfig:
-    """Resolve the translation alias, reading the enrollment address it needs.
-
-    The address is a panel preference rather than a run-snapshot value, so it is
-    read here, once per constructed engine and always before any request.
-    """
+    """Resolve the translation alias, reading the enrollment address it needs."""
     preferences: UserSettings = load_user_settings()
     config: LlmConfig = palantir_llm_config(
         load_model_catalog(),

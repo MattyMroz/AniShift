@@ -1,31 +1,4 @@
-"""Normalization of the four Foundry proxy responses into ``LlmResponse``.
-
-Each supported protocol returns a different response shape, so this module
-extracts the completion text, the finish reason and the token usage from the
-already decoded body and folds them into the single neutral ``LlmResponse``. No
-provider structure, no raw body fragment and no header ever crosses this
-boundary: a shape that does not match the protocol becomes a safe
-``PalantirResponseDefect`` label, and a completion the provider policy blocked
-becomes a typed blocked error carrying only a normalized finish reason.
-
-A blocked completion wins over a text-shape defect. Every protocol withholds the
-text when its policy blocks — OpenAI sends ``content: null``, Google omits the
-candidate content and Anthropic sends an empty block list — so each protocol
-probes the blocking signal on a tolerant read before any field is required.
-Reading the text first would report those bodies as malformed and send the user
-to debug the provider route instead of the content. The probe recognizes only
-blocking reasons, so a body that is genuinely malformed still yields its typed
-defect.
-
-This module never touches the network. The HTTP boundary decodes SSE events,
-then this module assembles Google text deltas before applying the same strict
-normalization as a non-streaming response.
-
-Public API:
-    merge_google_stream: Assemble decoded Google SSE events.
-    normalize_palantir_response: Map one decoded proxy body onto an
-        ``LlmResponse`` or raise a typed failure.
-"""
+"""Normalization of the four Foundry proxy responses into ``LlmResponse``."""
 
 from __future__ import annotations
 
@@ -39,6 +12,7 @@ from anishift.services.llm.engines.palantir.errors import (
     PalantirResponseDefect,
     palantir_blocked_error,
     palantir_response_error,
+    palantir_unavailable_error,
     raise_palantir_config_error,
 )
 from anishift.services.llm.types import LlmResponse, LlmUsage
@@ -74,14 +48,7 @@ type _BlockSignalReader = Callable[[Mapping[str, Any]], str]
 
 @dataclass(frozen=True, slots=True)
 class _ProtocolReader:
-    """The two readers one protocol needs, in the order they must run.
-
-    Attributes:
-        block_signal: Tolerant probe returning the normalized blocking reason of
-            a withheld completion, or ``""`` when the body is not blocked.
-        extract: Strict reader that requires a well-formed body and rejects
-            anything else as a typed defect.
-    """
+    """The two readers one protocol needs, in the order they must run."""
 
     block_signal: _BlockSignalReader
     extract: _Extractor
@@ -134,11 +101,7 @@ def merge_google_stream(events: tuple[Mapping[str, Any], ...]) -> Mapping[str, A
 
 
 def merge_openai_stream(events: tuple[Mapping[str, Any], ...]) -> Mapping[str, Any]:
-    """Assemble Chat Completions SSE events into one normalizable response mapping.
-
-    Every event carries an incremental ``delta`` rather than a whole message, so
-    the deltas are concatenated into the non-streaming shape the extractor reads.
-    """
+    """Assemble Chat Completions SSE events into one normalizable response mapping."""
     texts: list[str] = []
     refusals: list[str] = []
     finish_reason: object = None
@@ -215,26 +178,7 @@ def normalize_palantir_response(  # noqa: PLR0913 - one explicit argument per re
     provider_model_id: str,
     latency_ms: float,
 ) -> LlmResponse:
-    """Fold one decoded proxy body into the neutral ``LlmResponse``.
-
-    Args:
-        protocol: Wire protocol whose response shape the body follows.
-        payload: Decoded response body of one completion.
-        alias: Catalog alias used only in safe error diagnostics.
-        engine_id: Registry id stamped on the response.
-        provider_model_id: Configured model id stamped on the response.
-        latency_ms: Measured round trip of the request.
-
-    Returns:
-        The normalized completion with text, usage and finish reason.
-
-    Raises:
-        LlmConfigError: The protocol has no normalizer, keeping an unsupported
-            protocol a visible configuration failure.
-        LlmOutputBlockedError: The provider policy blocked the completion, which
-            is decided before any text field is required.
-        LlmRequestError: The body does not match the protocol or is empty.
-    """
+    """Fold one decoded proxy body into the neutral ``LlmResponse``."""
     reader: _ProtocolReader | None = _READERS.get(protocol)
     if reader is None:
         raise_palantir_config_error(
@@ -248,7 +192,19 @@ def normalize_palantir_response(  # noqa: PLR0913 - one explicit argument per re
     if blocked_reason:
         raise palantir_blocked_error(alias=alias, finish_reason=blocked_reason)
     extracted: _Extracted = reader.extract(payload, alias)
-    if not extracted.text.strip():
+    if extracted.finish_reason == "unknown":
+        raise palantir_unavailable_error(alias=alias)
+    if extracted.finish_reason not in {
+        "stop",
+        "end_turn",
+        "stop_sequence",
+        "completed",
+        "length",
+        "max_tokens",
+        "max_output_tokens",
+    }:
+        raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.INCOMPLETE_RESPONSE)
+    if not extracted.text.strip() and extracted.finish_reason not in {"length", "max_tokens", "max_output_tokens"}:
         raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.EMPTY_TEXT)
     logger.debug(
         "Palantir response normalized",
@@ -324,12 +280,7 @@ def _responses_item_refuses(item: object) -> bool:
 
 
 def _prompt_block_reason(payload: Mapping[str, Any]) -> str:
-    """Return the Google prompt-level block reason, whatever value it carries.
-
-    Google reports ``promptFeedback.blockReason`` only when it withheld the
-    completion, so any visible value blocks, unlike a candidate finish reason
-    that also carries the ordinary stop values.
-    """
+    """Return the Google prompt-level block reason, whatever value it carries."""
     feedback: object = payload.get("promptFeedback")
     if not isinstance(feedback, Mapping):
         return ""
@@ -402,8 +353,14 @@ def _extract_google_generate(payload: Mapping[str, Any], alias: str) -> _Extract
 
 def _extract_xai_responses(payload: Mapping[str, Any], alias: str) -> _Extracted:
     """Read message text, status and usage from an xAI Responses body."""
+    finish_reason: str = normalize_finish_reason(payload.get("status"))
+    details: object = payload.get("incomplete_details")
+    if finish_reason == "incomplete" and isinstance(details, Mapping) and details.get("reason") == "max_output_tokens":
+        finish_reason = "max_output_tokens"
+    if finish_reason not in {"completed", "max_output_tokens"}:
+        raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.INCOMPLETE_RESPONSE)
     output: object = payload.get("output")
-    if not isinstance(output, (list, tuple)) or not output:
+    if not isinstance(output, (list, tuple)) or (not output and finish_reason != "max_output_tokens"):
         raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.MISSING_CHOICE)
     texts: list[str] = []
     for item in output:
@@ -417,7 +374,7 @@ def _extract_xai_responses(payload: Mapping[str, Any], alias: str) -> _Extracted
         texts.extend(_responses_text_parts(content, alias))
     return _Extracted(
         text="".join(texts),
-        finish_reason=normalize_finish_reason(payload.get("status")),
+        finish_reason=finish_reason,
         usage=_responses_usage(payload.get("usage")),
     )
 
@@ -527,8 +484,4 @@ _READERS: Final[Mapping[ModelProtocol, _ProtocolReader]] = MappingProxyType(
         ModelProtocol.GOOGLE_GENERATE: _ProtocolReader(_google_block_signal, _extract_google_generate),
     },
 )
-"""Blocking probe and response reader of every supported protocol.
-
-A protocol missing here has no response shape and cannot borrow another
-provider's normalizer.
-"""
+"""Blocking probe and response reader of every supported protocol."""

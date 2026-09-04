@@ -30,6 +30,7 @@ from anishift.services.llm.engines.palantir.auth import resolve_palantir_token
 from anishift.services.llm.engines.palantir.errors import PalantirResponseDefect
 from anishift.services.llm.engines.palantir.normalize import normalize_palantir_response
 from anishift.services.llm.engines.palantir.service import PalantirService
+from anishift.services.llm.errors import LlmProviderUnavailableError, LlmRateLimitError
 from anishift.services.llm.wire_protocol import ModelProtocol
 
 _TOKEN = "palantir-token-sentinel-deadbeef"  # noqa: S105
@@ -309,6 +310,71 @@ def test_openai_chat_stream_hands_over_every_delta_as_it_arrives() -> None:
     engine.complete_stream(_request(), on_text=arrived.append)
 
     assert arrived == ["[0] Jeden\n", "[1] Dwa\n"]
+
+
+@pytest.mark.parametrize("protocol", [ModelProtocol.OPENAI_CHAT, ModelProtocol.GOOGLE_GENERATE])
+def test_stream_without_terminal_reason_rejects_partial_translation(protocol: ModelProtocol) -> None:
+    chunk: dict[str, object] = (
+        {"choices": [{"delta": {"content": "[0] Urwane zdanie"}}]}
+        if protocol is ModelProtocol.OPENAI_CHAT
+        else {"candidates": [{"content": {"parts": [{"text": "[0] Urwane zdanie"}]}}]}
+    )
+    response = httpx.Response(200, text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n")
+    with (
+        _engine(_recording_transport(response, []), _config(protocol=protocol)) as engine,
+        pytest.raises(LlmProviderUnavailableError),
+    ):
+        engine.complete_stream(_request())
+
+
+def test_stream_error_event_is_not_silently_ignored() -> None:
+    chunks: list[dict[str, object]] = [
+        {"choices": [{"delta": {"content": "[0] Partial"}}]},
+        {"error": {"code": 429, "message": _BODY_SENTINEL}},
+    ]
+    response = httpx.Response(200, text="".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks))
+    engine: PalantirService = _engine(_recording_transport(response, []))
+    try:
+        with pytest.raises(LlmRateLimitError) as raised:
+            engine.complete_stream(_request())
+        assert _BODY_SENTINEL not in str(raised.value)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("text", ["[0] Urwane", ""])
+def test_xai_incomplete_token_limit_preserves_split_signal(text: str) -> None:
+    payload: dict[str, object] = {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}],
+    }
+    result: LlmResponse = normalize_palantir_response(
+        ModelProtocol.XAI_RESPONSES,
+        payload,
+        alias="test",
+        engine_id="palantir",
+        provider_model_id="test",
+        latency_ms=0,
+    )
+    assert result.finish_reason == "max_output_tokens"
+
+
+@pytest.mark.parametrize("status", ["incomplete", "failed", "in_progress", "queued"])
+def test_xai_does_not_accept_unfinished_status(status: str) -> None:
+    payload: dict[str, object] = {
+        "status": status,
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "[0] Partial"}]}],
+    }
+    with pytest.raises(LlmRequestError):
+        normalize_palantir_response(
+            ModelProtocol.XAI_RESPONSES,
+            payload,
+            alias="test",
+            engine_id="palantir",
+            provider_model_id="test",
+            latency_ms=0,
+        )
 
 
 def test_a_protocol_without_a_stream_shape_uses_the_normal_path_and_never_reports() -> None:

@@ -82,6 +82,16 @@ def test_per_line_failure_pads_source() -> None:
     assert all(not line.ok for line in result)
 
 
+def test_empty_per_line_response_is_not_successful() -> None:
+    def fake(joined: str) -> str:
+        return "merged" if LINE_SEPARATOR in joined or "\n" in joined else " \t "
+
+    result = translate_lines(["first", "second"], batch_size=50, max_chars=15000, translate_joined=fake)
+
+    assert [line.text for line in result] == ["first", "second"]
+    assert all(not line.ok for line in result)
+
+
 def test_facade_built_google_uses_engine_char_limit_not_domain_default() -> None:
     engine = GoogleService(TranslationConfig(engine="google"))
     assert engine._config.max_chars_per_request == MAX_CHARS_PER_REQUEST

@@ -56,12 +56,13 @@ class NeverCancelledToken:
 class EventCancellationToken:
     """Idempotent thread-safe cancellation source implementing the narrow token."""
 
-    __slots__ = ("_event", "_lock")
+    __slots__ = ("_event", "_lock", "_parent")
 
-    def __init__(self) -> None:
-        """Create a token with cancellation initially open."""
+    def __init__(self, *, parent: CommitCancellationToken | None = None) -> None:
+        """Create a local cancellation source, optionally linked to a parent."""
         self._event: threading.Event = threading.Event()
         self._lock: threading.Lock = threading.Lock()
+        self._parent: CommitCancellationToken | None = parent
 
     def cancel(self) -> None:
         """Request cancellation; repeated requests have no additional effect."""
@@ -70,11 +71,11 @@ class EventCancellationToken:
 
     def is_cancelled(self) -> bool:
         """Return whether cancellation has been requested."""
-        return self._event.is_set()
+        return self._event.is_set() or (self._parent is not None and self._parent.is_cancelled())
 
     def raise_if_cancelled(self) -> None:
         """Raise a structured execution error after cancellation is requested."""
-        if not self._event.is_set():
+        if not self.is_cancelled():
             return
         context: ErrorContext = ErrorContext(
             code=ErrorCode.CANCELLED,
@@ -84,6 +85,17 @@ class EventCancellationToken:
 
     def commit_if_active(self, action: Callable[[], None]) -> bool:
         """Serialize one final commit with the cancellation transition."""
+        if self._parent is None:
+            return self._commit_local(action)
+        committed: bool = False
+
+        def commit_local() -> None:
+            nonlocal committed
+            committed = self._commit_local(action)
+
+        return self._parent.commit_if_active(commit_local) and committed
+
+    def _commit_local(self, action: Callable[[], None]) -> bool:
         with self._lock:
             if self._event.is_set():
                 return False

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Final, Never, Protocol
 
@@ -25,6 +26,9 @@ __all__ = ["AudioTaskHandler"]
 _MIX_INPUT_COUNT: Final[int] = 2
 """Required source-audio and manifest inputs for narration mixing."""
 
+_IN_PROGRESS_PERCENT: Final[int] = 99
+"""Highest measured percentage before the output passes handler validation."""
+
 
 class AudioMixer(Protocol):
     """Configured narration renderer used for one run."""
@@ -34,6 +38,7 @@ class AudioMixer(Protocol):
         request: AudioRenderRequest,
         *,
         callbacks: AudioProgressObserver | None = None,
+        on_percent: Callable[[int], None] | None = None,
         cancel: threading.Event | None = None,
     ) -> AudioRenderResult:
         """Render one narration mix."""
@@ -43,7 +48,14 @@ class AudioMixer(Protocol):
 class AudioTranscoder(Protocol):
     """Configured single-stream audio transcoder."""
 
-    def transcode(self, source: Path, destination: Path, *, cancel: threading.Event) -> Path:
+    def transcode(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        cancel: threading.Event,
+        on_percent: Callable[[int], None] | None = None,
+    ) -> Path:
         """Transcode one ready audio source into the configured profile."""
         ...
 
@@ -57,15 +69,27 @@ class AudioProgressObserver(Protocol):
 
 
 class _ProgressObserver:
-    __slots__ = ("_progress", "_task_id")
+    __slots__ = ("_phase", "_progress", "_task_id")
 
     def __init__(self, task_id: str, progress: TaskProgressSink) -> None:
         self._task_id: str = task_id
         self._progress: TaskProgressSink = progress
+        self._phase: str = "audio"
 
     def on_audio_phase(self, scope_id: str, phase: str) -> None:
         del scope_id
-        self._progress.emit(WorkerNotification(WorkerNotificationKind.PROGRESS, self._task_id, 0, phase))
+        self._phase = phase
+        self._progress.emit(WorkerNotification(WorkerNotificationKind.PROGRESS, self._task_id, None, phase))
+
+    def on_percent(self, percent: int) -> None:
+        self._progress.emit(
+            WorkerNotification(
+                WorkerNotificationKind.PROGRESS,
+                self._task_id,
+                min(percent, _IN_PROGRESS_PERCENT),
+                self._phase,
+            )
+        )
 
 
 class AudioTaskHandler:
@@ -95,7 +119,7 @@ class AudioTaskHandler:
             if task.kind is TaskKind.MIX_NARRATION:
                 result: TaskResult = self._mix(task, artifacts, event, progress)
             elif task.kind is TaskKind.TRANSCODE_AUDIO:
-                result = self._transcode(task, artifacts, event)
+                result = self._transcode(task, artifacts, event, progress)
             else:
                 _raise_execution("Audio handler received an unsupported task")
         finally:
@@ -137,6 +161,7 @@ class AudioTaskHandler:
             for clip in manifest.clips
         )
         synthetic_source: Path = task_staging_path(self._run_root, task, output, ".source")
+        observer: _ProgressObserver = _ProgressObserver(task.task_id, progress)
         rendered: AudioRenderResult = self._mixer.render(
             AudioRenderRequest(
                 manifest.scope_id,
@@ -145,7 +170,8 @@ class AudioTaskHandler:
                 clips,
                 self._run_root / task.group_id / "audio",
             ),
-            callbacks=_ProgressObserver(task.task_id, progress),
+            callbacks=observer,
+            on_percent=observer.on_percent,
             cancel=cancel,
         )
         if rendered.status not in {AudioRenderStatus.COMPLETED, AudioRenderStatus.RESUME_HIT}:
@@ -160,6 +186,7 @@ class AudioTaskHandler:
         task: PlanTask,
         artifacts: ArtifactSnapshot,
         cancel: threading.Event,
+        progress: TaskProgressSink,
     ) -> TaskResult:
         if len(task.requires) != 1 or len(task.produces) != 1:
             _raise_execution("Audio transcoding requires one input and output")
@@ -169,7 +196,14 @@ class AudioTaskHandler:
             _raise_execution("Audio transcoding requires ready narration audio")
         profile: str = _profile(task, output)
         destination: Path = task_staging_path(self._run_root, task, output, _profile_suffix(profile))
-        path: Path = self._transcoder.transcode(source.path, destination, cancel=cancel)
+        observer: _ProgressObserver = _ProgressObserver(task.task_id, progress)
+        observer.on_audio_phase(task.group_id, "transcoding")
+        path: Path = self._transcoder.transcode(
+            source.path,
+            destination,
+            cancel=cancel,
+            on_percent=observer.on_percent,
+        )
         if path != destination or not path.is_file():
             _raise_execution("Audio transcoder returned an invalid output")
         return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, path, {"validated": True}),))

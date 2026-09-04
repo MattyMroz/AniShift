@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from pathlib import Path
+
+import pytest
 
 from anishift.services.audio import AudioCodecProfile, AudioConfig, AudioTranscodeService
 from anishift.services.audio.commands import CommandResult
+from anishift.services.audio.errors import AudioConfigError
 
 
 class _Runner:
@@ -13,6 +17,7 @@ class _Runner:
         self.source: Path = source
         self.destination: Path = destination
         self.operations: list[str] = []
+        self.timeouts: list[float] = []
 
     def run(
         self,
@@ -21,11 +26,15 @@ class _Runner:
         operation: str,
         timeout_s: float,
         cancel: threading.Event | None = None,
+        on_stdout_line: Callable[[str], None] | None = None,
     ) -> CommandResult:
-        assert timeout_s == 30.0
         assert cancel is not None
         self.operations.append(operation)
+        self.timeouts.append(timeout_s)
         if operation == "transcode_audio":
+            if on_stdout_line is not None:
+                on_stdout_line("out_time_us=5000000")
+                on_stdout_line("out_time_us=10000000")
             Path(command[-1]).write_bytes(b"encoded")
             return CommandResult(command, "", "", 0)
         is_output: bool = Path(command[-1]) != self.source
@@ -63,8 +72,17 @@ def test_transcode_service_validates_and_commits_configured_profile(tmp_path: Pa
         ffprobe=Path("ffprobe"),
     )
 
-    result: Path = service.transcode(source, destination, cancel=threading.Event())
+    progress: list[int] = []
+    result: Path = service.transcode(source, destination, cancel=threading.Event(), on_percent=progress.append)
 
     assert result == destination
     assert result.read_bytes() == b"encoded"
     assert runner.operations == ["probe", "transcode_audio", "probe"]
+    assert runner.timeouts == [30.0, 14_400.0, 30.0]
+    assert progress == [50, 99]
+
+
+@pytest.mark.parametrize("timeout_s", [0.0, -1.0, float("inf"), float("nan")])
+def test_audio_render_timeout_must_be_finite_and_positive(timeout_s: float) -> None:
+    with pytest.raises(AudioConfigError, match="render_timeout_s"):
+        AudioConfig(render_timeout_s=timeout_s)

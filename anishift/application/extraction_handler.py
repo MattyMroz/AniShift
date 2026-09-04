@@ -51,7 +51,7 @@ class ExtractionExecutor(Protocol):
 class LegacyBulkExtractor(Protocol):
     """Existing one-process MKV extraction operation used by the REPL pipeline."""
 
-    def __call__(
+    def __call__(  # noqa: PLR0913 - preserve the bulk extraction boundary
         self,
         info: MediaInfo,
         selection: TrackSelection,
@@ -59,8 +59,9 @@ class LegacyBulkExtractor(Protocol):
         *,
         on_progress: Callable[[int], None] | None = None,
         cancel: threading.Event | None = None,
+        timeout_s: float = 3600.0,
     ) -> LegacyExtractionResult:
-        """Extract the selected legacy track pair without changing its lifecycle."""
+        """Extract the selected track pair with live progress and a deadline."""
         ...
 
 
@@ -75,7 +76,7 @@ class LegacyExtractionAdapter:
         """Identify one media source through the existing domain operation."""
         return self.identify_operation(source)
 
-    def extract(
+    def extract(  # noqa: PLR0913 - preserve the bulk extraction boundary
         self,
         info: MediaInfo,
         selection: TrackSelection,
@@ -83,6 +84,7 @@ class LegacyExtractionAdapter:
         *,
         on_progress: Callable[[int], None] | None,
         cancel: threading.Event,
+        timeout_s: float,
     ) -> LegacyExtractionResult:
         """Extract the selected pair through the existing bulk operation."""
         return self.extract_operation(
@@ -91,6 +93,7 @@ class LegacyExtractionAdapter:
             destination,
             on_progress=on_progress,
             cancel=cancel,
+            timeout_s=timeout_s,
         )
 
 
@@ -221,6 +224,7 @@ class ExtractionTaskHandler:
                 destination,
                 on_progress=report,
                 cancel=extraction_cancel,
+                timeout_s=self._timeout_s,
             )
             cancel.raise_if_cancelled()
         finally:

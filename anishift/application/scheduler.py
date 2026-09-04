@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import queue
+import time
 from collections import defaultdict, deque
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Final
 
-from anishift.application.cancellation import CancellationToken, CommitCancellationToken
+from anishift.application.cancellation import CancellationToken, CommitCancellationToken, EventCancellationToken
 from anishift.application.events import (
     RunEventEmitter,
     RunEventKind,
@@ -27,6 +28,7 @@ from anishift.application.scheduler_contracts import (
 )
 from anishift.application.scheduler_runtime import (
     ArtifactStore,
+    PendingPublication,
     QueuedProgressSink,
     SchedulerRuntime,
     SubmittedTask,
@@ -92,6 +94,7 @@ class GraphScheduler:
     ) -> RunResult:
         """Execute an admissible graph and preserve independent group outcomes."""
         self._validate_plan(plan)
+        run_cancel: EventCancellationToken = EventCancellationToken(parent=cancel)
         generation: int = self._session.generation
         group_roots: dict[str, Path] = {
             group.group_id: self._session.group_temp(group.group_id) for group in plan.groups
@@ -99,7 +102,7 @@ class GraphScheduler:
         emitter: RunEventEmitter = RunEventEmitter(self._run_id, events)
         runtime: SchedulerRuntime = SchedulerRuntime(
             plan=plan,
-            cancel=cancel,
+            cancel=run_cancel,
             emitter=emitter,
             generation=generation,
             store=ArtifactStore(plan.artifacts, group_roots),
@@ -112,13 +115,14 @@ class GraphScheduler:
             held=defaultdict(list),
             updates=queue.SimpleQueue(),
             task_by_id={task.task_id: task for task in plan.tasks},
-            commit_if_current=lambda action: self._commit_if_current(generation, cancel, action),
+            commit_if_current=lambda action: self._commit_if_current(generation, run_cancel, action),
         )
         emitter.emit(RunEventKind.RUN_STARTED)
         self._queue_initial(runtime)
         try:
             self._coordinate(runtime)
         finally:
+            run_cancel.cancel()
             for executor in runtime.executors.values():
                 executor.shutdown(wait=True, cancel_futures=True)
         groups: tuple[GroupResult, ...] = tuple(build_group_result(group.group_id, runtime) for group in plan.groups)
@@ -138,6 +142,11 @@ class GraphScheduler:
                 self._release_results(runtime)
                 if all_tasks_terminal(runtime.state):
                     break
+                if runtime.pending_publications:
+                    time.sleep(_COORDINATOR_POLL_S)
+                    continue
+                if any(runtime.ready.values()):
+                    continue
                 msg = "Execution graph stopped before reaching terminal task states"
                 raise ExecutionError(msg)
             done, _ = wait(
@@ -221,6 +230,9 @@ class GraphScheduler:
                 finish_failed(task, error, runtime)
 
     def _release_results(self, runtime: SchedulerRuntime) -> None:
+        for publication in tuple(runtime.pending_publications.values()):
+            if time.monotonic() >= publication.retry_at:
+                self._retry_publication(publication, runtime)
         if runtime.gate is None:
             self._report_terminal_groups(runtime)
             return
@@ -242,6 +254,16 @@ class GraphScheduler:
                 changed = True
             if self._report_terminal_groups(runtime):
                 changed = True
+
+    def _retry_publication(self, pending: PendingPublication, runtime: SchedulerRuntime) -> None:
+        try:
+            commit_success(pending.task, pending.result, runtime)
+        except Exception as error:  # noqa: BLE001
+            runtime.pending_publications.pop(pending.task.task_id, None)
+            if runtime.cancel.is_cancelled() or not self._session.accepts_generation(runtime.generation):
+                finish_cancelled(pending.task, runtime)
+            else:
+                finish_failed(pending.task, error, runtime)
 
     def _report_terminal_groups(self, runtime: SchedulerRuntime) -> bool:
         newly_terminal: tuple[str, ...] = detect_terminal_groups(runtime.plan, runtime.state)
@@ -297,6 +319,9 @@ class GraphScheduler:
             )
 
     def _cancel_unfinished(self, runtime: SchedulerRuntime) -> None:
+        for pending in runtime.pending_publications.values():
+            finish_cancelled(pending.task, runtime)
+        runtime.pending_publications.clear()
         for tasks in runtime.ready.values():
             tasks.clear()
         for group_items in runtime.held.values():

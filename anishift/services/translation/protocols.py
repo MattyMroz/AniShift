@@ -1,10 +1,4 @@
-"""Engine contract for the translation domain (sync).
-
-``TranslationEngine`` is the contract every engine satisfies; the facade only
-talks to this protocol. ``LlmCompleter`` is the minimal LLM contract the LLM
-engine depends on - injected from the composition root so translation never
-imports ``anishift.services.llm`` directly (independence contract, stage 5).
-"""
+"""Engine contract for the translation domain (sync)."""
 
 from __future__ import annotations
 
@@ -49,12 +43,7 @@ class LlmCompletionResult:
 
 @runtime_checkable
 class TranslationEngine(EngineInfo, Protocol):
-    """Sync contract for a translation engine.
-
-    The facade hands each engine an already-deduplicated set of single-line
-    texts and a caller language code; the engine returns one ``BatchedLine`` per
-    input line, same order (failed lines carry source + ``ok=False``).
-    """
+    """Sync contract for a translation engine."""
 
     def translate_batch(
         self,
@@ -108,24 +97,16 @@ class TranslationObserver(Protocol):
 
 @runtime_checkable
 class LlmCompleter(Protocol):
-    """Minimal LLM contract the LLM translation engine depends on (sync).
-
-    Injected from the composition root (stage 5). The engine knows only this
-    protocol, never the concrete LLM service.
-    """
+    """Minimal LLM contract the LLM translation engine depends on (sync)."""
 
     def complete(
         self,
         request: LlmCompletionRequest,
         *,
         on_text: Callable[[str], None] | None = None,
+        on_start: Callable[[], None] | None = None,
     ) -> LlmCompletionResult:
-        """Run one completion and return normalized text plus finish reason.
-
-        Text reaches *on_text* while the provider is still producing it, which is
-        what lets the engine report progress inside one request. A provider that
-        cannot stream simply never calls it.
-        """
+        """Run one completion and return normalized text plus finish reason."""
         ...
 
 

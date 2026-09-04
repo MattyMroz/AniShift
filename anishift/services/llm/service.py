@@ -11,7 +11,7 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.llm._retry import retry_transient
 from anishift.services.llm.config import LlmConfig
 from anishift.services.llm.engines import create_engine
-from anishift.services.llm.errors import LlmAuthError, LlmConfigError
+from anishift.services.llm.errors import LlmAuthError, LlmCancelledError, LlmConfigError
 from anishift.services.llm.protocols import LlmAttemptObserver, LlmEngine, StreamingLlmEngine
 from anishift.services.llm.types import LlmRequest, LlmResponse
 from anishift.utils.logger import get_logger
@@ -32,12 +32,7 @@ class LlmService:
         *,
         observer: LlmAttemptObserver | None = None,
     ) -> None:
-        """Create a facade without constructing the selected provider engine.
-
-        Args:
-            config: Provider and generation settings.
-            observer: Optional observer shared with the pipeline scheduler.
-        """
+        """Create a facade without constructing the selected provider engine."""
         self.config: LlmConfig = config
         self._observer: LlmAttemptObserver | None = observer
         self._engine: LlmEngine | None = None
@@ -58,24 +53,9 @@ class LlmService:
         *,
         cancel: threading.Event | None = None,
         on_text: Callable[[str], None] | None = None,
+        on_start: Callable[[], None] | None = None,
     ) -> LlmResponse:
-        """Complete one request using the lazy engine and central retry policy.
-
-        Args:
-            request: Provider-neutral completion request.
-            cancel: Optional cooperative cancellation event.
-            on_text: Optional sink receiving text as the provider streams it.
-                Providers without a streaming shape never call it, and one retried
-                attempt replays the text of that attempt only.
-
-        Returns:
-            The normalized provider response.
-
-        Raises:
-            LlmAuthError: The selected provider requires a missing API key.
-            LlmConfigError: The service is closed or a compatible base URL is missing.
-            LlmCancelledError: Cancellation is requested between provider attempts.
-        """
+        """Complete one request using the lazy engine and central retry policy."""
         self._ensure_open()
         self._ensure_available()
         logger.debug(
@@ -85,8 +65,21 @@ class LlmService:
             message_count=len(request.messages),
             max_retries=self.config.max_retries,
         )
+
+        def attempt() -> LlmResponse:
+            if on_start is not None:
+                on_start()
+            return self._complete_once(request, receive)
+
+        def receive(delta: str) -> None:
+            if cancel is not None and cancel.is_set():
+                msg = "LLM operation was cancelled"
+                raise LlmCancelledError(msg)
+            if on_text is not None:
+                on_text(delta)
+
         response = retry_transient(
-            lambda: self._complete_once(request, on_text),
+            attempt,
             max_retries=self.config.max_retries,
             observer=self._observer,
             cancel=cancel,

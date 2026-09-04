@@ -41,11 +41,7 @@ _DEFAULT_BITRATE: Final[dict[AudioCodecProfile, dict[int, str]]] = {
 """Locally validated default bitrates by profile and channel count."""
 
 _EAC3_DURATION_TOLERANCE_MS: Final[int] = 64
-"""Two E-AC-3 frames: the encoder pads to a whole 1536-sample frame, 32 ms at 48 kHz.
-
-Expected and probed durations are each rounded to whole milliseconds, so one frame
-alone leaves no room for that rounding and rejects renders that are in fact correct.
-"""
+"""Two E-AC-3 frames: the encoder pads to a whole 1536-sample frame, 32 ms at 48 kHz."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +153,9 @@ def render_command(
             "-f",
             spec.container,
             "-y",
+            "-progress",
+            "pipe:1",
+            "-nostats",
             str(destination),
         ),
     )

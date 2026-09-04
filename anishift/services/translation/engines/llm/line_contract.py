@@ -1,10 +1,4 @@
-"""Numbered-line contract for LLM translation requests and responses.
-
-One subtitle occupies exactly one line ``[N] text``. The number is the only
-carrier of identity, so a response that cannot be attributed line by line is
-rejected instead of being silently trimmed. A line break inside a subtitle
-travels escaped, because an unescaped one would shift every following number.
-"""
+"""Numbered-line contract for LLM translation requests and responses."""
 
 from __future__ import annotations
 
@@ -67,13 +61,7 @@ _MESSAGES: Final[dict[ViolationKind, str]] = {
 
 @dataclass(frozen=True, slots=True)
 class ContractViolation:
-    """Safe description of why part of a response was not trusted.
-
-    Attributes:
-        kind: Recognised violation category.
-        numbers: Numbers to request again; empty means the whole batch.
-        message: Polish diagnosis without subtitle or translation text.
-    """
+    """Safe description of why part of a response was not trusted."""
 
     kind: ViolationKind
     numbers: tuple[int, ...]
@@ -82,42 +70,19 @@ class ContractViolation:
 
 @dataclass(frozen=True, slots=True)
 class ParsedResponse:
-    """Outcome of one response scan.
-
-    Attributes:
-        entries: Trusted translations keyed by their contract number.
-        violation: Reason the remaining numbers are missing, or ``None``.
-    """
+    """Outcome of one response scan."""
 
     entries: Mapping[int, str]
     violation: ContractViolation | None
 
 
 def serialize_request(items: Sequence[tuple[int, str]]) -> str:
-    """Serialize numbered subtitles to the exact model input contract.
-
-    Args:
-        items: Pairs of contract number and source text, in request order.
-
-    Returns:
-        One newline-joined block of ``[N] text`` lines.
-    """
+    """Serialize numbered subtitles to the exact model input contract."""
     return "\n".join(f"[{number}] {_escape(text)}" for number, text in items)
 
 
 def parse_response(text: str, expected: Sequence[int]) -> ParsedResponse:
-    """Scan a numbered-line response into trusted entries and one violation.
-
-    A violation is part of the result rather than an exception, because the
-    repair loop needs both what succeeded and what has to be asked again.
-
-    Args:
-        text: Raw model response.
-        expected: Contract numbers requested, in request order.
-
-    Returns:
-        Trusted entries plus the violation covering every other number.
-    """
+    """Scan a numbered-line response into trusted entries and one violation."""
     order: tuple[int, ...] = tuple(dict.fromkeys(expected))
     lines: list[str] = _significant_lines(text)
     if not lines:
@@ -178,11 +143,11 @@ class _Scan:
             self._batch_wide = True
             return
         self._position = position
-        translation = body.strip()
-        if not translation:
+        translation: str = _unescape(body.strip())
+        if not translation.strip():
             self._reject(number, ViolationKind.EMPTY_TRANSLATION)
             return
-        self._entries[number] = _unescape(translation)
+        self._entries[number] = translation
         self._last = number
 
     def _blame_previous(self, kind: ViolationKind) -> None:

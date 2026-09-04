@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import subprocess
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Never, Protocol
+from typing import IO, Final, Never, Protocol
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.errors import AudioCancelledError, AudioProcessError
@@ -21,6 +22,7 @@ __all__ = [
     "SubprocessRunner",
     "decode_command",
     "decode_duration_command",
+    "ffmpeg_progress_reader",
     "join_clips_command",
     "narrator_wav_command",
     "normalize_command",
@@ -33,6 +35,9 @@ __all__ = [
 
 _POLL_SECONDS: Final[float] = 0.1
 """Maximum wait between timeout and cancellation checks."""
+
+_IN_PROGRESS_PERCENT: Final[int] = 99
+"""Maximum measured progress before the caller validates its output."""
 
 _STDERR_TAIL_LINES: Final[int] = 8
 """Trailing stderr lines retained in a safe process error."""
@@ -96,6 +101,7 @@ class CommandRunner(Protocol):
         operation: str,
         timeout_s: float,
         cancel: threading.Event | None = None,
+        on_stdout_line: Callable[[str], None] | None = None,
     ) -> CommandResult:
         """Execute one argument-list command or raise a typed audio error."""
         ...
@@ -115,6 +121,7 @@ class SubprocessRunner:
         operation: str,
         timeout_s: float,
         cancel: threading.Event | None = None,
+        on_stdout_line: Callable[[str], None] | None = None,
     ) -> CommandResult:
         """Execute one command with timeout, cancellation, and safe stderr."""
         timer: Timer = Timer(operation, auto_start=True)
@@ -139,28 +146,37 @@ class SubprocessRunner:
             )
             _raise_process(failure, cause=error)
 
-        while True:
-            if cancel is not None and cancel.is_set():
-                self._stop(process)
-                _raise_cancelled(operation)
-            elapsed_s: float = timer.duration_s
-            remaining_s: float = timeout_s - elapsed_s
-            if remaining_s <= 0:
-                self._stop(process)
-                _raise_process(
-                    _ProcessFailure(
-                        operation=operation,
-                        command=command,
-                        returncode=None,
-                        stderr="operation timed out",
-                        code=ErrorCode.TIMEOUT,
-                    ),
-                )
-            try:
-                stdout, stderr = process.communicate(timeout=min(_POLL_SECONDS, remaining_s))
-                break
-            except subprocess.TimeoutExpired:
-                continue
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        readers: tuple[threading.Thread, ...] = ()
+        if on_stdout_line is not None:
+            readers = (
+                _read_stream(process.stdout, stdout_lines, observer=on_stdout_line),
+                _read_stream(process.stderr, stderr_lines),
+            )
+        stdout: str = ""
+        stderr: str = ""
+        try:
+            while True:
+                if cancel is not None and cancel.is_set():
+                    _raise_cancelled(operation)
+                remaining_s: float = timeout_s - timer.duration_s
+                if remaining_s <= 0:
+                    _raise_process(_ProcessFailure(operation, command, None, "operation timed out", ErrorCode.TIMEOUT))
+                try:
+                    if readers:
+                        process.wait(timeout=min(_POLL_SECONDS, remaining_s))
+                    else:
+                        stdout, stderr = process.communicate(timeout=min(_POLL_SECONDS, remaining_s))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        finally:
+            self._stop(process, streaming=bool(readers))
+            for reader in readers:
+                reader.join(timeout=self._shutdown_grace_s)
+        if readers:
+            stdout, stderr = "".join(stdout_lines), "".join(stderr_lines)
 
         result: CommandResult = CommandResult(
             command=command,
@@ -186,18 +202,75 @@ class SubprocessRunner:
         )
         return result
 
-    def _stop(self, process: subprocess.Popen[str]) -> None:
+    def _stop(self, process: subprocess.Popen[str], *, streaming: bool = False) -> None:
         if process.poll() is not None:
             return
+        wait: Callable[..., object] = process.wait if streaming else process.communicate
         process.terminate()
         try:
-            process.communicate(timeout=self._shutdown_grace_s)
+            wait(timeout=self._shutdown_grace_s)
         except subprocess.TimeoutExpired:
             process.kill()
-            try:
-                process.communicate(timeout=self._shutdown_grace_s)
-            except subprocess.TimeoutExpired:
-                return
+            wait(timeout=self._shutdown_grace_s)
+
+
+def _read_stream(
+    stream: IO[str] | None,
+    lines: list[str],
+    *,
+    observer: Callable[[str], None] | None = None,
+) -> threading.Thread:
+    """Drain one pipe and isolate optional progress observers from execution."""
+
+    def read() -> None:
+        try:
+            for line in stream or ():
+                lines.append(line)
+                if observer is not None:
+                    _notify_line(observer, line)
+        finally:
+            if stream is not None:
+                stream.close()
+
+    reader: threading.Thread = threading.Thread(target=read, name="audio-pipe", daemon=True)
+    reader.start()
+    return reader
+
+
+def _notify_line(observer: Callable[[str], None], line: str) -> None:
+    """Report one progress line without letting an observer own execution."""
+    try:
+        observer(line)
+    except Exception:  # noqa: BLE001 - progress observers never own audio execution
+        logger.warning("Audio progress observer failed")
+
+
+def ffmpeg_progress_reader(
+    on_percent: Callable[[int], None] | None,
+    *,
+    duration_ms: int,
+) -> Callable[[str], None] | None:
+    """Report measured FFmpeg output time when the total duration is known."""
+    if on_percent is None or duration_ms <= 0:
+        return None
+    last_percent: int = -1
+
+    def read(line: str) -> None:
+        nonlocal last_percent
+        key, separator, value = line.strip().partition("=")
+        if key != "out_time_us" or not separator:
+            return
+        try:
+            position_us: int = int(value)
+        except ValueError:
+            return
+        percent: int = min(_IN_PROGRESS_PERCENT, max(0, position_us * 100 // (duration_ms * 1000)))
+        if percent <= last_percent:
+            return
+        last_percent = percent
+        on_percent(percent)
+
+    return read
 
 
 def probe_command(ffprobe: Path, path: Path) -> tuple[str, ...]:
@@ -386,6 +459,9 @@ def narrator_wav_command(
         "-f",
         "wav",
         "-y",
+        "-progress",
+        "pipe:1",
+        "-nostats",
         str(destination),
     )
 
@@ -433,6 +509,9 @@ def transcode_command(  # noqa: PLR0913 - explicit FFmpeg output contract
             "-f",
             container,
             "-y",
+            "-progress",
+            "pipe:1",
+            "-nostats",
             str(destination),
         )
     )

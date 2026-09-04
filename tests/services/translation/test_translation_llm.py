@@ -30,7 +30,10 @@ class _FakeCompleter:
         request: LlmCompletionRequest,
         *,
         on_text: Callable[[str], None] | None = None,
+        on_start: Callable[[], None] | None = None,
     ) -> LlmCompletionResult:
+        if on_start is not None:
+            on_start()
         self.requests.append(request)
         response = self.responses.pop(0)
         if isinstance(response, TranslationEngineError):
@@ -51,7 +54,10 @@ class _ChunkedCompleter:
         request: LlmCompletionRequest,
         *,
         on_text: Callable[[str], None] | None = None,
+        on_start: Callable[[], None] | None = None,
     ) -> LlmCompletionResult:
+        if on_start is not None:
+            on_start()
         self.requests.append(request)
         if on_text is not None:
             for start in range(0, len(self.text), self.chunk):
@@ -294,9 +300,12 @@ def test_translate_batch_honours_an_explicit_line_limit() -> None:
     engine.translate_batch(["1", "2", "3", "4", "5"], source_lang="auto", target_lang="pl", observer=observer)
 
     assert observer.progress_updates == [
+        ("llm", 0, 5),
         ("llm", 1, 5),
         ("llm", 2, 5),
+        ("llm", 2, 5),
         ("llm", 3, 5),
+        ("llm", 4, 5),
         ("llm", 4, 5),
         ("llm", 5, 5),
     ]
@@ -327,6 +336,58 @@ def test_stream_progress_never_runs_past_the_batch_total() -> None:
     engine.translate_batch(["1", "2"], source_lang="auto", target_lang="pl", observer=observer)
 
     assert max(update[1] for update in observer.progress_updates) == 2
+
+
+def test_stream_progress_ignores_blank_lines_and_fences() -> None:
+    observer = _Observer()
+    completer = _ChunkedCompleter("```text\n\n[0] jeden\n\n[1] dwa\n```\n", chunk=1)
+    engine = LlmTranslateService(LlmTranslateConfig(), completer=completer)
+
+    engine.translate_batch(["one", "two"], source_lang="auto", target_lang="pl", observer=observer)
+
+    assert [value for _, value, _ in observer.progress_updates] == [0, 1, 1, 2]
+
+
+def test_split_stream_progress_keeps_the_completed_left_offset() -> None:
+    observer = _Observer()
+    completer = _FakeCompleter(
+        [
+            _result("[0] partial", "length"),
+            _result("[0] jeden\n[1] dwa"),
+            _result("[0] trzy\n[1] cztery"),
+        ]
+    )
+    engine = LlmTranslateService(LlmTranslateConfig(), completer=completer)
+
+    engine.translate_batch(["one", "two", "three", "four"], source_lang="auto", target_lang="pl", observer=observer)
+
+    assert [value for _, value, _ in observer.progress_updates] == [0, 0, 1, 2, 3, 4]
+
+
+def test_transport_retry_resets_provisional_numbered_progress() -> None:
+    class RetryingCompleter:
+        def complete(
+            self,
+            request: LlmCompletionRequest,
+            *,
+            on_text: Callable[[str], None] | None = None,
+            on_start: Callable[[], None] | None = None,
+        ) -> LlmCompletionResult:
+            del request
+            assert on_start is not None
+            assert on_text is not None
+            on_start()
+            on_text("[0] jeden\n[1] urwa")
+            on_start()
+            on_text("[0] raz\n[1] dwa\n[2] trzy")
+            return _result("[0] raz\n[1] dwa\n[2] trzy")
+
+    observer = _Observer()
+    engine = LlmTranslateService(LlmTranslateConfig(), completer=RetryingCompleter())
+
+    engine.translate_batch(["one", "two", "three"], source_lang="auto", target_lang="pl", observer=observer)
+
+    assert [value for _, value, _ in observer.progress_updates] == [0, 1, 0, 1, 2, 3]
 
 
 def test_is_available_true_with_completer() -> None:
