@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -185,3 +188,59 @@ def test_audio_stage_preserves_cancelled_error_code(monkeypatch: pytest.MonkeyPa
 
     assert raised.value.context.code is ErrorCode.CANCELLED
     assert staging.exists() is False
+
+
+def _publish_after_restart(root: Path) -> None:
+    destination: Path = root / "Episode.pl.srt"
+    source: Path = root / "complete.srt"
+    previous: bytes = destination.read_bytes()
+    assert previous == b"1\n00:00:00,000 --> 00:00:01,000\nPrevious\n"
+    assert not (root / "cancelled-staging.srt").exists()
+    with pytest.raises(ExecutionError):
+        ArtifactPublisher().publish(_request(root / "incomplete.srt", destination))
+    assert destination.read_bytes() == previous
+    assert not tuple(root.glob(".Episode.pl-*.tmp.srt"))
+
+    artifact: Artifact = ArtifactPublisher().publish(_request(source, destination))
+
+    assert artifact.state is ArtifactState.READY
+    assert artifact.path == destination
+    assert destination.read_bytes() == source.read_bytes()
+    assert not tuple(root.glob(".Episode.pl-*.tmp.srt"))
+    sys.stdout.write(str(os.getpid()))
+
+
+@pytest.mark.integration
+def test_cancelled_publication_recovers_in_new_process_without_losing_previous_product(tmp_path: Path) -> None:
+    source: Path = tmp_path / "complete.srt"
+    source.write_text("1\n00:00:00,000 --> 00:00:01,000\nRecovered\n", encoding="utf-8")
+    source_bytes: bytes = source.read_bytes()
+    (tmp_path / "incomplete.srt").write_bytes(b"1\n00:00:")
+    destination: Path = tmp_path / "Episode.pl.srt"
+    previous: bytes = b"1\n00:00:00,000 --> 00:00:01,000\nPrevious\n"
+    destination.write_bytes(previous)
+    cancel: threading.Event = threading.Event()
+    cancel.set()
+    with pytest.raises(ExecutionError) as raised:
+        ArtifactPublisher().stage(_request(source, destination), tmp_path / "cancelled-staging.srt", cancel=cancel)
+    assert raised.value.context.code is ErrorCode.CANCELLED
+    assert destination.read_bytes() == previous
+
+    script: str = (
+        "import runpy, sys; from pathlib import Path; "
+        "runpy.run_path(sys.argv[1])['_publish_after_restart'](Path(sys.argv[2]))"
+    )
+    completed: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script, str(Path(__file__).resolve()), str(tmp_path)],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert int(completed.stdout) != os.getpid()
+    assert destination.read_bytes() == source_bytes
+    assert source.read_bytes() == source_bytes

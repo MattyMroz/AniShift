@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,7 +27,9 @@ from anishift.services.tts import (
     EngineLocality,
     SpeechBatch,
     SpeechBatchProgress,
+    SpeechBatchResult,
     SpeechBatchStatus,
+    SpeechClip,
     SpeechRequest,
     SpeechRequestProgress,
     SpeechRetryProgress,
@@ -475,3 +482,127 @@ def test_multichunk_local_failure_does_not_invent_retry(tmp_path: Path) -> None:
     assert result.status is SpeechBatchStatus.FAILED
     assert result.requests[0].retries == 0
     assert result.stats.retries == 0
+
+
+def _recovery_batch(*, changed_text: bool = False) -> SpeechBatch:
+    return SpeechBatch(
+        scope_id="process-recovery",
+        batch_rank=0,
+        requests=(
+            SpeechRequest("line-1", "Changed line." if changed_text else "First line.", 0),
+            SpeechRequest("line-2", "Second line.", 1),
+        ),
+    )
+
+
+def _resume_in_new_process(root: Path, cache_state: str) -> None:
+    engine: _Engine = _Engine()
+    validator: _Validator = _Validator()
+    with TtsService(
+        replace(_config(), max_concurrency=1, queue_capacity=1),
+        resume_root=root,
+        validator=validator,
+        engine_factory=lambda config: engine,
+    ) as service:
+        result: SpeechBatchResult = service.synthesize(
+            _recovery_batch(changed_text=cache_state == "stale_text"),
+            callbacks=_Progress(),
+        )
+
+    assert result.status is SpeechBatchStatus.COMPLETED
+    assert all(
+        item.speech_clip is not None and item.speech_clip.path.read_bytes() == b"valid" for item in result.requests
+    )
+    sys.stdout.write(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "statuses": [item.status.value for item in result.requests],
+                "provider_calls": engine.calls,
+                "validations": len(validator.calls),
+            },
+        ),
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("cache_state", ["valid", "truncated", "stale_text"])
+def test_partial_cancelled_batch_recovers_in_new_process(tmp_path: Path, cache_state: str) -> None:
+    class _InterruptedEngine(_Engine):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started: threading.Event = threading.Event()
+            self.partial_path: Path | None = None
+
+        async def synthesize(
+            self,
+            request: SynthesisRequest,
+            *,
+            cancel: CancellationToken,
+        ) -> EngineClipResult:
+            if request.text != "Second line.":
+                return await super().synthesize(request, cancel=cancel)
+            self.partial_path = request.destination
+            request.destination.write_bytes(b"partial")
+            self.started.set()
+            await cancel.wait()
+            raise TtsCancelledError("cancelled during provider output")
+
+    engine: _InterruptedEngine = _InterruptedEngine()
+    with (
+        TtsService(
+            replace(_config(), max_concurrency=1, queue_capacity=1),
+            resume_root=tmp_path,
+            validator=_Validator(),
+            engine_factory=lambda config: engine,
+        ) as service,
+        ThreadPoolExecutor(max_workers=1) as pool,
+    ):
+        synthesis: Future[SpeechBatchResult] = pool.submit(
+            service.synthesize,
+            _recovery_batch(),
+            callbacks=_Progress(),
+        )
+        try:
+            assert engine.started.wait(timeout=5.0)
+        finally:
+            service.cancel()
+        partial: SpeechBatchResult = synthesis.result(timeout=5.0)
+
+    assert partial.status is SpeechBatchStatus.PARTIAL
+    assert [item.status for item in partial.requests] == [SynthesisStatus.SYNTHESIZED, SynthesisStatus.CANCELLED]
+    assert engine.partial_path is not None
+    assert not engine.partial_path.exists()
+    cached: SpeechClip | None = partial.requests[0].speech_clip
+    assert cached is not None
+    original_bytes: bytes = cached.path.read_bytes()
+    manifest: Path = tmp_path / "process-recovery" / "tts" / "manifest.json"
+    assert len(json.loads(manifest.read_text(encoding="utf-8"))["entries"]) == 1
+    if cache_state == "truncated":
+        cached.path.write_bytes(b"va")
+
+    script: str = (
+        "import runpy, sys; from pathlib import Path; "
+        "runpy.run_path(sys.argv[1])['_resume_in_new_process'](Path(sys.argv[2]), sys.argv[3])"
+    )
+    completed: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script, str(Path(__file__).resolve()), str(tmp_path), cache_state],
+        cwd=Path(__file__).resolve().parents[3],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    recovered: dict[str, object] = json.loads(completed.stdout)
+    expected_first: SynthesisStatus = (
+        SynthesisStatus.RESUME_HIT if cache_state == "valid" else SynthesisStatus.SYNTHESIZED
+    )
+    expected_calls: int = 1 if cache_state == "valid" else 2
+    assert recovered["pid"] != os.getpid()
+    assert recovered["statuses"] == [expected_first.value, SynthesisStatus.SYNTHESIZED.value]
+    assert recovered["provider_calls"] == expected_calls
+    assert recovered["validations"] == expected_calls
+    assert cached.path.read_bytes() == original_bytes
