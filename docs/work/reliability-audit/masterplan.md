@@ -1,7 +1,7 @@
 ---
 kind: masterplan
 status: active
-updated: 2026-09-04
+updated: 2026-09-05
 ---
 
 # AniShift — masterplan dopracowania
@@ -16,7 +16,7 @@ stany produktu, nie każdą czynność wykonawcy.
 
 Właściciel zatwierdził realizację 2026-09-04, również naprawy współdzielonych utils.
 Aktualny zakres wykonania i podział odpowiedzialności opisuje
-[Plan 02](plans/02-hardening.md). Akceptacja wyglądu i odsłuch pozostają osobnymi
+[Plan 04 — terminal](plans/04-terminal-polish.md). Akceptacja wyglądu i odsłuch pozostają osobnymi
 checkpointami człowieka, niezależnie od zgody na implementację.
 
 ## Etapy
@@ -29,7 +29,7 @@ checkpointami człowieka, niezależnie od zgody na implementację.
 | M03 | Przerwanie i oczekiwanie nie blokują całej pracy | M01, rozpoznane narzędzia | Deadline, cancel, worker cleanup, blokada produktu i aktywna sieć mają sprawdzone zachowanie | verified: z limitami sieci |
 | M04 | Napisy i media zachowują całą wymaganą treść | Baseline M00; zmiany runnerów uzgadniane z M03 | Powtórzenia, świadomy wybór spoken, ogon narracji, ostrzeżenia i trudne ścieżki przechodzą regresje | verified: krótkie media |
 | M05 | Każdy etap ma uczciwy postęp i użyteczny wynik | M01, M03, aktywne ścieżki M04 | Pomiary przechodzą backend→event→UI; brak procentu ma jawną aktywność; widoczne przyczyny awarii | pending-human |
-| M06 | Terminal jest spójny i ma zmierzony koszt | M05 | Baseline/pomiar po zmianie, wizualna akceptacja, brak regresji klawiatury/resize/fallbacku | partial: pomiar i ocena TTY otwarte |
+| M06 | Terminal jest spójny i ma zmierzony koszt | M05 | Baseline/pomiar po zmianie, wizualna akceptacja, brak regresji klawiatury/resize/fallbacku | partial: render/klawisze zmierzone; TTY i pełny startup otwarte |
 | M07 | Kod i jego instrukcje są prostsze w utrzymaniu | Stabilne kontrakty wcześniejszych etapów | Skrócone opisy poza utils, zachowane separatory, aktualne źródła prawdy, usunięta uzasadniona redundancja | verified: bez zbędnych przenosin |
 | M08 | Istniejący produkt ma powtarzalny dowód działania | M01–M05 i działający setup z M02 | Krótkie prawdziwe E2E, awarie, pomiary oraz zaakceptowany odcinek i odsłuch | partial: dowody i ocena człowieka otwarte |
 | M09 | TXT może zostać audiobookiem | M08, szczegółowy kontrakt tekstu/audio | Samodzielny TXT, z tłumaczeniem lub bez, daje poprawne audio; odsłuch i brak zależności od wideo | deferred |
@@ -43,11 +43,22 @@ naraz; nie uruchamiać kilku writerów modyfikujących kontrakt postępu/cancell
 
 ## Aktualny punkt decyzji
 
-Naprawy wdrożono i poddano niezależnemu review; szczegóły i ograniczenia zawiera
-[outcome](outcomes/02-hardening.md). Następna iteracja to
-[akceptacja produktu](plans/03-product-acceptance.md), nie automatyczna rozbudowa.
+Naprawy niezawodności opisuje [outcome](outcomes/02-hardening.md). Feedback właściciela
+z 2026-09-05 skierował bieżącą iterację na terminal i ustawienia —
+[Plan 04](plans/04-terminal-polish.md). Po jego odbiorze wracamy do
+[akceptacji produktu](plans/03-product-acceptance.md), nie automatycznej rozbudowy.
 Pomiary nie wykazały tańszego kodowania maskotki. Pierwsza klatka nadal czeka
 na docelowy obraz zgodnie z decyzją właściciela; nie wraca placeholder.
+
+Następne rezultaty po odbiorze terminala:
+
+1. Dostęp do siedmiu zaawansowanych opcji domyślnego AutoPreset w panelu, bez zmiany
+   schema i utraty pozostałych pól — [Plan 05](plans/05-auto-preset-controls.md).
+2. Spójne instrukcje tłumaczenia i porównanie krótszego promptu:
+   [rekomendacje i ewaluacja](prompt-recommendations.md). Najpierw wierność znaczeniu,
+   dopiero później koszt i naturalność. Nie wdrażać propozycji bez A/B.
+3. Pełny odcinek, odsłuch/synchronizacja, świeży Windows i scenariusze graniczne
+   pozostałe w Planie 03; potem kontrakt TXT → audiobook.
 
 ## Pierwszy rezultat
 

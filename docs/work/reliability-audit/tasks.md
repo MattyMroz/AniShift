@@ -1,6 +1,6 @@
 ---
 kind: task-board
-updated: 2026-09-04
+updated: 2026-09-05
 ---
 
 # AniShift — lokalna tablica zadań
@@ -13,7 +13,9 @@ do późniejszego przygotowania issue zgodnie z szablonem repozytorium.
 ## Statusy i zasada aktualizacji
 
 Wynik implementacji i komendy: [outcome](outcomes/02-hardening.md).
-Następny checkpoint: [Plan 03](plans/03-product-acceptance.md).
+Terminal: [wynik Planu 04](outcomes/04-terminal-polish.md).
+Następny checkpoint: odbiór terminala, potem [Plan 05](plans/05-auto-preset-controls.md)
+i [Plan 03](plans/03-product-acceptance.md).
 
 `backlog` → `ready` → `in-progress` → `verified` → `done`.
 `pending-human` oznacza oczekującą ocenę właściciela, `blocked` konkretną zależność,
@@ -72,6 +74,20 @@ do innych dokumentów.
 | P02 | Watch completed input files automatically | przyszłość | M08, idempotencja | deferred | Zamknięte kopiowanie, deduplikacja zleceń i restart; osobny plan |
 | P03 | Import dropped terminal paths | przyszłość | Polityka copy/move/kolizji | deferred | Materiał trafia do właściwej grupy bez utraty źródła |
 | P04 | Discover and download requested episodes | przyszłość | Źródła i zasady dostępu | deferred | Osobny zaakceptowany kontrakt i plan integracji |
+
+## Terminal i ustawienia — feedback 2026-09-05
+
+| ID | Tytuł | Priorytet | Status | Warunek zakończenia / dowód |
+| --- | --- | --- | --- | --- |
+| U01 | Keep terminal ownership across redraw and exit | P1 | pending-human | Real Renderer i Application.run/exit PASS, brak wychodzenia do primary screen przy przejściu; [wynik](outcomes/04-terminal-polish.md) |
+| U02 | Make branding and queue responsive | P2 | pending-human | Trzy rozmiary napisu, animacja Auto, stała wysokość, mały Home, pełna osiągalność kolejki; [wynik](outcomes/04-terminal-polish.md) |
+| U03 | Keep completion and progress in one readable palette | P2 | pending-human | Checkmark, gradient, krótkie etapy, dynamiczne nazwy, Unicode i brak overflow; [wynik](outcomes/04-terminal-polish.md) |
+| U04 | Preserve settings edits and all output products | P1 | verified | Siedem produktów, rollback błędnego zapisu, no-op, brak utraty pending, jawne porzucenie; [wynik](outcomes/04-terminal-polish.md) |
+| U05 | Recover model selection without weakening run readiness | P1 | verified | Pierwszy własny model, atomowy zapis, usunięty alias nadal blokuje wykonanie, lecz nie picker; [wynik](outcomes/04-terminal-polish.md) |
+| U06 | Unify keyboard navigation and masked input | P2 | pending-human | Tab/backtab, lewo/prawo, cursor/delete/paste, powrót do miejsca w menu; [wynik](outcomes/04-terminal-polish.md) |
+| U07 | Audit prompts and remove unused scratch copies | P2 | verified | Loader i kontrakt zbadane, trzy TXT usunięte odzyskiwalnie, aktywne prompty bez zmian; [rekomendacje](prompt-recommendations.md) |
+| U08 | Expose advanced default Auto preset controls | P2 | ready | Siedem brakujących opcji z walidacją, resetem i brakiem utraty pól; [Plan 05](plans/05-auto-preset-controls.md) |
+| U09 | Evaluate a shorter faithful translation prompt | P2 | ready | Usunąć sprzeczności, ślepe A/B, metryki kontraktu i jakości; [plan ewaluacji](prompt-recommendations.md) |
 
 ## Jak dopisywać nowe problemy
 

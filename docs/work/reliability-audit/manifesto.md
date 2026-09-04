@@ -1,7 +1,7 @@
 ---
 kind: specification
 status: implementation-authorized
-updated: 2026-09-04
+updated: 2026-09-05
 ---
 
 # AniShift — manifest dopracowania produktu
@@ -101,7 +101,20 @@ Jedna paleta wyprowadzona z istniejącej maskotki ma obejmować wordmark, akcent
 i postęp. Gradientowe paski oraz subtelna animacja wordmarku są preferencją,
 ocenianą na działającym terminalu po naprawie semantyki postępu. Animacja nie
 może pogarszać reakcji na klawisze, czytelności ani zużycia CPU w bezczynności.
-Maskotka pozostaje na Home. Wersja pozostaje czytelna po prawej.
+Maskotka skacze na Home oraz podczas przetwarzania, gdy pozwala na to miejsce.
+Mniejszy terminal zachowuje dostęp do kolejki i sterowania; pełny wordmark może
+ustąpić średniemu napisowi lub samej maskotce. Wersja pozostaje czytelna po prawej.
+Przejścia i resize nie odsłaniają wcześniejszej konsoli ani nie kasują jej historii.
+Logo oddziela od postępu pusta linia. Ukończony wiersz zaczyna się od „✓”, zachowuje
+paletę marki; nazwa pliku korzysta z dostępnej szerokości zamiast stałego limitu.
+Ustawienia obsługują strzałki, Enter i cofanie z podpowiedzią działania. Dostępne
+opcje i modele nie mogą znikać ani nadpisywać innych ustawień przy edycji.
+
+Próba subtelnej fali wordmarku jest preferencją do oceny wizualnej, nie warunkiem
+poprawności przetwarzania. Sugestie poprawy promptów trafiają do osobnego raportu;
+aktywne szablony nie są zmieniane bez walidacji jakości. Trzy luźne pliki
+`prompt_helper.txt`, `prompt_helperSS.txt`, `prompt_main.txt` można usunąć po
+sprawdzeniu braku użycia, zachowując kopię odzyskiwalną poza repozytorium.
 
 2026-09-04 właściciel odrzucił placeholder podczas startu. Pierwsza klatka ma
 pokazywać gotową docelową maskotkę, nawet kosztem oczekiwania na jej przygotowanie.

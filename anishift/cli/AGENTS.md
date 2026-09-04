@@ -25,15 +25,13 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   alternate screen przez całą sesję. Nie zastępuj go `console.screen()`:
   Rich pomija alternate screen na części konfiguracji `legacy_windows`. Home, Auto i
   wynik czyszczą ten sam output. `interactive/prompts.py`, `interactive/app.py`
-- Auto ma trzy regiony: przyklejony nagłówek z marką, przewijana kolejka, przyklejona
-  stopka. Auto NIE MA maskotki (`show_mascot=False` na sztywno) — user ją odrzucił
-  obok postępu; wejście w Auto zdejmuje obraz z ekranu. Gdyby wróciła, wolno jej stać
-  wyłącznie w nagłówku, bo rastra SIXEL nie da się przyciąć, a wiersz kotwicy `\ue000`
-  musi być stały. Budżet kolejki liczy się z realnej wysokości marki, nie z
-  `AutoGeometry`, i żaden ukryty wiersz nie znika bez licznika „poza widokiem".
+- Auto ma trzy regiony: przyklejony nagłówek z marką i maskotką, przewijana kolejka,
+  przyklejona stopka. Maskotka może stać wyłącznie w nagłówku: rastra SIXEL nie da
+  się przyciąć. Budżet kolejki uwzględnia rzeczywistą wysokość marki i pustą linię.
+  Bardzo niski terminal pomija branding, zachowując kolejkę i liczniki ukrytych plików.
   `interactive/app.py`, `interactive/prompts.py`
 - `_QueueView.following` znaczy „widok jest na żywo": kolejka trzyma się aktywnej
-  pracy, dowolne przewinięcie ją odczepia, a `End` (albo dojście do końca) wraca do
+  pracy, dowolne przewinięcie ją odczepia, a wyłącznie `End` wraca do
   żywej pracy — NIE do ostatniego pliku. `visible` znany jest dopiero w renderze,
   więc ustawia go `fit()`, tak jak `_visible_count` w Ustawieniach. `interactive/app.py`
 - `_fit_frame` obcina KAŻDY wiersz do szerokości terminala. Wiersz szerszy zawinąłby
@@ -54,12 +52,13 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `_QuietRunEvents` celowo gubi wszystkie eventy postępu — raport ma być
   parsowalny, bez przeplotu. Nie dodawaj tam renderowania. `main.py`
 - `RichRunProgress` prealokuje jeden pasek na plik w naturalnej kolejności i odtwarza przejścia
-  legacy `_PipelineProgressRows`: `Extracting` od razu ma pasek i procent,
-  `Extracted`, `Translating`, `Translated` i `Synthesizing` reużywają ten sam
+  legacy `_PipelineProgressRows`: `Extract` od razu ma pasek i procent,
+  `Extracted`, `Translate`, `Translated` i `TTS` reużywają ten sam
   wiersz. Procent pochodzi z pomiaru backendu; `progress_percent=None` z komunikatem
   oznacza aktywność bez znanego procentu. Nie wyliczaj pozornego postępu z upływu czasu.
   Techniczne taski nie otrzymują osobnych wierszy. Etykieta zachowuje konkretną nazwę
-  źródła wraz z rozszerzeniem. Procent opisuje bieżący task; etykiety `Extracted`
+  źródła wraz z rozszerzeniem; przycinanie odbywa się dopiero w renderze według
+  komórek terminala. `✓ Done` zachowuje gradient. Procent opisuje bieżący task; etykiety `Extracted`
   i `Translated` wymagają ukończenia wszystkich tasków danego etapu.
   `interactive/progress.py`
 - Run niepełny, anulowany albo z ostrzeżeniami pokazuje przewijany wynik grup:
@@ -81,6 +80,15 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   klawisz specjalny przychodzi z pustym `data`, więc `Keys.Any` zlepia je w
   nierozróżnialne `"any"` — nowy klawisz MUSI dostać własny binding, inaczej nie da
   się go odróżnić. `interactive/prompts.py`
+- Wklejenie jest osobnym `Keys.BracketedPaste` → `paste:`; edytor odrzuca znaki
+  sterujące i maskuje sekrety. Left/Right/Home/End w tekście ruszają kursor,
+  poza tekstem służą nawigacji lub zmianie wartości. `interactive/settings.py`
+- Nieudany zapis zachowuje `_pending` i widoczny błąd; idle nie ponawia go co klatkę.
+  Kolejne klawisze mogą ponowić zapis, a dwa kolejne Ctrl+C po ostrzeżeniu jawnie
+  porzucają edycję. Brak zmiany nie zapisuje pliku. `interactive/settings.py`
+- Picker może naprawić nieaktualny alias Palantira bez oznaczania go jako gotowego
+  do wykonania. Domyślne `engine_availability()` sprawdza wybrany model; pominięcie
+  tego warunku jest wyłącznie granicą wyboru nowego modelu. `application/service.py`
 - Przewijanie listy ma własny `_offset`, niezależny od kursora. Klawiatura zawsze
   dociąga widok do kursora (`_follow_cursor`), kółko myszy odczepia widok i nie
   rusza zaznaczenia, a pierwszy klawisz nawigacji dociąga go z powrotem. Wyznaczanie
@@ -145,8 +153,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `_KNOWN_LAYOUT_GAPS` jest puste i test tego pilnuje: każde nowe pole edytowalne
   MUSI być osiągalne z panelu albo mieć wpis z powodem w `_FIELDS_COVERED_ELSEWHERE`.
   `interactive/settings.py`
-- Home ma zatwierdzonego skaczącego slime'a z `assets/mascot/idle/01.gif`,
-  sześciowierszowy wordmark, cztery akcje, hint i stopkę z cwd/version. GIF ma być
+- Home ma skaczącego slime'a z `assets/mascot/idle/01.gif`, responsywny
+  wordmark, cztery akcje, hint i stopkę z cwd/version. GIF ma być
   animowany: `TerminalRenderer.after_render` wysyła kolejne klatki SIXEL. Pierwsza
   klatka interaktywna ma już gotową maskotkę; nie dodawaj startup placeholdera.
   Konstruktor renderera nie koduje obrazu. `run()` sprawdza obsługę SIXEL i metryki,
@@ -163,12 +171,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Zapytanie działa tylko na realnej konsoli (`isatty`), przywraca poprzedni `ConsoleMode`
   i ma 250 ms budżetu. Nie odczytuj raportów terminala z workera ani podczas obsługi klawiszy.
   `interactive/mascot_native.py`
-- `NativeMascotImage` rozdziela DWA różne rozmiary i nie wolno ich mieszać: `layout_rows`
-  (= `_FRAME_ROWS`) rezerwuje miejsce w layoucie, a `cell_rows`/`cell_columns` opisują to,
-  co realnie namalowane, i tylko one sterują kasowaniem. Rozjazd bierze się z
-  `_TOP_PAD_DIVISOR`: pół komórki przezroczystego paddingu nad maskotką opuszcza ją o pół
-  wiersza, więc obraz zajmuje jeden wiersz więcej niż rezerwacja i zwisa w puste miejsce
-  pod marką. `interactive/mascot_native.py`, `interactive/prompts.py`
+- `NativeMascotImage.layout_rows` określa nominalną wysokość obrazu; rezerwacja
+  renderera i kasowanie używają `cell_rows`/`cell_columns`, czyli całego rastra.
+  Padding nad obrazem zwiększa go o wiersz, którego nie wolno liczyć jako pustego
+  odstępu nad postępem. `interactive/mascot_native.py`, `interactive/prompts.py`
 - Przesunięcie maskotki w prawo wewnątrz klatki jest WSPÓLNE dla całej animacji
   (`_shared_right_shift`, ograniczone najszerszą klatką). Dosuwanie każdej klatki osobno
   do krawędzi wygląda jak rozciąganie w lewo, bo klatki przysiadu są szersze od klatek
@@ -179,21 +185,24 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `interactive/palette.py`. Wordmark i paski postępu biorą z niego gradient, a panel styl
   `brand_accent` doklejany do konsoli przez `push_theme(BRAND_THEME)` — generyczny
   `purple_bold` z motywu `rich_console` nie występuje już w żadnym widoku i test tego
-  pilnuje. Czerwień marki nie oznacza błędu; stany zostają na `success`/`warning`/`error`.
+  pilnuje. Tekst akcentu jest rozjaśnionym azure, a pomoc i stopka mają kontrastowy
+  szary. Czerwień gradientu nie oznacza błędu; błędy zachowują styl `error`.
   `interactive/palette.py`, `interactive/prompts.py`, `interactive/home.py`
-- Dwa różne kasowania maskotki, nie zamieniaj ich rolami: klatka-do-klatki nadpisuje
-  spacjami sam prostokąt obrazu (tanie, bez migotania przy ~17 fps), a ZNIKNIĘCIE
-  (Ustawienia, Auto, Ręczny, wyjście) robi `\x1b[2J` plus `renderer.reset()` i
-  `invalidate()`. Ani ECH (`\x1b[X`), ani nadpisanie spacjami nie usuwa rastra SIXEL —
-  obraz nie żyje w buforze tekstu. `\x1b[2J` czyści tylko ekran alternatywny, więc jest
-  bezpieczne; NIE dodawaj `RIS` (`\x1bc`) ani `\x1b[3J`, bo te kasują historię terminala
-  usera. Kasowanie wołaj z `after_render`, nigdy z callbacku treści — `renderer.reset()`
-  w trakcie renderu jest reentrantny. `interactive/prompts.py`
-- Maskotkę widzi wyłącznie Home; Auto, Manual, Settings i komunikaty nie rezerwują dla
-  niej miejsca. `MascotController` nie ma własnego workera ani bezpośredniego
+- Klatka-do-klatki nadpisuje sam prostokąt obrazu. Zniknięcie lub przesunięcie
+  rastra obsługuje `before_render`: `reset(leave_alternate_screen=False)` oraz
+  buforowane `\x1b[2J`, wysłane razem z nową klatką tekstu. Domyślne `reset()`
+  wychodzi z alternate screen i odsłania starą konsolę. Nie kasuj w callbacku treści
+  ani po narysowaniu nowego widoku. Końcowy redraw (`application.is_done`) nie może
+  malować rastra po przywróceniu konsoli. Nie używaj `RIS` ani `\x1b[3J`, które
+  kasują historię użytkownika. `interactive/prompts.py`
+- Maskotkę pokazują Home i Auto, jeśli pozostaje miejsce na obsługę; Manual,
+  Settings i komunikaty nie rezerwują jej miejsca. `MascotController` nie ma własnego workera ani bezpośredniego
   zapisu do terminala. Brak obsługi obrazu lub zbyt mały terminal degraduje widok do
   fallbacku albo braku maskotki. Resize wywołuje czysty rerender bez rozciągania layoutu.
   `interactive/home.py`, `interactive/prompts.py`
+- Fala wordmarku i tekstowy podskok korzystają z zegara renderera (24 fazy),
+  cache i stałej rezerwacji. Nowej animacji nie wolno kodować w `render()` ani
+  uzależniać wysokości nagłówka od fazy. `interactive/home.py`
 - Auto i Ręczny nie mają ekranu pośredniego: `PREPARING` i `MANUAL_PREPARING`
   renderują dokładnie klatkę Home, bez spinnera i bez komunikatu skanowania. Skan
   workspace startuje w tle przy wejściu do Home (`_prewarm_workspace`), więc pierwszy
