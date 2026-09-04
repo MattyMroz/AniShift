@@ -115,6 +115,13 @@
       "experimental": false,
       "limits": { "context": 1048576, "input": 300000, "output": 65536 }
     },
+    "foundry-google/gemini-3.8-flash": {
+      "provider": "foundry-google",
+      "model": "gemini-3.8-flash",
+      "label": "Foundry: Gemini 3.8 Flash",
+      "experimental": false,
+      "limits": { "context": 1048576, "input": 300000, "output": 65536 }
+    },
     "foundry-google/gemini-3.7-flash": {
       "provider": "foundry-google",
       "model": "gemini-3.7-flash",
