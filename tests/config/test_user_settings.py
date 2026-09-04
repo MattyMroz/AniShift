@@ -65,6 +65,56 @@ def test_load_invalid_mode_falls_back_to_default(config_file: Path) -> None:
     assert load_user_settings().mode == "auto"
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "mode",
+        "processing_order_policy",
+        "output_variant",
+        "translation_engine",
+        "llm_provider",
+        "tts_engine",
+        "tts_output_profile",
+        "tts_timeline_policy",
+        "composition_quality_preset",
+    ],
+)
+@pytest.mark.parametrize("value", [[], {}, True, 1, None])
+def test_load_rejects_non_string_choices(key: str, value: object, config_file: Path) -> None:
+    config_file.write_text(json.dumps({key: value, "primary_model_alias": "kept"}), encoding="utf-8")
+
+    loaded: UserSettings = load_user_settings()
+
+    assert getattr(loaded, key) == getattr(UserSettings(), key)
+    assert loaded.primary_model_alias == "kept"
+
+
+@pytest.mark.parametrize(
+    ("key", "fraction"),
+    [
+        ("subtitle_max_chars_per_line", 40.5),
+        ("subtitle_max_lines_per_event", 1.5),
+        ("translation_chunk_chars", 300.5),
+        ("translation_batch_size", 1.5),
+        ("translation_concurrency", 1.5),
+        ("translation_max_retries", 1.5),
+        ("llm_max_output_tokens", 100.5),
+        ("llm_max_concurrency", 1.5),
+        ("tts_max_retries", 1.5),
+    ],
+)
+@pytest.mark.parametrize("kind", ["fraction", "float", "bool", "string"])
+def test_load_rejects_non_integer_counts(key: str, fraction: float, kind: str, config_file: Path) -> None:
+    values: dict[str, object] = {"fraction": fraction, "float": float(int(fraction)), "bool": True, "string": "2"}
+    config_file.write_text(json.dumps({key: values[kind], "primary_model_alias": "kept"}), encoding="utf-8")
+
+    loaded: UserSettings = load_user_settings()
+
+    assert getattr(loaded, key) == getattr(UserSettings(), key)
+    assert type(getattr(loaded, key)) is int
+    assert loaded.primary_model_alias == "kept"
+
+
 def test_load_invalid_processing_order_falls_back_to_default(config_file: Path) -> None:
     config_file.write_text(
         json.dumps({"processing_order_policy": "random"}),

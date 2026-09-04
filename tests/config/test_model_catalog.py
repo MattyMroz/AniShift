@@ -216,6 +216,62 @@ def test_parse_reports_a_provider_path_that_is_not_relative() -> None:
     assert _issue_keys(catalog) == {"foundry-openai"}
 
 
+@pytest.mark.parametrize("route", ["//[", "//[invalid]", "//host\uff1a80/path"])
+def test_parse_isolates_a_malformed_provider_url(route: str) -> None:
+    providers: dict[str, object] = {
+        "foundry-openai": {"protocol": "openai_chat", "path": "/v1"},
+        "broken": {"protocol": "openai_chat", "path": route},
+    }
+
+    catalog: ModelCatalog = parse_model_catalog(_source(providers=providers))
+
+    assert set(catalog.providers) == {"foundry-openai"}
+    assert set(catalog.models) == {"foundry/gpt-main"}
+    assert _issue_keys(catalog) == {"broken"}
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_parse_isolates_colliding_provider_ids_after_normalization(reverse: bool) -> None:
+    providers: dict[str, object] = {
+        "foundry-openai": {"protocol": "openai_chat", "path": "/v1"},
+        "same": {"protocol": "openai_chat", "path": "/first"},
+        " same ": {"protocol": "google_generate", "path": "/second"},
+    }
+    models: dict[str, object] = {
+        "foundry/gpt-main": {"provider": "foundry-openai", "model": "good-id"},
+        "ambiguous": {"provider": "same", "model": "ambiguous-id"},
+    }
+    if reverse:
+        providers = dict(reversed(providers.items()))
+
+    catalog: ModelCatalog = parse_model_catalog(_source(providers=providers, models=models))
+
+    assert set(catalog.providers) == {"foundry-openai"}
+    assert set(catalog.models) == {"foundry/gpt-main"}
+    assert {issue.key.strip() for issue in catalog.issues} == {"same", "ambiguous"}
+    assert len([issue for issue in catalog.issues if issue.section == "providers"]) == 2
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_parse_isolates_colliding_model_aliases_after_normalization(reverse: bool) -> None:
+    models: dict[str, object] = {
+        "foundry/gpt-main": {"provider": "foundry-openai", "model": "good-id"},
+        "same": {"provider": "foundry-openai", "model": "first-id"},
+        " same ": {"provider": "foundry-openai", "model": "second-id"},
+    }
+    if reverse:
+        models = dict(reversed(models.items()))
+
+    catalog: ModelCatalog = parse_model_catalog(
+        _source(models=models, defaults={"primary": "same", "translation": "foundry/gpt-main"}),
+    )
+
+    assert set(catalog.models) == {"foundry/gpt-main"}
+    assert catalog.defaults == CatalogDefaults(primary=None, translation="foundry/gpt-main")
+    assert {issue.key.strip() for issue in catalog.issues} == {"same", "primary"}
+    assert len([issue for issue in catalog.issues if issue.section == "models"]) == 2
+
+
 def test_parse_reports_a_leftover_enrollment_section_as_an_unknown_root_key() -> None:
     catalog = parse_model_catalog(_source(enrollment={"base_url": "https://example.palantirfoundry.com"}))
 

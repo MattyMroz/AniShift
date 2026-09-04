@@ -1,18 +1,4 @@
-"""Panel preferences persisted to ``config/settings.json`` next to the code.
-
-These are the choices the settings screens of the shell edit (mode, engines,
-voice, output placement...). They live in ``<repo>/config/settings.json`` — OUTSIDE the
-workspace, so the folder the user drops MKV files into stays clean, while the
-file stays visible and hand-editable. The file is created on first save.
-
-Public API:
-    UserSettings: Dataclass holding panel preferences.
-    Mode: Processing mode literal.
-    OutputVariant: Output-assembly variant literal.
-    config_path: Location of ``settings.json``.
-    load_user_settings: Read the file (defaults when absent / unreadable).
-    save_user_settings: Write the file atomically (creates ``config/`` if needed).
-"""
+"""Panel preferences persisted to ``config/settings.json`` next to the code."""
 
 from __future__ import annotations
 
@@ -132,14 +118,7 @@ TTS_CONCURRENCY_RANGE: Final[tuple[int, int]] = (1, 100)
 """Allowed inclusive range for persisted per-voice concurrency."""
 
 PALANTIR_ENROLLMENT_URL_PATTERN: Final[str] = r"(?:https://[^\s/?#]+(?:/[^\s?#]*)?)?"
-"""Accepted Palantir enrollment address, or the empty "not configured" value.
-
-An absolute ``https`` address with a host and an optional path prefix, carrying
-neither a query nor a fragment — the rule the model catalog applied before the
-address became a panel preference. This expression is its single owner: the
-settings catalog validates an edit with it and the tolerant loader matches
-persisted text against it, so an editor and the preference file cannot disagree.
-"""
+"""Accepted Palantir enrollment address, or the empty \"not configured\" value."""
 
 _MODES: Final[frozenset[str]] = frozenset(("auto", "manual"))
 """Accepted values for the ``mode`` field."""
@@ -261,50 +240,7 @@ def default_tts_voice_profiles() -> dict[str, TtsVoiceProfileSettings]:
 
 @dataclass(slots=True)
 class UserSettings:
-    """Panel preferences (mode, engines, voice, output placement).
-
-    Attributes:
-        mode: ``"auto"`` (Enter processes everything) or ``"manual"``.
-        processing_order_policy: Ready-first throughput or strict natural order.
-        translation_engine: Selected translation engine id.
-        subtitle_max_chars_per_line: Characters one displayed verse may hold.
-        subtitle_max_lines_per_event: Verses one subtitle event may occupy.
-        translation_chunk_chars: Characters packed into one translation request.
-        translation_batch_size: Lines per request (0 = engine default).
-        translation_concurrency: Concurrent batches per file (semaphore).
-        translation_max_retries: Retry attempts per batch.
-        llm_provider: Selected LLM provider id.
-        llm_provider_model_id: Arbitrary provider model id.
-        llm_temperature: LLM sampling temperature; low keeps translation repeatable.
-        llm_top_p: LLM nucleus-sampling top-p; the range maximum filters nothing.
-        llm_max_output_tokens: Explicit provider output limit, in tokens.
-        llm_translation_style: Selected packaged translation style name.
-        llm_max_concurrency: Maximum concurrently translated LLM files.
-        primary_model_alias: Catalog alias of the main model role, independent of
-            the translation model; empty means no main model is selected.
-        palantir_enrollment_base_url: HTTPS address of the Palantir enrollment
-            serving the proxy routes; empty means it is not configured. Owned
-            here, never in the model catalog, because ``/connect`` edits it.
-        schema_version: Persisted settings schema.
-        tts_engine: Selected text-to-speech engine id.
-        tts_provider_model_id: Provider model or endpoint variant.
-        tts_voice_id: Selected TTS alias or provider voice id.
-        tts_max_retries: Retry attempts for transient synthesis failures.
-        elevenbytes_vpn_enabled: Whether ElevenBytes traffic must use the VPN.
-        tts_output_profile: Final narration sidecar codec profile.
-        tts_output_bitrate: Optional FFmpeg bitrate for lossy profiles.
-        tts_timeline_policy: Narration overlap placement policy.
-        narrator_mix_base_gain_db: Base narrator gain used only while mixing.
-        original_gain_db: Original soundtrack gain used while mixing.
-        tts_voice_profiles: Settings keyed by engine and resolved voice id.
-        elevenbytes_custom_voices: User-defined ElevenBytes aliases.
-        output_variant: Output assembly variant.
-        composition_quality_preset: Quality target for burned-in rendering.
-        audio_language_priority: Preferred source audio languages, best first.
-        subtitle_language_priority: Preferred source subtitle languages, best
-            first. Both lists drive automatic track selection only; manual mode
-            still asks per file.
-    """
+    """Panel preferences (mode, engines, voice, output placement)."""
 
     schema_version: int = SETTINGS_SCHEMA_VERSION
     mode: Mode = "auto"
@@ -544,7 +480,8 @@ class UserSettings:
 
 def _clean_string(raw: dict[str, Any], key: str, allowed: frozenset[str]) -> None:
     """Drop ``key`` from ``raw`` when its value is not in ``allowed``."""
-    if raw.get(key) not in allowed:
+    value: object = raw.get(key)
+    if not isinstance(value, str) or value not in allowed:
         raw.pop(key, None)
 
 
@@ -571,6 +508,20 @@ def _clean_optional_number(raw: dict[str, Any], key: str, low: float, high: floa
     _clean_number(raw, key, low, high)
 
 
+def _clean_integer(raw: dict[str, Any], key: str, low: int, high: int) -> None:
+    """Keep only an in-range integer, excluding booleans and floats."""
+    value: object = raw.get(key)
+    if type(value) is not int or not low <= value <= high:
+        raw.pop(key, None)
+
+
+def _clean_optional_integer(raw: dict[str, Any], key: str, low: int, high: int) -> None:
+    """Keep None or an in-range integer and drop every other value."""
+    if raw.get(key) is None:
+        return
+    _clean_integer(raw, key, low, high)
+
+
 def _clean_language_tuple(raw: dict[str, Any], key: str) -> None:
     """Keep a list of plain language codes as a tuple, or drop the field."""
     value = raw.get(key)
@@ -590,11 +541,7 @@ def _clean_free_string(raw: dict[str, Any], key: str) -> None:
 
 
 def _clean_enrollment_base_url(raw: dict[str, Any]) -> None:
-    """Keep a valid https enrollment address, or drop the field to its default.
-
-    An empty string is a legal "not configured" value, so it is kept as is; a
-    malformed address is dropped instead of being carried into a request.
-    """
+    """Keep a valid https enrollment address, or drop the field to its default."""
     key: str = "palantir_enrollment_base_url"
     value = raw.get(key)
     if not isinstance(value, str):
@@ -847,11 +794,7 @@ def _migrate_schema(raw: dict[str, Any]) -> bool:
 
 
 def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant field validation
-    """Load panel preferences, falling back to defaults.
-
-    Unknown keys are ignored; missing, unreadable, wrong-typed or out-of-range
-    fields fall back to their defaults instead of raising.
-    """
+    """Load panel preferences, falling back to defaults."""
     path = config_path()
     if not path.is_file():
         logger.debug("User settings missing; defaults selected")
@@ -878,27 +821,27 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_string(filtered, "processing_order_policy", _PROCESSING_ORDER_POLICIES)
     _clean_string(filtered, "output_variant", _OUTPUT_VARIANTS)
     _clean_string(filtered, "translation_engine", engine_ids)
-    _clean_number(filtered, "subtitle_max_chars_per_line", *LINE_CHARS_RANGE)
-    _clean_number(filtered, "subtitle_max_lines_per_event", *EVENT_LINES_RANGE)
-    _clean_number(filtered, "translation_chunk_chars", *CHUNK_CHARS_RANGE)
-    _clean_number(filtered, "translation_batch_size", *BATCH_SIZE_RANGE)
-    _clean_number(filtered, "translation_concurrency", *CONCURRENCY_RANGE)
-    _clean_number(filtered, "translation_max_retries", *MAX_RETRIES_RANGE)
+    _clean_integer(filtered, "subtitle_max_chars_per_line", *LINE_CHARS_RANGE)
+    _clean_integer(filtered, "subtitle_max_lines_per_event", *EVENT_LINES_RANGE)
+    _clean_integer(filtered, "translation_chunk_chars", *CHUNK_CHARS_RANGE)
+    _clean_integer(filtered, "translation_batch_size", *BATCH_SIZE_RANGE)
+    _clean_integer(filtered, "translation_concurrency", *CONCURRENCY_RANGE)
+    _clean_integer(filtered, "translation_max_retries", *MAX_RETRIES_RANGE)
     _clean_string(filtered, "llm_provider", llm_engine_ids)
     _clean_free_string(filtered, "llm_provider_model_id")
     _clean_optional_number(filtered, "llm_temperature", *LLM_TEMPERATURE_RANGE)
     _clean_optional_number(filtered, "llm_top_p", *LLM_TOP_P_RANGE)
-    _clean_optional_number(filtered, "llm_max_output_tokens", *LLM_MAX_TOKENS_RANGE)
+    _clean_optional_integer(filtered, "llm_max_output_tokens", *LLM_MAX_TOKENS_RANGE)
     _clean_free_string(filtered, "llm_translation_style")
     _clean_prompt_selection(filtered)
-    _clean_number(filtered, "llm_max_concurrency", *LLM_MAX_CONCURRENCY_RANGE)
+    _clean_integer(filtered, "llm_max_concurrency", *LLM_MAX_CONCURRENCY_RANGE)
     _clean_free_string(filtered, "primary_model_alias")
     _clean_enrollment_base_url(filtered)
     filtered["schema_version"] = SETTINGS_SCHEMA_VERSION
     _clean_string(filtered, "tts_engine", tts_engine_ids)
     _clean_free_string(filtered, "tts_provider_model_id")
     _clean_free_string(filtered, "tts_voice_id")
-    _clean_number(filtered, "tts_max_retries", *TTS_MAX_RETRIES_RANGE)
+    _clean_integer(filtered, "tts_max_retries", *TTS_MAX_RETRIES_RANGE)
     _clean_bool(filtered, "elevenbytes_vpn_enabled")
     _clean_string(filtered, "tts_output_profile", _TTS_OUTPUT_PROFILES)
     _clean_tts_bitrate(filtered)

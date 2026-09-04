@@ -1,48 +1,10 @@
-"""Local catalog of Palantir providers and model aliases.
-
-The runtime file is ``config/anishift.models.jsonc``: JSONC, so a user can
-comment their own entries. It is gitignored; the repository ships only
-``config/anishift.models.example.jsonc``. The catalog says WHERE a model lives
-(relative proxy route, protocol) and WHICH provider model identifier an alias
-stands for. It never holds a token — the Palantir secret lives in the
-environment — and it never persists whether a model is really enabled in the
-enrollment, because that answer belongs to one session only.
-
-The enrollment address is deliberately NOT here. It is a panel preference,
-``UserSettings.palantir_enrollment_base_url``, because ``/connect`` edits it and
-``json5`` cannot write this file back without destroying the comments and the
-formatting the user wrote by hand. Nothing in the application writes the
-catalog; the file is read-only for AniShift, which is what keeps those comments
-safe. A provider route therefore stays relative and the full endpoint is
-assembled by the Palantir configuration from the preference plus that route.
-
-Validation is deliberately two-tiered:
-
-* A file-level defect makes the whole catalog unusable and raises
-  ``ModelCatalogError``: broken JSONC, a duplicated key, an unsupported schema
-  version, or a field whose name suggests a secret.
-* An entry-level defect keeps the rest of the file usable and lands in
-  ``ModelCatalog.issues``. The offending provider ID or model alias is named
-  there instead of vanishing, and is never remapped onto another provider.
-
-Loading and filtering are pure local operations; nothing here opens a socket.
-
-Public API:
-    ModelProtocol: The four supported Foundry wire protocols, re-exported from
-        ``anishift.services.llm.wire_protocol`` so the vocabulary has one owner.
-    ProviderEntry, ModelEntry, ModelLimits, CatalogDefaults, CatalogIssue,
-        ModelCatalog: Frozen catalog DTOs.
-    ModelCatalogError: Typed error raised for an unusable catalog file.
-    model_catalog_path, model_catalog_example_path: Runtime and example paths.
-    parse_model_catalog: Validate JSONC text into a ``ModelCatalog``.
-    load_model_catalog: Read and validate the runtime file.
-    ensure_model_catalog_file: Copy the example when no runtime file exists.
-"""
+"""Local catalog of Palantir providers and model aliases."""
 
 from __future__ import annotations
 
 import shutil
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -111,13 +73,7 @@ _SECRET_NAME_ENDINGS: Final[tuple[str, ...]] = (
     "secret",
     "token",
 )
-"""Separator-free field-name endings that mark a field as secret-looking.
-
-Matched as a suffix of the casefolded name with ``-``, ``_`` and spaces
-removed, so ``apiKey``, ``access_token`` and ``client-secret`` are caught while
-a plural count such as ``max_tokens`` stays legal. Only field names are
-matched; provider IDs and model aliases are user-chosen identifiers.
-"""
+"""Separator-free field-name endings that mark a field as secret-looking."""
 
 _IDENTIFIER_KEYED_SECTIONS: Final[frozenset[str]] = frozenset({"providers", "models"})
 """Root sections whose keys are user-chosen identifiers, not schema fields."""
@@ -125,11 +81,7 @@ _IDENTIFIER_KEYED_SECTIONS: Final[frozenset[str]] = frozenset({"providers", "mod
 _ROOT_KEYS: Final[frozenset[str]] = frozenset(
     {"schema_version", "providers", "models", "defaults"},
 )
-"""Keys the catalog schema defines at the top level.
-
-``enrollment`` is absent on purpose: the address moved to the panel preferences,
-so a leftover section is reported as an unknown field instead of being read.
-"""
+"""Keys the catalog schema defines at the top level."""
 
 _PROVIDER_KEYS: Final[frozenset[str]] = frozenset({"protocol", "path"})
 """Keys the catalog schema defines inside one provider entry."""
@@ -148,14 +100,7 @@ _DEFAULT_ROLE_KEYS: Final[frozenset[str]] = frozenset({"primary", "translation"}
 
 @dataclass(frozen=True, slots=True)
 class CatalogIssue:
-    """One configuration error kept visible instead of silently dropped.
-
-    Attributes:
-        section: Catalog part the error belongs to.
-        key: Provider ID, model alias or field path the error points at.
-        message: Human-readable description of the defect.
-        suggestion: Actionable fix for the user.
-    """
+    """One configuration error kept visible instead of silently dropped."""
 
     section: CatalogSection
     key: str
@@ -165,13 +110,7 @@ class CatalogIssue:
 
 @dataclass(frozen=True, slots=True)
 class ProviderEntry:
-    """One Foundry proxy provider: its protocol and its relative route.
-
-    Attributes:
-        provider_id: Stable ID model entries reference.
-        protocol: Wire protocol used to build a request.
-        path: Proxy route relative to the enrollment address.
-    """
+    """One Foundry proxy provider: its protocol and its relative route."""
 
     provider_id: str
     protocol: ModelProtocol
@@ -180,13 +119,7 @@ class ProviderEntry:
 
 @dataclass(frozen=True, slots=True)
 class ModelLimits:
-    """Optional safe capacity metadata of one model.
-
-    Attributes:
-        context: Total context window in tokens.
-        input: Maximum input tokens per request.
-        output: Maximum output tokens per response.
-    """
+    """Optional safe capacity metadata of one model."""
 
     context: int | None = None
     input: int | None = None
@@ -195,16 +128,7 @@ class ModelLimits:
 
 @dataclass(frozen=True, slots=True)
 class ModelEntry:
-    """One model alias bound to a provider and a provider model identifier.
-
-    Attributes:
-        alias: Stable user-facing ID selected in the UI.
-        provider_id: Provider whose protocol and route carry the request.
-        model_id: Exact identifier or RID sent to the proxy.
-        label: Display name shown in pickers.
-        experimental: Whether the user marked the entry as experimental.
-        limits: Optional safe capacity metadata.
-    """
+    """One model alias bound to a provider and a provider model identifier."""
 
     alias: str
     provider_id: str
@@ -216,12 +140,7 @@ class ModelEntry:
 
 @dataclass(frozen=True, slots=True)
 class CatalogDefaults:
-    """Aliases preselected for the model roles, ``None`` when unresolved.
-
-    Attributes:
-        primary: Alias of the main model.
-        translation: Alias of the model used by the LLM translation engine.
-    """
+    """Aliases preselected for the model roles, ``None`` when unresolved."""
 
     primary: str | None = None
     translation: str | None = None
@@ -229,15 +148,7 @@ class CatalogDefaults:
 
 @dataclass(frozen=True, slots=True)
 class ModelCatalog:
-    """Validated local catalog plus every configuration error it carries.
-
-    Attributes:
-        schema_version: Accepted catalog schema.
-        providers: Usable providers keyed by provider ID.
-        models: Usable model entries keyed by alias.
-        defaults: Aliases preselected for the model roles.
-        issues: Configuration errors of rejected entries, in file order.
-    """
+    """Validated local catalog plus every configuration error it carries."""
 
     schema_version: int
     providers: Mapping[str, ProviderEntry]
@@ -261,19 +172,7 @@ def model_catalog_example_path() -> Path:
 
 
 def parse_model_catalog(source: str) -> ModelCatalog:
-    """Validate JSONC *source* into a catalog without touching the network.
-
-    Args:
-        source: JSONC text of a catalog file.
-
-    Returns:
-        The catalog with every usable entry, plus one issue per rejected
-        entry so no provider ID or model alias disappears unnoticed.
-
-    Raises:
-        ModelCatalogError: The text is not valid JSONC, repeats a key, declares
-            an unsupported schema version, or holds a secret-looking field.
-    """
+    """Validate JSONC *source* into a catalog without touching the network."""
     raw: dict[str, Any] = _decode(source)
     _reject_secret_fields(raw)
     _require_schema_version(raw)
@@ -291,14 +190,7 @@ def parse_model_catalog(source: str) -> ModelCatalog:
 
 
 def load_model_catalog() -> ModelCatalog:
-    """Read and validate the runtime catalog, performing no network access.
-
-    Returns:
-        The parsed catalog, including its configuration issues.
-
-    Raises:
-        ModelCatalogError: The runtime file is absent, unreadable or invalid.
-    """
+    """Read and validate the runtime catalog, performing no network access."""
     path: Path = model_catalog_path()
     if not path.is_file():
         raise _catalog_error(
@@ -325,18 +217,7 @@ def load_model_catalog() -> ModelCatalog:
 
 
 def ensure_model_catalog_file() -> bool:
-    """Create the runtime catalog from the example when none exists yet.
-
-    An existing runtime file is never read, parsed or overwritten, so a valid
-    hand-edited catalog cannot be lost by calling this.
-
-    Returns:
-        ``True`` when the example was copied, ``False`` when a runtime file
-        already exists.
-
-    Raises:
-        ModelCatalogError: No runtime file exists and the example is missing.
-    """
+    """Create the runtime catalog from the example when none exists yet."""
     path: Path = model_catalog_path()
     if path.exists():
         return False
@@ -381,14 +262,7 @@ def _decode(source: str) -> dict[str, Any]:
 
 
 def _is_secret_name(name: str) -> bool:
-    """Whether *name* reads like a secret rather than catalog metadata.
-
-    The casefolded, separator-free name is matched against a trailing secret
-    word, so ``apiKey`` and ``access_token`` are caught while a plural count
-    such as ``max_tokens`` stays legal; because the match is a suffix, a secret
-    word carrying a further suffix — ``authorization_header``, ``token_id`` —
-    is a known blind spot of this rule.
-    """
+    """Whether *name* reads like a secret rather than catalog metadata."""
     normalized: str = name.casefold().replace("-", "").replace("_", "").replace(" ", "")
     return normalized.endswith(_SECRET_NAME_ENDINGS)
 
@@ -417,12 +291,7 @@ def _secret_key_in(mapping: dict[Any, Any]) -> str | None:
 
 
 def _secret_field_name_in_entries(value: object) -> str | None:
-    """Return the first secret-looking field name inside identifier-keyed entries.
-
-    The keys of *value* are provider IDs or model aliases the user picked, so
-    they are identifiers rather than field names and are never matched; each
-    entry behind them is still walked in full.
-    """
+    """Return the first secret-looking field name inside identifier-keyed entries."""
     if not isinstance(value, dict):
         return _secret_field_name(value)
     return next(
@@ -446,15 +315,7 @@ def _secret_field_name_in_catalog(raw: dict[str, Any]) -> str | None:
 
 
 def _reject_secret_fields(raw: dict[str, Any]) -> None:
-    """Reject the whole catalog when a field name looks like a secret.
-
-    The rule covers schema field names at any depth, not the provider IDs and
-    model aliases the user chose, and it is a heuristic rather than a proof
-    that the file holds no secret.
-
-    Raises:
-        ModelCatalogError: A secret-looking field name was found.
-    """
+    """Reject the whole catalog when a field name looks like a secret."""
     found: str | None = _secret_field_name_in_catalog(raw)
     if found is None:
         return
@@ -466,11 +327,7 @@ def _reject_secret_fields(raw: dict[str, Any]) -> None:
 
 
 def _require_schema_version(raw: dict[str, Any]) -> None:
-    """Accept only the supported schema version, treating absence as version 1.
-
-    Raises:
-        ModelCatalogError: The declared version is not supported.
-    """
+    """Accept only the supported schema version, treating absence as version 1."""
     version: object = raw.get("schema_version", CATALOG_SCHEMA_VERSION)
     if type(version) is int and version == CATALOG_SCHEMA_VERSION:
         return
@@ -512,7 +369,10 @@ def _relative_route(value: object) -> str | None:
     route: str | None = _nonempty_string(value)
     if route is None or not route.startswith("/"):
         return None
-    parts: SplitResult = urlsplit(route)
+    try:
+        parts: SplitResult = urlsplit(route)
+    except ValueError:
+        return None
     if parts.scheme or parts.netloc or parts.query or parts.fragment:
         return None
     return route
@@ -577,11 +437,33 @@ def _parse_providers(value: object, issues: list[CatalogIssue]) -> dict[str, Pro
         )
         return {}
     entries: dict[str, ProviderEntry] = {}
-    for key, item in value.items():
-        entry: ProviderEntry | None = _parse_provider(str(key).strip(), item, issues)
+    for key, item in _unique_entries(value, "providers", issues):
+        entry: ProviderEntry | None = _parse_provider(key, item, issues)
         if entry is not None:
             entries[entry.provider_id] = entry
     return entries
+
+
+def _unique_entries(
+    value: dict[Any, Any],
+    section: CatalogSection,
+    issues: list[CatalogIssue],
+) -> Iterator[tuple[str, object]]:
+    """Yield entries with unambiguous normalized IDs and report collisions."""
+    counts: Counter[str] = Counter(str(key).strip() for key in value)
+    for key, item in value.items():
+        identifier: str = str(key).strip()
+        if counts[identifier] > 1:
+            issues.append(
+                CatalogIssue(
+                    section=section,
+                    key=str(key),
+                    message=f"Duplicate catalog identifier after trimming whitespace: {identifier}",
+                    suggestion="Give each entry a unique identifier without surrounding whitespace",
+                ),
+            )
+            continue
+        yield identifier, item
 
 
 def _parse_limit(alias: str, name: str, value: object, issues: list[CatalogIssue]) -> int | None:
@@ -680,8 +562,8 @@ def _parse_models(
         )
         return {}
     entries: dict[str, ModelEntry] = {}
-    for key, item in value.items():
-        entry: ModelEntry | None = _parse_model(str(key).strip(), item, providers, issues)
+    for key, item in _unique_entries(value, "models", issues):
+        entry: ModelEntry | None = _parse_model(key, item, providers, issues)
         if entry is not None:
             entries[entry.alias] = entry
     return entries
