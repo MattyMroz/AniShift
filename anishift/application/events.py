@@ -12,7 +12,6 @@ from anishift.application.planning import TaskState
 from anishift.utils.logger import get_logger
 
 __all__ = [
-    "EventBuffer",
     "RunEvent",
     "RunEventEmitter",
     "RunEventKind",
@@ -72,8 +71,10 @@ class RunEvent:
         _validate_optional_id(self.group_id)
         _validate_optional_id(self.task_id)
         _validate_progress(self.progress_percent)
-        if self.kind is RunEventKind.TASK_PROGRESS and (self.task_id is None or self.progress_percent is None):
-            msg = "Task progress events require a task ID and percentage"
+        if self.kind is RunEventKind.TASK_PROGRESS and (
+            self.task_id is None or (self.progress_percent is None and not (self.message or "").strip())
+        ):
+            msg = "Task progress events require a task ID and percentage or activity message"
             raise ValueError(msg)
         object.__setattr__(self, "message", sanitize_event_message(self.message))
 
@@ -92,8 +93,12 @@ class WorkerNotification:
             msg = "Worker notification requires a task ID"
             raise ValueError(msg)
         _validate_progress(self.progress_percent)
-        if self.kind is WorkerNotificationKind.PROGRESS and self.progress_percent is None:
-            msg = "Worker progress notification requires a percentage"
+        if (
+            self.kind is WorkerNotificationKind.PROGRESS
+            and self.progress_percent is None
+            and not (self.message or "").strip()
+        ):
+            msg = "Worker progress notification requires a percentage or activity message"
             raise ValueError(msg)
         object.__setattr__(self, "message", sanitize_event_message(self.message))
 
@@ -151,41 +156,6 @@ class RunEventEmitter:
         return event
 
 
-class EventBuffer:
-    """Bounded-progress, lossless-state buffer shared by workers and a frontend."""
-
-    __slots__ = ("_lock", "_progress", "_state_events")
-
-    def __init__(self) -> None:
-        """Create an empty thread-safe buffer."""
-        self._lock: threading.Lock = threading.Lock()
-        self._state_events: list[RunEvent] = []
-        self._progress: dict[tuple[str, str], RunEvent] = {}
-
-    def push(self, event: RunEvent) -> None:
-        """Keep every state event and only the latest progress per task and run."""
-        with self._lock:
-            if event.kind is RunEventKind.TASK_PROGRESS and event.task_id is not None:
-                key: tuple[str, str] = (event.run_id, event.task_id)
-                current: RunEvent | None = self._progress.get(key)
-                if current is None or event.sequence > current.sequence:
-                    self._progress[key] = event
-                return
-            self._state_events.append(event)
-
-    def emit(self, event: RunEvent) -> None:
-        """Accept the event-sink protocol used by the application facade."""
-        self.push(event)
-
-    def drain(self) -> tuple[RunEvent, ...]:
-        """Atomically return buffered events in per-run sequence order and clear them."""
-        with self._lock:
-            events: tuple[RunEvent, ...] = (*self._state_events, *self._progress.values())
-            self._state_events.clear()
-            self._progress.clear()
-        return tuple(sorted(events, key=lambda event: (event.run_id, event.sequence)))
-
-
 def sanitize_event_message(message: str | None) -> str | None:
     """Redact common secret and absolute-path forms from public event text."""
     if message is None:
@@ -205,7 +175,7 @@ def sanitize_event_message(message: str | None) -> str | None:
     sanitized = re.sub(r"(?i)\bsk-[A-Za-z0-9_-]+", "<redacted>", sanitized)
     sanitized = re.sub(r"\\\\[^\\\s]+\\[^\s]+", "<path>", sanitized)
     sanitized = re.sub(r"\b[A-Za-z]:[\\/][^\s]+", "<path>", sanitized)
-    sanitized = re.sub(r"(?<![:/\\])/(?:[^/\s]+/)*[^/\s]+", "<path>", sanitized)
+    sanitized = re.sub(r"(?<![\w:/\\])/(?:[^/\s]+/)*[^/\s]+", "<path>", sanitized)
     return sanitized[:500]
 
 

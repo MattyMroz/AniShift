@@ -1,17 +1,15 @@
-"""Free Google Translate engine (googletrans 4.x, async under a sync facade).
-
-googletrans is async, so the batching ladder stays async and the sync
-``translate_batch`` wraps a whole file in one ``asyncio.run`` (one event loop per
-file, never per batch).
-"""
+"""Free Google Translate engine (mobile page, synchronous)."""
 
 from __future__ import annotations
 
-import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from anishift.services.translation._retry import call_with_retry_async
+from anishift.services.translation._retry import call_with_retry
 from anishift.services.translation.engines.google._batching import translate_lines
+from anishift.services.translation.engines.google.api_backend import (
+    TRANSIENT_ERRORS,
+    MobileTranslateClient,
+)
 from anishift.services.translation.engines.google.config import GoogleConfig
 from anishift.services.translation.engines.google.constants import (
     RETRY_BACKOFF_BASE_S,
@@ -25,12 +23,12 @@ if TYPE_CHECKING:
 
 
 class GoogleService:
-    """Translation engine backed by the free googletrans client."""
+    """Translation engine backed by the free Google Translate mobile page."""
 
-    __slots__ = ("_config",)
+    __slots__ = ("_client", "_config")
 
     def __init__(self, config: TranslationConfig | GoogleConfig) -> None:
-        """Store config; the client is created per call inside the event loop."""
+        """Store config; the HTTP client is created on first use."""
         if isinstance(config, GoogleConfig):
             self._config = config
         else:
@@ -38,6 +36,7 @@ class GoogleService:
                 batch_size=config.batch_size,
                 max_retries=config.max_retries,
             )
+        self._client: MobileTranslateClient | None = None
 
     @property
     def engine_id(self) -> str:
@@ -46,11 +45,15 @@ class GoogleService:
 
     @property
     def is_available(self) -> bool:
-        """The free Google endpoint needs no key, so it is always available."""
+        """The free endpoint needs no key, so it is always available."""
         return True
 
     def close(self) -> None:
-        """No persistent client to release."""
+        """Release the HTTP client; idempotent."""
+        if self._client is None:
+            return
+        self._client.close()
+        self._client = None
 
     def input_policy(self, stream: TranslationStream) -> TranslationInputPolicy:
         """Deduplicate both subtitle streams before translation."""
@@ -65,65 +68,52 @@ class GoogleService:
         target_lang: str,
         observer: TranslationObserver | None = None,
     ) -> list[BatchedLine]:
-        """Translate one batch, preserving order and length (one event loop)."""
-        del source_lang  # googletrans auto-detects the source language
+        """Translate one batch, preserving order and length."""
         if not texts:
             return []
-        dest = (target_lang or "pl").lower()
-        return asyncio.run(self._translate_all(texts, dest=dest, observer=observer))
+        source = (source_lang or "auto").lower()
+        target = (target_lang or "pl").lower()
 
-    async def _translate_all(
-        self,
-        texts: list[str],
-        *,
-        dest: str,
-        observer: TranslationObserver | None,
-    ) -> list[BatchedLine]:
-        """Build the client and run the batching ladder in this event loop."""
-        from googletrans import Translator  # type: ignore[import-untyped]  # noqa: PLC0415 - lazy SDK import
+        def translate_joined(joined: str) -> str:
+            return self._translate_with_retry(joined, source=source, target=target, observer=observer)
 
-        client: Any = Translator()
-
-        async def _translate_joined(joined: str) -> str:
-            return await self._call_with_retry(client, joined, dest=dest, observer=observer)
-
-        return await translate_lines(
+        return translate_lines(
             texts,
             batch_size=self._config.batch_size,
             max_chars=self._config.max_chars_per_request,
-            translate_joined=_translate_joined,
+            translate_joined=translate_joined,
         )
 
-    async def _call_with_retry(
+    def _ensure_client(self) -> MobileTranslateClient:
+        """Return the HTTP client, creating it on first use (idempotent)."""
+        if self._client is None:
+            self._client = MobileTranslateClient()
+        return self._client
+
+    def _translate_with_retry(
         self,
-        client: Any,
         text: str,
         *,
-        dest: str,
-        observer: TranslationObserver | None = None,
+        source: str,
+        target: str,
+        observer: TranslationObserver | None,
     ) -> str:
-        """Call googletrans, retrying transient HTTP errors with shared backoff.
+        """Translate one string, retrying the failures a retry can fix."""
+        client: MobileTranslateClient = self._ensure_client()
 
-        ``httpx.HTTPError`` is the only stable transient class googletrans
-        raises (network/timeout/status); anything else (parse failures) raises
-        immediately and the batching ladder falls back per-line.
-        """
-        import httpx  # noqa: PLC0415 - lazy import: ships with googletrans
+        def once() -> str:
+            return client.translate(text, source_lang=source, target_lang=target)
 
-        async def _once() -> Any:
-            return await client.translate(text, dest=dest)
-
-        result = await call_with_retry_async(
-            _once,
+        return call_with_retry(
+            once,
             max_attempts=self._config.max_retries + 1,
-            retry_on=httpx.HTTPError,
+            retry_on=TRANSIENT_ERRORS,
             base_s=RETRY_BACKOFF_BASE_S,
             cap_s=RETRY_MAX_WAIT_S,
             on_retry=(
                 None if observer is None else lambda attempt, maximum: observer.retry(self.engine_id, attempt, maximum)
             ),
         )
-        return str(result.text)
 
 
 __all__ = ["GoogleService"]

@@ -1,17 +1,4 @@
-"""Diagnostic doctor — health checks returned as a structured report.
-
-One flat, synchronous module (no ``doctor_checks/`` package, no async gather):
-AniShift has ~6 checks, not 15. ``run_doctor()`` runs them in order and returns
-a list of :class:`CheckResult`. The CLI renders the list.
-
-Checks:
-
-1. ``python_version``  — interpreter >= 3.14
-2. ``uv_installed``    — uv on PATH
-3. ``binaries``        — mkvextract, mkvmerge, ffmpeg present
-4. ``api_keys``        — which optional API keys are configured (never a failure)
-5. ``workspace``       — workspace root resolves and is writable
-"""
+"""Diagnostic doctor — health checks returned as a structured report."""
 
 from __future__ import annotations
 
@@ -69,15 +56,7 @@ class CheckStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class CheckResult:
-    """Result of one diagnostic check.
-
-    Attributes:
-        name: Stable check identifier (``"python_version"``).
-        status: Outcome category.
-        message: One-line human-readable summary.
-        suggestion: Optional actionable hint shown on failure.
-        details: Extra structured context for machine consumers.
-    """
+    """Result of one diagnostic check."""
 
     name: str
     status: CheckStatus

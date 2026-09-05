@@ -7,12 +7,22 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from pathlib import PurePath, PureWindowsPath
+from traceback import FrameSummary, StackSummary, TracebackException
 from typing import TYPE_CHECKING, Any, Final, cast
 
 __all__ = ["scrub_message", "scrub_patcher"]
 
 if TYPE_CHECKING:
-    from loguru import Record
+    from loguru import Record, RecordException, RecordFile
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+_ABSOLUTE_PATH_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"""(?P<quote>["'])(?P<quoted>(?:[A-Za-z]:[\\/]|\\\\|/)[^\r\n]*?)(?P=quote)"""
+    r"""|(?<![\w:/\\])(?P<plain>(?:[A-Za-z]:[\\/]|\\\\|/)(?:[^\r\n/\\<>"']+[\\/])*[^\s/\\<>"']+)""",
+)
+"""Quoted and unquoted absolute Windows, UNC and POSIX paths."""
 
 _SCRUB_PATTERNS: Final[list[tuple[re.Pattern[str], str]]] = [
     (re.compile(r"(api[_-]?key|apikey|secret[_-]?key|access[_-]?key)\s*[=:]\s*\S+", re.IGNORECASE), r"\1=***"),
@@ -54,7 +64,15 @@ def scrub_message(text: str) -> str:
     """
     for pattern, replacement in _SCRUB_PATTERNS:
         text = pattern.sub(replacement, text)
-    return text
+    return _ABSOLUTE_PATH_PATTERN.sub(_path_name, text)
+
+
+def _path_name(match: re.Match[str]) -> str:
+    """Retain only a path's basename and its surrounding quote."""
+    quote: str = match.group("quote") or ""
+    path: str = match.group("quoted") or match.group("plain")
+    name: str = PureWindowsPath(path).name or "<path>"
+    return f"{quote}{name}{quote}"
 
 
 def scrub_patcher(record: Record) -> None:
@@ -68,6 +86,9 @@ def scrub_patcher(record: Record) -> None:
     raw_message: str = record["message"]
     sensitive_values: frozenset[str] = _sensitive_values(raw_message)
     record["message"] = scrub_message(raw_message)
+    source_file: RecordFile | None = record.get("file")
+    if source_file is not None:
+        source_file.path = source_file.name
     extra = record.get("extra")
     if isinstance(extra, Mapping):
         # Mapping input to _scrub_value always yields a dict via the Mapping branch.
@@ -75,6 +96,7 @@ def scrub_patcher(record: Record) -> None:
     exception = record.get("exception")
     if exception is None:
         return
+    record.setdefault("extra", {})["_safe_traceback"] = _safe_traceback(exception)
     original: str = str(exception.value)
     scrubbed: str = scrub_message(original)
     if scrubbed == original:
@@ -87,6 +109,33 @@ def scrub_patcher(record: Record) -> None:
     )
 
 
+def _safe_traceback(exception: RecordException) -> str:
+    """Preserve exception diagnostics without paths, source code or locals."""
+    error: BaseException = exception.value if exception.value is not None else RuntimeError("Exception unavailable")
+    summary: TracebackException = TracebackException(
+        exception.type or type(error),
+        error,
+        exception.traceback,
+        lookup_lines=False,
+        capture_locals=False,
+    )
+    pending: list[TracebackException] = [summary]
+    while pending:
+        current: TracebackException = pending.pop()
+        current.stack = StackSummary.from_list(
+            [
+                FrameSummary(PureWindowsPath(frame.filename).name, frame.lineno, frame.name, lookup_line=False, line="")
+                for frame in current.stack
+            ],
+        )
+        if hasattr(current, "filename"):
+            current.filename = PureWindowsPath(current.filename or "").name
+            current.text = ""
+        pending.extend(item for item in (current.__cause__, current.__context__) if item is not None)
+        pending.extend(current.exceptions or ())
+    return scrub_message("".join(summary.format())).rstrip()
+
+
 def _scrub_value(  # noqa: PLR0911 — one guard clause per type keeps dispatch flat and readable
     value: object,
     *,
@@ -96,13 +145,11 @@ def _scrub_value(  # noqa: PLR0911 — one guard clause per type keeps dispatch 
     """Return a recursively scrubbed structured log value."""
     if key and _SENSITIVE_KEY_PATTERN.search(key) is not None:
         return "***"
-    if isinstance(value, str):
-        if value in sensitive_values:
-            return "***"
-        return scrub_message(value)
+    if isinstance(value, str | PurePath):
+        return _scrub_text(value, sensitive_values=sensitive_values)
     if isinstance(value, Mapping):
         return {
-            str(item_key): _scrub_value(
+            _scrub_text(item_key, sensitive_values=sensitive_values): _scrub_value(
                 item_value,
                 key=str(item_key),
                 sensitive_values=sensitive_values,
@@ -116,6 +163,16 @@ def _scrub_value(  # noqa: PLR0911 — one guard clause per type keeps dispatch 
     if isinstance(value, set):
         return {_scrub_value(item, sensitive_values=sensitive_values) for item in value}
     return value
+
+
+def _scrub_text(value: object, *, sensitive_values: frozenset[str] = frozenset()) -> str:
+    """Sanitize text and retain only the name of rooted path objects."""
+    text: str = str(value)
+    if text in sensitive_values:
+        return "***"
+    if isinstance(value, PurePath) and value.root:
+        text = value.name
+    return scrub_message(text)
 
 
 def _sensitive_values(text: str) -> frozenset[str]:

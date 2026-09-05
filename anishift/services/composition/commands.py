@@ -93,14 +93,7 @@ def merge_command(
     mkvmerge: Path,
     destination: Path,
 ) -> tuple[str, ...]:
-    """Build the mkvmerge invocation adding lector and subtitle tracks.
-
-    Original tracks, attachments, chapters, and tags are copied by default, so
-    only the appended files carry explicit metadata. No ``--track-order`` is
-    passed: mkvmerge lays files out in command order, which already puts every
-    appended track after the whole source. Naming only the added tracks would
-    instead push the source's own audio and subtitles behind them.
-    """
+    """Build the mkvmerge invocation adding lector and subtitle tracks."""
     arguments: list[str] = [
         str(mkvmerge),
         "--gui-mode",
@@ -168,17 +161,16 @@ def burn_command(  # noqa: PLR0913 - render inputs stay explicit instead of a wr
     audio_codec: str,
     destination: Path,
 ) -> tuple[str, ...]:
-    """Build the FFmpeg invocation rendering one MP4.
-
-    The picture is always re-encoded when a subtitle filter is present; a copy
-    of the video stream is impossible while libass composites frames.
-    ``audio_codec`` describes the stream actually mapped into the result — the
-    narration sidecar when one exists, otherwise the source's own audio.
-    """
-    arguments: list[str] = [str(ffmpeg), "-y", "-hide_banner", "-nostats"]
-    arguments.extend(("-i", str(plan.source_path)))
+    """Build the FFmpeg invocation rendering one MP4."""
+    arguments: list[str] = [
+        str(ffmpeg.resolve()) if ffmpeg.is_file() else str(ffmpeg),
+        "-y",
+        "-hide_banner",
+        "-nostats",
+    ]
+    arguments.extend(("-i", str(plan.source_path.resolve())))
     if plan.narration_audio is not None:
-        arguments.extend(("-i", str(plan.narration_audio)))
+        arguments.extend(("-i", str(plan.narration_audio.resolve())))
         arguments.extend(("-map", "0:v:0", "-map", "1:a:0"))
     else:
         arguments.extend(("-map", "0:v:0", "-map", "0:a:0?"))
@@ -193,7 +185,7 @@ def burn_command(  # noqa: PLR0913 - render inputs stay explicit instead of a wr
     arguments.extend(("-c:a", "copy") if mp4_audio_is_copyable(audio_codec) else ("-c:a", "aac"))
     arguments.extend(("-movflags", "+faststart"))
     arguments.extend(("-progress", "pipe:1"))
-    arguments.append(str(destination))
+    arguments.append(str(destination.resolve()))
     return tuple(arguments)
 
 
@@ -207,9 +199,16 @@ def container_burn_command(  # noqa: PLR0913 - explicit process inputs avoid hid
     destination: Path,
 ) -> tuple[str, ...]:
     """Build one MP4 command without deriving burn or audio policy from presence alone."""
-    arguments: list[str] = [str(ffmpeg), "-y", "-hide_banner", "-nostats", "-i", str(request.source_video)]
+    arguments: list[str] = [
+        str(ffmpeg.resolve()) if ffmpeg.is_file() else str(ffmpeg),
+        "-y",
+        "-hide_banner",
+        "-nostats",
+        "-i",
+        str(request.source_video.resolve()),
+    ]
     if request.narration_audio is not None:
-        arguments.extend(("-i", str(request.narration_audio)))
+        arguments.extend(("-i", str(request.narration_audio.resolve())))
     arguments.extend(("-map", "0:v:0"))
     if request.keep_original_audio:
         arguments.extend(("-map", "0:a:0?"))
@@ -227,7 +226,7 @@ def container_burn_command(  # noqa: PLR0913 - explicit process inputs avoid hid
         arguments.extend(("-c:a", "aac"))
     elif request.keep_original_audio or request.narration_audio is not None:
         arguments.extend(("-c:a", "copy") if mp4_audio_is_copyable(audio_codec) else ("-c:a", "aac"))
-    arguments.extend(("-movflags", "+faststart", "-progress", "pipe:1", str(destination)))
+    arguments.extend(("-movflags", "+faststart", "-progress", "pipe:1", str(destination.resolve())))
     return tuple(arguments)
 
 
@@ -237,11 +236,7 @@ def subtitle_filter_argument(
     kind: str,
     fonts_dir: Path | None = None,
 ) -> str:
-    """Return the ``-vf`` value rendering one subtitle file.
-
-    ``ass`` preserves every V4+ style verbatim; ``subtitles`` is used only for
-    SRT, which libass renders with its default style.
-    """
+    """Return the ``-vf`` value rendering one subtitle file."""
     filter_name: str = "ass" if kind == "ass" else "subtitles"
     value: str = f"{filter_name}={escape_filter_path(subtitle)}"
     if fonts_dir is not None:
@@ -286,31 +281,40 @@ class StreamingRunner:
         on_percent: Callable[[int], None] | None = None,
         cancel: threading.Event | None = None,
         warning_exit_code: int | None = None,
+        cwd: Path | None = None,
     ) -> CommandOutcome:
-        """Execute one command, streaming stdout and enforcing cancellation.
-
-        Both pipes are drained by daemon threads: a process that stops printing
-        still meets its cancellation and timeout checks every poll interval,
-        and a noisy stderr never fills its buffer and deadlocks the run.
-        """
+        """Execute one command, streaming stdout and enforcing cancellation."""
         timer: Timer = Timer(operation, auto_start=True)
         logger.debug("Composition subprocess starting", operation=operation)
-        process: subprocess.Popen[str] = _spawn(command, operation)
+        process: subprocess.Popen[str] = _spawn(command, operation, cwd=cwd)
         lines: queue.Queue[str | None] = queue.Queue()
         stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
-        _drain(process.stdout, lines.put, done=lambda: lines.put(None))
-        _drain(process.stderr, stderr_tail.append)
+        readers: tuple[threading.Thread, ...] = (
+            _drain(process.stdout, lines.put, done=lambda: lines.put(None)),
+            _drain(process.stderr, stderr_tail.append),
+        )
         last_percent: int = -1
-        while True:
-            self._guard(process, operation=operation, timer=timer, timeout_s=timeout_s, cancel=cancel)
-            try:
-                line: str | None = lines.get(timeout=_POLL_SECONDS)
-            except queue.Empty:
-                continue
-            if line is None:
-                break
-            last_percent = _report(line, progress=progress, on_percent=on_percent, last_percent=last_percent)
-        returncode: int = process.wait()
+        try:
+            while True:
+                self._guard(process, operation=operation, timer=timer, timeout_s=timeout_s, cancel=cancel)
+                try:
+                    line: str | None = lines.get(timeout=_POLL_SECONDS)
+                except queue.Empty:
+                    continue
+                if line is None:
+                    break
+                last_percent = _report(line, progress=progress, on_percent=on_percent, last_percent=last_percent)
+            while True:
+                self._guard(process, operation=operation, timer=timer, timeout_s=timeout_s, cancel=cancel)
+                try:
+                    returncode: int = process.wait(timeout=_POLL_SECONDS)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        finally:
+            self._stop(process)
+            for reader in readers:
+                reader.join(timeout=self._shutdown_grace_s)
         timer.stop()
         stderr: str = _safe_stderr(stderr_tail)
         had_warnings: bool = warning_exit_code is not None and returncode == warning_exit_code
@@ -356,9 +360,10 @@ class StreamingRunner:
             process.wait(timeout=self._shutdown_grace_s)
         except subprocess.TimeoutExpired:
             process.kill()
+            process.wait(timeout=self._shutdown_grace_s)
 
 
-def _spawn(command: Sequence[str], operation: str) -> subprocess.Popen[str]:
+def _spawn(command: Sequence[str], operation: str, *, cwd: Path | None = None) -> subprocess.Popen[str]:
     """Start one external process with both pipes captured as text."""
     try:
         return subprocess.Popen(  # noqa: S603 - command built from validated binaries and paths
@@ -370,21 +375,33 @@ def _spawn(command: Sequence[str], operation: str) -> subprocess.Popen[str]:
             errors="replace",
             bufsize=1,
             creationflags=_NEW_PROCESS_GROUP,
+            cwd=cwd,
         )
     except OSError as error:
         _raise_process(operation, None, str(error), ErrorCode.IO_ERROR, cause=error)
 
 
-def _drain(stream: IO[str] | None, sink: Callable[[str], None], *, done: Callable[[], None] | None = None) -> None:
+def _drain(
+    stream: IO[str] | None,
+    sink: Callable[[str], None],
+    *,
+    done: Callable[[], None] | None = None,
+) -> threading.Thread:
     """Consume one pipe in a daemon thread so its buffer never fills."""
 
     def _pump() -> None:
-        for line in stream or ():
-            sink(line)
-        if done is not None:
-            done()
+        try:
+            for line in stream or ():
+                sink(line)
+        finally:
+            if stream is not None:
+                stream.close()
+            if done is not None:
+                done()
 
-    threading.Thread(target=_pump, name="composition-pipe", daemon=True).start()
+    reader: threading.Thread = threading.Thread(target=_pump, name="composition-pipe", daemon=True)
+    reader.start()
+    return reader
 
 
 def _report(
@@ -400,7 +417,10 @@ def _report(
     percent: int | None = progress(line)
     if percent is None or percent == last_percent:
         return last_percent
-    on_percent(percent)
+    try:
+        on_percent(percent)
+    except Exception:  # noqa: BLE001 - observers never own subprocess execution
+        logger.warning("Composition progress observer failed")
     return percent
 
 

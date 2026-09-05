@@ -4,14 +4,29 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
-    from anishift.application.discovery import DiscoveryResult, DiscoveryWarning
+    from anishift.application.discovery import (
+        PRIMARY_SOURCE_SUFFIXES,
+        DiscoveryResult,
+        DiscoveryWarning,
+    )
     from anishift.application.inspection import (
         InspectedSourceGroup,
         InspectedWorkspace,
         InspectionWarning,
         WorkspaceInspector,
     )
-    from anishift.application.service import AppService, AutoPresetDraft, ExecutionHandlerFactory, SettingsDraft
+    from anishift.application.service import (
+        AppService,
+        AutoPresetDraft,
+        EnvironmentSettingStatus,
+        ExecutionHandlerFactory,
+        ModelAvailability,
+        ModelProbeResult,
+        SettingsDraft,
+        TranslationModelOption,
+    )
+    from anishift.setup.doctor import CheckResult
+    from anishift.setup.installer import ResourceResult
 
 from anishift.application.artifacts import (
     Artifact,
@@ -24,7 +39,6 @@ from anishift.application.artifacts import (
 )
 from anishift.application.cancellation import CancellationToken, EventCancellationToken
 from anishift.application.events import (
-    EventBuffer,
     RunEvent,
     RunEventEmitter,
     RunEventKind,
@@ -65,8 +79,10 @@ from anishift.application.results import (
     RunResult,
     TaskResult,
 )
+from anishift.application.selection import group_is_ready, ready_group_ids
 
 __all__ = [
+    "PRIMARY_SOURCE_SUFFIXES",
     "AppService",
     "Artifact",
     "ArtifactKind",
@@ -77,9 +93,10 @@ __all__ = [
     "AutoPresetDraft",
     "BurnSubtitleProduct",
     "CancellationToken",
+    "CheckResult",
     "DiscoveryResult",
     "DiscoveryWarning",
-    "EventBuffer",
+    "EnvironmentSettingStatus",
     "EventCancellationToken",
     "ExecutionHandlerFactory",
     "ExecutionPlan",
@@ -94,6 +111,8 @@ __all__ = [
     "InspectedWorkspace",
     "InspectionWarning",
     "MkvTrackProduct",
+    "ModelAvailability",
+    "ModelProbeResult",
     "Mp4AudioSource",
     "PlanProblem",
     "PlanTask",
@@ -101,6 +120,7 @@ __all__ = [
     "ProducedArtifact",
     "ProductIntent",
     "ProductKind",
+    "ResourceResult",
     "RunEvent",
     "RunEventEmitter",
     "RunEventKind",
@@ -116,23 +136,33 @@ __all__ = [
     "TaskResult",
     "TaskState",
     "TranslationAction",
+    "TranslationModelOption",
     "WorkerNotification",
     "WorkerNotificationKind",
     "WorkspaceInspector",
+    "group_is_ready",
     "plan_auto",
     "plan_manual",
+    "ready_group_ids",
 ]
 
 _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "PRIMARY_SOURCE_SUFFIXES": ("anishift.application.discovery", "PRIMARY_SOURCE_SUFFIXES"),
     "AppService": ("anishift.application.service", "AppService"),
     "AutoPresetDraft": ("anishift.application.service", "AutoPresetDraft"),
+    "EnvironmentSettingStatus": ("anishift.application.service", "EnvironmentSettingStatus"),
+    "CheckResult": ("anishift.setup.doctor", "CheckResult"),
     "DiscoveryResult": ("anishift.application.discovery", "DiscoveryResult"),
     "DiscoveryWarning": ("anishift.application.discovery", "DiscoveryWarning"),
     "InspectedSourceGroup": ("anishift.application.inspection", "InspectedSourceGroup"),
     "InspectedWorkspace": ("anishift.application.inspection", "InspectedWorkspace"),
     "InspectionWarning": ("anishift.application.inspection", "InspectionWarning"),
     "ExecutionHandlerFactory": ("anishift.application.service", "ExecutionHandlerFactory"),
+    "ModelAvailability": ("anishift.application.service", "ModelAvailability"),
+    "ModelProbeResult": ("anishift.application.service", "ModelProbeResult"),
+    "ResourceResult": ("anishift.setup.installer", "ResourceResult"),
     "SettingsDraft": ("anishift.application.service", "SettingsDraft"),
+    "TranslationModelOption": ("anishift.application.service", "TranslationModelOption"),
     "WorkspaceInspector": ("anishift.application.inspection", "WorkspaceInspector"),
 }
 """I/O exports loaded only when requested, avoiding eager package import cycles."""

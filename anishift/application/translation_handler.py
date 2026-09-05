@@ -30,6 +30,7 @@ from anishift.services.subtitles import (
     write_translated,
 )
 from anishift.services.translation.errors import TranslationError
+from anishift.services.translation.layout_config import LayoutConfig
 from anishift.services.translation.linebreak import split_for_layout, split_line
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation
@@ -72,14 +73,30 @@ class _CancellationView:
 
 
 class _ProgressObserver:
-    __slots__ = ("_progress", "_task_id")
+    __slots__ = ("_completed", "_progress", "_task_id")
 
     def __init__(self, task_id: str, progress: TaskProgressSink) -> None:
         self._task_id: str = task_id
         self._progress: TaskProgressSink = progress
+        self._completed: int = 0
 
-    def retry(self, engine_id: str, attempt: int, max_attempts: int) -> None:
-        message: str = f"{engine_id} retry {attempt}/{max_attempts}"
+    def progress(self, engine_id: str, completed: int, total: int) -> None:
+        del engine_id
+        percent: int = 99 if total <= 0 else min(99, max(0, completed * 100 // total))
+        self._completed = percent
+        self._progress.emit(
+            WorkerNotification(WorkerNotificationKind.PROGRESS, self._task_id, self._completed),
+        )
+
+    def retry(
+        self,
+        engine_id: str,
+        attempt: int,
+        max_attempts: int,
+        reason: str | None = None,
+    ) -> None:
+        label: str = reason.replace("_", " ").title() if reason else engine_id.upper()
+        message: str = f"{label} - retry {attempt}/{max_attempts}"
         self._progress.emit(WorkerNotification(WorkerNotificationKind.RETRY, self._task_id, message=message))
 
     def fallback(self, failed_engine_id: str, next_engine_id: str) -> None:
@@ -98,12 +115,19 @@ class TranslationVerses:
 class TranslationTaskHandler:
     """Translate one subtitle artifact and write a complete Polish staging file."""
 
-    __slots__ = ("_run_root", "_service")
+    __slots__ = ("_layout", "_run_root", "_service")
 
-    def __init__(self, service: TranslationExecutor, *, run_root: Path) -> None:
+    def __init__(
+        self,
+        service: TranslationExecutor,
+        *,
+        run_root: Path,
+        layout: LayoutConfig | None = None,
+    ) -> None:
         """Bind one configured translation facade to the run scope."""
         self._service: TranslationExecutor = service
         self._run_root: Path = run_root
+        self._layout: LayoutConfig = layout if layout is not None else LayoutConfig()
 
     def execute(
         self,
@@ -161,7 +185,7 @@ class TranslationTaskHandler:
         if parameters.get("source_kind") != "txt" or output.subtitle_format != "srt" or source.path is None:
             msg = "Text translation requires source_kind=txt and an SRT output"
             raise ExecutionError(msg)
-        spoken: tuple[SpokenLine, ...] = text_spoken_lines(read_txt(source.path))
+        spoken: tuple[SpokenLine, ...] = text_spoken_lines(read_txt(source.path), self._layout)
         result: FileTranslation = self._service.translate_file(
             list(spoken),
             [],
@@ -169,6 +193,8 @@ class TranslationTaskHandler:
             cancel=_CancellationView(cancel),
             observer=observer,
         )
+        _require_complete_translation(result, spoken, ())
+        cancel.raise_if_cancelled()
         destination: Path = task_staging_path(self._run_root, task, output, ".srt")
         return result, spoken_to_srt(result.spoken, destination) if result.is_success else None
 
@@ -192,11 +218,42 @@ class TranslationTaskHandler:
         result: FileTranslation = translate_subtitle_split(self._service, split, cancel, observer=observer)
         if not result.is_success:
             return result, None
-        verses: TranslationVerses = translation_verses(split, result)
+        _require_complete_translation(result, split.spoken, displayed_lines(split))
+        cancel.raise_if_cancelled()
+        verses: TranslationVerses = translation_verses(split, result, self._layout)
         output_split: SubtitleSplit = replace(split, kind=output_kind)
         destination: Path = task_staging_path(self._run_root, task, output, f".{output_kind}")
         written: Path | None = write_translated(output_split, verses.displayed, verses.spoken, destination)
         return result, written
+
+
+def _require_complete_translation(
+    result: FileTranslation,
+    spoken: tuple[SpokenLine, ...],
+    displayed: tuple[DisplayedLine, ...],
+) -> None:
+    """Reject incomplete products before any subtitle writer runs."""
+    if not result.is_success:
+        if result.error_context is not None:
+            raise TranslationError(context=result.error_context)
+        raise ExecutionError(result.error or "Subtitle translation failed")
+    if result.failed_lines or len(result.spoken) != len(spoken) or len(result.displayed) != len(displayed):
+        msg = "Subtitle translation is incomplete"
+        raise ExecutionError(msg)
+    for source, translated in zip(spoken, result.spoken, strict=True):
+        expected: tuple[int, int, str, str] = (source.start, source.end, source.style, source.text)
+        actual: tuple[int, int, str, str] = (
+            translated.start,
+            translated.end,
+            translated.style,
+            translated.source_text,
+        )
+        if expected != actual or not translated.ok or (source.text.strip() and not translated.text.strip()):
+            msg = "Spoken subtitle translation is incomplete"
+            raise ExecutionError(msg)
+    if any(source.text.strip() and not text.strip() for source, text in zip(displayed, result.displayed, strict=True)):
+        msg = "Displayed subtitle translation is incomplete"
+        raise ExecutionError(msg)
 
 
 def translate_subtitle_split(
@@ -216,11 +273,13 @@ def translate_subtitle_split(
     )
 
 
-def text_spoken_lines(text: str) -> tuple[SpokenLine, ...]:
+def text_spoken_lines(text: str, layout: LayoutConfig | None = None) -> tuple[SpokenLine, ...]:
     """Chunk plain text hierarchically and wrap each chunk as a narrator line."""
     from anishift.services.translation.chunking import chunk_text  # noqa: PLC0415 - keep engines lazy
 
-    flattened = (" ".join(chunk.split()) for chunk in chunk_text(text))
+    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
+    chunks = chunk_text(text, char_limit=limits.chunk_chars, chunk_limit=limits.chunk_pieces)
+    flattened = (" ".join(chunk.split()) for chunk in chunks)
     return tuple(SpokenLine(start=0, end=0, text=chunk, style="") for chunk in flattened if chunk)
 
 
@@ -239,8 +298,13 @@ def displayed_lines(split: SubtitleSplit) -> tuple[DisplayedLine, ...]:
     )
 
 
-def translation_verses(split: SubtitleSplit, result: FileTranslation) -> TranslationVerses:
+def translation_verses(
+    split: SubtitleSplit,
+    result: FileTranslation,
+    layout: LayoutConfig | None = None,
+) -> TranslationVerses:
     """Build authored displayed layout and readable spoken line breaks."""
+    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
     dialogue = [event for event in split.subs.events if event.type == "Dialogue"]
     displayed_events = [
         event
@@ -248,10 +312,18 @@ def translation_verses(split: SubtitleSplit, result: FileTranslation) -> Transla
         if decision == "displayed" and not is_drawing(event.text)
     ]
     displayed: tuple[tuple[str, ...], ...] = tuple(
-        split_for_layout(text, visible_verses(event.text))
+        split_for_layout(
+            text,
+            visible_verses(event.text),
+            max_chars=limits.max_chars_per_line,
+            max_lines=limits.max_lines_per_event,
+        )
         for event, text in zip(displayed_events, result.displayed, strict=True)
     )
-    spoken: tuple[tuple[str, ...], ...] = tuple(split_line(line.text) for line in result.spoken)
+    spoken: tuple[tuple[str, ...], ...] = tuple(
+        split_line(line.text, max_chars=limits.max_chars_per_line, max_lines=limits.max_lines_per_event)
+        for line in result.spoken
+    )
     return TranslationVerses(displayed, spoken)
 
 

@@ -51,8 +51,7 @@ _SIGNS_PENALTY: Final[int] = -200
 """Penalty for signs, songs, or forced subtitle tracks."""
 
 _DEFAULT_BONUS: Final[int] = 1
-"""Bonus for a default audio track, kept below one language-priority step so
-it only breaks ties inside a language and never outranks a preferred one."""
+"""Bonus for a default audio track, kept below one language-priority step so"""
 
 _LINES_DIVISOR: Final[float] = 1000.0
 """Scale for the subtitle line-count tie-breaker."""

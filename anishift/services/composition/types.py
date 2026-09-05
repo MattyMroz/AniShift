@@ -110,19 +110,7 @@ class ContainerCompositionResult:
 
 @dataclass(frozen=True, slots=True)
 class CompositionPlan:
-    """Neutral description of what to assemble for one source file.
-
-    Attributes:
-        source_path: Original container the result is built from.
-        variant: Requested output variant.
-        narration_audio: Rendered lector sidecar, when one exists.
-        subtitles: Subtitle files to mux, in final track order.
-        burn_subtitle: Subtitle file to render into the picture.
-        source_subtitle_kind: ``ass`` or ``srt`` for the burned file.
-        scope_id: Opaque per-source identifier owned by the pipeline.
-        temporary_root: Directory for filter-safe copies and partial files.
-        destination_dir: Directory the finished artifact is written to.
-    """
+    """Neutral description of what to assemble for one source file."""
 
     source_path: Path
     variant: OutputVariant
@@ -142,19 +130,7 @@ class CompositionPlan:
 
 @dataclass(frozen=True, slots=True)
 class CompositionResult:
-    """Outcome of one composition attempt.
-
-    Attributes:
-        source_path: Container the result was built from.
-        variant: Variant that produced the result.
-        status: Terminal state of the attempt.
-        output_path: Finished artifact, or the directory for ``players``.
-        output_size_bytes: Size of the produced artifact.
-        source_size_bytes: Size of the source, for the size budget.
-        duration_ms: Wall time spent assembling this file.
-        warnings: Human-readable notes worth showing in the report.
-        moved_paths: Products relocated next to the source in ``players``.
-    """
+    """Outcome of one composition attempt."""
 
     source_path: Path
     variant: OutputVariant

@@ -4,9 +4,8 @@ Pakiet aplikacji. Composition root i hierarchia błędów tutaj; reszta w moduł
 
 ## Moduły (każdy ma własny AGENTS.md)
 
-- `application/` — czysty model produktu, planowanie i wykonawcze use case'y dla wszystkich UI
-- `cli/` — REPL, komendy `/`, panel `/settings`, banner
-- `pipeline/` — orkiestracja ekstrakcji, tłumaczenia, TTS i audio oraz paski postępu
+- `application/` — czysty model produktu, planowanie i wykonawcze use case'y
+- `cli/` — Typer entry point, jedyne wejście: subkomendy techniczne i `run --preset`
 - `services/` — domeny audio, extraction, llm, subtitles, translation i tts
 - `text/` — bezdomenowe granice Unicode, skróty i segmentacja grafemów
 - `setup/` — pobieranie i instalacja zewnętrznych binarek
@@ -18,6 +17,7 @@ Pakiet aplikacji. Composition root i hierarchia błędów tutaj; reszta w moduł
 
 - `bootstrap.py` — composition root
 - `errors.py` — hierarchia błędów
+- `paths.py` — `config_path()`; poza `config/`, bo import `anishift.config` wciąga rejestry silników
 
 ## Fakty
 

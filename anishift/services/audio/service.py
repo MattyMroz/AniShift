@@ -9,6 +9,7 @@ import re
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Final, Never, Protocol
@@ -16,7 +17,12 @@ from typing import Final, Never, Protocol
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.platform.binaries import Binary, BinaryNotFoundError, require_binary
 from anishift.services.audio.channels import build_channel_plan
-from anishift.services.audio.commands import CommandRunner, SubprocessRunner, narrator_wav_command
+from anishift.services.audio.commands import (
+    CommandRunner,
+    SubprocessRunner,
+    ffmpeg_progress_reader,
+    narrator_wav_command,
+)
 from anishift.services.audio.config import AudioConfig
 from anishift.services.audio.errors import (
     AudioCancelledError,
@@ -133,6 +139,7 @@ class AudioService:
         request: AudioRenderRequest,
         *,
         callbacks: AudioProgressSink | None = None,
+        on_percent: Callable[[int], None] | None = None,
         cancel: threading.Event | None = None,
     ) -> AudioRenderResult:
         """Build and atomically commit one final audio sidecar."""
@@ -174,6 +181,7 @@ class AudioService:
             repository,
             narration_id,
             callbacks=callbacks,
+            on_percent=on_percent,
             cancel=cancel,
         )
         original_probe: AudioProbe | None = self._probe_original(request, cancel=cancel)
@@ -236,6 +244,7 @@ class AudioService:
             channel_plan,
             expected_duration_ms,
             mix_id,
+            on_percent=on_percent,
             cancel=cancel,
         )
         _notify(callbacks, request.scope_id, "done")
@@ -257,13 +266,14 @@ class AudioService:
             mix_id=mix_id,
         )
 
-    def _narrator(
+    def _narrator(  # noqa: PLR0913 - phase and measured progress callbacks remain independent
         self,
         request: AudioRenderRequest,
         repository: AudioResumeRepository,
         narration_id: str,
         *,
         callbacks: AudioProgressSink | None,
+        on_percent: Callable[[int], None] | None,
         cancel: threading.Event | None,
     ) -> tuple[Path, TimelinePlan | None, AudioProbe]:
         hit: Path | None = repository.narration_hit(narration_id)
@@ -293,6 +303,7 @@ class AudioService:
         narrator_path: Path = narration_dir / "narrator.wav"
         temporary_wav: Path = _temporary_sibling(narrator_path)
         try:
+            _notify(callbacks, request.scope_id, "wrapping")
             self._runner.run(
                 narrator_wav_command(
                     self._ffmpeg,
@@ -302,8 +313,12 @@ class AudioService:
                     channels=plan.channels,
                 ),
                 operation="wrap_narrator",
-                timeout_s=self._config.operation_timeout_s,
+                timeout_s=self._config.render_timeout_s,
                 cancel=cancel,
+                on_stdout_line=ffmpeg_progress_reader(
+                    on_percent,
+                    duration_ms=plan.total_frames * 1000 // plan.sample_rate,
+                ),
             )
             probe: AudioProbe = probe_audio(
                 temporary_wav,
@@ -394,7 +409,7 @@ class AudioService:
                 path,
                 ffmpeg=self._ffmpeg,
                 runner=self._runner,
-                timeout_s=self._config.operation_timeout_s,
+                timeout_s=self._config.render_timeout_s,
                 cancel=cancel,
             )
         except AudioDecodeError, AudioProbeError, AudioProcessError:
@@ -435,7 +450,7 @@ class AudioService:
             request.source_audio_path,
             ffmpeg=self._ffmpeg,
             runner=self._runner,
-            timeout_s=self._config.operation_timeout_s,
+            timeout_s=self._config.render_timeout_s,
             cancel=cancel,
         )
 
@@ -463,7 +478,7 @@ class AudioService:
                 destination,
                 ffmpeg=self._ffmpeg,
                 runner=self._runner,
-                timeout_s=self._config.operation_timeout_s,
+                timeout_s=self._config.render_timeout_s,
                 cancel=cancel,
             )
             validate_output_probe(
@@ -486,6 +501,7 @@ class AudioService:
         expected_duration_ms: int,
         mix_id: str,
         *,
+        on_percent: Callable[[int], None] | None,
         cancel: threading.Event | None,
     ) -> AudioProbe:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -503,8 +519,9 @@ class AudioService:
                     ),
                 ),
                 operation="render_output",
-                timeout_s=self._config.operation_timeout_s,
+                timeout_s=self._config.render_timeout_s,
                 cancel=cancel,
+                on_stdout_line=ffmpeg_progress_reader(on_percent, duration_ms=expected_duration_ms),
             )
             probe: AudioProbe = probe_audio(
                 temporary,

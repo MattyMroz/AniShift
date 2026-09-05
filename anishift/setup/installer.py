@@ -1,36 +1,14 @@
-"""Download and install external resources per the manifest.
-
-For every manifest resource: skip it when its members are already present,
-otherwise download the archive to a temp dir, verify its SHA256, extract only
-the named members (rejecting path traversal), and move them into the install
-root. Nothing lands in the live tree unless the archive verified.
-
-Two entry points share those steps:
-
-- ``ensure_binary`` / ``ensure_resource`` — lazy, called by domain code right
-  before a tool is used; installs exactly one missing resource, synchronously,
-  behind its own progress bar, and raises a typed domain error on failure.
-- ``run_setup`` — explicit "download everything up front" behind `/setup` and
-  ``anishift setup``; missing resources download in parallel behind one shared
-  progress bar and failures become report entries, never exceptions.
-
-Usage:
-    from anishift.setup.installer import ensure_binary, run_setup
-
-    mkvextract = ensure_binary(Binary.MKVEXTRACT)   # domain code (stages 3/6)
-    report = run_setup()            # `/setup`, `anishift setup`
-    report = run_setup(force=True)  # `/setup force` / `anishift setup --force`
-"""
+"""Download and install external resources per the manifest."""
 
 from __future__ import annotations
 
 import hashlib
-import shutil
 import tempfile
 import threading
 import zipfile
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
@@ -107,13 +85,7 @@ class InstallCancelledError(InstallerError):
 
 @dataclass(frozen=True, slots=True)
 class ResourceResult:
-    """Outcome of handling one resource during a setup run.
-
-    Attributes:
-        name: Resource name from the manifest.
-        outcome: What happened.
-        detail: Human-readable one-liner for the report.
-    """
+    """Outcome of handling one resource during a setup run."""
 
     name: str
     outcome: ResourceOutcome
@@ -169,11 +141,7 @@ def _read_member(archive: Path, resource: Resource, archive_path: str) -> bytes:
 
 
 def extract_members(archive: Path, resource: Resource, dest_root: Path) -> None:
-    """Extract *resource*'s named members from *archive* into *dest_root*.
-
-    Destinations were validated against traversal at manifest load; this
-    re-checks after resolving, then writes each member.
-    """
+    """Extract *resource*'s named members from *archive* into *dest_root*."""
     root = dest_root.resolve()
     for member in resource.members:
         target = (dest_root / member.dest).resolve()
@@ -193,23 +161,27 @@ def _download_httpx(
     target: Path,
     *,
     progress: ProgressFn | None = None,
-    cancel: threading.Event | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> None:
     """Stream *resource*'s archive to *target* over HTTPS."""
+    _raise_if_cancelled(cancel)
     with httpx.stream("GET", resource.source.url, follow_redirects=True, timeout=_DOWNLOAD_TIMEOUT) as response:
         response.raise_for_status()
         with target.open("wb") as handle:
             for chunk in response.iter_bytes(_CHUNK_SIZE):
-                if cancel is not None and cancel.is_set():
-                    raise InstallCancelledError(
-                        context=ErrorContext(
-                            code=ErrorCode.CANCELLED,
-                            message=f"{resource.name}: download cancelled",
-                        ),
-                    )
+                _raise_if_cancelled(cancel)
                 handle.write(chunk)
                 if progress is not None:
                     progress(len(chunk))
+    _raise_if_cancelled(cancel)
+
+
+def _raise_if_cancelled(cancel: Callable[[], bool] | None) -> None:
+    """Stop resource preparation at a cooperative cancellation boundary."""
+    if cancel is not None and cancel():
+        raise InstallCancelledError(
+            context=ErrorContext(code=ErrorCode.CANCELLED, message="Resource preparation cancelled"),
+        )
 
 
 def install_resource(
@@ -219,35 +191,19 @@ def install_resource(
     download: DownloadFn = _download_httpx,
     force: bool = False,
 ) -> ResourceResult:
-    """Install one resource, skipping when already present.
-
-    Args:
-        resource: The resource to install.
-        dest_root: Root the members are placed under (``external/bin``).
-        download: Injectable downloader (real HTTPS by default; fakes in tests).
-        force: Reinstall even when the members are present.
-
-    Returns:
-        A :class:`ResourceResult` (``installed`` or ``skipped``).
-
-    Raises:
-        HashMismatchError: When the downloaded archive fails verification.
-        InstallCancelledError: When the user cancelled the download.
-        InstallerError: On extraction failure or a broken archive.
-        httpx.HTTPError: On network or server failure (callers map it).
-        OSError: On disk failure (callers map it).
-    """
+    """Install one resource, skipping when already present."""
     if not force and is_installed(resource, dest_root):
         logger.debug("External resource installation skipped", resource=resource.name, reason="already_present")
         return ResourceResult(resource.name, "skipped", "already present")
 
     logger.info("External resource installation started", resource=resource.name, force=force)
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-        tmp_dir = Path(tmp)
-        archive = tmp_dir / f"{resource.name}.{resource.archive}"
+    dest_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=dest_root, ignore_cleanup_errors=True) as tmp:
+        tmp_dir: Path = Path(tmp)
+        archive: Path = tmp_dir / f"{resource.name}.{resource.archive}"
         download(resource, archive)
 
-        actual = sha256_file(archive)
+        actual: str = sha256_file(archive)
         if actual != resource.sha256:
             raise HashMismatchError(
                 context=ErrorContext(
@@ -258,13 +214,12 @@ def install_resource(
                 ),
             )
 
-        staged = tmp_dir / "staged"
+        staged: Path = tmp_dir / "staged"
         extract_members(archive, resource, staged)
         for member in resource.members:
-            final = dest_root / member.dest
+            final: Path = dest_root / member.dest
             final.parent.mkdir(parents=True, exist_ok=True)
-            final.unlink(missing_ok=True)
-            shutil.move(staged / member.dest, final)
+            (staged / member.dest).replace(final)
 
     logger.info("External resource installation completed", resource=resource.name)
     return ResourceResult(resource.name, "installed", "downloaded and verified")
@@ -273,52 +228,55 @@ def install_resource(
 # ── Lazy ensure (domain entry point) ─────────────────────────────────────────
 
 
-def _install_single(resource: Resource, dest_root: Path) -> None:
-    """Install one resource synchronously behind its own progress bar."""
-    with ProgressBarManager(
-        f"Downloading {resource.name}",
-        total=resource.size_bytes,
-        bar="blocks",
-        show_download=True,
-        show_speed=True,
-        show_percentage=True,
-        show_elapsed=True,
-        show_eta=False,
-        show_spinner=False,
+def _install_single(
+    resource: Resource,
+    dest_root: Path,
+    *,
+    show_progress: bool,
+    progress: ProgressFn | None,
+    cancel: Callable[[], bool] | None,
+) -> None:
+    """Install one resource with optional terminal and byte progress observers."""
+    with (
+        ProgressBarManager(
+            f"Downloading {resource.name}",
+            total=resource.size_bytes,
+            bar="blocks",
+            show_download=True,
+            show_speed=True,
+            show_percentage=True,
+            show_elapsed=True,
+            show_eta=False,
+            show_spinner=False,
+        )
+        if show_progress
+        else nullcontext()
     ) as bar:
 
+        def advance(amount: int) -> None:
+            if bar is not None:
+                bar.advance(amount)
+            if progress is not None:
+                progress(amount)
+
         def _download(res: Resource, target: Path) -> None:
-            _download_httpx(res, target, progress=bar.advance)
+            _download_httpx(res, target, progress=advance, cancel=cancel)
+            _raise_if_cancelled(cancel)
 
         install_resource(resource, dest_root=dest_root, download=_download)
 
 
-def ensure_resource(
+def ensure_resource(  # noqa: PLR0913 - optional install boundary controls
     name: str,
     *,
     resources: tuple[Resource, ...] | None = None,
     dest_root: Path | None = None,
+    show_progress: bool = True,
+    progress: ProgressFn | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> None:
-    """Ensure one manifest resource is installed, downloading it on demand.
-
-    The lazy counterpart of :func:`run_setup`, called by domain code right
-    before a resource is used (for binaries via :func:`ensure_binary`). An
-    installed resource returns immediately; a missing one downloads alone,
-    synchronously, behind a single-resource progress bar. Off Windows this is
-    a silent no-op for ``binary`` resources — the ``PATH`` fallback in
-    ``binaries.py`` applies instead.
-
-    Args:
-        name: Resource name from the manifest (e.g. ``"mkvtoolnix"``).
-        resources: Manifest override for tests (defaults to :func:`load_manifest`).
-        dest_root: Install-root override for tests (defaults to ``external/bin``).
-
-    Raises:
-        InstallerError: When *name* is unknown or the install fails — network
-            and disk errors are mapped so callers always get a domain error.
-        HashMismatchError: When the downloaded archive fails verification.
-        ManifestError: When the manifest itself is broken (fail-loud dev error).
-    """
+    """Ensure one manifest resource is installed, downloading it on demand."""
+    _raise_if_cancelled(cancel)
     loaded = resources if resources is not None else load_manifest()
     root = dest_root if dest_root is not None else external_bin_root()
     resource = next((entry for entry in loaded if entry.name == name), None)
@@ -335,7 +293,7 @@ def ensure_resource(
     if is_installed(resource, root):
         return
     try:
-        _install_single(resource, root)
+        _install_single(resource, root, show_progress=show_progress, progress=progress, cancel=cancel)
     except httpx.HTTPError as exc:
         raise InstallerError(
             context=ErrorContext(
@@ -355,15 +313,7 @@ def ensure_resource(
 
 
 def _resource_for(binary: Binary, resources: tuple[Resource, ...]) -> str | None:
-    """Return the name of the resource whose members install *binary*.
-
-    Args:
-        binary: The executable to find a provider for.
-        resources: Parsed manifest resources.
-
-    Returns:
-        The providing resource's name, or ``None`` when no resource installs it.
-    """
+    """Return the name of the resource whose members install *binary*."""
     for resource in resources:
         for member in resource.members:
             stem = Path(member.dest).name.removesuffix(_EXE_SUFFIX)
@@ -372,31 +322,22 @@ def _resource_for(binary: Binary, resources: tuple[Resource, ...]) -> str | None
     return None
 
 
-def ensure_binary(binary: Binary) -> Path:
-    """Return *binary*'s path, installing its resource first when missing.
-
-    The single lazy entry point for domain code (stage 3 extraction, stage 6
-    audio): an installed binary resolves immediately — no manifest read, no
-    network — and a missing one triggers the download of exactly the one
-    resource that provides it.
-
-    Args:
-        binary: The executable the caller is about to run.
-
-    Returns:
-        Absolute path to the executable.
-
-    Raises:
-        InstallerError: When the on-demand install fails (network, disk, hash).
-        BinaryNotFoundError: When the binary cannot be provided at all (other
-            OS without a ``PATH`` fallback, or no manifest resource maps to it).
-    """
+def ensure_binary(
+    binary: Binary,
+    *,
+    show_progress: bool = True,
+    progress: ProgressFn | None = None,
+    cancel: Callable[[], bool] | None = None,
+) -> Path:
+    """Return *binary*'s path, installing its resource first when missing."""
+    _raise_if_cancelled(cancel)
     path = resolve_binary(binary)
     if path is not None:
         return path
     resource_name = _resource_for(binary, load_manifest())
     if resource_name is not None:
-        ensure_resource(resource_name)
+        ensure_resource(resource_name, show_progress=show_progress, progress=progress, cancel=cancel)
+    _raise_if_cancelled(cancel)
     return require_binary(binary)
 
 
@@ -449,7 +390,7 @@ def _install_parallel(
                     def _advance(amount: int) -> None:
                         bar.advance(task, amount)
 
-                    _download_httpx(res, target, progress=_advance, cancel=cancel)
+                    _download_httpx(res, target, progress=_advance, cancel=cancel.is_set)
                     bar.update(task, res.size_bytes)
 
                 return _download
@@ -503,25 +444,7 @@ def run_setup(
     dest_root: Path | None = None,
     show_progress: bool = True,
 ) -> list[ResourceResult]:
-    """Install every manifest resource up front; never crash the caller.
-
-    The explicit bulk path behind `/setup` and ``anishift setup``. Per-resource
-    failures (network, disk, bad hash, Ctrl+C) become ``failed`` or
-    ``cancelled`` entries in the returned report instead of exceptions, so the
-    caller can always render a complete report and keep running.
-
-    Args:
-        force: Reinstall everything, even resources already present.
-        resources: Manifest override for tests (defaults to :func:`load_manifest`).
-        dest_root: Install-root override for tests (defaults to ``external/bin``).
-        show_progress: Render terminal progress bars for interactive CLI callers.
-
-    Returns:
-        One :class:`ResourceResult` per manifest resource, in manifest order.
-
-    Raises:
-        ManifestError: When the manifest itself is broken (fail-loud dev error).
-    """
+    """Install every manifest resource up front; never crash the caller."""
     loaded = resources if resources is not None else load_manifest()
     root = dest_root if dest_root is not None else external_bin_root()
     logger.info("Setup run started", resource_count=len(loaded), force=force)

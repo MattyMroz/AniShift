@@ -58,10 +58,12 @@ class LogReader:
                     continue
 
                 try:
-                    log = json.loads(line)
-                    self._logs.append(log)
+                    log: object = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if isinstance(log, dict):
+                    record: object = log.get("record")
+                    self._logs.append(_flatten_loguru_record(record) if isinstance(record, dict) else log)
 
         return self._logs
 
@@ -202,3 +204,23 @@ class LogReader:
             "by_level": level_counts,
             "by_logger": logger_counts,
         }
+
+
+def _flatten_loguru_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Loguru serialization to the flat fields used by both readers."""
+    time_obj: object = record.get("time", {})
+    level_obj: object = record.get("level", {})
+    extra: object = record.get("extra", {})
+    file_obj: object = record.get("file", {})
+    flat_log: dict[str, Any] = {
+        "timestamp": time_obj.get("repr", "") if isinstance(time_obj, dict) else str(time_obj),
+        "level": level_obj.get("name", "") if isinstance(level_obj, dict) else str(level_obj),
+        "logger": extra.get("logger_name", record.get("name", "")) if isinstance(extra, dict) else "",
+        "message": record.get("message", ""),
+        "file": file_obj.get("name", "") if isinstance(file_obj, dict) else "",
+        "function": record.get("function", ""),
+        "line": record.get("line", 0),
+    }
+    if isinstance(extra, dict):
+        flat_log.update({key: value for key, value in extra.items() if key not in flat_log and key != "logger_name"})
+    return flat_log

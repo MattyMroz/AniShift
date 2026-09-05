@@ -42,9 +42,12 @@ TEST_MARKERS: Final[tuple[str, ...]] = ("test", "spec")
 
 
 def _is_test_file(path: Path) -> bool:
-    """Whether *path* is a test file by name (``test_*.py``, ``*.test.tsx``...)."""
+    """Recognize named tests and Python support modules in test directories."""
     name = path.name.lower()
-    return any(marker in name for marker in TEST_MARKERS)
+    in_tests: bool = any(part.lower() in {"test", "tests"} for part in path.parts[:-1])
+    return (
+        name == "conftest.py" or (in_tests and path.suffix == ".py") or any(marker in name for marker in TEST_MARKERS)
+    )
 
 
 def _check_python(path: Path) -> list[str]:
@@ -57,10 +60,8 @@ def _check_python(path: Path) -> list[str]:
             problems.append(f"{path}:{tok.start[0]}: comment not allowed in tests: {tok.string.strip()}")
 
     for node in ast.walk(ast.parse(src)):
-        if isinstance(node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) and (
-            ast.get_docstring(node) and node.body
-        ):
-            problems.append(f"{path}:{node.body[0].lineno}: docstring not allowed in tests")
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            problems.append(f"{path}:{node.lineno}: docstring not allowed in tests")
     return problems
 
 

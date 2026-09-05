@@ -30,11 +30,7 @@ def _fail(message: str, suggestion: str = "") -> SubtitleError:
 
 
 def read_txt(path: Path) -> str:
-    """Read a UTF-8 text file.
-
-    Raises:
-        SubtitleError: The file is missing, unreadable or not UTF-8.
-    """
+    """Read a UTF-8 text file."""
     try:
         return path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:

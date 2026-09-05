@@ -1,8 +1,4 @@
-"""Setup layer — diagnostics (doctor) and binary installation.
-
-``doctor`` symbols are re-exported here; ``installer`` is imported directly
-as ``anishift.setup.installer``.
-"""
+"""Setup layer — diagnostics (doctor) and binary installation."""
 
 from __future__ import annotations
 

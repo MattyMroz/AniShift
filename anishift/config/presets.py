@@ -89,8 +89,8 @@ def default_preset_file() -> AutoPresetFile:
     """Return an independent safe default without reading or writing disk."""
     preset = AutoPreset(
         preset_id=DEFAULT_PRESET_ID,
-        name="Polish subtitles",
-        products=ProductIntent(requested_products=frozenset({ProductKind.FULL_PL})),
+        name="Polish lector",
+        products=ProductIntent(requested_products=frozenset({ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO})),
     )
     return AutoPresetFile(
         schema_version=PRESET_SCHEMA_VERSION,

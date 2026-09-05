@@ -1,11 +1,17 @@
 import threading
+from collections.abc import Callable
 
 import pytest
 
 from anishift.services.subtitles.types import DisplayedLine, SpokenLine
 from anishift.services.translation.config import TranslationConfig
+from anishift.services.translation.engines.llm.config import LlmTranslateConfig
+from anishift.services.translation.engines.llm.service import LlmTranslateService
 from anishift.services.translation.errors import TranslationError, TranslationQuotaError
 from anishift.services.translation.protocols import (
+    LlmCompletionRequest,
+    LlmCompletionResult,
+    TranslationEngine,
     TranslationEngineFactory,
     TranslationInputPolicy,
     TranslationObserver,
@@ -60,11 +66,32 @@ class _Observer:
     def __init__(self) -> None:
         self.fallbacks: list[tuple[str, str]] = []
 
-    def retry(self, engine_id: str, attempt: int, max_attempts: int) -> None:
-        del engine_id, attempt, max_attempts
+    def progress(self, engine_id: str, completed: int, total: int) -> None:
+        del engine_id, completed, total
+
+    def retry(
+        self,
+        engine_id: str,
+        attempt: int,
+        max_attempts: int,
+        reason: str | None = None,
+    ) -> None:
+        del engine_id, attempt, max_attempts, reason
 
     def fallback(self, failed_engine_id: str, next_engine_id: str) -> None:
         self.fallbacks.append((failed_engine_id, next_engine_id))
+
+
+class _InvalidLlmCompleter:
+    def complete(
+        self,
+        request: LlmCompletionRequest,
+        *,
+        on_text: Callable[[str], None] | None = None,
+        on_start: Callable[[], None] | None = None,
+    ) -> LlmCompletionResult:
+        del request, on_text, on_start
+        return LlmCompletionResult(text="invalid response", finish_reason="stop")
 
 
 def _spoken(*texts: str) -> list[SpokenLine]:
@@ -203,6 +230,31 @@ def test_fallback_chain_uses_next_engine_on_quota() -> None:
     assert [line.text for line in result.spoken] == ["G:x"]
     assert isinstance(observer, _Observer)
     assert observer.fallbacks == [("deepl", "google")]
+
+
+def test_invalid_llm_json_falls_back_for_the_whole_file() -> None:
+    failing = LlmTranslateService(
+        LlmTranslateConfig(max_contract_retries=0),
+        completer=_InvalidLlmCompleter(),
+    )
+    working = _FakeEngine(engine_id="google", prefix="G:")
+
+    def build(engine_id: str, _config: TranslationConfig) -> TranslationEngine:
+        return failing if engine_id == "llm" else working
+
+    service = TranslationService(
+        TranslationConfig(engine="llm"),
+        fallback_chain=("google",),
+        engine_factory=build,
+    )
+    observer = _Observer()
+
+    result = service.translate_file(_spoken("one", "two"), [], target_lang="pl", observer=observer)
+
+    assert result.engine_id == "google"
+    assert [line.text for line in result.spoken] == ["G:one", "G:two"]
+    assert working.calls == [["one", "two"]]
+    assert observer.fallbacks == [("llm", "google")]
 
 
 def test_exhausted_chain_sets_error() -> None:

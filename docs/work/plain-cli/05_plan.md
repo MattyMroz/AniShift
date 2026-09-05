@@ -1,0 +1,414 @@
+# 05 — Plan wykonania
+
+Plan bieżących etapów. Wymagania: `05_settings_and_progress.md`. Mapa etapów:
+`05_masterplan.md`.
+
+Dokument jest żywy: zawiera szczegóły etapu budowanego teraz i następnego.
+Dalsze etapy pozostają w masterplanie na poziomie stanów, bo ich szczegóły
+zależą od wyniku tych dwóch.
+
+## Baseline
+
+- branch `work/interactive-cli/04-mascot-polish`, HEAD `4b03ce2`, drzewo czyste
+- baseline testów: 47 nieprzechodzących, 2 błędy zbierania — stan zastany,
+  niezwiązany z tym etapem, nie wolno go „naprawiać" po drodze
+- bramki: `ruff check`, `ruff format --check`, `mypy` dla win32 i `--platform linux`,
+  `pytest` — zawsze na `anishift/ tests/`, nigdy na podkatalogu
+
+---
+
+# E1 — Strażnik kompletności układu
+
+## Różnica
+
+```text
+STAN OBECNY
+    układ panelu = trzy krotki _GENERAL_FIELDS, _TRANSLATION_FIELDS, _TTS_FIELDS
+    katalog      = 55 pól dla konfiguracji elevenbytes/run6
+    związek      = brak
+        ↓
+PRZYCZYNA
+    pole dodane do katalogu nie musi pojawić się w panelu i nic tego nie zgłasza
+    dowód: elevenbytes_custom_voices ma pełny kontrakt i nie istnieje w UI
+        ↓
+STAN DOCELOWY
+    test wiąże obie listy; pole pominięte bez wpisu na listę wyjątków wywala test
+```
+
+## Projekt
+
+Jedna nowa struktura w `settings.py` — jawna, opisana lista pól świadomie
+nieobecnych w układzie, z powodem przy każdym wpisie:
+
+```text
+_FIELDS_COVERED_ELSEWHERE: mapa setting_id -> powód
+    llm_provider                 wybierany atomowo razem z modelem
+    llm_provider_model_id        wybierany atomowo razem z providerem
+    palantir_enrollment_base_url kategoria Połączenia
+    openai_compatible_base_url   kategoria Połączenia
+    primary_model_alias          świadomie ukryty
+```
+
+`elevenbytes_custom_voices` **nie** trafia na tę listę. Jest realną luką, więc test
+ma na nią wskazywać aż do E3, gdy powstanie edytor `OBJECT_LIST`. Do tego czasu
+figuruje na osobnej liście znanych braków, żeby test był zielony, ale brak był
+policzony i widoczny.
+
+## Zakres
+
+- **w zakresie:** test kompletności, dwie listy w `settings.py`, zmiana etykiety
+  `Wróć` na `Cofnij`
+- **poza zakresem:** przenoszenie układu do katalogu, przenoszenie polskich
+  tekstów do `anishift/config/`, nowe pola, nowe edytory
+- **zabronione:** dodawanie pól prezentacyjnych do `SettingSpec`, usuwanie
+  którejkolwiek z dwóch list, obchodzenie testu przez rozszerzanie listy wyjątków
+  bez powodu
+- **dozwolone lokalnie:** nazwy stałych i helperów, dokładny kształt asercji
+
+## Mapa plików
+
+```text
+MODIFY  anishift/cli/interactive/settings.py     dwie listy + etykieta Cofnij
+CREATE  tests/cli/test_interactive_settings_layout.py   test kompletności
+READ    anishift/config/field_catalog.py         źródło pól i dyspozycji
+READ    anishift/config/field_access.py          setting_is_active
+```
+
+## Kroki
+
+1. **Listy i etykieta.** Dodać `_FIELDS_COVERED_ELSEWHERE` i `_KNOWN_LAYOUT_GAPS`
+   z powodem przy każdym wpisie. Zmienić `Wróć` na `Cofnij` w `_ROOT_ITEMS` i we
+   wszystkich miejscach dopinających wiersz powrotu.
+   Sprawdzenie: `ruff`, `mypy`, panel nadal się otwiera.
+2. **Test kompletności.** Dla kilku reprezentatywnych konfiguracji silników
+   zbudować katalog i sprawdzić, że każde pole edytowalne jest albo w układzie,
+   albo na jednej z dwóch list; oraz że żadne pole układu nie jest zdublowane.
+   Konfiguracje: `elevenbytes/run6`, `elevenbytes/run7`, `edge`, `sapi`,
+   `elevenlabs` — bo `depends_on` odsłania różne pola.
+   Sprawdzenie: test przechodzi; ręczne dopisanie atrapy pola do katalogu wywala go.
+3. **Bramki.** Pełny zestaw na `anishift/ tests/`; baseline bez zmian.
+
+## Weryfikacja
+
+| twierdzenie | dowód |
+|---|---|
+| układ pokrywa wszystkie pola edytowalne | test kompletności na 5 konfiguracjach |
+| brak zdublowanych pól | asercja w tym samym teście |
+| przyszłe pole nie zniknie po cichu | test wywala się po dodaniu atrapy |
+| panel działa jak przed zmianą | ręczne otwarcie każdej kategorii |
+
+## Warunek przejścia do E2
+
+Test kompletności zielony, bramki zielone, baseline bez zmian, jedna realna luka
+policzona i opisana.
+
+---
+
+# E2 — Interakcja: strzałki, przewijanie, Cofnij
+
+## Różnica
+
+```text
+STAN OBECNY
+    klawisze: up, down, enter, space, backspace, escape, interrupt, any
+    liczby:   wyłącznie wpisywanie w modalu
+    okno:     funkcja kursora, brute force O(n³) na klatkę, bez stanu
+    Cofnij:   zwykły wiersz listy, może wypaść poza okno
+    mysz:     zdarzenie dochodzi i ginie, bo treść ma dokładnie tyle wierszy co okno
+        ↓
+STAN DOCELOWY
+    klawisze: dodatkowo left, right, pageup, pagedown, home, end
+    liczby:   ←→ zmieniają wartość o krok, wpisywanie zostaje
+    okno:     własny offset, wyznaczanie liniowe
+    Cofnij:   przyklejony pod listą, zawsze widoczny
+    mysz:     kółko przewija listę
+```
+
+## Projekt
+
+### Klawisze
+
+Rozszerzenie wyłącznie w `TerminalRenderer._key_bindings()`, bo to jedyny
+właściciel interakcji. Nowe znormalizowane stringi: `left`, `right`, `pageup`,
+`pagedown`, `home`, `end`.
+
+Powód, dla którego muszą to być osobne bindingi, a nie obsługa `"any"`: na
+Windowsie klawisze specjalne przychodzą z pustym `data`, więc `Keys.Any` zamienia
+je wszystkie na nierozróżnialne `"any"`. Bez własnego bindingu nie da się ich
+odróżnić.
+
+### Krok liczby
+
+Krok jest **pochodną** `SettingSpec`, nie nowym polem konfiguracji:
+
+```text
+INTEGER, rozpiętość > 1000   -> 100      (limit tokenów)
+INTEGER                      -> 1
+FLOAT, rozpiętość <= 2       -> 0.05     (temperatura, top_p, stabilność)
+FLOAT, rozpiętość <= 20      -> 0.5      (tempo, gain w dB)
+FLOAT, brak zakresu          -> 0.5      (gainy bez min/max)
+```
+
+Wartość jest klampowana do `minimum`/`maximum`, gdy istnieją. Pole `OPTIONAL_*`
+o wartości `None` przy pierwszym `→` przyjmuje `default` ze spec, a przy `←` z
+`minimum` wraca do `None`.
+
+### Zapis opóźniony
+
+Naciśnięcie strzałki **nie** zapisuje od razu. Zmiana ląduje w oczekującej edycji
+i utrwala się po 400 ms bezczynności. Dwadzieścia naciśnięć to jeden zapis.
+
+To nie jest globalny `Save` i nie łamie ustalenia o jego braku: użytkownik nie
+zatwierdza niczego ręcznie, nie ma przycisku, a zmiana zapisuje się sama.
+Opóźnienie jest wyłącznie sklejeniem serii naciśnięć w jedną transakcję.
+
+Miejsce wykonania zapisu wynika z ograniczenia: `render()` nie może robić I/O, bo
+renderer odświeża klatkę cyklicznie. Aplikacja ma `refresh_interval` 0.1 s i
+wywołuje `after_render` nawet bez wejścia użytkownika, więc to tam sprawdzany jest
+termin oczekującej edycji. `TerminalRenderer` zyskuje callback bezczynności obok
+istniejącego rysowania maskotki.
+
+Oczekująca edycja utrwala się także natychmiast, gdy użytkownik zejdzie z wiersza,
+otworzy modal, wyjdzie z kategorii, naciśnie `Esc` albo zamknie panel. Żadne
+wyjście nie może zgubić zmiany.
+
+Dopóki edycja czeka, lista pokazuje wartość oczekującą, nie zapisaną — inaczej
+strzałka wyglądałaby przez 400 ms jak brak reakcji.
+
+### Pola wyboru
+
+`←` i `→` przechodzą po `allowed_values` bez otwierania modala. Modal pozostaje
+dla list wielokrotnego wyboru i dla wpisywania tekstu.
+
+### Przewijanie
+
+Kontroler zyskuje `_offset: int`. Wyznaczanie widocznego zakresu jest liniowe:
+od offsetu w dół, licząc wiersze razem z nagłówkami sekcji, aż do wypełnienia
+budżetu. `_sectioned_window` i jego `O(n³)` znika.
+
+Reguły:
+
+- ruch kursora klawiaturą koryguje offset minimalnie, żeby kursor pozostał w widoku
+- `pageup`/`pagedown` przesuwają kursor o wysokość widoku, offset podąża
+- `home`/`end` skaczą na początek i koniec, offset podąża
+- kółko myszy zmienia **wyłącznie** offset; kursor zostaje na swoim wierszu, a
+  pierwsze naciśnięcie strzałki wraca widok do kursora
+
+### Mysz
+
+`FormattedTextControl` dostaje podklasę nadpisującą `mouse_handler`, która
+zamienia `SCROLL_UP` i `SCROLL_DOWN` na wywołanie callbacku przewijania i
+zgłasza obsłużenie zdarzenia. Bez tego domyślny scroller okna dostaje zdarzenie i
+gubi je, bo treść nigdy nie jest wyższa od okna.
+
+To jedyny sposób bez drugiego renderera: `mouse_support=True` już jest, layout
+ma jedno okno, a fragmenty po konwersji Rich → ANSI nie mają własnych handlerów.
+
+### Cofnij
+
+Wiersz powrotu przestaje być elementem przewijanej listy. Kolejność składania:
+tytuł, wskaźnik `↑`, przewijana lista, wskaźnik `↓`, `Cofnij`, feedback, hint.
+Budżet wierszy listy maleje o jeden.
+
+## Zakres
+
+- **w zakresie:** klawisze, krok liczby, przewijanie z offsetem, mysz w
+  Ustawieniach, przyklejony `Cofnij`
+- **poza zakresem:** przewijanie w Auto — to E5, mimo wspólnego mechanizmu;
+  nowe pola i nowe edytory — to E3; paleta — to E4
+- **zabronione:** druga aplikacja Prompt Toolkit, drugi renderer, `viewport.py`,
+  własny `Live`, import `prompt_toolkit` poza `interactive/prompts.py`, globalny
+  `Save`, kolorowe tło aktywnego wiersza
+- **dozwolone lokalnie:** nazwy helperów, dokładny kształt struktury offsetu
+- **warunki eskalacji:** jeśli przechwycenie kółka wymaga zmiany layoutu na
+  `HSplit` albo `ScrollablePane`, zatrzymać się i przeplanować, bo to zmiana
+  własności renderowania
+
+## Mapa plików
+
+```text
+MODIFY  anishift/cli/interactive/prompts.py   nowe bindingi, podklasa kontrolki, callback scrolla
+MODIFY  anishift/cli/interactive/settings.py  offset, liniowe okno, krok strzałek, przyklejony Cofnij
+MODIFY  anishift/cli/interactive/manual.py    tylko jeśli dzieli mechanizm okna
+MODIFY  anishift/cli/interactive/app.py       przekazanie nowych klawiszy do kontrolerów
+MODIFY  anishift/cli/AGENTS.md                kontrakt klawiszy i reguła przewijania
+CREATE  tests/cli/test_interactive_settings_scroll.py   offset, widoczność kursora, budżet
+CREATE  tests/cli/test_interactive_settings_steps.py    krok, klamp, OPTIONAL_*
+MODIFY  tests/cli/test_interactive_prompts.py  nowe znormalizowane klawisze
+```
+
+## Kroki
+
+1. **Bindingi.** Dodać sześć klawiszy w `_key_bindings()`, przekazać dalej bez
+   zmiany istniejących ścieżek. Sprawdzenie: test znormalizowanych klawiszy;
+   Home i Ręczny nadal działają.
+2. **Liniowe okno z offsetem.** Zastąpić `_sectioned_window` funkcją liniową,
+   dodać `_offset` i korektę przy ruchu kursora. Bez nowych klawiszy jeszcze.
+   Sprawdzenie: test budżetu i widoczności kursora dla wysokości 10, 24, 60;
+   zachowanie identyczne jak przed zmianą przy samych `↑↓`.
+3. **Strony i skoki.** `pageup`, `pagedown`, `home`, `end`.
+   Sprawdzenie: test skoków na liście 22 pól.
+4. **Krok liczby, przechodzenie po wyborach i zapis opóźniony.** Funkcja kroku z
+   `SettingSpec`, klamp, obsługa `OPTIONAL_*`, oczekująca edycja z terminem oraz
+   callback bezczynności w rendererze.
+   Sprawdzenie: test kroku dla `llm_temperature` (0–2), `llm_max_output_tokens`
+   (1–32000), `narrator_mix_base_gain_db` (bez zakresu), `tts_output_bitrate`
+   (`OPTIONAL_STRING` — nie może reagować na strzałki); test, że dwadzieścia
+   naciśnięć daje jeden zapis; test, że każde wyjście utrwala oczekującą edycję.
+5. **Przyklejony Cofnij.** Wyjęcie wiersza powrotu z przewijanej listy.
+   Sprawdzenie: test, że wiersz jest ostatni przy każdej pozycji offsetu.
+6. **Mysz.** Podklasa kontrolki, callback scrolla.
+   Sprawdzenie: test jednostkowy podklasy na sztucznym `MouseEvent`; ręczne
+   potwierdzenie kółkiem w realnym terminalu.
+7. **AGENTS.md i bramki.** Zapisać kontrakt klawiszy i regułę przewijania.
+   Pełne bramki, baseline bez zmian.
+
+## Weryfikacja
+
+| twierdzenie | dowód |
+|---|---|
+| sześć nowych klawiszy dochodzi jako osobne stringi | test `prompts` |
+| kursor nigdy nie ucieka z widoku przy klawiaturze | test dla trzech wysokości |
+| przewinięcie myszą nie zmienia zaznaczenia | test podklasy + ręcznie |
+| krok respektuje zakres i typ | test czterech reprezentatywnych pól |
+| seria naciśnięć to jeden zapis | licznik wywołań zapisu w teście |
+| żadne wyjście nie gubi zmiany | test dla zejścia z wiersza, `Esc`, wyjścia z kategorii i zamknięcia panelu |
+| `Cofnij` jest zawsze widoczny | test przy skrajnych offsetach |
+| wyznaczanie okna jest liniowe | brak podwójnej pętli po parach; test wydajności nie jest potrzebny |
+| Home i Ręczny bez regresji | istniejące testy CLI |
+
+## Punkt kontrolny człowieka
+
+Po kroku 6:
+
+```text
+uruchom      uv run anishift  ->  Ustawienia  ->  Lektor
+zrób         przejdź listę strzałkami, zmień tempo ←→, przewiń kółkiem,
+             wróć strzałką, zejdź na Cofnij i naciśnij Enter
+oczekuj      kursor zawsze widoczny, tempo zmienia się o 0.05 od razu na liście,
+             kółko przewija bez zmiany zaznaczenia, Cofnij zawsze na dole
+zwróć uwagę  czy maskotka nie zostawia rastra przy przewijaniu,
+             czy trzymanie strzałki jest płynne i czy wartość utrzymuje się
+             po wyjściu i powrocie do kategorii
+przekaż      jedno zdanie: co działa, co nie
+```
+
+## Sprzężenie zwrotne
+
+```text
+błąd lokalny zgodny z projektem        popraw w tej iteracji i sprawdź ponownie
+krok liczby nieintuicyjny w praktyce   zmień tabelę kroków, to nie zmienia projektu
+kółko wymaga zmiany layoutu            zatrzymaj się, przeplanuj E2
+opóźnienie 400 ms wyczuwalne jak lag   zmień samą stałą, projekt zostaje
+```
+
+---
+
+# E3 — Pokrętła jakości i jedno źródło prawdy
+
+## Zakres po weryfikacji
+
+Rozpoznanie odrzuciło trzy z czterech napraw zapisanych w wymaganiach (patrz
+sekcja 2.3 wymagań: `narrator_sample_rate`, dwa progi tolerancji, cap backoffu).
+Zostaje jedna prawdziwa, plus trzy pokrętła i jeden brakujący edytor.
+
+- **w zakresie:** maks. znaków w linii, maks. linii na event, rozmiar kontekstu
+  tłumaczenia, kategoria `Napisy`, edytor `OBJECT_LIST` dla własnych głosów, jedno
+  źródło prawdy dla tolerancji długości audio
+- **poza zakresem:** zakres czytania napisów — to INTENCJA nad dziesięcioma progami
+  i wagami klasyfikatora (`subtitles/classifier.py:65-80,161-173`), wymaga własnego
+  projektu i idzie do osobnego etapu; ujednolicenie ośmiu backoffów
+- **zabronione:** wystawianie surowych progów klasyfikatora, dodawanie pola bez
+  ścieżki do serwisu, zmiana domyślnych wartości pipeline'u
+
+## Główna przeszkoda
+
+`TranslationTaskHandler` nie ma dostępu do żadnej konfiguracji:
+
+```text
+UserSettings -> RunSettingsSnapshot -> plan.settings -> runtime._translation_service
+                                                            \-> TranslationConfig -> TranslationService
+    TranslationTaskHandler(service, run_root=...)   <- runtime.py:181-184 ma plan
+        __slots__ = ("_run_root", "_service")        <- ale go nie zatrzymuje
+            translation_verses(split, result)        <- translation_handler.py:258
+                split_for_layout(text, verses)       <- bez max_chars
+                split_line(line.text)                <- bez max_chars
+            text_spoken_lines(text)                  <- translation_handler.py:235
+                chunk_text(text)                     <- bez char_limit
+```
+
+`TranslationConfig` (`services/translation/config.py:25-51`) dociera tylko do
+`TranslationService`, nie do handlera. `MAX_LINES` (`linebreak.py:30`) nie ma dziś
+żadnego override — jest wstrzykiwane na sztywno w `linebreak.py:285`.
+
+## Projekt
+
+Nowy, mały nośnik układu tekstu przekazywany handlerowi przy konstrukcji, wzorem
+`AudioConfig` i `TtsConfig`:
+
+```text
+LayoutConfig (frozen, slots)
+    max_chars_per_line: int = DEFAULT_MAX_CHARS
+    max_lines_per_event: int = MAX_LINES
+    chunk_chars: int = DEFAULT_CHAR_LIMIT
+```
+
+`chunk_limit` NIE jest osobnym polem. Zachowujemy dzisiejszą proporcję 750/250,
+czyli dokładnie 3:1, i wyliczamy `chunk_limit = chunk_chars // 3`. Jedno pokrętło
+zamiast dwóch, a domyślne zachowanie bit w bit takie samo jak dziś.
+
+`split_for_layout` i `split_line` zyskują `max_lines` jako parametr keyword-only z
+dzisiejszym defaultem, więc żadne istniejące wywołanie się nie zmienia.
+
+## Mapa plików
+
+```text
+MODIFY  anishift/config/user_settings.py          trzy pola + docstringi
+MODIFY  anishift/config/field_catalog.py          trzy specy + dyspozycje
+MODIFY  anishift/application/planning.py          trzy pola snapshotu + walidacja
+MODIFY  anishift/application/service.py           przepisanie do snapshotu
+MODIFY  anishift/application/runtime.py           budowa LayoutConfig, wstrzyknięcie
+MODIFY  anishift/application/translation_handler.py  przyjęcie configu, przekazanie dalej
+MODIFY  anishift/services/translation/linebreak.py   parametr max_lines
+CREATE  anishift/services/translation/layout_config.py  LayoutConfig
+MODIFY  anishift/cli/interactive/settings.py      kategoria Napisy + trzy pozycje
+MODIFY  anishift/cli/interactive/settings_editors.py  parsowanie OBJECT_LIST
+MODIFY  anishift/application/inspection.py        tolerancja z jednego miejsca
+MODIFY  anishift/application/planning.py          to samo źródło tolerancji
+```
+
+## Kroki
+
+1. **Jedno źródło prawdy dla tolerancji.** `application/inspection.py:42` i
+   `application/planning.py:149` trzymają tę samą wielkość osobno. Jedna stała,
+   oba miejsca ją importują.
+   Sprawdzenie: test, że obie wartości pochodzą z jednej stałej.
+2. **`LayoutConfig` i ścieżka do handlera.** Nowy nośnik, pola snapshotu, budowa w
+   `runtime.py`, przyjęcie w handlerze, przekazanie do `linebreak` i `chunking`.
+   Bez nowych pól `UserSettings` — na razie same defaulty, więc zachowanie się nie
+   zmienia.
+   Sprawdzenie: testy pipeline'u przechodzą bez zmian; test, że handler przekazuje
+   podane wartości do splittera.
+3. **`max_lines` w splitterze.** Parametr keyword-only z dzisiejszym defaultem.
+   Sprawdzenie: test dla 1, 2 i 3 linii budżetu.
+4. **Trzy pola w konfiguracji.** `UserSettings`, katalog, dyspozycje, snapshot.
+   Sprawdzenie: strażnik kompletności z E1 wymusi obecność w układzie panelu.
+5. **Kategoria `Napisy`.** Nowa pozycja w `_ROOT_ITEMS`, nowa krotka pól, dwa pola
+   układu tekstu; rozmiar kontekstu ląduje w `Tłumaczenie`.
+   Sprawdzenie: test kompletności, test renderu kategorii.
+6. **Edytor `OBJECT_LIST`.** Własne głosy stają się osiągalne, a
+   `_KNOWN_LAYOUT_GAPS` pustoszeje.
+   Sprawdzenie: test dodania, zmiany i usunięcia głosu; test, że słownik luk jest
+   pusty.
+7. **Bramki.** Pełny zestaw, baseline bez zmian.
+
+## Weryfikacja
+
+| twierdzenie | dowód |
+|---|---|
+| defaulty nie zmieniają zachowania | testy pipeline'u bez zmian po kroku 2 |
+| wartość z panelu dociera do splittera | test handlera z niestandardowym configem |
+| budżet linii działa | test dla 1, 2 i 3 |
+| proporcja 750/250 zachowana | test, że `chunk_chars=750` daje `chunk_limit=250` |
+| własne głosy są osiągalne | test edytora + pusty słownik luk |
+| tolerancja ma jedno źródło | test równości obu miejsc |

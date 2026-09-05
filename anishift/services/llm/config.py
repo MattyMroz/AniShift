@@ -8,6 +8,7 @@ from typing import Final, Never
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.llm.errors import LlmConfigError
+from anishift.services.llm.wire_protocol import ModelProtocol
 
 __all__ = ["LlmConfig"]
 
@@ -26,8 +27,11 @@ class LlmConfig:
     temperature: float | None = None
     top_p: float | None = None
     max_output_tokens: int | None = None
-    timeout_s: float = 60.0
+    timeout_s: float = 300.0
     max_retries: int = 2
+    alias: str = ""
+    provider_id: str = ""
+    protocol: ModelProtocol | None = None
 
     def __post_init__(self) -> None:
         """Validate provider-independent configuration constraints."""

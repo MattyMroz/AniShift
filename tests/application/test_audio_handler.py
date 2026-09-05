@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import threading
+import wave
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -13,7 +15,17 @@ from anishift.application.events import WorkerNotification
 from anishift.application.planning import PlanTask, TaskKind
 from anishift.application.results import ArtifactSnapshot, TaskResult
 from anishift.errors import ErrorCode, ExecutionError
-from anishift.services.audio import AudioRenderRequest, AudioRenderResult, AudioRenderStatus
+from anishift.platform.binaries import Binary, resolve_binary
+from anishift.services.audio import (
+    AudioConfig,
+    AudioRenderRequest,
+    AudioRenderResult,
+    AudioRenderStatus,
+    AudioTranscodeService,
+)
+
+FFMPEG = resolve_binary(Binary.FFMPEG)
+FFPROBE = resolve_binary(Binary.FFPROBE)
 
 
 class _Progress:
@@ -30,22 +42,39 @@ class _Mixer:
         request: AudioRenderRequest,
         *,
         callbacks: AudioProgressObserver | None = None,
+        on_percent: Callable[[int], None] | None = None,
         cancel: threading.Event | None = None,
     ) -> AudioRenderResult:
         assert cancel is not None
         assert cancel.is_set() is False
         if callbacks is not None:
             callbacks.on_audio_phase(request.scope_id, "mixing")
+        if on_percent is not None:
+            on_percent(40)
+            on_percent(100)
         output = request.source_path.with_suffix(".eac3")
         output.write_bytes(b"mixed")
         return AudioRenderResult(request.scope_id, AudioRenderStatus.COMPLETED, None, output, None, (), (), "n", "m")
 
 
 class _Transcoder:
-    def transcode(self, source: Path, destination: Path, *, cancel: threading.Event) -> Path:
+    def __init__(self, *, invalid_output: bool = False) -> None:
+        self.invalid_output: bool = invalid_output
+
+    def transcode(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        cancel: threading.Event,
+        on_percent: Callable[[int], None] | None = None,
+    ) -> Path:
         assert cancel.is_set() is False
         destination.write_bytes(source.read_bytes())
-        return destination
+        if on_percent is not None:
+            on_percent(50)
+            on_percent(100)
+        return source if self.invalid_output else destination
 
 
 def _ready(artifact_id: str, kind: ArtifactKind, path: Path) -> Artifact:
@@ -105,18 +134,21 @@ def test_audio_handler_mixes_manifest_and_source_audio(tmp_path: Path) -> None:
         (("output_profile", "eac3"),),
     )
 
+    progress: _Progress = _Progress()
     result: TaskResult = AudioTaskHandler(_Mixer(), _Transcoder(), run_root=tmp_path / "run").execute(
         task,
         ArtifactSnapshot({"source": source, "manifest": manifest}, {"narration": output}),
         NeverCancelledToken(),
-        _Progress(),
+        progress,
     )
 
     assert result.outputs[0].path.read_bytes() == b"mixed"
     assert result.outputs[0].metadata["validated"] is True
+    assert [event.progress_percent for event in progress.notifications] == [None, 40, 99, 100]
 
 
-def test_audio_handler_transcodes_ready_narration(tmp_path: Path) -> None:
+@pytest.mark.parametrize("invalid_output", [False, True])
+def test_audio_handler_transcodes_ready_narration(tmp_path: Path, invalid_output: bool) -> None:
     source_path = tmp_path / "narration.wav"
     source_path.write_bytes(b"audio")
     source = _ready("source", ArtifactKind.NARRATION_AUDIO, source_path)
@@ -132,15 +164,28 @@ def test_audio_handler_transcodes_ready_narration(tmp_path: Path) -> None:
         (("output_profile", "eac3"),),
     )
 
-    result: TaskResult = AudioTaskHandler(_Mixer(), _Transcoder(), run_root=tmp_path / "run").execute(
+    progress: _Progress = _Progress()
+    handler: AudioTaskHandler = AudioTaskHandler(
+        _Mixer(),
+        _Transcoder(invalid_output=invalid_output),
+        run_root=tmp_path / "run",
+    )
+    snapshot: ArtifactSnapshot = ArtifactSnapshot({"source": source}, {"transcoded": output})
+    if invalid_output:
+        with pytest.raises(ExecutionError, match="invalid output"):
+            handler.execute(task, snapshot, NeverCancelledToken(), progress)
+        assert [event.progress_percent for event in progress.notifications] == [None, 50, 99]
+        return
+    result: TaskResult = handler.execute(
         task,
-        ArtifactSnapshot({"source": source}, {"transcoded": output}),
+        snapshot,
         NeverCancelledToken(),
-        _Progress(),
+        progress,
     )
 
     assert result.outputs[0].path.suffix == ".eac3"
     assert result.outputs[0].path.read_bytes() == b"audio"
+    assert [event.progress_percent for event in progress.notifications] == [None, 50, 99, 100]
 
 
 def test_audio_handler_rejects_cancelled_task_before_service_call(tmp_path: Path) -> None:
@@ -166,3 +211,41 @@ def test_audio_handler_rejects_cancelled_task_before_service_call(tmp_path: Path
         )
 
     assert raised.value.context.code is ErrorCode.CANCELLED
+
+
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+def test_real_audio_handler_reports_measured_progress_before_success(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "narration.wav"
+    with wave.open(str(source_path), "wb") as source_wav:
+        source_wav.setnchannels(1)
+        source_wav.setsampwidth(2)
+        source_wav.setframerate(48_000)
+        source_wav.writeframes(b"\x00" * 96_000)
+    source: Artifact = _ready("source", ArtifactKind.NARRATION_AUDIO, source_path)
+    output: Artifact = _output("transcoded")
+    task: PlanTask = PlanTask(
+        "transcode",
+        "group-1",
+        TaskKind.TRANSCODE_AUDIO,
+        ("source",),
+        ("transcoded",),
+        (),
+        "audio:default",
+        (("output_profile", "eac3"),),
+    )
+    progress: _Progress = _Progress()
+    transcoder: AudioTranscodeService = AudioTranscodeService(AudioConfig(), ffmpeg=FFMPEG, ffprobe=FFPROBE)
+
+    result: TaskResult = AudioTaskHandler(_Mixer(), transcoder, run_root=tmp_path / "run").execute(
+        task,
+        ArtifactSnapshot({"source": source}, {"transcoded": output}),
+        NeverCancelledToken(),
+        progress,
+    )
+
+    assert result.outputs[0].metadata["validated"] is True
+    assert result.outputs[0].path.stat().st_size > 0
+    assert progress.notifications[0].progress_percent is None
+    assert any(event.progress_percent == 99 for event in progress.notifications[:-1])
+    assert all(event.progress_percent != 100 for event in progress.notifications[:-1])
+    assert progress.notifications[-1].progress_percent == 100

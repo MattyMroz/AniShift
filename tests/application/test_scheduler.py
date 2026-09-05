@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from anishift.application import scheduler as scheduler_module
+from anishift.application import scheduler_runtime
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState
 from anishift.application.cancellation import CancellationToken, EventCancellationToken, NeverCancelledToken
 from anishift.application.events import RunEvent, RunEventKind, WorkerNotification, WorkerNotificationKind
@@ -57,6 +59,7 @@ class _FakeHandler:
         modes: dict[str, str] | None = None,
         notifications: dict[str, tuple[WorkerNotificationKind, ...]] | None = None,
         ignore_cancel: frozenset[str] = frozenset(),
+        barriers: dict[str, threading.Barrier] | None = None,
     ) -> None:
         self.run_root: Path = run_root
         self.delays: dict[str, float] = delays or {}
@@ -64,6 +67,7 @@ class _FakeHandler:
         self.modes: dict[str, str] = modes or {}
         self.notifications: dict[str, tuple[WorkerNotificationKind, ...]] = notifications or {}
         self.ignore_cancel: frozenset[str] = ignore_cancel
+        self.barriers: dict[str, threading.Barrier] = barriers or {}
         self.calls: list[str] = []
         self.started: dict[str, float] = {}
         self.finished: dict[str, float] = {}
@@ -88,6 +92,9 @@ class _FakeHandler:
             self.max_active[resource_bucket] = max(self.max_active.get(resource_bucket, 0), active)
         self.entered.set()
         try:
+            barrier: threading.Barrier | None = self.barriers.get(task.task_id)
+            if barrier is not None:
+                barrier.wait(timeout=5)
             for kind in self.notifications.get(task.task_id, ()):
                 percentage: int | None = 50 if kind is WorkerNotificationKind.PROGRESS else None
                 progress.emit(WorkerNotification(kind, task.task_id, percentage, "worker update"))
@@ -150,7 +157,6 @@ class _FakeHandler:
 def _settings(policy: ProcessingOrderPolicy = ProcessingOrderPolicy.READY_FIRST) -> RunSettingsSnapshot:
     return RunSettingsSnapshot(
         translation_profile_id="google",
-        translation_fallback_chain=("deepl",),
         translation_max_retries=3,
         translation_concurrency=2,
         llm_profile_id="gemini",
@@ -307,11 +313,15 @@ def test_dependent_task_streams_before_another_group_finishes(tmp_path: Path) ->
         _TaskSpec("group-2", "fast-second", ("fast-first",)),
     )
     plan: ExecutionPlan = _plan(tmp_path, specs)
+    overlap_barrier: threading.Barrier = threading.Barrier(2)
 
     result, handler, _ = _run(
         tmp_path,
         plan,
-        lambda run_root: _FakeHandler(run_root, delays={"slow-first": 0.08, "fast-first": 0.01}),
+        lambda run_root: _FakeHandler(
+            run_root,
+            barriers={"slow-first": overlap_barrier, "fast-second": overlap_barrier},
+        ),
     )
 
     assert result.succeeded is True
@@ -341,27 +351,42 @@ def test_audio_for_one_group_overlaps_tts_for_the_next_group(tmp_path: Path) -> 
 
 
 def test_scheduler_respects_provider_and_sapi_worker_limits(tmp_path: Path) -> None:
-    specs: tuple[_TaskSpec, ...] = tuple(_TaskSpec("group-1", f"translate-{index}") for index in range(6)) + tuple(
-        _TaskSpec(
-            "group-1",
-            f"sapi-{index}",
-            resource_key="tts:sapi" if index % 2 == 0 else "tts:SAPI",
-        )
-        for index in range(3)
+    specs: tuple[_TaskSpec, ...] = (
+        *(_TaskSpec("group-1", f"translate-{index}") for index in range(6)),
+        *(_TaskSpec("group-1", f"llm-{index}", resource_key="llm:gemini") for index in range(6)),
+        *(
+            _TaskSpec(
+                "group-1",
+                f"sapi-{index}",
+                resource_key="tts:sapi" if index % 2 == 0 else "tts:SAPI",
+            )
+            for index in range(3)
+        ),
     )
     plan: ExecutionPlan = _plan(tmp_path, specs)
+    translation_barrier: threading.Barrier = threading.Barrier(2)
+    llm_barrier: threading.Barrier = threading.Barrier(4)
+    barriers: dict[str, threading.Barrier] = {
+        "translate-0": translation_barrier,
+        "translate-1": translation_barrier,
+        "llm-0": llm_barrier,
+        "llm-1": llm_barrier,
+        "llm-2": llm_barrier,
+        "llm-3": llm_barrier,
+    }
 
     result, handler, _ = _run(
         tmp_path,
         plan,
         lambda run_root: _FakeHandler(
             run_root,
-            delays={spec.task_id: 0.02 for spec in specs},
+            barriers=barriers,
         ),
     )
 
     assert result.succeeded is True
     assert handler.max_active["translation:google"] == 2
+    assert handler.max_active["llm:gemini"] == 4
     assert handler.max_active["tts:sapi"] == 1
 
 
@@ -583,3 +608,213 @@ def test_executors_shutdown_without_named_thread_leaks(tmp_path: Path) -> None:
     thread_names: tuple[str, ...] = tuple(thread.name for thread in threading.enumerate())
     assert result.succeeded is True
     assert not any(name.startswith("anishift-") for name in thread_names)
+
+
+@pytest.mark.parametrize("failure", [KeyboardInterrupt, RuntimeError])
+def test_coordinator_failure_cancels_workers_before_join(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: type[BaseException],
+) -> None:
+    plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "work"),))
+    entered: threading.Event = threading.Event()
+    observed_cancellation: list[bool] = []
+
+    def wait_for_cancel(self: _FakeHandler, task: PlanTask, cancel: CancellationToken) -> None:
+        entered.set()
+        deadline: float = time.monotonic() + 1.0
+        while not cancel.is_cancelled() and time.monotonic() < deadline:
+            time.sleep(0.002)
+        observed_cancellation.append(cancel.is_cancelled())
+        cancel.raise_if_cancelled()
+
+    def interrupt_wait(*_: object, **__: object) -> None:
+        assert entered.wait(timeout=1.0)
+        raise failure("coordinator interrupted")
+
+    monkeypatch.setattr(_FakeHandler, "_wait", wait_for_cancel)
+    monkeypatch.setattr(scheduler_module, "wait", interrupt_wait)
+
+    with pytest.raises(failure, match="coordinator interrupted"):
+        _run(tmp_path, plan, _FakeHandler)
+
+    assert observed_cancellation == [True]
+
+
+class _LockedDestinationError(PermissionError):
+    def __init__(self) -> None:
+        super().__init__(13, "target locked")
+        self.winerror: int = 32
+
+
+def test_locked_publication_allows_other_group_to_finish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan: ExecutionPlan = _plan(
+        tmp_path,
+        (_TaskSpec("group-1", "locked", durable=True), _TaskSpec("group-2", "independent", durable=True)),
+    )
+    attempted: threading.Event = threading.Event()
+    released: threading.Event = threading.Event()
+    original_replace: Callable[[Path, Path], Path] = Path.replace
+    original_wait: Callable[[_FakeHandler, PlanTask, CancellationToken], None] = _FakeHandler._wait
+
+    def replace(staging: Path, destination: Path) -> Path:
+        if destination.name == "locked.pl.ass" and not released.is_set():
+            attempted.set()
+            raise _LockedDestinationError
+        return original_replace(staging, destination)
+
+    def wait_for_attempt(self: _FakeHandler, task: PlanTask, cancel: CancellationToken) -> None:
+        if task.task_id == "independent":
+            assert attempted.wait(timeout=1.0)
+        original_wait(self, task, cancel)
+
+    class ReleasingSink(_CollectingSink):
+        def emit(self, event: RunEvent) -> None:
+            super().emit(event)
+            if event.kind is RunEventKind.GROUP_FINISHED and event.group_id == "group-2":
+                released.set()
+
+    monkeypatch.setattr(Path, "replace", replace)
+    monkeypatch.setattr(_FakeHandler, "_wait", wait_for_attempt)
+    monkeypatch.setattr(scheduler_runtime, "_PUBLICATION_LOCK_RETRIES", 3)
+    monkeypatch.setattr(scheduler_runtime, "_PUBLICATION_LOCK_RETRY_DELAY_S", 0.01)
+    sink: ReleasingSink = ReleasingSink()
+    run_root: Path = tmp_path / "temp" / "run-1"
+    with RunSession(run_root) as session:
+        handler: _FakeHandler = _FakeHandler(run_root)
+        scheduler: GraphScheduler = GraphScheduler(
+            handler, limits=_limits(plan.settings), run_id="run-1", session=session
+        )
+        result: RunResult = scheduler.run(plan, cancel=NeverCancelledToken(), events=sink)
+
+    assert result.succeeded
+    assert handler.calls.count("locked") == 1
+    finished_groups: list[str | None] = [
+        event.group_id for event in sink.events if event.kind is RunEventKind.GROUP_FINISHED
+    ]
+    assert finished_groups == ["group-2", "group-1"]
+
+
+def test_cancel_during_publication_retry_preserves_existing_product(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "locked", durable=True),))
+    destination: Path = tmp_path / "locked.pl.ass"
+    destination.write_bytes(b"existing")
+    token: EventCancellationToken = EventCancellationToken()
+    original_replace: Callable[[Path, Path], Path] = Path.replace
+    attempts: list[Path] = []
+
+    def replace(staging: Path, target: Path) -> Path:
+        if target == destination:
+            attempts.append(staging)
+            raise _LockedDestinationError
+        return original_replace(staging, target)
+
+    def cancel_after_attempt(delay: float) -> None:
+        token.cancel()
+
+    monkeypatch.setattr(Path, "replace", replace)
+    monkeypatch.setattr(time, "sleep", cancel_after_attempt)
+
+    result, _, _ = _run(tmp_path, plan, _FakeHandler, cancel=token)
+
+    assert result.cancelled
+    assert len(attempts) == 1
+    assert destination.read_bytes() == b"existing"
+
+
+def test_exhausted_publication_retries_preserve_existing_product(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "locked", durable=True),))
+    destination: Path = tmp_path / "locked.pl.ass"
+    destination.write_bytes(b"existing")
+    attempts: list[Path] = []
+    original_replace: Callable[[Path, Path], Path] = Path.replace
+
+    def replace(staging: Path, target: Path) -> Path:
+        if target == destination:
+            attempts.append(staging)
+            raise _LockedDestinationError
+        return original_replace(staging, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    monkeypatch.setattr(scheduler_runtime, "_PUBLICATION_LOCK_RETRIES", 2)
+    monkeypatch.setattr(scheduler_runtime, "_PUBLICATION_LOCK_RETRY_DELAY_S", 0.0)
+
+    result, _, _ = _run(tmp_path, plan, _FakeHandler)
+
+    assert result.groups[0].status is GroupStatus.FAILED
+    assert len(attempts) == 3
+    assert destination.read_bytes() == b"existing"
+
+
+@pytest.mark.parametrize("policy", [ProcessingOrderPolicy.READY_FIRST, ProcessingOrderPolicy.STRICT_NATURAL])
+def test_publication_retry_releases_dependants_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    policy: ProcessingOrderPolicy,
+) -> None:
+    plan: ExecutionPlan = _plan(
+        tmp_path,
+        (_TaskSpec("group-1", "locked", durable=True), _TaskSpec("group-1", "next", ("locked",))),
+        policy=policy,
+    )
+    attempts: list[Path] = []
+    original_replace: Callable[[Path, Path], Path] = Path.replace
+
+    def replace(staging: Path, target: Path) -> Path:
+        if target.name == "locked.pl.ass":
+            attempts.append(staging)
+            if len(attempts) == 1:
+                raise _LockedDestinationError
+        return original_replace(staging, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    monkeypatch.setattr(scheduler_runtime, "_PUBLICATION_LOCK_RETRY_DELAY_S", 0.0)
+
+    result, handler, _ = _run(tmp_path, plan, _FakeHandler)
+
+    assert result.succeeded
+    assert handler.calls == ["locked", "next"]
+    assert len(attempts) == 2
+
+
+def test_publication_retry_rechecks_session_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "locked", durable=True),))
+    destination: Path = tmp_path / "locked.pl.ass"
+    destination.write_bytes(b"existing")
+    attempts: list[Path] = []
+    original_replace: Callable[[Path, Path], Path] = Path.replace
+    original_commit: Callable[[RunSession, int, Callable[[], None]], bool] = RunSession.commit_if_generation
+
+    def replace(staging: Path, target: Path) -> Path:
+        if target == destination:
+            attempts.append(staging)
+            raise _LockedDestinationError
+        return original_replace(staging, target)
+
+    def commit_if_generation(session: RunSession, generation: int, action: Callable[[], None]) -> bool:
+        if attempts:
+            return False
+        return original_commit(session, generation, action)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    monkeypatch.setattr(RunSession, "commit_if_generation", commit_if_generation)
+    monkeypatch.setattr(RunSession, "accepts_generation", lambda session, generation: not attempts)
+    monkeypatch.setattr(scheduler_runtime, "_PUBLICATION_LOCK_RETRY_DELAY_S", 0.0)
+
+    result, _, _ = _run(tmp_path, plan, _FakeHandler)
+
+    assert result.cancelled
+    assert len(attempts) == 1
+    assert destination.read_bytes() == b"existing"

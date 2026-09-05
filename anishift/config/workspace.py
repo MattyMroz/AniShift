@@ -1,15 +1,4 @@
-"""Workspace resolution, runtime paths, and orphaned-run cleanup.
-
-The workspace is where the user drops media and receives durable products.
-Its only managed subdirectory is ``temp/``. No ``input/``, ``output/``,
-``cache/``, ``logs/`` or ``settings.json`` live here.
-
-Public API:
-    ENV_WORKSPACE_ROOT: Env var name for an explicit override.
-    DEFAULT_SUBDIRS: Subdirectories created by ``ensure_workspace_dir``.
-    resolve_workspace_root: Locate the active workspace root.
-    ensure_workspace_dir: Create the root and its default subdirectories.
-"""
+"""Workspace resolution, runtime paths, and orphaned-run cleanup."""
 
 from __future__ import annotations
 
@@ -100,18 +89,7 @@ def _infer_repo_workspace() -> Path:
 
 
 def resolve_workspace_root(*, override: str | Path | None = None) -> Path:
-    """Resolve the workspace root (env override or ``<repo>/workspace``).
-
-    Precedence: ``ANISHIFT_WORKSPACE_ROOT`` env var, otherwise
-    ``<repo_root>/workspace`` inferred from this module's location.
-
-    Returns:
-        Absolute path to the workspace root (NOT created on disk).
-
-    Raises:
-        WorkspaceRootNotResolvedError: When the env var is unset and the
-            module is not running from a repo checkout.
-    """
+    """Resolve the workspace root (env override or ``<repo>/workspace``)."""
     if override is not None and str(override).strip():
         resolved = Path(override).expanduser().resolve()
         logger.debug("Workspace root resolved", source="settings", workspace_name=resolved.name)
@@ -126,11 +104,7 @@ def resolve_workspace_root(*, override: str | Path | None = None) -> Path:
 
 
 def ensure_workspace_dir(root: Path) -> None:
-    """Create ``root`` and every entry in :data:`DEFAULT_SUBDIRS`.
-
-    Idempotent. Raises :class:`NotADirectoryError` if ``root`` exists as a
-    non-directory file (a path collision the user must resolve manually).
-    """
+    """Create ``root`` and every entry in :data:`DEFAULT_SUBDIRS`."""
     if root.exists() and not root.is_dir():
         msg = f"workspace root exists but is not a directory: {root}"
         raise NotADirectoryError(msg)

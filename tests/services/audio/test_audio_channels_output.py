@@ -6,6 +6,7 @@ import pytest
 
 from anishift.services.audio.channels import build_channel_plan
 from anishift.services.audio.config import AudioConfig
+from anishift.services.audio.errors import AudioDecodeError
 from anishift.services.audio.output import (
     RenderInputs,
     codec_spec,
@@ -148,3 +149,48 @@ def test_eac3_validation_accepts_one_frame_rounding_at_48_khz() -> None:
         channel_plan=plan,
         expected_duration_ms=1_420_063,
     )
+
+
+def test_eac3_validation_accepts_frame_padding_plus_millisecond_rounding() -> None:
+    config = AudioConfig(codec_profile=AudioCodecProfile.EAC3)
+    plan = build_channel_plan(AudioCodecProfile.EAC3, "stereo")
+    probe = AudioProbe(
+        path=Path("Episode.eac3"),
+        codec_name="eac3",
+        format_name="eac3",
+        sample_rate=48_000,
+        channels=2,
+        channel_layout="stereo",
+        duration_ms=1_440_160,
+        bit_rate=384_000,
+    )
+
+    validate_output_probe(
+        probe,
+        config=config,
+        channel_plan=plan,
+        expected_duration_ms=1_440_125,
+    )
+
+
+def test_eac3_validation_still_rejects_a_render_cut_short() -> None:
+    config = AudioConfig(codec_profile=AudioCodecProfile.EAC3)
+    plan = build_channel_plan(AudioCodecProfile.EAC3, "stereo")
+    probe = AudioProbe(
+        path=Path("Episode.eac3"),
+        codec_name="eac3",
+        format_name="eac3",
+        sample_rate=48_000,
+        channels=2,
+        channel_layout="stereo",
+        duration_ms=1_439_125,
+        bit_rate=384_000,
+    )
+
+    with pytest.raises(AudioDecodeError):
+        validate_output_probe(
+            probe,
+            config=config,
+            channel_plan=plan,
+            expected_duration_ms=1_440_125,
+        )

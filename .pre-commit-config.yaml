@@ -62,7 +62,7 @@ repos:
         name: no docstrings/comments in tests
         entry: python scripts/hooks/check_test_comments.py
         language: system
-        files: (^tests/|/tests/).*(test_.*|.*\.test|.*\.spec)\.(py|ts|tsx|js|jsx)$
+        files: (^tests/|/tests/).*\.(py|ts|tsx|js|jsx)$|(^|/)conftest\.py$
         stages: [pre-commit]
       - id: const-docstrings
         name: docstring under every constant

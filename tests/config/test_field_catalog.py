@@ -62,13 +62,11 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
         "gemini_api_key",
         "llm_max_concurrency",
         "llm_max_output_tokens",
-        "llm_module_ids",
-        "llm_prompt_id",
         "llm_provider",
         "llm_provider_model_id",
-        "llm_style_id",
         "llm_temperature",
         "llm_top_p",
+        "llm_translation_style",
         "mkv_tracks",
         "mp4_audio_source",
         "narrator_mix_base_gain_db",
@@ -77,7 +75,10 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
         "openai_compatible_base_url",
         "openrouter_api_key",
         "original_gain_db",
+        "palantir_enrollment_base_url",
+        "palantir_token",
         "preferred_video_artifact_id",
+        "primary_model_alias",
         "processing_order_policy",
         "requested_products",
         "selected_audio_artifact_id",
@@ -89,10 +90,12 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
         "subtitle_output_format",
         "subtitle_source_policy",
         "translation_action",
+        "subtitle_max_chars_per_line",
+        "subtitle_max_lines_per_event",
         "translation_batch_size",
+        "translation_chunk_chars",
         "translation_concurrency",
         "translation_engine",
-        "translation_fallback_chain",
         "translation_max_retries",
         "tts_engine",
         "tts_max_retries",
@@ -113,6 +116,9 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
     assert all(spec.is_secret is (spec.scope is SettingScope.SECRET) for spec in specs)
     assert catalog["translation_engine"].allowed_values == tuple(available_translation_engine_ids())
     assert catalog["llm_provider"].allowed_values == tuple(available_llm_engine_ids())
+    assert catalog["llm_translation_style"].allowed_values == ("adult-extreme", "funny", "neutral")
+    assert catalog["llm_max_concurrency"].default == 4
+    assert catalog["llm_max_concurrency"].maximum == 16
     assert catalog["tts_engine"].allowed_values == tuple(available_tts_engine_ids())
 
 
@@ -283,9 +289,12 @@ def test_sapi_catalog_uses_voice_specific_scales_without_false_concurrency(
 def test_secret_catalog_covers_environment_keys_without_exposing_workspace() -> None:
     catalog = _catalog()
     secret_ids = {setting_id for setting_id, spec in catalog.items() if spec.is_secret}
-    expected_secret_ids = {field_name for field_name in Settings.model_fields if field_name.endswith("_api_key")}
+    expected_secret_ids = {field_name for field_name in Settings.model_fields if field_name.endswith("_api_key")} | {
+        "palantir_token",
+    }
 
     assert secret_ids == expected_secret_ids
+    assert secret_ids <= set(Settings.model_fields)
     assert all(catalog[setting_id].default == "" for setting_id in secret_ids)
     assert catalog["openai_compatible_base_url"].is_secret is False
     assert "workspace_root" not in catalog

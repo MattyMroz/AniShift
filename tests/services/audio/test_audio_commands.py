@@ -1,20 +1,27 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from anishift.services.audio.commands import (
+    CommandResult,
     SubprocessRunner,
     decode_command,
     decode_duration_command,
+    ffmpeg_progress_reader,
     join_clips_command,
     scan_duration_command,
 )
+from anishift.services.audio.config import AudioConfig
 from anishift.services.audio.errors import AudioCancelledError, AudioProcessError
 from anishift.services.audio.types import AudioFormat
+from anishift.utils.timer import Timer
 
 
 class _StuckProcess:
@@ -85,6 +92,88 @@ def test_subprocess_runner_cancel_terminates_and_kills(
 
     assert process.terminate_calls == 1
     assert process.kill_calls == 1
+
+
+def test_audio_render_can_finish_beyond_the_probe_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FinishedProcess(_StuckProcess):
+        def communicate(self, timeout: float) -> tuple[str, str]:
+            del timeout
+            self.returncode = 0
+            return "", ""
+
+    process: _FinishedProcess = _FinishedProcess()
+    config: AudioConfig = AudioConfig()
+    monkeypatch.setattr("anishift.services.audio.commands.subprocess.Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(Timer, "duration_s", property(lambda _timer: config.operation_timeout_s + 1))
+
+    result: CommandResult = SubprocessRunner().run(
+        ("ffmpeg", "-version"),
+        operation="render_output",
+        timeout_s=config.render_timeout_s,
+    )
+
+    assert result.returncode == 0
+    assert process.terminate_calls == 0
+
+
+def test_audio_progress_uses_output_time_and_reserves_completion() -> None:
+    percents: list[int] = []
+    reader: Callable[[str], None] | None = ffmpeg_progress_reader(percents.append, duration_ms=1000)
+    assert reader is not None
+
+    for line in ("speed=2x", "out_time_us=invalid", "out_time_us=500000", "out_time_us=400000", "out_time_us=1000000"):
+        reader(line)
+
+    assert percents == [50, 99]
+    assert ffmpeg_progress_reader(percents.append, duration_ms=0) is None
+
+
+def test_audio_progress_arrives_before_exit_and_can_cancel(monkeypatch: pytest.MonkeyPatch) -> None:
+    processes: list[subprocess.Popen[str]] = []
+    spawn: Callable[..., subprocess.Popen[str]] = subprocess.Popen
+    cancel: threading.Event = threading.Event()
+    percents: list[int] = []
+
+    def record_spawn(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
+        process: subprocess.Popen[str] = spawn(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    def on_percent(percent: int) -> None:
+        percents.append(percent)
+        cancel.set()
+
+    monkeypatch.setattr("anishift.services.audio.commands.subprocess.Popen", record_spawn)
+    with pytest.raises(AudioCancelledError):
+        SubprocessRunner().run(
+            (sys.executable, "-u", "-c", "import time; print('out_time_us=500000'); time.sleep(30)"),
+            operation="render_output",
+            timeout_s=5.0,
+            cancel=cancel,
+            on_stdout_line=ffmpeg_progress_reader(on_percent, duration_ms=1000),
+        )
+
+    assert percents == [50]
+    assert processes[0].poll() is not None
+    assert processes[0].stdout is not None
+    assert processes[0].stdout.closed
+    assert processes[0].stderr is not None
+    assert processes[0].stderr.closed
+
+
+def test_audio_progress_observer_failure_does_not_fail_process() -> None:
+    def on_line(_line: str) -> None:
+        raise RuntimeError("renderer unavailable")
+
+    result: CommandResult = SubprocessRunner().run(
+        (sys.executable, "-u", "-c", "print('out_time_us=500000')"),
+        operation="render_output",
+        timeout_s=5.0,
+        on_stdout_line=on_line,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "out_time_us=500000"
 
 
 def test_decode_command_maps_exactly_one_audio_stream() -> None:

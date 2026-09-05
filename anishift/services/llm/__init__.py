@@ -24,7 +24,7 @@ from anishift.services.llm.errors import (
     LlmRequestError,
     LlmTimeoutError,
 )
-from anishift.services.llm.protocols import LlmAttemptObserver, LlmEngine
+from anishift.services.llm.protocols import LlmAttemptObserver, LlmEngine, StreamingLlmEngine
 from anishift.services.llm.service import LlmService
 from anishift.services.llm.types import (
     LlmContentPart,
@@ -61,6 +61,7 @@ __all__ = [
     "LlmService",
     "LlmTimeoutError",
     "LlmUsage",
+    "StreamingLlmEngine",
     "TextPart",
     "available_engine_ids",
     "create_engine",

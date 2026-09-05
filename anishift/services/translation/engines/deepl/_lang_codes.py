@@ -1,9 +1,4 @@
-"""DeepL language code mapping.
-
-DeepL uses uppercase codes and needs a regional variant for a few languages
-(English, Portuguese). ``auto`` maps to ``None`` because DeepL signals
-auto-detect by omitting source_lang.
-"""
+"""DeepL language code mapping."""
 
 from __future__ import annotations
 
@@ -17,15 +12,7 @@ _OVERRIDES: Final[dict[str, str]] = {
 
 
 def to_deepl_code(code: str) -> str | None:
-    """Map a caller-facing language code to DeepL's expected form.
-
-    Args:
-        code: Caller code (lowercase ISO, e.g. ``pl``, or ``auto``).
-
-    Returns:
-        DeepL code (uppercase, regional variant where required). ``None`` for
-        ``auto`` so the caller omits source_lang.
-    """
+    """Map a caller-facing language code to DeepL's expected target form."""
     normalized = code.lower()
     if normalized == "auto":
         return None
@@ -34,4 +21,12 @@ def to_deepl_code(code: str) -> str | None:
     return normalized.upper()
 
 
-__all__ = ["to_deepl_code"]
+def to_deepl_source_code(code: str) -> str | None:
+    """Map a caller-facing language code to DeepL's expected source form."""
+    normalized = code.lower().strip()
+    if not normalized or normalized == "auto":
+        return None
+    return normalized.split("-", 1)[0].upper()
+
+
+__all__ = ["to_deepl_code", "to_deepl_source_code"]

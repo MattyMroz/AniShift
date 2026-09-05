@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.platform.binaries import Binary, require_binary
 from anishift.services.audio.channels import build_channel_plan
-from anishift.services.audio.commands import CommandRunner, SubprocessRunner, transcode_command
+from anishift.services.audio.commands import CommandRunner, SubprocessRunner, ffmpeg_progress_reader, transcode_command
 from anishift.services.audio.config import AudioConfig
 from anishift.services.audio.errors import AudioCancelledError
 from anishift.services.audio.output import CodecSpec, codec_spec, validate_output_probe
@@ -36,7 +37,14 @@ class AudioTranscodeService:
         self._ffmpeg: Path = ffmpeg or require_binary(Binary.FFMPEG)
         self._ffprobe: Path = ffprobe or require_binary(Binary.FFPROBE)
 
-    def transcode(self, source: Path, destination: Path, *, cancel: threading.Event) -> Path:
+    def transcode(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        cancel: threading.Event,
+        on_percent: Callable[[int], None] | None = None,
+    ) -> Path:
         """Transcode one stream atomically into the configured output profile."""
         source_probe: AudioProbe = probe_audio(
             source,
@@ -64,8 +72,9 @@ class AudioTranscodeService:
                     source_filter=channel_plan.source_filter,
                 ),
                 operation="transcode_audio",
-                timeout_s=self._config.operation_timeout_s,
+                timeout_s=self._config.render_timeout_s,
                 cancel=cancel,
+                on_stdout_line=ffmpeg_progress_reader(on_percent, duration_ms=source_probe.duration_ms),
             )
             output_probe: AudioProbe = probe_audio(
                 temporary,

@@ -81,11 +81,7 @@ class ResourceLimits:
         max_pending_per_resource: int = 1,
     ) -> ResourceLimits:
         """Build default scheduler limits from one immutable settings snapshot."""
-        providers: tuple[str, ...] = (
-            settings.translation_profile_id,
-            *settings.translation_fallback_chain,
-        )
-        translation: dict[str, int] = dict.fromkeys(providers, settings.translation_concurrency)
+        translation: dict[str, int] = {settings.translation_profile_id: settings.translation_concurrency}
         return cls(
             extraction=extraction,
             translation=translation,
@@ -102,7 +98,7 @@ class ResourceLimits:
         if family == "translation":
             limit = self.translation.get(provider, settings.translation_concurrency)
         elif family == "llm":
-            limit = min(settings.llm_max_concurrency, 4)
+            limit = settings.llm_max_concurrency
         elif family == "tts":
             limit = 1 if provider.startswith("sapi") else self.tts_group_jobs
         elif family == "audio":

@@ -31,14 +31,18 @@ jobs:
       - run: uv run ruff check anishift/ tests/
       - run: uv run ruff format --check anishift/ tests/
       - name: No docstrings/comments in tests
-        run: uv run python scripts/hooks/check_test_comments.py $(git ls-files 'tests/**/test_*.py' 'anishift/**/test_*.py')
+        run: uv run python scripts/hooks/check_test_comments.py $(git ls-files ':(glob)tests/**/*.py' ':(glob)anishift/**/tests/**/*.py' ':(glob)**/conftest.py')
       - name: Docstring under every constant
         run: uv run python scripts/hooks/check_const_docstrings.py $(git ls-files 'anishift/**/*.py')
 
   audit:
-    name: Security (pip-audit)
-    runs-on: ubuntu-latest
+    name: Security (pip-audit) [${{ matrix.os }}]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,7 +52,10 @@ jobs:
           version: "latest"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uvx pip-audit
+      - name: Export locked project and development dependencies
+        run: uv export --frozen --all-groups --no-emit-project --format requirements.txt --output-file audit-requirements.txt
+      - name: Audit locked dependencies
+        run: uvx pip-audit --requirement audit-requirements.txt --disable-pip --strict
 
   typecheck:
     name: Type Check (mypy)
@@ -65,12 +72,23 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev
       - run: uv run mypy anishift/ tests/
+      # mypy resolves sys.platform for the platform it targets, so a Linux-only run
+      # never analyses the Windows branches (config/workspace.py, platform/binaries.py).
+      # This mirrors the mypy-linux pre-push hook, which does the same the other way.
+      - name: Type check the Windows target
+        run: uv run mypy --platform win32 anishift/ tests/
 
   test:
-    name: Test (pytest) [ubuntu-latest]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    # Windows off the matrix: local pre-push pytest covers OS bugs, GHA Windows = 2x minutes.
+    name: Test (pytest) [${{ matrix.os }}]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # AniShift ships to Windows, so the suite has to pass there, not only on the
+        # cheap runner: paths, file locks, the console code page and the ctypes
+        # process probe only answer for real on the shipping platform.
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,4 +99,6 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev
+      - name: Entry point smoke
+        run: uv run anishift --help
       - run: uv run pytest

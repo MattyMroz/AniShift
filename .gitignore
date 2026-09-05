@@ -289,8 +289,8 @@ logs/
 workspace/**
 external/bin/*
 config/settings.json
-config/.shell_history
-config/prompts/**/*.txt
+config/presets.json
+config/anishift.models.jsonc
 
 # ── Re-includes ──────────────────────────────────────────────────────────────
 # Every keeper lives HERE, not next to the rule it escapes — a template pasted

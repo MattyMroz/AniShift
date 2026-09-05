@@ -1,10 +1,4 @@
-"""DeepL engine (official SDK, synchronous).
-
-``translate_text`` accepts a list and returns results in order, so this engine
-uses the SDK's native batch. The key comes from the config (injected from
-Settings). Rate-limit errors retry with backoff; other SDK errors map onto the
-translation error hierarchy so the facade can react (quota -> fallback).
-"""
+"""DeepL engine (official SDK, synchronous)."""
 
 from __future__ import annotations
 
@@ -12,7 +6,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from anishift.services.translation._retry import call_with_retry
-from anishift.services.translation.engines.deepl._lang_codes import to_deepl_code
+from anishift.services.translation.engines.deepl._lang_codes import to_deepl_code, to_deepl_source_code
 from anishift.services.translation.engines.deepl.config import DeeplConfig
 from anishift.services.translation.engines.deepl.constants import (
     MAX_PAYLOAD_BYTES,
@@ -32,10 +26,7 @@ if TYPE_CHECKING:
 
 
 def _map_sdk_error(exc: Exception) -> Exception:
-    """Map a DeepL SDK exception onto the translation error hierarchy.
-
-    ``deepl`` is imported lazily so the module stays importable without the SDK.
-    """
+    """Map a DeepL SDK exception onto the translation error hierarchy."""
     import deepl  # noqa: PLC0415 - lazy SDK import
 
     if isinstance(exc, deepl.TooManyRequestsException):
@@ -106,11 +97,7 @@ class DeeplService:
         return "deduplicate"
 
     def _ensure_client(self) -> None:
-        """Create the DeepL client from the configured key (idempotent).
-
-        Raises:
-            TranslationAuthError: When no API key is configured.
-        """
+        """Create the DeepL client from the configured key (idempotent)."""
         if self._client is not None:
             return
         if not self._config.api_key:
@@ -133,7 +120,7 @@ class DeeplService:
             return []
         self._ensure_client()
         target = to_deepl_code(target_lang) or "EN-US"
-        source = to_deepl_code(source_lang)
+        source = to_deepl_source_code(source_lang)
         max_attempts = self._config.max_retries + 1
         out: list[BatchedLine] = []
         for chunk in _chunk_batches(texts, self._config.batch_size, MAX_PAYLOAD_BYTES):

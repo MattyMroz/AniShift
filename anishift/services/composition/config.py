@@ -33,17 +33,7 @@ _SUPPORTED_ENCODERS: Final[frozenset[str]] = frozenset({"libx264", "libx265"})
 
 @dataclass(frozen=True, slots=True)
 class CompositionConfig:
-    """Composition behaviour shared by every variant.
-
-    Attributes:
-        quality_preset: Named quality target for hardsub rendering.
-        video_encoder: FFmpeg encoder used when the picture is re-encoded.
-        encoder_preset: FFmpeg speed/compression preset.
-        size_budget_ratio: Output-to-source size ratio that triggers a warning.
-        operation_timeout_s: Timeout for a single muxing or probing process.
-        render_timeout_s: Timeout for one hardsub render.
-        shutdown_grace_s: Grace period before a hard kill.
-    """
+    """Composition behaviour shared by every variant."""
 
     quality_preset: QualityPreset = QualityPreset.BALANCED
     video_encoder: str = "libx264"

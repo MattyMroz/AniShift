@@ -1,7 +1,4 @@
-"""Translation engine factory: registry-based engine construction.
-
-Entry point: ``create_engine(config)`` -> concrete ``TranslationEngine``.
-"""
+"""Translation engine factory: registry-based engine construction."""
 
 from __future__ import annotations
 
@@ -36,21 +33,7 @@ def available_engine_ids() -> tuple[TranslationEngineId, ...]:
 
 
 def create_engine(config: TranslationConfig) -> TranslationEngine:
-    """Create a translation engine for the given config.
-
-    Engines import lazily so heavy SDKs stay off the domain import path.
-
-    Args:
-        config: Facade config; ``config.engine`` selects the registry entry.
-
-    Returns:
-        A ``TranslationEngine`` implementation ready to translate.
-
-    Raises:
-        TranslationConfigError: If ``config.engine`` is empty, unknown, or is
-            ``llm`` (needs an injected completer; build LlmTranslateService
-            directly and pass it through a composition-owned engine factory).
-    """
+    """Create a translation engine for the given config."""
     engine_id = config.engine
     if not engine_id:
         msg = "translation.engine is required"

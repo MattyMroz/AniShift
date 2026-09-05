@@ -1,0 +1,792 @@
+"""Single-event-loop interactive command line for AniShift."""
+
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Final
+
+from rich.text import Text
+
+from anishift import __version__
+from anishift.application import AppService, AutoPreset, InspectedWorkspace, RunResult
+from anishift.application.cancellation import EventCancellationToken
+from anishift.application.events import sanitize_event_message
+from anishift.cli.interactive.home import HomeAction, brand_for_geometry, working_directory_label
+from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
+from anishift.cli.interactive.mascot import MascotController, MascotState
+from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS, NATIVE_MASCOT_ANCHOR
+from anishift.cli.interactive.progress import RichRunProgress
+from anishift.cli.interactive.prompts import (
+    TEXT_MASCOT_SIZE,
+    AutoGeometry,
+    HomeGeometry,
+    TerminalRenderer,
+    resolve_auto_geometry,
+    resolve_home_geometry,
+    status_line,
+)
+from anishift.cli.interactive.settings import SettingsController, SettingsResult
+from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, execute_plan, prepare_auto_run
+from anishift.errors import AniShiftError
+from anishift.utils.logger import get_logger
+
+__all__ = ["run_interactive"]
+
+logger = get_logger(__name__)
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_LOG_LOCATION: Final[str] = "logs/anishift.log.jsonl"
+"""Relative location of the process diagnostic log."""
+
+_HOME_CHOICES: Final[tuple[tuple[str, HomeAction], ...]] = (
+    ("Auto", HomeAction.AUTO),
+    ("Ręczny", HomeAction.MANUAL),
+    ("Ustawienia", HomeAction.SETTINGS),
+    ("Wyjście", HomeAction.EXIT),
+)
+"""Home actions in their product-defined display order."""
+
+_HOME_HINT: Final[str] = "↑↓ · Enter"
+"""Compact keyboard hint shown below Home choices."""
+
+_HOME_POINTER: Final[str] = "\u276f"
+"""Pointer glyph shown beside the active Home choice."""
+
+_QUEUE_SCROLL_KEYS: Final[frozenset[str]] = frozenset({"up", "down", "pageup", "pagedown", "home", "end"})
+"""Keys that move the Auto queue instead of leaving the view."""
+
+_QUEUE_WHEEL_ROWS: Final[int] = 3
+"""Queue rows one wheel notch moves."""
+
+_QUEUE_MARKER_ROWS: Final[int] = 2
+"""Rows reserved above and below the queue for the hidden-row markers."""
+
+_MINIMUM_BRANDED_ROWS: Final[int] = 8
+"""Minimum terminal height for a brand, gap, queue markers and progress."""
+
+_REFUSAL_MESSAGES: Final[dict[str, str]] = {
+    "The workspace holds no source group to run.": "Workspace nie zawiera materiału do uruchomienia",
+    "No discovered source group is ready to run.": "Żadna wykryta grupa nie jest gotowa do uruchomienia",
+    "The plan cannot run because of a blocking problem.": "Plan nie może zostać uruchomiony",
+}
+"""Polish presentation of stable UI-neutral Auto refusals."""
+
+_REFUSAL_SUGGESTIONS: Final[dict[str, str]] = {
+    "Put a video or a subtitle file in the workspace and run the preset again.": (
+        "Umieść plik wideo lub napisów w workspace i spróbuj ponownie"
+    ),
+    "Give every group usable text, resolve its conflict, then run the preset again.": (
+        "Usuń konflikty i zapewnij każdej grupie użyteczne napisy"
+    ),
+}
+"""Polish presentation of stable UI-neutral Auto suggestions."""
+
+
+@dataclass(slots=True)
+class _QueueView:
+    """Own the scroll position of the Auto queue without touching its row order."""
+
+    offset: int = 0
+    visible: int = 1
+    following: bool = True
+
+    def navigate(self, key: str, total: int) -> None:
+        """Move the view by one keyboard step, page or edge."""
+        if key == "end":
+            self.following = True
+            return
+        stride: int = max(self.visible - 1, 1)
+        moves: dict[str, int] = {
+            "up": -1,
+            "down": 1,
+            "pageup": -stride,
+            "pagedown": stride,
+            "home": -total,
+        }
+        self.move(moves.get(key, 0), total)
+
+    def move(self, rows: int, total: int) -> None:
+        """Scroll independently of active work until End explicitly resumes following."""
+        last: int = _last_offset(total, self.visible)
+        self.offset = min(max(self.offset + rows, 0), last)
+        self.following = False
+
+    def fit(self, row: int, total: int, visible: int) -> None:
+        """Adopt the row budget known only at render time and follow active work."""
+        self.visible = max(visible, 1)
+        last: int = _last_offset(total, self.visible)
+        self.offset = min(self.offset, last)
+        if self.following:
+            self.offset = min(max(row - self.visible + 1, 0), last)
+
+
+class _ViewMode(StrEnum):
+    """Identify the screen content rendered by the single terminal owner."""
+
+    HOME = "home"
+    PREPARING = "preparing"
+    MANUAL_PREPARING = "manual_preparing"
+    MANUAL = "manual"
+    AUTO = "auto"
+    AUTO_DONE = "auto_done"
+    SETTINGS = "settings"
+    MESSAGE = "message"
+
+
+class _InteractiveApplication:
+    """Coordinate application work with one Prompt Toolkit renderer."""
+
+    def __init__(self, service: AppService) -> None:
+        self._service: AppService = service
+        self._lock: threading.Lock = threading.Lock()
+        self._mode: _ViewMode = _ViewMode.HOME
+        self._selected: int = 0
+        self._message: Text = Text()
+        self._message_view: _QueueView = _QueueView(following=False)
+        self._progress: RichRunProgress | None = None
+        self._queue: _QueueView = _QueueView()
+        self._settings: SettingsController | None = None
+        self._manual: ManualController | None = None
+        self._cancel_requested: bool = False
+        self._preflight_cancel: EventCancellationToken | None = None
+        self._generation: int = 0
+        self._worker: threading.Thread | None = None
+        self._directory: str = working_directory_label()
+        self._renderer: TerminalRenderer = TerminalRenderer(
+            self._render_frame,
+            self._handle_key,
+            self._handle_idle,
+            self._handle_scroll,
+        )
+        self._mascot: MascotController = MascotController(self._renderer.invalidate)
+
+    def run(self) -> None:
+        """Run the interactive session until Home exits."""
+        self._start_prewarm()
+        try:
+            self._renderer.run()
+        finally:
+            self._cancel_active_work()
+            self._close_settings()
+            self._mascot.close()
+
+    def _cancel_active_work(self) -> None:
+        """Signal every active operation before the terminal owner closes."""
+        with self._lock:
+            self._cancel_requested = True
+            preflight: EventCancellationToken | None = self._preflight_cancel
+            progress: RichRunProgress | None = self._progress
+            manual: ManualController | None = self._manual
+        if preflight is not None:
+            preflight.cancel()
+        if manual is not None:
+            manual.cancel()
+        if progress is not None and progress.run_id is not None:
+            self._service.cancel(progress.run_id)
+
+    def _close_settings(self) -> None:
+        """Let the settings panel persist a delayed edit before it stops existing."""
+        with self._lock:
+            controller: SettingsController | None = self._settings
+        if controller is not None:
+            controller.close()
+        with self._lock:
+            self._settings = None
+
+    def _start_prewarm(self) -> None:
+        """Inspect the workspace while Home is idle so Auto and Manual start at once."""
+        threading.Thread(target=self._prewarm_workspace, name="anishift-prewarm", daemon=True).start()
+
+    def _prewarm_workspace(self) -> None:
+        try:
+            self._service.discover()
+        except (AniShiftError, OSError) as problem:
+            logger.info("Workspace prewarm skipped", error_class=type(problem).__name__)
+
+    def _handle_key(self, key: str) -> None:
+        with self._lock:
+            mode: _ViewMode = self._mode
+        if mode is _ViewMode.SETTINGS:
+            self._handle_settings_key(key)
+            return
+        if key == "interrupt":
+            self._interrupt(mode)
+            return
+        if mode is _ViewMode.HOME:
+            self._handle_home_key(key)
+            return
+        if mode is _ViewMode.MANUAL:
+            self._handle_manual_key(key)
+            return
+        if mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and key in _QUEUE_SCROLL_KEYS:
+            self._navigate_queue(key)
+            return
+        if mode is _ViewMode.MESSAGE and key in _QUEUE_SCROLL_KEYS:
+            with self._lock:
+                self._message_view.navigate(key, len(self._message.split("\n")))
+            self._renderer.invalidate()
+            return
+        if mode in {_ViewMode.AUTO_DONE, _ViewMode.MESSAGE}:
+            self._show_home()
+
+    def _handle_idle(self) -> None:
+        with self._lock:
+            controller: SettingsController | None = self._settings if self._mode is _ViewMode.SETTINGS else None
+        if controller is not None:
+            controller.flush_pending()
+
+    def _handle_scroll(self, direction: int) -> None:
+        with self._lock:
+            mode: _ViewMode = self._mode
+            controller: SettingsController | None = self._settings if mode is _ViewMode.SETTINGS else None
+            progress: RichRunProgress | None = self._progress
+        if mode is _ViewMode.MESSAGE:
+            self._message_view.move(direction * _QUEUE_WHEEL_ROWS, len(self._message.split("\n")))
+            self._renderer.invalidate()
+            return
+        if mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
+            self._queue.move(direction * _QUEUE_WHEEL_ROWS, progress.row_count)
+            self._renderer.invalidate()
+            return
+        if controller is None:
+            return
+        controller.scroll(direction)
+        self._renderer.invalidate()
+
+    def _navigate_queue(self, key: str) -> None:
+        with self._lock:
+            progress: RichRunProgress | None = self._progress
+        if progress is None:
+            return
+        self._queue.navigate(key, progress.row_count)
+        self._renderer.invalidate()
+
+    def _handle_home_key(self, key: str) -> None:
+        if key == "up":
+            with self._lock:
+                self._selected = (self._selected - 1) % len(_HOME_CHOICES)
+            self._renderer.invalidate()
+            return
+        if key == "down":
+            with self._lock:
+                self._selected = (self._selected + 1) % len(_HOME_CHOICES)
+            self._renderer.invalidate()
+            return
+        if key != "enter":
+            return
+        with self._lock:
+            action: HomeAction = _HOME_CHOICES[self._selected][1]
+        if action is HomeAction.EXIT:
+            self._renderer.exit()
+        elif action is HomeAction.AUTO:
+            self._start_auto()
+        elif action is HomeAction.SETTINGS:
+            self._show_settings()
+        else:
+            self._start_manual()
+
+    def _handle_settings_key(self, key: str) -> None:
+        with self._lock:
+            controller: SettingsController | None = self._settings
+        if controller is None:
+            self._show_home()
+            return
+        result: SettingsResult = controller.handle_key(key)
+        if result is SettingsResult.BACK_HOME:
+            self._show_home()
+            return
+        self._renderer.invalidate()
+
+    def _handle_manual_key(self, key: str) -> None:
+        with self._lock:
+            controller: ManualController | None = self._manual
+        if controller is None:
+            self._show_home()
+            return
+        result: ManualResult = controller.handle_key(key)
+        if result is ManualResult.BACK_HOME:
+            self._show_home()
+            return
+        if result is ManualResult.START_RUN:
+            prepared: ManualRun | None = controller.take_ready_run()
+            if prepared is not None:
+                self._start_manual_run(prepared)
+                return
+        self._renderer.invalidate()
+
+    def _interrupt(self, mode: _ViewMode) -> None:
+        if mode is _ViewMode.HOME:
+            logger.info("Interactive session interrupted")
+            self._renderer.exit()
+            return
+        if mode in {_ViewMode.PREPARING, _ViewMode.MANUAL_PREPARING}:
+            preflight_cancel: EventCancellationToken | None
+            with self._lock:
+                self._generation += 1
+                self._mode = _ViewMode.HOME
+                self._progress = None
+                self._manual = None
+                preflight_cancel = self._preflight_cancel
+                self._preflight_cancel = None
+            if preflight_cancel is not None:
+                preflight_cancel.cancel()
+            self._mascot.reset()
+            self._renderer.invalidate()
+            return
+        if mode is _ViewMode.MANUAL:
+            with self._lock:
+                self._generation += 1
+                manual: ManualController | None = self._manual
+            if manual is not None:
+                manual.cancel()
+            self._show_home()
+            return
+        if mode is _ViewMode.AUTO:
+            progress: RichRunProgress | None
+            with self._lock:
+                self._generation += 1
+                self._cancel_requested = True
+                self._mode = _ViewMode.HOME
+                progress = self._progress
+                self._progress = None
+            run_id: str | None = progress.run_id if progress is not None else None
+            if run_id is not None:
+                self._service.cancel(run_id)
+            self._mascot.reset()
+            self._renderer.invalidate()
+            return
+        self._show_home()
+
+    def _start_auto(self) -> None:
+        with self._lock:
+            if self._worker is not None and self._worker.is_alive():
+                return
+            self._generation += 1
+            generation: int = self._generation
+            self._mode = _ViewMode.PREPARING
+            self._progress = None
+            self._message = Text()
+            self._cancel_requested = False
+            self._preflight_cancel = EventCancellationToken()
+            self._worker = threading.Thread(
+                target=self._prepare_and_run,
+                args=(generation,),
+                name="anishift-auto",
+                daemon=True,
+            )
+            worker: threading.Thread = self._worker
+        self._renderer.invalidate()
+        self._mascot.show(MascotState.DISCOVER)
+        worker.start()
+
+    def _start_manual(self) -> None:
+        with self._lock:
+            if self._worker is not None and self._worker.is_alive():
+                return
+            self._generation += 1
+            generation: int = self._generation
+            self._mode = _ViewMode.MANUAL_PREPARING
+            self._manual = None
+            self._message = Text()
+            self._preflight_cancel = EventCancellationToken()
+            self._worker = threading.Thread(
+                target=self._prepare_manual,
+                args=(generation,),
+                name="anishift-manual-discovery",
+                daemon=True,
+            )
+            worker: threading.Thread = self._worker
+        self._renderer.invalidate()
+        self._mascot.show(MascotState.DISCOVER)
+        worker.start()
+
+    def _prepare_manual(self, generation: int) -> None:
+        try:
+            with self._lock:
+                preflight_cancel: EventCancellationToken | None = self._preflight_cancel
+            if preflight_cancel is None:
+                return
+            workspace: InspectedWorkspace = self._service.discover(cancel=preflight_cancel)
+            preflight_cancel.raise_if_cancelled()
+            if not workspace.groups:
+                self._finish_with_message(
+                    generation, Text("Nie znaleziono materiału do przetworzenia", style="warning")
+                )
+                return
+            preset: AutoPreset = self._service.get_preset(self._service.default_preset_id())
+            controller: ManualController = ManualController(
+                self._service,
+                workspace,
+                preset,
+                self._renderer.invalidate,
+            )
+            with self._lock:
+                if generation != self._generation:
+                    return
+                self._preflight_cancel = None
+                self._manual = controller
+                self._mode = _ViewMode.MANUAL
+                self._worker = None
+            self._mascot.reset()
+            self._renderer.invalidate()
+        except (AniShiftError, OSError) as problem:
+            with self._lock:
+                if generation != self._generation:
+                    return
+            logger.warning("Interactive manual discovery failed", error_class=type(problem).__name__)
+            self._finish_with_message(generation, _problem_text(problem))
+
+    def _start_manual_run(self, prepared: ManualRun) -> None:
+        with self._lock:
+            if self._worker is not None and self._worker.is_alive():
+                return
+            self._generation += 1
+            generation: int = self._generation
+            self._manual = None
+            self._mode = _ViewMode.PREPARING
+            self._progress = None
+            self._cancel_requested = False
+            self._worker = threading.Thread(
+                target=self._execute_run,
+                args=(generation, prepared),
+                name="anishift-manual",
+                daemon=True,
+            )
+            worker: threading.Thread = self._worker
+        self._mascot.reset()
+        self._renderer.invalidate()
+        worker.start()
+
+    def _prepare_and_run(self, generation: int) -> None:
+        try:
+            with self._lock:
+                preflight_cancel: EventCancellationToken | None = self._preflight_cancel
+            if preflight_cancel is None:
+                return
+            preset_id: str = self._service.default_preset_id()
+            preparation: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(
+                self._service,
+                preset_id,
+                cancel=preflight_cancel,
+            )
+            with self._lock:
+                if generation != self._generation:
+                    return
+                self._preflight_cancel = None
+            if isinstance(preparation, AutoRunRefusal):
+                self._finish_with_message(generation, _refusal_text(preparation))
+                return
+            self._mascot.reset()
+            self._execute_run(generation, preparation)
+        except (AniShiftError, OSError) as problem:
+            with self._lock:
+                if generation != self._generation:
+                    return
+            logger.warning("Interactive automatic run failed", error_class=type(problem).__name__)
+            self._finish_with_message(generation, _problem_text(problem))
+
+    def _execute_run(self, generation: int, prepared: PreparedAutoRun | ManualRun) -> None:
+        try:
+            progress: RichRunProgress = RichRunProgress(
+                prepared,
+                self._renderer.invalidate,
+                self._on_run_started,
+                mascot=self._mascot,
+            )
+            with self._lock:
+                if generation != self._generation:
+                    return
+                self._progress = progress
+                self._mode = _ViewMode.AUTO
+            self._renderer.invalidate()
+            with progress:
+                result: RunResult = execute_plan(self._service, prepared.plan, progress)
+            if not result.succeeded or result.warnings:
+                self._finish_with_message(generation, _result_message(result, prepared.workspace))
+                return
+            with self._lock:
+                if generation != self._generation:
+                    return
+                self._mode = _ViewMode.AUTO_DONE
+                self._cancel_requested = False
+                self._worker = None
+            self._renderer.invalidate()
+        except (AniShiftError, OSError) as problem:
+            with self._lock:
+                if generation != self._generation:
+                    return
+            logger.warning("Interactive run failed", error_class=type(problem).__name__)
+            self._finish_with_message(generation, _problem_text(problem))
+
+    def _on_run_started(self, run_id: str) -> None:
+        with self._lock:
+            cancel_requested: bool = self._cancel_requested
+        if cancel_requested:
+            self._service.cancel(run_id)
+
+    def _finish_with_message(self, generation: int, message: Text) -> None:
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._message = message
+            self._message_view = _QueueView(following=False)
+            self._mode = _ViewMode.MESSAGE
+            self._progress = None
+            self._manual = None
+            self._cancel_requested = False
+            self._preflight_cancel = None
+            self._worker = None
+        self._mascot.show(MascotState.ERROR)
+        self._renderer.invalidate()
+
+    def _show_settings(self) -> None:
+        controller: SettingsController = SettingsController(self._service, self._renderer.invalidate)
+        self._mascot.reset()
+        with self._lock:
+            self._settings = controller
+            self._mode = _ViewMode.SETTINGS
+            self._message = Text()
+        self._renderer.invalidate()
+
+    def _show_home(self) -> None:
+        self._close_settings()
+        self._mascot.reset()
+        with self._lock:
+            self._mode = _ViewMode.HOME
+            self._message = Text()
+            self._progress = None
+            self._manual = None
+            self._cancel_requested = False
+        self._renderer.invalidate()
+
+    def _render_frame(self, columns: int, rows: int) -> Text:
+        with self._lock:
+            mode: _ViewMode = self._mode
+            selected: int = self._selected
+            message: Text = self._message
+            message_view: _QueueView = self._message_view
+            progress: RichRunProgress | None = self._progress
+            settings: SettingsController | None = self._settings
+            manual: ManualController | None = self._manual
+        mascot_state: MascotState = self._mascot.state
+        native_size: tuple[int, int] | None = getattr(self._renderer, "native_mascot_size", None)
+        animation_phase: int = getattr(self._renderer, "animation_phase", 0)
+        if mode in {_ViewMode.HOME, _ViewMode.PREPARING, _ViewMode.MANUAL_PREPARING}:
+            content: Text = _home_content(
+                columns, rows, selected, mascot_state, native_size=native_size, animation_phase=animation_phase
+            )
+        elif mode is _ViewMode.MANUAL and manual is not None:
+            content = manual.render(columns, rows)
+        elif mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
+            content = _auto_content(
+                (columns, rows),
+                progress,
+                mascot_state,
+                self._queue,
+                native_size=native_size,
+                animation_phase=animation_phase,
+            )
+        elif mode is _ViewMode.SETTINGS and settings is not None:
+            content = settings.render(columns, rows)
+        else:
+            content = _message_content(columns, rows, message, mascot_state, view=message_view)
+        return _fit_frame(content, __version__, self._directory, columns, rows)
+
+
+def run_interactive(service: AppService) -> None:
+    """Run the single-owner interactive terminal application."""
+    _InteractiveApplication(service).run()
+
+
+def _home_content(  # noqa: PLR0913
+    columns: int,
+    rows: int,
+    selected: int,
+    mascot_state: MascotState,
+    *,
+    native_size: tuple[int, int] | None = None,
+    animation_phase: int = 0,
+) -> Text:
+    if rows < _MINIMUM_BRANDED_ROWS:
+        return _small_home_content(columns, rows, selected)
+    geometry: HomeGeometry = resolve_home_geometry(columns, rows, native_size or TEXT_MASCOT_SIZE)
+    brand: Text = brand_for_geometry(
+        geometry, mascot_state, native_mascot=native_size is not None, animation_phase=animation_phase
+    )
+    brand_rows: int = len(brand.split("\n"))
+    menu_rows: int = len(_HOME_CHOICES) + 1
+    body_rows: int = max(rows - 1, 1)
+    resting: Text = brand_for_geometry(geometry, mascot_state, native_mascot=native_size is not None)
+    resting_top: int = next(
+        (
+            index
+            for index, line in enumerate(resting.split("\n"))
+            if line.plain.replace(NATIVE_MASCOT_ANCHOR, "").strip()
+        ),
+        brand_rows,
+    )
+    if native_size is not None and geometry.show_mascot:
+        resting_top = min(resting_top, MASCOT_REST_TOP_ROWS)
+    free_rows: int = max(body_rows - (brand_rows - resting_top) - menu_rows, 0)
+    brand_top: int = max(free_rows // 3 - resting_top, 0)
+    menu_region_top: int = brand_top + brand_rows
+    menu_region_rows: int = max(body_rows - menu_region_top, menu_rows)
+    menu_top: int = menu_region_top + max((menu_region_rows - menu_rows) // 2, 0)
+    brand_bottom: int = brand_top + brand_rows - 1
+    content = Text("\n" * brand_top)
+    content.append_text(brand)
+    content.append("\n" * max(menu_top - brand_bottom, 1))
+    for index, (label, _action) in enumerate(_HOME_CHOICES):
+        content.append(" " * geometry.left_padding)
+        if index == selected:
+            content.append(f"{_HOME_POINTER} ", style="brand_accent")
+            content.append(label, style="brand_accent")
+        else:
+            content.append(f"  {label}", style="white_bold")
+        content.append("\n")
+    content.append(" " * geometry.left_padding)
+    content.append(f"  {_HOME_HINT}", style="gray")
+    return content
+
+
+def _small_home_content(columns: int, rows: int, selected: int) -> Text:
+    """Keep the selected Home action reachable when branding cannot fit."""
+    visible: int = min(len(_HOME_CHOICES), max(rows - 1, 1))
+    start: int = max(selected - visible + 1, 0)
+    content = Text()
+    for index in range(start, min(start + visible, len(_HOME_CHOICES))):
+        label: str = _HOME_CHOICES[index][0]
+        pointer: str = _HOME_POINTER if index == selected else " "
+        content.append(f"{pointer} {label}\n", style="brand_accent" if index == selected else "white_bold")
+    if rows > len(_HOME_CHOICES) + 1:
+        content.append(_HOME_HINT[:columns], style="gray")
+    return content
+
+
+def _auto_content(  # noqa: PLR0913
+    size: tuple[int, int],
+    progress: RichRunProgress,
+    mascot_state: MascotState,
+    view: _QueueView,
+    *,
+    native_size: tuple[int, int] | None = None,
+    animation_phase: int = 0,
+) -> Text:
+    columns, rows = size
+    if rows < _MINIMUM_BRANDED_ROWS:
+        visible_rows: int = max(rows - 2, 1)
+        view.fit(progress.active_row, progress.row_count, visible_rows)
+        tiny = Text(f"↑ {view.offset} · ↓ {max(progress.row_count - view.offset - visible_rows, 0)}\n", style="gray")
+        tiny.append_text(progress.render(columns, offset=view.offset, limit=visible_rows))
+        return tiny
+    geometry: AutoGeometry = resolve_auto_geometry(columns, rows, progress.row_count, native_size or TEXT_MASCOT_SIZE)
+    brand: Text = brand_for_geometry(
+        geometry, mascot_state, native_mascot=native_size is not None, animation_phase=animation_phase
+    )
+    budget: int = max(rows - 1 - geometry.top_padding - len(brand.split("\n")) - 1, 1)
+    total: int = progress.row_count
+    paged: bool = total > budget
+    visible: int = max(budget - _QUEUE_MARKER_ROWS, 1) if paged else total
+    view.fit(progress.active_row, total, visible)
+    content = Text("\n" * geometry.top_padding)
+    content.append_text(brand)
+    content.append("\n\n")
+    if paged:
+        content.append_text(_queue_marker("↑", view.offset))
+    content.append_text(progress.render(columns, offset=view.offset, limit=visible))
+    if paged:
+        content.append("\n")
+        content.append_text(_queue_marker("↓", total - view.offset - visible))
+    return content
+
+
+def _queue_marker(arrow: str, hidden: int) -> Text:
+    if hidden <= 0:
+        return Text("\n")
+    return Text(f"{arrow} {hidden} poza widokiem\n", style="gray")
+
+
+def _last_offset(total: int, visible: int) -> int:
+    return max(total - visible, 0)
+
+
+def _message_content(
+    columns: int,
+    rows: int,
+    message: Text,
+    mascot_state: MascotState,
+    *,
+    view: _QueueView | None = None,
+) -> Text:
+    geometry: HomeGeometry = resolve_home_geometry(columns, rows)
+    content = Text("\n" * geometry.top_padding)
+    content.append_text(brand_for_geometry(geometry, mascot_state, show_mascot=False))
+    content.append("\n\n")
+    lines: list[Text] = list(message.split("\n"))
+    budget: int = max(rows - len(content.split("\n")) - 3, 1)
+    window: _QueueView = view if view is not None else _QueueView(following=False)
+    window.fit(len(lines) - 1, len(lines), budget)
+    content.append_text(Text("\n").join(lines[window.offset : window.offset + budget]))
+    content.append("\n\n↑↓ przewijanie · dowolny inny klawisz: powrót", style="gray")
+    return content
+
+
+def _result_message(result: RunResult, workspace: InspectedWorkspace) -> Text:
+    """Show safe failure causes and products preserved by each source group."""
+    names: dict[str, str] = {group.group_id: group.source.stem for group in workspace.groups}
+    message = Text("Przetwarzanie anulowane" if result.cancelled else "Wynik przetwarzania", style="brand_accent")
+    for group in result.groups:
+        message.append(
+            f"\n\n{_safe(names.get(group.group_id, group.group_id))}: {group.status.value}", style="white_bold"
+        )
+        for error in group.error_messages:
+            message.append(f"\n  {_safe(error)}", style="error")
+        for product in (*group.products, *group.preserved_products):
+            message.append(f"\n  ✓ Zachowano: {_safe(product.path.name)}", style="brand_accent")
+    for warning in result.warnings:
+        message.append(f"\n{_safe(warning)}", style="warning")
+    message.append(f"\n\nSzczegóły: {_LOG_LOCATION}", style="gray")
+    return message
+
+
+def _fit_frame(content: Text, version: str, directory: str, columns: int, rows: int) -> Text:
+    body_rows: int = max(rows - 1, 0)
+    lines: list[Text] = list(content.split("\n"))[:body_rows]
+    for line in lines:
+        # A line wider than the terminal would wrap, push every later row down and
+        # move the screen row the native mascot is anchored to.
+        line.truncate(max(columns, 1), overflow="crop")
+    lines.extend(Text() for _ in range(body_rows - len(lines)))
+    lines.append(Text(status_line(version, directory, columns), style="gray"))
+    frame = Text()
+    for index, line in enumerate(lines):
+        frame.append_text(line)
+        if index < len(lines) - 1:
+            frame.append("\n")
+    return frame
+
+
+def _refusal_text(refusal: AutoRunRefusal) -> Text:
+    message = Text(_REFUSAL_MESSAGES.get(refusal.message, _safe(refusal.message)), style="warning")
+    for blocker in refusal.blockers:
+        message.append(f"\n  {_safe(blocker.scope)}: {_safe(blocker.message)}")
+    if refusal.suggestion:
+        suggestion: str = _REFUSAL_SUGGESTIONS.get(refusal.suggestion, _safe(refusal.suggestion))
+        message.append(f"\n  {suggestion}", style="gray")
+    return message
+
+
+def _problem_text(problem: AniShiftError | OSError) -> Text:
+    message = Text(f"Błąd · {_safe(str(problem))}", style="error")
+    suggestion: str = problem.context.suggestion if isinstance(problem, AniShiftError) else ""
+    if suggestion:
+        message.append(f"\n  {_safe(suggestion)}", style="gray")
+    message.append(f"\nSzczegóły: {_LOG_LOCATION}", style="gray")
+    return message
+
+
+def _safe(text: str) -> str:
+    return (sanitize_event_message(text) or "").rstrip(".")

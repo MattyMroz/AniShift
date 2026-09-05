@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import zipfile
+from contextlib import nullcontext
 from pathlib import Path
 
 import httpx
 import pytest
 
+from anishift.errors import ErrorCode
 from anishift.platform import binaries
 from anishift.platform.binaries import Binary, BinaryNotFoundError
 from anishift.setup import installer
@@ -397,3 +399,109 @@ def test_ensure_binary_unmapped_raises_binary_not_found(monkeypatch: pytest.Monk
     monkeypatch.setattr(installer, "ensure_resource", _never)
     with pytest.raises(BinaryNotFoundError):
         ensure_binary(Binary.FFMPEG)
+
+
+@pytest.mark.parametrize("cancel_during_download", [False, True])
+def test_silent_install_reports_bytes_and_honors_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cancel_during_download: bool,
+) -> None:
+    archive: Path = _zip(tmp_path, {"root/tool.exe": b"MZ"})
+    resource: Resource = _resource(archive, [Member("root/tool.exe", "tool/tool.exe")])
+    destination: Path = tmp_path / "bin"
+    cancelled: bool = False
+    observed: list[int] = []
+    response: httpx.Response = httpx.Response(
+        200,
+        content=archive.read_bytes(),
+        request=httpx.Request("GET", resource.source.url),
+    )
+
+    def progress(amount: int) -> None:
+        nonlocal cancelled
+        observed.append(amount)
+        cancelled = cancel_during_download
+
+    def no_renderer(*_: object, **__: object) -> None:
+        pytest.fail("Silent preparation must not create a terminal renderer")
+
+    monkeypatch.setattr(installer, "is_windows", lambda: True)
+    monkeypatch.setattr(installer, "ProgressBarManager", no_renderer)
+    monkeypatch.setattr(httpx, "stream", lambda *args, **kwargs: nullcontext(response))
+
+    if cancel_during_download:
+        with pytest.raises(InstallCancelledError) as captured:
+            ensure_resource(
+                resource.name,
+                resources=(resource,),
+                dest_root=destination,
+                show_progress=False,
+                progress=progress,
+                cancel=lambda: cancelled,
+            )
+        assert captured.value.context.code is ErrorCode.CANCELLED
+        assert not (destination / "tool" / "tool.exe").exists()
+    else:
+        ensure_resource(
+            resource.name,
+            resources=(resource,),
+            dest_root=destination,
+            show_progress=False,
+            progress=progress,
+            cancel=lambda: cancelled,
+        )
+        assert (destination / "tool" / "tool.exe").read_bytes() == b"MZ"
+    assert sum(observed) == archive.stat().st_size
+
+
+def test_cancelled_binary_preparation_does_not_read_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_manifest() -> tuple[Resource, ...]:
+        pytest.fail("Cancelled preparation must not read the manifest")
+
+    monkeypatch.setattr(installer, "load_manifest", no_manifest)
+
+    with pytest.raises(InstallCancelledError) as captured:
+        ensure_binary(Binary.FFMPEG, show_progress=False, cancel=lambda: True)
+
+    assert captured.value.context.code is ErrorCode.CANCELLED
+
+
+def test_ensure_binary_repairs_zero_byte_tool_through_verified_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    archive: Path = _zip(tmp_path, {"ffmpeg.exe": b"MZ-new-ffmpeg", "ffprobe.exe": b"MZ-new-ffprobe"})
+    resource: Resource = _resource(
+        archive,
+        [Member("ffmpeg.exe", "ffmpeg/ffmpeg.exe"), Member("ffprobe.exe", "ffmpeg/ffprobe.exe")],
+        name="ffmpeg",
+    )
+    destination: Path = tmp_path / "bin"
+    broken: Path = destination / "ffmpeg" / "ffmpeg.exe"
+    intact: Path = destination / "ffmpeg" / "ffprobe.exe"
+    broken.parent.mkdir(parents=True)
+    broken.touch()
+    intact.write_bytes(b"MZ-old-ffprobe")
+    downloads: list[str] = []
+
+    def download(selected: Resource, target: Path, **kwargs: object) -> None:
+        assert broken.exists()
+        assert broken.stat().st_size == 0
+        assert intact.read_bytes() == b"MZ-old-ffprobe"
+        assert target.is_relative_to(destination)
+        downloads.append(selected.name)
+        target.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(binaries, "is_windows", lambda: True)
+    monkeypatch.setattr(installer, "is_windows", lambda: True)
+    monkeypatch.setattr(binaries, "external_bin_root", lambda: destination)
+    monkeypatch.setattr(installer, "external_bin_root", lambda: destination)
+    monkeypatch.setattr(installer, "load_manifest", lambda: (resource,))
+    monkeypatch.setattr(installer, "_download_httpx", download)
+
+    assert ensure_binary(Binary.FFMPEG, show_progress=False) == broken
+    assert ensure_binary(Binary.FFPROBE, show_progress=False) == intact
+    assert downloads == ["ffmpeg"]
+    assert broken.read_bytes() == b"MZ-new-ffmpeg"
+    assert intact.read_bytes() == b"MZ-new-ffprobe"

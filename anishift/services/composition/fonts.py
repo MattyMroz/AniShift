@@ -1,4 +1,4 @@
-"""Detect ASS font references missing from a container's attachments."""
+"""Report ASS font references and the limits of attachment-name evidence."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Final
 
-__all__ = ["attachment_font_names", "font_names", "missing_fonts"]
+__all__ = ["attachment_font_names", "font_embedding_warnings", "font_names", "missing_fonts"]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -32,14 +32,20 @@ def font_names(subtitle: Path) -> frozenset[str]:
 
 
 def attachment_font_names(attachment_names: tuple[str, ...]) -> frozenset[str]:
-    """Return normalized font names available as container attachments."""
+    """Return normalized filename stems of font attachments, not family names."""
     return frozenset(
         Path(name).stem.casefold() for name in attachment_names if Path(name).suffix.casefold() in _FONT_SUFFIXES
     )
 
 
 def missing_fonts(subtitle: Path, available: frozenset[str]) -> tuple[str, ...]:
-    """Return referenced fonts absent from the available set, sorted."""
+    """Compare references against caller-verified, case-folded font families."""
     referenced: frozenset[str] = font_names(subtitle)
     missing: set[str] = {name for name in referenced if name.casefold() not in available}
     return tuple(sorted(missing))
+
+
+def font_embedding_warnings(subtitle: Path, attachment_names: tuple[str, ...]) -> tuple[str, ...]:
+    """Distinguish absent font attachments from unverified family metadata."""
+    prefix: str = "font embedding not verified" if attachment_font_names(attachment_names) else "font not embedded"
+    return tuple(f"{prefix}: {name}" for name in sorted(font_names(subtitle)))

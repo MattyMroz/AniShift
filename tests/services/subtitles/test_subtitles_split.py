@@ -2,6 +2,7 @@ from pathlib import Path
 
 from pysubs2 import SSAEvent, SSAFile
 
+from anishift.services.subtitles.classifier import Category, StyleVerdict
 from anishift.services.subtitles.service import split_subtitles, write_displayed
 
 
@@ -49,3 +50,39 @@ def test_split_subtitles_treats_srt_lines_as_spoken() -> None:
     assert split.decisions == ("spoken",)
     assert split.spoken[0].text == "Hello"
     assert split.verdicts == ()
+
+
+def test_split_srt_preserves_repeated_utterances() -> None:
+    subs: SSAFile = _subs(
+        [
+            SSAEvent(start=0, end=500, text="No!"),
+            SSAEvent(start=600, end=1100, text="No!"),
+        ]
+    )
+
+    split = split_subtitles(subs, kind="srt")
+
+    assert [(line.start, line.end, line.text, line.order) for line in split.spoken] == [
+        (0, 500, "No!", 0),
+        (600, 1100, "No!", 1),
+    ]
+    assert split.stats.collapsed_away == 0
+
+
+def test_split_honors_explicit_empty_spoken_selection() -> None:
+    subs: SSAFile = _subs([_event("Sign", style="Signs")])
+
+    split = split_subtitles(subs, kind="ass", spoken_styles=())
+
+    assert split.decisions == ("displayed",)
+    assert split.spoken == ()
+    assert split.stats.spoken_events == 0
+
+
+def test_split_retains_automatic_fallback_when_styles_are_not_selected() -> None:
+    subs: SSAFile = _subs([_event("Sign", style="Signs")])
+    verdicts: tuple[StyleVerdict, ...] = (StyleVerdict("Signs", Category.SIGN, 1.0, 1, 1),)
+
+    split = split_subtitles(subs, kind="ass", verdicts=verdicts)
+
+    assert split.decisions == ("spoken",)

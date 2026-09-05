@@ -8,9 +8,11 @@ from anishift.errors import AniShiftError, TransientError
 from anishift.services._base import EngineInfo
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from anishift.services.llm.types import LlmRequest, LlmResponse
 
-__all__ = ["LlmAttemptObserver", "LlmEngine"]
+__all__ = ["LlmAttemptObserver", "LlmEngine", "StreamingLlmEngine"]
 
 
 @runtime_checkable
@@ -23,6 +25,20 @@ class LlmEngine(EngineInfo, Protocol):
 
     def close(self) -> None:
         """Release resources held by the provider client."""
+        ...
+
+
+@runtime_checkable
+class StreamingLlmEngine(Protocol):
+    """Optional engine capability for incrementally received completions."""
+
+    def complete_stream(
+        self,
+        request: LlmRequest,
+        *,
+        on_text: Callable[[str], None] | None = None,
+    ) -> LlmResponse:
+        """Run one completion while consuming provider chunks incrementally."""
         ...
 
 

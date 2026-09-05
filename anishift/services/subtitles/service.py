@@ -85,11 +85,7 @@ def subtitle_kind(path: Path) -> SubtitleKind | None:
 
 
 def load_subtitles(path: Path) -> SSAFile:
-    """Load a subtitle file in UTF-8.
-
-    Raises:
-        SubtitleError: When the file is missing, unreadable or unparsable.
-    """
+    """Load a subtitle file in UTF-8."""
     try:
         subtitles: SSAFile = pysubs2.load(str(path), encoding=_ENCODING)
     except FileNotFoundError as exc:
@@ -191,6 +187,8 @@ def _collapse_fbf_indexed(
 def _dialogue_decisions(
     dialogue: Sequence[SSAEvent],
     spoken_styles: Collection[str],
+    *,
+    allow_fallback: bool,
 ) -> tuple[list[Decision], int, int, int]:
     decisions: list[Decision] = []
     drawing_events = 0
@@ -201,7 +199,7 @@ def _dialogue_decisions(
             continue
         decisions.append("spoken" if event.style in spoken_styles else "displayed")
     spoken_events = decisions.count("spoken")
-    if spoken_events == 0 and len(dialogue) > drawing_events:
+    if allow_fallback and spoken_events == 0 and len(dialogue) > drawing_events:
         decisions = ["displayed" if is_drawing(event.text) else "spoken" for event in dialogue]
         spoken_events = len(dialogue) - drawing_events
     return decisions, spoken_events, drawing_events, decisions.count("displayed")
@@ -227,14 +225,27 @@ def split_subtitles(
             if spoken_styles is not None
             else {verdict.style for verdict in final_verdicts if verdict.category is Category.DIALOG}
         )
-        decisions, _, drawing_events, _ = _dialogue_decisions(dialogue, styles)
+        decisions, _, drawing_events, _ = _dialogue_decisions(
+            dialogue,
+            styles,
+            allow_fallback=spoken_styles is None,
+        )
     spoken_events = decisions.count("spoken")
     spoken_input = [
         (order, event)
         for order, (event, decision) in enumerate(zip(dialogue, decisions, strict=True))
         if decision == "spoken"
     ]
-    spoken, collapsed_away = _collapse_fbf_indexed(spoken_input)
+    spoken: tuple[SpokenLine, ...]
+    collapsed_away: int = 0
+    if kind == "srt":
+        spoken = tuple(
+            SpokenLine(event.start, event.end, text, event.style, order)
+            for order, event in spoken_input
+            if not is_drawing(event.text) and (text := visible_text(event.text))
+        )
+    else:
+        spoken, collapsed_away = _collapse_fbf_indexed(spoken_input)
     stats = SplitStats(
         total_events=len(dialogue),
         spoken_events=spoken_events,
@@ -320,6 +331,7 @@ def _translated_file(
     out.styles = {name: style.copy() for name, style in split.subs.styles.items()}
     line_break = _LINE_BREAKS[split.kind]
     translated_spoken = tuple(zip(split.spoken, spoken_verses, strict=True)) if selected in {None, "spoken"} else ()
+    spoken_by_order: dict[int, tuple[str, ...]] = {spoken.order: verses for spoken, verses in translated_spoken}
     spoken_by_key: defaultdict[tuple[str, str], list[tuple[SpokenLine, tuple[str, ...]]]] = defaultdict(list)
     for spoken, translated in translated_spoken:
         spoken_by_key[spoken.style, spoken.text].append((spoken, translated))
@@ -341,14 +353,16 @@ def _translated_file(
                 displayed_index += 1
         else:
             visible = visible_text(event.text)
-            verses = next(
-                (
-                    translated
-                    for spoken, translated in spoken_by_key.get((event.style, visible), ())
-                    if spoken.start <= event.start and event.end <= spoken.end
-                ),
-                None,
-            )
+            verses = spoken_by_order.get(dialogue_index - 1)
+            if verses is None:
+                verses = next(
+                    (
+                        translated
+                        for spoken, translated in spoken_by_key.get((event.style, visible), ())
+                        if spoken.start <= event.start and event.end <= spoken.end
+                    ),
+                    None,
+                )
         if verses is None:
             out.events.append(event)
             continue
@@ -364,24 +378,7 @@ def write_translated(
     spoken_verses: Sequence[tuple[str, ...]],
     dest: Path,
 ) -> Path | None:
-    r"""Write the whole translated subtitle file atomically, or None when empty.
-
-    Every Dialogue event is kept - spoken and displayed alike - with its tags,
-    style and timing intact; only the visible text is replaced with translated
-    verses joined by the format's soft break (``\N`` for ASS, ``\n`` for SRT).
-
-    Args:
-        split: The split whose source file is re-assembled.
-        displayed_verses: One verse tuple per non-drawing displayed event, in
-            event order. Vector drawings are copied without consuming a tuple.
-        spoken_verses: One verse tuple per collapsed spoken run, in
-            ``split.spoken`` order. Every source event is matched by style,
-            visible text, and its run's timing bounds.
-        dest: Output path (same format as the source).
-
-    Raises:
-        SubtitleError: The file could not be written.
-    """
+    """Write the whole translated subtitle file atomically, or None when empty."""
     if split.stats.total_events == 0:
         return None
     output = _translated_file(split, displayed_verses, spoken_verses)

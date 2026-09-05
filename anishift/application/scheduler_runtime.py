@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import re
+import time
 from collections import defaultdict, deque
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Final
+from typing import Final, Never
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
 from anishift.application.cancellation import CommitCancellationToken
@@ -24,7 +26,10 @@ from anishift.application.results import (
     TaskResult,
 )
 from anishift.application.scheduler_contracts import NaturalOrderGate, normalize_resource_key
-from anishift.errors import AniShiftError, ExecutionError
+from anishift.errors import AniShiftError, ErrorCode, ErrorContext, ExecutionError
+from anishift.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -35,6 +40,15 @@ TERMINAL_TASK_STATES: Final[frozenset[TaskState]] = frozenset(
 
 _VALIDATED_STAGING_KEY: Final[str] = "validated"
 """Produced-artifact metadata flag allowing coordinator-owned publication."""
+
+_PUBLICATION_LOCK_RETRIES: Final[int] = 240
+"""Additional atomic publication attempts allowed for a locked Windows target."""
+
+_PUBLICATION_LOCK_RETRY_DELAY_S: Final[float] = 0.25
+"""Delay between atomic publication attempts without holding cancellation locks."""
+
+_WINDOWS_TRANSIENT_ERRORS: Final[frozenset[int]] = frozenset({5, 32, 33})
+"""Windows denials that disappear once a scanner, mapping or reader handle closes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +64,27 @@ class SubmittedTask:
 
     task: PlanTask
     resource_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class PendingPublication:
+    """Completed work retained until its next atomic publication attempt."""
+
+    task: PlanTask
+    result: TaskResult
+    retries: int
+    retry_at: float
+
+
+class PublicationLockedError(Exception):
+    """Transient destination lock requiring a later coordinator attempt."""
+
+    def __init__(self, error: OSError, staging: Path, destination: Path, artifact_kind: str) -> None:
+        super().__init__("Durable publication is waiting for a destination lock")
+        self.error: OSError = error
+        self.staging: Path = staging
+        self.destination: Path = destination
+        self.artifact_kind: str = artifact_kind
 
 
 @dataclass(slots=True)
@@ -85,6 +120,7 @@ class SchedulerRuntime:
     updates: queue.SimpleQueue[TaskStarted | WorkerNotification]
     task_by_id: dict[str, PlanTask]
     commit_if_current: Callable[[Callable[[], None]], bool]
+    pending_publications: dict[str, PendingPublication] = field(default_factory=dict)
 
 
 class QueuedProgressSink:
@@ -199,15 +235,12 @@ class ArtifactStore:
             msg = "Durable artifact staging file lacks validation confirmation"
             raise ExecutionError(msg)
         destination.parent.mkdir(parents=True, exist_ok=True)
-
-        def publish() -> None:
-            output.path.replace(destination)
-
-        try:
-            committed: bool = commit_if_current(publish)
-        except OSError as error:
-            msg = "Durable artifact could not be published atomically"
-            raise ExecutionError(msg) from error
+        committed: bool = _publish_durable(
+            output.path,
+            destination,
+            commit_if_current,
+            artifact_kind=planned.kind.value,
+        )
         if not committed:
             msg = "Durable artifact publication was cancelled"
             raise ExecutionError(msg)
@@ -255,7 +288,16 @@ def queue_task(task: PlanTask, runtime: SchedulerRuntime) -> None:
 
 def commit_success(task: PlanTask, result: TaskResult, runtime: SchedulerRuntime) -> None:
     """Register outputs and forward readiness to direct dependants."""
-    registered: TaskResult = runtime.store.register(task, result, runtime.commit_if_current)
+    try:
+        registered: TaskResult = runtime.store.register(task, result, runtime.commit_if_current)
+    except PublicationLockedError as locked:
+        _defer_publication(task, result, runtime, locked)
+        return
+    pending: PendingPublication | None = runtime.pending_publications.pop(task.task_id, None)
+    if pending is not None:
+        logger.info(
+            "Durable publication resumed after destination lock", task_kind=task.kind.value, retries=pending.retries
+        )
     runtime.state.task_results[task.task_id] = registered
     runtime.state.task_states[task.task_id] = TaskState.SUCCEEDED
     runtime.emitter.emit(
@@ -270,9 +312,42 @@ def commit_success(task: PlanTask, result: TaskResult, runtime: SchedulerRuntime
             queue_task(runtime.task_by_id[dependant_id], runtime)
 
 
+def _defer_publication(
+    task: PlanTask,
+    result: TaskResult,
+    runtime: SchedulerRuntime,
+    locked: PublicationLockedError,
+) -> None:
+    pending: PendingPublication | None = runtime.pending_publications.get(task.task_id)
+    retries: int = 0 if pending is None else pending.retries
+    if retries >= _PUBLICATION_LOCK_RETRIES:
+        runtime.pending_publications.pop(task.task_id, None)
+        _raise_locked_destination(locked.error, locked.artifact_kind, retries, locked.staging, locked.destination)
+    if pending is None:
+        logger.warning(
+            "Durable publication waiting for a locked destination",
+            artifact_kind=locked.artifact_kind,
+            winerror=getattr(locked.error, "winerror", None),
+        )
+    runtime.pending_publications[task.task_id] = PendingPublication(
+        task,
+        result,
+        retries + 1,
+        time.monotonic() + _PUBLICATION_LOCK_RETRY_DELAY_S,
+    )
+
+
 def finish_failed(task: PlanTask, error: BaseException, runtime: SchedulerRuntime) -> None:
     """Fail one task and block only its same-group dependency descendants."""
     message: str = public_error(error)
+    error_code: str = error.context.code.value if isinstance(error, AniShiftError) else "UNEXPECTED"
+    logger.error(
+        "Workflow task failed",
+        group_id=task.group_id,
+        task_kind=task.kind.value,
+        error_class=type(error).__name__,
+        error_code=error_code,
+    )
     runtime.state.errors[task.group_id].append(message)
     runtime.state.task_states[task.task_id] = TaskState.FAILED
     runtime.emitter.emit(
@@ -402,6 +477,79 @@ def public_error(error: BaseException) -> str:
     else:
         message = str(error) or "Task handler failed unexpectedly"
     return sanitize_event_message(message) or "Task failed"
+
+
+def _publish_durable(
+    staging: Path,
+    destination: Path,
+    commit_if_current: Callable[[Callable[[], None]], bool],
+    *,
+    artifact_kind: str,
+) -> bool:
+    def publish() -> None:
+        staging.replace(destination)
+
+    try:
+        return commit_if_current(publish)
+    except OSError as error:
+        if not _is_windows_transient_error(error):
+            _raise_publication_error(error, artifact_kind)
+        raise PublicationLockedError(error, staging, destination, artifact_kind) from error
+
+
+def _write_denied(path: Path) -> bool:
+    """Tell whether a publication path currently refuses to open for writing."""
+    try:
+        handle: int = os.open(path, os.O_RDWR)
+    except OSError:
+        return True
+    os.close(handle)
+    return False
+
+
+def _is_windows_transient_error(error: OSError) -> bool:
+    return getattr(error, "winerror", None) in _WINDOWS_TRANSIENT_ERRORS
+
+
+def _raise_locked_destination(
+    error: OSError,
+    artifact_kind: str,
+    attempts: int,
+    staging: Path,
+    destination: Path,
+) -> Never:
+    logger.error(
+        "Durable publication gave up on a locked destination",
+        artifact_kind=artifact_kind,
+        winerror=getattr(error, "winerror", None),
+        attempts=attempts,
+        staging_denied=_write_denied(staging),
+        destination_denied=_write_denied(destination),
+    )
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.IO_ERROR,
+        message="The existing product cannot be replaced because a program still holds it",
+        suggestion=(
+            "Close the player, and the workspace folder in the file explorer, then run Auto again. "
+            "A preview or search indexer can map a finished product and block replacing it."
+        ),
+    )
+    raise ExecutionError(context=context) from error
+
+
+def _raise_publication_error(error: OSError, artifact_kind: str) -> Never:
+    logger.error(
+        "Durable publication failed",
+        artifact_kind=artifact_kind,
+        winerror=getattr(error, "winerror", None),
+        errno=error.errno,
+    )
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.IO_ERROR,
+        message="Durable artifact could not be published atomically",
+        suggestion="Check the destination permissions and available disk space, then run Auto again.",
+    )
+    raise ExecutionError(context=context) from error
 
 
 def thread_prefix(resource_key: str) -> str:

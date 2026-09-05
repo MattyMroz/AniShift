@@ -36,7 +36,8 @@ Zastąpić odrzuconą warstwę prezentacji AniShift jednym szybkim, zwartym i kl
 - dialogi i edycja pełnego katalogu ustawień;
 - konfiguracja kluczy, Palantir Foundry, lokalny katalog modeli i dwa niezależne wybory modelu;
 - workspace, Auto, Manual, Preview, Execution, Results i narzędzia diagnostyczne;
-- Windows Terminal, kodowanie konsoli, responsywność, testy, parytet i usunięcie starej ścieżki po bramce akceptacji.
+- Windows Terminal, kodowanie konsoli, responsywność, testy, parytet i usunięcie starej ścieżki po bramce akceptacji;
+- wykończenie po parytecie: R-110 do R-114, realizowane dopiero po T-027 i każde z osobnym potwierdzeniem zakresu.
 
 ### Odłożone
 
@@ -118,89 +119,204 @@ Komenda może być chwilowo niewykonalna, ale pozostaje widoczna z konkretnym po
 
 ## 6. Gramatyka wizualna
 
+Referencją nie jest interpretacja OpenCode, lecz jego zmierzone wartości. Wszystkie liczby i reguły w tej sekcji pochodzą z zainstalowanej binarki `opencode-ai` (wbudowany motyw `opencode`, wariant `Xa` w rejestrze motywów) oraz z dokumentacji `opencode.ai/docs/themes` i `opencode.ai/docs/keybinds`. Nazwy tokenów są celowo takie same jak w OpenCode, żeby porównanie było bezpośrednie.
+
+### Nazwy tokenów
+
+Piętnaście tokenów, identyczne jak w schemacie `opencode.ai/theme.json`:
+`primary`, `secondary`, `accent`, `error`, `warning`, `success`, `info`, `text`, `textMuted`, `background`, `backgroundPanel`, `backgroundElement`, `border`, `borderActive`, `borderSubtle`.
+
 ### Motyw ciemny
-| Token | Wartość |
-| --- | --- |
-| background | #0B0D10 |
-| surface | #11141A |
-| elevated | #171B22 |
-| border | #2A303B |
-| focus | #7AA2F7 |
-| text | #E6E9EF |
-| muted | #8B93A5 |
-| accent_soft | #283457 |
-| success | #9ECE6A |
-| warning | #E0AF68 |
-| error | #F7768E |
-| info | #7DCFFF |
+| Token | Wartość | Rola |
+| --- | --- | --- |
+| background | #0a0a0a | tło aplikacji |
+| backgroundPanel | #141414 | tło dialogu i panelu |
+| backgroundElement | #1e1e1e | tło elementu wewnątrz panelu |
+| borderSubtle | #3c3c3c | podział bez znaczenia |
+| border | #484848 | zwykła krawędź |
+| borderActive | #606060 | krawędź elementu aktywnego |
+| primary | #fab283 | **jedyny akcent** — zaznaczenie, kursor, aktywna krawędź |
+| textMuted | #808080 | tekst drugorzędny |
+| text | #eeeeee | tekst pierwszorzędny |
+| secondary | #5c9cf5 | rzadkie wyróżnienie strukturalne |
+| accent | #9d7cd8 | nagłówek grupy na liście |
+| error | #e06c75 | stan terminalny nieudany |
+| warning | #f5a742 | ostrzeżenie |
+| success | #7fd88f | stan terminalny udany |
+| info | #56b6c2 | informacja neutralna |
 
 ### Motyw jasny
 | Token | Wartość |
 | --- | --- |
-| background | #F5F7FA |
-| surface | #FFFFFF |
-| elevated | #EEF1F5 |
-| border | #CDD3DD |
-| focus | #3B6EDC |
-| text | #1F2430 |
-| muted | #667085 |
-| accent_soft | #DCE7FF |
-| success | #2F7D32 |
-| warning | #9A6700 |
-| error | #C6283D |
-| info | #1F6FA8 |
+| background | #ffffff |
+| backgroundPanel | #fafafa |
+| backgroundElement | #f5f5f5 |
+| borderSubtle | #d4d4d4 |
+| border | #b8b8b8 |
+| borderActive | #a0a0a0 |
+| primary | #3b7dd8 |
+| textMuted | #8a8a8a |
+| text | #1a1a1a |
+| secondary | #7b5bb6 |
+| accent | #d68c27 |
+| error | #d1383d |
+| warning | #d68c27 |
+| success | #3d9a57 |
+| info | #318795 |
+
+Skala neutralna ma dwanaście stopni i jeden nasycony akcent na wariant. W ciemnym akcentem jest ciepły `#fab283`, w jasnym niebieski `#3b7dd8`. Kolory semantyczne istnieją, ale opisują wyłącznie stan terminalny lub ostrzeżenie — nigdy zaznaczenie, focus ani dekorację.
+
+### 6.0. Hierarchia tekstu
+
+Tekst nie jest jednolity. Waga, odcień i tło wynikają ze stanu, według reguł zmierzonych w komponencie listy OpenCode:
+
+| Element | Tło | Kolor tekstu | Waga |
+| --- | --- | --- | --- |
+| wiersz zaznaczony, tytuł | `primary` | kontrast do `primary` | **bold** |
+| wiersz zaznaczony, etykieta | `primary` | kontrast do `primary` | normalna |
+| wiersz zwykły, tytuł | brak | `text` | normalna |
+| wiersz zwykły, etykieta | brak | `textMuted` | normalna |
+| wiersz nieaktywny | brak | `textMuted` | normalna |
+| nagłówek grupy | brak | `accent` | **bold** |
+| tytuł dialogu | brak | `text` | **bold** |
+| afordancja `esc` | brak | `textMuted` | normalna |
+| placeholder filtra | brak | `textMuted` | normalna |
+| kursor | — | `primary` | — |
+| pusty wynik | brak | `textMuted` | normalna |
+
+Kontrast do `primary` liczy się luminancją `0.299r + 0.587g + 0.114b`: powyżej `0.5` tekst czarny, poniżej biały. Dla `#fab283` luminancja to `0.76`, więc zaznaczony wiersz ma **czarny bold na ciepłym tle**. Reguła jest wyliczana, nie wpisana na sztywno, więc trzyma się każdego motywu.
+
+Zasada nadrzędna: zaznaczenie sygnalizuje **tło plus bold**, nie zmiana barwy tekstu na kolejny hue. Stan drugorzędny sygnalizuje **wyblakły odcień**, nie mniejszy rozmiar.
 
 ### Gęstość i układ
 
 - wiersz listy ma wysokość 1; opis pojawia się w podświetlonym wierszu albo panelu szczegółów;
 - standardowy padding panelu: 1 wiersz pionowo i 2 kolumny poziomo;
-- dialogi nie mają ozdobnej ramki, odróżnia je tło `elevated` na zasłonie;
+- dialogi nie mają ozdobnej ramki, odróżnia je tło `backgroundPanel` na zasłonie;
+- zasłona dialogu to czarne tło z alfa `150/255`;
+- szerokość dialogu jest skokowa: `60` domyślnie, `88` dla dużego, `116` dla bardzo dużego, zawsze przycięta do `terminal - 2`;
+- dialog startuje na wysokości `terminal / 4` od góry i jest wyśrodkowany poziomo;
+- nagłówek dialogu ma padding poziomy 4, lista padding poziomy 1, nagłówek grupy padding lewy 3;
+- pasek przewijania listy jest ukryty;
 - jedna główna powierzchnia ma pierwszeństwo przed wieloma kartami;
-- logo ma maksymalnie 4 wiersze i znika przed funkcjonalnymi kontrolami przy małym terminalu;
+- logo znika przed funkcjonalnymi kontrolami przy małym terminalu;
 - composer i stopka nie mogą zniknąć z powodu resize.
 
 
 ### 6.1. Kanoniczny układ dużego terminala
 
+Referencją jest ekran startowy OpenCode. **Zero obramowań, zero pasków kart, zero nagłówka aplikacji.** Ekran startowy to wyśrodkowany pionowo i poziomo blok treści na tle `background`, z jednowierszowym pasem dolnym przyklejonym do dolnej krawędzi.
+
 ```text
-┌─ ANISHIFT ───────────────────────────────────────── workspace / auto ─┐
-│  statyczne logo tylko na ekranie startowym lub po lewej w nagłówku    │
-│                                                                       │
-│  główny obszar roboczy: jedna dominująca lista/tabela/plan             │
-│  panel szczegółów tylko wtedy, gdy realnie pomaga aktualnej decyzji    │
-│                                                                       │
-│  ❯ Wpisz /komendę albo naciśnij Enter, aby uruchomić Auto             │
-│  workspace: 12 · selected: 12 · preset: default · run: idle           │
-└───────────────────────────────────────────────────────────────────────┘
+
+                      █████╗ ███╗   ██╗██╗███████╗██╗  ██╗██╗███████╗████████╗
+                     ██╔══██╗████╗  ██║██║██╔════╝██║  ██║██║██╔════╝╚══██╔══╝
+                     ███████║██╔██╗ ██║██║███████╗███████║██║█████╗     ██║
+                     ██╔══██║██║╚██╗██║██║╚════██║██╔══██║██║██╔══╝     ██║
+                     ██║  ██║██║ ╚████║██║███████║██║  ██║██║██║        ██║
+                     ╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝╚══════╝╚═╝  ╚═╝╚═╝╚═╝        ╚═╝
+
+               ▌ Ask anything or press enter to dub
+               ▌
+               ▌ Auto · Foundry: Claude Opus 5
+
+                 enter  auto      ctrl+p  commands
+
+                     ● Tip  Drop an MKV into workspace to begin
+
+ ~\Desktop\PROJECTS\AniShift:feature/stage-10-tui                    0.1.0
 ```
 
-Nagłówek nie udaje klasycznej aplikacji okienkowej. Nie zawiera paska kart, menu hamburgerowego ani wielkich przycisków. Podstawową nawigacją są composer, paleta i lokalne skróty ekranu.
+Elementy bloku, w kolejności z góry:
+
+1. **logo** — statyczne, sześciowierszowe, wyśrodkowane, szerokość 57 kolumn; rysowane blokiem pełnym `█` z cieniem `╗╚═║╝`, nie ręcznie składanymi półblokami. `ANI` zajmuje kolumny 0–20 i jest stonowane w `textMuted`, `SHIFT` zajmuje kolumny 21–56 i jest wyróżnione w `primary`;
+2. **box composera** — tło `backgroundElement`, **pionowy akcent na lewej krawędzi** w kolorze `primary`, bez obramowania; wewnątrz pole wejścia, a pod nim wyblakła **linia kontekstu** `tryb · provider: model` w `textMuted`;
+3. **podpowiedzi klawiszy** — klawisz w kolorze `text`, etykieta w `textMuted`, maksymalnie dwa słowa na etykietę, czytane z żywego rejestru;
+4. **linia tipu** — kropka w `warning` plus jedno krótkie zdanie; opcjonalna.
+
+**Pas dolny** jest zawsze widoczny: po lewej skrócona ścieżka roboczej lokalizacji z gałęzią gita w formie `ścieżka:gałąź`, po prawej wersja aplikacji. Pas dolny **nie** jest panelem statusu przebiegu — stan przebiegu należy do ekranu roboczego.
+
+Po wejściu w pracę logo i tip ustępują miejsca jednej dominującej powierzchni: liście, tabeli albo planowi. Composer zostaje na dole, pas dolny zostaje na dole. Panel szczegółów pojawia się tylko wtedy, gdy realnie pomaga aktualnej decyzji.
+
+Podstawową nawigacją są composer, paleta i lokalne skróty ekranu.
+
+### 6.1.1. Niezmienniki geometrii
+
+Łamanie któregokolwiek jest błędem kontraktu, nie kwestią estetyki:
+
+- obszar roboczy **dominuje** — dostaje całą wysokość pozostałą po logo, composerze i pasie dolnym;
+- composer i pas dolny **mieszczą się w widocznym obszarze** przy każdym rozmiarze terminala; element wyrenderowany poza `y < 0` albo `y >= wysokość` jest usterką, nawet jeśli pozostaje zamontowany w DOM;
+- żaden element nie ma obramowania; warstwy odróżnia wyłącznie tło i akcent krawędziowy;
+- padding panelu to 1 wiersz pionowo i 2 kolumny poziomo.
 
 ### 6.2. Kanoniczny układ małego terminala
 
 Przy szerokości lub wysokości poniżej pełnego progu:
 
 - logo przechodzi do jednowierszowego `ANISHIFT` albo znika;
+- tip znika pierwszy, przed jakimkolwiek funkcjonalnym elementem;
 - panel szczegółów zostaje zwinięty;
 - tabela ogranicza kolumny do identyfikatora/nazwy, zaznaczenia i stanu;
-- composer oraz jednowierszowa stopka pozostają zamontowane;
+- composer oraz pas dolny pozostają **widoczne**, nie tylko zamontowane;
+- pas dolny skraca ścieżkę od lewej, zachowując gałąź i wersję;
 - dialog ogranicza szerokość do `terminal - 2` i przewija własną zawartość;
 - użytkownik zawsze ma dostępną ścieżkę `/help` i `/exit`.
 
 ### 6.3. Teksty stanów bazowych
 
+Napisy zwięzłe, bez kropki kończącej, bez zdań złożonych.
+
 | Stan | Tekst bazowy | Znaczenie |
 | --- | --- | --- |
-| brak workspace | `Nie znaleziono obsługiwanych plików w workspace.` | brak źródeł, nie błąd aplikacji |
-| discovery | `Skanowanie workspace…` | operacja lokalna w workerze |
-| planning | `Budowanie planu…` | `plan_auto` albo `plan_manual`, jeszcze bez wykonania |
-| running | `Przetwarzanie` + bieżąca operacja | aktywny run |
-| cancelling | `Anulowanie…` | prośba wysłana, run jeszcze nie jest terminalny |
-| partial | `Częściowo ukończono` | co najmniej jeden trwały produkt lub sukces grupy oraz co najmniej jeden problem |
-| failed | `Nie ukończono` | brak wymaganego sukcesu; szczegóły bezpiecznie zredagowane |
-| model unknown | `niezweryfikowany` | wpis istnieje lokalnie, ale bieżąca sesja go nie sprawdziła |
-| secret missing | `brak` | wartość nie jest skonfigurowana |
-| secret configured | `skonfigurowany` | wartość istnieje, ale nigdy nie jest wyświetlana |
+| brak workspace | `No supported files in workspace` | brak źródeł, nie błąd aplikacji |
+| discovery | `Scanning workspace…` | operacja lokalna w workerze |
+| planning | `Building plan…` | `plan_auto` albo `plan_manual`, jeszcze bez wykonania |
+| running | `Working` + bieżąca operacja | aktywny run |
+| cancelling | `Cancelling…` | prośba wysłana, run jeszcze nie jest terminalny |
+| partial | `Partly done` | co najmniej jeden trwały produkt lub sukces grupy oraz co najmniej jeden problem |
+| failed | `Not finished` | brak wymaganego sukcesu; szczegóły bezpiecznie zredagowane |
+| model unknown | `unverified` | wpis istnieje lokalnie, ale bieżąca sesja go nie sprawdziła |
+| secret missing | `missing` | wartość nie jest skonfigurowana |
+| secret configured | `configured` | wartość istnieje, ale nigdy nie jest wyświetlana |
+
+### 6.4. Kontrakt skrótów klawiszowych
+
+Skróty odwzorowują domyślne `keybinds` OpenCode. Wartości pochodzą z rejestru skrótów w binarce i z `opencode.ai/docs/keybinds`.
+
+| Akcja | Skrót | Nazwa w OpenCode |
+| --- | --- | --- |
+| wyjście z aplikacji | `ctrl+c`, `ctrl+d` | `app_exit` |
+| lista komend | `ctrl+p` | `command_list` |
+| przerwanie przebiegu | `escape` | `session_interrupt` |
+| zatwierdzenie wejścia | `enter` | `input_submit` |
+| nowa linia w wejściu | `shift+enter`, `ctrl+enter`, `alt+enter`, `ctrl+j` | `input_newline` |
+| czyszczenie wejścia | `ctrl+c` | `input_clear` |
+| początek/koniec linii | `ctrl+a` / `ctrl+e` | `input_line_home` / `input_line_end` |
+| usunięcie do końca/początku linii | `ctrl+k` / `ctrl+u` | `input_delete_to_line_end` / `input_delete_to_line_start` |
+| usunięcie słowa wstecz | `ctrl+w`, `ctrl+backspace`, `alt+backspace` | `input_delete_word_backward` |
+| ruch o słowo | `alt+left` / `alt+right`, `ctrl+left` / `ctrl+right` | `input_word_backward` / `input_word_forward` |
+| dialog: poprzedni | `up`, `ctrl+p` | `dialog.select.prev` |
+| dialog: następny | `down`, `ctrl+n` | `dialog.select.next` |
+| dialog: strona | `pageup` / `pagedown` | `dialog.select.page_up` / `page_down` |
+| dialog: skraj | `home` / `end` | `dialog.select.home` / `end` |
+| dialog: zatwierdzenie | `enter` | `dialog.select.submit` |
+| dialog: zamknięcie | `escape`, `ctrl+c` | zamknięcie dialogu |
+| autocomplete: poprzedni | `up`, `ctrl+p` | `prompt.autocomplete.prev` |
+| autocomplete: następny | `down`, `ctrl+n` | `prompt.autocomplete.next` |
+| autocomplete: ukrycie | `escape` | `prompt.autocomplete.hide` |
+| autocomplete: wybór | `enter` | `prompt.autocomplete.select` |
+| autocomplete: dopełnienie | `tab` | `prompt.autocomplete.complete` |
+
+**`input_newline` jest odłożone.** Composer stoi na jednoliniowym `Input`, w którym nowa linia nie ma znaczenia, więc te cztery skróty nie są zaimplementowane. Spełnienie ich wymaga wieloliniowego widgetu, a ten ma sens dopiero razem z treścią, która potrzebuje wielu linii. Takiej treści dziś nie ma i nie jest potwierdzone, że będzie: tryb czatu nie jest zaplanowany, a docelowy przepływ to jedno uruchomienie bez pisania, później scheduler bez udziału użytkownika. Do czasu, gdy pojawi się udowodnione zastosowanie, ten wiersz tabeli pozostaje niespełniony świadomie, a nie przez przeoczenie.
+
+**Rozstrzyganie kolizji.** Ten sam skrót ma różne znaczenie zależnie od tego, co jest otwarte. Pierwszeństwo od najwęższego kontekstu:
+
+1. `ctrl+p` — gdy otwarty jest dialog albo autocomplete, przechodzi do poprzedniej pozycji; w przeciwnym razie otwiera listę komend;
+2. `ctrl+c` — gdy otwarty jest dialog, zamyka dialog; gdy composer ma treść, czyści treść; gdy composer jest pusty, wychodzi z aplikacji;
+3. `escape` — gdy otwarty jest autocomplete, chowa autocomplete; gdy otwarty jest dialog, zamyka dialog; gdy trwa przebieg, przerywa przebieg;
+4. `enter` — gdy otwarty jest autocomplete lub dialog, zatwierdza pozycję; w przeciwnym razie zatwierdza composer.
+
+Klawisz nieobsłużony w węższym kontekście przechodzi do szerszego. Skrót, którego bieżący kontekst nie obsługuje, nie może wykonać cichej akcji w innym kontekście.
 
 ## 7. Wymagania systemowe
 
@@ -214,11 +330,13 @@ Po zakończeniu migracji wywołanie `anishift` bez subkomendy otwiera nowe TUI. 
 
 ### R-003 - Statyczne logo
 
-Ekran startowy pokazuje statyczne, czterowierszowe logo blokowe `ANISHIFT` inspirowane charakterem logo OpenCode. `ANI` jest stonowane, `SHIFT` wyróżnione. Nie ma maskotki, animacji ani dużego pełnoekranowego ASCII artu.
+Ekran startowy pokazuje statyczne, sześciowierszowe logo blokowe `ANISHIFT` o szerokości 57 kolumn, **wyśrodkowane poziomo** w bloku startowym. Litery są rysowane pełnym blokiem `█` z cieniem `╗╚═║╝`, w jednym spójnym kroju o stałej metryce — nie ręcznie składanymi półblokami o różnej grubości. `ANI` jest stonowane w `textMuted`, `SHIFT` wyróżnione w `primary`. Nie ma maskotki, animacji ani dużego pełnoekranowego ASCII artu.
 
 ### R-004 - Układ główny
 
-Pełny układ składa się z nagłówka kontekstowego, jednego głównego obszaru roboczego, stale dostępnego composera i jednowierszowej stopki statusu. Interfejs nie używa siatki wielkich kart ani szerokich pustych odstępów.
+Pełny układ składa się z jednego dominującego obszaru roboczego, stale dostępnego composera i jednowierszowego pasa dolnego. **Nie ma paska nagłówka aplikacji** — kontekst nosi linia w boxie composera. Ekran startowy centruje blok logo, composera, podpowiedzi i tipu, zgodnie z 6.1.
+
+Interfejs nie używa obramowań, siatki wielkich kart ani szerokich pustych odstępów. Composer i pas dolny pozostają widoczne w każdym rozmiarze terminala.
 
 ### R-005 - Motywy
 
@@ -228,13 +346,27 @@ Dostępne są co najmniej `anishift-dark` i `anishift-light`. Wszystkie kolory p
 
 Każdy stan ważny dla użytkownika ma słowo oraz glif albo pozycję strukturalną. Kolor jest wyłącznie dodatkowym sygnałem.
 
+Tekst niesie stan także wagą i odcieniem, zgodnie z tabelą w 6.0. Jednolity tekst o jednej wadze i jednym odcieniu w całym widoku jest usterką kontraktu: pozycja zaznaczona musi różnić się tłem **i** wagą, a treść drugorzędna musi być wyblakła względem pierwszorzędnej. Zaznaczenie nigdy nie sygnalizuje się wprowadzeniem kolejnej barwy — tylko tłem `primary`, wyliczonym kontrastem i pogrubieniem.
+
 ### R-007 - Rozmiar terminala
 
 Pełny układ obowiązuje od 100x30. Przy 80x24 aplikacja nadal pozwala wpisać komendę, otworzyć pomoc, odczytać stan i bezpiecznie wyjść; treści drugorzędne mogą zostać zwinięte.
 
 ### R-008 - Język interfejsu
 
-Teksty produktu są po polsku. Nazwy modeli, providerów, plików, kodów błędów i identyfikatory techniczne pozostają w oryginalnej formie.
+Teksty interfejsu są **na razie po angielsku**, tak jak w OpenCode. Polski pozostaje językiem produktu wyjściowego — napisów, lektora i nazw generowanych plików.
+
+Wybór języka powłoki jest **decyzją otwartą** i może zostać cofnięty na polski po ocenie działającego produktu. Dlatego:
+
+- wszystkie napisy widoczne dla użytkownika żyją jako stałe `Final` w jednym module `anishift/tui/strings.py`, nigdy jako literały rozsiane po widgetach;
+- **nie** powstaje warstwa i18n, katalog locale, przełącznik języka ani druga wersja napisów — tłumaczenie ma być zamianą jednego pliku, nie zbudowaniem mechanizmu;
+- testy asertują przez te stałe, nie przez wpisane ręcznie napisy, żeby zmiana języka nie wywróciła zestawu testów.
+
+Nazwy modeli, providerów, plików, kodów błędów i identyfikatory techniczne pozostają w oryginalnej formie niezależnie od języka powłoki.
+
+### R-009 - Zwięzłość napisów
+
+Etykieta akcji ma **maksymalnie dwa słowa** (`ctrl+p commands`, `tab agents`). Opis komendy w palecie to jedno zdanie bez kropki, do ośmiu słów. Komunikat stanu to fraza, nie zdanie złożone. Napis dłuższy niż to jest błędem kontraktu, a nie kwestią gustu — gęstość ekranu jest cechą produktu.
 
 ### R-010 - Jeden rejestr komend
 
@@ -262,7 +394,9 @@ Nieznana komenda nie wykonuje żadnego use case'u i pokazuje najbliższą znaną
 
 ### R-020 - Stały composer
 
-Composer jest dostępny na każdym głównym ekranie. Placeholder brzmi: `Wpisz /komendę albo naciśnij Enter, aby uruchomić Auto`.
+Composer jest dostępny na każdym głównym ekranie. Placeholder brzmi: `Ask anything or press enter to dub`.
+
+Composer renderuje się jako box na tle `backgroundElement` z pionowym akcentem `primary` na lewej krawędzi, bez obramowania. Pod polem wejścia stoi wyblakła linia kontekstu w `textMuted`, w formie `tryb · provider: model`.
 
 ### R-021 - Pusty Enter
 
@@ -470,7 +604,11 @@ Dla nieukończonej grupy Results może utworzyć draft Manual korzystający z tr
 
 ### R-094 - Exit
 
-`/exit` i `Ctrl+Q` zamykają aplikację. Przy aktywnym przebiegu użytkownik wybiera powrót, anulowanie i wyjście albo pozostanie do końca; aplikacja nie zabija pracy bez potwierdzenia.
+`/exit`, `Ctrl+Q` i `Ctrl+C` zamykają aplikację. Wszystkie trzy prowadzą przez tę samą komendę rejestru — nie istnieje druga ścieżka wyjścia.
+
+`Ctrl+C` na poziomie aplikacji wychodzi, tak jak w OpenCode. Wewnątrz otwartego dialogu `Ctrl+C` anuluje dialog, bo priorytetowy binding ekranu ma pierwszeństwo; to jest zamierzone i nie tworzy drugiej ścieżki wyjścia.
+
+Przy aktywnym przebiegu użytkownik wybiera powrót, anulowanie i wyjście albo pozostanie do końca; aplikacja nie zabija pracy bez potwierdzenia.
 
 ### R-100 - Wątek UI
 
@@ -511,6 +649,26 @@ Prompt-toolkit shell, stary panel i `anishift/pipeline/` są usuwane dopiero po 
 ### R-109 - Windows CI
 
 Repo uruchamia skupiony smoke TUI/CLI/launcher na Windows oraz dotychczasowe pełne bramki repo.
+
+### R-110 - Czytelne liczby TTS
+
+Liczbowe ustawienia TTS pokazują się w panelu, podsumowaniach i podpowiedziach w formie czytelnej dla człowieka, bez artefaktów zapisu zmiennoprzecinkowego. Wartość przechowywana nie zmienia się przez sposób jej wyświetlenia.
+
+### R-111 - Minimalistyczny wariant motywu jasnego
+
+Obok kanonicznego motywu jasnego z sekcji 6.147 istnieje opcjonalny wariant o ograniczonej dekoracji. Kanoniczny motyw pozostaje domyślny, a wariant nie zmienia tokenów semantycznych ani kontraktu I-015 i I-017.
+
+### R-112 - Plik upuszczony na terminal
+
+Ścieżka pliku wklejona do composera przez upuszczenie na okno terminala jest rozpoznawana jako źródło workspace, a nie jako zwykły tekst. Stanowi to jawny wyjątek od R-025 i wymaga, by nierozpoznana ścieżka nadal zachowywała się jak zwykły tekst.
+
+### R-113 - Dostawca i model w stopce
+
+Stopka ekranu pokazuje aktualnego dostawcę i model. Wymaganie obejmuje najpierw ustalenie, czego brakuje wobec linii kontekstu composera, która już niesie tryb, dostawcę i model, żeby nie powstały dwa niezależne miejsca prawdy.
+
+### R-114 - Edycja długiego tekstu w terminalu
+
+Prompty i inne pola wielolinijkowe są edytowalne wewnątrz TUI w powierzchni wielolinijkowej, bez uruchamiania zewnętrznego edytora. Kontrakt R-044 o tym, że Esc nie zapisuje, obowiązuje bez zmian.
 
 ## 8. Inwarianty
 

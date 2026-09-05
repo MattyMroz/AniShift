@@ -8,7 +8,7 @@ body:
     attributes:
       label: Problem
       description: What breaks and where? How to reproduce it?
-      placeholder: "After typing /settings the panel does not open, it prints an error instead."
+      placeholder: "After typing /tts the settings screen does not open, it prints an error instead."
     validations:
       required: true
   - type: textarea
@@ -16,7 +16,7 @@ body:
     attributes:
       label: Expected behavior
       description: What should happen?
-      placeholder: "The /settings panel opens and shows current settings."
+      placeholder: "The /tts screen opens and shows the current voice settings."
     validations:
       required: true
   - type: textarea
@@ -24,7 +24,7 @@ body:
     attributes:
       label: Context
       description: Files, paths, logs, screenshots, commit where it appeared.
-      placeholder: "anishift/cli/settings_panel.py, since commit abc123"
+      placeholder: "anishift/cli/main.py, since commit abc123"
     validations:
       required: false
   - type: dropdown

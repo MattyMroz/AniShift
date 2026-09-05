@@ -54,6 +54,10 @@ duplikacji i wydajności. Branch roboczy: `chore/stage-6.3-audit-fixes`.
   ["llm"]`): przy trwałej awarii LLM pipeline pyta `retry/settings/finish`,
   a użytkownik przełącza silnik ręcznie w `settings`. Decyzja z 2026-08-02:
   zostaje tak — brak cichego fallbacku na gorszy silnik.
+  Gwarancję zapewniał usunięty `pipeline/runner.py`, więc po etapie 10 przestała
+  obowiązywać: `application/runtime.py` przepuszczał łańcuch bez warunku i przy
+  `translation_engine = "llm"` plik po cichu kończył na Google. Pole usunięto
+  2026-09-01; następcę opisuje [kolejka-tlumaczenia-wymagania.md](kolejka-tlumaczenia-wymagania.md).
 
 - Rozmiar `pipeline/runner.py` (1441 linii) i `open_settings_panel` (~300
   linii) — uzasadnione `noqa`, refaktor UI/pipeline planowany osobno.
@@ -94,8 +98,6 @@ Stan na 2026-08-02. Dodanie brakujących pozycji do panelu to osobny task
 
 ### Pola `UserSettings` zapisywane w `config/settings.json`, ale bez wiersza w panelu
 
-- `translation_fallback_chain` (default `["google"]`) — konsumowane w
-  `pipeline/runner.py`; dziś zmiana tylko ręcznie w `config/settings.json`.
 - `translation_batch_size` (default `0` = default silnika, zakres 0-500) —
   konsumowane przez `TranslationConfig.batch_size`.
 - `llm_temperature`, `llm_top_p`, `llm_max_output_tokens` (wszystkie

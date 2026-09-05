@@ -34,22 +34,7 @@ def retry_transient(
     cancel: threading.Event | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> LlmResponse:
-    """Run an LLM operation and retry only transient domain failures.
-
-    Args:
-        operation: One synchronous provider attempt.
-        max_retries: Maximum retries after the initial attempt.
-        observer: Optional attempt lifecycle observer.
-        cancel: Optional cooperative cancellation event.
-        sleep: Backoff waiter used when no cancellation event is present.
-
-    Returns:
-        The first successful LLM response.
-
-    Raises:
-        LlmCancelledError: Cancellation was requested before an attempt or during backoff.
-        TransientError: All allowed attempts failed transiently.
-    """
+    """Run an LLM operation and retry only transient domain failures."""
     retry_index: int = 0
     while True:
         _raise_if_cancelled(cancel)

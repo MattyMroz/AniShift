@@ -1,8 +1,4 @@
-"""Translation domain constants. No provider secrets, no engine names.
-
-Engine names live in the registry (single source of truth); API keys live in
-:class:`anishift.config.settings.Settings`.
-"""
+"""Translation domain constants. No provider secrets, no engine names."""
 
 from __future__ import annotations
 

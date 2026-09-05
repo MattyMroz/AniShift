@@ -23,7 +23,6 @@ from anishift.errors import PlanningError
 def _settings() -> RunSettingsSnapshot:
     return RunSettingsSnapshot(
         translation_profile_id="google",
-        translation_fallback_chain=("deepl",),
         translation_max_retries=3,
         translation_concurrency=4,
         llm_profile_id="gemini",
@@ -99,6 +98,13 @@ def test_topological_order_is_stable_for_shuffled_input() -> None:
     translate = _task("translate", depends_on=("extract",))
     assert stable_topological_order((translate, extract)) == (extract, translate)
     assert stable_topological_order((extract, translate)) == (extract, translate)
+
+
+def test_topological_order_preserves_input_order_for_independent_tasks() -> None:
+    episode_2 = _task("episode-2", produces=("episode-2-result",))
+    episode_10 = _task("episode-10", produces=("episode-10-result",))
+
+    assert stable_topological_order((episode_2, episode_10)) == (episode_2, episode_10)
 
 
 def test_topological_order_rejects_cycle() -> None:
@@ -187,7 +193,7 @@ def test_settings_snapshot_validates_runtime_limits() -> None:
     with pytest.raises(ValueError, match="must be between"):
         replace(settings, translation_concurrency=17)
     with pytest.raises(ValueError, match="must be between"):
-        replace(settings, llm_max_concurrency=5)
+        replace(settings, llm_max_concurrency=17)
     with pytest.raises(ValueError, match="must be between"):
         replace(settings, tts_max_retries=-1)
     with pytest.raises(ValueError, match="profile is unsupported"):

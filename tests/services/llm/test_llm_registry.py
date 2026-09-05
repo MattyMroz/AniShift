@@ -37,6 +37,7 @@ EXPECTED_ENGINE_IDS = (
     "openai",
     "openai_compatible",
     "openrouter",
+    "palantir",
 )
 
 

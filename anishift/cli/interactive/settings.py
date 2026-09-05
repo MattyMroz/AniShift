@@ -1,0 +1,1967 @@
+"""Curated interactive settings built on the single terminal renderer."""
+
+from __future__ import annotations
+
+import math
+import threading
+import time
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Final
+
+from rich.cells import get_character_cell_size, set_cell_size
+from rich.text import Text
+
+from anishift.application import (
+    AppService,
+    AutoPreset,
+    AutoPresetDraft,
+    BurnSubtitleProduct,
+    EnvironmentSettingStatus,
+    ModelAvailability,
+    ModelProbeResult,
+    Mp4AudioSource,
+    ProductIntent,
+    ProductKind,
+    TranslationModelOption,
+)
+from anishift.cli.interactive.settings_editors import format_voice_input, parse_setting_input, parse_voice_input
+from anishift.config.field_access import read_setting_value, setting_is_active
+from anishift.config.field_catalog import SettingSpec, SettingValue, SettingValueType
+from anishift.config.model_catalog import ModelCatalog, ModelEntry
+from anishift.config.user_settings import CustomVoiceSetting, UserSettings
+from anishift.errors import AniShiftError
+
+__all__ = ["SettingsController", "SettingsResult"]
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_POINTER: Final[str] = "\u276f"
+"""Marker placed before the active interactive row."""
+
+_MENU_HINT: Final[str] = "↑↓/Tab · ←→ · Enter · Esc"
+"""Keyboard hint used by settings menus."""
+
+_MULTI_HINT: Final[str] = "↑↓ · Enter/Space zmień · Esc wróć"
+"""Keyboard hint used by the output product selector."""
+
+_MULTI_SELECT_HINT: Final[str] = "↑↓ · Space zmień · Esc wróć"
+"""Keyboard hint used by multi-choice setting editors."""
+
+_SELECT_HINT: Final[str] = "↑↓/Tab · Enter/→ wybierz · Esc/← cofnij"
+"""Keyboard hint used by single-choice editors, where moving is not choosing."""
+
+_SECRET_HINT: Final[str] = "Enter zatwierdź · Esc anuluj"  # noqa: S105 - keyboard hint, never a credential
+"""Keyboard hint used by the secret editor, the only value not saved on its own."""
+
+_INPUT_HINT: Final[str] = "←→ kursor · Enter/Esc wróć · zapis automatyczny"
+"""Keyboard hint used by editors that persist what was typed on their own."""
+
+_VOICE_HINT: Final[str] = "alias | nazwa | ID głosu · Enter zatwierdź · puste usuwa · Esc wróć"
+"""Keyboard hint used by the custom voice editor, including its line format."""
+
+_VOICES_SETTING_ID: Final[str] = "elevenbytes_custom_voices"
+"""Setting holding the list of user-defined ElevenBytes voices."""
+
+_VOICES_TITLE: Final[str] = "WŁASNE GŁOSY"
+"""Heading shown above the custom voice list."""
+
+_ADD_VOICE_KEY: Final[str] = "voice-add"
+"""Stable action key opening an empty custom voice editor."""
+
+_ADD_VOICE_LABEL: Final[str] = "Dodaj głos"
+"""Label of the row that creates one custom voice."""
+
+
+_STATUS_ROWS: Final[int] = 1
+"""Rows every screen spends on its status line, spent whether it says anything or not."""
+
+_ZERO_MEANS_DEFAULT: Final[frozenset[str]] = frozenset({"translation_batch_size"})
+"""Fields where zero is not a quantity but a request for the engine default."""
+
+_BACK_KEY: Final[str] = "back"
+"""Stable action key returning to the parent menu."""
+
+_RESET_KEY: Final[str] = "reset-settings"
+"""Stable action key restoring non-secret panel preferences."""
+
+_BACK_LABEL: Final[str] = "Cofnij"
+"""Label of the row that collapses one level."""
+
+_RESET_LABEL: Final[str] = "Przywróć domyślne"
+"""Label of the row that restores the defaults of the screen it sits on."""
+
+_RESET_SCOPE_PREFIX: Final[str] = "reset-scope:"
+"""Action key prefix naming which screen a reset row restores."""
+
+_VOICES_SCOPE: Final[str] = "voices"
+"""Reset scope covering the user-defined voice list."""
+
+_ROOT_SCOPE: Final[str] = "all"
+"""Reset scope of the root row, covering everything any screen can restore."""
+
+_ROOT_SCOPE_TITLE: Final[str] = "WSZYSTKO"
+"""Heading naming the root reset scope in its confirmation."""
+
+_WHEEL_ROWS: Final[int] = 3
+"""Rows one wheel notch moves the view."""
+
+_SAVE_DELAY_SECONDS: Final[float] = 0.4
+"""Idle time that coalesces a run of arrow presses into one saved transaction."""
+
+_EDITOR_DEFERRING_KEYS: Final[frozenset[str]] = frozenset(
+    {"up", "down", "pageup", "pagedown", "home", "end", "space", "backspace"},
+)
+"""Editor keys that build the value further, so they postpone its save."""
+
+_COARSE_INTEGER_SPAN: Final[int] = 1000
+"""Range above which whole numbers step by hundreds instead of by one."""
+
+_FINE_FLOAT_SPAN: Final[float] = 2.0
+"""Range up to which fractional values step by hundredths."""
+
+_MEDIUM_FLOAT_SPAN: Final[float] = 20.0
+"""Range up to which fractional values step by halves."""
+
+_FINE_FLOAT_STEP: Final[float] = 0.05
+"""Step used by probabilities, temperatures and other narrow fractions."""
+
+_COARSE_FLOAT_STEP: Final[float] = 0.5
+"""Step used by tempo multipliers and decibel gains."""
+
+_COARSE_INTEGER_STEP: Final[int] = 100
+"""Step used by token limits and other wide whole-number ranges."""
+
+_ROOT_ITEMS: Final[tuple[tuple[str, str], ...]] = (
+    ("Ogólne", "category:general"),
+    ("Napisy", "category:subtitles"),
+    ("Tłumaczenie", "category:translation"),
+    ("Lektor", "category:tts"),
+    ("Wynik", "category:output"),
+    ("Połączenia", "category:connections"),
+    (_RESET_LABEL, _RESET_KEY),
+    (_BACK_LABEL, _BACK_KEY),
+)
+"""Settings root entries in product-defined order."""
+
+type _SettingField = tuple[str, str, str]
+"""Setting ID, Polish label, and visible menu section."""
+
+_GENERAL_FIELDS: Final[tuple[_SettingField, ...]] = (
+    ("processing_order_policy", "Kolejność przetwarzania", "PRZETWARZANIE"),
+    ("audio_language_priority", "Priorytet języków audio", "JĘZYKI"),
+    ("subtitle_language_priority", "Priorytet języków napisów", "JĘZYKI"),
+    ("composition_quality_preset", "Jakość obrazu", "WYNIK"),
+)
+"""General persisted preferences exposed by the product."""
+
+_SUBTITLE_FIELDS: Final[tuple[_SettingField, ...]] = (
+    ("subtitle_max_chars_per_line", "Znaków w linii", "UKŁAD TEKSTU"),
+    ("subtitle_max_lines_per_event", "Linii na napis", "UKŁAD TEKSTU"),
+)
+"""Persisted subtitle layout fields exposed by the product."""
+
+_TRANSLATION_FIELDS: Final[tuple[_SettingField, ...]] = (
+    ("translation_engine", "Silnik tłumaczenia", "PODSTAWOWE"),
+    ("translation_chunk_chars", "Rozmiar kontekstu", "WYDAJNOŚĆ"),
+    ("translation_batch_size", "Linii na zapytanie", "WYDAJNOŚĆ"),
+    ("translation_concurrency", "Partii jednocześnie", "WYDAJNOŚĆ"),
+    ("translation_max_retries", "Ponowienia", "WYDAJNOŚĆ"),
+    ("llm_max_concurrency", "Plików LLM jednocześnie", "WYDAJNOŚĆ"),
+    ("llm_temperature", "Temperatura", "MODEL LLM"),
+    ("llm_top_p", "Top-p", "MODEL LLM"),
+    ("llm_max_output_tokens", "Limit tokenów odpowiedzi", "MODEL LLM"),
+    ("llm_translation_style", "Styl", "PROMPT"),
+)
+"""Persisted translation fields exposed by the product."""
+
+_TRANSLATION_MODEL_FIELDS: Final[tuple[_SettingField, ...]] = (
+    ("llm_provider", "Model tłumaczenia", "PODSTAWOWE"),
+    ("llm_provider_model_id", "Model tłumaczenia", "PODSTAWOWE"),
+)
+"""Provider and model behind the single model row, restored with their screen."""
+
+_TTS_FIELDS: Final[tuple[_SettingField, ...]] = (
+    ("tts_engine", "Silnik", "PODSTAWOWE"),
+    ("tts_provider_model_id", "Model / endpoint", "PODSTAWOWE"),
+    ("tts_voice_id", "Głos", "PODSTAWOWE"),
+    ("elevenbytes_custom_voices", "Własne głosy", "PODSTAWOWE"),
+    ("tts_profile.concurrency", "Syntez jednocześnie", "WYDAJNOŚĆ"),
+    ("tts_max_retries", "Ponowienia", "WYDAJNOŚĆ"),
+    ("elevenbytes_vpn_enabled", "VPN ElevenBytes", "WYDAJNOŚĆ"),
+    ("tts_profile.postprocess_tempo", "Tempo końcowe", "GŁOS"),
+    ("tts_profile.voice_mix_offset_db", "Korekta głośności głosu", "GŁOS"),
+    ("tts_profile.native_rate", "Tempo natywne", "GŁOS"),
+    ("tts_profile.native_volume", "Głośność natywna", "GŁOS"),
+    ("tts_profile.native_pitch", "Wysokość głosu", "GŁOS"),
+    ("tts_profile.engine_options.stability", "Stabilność", "GŁOS"),
+    ("tts_profile.engine_options.similarity_boost", "Podobieństwo", "GŁOS"),
+    ("tts_profile.engine_options.style", "Ekspresja", "GŁOS"),
+    ("tts_profile.engine_options.use_speaker_boost", "Wzmocnienie mówcy", "GŁOS"),
+    ("tts_profile.engine_options.speed", "Prędkość natywna", "GŁOS"),
+    ("tts_profile.engine_options.output_format", "Format natywny", "DŹWIĘK"),
+    ("tts_output_profile", "Kodek lektora", "DŹWIĘK"),
+    ("tts_output_bitrate", "Bitrate lektora", "DŹWIĘK"),
+    ("narrator_mix_base_gain_db", "Głośność lektora", "DŹWIĘK"),
+    ("original_gain_db", "Głośność oryginału", "DŹWIĘK"),
+)
+"""Persisted narration fields exposed by the product."""
+
+
+_FIELDS_COVERED_ELSEWHERE: Final[dict[str, str]] = {
+    "llm_provider": "chosen atomically together with the model",
+    "llm_provider_model_id": "chosen atomically together with the provider",
+    "openai_compatible_base_url": "edited inside the connections category",
+    "palantir_enrollment_base_url": "edited inside the connections category",
+    "primary_model_alias": "deliberately hidden from the product surface",
+}
+"""Editable fields intentionally absent from the section layout, with the reason."""
+
+_KNOWN_LAYOUT_GAPS: Final[dict[str, str]] = {}
+
+"""Editable fields still unreachable, tracked so the shortfall stays counted."""
+
+_PRODUCTS: Final[tuple[tuple[ProductKind, str], ...]] = (
+    (ProductKind.FULL_PL, "Polskie napisy"),
+    (ProductKind.NARRATION_AUDIO, "Polski lektor"),
+    (ProductKind.MKV, "MKV"),
+    (ProductKind.MP4, "MP4"),
+    (ProductKind.SOURCE_SUBTITLES, "Napisy źródłowe"),
+    (ProductKind.SPOKEN_PL, "Polskie dialogi"),
+    (ProductKind.DISPLAYED_PL, "Polskie napisy ekranowe"),
+)
+"""Public output products and their labels."""
+
+_DEFAULT_PRODUCTS: Final[frozenset[ProductKind]] = frozenset({ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO})
+"""Products the product ships with selected."""
+
+_ENGINE_LABELS: Final[dict[str, str]] = {
+    "anthropic": "Anthropic",
+    "deepseek": "DeepSeek",
+    "deepl": "DeepL",
+    "edge": "Microsoft Edge",
+    "elevenbytes": "ElevenBytes",
+    "elevenlabs": "ElevenLabs",
+    "gemini": "Gemini",
+    "google": "Google",
+    "llm": "LLM",
+    "openai": "OpenAI",
+    "openai_compatible": "OpenAI-compatible",
+    "openrouter": "OpenRouter",
+    "palantir": "Palantir Foundry",
+    "sapi": "Windows SAPI",
+}
+"""Readable labels for engine IDs exposed by the curated menus."""
+
+
+class SettingsResult(StrEnum):
+    """Signal whether the settings controller remains active."""
+
+    STAY = "stay"
+    BACK_HOME = "back_home"
+
+
+class _Category(StrEnum):
+    GENERAL = "general"
+    SUBTITLES = "subtitles"
+    TRANSLATION = "translation"
+    TTS = "tts"
+    OUTPUT = "output"
+    CONNECTIONS = "connections"
+
+
+_SCOPE_FIELDS: Final[dict[str, tuple[_SettingField, ...]]] = {
+    _Category.GENERAL.value: _GENERAL_FIELDS,
+    _Category.SUBTITLES.value: _SUBTITLE_FIELDS,
+    # The model goes before `translation_engine` on purpose: both its fields depend on
+    # the `llm` engine, so restoring the engine first would make the reset skip them.
+    _Category.TRANSLATION.value: _TRANSLATION_MODEL_FIELDS + _TRANSLATION_FIELDS,
+    _Category.TTS.value: _TTS_FIELDS,
+}
+"""Fields each reset row restores, keyed by the screen it sits on."""
+
+
+class _EditorKind(StrEnum):
+    SELECT = "select"
+    MULTI_SELECT = "multi_select"
+    TEXT = "text"
+    PASSWORD = "password"  # noqa: S105 - editor kind, never a credential
+    VOICE = "voice"
+    CONFIRM = "confirm"
+
+
+class _EditorAction(StrEnum):
+    UPDATE_SETTING = "update_setting"
+    UPDATE_VOICE = "update_voice"
+    SELECT_MODEL = "select_model"
+    SELECT_MODEL_PROVIDER = "select_model_provider"
+    SELECT_CUSTOM_MODEL = "select_custom_model"
+    UPDATE_SECRET = "update_secret"  # noqa: S105 - operation name, never a credential
+    UPDATE_ENVIRONMENT = "update_environment"
+    REMOVE_SECRET = "remove_secret"  # noqa: S105 - operation name, never a credential
+    RESET_SCOPE = "reset_scope"
+
+
+@dataclass(frozen=True, slots=True)
+class _MenuItem:
+    key: str
+    label: str
+    current: str = ""
+    section: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _Option:
+    value: str
+    label: str
+    group: str = ""
+    provider_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _Connection:
+    key: str
+    label: str
+    secret_id: str
+    address_id: str = ""
+    can_probe: bool = False
+
+
+@dataclass(slots=True)
+class _Editor:
+    title: str
+    kind: _EditorKind
+    action: _EditorAction
+    setting_id: str
+    options: tuple[_Option, ...] = ()
+    selected: int = 0
+    offset: int = 0
+    visible_count: int = 0
+    current_value: str = ""
+    buffer: str = ""
+    pristine: bool = True
+    cursor: int | None = None
+    provider_id: str = ""
+    selected_values: set[str] = field(default_factory=set)
+
+
+@dataclass(slots=True)
+class _PendingEdit:
+    setting_id: str
+    value: SettingValue
+    deadline: float
+    action: _EditorAction = _EditorAction.UPDATE_SETTING
+
+
+@dataclass(frozen=True, slots=True)
+class _CatalogSnapshot:
+    settings: UserSettings
+    specs: dict[str, SettingSpec]
+
+
+@dataclass(frozen=True, slots=True)
+class _Feedback:
+    text: str
+    style: str
+
+
+_CONNECTIONS: Final[tuple[_Connection, ...]] = (
+    _Connection("palantir", "Palantir Foundry", "palantir_token", "palantir_enrollment_base_url", True),
+    _Connection("gemini", "Gemini", "gemini_api_key"),
+    _Connection("openai", "OpenAI", "openai_api_key"),
+    _Connection("anthropic", "Anthropic", "anthropic_api_key"),
+    _Connection("deepseek", "DeepSeek", "deepseek_api_key"),
+    _Connection("openrouter", "OpenRouter", "openrouter_api_key"),
+    _Connection(
+        "openai-compatible",
+        "OpenAI-compatible",
+        "openai_compatible_api_key",
+        "openai_compatible_base_url",
+    ),
+    _Connection("deepl", "DeepL", "deepl_api_key"),
+    _Connection("elevenlabs", "ElevenLabs", "elevenlabs_api_key"),
+)
+"""Environment-backed connections that already exist in the backend."""
+
+
+class SettingsController:
+    """Own local settings navigation while all persistence stays in AppService."""
+
+    def __init__(self, service: AppService, invalidate: Callable[[], None]) -> None:
+        self._service: AppService = service
+        self._invalidate: Callable[[], None] = invalidate
+        self._category: _Category | None = None
+        self._connection: _Connection | None = None
+        self._voices_open: bool = False
+        self._items: tuple[_MenuItem, ...] = ()
+        self._selected: int = 0
+        self._offset: int = 0
+        self._visible_count: int = 0
+        self._pending: _PendingEdit | None = None
+        self._discard_armed: bool = False
+        self._follow_cursor: bool = True
+        self._editor: _Editor | None = None
+        self._output_products: set[ProductKind] = set()
+        self._model_label_cache: tuple[str, str] | None = None
+        self._feedback: _Feedback | None = None
+        self._busy: bool = False
+        self._generation: int = 0
+        self._lock: threading.Lock = threading.Lock()
+        self._refresh_menu()
+
+    def handle_key(self, key: str) -> SettingsResult:
+        """Apply one normalized terminal key without performing render-time I/O."""
+        if self._discard_armed and key == "interrupt":
+            self._pending = None
+            self._editor = None
+            self._discard_armed = False
+            return SettingsResult.BACK_HOME
+        self._discard_armed = False
+        if not self._defers_save(key) and not self._commit_pending():
+            if key == "interrupt":
+                self._discard_armed = True
+                self._feedback = _Feedback(
+                    "Nie zapisano zmiany. Ctrl+C ponownie: porzuć i wróć; inny klawisz: zostań",
+                    "warning",
+                )
+            return SettingsResult.STAY
+        if self._busy:
+            return self._handle_busy_key(key)
+        if self._editor is not None:
+            self._handle_editor_key(key)
+        elif key in {"escape", "interrupt", "backspace"}:
+            return self._go_back()
+        elif self._category is _Category.OUTPUT:
+            self._handle_output_key(key)
+        else:
+            return self._handle_menu_key(key)
+        return SettingsResult.STAY
+
+    def scroll(self, direction: int) -> None:
+        """Move the view by one wheel notch without moving the selection."""
+        if self._editor is not None:
+            if self._editor.options:
+                self._editor.selected = min(
+                    max(self._editor.selected + direction * _WHEEL_ROWS, 0), len(self._editor.options) - 1
+                )
+            return
+        length: int = self._scrollable_length()
+        if not length:
+            return
+        self._follow_cursor = False
+        self._offset = min(max(self._offset + direction * _WHEEL_ROWS, 0), max(length - 1, 0))
+
+    def _scrollable_length(self) -> int:
+        if self._category is _Category.OUTPUT:
+            return len(_PRODUCTS) + 1
+        if self._items and self._items[-1].key == _BACK_KEY:
+            return len(self._items) - 1
+        return len(self._items)
+
+    def _defers_save(self, key: str) -> bool:
+        if key in {"left", "right"}:
+            if self._editor is not None:
+                return self._editor.kind not in {_EditorKind.SELECT, _EditorKind.MULTI_SELECT, _EditorKind.CONFIRM}
+            return bool(self._items and self._items[self._selected].key.startswith("setting:"))
+        if self._editor is None:
+            return False
+        return key in _EDITOR_DEFERRING_KEYS or key == "delete" or key.startswith(("text:", "paste:"))
+
+    def close(self) -> None:
+        """Persist a delayed edit at once, whatever reason is closing the panel."""
+        self._commit_pending()
+
+    def flush_pending(self) -> None:
+        """Persist a delayed edit once the user has stopped pressing arrows."""
+        pending: _PendingEdit | None = self._pending
+        if pending is None or time.monotonic() < pending.deadline:
+            return
+        self._commit_pending()
+        self._invalidate()
+
+    def _commit_pending(self) -> bool:
+        pending: _PendingEdit | None = self._pending
+        if pending is None:
+            return True
+        if self._already_stored(pending):
+            # Landing back on the stored value is not an edit, so it must neither
+            # write a transaction nor claim that anything was saved.
+            self._pending = None
+            return True
+        try:
+            self._persist_pending(pending)
+        except AniShiftError, OSError:
+            self._feedback = _Feedback("✗ Nie udało się zapisać ustawienia", "error")
+        except TypeError, ValueError:
+            self._feedback = _Feedback(self._validation_message(pending.setting_id), "error")
+        else:
+            self._pending = None
+            self._refresh_menu()
+            return True
+        # A failed edit remains recoverable, but only a deliberate key press retries it.
+        pending.deadline = math.inf
+        self._refresh_menu()
+        return False
+
+    def _already_stored(self, pending: _PendingEdit) -> bool:
+        if pending.action is _EditorAction.UPDATE_ENVIRONMENT:
+            current: object = getattr(self._service.current_settings(), pending.setting_id)
+            return current == pending.value
+        try:
+            snapshot: _CatalogSnapshot = self._catalog_snapshot()
+        except AniShiftError, OSError:
+            return False
+        if pending.action is not _EditorAction.UPDATE_SETTING:
+            return False
+        spec: SettingSpec | None = snapshot.specs.get(pending.setting_id)
+        return spec is not None and read_setting_value(snapshot.settings, spec) == pending.value
+
+    def _persist_pending(self, pending: _PendingEdit) -> None:
+        if pending.action is _EditorAction.UPDATE_ENVIRONMENT:
+            self._service.update_environment_setting(pending.setting_id, str(pending.value))
+            return
+        self._service.update_setting(pending.setting_id, pending.value)
+
+    def _schedule(self, pending: _PendingEdit) -> None:
+        self._pending = pending
+        self._feedback = None
+
+    def _typed(self, editor: _Editor, text: str) -> None:
+        if text and not text.isprintable():
+            self._feedback = _Feedback("✗ Wpisz jedną linię bez znaków sterujących", "error")
+            return
+        if editor.pristine:
+            # The stored value is shown as the starting point, so the first typed
+            # character replaces it instead of appending a second number to it.
+            editor.buffer = ""
+            editor.pristine = False
+            editor.cursor = 0
+        cursor: int = len(editor.buffer) if editor.cursor is None else editor.cursor
+        editor.buffer = editor.buffer[:cursor] + text + editor.buffer[cursor:]
+        editor.cursor = cursor + len(text)
+        self._schedule_typed_save(editor)
+
+    def _schedule_typed_save(self, editor: _Editor) -> None:
+        self._feedback = None
+        if editor.kind is _EditorKind.PASSWORD or editor.action in {
+            _EditorAction.UPDATE_VOICE,
+            _EditorAction.SELECT_CUSTOM_MODEL,
+        }:
+            # A half-typed secret must never reach .env, and half a voice line is not
+            # a voice, so both stay explicit while every other value saves itself.
+            return
+        self._schedule_editor_save(editor)
+
+    def _schedule_editor_save(self, editor: _Editor) -> None:
+        raw_value: str = self._editor_raw_value(editor)
+        try:
+            spec: SettingSpec = _required_spec(self._catalog_snapshot().specs, editor.setting_id)
+            value: SettingValue = parse_setting_input(spec, raw_value)
+        except AniShiftError, OSError, TypeError, ValueError:
+            # An incomplete value is normal while typing; only the deadline decides
+            # when a value is worth persisting, so the row keeps its stored value.
+            self._pending = None
+            return
+        self._schedule(_PendingEdit(editor.setting_id, value, time.monotonic() + _SAVE_DELAY_SECONDS, editor.action))
+
+    def _adjust_selected(self, direction: int) -> bool:
+        if not self._items:
+            return False
+        key: str = self._items[self._selected].key
+        if not key.startswith("setting:"):
+            return False
+        setting_id: str = key.removeprefix("setting:")
+        try:
+            snapshot: _CatalogSnapshot = self._catalog_snapshot()
+        except AniShiftError, OSError:
+            return True
+        spec: SettingSpec | None = snapshot.specs.get(setting_id)
+        if spec is None or spec.value_type in {
+            SettingValueType.STRING_LIST,
+            SettingValueType.STRING_SET,
+            SettingValueType.OBJECT_LIST,
+        }:
+            return False
+        current: SettingValue = self._effective_value(snapshot, spec)
+        stepped: tuple[SettingValue] | None = _stepped_value(spec, current, direction)
+        if stepped is None:
+            return bool(spec.allowed_values) or spec.value_type not in {
+                SettingValueType.STRING,
+                SettingValueType.OPTIONAL_STRING,
+            }
+        self._pending = _PendingEdit(setting_id, stepped[0], time.monotonic() + _SAVE_DELAY_SECONDS)
+        self._feedback = None
+        # The row carries a formatted value built with the list, so without this the
+        # stepped number would appear only once the delayed save rebuilt the menu.
+        self._refresh_menu()
+        return True
+
+    def _effective_value(self, snapshot: _CatalogSnapshot, spec: SettingSpec) -> SettingValue:
+        pending: _PendingEdit | None = self._pending
+        if pending is not None and pending.setting_id == spec.setting_id:
+            return pending.value
+        return read_setting_value(snapshot.settings, spec)
+
+    def render(self, columns: int, rows: int) -> Text:
+        """Render the cached current menu or editor for one terminal geometry."""
+        with self._lock:
+            if self._editor is not None:
+                return self._render_editor(columns, rows, self._editor)
+            if self._category is _Category.OUTPUT:
+                return self._render_output(columns, rows)
+            return self._render_menu(columns, rows)
+
+    def _handle_busy_key(self, key: str) -> SettingsResult:
+        if key not in {"escape", "interrupt"}:
+            return SettingsResult.STAY
+        with self._lock:
+            self._generation += 1
+            self._busy = False
+            self._feedback = _Feedback("Anulowano", "warning")
+        return SettingsResult.STAY
+
+    def _apply_navigation(self, key: str, length: int) -> bool:
+        if key in {"up", "backtab"}:
+            self._move(-1, length)
+        elif key in {"down", "tab"}:
+            self._move(1, length)
+        elif key == "pageup":
+            self._jump(self._selected - self._page_stride(), length)
+        elif key == "pagedown":
+            self._jump(self._selected + self._page_stride(), length)
+        elif key == "home":
+            self._jump(0, length)
+        elif key == "end":
+            self._jump(length - 1, length)
+        else:
+            return False
+        return True
+
+    def _handle_menu_key(self, key: str) -> SettingsResult:
+        if self._apply_navigation(key, len(self._items)):
+            return SettingsResult.STAY
+        if key in {"left", "right"}:
+            if self._adjust_selected(1 if key == "right" else -1):
+                return SettingsResult.STAY
+            if key == "left":
+                return self._go_back()
+        if key not in {"enter", "right"} or not self._items:
+            return SettingsResult.STAY
+        return self._activate(self._items[self._selected].key)
+
+    def _handle_output_key(self, key: str) -> None:
+        reset_index: int = len(_PRODUCTS)
+        back_index: int = reset_index + 1
+        row_count: int = back_index + 1
+        if self._apply_navigation(key, row_count):
+            return
+        if key == "left":
+            self._go_back()
+            return
+        if key in {"space", "enter"} and self._selected < len(_PRODUCTS):
+            self._toggle_output_product(self._selected)
+            return
+        if key != "enter":
+            return
+        if self._selected == reset_index:
+            self._open_scoped_reset(_Category.OUTPUT.value)
+            return
+        if self._selected == back_index:
+            self._go_back()
+
+    def _toggle_output_product(self, index: int) -> None:
+        previous: set[ProductKind] = set(self._output_products)
+        product: ProductKind = _PRODUCTS[index][0]
+        if product not in self._output_products:
+            self._output_products.add(product)
+        elif len(self._output_products) > 1:
+            self._output_products.remove(product)
+        else:
+            # The choice saves itself, so refusing the toggle is the only way to keep
+            # the marks on screen equal to what is stored.
+            self._feedback = _Feedback("✗ Wybierz co najmniej jeden wynik", "error")
+            return
+        self._feedback = None
+        if not self._save_output():
+            self._output_products = previous
+
+    def _handle_editor_key(self, key: str) -> None:
+        editor: _Editor | None = self._editor
+        if editor is None:
+            return
+        if key in {"escape", "interrupt"}:
+            self._editor = None
+            self._feedback = None
+            return
+        if editor.kind in {_EditorKind.SELECT, _EditorKind.MULTI_SELECT, _EditorKind.CONFIRM}:
+            self._handle_choice_editor(editor, key)
+            return
+        self._handle_text_key(editor, key)
+
+    def _handle_text_key(self, editor: _Editor, key: str) -> None:
+        cursor: int = len(editor.buffer) if editor.cursor is None else editor.cursor
+        if key in {"left", "right", "home", "end"}:
+            editor.pristine = False
+            if key in {"home", "end"}:
+                editor.cursor = 0 if key == "home" else len(editor.buffer)
+            else:
+                editor.cursor = min(max(cursor + (1 if key == "right" else -1), 0), len(editor.buffer))
+            return
+        if key in {"backspace", "delete"}:
+            editor.pristine = False
+            start: int = max(cursor - 1, 0) if key == "backspace" else cursor
+            stop: int = cursor if key == "backspace" else min(cursor + 1, len(editor.buffer))
+            editor.buffer = editor.buffer[:start] + editor.buffer[stop:]
+            editor.cursor = start
+            self._schedule_typed_save(editor)
+            return
+        if key == "space":
+            self._typed(editor, " ")
+            return
+        if key.startswith(("text:", "paste:")):
+            self._typed(editor, key.partition(":")[2])
+            return
+        if key == "enter":
+            self._submit_editor(editor)
+
+    def _handle_choice_editor(self, editor: _Editor, key: str) -> None:
+        if key in {"left", "backspace"}:
+            self._editor = None
+            self._feedback = None
+            return
+        if _navigate_editor(editor, key):
+            # Moving the cursor is not choosing: the bullet marks the stored value, so
+            # walking the list must leave both the value and the file untouched.
+            return
+        if key == "space" and editor.kind is _EditorKind.MULTI_SELECT:
+            value: str = editor.options[editor.selected].value
+            if value in editor.selected_values:
+                editor.selected_values.remove(value)
+            else:
+                editor.selected_values.add(value)
+            self._schedule_editor_save(editor)
+            return
+        if key in {"enter", "right"}:
+            self._submit_editor(editor)
+
+    def _move(self, delta: int, length: int) -> None:
+        if length:
+            self._selected = (self._selected + delta) % length
+        self._follow_cursor = True
+        self._feedback = None
+
+    def _jump(self, index: int, length: int) -> None:
+        if length:
+            self._selected = min(max(index, 0), length - 1)
+        self._follow_cursor = True
+        self._feedback = None
+
+    def _page_stride(self) -> int:
+        return max(self._visible_count - 1, 1)
+
+    def _activate(self, key: str) -> SettingsResult:
+        self._feedback = None
+        if key == _BACK_KEY:
+            return self._go_back()
+
+        action: Callable[[], None] | None = self._exact_actions().get(key)
+        if action is not None:
+            action()
+            return SettingsResult.STAY
+        for prefix, handler in self._prefixed_actions():
+            if key.startswith(prefix):
+                handler(key.removeprefix(prefix))
+                break
+        return SettingsResult.STAY
+
+    def _exact_actions(self) -> dict[str, Callable[[], None]]:
+        return {
+            _RESET_KEY: lambda: self._open_scoped_reset(_ROOT_SCOPE),
+            _ADD_VOICE_KEY: lambda: self._open_voice_editor(None),
+            f"setting:{_VOICES_SETTING_ID}": self._enter_voices,
+            "translation-model": self._open_model_editor,
+            "connection-secret": self._open_password_editor,
+            "connection-address": self._open_address_editor,
+            "connection-remove": self._open_remove_confirmation,
+            "connection-probe": self._start_probe,
+        }
+
+    def _prefixed_actions(self) -> tuple[tuple[str, Callable[[str], None]], ...]:
+        return (
+            ("category:", lambda value: self._enter_category(_Category(value))),
+            (_RESET_SCOPE_PREFIX, self._open_scoped_reset),
+            ("voice:", self._open_voice_editor),
+            ("setting:", self._open_setting_editor),
+            ("connection:", self._enter_connection),
+        )
+
+    def _enter_connection(self, key: str) -> None:
+        self._connection = _connection_by_key(key)
+        self._selected = 0
+        self._offset = 0
+        self._refresh_menu()
+
+    def _enter_voices(self) -> None:
+        self._voices_open = True
+        self._selected = 0
+        self._offset = 0
+        self._refresh_menu()
+
+    def _enter_category(self, category: _Category) -> None:
+        self._category = category
+        self._connection = None
+        self._voices_open = False
+        self._selected = 0
+        self._offset = 0
+        if category is _Category.TRANSLATION:
+            self._model_label_cache = None
+        if category is _Category.OUTPUT:
+            self._load_output()
+            return
+        self._refresh_menu()
+
+    def _go_back(self) -> SettingsResult:
+        self._feedback = None
+        if self._editor is not None:
+            self._editor = None
+            return SettingsResult.STAY
+        if self._connection is not None:
+            key: str = f"connection:{self._connection.key}"
+            self._connection = None
+            self._selected = 0
+            self._offset = 0
+            self._refresh_menu()
+            self._select_menu_key(key)
+            return SettingsResult.STAY
+        if self._voices_open:
+            self._voices_open = False
+            self._selected = 0
+            self._offset = 0
+            self._refresh_menu()
+            self._select_menu_key(f"setting:{_VOICES_SETTING_ID}")
+            return SettingsResult.STAY
+        if self._category is not None:
+            key = f"category:{self._category.value}"
+            self._category = None
+            self._selected = 0
+            self._offset = 0
+            self._refresh_menu()
+            self._select_menu_key(key)
+            return SettingsResult.STAY
+        return SettingsResult.BACK_HOME
+
+    def _select_menu_key(self, key: str) -> None:
+        self._selected = next((index for index, item in enumerate(self._items) if item.key == key), 0)
+        self._follow_cursor = True
+
+    def _refresh_menu(self) -> None:
+        if self._category is _Category.OUTPUT:
+            # The output screen owns its rows, so an empty `_items` must not drag its
+            # cursor back to the first product after an editor closes.
+            self._items = ()
+            return
+        try:
+            self._items = self._build_menu_items()
+        except AniShiftError, OSError, TypeError, ValueError:
+            self._items = (_MenuItem(_BACK_KEY, _BACK_LABEL),)
+            self._selected = 0
+            self._offset = 0
+            self._feedback = _Feedback("✗ Nie można wczytać ustawień", "error")
+        self._selected = min(self._selected, max(len(self._items) - 1, 0))
+        self._offset = min(self._offset, self._selected)
+
+    def _build_menu_items(self) -> tuple[_MenuItem, ...]:
+        if self._category is None:
+            return tuple(_MenuItem(key, label) for label, key in _ROOT_ITEMS)
+        if self._connection is not None:
+            return self._connection_menu_items(self._connection)
+        if self._voices_open:
+            return self._voice_menu_items()
+        if self._category is _Category.GENERAL:
+            items: tuple[_MenuItem, ...] = self._setting_items(_GENERAL_FIELDS)
+        elif self._category is _Category.SUBTITLES:
+            items = self._setting_items(_SUBTITLE_FIELDS)
+        elif self._category is _Category.TRANSLATION:
+            items = self._translation_items()
+        elif self._category is _Category.TTS:
+            items = self._setting_items(_TTS_FIELDS)
+        elif self._category is _Category.CONNECTIONS:
+            items = self._connection_items()
+        else:
+            items = ()
+        return items
+
+    def _translation_items(self) -> tuple[_MenuItem, ...]:
+        snapshot: _CatalogSnapshot = self._catalog_snapshot()
+        items: list[_MenuItem] = [self._setting_item(snapshot, *_TRANSLATION_FIELDS[0])]
+        if snapshot.settings.translation_engine == "llm":
+            items.append(
+                _MenuItem(
+                    "translation-model",
+                    "Model tłumaczenia",
+                    self._model_label(snapshot.settings),
+                    "PODSTAWOWE",
+                ),
+            )
+        items.extend(self._active_setting_items(snapshot, _TRANSLATION_FIELDS[1:]))
+        items.append(self._scoped_reset_item())
+        items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
+        return tuple(items)
+
+    def _setting_items(self, fields: tuple[_SettingField, ...]) -> tuple[_MenuItem, ...]:
+        snapshot: _CatalogSnapshot = self._catalog_snapshot()
+        items: list[_MenuItem] = list(self._active_setting_items(snapshot, fields))
+        items.append(self._scoped_reset_item())
+        items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
+        return tuple(items)
+
+    def _scoped_reset_item(self) -> _MenuItem:
+        category: _Category = self._category if self._category is not None else _Category.GENERAL
+        return _MenuItem(f"{_RESET_SCOPE_PREFIX}{category.value}", _RESET_LABEL)
+
+    def _active_setting_items(
+        self,
+        snapshot: _CatalogSnapshot,
+        fields: tuple[_SettingField, ...],
+    ) -> tuple[_MenuItem, ...]:
+        items: list[_MenuItem] = []
+        for setting_id, label, section in fields:
+            spec: SettingSpec | None = snapshot.specs.get(setting_id)
+            if spec is None or not setting_is_active(spec, snapshot.settings):
+                continue
+            items.append(self._setting_item(snapshot, setting_id, label, section))
+        return tuple(items)
+
+    def _setting_item(
+        self,
+        snapshot: _CatalogSnapshot,
+        setting_id: str,
+        label: str,
+        section: str,
+    ) -> _MenuItem:
+        spec: SettingSpec = _required_spec(snapshot.specs, setting_id)
+        value: SettingValue = self._effective_value(snapshot, spec)
+        return _MenuItem(f"setting:{setting_id}", label, _format_value(setting_id, value), section)
+
+    def _voice_menu_items(self) -> tuple[_MenuItem, ...]:
+        items: list[_MenuItem] = [
+            _MenuItem(f"voice:{voice.alias}", voice.label, voice.voice_id, "WŁASNE GŁOSY")
+            for voice in self._custom_voices()
+        ]
+        items.append(_MenuItem(_ADD_VOICE_KEY, _ADD_VOICE_LABEL))
+        items.append(_MenuItem(f"{_RESET_SCOPE_PREFIX}{_VOICES_SCOPE}", _RESET_LABEL))
+        items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
+        return tuple(items)
+
+    def _custom_voices(self) -> tuple[CustomVoiceSetting, ...]:
+        return tuple(self._service.settings_snapshot().elevenbytes_custom_voices)
+
+    def _open_voice_editor(self, alias: str | None) -> None:
+        voice: CustomVoiceSetting | None = next(
+            (item for item in self._custom_voices() if item.alias == alias),
+            None,
+        )
+        self._editor = _Editor(
+            title=voice.alias.upper() if voice is not None else _ADD_VOICE_LABEL.upper(),
+            kind=_EditorKind.VOICE,
+            action=_EditorAction.UPDATE_VOICE,
+            setting_id=_VOICES_SETTING_ID,
+            current_value=voice.alias if voice is not None else "",
+            buffer=format_voice_input(voice) if voice is not None else "",
+        )
+
+    def _connection_items(self) -> tuple[_MenuItem, ...]:
+        statuses: dict[str, EnvironmentSettingStatus] = {
+            status.setting_id: status for status in self._service.environment_setting_statuses()
+        }
+        items: list[_MenuItem] = []
+        for connection in _CONNECTIONS:
+            status: EnvironmentSettingStatus | None = statuses.get(connection.secret_id)
+            current: str = _connection_status(status)
+            items.append(_MenuItem(f"connection:{connection.key}", connection.label, current))
+        items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
+        return tuple(items)
+
+    def _connection_menu_items(self, connection: _Connection) -> tuple[_MenuItem, ...]:
+        items: list[_MenuItem] = [_MenuItem("connection-secret", "Ustaw / zmień klucz")]
+        if connection.address_id:
+            items.append(_MenuItem("connection-address", "Adres", self._connection_address(connection)))
+        items.append(_MenuItem("connection-remove", "Usuń klucz"))
+        if connection.can_probe:
+            items.append(_MenuItem("connection-probe", "Testuj połączenie"))
+        items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
+        return tuple(items)
+
+    def _connection_address(self, connection: _Connection) -> str:
+        if connection.address_id == "palantir_enrollment_base_url":
+            return self._service.settings_snapshot().palantir_enrollment_base_url or "brak"
+        value: str = getattr(self._service.current_settings(), connection.address_id, "")
+        return value or "brak"
+
+    def _catalog_snapshot(self) -> _CatalogSnapshot:
+        settings: UserSettings = self._service.settings_snapshot()
+        specs: dict[str, SettingSpec] = {spec.setting_id: spec for spec in self._service.settings_catalog(settings)}
+        return _CatalogSnapshot(settings, specs)
+
+    def _model_label(self, settings: UserSettings) -> str:
+        if settings.llm_provider != "palantir":
+            provider: str = _ENGINE_LABELS.get(settings.llm_provider, settings.llm_provider)
+            return f"{provider} · {settings.llm_provider_model_id}"
+        if self._model_label_cache is not None and self._model_label_cache[0] == settings.llm_provider_model_id:
+            return self._model_label_cache[1]
+        label: str = self._palantir_model_label(settings.llm_provider_model_id)
+        self._model_label_cache = (settings.llm_provider_model_id, label)
+        return label
+
+    def _palantir_model_label(self, alias: str) -> str:
+        try:
+            catalog: ModelCatalog = self._service.model_catalog()
+        except AniShiftError:
+            return "Palantir · katalog niedostępny"
+        entry: ModelEntry | None = catalog.models.get(alias)
+        if entry is None:
+            return f"Palantir · {alias}"
+        if entry.model_id.casefold().startswith("replace-with-"):
+            return "Palantir · model nieustawiony"
+        return f"Palantir · {entry.label}"
+
+    def _open_setting_editor(self, setting_id: str) -> None:
+        snapshot: _CatalogSnapshot = self._catalog_snapshot()
+        spec: SettingSpec = _required_spec(snapshot.specs, setting_id)
+        current: SettingValue = read_setting_value(snapshot.settings, spec)
+        if spec.value_type is SettingValueType.BOOLEAN:
+            options: tuple[_Option, ...] = (_Option("true", "Tak"), _Option("false", "Nie"))
+            current_text: str = "true" if current is True else "false"
+            self._editor = _Editor(
+                title=_field_title(setting_id),
+                kind=_EditorKind.SELECT,
+                action=_EditorAction.UPDATE_SETTING,
+                setting_id=setting_id,
+                options=options,
+                selected=_selected_option(options, current_text),
+                current_value=current_text,
+            )
+            return
+        if spec.allowed_values and spec.value_type in {SettingValueType.STRING_LIST, SettingValueType.STRING_SET}:
+            if not isinstance(current, (tuple, frozenset)):
+                msg = f"Collection setting {setting_id!r} returned a scalar value"
+                raise TypeError(msg)
+            options = tuple(_Option(str(value), _choice_label(setting_id, str(value))) for value in spec.allowed_values)
+            selected_values: set[str] = {str(value) for value in current}
+            selected: int = next(
+                (index for index, option in enumerate(options) if option.value in selected_values),
+                0,
+            )
+            self._editor = _Editor(
+                title=_field_title(setting_id),
+                kind=_EditorKind.MULTI_SELECT,
+                action=_EditorAction.UPDATE_SETTING,
+                setting_id=setting_id,
+                options=options,
+                selected=selected,
+                selected_values=selected_values,
+            )
+            return
+        if spec.allowed_values:
+            choice_options: tuple[_Option, ...] = tuple(
+                _Option(str(value), _choice_label(setting_id, str(value))) for value in spec.allowed_values
+            )
+            choice_selected: int = _selected_option(choice_options, str(current))
+            self._editor = _Editor(
+                title=_field_title(setting_id),
+                kind=_EditorKind.SELECT,
+                action=_EditorAction.UPDATE_SETTING,
+                setting_id=setting_id,
+                options=choice_options,
+                selected=choice_selected,
+                current_value=str(current),
+            )
+            return
+        self._editor = _Editor(
+            title=_field_title(setting_id),
+            kind=_EditorKind.TEXT,
+            action=_EditorAction.UPDATE_SETTING,
+            setting_id=setting_id,
+            buffer=_format_input(current),
+        )
+
+    def _voices_after_edit(self, editor: _Editor, raw_value: str) -> tuple[CustomVoiceSetting, ...]:
+        current: tuple[CustomVoiceSetting, ...] = self._custom_voices()
+        cleaned: str = raw_value.strip()
+        if not cleaned:
+            return tuple(item for item in current if item.alias != editor.current_value)
+        voice: CustomVoiceSetting = parse_voice_input(cleaned)
+        if not editor.current_value:
+            return (*current, voice)
+        return tuple(voice if item.alias == editor.current_value else item for item in current)
+
+    def _open_model_editor(self) -> None:
+        self._model_label_cache = None
+        try:
+            choices: tuple[TranslationModelOption, ...] = self._service.translation_model_options()
+        except AniShiftError:
+            self._feedback = _Feedback(
+                "✗ Nie można wczytać modeli · Sprawdź Połączenia i katalog Palantir",
+                "error",
+            )
+            return
+        options: tuple[_Option, ...] = tuple(
+            _Option(
+                choice.model_id,
+                choice.label,
+                _model_group_label(choice.group_id),
+                choice.provider_id,
+            )
+            for choice in choices
+        )
+        if self._custom_model_providers():
+            options = (*options, _Option("", "Własny model…", "WŁASNY IDENTYFIKATOR"))
+        if not options:
+            self._feedback = _Feedback("✗ Brak modeli · Najpierw skonfiguruj dostawcę w Połączeniach", "error")
+            return
+        settings: UserSettings = self._service.settings_snapshot()
+        self._editor = _Editor(
+            title="MODEL TŁUMACZENIA",
+            kind=_EditorKind.SELECT,
+            action=_EditorAction.SELECT_MODEL,
+            setting_id="llm_provider_model_id",
+            options=options,
+            selected=_selected_model_option(options, settings.llm_provider, settings.llm_provider_model_id),
+            current_value=f"{settings.llm_provider}\x1f{settings.llm_provider_model_id}",
+        )
+
+    def _custom_model_providers(self) -> tuple[_Option, ...]:
+        return tuple(
+            _Option(status.engine_id, _ENGINE_LABELS.get(status.engine_id, status.engine_id))
+            for status in self._service.engine_availability()
+            if status.domain == "llm" and status.is_available and status.engine_id != "palantir"
+        )
+
+    def _open_custom_model_provider_editor(self) -> None:
+        options: tuple[_Option, ...] = self._custom_model_providers()
+        if not options:
+            self._feedback = _Feedback("✗ Najpierw skonfiguruj dostawcę w Połączeniach", "error")
+            return
+        self._editor = _Editor(
+            title="WŁASNY MODEL · DOSTAWCA",
+            kind=_EditorKind.SELECT,
+            action=_EditorAction.SELECT_MODEL_PROVIDER,
+            setting_id="llm_provider",
+            options=options,
+        )
+
+    def _open_custom_model_editor(self, provider_id: str) -> None:
+        settings: UserSettings = self._service.settings_snapshot()
+        self._editor = _Editor(
+            title=f"{_ENGINE_LABELS.get(provider_id, provider_id).upper()} · ID MODELU",
+            kind=_EditorKind.TEXT,
+            action=_EditorAction.SELECT_CUSTOM_MODEL,
+            setting_id="llm_provider_model_id",
+            provider_id=provider_id,
+            buffer=settings.llm_provider_model_id if settings.llm_provider == provider_id else "",
+        )
+
+    def _open_scoped_reset(self, scope: str) -> None:
+        self._editor = _Editor(
+            title=f"PRZYWRÓCIĆ DOMYŚLNE · {_scope_title(scope)}?",
+            kind=_EditorKind.CONFIRM,
+            action=_EditorAction.RESET_SCOPE,
+            setting_id=scope,
+            options=(_Option("no", "Nie"), _Option("yes", "Tak")),
+        )
+
+    def _reset_scope(self, scope: str) -> None:
+        if scope == _ROOT_SCOPE:
+            # The root row restores every screen, and products live outside the setting
+            # catalog, so they have to be restored next to the catalog defaults.
+            self._service.reset_settings()
+            self._restore_default_products()
+            return
+        if scope == _VOICES_SCOPE:
+            self._service.update_setting(_VOICES_SETTING_ID, ())
+            return
+        if scope == _Category.OUTPUT.value:
+            # Products live in the preset, not in the setting catalog, so this screen
+            # restores its own state instead of walking `_SCOPE_FIELDS`.
+            self._restore_default_products()
+            return
+        for setting_id, _label, _section in _SCOPE_FIELDS[scope]:
+            snapshot: _CatalogSnapshot = self._catalog_snapshot()
+            spec: SettingSpec | None = snapshot.specs.get(setting_id)
+            if spec is None or not setting_is_active(spec, snapshot.settings):
+                continue
+            if read_setting_value(snapshot.settings, spec) == spec.default:
+                continue
+            self._service.update_setting(setting_id, spec.default)
+
+    def _restore_default_products(self) -> None:
+        previous: set[ProductKind] = set(self._output_products)
+        self._output_products = set(_DEFAULT_PRODUCTS)
+        if not self._save_output():
+            self._output_products = previous
+            msg = "Default products could not be saved"
+            raise OSError(msg)
+
+    def _open_password_editor(self) -> None:
+        connection: _Connection = _required_connection(self._connection)
+        self._editor = _Editor(
+            title=f"{connection.label.upper()} · KLUCZ",
+            kind=_EditorKind.PASSWORD,
+            action=_EditorAction.UPDATE_SECRET,
+            setting_id=connection.secret_id,
+        )
+
+    def _open_address_editor(self) -> None:
+        connection: _Connection = _required_connection(self._connection)
+        current: str = self._connection_address(connection)
+        if current == "brak":
+            current = ""
+        action: _EditorAction = (
+            _EditorAction.UPDATE_SETTING
+            if connection.address_id == "palantir_enrollment_base_url"
+            else _EditorAction.UPDATE_ENVIRONMENT
+        )
+        self._editor = _Editor(
+            title=f"{connection.label.upper()} · ADRES",
+            kind=_EditorKind.TEXT,
+            action=action,
+            setting_id=connection.address_id,
+            buffer=current,
+        )
+
+    def _open_remove_confirmation(self) -> None:
+        connection: _Connection = _required_connection(self._connection)
+        self._editor = _Editor(
+            title=f"USUNĄĆ KLUCZ · {connection.label.upper()}?",
+            kind=_EditorKind.CONFIRM,
+            action=_EditorAction.REMOVE_SECRET,
+            setting_id=connection.secret_id,
+            options=(_Option("no", "Nie"), _Option("yes", "Tak")),
+        )
+
+    def _submit_editor(self, editor: _Editor) -> None:
+        raw_value: str = self._editor_raw_value(editor)
+        if editor.action is _EditorAction.SELECT_MODEL and not editor.options[editor.selected].provider_id:
+            self._open_custom_model_provider_editor()
+            return
+        if editor.action is _EditorAction.SELECT_MODEL_PROVIDER:
+            self._open_custom_model_editor(raw_value)
+            return
+        if (editor.kind is _EditorKind.PASSWORD and not raw_value.strip()) or (
+            editor.action in {_EditorAction.REMOVE_SECRET, _EditorAction.RESET_SCOPE} and raw_value == "no"
+        ):
+            self._editor = None
+            self._feedback = None
+            return
+        try:
+            self._apply_editor(editor, raw_value)
+        except AniShiftError, OSError:
+            self._feedback = _Feedback("✗ Nie udało się zapisać ustawienia", "error")
+            return
+        except TypeError, ValueError:
+            self._feedback = _Feedback(self._validation_message(editor.setting_id), "error")
+            return
+        self._editor = None
+        self._feedback = None
+        self._refresh_menu()
+
+    def _editor_raw_value(self, editor: _Editor) -> str:
+        if editor.kind is _EditorKind.MULTI_SELECT:
+            return ",".join(option.value for option in editor.options if option.value in editor.selected_values)
+        return editor.options[editor.selected].value if editor.options else editor.buffer
+
+    def _apply_editor(self, editor: _Editor, raw_value: str) -> None:
+        if editor.action in {_EditorAction.UPDATE_SETTING, _EditorAction.UPDATE_ENVIRONMENT}:
+            self._save_setting_editor(editor, raw_value)
+            return
+        if editor.action is _EditorAction.UPDATE_VOICE:
+            voices: tuple[CustomVoiceSetting, ...] = self._voices_after_edit(editor, raw_value)
+            if voices != self._custom_voices():
+                self._service.update_setting(_VOICES_SETTING_ID, voices)
+            return
+        if editor.action in {_EditorAction.SELECT_MODEL, _EditorAction.SELECT_CUSTOM_MODEL}:
+            provider_id: str = editor.provider_id
+            model_id: str = raw_value
+            if editor.action is _EditorAction.SELECT_MODEL:
+                option: _Option = editor.options[editor.selected]
+                provider_id, model_id = option.provider_id, option.value
+            self._service.select_translation_model(provider_id, model_id)
+            return
+        if editor.action is _EditorAction.UPDATE_SECRET:
+            self._service.update_secret(editor.setting_id, raw_value)
+            return
+        if editor.action is _EditorAction.REMOVE_SECRET and raw_value == "yes":
+            self._service.update_secret(editor.setting_id, None)
+            return
+        if editor.action is _EditorAction.RESET_SCOPE:
+            self._reset_scope(editor.setting_id)
+
+    def _save_setting_editor(self, editor: _Editor, raw_value: str) -> None:
+        snapshot: _CatalogSnapshot = self._catalog_snapshot()
+        spec: SettingSpec = _required_spec(snapshot.specs, editor.setting_id)
+        value: SettingValue = parse_setting_input(spec, raw_value)
+        if editor.action is _EditorAction.UPDATE_SETTING:
+            if read_setting_value(snapshot.settings, spec) != value:
+                self._service.update_setting(editor.setting_id, value)
+            return
+        if getattr(self._service.current_settings(), editor.setting_id) != value:
+            self._service.update_environment_setting(editor.setting_id, str(value))
+
+    def _validation_message(self, setting_id: str) -> str:
+        try:
+            spec: SettingSpec = _required_spec(self._catalog_snapshot().specs, setting_id)
+        except AniShiftError, OSError, ValueError:
+            return "✗ Nieprawidłowa wartość"
+        if spec.minimum is not None and spec.maximum is not None:
+            return f"✗ Nieprawidłowa wartość · Zakres: {spec.minimum:g}–{spec.maximum:g}"
+        return "✗ Nieprawidłowa wartość"
+
+    def _load_output(self) -> None:
+        try:
+            preset: AutoPreset = self._default_preset()
+        except AniShiftError, OSError, TypeError, ValueError:
+            self._output_products = set()
+            self._feedback = _Feedback("✗ Nie można wczytać ustawień wyniku", "error")
+            return
+        self._output_products = set(preset.products.requested_products)
+
+    def _save_output(self) -> bool:
+        try:
+            current: AutoPreset = self._default_preset()
+            requested: frozenset[ProductKind] = frozenset(self._output_products)
+            products: ProductIntent = ProductIntent(
+                requested_products=requested,
+                burn_subtitle_product=(
+                    current.products.burn_subtitle_product if ProductKind.MP4 in requested else BurnSubtitleProduct.NONE
+                ),
+                mkv_tracks=current.products.mkv_tracks if ProductKind.MKV in requested else frozenset(),
+                mp4_audio_source=(
+                    current.products.mp4_audio_source if ProductKind.MP4 in requested else Mp4AudioSource.AUTO
+                ),
+            )
+            if products == current.products:
+                return True
+            draft: AutoPresetDraft = AutoPresetDraft(
+                preset_id=current.preset_id,
+                name=current.name,
+                products=products,
+                subtitle_source_policy=current.subtitle_source_policy,
+                translation_action=current.translation_action,
+                source_subtitle_language=current.source_subtitle_language,
+                subtitle_output_format=current.subtitle_output_format,
+            )
+            self._service.save_preset(draft)
+        except AniShiftError, OSError, TypeError, ValueError:
+            self._feedback = _Feedback("✗ Nie udało się zapisać ustawień wyniku", "error")
+            return False
+        self._feedback = None
+        return True
+
+    def _default_preset(self) -> AutoPreset:
+        return self._service.get_preset(self._service.default_preset_id())
+
+    def _start_probe(self) -> None:
+        try:
+            catalog: ModelCatalog = self._service.model_catalog()
+            alias: str = self._service.settings_snapshot().llm_provider_model_id
+        except AniShiftError:
+            self._feedback = _Feedback("✗ Nie można wczytać katalogu modeli", "error")
+            return
+        if alias not in catalog.models:
+            self._feedback = _Feedback("✗ Najpierw wybierz model tłumaczenia", "error")
+            return
+        with self._lock:
+            self._generation += 1
+            generation: int = self._generation
+            self._busy = True
+            self._feedback = _Feedback("Testowanie połączenia…", "info")
+        worker: threading.Thread = threading.Thread(
+            target=self._run_probe,
+            args=(alias, generation),
+            name="anishift-connection-probe",
+            daemon=True,
+        )
+        worker.start()
+
+    def _run_probe(self, alias: str, generation: int) -> None:
+        try:
+            result: ModelProbeResult = self._service.probe_model(alias)
+            success: bool = result.availability is ModelAvailability.VERIFIED
+        except AniShiftError, OSError, TypeError, ValueError:
+            success = False
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._busy = False
+            self._feedback = _Feedback(
+                "✓ Połączenie działa" if success else "✗ Test połączenia nie powiódł się",
+                "success" if success else "error",
+            )
+        self._invalidate()
+
+    def _render_menu(self, columns: int, rows: int) -> Text:
+        title: str = _VOICES_TITLE if self._voices_open else _menu_title(self._category, self._connection)
+        back: _MenuItem | None = self._items[-1] if self._items and self._items[-1].key == _BACK_KEY else None
+        scrollable: tuple[_MenuItem, ...] = self._items[:-1] if back is not None else self._items
+        row_budget: int = max(rows - 6 - _STATUS_ROWS - int(back is not None), 1)
+        sections: tuple[str, ...] = tuple(item.section for item in scrollable)
+        start, end = _visible_window(
+            sections,
+            min(self._selected, max(len(scrollable) - 1, 0)),
+            self._offset,
+            row_budget,
+            follow_cursor=self._follow_cursor,
+        )
+        # The row budget is only known here, so this is where a corrected offset
+        # has to be kept for the next key press to scroll from.
+        self._offset = start
+        self._visible_count = end - start
+        visible: tuple[_MenuItem, ...] = scrollable[start:end]
+        has_above: bool = start > 0
+        has_below: bool = end < len(scrollable)
+        option_rows: int = _sectioned_row_count(tuple(item.section for item in visible))
+        body_rows: int = option_rows + int(has_above) + int(has_below) + int(back is not None) + 4 + _STATUS_ROWS
+        left: int = _menu_left_padding(columns, visible if back is None else (*visible, back))
+        content: Text = Text("\n" * max((max(rows - 1, 1) - body_rows) // 2, 0))
+        content.append(" " * left)
+        content.append(_truncate_right(title, max(columns - left, 1)), style="white_bold")
+        content.append("\n\n")
+        if has_above:
+            content.append(" " * left)
+            content.append("↑ więcej\n", style="gray")
+        previous_section: str = ""
+        for index, item in enumerate(visible, start=start):
+            if item.section and item.section != previous_section:
+                content.append(" " * left)
+                content.append(f"{_truncate_right(item.section, max(columns - left, 1))}\n", style="gray")
+                previous_section = item.section
+            content.append(" " * left)
+            content.append(f"{_POINTER} " if index == self._selected else "  ", style="brand_accent")
+            available: int = max(columns - left - 2, 1)
+            current: str = _truncate_right(item.current, max(available // 2, 1)) if item.current else ""
+            label_width: int = max(available - len(current) - (3 if current else 0), 1)
+            content.append(
+                _truncate_right(item.label, label_width),
+                style="brand_accent" if index == self._selected else "white_bold",
+            )
+            if current:
+                content.append(f" · {current}", style="gray")
+            content.append("\n")
+        if has_below:
+            content.append(" " * left)
+            content.append("↓ więcej\n", style="gray")
+        if back is not None:
+            selected_back: bool = self._selected == len(self._items) - 1
+            content.append(" " * left)
+            content.append(f"{_POINTER} " if selected_back else "  ", style="brand_accent")
+            content.append(
+                _truncate_right(back.label, max(columns - left - 2, 1)),
+                style="brand_accent" if selected_back else "white_bold",
+            )
+            content.append("\n")
+        self._append_feedback(content, left, columns)
+        content.append(" " * left)
+        content.append(_MENU_HINT, style="gray")
+        return content
+
+    def _render_output(self, columns: int, rows: int) -> Text:
+        reset_index: int = len(_PRODUCTS)
+        back_index: int = reset_index + 1
+        start, end = _visible_window(
+            ("",) * back_index,
+            min(self._selected, reset_index),
+            self._offset,
+            max(rows - 7 - _STATUS_ROWS, 1),
+            follow_cursor=self._follow_cursor,
+        )
+        self._offset = start
+        self._visible_count = end - start
+        has_above: bool = start > 0
+        has_below: bool = end < back_index
+        body_rows: int = end - start + int(has_above) + int(has_below) + 6 + _STATUS_ROWS
+        labels: tuple[_MenuItem, ...] = tuple(_MenuItem("", label) for _product, label in _PRODUCTS)
+        actions: tuple[_MenuItem, ...] = (
+            _MenuItem("", _RESET_LABEL),
+            _MenuItem("", _BACK_LABEL),
+        )
+        left: int = _menu_left_padding(columns, (*labels, *actions))
+        content: Text = Text("\n" * max((max(rows - 1, 1) - body_rows) // 2, 0))
+        content.append(" " * left)
+        content.append("WYNIK", style="white_bold")
+        content.append("\n\n")
+        if has_above:
+            content.append(" " * left + "↑ więcej\n", style="gray")
+        for index, (product, label) in enumerate(_PRODUCTS[start : min(end, reset_index)], start=start):
+            content.append(" " * left)
+            content.append(f"{_POINTER} " if index == self._selected else "  ", style="brand_accent")
+            content.append("● " if product in self._output_products else "○ ", style="brand_accent")
+            content.append(
+                _truncate_right(label, max(columns - left - 4, 1)),
+                style="brand_accent" if index == self._selected else "white_bold",
+            )
+            content.append("\n")
+        if has_below:
+            content.append(" " * left + "↓ więcej\n", style="gray")
+        visible_actions: tuple[tuple[int, str], ...] = ((back_index, _BACK_LABEL),)
+        if start <= reset_index < end:
+            visible_actions = ((reset_index, _RESET_LABEL), *visible_actions)
+        for index, label in visible_actions:
+            content.append(" " * left)
+            content.append(f"{_POINTER} " if self._selected == index else "  ", style="brand_accent")
+            content.append(
+                _truncate_right(label, max(columns - left - 2, 1)),
+                style="brand_accent" if self._selected == index else "white_bold",
+            )
+            content.append("\n")
+        self._append_feedback(content, left, columns)
+        content.append(" " * left)
+        content.append(_truncate_right(_MULTI_HINT, max(columns - left, 1)), style="gray")
+        return content
+
+    def _render_editor(self, columns: int, rows: int, editor: _Editor) -> Text:
+        start, end, body_rows = _editor_window(
+            tuple(option.group for option in editor.options),
+            editor.selected,
+            editor.offset,
+            rows,
+        )
+        editor.offset = start
+        editor.visible_count = end - start
+        visible: tuple[_Option, ...] = editor.options[start:end]
+        has_above: bool = bool(editor.options) and start > 0
+        has_below: bool = bool(editor.options) and end < len(editor.options)
+        width: int = max([len(editor.title), *(len(option.label) + 4 for option in visible)], default=20)
+        left: int = max((columns - min(width, columns)) // 2, 0)
+        content: Text = Text("\n" * max((max(rows - 1, 1) - body_rows) // 2, 0))
+        content.append(" " * left)
+        content.append(_truncate_right(editor.title, max(columns - left, 1)), style="white_bold")
+        content.append("\n\n")
+        if editor.options:
+            if has_above:
+                content.append(" " * left)
+                content.append("↑ więcej\n", style="gray")
+            previous_group: str = ""
+            for index, option in enumerate(visible, start=start):
+                if option.group and option.group != previous_group:
+                    content.append(" " * left)
+                    content.append(f"{_truncate_right(option.group, max(columns - left, 1))}\n", style="gray")
+                    previous_group = option.group
+                content.append(" " * left)
+                content.append(f"{_POINTER} " if index == editor.selected else "  ", style="brand_accent")
+                content.append(f"{_option_marker(editor, option, index)} ", style="brand_accent")
+                option_width: int = max(columns - left - 4, 1)
+                content.append(
+                    _truncate_right(option.label, option_width),
+                    style="brand_accent" if index == editor.selected else "white_bold",
+                )
+                content.append("\n")
+            if has_below:
+                content.append(" " * left)
+                content.append("↓ więcej\n", style="gray")
+        else:
+            _append_editor_buffer(content, editor, columns, left)
+        self._append_feedback(content, left, columns)
+        content.append(" " * left)
+        hint: str = _INPUT_HINT if not editor.options else _SELECT_HINT
+        if editor.kind is _EditorKind.MULTI_SELECT:
+            hint = _MULTI_SELECT_HINT
+        elif editor.kind is _EditorKind.VOICE:
+            hint = _VOICE_HINT
+        elif editor.kind is _EditorKind.PASSWORD:
+            hint = _SECRET_HINT
+        elif editor.action is _EditorAction.SELECT_CUSTOM_MODEL:
+            hint = "ID modelu · Enter zatwierdź · Esc anuluj"
+        content.append(_truncate_right(hint, max(columns - left, 1)), style="gray")
+        return content
+
+    def _append_feedback(self, content: Text, left: int, columns: int) -> None:
+        # The row is always spent, empty or not: a status appearing between two key
+        # presses must never move the list under the cursor.
+        if self._feedback is None:
+            content.append("\n")
+            return
+        feedback: str = self._feedback.text
+        available: int = max(columns - left, 1)
+        if self._discard_armed and len(feedback) > available:
+            compact: str = "Ctrl+C: porzuć · inny klawisz: zostań"
+            feedback = compact if available >= len(compact) else "Ctrl+C: porzuć zmianę"
+        content.append(" " * left)
+        content.append(_truncate_right(feedback, available), style=self._feedback.style)
+        content.append("\n")
+
+
+def _required_spec(specs: dict[str, SettingSpec], setting_id: str) -> SettingSpec:
+    try:
+        return specs[setting_id]
+    except KeyError as error:
+        msg = f"Required product setting is absent: {setting_id}"
+        raise ValueError(msg) from error
+
+
+def _required_connection(connection: _Connection | None) -> _Connection:
+    if connection is None:
+        msg = "Connection action requires an active connection"
+        raise ValueError(msg)
+    return connection
+
+
+def _connection_by_key(key: str) -> _Connection:
+    for connection in _CONNECTIONS:
+        if connection.key == key:
+            return connection
+    msg = f"Unknown connection key: {key}"
+    raise ValueError(msg)
+
+
+def _selected_option(options: tuple[_Option, ...], current: str) -> int:
+    return next((index for index, option in enumerate(options) if option.value == current), 0)
+
+
+def _selected_model_option(options: tuple[_Option, ...], provider_id: str, model_id: str) -> int:
+    return next(
+        (
+            index
+            for index, option in enumerate(options)
+            if option.provider_id == provider_id and option.value == model_id
+        ),
+        0,
+    )
+
+
+def _field_title(setting_id: str) -> str:
+    labels: dict[str, str] = {
+        field_id: label for field_id, label, _section in (*_GENERAL_FIELDS, *_TRANSLATION_FIELDS, *_TTS_FIELDS)
+    }
+    return labels.get(setting_id, setting_id).upper()
+
+
+def _choice_label(setting_id: str, value: str) -> str:
+    if setting_id in {"translation_engine", "tts_engine"}:
+        return _ENGINE_LABELS.get(value, value)
+    labels: dict[tuple[str, str], str] = {
+        ("processing_order_policy", "ready_first"): "Najpierw gotowe",
+        ("processing_order_policy", "strict_natural"): "Ścisła kolejność plików",
+        ("composition_quality_preset", "high"): "Wysoka",
+        ("composition_quality_preset", "balanced"): "Zrównoważona",
+        ("composition_quality_preset", "compact"): "Kompaktowa",
+    }
+    if (setting_id, value) in labels:
+        return labels[(setting_id, value)]
+    return value.replace("_", " ").strip().title()
+
+
+def _asks_for_the_engine_default(setting_id: str, value: SettingValue) -> bool:
+    """Report whether the stored value asks for a default instead of naming one."""
+    if value is None:
+        return True
+    if isinstance(value, bool) or not isinstance(value, int):
+        return False
+    return value == 0 and setting_id in _ZERO_MEANS_DEFAULT
+
+
+def _format_value(setting_id: str, value: SettingValue) -> str:
+    if _asks_for_the_engine_default(setting_id, value):
+        return "domyślnie"
+    if isinstance(value, bool):
+        return "tak" if value else "nie"
+    if isinstance(value, float):
+        multiplier_fields: frozenset[str] = frozenset(
+            {"tts_profile.postprocess_tempo", "tts_profile.engine_options.speed"},
+        )
+        gain_fields: frozenset[str] = frozenset(
+            {"tts_profile.voice_mix_offset_db", "narrator_mix_base_gain_db", "original_gain_db"},
+        )
+        suffix: str = "×" if setting_id in multiplier_fields else " dB" if setting_id in gain_fields else ""
+        return f"{value:g}{suffix}"
+    if isinstance(value, str):
+        return _choice_label(setting_id, value)
+    return _format_collection(setting_id, value) if isinstance(value, (tuple, frozenset)) else str(value)
+
+
+def _format_collection(setting_id: str, value: Iterable[object]) -> str:
+    if setting_id == _VOICES_SETTING_ID:
+        return ", ".join(_voice_alias(item) for item in value) or "brak"
+    return ", ".join(str(item) for item in value) or "brak"
+
+
+def _voice_alias(voice: object) -> str:
+    return voice.alias if isinstance(voice, CustomVoiceSetting) else str(voice)
+
+
+def _format_input(value: SettingValue) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:g}"
+    if isinstance(value, (tuple, frozenset)):
+        return ", ".join(str(item) for item in value)
+    return str(value)
+
+
+def _model_group_label(group_id: str) -> str:
+    labels: dict[str, str] = {
+        "anthropic": "ANTHROPIC",
+        "deepseek": "DEEPSEEK",
+        "gemini": "GOOGLE GEMINI",
+        "openai": "OPENAI",
+        "openai_compatible": "OPENAI-COMPATIBLE",
+        "openrouter": "OPENROUTER",
+        "palantir:openai_chat": "PALANTIR FOUNDRY · OPENAI",
+        "palantir:anthropic_messages": "PALANTIR FOUNDRY · ANTHROPIC",
+        "palantir:google_generate": "PALANTIR FOUNDRY · GOOGLE",
+        "palantir:xai_responses": "PALANTIR FOUNDRY · XAI",
+    }
+    return labels.get(group_id, group_id.upper())
+
+
+def _connection_status(status: EnvironmentSettingStatus | None) -> str:
+    if status is None or not status.is_configured:
+        return "brak"
+    return "skonfigurowane · system" if status.is_system_override else "skonfigurowane"
+
+
+def _menu_title(category: _Category | None, connection: _Connection | None) -> str:
+    if connection is not None:
+        return connection.label.upper()
+    titles: dict[_Category | None, str] = {
+        None: "USTAWIENIA",
+        _Category.GENERAL: "OGÓLNE",
+        _Category.SUBTITLES: "NAPISY",
+        _Category.TRANSLATION: "TŁUMACZENIE",
+        _Category.TTS: "LEKTOR",
+        _Category.CONNECTIONS: "POŁĄCZENIA",
+        _Category.OUTPUT: "WYNIK",
+    }
+    return titles[category]
+
+
+def _scope_title(scope: str) -> str:
+    if scope == _ROOT_SCOPE:
+        return _ROOT_SCOPE_TITLE
+    if scope == _VOICES_SCOPE:
+        return _VOICES_TITLE
+    return _menu_title(_Category(scope), None)
+
+
+def _menu_left_padding(columns: int, items: tuple[_MenuItem, ...]) -> int:
+    width: int = max(
+        (len(item.label) + len(item.current) + (3 if item.current else 0) + 2 for item in items), default=1
+    )
+    return max((columns - min(width, columns)) // 2, 0)
+
+
+def _sectioned_row_count(sections: tuple[str, ...]) -> int:
+    rows: int = len(sections)
+    previous: str = ""
+    for section in sections:
+        if section and section != previous:
+            rows += 1
+            previous = section
+    return rows
+
+
+def _numeric_step(spec: SettingSpec) -> float:
+    """Return the increment one arrow press applies to a numeric field."""
+    span: float | None = None
+    if spec.minimum is not None and spec.maximum is not None:
+        span = float(spec.maximum) - float(spec.minimum)
+    if spec.value_type in {SettingValueType.INTEGER, SettingValueType.OPTIONAL_INTEGER}:
+        return _COARSE_INTEGER_STEP if span is not None and span > _COARSE_INTEGER_SPAN else 1
+    if span is not None and span <= _FINE_FLOAT_SPAN:
+        return _FINE_FLOAT_STEP
+    if span is not None and span <= _MEDIUM_FLOAT_SPAN:
+        return _COARSE_FLOAT_STEP
+    return _COARSE_FLOAT_STEP
+
+
+def _snapped_number(current: float, step: float, direction: int) -> float:
+    """Return the neighbouring value that sits on the step grid."""
+    if step <= 1:
+        return current + direction * step
+    grid: float = current / step
+    target: float = math.floor(grid) + 1 if direction > 0 else math.ceil(grid) - 1
+    return target * step
+
+
+def _stepped_number(spec: SettingSpec, current: SettingValue, direction: int) -> tuple[SettingValue] | None:
+    """Wrap the neighbouring number, or return ``None`` when the field cannot step."""
+    optional: bool = spec.value_type in {
+        SettingValueType.OPTIONAL_INTEGER,
+        SettingValueType.OPTIONAL_FLOAT,
+    }
+    integral: bool = spec.value_type in {SettingValueType.INTEGER, SettingValueType.OPTIONAL_INTEGER}
+    step: float = _numeric_step(spec)
+    if current is None:
+        start: SettingValue = spec.default if spec.default is not None else spec.minimum
+        if not isinstance(start, (int, float)) or isinstance(start, bool):
+            return None
+        return (int(start) if integral else round(float(start), 2),)
+    if not isinstance(current, (int, float)) or isinstance(current, bool):
+        return None
+    raw: float = _snapped_number(float(current), step, direction)
+    if spec.minimum is not None and raw < float(spec.minimum):
+        if optional:
+            return (None,)
+        return (int(spec.minimum) if integral else float(spec.minimum),)
+    if spec.maximum is not None and raw > float(spec.maximum):
+        raw = float(spec.maximum)
+    return (round(raw) if integral else round(raw, 2),)
+
+
+def _stepped_choice(spec: SettingSpec, current: SettingValue, direction: int) -> tuple[SettingValue] | None:
+    """Wrap the neighbouring allowed value, never wrapping past either end."""
+    values: tuple[SettingValue, ...] = spec.allowed_values
+    if not values:
+        return None
+    texts: list[str] = [str(value) for value in values]
+    try:
+        position: int = texts.index(str(current))
+    except ValueError:
+        position = 0
+    target: int = min(max(position + direction, 0), len(values) - 1)
+    if target == position:
+        return None
+    return (values[target],)
+
+
+def _stepped_value(spec: SettingSpec, current: SettingValue, direction: int) -> tuple[SettingValue] | None:
+    """Wrap the value one arrow press away, or return ``None`` when arrows do not apply."""
+    if spec.value_type is SettingValueType.BOOLEAN:
+        return (not current if isinstance(current, bool) else True,)
+    if spec.value_type in {SettingValueType.STRING_LIST, SettingValueType.STRING_SET, SettingValueType.OBJECT_LIST}:
+        return None
+    if spec.allowed_values:
+        return _stepped_choice(spec, current, direction)
+    if spec.value_type in {
+        SettingValueType.INTEGER,
+        SettingValueType.OPTIONAL_INTEGER,
+        SettingValueType.FLOAT,
+        SettingValueType.OPTIONAL_FLOAT,
+    }:
+        return _stepped_number(spec, current, direction)
+    return None
+
+
+def _append_editor_buffer(content: Text, editor: _Editor, columns: int, left: int) -> None:
+    """Render one clipped input line with a visible cursor and masked secret."""
+    shown: str = "•" * len(editor.buffer) if editor.kind is _EditorKind.PASSWORD else editor.buffer
+    available: int = max(columns - left - 4, 1)
+    cursor: int = len(shown) if editor.cursor is None else editor.cursor
+    start: int = cursor
+    used: int = 0
+    while start > 0:
+        width: int = get_character_cell_size(shown[start - 1])
+        if used + width > available - 1:
+            break
+        used += width
+        start -= 1
+    content.append(" " * left)
+    content.append(f"{_POINTER} ", style="brand_accent")
+    content.append(shown[start:cursor], style="white_bold")
+    content.append("█", style="brand_accent")
+    content.append(set_cell_size(shown[cursor : cursor + available], available - used - 1), style="white_bold")
+    content.append("\n")
+
+
+def _navigate_editor(editor: _Editor, key: str) -> bool:
+    """Move an editor cursor for one navigation key, reporting whether it applied."""
+    length: int = len(editor.options)
+    if not length:
+        return False
+    stride: int = max(editor.visible_count - 1, 1)
+    if key in {"up", "backtab"}:
+        editor.selected = (editor.selected - 1) % length
+    elif key in {"down", "tab"}:
+        editor.selected = (editor.selected + 1) % length
+    elif key == "pageup":
+        editor.selected = max(editor.selected - stride, 0)
+    elif key == "pagedown":
+        editor.selected = min(editor.selected + stride, length - 1)
+    elif key == "home":
+        editor.selected = 0
+    elif key == "end":
+        editor.selected = length - 1
+    else:
+        return False
+    return True
+
+
+def _option_marker(editor: _Editor, option: _Option, index: int) -> str:
+    """Return the filled or hollow marker one editor row shows."""
+    if editor.kind is _EditorKind.CONFIRM:
+        return "●" if index == editor.selected else "○"
+    if editor.kind is _EditorKind.MULTI_SELECT:
+        return "●" if option.value in editor.selected_values else "○"
+    if editor.action is _EditorAction.SELECT_MODEL:
+        return "●" if f"{option.provider_id}\x1f{option.value}" == editor.current_value else "○"
+    return "●" if option.value == editor.current_value else "○"
+
+
+def _window_end(sections: tuple[str, ...], start: int, row_budget: int) -> int:
+    """Return the first index past the rows that still fit below ``start``."""
+    used: int = int(start > 0)
+    previous: str = ""
+    end: int = start
+    while end < len(sections):
+        section: str = sections[end]
+        cost: int = 1 + int(bool(section) and section != previous)
+        if used + cost + int(end + 1 < len(sections)) > row_budget:
+            break
+        used += cost
+        previous = section or previous
+        end += 1
+    return max(end, start + 1)
+
+
+def _visible_window(
+    sections: tuple[str, ...],
+    cursor: int,
+    offset: int,
+    row_budget: int,
+    *,
+    follow_cursor: bool,
+) -> tuple[int, int]:
+    """Return the visible slice for one scroll offset, honouring section labels."""
+    if not sections:
+        return 0, 0
+    offset = min(max(offset, 0), len(sections) - 1)
+    if not follow_cursor:
+        return offset, _window_end(sections, offset, row_budget)
+    cursor = min(max(cursor, 0), len(sections) - 1)
+    offset = min(offset, cursor)
+    end: int = _window_end(sections, offset, row_budget)
+    while cursor >= end and offset < len(sections) - 1:
+        offset += 1
+        end = _window_end(sections, offset, row_budget)
+    return offset, end
+
+
+def _editor_window(
+    groups: tuple[str, ...],
+    selected: int,
+    offset: int,
+    rows: int,
+) -> tuple[int, int, int]:
+    row_budget: int = max(rows - 6 - _STATUS_ROWS, 1)
+    start, end = _visible_window(groups, selected, offset, row_budget, follow_cursor=True)
+    visible_groups: tuple[str, ...] = groups[start:end]
+    option_rows: int = _sectioned_row_count(visible_groups) if visible_groups else 1
+    body_rows: int = option_rows + int(start > 0) + int(end < len(groups)) + 4 + _STATUS_ROWS
+    return start, end, body_rows
+
+
+def _truncate_right(value: str, width: int) -> str:
+    if len(value) <= width:
+        return value
+    if width <= 1:
+        return "…"
+    return f"{value[: width - 1]}…"
+
+
+def _truncate_left(value: str, width: int) -> str:
+    if len(value) <= width:
+        return value
+    if width <= 1:
+        return "…"
+    return f"…{value[-(width - 1) :]}"

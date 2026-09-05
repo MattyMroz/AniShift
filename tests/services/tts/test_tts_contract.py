@@ -30,7 +30,6 @@ from anishift.services.tts import (
 
 FORBIDDEN_IMPORT_PREFIXES = (
     "pysubs2",
-    "anishift.pipeline",
     "anishift.services.audio",
     "anishift.services.subtitles",
     "anishift.services.translation",

@@ -1,19 +1,4 @@
-"""Re-split a translated line into readable on-screen subtitle verses.
-
-A translated line is often too long to read at a glance, so it is split into at
-most two short verses at a natural boundary. The source layout is never
-reconstructed (Polish syntax differs); a new readable split is built instead.
-
-Cut hierarchy (best first): strong punctuation -> weak punctuation -> before a
-conjunction/preposition -> closest to the centre on a word boundary (the
-``split_at_half`` idea). Protective rules: preferred max length, at most two
-verses, no single-word orphan verse, never split a fixed multi-word phrase or
-detach a short preposition from its noun.
-
-Punctuation classes reuse the chunker's Unicode-derived sets (one source of
-truth); the conjunction and preposition lists are the complete Polish word
-lists from Wiktionary.
-"""
+"""Re-split a translated line into readable on-screen subtitle verses."""
 
 from __future__ import annotations
 
@@ -267,22 +252,10 @@ _RE_SPACES: Final[re.Pattern[str]] = re.compile(r"\s+")
 """Whitespace run, collapsed to a single space before splitting."""
 
 
-def split_line(text: str, *, max_chars: int = DEFAULT_MAX_CHARS) -> tuple[str, ...]:
-    """Split ``text`` into readable verses; return one entry when it fits.
-
-    Verses over ``max_chars`` are split again, but never past :data:`MAX_LINES`
-    verses: once the budget is used up an over-length verse is accepted rather
-    than fragmenting the line further.
-
-    Args:
-        text: Single-line text to split.
-        max_chars: Preferred maximum length of one verse.
-
-    Returns:
-        One or more verses; a single-entry tuple when the text already fits.
-    """
+def split_line(text: str, *, max_chars: int = DEFAULT_MAX_CHARS, max_lines: int = MAX_LINES) -> tuple[str, ...]:
+    """Split ``text`` into readable verses; return one entry when it fits."""
     text = _RE_SPACES.sub(" ", text).strip()
-    return _split(text, max_chars, MAX_LINES)
+    return _split(text, max_chars, max_lines)
 
 
 def split_for_layout(
@@ -290,17 +263,12 @@ def split_for_layout(
     source_verses: tuple[str, ...],
     *,
     max_chars: int = DEFAULT_MAX_CHARS,
+    max_lines: int = MAX_LINES,
 ) -> tuple[str, ...]:
-    """Split displayed text using authored verse count as the layout contract.
-
-    A single authored verse keeps the normal Polish readability policy. Two or
-    more authored verses retain their count and approximate relative lengths
-    when the translation has enough word boundaries. A shorter translation is
-    kept intact instead of producing empty verses or splitting one word.
-    """
+    """Split displayed text using authored verse count as the layout contract."""
     normalised = _RE_SPACES.sub(" ", text).strip()
     if len(source_verses) <= 1:
-        return split_line(normalised, max_chars=max_chars)
+        return split_line(normalised, max_chars=max_chars, max_lines=max_lines)
     words = normalised.split()
     if len(words) < len(source_verses):
         return tuple(words) if words else ("",)
@@ -404,13 +372,8 @@ def _weight(prev_word: str, words: list[str], word_index: int) -> float:
 
 
 def _protected(words: list[str], word_index: int) -> bool:
-    """True when a cut before ``words[word_index]`` would break a fixed phrase.
-
-    A cut sits between ``word_index - 1`` and ``word_index``; it breaks a phrase
-    occupying ``words[start:start + length]`` whenever ``start < word_index <
-    start + length``.
-    """
-    if _clean(words[word_index - 1]) in _NON_BREAKING_HEADS:
+    """True when a cut before ``words[word_index]`` would break a fixed phrase."""
+    if _clean(words[word_index]) == "się" or _clean(words[word_index - 1]) in _NON_BREAKING_HEADS:
         return True
     for length in range(2, _MAX_PHRASE_WORDS + 1):
         for start in range(max(0, word_index - length + 1), word_index):

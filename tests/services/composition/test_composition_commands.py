@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import io
+import subprocess
 import sys
 import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from anishift.services.composition.commands import (
+    CommandOutcome,
     StreamingRunner,
     burn_command,
     container_burn_command,
@@ -30,6 +35,7 @@ from anishift.services.composition.types import (
     OutputVariant,
     SubtitleRole,
 )
+from anishift.utils.timer import Timer
 
 _SILENT_SLEEP = "import time; time.sleep(30)"
 
@@ -242,6 +248,71 @@ def test_streaming_runner_reports_progress_and_succeeds() -> None:
     assert percents == [50, 100]
 
 
+def test_streaming_runner_ignores_observer_failure_and_reaps_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    processes: list[subprocess.Popen[str]] = []
+    spawn: Callable[..., subprocess.Popen[str]] = subprocess.Popen
+
+    def record_spawn(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
+        process: subprocess.Popen[str] = spawn(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    def fail_observer(_percent: int) -> None:
+        raise RuntimeError("renderer unavailable")
+
+    monkeypatch.setattr("anishift.services.composition.commands.subprocess.Popen", record_spawn)
+
+    result: CommandOutcome = StreamingRunner().run(
+        (sys.executable, "-c", "print('#GUI#progress 50%')"),
+        operation="merge",
+        timeout_s=5.0,
+        progress=parse_mkvmerge_progress,
+        on_percent=fail_observer,
+    )
+
+    assert result.returncode == 0
+    assert processes[0].poll() == 0
+    assert processes[0].stdout is not None
+    assert processes[0].stdout.closed
+    assert processes[0].stderr is not None
+    assert processes[0].stderr.closed
+
+
+def test_streaming_runner_reaps_hard_kill_after_cancellation(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _StuckProcess:
+        def __init__(self) -> None:
+            self.stdout: io.StringIO = io.StringIO()
+            self.stderr: io.StringIO = io.StringIO()
+            self.returncode: int | None = None
+            self.waited_after_kill: bool = False
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def terminate(self) -> None:
+            return
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self.returncode is None:
+                assert timeout is not None
+                raise subprocess.TimeoutExpired("ffmpeg", timeout)
+            self.waited_after_kill = True
+            return self.returncode
+
+    process: _StuckProcess = _StuckProcess()
+    cancel: threading.Event = threading.Event()
+    cancel.set()
+    monkeypatch.setattr("anishift.services.composition.commands._spawn", lambda *_args, **_kwargs: process)
+
+    with pytest.raises(CompositionCancelledError):
+        StreamingRunner().run(("ffmpeg",), operation="burn", timeout_s=5.0, cancel=cancel)
+
+    assert process.waited_after_kill is True
+
+
 def test_streaming_runner_cancels_a_process_that_never_prints() -> None:
     cancel = threading.Event()
     cancel.set()
@@ -262,6 +333,41 @@ def test_streaming_runner_times_out_a_process_that_never_prints() -> None:
             operation="burn",
             timeout_s=0.5,
         )
+
+
+def test_streaming_runner_keeps_deadline_after_stdout_closes(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _ClosedPipeProcess:
+        def __init__(self) -> None:
+            self.stdout: io.StringIO = io.StringIO()
+            self.stderr: io.StringIO = io.StringIO()
+            self.returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self.returncode is not None:
+                return self.returncode
+            assert timeout is not None
+            raise subprocess.TimeoutExpired("ffmpeg", timeout)
+
+    process: _ClosedPipeProcess = _ClosedPipeProcess()
+    elapsed: Iterator[float] = iter((0.0, 0.0, 10.0))
+    monkeypatch.setattr("anishift.services.composition.commands._spawn", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(Timer, "duration_s", property(lambda _timer: next(elapsed, 10.0)))
+
+    with pytest.raises(CompositionProcessError) as caught:
+        StreamingRunner(shutdown_grace_s=1.0).run(
+            ("ffmpeg", "-version"),
+            operation="burn",
+            timeout_s=1.0,
+        )
+
+    assert caught.value.context.code.value == "TIMEOUT"
+    assert process.poll() is not None
 
 
 def test_streaming_runner_reports_a_failing_process() -> None:

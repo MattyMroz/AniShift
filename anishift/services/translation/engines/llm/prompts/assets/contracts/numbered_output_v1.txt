@@ -1,3 +1,0 @@
-Return only numbered lines in the form "[N] translation".
-Keep exactly the same numbers, order, and line count as the input.
-Do not merge lines or add commentary, introductions, summaries, or Markdown.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -21,6 +22,7 @@ from anishift.application.artifacts import (
 from anishift.application.cancellation import CancellationToken
 from anishift.application.discovery import DiscoveryResult
 from anishift.application.intents import ExternalAudioRole
+from anishift.application.planning import DEFAULT_AUDIO_TOLERANCE_US
 from anishift.application.selection import choose_primary_video
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, MediaProbeError
 from anishift.platform.binaries import Binary, require_binary
@@ -38,8 +40,9 @@ from anishift.services.subtitles.service import load_subtitles
 _DEFAULT_PROBE_TIMEOUT_SECONDS: Final[float] = 120.0
 """Default upper bound for one media or audio inspection subprocess."""
 
-_DEFAULT_AUDIO_TOLERANCE_US: Final[int] = 1_000_000
-"""Default accepted duration difference between external audio and video."""
+
+_MAX_INSPECTION_WORKERS: Final[int] = 8
+"""Upper bound on groups probed at once, because probing waits on subprocesses."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +102,7 @@ class WorkspaceInspector:
         runner: ProcessRunner | None = None,
         ffmpeg: Path | None = None,
         timeout_s: float = _DEFAULT_PROBE_TIMEOUT_SECONDS,
-        audio_tolerance_us: int = _DEFAULT_AUDIO_TOLERANCE_US,
+        audio_tolerance_us: int = DEFAULT_AUDIO_TOLERANCE_US,
     ) -> None:
         if timeout_s <= 0 or audio_tolerance_us < 0:
             msg = "Inspection timeout must be positive and audio tolerance non-negative"
@@ -116,15 +119,22 @@ class WorkspaceInspector:
         *,
         cancel: CancellationToken,
     ) -> InspectedWorkspace:
-        """Probe containers and validate local artifact contents."""
-        inspected_groups: list[InspectedSourceGroup] = []
-        warnings: list[InspectionWarning] = []
-        for source in discovery.groups:
-            cancel.raise_if_cancelled()
-            group, group_warnings = self._inspect_group(source, cancel=cancel)
-            inspected_groups.append(group)
-            warnings.extend(group_warnings)
-        return InspectedWorkspace(groups=tuple(inspected_groups), warnings=tuple(warnings))
+        """Probe containers and validate local artifact contents group by group."""
+        cancel.raise_if_cancelled()
+        sources: tuple[SourceGroup, ...] = discovery.groups
+        if not sources:
+            return InspectedWorkspace(groups=(), warnings=())
+        with ThreadPoolExecutor(
+            max_workers=min(len(sources), _MAX_INSPECTION_WORKERS),
+            thread_name_prefix="anishift-inspect",
+        ) as pool:
+            inspected: tuple[tuple[InspectedSourceGroup, tuple[InspectionWarning, ...]], ...] = tuple(
+                pool.map(lambda source: self._inspect_group(source, cancel=cancel), sources)
+            )
+        return InspectedWorkspace(
+            groups=tuple(group for group, _ in inspected),
+            warnings=tuple(warning for _, group_warnings in inspected for warning in group_warnings),
+        )
 
     def register_external_subtitle(
         self,
@@ -192,6 +202,7 @@ class WorkspaceInspector:
         *,
         cancel: CancellationToken,
     ) -> tuple[InspectedSourceGroup, tuple[InspectionWarning, ...]]:
+        cancel.raise_if_cancelled()
         catalogs: dict[str, MediaCatalog] = {}
         artifacts: list[Artifact] = []
         warnings: list[InspectionWarning] = []

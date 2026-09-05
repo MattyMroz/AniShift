@@ -32,7 +32,6 @@ from anishift.services.media.types import ContainerKind, MediaCatalog, MediaTrac
 def _settings() -> RunSettingsSnapshot:
     return RunSettingsSnapshot(
         translation_profile_id="translation",
-        translation_fallback_chain=(),
         translation_max_retries=1,
         translation_concurrency=2,
         llm_profile_id="classifier",

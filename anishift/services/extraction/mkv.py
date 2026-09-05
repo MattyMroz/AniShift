@@ -35,4 +35,5 @@ def extract_mkv_track(
         cancel=cancel,
         timeout_s=timeout_s,
         runner=runner,
+        allow_warnings=True,
     )

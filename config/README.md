@@ -1,27 +1,27 @@
 # config/
 
-Panel preferences live here — **not** in `workspace/`.
+Preferences and hand-written runtime files live here, not in `workspace/`.
 
-`settings.json` (created on first `/settings` save) holds the choices the panel
-edits: processing mode, selected translation/TTS engine, voice, tempo, volume,
-and related engine options. Durable products are always written beside their source.
+This directory holds every hand-editable runtime file AniShift keeps next to
+the code:
 
-## Why here and not in workspace
+- `settings.json` stores workflow and engine preferences;
+- `presets.json` stores reusable run presets and the default preset;
+- `anishift.models.jsonc` is the local model catalog copied from
+  `anishift.models.example.jsonc`.
 
-`workspace/` is for runtime data only — the folder the user drops MKV files
-into. Keeping `settings.json` next to the code leaves that folder clean while
-the file stays visible and hand-editable. It is gitignored (preferences are
-per-machine); this README is tracked.
+Durable products are always written beside their source, never here.
+Per-machine files are gitignored; only this README and the model-catalog
+example are tracked.
 
-## Custom LLM prompts
+## LLM translation prompts
 
-Optional user prompts live in:
+Translation prompts are versioned application resources under
+`anishift/services/translation/engines/llm/prompts/`, not runtime config.
+The fixed files are `system.md`, `translation.md` and `retry.md`; selectable
+styles are immediate `styles/*.md` files.
 
-- `prompts/tasks/*.txt` — complete translation tasks;
-- `prompts/styles/*.txt` — Polish-language style instructions;
-- `prompts/modules/*.txt` — optional reusable instruction modules.
-
-The filename without `.txt` is the prompt ID shown in `/settings`. AniShift
-discovers every UTF-8 `.txt` file on panel open and before a pipeline run.
-Custom files use version `1`; empty files and duplicate IDs are rejected with a
-clear configuration error. User-authored `.txt` prompts are gitignored.
+`settings.json` stores only the selected style name in
+`llm_translation_style`. To add a style, add and ship another UTF-8 Markdown
+file in the module's `styles/` directory. Missing, empty or invalid packaged
+resources are configuration errors.

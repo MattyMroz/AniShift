@@ -103,12 +103,7 @@ class VpnError(Exception):
 
 @cache
 def _tls_context() -> ssl.SSLContext:
-    """Return the TLS context shared by every proxy hop and tunnelled request.
-
-    httpcore builds a fresh context and reparses the whole CA bundle for each
-    connection left without one, blocking the event loop for hundreds of
-    milliseconds per route.
-    """
+    """Return the TLS context shared by every proxy hop and tunnelled request."""
     return httpx.create_ssl_context()
 
 
@@ -126,13 +121,7 @@ def _proxy_urls(location: str | None = None) -> list[str]:
 
 
 class VpnTransport(httpx.AsyncBaseTransport):
-    """Spread requests across stable per-server connection pools.
-
-    Selection matches the original standalone ``one_vpn.py`` transport: slow,
-    busy, and overused servers are filtered when alternatives exist, while a
-    network failure immediately moves the request to an untried server. The
-    transport never falls back to the local connection.
-    """
+    """Spread requests across stable per-server connection pools."""
 
     def __init__(
         self,

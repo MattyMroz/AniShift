@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import queue
 import re
 import subprocess
 import threading
 from collections import deque
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
+from time import monotonic
 from typing import Any, Final
 
 from anishift.application.cancellation import CancellationToken
@@ -55,6 +58,9 @@ _ERROR_TAIL_LINES: Final[int] = 8
 _CANCEL_POLL_SECONDS: Final[float] = 0.1
 """Interval used to notice cancellation while stdout is blocked."""
 
+_SHUTDOWN_GRACE_SECONDS: Final[float] = 5.0
+"""Bound on each terminate, kill, and output-reader shutdown wait."""
+
 _NEW_PROCESS_GROUP: Final[int] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 """Windows flag isolating the child from the console Ctrl+C; zero elsewhere."""
 
@@ -80,18 +86,7 @@ def _fail(
 
 
 def parse_media_info(path: Path, payload: str) -> MediaInfo:
-    """Parse ``mkvmerge -J`` JSON output into a typed :class:`MediaInfo`.
-
-    Args:
-        path: The container the payload describes.
-        payload: Raw stdout of ``mkvmerge -J``.
-
-    Returns:
-        The typed container description, tracks sorted by id.
-
-    Raises:
-        ExtractionError: When the payload is not valid identify JSON.
-    """
+    """Parse ``mkvmerge -J`` JSON output into a typed :class:`MediaInfo`."""
     try:
         raw: dict[str, Any] = json.loads(payload)
         container: dict[str, Any] = raw["container"]
@@ -156,17 +151,7 @@ def _parse_duration_us(container: dict[str, Any]) -> int:
 
 
 def identify(path: Path) -> MediaInfo:
-    """Identify an MKV container with ``mkvmerge -J``.
-
-    Args:
-        path: The MKV file to identify.
-
-    Returns:
-        The typed container description.
-
-    Raises:
-        ExtractionError: When mkvmerge fails, times out or emits bad JSON.
-    """
+    """Identify an MKV container with ``mkvmerge -J``."""
     timer: Timer = Timer("media_identification", auto_start=True)
     logger.debug("Media identification started", source=path.name)
     exe = ensure_binary(Binary.MKVMERGE)
@@ -231,45 +216,108 @@ def _remove_outputs(specs: list[tuple[int, Path]]) -> None:
         destination.unlink(missing_ok=True)
 
 
-def _cancel(process: subprocess.Popen[str], specs: list[tuple[int, Path]]) -> None:
-    """Terminate an extraction and remove its partial outputs."""
+def _validate_outputs(specs: list[tuple[int, Path]], source: Path, returncode: int) -> None:
+    """Require every selected track to have a non-empty file."""
+    for _, destination in specs:
+        if not destination.is_file() or destination.stat().st_size == 0:
+            msg = f"{source}: mkvextract exited {returncode} but wrote no data"
+            raise _fail(ErrorCode.EXTRACTION_FAILED, msg, details={"output": str(destination)})
+
+
+def _stop_extraction(process: subprocess.Popen[str]) -> None:
+    """Reap the child, escalating to kill after a bounded grace period."""
+    if process.poll() is not None:
+        return
     process.terminate()
-    process.wait()
-    _remove_outputs(specs)
-    msg = "mkvextract extraction cancelled"
-    raise _fail(ErrorCode.CANCELLED, msg)
+    try:
+        process.wait(timeout=_SHUTDOWN_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=_SHUTDOWN_GRACE_SECONDS)
+        except subprocess.TimeoutExpired as error:
+            raise _fail(ErrorCode.TIMEOUT, "mkvextract did not exit after kill") from error
 
 
-def _terminate_on_cancel(
+def _read_output(
     process: subprocess.Popen[str],
-    cancel: threading.Event,
-    stop: threading.Event,
+    output: queue.SimpleQueue[str | OSError | None],
 ) -> None:
-    """Terminate the child when cancellation occurs during a blocked read."""
-    while not stop.wait(_CANCEL_POLL_SECONDS):
-        if cancel.is_set():
-            process.terminate()
-            return
+    """Drain and close the owned pipe, including EOF after the caller's grace period."""
+    if process.stdout is None:
+        output.put(None)
+        return
+    try:
+        with closing(process.stdout) as stream:
+            for line in stream:
+                output.put(line)
+    except OSError as error:
+        output.put(error)
+    finally:
+        output.put(None)
 
 
-def extract_tracks(  # noqa: PLR0912,PLR0915 - extraction lifecycle stays explicit
+def _wait_for_extraction(
+    process: subprocess.Popen[str],
+    output: queue.SimpleQueue[str | OSError | None],
+    *,
+    cancel: threading.Event | None,
+    deadline: float,
+    on_progress: Callable[[int], None] | None,
+) -> tuple[int, deque[str]]:
+    """Watch both stdout and process exit under the same deadline."""
+    output_finished: bool = False
+    tail: deque[str] = deque(maxlen=_ERROR_TAIL_LINES)
+    while True:
+        if cancel is not None and cancel.is_set():
+            raise _fail(ErrorCode.CANCELLED, "mkvextract extraction cancelled")
+        remaining: float = deadline - monotonic()
+        if remaining <= 0:
+            raise _fail(ErrorCode.TIMEOUT, "mkvextract extraction timed out")
+        interval: float = min(_CANCEL_POLL_SECONDS, remaining)
+        if output_finished:
+            try:
+                return process.wait(timeout=interval), tail
+            except subprocess.TimeoutExpired:
+                continue
+        try:
+            line: str | OSError | None = output.get(timeout=interval)
+        except queue.Empty:
+            continue
+        if isinstance(line, OSError):
+            raise line
+        if line is None:
+            output_finished = True
+            continue
+        match: re.Match[str] | None = _RE_GUI_PROGRESS.match(line)
+        if match is not None:
+            if on_progress is not None:
+                on_progress(min(100, int(match.group(1))))
+            continue
+        tail.append(line.strip())
+
+
+def extract_tracks(  # noqa: PLR0912,PLR0913,PLR0915 - extraction lifecycle stays explicit
     info: MediaInfo,
     selection: TrackSelection,
     dest_dir: Path,
     *,
     on_progress: Callable[[int], None] | None = None,
     cancel: threading.Event | None = None,
+    timeout_s: float = 3600.0,
 ) -> LegacyExtractionResult:
-    """Extract the selected tracks into *dest_dir* with live progress.
-
-    Runs a single ``mkvextract --gui-mode`` process covering both tracks and
-    reports its ``#GUI#progress N%`` lines through *on_progress*. Validates
-    that every requested output file exists and is non-empty afterwards.
-    """
-    specs = _build_specs(info, selection, dest_dir)
+    """Extract the selected tracks into *dest_dir* with live progress."""
+    if timeout_s <= 0:
+        msg = "Extraction timeout must be positive"
+        raise ValueError(msg)
+    specs: list[tuple[int, Path]] = _build_specs(info, selection, dest_dir)
     if not specs:
         logger.debug("Track extraction skipped", source=info.path.name, reason="no_selected_tracks")
         return LegacyExtractionResult(None, None)
+    if any(destination.exists() for _, destination in specs):
+        raise _fail(ErrorCode.IO_ERROR, "Extraction target already exists")
+    if cancel is not None and cancel.is_set():
+        raise _fail(ErrorCode.CANCELLED, "mkvextract extraction cancelled")
     timer: Timer = Timer("track_extraction", auto_start=True)
     logger.debug(
         "Track extraction started",
@@ -282,8 +330,9 @@ def extract_tracks(  # noqa: PLR0912,PLR0915 - extraction lifecycle stays explic
     exe = ensure_binary(Binary.MKVEXTRACT)
     command = [str(exe), "--ui-language", "en", "--gui-mode", str(info.path), "tracks"]
     command.extend(f"{track_id}:{destination}" for track_id, destination in specs)
-    cancel_watcher: threading.Thread | None = None
-    stop_watcher = threading.Event()
+    process: subprocess.Popen[str] | None = None
+    reader: threading.Thread | None = None
+    succeeded: bool = False
     try:
         process = subprocess.Popen(  # noqa: S603
             command,
@@ -295,29 +344,19 @@ def extract_tracks(  # noqa: PLR0912,PLR0915 - extraction lifecycle stays explic
             bufsize=1,
             creationflags=_NEW_PROCESS_GROUP,
         )
-        if cancel is not None:
-            cancel_watcher = threading.Thread(
-                target=_terminate_on_cancel,
-                args=(process, cancel, stop_watcher),
-                daemon=True,
-            )
-            cancel_watcher.start()
-        if cancel is not None and cancel.is_set():
-            _cancel(process, specs)
-        tail: deque[str] = deque(maxlen=_ERROR_TAIL_LINES)
-        for line in process.stdout or ():
-            if cancel is not None and cancel.is_set():
-                _cancel(process, specs)
-            match = _RE_GUI_PROGRESS.match(line)
-            if match is not None:
-                if on_progress is not None:
-                    on_progress(min(100, int(match.group(1))))
-                continue
-            tail.append(line.strip())
-        if cancel is not None and cancel.is_set():
-            _cancel(process, specs)
-        returncode = process.wait()
-        if returncode != 0:
+        output: queue.SimpleQueue[str | OSError | None] = queue.SimpleQueue()
+        reader = threading.Thread(target=_read_output, args=(process, output), daemon=True)
+        reader.start()
+        returncode: int
+        tail: deque[str]
+        returncode, tail = _wait_for_extraction(
+            process,
+            output,
+            cancel=cancel,
+            deadline=monotonic() + timeout_s,
+            on_progress=on_progress,
+        )
+        if returncode not in {0, 1}:
             detail = " | ".join(line for line in tail if line)
             msg = f"{info.path}: mkvextract failed: {detail}"
             raise _fail(
@@ -326,19 +365,28 @@ def extract_tracks(  # noqa: PLR0912,PLR0915 - extraction lifecycle stays explic
                 "Check the MKV is readable and the disk has free space",
                 details={"command": command, "tail": list(tail)},
             )
-        for _, destination in specs:
-            if not destination.is_file() or destination.stat().st_size == 0:
-                msg = f"{info.path}: mkvextract exited 0 but wrote no data"
-                raise _fail(ErrorCode.EXTRACTION_FAILED, msg, details={"output": str(destination)})
+        _validate_outputs(specs, info.path, returncode)
+        if returncode == 1:
+            logger.warning("Track extraction completed with warnings", source=info.path.name, output_count=len(specs))
+        if on_progress is not None:
+            on_progress(100)
+        if cancel is not None and cancel.is_set():
+            raise _fail(ErrorCode.CANCELLED, "mkvextract extraction cancelled")
+        succeeded = True
     except OSError as exc:
         msg = f"{info.path}: extraction I/O failed: {exc}"
         raise _fail(ErrorCode.IO_ERROR, msg) from exc
     finally:
-        stop_watcher.set()
-        if cancel_watcher is not None:
-            cancel_watcher.join()
-    if on_progress is not None:
-        on_progress(100)
+        try:
+            if process is not None:
+                _stop_extraction(process)
+        finally:
+            if reader is not None:
+                reader.join(timeout=_SHUTDOWN_GRACE_SECONDS)
+            if process is not None and process.stdout is not None and (reader is None or not reader.is_alive()):
+                process.stdout.close()
+            if not succeeded:
+                _remove_outputs(specs)
     timer.stop()
     logger.info(
         "Track extraction completed",

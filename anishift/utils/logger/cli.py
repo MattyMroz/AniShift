@@ -141,13 +141,13 @@ def apply_filters(reader: LogReader, options: dict[str, Any]) -> list[dict[str, 
     """
     logs = reader.read_all()
 
-    if "level" in options:
-        logs = [log for log in logs if log.get("level") == options["level"].upper()]
-
     if "minutes" in options:
         logs = reader.filter_by_time(minutes=options["minutes"])
     elif "hours" in options:
         logs = reader.filter_by_time(hours=options["hours"])
+
+    if "level" in options:
+        logs = [log for log in logs if log.get("level") == options["level"].upper()]
 
     if "logger" in options:
         logs = [log for log in logs if options["logger"].lower() in log.get("logger", "").lower()]

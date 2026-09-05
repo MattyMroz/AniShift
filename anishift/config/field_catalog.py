@@ -22,12 +22,16 @@ from anishift.application.intents import (
 )
 from anishift.config.user_settings import (
     BATCH_SIZE_RANGE,
+    CHUNK_CHARS_RANGE,
     CONCURRENCY_RANGE,
+    EVENT_LINES_RANGE,
+    LINE_CHARS_RANGE,
     LLM_MAX_CONCURRENCY_RANGE,
     LLM_MAX_TOKENS_RANGE,
     LLM_TEMPERATURE_RANGE,
     LLM_TOP_P_RANGE,
     MAX_RETRIES_RANGE,
+    PALANTIR_ENROLLMENT_URL_PATTERN,
     TEMPO_RANGE,
     TTS_CONCURRENCY_RANGE,
     TTS_MAX_RETRIES_RANGE,
@@ -40,7 +44,7 @@ from anishift.config.user_settings import (
 from anishift.services.audio.types import AudioCodecProfile
 from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
 from anishift.services.translation.engines import available_engine_ids as available_translation_engine_ids
-from anishift.services.translation.engines.llm.prompts import PromptRegistry
+from anishift.services.translation.engines.llm.prompts import available_style_names
 from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
 from anishift.services.tts.engines.edge.constants import (
     DEFAULT_PITCH,
@@ -222,7 +226,7 @@ class SettingCatalogContext:
     tts_engine: str = "elevenbytes"
     tts_provider_model_id: str = "run6"
     tts_voice_id: str = DALLIN_ALIAS
-    elevenbytes_vpn_enabled: bool = True
+    elevenbytes_vpn_enabled: bool = False
     elevenbytes_custom_voice_aliases: tuple[str, ...] = ()
 
     @classmethod
@@ -307,7 +311,9 @@ USER_SETTING_DISPOSITIONS: Final[MappingProxyType[str, SettingDisposition]] = Ma
         "mode": SettingDisposition.REMOVED,
         "processing_order_policy": SettingDisposition.VISIBLE,
         "translation_engine": SettingDisposition.VISIBLE,
-        "translation_fallback_chain": SettingDisposition.VISIBLE,
+        "subtitle_max_chars_per_line": SettingDisposition.VISIBLE,
+        "subtitle_max_lines_per_event": SettingDisposition.VISIBLE,
+        "translation_chunk_chars": SettingDisposition.VISIBLE,
         "translation_batch_size": SettingDisposition.VISIBLE,
         "translation_concurrency": SettingDisposition.VISIBLE,
         "translation_max_retries": SettingDisposition.VISIBLE,
@@ -316,10 +322,10 @@ USER_SETTING_DISPOSITIONS: Final[MappingProxyType[str, SettingDisposition]] = Ma
         "llm_temperature": SettingDisposition.VISIBLE,
         "llm_top_p": SettingDisposition.VISIBLE,
         "llm_max_output_tokens": SettingDisposition.VISIBLE,
-        "llm_prompt_id": SettingDisposition.VISIBLE,
-        "llm_style_id": SettingDisposition.VISIBLE,
-        "llm_module_ids": SettingDisposition.VISIBLE,
+        "llm_translation_style": SettingDisposition.VISIBLE,
         "llm_max_concurrency": SettingDisposition.VISIBLE,
+        "primary_model_alias": SettingDisposition.VISIBLE,
+        "palantir_enrollment_base_url": SettingDisposition.VISIBLE,
         "tts_engine": SettingDisposition.VISIBLE,
         "tts_provider_model_id": SettingDisposition.CONDITIONAL,
         "tts_voice_id": SettingDisposition.CONDITIONAL,
@@ -345,11 +351,11 @@ def setting_catalog(context: SettingCatalogContext | None = None) -> tuple[Setti
     """Build the complete stable catalog without network access or synthesis."""
     resolved_context: SettingCatalogContext = context or SettingCatalogContext()
     defaults = UserSettings()
-    prompt_registry = PromptRegistry()
     catalog: tuple[SettingSpec, ...] = (
         *_workflow_specs(resolved_context),
         *_global_specs(defaults),
-        *_translation_specs(defaults, resolved_context, prompt_registry),
+        *_translation_specs(defaults, resolved_context),
+        *_model_specs(defaults),
         *_tts_specs(defaults, resolved_context),
         *_profile_specs(resolved_context),
         *_audio_and_composition_specs(defaults),
@@ -538,7 +544,7 @@ def _workflow_specs(context: SettingCatalogContext) -> tuple[SettingSpec, ...]:
             label="Products",
             description="Select independent subtitle, narration, MKV, and MP4 products.",
             value_type=SettingValueType.STRING_SET,
-            default=frozenset({ProductKind.FULL_PL.value}),
+            default=frozenset({ProductKind.FULL_PL.value, ProductKind.NARRATION_AUDIO.value}),
             scope=shared_scope,
             allowed_values=tuple(product.value for product in ProductKind),
             invalidates=_COMPOSITION_INVALIDATES,
@@ -614,7 +620,6 @@ def _global_specs(defaults: UserSettings) -> tuple[SettingSpec, ...]:
 def _translation_specs(
     defaults: UserSettings,
     context: SettingCatalogContext,
-    prompt_registry: PromptRegistry,
 ) -> tuple[SettingSpec, ...]:
     llm_condition = (SettingCondition("translation_engine", ("llm",)),)
     return (
@@ -629,13 +634,36 @@ def _translation_specs(
             invalidates=_TRANSLATION_INVALIDATES,
         ),
         SettingSpec(
-            setting_id="translation_fallback_chain",
-            label="Translation fallbacks",
-            description="Order unique fallback engines used after retryable translation failures.",
-            value_type=SettingValueType.STRING_LIST,
-            default=tuple(defaults.translation_fallback_chain),
+            setting_id="subtitle_max_chars_per_line",
+            label="Characters per subtitle line",
+            description="Limit how long one displayed verse may become before it is split.",
+            value_type=SettingValueType.INTEGER,
+            default=defaults.subtitle_max_chars_per_line,
             scope=SettingScope.GLOBAL,
-            allowed_values=tuple(available_translation_engine_ids()),
+            minimum=LINE_CHARS_RANGE[0],
+            maximum=LINE_CHARS_RANGE[1],
+            invalidates=_TRANSLATION_INVALIDATES,
+        ),
+        SettingSpec(
+            setting_id="subtitle_max_lines_per_event",
+            label="Lines per subtitle event",
+            description="Limit how many verses one subtitle event may occupy on screen.",
+            value_type=SettingValueType.INTEGER,
+            default=defaults.subtitle_max_lines_per_event,
+            scope=SettingScope.GLOBAL,
+            minimum=EVENT_LINES_RANGE[0],
+            maximum=EVENT_LINES_RANGE[1],
+            invalidates=_TRANSLATION_INVALIDATES,
+        ),
+        SettingSpec(
+            setting_id="translation_chunk_chars",
+            label="Translation context size",
+            description="Set how much text one translation request carries at once.",
+            value_type=SettingValueType.INTEGER,
+            default=defaults.translation_chunk_chars,
+            scope=SettingScope.GLOBAL,
+            minimum=CHUNK_CHARS_RANGE[0],
+            maximum=CHUNK_CHARS_RANGE[1],
             invalidates=_TRANSLATION_INVALIDATES,
         ),
         SettingSpec(
@@ -728,35 +756,13 @@ def _translation_specs(
             invalidates=_TRANSLATION_INVALIDATES,
         ),
         SettingSpec(
-            setting_id="llm_prompt_id",
-            label="Translation prompt",
-            description="Select the task prompt used for subtitle translation.",
-            value_type=SettingValueType.STRING,
-            default=defaults.llm_prompt_id,
-            scope=SettingScope.GLOBAL,
-            allowed_values=tuple(prompt_registry.list_ids("task")),
-            depends_on=llm_condition,
-            invalidates=_TRANSLATION_INVALIDATES,
-        ),
-        SettingSpec(
-            setting_id="llm_style_id",
+            setting_id="llm_translation_style",
             label="Translation style",
             description="Select the style prompt used for subtitle translation.",
             value_type=SettingValueType.STRING,
-            default=defaults.llm_style_id,
+            default=defaults.llm_translation_style,
             scope=SettingScope.GLOBAL,
-            allowed_values=tuple(prompt_registry.list_ids("style")),
-            depends_on=llm_condition,
-            invalidates=_TRANSLATION_INVALIDATES,
-        ),
-        SettingSpec(
-            setting_id="llm_module_ids",
-            label="Prompt modules",
-            description="Select optional prompt modules included in translation requests.",
-            value_type=SettingValueType.STRING_SET,
-            default=frozenset(defaults.llm_module_ids),
-            scope=SettingScope.GLOBAL,
-            allowed_values=tuple(prompt_registry.list_ids("module")),
+            allowed_values=available_style_names(),
             depends_on=llm_condition,
             invalidates=_TRANSLATION_INVALIDATES,
         ),
@@ -770,6 +776,30 @@ def _translation_specs(
             minimum=LLM_MAX_CONCURRENCY_RANGE[0],
             maximum=LLM_MAX_CONCURRENCY_RANGE[1],
             depends_on=llm_condition,
+        ),
+    )
+
+
+def _model_specs(defaults: UserSettings) -> tuple[SettingSpec, ...]:
+    """Build the main model role and the Palantir connection address."""
+    return (
+        SettingSpec(
+            setting_id="primary_model_alias",
+            label="Main model",
+            description="Select the catalog alias of the main model, independent of the translation model.",
+            value_type=SettingValueType.STRING,
+            default=defaults.primary_model_alias,
+            scope=SettingScope.GLOBAL,
+        ),
+        SettingSpec(
+            setting_id="palantir_enrollment_base_url",
+            label="Palantir enrollment address",
+            description="Configure the https address of the enrollment serving the Foundry proxy routes.",
+            value_type=SettingValueType.STRING,
+            default=defaults.palantir_enrollment_base_url,
+            scope=SettingScope.GLOBAL,
+            validation_pattern=PALANTIR_ENROLLMENT_URL_PATTERN,
+            invalidates=_TRANSLATION_INVALIDATES,
         ),
     )
 
@@ -1192,6 +1222,12 @@ def _environment_specs() -> tuple[SettingSpec, ...]:
                 "openai_compatible_api_key",
                 "OpenAI-compatible API key",
                 "Configure the optional key for an OpenAI-compatible endpoint.",
+                (),
+            ),
+            (
+                "palantir_token",
+                "Palantir token",
+                "Configure the Foundry token used by every Palantir model.",
                 (),
             ),
         )

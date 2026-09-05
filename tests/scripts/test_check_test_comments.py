@@ -74,3 +74,24 @@ def test_tsx_eslint_directive_allowed(monkeypatch: pytest.MonkeyPatch, tmp_path:
 def test_non_test_file_skipped(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     path = _write(tmp_path, "helper.py", 'def f() -> None:\n    """this is fine"""\n')
     assert _run(monkeypatch, path) == 0
+
+
+@pytest.mark.parametrize("name", ["conftest.py", "tests/__init__.py", "tests/helpers.py"])
+@pytest.mark.parametrize("body", ['"""prose"""\n', 'value = 1\n"""constant description"""\n', "# prose\n"])
+def test_test_support_modules_reject_prose(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+    body: str,
+) -> None:
+    path: Path = tmp_path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+    assert _run(monkeypatch, path) == 1
+
+
+def test_test_support_modules_keep_tool_directives(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path: Path = _write(tmp_path, "conftest.py", "value = 1  # noqa: F841\nother = value  # type: ignore\n")
+
+    assert _run(monkeypatch, path) == 0

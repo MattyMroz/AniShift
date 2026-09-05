@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import re
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
@@ -13,17 +14,24 @@ from anishift.application.handlers import (
     CompositionTaskHandler,
     ExecutionHandlers,
     ExtractionTaskHandler,
+    LegacyExtractionAdapter,
     PublishTaskHandler,
     SubtitleTaskHandler,
     TranslationTaskHandler,
     TtsTaskHandler,
 )
 from anishift.application.inspection import InspectedSourceGroup
-from anishift.application.planning import ExecutionPlan, TaskKind
+from anishift.application.planning import ExecutionPlan, RunSettingsSnapshot, TaskKind
 from anishift.application.tts_clips import FfmpegClipService
 from anishift.application.tts_handler import TtsProgressObserver
-from anishift.config.user_settings import config_path
-from anishift.errors import AniShiftError, TransientError
+from anishift.config.model_catalog import ModelCatalog, ModelEntry, ProviderEntry, load_model_catalog
+from anishift.config.user_settings import (
+    PALANTIR_ENROLLMENT_URL_PATTERN,
+    UserSettings,
+    config_path,
+    load_user_settings,
+)
+from anishift.errors import AniShiftError, ConfigError, ErrorCode, ErrorContext, TransientError
 from anishift.platform.binaries import Binary, require_binary
 from anishift.services.audio import (
     AudioConfig,
@@ -36,7 +44,7 @@ from anishift.services.audio.commands import SubprocessRunner
 from anishift.services.audio.service import AudioProgressSink
 from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
 from anishift.services.composition import CompositionConfig, CompositionService, QualityPreset
-from anishift.services.extraction import ExtractionService
+from anishift.services.extraction import ExtractionService, extract_tracks, identify
 from anishift.services.llm import (
     LlmAuthError,
     LlmCancelledError,
@@ -58,12 +66,11 @@ from anishift.services.llm import (
     LlmTimeoutError,
     TextPart,
 )
+from anishift.services.llm.engines.palantir import PALANTIR_ENGINE_ID, PalantirModelConfig, palantir_model_config
 from anishift.services.translation import TranslationConfig, TranslationService
 from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
 from anishift.services.translation.engines import create_engine
 from anishift.services.translation.engines.llm import LlmTranslateConfig, LlmTranslateService
-from anishift.services.translation.engines.llm.prompts import PromptRegistry
-from anishift.services.translation.engines.llm.prompts.types import PromptContext
 from anishift.services.translation.errors import (
     TranslationAuthError,
     TranslationContextLengthError,
@@ -72,6 +79,7 @@ from anishift.services.translation.errors import (
     TranslationQuotaError,
     TranslationRateLimitError,
 )
+from anishift.services.translation.layout_config import LayoutConfig
 from anishift.services.translation.protocols import (
     LlmCompletionRequest,
     LlmCompletionResult,
@@ -89,12 +97,24 @@ if TYPE_CHECKING:
     from anishift.config.settings import Settings
     from anishift.services.subtitles import DisplayedLine, SpokenLine
 
-__all__ = ["ProductionHandlerFactory"]
+__all__ = ["ProductionHandlerFactory", "palantir_llm_config", "probe_palantir_model"]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-_EXTRACTION_TIMEOUT_S: Final[float] = 120.0
+_EXTRACTION_TIMEOUT_S: Final[float] = 3600.0
 """Maximum time allowed for one neutral track extraction."""
+
+_PROBE_PROMPT: Final[str] = "ping"
+"""Shortest prompt of the single request one explicit connection test sends."""
+
+_PROBE_MAX_OUTPUT_TOKENS: Final[int] = 16
+"""Output cap of that request, small enough to stay a negligible cost."""
+
+_ENROLLMENT_SETTING_ID: Final[str] = "palantir_enrollment_base_url"
+"""Preference naming the enrollment address in a configuration failure."""
+
+_ENROLLMENT_URL_RE: Final[re.Pattern[str]] = re.compile(PALANTIR_ENROLLMENT_URL_PATTERN)
+"""Compiled form of the enrollment-address rule owned by ``user_settings``."""
 
 _AUDIO_TIMEOUT_S: Final[float] = 30.0
 """Maximum time allowed for one audio validation or conversion process."""
@@ -124,10 +144,10 @@ class _TranslationExecutor(Protocol):
 class ProductionHandlerFactory:
     """Build only the concrete services required by one accepted plan."""
 
-    __slots__ = ("_settings",)
+    __slots__ = ("_settings_provider",)
 
-    def __init__(self, settings: Settings) -> None:
-        self._settings: Settings = settings
+    def __init__(self, settings_provider: Callable[[], Settings]) -> None:
+        self._settings_provider: Callable[[], Settings] = settings_provider
 
     def __call__(
         self,
@@ -136,8 +156,9 @@ class ProductionHandlerFactory:
         source_groups: Mapping[str, InspectedSourceGroup],
     ) -> ExecutionHandlers:
         """Construct a run-owned dispatcher from immutable execution choices."""
+        settings: Settings = self._settings_provider()
         kinds: frozenset[TaskKind] = frozenset(task.kind for task in plan.tasks)
-        tts_handler: TtsTaskHandler | None = self._tts_handler(run_root, plan, kinds)
+        tts_handler: TtsTaskHandler | None = self._tts_handler(settings, run_root, plan, kinds)
         audio_handler: AudioTaskHandler | None = self._audio_handler(run_root, plan, kinds)
         composition_handler: CompositionTaskHandler | None = self._composition_handler(
             run_root,
@@ -151,11 +172,17 @@ class ProductionHandlerFactory:
                 source_groups={group_id: group.source for group_id, group in source_groups.items()},
             )
         return ExecutionHandlers(
-            ExtractionTaskHandler(ExtractionService(), run_root=run_root, timeout_s=_EXTRACTION_TIMEOUT_S),
+            ExtractionTaskHandler(
+                ExtractionService(),
+                run_root=run_root,
+                timeout_s=_EXTRACTION_TIMEOUT_S,
+                legacy=LegacyExtractionAdapter(identify, extract_tracks),
+            ),
             SubtitleTaskHandler(run_root=run_root),
             TranslationTaskHandler(
-                _translation_service(self._settings, plan),
+                _translation_service(settings, plan),
                 run_root=run_root,
+                layout=_layout_config(plan),
             ),
             tts=tts_handler,
             audio=audio_handler,
@@ -163,8 +190,9 @@ class ProductionHandlerFactory:
             publish=publish_handler,
         )
 
+    @staticmethod
     def _tts_handler(
-        self,
+        settings: Settings,
         run_root: Path,
         plan: ExecutionPlan,
         kinds: frozenset[TaskKind],
@@ -183,7 +211,7 @@ class ProductionHandlerFactory:
             timeout_s=_AUDIO_TIMEOUT_S,
         )
         service = TtsService(
-            _tts_config(self._settings, plan),
+            _tts_config(settings, plan),
             resume_root=run_root / "tts",
             validator=clips,
             assembler=clips,
@@ -251,10 +279,11 @@ class _ConfiguredAudioService:
         request: AudioRenderRequest,
         *,
         callbacks: AudioProgressSink | None = None,
+        on_percent: Callable[[int], None] | None = None,
         cancel: threading.Event | None = None,
     ) -> AudioRenderResult:
         configured: AudioRenderRequest = replace(request, post_process_tempo=self._post_process_tempo)
-        return self._service.render(configured, callbacks=callbacks, cancel=cancel)
+        return self._service.render(configured, callbacks=callbacks, on_percent=on_percent, cancel=cancel)
 
 
 class _TranslationRuntime:
@@ -338,7 +367,6 @@ class _LlmTranslationEngine:
         engine = LlmTranslateService(
             self._llm_config,
             completer=_LlmCompleter(service, self._cancel),
-            prompt_registry=PromptRegistry(custom_root=config_path().parent / "prompts"),
         )
         self._service = service
         self._engine = engine
@@ -358,15 +386,24 @@ class _LlmCompleter:
         self._service: LlmService = service
         self._cancel: threading.Event = cancel
 
-    def complete(self, request: LlmCompletionRequest) -> LlmCompletionResult:
+    def complete(
+        self,
+        request: LlmCompletionRequest,
+        *,
+        on_text: Callable[[str], None] | None = None,
+        on_start: Callable[[], None] | None = None,
+    ) -> LlmCompletionResult:
         llm_request = LlmRequest(
             messages=(
                 LlmMessage(role=LlmRole.SYSTEM, parts=(TextPart(request.system),)),
-                LlmMessage(role=LlmRole.USER, parts=(TextPart(request.user),)),
+                LlmMessage(
+                    role=LlmRole.USER,
+                    parts=tuple(TextPart(part) for part in request.user_parts),
+                ),
             ),
         )
         try:
-            response = self._service.complete(llm_request, cancel=self._cancel)
+            response = self._service.complete(llm_request, cancel=self._cancel, on_text=on_text, on_start=on_start)
         except LlmError as error:
             _raise_translation_error(error)
         return LlmCompletionResult(response.text, response.finish_reason)
@@ -384,9 +421,13 @@ class _LlmRetryObserver:
         self._attempt += 1
 
     def on_transient_failure(self, error: TransientError) -> None:
-        del error
         if self._delegate is not None:
-            self._delegate.retry("llm", self._attempt, self._max_retries + 1)
+            self._delegate.retry(
+                "llm",
+                min(self._attempt + 1, self._max_retries + 1),
+                self._max_retries + 1,
+                error.context.code.value,
+            )
 
     def on_success(self) -> None: ...
 
@@ -418,24 +459,97 @@ def _translation_service(settings: Settings, plan: ExecutionPlan) -> _Translatio
         return _LlmTranslationEngine(
             _llm_config(settings, plan),
             LlmTranslateConfig(
-                prompt_id=snapshot.llm_prompt_id,
-                style_id=snapshot.llm_style_id,
-                module_ids=snapshot.llm_module_ids,
-                context=PromptContext(),
+                # An LLM reads the whole file at once, which keeps the prompts out
+                # of every extra request. Progress comes from the streamed answer,
+                # not from cutting the file up. Zero means no limit at all.
+                max_batch_lines=snapshot.translation_batch_size or None,
+                style_name=snapshot.llm_translation_style,
+                max_contract_retries=snapshot.translation_max_retries,
             ),
             cancel=llm_cancel,
         )
 
-    service = TranslationService(
-        config,
-        engine_factory=engine_factory,
-        fallback_chain=snapshot.translation_fallback_chain,
-    )
+    service = TranslationService(config, engine_factory=engine_factory)
     return _TranslationRuntime(service, llm_cancel)
+
+
+def palantir_llm_config(
+    catalog: ModelCatalog,
+    alias: str,
+    *,
+    enrollment_base_url: str,
+    token: str,
+    max_retries: int = 0,
+) -> LlmConfig:
+    """Resolve one catalog alias into a complete Palantir configuration."""
+    entry: ModelEntry | None = catalog.models.get(alias.strip())
+    if entry is None:
+        raise _alias_error(alias)
+    provider: ProviderEntry | None = catalog.providers.get(entry.provider_id)
+    if provider is None:
+        raise _alias_error(alias)
+    model: PalantirModelConfig = palantir_model_config(
+        alias=entry.alias,
+        provider_id=provider.provider_id,
+        protocol=provider.protocol,
+        enrollment_base_url=_required_enrollment_url(enrollment_base_url),
+        provider_path=provider.path,
+        provider_model_id=entry.model_id,
+        token=token,
+    )
+    return LlmConfig(
+        engine_id=PALANTIR_ENGINE_ID,
+        provider_model_id=model.provider_model_id,
+        api_key=model.token,
+        base_url=model.base_url,
+        max_retries=max_retries,
+        alias=model.alias,
+        provider_id=model.provider_id,
+        protocol=model.protocol,
+    )
+
+
+def probe_palantir_model(config: LlmConfig) -> None:
+    """Send exactly one minimal completion to prove *config* can really run."""
+    service: LlmService = LlmService(replace(config, max_retries=0, max_output_tokens=_PROBE_MAX_OUTPUT_TOKENS))
+    try:
+        service.complete(
+            LlmRequest(messages=(LlmMessage(role=LlmRole.USER, parts=(TextPart(_PROBE_PROMPT),)),)),
+        )
+    finally:
+        service.close()
+
+
+def _alias_error(alias: str) -> ConfigError:
+    """Build the failure of an alias no usable catalog entry serves."""
+    return ConfigError(
+        context=ErrorContext(
+            code=ErrorCode.CONFIG_INVALID,
+            message=f"Model alias is not served by the local catalog: {alias}",
+            suggestion="Select one of the aliases the model catalog defines with a usable provider",
+        ),
+    )
+
+
+def _required_enrollment_url(enrollment_base_url: str) -> str:
+    """Return the configured enrollment address or fail before any request."""
+    candidate: str = enrollment_base_url.strip()
+    if candidate and _ENROLLMENT_URL_RE.fullmatch(candidate) is not None:
+        return candidate
+    code: ErrorCode = ErrorCode.CONFIG_MISSING if not candidate else ErrorCode.CONFIG_INVALID
+    raise ConfigError(
+        context=ErrorContext(
+            code=code,
+            message=f"Palantir enrollment address is not usable: {_ENROLLMENT_SETTING_ID}",
+            suggestion="Set the enrollment address to the https origin of your enrollment in /connect",
+        ),
+    )
 
 
 def _llm_config(settings: Settings, plan: ExecutionPlan) -> LlmConfig:
     snapshot = plan.settings
+    if snapshot.llm_profile_id == PALANTIR_ENGINE_ID:
+        return _palantir_translation_config(settings, snapshot)
     keys: dict[str, str] = {
         "anthropic": settings.anthropic_api_key,
         "gemini": settings.gemini_api_key,
@@ -444,15 +558,36 @@ def _llm_config(settings: Settings, plan: ExecutionPlan) -> LlmConfig:
         "openrouter": settings.openrouter_api_key,
         "openai_compatible": settings.openai_compatible_api_key,
     }
+    # Only the OpenAI-compatible provider is addressed by that base URL; every
+    # other engine, Palantir included, resolves its own endpoint.
+    compatible: bool = snapshot.llm_profile_id == "openai_compatible"
     return LlmConfig(
         engine_id=snapshot.llm_profile_id,
         provider_model_id=snapshot.llm_model_id,
         api_key=keys.get(snapshot.llm_profile_id, ""),
-        base_url=settings.openai_compatible_base_url or None,
+        base_url=(settings.openai_compatible_base_url or None) if compatible else None,
         temperature=snapshot.llm_temperature,
         top_p=snapshot.llm_top_p,
         max_output_tokens=snapshot.llm_max_output_tokens,
         max_retries=snapshot.translation_max_retries,
+    )
+
+
+def _palantir_translation_config(settings: Settings, snapshot: RunSettingsSnapshot) -> LlmConfig:
+    """Resolve the translation alias, reading the enrollment address it needs."""
+    preferences: UserSettings = load_user_settings()
+    config: LlmConfig = palantir_llm_config(
+        load_model_catalog(),
+        snapshot.llm_model_id,
+        enrollment_base_url=preferences.palantir_enrollment_base_url,
+        token=settings.palantir_token,
+        max_retries=snapshot.translation_max_retries,
+    )
+    return replace(
+        config,
+        temperature=snapshot.llm_temperature,
+        top_p=snapshot.llm_top_p,
+        max_output_tokens=snapshot.llm_max_output_tokens,
     )
 
 
@@ -491,6 +626,15 @@ def _audio_config(plan: ExecutionPlan) -> AudioConfig:
         voice_mix_offset_db=snapshot.voice_mix_offset_db,
         original_gain_db=snapshot.original_gain_db,
         timeline_policy=TimelinePolicy(snapshot.tts_timeline_policy),
+    )
+
+
+def _layout_config(plan: ExecutionPlan) -> LayoutConfig:
+    snapshot = plan.settings
+    return LayoutConfig(
+        max_chars_per_line=snapshot.subtitle_max_chars_per_line,
+        max_lines_per_event=snapshot.subtitle_max_lines_per_event,
+        chunk_chars=snapshot.translation_chunk_chars,
     )
 
 

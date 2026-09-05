@@ -1,9 +1,4 @@
-"""TranslationService - sync facade over one engine with a fallback chain.
-
-Deduplicates lines, delegates a whole file's unique set to the engine, and on a
-hard engine failure retranslates the whole file with the next available engine in
-the chain. Accepts an injected engine for tests / the LLM engine.
-"""
+"""TranslationService - sync facade over one engine with a fallback chain."""
 
 from __future__ import annotations
 
@@ -93,20 +88,7 @@ class TranslationService:
         cancel: TranslationCancellation | None = None,
         observer: TranslationObserver | None = None,
     ) -> FileTranslation:
-        """Translate one file's spoken + displayed streams with dedup + fallback.
-
-        Args:
-            spoken: Narrator lines carrying source timings and styles.
-            displayed: On-screen events carrying source-file order.
-            source_lang: Source language code (``auto`` to auto-detect).
-            target_lang: Target language code.
-            cancel: Cooperative cancellation event checked before each engine.
-            observer: Optional provider retry and fallback observer.
-
-        Returns:
-            A :class:`FileTranslation`; ``error`` is set only when the whole
-            fallback chain failed.
-        """
+        """Translate one file's spoken + displayed streams with dedup + fallback."""
         if not spoken and not displayed:
             return FileTranslation(target_lang=target_lang)
 

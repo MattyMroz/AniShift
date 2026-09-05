@@ -1,8 +1,4 @@
-"""Translation service public surface.
-
-Thin re-exports only; no heavy SDK imports at module load (engines lazy-load
-their clients through the registry).
-"""
+"""Translation service public surface."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 import pytest
 
-from anishift.services.translation.engines.deepl._lang_codes import to_deepl_code
+from anishift.services.translation.engines.deepl._lang_codes import to_deepl_code, to_deepl_source_code
 from anishift.services.translation.engines.deepl.config import DeeplConfig
 from anishift.services.translation.engines.deepl.service import DeeplService
 from anishift.services.translation.errors import TranslationAuthError
@@ -57,6 +57,32 @@ def test_logical_pl_reaches_deepl_sdk_as_uppercase() -> None:
     engine = DeeplService(DeeplConfig(api_key="key:fx"))
     engine._client = _CapturingClient()
     engine.translate_batch(["hi"], source_lang="auto", target_lang="pl")
+    assert captured["target"] == "PL"
+
+
+def test_to_deepl_source_code_never_carries_a_region() -> None:
+    assert to_deepl_source_code("auto") is None
+    assert to_deepl_source_code("") is None
+    assert to_deepl_source_code("en") == "EN"
+    assert to_deepl_source_code("pt") == "PT"
+    assert to_deepl_source_code("en-US") == "EN"
+    assert to_deepl_source_code("pl") == "PL"
+
+
+def test_english_source_reaches_deepl_without_a_region() -> None:
+    captured: dict[str, str | None] = {}
+
+    class _CapturingClient:
+        def translate_text(self, texts, *, target_lang, source_lang):  # type: ignore[no-untyped-def]
+            captured["source"] = source_lang
+            captured["target"] = target_lang
+            return [_Result(t) for t in texts]
+
+    engine = DeeplService(DeeplConfig(api_key="key:fx"))
+    engine._client = _CapturingClient()
+    engine.translate_batch(["hi"], source_lang="en", target_lang="pl")
+
+    assert captured["source"] == "EN"
     assert captured["target"] == "PL"
 
 

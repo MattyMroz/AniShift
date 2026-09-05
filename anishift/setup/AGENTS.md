@@ -20,7 +20,10 @@ Pobieranie, weryfikacja SHA256 i instalacja zewnętrznych binarek z manifestu `e
 ## Konwencje
 
 - Path-traversal sprawdzany dwukrotnie: przy ładowaniu manifestu (`_parse_member`) i po `resolve()` w `extract_members`. `manifest.py:159`, `installer.py:177`
-- Instalacja atomowa: download i ekstrakcja do `tempfile.TemporaryDirectory`, do `dest_root` wchodzi dopiero zweryfikowany plik przez `shutil.move`. `installer.py:240`
+- Download i ekstrakcja używają `TemporaryDirectory` na woluminie `dest_root`.
+  Dopiero po SHA256 pliki trafiają do celów przez atomowe `Path.replace`, bez
+  wcześniejszego unlink sprawnej binarki. Atomowość dotyczy każdego pliku,
+  nie transakcji obejmującej cały zasób. `installer.py::install_resource`
 - `wait(..., timeout=_WAIT_POLL_SECONDS)` w pętli zamiast blokującego `wait` — by Ctrl+C był responsywny na Windows. `installer.py:456`
 - `size_bytes`/`_clean_number` odrzucają `bool` osobnym `isinstance(..., bool)` (bool jest podtypem int). `manifest.py:181`
 - `sha256` z manifestu wymuszany na lowercase przy parsowaniu. `manifest.py:196`
@@ -31,5 +34,8 @@ Pobieranie, weryfikacja SHA256 i instalacja zewnętrznych binarek z manifestu `e
 - Doctor to jeden płaski, synchroniczny moduł (bez `doctor_checks/`, bez async) — checków jest ~6. `doctor.py:1`
 - `source` w manifeście to tagged union po `source.type`; dziś tylko `url`, nowe źródło dodaje literal + fetcher, nie nową strukturę. `manifest.py:5,35`
 - Dwa wejścia instalacyjne: `ensure_binary`/`ensure_resource` (leniwe, jedna binarka, rzuca) vs `run_setup` (bulk, równolegle, błędy jako wpisy raportu, nigdy nie crashuje). `installer.py:8`
-- `ensure_binary` jest jedynym leniwym wejściem dla kodu domenowego etapów 3 (extraction) i 6 (audio). `installer.py:369`
+- `ensure_binary` jest wspólnym leniwym wejściem przygotowania narzędzi. Produkcyjne
+  discovery używa `show_progress=False`, żeby instalator nie tworzył drugiego
+  renderera. Opcjonalne `progress` dostaje przyrost bajtów, a `cancel` jest callable
+  zwracającym bool; setup nie importuje warstwy application. `installer.py`
 - Jedyny format archiwum to `zip`, jedyny `kind` to `binary`, jedyny `SourceType` to `url` (Literal/frozenset). `manifest.py:32-47`

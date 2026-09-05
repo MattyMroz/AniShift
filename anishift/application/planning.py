@@ -17,12 +17,16 @@ from anishift.errors import PlanningError
 _MAX_LLM_TEMPERATURE: Final[float] = 2.0
 """Maximum provider-neutral LLM sampling temperature."""
 
+DEFAULT_AUDIO_TOLERANCE_US: Final[int] = 1_000_000
+"""Accepted duration difference between supplied audio and the selected video."""
+
 
 class TaskKind(StrEnum):
     """Operations that can appear in an AniShift execution graph."""
 
     EXTRACT_AUDIO = "extract_audio"
     EXTRACT_SUBTITLES = "extract_subtitles"
+    EXTRACT_TRACKS = "extract_tracks"
     NORMALIZE_SUBTITLES = "normalize_subtitles"
     TRANSLATE_SUBTITLES = "translate_subtitles"
     SPLIT_SUBTITLES = "split_subtitles"
@@ -132,7 +136,6 @@ class RunSettingsSnapshot:
     """Validated non-secret settings consumed by planning and scheduling."""
 
     translation_profile_id: str
-    translation_fallback_chain: tuple[str, ...]
     translation_max_retries: int
     translation_concurrency: int
     llm_profile_id: str
@@ -145,7 +148,7 @@ class RunSettingsSnapshot:
     processing_order_policy: ProcessingOrderPolicy
     tts_request_concurrency: int = 1
     audio_output_profile: str = "eac3"
-    audio_duration_tolerance_us: int = 1_000_000
+    audio_duration_tolerance_us: int = DEFAULT_AUDIO_TOLERANCE_US
     subtitle_language_priority: tuple[str, ...] = ("eng",)
     audio_language_priority: tuple[str, ...] = ("jpn",)
     translation_is_network: bool = True
@@ -154,16 +157,18 @@ class RunSettingsSnapshot:
     llm_is_paid: bool = True
     tts_is_network: bool = True
     tts_is_paid: bool = True
+    subtitle_max_chars_per_line: int = 42
+    subtitle_max_lines_per_event: int = 2
+    translation_chunk_chars: int = 750
     translation_batch_size: int = 0
     llm_model_id: str = "default"
     llm_temperature: float | None = None
     llm_top_p: float | None = None
     llm_max_output_tokens: int | None = None
-    llm_prompt_id: str = "anime_translation_v1"
-    llm_style_id: str = "natural_polish_v1"
-    llm_module_ids: tuple[str, ...] = ()
+    llm_translation_style: str = "neutral"
     tts_model_id: str = "default"
     tts_voice_id: str = "default"
+    tts_voice_label: str = "default"
     tts_native_rate: str | float | None = None
     tts_native_volume: str | float | None = None
     tts_native_pitch: str | float | None = None
@@ -194,13 +199,9 @@ def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
     if any(not profile_id.strip() for profile_id in profile_ids):
         msg = "Run setting profile IDs cannot be empty"
         raise ValueError(msg)
-    _require_unique(settings.translation_fallback_chain, "translation fallback profiles")
-    if settings.translation_profile_id in settings.translation_fallback_chain:
-        msg = "Primary translation profile cannot repeat in its fallback chain"
-        raise ValueError(msg)
     _require_range(settings.translation_max_retries, 0, 10, "translation retries")
     _require_range(settings.translation_concurrency, 1, 16, "translation concurrency")
-    _require_range(settings.llm_max_concurrency, 1, 4, "LLM concurrency")
+    _require_range(settings.llm_max_concurrency, 1, 16, "LLM concurrency")
     _require_range(settings.tts_max_retries, 0, 10, "TTS retries")
     _require_range(settings.tts_group_jobs, 1, 100, "TTS group jobs")
     _require_range(settings.tts_request_concurrency, 1, 100, "TTS request concurrency")
@@ -211,6 +212,9 @@ def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
     if settings.audio_duration_tolerance_us < 0:
         msg = "Audio duration tolerance cannot be negative"
         raise ValueError(msg)
+    _require_range(settings.subtitle_max_chars_per_line, 20, 120, "subtitle line length")
+    _require_range(settings.subtitle_max_lines_per_event, 1, 4, "subtitle line count")
+    _require_range(settings.translation_chunk_chars, 200, 4000, "translation chunk size")
     if settings.translation_batch_size < 0:
         msg = "Translation batch size cannot be negative"
         raise ValueError(msg)
@@ -219,15 +223,14 @@ def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
 def _validate_runtime_settings(settings: RunSettingsSnapshot) -> None:
     runtime_ids: tuple[str, ...] = (
         settings.llm_model_id,
-        settings.llm_prompt_id,
-        settings.llm_style_id,
+        settings.llm_translation_style,
         settings.tts_model_id,
         settings.tts_voice_id,
+        settings.tts_voice_label,
     )
     if any(not value.strip() for value in runtime_ids):
         msg = "Run setting runtime IDs cannot be empty"
         raise ValueError(msg)
-    _require_unique(settings.llm_module_ids, "LLM prompt module IDs")
     option_names: tuple[str, ...] = tuple(name for name, _ in settings.tts_engine_options)
     _require_unique(option_names, "TTS engine option names")
     if settings.llm_temperature is not None and not 0 <= settings.llm_temperature <= _MAX_LLM_TEMPERATURE:
@@ -312,13 +315,15 @@ class ExecutionPlan:
 
 
 def stable_topological_order(tasks: Sequence[PlanTask]) -> tuple[PlanTask, ...]:
-    """Return a deterministic topological order or raise for an invalid graph."""
+    """Return an input-stable topological order or raise for an invalid graph."""
     task_by_id: dict[str, PlanTask] = {}
-    for task in tasks:
+    order_by_id: dict[str, int] = {}
+    for index, task in enumerate(tasks):
         if task.task_id in task_by_id:
             msg = f"Duplicate task ID: {task.task_id}"
             raise PlanningError(msg)
         task_by_id[task.task_id] = task
+        order_by_id[task.task_id] = index
 
     indegree: dict[str, int] = dict.fromkeys(task_by_id, 0)
     dependants: dict[str, list[str]] = {task_id: [] for task_id in task_by_id}
@@ -330,16 +335,16 @@ def stable_topological_order(tasks: Sequence[PlanTask]) -> tuple[PlanTask, ...]:
             indegree[task.task_id] += 1
             dependants[dependency_id].append(task.task_id)
 
-    ready: list[str] = sorted(task_id for task_id, degree in indegree.items() if degree == 0)
+    ready: list[str] = [task_id for task_id, degree in indegree.items() if degree == 0]
     ordered: list[PlanTask] = []
     while ready:
         task_id: str = ready.pop(0)
         ordered.append(task_by_id[task_id])
-        for dependant_id in sorted(dependants[task_id]):
+        for dependant_id in sorted(dependants[task_id], key=order_by_id.__getitem__):
             indegree[dependant_id] -= 1
             if indegree[dependant_id] == 0:
                 ready.append(dependant_id)
-        ready.sort()
+        ready.sort(key=order_by_id.__getitem__)
 
     if len(ordered) != len(task_by_id):
         msg = "Execution plan contains a dependency cycle"
@@ -460,6 +465,10 @@ def _validate_task_parameter_names(kind: TaskKind, names: frozenset[str]) -> Non
         TaskKind.EXTRACT_SUBTITLES: (
             frozenset({"track_id", "target_format"}),
             frozenset({"track_id", "target_format"}),
+        ),
+        TaskKind.EXTRACT_TRACKS: (
+            frozenset({"audio_codec", "audio_track_id", "subtitle_format", "subtitle_track_id"}),
+            frozenset({"audio_codec", "audio_track_id", "subtitle_format", "subtitle_track_id"}),
         ),
         TaskKind.NORMALIZE_SUBTITLES: (frozenset({"output_format"}), frozenset({"output_format"})),
         TaskKind.TRANSLATE_SUBTITLES: (

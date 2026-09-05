@@ -1,20 +1,57 @@
 # LLM engine
 
-Silnik tłumaczenia przez wstrzyknięty `LlmCompleter` (provider-agnostic). Rejestrowany pod `engine_id = "llm"`.
+Silnik tłumaczenia przez wstrzyknięty `LlmCompleter` (provider-agnostic).
+Rejestrowany pod `engine_id = "llm"`.
 
 ## Pułapki
 
-- Świadomie NIE importuje `anishift.services.llm` — completer dostaje przez wstrzyknięcie (`__init__` wymaga go), realny podłącza dopiero etap 5. `service.py:1-8,53-61`
-- Konstruktor przyjmuje wyłącznie `LlmTranslateConfig`; zwykły `TranslationConfig` jest błędem zamiast cichego użycia ustawień domyślnych. Pipeline zawsze buduje jawny config LLM. `service.py`, `pipeline/llm_runtime.py`
-- `_parse_numbered` zwraca `None` (odrzuca CAŁĄ partię) przy jakimkolwiek zdublowanym, brakującym lub spoza zakresu indeksie — nie tylko przy złej liczbie linii. `service.py:40-45`
-- Porażka pojedynczej linii rzuca `TranslationEngineError`; źródło nigdy nie jest zwracane jako udane tłumaczenie. `service.py`
-- `TranslationContextLengthError`, output limit i błędny format uruchamiają stabilny podział na połowy; inne błędy transportu propagują bez shrink. `service.py`
+- Nie importuje `anishift.services.llm`. Konkretny completer podłącza wyłącznie
+  granica w `application/runtime.py`.
+- Przyjmuje tylko `LlmTranslateConfig`; zwykły `TranslationConfig` jest błędem.
+- Obsługuje wyłącznie wynikowy język polski (`target_lang == "pl"`). Język
+  źródłowy nie jest wysyłany do modelu.
+- Nie odzyskuje fragmentów odpowiedzi i nie traktuje tekstu źródłowego jako
+  udanego tłumaczenia.
+- Naruszenie kontraktu uruchamia naprawę zawężoną do numerów, ale nigdy podziału
+  partii. Podział na stabilne połowy dotyczy wyłącznie limitu kontekstu lub
+  wyjścia.
+- Porażka pojedynczej linii rzuca `TranslationEngineError`.
+- `max_batch_lines=None` (default) wysyła cały plik w jednym żądaniu. Wartość
+  dodatnia tnie partię; `runtime.py` podaje tu surową preferencję użytkownika, nie
+  default Google.
 
-## Konwencje
+## Kontrakt numerowanych linii
 
-- Protokół to numerowane linie `[N] text`, NIE JSON — parser trzyma tylko linie pasujące do `LINE_PATTERN`, resztę (intro/markdown/outro) ignoruje. `service.py:3-4`, `constants.py:1,17-18`
-- Drabina ma stałą kolejność: pełna partia → jedna naprawa formatu → stabilne połowienie → błąd pojedynczej linii. `service.py`
-- Engine łapie wyłącznie typed context-length error; pozostałe błędy completera propagują do fasady i schedulera. `service.py`
-- `close()` no-op — completer należy do composition root. `service.py:73-74`
-- `LINE_PATTERN` toleruje wiodące spacje i co najwyżej jedną po `]` (`\s?`); tekst grupy jest `.strip()`-owany. `constants.py:17`, `service.py:42`
-- `prompts/` składa task, style, moduły i obowiązkowy contract; dane runtime są escapowane i nie wchodzą do fingerprintu. Custom `.txt` pochodzą z `config/prompts/`. `prompts/`
+- `line_contract.py` jest JEDYNYM właścicielem formatu: wzorca, ucieczki,
+  serializacji, parsowania i klasyfikacji naruszeń. Prompty opisują ten sam
+  kontrakt słowami, ale niczego nie walidują.
+- Wejście jest osobnym `TextPart`: jedna linia `[N] tekst` na napis, gdzie numer
+  to indeks w żądaniu. Wyjście musi mieć dokładnie jedną linię `[N] tłumaczenie`
+  na każdy żądany numer, w tej samej kolejności.
+- Podział wiersza wewnątrz napisu jedzie jako `\n`; nieuciekniony przesunąłby
+  każdy następny numer. Odwracanie ucieczki jest JEDNOPRZEBIEGOWE (regex), bo
+  dwa kolejne `replace` psują napis z literalnym `\n`.
+- `parse_response` nie rzuca wyjątku dla naruszenia: zwraca zaufane wpisy ORAZ
+  jedno naruszenie z numerami do powtórzenia, bo pętla naprawy potrzebuje obu.
+- Linia niepasująca do wzorca unieważnia numer, który poprzedza — a gdy nie ma
+  otwartego numeru, całą partię. Nigdy nie jest cicho pomijana.
+- Numer spoza żądania unieważnia poprzedni numer; powtórzony i z pustym
+  tłumaczeniem unieważnia siebie; zła kolejność unieważnia całą partię.
+- Kolejność sprawdza się po POZYCJI w żądaniu, nie po wielkości numeru — inaczej
+  naprawa podzbioru (`[12]` przed `[7]` w kolejnym żądaniu) odrzucałaby poprawną
+  odpowiedź.
+- Puste linie i ogrodzenia bloku kodu są pomijane.
+- Diagnostyka retry jest po polsku i nie zawiera treści napisów ani surowej
+  odpowiedzi; powyżej 20 numerów podaje ich liczbę zamiast listy.
+
+## Prompty
+
+- Prompty są zasobami pakietu w `prompts/`: `system.md`, `translation.md`,
+  `retry.md` oraz dokładnie jeden wybrany plik `styles/*.md`.
+- `PromptLoader` używa `importlib.resources`, dlatego zasoby muszą działać także
+  z zainstalowanego wheel.
+- Nazwy trzech promptów bazowych są stałe. UI odkrywa style po nazwach
+  bezpośrednich plików Markdown; ustawienia przechowują tylko nazwę stylu.
+- Brakujący, pusty, nie-UTF-8 lub wadliwy zasób jest `TranslationConfigError`.
+  Nie dodawaj zapasowej treści promptu w stałych ani `config/prompts`.
+- `retry.md` musi zawierać dokładnie jeden token `{{validation_error}}`.

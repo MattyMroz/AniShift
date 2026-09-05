@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -16,6 +16,7 @@ from anishift.services.audio.types import AudioFormat, AudioRenderRequest, Timed
 class ConcurrentNormalizationRunner:
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._barrier: threading.Barrier = threading.Barrier(4, timeout=5.0)
         self.active = 0
         self.peak = 0
 
@@ -26,13 +27,14 @@ class ConcurrentNormalizationRunner:
         operation: str,
         timeout_s: float,
         cancel: threading.Event | None = None,
+        on_stdout_line: Callable[[str], None] | None = None,
     ) -> CommandResult:
-        del operation, timeout_s, cancel
+        del operation, timeout_s, cancel, on_stdout_line
         with self._lock:
             self.active += 1
             self.peak = max(self.peak, self.active)
         try:
-            time.sleep(0.05)
+            self._barrier.wait()
             Path(command[-1]).write_bytes(b"\x00" * 480)
         finally:
             with self._lock:

@@ -27,6 +27,7 @@ LlmEngineId = Literal[
     "openai",
     "openai_compatible",
     "openrouter",
+    "palantir",
 ]
 """Stable registry identifiers for supported LLM providers."""
 
@@ -67,6 +68,11 @@ _REGISTRY: Final[dict[LlmEngineId, _RegistryEntry]] = {
         "OpenrouterService",
         "anishift.services.llm.engines.openrouter.constants",
     ),
+    "palantir": (
+        "anishift.services.llm.engines.palantir.service",
+        "PalantirService",
+        None,
+    ),
 }
 """Provider module, service class, and optional suggestions module by engine id."""
 
@@ -77,17 +83,7 @@ def available_engine_ids() -> tuple[LlmEngineId, ...]:
 
 
 def create_engine(config: LlmConfig) -> LlmEngine:
-    """Create only the provider engine selected by the caller.
-
-    Args:
-        config: Validated provider configuration.
-
-    Returns:
-        The selected provider engine.
-
-    Raises:
-        LlmConfigError: The engine id is not registered.
-    """
+    """Create only the provider engine selected by the caller."""
     module_path, class_name, _ = _get_registry_entry(config.engine_id)
     module = importlib.import_module(module_path)
     factory = cast("_EngineFactory", getattr(module, class_name))
@@ -96,17 +92,7 @@ def create_engine(config: LlmConfig) -> LlmEngine:
 
 
 def suggested_model_ids(engine_id: str) -> tuple[str, ...]:
-    """Return lightweight UI suggestions without importing a provider SDK.
-
-    Args:
-        engine_id: Registered provider id.
-
-    Returns:
-        Suggested provider model ids. An empty tuple means custom input only.
-
-    Raises:
-        LlmConfigError: The engine id is not registered.
-    """
+    """Return lightweight UI suggestions without importing a provider SDK."""
     _, _, constants_path = _get_registry_entry(engine_id)
     if constants_path is None:
         return ()

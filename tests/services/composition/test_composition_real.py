@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -8,12 +9,16 @@ import pytest
 from anishift.platform.binaries import Binary, resolve_binary
 from anishift.services.composition.commands import StreamingRunner
 from anishift.services.composition.config import CompositionConfig
-from anishift.services.composition.probe import validate_merged
+from anishift.services.composition.probe import source_duration_us, validate_merged
 from anishift.services.composition.service import CompositionService
 from anishift.services.composition.types import (
     AttachedSubtitle,
     CompositionPlan,
+    CompositionResult,
     CompositionStatus,
+    ContainerCompositionRequest,
+    ContainerCompositionResult,
+    ContainerTarget,
     OutputVariant,
     SubtitleRole,
 )
@@ -38,7 +43,7 @@ Dialogue: 0,0:00:00.20,0:00:01.50,Default,,0,0,0,,Zażółć gęślą jaźń
 """
 
 
-def _sample_video(path: Path) -> None:
+def _sample_video(path: Path, *, duration_s: int = 2) -> None:
     subprocess.run(  # noqa: S603
         [
             str(FFMPEG),
@@ -46,11 +51,11 @@ def _sample_video(path: Path) -> None:
             "-f",
             "lavfi",
             "-i",
-            "testsrc=size=320x240:rate=10:duration=2",
+            f"testsrc=size=320x240:rate=10:duration={duration_s}",
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=440:duration=2",
+            f"sine=frequency=440:duration={duration_s}",
             "-c:v",
             "libx264",
             "-preset",
@@ -120,8 +125,9 @@ def test_merge_appends_the_lector_after_the_original_audio(tmp_path: Path) -> No
 
 
 @pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled tools are unavailable")
-def test_burn_handles_difficult_path_characters(tmp_path: Path) -> None:
-    media_dir = tmp_path / "dir with spaces [1080p]"
+@pytest.mark.parametrize("container_request", [False, True])
+def test_burn_handles_difficult_path_characters(tmp_path: Path, container_request: bool) -> None:
+    media_dir = tmp_path / "Heroine's dir with spaces [1080p]"
     media_dir.mkdir()
     source = media_dir / "Zażółć - 04.mkv"
     _sample_video(source)
@@ -131,13 +137,180 @@ def test_burn_handles_difficult_path_characters(tmp_path: Path) -> None:
         source_path=source,
         variant=OutputVariant.BURN,
         burn_subtitle=subtitle,
-        destination_dir=tmp_path / "output",
-        temporary_root=tmp_path / "tmp",
+        destination_dir=media_dir / "output",
+        temporary_root=media_dir / "tmp",
     )
     service = CompositionService(CompositionConfig(), runner=StreamingRunner())
 
-    result = service.compose(plan)
+    result: CompositionResult | ContainerCompositionResult
+    if container_request:
+        result = service.compose_container(
+            ContainerCompositionRequest(
+                source_video=source,
+                destination=media_dir / "output" / "Episode.pl.mp4",
+                target=ContainerTarget.MP4,
+                burn_subtitle=subtitle,
+                attached_subtitles=(),
+                narration_audio=None,
+                keep_original_audio=True,
+            )
+        )
+    else:
+        result = service.compose(plan)
 
-    assert result.status is CompositionStatus.COMPLETED
     assert result.output_path is not None
     assert result.output_path.stat().st_size > 0
+
+
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled tools are unavailable")
+@pytest.mark.parametrize("container_request", [False, True])
+def test_mp4_preserves_narration_beyond_video_duration(tmp_path: Path, container_request: bool) -> None:
+    source: Path = tmp_path / "Episode.mp4"
+    _sample_video(source, duration_s=1)
+    narration: Path = tmp_path / "Narration.m4a"
+    subprocess.run(  # noqa: S603
+        [str(FFMPEG), "-y", "-f", "lavfi", "-i", "sine=frequency=220:duration=4", "-c:a", "aac", str(narration)],
+        check=True,
+        capture_output=True,
+    )
+    service: CompositionService = CompositionService(CompositionConfig())
+    result: CompositionResult | ContainerCompositionResult
+    if container_request:
+        result = service.compose_container(
+            ContainerCompositionRequest(
+                source_video=source,
+                destination=tmp_path / "Episode.pl.mp4",
+                target=ContainerTarget.MP4,
+                burn_subtitle=None,
+                attached_subtitles=(),
+                narration_audio=narration,
+                keep_original_audio=False,
+            )
+        )
+    else:
+        result = service.compose(
+            CompositionPlan(
+                source_path=source,
+                variant=OutputVariant.BURN,
+                narration_audio=narration,
+                destination_dir=tmp_path,
+            )
+        )
+
+    assert result.output_path is not None
+    assert source_duration_us(result.output_path, ffprobe=service.ffprobe) == pytest.approx(4_000_000, abs=100_000)
+
+
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled tools are unavailable")
+def test_mp4_duration_excludes_original_audio_when_dropped(tmp_path: Path) -> None:
+    source: Path = tmp_path / "Episode.mp4"
+    subprocess.run(  # noqa: S603
+        [
+            str(FFMPEG),
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=320x240:rate=10:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=220:duration=4",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "aac",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    service: CompositionService = CompositionService(CompositionConfig())
+
+    result: ContainerCompositionResult = service.compose_container(
+        ContainerCompositionRequest(
+            source_video=source,
+            destination=tmp_path / "Episode.pl.mp4",
+            target=ContainerTarget.MP4,
+            burn_subtitle=None,
+            attached_subtitles=(),
+            narration_audio=None,
+            keep_original_audio=False,
+        )
+    )
+
+    assert source_duration_us(result.output_path, ffprobe=service.ffprobe) == pytest.approx(1_000_000, abs=100_000)
+
+
+@pytest.mark.skipif(FFMPEG is None or MKVMERGE is None, reason="bundled tools are unavailable")
+def test_real_font_attachment_survives_merge_without_false_missing_warning(tmp_path: Path) -> None:
+    font: Path = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "segoeui.ttf"
+    if not font.is_file():
+        pytest.skip("The locally installed Segoe UI font is unavailable")
+    video: Path = tmp_path / "video.mkv"
+    _sample_video(video, duration_s=1)
+    source: Path = tmp_path / "Episode.mkv"
+    subprocess.run(  # noqa: S603
+        [
+            str(FFMPEG),
+            "-y",
+            "-i",
+            str(video),
+            "-c",
+            "copy",
+            "-attach",
+            str(font),
+            "-metadata:s:t:0",
+            "mimetype=application/x-truetype-font",
+            "-metadata:s:t:0",
+            "filename=segoeui.ttf",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=15.0,
+    )
+    source_bytes: bytes = source.read_bytes()
+    subtitle: Path = tmp_path / "Episode.pl.ass"
+    subtitle.write_text(_ASS.replace("Arial", "Segoe UI"), encoding="utf-8")
+    service: CompositionService = CompositionService(CompositionConfig())
+
+    result: ContainerCompositionResult = service.compose_container(
+        ContainerCompositionRequest(
+            source_video=source,
+            destination=tmp_path / "Episode.pl.mkv",
+            target=ContainerTarget.MKV,
+            burn_subtitle=None,
+            attached_subtitles=(AttachedSubtitle(subtitle, SubtitleRole.FULL, "pol", "Napisy PL"),),
+            narration_audio=None,
+            keep_original_audio=True,
+        )
+    )
+
+    assert identify(result.output_path).attachments == ("segoeui.ttf",)
+    extracted_font: Path = tmp_path / "extracted-font.ttf"
+    subprocess.run(  # noqa: S603
+        [
+            str(FFMPEG),
+            "-y",
+            "-dump_attachment:t:0",
+            str(extracted_font),
+            "-i",
+            str(result.output_path),
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "0",
+            "-f",
+            "null",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+        timeout=15.0,
+    )
+    assert extracted_font.read_bytes() == font.read_bytes()
+    assert source.read_bytes() == source_bytes
+    assert result.warnings == ("font embedding not verified: Segoe UI",)

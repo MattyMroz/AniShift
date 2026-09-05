@@ -12,6 +12,9 @@ Testy pytest. Konwencje testowe całego drzewa; komenda bramki jakości i marker
 
 ## Konwencje
 
+- Zakaz opisowej prozy obejmuje testy, wszystkie pomocnicze moduły Python w ich
+  katalogach oraz `conftest.py`. Hook odrzuca także samodzielne stringi pod stałymi;
+  dopuszcza dyrektywy `# noqa`, `# type:` i `# pragma`. Opis scenariusza należy do nazwy testu.
 - Testy `network` domyślnie SKIPowane; uruchamiają się tylko z `-m network` (logika w `pytest_collection_modifyitems`, nie w addopts). `conftest.py:26`
 - Testy zależne od datasetu spoza repo gate'ują się przez `skipif(not PATH.is_file())` / `pytest.skip()` — brak pliku = zielono, nie czerwono. `services/extraction/test_regression_tracks.py:12`
 - Dataset selekcji ścieżek (`TRACKS_DATASET`) i korpus ASS (`MM_AVH_TEMP`) leżą POZA repo, w siostrzanym `../mm_avh_working_space/temp/`. `conftest.py:19`
@@ -23,7 +26,7 @@ Testy pytest. Konwencje testowe całego drzewa; komenda bramki jakości i marker
 - `testpaths` obejmuje nie tylko `tests/`, ale też `anishift/utils/{logger,rich_console,timer}/tests` — czyste `uv run pytest tests/` je pomija. `pyproject.toml:120`
 - Testy biegną równolegle (xdist `-n auto --dist=worksteal`) — muszą być bezstanowe/niezależne od kolejności. `pyproject.toml:141`
 - `--strict-markers` + `--strict-config`: niezadeklarowany marker = błąd; wszystkie markery muszą być w `[tool.pytest.ini_options].markers`. `pyproject.toml:138`
-- Zadeklarowanych 6 markerów (`unit`/`integration`/`e2e`/`network`/`slow`/`smoke`), ale w kodzie realnie używany tylko `network`. `pyproject.toml:129`
+- Zadeklarowanych 6 markerów: `unit`/`integration`/`e2e`/`network`/`slow`/`smoke`. `integration` obejmuje m.in. recovery w świeżym interpreterze; nie wyłącza testu domyślnie. `pyproject.toml`
 
 ## Dane testowe
 

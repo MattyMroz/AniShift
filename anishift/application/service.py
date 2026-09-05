@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import os
+import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from secrets import token_hex
-from typing import Protocol
+from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application.cancellation import CancellationToken, EventCancellationToken, NeverCancelledToken
-from anishift.application.discovery import discover_groups
+from anishift.application.discovery import DiscoveryResult, discover_groups
 from anishift.application.events import RunEventSink
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
 from anishift.application.intents import (
@@ -25,27 +29,99 @@ from anishift.application.intents import (
 )
 from anishift.application.planner import plan_auto as build_auto_plan
 from anishift.application.planner import plan_manual as build_manual_plan
-from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
+from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot, TaskKind
 from anishift.application.results import RunResult
 from anishift.application.scheduler import GraphScheduler, ResourceLimits
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.sessions import RunSession
-from anishift.config.field_catalog import SettingCatalogContext, SettingSpec, setting_catalog
+from anishift.config.env_file import env_path, update_env_value
+from anishift.config.field_access import assign_setting_value, setting_is_active, setting_is_persisted
+from anishift.config.field_catalog import SettingCatalogContext, SettingSpec, SettingValue, setting_catalog
+from anishift.config.model_catalog import ModelCatalog, ModelCatalogError, load_model_catalog
 from anishift.config.presets import AutoPresetFile, load_presets, save_presets
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings, save_user_settings
 from anishift.config.workspace import cleanup_orphaned_temp, run_temp_dir
-from anishift.errors import ErrorCode, ErrorContext, ExecutionError, PlanningError, RunConflictError
-from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
+from anishift.errors import (
+    AniShiftError,
+    ConfigError,
+    ErrorCode,
+    ErrorContext,
+    ExecutionError,
+    PlanningError,
+    RunConflictError,
+)
+from anishift.services.llm.engines import (
+    available_engine_ids as available_llm_engine_ids,
+)
+from anishift.services.llm.engines import (
+    suggested_model_ids,
+)
+from anishift.services.llm.palantir_token import PALANTIR_TOKEN_COMPAT_ENV_VAR
 from anishift.services.translation.engines import available_engine_ids as available_translation_engine_ids
 from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
 from anishift.setup.doctor import CheckResult, run_doctor
 from anishift.setup.installer import ResourceResult, run_setup
+from anishift.utils.logger import get_logger
 
-__all__ = ["AppService", "AutoPresetDraft", "EngineAvailability", "ExecutionHandlerFactory", "SettingsDraft"]
+if TYPE_CHECKING:
+    from anishift.services.llm import LlmConfig
+
+__all__ = [
+    "AppService",
+    "AutoPresetDraft",
+    "EngineAvailability",
+    "EnvironmentSettingStatus",
+    "ExecutionHandlerFactory",
+    "ModelAvailability",
+    "ModelProbeResult",
+    "ModelProber",
+    "SettingsDraft",
+    "TranslationModelOption",
+]
+
+logger = get_logger(__name__)
 
 type SettingsDraft = UserSettings
 """Detached mutable settings copy edited by a frontend before explicit save."""
+
+type ModelProber = Callable[[LlmConfig], None]
+"""Connection test sending at most one minimal request, raising on failure."""
+
+type WorkspaceFingerprint = tuple[tuple[str, int, int], ...]
+"""Path, size and modification time of every discovered file in scan order."""
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+_PALANTIR_ENGINE_ID: Final[str] = "palantir"
+"""LLM engine whose readiness needs an enrollment address and a catalog alias."""
+
+_EXTRACTION_IO_HEADROOM: Final[int] = 2
+"""Legacy number of extraction workers added above the CPU-count square root."""
+
+_DISCOVERY_LOCK_POLL_S: Final[float] = 0.1
+"""Maximum cancellation delay while another discovery prepares media tools."""
+
+_TTS_GROUP_JOBS: Final[int] = 1
+"""Legacy file-level limit keeping one episode in synthesis at a time."""
+
+
+class ModelAvailability(StrEnum):
+    """Session-only availability vocabulary of one catalog model."""
+
+    UNVERIFIED = "unverified"
+    VERIFIED = "verified"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class ModelProbeResult:
+    """Outcome of one explicit connection test, owned by the session alone."""
+
+    alias: str
+    availability: ModelAvailability
+    checked_at: datetime
+    error_class: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +159,25 @@ class EngineAvailability:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class EnvironmentSettingStatus:
+    """Safe configuration status for one environment-backed setting."""
+
+    setting_id: str
+    is_configured: bool
+    is_system_override: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TranslationModelOption:
+    """One configured-provider model that an interface may select."""
+
+    provider_id: str
+    model_id: str
+    label: str
+    group_id: str
+
+
 class ExecutionHandlerFactory(Protocol):
     """Build run-scoped handlers after the immutable plan is accepted."""
 
@@ -112,6 +207,10 @@ class AppService:
         settings_saver: Callable[[UserSettings], None] = save_user_settings,
         doctor_runner: Callable[[Settings | None], Sequence[CheckResult]] = run_doctor,
         setup_runner: Callable[..., Sequence[ResourceResult]] = run_setup,
+        catalog_loader: Callable[[], ModelCatalog] = load_model_catalog,
+        model_prober: ModelProber | None = None,
+        env_file: Path | None = None,
+        prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = None,
     ) -> None:
         self._workspace_root: Path = workspace_root
         self._settings: Settings = settings
@@ -123,20 +222,43 @@ class AppService:
         self._settings_saver: Callable[[UserSettings], None] = settings_saver
         self._doctor_runner: Callable[[Settings | None], Sequence[CheckResult]] = doctor_runner
         self._setup_runner: Callable[..., Sequence[ResourceResult]] = setup_runner
+        self._catalog_loader: Callable[[], ModelCatalog] = catalog_loader
+        self._model_prober: ModelProber | None = model_prober
+        self._env_file: Path = env_file if env_file is not None else env_path()
         self._workspace: InspectedWorkspace | None = None
+        self._workspace_fingerprint: WorkspaceFingerprint | None = None
         self._active_run_id: str | None = None
         self._active_cancel: EventCancellationToken | None = None
         self._run_lock: threading.Lock = threading.Lock()
+        self._discover_lock: threading.Lock = threading.Lock()
+        self._prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = prepare_workspace
+
+    @property
+    def workspace_root(self) -> Path:
+        """The directory every discovered group and planned product lives under."""
+        return self._workspace_root
 
     def discover(self, *, cancel: CancellationToken | None = None) -> InspectedWorkspace:
-        """Discover and fully inspect the current workspace without starting work."""
+        """Inspect the workspace once, reusing the last inspection of unchanged files."""
         token: CancellationToken = cancel or NeverCancelledToken()
-        inspected: InspectedWorkspace = self._inspector.inspect(
-            discover_groups(self._workspace_root),
-            cancel=token,
-        )
-        _commit_if_active(token, lambda: self._cache_workspace(inspected))
-        return inspected
+        while not self._discover_lock.acquire(timeout=_DISCOVERY_LOCK_POLL_S):
+            token.raise_if_cancelled()
+        try:
+            token.raise_if_cancelled()
+            discovery: DiscoveryResult = discover_groups(self._workspace_root)
+            if self._prepare_workspace is not None:
+                self._prepare_workspace(discovery, token)
+            token.raise_if_cancelled()
+            fingerprint: WorkspaceFingerprint = _workspace_fingerprint(discovery)
+            unchanged: InspectedWorkspace | None = self._unchanged_workspace(fingerprint)
+            if unchanged is not None:
+                token.raise_if_cancelled()
+                return unchanged
+            inspected: InspectedWorkspace = self._inspector.inspect(discovery, cancel=token)
+            _commit_if_active(token, lambda: self._cache_workspace(inspected, fingerprint))
+            return inspected
+        finally:
+            self._discover_lock.release()
 
     def register_external_subtitle(
         self,
@@ -181,6 +303,10 @@ class AppService:
     def list_presets(self) -> tuple[AutoPreset, ...]:
         """Return all stored automatic presets without mutating persistence."""
         return self._preset_loader().presets
+
+    def default_preset_id(self) -> str:
+        """Return the stable ID of the preset a run applies when none is named."""
+        return self._preset_loader().default_preset_id
 
     def get_preset(self, preset_id: str) -> AutoPreset:
         """Return one stored preset by stable ID."""
@@ -243,7 +369,10 @@ class AppService:
                 handler: TaskHandler = self._handler_factory(run_root, plan, source_groups)
                 scheduler = GraphScheduler(
                     handler,
-                    limits=ResourceLimits.from_settings(plan.settings),
+                    limits=ResourceLimits.from_settings(
+                        plan.settings,
+                        extraction=_extraction_worker_count(plan),
+                    ),
                     run_id=run_id,
                     session=session,
                 )
@@ -270,6 +399,11 @@ class AppService:
         preferences: UserSettings = deepcopy(draft) if draft is not None else self.settings_snapshot()
         return setting_catalog(SettingCatalogContext.from_user_settings(preferences))
 
+    def current_settings(self) -> Settings:
+        """Return the environment settings that the next run must use."""
+        with self._run_lock:
+            return self._settings
+
     def environment_statuses(self) -> Mapping[str, bool]:
         """Return environment-only availability without exposing configured values."""
         return {
@@ -278,7 +412,19 @@ class AppService:
             if spec.is_secret or not hasattr(self._user_settings, spec.setting_id)
         }
 
-    def engine_availability(self) -> tuple[EngineAvailability, ...]:
+    def environment_setting_statuses(self) -> tuple[EnvironmentSettingStatus, ...]:
+        """Return safe source-aware statuses for environment-backed settings."""
+        statuses: Mapping[str, bool] = self.environment_statuses()
+        return tuple(
+            EnvironmentSettingStatus(
+                setting_id=setting_id,
+                is_configured=is_configured,
+                is_system_override=_has_system_override(setting_id),
+            )
+            for setting_id, is_configured in statuses.items()
+        )
+
+    def engine_availability(self, *, require_selected_model: bool = True) -> tuple[EngineAvailability, ...]:
         """Describe configured engine readiness without creating provider clients."""
         secret_by_engine: tuple[tuple[str, str, str], ...] = (
             ("translation", "deepl", "deepl_api_key"),
@@ -287,8 +433,8 @@ class AppService:
             ("llm", "deepseek", "deepseek_api_key"),
             ("llm", "gemini", "gemini_api_key"),
             ("llm", "openai", "openai_api_key"),
-            ("llm", "openai_compatible", "openai_compatible_api_key"),
             ("llm", "openrouter", "openrouter_api_key"),
+            ("llm", "palantir", "palantir_token"),
         )
         configured: dict[tuple[str, str], str] = {
             (domain, engine_id): secret_id for domain, engine_id, secret_id in secret_by_engine
@@ -303,8 +449,75 @@ class AppService:
             secret_id: str | None = configured.get((domain, engine_id))
             available: bool = secret_id is None or bool(getattr(self._settings, secret_id, ""))
             reason: str = "ready" if available else f"missing {secret_id}; configure environment or open Tools"
+            if domain == "llm" and engine_id == "openai_compatible":
+                available = bool(self._settings.openai_compatible_base_url.strip())
+                reason = (
+                    "ready" if available else "missing openai_compatible_base_url; configure environment or open Tools"
+                )
+            if available and domain == "llm" and engine_id == _PALANTIR_ENGINE_ID:
+                available, reason = self._palantir_readiness(require_selected_model=require_selected_model)
             statuses.append(EngineAvailability(domain, engine_id, available, reason))
         return tuple(statuses)
+
+    def translation_model_options(self) -> tuple[TranslationModelOption, ...]:
+        """Return exact model choices grouped by configured LLM provider."""
+        available: frozenset[str] = frozenset(
+            status.engine_id
+            for status in self.engine_availability(require_selected_model=False)
+            if status.domain == "llm" and status.is_available
+        )
+        preferences: UserSettings = self.settings_snapshot()
+        options: list[TranslationModelOption] = []
+        for provider_id in available_llm_engine_ids():
+            if provider_id not in available or provider_id == _PALANTIR_ENGINE_ID:
+                continue
+            model_ids: tuple[str, ...] = suggested_model_ids(provider_id)
+            if preferences.llm_provider == provider_id:
+                current: str = preferences.llm_provider_model_id.strip()
+                if self._valid_custom_model_id(current) and current not in model_ids:
+                    model_ids = (*model_ids, current)
+            options.extend(
+                TranslationModelOption(
+                    provider_id=provider_id,
+                    model_id=model_id,
+                    label=model_id,
+                    group_id=provider_id,
+                )
+                for model_id in model_ids
+            )
+        if _PALANTIR_ENGINE_ID in available:
+            options.extend(self._palantir_model_options())
+        return tuple(options)
+
+    def model_catalog(self) -> ModelCatalog:
+        """Return the validated local catalog of Palantir providers and models."""
+        return self._catalog_loader()
+
+    def probe_model(self, alias: str) -> ModelProbeResult:
+        """Run one explicit connection test for one catalog alias."""
+        try:
+            config: LlmConfig = self._palantir_config(alias)
+            self._prober()(config)
+        except AniShiftError as error:
+            error_class: str = type(error).__name__
+            logger.warning(
+                "Model probe failed",
+                alias=alias,
+                error_class=error_class,
+                error_code=error.context.code.value,
+            )
+            return ModelProbeResult(
+                alias=alias,
+                availability=ModelAvailability.ERROR,
+                checked_at=datetime.now(UTC),
+                error_class=error_class,
+            )
+        logger.info("Model probe verified", alias=alias)
+        return ModelProbeResult(
+            alias=alias,
+            availability=ModelAvailability.VERIFIED,
+            checked_at=datetime.now(UTC),
+        )
 
     def settings_snapshot(self) -> SettingsDraft:
         """Return a detached mutable copy that cannot affect an active plan."""
@@ -320,6 +533,90 @@ class AppService:
             self._user_settings = deepcopy(validated)
         return deepcopy(validated)
 
+    def update_setting(self, setting_id: str, value: SettingValue) -> UserSettings:
+        """Change one active preference as a single all-or-nothing transaction."""
+        candidate: UserSettings = self.settings_snapshot()
+        spec: SettingSpec = self._editable_spec(setting_id, candidate)
+        spec.validate_value(value)
+        assign_setting_value(candidate, spec, value)
+        candidate.__post_init__()
+        self._settings_saver(candidate)
+        with self._run_lock:
+            self._user_settings = deepcopy(candidate)
+        return deepcopy(candidate)
+
+    def select_translation_model(self, provider_id: str, model_id: str) -> UserSettings:
+        """Select a configured provider and a catalog alias or explicit model ID atomically."""
+        model_id = model_id.strip()
+        available: frozenset[str] = frozenset(
+            status.engine_id
+            for status in self.engine_availability(require_selected_model=False)
+            if status.domain == "llm" and status.is_available
+        )
+        allowed: bool = provider_id in available and self._valid_custom_model_id(model_id)
+        if provider_id == _PALANTIR_ENGINE_ID:
+            allowed = provider_id in available and model_id in {
+                option.model_id for option in self._palantir_model_options()
+            }
+        if not allowed:
+            context = ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message="Unavailable translation provider or invalid model identifier",
+                suggestion="Configure the provider and select a listed model or enter its model ID",
+            )
+            raise ConfigError(context=context)
+        candidate: UserSettings = self.settings_snapshot()
+        if (candidate.llm_provider, candidate.llm_provider_model_id) == (provider_id, model_id):
+            return candidate
+        candidate.llm_provider = provider_id
+        candidate.llm_provider_model_id = model_id
+        candidate.__post_init__()
+        self._settings_saver(candidate)
+        with self._run_lock:
+            self._user_settings = deepcopy(candidate)
+        return deepcopy(candidate)
+
+    def _valid_custom_model_id(self, model_id: str) -> bool:
+        """Accept provider identifiers without paths, control characters, or configured secrets."""
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*(?:/[A-Za-z0-9][A-Za-z0-9._:-]*)*", model_id) is None:
+            return False
+        if re.match(r"[A-Za-z]:", model_id) or any(part in {".", ".."} for part in model_id.split("/")):
+            return False
+        settings: Settings = self.current_settings()
+        return not any(
+            model_id == getattr(settings, name)
+            for name in Settings.model_fields
+            if name.endswith("_api_key") or name.startswith("palantir_token")
+        )
+
+    def reset_settings(self) -> UserSettings:
+        """Restore persisted panel preferences without touching secrets or presets."""
+        defaults: UserSettings = UserSettings()
+        defaults.palantir_enrollment_base_url = self.settings_snapshot().palantir_enrollment_base_url
+        self._settings_saver(defaults)
+        with self._run_lock:
+            self._user_settings = deepcopy(defaults)
+        return deepcopy(defaults)
+
+    def update_secret(self, setting_id: str, value: str | None) -> None:
+        """Store, clear, or remove one environment secret in the ``.env`` file."""
+        spec: SettingSpec = self._secret_spec(setting_id)
+        update_env_value(_env_variable(spec.setting_id), value, path=self._env_file)
+        self._reload_settings()
+
+    def update_environment_setting(self, setting_id: str, value: str | None) -> None:
+        """Persist one non-secret environment-backed setting atomically."""
+        spec: SettingSpec = self._environment_setting_spec(setting_id)
+        if value is not None:
+            spec.validate_value(value)
+        update_env_value(_env_variable(spec.setting_id), value, path=self._env_file)
+        self._reload_settings()
+
+    def reload_environment(self) -> Mapping[str, bool]:
+        """Re-read the environment file and report which env settings are configured."""
+        self._reload_settings()
+        return self.environment_statuses()
+
     def doctor(self) -> tuple[CheckResult, ...]:
         """Return every technical diagnostic through the shared setup API."""
         return tuple(self._doctor_runner(self._settings))
@@ -327,6 +624,67 @@ class AppService:
     def setup(self, *, force: bool = False) -> tuple[ResourceResult, ...]:
         """Install configured external resources without exposing setup internals."""
         return tuple(self._setup_runner(force=force, show_progress=False))
+
+    def _editable_spec(self, setting_id: str, candidate: UserSettings) -> SettingSpec:
+        spec: SettingSpec | None = next(
+            (item for item in self.settings_catalog(candidate) if item.setting_id == setting_id),
+            None,
+        )
+        if spec is None or spec.is_secret or not setting_is_persisted(spec):
+            unknown = ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message=f"Unknown editable setting: {setting_id}",
+                suggestion="Pick one of the settings the catalog reports for the current selections",
+            )
+            raise ConfigError(context=unknown)
+        if not setting_is_active(spec, candidate):
+            inactive = ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message=f"Setting is not active for the current selections: {setting_id}",
+                suggestion="Change the engine or provider this setting depends on first",
+            )
+            raise ConfigError(context=inactive)
+        return spec
+
+    def _secret_spec(self, setting_id: str) -> SettingSpec:
+        spec: SettingSpec | None = next(
+            (item for item in self.settings_catalog() if item.setting_id == setting_id and item.is_secret),
+            None,
+        )
+        if spec is None or setting_id not in Settings.model_fields:
+            unknown = ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message=f"Unknown environment secret: {setting_id}",
+                suggestion="Pick one of the secret settings the catalog reports",
+            )
+            raise ConfigError(context=unknown)
+        return spec
+
+    def _environment_setting_spec(self, setting_id: str) -> SettingSpec:
+        spec: SettingSpec | None = next(
+            (
+                item
+                for item in self.settings_catalog()
+                if item.setting_id == setting_id
+                and not item.is_secret
+                and not setting_is_persisted(item)
+                and item.setting_id in Settings.model_fields
+            ),
+            None,
+        )
+        if spec is None:
+            context = ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message=f"Unknown environment setting: {setting_id}",
+                suggestion="Pick one of the environment settings reported by the catalog",
+            )
+            raise ConfigError(context=context)
+        return spec
+
+    def _reload_settings(self) -> None:
+        reloaded: Settings = Settings(_env_file=self._env_file)
+        with self._run_lock:
+            self._settings = reloaded
 
     def _selected_groups(self, group_ids: Sequence[str]) -> tuple[InspectedSourceGroup, ...]:
         requested: tuple[str, ...] = tuple(group_ids)
@@ -360,14 +718,77 @@ class AppService:
         with self._run_lock:
             self._workspace = replace(workspace, groups=groups)
 
-    def _cache_workspace(self, inspected: InspectedWorkspace) -> None:
+    def _cache_workspace(self, inspected: InspectedWorkspace, fingerprint: WorkspaceFingerprint) -> None:
         with self._run_lock:
             self._workspace = inspected
+            self._workspace_fingerprint = fingerprint
+
+    def _unchanged_workspace(self, fingerprint: WorkspaceFingerprint) -> InspectedWorkspace | None:
+        with self._run_lock:
+            if self._workspace_fingerprint != fingerprint:
+                return None
+            return self._workspace
 
     def _settings_snapshot(self) -> RunSettingsSnapshot:
         with self._run_lock:
             preferences: UserSettings = deepcopy(self._user_settings)
         return _run_settings_snapshot(preferences)
+
+    def _palantir_readiness(self, *, require_selected_model: bool = True) -> tuple[bool, str]:
+        """Report whether a token-configured Palantir provider could really run."""
+        preferences: UserSettings = self.settings_snapshot()
+        if not preferences.palantir_enrollment_base_url.strip():
+            return False, "missing palantir_enrollment_base_url; set the enrollment address in Tools"
+        try:
+            catalog: ModelCatalog = self.model_catalog()
+        except ModelCatalogError:
+            return False, "unusable model catalog; fix the catalog file the setup describes"
+        if not catalog.models:
+            return False, "empty model catalog; add one model entry with a usable provider"
+        alias: str = preferences.llm_provider_model_id.strip()
+        if require_selected_model and preferences.llm_provider == _PALANTIR_ENGINE_ID and alias not in catalog.models:
+            return False, "translation model alias is absent from the catalog; select one again"
+        return True, "ready"
+
+    def _palantir_model_options(self) -> tuple[TranslationModelOption, ...]:
+        """Return configured Foundry aliases while rejecting example placeholders."""
+        catalog: ModelCatalog = self.model_catalog()
+        options: list[TranslationModelOption] = []
+        for entry in catalog.models.values():
+            if _is_placeholder_model_id(entry.model_id):
+                continue
+            provider = catalog.providers.get(entry.provider_id)
+            if provider is None:
+                continue
+            options.append(
+                TranslationModelOption(
+                    provider_id=_PALANTIR_ENGINE_ID,
+                    model_id=entry.alias,
+                    label=f"{entry.label} · {entry.model_id}",
+                    group_id=f"palantir:{provider.protocol.value}",
+                ),
+            )
+        return tuple(options)
+
+    def _palantir_config(self, alias: str) -> LlmConfig:
+        """Resolve one alias into the configuration a connection test would use."""
+        from anishift.application.runtime import palantir_llm_config  # noqa: PLC0415 - avoids an import cycle
+
+        preferences: UserSettings = self.settings_snapshot()
+        return palantir_llm_config(
+            self.model_catalog(),
+            alias,
+            enrollment_base_url=preferences.palantir_enrollment_base_url,
+            token=self.current_settings().palantir_token,
+        )
+
+    def _prober(self) -> ModelProber:
+        """Return the injected connection test, or the production one."""
+        if self._model_prober is not None:
+            return self._model_prober
+        from anishift.application.runtime import probe_palantir_model  # noqa: PLC0415 - avoids an import cycle
+
+        return probe_palantir_model
 
     def _claim_run(self, run_id: str, cancel: EventCancellationToken) -> None:
         with self._run_lock:
@@ -387,23 +808,47 @@ class AppService:
                 self._active_cancel = None
 
 
-def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
-    fallback: tuple[str, ...] = tuple(
-        engine for engine in preferences.translation_fallback_chain if engine != preferences.translation_engine
+def _env_variable(setting_id: str) -> str:
+    prefix: str = Settings.model_config.get("env_prefix", "")
+    return f"{prefix}{setting_id}".upper()
+
+
+def _has_system_override(setting_id: str) -> bool:
+    if _env_variable(setting_id) in os.environ:
+        return True
+    return setting_id == "palantir_token" and PALANTIR_TOKEN_COMPAT_ENV_VAR in os.environ
+
+
+def _is_placeholder_model_id(model_id: str) -> bool:
+    """Reject example tokens that cannot identify a real provider model."""
+    normalized: str = model_id.strip().casefold()
+    return normalized.startswith("replace-with-") or normalized.startswith("<select-")
+
+
+def _extraction_worker_count(plan: ExecutionPlan) -> int:
+    """Return the exact legacy I/O pool size for groups requiring extraction."""
+    extraction_kinds: frozenset[TaskKind] = frozenset(
+        {TaskKind.EXTRACT_AUDIO, TaskKind.EXTRACT_SUBTITLES, TaskKind.EXTRACT_TRACKS}
     )
+    group_ids: frozenset[str] = frozenset(task.group_id for task in plan.tasks if task.kind in extraction_kinds)
+    cores: int = os.cpu_count() or 1
+    scaled_workers: int = round(cores**0.5) + _EXTRACTION_IO_HEADROOM
+    return max(1, min(len(group_ids), scaled_workers))
+
+
+def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
     profile = preferences.active_tts_profile
-    tts_jobs: int = profile.concurrency or 1
+    request_concurrency: int = profile.concurrency or 1
     return RunSettingsSnapshot(
         translation_profile_id=preferences.translation_engine,
-        translation_fallback_chain=fallback,
         translation_max_retries=preferences.translation_max_retries,
         translation_concurrency=preferences.translation_concurrency,
         llm_profile_id=preferences.llm_provider,
         llm_max_concurrency=preferences.llm_max_concurrency,
         tts_profile_id=preferences.tts_engine,
         tts_max_retries=preferences.tts_max_retries,
-        tts_group_jobs=4,
-        tts_request_concurrency=tts_jobs,
+        tts_group_jobs=_TTS_GROUP_JOBS,
+        tts_request_concurrency=request_concurrency,
         audio_profile_id=preferences.tts_output_profile,
         composition_profile_id=preferences.composition_quality_preset,
         processing_order_policy=ProcessingOrderPolicy(preferences.processing_order_policy),
@@ -414,16 +859,18 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         llm_is_paid=True,
         tts_is_network=preferences.tts_engine != "sapi",
         tts_is_paid=preferences.tts_engine in {"elevenbytes", "elevenlabs"},
+        subtitle_max_chars_per_line=preferences.subtitle_max_chars_per_line,
+        subtitle_max_lines_per_event=preferences.subtitle_max_lines_per_event,
+        translation_chunk_chars=preferences.translation_chunk_chars,
         translation_batch_size=preferences.translation_batch_size,
         llm_model_id=preferences.llm_provider_model_id,
         llm_temperature=preferences.llm_temperature,
         llm_top_p=preferences.llm_top_p,
         llm_max_output_tokens=preferences.llm_max_output_tokens,
-        llm_prompt_id=preferences.llm_prompt_id,
-        llm_style_id=preferences.llm_style_id,
-        llm_module_ids=tuple(preferences.llm_module_ids),
+        llm_translation_style=preferences.llm_translation_style,
         tts_model_id=preferences.tts_provider_model_id,
         tts_voice_id=preferences.resolved_tts_voice_id,
+        tts_voice_label=preferences.tts_voice_label,
         tts_native_rate=profile.native_rate,
         tts_native_volume=profile.native_volume,
         tts_native_pitch=profile.native_pitch,
@@ -442,6 +889,20 @@ def _close_handler(handler: TaskHandler) -> None:
     close: object = getattr(handler, "close", None)
     if callable(close):
         close()
+
+
+def _workspace_fingerprint(discovery: DiscoveryResult) -> WorkspaceFingerprint:
+    return tuple(_file_identity(artifact.path) for group in discovery.groups for artifact in group.artifacts)
+
+
+def _file_identity(path: Path | None) -> tuple[str, int, int]:
+    if path is None:
+        return "", 0, 0
+    try:
+        status: os.stat_result = path.stat()
+    except OSError:
+        return path.as_posix(), -1, -1
+    return path.as_posix(), status.st_size, status.st_mtime_ns
 
 
 def _commit_if_active(token: CancellationToken, action: Callable[[], None]) -> None:

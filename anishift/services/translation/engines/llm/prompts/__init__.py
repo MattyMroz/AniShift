@@ -1,19 +1,9 @@
-"""Prompt asset discovery and deterministic composition for LLM translation."""
+"""Packaged prompt loading for LLM translation."""
 
-from anishift.services.translation.engines.llm.prompts.composer import PromptComposer
-from anishift.services.translation.engines.llm.prompts.registry import PromptRegistry
-from anishift.services.translation.engines.llm.prompts.types import (
-    ComposedPrompt,
-    GlossaryEntry,
-    PromptAsset,
-    PromptContext,
+from anishift.services.translation.engines.llm.prompts.loader import (
+    LoadedPrompts,
+    PromptLoader,
+    available_style_names,
 )
 
-__all__ = [
-    "ComposedPrompt",
-    "GlossaryEntry",
-    "PromptAsset",
-    "PromptComposer",
-    "PromptContext",
-    "PromptRegistry",
-]
+__all__ = ["LoadedPrompts", "PromptLoader", "available_style_names"]

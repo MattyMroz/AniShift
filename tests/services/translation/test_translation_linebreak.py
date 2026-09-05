@@ -81,6 +81,30 @@ def test_preposition_stays_with_noun() -> None:
     assert not any(v.strip().endswith(" w") or v.strip() in {"w", "na", "z"} for v in verses)
 
 
+@pytest.mark.parametrize("limit", [12, 18, 24, 30, 42])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Zastanawiam się nad tym.",
+        "Naprawdę bardzo boję się wracać do domu.",
+        "Postanowiłem się nie poddawać, nawet jeśli będzie trudno.",
+        "Wtedy właśnie spotkaliśmy się ponownie po wielu latach.",
+    ],
+)
+def test_polish_reflow_keeps_reflexive_particle_off_generated_line_starts(text: str, limit: int) -> None:
+    verses: tuple[str, ...] = split_line(text, max_chars=limit)
+
+    assert " ".join(verses) == text
+    assert not any(verse.split()[0].casefold().strip(".,!?") == "się" for verse in verses[1:])
+
+
+@pytest.mark.parametrize(
+    "text", ["Się nie zmienia źródła.", "Sięga wysoko, ale jeszcze nie dosięga sufitu.", "— Boję się! — Nie bój się."]
+)
+def test_polish_reflow_never_reorders_or_rewrites_words(text: str) -> None:
+    assert " ".join(split_line(text, max_chars=14)) == text
+
+
 def test_cut_prefers_comma() -> None:
     verses = split_line("Zjadłem obiad, potem poszedłem na spacer do parku", max_chars=28)
     assert verses[0].rstrip().endswith(",")
