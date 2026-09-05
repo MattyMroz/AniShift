@@ -94,3 +94,14 @@ def test_a_generous_budget_shows_everything_without_indicators() -> None:
 def test_window_end_reserves_a_row_for_each_indicator() -> None:
     end = _window_end(_SECTIONS, 5, 6)
     assert _rows_used(5, end) <= 6
+
+
+@pytest.mark.parametrize("budget", _BUDGETS)
+@pytest.mark.parametrize("follow_cursor", [False, True])
+def test_scrolling_to_the_end_keeps_the_last_page_filled(budget: int, follow_cursor: bool) -> None:
+    start: int
+    end: int
+    start, end = _visible_window(_SECTIONS, len(_SECTIONS) - 1, 900, budget, follow_cursor=follow_cursor)
+    assert end == len(_SECTIONS)
+    assert start == 0 or _rows_used(start - 1, end) > budget
+    assert _rows_used(start, end) <= max(budget, _rows_used(start, start + 1))

@@ -2020,6 +2020,21 @@ def _window_end(sections: tuple[str, ...], start: int, row_budget: int) -> int:
     return max(end, start + 1)
 
 
+def _last_window_start(sections: tuple[str, ...], row_budget: int) -> int:
+    """Find the earliest row of a full final page, including section headers."""
+    start: int = len(sections) - 1
+    used: int = 0
+    first_section: str = ""
+    for index in range(len(sections) - 1, -1, -1):
+        section: str = sections[index]
+        used += 1 + int(bool(section) and section != first_section)
+        if used + int(index > 0) > row_budget:
+            break
+        start = index
+        first_section = section or first_section
+    return start
+
+
 def _visible_window(
     sections: tuple[str, ...],
     cursor: int,
@@ -2031,7 +2046,7 @@ def _visible_window(
     """Return the visible slice for one scroll offset, honouring section labels."""
     if not sections:
         return 0, 0
-    offset = min(max(offset, 0), len(sections) - 1)
+    offset = min(max(offset, 0), _last_window_start(sections, row_budget))
     if not follow_cursor:
         return offset, _window_end(sections, offset, row_budget)
     cursor = min(max(cursor, 0), len(sections) - 1)
