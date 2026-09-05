@@ -3,6 +3,8 @@
 ## Używanie działającej aplikacji
 
 [README projektu](../README.md) opisuje uruchomienie, komendy i konfigurację.
+[Ustawienia](reference/settings.md) wyjaśniają każde ustawienie panelu: zakres, wartość
+domyślną, silnik, zależności i skutek dla przebiegu.
 Plany nie są instrukcją obecnego interfejsu.
 
 ## Aktualny kierunek rozwoju
