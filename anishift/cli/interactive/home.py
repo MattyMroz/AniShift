@@ -26,6 +26,7 @@ class HomeAction(StrEnum):
 
     AUTO = "auto"
     MANUAL = "manual"
+    ANIME = "anime"
     SETTINGS = "settings"
     EXIT = "exit"
 

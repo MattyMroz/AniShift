@@ -44,7 +44,7 @@ __all__ = [
 _HOME_MENU_WIDTH: Final[int] = 13
 """Width of the marker, spacing and longest Home label."""
 
-_HOME_MENU_ROWS: Final[int] = 6
+_HOME_MENU_ROWS: Final[int] = 7
 """Rows occupied by the choices and keyboard hint."""
 
 TEXT_MASCOT_SIZE: Final[tuple[int, int]] = (18, 10)
@@ -62,7 +62,7 @@ BRAND_GAP_COLUMNS: Final[int] = 2
 _MASCOT_NUDGE_COLUMNS: Final[int] = 2
 """Columns the native image is drawn right of its reserved area, inside the gap."""
 
-_HOME_CHROME_ROWS: Final[int] = 11
+_HOME_CHROME_ROWS: Final[int] = 12
 """Rows Home spends on top padding, the menu gap, the menu and the footer."""
 
 _MINIMUM_QUEUE_ROWS: Final[int] = 3

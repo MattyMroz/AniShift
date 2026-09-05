@@ -74,12 +74,19 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Run niepełny, anulowany albo z ostrzeżeniami pokazuje przewijany wynik grup:
   przyczyny błędów, zapisane i zachowane produkty oraz lokalizację logu.
   Treść przechodzi przez sanitizację i ten sam renderer. `interactive/app.py`
-- Home ma dokładnie `Auto`, `Ręczny`, `Ustawienia`, `Wyjście`. Settings działa w tym
+- Home ma dokładnie `Auto`, `Ręczny`, `Anime`, `Ustawienia`, `Wyjście`. Settings działa w tym
   samym rendererze, a mutacje `settings.json`, `presets.json` i `.env` przechodzą
   przez `AppService`. Manual przechowuje drafty wyłącznie lokalnie, rejestruje pliki
   zewnętrzne przez `AppService`, waliduje przez `plan_manual()` i przekazuje zaakceptowany
   plan do tej samej ścieżki wykonania oraz postępu co Auto.
   `interactive/app.py`, `interactive/settings.py`, `interactive/manual.py`, `run.py`
+- `AnimeController` jest jedynym właścicielem stanu ekranu Anime (QUERY → BUSY → RESULTS →
+  DONE/PROBLEM); `app.py` tylko go tworzy, przekazuje klawisze i renderuje. Sieć
+  (`AppService.acquisition.search`/`download`) idzie do wątku `anishift-anime`, a licznik
+  generacji odrzuca wynik spóźniony po `Esc`; `render()` nigdy nie blokuje i nie robi I/O.
+  Piąty wiersz Home zmienia indeksy pozycji — `_HOME_MENU_ROWS` i `_HOME_CHROME_ROWS`
+  liczą wiersze menu, a testy budujące aplikację ręcznie muszą ustawić `_anime`.
+  `interactive/anime.py`, `interactive/app.py`, `interactive/prompts.py`
 - `SettingsController.render()` korzysta wyłącznie z lokalnego, odświeżonego snapshotu;
   nie wykonuj w nim I/O ani wywołań sieciowych, bo renderer odświeża klatkę cyklicznie.
   Katalog modeli jest tylko do odczytu, a probe działa wyłącznie po jawnej akcji.
@@ -165,7 +172,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   MUSI być osiągalne z panelu albo mieć wpis z powodem w `_FIELDS_COVERED_ELSEWHERE`.
   `interactive/settings.py`
 - Home ma skaczącego slime'a z `assets/mascot/idle/01.gif`, responsywny
-  wordmark, cztery akcje, hint i stopkę z cwd/version. GIF ma być
+  wordmark, pięć akcji, hint i stopkę z cwd/version. GIF ma być
   animowany: `TerminalRenderer.after_render` wysyła kolejne klatki SIXEL. Pierwsza
   klatka interaktywna ma już gotową maskotkę; nie dodawaj startup placeholdera.
   Konstruktor renderera nie koduje obrazu. `run()` sprawdza obsługę SIXEL i metryki,

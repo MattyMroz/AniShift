@@ -175,7 +175,7 @@ def _frame(application: interactive_app._InteractiveApplication, columns: int = 
 def test_the_session_runs_one_full_screen_renderer_and_leaves_from_the_exit_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    made: list[_Renderer] = _install_renderer(monkeypatch, ("down", "down", "down", "enter"))
+    made: list[_Renderer] = _install_renderer(monkeypatch, ("down", "down", "down", "down", "enter"))
 
     interactive_app.run_interactive(cast("AppService", _service()))
 
@@ -248,7 +248,7 @@ def test_the_manual_row_opens_the_manual_screen_over_the_discovered_workspace(
 
 def test_the_settings_row_opens_the_panel_inside_the_same_renderer(monkeypatch: pytest.MonkeyPatch) -> None:
     application, renderer = _application(monkeypatch, _service())
-    application._selected = 2
+    application._selected = 3
 
     application._handle_key("enter")
     panel: str = _frame(application)
@@ -262,7 +262,7 @@ def test_the_settings_row_opens_the_panel_inside_the_same_renderer(monkeypatch: 
 
 def test_the_exit_row_finishes_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
     application, renderer = _application(monkeypatch, _service())
-    application._selected = 3
+    application._selected = 4
 
     application._handle_key("enter")
 

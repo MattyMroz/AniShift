@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from time import monotonic
@@ -16,6 +16,7 @@ from anishift.application import AppService, AutoPreset, InspectedWorkspace, Run
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import sanitize_event_message
 from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS, run_exit_code
+from anishift.cli.interactive.anime import AnimeController, AnimeResult
 from anishift.cli.interactive.home import HomeAction, brand_for_geometry, working_directory_label
 from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
 from anishift.cli.interactive.mascot import MascotController, MascotState
@@ -47,6 +48,7 @@ _LOG_LOCATION: Final[str] = "logs/anishift.log.jsonl"
 _HOME_CHOICES: Final[tuple[tuple[str, HomeAction], ...]] = (
     ("Auto", HomeAction.AUTO),
     ("Ręczny", HomeAction.MANUAL),
+    ("Anime", HomeAction.ANIME),
     ("Ustawienia", HomeAction.SETTINGS),
     ("Wyjście", HomeAction.EXIT),
 )
@@ -139,6 +141,7 @@ class _ViewMode(StrEnum):
     PREPARING = "preparing"
     MANUAL_PREPARING = "manual_preparing"
     MANUAL = "manual"
+    ANIME = "anime"
     AUTO = "auto"
     AUTO_DONE = "auto_done"
     SETTINGS = "settings"
@@ -162,6 +165,7 @@ class _InteractiveApplication:
         self._queue: _QueueView = _QueueView()
         self._settings: SettingsController | None = None
         self._manual: ManualController | None = None
+        self._anime: AnimeController | None = None
         self._cancel_requested: bool = False
         self._preflight_cancel: EventCancellationToken | None = None
         self._generation: int = 0
@@ -196,10 +200,13 @@ class _InteractiveApplication:
             preflight: EventCancellationToken | None = self._preflight_cancel
             progress: RichRunProgress | None = self._progress
             manual: ManualController | None = self._manual
+            anime: AnimeController | None = self._anime
         if preflight is not None:
             preflight.cancel()
         if manual is not None:
             manual.cancel()
+        if anime is not None:
+            anime.cancel()
         if progress is not None and progress.run_id is not None:
             self._service.cancel(progress.run_id)
 
@@ -231,11 +238,13 @@ class _InteractiveApplication:
         if key == "interrupt":
             self._interrupt(mode)
             return
-        if mode is _ViewMode.HOME:
-            self._handle_home_key(key)
-            return
-        if mode is _ViewMode.MANUAL:
-            self._handle_manual_key(key)
+        screen: Callable[[str], None] | None = {
+            _ViewMode.HOME: self._handle_home_key,
+            _ViewMode.MANUAL: self._handle_manual_key,
+            _ViewMode.ANIME: self._handle_anime_key,
+        }.get(mode)
+        if screen is not None:
+            screen(key)
             return
         if mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and key in _QUEUE_SCROLL_KEYS:
             self._navigate_queue(key)
@@ -315,6 +324,8 @@ class _InteractiveApplication:
             self._renderer.exit()
         elif action is HomeAction.AUTO:
             self._start_auto()
+        elif action is HomeAction.ANIME:
+            self._start_anime()
         elif action is HomeAction.SETTINGS:
             self._show_settings()
         else:
@@ -349,6 +360,17 @@ class _InteractiveApplication:
                 return
         self._renderer.invalidate()
 
+    def _handle_anime_key(self, key: str) -> None:
+        with self._lock:
+            controller: AnimeController | None = self._anime
+        if controller is None:
+            self._show_home()
+            return
+        if controller.handle_key(key) is AnimeResult.HOME:
+            self._show_home()
+            return
+        self._renderer.invalidate()
+
     def _interrupt(self, mode: _ViewMode) -> None:
         if self._batch is not None:
             self._close_batch(EXIT_CANCELLED)
@@ -377,6 +399,9 @@ class _InteractiveApplication:
                 manual: ManualController | None = self._manual
             if manual is not None:
                 manual.cancel()
+            self._show_home()
+            return
+        if mode is _ViewMode.ANIME:
             self._show_home()
             return
         if mode is _ViewMode.AUTO:
@@ -591,6 +616,16 @@ class _InteractiveApplication:
         self._mascot.show(MascotState.ERROR)
         self._renderer.invalidate()
 
+    def _start_anime(self) -> None:
+        """Open the release search over the acquisition boundary of this session."""
+        controller: AnimeController = AnimeController(self._service, self._renderer.invalidate)
+        self._mascot.reset()
+        with self._lock:
+            self._anime = controller
+            self._mode = _ViewMode.ANIME
+            self._message = Text()
+        self._renderer.invalidate()
+
     def _show_settings(self) -> None:
         controller: SettingsController = SettingsController(self._service, self._renderer.invalidate)
         self._mascot.reset()
@@ -604,11 +639,15 @@ class _InteractiveApplication:
         self._close_settings()
         self._mascot.reset()
         with self._lock:
+            anime: AnimeController | None = self._anime
             self._mode = _ViewMode.HOME
             self._message = Text()
             self._progress = None
             self._manual = None
+            self._anime = None
             self._cancel_requested = False
+        if anime is not None:
+            anime.cancel()
         self._renderer.invalidate()
 
     def _render_frame(self, columns: int, rows: int) -> Text:
@@ -620,6 +659,7 @@ class _InteractiveApplication:
             progress: RichRunProgress | None = self._progress
             settings: SettingsController | None = self._settings
             manual: ManualController | None = self._manual
+            anime: AnimeController | None = self._anime
             closing_at: float | None = self._closing_at
         mascot_state: MascotState = self._mascot.state
         native_size: tuple[int, int] | None = getattr(self._renderer, "native_mascot_size", None)
@@ -630,6 +670,8 @@ class _InteractiveApplication:
             )
         elif mode is _ViewMode.MANUAL and manual is not None:
             content = manual.render(columns, rows)
+        elif mode is _ViewMode.ANIME and anime is not None:
+            content = anime.render(columns, rows)
         elif mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
             content = _auto_content(
                 (columns, rows),

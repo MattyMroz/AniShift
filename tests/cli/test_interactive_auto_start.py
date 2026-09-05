@@ -26,6 +26,7 @@ def _application(
     application._progress = None
     application._settings = None
     application._manual = None
+    application._anime = None
     application._batch = None
     application._closing_at = None
     application._mascot = cast("MascotController", SimpleNamespace(state=MascotState.IDLE))
