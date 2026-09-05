@@ -132,6 +132,16 @@ def test_a_scrolled_list_announces_rows_above_and_below(panel: SettingsControlle
     assert "więcej" in joined
 
 
+def test_wheel_does_not_shrink_a_list_that_fits_the_terminal(panel: SettingsController) -> None:
+    _open_narration(panel)
+    before: str = panel.render(90, 60).plain
+    selected: int = panel._selected
+    for _ in range(20):
+        panel.scroll(1)
+        assert panel.render(90, 60).plain == before
+        assert panel._selected == selected
+
+
 def test_only_the_back_row_survives_a_catalog_that_cannot_load(
     panel: SettingsController,
     service: FakeSettingsService,

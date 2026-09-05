@@ -6,16 +6,23 @@ updated: 2026-09-05
 # AniShift — lokalna tablica zadań
 
 Tablica jest powiązana z [masterplanem](masterplan.md) i
-[findingami audytu](audit.md). Nie utworzono GitHub Issues ani GitHub Project.
-Każdy identyfikator pozostaje stały; tytuły są po angielsku i mogą posłużyć
-do późniejszego przygotowania issue zgodnie z szablonem repozytorium.
+[findingami audytu](audit.md). Otwarte dopracowanie przeniesiono do
+[GitHub Issues](../../plans/automation/README.md#odłożone-dopracowanie), które są
+właścicielem jego bieżącego statusu. Historyczne ID i dowody pozostają tutaj.
+Nie utworzono osobnego GitHub Project.
 
 ## Statusy i zasada aktualizacji
 
+Aktualny workstream: [plany automatyzacji i napisów](../../plans/automation/README.md).
+Kod poprzedniej iteracji jest na `main` po PR #41; nie zamyka to oczekujących
+ocen człowieka. Pełne testy produktu i porównania promptów są decyzją właściciela
+odłożone. Nowe funkcje mają na razie wyłącznie zakres planistyczny.
+
 Wynik implementacji i komendy: [outcome](outcomes/02-hardening.md).
 Terminal: [wynik Planu 04](outcomes/04-terminal-polish.md).
-Następny checkpoint: odbiór terminala, potem [Plan 05](plans/05-auto-preset-controls.md)
-i [Plan 03](plans/03-product-acceptance.md).
+Aktualny checkpoint: wybór jednej iteracji automatyzacji i szczegółowy plan
+z [briefu dla Pro](../../plans/automation/pro-brief.md). Ogólne dopracowanie
+i pełne próby produktu są odłożone; nie blokują wszystkiego.
 
 `backlog` → `ready` → `in-progress` → `verified` → `done`.
 `pending-human` oznacza oczekującą ocenę właściciela, `blocked` konkretną zależność,
@@ -86,8 +93,10 @@ do innych dokumentów.
 | U05 | Recover model selection without weakening run readiness | P1 | verified | Pierwszy własny model, atomowy zapis, usunięty alias nadal blokuje wykonanie, lecz nie picker; [wynik](outcomes/04-terminal-polish.md) |
 | U06 | Unify keyboard navigation and masked input | P2 | pending-human | Tab/backtab, lewo/prawo, cursor/delete/paste, powrót do miejsca w menu; [wynik](outcomes/04-terminal-polish.md) |
 | U07 | Audit prompts and remove unused scratch copies | P2 | verified | Loader i kontrakt zbadane, trzy TXT usunięte odzyskiwalnie, aktywne prompty bez zmian; [rekomendacje](prompt-recommendations.md) |
-| U08 | Expose advanced default Auto preset controls | P2 | ready | Siedem brakujących opcji z walidacją, resetem i brakiem utraty pól; [Plan 05](plans/05-auto-preset-controls.md) |
-| U09 | Evaluate a shorter faithful translation prompt | P2 | ready | Usunąć sprzeczności, ślepe A/B, metryki kontraktu i jakości; [plan ewaluacji](prompt-recommendations.md) |
+| U08 | Expose advanced default Auto preset controls | P2 | pending-human | `4dc99dc` scalone lokalnie do głównej kopii; R1–R5 zamknięte, 3089 testów PASS i 30 smoke PASS; czeka odbiór panelu; [wynik](outcomes/05-auto-preset-controls.md) |
+| U09 | Evaluate a shorter faithful translation prompt | P2 | deferred | Usunąć sprzeczności, ślepe A/B, metryki kontraktu i jakości; [plan ewaluacji](prompt-recommendations.md) |
+| U10 | Document settings and correct misleading concurrency labels | P2 | transferred | Status i kryteria: [GitHub #42](https://github.com/MattyMroz/AniShift/issues/42) |
+| U11 | Keep settings viewport height stable while wheel scrolling | P2 | done | 83150d8; 13 regresji FAIL→PASS, pełny suite 3102 passed / 13 skipped; właściciel potwierdził „Ok działa” |
 
 ## Jak dopisywać nowe problemy
 

@@ -1,5 +1,9 @@
 # ficzer: auto-pobieranie anime do workspace
 
+> Materiał historyczny, nie aktualny plan wykonania. Bieżący kierunek i priorytety:
+> [automatyzacja AniShift](../automation/README.md). Propozycje technologii i modułów
+> poniżej wymagają ponownego sprawdzenia; nie zastępują obecnych AGENTS.md.
+
 > status: POMYSŁ (poza obecną przebudową)
 > priorytet: wysoki — domyka pętlę "nazwa anime → gotowy lektor" bez ręcznego szukania plików
 > cel: user wpisuje `/download <nazwa anime>`, program znajduje odcinki, pobiera MKV prosto do `workspace/`, a Enter przetwarza je jak każde inne pliki.

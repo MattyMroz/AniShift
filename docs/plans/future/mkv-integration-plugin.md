@@ -1,5 +1,9 @@
 # ficzer: integracja z odtwarzaczem / lektor w MKV
 
+> Materiał historyczny, nie aktualny plan wykonania. Bieżący kierunek i priorytety:
+> [automatyzacja AniShift](../automation/README.md). Propozycje technologii i modułów
+> poniżej wymagają ponownego sprawdzenia; nie zastępują obecnych AGENTS.md.
+
 > status: POMYSŁ (poza obecną przebudową)
 > priorytet: średni — wygoda oglądania; wariant (b) to w dużej mierze polerka tego, co już jest
 > cel: user ogląda anime z lektorem AniShift bez ręcznego przełączania ścieżek — odtwarzacz sam wie, co załadować.

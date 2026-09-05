@@ -645,6 +645,20 @@ def test_do_not_translate_unknown_source_blocks_false_polish_product() -> None:
     assert plan.problems[0].code == "false_polish_product"
 
 
+def test_do_not_translate_embedded_english_blocks_instead_of_crashing() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO}))
+    preset: AutoPreset = _preset(products, translation_action=TranslationAction.DO_NOT_TRANSLATE)
+
+    plan: ExecutionPlan = plan_auto((_group(video),), preset, _settings())
+
+    assert plan.can_execute is False
+    assert plan.tasks == ()
+    assert [problem.code for problem in plan.problems] == ["false_polish_product"]
+    assert plan.problems[0].artifact_ids == ()
+    assert {artifact.artifact_id for artifact in plan.artifacts} == {video.artifact_id}
+
+
 def test_exact_stem_source_product_requires_no_task() -> None:
     video = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
     sidecar = _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", subtitle_format="ass")

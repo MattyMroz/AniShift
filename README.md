@@ -79,3 +79,8 @@ configured.
 - Optional Windows SAPI voices must be installed separately with a valid license
   and be available to the Python process architecture. AniShift does not install
   or activate commercial voices; an expired voice can display its own vendor dialog.
+
+## Documentation and plans
+
+See the [documentation map](docs/README.md) for the current product direction,
+planning handoff and historical implementation records.

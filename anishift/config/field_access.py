@@ -1,16 +1,36 @@
-"""Mapping between catalog specs and the panel preferences they describe."""
+"""Mapping between catalog specs and the preferences or preset fields they describe."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Final
 
+from anishift.application.intents import (
+    AutoPreset,
+    BurnSubtitleProduct,
+    MkvTrackProduct,
+    Mp4AudioSource,
+    ProductIntent,
+    ProductKind,
+    SubtitleOutputFormat,
+    SubtitleSourcePolicy,
+    TranslationAction,
+)
 from anishift.config.field_catalog import SettingCondition, SettingSpec, SettingValue, SettingValueType
 from anishift.config.user_settings import CustomVoiceSetting, JsonScalar, TtsVoiceProfileSettings, UserSettings
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-__all__ = ["assign_setting_value", "read_setting_value", "setting_is_active", "setting_is_persisted"]
+__all__ = [
+    "assign_setting_value",
+    "preset_setting_is_active",
+    "preset_with_value",
+    "read_preset_value",
+    "read_setting_value",
+    "setting_is_active",
+    "setting_is_persisted",
+]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -57,6 +77,9 @@ _OPTIONAL_VALUE_TYPES: Final[frozenset[SettingValueType]] = frozenset(
 _MISSING: Final[object] = object()
 """Sentinel separating an absent stored value from a persisted ``None``."""
 
+_PRESET_IDENTITY: Final[frozenset[str]] = frozenset({"preset_id", "name", "products"})
+"""Preset fields that name it or nest others, so no catalog spec addresses them."""
+
 
 def read_setting_value(settings: UserSettings, spec: SettingSpec) -> SettingValue:
     """Return the value *settings* holds for *spec*, or the spec default."""
@@ -85,7 +108,9 @@ def assign_setting_value(settings: UserSettings, spec: SettingSpec, value: Setti
 
 def setting_is_active(spec: SettingSpec, settings: UserSettings) -> bool:
     """Report whether every dependency of *spec* holds for *settings*."""
-    return all(_condition_holds(condition, settings) for condition in spec.depends_on)
+    return all(
+        _condition_holds(condition, _preference_value(settings, condition.setting_id)) for condition in spec.depends_on
+    )
 
 
 def setting_is_persisted(spec: SettingSpec) -> bool:
@@ -93,11 +118,95 @@ def setting_is_persisted(spec: SettingSpec) -> bool:
     return spec.setting_id.startswith(_PROFILE_PREFIX) or spec.setting_id in UserSettings.__dataclass_fields__
 
 
-def _condition_holds(condition: SettingCondition, settings: UserSettings) -> bool:
-    current: object = _preference_value(settings, condition.setting_id)
+def read_preset_value(preset: AutoPreset, spec: SettingSpec) -> SettingValue:
+    """Return the catalog value *preset* holds for *spec*."""
+    return _catalog_value(_preset_value(preset, spec.setting_id))
+
+
+def preset_setting_is_active(spec: SettingSpec, preset: AutoPreset) -> bool:
+    """Report whether every dependency of *spec* holds for *preset*."""
+    return all(
+        _condition_holds(condition, _catalog_value(_preset_value(preset, condition.setting_id)))
+        for condition in spec.depends_on
+    )
+
+
+def preset_with_value(preset: AutoPreset, spec: SettingSpec, value: SettingValue) -> AutoPreset:
+    """Return *preset* with the field *spec* addresses replaced by a validated *value*."""
+    _preset_value(preset, spec.setting_id)
+    spec.validate_value(value)
+    if spec.setting_id in ProductIntent.__dataclass_fields__:
+        return replace(preset, products=_products_with_value(preset.products, spec, value))
+    if spec.setting_id == "source_subtitle_language":
+        return replace(preset, source_subtitle_language=None if value is None else _text(spec, value))
+    text: str = _text(spec, value)
+    if spec.setting_id == "subtitle_source_policy":
+        return replace(preset, subtitle_source_policy=SubtitleSourcePolicy(text))
+    if spec.setting_id == "translation_action":
+        return replace(preset, translation_action=TranslationAction(text))
+    if spec.setting_id == "subtitle_output_format":
+        return replace(preset, subtitle_output_format=SubtitleOutputFormat(text))
+    msg: str = f"Setting {spec.setting_id!r} has no preset writer"
+    raise ValueError(msg)
+
+
+def _condition_holds(condition: SettingCondition, current: object) -> bool:
     if isinstance(current, (list, tuple, frozenset, set)):
         return any(item in condition.allowed_values for item in current)
     return current in condition.allowed_values
+
+
+def _preset_value(preset: AutoPreset, setting_id: str) -> object:
+    if setting_id in ProductIntent.__dataclass_fields__:
+        return getattr(preset.products, setting_id)
+    if setting_id in AutoPreset.__dataclass_fields__ and setting_id not in _PRESET_IDENTITY:
+        return getattr(preset, setting_id)
+    msg: str = f"Setting {setting_id!r} is not an automatic preset field"
+    raise ValueError(msg)
+
+
+def _catalog_value(raw: object) -> SettingValue:
+    if isinstance(raw, frozenset):
+        return frozenset(str(item) for item in raw)
+    if raw is None:
+        return None
+    return str(raw)
+
+
+def _products_with_value(products: ProductIntent, spec: SettingSpec, value: SettingValue) -> ProductIntent:
+    if spec.setting_id == "requested_products":
+        requested: frozenset[ProductKind] = frozenset(ProductKind(item) for item in _string_set(spec, value))
+        return _products_with_requested(products, requested)
+    if spec.setting_id == "mkv_tracks":
+        return replace(products, mkv_tracks=frozenset(MkvTrackProduct(item) for item in _string_set(spec, value)))
+    text: str = _text(spec, value)
+    if spec.setting_id == "burn_subtitle_product":
+        return replace(products, burn_subtitle_product=BurnSubtitleProduct(text))
+    return replace(products, mp4_audio_source=Mp4AudioSource(text))
+
+
+def _products_with_requested(products: ProductIntent, requested: frozenset[ProductKind]) -> ProductIntent:
+    has_mkv: bool = ProductKind.MKV in requested
+    has_mp4: bool = ProductKind.MP4 in requested
+    # Dropping a container also drops the choices that exist only for it, so the
+    # intent stays valid without asking the user to clear them first.
+    return ProductIntent(
+        requested_products=requested,
+        burn_subtitle_product=products.burn_subtitle_product if has_mp4 else BurnSubtitleProduct.NONE,
+        mkv_tracks=products.mkv_tracks if has_mkv else frozenset(),
+        mp4_audio_source=products.mp4_audio_source if has_mp4 else Mp4AudioSource.AUTO,
+    )
+
+
+def _text(spec: SettingSpec, value: object) -> str:
+    if isinstance(value, str):
+        return value
+    msg: str = f"Value of {spec.setting_id!r} is not text"
+    raise TypeError(msg)
+
+
+def _string_set(spec: SettingSpec, value: object) -> frozenset[str]:
+    return frozenset(_string_items(spec, _collection_items(spec, value)))
 
 
 def _stored_value(settings: UserSettings, setting_id: str) -> object:
