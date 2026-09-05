@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -38,6 +38,9 @@ _PRIMARY_KINDS: Final[frozenset[ArtifactKind]] = frozenset(_PRIMARY_SOURCE_KINDS
 
 PRIMARY_SOURCE_SUFFIXES: Final[frozenset[str]] = frozenset(_PRIMARY_SOURCE_KINDS)
 """Folded suffixes of every primary source, for any caller judging one filename."""
+
+_MANAGED_TEMP_DIRECTORY: Final[str] = "temp"
+"""Name of the managed workspace subfolder that never holds user sources."""
 
 
 class DiscoveryWarningKind(StrEnum):
@@ -78,17 +81,12 @@ class DiscoveryResult:
 
 
 def discover_groups(root: Path) -> DiscoveryResult:
-    """Read *root* once and deterministically group supported artifact names."""
-    paths: tuple[Path, ...] = tuple(
-        sorted(
-            (path for path in root.iterdir() if path.is_file()),
-            key=lambda path: (path.name.casefold(), path.name),
-        )
-    )
+    """Read *root* with its subfolders once and deterministically group supported artifact names."""
+    paths: tuple[Path, ...] = tuple(sorted(_iter_source_paths(root), key=lambda path: _relative_sort_key(path, root)))
     candidates: tuple[ArtifactName, ...] = tuple(
         candidate for path in paths if (candidate := classify_artifact(path)) is not None
     )
-    groups: tuple[SourceGroup, ...] = group_candidates(candidates)
+    groups: tuple[SourceGroup, ...] = group_candidates(candidates, root)
     grouped_keys: set[tuple[str, str]] = {
         (group.directory.as_posix().casefold(), group.stem.casefold()) for group in groups
     }
@@ -133,8 +131,8 @@ def classify_artifact(path: Path) -> ArtifactName | None:
     return None
 
 
-def group_candidates(candidates: Sequence[ArtifactName]) -> tuple[SourceGroup, ...]:
-    """Group classified names by directory and normalized stem."""
+def group_candidates(candidates: Sequence[ArtifactName], root: Path) -> tuple[SourceGroup, ...]:
+    """Group classified names by directory and normalized stem, keying IDs on paths relative to *root*."""
     buckets: dict[tuple[str, str], list[ArtifactName]] = {}
     for candidate in candidates:
         buckets.setdefault(_candidate_group_key(candidate), []).append(candidate)
@@ -144,8 +142,36 @@ def group_candidates(candidates: Sequence[ArtifactName]) -> tuple[SourceGroup, .
         bucket: tuple[ArtifactName, ...] = tuple(sorted(buckets[key], key=_candidate_sort_key))
         if not any(candidate.is_primary for candidate in bucket):
             continue
-        groups.append(_build_source_group(bucket))
+        groups.append(_build_source_group(bucket, root))
     return tuple(groups)
+
+
+def _iter_source_paths(root: Path) -> Iterator[Path]:
+    for entry in _iter_visible_entries(root):
+        if entry.name.casefold() == _MANAGED_TEMP_DIRECTORY and entry.is_dir():
+            continue
+        yield from _iter_entry_sources(entry)
+
+
+def _iter_entry_sources(entry: Path) -> Iterator[Path]:
+    if entry.is_dir():
+        # A symlinked directory can point back into the workspace and loop the scan.
+        if entry.is_symlink():
+            return
+        for child in _iter_visible_entries(entry):
+            yield from _iter_entry_sources(child)
+        return
+    if entry.is_file():
+        yield entry
+
+
+def _iter_visible_entries(directory: Path) -> Iterator[Path]:
+    return (entry for entry in directory.iterdir() if not entry.name.startswith("."))
+
+
+def _relative_sort_key(path: Path, root: Path) -> tuple[str, str]:
+    relative: str = path.relative_to(root).as_posix()
+    return relative.casefold(), relative
 
 
 def _classify_derived_subtitle(path: Path, lowered: str) -> ArtifactName | None:
@@ -241,9 +267,9 @@ def _artifact_name(
     )
 
 
-def _build_source_group(candidates: tuple[ArtifactName, ...]) -> SourceGroup:
+def _build_source_group(candidates: tuple[ArtifactName, ...], root: Path) -> SourceGroup:
     first: ArtifactName = candidates[0]
-    group_id: str = create_group_id(Path(), first.stem)
+    group_id: str = create_group_id(first.path.parent.relative_to(root), first.stem)
     discovered_artifacts: tuple[Artifact, ...] = tuple(_to_artifact(candidate, group_id) for candidate in candidates)
     artifacts_by_id: dict[str, Artifact] = {}
     for artifact in discovered_artifacts:

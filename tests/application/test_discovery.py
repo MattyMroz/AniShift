@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from anishift.application.artifacts import ArtifactKind, ArtifactState, GroupConflictKind
+from anishift.application.artifacts import (
+    ArtifactKind,
+    ArtifactState,
+    GroupConflictKind,
+    create_group_id,
+)
 from anishift.application.discovery import (
     ArtifactName,
     DiscoveryWarningKind,
@@ -21,7 +26,9 @@ from anishift.application.selection import choose_auto_sidecar, choose_primary_v
 
 def _touch(root: Path, *names: str) -> None:
     for name in names:
-        (root / name).touch()
+        path: Path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
 
 
 def test_discovery_groups_mkv_and_mp4_and_prefers_mkv() -> None:
@@ -31,7 +38,7 @@ def test_discovery_groups_mkv_and_mp4_and_prefers_mkv() -> None:
         classify_artifact(root / "1.mkv"),
     )
     names = tuple(candidate for candidate in candidates if candidate is not None)
-    group = group_candidates(names)[0]
+    group = group_candidates(names, root)[0]
     assert group.stem == "1"
     assert {artifact.kind for artifact in group.artifacts} == {
         ArtifactKind.VIDEO_MKV,
@@ -142,7 +149,7 @@ def test_duplicate_normalized_primary_names_report_conflict() -> None:
         ArtifactName(Path("workspace/1.mkv"), "1", ArtifactKind.VIDEO_MKV, True, False),
         ArtifactName(Path("workspace/1.MKV"), "1", ArtifactKind.VIDEO_MKV, True, False),
     )
-    group = group_candidates(candidates)[0]
+    group = group_candidates(candidates, Path("workspace"))[0]
     assert tuple(conflict.kind for conflict in group.conflicts) == (GroupConflictKind.AMBIGUOUS_PRIMARY,)
 
 
@@ -167,3 +174,70 @@ def test_discovery_result_is_independent_of_filesystem_order(
         current_order = order
         results.append(discover_groups(tmp_path))
     assert results[1:] == [results[0], results[0]]
+
+
+def test_group_in_subfolder_is_discovered_with_its_own_directory(tmp_path: Path) -> None:
+    _touch(tmp_path, "Series A/01.mkv", "Series A/01.ass")
+    groups = discover_groups(tmp_path).groups
+    assert len(groups) == 1
+    assert groups[0].stem == "01"
+    assert groups[0].directory == tmp_path / "Series A"
+
+
+def test_group_in_root_keeps_the_flat_workspace_identifier(tmp_path: Path) -> None:
+    _touch(tmp_path, "01.mkv")
+    group = discover_groups(tmp_path).groups[0]
+    assert group.group_id == create_group_id(Path(), "01")
+
+
+def test_subfolder_group_identifier_uses_the_relative_directory(tmp_path: Path) -> None:
+    _touch(tmp_path, "Series A/01.mkv")
+    group = discover_groups(tmp_path).groups[0]
+    assert group.group_id == create_group_id(Path("Series A"), "01")
+
+
+def test_same_stem_in_two_subfolders_creates_two_distinct_groups(tmp_path: Path) -> None:
+    _touch(tmp_path, "Series A/01.mkv", "Series B/01.mkv")
+    groups = discover_groups(tmp_path).groups
+    assert {group.directory for group in groups} == {tmp_path / "Series A", tmp_path / "Series B"}
+    assert len({group.group_id for group in groups}) == 2
+
+
+def test_managed_temp_tree_below_root_is_never_discovered(tmp_path: Path) -> None:
+    _touch(tmp_path, "temp/run-1/01.mkv")
+    result = discover_groups(tmp_path)
+    assert result.groups == ()
+    assert result.warnings == ()
+
+
+def test_temp_folder_below_a_subfolder_is_still_discovered(tmp_path: Path) -> None:
+    _touch(tmp_path, "Series A/temp/01.mkv")
+    groups = discover_groups(tmp_path).groups
+    assert len(groups) == 1
+    assert groups[0].directory == tmp_path / "Series A" / "temp"
+
+
+def test_hidden_directories_and_files_are_never_discovered(tmp_path: Path) -> None:
+    _touch(tmp_path, ".foo/01.mkv", ".01.mkv")
+    result = discover_groups(tmp_path)
+    assert result.groups == ()
+    assert result.warnings == ()
+
+
+def test_nested_discovery_is_independent_of_filesystem_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _touch(tmp_path, "02.mkv", "Series A/01.mkv", "Series A/01.ass", "Series B/01.mkv")
+    original_iterdir = Path.iterdir
+    reversed_order: bool = False
+
+    def fake_iterdir(path: Path) -> Iterator[Path]:
+        return iter(sorted(original_iterdir(path), reverse=reversed_order))
+
+    monkeypatch.setattr(Path, "iterdir", fake_iterdir)
+    ascending = discover_groups(tmp_path)
+    reversed_order = True
+    descending = discover_groups(tmp_path)
+    assert descending == ascending
+    assert len(ascending.groups) == 3
