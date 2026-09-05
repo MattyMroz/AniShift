@@ -52,6 +52,9 @@ _STDERR_TAIL_CHARS: Final[int] = 2_000
 _NEW_PROCESS_GROUP: Final[int] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 """Windows flag preventing console Ctrl+C from leaking into child processes."""
 
+_NO_WINDOW: Final[int] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+"""Windows flag keeping a console child from opening its own window when the parent has none."""
+
 _GUI_PROGRESS: Final[re.Pattern[str]] = re.compile(r"^#GUI#progress (\d+)%")
 """mkvmerge --gui-mode progress line."""
 
@@ -374,7 +377,7 @@ def _spawn(command: Sequence[str], operation: str, *, cwd: Path | None = None) -
             encoding="utf-8",
             errors="replace",
             bufsize=1,
-            creationflags=_NEW_PROCESS_GROUP,
+            creationflags=_NEW_PROCESS_GROUP | _NO_WINDOW,
             cwd=cwd,
         )
     except OSError as error:

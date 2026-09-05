@@ -48,6 +48,9 @@ _STDERR_TAIL_CHARS: Final[int] = 2_000
 _NEW_PROCESS_GROUP: Final[int] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 """Windows flag preventing console Ctrl+C from leaking into child processes."""
 
+_NO_WINDOW: Final[int] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+"""Windows flag keeping a console child from opening its own window when the parent has none."""
+
 _MINIMUM_JOIN_SOURCES: Final[int] = 2
 """Minimum number of parts that require provider-native assembly."""
 
@@ -134,7 +137,7 @@ class SubprocessRunner:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                creationflags=_NEW_PROCESS_GROUP,
+                creationflags=_NEW_PROCESS_GROUP | _NO_WINDOW,
             )
         except OSError as error:
             failure: _ProcessFailure = _ProcessFailure(
