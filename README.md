@@ -41,6 +41,26 @@ Before inspecting media, AniShift prepares missing MKVToolNix and FFmpeg tools f
 the verified manifest. Windows downloads use SHA256 verification and run outside
 the renderer. TXT-only workspaces do not trigger media-tool downloads.
 
+## Searching and downloading
+
+The **Anime** row in the interactive interface searches nyaa.si for a title, lists the
+1080p+ releases grouped by release group, and sends the episodes you tick (Space) to
+qBittorrent with Enter. Files are saved into `workspace/<Series>/`, so the watch picks
+every finished download up on its own.
+
+qBittorrent needs its Web UI once: Options → Web UI → enable the Web User Interface and
+tick "Bypass authentication for clients on localhost" (or set
+`ANISHIFT_QBITTORRENT_USERNAME` and `ANISHIFT_QBITTORRENT_PASSWORD` in `.env`;
+`ANISHIFT_QBITTORRENT_URL` overrides the default `http://127.0.0.1:8080`). Then run:
+
+```bash
+uv run anishift qbit setup    # make qBittorrent mark unfinished files with .!qB
+uv run anishift qbit status   # reachable: yes (v5.2.3) / incomplete extension: on
+```
+
+The `.!qB` suffix matters: torrent files are created at full size before they are
+complete, and the watch ignores that suffix until the download finishes.
+
 ## Watching the library
 
 `workspace/` may hold one subfolder per series, for example `workspace/Frieren/`.

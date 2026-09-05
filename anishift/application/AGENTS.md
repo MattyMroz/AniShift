@@ -7,7 +7,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `artifacts.py`, `intents.py`, `planning.py`, `selection.py` i `planner.py` nie importują I/O,
   `anishift.services`, `anishift.config` ani CLI.
 - Kontrolowane I/O należy do `discovery.py`, `inspection.py`, `publisher.py`,
-  `sessions.py`, handlerów oraz fasady `service.py`; koordynator publikuje zwalidowany
+  `sessions.py`, `acquisition.py` (katalog wydań i wysyłka do klienta torrent przez
+  wstrzyknięte protokoły `TorrentSource`/`TorrentClient`; typy z `services.torrents` tylko
+  pod `TYPE_CHECKING`), handlerów oraz fasady `service.py`; koordynator publikuje zwalidowany
   staging przez `scheduler_runtime.py`. Decyzje produktowe pozostają w plannerze.
 - CLI używa publicznej fasady `anishift.application`; nie importuje
   wewnętrznych helperów I/O ani schedulera.
