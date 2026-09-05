@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-import csv
+import getpass
+import os
 import subprocess
 import sys
+import tempfile
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
+from xml.etree import ElementTree
+from xml.sax.saxutils import escape
 
 from anishift.errors import ErrorCode, ErrorContext, FatalError
 from anishift.platform.binaries import is_windows
@@ -47,14 +51,40 @@ _WATCH_MODULE: Final[str] = "anishift.cli.main"
 _PYTHONW_NAME: Final[str] = "pythonw.exe"
 """Windowless interpreter that keeps the watch process free of a console."""
 
-_MISSING_TASK_MARKER: Final[str] = "cannot find"
-"""Fragment of the ``schtasks`` refusal that means the task simply does not exist."""
+_TASK_NAMESPACE: Final[str] = "http://schemas.microsoft.com/windows/2004/02/mit/task"
+"""XML namespace of every task definition the scheduler imports and exports."""
 
-_DISABLED_STATUS: Final[str] = "disabled"
-"""Value of the CSV status column for a registered but switched-off task."""
-
-_STATUS_COLUMN: Final[int] = 2
-"""Index of the ``Status`` column in the headerless ``/FO CSV`` query row."""
+_TASK_XML: Final[str] = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="{namespace}">
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{user}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{command}</Command>
+      <Arguments>{arguments}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+"""Task definition a standard user may register: own logon, own account, least privilege."""
 
 _UNSUPPORTED_MESSAGE: Final[str] = "Autostart needs the Windows task scheduler"
 """Refusal stated when autostart is requested on a system without ``schtasks``."""
@@ -89,8 +119,15 @@ class AutostartUnsupportedError(FatalError):
 
 
 def _default_run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    """Run *command* to completion and capture its text output."""
-    return subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603 - fixed schtasks argv
+    """Run *command* to completion, decoding its console-code-page output leniently."""
+    return subprocess.run(  # noqa: S603 - fixed schtasks argv
+        command,
+        capture_output=True,
+        text=True,
+        encoding="oem",
+        errors="replace",
+        check=False,
+    )
 
 
 def watch_command() -> list[str]:
@@ -108,13 +145,13 @@ def watch_command() -> list[str]:
 
 
 def enable(command: Sequence[str], *, run: Runner = _default_run) -> None:
-    """Register the logon task running *command*, then start watching right away."""
+    """Register the logon task running *command* for this user, then start watching right away."""
     _require_windows()
-    _schtasks(
-        run,
-        ["/Create", "/F", "/SC", "ONLOGON", "/RL", "LIMITED", "/TN", TASK_NAME, "/TR", _task_argument(command)],
-        "register",
-    )
+    definition: Path = _write_definition(command)
+    try:
+        _schtasks(run, ["/Create", "/F", "/XML", str(definition), "/TN", TASK_NAME], "register")
+    finally:
+        definition.unlink(missing_ok=True)
     _schtasks(run, ["/Run", "/TN", TASK_NAME], "start")
     logger.info("Logon task registered and started")
 
@@ -123,8 +160,12 @@ def disable(*, run: Runner = _default_run) -> None:
     """Remove the logon task, treating an already absent task as success."""
     _require_windows()
     completed: subprocess.CompletedProcess[str] = run([_SCHTASKS, "/Delete", "/F", "/TN", TASK_NAME])
-    if completed.returncode == 0 or _reports_missing_task(completed):
-        logger.info("Logon task removed", existed=completed.returncode == 0)
+    if completed.returncode == 0:
+        logger.info("Logon task removed", existed=True)
+        return
+    # The refusal text is localized, so a follow-up query decides whether the task exists at all.
+    if _query(run).returncode != 0:
+        logger.info("Logon task removed", existed=False)
         return
     raise _failure(completed, "remove")
 
@@ -132,9 +173,7 @@ def disable(*, run: Runner = _default_run) -> None:
 def status(*, run: Runner = _default_run) -> AutostartStatus:
     """Report whether the logon task is registered and switched on."""
     _require_windows()
-    completed: subprocess.CompletedProcess[str] = run(
-        [_SCHTASKS, "/Query", "/TN", TASK_NAME, "/FO", "CSV", "/NH"],
-    )
+    completed: subprocess.CompletedProcess[str] = _query(run)
     if completed.returncode != 0:
         return AutostartStatus.MISSING
     return _parsed_status(completed.stdout)
@@ -153,6 +192,11 @@ def _require_windows() -> None:
     )
 
 
+def _query(run: Runner) -> subprocess.CompletedProcess[str]:
+    """Export the task definition, which names its state independently of the display language."""
+    return run([_SCHTASKS, "/Query", "/TN", TASK_NAME, "/XML"])
+
+
 def _schtasks(run: Runner, arguments: Sequence[str], action: str) -> None:
     """Run one ``schtasks`` request and raise when the scheduler refuses it."""
     completed: subprocess.CompletedProcess[str] = run([_SCHTASKS, *arguments])
@@ -161,26 +205,35 @@ def _schtasks(run: Runner, arguments: Sequence[str], action: str) -> None:
     raise _failure(completed, action)
 
 
-def _task_argument(command: Sequence[str]) -> str:
-    """Join *command* into the single string ``/TR`` accepts, quoting spaced parts."""
-    return " ".join(f'"{part}"' if " " in part else part for part in command)
+def _write_definition(command: Sequence[str]) -> Path:
+    """Write the task definition for *command* to a temporary UTF-16 file the scheduler imports."""
+    user: str = f"{os.environ.get('USERDOMAIN', '.')}\\{getpass.getuser()}"
+    text: str = _TASK_XML.format(
+        namespace=_TASK_NAMESPACE,
+        user=escape(user),
+        command=escape(command[0]),
+        arguments=escape(_arguments(command[1:])),
+    )
+    with tempfile.NamedTemporaryFile("w", encoding="utf-16", suffix=".xml", delete=False) as handle:
+        handle.write(text)
+        return Path(handle.name)
 
 
-def _reports_missing_task(completed: subprocess.CompletedProcess[str]) -> bool:
-    """Whether the scheduler refused only because the task does not exist."""
-    output: str = f"{completed.stderr or ''}\n{completed.stdout or ''}".casefold()
-    return _MISSING_TASK_MARKER in output
+def _arguments(parts: Sequence[str]) -> str:
+    """Join the arguments after the command into one line, quoting parts that hold a space."""
+    return " ".join(f'"{part}"' if " " in part else part for part in parts)
 
 
-def _parsed_status(output: str) -> AutostartStatus:
-    """Read the status column of the headerless CSV row the scheduler printed."""
-    for row in csv.reader(output.splitlines()):
-        if len(row) <= _STATUS_COLUMN:
-            continue
-        if row[_STATUS_COLUMN].strip().casefold() == _DISABLED_STATUS:
-            return AutostartStatus.DISABLED
-        return AutostartStatus.ENABLED
-    return AutostartStatus.MISSING
+def _parsed_status(definition: str) -> AutostartStatus:
+    """Read the ``Settings/Enabled`` flag of an exported task definition."""
+    try:
+        root: ElementTree.Element = ElementTree.fromstring(definition.strip())  # noqa: S314 - local scheduler export
+    except ElementTree.ParseError:
+        return AutostartStatus.MISSING
+    enabled: ElementTree.Element | None = root.find(f"{{{_TASK_NAMESPACE}}}Settings/{{{_TASK_NAMESPACE}}}Enabled")
+    if enabled is not None and (enabled.text or "").strip().casefold() == "false":
+        return AutostartStatus.DISABLED
+    return AutostartStatus.ENABLED
 
 
 def _failure(completed: subprocess.CompletedProcess[str], action: str) -> AutostartError:
