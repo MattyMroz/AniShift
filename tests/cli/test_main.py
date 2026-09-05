@@ -7,7 +7,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 from unittest.mock import Mock
 
 import pytest
@@ -15,10 +15,16 @@ from typer.testing import CliRunner, Result
 
 from anishift import bootstrap
 from anishift.application import AppService
+from anishift.cli import interactive as interactive_package
+from anishift.cli import watch as cli_watch
 from anishift.config.workspace import ENV_WORKSPACE_ROOT, WorkspaceRootNotResolvedError
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.platform import autostart
+from anishift.platform.autostart import AutostartStatus, AutostartUnsupportedError
 
 cli_main = importlib.import_module("anishift.cli.main")
+
+_UNSUPPORTED_AUTOSTART_MESSAGE: Final[str] = "Autostart needs the Windows task scheduler"
 
 _UI_MODULE_PREFIXES: Final[tuple[str, ...]] = (
     "textual",
@@ -42,11 +48,17 @@ import sys
 from typer.testing import CliRunner
 
 cli_main = importlib.import_module("anishift.cli.main")
+cli_watch = importlib.import_module("anishift.cli.watch")
+autostart = importlib.import_module("anishift.platform.autostart")
 cli_main.run_setup = lambda *, force=False: []
+cli_watch.watch_status = lambda state_dir: cli_watch.WatchStatus(running=False, pid=None)
+autostart.status = lambda: autostart.AutostartStatus.MISSING
 runner = CliRunner()
 codes = [
     runner.invoke(cli_main.app, ["doctor"]).exit_code,
     runner.invoke(cli_main.app, ["setup"]).exit_code,
+    runner.invoke(cli_main.app, ["watch", "status"]).exit_code,
+    runner.invoke(cli_main.app, ["autostart", "status"]).exit_code,
 ]
 prefixes = tuple(json.loads(sys.argv[1]))
 print(json.dumps({"codes": codes, "loaded": sorted(n for n in sys.modules if n.startswith(prefixes))}))
@@ -143,3 +155,126 @@ def test_the_technical_subcommands_load_no_interactive_toolkit(tmp_path: Path) -
     assert probe.returncode == 0, probe.stderr
     report: dict[str, Any] = json.loads(probe.stdout)
     assert report["loaded"] == []
+    assert report["codes"][2:] == [0, 0]
+
+
+def test_watch_status_reports_a_stopped_watch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["watch", "status"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "stopped"
+
+
+def test_watch_status_names_the_running_process(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli_watch, "watch_status", lambda _dir: cli_watch.WatchStatus(running=True, pid=99))
+
+    result: Result = CliRunner().invoke(cli_main.app, ["watch", "status"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "running (pid 99)"
+
+
+def test_watch_stop_records_the_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    requested: list[Path] = []
+    monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli_watch, "request_stop", requested.append)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["watch", "stop"])
+
+    assert result.exit_code == 0
+    assert requested == [tmp_path]
+
+
+def test_watch_runs_the_daemon_on_the_composed_service(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    service: AppService = cast("AppService", object())
+    seen: list[tuple[object, Path]] = []
+
+    def daemon(passed: AppService, *, state_dir: Path) -> int:
+        seen.append((passed, state_dir))
+        return 3
+
+    monkeypatch.setattr(bootstrap, "production_service", lambda: service)
+    monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli_watch, "run_daemon", daemon)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["watch"])
+
+    assert result.exit_code == 3
+    assert seen == [(service, tmp_path)]
+
+
+def test_watch_batch_hands_the_named_groups_to_one_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    service: AppService = cast("AppService", object())
+    batches: list[list[str]] = []
+
+    def interactive(passed: AppService, *, batch: list[str] | None = None) -> int:
+        assert passed is service
+        batches.append(list(batch or []))
+        return 4
+
+    monkeypatch.setattr(bootstrap, "production_service", lambda: service)
+    monkeypatch.setattr(interactive_package, "run_interactive", interactive)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["watch", "batch", "a", "b"])
+
+    assert result.exit_code == 4
+    assert batches == [["a", "b"]]
+
+
+def test_autostart_enable_registers_the_watch_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    registered: list[list[str]] = []
+    monkeypatch.setattr(autostart, "watch_command", lambda: ["pythonw.exe", "-m", "anishift.cli.main", "watch"])
+    monkeypatch.setattr(autostart, "enable", lambda command: registered.append(list(command)))
+
+    result: Result = CliRunner().invoke(cli_main.app, ["autostart", "enable"])
+
+    assert result.exit_code == 0
+    assert registered == [["pythonw.exe", "-m", "anishift.cli.main", "watch"]]
+
+
+def test_autostart_enable_states_a_refusal_without_a_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse() -> list[str]:
+        raise AutostartUnsupportedError(
+            context=ErrorContext(
+                code=ErrorCode.AUTOSTART_UNSUPPORTED,
+                message=_UNSUPPORTED_AUTOSTART_MESSAGE,
+                suggestion="Start `anishift watch` yourself on this system",
+            ),
+        )
+
+    monkeypatch.setattr(autostart, "watch_command", refuse)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["autostart", "enable"])
+
+    assert result.exit_code == 1
+    assert _UNSUPPORTED_AUTOSTART_MESSAGE in result.output
+    assert isinstance(result.exception, SystemExit)
+
+
+def test_autostart_disable_removes_the_task_and_stops_the_watch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    removed: list[bool] = []
+    requested: list[Path] = []
+    monkeypatch.setattr(autostart, "disable", lambda: removed.append(True))
+    monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli_watch, "request_stop", requested.append)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["autostart", "disable"])
+
+    assert result.exit_code == 0
+    assert removed == [True]
+    assert requested == [tmp_path]
+
+
+def test_autostart_status_prints_the_scheduler_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(autostart, "status", lambda: AutostartStatus.ENABLED)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["autostart", "status"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "enabled"

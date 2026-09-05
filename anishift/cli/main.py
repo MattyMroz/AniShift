@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from anishift.application import AppService, RunResult
     from anishift.application.events import RunEvent
     from anishift.cli.run import AutoRunRefusal, PreparedAutoRun
+    from anishift.cli.watch import WatchStatus
+    from anishift.platform.autostart import AutostartStatus
     from anishift.setup.installer import ResourceResult
 
 app = typer.Typer(
@@ -27,6 +29,16 @@ app = typer.Typer(
     no_args_is_help=False,
     add_completion=False,
 )
+
+watch_app = typer.Typer(
+    help="Watch the library and hand every new file to one automatic window.",
+    no_args_is_help=False,
+)
+
+autostart_app = typer.Typer(help="Manage the Windows logon task that starts the watch.")
+
+app.add_typer(watch_app, name="watch")
+app.add_typer(autostart_app, name="autostart")
 
 logger = get_logger(__name__)
 
@@ -54,6 +66,24 @@ _OUTCOME_ICON: dict[str, StatusType] = {
     "failed": "error",
 }
 """Maps a setup outcome to a ``rich_console`` status-icon name."""
+
+_WATCH_RUNNING: Final[str] = "running (pid {pid})"
+"""Status line naming the process that currently watches the library."""
+
+_WATCH_RUNNING_UNKNOWN: Final[str] = "running"
+"""Status line used when the watch runs but recorded no readable identifier."""
+
+_WATCH_STOPPED: Final[str] = "stopped"
+"""Status line stated when no process watches the library."""
+
+_WATCH_STOP_REQUESTED: Final[str] = "Stop requested; the watch ends after its current scan."
+"""Confirmation of a stop request, which is accepted even with nothing running."""
+
+_AUTOSTART_ENABLED: Final[str] = "Autostart is on; the watch runs now and after every logon."
+"""Confirmation printed once the logon task exists and the watch was started."""
+
+_AUTOSTART_DISABLED: Final[str] = "Autostart is off; the running watch was asked to stop."
+"""Confirmation printed once the logon task is gone and a stop was requested."""
 
 
 def _print_doctor_report(results: list[CheckResult]) -> None:
@@ -119,6 +149,103 @@ def run(
 ) -> None:
     """Run one stored automatic preset over the workspace and report the outcome as text."""
     _run_preset(_composed_service(), preset)
+
+
+@watch_app.callback(invoke_without_command=True)
+def _watch(ctx: typer.Context) -> None:
+    """Watch the library in this terminal until `anishift watch stop`."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from anishift.cli.watch import run_daemon, watch_state_dir  # noqa: PLC0415 - keep the watch loop lazy
+
+    service: AppService = _composed_service()
+    raise typer.Exit(code=run_daemon(service, state_dir=watch_state_dir()))
+
+
+@watch_app.command("stop")
+def watch_stop() -> None:
+    """Ask the running watch to finish after its current scan."""
+    from anishift.cli.watch import request_stop, watch_state_dir  # noqa: PLC0415 - keep the watch loop lazy
+
+    request_stop(watch_state_dir())
+    typer.echo(_safe(_WATCH_STOP_REQUESTED))
+
+
+@watch_app.command("status")
+def watch_state() -> None:
+    """Report whether a watch process is running."""
+    from anishift.cli.watch import watch_state_dir, watch_status  # noqa: PLC0415 - keep the watch loop lazy
+
+    state: WatchStatus = watch_status(watch_state_dir())
+    typer.echo(_safe(_watch_status_line(state)))
+
+
+@watch_app.command("batch", hidden=True)
+def watch_batch(
+    group_ids: Annotated[
+        list[str],
+        typer.Argument(help="IDs of the source groups this window processes."),
+    ],
+) -> None:
+    """Run the named source groups in one window that closes itself."""
+    service: AppService = _composed_service()
+    from anishift.cli.interactive import run_interactive  # noqa: PLC0415 - keep prompts off technical commands
+
+    raise typer.Exit(code=run_interactive(service, batch=group_ids))
+
+
+@autostart_app.command("enable")
+def autostart_enable() -> None:
+    """Register the logon task and start watching right away."""
+    from anishift.platform.autostart import enable, watch_command  # noqa: PLC0415 - keep the scheduler lazy
+
+    try:
+        enable(watch_command())
+    except AniShiftError as problem:
+        _refuse_command(problem)
+    typer.echo(_safe(_AUTOSTART_ENABLED))
+
+
+@autostart_app.command("disable")
+def autostart_disable() -> None:
+    """Remove the logon task and ask a running watch to stop."""
+    from anishift.cli.watch import request_stop, watch_state_dir  # noqa: PLC0415 - keep the watch loop lazy
+    from anishift.platform.autostart import disable  # noqa: PLC0415 - keep the scheduler lazy
+
+    try:
+        disable()
+    except AniShiftError as problem:
+        _refuse_command(problem)
+    request_stop(watch_state_dir())
+    typer.echo(_safe(_AUTOSTART_DISABLED))
+
+
+@autostart_app.command("status")
+def autostart_state() -> None:
+    """Report whether the logon task is registered and switched on."""
+    from anishift.platform.autostart import status  # noqa: PLC0415 - keep the scheduler lazy
+
+    try:
+        state: AutostartStatus = status()
+    except AniShiftError as problem:
+        _refuse_command(problem)
+    typer.echo(_safe(state.value))
+
+
+def _watch_status_line(state: WatchStatus) -> str:
+    """Render one stable line describing the state of the watch process."""
+    if not state.running:
+        return _WATCH_STOPPED
+    if state.pid is None:
+        return _WATCH_RUNNING_UNKNOWN
+    return _WATCH_RUNNING.format(pid=state.pid)
+
+
+def _refuse_command(problem: AniShiftError) -> NoReturn:
+    """State one redacted sentence about a refused command and leave with code 1."""
+    logger.warning("Command refused", error_class=type(problem).__name__)
+    _echo_problem(problem)
+    raise typer.Exit(code=EXIT_REFUSED) from problem
 
 
 def _run_preset(service: AppService, preset: str) -> NoReturn:

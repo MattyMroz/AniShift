@@ -80,9 +80,11 @@ from anishift.application.results import (
     TaskResult,
 )
 from anishift.application.selection import group_is_ready, ready_group_ids
+from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger
 
 __all__ = [
     "PRIMARY_SOURCE_SUFFIXES",
+    "SCAN_INTERVAL_S",
     "AppService",
     "Artifact",
     "ArtifactKind",
@@ -137,6 +139,7 @@ __all__ = [
     "TaskState",
     "TranslationAction",
     "TranslationModelOption",
+    "WatchLedger",
     "WorkerNotification",
     "WorkerNotificationKind",
     "WorkspaceInspector",
