@@ -1,5 +1,9 @@
 # AniShift — od wyboru anime do oglądania
 
+> **Ten pakiet jest historyczny.** Aktualny kierunek i masterplan:
+> [docs/plans/local-automation/](../local-automation/README.md). Poniższe dokumenty zachowują
+> ustalenia właściciela U01–U18 i dowody z baseline 83150d8; nie są kolejką wykonania.
+
 Aktualny kierunek po decyzji właściciela z 2026-09-05: działający Auto rozwijamy
 o funkcje usuwające codzienną obsługę. Ogólne polerowanie jest odłożone.
 Ten pakiet nie jest zgodą na wdrożenie downloadera, watchera ani serwera.

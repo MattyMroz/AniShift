@@ -1,0 +1,56 @@
+---
+kind: package-index
+status: proposed
+updated: 2026-09-05
+baseline: bc74425b487fb9110da76911c26dca4194b2aad9
+implementation: not-executed
+language: pl
+---
+
+# AniShift | pełny pakiet lokalnej automatyzacji
+
+## Pliki do przekazania wykonawcy
+
+**[Masterplan implementacji](masterplan.md): kontrakt projektowy (sekcje 1–14), 16 faz i 128 uporządkowanych kart zadań ze scenariuszami weryfikacji.**
+
+| Dokument | Zawartość |
+| --- | --- |
+| [spec.md](spec.md) | Cel, sześć przepływów, 30 wymagań, granice i odbiór. |
+| [research.md](research.md) | Aktualny kod, integracje, biblioteki, alternatywy, 43 źródła i ograniczenia dowodu. |
+| [brief.md](brief.md) | Wybrany stos, kompromisy, konfiguracja i rzeczywiste decyzje właściciela. |
+| [masterplan.md](masterplan.md) | Architektura, schemat danych, kontrakty, foldery, stany, fazy i zadania plik po pliku. |
+| [handoff.md](handoff.md) | Instrukcja dla agenta kodującego, granice lokalnej adaptacji i bramki. |
+
+## Co ma powstać
+
+Wpisujesz tytuł, wybierasz sezon/grupę albo zapisujesz subskrypcję. Worker pobiera wskazane pliki przez qBittorrent, kopiuje je bez naruszania oryginałów, uruchamia obecny rdzeń i układa wyniki w bibliotece. Każdy gotowy fizyczny plik jest dostępny niezależnie od reszty paczki.
+
+Wrzucenie własnego MKV/MP4 do inbox działa bez otwierania Auto. Po świadomym włączeniu autostartu worker czuwa po zalogowaniu. Jedno opcjonalne okno pokazuje postęp i może zostać zamknięte bez przerwania obróbki.
+
+## Rozstrzygnięcia
+
+Lokalny worker, SQLite, obecne AppService/GraphScheduler i Prompt Toolkit, qBittorrent WebUI loopback, AniList, Nyaa RSS + historia, dodatkowy publiczny RSS, własny inbox i katalogi rewizji. Bez VPS, chmury, nowego UI, Redis/Celery/Docker i przepisywania TTS.
+
+Wybór qBittorrent jest rekomendacją techniczną, nie stwierdzeniem, że jest to obecny klient właściciela. Dwie ulubione grupy nie zostały nazwane, więc pakiet ich nie zgaduje.
+
+**MAL:** opcjonalny import XML i lokalne obejrzane; bez automatycznego zapisu na konto lub pełnej synchronizacji w tej edycji.
+
+## Relacja do wcześniejszego pakietu
+
+[docs/plans/automation/](../automation/README.md) z tego samego dnia zakładał najbliższy mały wycinek (A01) i zostawiał otwarte SQLite/JSON oraz VPS. Ten pakiet jest odpowiedzią na tamten brief i zastępuje tamten masterplan kierunkowo: pełny zakres lokalny, SQLite, bez VPS. Tamte dokumenty pozostają historią i źródłem ustaleń właściciela U01–U14; nie są równoległą kolejką wykonania.
+
+## Stan pakietu
+
+Plan przygotowano na bazie `MattyMroz/AniShift` z commitu `bc74425b487fb9110da76911c26dca4194b2aad9`. Starszy brief „tylko jeden wycinek” nie ogranicza obecnego pełnego zlecenia.
+
+Po przeglądzie właściciela z 2026-09-05 usunięto pliki pomocnicze generatora (eksport zadań, mapę pokrycia, sumy kontrolne, raport walidacji dokumentów, rejestr źródeł zdublowany z research.md) i zmieniono limity równoległości na ustawienia użytkownika. Pokrycie wymagań jest w polu **Realizacja** każdego R w spec.md.
+
+To komplet dokumentów planistycznych. Nie jest implementacją. Nie instalowano klienta, nie włączano autostartu, nie zmieniano kont, nie pobierano odcinków użytkownika i nie uruchamiano suite aplikacji. T003/T004 oraz końcowe próby Windows/live/human mają dopiero dostarczyć właściwy dowód runtime.
+
+Dokument zawiera rozstrzygnięte decyzje i konkretne testy dla niepewnych integracji. Nie daje nieuzasadnionej gwarancji, że wszystkie zewnętrzne API pozostaną niezmienne albo że nie ma błędów.
+
+## Początek implementacji
+
+Pierwszy rezultat do wykonania: [plans/01-watch-mode.md](plans/01-watch-mode.md) (tryb Czuwaj na istniejącym Auto, podfoldery serii, autostart). Zastępuje fazy P02–P04 i P12 masterplanu. Kolejne plany powstają po odbiorze poprzedniego.
+
+Wykonawca zaczyna od [handoff.md](handoff.md), potem od aktualnego planu w `plans/`. Cały katalog można umieścić w `docs/work/local-automation/`. Zachowanie nazw plików utrzymuje linki względne.

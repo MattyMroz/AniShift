@@ -9,9 +9,10 @@ Plany nie są instrukcją obecnego interfejsu.
 
 ## Aktualny kierunek rozwoju
 
-[Automatyzacja: od wyboru anime do oglądania](plans/automation/README.md).
-Kolejność: wizja → specyfikacja → masterplan → brief dla Pro → jeden zatwierdzony plan.
-Otwarte odłożone zadania mają status w GitHub Issues.
+[Lokalna automatyzacja: od wyboru anime do gotowego odcinka](plans/local-automation/README.md).
+Kolejność: specyfikacja → research → brief → masterplan → plany kolejnych rezultatów w `plans/`.
+Wcześniejszy pakiet [plans/automation/](plans/automation/README.md) jest historią i źródłem
+ustaleń właściciela U01–U18. Otwarte odłożone zadania mają status w GitHub Issues.
 
 ## Dowody dostarczonego kodu
 
