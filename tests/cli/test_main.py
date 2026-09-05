@@ -3,10 +3,12 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Final
+from unittest.mock import Mock
 
 import pytest
 from typer.testing import CliRunner, Result
@@ -93,6 +95,35 @@ def test_the_entry_point_holds_no_second_construction_path() -> None:
     assert "prototype" not in source
     assert "PrototypeApp" not in source
     assert "AniShiftApp" not in source
+
+
+@pytest.mark.parametrize("exit_code", [0, 4])
+def test_ctrl_c_during_logger_shutdown_preserves_exit_and_finishes_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    exit_code: int,
+) -> None:
+    logger_module = importlib.import_module("anishift.utils.logger")
+    completed: list[bool] = []
+    previous = signal.getsignal(signal.SIGINT)
+
+    def shutdown() -> None:
+        signal.raise_signal(signal.SIGINT)
+        completed.append(True)
+
+    monkeypatch.setattr(logger_module, "setup_mode_from_env", Mock())
+    monkeypatch.setattr(logger_module, "get_logger", Mock(return_value=Mock()))
+    monkeypatch.setattr(logger_module, "shutdown_logger", shutdown)
+    monkeypatch.setattr(cli_main, "app", Mock(side_effect=SystemExit(exit_code)))
+
+    try:
+        with pytest.raises(SystemExit) as result:
+            cli_main.main()
+    except KeyboardInterrupt:
+        pytest.fail("Ctrl+C interrupted logger cleanup")
+
+    assert result.value.code == exit_code
+    assert completed == [True]
+    assert signal.getsignal(signal.SIGINT) == previous
 
 
 def test_the_technical_subcommands_load_no_interactive_toolkit(tmp_path: Path) -> None:

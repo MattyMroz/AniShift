@@ -10,7 +10,7 @@ from typing import Final
 from rich.text import Text
 
 from anishift.cli.interactive.mascot import MascotState, mascot_art
-from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR
+from anishift.cli.interactive.mascot_native import MASCOT_FRAME_ROWS, NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.palette import hex_color, mix, rim_color
 from anishift.cli.interactive.prompts import BRAND_GAP_COLUMNS, AutoGeometry, HomeGeometry
 
@@ -73,9 +73,11 @@ def brand_for_geometry(
 ) -> Text:
     """Build the centered brand selected for one terminal geometry."""
     mascot: Text | None = None
+    raster_padding: int = 0
     if show_mascot and geometry.show_mascot:
+        raster_padding = max(geometry.mascot_rows - MASCOT_FRAME_ROWS, 0) if native_mascot else 0
         mascot = (
-            _native_mascot_placeholder(geometry.mascot_columns, geometry.mascot_rows)
+            _native_mascot_placeholder(geometry.mascot_columns, geometry.mascot_rows - raster_padding)
             if native_mascot
             else mascot_art(geometry.mascot_columns, max(geometry.mascot_rows - 2, 1), state)
         )
@@ -87,6 +89,9 @@ def brand_for_geometry(
         reserved_rows=geometry.brand_rows if show_mascot else 0,
         wordmark_columns=geometry.wordmark_columns,
     )
+    if raster_padding:
+        brand = brand.copy()
+        brand.append("\n " * raster_padding)
     return _centered_brand(brand, geometry.terminal_columns)
 
 

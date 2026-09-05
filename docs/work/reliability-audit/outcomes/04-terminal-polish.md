@@ -18,8 +18,9 @@ completed: 2026-09-05
 - Po ocenie właściciela usunięto falę i średni napis. Gdy duże logo nie mieści się
   obok maskotki, pozostaje sam slime; animacja maskotki nie przesuwa pasków.
 - Pod całą marką, również dodatkowym wierszem natywnego rastra, zostaje odstęp.
-- Home dzieli wolną wysokość równo nad i pod menu; różnica wynosi najwyżej
-  jeden wiersz. Górny margines marki pozostaje stały, jeśli okno go mieści.
+- Home dzieli wolną wysokość na trzy równe przerwy: nad marką, przed menu
+  i przed stopką (bez wliczania stopki). Pomiar bazuje na spoczynku slime'a,
+  nie na klatce podskoku. Przy małej wysokości priorytet ma sterowanie.
 - Etap ma osobną 14-kolumnową rezerwację. Pasek najpierw rośnie do 40 kolumn,
   a dopiero potem rozszerza się nazwa źródła. Nazwa korzysta
   z szerokości okna, Unicode jest liczone w komórkach, rozszerzenie zostaje.
@@ -159,3 +160,17 @@ Commity tematyczne:
 
 - `e1bde51` — renderer, responsywny branding, nawigacja kolejki i postęp.
 - `47f9125` — komplet produktów, trwałość ustawień, klawiatura i wybór modeli.
+
+## Ostatni feedback: padding i zamykanie
+
+Trzy przerwy Home są mierzone od sylwetki slime'a w spoczynku; stopka nie
+wchodzi do paddingu. Dodatkowy wiersz rastra nie obniża napisu. Test odnosi
+wysokość spoczynku do faktycznej pierwszej klatki GIF. Ctrl+C podczas zamykania
+loggera nie przerywa flush/close ani nie nadpisuje kodu wyjścia; poprzednia
+obsługa SIGINT jest przywracana. Regresje obu problemów odtworzono przed naprawą.
+
+Bramki przed commitem: Ruff, format oraz mypy Windows/Linux PASS.
+Pełny pytest: **3014 passed, 2 failed, 9 skipped**, 19,99 s.
+Oba failure dotyczą sztywnej listy stylów w testach, która nie uwzględnia
+lokalnego, nieśledzonego `shadow-slave.md`. Plik pozostaje nietknięty i poza
+commitem terminala; wynik nie jest deklaracją zielonego pełnego suite.

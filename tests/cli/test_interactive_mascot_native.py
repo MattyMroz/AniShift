@@ -4,11 +4,13 @@ import asyncio
 import threading
 import time
 from dataclasses import replace
+from importlib.resources import files
 from io import StringIO
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from PIL import Image
 from prompt_toolkit import Application
 from prompt_toolkit.application.current import create_app_session, set_app
 from prompt_toolkit.data_structures import Size
@@ -330,12 +332,22 @@ def test_the_native_reservation_includes_the_painted_padding_row() -> None:
     assert not lines[progress - 1].strip()
 
 
-def test_home_places_brand_at_top_and_menu_at_center() -> None:
+def test_home_balances_the_three_gaps_around_the_resting_brand_and_menu() -> None:
     content: Text = _home_content(120, 40, 0, MascotState.IDLE, native_size=(18, 10))
     lines: list[str] = [line.plain for line in content.split("\n")]
 
-    assert next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line) == 2
-    assert next(index for index, line in enumerate(lines) if "Auto" in line) == 23
+    assert next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line) == 6
+    assert next(index for index, line in enumerate(lines) if "Auto" in line) == 25
+
+
+def test_resting_padding_matches_the_packaged_gif_silhouette() -> None:
+    asset = files("anishift.cli.interactive.assets").joinpath("mascot", "idle", "01.gif")
+    with asset.open("rb") as stream, Image.open(stream) as source:
+        bounds = source.convert("RGBA").getbbox()
+        assert bounds is not None
+        resting_top: int = int(bounds[1] / source.height * native_module.MASCOT_FRAME_ROWS + 0.5)
+
+    assert resting_top == native_module.MASCOT_REST_TOP_ROWS
 
 
 def test_auto_reserves_mascot_space_above_progress() -> None:

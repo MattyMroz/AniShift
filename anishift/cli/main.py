@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Final, NoReturn
 
@@ -277,8 +278,12 @@ def main() -> None:
         log.opt(exception=error).critical("AniShift process terminated unexpectedly")
         raise
     finally:
-        log.info("AniShift process stopped")
-        shutdown_logger()
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            log.info("AniShift process stopped")
+            shutdown_logger()
+        finally:
+            signal.signal(signal.SIGINT, previous)
 
 
 def _log_path() -> Path:

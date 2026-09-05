@@ -161,8 +161,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   przygotowuje animację, dopiero potem uruchamia pętlę wejścia. VS Code korzysta z tracked
   `terminal.integrated.enableImages=true`.
   `interactive/home.py`, `interactive/mascot_native.py`, `interactive/prompts.py`
-- Wielkość maskotki jest wyrażona w WIERSZACH TEKSTU (`_FRAME_ROWS`), nie w pikselach:
-  `side = _FRAME_ROWS * wysokość_komórki`. Stała liczba pikseli wygląda na mniejszą w
+- Wielkość maskotki jest wyrażona w WIERSZACH TEKSTU (`MASCOT_FRAME_ROWS`), nie w pikselach:
+  `side = MASCOT_FRAME_ROWS * wysokość_komórki`. Stała liczba pikseli wygląda na mniejszą w
   terminalu o większym foncie (Windows Terminal 10×20 px) niż w VS Code (7×17 px), bo
   obok stoi większy wordmark — user porównuje maskotkę do tekstu, nie do ekranu.
   Skalowanie do rezerwacji w komórkach też jest złe: daje wielkość zależną od szerokości
@@ -174,7 +174,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `NativeMascotImage.layout_rows` określa nominalną wysokość obrazu; rezerwacja
   renderera i kasowanie używają `cell_rows`/`cell_columns`, czyli całego rastra.
   Padding nad obrazem zwiększa go o wiersz, którego nie wolno liczyć jako pustego
-  odstępu nad postępem. `interactive/mascot_native.py`, `interactive/prompts.py`
+  odstępu nad postępem. Wordmark wyrównuje się do nominalnej wysokości, nie do
+  dodatkowego wiersza rastra. `interactive/mascot_native.py`, `interactive/home.py`, `interactive/prompts.py`
 - Przesunięcie maskotki w prawo wewnątrz klatki jest WSPÓLNE dla całej animacji
   (`_shared_right_shift`, ograniczone najszerszą klatką). Dosuwanie każdej klatki osobno
   do krawędzi wygląda jak rozciąganie w lewo, bo klatki przysiadu są szersze od klatek

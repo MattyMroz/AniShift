@@ -16,7 +16,7 @@ from PIL import Image, ImageSequence
 
 from anishift.utils.logger import get_logger
 
-__all__ = ["NATIVE_MASCOT_ANCHOR", "NativeMascotImage", "load_native_mascot", "native_mascot_cell"]
+__all__ = ["MASCOT_FRAME_ROWS", "NATIVE_MASCOT_ANCHOR", "NativeMascotImage", "load_native_mascot", "native_mascot_cell"]
 
 logger = get_logger(__name__)
 
@@ -49,8 +49,11 @@ _RLE_THRESHOLD: Final[int] = 4
 _DEFAULT_FRAME_SECONDS: Final[float] = 0.1
 """Fallback duration used when an animation frame omits timing metadata."""
 
-_FRAME_ROWS: Final[int] = 10
+MASCOT_FRAME_ROWS: Final[int] = 10
 """Approved frame height counted in text rows, so the mascot follows the font."""
+
+MASCOT_REST_TOP_ROWS: Final[int] = 3
+"""Blank rows above the resting GIF silhouette: 46/160 of ten rows plus the half-row pad."""
 
 _ASSUMED_CELL: Final[tuple[int, int]] = (8, 17)
 """Cell size in pixels assumed when the terminal reports no metrics."""
@@ -136,7 +139,7 @@ def load_native_mascot(
         return None
     reported: tuple[int, int] | None = terminal_cell_size() if query_terminal else cell_size
     cell: tuple[int, int] = reported or _ASSUMED_CELL
-    side: int = _FRAME_ROWS * cell[1]
+    side: int = MASCOT_FRAME_ROWS * cell[1]
     top_pad: int = cell[1] // _TOP_PAD_DIVISOR
     columns: int = math.ceil(side / cell[0])
     painted_rows: int = math.ceil((side + top_pad) / cell[1])
@@ -149,7 +152,7 @@ def load_native_mascot(
         top_pad=top_pad,
         cell_columns=columns,
         cell_rows=painted_rows,
-        layout_rows=_FRAME_ROWS,
+        layout_rows=MASCOT_FRAME_ROWS,
     )
     asset = files(_ASSET_PACKAGE).joinpath(*_ASSET_PARTS)
     try:
@@ -168,7 +171,7 @@ def load_native_mascot(
                 cycle_seconds=sum(frame_seconds),
                 cell_columns=columns,
                 cell_rows=painted_rows,
-                layout_rows=_FRAME_ROWS,
+                layout_rows=MASCOT_FRAME_ROWS,
             )
     except OSError, ValueError:
         logger.warning("Native mascot encoder failed")

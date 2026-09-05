@@ -105,6 +105,20 @@ def test_the_wordmark_stays_still_while_the_native_slime_animates() -> None:
     assert all(frame == frames[0] for frame in frames)
 
 
+@pytest.mark.parametrize("auto", [False, True])
+def test_native_raster_padding_does_not_lower_the_wordmark(auto: bool) -> None:
+    geometry: HomeGeometry | AutoGeometry = (
+        resolve_auto_geometry(120, 40, 4, (18, 11)) if auto else resolve_home_geometry(120, 40, (18, 11))
+    )
+    frame = brand_for_geometry(geometry, native_mascot=True)
+    lines: list[str] = frame.plain.split("\n")
+    anchor: int = next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line)
+    wordmark_bottom: int = max(index for index, line in enumerate(lines) if "═" in line)
+
+    assert wordmark_bottom - anchor == 9
+    assert len(lines) == 11
+
+
 @pytest.mark.parametrize("columns", [35, 50, 60, 75])
 def test_only_the_slime_remains_when_the_full_wordmark_cannot_fit(columns: int) -> None:
     geometry = resolve_home_geometry(columns, 30)
@@ -152,3 +166,19 @@ def test_home_balances_the_gaps_above_and_below_the_menu(size: tuple[int, int]) 
     below: int = rows - menu_bottom - 2
 
     assert abs(above - below) <= 1
+
+
+@pytest.mark.parametrize("size", [(120, 40), (120, 41), (80, 30), (60, 30)])
+@pytest.mark.parametrize("phase", [0, 11, 19])
+def test_home_padding_uses_resting_silhouette_and_excludes_footer(size: tuple[int, int], phase: int) -> None:
+    columns, rows = size
+    content = _home_content(columns, rows, 0, MascotState.IDLE, native_size=(18, 11), animation_phase=phase)
+    frame = _fit_frame(content, "1.0.0", "workspace", columns, rows)
+    lines: list[str] = frame.plain.split("\n")
+    anchor: int = next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line)
+    menu_top: int = next(index for index, line in enumerate(lines) if "Auto" in line)
+    menu_bottom: int = next(index for index, line in enumerate(lines) if "↑↓" in line)
+    gaps: tuple[int, int, int] = (anchor + 3, menu_top - anchor - 11, rows - menu_bottom - 2)
+
+    assert max(gaps) - min(gaps) <= 1
+    assert lines[-1].endswith("v1.0.0")

@@ -113,8 +113,10 @@ opcje i modele nie mogą znikać ani nadpisywać innych ustawień przy edycji.
 
 Etap ma osobny odstęp od nazwy pliku. Pasek ma pierwszeństwo przed rozszerzaniem
 tytułu, a akcent zachowuje oryginalny azure, bez rozjaśniania.
-Home zachowuje stały górny margines, o ile wystarcza wysokości. Puste odstępy
-logo–menu i menu–stopka są równe z tolerancją jednego wiersza przy resize.
+Home wyrównuje trzy puste odstępy: nad marką, marka–menu i menu–stopka,
+z tolerancją jednego wiersza, gdy okno mieści dekorację i sterowanie.
+Stopka nie jest paddingiem. Sylwetkę slime'a mierzy się w spoczynku;
+podskok nie przesuwa menu ani nie zmienia odstępów.
 Sugestie poprawy promptów trafiają do osobnego raportu;
 aktywne szablony nie są zmieniane bez walidacji jakości. Trzy luźne pliki
 `prompt_helper.txt`, `prompt_helperSS.txt`, `prompt_main.txt` można usunąć po

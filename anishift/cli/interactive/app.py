@@ -16,6 +16,7 @@ from anishift.application.events import sanitize_event_message
 from anishift.cli.interactive.home import HomeAction, brand_for_geometry, working_directory_label
 from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
 from anishift.cli.interactive.mascot import MascotController, MascotState
+from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS, NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.prompts import (
     TEXT_MASCOT_SIZE,
@@ -53,12 +54,6 @@ _HOME_HINT: Final[str] = "↑↓ · Enter"
 
 _HOME_POINTER: Final[str] = "\u276f"
 """Pointer glyph shown beside the active Home choice."""
-
-_HOME_BRAND_TOP_PADDING_ROWS: Final[int] = 2
-"""Fixed terminal padding above the Home brand."""
-
-_HOME_MENU_REGION_GAP_ROWS: Final[int] = 2
-"""Minimum combined spacing above and below the Home choices."""
 
 _QUEUE_SCROLL_KEYS: Final[frozenset[str]] = frozenset({"up", "down", "pageup", "pagedown", "home", "end"})
 """Keys that move the Auto queue instead of leaving the view."""
@@ -624,8 +619,19 @@ def _home_content(  # noqa: PLR0913
     brand_rows: int = len(brand.split("\n"))
     menu_rows: int = len(_HOME_CHOICES) + 1
     body_rows: int = max(rows - 1, 1)
-    gap: int = min(_HOME_MENU_REGION_GAP_ROWS, max(body_rows - brand_rows - menu_rows, 0))
-    brand_top: int = min(_HOME_BRAND_TOP_PADDING_ROWS, max(body_rows - brand_rows - menu_rows - gap, 0))
+    resting: Text = brand_for_geometry(geometry, mascot_state, native_mascot=native_size is not None)
+    resting_top: int = next(
+        (
+            index
+            for index, line in enumerate(resting.split("\n"))
+            if line.plain.replace(NATIVE_MASCOT_ANCHOR, "").strip()
+        ),
+        brand_rows,
+    )
+    if native_size is not None and geometry.show_mascot:
+        resting_top = min(resting_top, MASCOT_REST_TOP_ROWS)
+    free_rows: int = max(body_rows - (brand_rows - resting_top) - menu_rows, 0)
+    brand_top: int = max(free_rows // 3 - resting_top, 0)
     menu_region_top: int = brand_top + brand_rows
     menu_region_rows: int = max(body_rows - menu_region_top, menu_rows)
     menu_top: int = menu_region_top + max((menu_region_rows - menu_rows) // 2, 0)
