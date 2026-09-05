@@ -26,6 +26,7 @@ from anishift.application import (
 )
 from anishift.application.planning import PlanProblem
 from anishift.application.results import GroupResult, GroupStatus, ProducedArtifact, RunResult
+from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, prepare_auto_run
 from anishift.errors import ConfigError, ErrorCode, ErrorContext, ExecutionError, PlanningError
 
 cli_main = importlib.import_module("anishift.cli.main")
@@ -600,6 +601,77 @@ def test_the_run_command_loads_no_textual_module() -> None:
     report: dict[str, Any] = json.loads(probe.stdout)
     assert report["code"] == cli_main.EXIT_SUCCESS
     assert report["loaded"] == []
+
+
+def test_a_requested_subset_plans_only_those_groups_in_workspace_order(tmp_path: Path) -> None:
+    facade: _Facade = _Facade(root=tmp_path, group_ids=("anime-01", "anime-02", "anime-03"))
+
+    prepared: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(
+        cast("AppService", facade),
+        "default",
+        group_ids=("anime-03", "anime-01"),
+    )
+
+    assert isinstance(prepared, PreparedAutoRun)
+    assert prepared.group_ids == ("anime-01", "anime-03")
+    assert facade.planned == [(("anime-01", "anime-03"), "preset:default")]
+
+
+def test_a_requested_group_the_workspace_never_discovered_is_refused_before_planning(tmp_path: Path) -> None:
+    facade: _Facade = _Facade(root=tmp_path, group_ids=("anime-01", "anime-02"))
+
+    prepared: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(
+        cast("AppService", facade),
+        "default",
+        group_ids=("anime-01", "anime-77"),
+    )
+
+    assert isinstance(prepared, AutoRunRefusal)
+    assert prepared.message == "The run cannot take every requested source group."
+    assert [(blocker.scope, blocker.message) for blocker in prepared.blockers] == [
+        ("anime-77", "The workspace holds no such source group."),
+    ]
+    assert facade.planned == []
+
+
+def test_a_requested_group_that_is_not_ready_is_refused_before_planning(tmp_path: Path) -> None:
+    facade: _Facade = _Facade(root=tmp_path, group_ids=("anime-01", "anime-02"), unready=("anime-02",))
+
+    prepared: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(
+        cast("AppService", facade),
+        "default",
+        group_ids=("anime-01", "anime-02"),
+    )
+
+    assert isinstance(prepared, AutoRunRefusal)
+    assert [(blocker.scope, blocker.message) for blocker in prepared.blockers] == [
+        ("anime-02", "This source group is not ready to run."),
+    ]
+    assert facade.planned == []
+
+
+def test_a_run_without_a_requested_selection_still_plans_every_ready_group(tmp_path: Path) -> None:
+    facade: _Facade = _Facade(root=tmp_path, group_ids=("anime-01", "anime-02", "anime-03"), unready=("anime-02",))
+
+    prepared: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(cast("AppService", facade), "default")
+
+    assert isinstance(prepared, PreparedAutoRun)
+    assert prepared.group_ids == ready_group_ids(facade.workspace.groups)
+    assert facade.planned == [(("anime-01", "anime-03"), "preset:default")]
+
+
+def test_an_empty_requested_selection_is_refused_instead_of_planning_every_group(tmp_path: Path) -> None:
+    facade: _Facade = _Facade(root=tmp_path, group_ids=("anime-01", "anime-02"))
+
+    prepared: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(
+        cast("AppService", facade),
+        "default",
+        group_ids=(),
+    )
+
+    assert isinstance(prepared, AutoRunRefusal)
+    assert prepared.message == "No discovered source group is ready to run."
+    assert facade.planned == []
 
 
 def _invoke_run(monkeypatch: pytest.MonkeyPatch, facade: _Facade, *, preset: str = "default") -> Result:
