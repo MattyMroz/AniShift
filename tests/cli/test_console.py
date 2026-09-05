@@ -115,7 +115,7 @@ def test_cli_commands_do_not_import_textual(tmp_path: Path) -> None:
         errors="replace",
         timeout=60,
         check=False,
-        env={**os.environ, "ANISHIFT_WORKSPACE_ROOT": str(tmp_path / "workspace")},
+        env={**os.environ, "ANISHIFT_WORKSPACE_ROOT": str(tmp_path / "workspace"), "PYTHONIOENCODING": "utf-8"},
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert not [path for path in install_root.rglob("*") if path.is_file()]
