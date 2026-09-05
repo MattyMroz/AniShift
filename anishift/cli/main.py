@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Annotated, Final, NoReturn
 
 import typer
 
+from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_INCOMPLETE, EXIT_REFUSED, run_exit_code
 from anishift.errors import AniShiftError
 from anishift.setup.doctor import CheckResult, CheckStatus, run_doctor
 from anishift.setup.installer import run_setup
@@ -30,18 +31,6 @@ app = typer.Typer(
 logger = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-
-EXIT_SUCCESS: Final[int] = 0
-"""Every group of a non-interactive run reached a successful terminal state."""
-
-EXIT_REFUSED: Final[int] = 1
-"""The run never started: unusable configuration, unknown preset, no sources or a blocked plan."""
-
-EXIT_INCOMPLETE: Final[int] = 3
-"""The run finished with a failed or partial group; 2 stays reserved for command-line usage errors."""
-
-EXIT_CANCELLED: Final[int] = 4
-"""Cancellation reached the run before every group succeeded."""
 
 _RUN_CANCELLED: Final[str] = "The run was cancelled before it finished."
 """Sentence stated when the process is interrupted while the run is executing."""
@@ -147,7 +136,7 @@ def _run_preset(service: AppService, preset: str) -> NoReturn:
         _refuse_preparation(prepared)
     result: RunResult = _executed_run(service, prepared)
     _print_run_report(result, service.workspace_root)
-    code: int = _run_exit_code(result)
+    code: int = run_exit_code(result)
     logger.info("Non-interactive run finished", groups=len(result.groups), exit_code=code)
     raise typer.Exit(code=code)
 
@@ -203,15 +192,6 @@ def _print_run_report(result: RunResult, root: Path) -> None:
         typer.echo(f"warning: {warning}")
     succeeded: int = sum(1 for group in result.groups if group.status is GroupStatus.SUCCEEDED)
     typer.echo(_RUN_SUMMARY.format(succeeded=succeeded, total=len(result.groups)))
-
-
-def _run_exit_code(result: RunResult) -> int:
-    """Map one terminal run result to the exit code a calling script reads."""
-    if result.succeeded:
-        return EXIT_SUCCESS
-    if result.cancelled:
-        return EXIT_CANCELLED
-    return EXIT_INCOMPLETE
 
 
 def _refuse_problem(problem: AniShiftError | OSError) -> NoReturn:

@@ -441,6 +441,8 @@ def test_settings_view_does_not_render_the_mascot() -> None:
         SimpleNamespace(render=lambda _columns, _rows: Text("Ustawienia")),
     )
     application._manual = None
+    application._batch = None
+    application._closing_at = None
     application._mascot = cast("MascotController", SimpleNamespace(state=MascotState.IDLE))
     application._renderer = cast("TerminalRenderer", SimpleNamespace(native_mascot_size=(20, 10)))
     application._directory = "~"

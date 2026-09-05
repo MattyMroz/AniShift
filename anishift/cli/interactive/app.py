@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from time import monotonic
 from typing import Final
 
 from rich.text import Text
@@ -13,6 +15,7 @@ from anishift import __version__
 from anishift.application import AppService, AutoPreset, InspectedWorkspace, RunResult
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import sanitize_event_message
+from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS, run_exit_code
 from anishift.cli.interactive.home import HomeAction, brand_for_geometry, working_directory_label
 from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
 from anishift.cli.interactive.mascot import MascotController, MascotState
@@ -66,6 +69,12 @@ _QUEUE_MARKER_ROWS: Final[int] = 2
 
 _MINIMUM_BRANDED_ROWS: Final[int] = 8
 """Minimum terminal height for a brand, gap, queue markers and progress."""
+
+_BATCH_CLOSE_SECONDS: Final[float] = 10.0
+"""Seconds a finished batch window stays readable before it closes itself."""
+
+_BATCH_CLOSING: Final[str] = "Okno zamknie się za {seconds} s · dowolny klawisz zamyka"
+"""Footer of a finished batch window while it counts down."""
 
 _REFUSAL_MESSAGES: Final[dict[str, str]] = {
     "The workspace holds no source group to run.": "Workspace nie zawiera materiału do uruchomienia",
@@ -139,8 +148,11 @@ class _ViewMode(StrEnum):
 class _InteractiveApplication:
     """Coordinate application work with one Prompt Toolkit renderer."""
 
-    def __init__(self, service: AppService) -> None:
+    def __init__(self, service: AppService, *, batch: tuple[str, ...] | None = None) -> None:
         self._service: AppService = service
+        self._batch: tuple[str, ...] | None = batch
+        self._exit_code: int = EXIT_SUCCESS
+        self._closing_at: float | None = None
         self._lock: threading.Lock = threading.Lock()
         self._mode: _ViewMode = _ViewMode.HOME
         self._selected: int = 0
@@ -163,15 +175,19 @@ class _InteractiveApplication:
         )
         self._mascot: MascotController = MascotController(self._renderer.invalidate)
 
-    def run(self) -> None:
-        """Run the interactive session until Home exits."""
-        self._start_prewarm()
+    def run(self) -> int:
+        """Run the session until Home exits, or until one batch finishes and its window closes."""
+        if self._batch is None:
+            self._start_prewarm()
+        else:
+            self._start_auto()
         try:
             self._renderer.run()
         finally:
             self._cancel_active_work()
             self._close_settings()
             self._mascot.close()
+        return self._exit_code
 
     def _cancel_active_work(self) -> None:
         """Signal every active operation before the terminal owner closes."""
@@ -230,13 +246,29 @@ class _InteractiveApplication:
             self._renderer.invalidate()
             return
         if mode in {_ViewMode.AUTO_DONE, _ViewMode.MESSAGE}:
-            self._show_home()
+            self._leave_finished_view()
+
+    def _leave_finished_view(self) -> None:
+        """Return to Home, or let a batch window close now that its outcome was read."""
+        if self._batch is not None:
+            self._renderer.exit()
+            return
+        self._show_home()
+
+    def _close_batch(self, exit_code: int) -> None:
+        """Stop the work of a batch window and close it with the given outcome."""
+        self._exit_code = exit_code
+        self._cancel_active_work()
+        self._renderer.exit()
 
     def _handle_idle(self) -> None:
         with self._lock:
             controller: SettingsController | None = self._settings if self._mode is _ViewMode.SETTINGS else None
+            closing_at: float | None = self._closing_at
         if controller is not None:
             controller.flush_pending()
+        if closing_at is not None and monotonic() >= closing_at:
+            self._renderer.exit()
 
     def _handle_scroll(self, direction: int) -> None:
         with self._lock:
@@ -318,6 +350,9 @@ class _InteractiveApplication:
         self._renderer.invalidate()
 
     def _interrupt(self, mode: _ViewMode) -> None:
+        if self._batch is not None:
+            self._close_batch(EXIT_CANCELLED)
+            return
         if mode is _ViewMode.HOME:
             logger.info("Interactive session interrupted")
             self._renderer.exit()
@@ -467,16 +502,13 @@ class _InteractiveApplication:
             if preflight_cancel is None:
                 return
             preset_id: str = self._service.default_preset_id()
-            preparation: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(
-                self._service,
-                preset_id,
-                cancel=preflight_cancel,
-            )
+            preparation: PreparedAutoRun | AutoRunRefusal = self._prepared_auto(preset_id, preflight_cancel)
             with self._lock:
                 if generation != self._generation:
                     return
                 self._preflight_cancel = None
             if isinstance(preparation, AutoRunRefusal):
+                self._finish_batch(EXIT_REFUSED)
                 self._finish_with_message(generation, _refusal_text(preparation))
                 return
             self._mascot.reset()
@@ -486,7 +518,14 @@ class _InteractiveApplication:
                 if generation != self._generation:
                     return
             logger.warning("Interactive automatic run failed", error_class=type(problem).__name__)
+            self._finish_batch(EXIT_REFUSED)
             self._finish_with_message(generation, _problem_text(problem))
+
+    def _prepared_auto(self, preset_id: str, cancel: EventCancellationToken) -> PreparedAutoRun | AutoRunRefusal:
+        """Plan every ready group, or only the groups one batch window was opened for."""
+        if self._batch is None:
+            return prepare_auto_run(self._service, preset_id, cancel=cancel)
+        return prepare_auto_run(self._service, preset_id, cancel=cancel, group_ids=self._batch)
 
     def _execute_run(self, generation: int, prepared: PreparedAutoRun | ManualRun) -> None:
         try:
@@ -504,6 +543,7 @@ class _InteractiveApplication:
             self._renderer.invalidate()
             with progress:
                 result: RunResult = execute_plan(self._service, prepared.plan, progress)
+            self._finish_batch(run_exit_code(result))
             if not result.succeeded or result.warnings:
                 self._finish_with_message(generation, _result_message(result, prepared.workspace))
                 return
@@ -519,7 +559,16 @@ class _InteractiveApplication:
                 if generation != self._generation:
                     return
             logger.warning("Interactive run failed", error_class=type(problem).__name__)
+            self._finish_batch(EXIT_INCOMPLETE)
             self._finish_with_message(generation, _problem_text(problem))
+
+    def _finish_batch(self, exit_code: int) -> None:
+        """Record the outcome of a batch window and start the countdown that closes it."""
+        if self._batch is None:
+            return
+        with self._lock:
+            self._exit_code = exit_code
+            self._closing_at = monotonic() + _BATCH_CLOSE_SECONDS
 
     def _on_run_started(self, run_id: str) -> None:
         with self._lock:
@@ -571,6 +620,7 @@ class _InteractiveApplication:
             progress: RichRunProgress | None = self._progress
             settings: SettingsController | None = self._settings
             manual: ManualController | None = self._manual
+            closing_at: float | None = self._closing_at
         mascot_state: MascotState = self._mascot.state
         native_size: tuple[int, int] | None = getattr(self._renderer, "native_mascot_size", None)
         animation_phase: int = getattr(self._renderer, "animation_phase", 0)
@@ -593,12 +643,19 @@ class _InteractiveApplication:
             content = settings.render(columns, rows)
         else:
             content = _message_content(columns, rows, message, mascot_state, view=message_view)
-        return _fit_frame(content, __version__, self._directory, columns, rows)
+        footer: str = self._directory if closing_at is None else _closing_label(closing_at)
+        return _fit_frame(content, __version__, footer, columns, rows)
 
 
-def run_interactive(service: AppService) -> None:
-    """Run the single-owner interactive terminal application."""
-    _InteractiveApplication(service).run()
+def run_interactive(service: AppService, *, batch: Sequence[str] | None = None) -> int:
+    """Run the single-owner interactive session; a batch runs its groups and closes on its own."""
+    groups: tuple[str, ...] | None = tuple(batch) if batch is not None else None
+    return _InteractiveApplication(service, batch=groups).run()
+
+
+def _closing_label(closing_at: float) -> str:
+    remaining: int = max(int(closing_at - monotonic() + 0.999), 0)
+    return _BATCH_CLOSING.format(seconds=remaining)
 
 
 def _home_content(  # noqa: PLR0913
