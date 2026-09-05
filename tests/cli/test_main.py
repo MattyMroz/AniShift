@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Final, cast
 from unittest.mock import Mock
 
@@ -14,7 +15,7 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from anishift import bootstrap
-from anishift.application import AppService
+from anishift.application import AppService, ClientStatus
 from anishift.cli import interactive as interactive_package
 from anishift.cli import watch as cli_watch
 from anishift.config.workspace import ENV_WORKSPACE_ROOT, WorkspaceRootNotResolvedError
@@ -278,3 +279,54 @@ def test_autostart_status_prints_the_scheduler_state(monkeypatch: pytest.MonkeyP
 
     assert result.exit_code == 0
     assert result.output.strip() == "enabled"
+
+
+def _service_with_client(status: object, *, setup: object | None = None) -> AppService:
+    acquisition: SimpleNamespace = SimpleNamespace(
+        client_status=lambda: status,
+        setup_client=lambda: setup if setup is not None else status,
+    )
+    return cast("AppService", SimpleNamespace(acquisition=acquisition))
+
+
+def test_qbit_status_prints_the_version_and_the_incomplete_extension(monkeypatch: pytest.MonkeyPatch) -> None:
+    service: AppService = _service_with_client(ClientStatus(reachable=True, version="5.2.3", incomplete_extension=True))
+    monkeypatch.setattr(bootstrap, "production_service", lambda: service)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "status"])
+
+    assert result.exit_code == 0
+    assert result.output.splitlines() == ["reachable: yes (v5.2.3)", "incomplete extension: on"]
+
+
+def test_qbit_status_refuses_with_the_hint_when_the_client_is_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    status: ClientStatus = ClientStatus(
+        reachable=False, problem="Web UI is not reachable", suggestion="Enable the Web UI"
+    )
+    monkeypatch.setattr(bootstrap, "production_service", lambda: _service_with_client(status))
+
+    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "status"])
+
+    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert result.output.splitlines() == ["reachable: no", "Web UI is not reachable", "  Enable the Web UI"]
+    assert "Traceback" not in result.output
+
+
+def test_qbit_setup_reports_the_state_after_switching_the_extension_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    before: ClientStatus = ClientStatus(reachable=True, version="5.2.3", incomplete_extension=False)
+    after: ClientStatus = ClientStatus(reachable=True, version="5.2.3", incomplete_extension=True)
+    monkeypatch.setattr(bootstrap, "production_service", lambda: _service_with_client(before, setup=after))
+
+    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
+
+    assert result.exit_code == 0
+    assert result.output.splitlines()[-1] == "incomplete extension: on"
+
+
+def test_qbit_refuses_a_session_without_a_torrent_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", SimpleNamespace(acquisition=None)))
+
+    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "status"])
+
+    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert "no torrent client" in result.output

@@ -16,7 +16,7 @@ from anishift.utils.logger import get_logger
 from anishift.utils.rich_console import StatusType, console, get_status_icon
 
 if TYPE_CHECKING:
-    from anishift.application import AppService, RunResult
+    from anishift.application import AcquisitionService, AppService, ClientStatus, RunResult
     from anishift.application.events import RunEvent
     from anishift.cli.run import AutoRunRefusal, PreparedAutoRun
     from anishift.cli.watch import WatchStatus
@@ -37,8 +37,11 @@ watch_app = typer.Typer(
 
 autostart_app = typer.Typer(help="Manage the Windows logon task that starts the watch.")
 
+qbit_app = typer.Typer(help="Check and prepare the qBittorrent Web UI that downloads into the library.")
+
 app.add_typer(watch_app, name="watch")
 app.add_typer(autostart_app, name="autostart")
+app.add_typer(qbit_app, name="qbit")
 
 logger = get_logger(__name__)
 
@@ -84,6 +87,18 @@ _AUTOSTART_ENABLED: Final[str] = "Autostart is on; the watch runs now and after 
 
 _AUTOSTART_DISABLED: Final[str] = "Autostart is off; the running watch was asked to stop."
 """Confirmation printed once the logon task is gone and a stop was requested."""
+
+_QBIT_REACHABLE: Final[str] = "reachable: yes (v{version})"
+"""Status line stated when the qBittorrent Web UI answers."""
+
+_QBIT_UNREACHABLE: Final[str] = "reachable: no"
+"""Status line stated when the qBittorrent Web UI does not answer."""
+
+_QBIT_EXTENSION: Final[str] = "incomplete extension: {state}"
+"""Status line naming whether the client marks files still being downloaded."""
+
+_QBIT_ABSENT: Final[str] = "This session has no torrent client composed."
+"""Refusal stated when the facade was built without the acquisition boundary."""
 
 
 def _print_doctor_report(results: list[CheckResult]) -> None:
@@ -230,6 +245,39 @@ def autostart_state() -> None:
     except AniShiftError as problem:
         _refuse_command(problem)
     typer.echo(_safe(state.value))
+
+
+@qbit_app.command("status")
+def qbit_status() -> None:
+    """Report whether the qBittorrent Web UI answers and marks incomplete files."""
+    _print_client_status(_acquisition(_composed_service()).client_status())
+
+
+@qbit_app.command("setup")
+def qbit_setup() -> None:
+    """Make qBittorrent mark incomplete files, so the watch never takes a partial download."""
+    _print_client_status(_acquisition(_composed_service()).setup_client())
+
+
+def _acquisition(service: AppService) -> AcquisitionService:
+    """Return the composed acquisition boundary or refuse with one sentence."""
+    acquisition: AcquisitionService | None = service.acquisition
+    if acquisition is None:
+        typer.echo(_QBIT_ABSENT)
+        raise typer.Exit(code=EXIT_REFUSED)
+    return acquisition
+
+
+def _print_client_status(status: ClientStatus) -> None:
+    """Print the stable status lines and leave with code 1 when the client is unreachable."""
+    if not status.reachable:
+        typer.echo(_QBIT_UNREACHABLE)
+        typer.echo(_safe(status.problem))
+        if status.suggestion:
+            typer.echo(f"  {_safe(status.suggestion)}")
+        raise typer.Exit(code=EXIT_REFUSED)
+    typer.echo(_QBIT_REACHABLE.format(version=_safe(status.version)))
+    typer.echo(_QBIT_EXTENSION.format(state="on" if status.incomplete_extension else "off"))
 
 
 def _watch_status_line(state: WatchStatus) -> str:
