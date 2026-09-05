@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import io
+import os
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -12,6 +14,7 @@ from anishift.cli.console import (
     configure_utf8_streams,
     console_encoding_check,
 )
+from anishift.platform.binaries import is_windows
 from anishift.setup.doctor import CheckStatus
 
 
@@ -78,30 +81,47 @@ def test_doctor_report_no_unicode_error_on_cp1250_stream(
     _print_doctor_report(results)
 
 
-def test_cli_commands_do_not_import_textual() -> None:
-    snippet = (
+def test_cli_commands_do_not_import_textual(tmp_path: Path) -> None:
+    install_root: Path = tmp_path / "external-bin"
+    snippet: str = (
         "import sys\n"
+        "from pathlib import Path\n"
+        "from unittest.mock import patch\n"
+        "import httpx\n"
         "from typer.testing import CliRunner\n"
         "from anishift.cli.main import app\n"
         "runner = CliRunner()\n"
         "guilty = []\n"
-        "runner.invoke(app, ['doctor'])\n"
-        "if 'textual' in sys.modules:\n"
-        "    guilty.append('doctor')\n"
-        "runner.invoke(app, ['setup'])\n"
-        "if 'textual' in sys.modules and 'doctor' not in guilty:\n"
-        "    guilty.append('setup')\n"
+        "offline = patch('httpx.stream', side_effect=httpx.ConnectError('offline'))\n"
+        "sandbox = patch('anishift.setup.installer.external_bin_root', return_value=Path(sys.argv[1]))\n"
+        "with offline, sandbox:\n"
+        "    runner.invoke(app, ['doctor'])\n"
+        "    if 'textual' in sys.modules:\n"
+        "        guilty.append('doctor')\n"
+        "    setup = runner.invoke(app, ['setup'])\n"
+        "    if 'textual' in sys.modules and 'doctor' not in guilty:\n"
+        "        guilty.append('setup')\n"
+        "print('setup exit code: ' + str(setup.exit_code))\n"
+        "print(setup.output)\n"
         "if guilty:\n"
         "    print('textual imported by: ' + ', '.join(guilty))\n"
         "raise SystemExit(1 if guilty else 0)\n"
     )
-    completed = subprocess.run(  # noqa: S603
-        [sys.executable, "-c", snippet],
+    completed: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", snippet, str(install_root)],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         timeout=60,
         check=False,
+        env={**os.environ, "ANISHIFT_WORKSPACE_ROOT": str(tmp_path / "workspace")},
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert not [path for path in install_root.rglob("*") if path.is_file()]
+    if is_windows():
+        assert "setup exit code: 1" in completed.stdout
+        assert "download failed" in completed.stdout
+    else:
+        assert "setup exit code: 0" in completed.stdout
+        assert "install via your OS package manager" in completed.stdout

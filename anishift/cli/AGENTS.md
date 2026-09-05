@@ -132,8 +132,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `_open_scoped_reset` → `_EditorAction.RESET_SCOPE` → `_reset_scope`, a pytanie ma
   zawsze kształt `PRZYWRÓCIĆ DOMYŚLNE · <ZAKRES>?` (root = scope `all`, tytuł
   `WSZYSTKO`). Root przywraca wszystko DOSŁOWNIE: obok `reset_settings()` woła
-  `_restore_default_products()`, bo produkty siedzą w presecie, nie w katalogu pól, i
-  bez tego przeżywały reset, który obiecywał całość. Reset idzie polami w kolejności
+  `_restore_default_preset()`, bo produkty i polityki Auto siedzą w presecie, nie
+  w preferencjach. Auto i Wynik przywracają cały preset pod zachowaną tożsamością;
+  częściowy błąd resetu root pokazuje, który zapis zawiódł. Reset preferencji idzie polami w kolejności
   ekranu i pomija te, które po drodze przestały być aktywne, bo zmiana silnika
   przebudowuje resztę. JEDEN wyjątek od kolejności ekranu: zakres `translation`
   zaczyna się od `_TRANSLATION_MODEL_FIELDS`, bo `llm_provider` i
