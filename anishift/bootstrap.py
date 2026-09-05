@@ -13,9 +13,11 @@ from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_ro
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from anishift.application.acquisition import AcquisitionService
     from anishift.application.cancellation import CancellationToken
     from anishift.application.discovery import DiscoveryResult
     from anishift.application.service import AppService
+    from anishift.services.torrents import Release
 
 __all__ = ["AppContext", "bootstrap", "create_app_service", "production_service"]
 
@@ -76,8 +78,39 @@ def create_app_service(context: AppContext) -> AppService:
         handler_factory=ProductionHandlerFactory(
             lambda: service.current_settings(),  # noqa: PLW0108 - defers the lookup until the service exists
         ),
+        acquisition=_acquisition_service(context),
     )
     return service
+
+
+def _acquisition_service(context: AppContext) -> AcquisitionService:
+    """Wire the public release index and the local torrent client from the environment settings."""
+    import httpx  # noqa: PLC0415
+
+    from anishift.application.acquisition import AcquisitionService  # noqa: PLC0415
+    from anishift.services.torrents import QBittorrentClient, parse_release_name, search_releases  # noqa: PLC0415
+
+    http: httpx.Client = httpx.Client(follow_redirects=True)
+
+    class NyaaSource:
+        """Public nyaa.si index queried through the shared HTTP client."""
+
+        def search(self, query: str) -> tuple[Release, ...]:
+            """Return the English-translated anime releases matching *query*."""
+            return search_releases(query, http=http)
+
+    client: QBittorrentClient = QBittorrentClient(
+        context.settings.qbittorrent_url,
+        username=context.settings.qbittorrent_username,
+        password=context.settings.qbittorrent_password,
+        http=http,
+    )
+    return AcquisitionService(
+        source=NyaaSource(),
+        client=client,
+        workspace_root=context.workspace_root,
+        parse_name=parse_release_name,
+    )
 
 
 def _prepare_workspace_binaries(discovery: DiscoveryResult, cancel: CancellationToken) -> None:
