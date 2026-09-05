@@ -1,5 +1,9 @@
 # Przyszły etap: silnik layoutu i jakości napisów
 
+> Materiał historyczny, nie aktualny plan wykonania. Bieżący kierunek i priorytety:
+> [automatyzacja AniShift](../automation/README.md). Propozycje technologii i modułów
+> poniżej wymagają ponownego sprawdzenia; nie zastępują obecnych AGENTS.md.
+
 Status: plan przyszłego, samodzielnego etapu po ukończeniu bieżącego planu.
 Dokument nie opisuje gotowej implementacji i nie rozszerza zakresu obecnego PR.
 
