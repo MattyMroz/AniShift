@@ -16,6 +16,13 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 
 ## Inwarianty
 
+- Discovery skanuje root workspace rekurencyjnie: pomija `temp/` bezpośrednio pod rootem,
+  katalogi i pliki od kropki oraz nie wchodzi w dowiązania symboliczne. ID grupy liczy się
+  z katalogu względem roota i stemu, więc `A/01.mkv` i `B/01.mkv` to dwie grupy, a plik
+  w root zachowuje dotychczasowe ID. `discovery.py`
+- `watch.py` to czyste reguły czuwania (stabilność pliku, `needs_work`, `WatchLedger`);
+  `open("r+b")` wykrywa writer bez współdzielenia (Explorer, qBittorrent), nie drugi
+  pythonowy uchwyt. Eksport przez fasadę: `SCAN_INTERVAL_S`, `WatchLedger`. `watch.py`
 - ID grup i odkrytych artefaktów powstają wyłącznie z normalizowanych ścieżek
   względnych. Ręcznie zarejestrowany plik spoza workspace używa znormalizowanej
   ścieżki zewnętrznej wyłącznie jako wejścia stabilnego skrótu; nie używaj `hash()`

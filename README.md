@@ -41,6 +41,29 @@ Before inspecting media, AniShift prepares missing MKVToolNix and FFmpeg tools f
 the verified manifest. Windows downloads use SHA256 verification and run outside
 the renderer. TXT-only workspaces do not trigger media-tool downloads.
 
+## Watching the library
+
+`workspace/` may hold one subfolder per series, for example `workspace/Frieren/`.
+Discovery reads the root and every subfolder except the managed `temp/` directory,
+and products are written beside their source in the same subfolder.
+
+```bash
+uv run anishift autostart enable    # register the logon task and start watching now
+uv run anishift autostart disable   # remove the task and stop watching
+uv run anishift autostart status    # enabled | disabled | missing
+uv run anishift watch               # watch in this terminal instead of the logon task
+uv run anishift watch status        # running (pid N) | stopped
+uv run anishift watch stop          # stop the watching process
+```
+
+Watching runs without a window. When a new video file (with usable text) has stayed
+unchanged for ten seconds and is not held exclusively by another program, a terminal
+window opens with the Auto screen for that batch only, shows the outcome for ten
+seconds, and closes itself. Any key closes it earlier; closing it mid-run cancels that
+batch only, and the batch is not retried until its files change. Files that appear
+during a batch wait for the next scan. Groups that already hold every product of the
+default preset are never reprocessed.
+
 ## Technical commands
 
 ```bash
@@ -49,9 +72,10 @@ uv run anishift doctor            # inspect tools, credentials, workspace, and e
 uv run anishift setup [--force]   # download and verify tools in external/bin/
 ```
 
-Non-interactive runs exit with `0` for full success, `1` when refused before start,
-`3` for a failed or partial run, and `4` when cancelled. User-facing refusals and
-errors remain concise; developer diagnostics are written to the structured log.
+Non-interactive runs and batch windows exit with `0` for full success, `1` when
+refused before start, `3` for a failed or partial run, and `4` when cancelled.
+User-facing refusals and errors remain concise; developer diagnostics are written
+to the structured log.
 
 ## Configuration
 

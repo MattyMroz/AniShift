@@ -71,8 +71,8 @@ Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit
 
 ## Dane runtime
 
-- `workspace/` — dozwolony jest tylko zarządzany podfolder `temp/`; trwałe produkty leżą obok źródła. Zero `input/`, `output/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`.
-- Preferencje panelu: `config/settings.json` (obok kodu, gitignored, poza workspace).
+- `workspace/` — biblioteka: root i podfoldery serii (`workspace/<Seria>/`), skanowane rekurencyjnie z pominięciem `temp/` i katalogów od kropki; trwałe produkty leżą obok źródła w tym samym podfolderze. Jedyny zarządzany podfolder to `temp/`. Zero `input/`, `output/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`.
+- Preferencje panelu: `config/settings.json` (obok kodu, gitignored, poza workspace). Stan czuwania: `config/watch/` (blokada instancji, PID, flaga stop); bez sekretów i bez mediów.
 - Settings API/env: pydantic-settings, prefix `ANISHIFT_`, z `.env`, wszystkie opcjonalne.
 - Diagnostyka runtime używa wyłącznie `from anishift.utils.logger import get_logger`
   oraz modułowego `logger = get_logger(__name__)`. Sinki konfiguruje tylko granica

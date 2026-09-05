@@ -4,12 +4,22 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 
 ## Pliki
 
-- `main.py` — Typer app, `main()` (console script), subkomendy `doctor`/`setup`/`run --preset`, bare = Interactive CLI
+- `main.py` — Typer app, `main()` (console script), subkomendy `doctor`/`setup`/`run --preset`, grupy `watch` i `autostart`, bare = Interactive CLI
 - `console.py` — jedyny właściciel rekonfiguracji stdout/stderr na UTF-8 + check dla doctora
-- `run.py` — wspólny, UI-neutralny preflight Auto oraz wykonanie zaakceptowanego planu
+- `run.py` — wspólny, UI-neutralny preflight Auto (także dla wskazanego podzbioru grup) oraz wykonanie zaakceptowanego planu
+- `exit_codes.py` — kody wyjścia 0/1/3/4 i `run_exit_code()` wspólne dla `run --preset` i okna partii
+- `watch.py` — pętla czuwania bez UI: blokada instancji, skan biblioteki, uruchamianie okna partii, flaga stop
 - `interactive/` — lazy-loaded Home, jeden renderer Prompt Toolkit, maskotka, Settings, Manual i wspólny postęp
 
 ## Pułapki
+
+- Czuwanie (`anishift watch`) NIE importuje `anishift.cli.interactive` ani Prompt Toolkit: proces
+  startuje z `pythonw.exe` bez konsoli. Okno partii to osobny proces `anishift watch batch ID...`
+  uruchamiany z `CREATE_NEW_CONSOLE`; czuwanie zna tylko jego kod wyjścia. Jedno okno naraz.
+  `watch.py`, `main.py`
+- `run_interactive(service, batch=...)` zwraca kod wyjścia jak `run --preset` i po wyniku odlicza
+  10 s w `_handle_idle`, dowolny klawisz zamyka; `interrupt` w partii anuluje run i kończy kodem 4.
+  Test buduje aplikację ręcznie? Ustaw też `_batch` i `_closing_at`. `interactive/app.py`
 
 - `main()` woła `configure_utf8_streams()` PRZED jakimkolwiek outputem, a dopiero
   potem konfiguruje logger; nie odwracaj tej kolejności. `main.py`
