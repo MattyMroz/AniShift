@@ -171,7 +171,7 @@ def _watch_loop(
                 sleep(SCAN_INTERVAL_S)
                 continue
             if exit_code is not None:
-                ledger.record_exit(started, exit_code)
+                ledger.mark_finished(started)
                 logger.info("Batch window finished", groups=len(started), exit_code=exit_code)
             child, started = None, ()
             checked_at = _check_subscriptions(service, clock(), checked_at)

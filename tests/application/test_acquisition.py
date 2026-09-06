@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -11,6 +11,7 @@ import pytest
 
 from anishift.application.acquisition import (
     MAX_GROUP_QUERIES,
+    MAX_REQUESTS,
     AcquisitionService,
     CatalogOrder,
     ClientStatus,
@@ -26,6 +27,11 @@ from anishift.application.acquisition import (
 from anishift.errors import ErrorCode, ErrorContext, FatalError
 from anishift.services.catalog import PrequelEntry, TitleCandidate, TitleStatus
 from anishift.services.torrents import Release, ReleaseName, TorrentInfo
+from anishift.services.torrents.categories import (
+    CATEGORY_ENGLISH_TRANSLATED,
+    CATEGORY_NON_ENGLISH_TRANSLATED,
+    SEARCH_CATEGORIES,
+)
 from anishift.services.torrents.query import EpisodeRange
 
 
@@ -42,9 +48,11 @@ class _Source:
         self.releases: tuple[Release, ...] = releases
         self.answers: dict[str, tuple[Release, ...]] = dict(answers or {})
         self.queries: list[str] = []
+        self.requests: list[tuple[str, str]] = []
 
-    def search(self, query: str) -> tuple[Release, ...]:
+    def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> tuple[Release, ...]:
         self.queries.append(query)
+        self.requests.extend((query, category) for category in categories)
         if self.answers:
             return self.answers.get(query, ())
         return self.releases
@@ -317,7 +325,10 @@ def test_setup_client_switches_the_incomplete_extension_on(tmp_path: Path) -> No
     status: ClientStatus = _service(client, tmp_path).setup_client()
 
     assert client.preference_values["incomplete_files_ext"] is True
+    assert client.preference_values["max_ratio"] == 0
+    assert client.preference_values["max_seeding_time"] == 0
     assert status.incomplete_extension is True
+    assert status.seeding_stops is True
 
 
 def test_setup_client_does_not_touch_an_unreachable_client(tmp_path: Path) -> None:
@@ -397,14 +408,23 @@ def test_catalog_groups_one_series_written_with_and_without_punctuation() -> Non
     assert [choice.release.title for choice in catalog.groups[0].choices] == ["mt-colon", "mt-plain"]
 
 
-def test_catalog_hides_a_dubbed_release_and_one_without_a_stated_language() -> None:
+def test_catalog_excludes_a_dubbed_release_and_one_without_a_stated_language() -> None:
     catalog: ReleaseCatalog = catalog_releases(
         (_release("sp-10"), _release("dub"), _release("sp-11", language=None)),
         _parse,
     )
 
-    assert catalog.hidden == 2
+    assert (catalog.hidden, catalog.excluded) == (0, 2)
     assert [choice.release.title for group in catalog.groups for choice in group.choices] == ["sp-10"]
+
+
+def test_catalog_counts_quality_and_language_apart() -> None:
+    catalog: ReleaseCatalog = catalog_releases(
+        (_release("sp-10"), _release("sp-720"), _release("dub")),
+        _parse,
+    )
+
+    assert (catalog.hidden, catalog.excluded) == (1, 1)
 
 
 def test_catalog_reports_the_language_most_of_a_group_carries() -> None:
@@ -559,13 +579,11 @@ def test_search_title_asks_for_a_numbered_episode_in_both_numberings(tmp_path: P
     assert source.queries == [
         "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
         "Solo Leveling Season 2 -Arise from the Shadow-",
-        "Ore dake Level Up na Ken - 01",
-        "Ore dake Level Up na Ken S02E01",
-        "Ore dake Level Up na Ken - 13",
         "Solo Leveling - 01",
         "Solo Leveling S02E01",
         "Solo Leveling - 13",
     ]
+    assert len(source.requests) <= MAX_REQUESTS
 
 
 def test_search_title_does_not_number_a_range_wider_than_three_episodes(tmp_path: Path) -> None:
@@ -578,6 +596,33 @@ def test_search_title_does_not_number_a_range_wider_than_three_episodes(tmp_path
         "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
         "Solo Leveling Season 2 -Arise from the Shadow-",
     ]
+
+
+def test_search_title_asks_a_group_only_in_the_category_its_releases_came_from(tmp_path: Path) -> None:
+    source: _Source = _Source(
+        answers={"Neko to Ryuu": (_release("sp-10"), _release("dkb-11", language="fr"))},
+    )
+    service: AcquisitionService = _service(_Client(), tmp_path, source=source)
+
+    service.search_title(_CANDIDATE)
+
+    assert dict(source.requests[-2:]) == {
+        "Neko to Ryuu SubsPlease": CATEGORY_ENGLISH_TRANSLATED,
+        "Neko to Ryuu DKB": CATEGORY_NON_ENGLISH_TRANSLATED,
+    }
+
+
+def test_search_title_never_spends_more_requests_than_the_budget(tmp_path: Path) -> None:
+    source: _Source = _Source(answers={"Neko to Ryuu": tuple(_release(f"g{index}-1") for index in range(1, 7))})
+    service: AcquisitionService = _service(_Client(), tmp_path, source=source)
+
+    service.search_title(
+        _SOLO,
+        episodes=EpisodeRange(Decimal(1), Decimal(3)),
+        context=SeasonContext(index=2, offset=12, episodes=13),
+    )
+
+    assert len(source.requests) <= MAX_REQUESTS
 
 
 def test_search_title_refines_the_best_seeded_matching_groups_first(tmp_path: Path) -> None:

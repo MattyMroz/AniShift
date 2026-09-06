@@ -37,7 +37,7 @@ class _Ledger:
     def __init__(self, scripted: list[tuple[str, ...]]) -> None:
         self.scripted: list[tuple[str, ...]] = scripted
         self.started: list[tuple[str, ...]] = []
-        self.exits: list[tuple[tuple[str, ...], int]] = []
+        self.finished: list[tuple[str, ...]] = []
         self.scans: list[float] = []
 
     def candidates(self, workspace: object, preset: object, now: float) -> tuple[str, ...]:
@@ -48,8 +48,8 @@ class _Ledger:
     def mark_started(self, group_ids: Sequence[str]) -> None:
         self.started.append(tuple(group_ids))
 
-    def record_exit(self, group_ids: Sequence[str], exit_code: int) -> None:
-        self.exits.append((tuple(group_ids), exit_code))
+    def mark_finished(self, group_ids: Sequence[str]) -> None:
+        self.finished.append(tuple(group_ids))
 
 
 class _Child:
@@ -196,7 +196,7 @@ def test_a_live_window_blocks_the_next_scan(monkeypatch: pytest.MonkeyPatch, tmp
     assert service.discoveries == 1
 
 
-def test_a_finished_window_records_its_exit_code(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_a_finished_window_releases_its_groups(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     ledger: _Ledger = _Ledger([("a",)])
     _install_ledger(monkeypatch, ledger)
     spawner: _Spawner = _Spawner(_Child([3]))
@@ -209,7 +209,7 @@ def test_a_finished_window_records_its_exit_code(monkeypatch: pytest.MonkeyPatch
         sleep=_Sleeper(tmp_path, 2),
     )
 
-    assert ledger.exits == [(("a",), 3)]
+    assert ledger.finished == [("a",)]
     assert len(spawner.commands) == 1
 
 

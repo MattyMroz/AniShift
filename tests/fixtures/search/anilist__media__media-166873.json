@@ -1,0 +1,49 @@
+{
+ "data": {
+  "Media": {
+   "id": 166873,
+   "episodes": 12,
+   "format": "TV",
+   "title": {
+    "romaji": "Mushoku Tensei II: Isekai Ittara Honki Dasu Part 2",
+    "english": "Mushoku Tensei: Jobless Reincarnation Season 2 Part 2"
+   },
+   "relations": {
+    "edges": [
+     {
+      "relationType": "ADAPTATION",
+      "node": {
+       "id": 85470,
+       "episodes": null,
+       "format": "NOVEL"
+      }
+     },
+     {
+      "relationType": "ALTERNATIVE",
+      "node": {
+       "id": 85564,
+       "episodes": null,
+       "format": "MANGA"
+      }
+     },
+     {
+      "relationType": "PREQUEL",
+      "node": {
+       "id": 146065,
+       "episodes": 13,
+       "format": "TV"
+      }
+     },
+     {
+      "relationType": "SEQUEL",
+      "node": {
+       "id": 178789,
+       "episodes": 14,
+       "format": "TV"
+      }
+     }
+    ]
+   }
+  }
+ }
+}

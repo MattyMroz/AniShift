@@ -103,8 +103,13 @@ def _group(
     return SeriesGroup(series, group, tuple(choices), language, newest)
 
 
-def _catalog(choices: Sequence[ReleaseChoice], hidden: int = 0, filtered: int = 0) -> ReleaseCatalog:
-    return ReleaseCatalog((_group(choices),), hidden, filtered)
+def _catalog(
+    choices: Sequence[ReleaseChoice],
+    hidden: int = 0,
+    filtered: int = 0,
+    excluded: int = 0,
+) -> ReleaseCatalog:
+    return ReleaseCatalog((_group(choices),), hidden, filtered, excluded)
 
 
 def _title(
@@ -383,14 +388,14 @@ def test_a_finished_download_returns_home_on_any_key() -> None:
     assert controller.handle_key("any") is AnimeResult.HOME
 
 
-def test_a_failed_search_shows_the_sentence_with_its_suggestion_and_no_traceback() -> None:
+def test_a_failed_search_states_a_known_error_code_in_polish() -> None:
     def search(query: str) -> ReleaseCatalog:
         del query
         raise AniShiftError(
             context=ErrorContext(
                 code=ErrorCode.TORRENT_SOURCE_FAILED,
-                message="Nyaa nie odpowiedziało poprawnie",
-                suggestion="Sprawdź połączenie i spróbuj ponownie",
+                message="Nyaa could not be reached",
+                suggestion="Check the connection and try again",
             )
         )
 
@@ -401,11 +406,194 @@ def test_a_failed_search_shows_the_sentence_with_its_suggestion_and_no_traceback
     reported: str = _frame(controller)
 
     assert _screen(controller) is _Screen.PROBLEM
-    assert "Nyaa nie odpowiedziało poprawnie" in reported
+    assert "Nyaa nie odpowiada" in reported
     assert "Sprawdź połączenie i spróbuj ponownie" in reported
+    assert "could not be reached" not in reported
     assert "Traceback" not in reported
 
     assert controller.handle_key("enter") is AnimeResult.CONTINUE
+    assert _screen(controller) is _Screen.QUERY
+
+
+def test_a_refused_subscription_says_the_release_cannot_be_watched() -> None:
+    def subscribe(query: str, choice: ReleaseChoice, **options: object) -> SimpleNamespace:
+        del query, choice, options
+        raise ValueError("release carries no episode number")
+
+    controller: AnimeController = _controller(
+        _service(
+            search=lambda query: _catalog((_choice("9"),)),
+            subscriptions=SimpleNamespace(subscribe=subscribe, check=lambda subscription: _outcome()),
+        )
+    )
+    _type(controller, "oshi")
+    controller.handle_key("enter")
+    _settle(controller)
+    controller.handle_key("text:o")
+    _settle(controller)
+    reported: str = _frame(controller)
+
+    assert _screen(controller) is _Screen.PROBLEM
+    assert "To wydanie nie nadaje się do obserwowania" in reported
+    assert "carries no episode number" not in reported
+
+
+def test_a_pasted_title_drops_its_control_characters() -> None:
+    controller: AnimeController = _controller(_service(search=lambda query: _catalog(())))
+
+    controller.handle_key("paste:oshi no ko\r\n")
+
+    assert controller._query == "oshi no ko"
+    assert "> oshi no ko▌" in _frame(controller)
+
+
+def test_an_empty_result_after_an_episode_filter_names_the_filter_and_offers_f() -> None:
+    asked: list[object] = []
+
+    def search_title(chosen: TitleCandidate, **options: object) -> ReleaseCatalog:
+        del chosen
+        asked.append(options["episodes"])
+        if options["episodes"] is None:
+            return _catalog((_choice("11"),))
+        return ReleaseCatalog((), 0, 17)
+
+    controller: AnimeController = _controller(
+        _service(extra={"find_titles": lambda text: (_title(),), "search_title": search_title})
+    )
+    _chosen(controller, "frieren 99")
+    empty: str = _frame(controller)
+
+    assert "Brak odc. 99 w 1080p+ dla tego tytułu" in empty
+    assert "poza filtrem: 17" in empty
+    assert "F pokaż wszystkie" in empty
+    assert "Esc wróć" in empty
+    assert "ukryte poniżej" not in empty
+
+    controller.handle_key("text:f")
+    _settle(controller)
+
+    assert asked[1] is None
+    assert "odc. 11" in _frame(controller)
+
+
+def test_an_empty_result_without_a_filter_keeps_the_quality_sentence_and_both_counters() -> None:
+    controller: AnimeController = _controller(_service(search=lambda query: ReleaseCatalog((), 7, 0, 4)))
+    _type(controller, "oshi")
+    controller.handle_key("enter")
+    _settle(controller)
+    empty: str = _frame(controller)
+
+    assert "Brak wydań w 1080p+ dla tego tytułu" in empty
+    assert "ukryte poniżej 1080p: 7" in empty
+    assert "bez napisów/dubbing: 4" in empty
+
+
+def test_the_results_footer_counts_the_quality_and_the_language_reasons_apart() -> None:
+    controller: AnimeController = _controller(
+        _service(search=lambda query: ReleaseCatalog((_group((_choice("11"),)),), 4, 0, 6))
+    )
+    _type(controller, "oshi")
+    controller.handle_key("enter")
+    _settle(controller)
+    listed: str = _frame(controller)
+
+    assert "ukryte poniżej 1080p: 4" in listed
+    assert "bez napisów/dubbing: 6" in listed
+
+
+def test_s_keeps_a_group_of_another_season_below_the_chosen_one() -> None:
+    foreign: SeriesGroup = _group(
+        (_choice("3", seeders=900, series="Foreign", reading=_reading("3", other_season=True)),),
+        series="Foreign",
+        group="Erai-raws",
+    )
+    wanted: SeriesGroup = _group(
+        (_choice("9", seeders=5, series="Wanted"),),
+        series="Wanted",
+        newest=datetime(2026, 9, 5, tzinfo=UTC),
+    )
+    controller: AnimeController = _controller(
+        _service(
+            extra={
+                "find_titles": lambda text: (_title(),),
+                "search_title": lambda chosen, **options: ReleaseCatalog((wanted, foreign), 0),
+            }
+        )
+    )
+    _chosen(controller)
+    controller.handle_key("text:s")
+    seeded: str = _frame(controller)
+    controller.handle_key("text:s")
+    newest: str = _frame(controller)
+
+    assert seeded.index("Wanted") < seeded.index("Foreign")
+    assert newest.index("Wanted") < newest.index("Foreign")
+
+
+def test_the_fallback_results_name_the_order_they_arrived_in() -> None:
+    controller: AnimeController = _controller(
+        _service(search=lambda query: _catalog((_choice("11"),)), extra={"find_titles": lambda text: ()})
+    )
+    _type(controller, "oshi no ko")
+    controller.handle_key("enter")
+    _settle(controller)
+
+    assert "S najnowsze" in _frame(controller)
+
+
+def test_a_broken_season_lookup_notes_that_the_numbering_is_missing() -> None:
+    def season_context(candidate: TitleCandidate) -> SeasonContext:
+        del candidate
+        raise TitleCatalogError(
+            context=ErrorContext(code=ErrorCode.TITLE_CATALOG_FAILED, message="AniList nie odpowiada")
+        )
+
+    controller: AnimeController = _controller(
+        _service(
+            extra={
+                "find_titles": lambda text: (_title(),),
+                "season_context": season_context,
+                "search_title": lambda chosen, **options: _catalog((_choice("11"),)),
+            }
+        )
+    )
+    _chosen(controller)
+    listed: str = _frame(controller)
+
+    assert _screen(controller) is _Screen.RESULTS
+    assert "numeracja sezonu niedostępna" in listed
+
+
+def test_escape_from_the_results_returns_to_the_title_list_and_then_to_the_query() -> None:
+    controller: AnimeController = _controller(
+        _service(
+            extra={
+                "find_titles": lambda text: (_title(), _title("Oshi no Ko II")),
+                "search_title": lambda chosen, **options: _catalog((_choice("11"),)),
+            }
+        )
+    )
+    _chosen(controller)
+
+    controller.handle_key("escape")
+
+    assert _screen(controller) is _Screen.TITLES
+
+    controller.handle_key("escape")
+
+    assert _screen(controller) is _Screen.QUERY
+
+
+def test_escape_from_the_fallback_results_returns_to_the_query() -> None:
+    controller: AnimeController = _controller(
+        _service(search=lambda query: _catalog((_choice("11"),)), extra={"find_titles": lambda text: ()})
+    )
+    _type(controller, "oshi")
+    controller.handle_key("enter")
+    _settle(controller)
+
+    controller.handle_key("escape")
+
     assert _screen(controller) is _Screen.QUERY
 
 
@@ -415,8 +603,8 @@ def test_a_failed_download_returns_to_the_results_and_escape_leaves_home() -> No
         raise AniShiftError(
             context=ErrorContext(
                 code=ErrorCode.TORRENT_CLIENT_UNAVAILABLE,
-                message="qBittorrent nie odpowiada",
-                suggestion="Włącz Web UI w qBittorrent",
+                message="qBittorrent Web UI is not reachable",
+                suggestion="Enable the Web UI",
             )
         )
 
@@ -431,7 +619,8 @@ def test_a_failed_download_returns_to_the_results_and_escape_leaves_home() -> No
     reported: str = _frame(controller)
 
     assert "qBittorrent nie odpowiada" in reported
-    assert "Włącz Web UI w qBittorrent" in reported
+    assert "Uruchom qBittorrenta z włączonym Web UI" in reported
+    assert "not reachable" not in reported
 
     controller.handle_key("enter")
 

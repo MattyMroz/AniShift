@@ -1,0 +1,65 @@
+{
+ "data": {
+  "Page": {
+   "media": [
+    {
+     "id": 176496,
+     "title": {
+      "romaji": "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow",
+      "english": "Solo Leveling Season 2 -Arise from the Shadow-",
+      "native": "俺だけレベルアップな件 Season 2 -Arise from the Shadow-"
+     },
+     "synonyms": [
+      "Na Honjaman Level Up 2",
+      "나 혼자만 레벨업 2",
+      "俺だけレベルアップな件 第2期",
+      "Ore dake Level Up na Ken 2nd Season",
+      "Solo Leveling 2ª Temporada -Ergam-se das Sombras-",
+      "나 혼자만 레벨업 -ARISE FROM THE SHADOW-"
+     ],
+     "seasonYear": 2025,
+     "season": "WINTER",
+     "format": "TV",
+     "episodes": 13,
+     "status": "FINISHED",
+     "relations": {
+      "edges": [
+       {
+        "relationType": "ADAPTATION",
+        "node": {
+         "id": 105398,
+         "episodes": null,
+         "format": "MANGA"
+        }
+       },
+       {
+        "relationType": "PREQUEL",
+        "node": {
+         "id": 151807,
+         "episodes": 12,
+         "format": "TV"
+        }
+       },
+       {
+        "relationType": "PREQUEL",
+        "node": {
+         "id": 184694,
+         "episodes": 1,
+         "format": "MOVIE"
+        }
+       },
+       {
+        "relationType": "SEQUEL",
+        "node": {
+         "id": 213846,
+         "episodes": 1,
+         "format": "MOVIE"
+        }
+       }
+      ]
+     }
+    }
+   ]
+  }
+ }
+}

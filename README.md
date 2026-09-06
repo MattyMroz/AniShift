@@ -10,9 +10,18 @@ Durable products are written beside their source; temporary run data stays in
 ## Quick start
 
 ```bash
-uv sync
-uv run anishift
+uv sync                                   # Python dependencies
+uv run anishift setup                     # MKVToolNix and FFmpeg into external/bin/ (Windows)
+winget install qBittorrent.qBittorrent    # once, if qBittorrent is not installed yet
+uv run anishift qbit setup                # with qBittorrent closed: enables its Web UI; start qBittorrent, run again
+uv run anishift doctor                    # everything green? then:
+uv run anishift autostart enable          # watch the library now and after every logon
+uv run anishift                           # the interactive interface
 ```
+
+API keys go into `.env` (see "Configuration"); `doctor` lists which engines have one.
+On a fresh machine every step above is needed once; afterwards `uv run anishift`
+is the only command you use.
 
 If the shell still has another project's virtual environment active, start with
 `uv run --no-active anishift`. This selects AniShift's `.venv` and silences the
@@ -22,9 +31,10 @@ See [uv project environment documentation](https://docs.astral.sh/uv/concepts/pr
 Running `anishift` without a subcommand opens the interactive interface:
 
 - **Auto** processes every ready workspace group with the default preset.
-- **Manual** lets you choose sources, output, and per-run overrides before execution.
-- **Settings** edits supported preferences and provides a read-only model catalogue.
-- **Exit** closes the interface immediately.
+- **Ręczny** lets you choose sources, output, and per-run overrides before execution.
+- **Anime** searches nyaa.si for a title and hands the chosen releases to qBittorrent.
+- **Ustawienia** edits supported preferences and provides a read-only model catalogue.
+- **Wyjście** closes the interface immediately.
 
 The interface uses one Prompt Toolkit renderer. Home and Auto display the packaged animated
 pixel-art slime on terminals with SIXEL support. The animation is prepared before
@@ -59,7 +69,8 @@ group, **Z** asks for a range (`4-10`, `5-`, `-3`), **S** switches between newes
 most seeded, **F** drops the episode filter from your phrase, and Enter sends the ticked
 episodes to qBittorrent. Files of one series always land in one folder,
 `workspace/<English title>/` (romaji when AniList has no English title), whichever
-group you took. If AniList does not answer, the phrase goes to nyaa.si as typed.
+group you took. If AniList does not answer, the phrase goes to nyaa.si as typed and the
+groups arrive ordered by seeders instead of by newest release; **S** switches that too.
 
 qBittorrent needs its Web UI once: Options → Web UI → enable the Web User Interface and
 tick "Bypass authentication for clients on localhost" (or set
@@ -67,8 +78,8 @@ tick "Bypass authentication for clients on localhost" (or set
 `ANISHIFT_QBITTORRENT_URL` overrides the default `http://127.0.0.1:8080`). Then run:
 
 ```bash
-uv run anishift qbit setup    # make qBittorrent mark unfinished files with .!qB
-uv run anishift qbit status   # reachable: yes (v5.2.3) / incomplete extension: on
+uv run anishift qbit setup    # mark unfinished files with .!qB and stop seeding once a download completes
+uv run anishift qbit status   # reachable: yes (v5.2.3) / incomplete extension: on / seeding after download: off
 ```
 
 The `.!qB` suffix matters: torrent files are created at full size before they are

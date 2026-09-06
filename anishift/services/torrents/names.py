@@ -18,10 +18,14 @@ SERIES_SEPARATOR: Final[str] = " - "
 _TECHNICAL_TAGS: Final[tuple[str, ...]] = (
     "1080p", "720p", "2160p", "WEB-DL", "WEBRip", "WEBRiP", "BDRip", "BD", "BILI",
     "CR", "NF", "AMZN", "AAC", "AAC2.0", "DDP", "DDP2.0", "DD+", "H.264", "H.265",
-    "x264", "x265", "HEVC", "AVC", "10bit", "Dual-Audio", "DUAL", "MULTi", "MultiSub",
-    "Multi-Subs", "SUBFRENCH", "VOSTFR", "VF", "FRENCH", "READNFO",
+    "H 264", "H 265", "x264", "x265", "x 264", "x 265", "HEVC", "AVC", "10bit",
+    "Dual-Audio", "DUAL", "MULTi", "MultiSub", "Multi-Subs", "SUBFRENCH", "VOSTFR",
+    "VF", "FRENCH", "READNFO",
 )  # fmt: skip
-"""Source, codec, and language markers that never belong to the series text."""
+"""Source, codec, and language markers that never belong to the series text.
+
+Codec tags appear with a space instead of the dot, as in ``H 264-VARYG``.
+"""
 
 _TAG_ALTERNATION: Final[str] = "|".join(re.escape(tag) for tag in sorted(_TECHNICAL_TAGS, key=len, reverse=True))
 """Technical tags as one regex branch, longest first so ``AAC2.0`` wins over ``AAC``."""
@@ -72,7 +76,10 @@ _EPISODE_RE: Final[re.Pattern[str]] = re.compile(r"^(\d{1,4}(?:\.\d+)?)(?:v(\d+)
 """Episode number opening the text after the separator, with an optional version."""
 
 _BATCH_RANGE_RE: Final[re.Pattern[str]] = re.compile(r"\(\s*\d+\s*-\s*\d+\s*\)")
-"""Episode range marking a multi-episode pack."""
+"""Parenthesised episode range marking a multi-episode pack."""
+
+_BARE_RANGE_RE: Final[re.Pattern[str]] = re.compile(rf"{SERIES_SEPARATOR}\d{{1,4}}\s*[-~]\s*\d{{1,4}}(?!\d)")
+"""Episode range written without parentheses right after the separator, as in ``- 01-12``."""
 
 _BATCH_TAG_RE: Final[re.Pattern[str]] = re.compile(r"[(\[][^)\]]*\bbatch\b[^)\]]*[)\]]", re.IGNORECASE)
 """Bracket or parenthesis tag marking a multi-episode pack."""
@@ -229,7 +236,10 @@ def _name_fields(body: str) -> tuple[int | None, Decimal | None, int | None, str
 
 def _split_series(body: str, marker: re.Match[str] | None) -> tuple[str, str]:
     """Split the text after the group into the series and the trailing episode part."""
-    separator_at: int = body.find(SERIES_SEPARATOR)
+    pack: re.Match[str] | None = _BARE_RANGE_RE.search(body)
+    if pack is not None:
+        return _trim_series(body[: pack.start()]), ""
+    separator_at: int = _episode_separator(body)
     if separator_at >= 0:
         return _trim_series(body[:separator_at]), body[separator_at + len(SERIES_SEPARATOR) :].strip()
     if marker is not None:
@@ -240,9 +250,24 @@ def _split_series(body: str, marker: re.Match[str] | None) -> tuple[str, str]:
     return _trim_series(body), ""
 
 
+def _episode_separator(body: str) -> int:
+    """Return where the episode part opens: the last separator a number follows, else the first.
+
+    A series carrying its own ``" - "``, as in ``Shingeki no Kyojin - The Final Season - 05``,
+    keeps every separator but the numbered one.
+    """
+    at: int = body.find(SERIES_SEPARATOR)
+    chosen: int = at
+    while at >= 0:
+        if body[at + len(SERIES_SEPARATOR) :].lstrip()[:1].isdigit():
+            chosen = at
+        at = body.find(SERIES_SEPARATOR, at + 1)
+    return chosen
+
+
 def _trim_series(text: str) -> str:
-    """Drop the dangling separator, technical tags, and release year closing the series text."""
-    trimmed: str = text.strip().rstrip(_SERIES_EDGE)
+    """Drop the dangling separators, technical tags, and release year around the series text."""
+    trimmed: str = text.strip().strip(_SERIES_EDGE)
     tail: re.Match[str] | None = _SERIES_TAIL_RE.search(trimmed)
     while tail is not None:
         trimmed = trimmed[: tail.start()].rstrip(_SERIES_EDGE)
@@ -267,7 +292,7 @@ def _resolution(remainder: str) -> int | None:
 
 def _is_batch(remainder: str) -> bool:
     """Whether the title advertises a multi-episode pack."""
-    return _BATCH_RANGE_RE.search(remainder) is not None or _BATCH_TAG_RE.search(remainder) is not None
+    return any(pattern.search(remainder) is not None for pattern in (_BATCH_RANGE_RE, _BARE_RANGE_RE, _BATCH_TAG_RE))
 
 
 def _optional_int(value: str | None) -> int | None:

@@ -54,6 +54,7 @@ def _choice(  # noqa: PLR0913
     episode: Decimal | None,
     *,
     series: str = "Neko to Ryuu",
+    fraction: bool = False,
     group: str = "SubsPlease",
     version: int | None = None,
     seeders: int = 10,
@@ -61,7 +62,7 @@ def _choice(  # noqa: PLR0913
     reading: EpisodeReading | None = None,
 ) -> ReleaseChoice:
     name: ReleaseName = replace(_BASE_NAME, series=series, group=group, episode=episode, version=version, season=season)
-    label: str = f"{group}-{series}-{episode}-v{version or 1}"
+    label: str = f"{group}-{series}-{episode}-v{version or 1}{'-frac' if fraction else ''}"
     release: Release = Release(
         title=f"[{group}] {series} - {episode}",
         torrent_url=f"https://nyaa.si/download/{label}.torrent",
@@ -100,6 +101,7 @@ class _Acquisition(AcquisitionService):
         self.downloaded: list[tuple[ReleaseChoice, ...]] = []
         self.directories: list[str | None] = []
         self.queued: set[str] = set()
+        self.dropped: set[str] = set()
 
     def search(self, query: str) -> ReleaseCatalog:
         self.queries.append(query)
@@ -116,6 +118,9 @@ class _Acquisition(AcquisitionService):
     def download(self, choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
         self.downloaded.append(tuple(choices))
         self.directories.append(directory_name)
+        self.queued.update(
+            choice.release.info_hash.casefold() for choice in choices if choice.release.info_hash not in self.dropped
+        )
         return DownloadReceipt(len(choices), Path("library"))
 
     def queued_hashes(self) -> frozenset[str]:
@@ -127,7 +132,7 @@ def _store(tmp_path: Path) -> SubscriptionStore:
 
 
 def _service(tmp_path: Path, acquisition: _Acquisition) -> SubscriptionService:
-    return SubscriptionService(store=_store(tmp_path), acquisition=acquisition, clock=_clock)
+    return SubscriptionService(store=_store(tmp_path), acquisition=acquisition, clock=_clock, sleep=lambda _: None)
 
 
 def _subscription(  # noqa: PLR0913
@@ -141,6 +146,7 @@ def _subscription(  # noqa: PLR0913
     season_index: int = 1,
     episode_offset: int = 0,
     season_episodes: int | None = None,
+    taken_episodes: Sequence[str] = (),
 ) -> Subscription:
     return Subscription(
         subscription_id=subscription_id(series, group),
@@ -156,12 +162,13 @@ def _subscription(  # noqa: PLR0913
         season_index=season_index,
         episode_offset=episode_offset,
         season_episodes=season_episodes,
+        taken_episodes=tuple(taken_episodes),
     )
 
 
 def test_store_round_trip_keeps_fractional_episodes_and_taken_hashes(tmp_path: Path) -> None:
     store: SubscriptionStore = _store(tmp_path)
-    subscription: Subscription = _subscription(next_episode="7.5", taken=("aaa", "bbb"))
+    subscription: Subscription = _subscription(next_episode="7.5", taken=("aaa", "bbb"), taken_episodes=("7", "7.5"))
 
     store.save((subscription,))
 
@@ -294,6 +301,18 @@ def test_check_skips_releases_already_handed_to_the_client(tmp_path: Path) -> No
     assert service.list()[0].next_episode == Decimal(11)
 
 
+def test_check_skips_a_taken_release_whatever_the_hash_case(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)), _choice(Decimal(10)))})
+    store: SubscriptionStore = _store(tmp_path)
+    stored: Subscription = _subscription(taken=("SUBSPLEASE-NEKO TO RYUU-9-V1",))
+    store.save((stored,))
+    service: SubscriptionService = _service(tmp_path, acquisition)
+
+    service.check(stored)
+
+    assert [choice.release.info_hash for choice in acquisition.downloaded[0]] == ["SubsPlease-Neko to Ryuu-10-v1"]
+
+
 def test_check_treats_a_torrent_already_in_the_client_as_taken(tmp_path: Path) -> None:
     acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)), _choice(Decimal(10)))})
     acquisition.queued = {"subsplease-neko to ryuu-9-v1"}
@@ -308,6 +327,33 @@ def test_check_treats_a_torrent_already_in_the_client_as_taken(tmp_path: Path) -
     assert service.list()[0].taken == frozenset({"SubsPlease-Neko to Ryuu-9-v1", "SubsPlease-Neko to Ryuu-10-v1"})
 
 
+def test_check_does_not_record_a_release_the_client_dropped(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)), _choice(Decimal(10)))})
+    acquisition.dropped = {"SubsPlease-Neko to Ryuu-10-v1"}
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("neko", _choice(Decimal(9)))
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert outcome.downloaded == 1
+    assert service.list()[0].taken == frozenset({"SubsPlease-Neko to Ryuu-9-v1"})
+    assert service.list()[0].next_episode == Decimal(10)
+
+
+def test_check_moves_past_an_episode_already_taken_without_a_new_download(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)))})
+    store: SubscriptionStore = _store(tmp_path)
+    stored: Subscription = _subscription(taken=("SubsPlease-Neko to Ryuu-9-v1",))
+    store.save((stored,))
+    service: SubscriptionService = _service(tmp_path, acquisition)
+
+    outcome: CheckOutcome = service.check(stored)
+
+    assert acquisition.downloaded == []
+    assert outcome.downloaded == 0
+    assert service.list()[0].next_episode == Decimal(10)
+
+
 def test_check_without_new_episodes_only_records_the_check_time(tmp_path: Path) -> None:
     acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(8)))})
     service: SubscriptionService = _service(tmp_path, acquisition)
@@ -320,6 +366,25 @@ def test_check_without_new_episodes_only_records_the_check_time(tmp_path: Path) 
     assert service.list()[0].next_episode == Decimal(9)
     assert service.list()[0].taken == frozenset()
     assert service.list()[0].checked_at == _TIMESTAMP
+
+
+def test_check_ignores_another_season_of_the_same_series(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition(
+        {
+            "kanojo": _catalog(
+                _choice(Decimal(11), series="100-nin no Kanojo S2"),
+                _choice(Decimal(7), series="100-nin no Kanojo S3"),
+            )
+        }
+    )
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("kanojo", _choice(Decimal(7), series="100-nin no Kanojo S3"))
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert [choice.name.series for choice in acquisition.downloaded[0]] == ["100-nin no Kanojo S3"]
+    assert outcome.downloaded == 1
+    assert service.list()[0].next_episode == Decimal(8)
 
 
 def test_check_ignores_other_groups_and_other_series(tmp_path: Path) -> None:
@@ -339,6 +404,129 @@ def test_check_ignores_other_groups_and_other_series(tmp_path: Path) -> None:
     assert acquisition.downloaded == []
     assert outcome.downloaded == 0
     assert service.list()[0].next_episode == Decimal(9)
+
+
+def test_one_series_keeps_one_identifier_whatever_punctuation_a_release_carries() -> None:
+    assert subscription_id("Mushoku Tensei: Jobless Reincarnation", "SubsPlease") == subscription_id(
+        "Mushoku Tensei Jobless Reincarnation", "SubsPlease"
+    )
+
+
+def test_check_follows_the_group_whose_label_spells_the_series_differently(tmp_path: Path) -> None:
+    plain: ReleaseChoice = _choice(Decimal(11), series="Mushoku Tensei Jobless Reincarnation")
+    labelled: ReleaseCatalog = ReleaseCatalog(
+        (SeriesGroup("Mushoku Tensei: Jobless Reincarnation", "SubsPlease", (plain,)),), 0
+    )
+    acquisition: _Acquisition = _Acquisition({"mushoku": labelled})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("mushoku", plain)
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert [choice.release.info_hash for choice in acquisition.downloaded[0]] == [plain.release.info_hash]
+    assert outcome.downloaded == 1
+    assert service.list()[0].next_episode == Decimal(12)
+
+
+def test_check_lets_a_half_episode_pass_without_moving_the_counter_past_the_next_one(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition(
+        {"neko": _catalog(_choice(Decimal(7)), _choice(Decimal("7.5"), fraction=True))}
+    )
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("neko", _choice(Decimal(7)))
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert outcome.downloaded == 2
+    assert service.list()[0].next_episode == Decimal(8)
+    assert service.list()[0].taken_episodes == ("7", "7.5")
+
+
+def test_check_stops_the_counter_at_the_episode_a_feed_gap_left_behind(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(26)), _choice(Decimal(28)))})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("neko", _choice(Decimal(26)))
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert outcome.downloaded == 2
+    assert service.list()[0].next_episode == Decimal(27)
+
+
+def test_check_passes_the_gap_once_the_missing_episode_arrives(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(26)), _choice(Decimal(28)))})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("neko", _choice(Decimal(26)))
+    service.check(service.list()[0])
+    acquisition.catalogs["neko"] = _catalog(_choice(Decimal(27)), _choice(Decimal(28)))
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert [choice.release.info_hash for choice in acquisition.downloaded[-1]] == ["SubsPlease-Neko to Ryuu-27-v1"]
+    assert outcome.downloaded == 1
+    assert service.list()[0].next_episode == Decimal(29)
+
+
+def test_check_asks_for_the_missing_episode_by_number_when_the_feed_skips_it(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition(
+        {"neko": _catalog(_choice(Decimal(12))), "neko 09": _catalog(_choice(Decimal(9)))}
+    )
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("neko", _choice(Decimal(9)))
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert acquisition.queries == ["neko", "neko 09"]
+    assert outcome.downloaded == 2
+    assert service.list()[0].next_episode == Decimal(10)
+
+
+def test_check_asks_no_second_query_when_the_feed_already_carries_the_episode(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)))})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("neko", _choice(Decimal(9)))
+
+    service.check(service.list()[0])
+
+    assert acquisition.queries == ["neko"]
+
+
+def test_check_survives_a_failing_catch_up_query(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(12)))}, failing=("neko 09",))
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("neko", _choice(Decimal(9)))
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert outcome.problem == ""
+    assert outcome.downloaded == 1
+    assert service.list()[0].next_episode == Decimal(9)
+
+
+def test_store_loads_an_entry_written_before_taken_episodes_were_recorded(tmp_path: Path) -> None:
+    document: dict[str, object] = {
+        "schema_version": 1,
+        "subscriptions": [
+            {
+                "subscription_id": subscription_id("Neko to Ryuu", "SubsPlease"),
+                "query": "neko",
+                "series": "Neko to Ryuu",
+                "group": "SubsPlease",
+                "next_episode": "9",
+                "min_resolution": MIN_RESOLUTION,
+                "taken": ["aaa"],
+                "added_at": _TIMESTAMP,
+                "checked_at": None,
+                "directory": None,
+                "season_index": 1,
+                "episode_offset": 0,
+                "season_episodes": None,
+            }
+        ],
+    }
+    (tmp_path / "subscriptions.json").write_text(json.dumps(document), encoding="utf-8")
+
+    assert _store(tmp_path).load() == (_subscription(taken=("aaa",)),)
 
 
 def test_check_reports_a_failing_search_and_leaves_the_file_untouched(tmp_path: Path) -> None:

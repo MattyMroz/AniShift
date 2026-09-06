@@ -1,0 +1,330 @@
+{
+ "data": {
+  "Page": {
+   "media": [
+    {
+     "id": 108465,
+     "title": {
+      "romaji": "Mushoku Tensei: Isekai Ittara Honki Dasu",
+      "english": "Mushoku Tensei: Jobless Reincarnation",
+      "native": "無職転生 ～異世界行ったら本気だす～"
+     },
+     "synonyms": [
+      "Jobless Reincarnation: I Will Seriously Try If I Go To Another World",
+      "无职转生 ~到了异世界就拿出真本事~",
+      "เกิดชาตินี้พี่ต้องเทพ",
+      "Thất nghiệp chuyển sinh"
+     ],
+     "seasonYear": 2021,
+     "season": "WINTER",
+     "format": "TV",
+     "episodes": 11,
+     "status": "FINISHED",
+     "relations": {
+      "edges": [
+       {
+        "relationType": "ADAPTATION",
+        "node": {
+         "id": 85470,
+         "episodes": null,
+         "format": "NOVEL"
+        }
+       },
+       {
+        "relationType": "ALTERNATIVE",
+        "node": {
+         "id": 85564,
+         "episodes": null,
+         "format": "MANGA"
+        }
+       },
+       {
+        "relationType": "SEQUEL",
+        "node": {
+         "id": 127720,
+         "episodes": 12,
+         "format": "TV"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "id": 146065,
+     "title": {
+      "romaji": "Mushoku Tensei II: Isekai Ittara Honki Dasu",
+      "english": "Mushoku Tensei: Jobless Reincarnation Season 2",
+      "native": "無職転生Ⅱ ～異世界行ったら本気だす～"
+     },
+     "synonyms": [
+      "เกิดชาตินี้พี่ต้องเทพ ซีซั่น 2",
+      "Mushoku Tensei: Isekai Ittara Honki Dasu 2nd Season",
+      "Mushoku Tensei II: Jobless Reincarnation",
+      "Mushoku Tensei II: Reencarnación desde cero",
+      "无职转生～到了异世界就拿出真本事～第2季"
+     ],
+     "seasonYear": 2023,
+     "season": "SUMMER",
+     "format": "TV",
+     "episodes": 13,
+     "status": "FINISHED",
+     "relations": {
+      "edges": [
+       {
+        "relationType": "PREQUEL",
+        "node": {
+         "id": 127720,
+         "episodes": 12,
+         "format": "TV"
+        }
+       },
+       {
+        "relationType": "ADAPTATION",
+        "node": {
+         "id": 85470,
+         "episodes": null,
+         "format": "NOVEL"
+        }
+       },
+       {
+        "relationType": "ALTERNATIVE",
+        "node": {
+         "id": 142989,
+         "episodes": null,
+         "format": "MANGA"
+        }
+       },
+       {
+        "relationType": "ALTERNATIVE",
+        "node": {
+         "id": 85564,
+         "episodes": null,
+         "format": "MANGA"
+        }
+       },
+       {
+        "relationType": "SEQUEL",
+        "node": {
+         "id": 166873,
+         "episodes": 12,
+         "format": "TV"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "id": 178789,
+     "title": {
+      "romaji": "Mushoku Tensei III: Isekai Ittara Honki Dasu",
+      "english": "Mushoku Tensei: Jobless Reincarnation Season 3",
+      "native": "無職転生Ⅲ ～異世界行ったら本気だす～"
+     },
+     "synonyms": [
+      "無職転生 ～異世界行ったら本気だす～ 第3期",
+      "Mushoku Tensei: Isekai Ittara Honki Dasu 3rd Season",
+      "เกิดชาตินี้พี่ต้องเทพ ซีซั่น 3"
+     ],
+     "seasonYear": 2026,
+     "season": "SUMMER",
+     "format": "TV",
+     "episodes": 14,
+     "status": "RELEASING",
+     "relations": {
+      "edges": [
+       {
+        "relationType": "PREQUEL",
+        "node": {
+         "id": 166873,
+         "episodes": 12,
+         "format": "TV"
+        }
+       },
+       {
+        "relationType": "ADAPTATION",
+        "node": {
+         "id": 85470,
+         "episodes": null,
+         "format": "NOVEL"
+        }
+       },
+       {
+        "relationType": "ALTERNATIVE",
+        "node": {
+         "id": 146378,
+         "episodes": null,
+         "format": "MANGA"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "id": 166873,
+     "title": {
+      "romaji": "Mushoku Tensei II: Isekai Ittara Honki Dasu Part 2",
+      "english": "Mushoku Tensei: Jobless Reincarnation Season 2 Part 2",
+      "native": "無職転生Ⅱ ～異世界行ったら本気だす～ 第2クール"
+     },
+     "synonyms": [
+      "Mushoku Tensei: Jobless Reincarnation Season 2 Cour 2",
+      "เกิดชาตินี้พี่ต้องเทพ ซีซั่น 2 ครึ่งหลัง",
+      "Mushoku Tensei: Isekai Ittara Honki Dasu 2nd Season Part 2",
+      "Mushoku Tensei II: Jobless Reincarnation Part 2",
+      "Mushoku Tensei II: Reencarnación desde cero",
+      "无职转生～到了异世界就拿出真本事～第2季"
+     ],
+     "seasonYear": 2024,
+     "season": "SPRING",
+     "format": "TV",
+     "episodes": 12,
+     "status": "FINISHED",
+     "relations": {
+      "edges": [
+       {
+        "relationType": "ADAPTATION",
+        "node": {
+         "id": 85470,
+         "episodes": null,
+         "format": "NOVEL"
+        }
+       },
+       {
+        "relationType": "ALTERNATIVE",
+        "node": {
+         "id": 85564,
+         "episodes": null,
+         "format": "MANGA"
+        }
+       },
+       {
+        "relationType": "PREQUEL",
+        "node": {
+         "id": 146065,
+         "episodes": 13,
+         "format": "TV"
+        }
+       },
+       {
+        "relationType": "SEQUEL",
+        "node": {
+         "id": 178789,
+         "episodes": 14,
+         "format": "TV"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "id": 127720,
+     "title": {
+      "romaji": "Mushoku Tensei: Isekai Ittara Honki Dasu Part 2",
+      "english": "Mushoku Tensei: Jobless Reincarnation Cour 2",
+      "native": "無職転生 ～異世界行ったら本気だす～ 第2クール"
+     },
+     "synonyms": [
+      "Mushoku Tensei: Jobless Reincarnation Part 2",
+      "เกิดชาตินี้พี่ต้องเทพ พาร์ท 2"
+     ],
+     "seasonYear": 2021,
+     "season": "FALL",
+     "format": "TV",
+     "episodes": 12,
+     "status": "FINISHED",
+     "relations": {
+      "edges": [
+       {
+        "relationType": "PREQUEL",
+        "node": {
+         "id": 108465,
+         "episodes": 11,
+         "format": "TV"
+        }
+       },
+       {
+        "relationType": "ADAPTATION",
+        "node": {
+         "id": 85470,
+         "episodes": null,
+         "format": "NOVEL"
+        }
+       },
+       {
+        "relationType": "ALTERNATIVE",
+        "node": {
+         "id": 85564,
+         "episodes": null,
+         "format": "MANGA"
+        }
+       },
+       {
+        "relationType": "SIDE_STORY",
+        "node": {
+         "id": 141534,
+         "episodes": 1,
+         "format": "SPECIAL"
+        }
+       },
+       {
+        "relationType": "SEQUEL",
+        "node": {
+         "id": 146065,
+         "episodes": 13,
+         "format": "TV"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "id": 141534,
+     "title": {
+      "romaji": "Mushoku Tensei: Isekai Ittara Honki Dasu Part 2 - Eris no Goblin Toubatsu",
+      "english": "Mushoku Tensei: Jobless Reincarnation Cour 2 - Eris the Goblin Slayer",
+      "native": "無職転生 ～異世界行ったら本気だす～ 第2クール エリスのゴブリン討伐"
+     },
+     "synonyms": [
+      "Mushoku Tensei: Jobless Reincarnation Cour 2 Special",
+      "Mushoku Tensei: Jobless Reincarnation Part 2 Special",
+      "เกิดชาตินี้พี่ต้องเทพ OVA",
+      "Mushoku Tensei: Isekai Ittara Honki Dasu Part 2 Special"
+     ],
+     "seasonYear": 2022,
+     "season": "WINTER",
+     "format": "SPECIAL",
+     "episodes": 1,
+     "status": "FINISHED",
+     "relations": {
+      "edges": [
+       {
+        "relationType": "PARENT",
+        "node": {
+         "id": 127720,
+         "episodes": 12,
+         "format": "TV"
+        }
+       },
+       {
+        "relationType": "ADAPTATION",
+        "node": {
+         "id": 85470,
+         "episodes": null,
+         "format": "NOVEL"
+        }
+       },
+       {
+        "relationType": "ALTERNATIVE",
+        "node": {
+         "id": 85564,
+         "episodes": null,
+         "format": "MANGA"
+        }
+       }
+      ]
+     }
+    }
+   ]
+  }
+ }
+}

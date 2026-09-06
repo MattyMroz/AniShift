@@ -51,16 +51,16 @@ def test_parse_query_keeps_the_whole_phrase_as_the_title(text: str, title: str) 
 
 
 @pytest.mark.parametrize(
-    ("episodes", "label"),
+    ("episodes", "text"),
     [
-        (EpisodeRange(first=Decimal(1), last=Decimal(1)), "odc. 1"),
-        (EpisodeRange(first=Decimal(4), last=Decimal(10)), "odc. 4–10"),
-        (EpisodeRange(first=Decimal(5), last=None), "odc. 5–"),
-        (EpisodeRange(first=None, last=Decimal(3)), "odc. –3"),
+        (EpisodeRange(first=Decimal(1), last=Decimal(1)), "1"),
+        (EpisodeRange(first=Decimal(4), last=Decimal(10)), "4–10"),
+        (EpisodeRange(first=Decimal(5), last=None), "5–"),
+        (EpisodeRange(first=None, last=Decimal(3)), "–3"),
     ],
 )
-def test_episode_range_label(episodes: EpisodeRange, label: str) -> None:
-    assert episodes.label == label
+def test_episode_range_text_carries_no_language(episodes: EpisodeRange, text: str) -> None:
+    assert episodes.text == text
 
 
 @pytest.mark.parametrize(

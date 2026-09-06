@@ -9,7 +9,7 @@ import sys
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Final, cast
+from typing import Any, Final, NoReturn, cast
 from unittest.mock import Mock
 
 import pytest
@@ -20,10 +20,11 @@ from anishift.application import AppService, ClientStatus
 from anishift.cli import interactive as interactive_package
 from anishift.cli import watch as cli_watch
 from anishift.config.workspace import ENV_WORKSPACE_ROOT, WorkspaceRootNotResolvedError
-from anishift.errors import ErrorCode, ErrorContext
+from anishift.errors import ConfigError, ErrorCode, ErrorContext
 from anishift.platform import autostart, qbittorrent_config
 from anishift.platform.autostart import AutostartStatus, AutostartUnsupportedError
 from anishift.platform.qbittorrent_config import QBittorrentConfigError, WebUiSetup
+from anishift.services.torrents.errors import TorrentClientError
 
 cli_main = importlib.import_module("anishift.cli.main")
 
@@ -246,6 +247,38 @@ def test_watch_runs_the_daemon_on_the_composed_service(monkeypatch: pytest.Monke
     assert seen == [(service, tmp_path)]
 
 
+def test_watch_refuses_a_second_process_with_one_sentence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    started: list[Path] = []
+
+    def daemon(service: AppService, *, state_dir: Path) -> int:
+        del service
+        started.append(state_dir)
+        return 0
+
+    monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", object()))
+    monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli_watch, "watch_status", lambda _dir: cli_watch.WatchStatus(running=True, pid=7))
+    monkeypatch.setattr(cli_watch, "run_daemon", daemon)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["watch"])
+
+    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert result.output.strip() == "Another watch process is already running; see `anishift watch status`"
+    assert started == []
+
+
+def test_watch_says_it_is_watching_before_the_loop_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", object()))
+    monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli_watch, "watch_status", lambda _dir: cli_watch.WatchStatus(running=False, pid=None))
+    monkeypatch.setattr(cli_watch, "run_daemon", lambda service, *, state_dir: 0)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["watch"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "Watching the library; Ctrl+C or `anishift watch stop` ends it"
+
+
 def test_watch_batch_hands_the_named_groups_to_one_window(monkeypatch: pytest.MonkeyPatch) -> None:
     service: AppService = cast("AppService", object())
     batches: list[list[str]] = []
@@ -329,13 +362,19 @@ def _service_with_client(status: object, *, setup: object | None = None) -> AppS
 
 
 def test_qbit_status_prints_the_version_and_the_incomplete_extension(monkeypatch: pytest.MonkeyPatch) -> None:
-    service: AppService = _service_with_client(ClientStatus(reachable=True, version="5.2.3", incomplete_extension=True))
+    service: AppService = _service_with_client(
+        ClientStatus(reachable=True, version="5.2.3", incomplete_extension=True, seeding_stops=True)
+    )
     monkeypatch.setattr(bootstrap, "production_service", lambda: service)
 
     result: Result = CliRunner().invoke(cli_main.app, ["qbit", "status"])
 
     assert result.exit_code == 0
-    assert result.output.splitlines() == ["reachable: yes (v5.2.3)", "incomplete extension: on"]
+    assert result.output.splitlines() == [
+        "reachable: yes (v5.2.3)",
+        "incomplete extension: on",
+        "seeding after download: off",
+    ]
 
 
 def test_qbit_status_refuses_with_the_hint_when_the_client_is_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -353,13 +392,13 @@ def test_qbit_status_refuses_with_the_hint_when_the_client_is_unreachable(monkey
 
 def test_qbit_setup_reports_the_state_after_switching_the_extension_on(monkeypatch: pytest.MonkeyPatch) -> None:
     before: ClientStatus = ClientStatus(reachable=True, version="5.2.3", incomplete_extension=False)
-    after: ClientStatus = ClientStatus(reachable=True, version="5.2.3", incomplete_extension=True)
+    after: ClientStatus = ClientStatus(reachable=True, version="5.2.3", incomplete_extension=True, seeding_stops=True)
     monkeypatch.setattr(bootstrap, "production_service", lambda: _service_with_client(before, setup=after))
 
     result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
 
     assert result.exit_code == 0
-    assert result.output.splitlines()[-1] == "incomplete extension: on"
+    assert result.output.splitlines()[-2:] == ["incomplete extension: on", "seeding after download: off"]
 
 
 def _unreachable_service() -> AppService:
@@ -443,6 +482,45 @@ def test_qbit_setup_states_one_sentence_when_the_settings_cannot_be_written(monk
     assert "Traceback" not in result.output
 
 
+def test_qbit_setup_asks_for_the_web_ui_when_the_keys_already_exist(monkeypatch: pytest.MonkeyPatch) -> None:
+    _prepared_client(monkeypatch, installed=True, running=False)
+    monkeypatch.setattr(qbittorrent_config, "enable_web_ui", lambda: WebUiSetup(path_written=False, password=None))
+
+    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
+
+    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert "Web UI keys already exist in the qBittorrent settings" in result.output
+    assert "Options → Web UI" in result.output
+    assert "run `anishift qbit setup` again" not in result.output
+
+
+@pytest.mark.parametrize("command", [["qbit", "status"], ["qbit", "setup"]])
+def test_qbit_states_a_rejecting_client_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    command: list[str],
+) -> None:
+    def refuse() -> NoReturn:
+        raise TorrentClientError(
+            context=ErrorContext(
+                code=ErrorCode.TORRENT_CLIENT_REFUSED,
+                message="qBittorrent rejected the request",
+                suggestion="Check the Web UI credentials",
+            ),
+        )
+
+    acquisition: SimpleNamespace = SimpleNamespace(client_status=refuse, setup_client=refuse)
+    monkeypatch.setattr(
+        bootstrap, "production_service", lambda: cast("AppService", SimpleNamespace(acquisition=acquisition))
+    )
+
+    result: Result = CliRunner().invoke(cli_main.app, command)
+
+    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert "qBittorrent rejected the request" in result.output
+    assert "Check the Web UI credentials" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_qbit_refuses_a_session_without_a_torrent_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", SimpleNamespace(acquisition=None)))
 
@@ -521,6 +599,31 @@ def test_subs_check_prints_downloads_and_problems_per_series(monkeypatch: pytest
         "[SubsPlease] Neko to Ryuu: downloaded 2",
         "[DKB] Oshi no Ko: Nyaa timed out",
     ]
+
+
+@pytest.mark.parametrize("command", [["subs", "list"], ["subs", "check"], ["subs", "remove", "ab12cd34ef56"]])
+def test_subs_states_a_broken_store_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    command: list[str],
+) -> None:
+    def refuse(*_arguments: object) -> NoReturn:
+        raise ConfigError(
+            context=ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message="Subscriptions file is invalid",
+                suggestion="Fix or delete config/subscriptions.json",
+            ),
+        )
+
+    store: SimpleNamespace = SimpleNamespace(list=refuse, check_all=refuse, remove=refuse)
+    monkeypatch.setattr(bootstrap, "production_service", lambda: _service_with_subscriptions(store))
+
+    result: Result = CliRunner().invoke(cli_main.app, command)
+
+    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert "Subscriptions file is invalid" in result.output
+    assert "Fix or delete config/subscriptions.json" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_subs_refuses_a_session_without_subscriptions(monkeypatch: pytest.MonkeyPatch) -> None:

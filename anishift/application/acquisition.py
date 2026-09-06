@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.errors import AniShiftError
+from anishift.services.torrents.categories import (
+    CATEGORY_ENGLISH_TRANSLATED,
+    CATEGORY_NON_ENGLISH_TRANSLATED,
+    SEARCH_CATEGORIES,
+)
 from anishift.services.torrents.names import base_title, season_hint, title_forms
 from anishift.utils.logger import get_logger
 
@@ -26,7 +31,7 @@ if TYPE_CHECKING:
 __all__ = [
     "DOWNLOAD_CATEGORY",
     "MAX_GROUP_QUERIES",
-    "MAX_QUERIES",
+    "MAX_REQUESTS",
     "MIN_RESOLUTION",
     "TITLE_SEARCH_LIMIT",
     "AcquisitionService",
@@ -42,8 +47,11 @@ __all__ = [
     "TorrentClient",
     "TorrentSource",
     "catalog_releases",
+    "normalize_series",
+    "order_groups",
     "read_episode",
     "series_directory_name",
+    "series_forms",
 ]
 
 logger = get_logger(__name__)
@@ -59,20 +67,26 @@ DOWNLOAD_CATEGORY: Final[str] = "AniShift"
 MAX_GROUP_QUERIES: Final[int] = 5
 """Release groups asked for their own complete listing after a title search."""
 
-MAX_QUERIES: Final[int] = 12
-"""Requests one title search may send to the index, episode and group refinement included."""
+MAX_REQUESTS: Final[int] = 16
+"""HTTP GET requests one title search may spend; a query covering both categories costs two."""
 
 MAX_EPISODE_SPAN: Final[int] = 3
 """Widest episode range still asked for by number, one set of queries per episode."""
-
-MAX_EPISODE_BASES: Final[int] = 2
-"""Title spellings used when asking the index for one episode by number."""
 
 TITLE_SEARCH_LIMIT: Final[int] = 7
 """Title candidates a catalog is asked for by default."""
 
 INCOMPLETE_EXTENSION_PREFERENCE: Final[str] = "incomplete_files_ext"
 """Client preference appending ``.!qB`` to files still being downloaded, which the watch skips."""
+
+SEEDING_STOP_PREFERENCES: Final[Mapping[str, object]] = {
+    "max_ratio_enabled": True,
+    "max_ratio": 0,
+    "max_ratio_act": 0,
+    "max_seeding_time_enabled": True,
+    "max_seeding_time": 0,
+}
+"""Client preferences stopping every torrent the moment its download completes, so nothing is seeded."""
 
 _INVALID_NAME_CHARACTERS: Final[re.Pattern[str]] = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 """Characters Windows refuses inside one path component."""
@@ -85,12 +99,18 @@ _RESERVED_NAMES: Final[frozenset[str]] = frozenset(
 _FALLBACK_DIRECTORY: Final[str] = "Nieznana seria"
 """Directory used when a release title leaves nothing usable for a folder name."""
 
+_NON_ENGLISH_LANGUAGE: Final[str] = "fr"
+"""Subtitle language whose releases the index keeps outside the English-translated category."""
+
 
 class TorrentSource(Protocol):
     """Index of public releases answering one free-text title query."""
 
-    def search(self, query: str) -> tuple[Release, ...]:
-        """Return the releases matching *query*, newest first as the index lists them."""
+    def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> tuple[Release, ...]:
+        """Return the releases matching *query* in *categories*, newest first as the index lists them.
+
+        One category costs one HTTP request, which is the unit :data:`MAX_REQUESTS` counts.
+        """
         ...
 
 
@@ -197,11 +217,17 @@ class SeriesGroup:
 
 @dataclass(frozen=True, slots=True)
 class ReleaseCatalog:
-    """Listed release groups, releases hidden by quality, and releases outside the episode filter."""
+    """Listed release groups and the three reasons a release was left out of them.
+
+    ``hidden`` counts releases below the quality floor, ``excluded`` dubbed ones and ones
+    whose subtitle language the index never stated, ``filtered`` the ones outside the
+    episode filter.
+    """
 
     groups: tuple[SeriesGroup, ...]
     hidden: int
     filtered: int = 0
+    excluded: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +245,7 @@ class ClientStatus:
     reachable: bool
     version: str = ""
     incomplete_extension: bool = False
+    seeding_stops: bool = False
     problem: str = ""
     suggestion: str = ""
 
@@ -258,34 +285,58 @@ def catalog_releases(  # noqa: PLR0913 - every listing rule stays an explicit ca
 ) -> ReleaseCatalog:
     """Group listable releases by series and release group, reading every episode in *context*.
 
-    Releases below *min_resolution*, dubbed ones, and ones whose subtitle language the index
-    never stated are hidden. When *episodes* is given, releases outside that span, packs, and
-    releases without a number are counted as filtered instead. Series titles are compared with
-    punctuation and case removed, so one series never splits over its own spelling.
+    Releases below *min_resolution* are hidden, dubbed ones and ones whose subtitle language
+    the index never stated are excluded. When *episodes* is given, releases outside that span,
+    packs, and releases without a number are counted as filtered instead. Series titles are
+    compared with punctuation and case removed, so one series never splits over its own spelling.
     """
     buckets: dict[tuple[str, str], list[ReleaseChoice]] = {}
     labels: dict[tuple[str, str], tuple[str, str]] = {}
     hidden: int = 0
+    excluded: int = 0
     filtered: int = 0
     for release in releases:
         name: ReleaseName = parse_name(release.title)
-        if _is_hidden(release, name, min_resolution):
+        if _is_hidden(name, min_resolution):
             hidden += 1
+            continue
+        if _is_excluded(release, name):
+            excluded += 1
             continue
         reading: EpisodeReading = read_episode(name, context)
         if episodes is not None and _is_filtered(name, reading, episodes):
             filtered += 1
             continue
         group: str = name.group or "?"
-        key: tuple[str, str] = (_normalize(name.series), group.casefold())
+        key: tuple[str, str] = (normalize_series(name.series), group.casefold())
         labels.setdefault(key, (name.series, group))
         buckets.setdefault(key, []).append(ReleaseChoice(release, name, reading))
-    alias_keys: frozenset[str] = frozenset(form for alias in aliases for form in _forms(alias))
+    alias_keys: frozenset[str] = frozenset(form for alias in aliases for form in series_forms(alias))
     groups: list[SeriesGroup] = [
         _series_group(labels[key][0], labels[key][1], choices, alias_keys) for key, choices in buckets.items()
     ]
-    groups.sort(key=lambda group: _group_order(group, order, ranked=bool(aliases)))
-    return ReleaseCatalog(tuple(groups), hidden, filtered)
+    return ReleaseCatalog(order_groups(groups, order, ranked=bool(aliases)), hidden, filtered, excluded)
+
+
+def order_groups(groups: Sequence[SeriesGroup], order: CatalogOrder, *, ranked: bool) -> tuple[SeriesGroup, ...]:
+    """Return *groups* in the order a catalog lists them, so no caller reinvents the rule.
+
+    Groups matching the searched title come first when *ranked*, then the ones carrying at
+    least one release of the chosen season, then the requested order.
+    """
+    return tuple(sorted(groups, key=lambda group: _group_order(group, order, ranked=ranked)))
+
+
+def series_forms(text: str) -> frozenset[str]:
+    """Return the normalized spellings a series title may be recognized by, empty ones dropped."""
+    return frozenset(form for raw in title_forms(text) if (form := normalize_series(raw)))
+
+
+def normalize_series(text: str) -> str:
+    """Fold *text* to letters, digits, and single spaces, so spelling never splits one series."""
+    folded: str = unicodedata.normalize("NFKC", text).casefold()
+    kept: str = "".join(character for character in folded if character.isalnum() or character.isspace())
+    return " ".join(kept.split())
 
 
 def series_directory_name(series: str) -> str:
@@ -324,7 +375,10 @@ class AcquisitionService:
         releases: tuple[Release, ...] = self._source.search(query)
         catalog: ReleaseCatalog = catalog_releases(releases, self._parse_name)
         logger.info(
-            "Releases searched", listed=sum(len(group.choices) for group in catalog.groups), hidden=catalog.hidden
+            "Releases searched",
+            listed=sum(len(group.choices) for group in catalog.groups),
+            hidden=catalog.hidden,
+            excluded=catalog.excluded,
         )
         return catalog
 
@@ -369,28 +423,34 @@ class AcquisitionService:
 
         The index answers one free-text query with its newest entries only, so a narrow episode
         request names the episode itself, and the groups revealed by the title queries are then
-        asked for their own episodes.
+        asked for their own episodes. Title and episode queries cover both categories; a group is
+        asked only in the category its releases were seen in, and the whole search stays inside
+        :data:`MAX_REQUESTS` HTTP requests.
         """
         aliases: tuple[str, ...] = candidate.aliases()
         merged: dict[str, Release] = {}
-        queries: int = 0
+        requests: int = 0
         for query in _search_queries(candidate, episodes, context):
-            queries += 1
+            if requests + len(SEARCH_CATEGORIES) > MAX_REQUESTS:
+                break
+            requests += len(SEARCH_CATEGORIES)
             _merge(merged, self._source.search(query))
         preliminary: ReleaseCatalog = catalog_releases(
             tuple(merged.values()), self._parse_name, aliases=aliases, order=order, context=context
         )
-        for group in _group_queries(preliminary, MAX_QUERIES - queries):
-            queries += 1
-            _merge(merged, self._source.search(f"{group.series} {group.group}"))
+        for group in _group_queries(preliminary, MAX_REQUESTS - requests):
+            categories: tuple[str, ...] = _group_categories(group)
+            requests += len(categories)
+            _merge(merged, self._source.search(f"{group.series} {group.group}", categories=categories))
         catalog: ReleaseCatalog = catalog_releases(
             tuple(merged.values()), self._parse_name, aliases=aliases, order=order, episodes=episodes, context=context
         )
         logger.info(
             "Title releases searched",
-            queries=queries,
+            requests=requests,
             listed=sum(len(group.choices) for group in catalog.groups),
             hidden=catalog.hidden,
+            excluded=catalog.excluded,
             filtered=catalog.filtered,
         )
         return catalog
@@ -432,15 +492,16 @@ class AcquisitionService:
             reachable=True,
             version=version,
             incomplete_extension=bool(preferences.get(INCOMPLETE_EXTENSION_PREFERENCE, False)),
+            seeding_stops=_seeding_stops(preferences),
         )
 
     def setup_client(self) -> ClientStatus:
-        """Make the client mark incomplete files, so the watch never takes a partial download."""
+        """Make the client mark incomplete files and stop seeding once a download completes."""
         status: ClientStatus = self.client_status()
         if not status.reachable:
             return status
-        self._client.set_preferences({INCOMPLETE_EXTENSION_PREFERENCE: True})
-        logger.info("Torrent client configured for incomplete-file suffixes")
+        self._client.set_preferences({INCOMPLETE_EXTENSION_PREFERENCE: True, **SEEDING_STOP_PREFERENCES})
+        logger.info("Torrent client configured for incomplete-file suffixes and no seeding")
         return self.client_status()
 
 
@@ -462,7 +523,7 @@ def _search_queries(
     for query in (*_title_queries(candidate), *_episode_queries(candidate, episodes, context)):
         if query not in planned:
             planned.append(query)
-    return tuple(planned[:MAX_QUERIES])
+    return tuple(planned)
 
 
 def _episode_queries(
@@ -473,29 +534,25 @@ def _episode_queries(
     """Return the queries naming every episode a narrow request asks for, in both numberings.
 
     A title query brings back the newest entries only, so an episode that aired long ago is
-    reachable only through a query carrying its own number.
+    reachable only through a query carrying its own number. One spelling carries them all,
+    because every further one doubles the requests without widening the answer much.
     """
     numbers: tuple[int, ...] = _episode_numbers(episodes)
-    if not numbers:
+    base: str = _episode_base(candidate)
+    if not numbers or not base:
         return ()
     queries: list[str] = []
-    for base in _episode_bases(candidate):
-        for number in numbers:
-            queries.append(f"{base} - {number:02d}")
-            if context is not None and context.index > 1:
-                queries.append(f"{base} S{context.index:02d}E{number:02d}")
-                queries.append(f"{base} - {number + context.offset:02d}")
+    for number in numbers:
+        queries.append(f"{base} - {number:02d}")
+        if context is not None and context.index > 1:
+            queries.append(f"{base} S{context.index:02d}E{number:02d}")
+            queries.append(f"{base} - {number + context.offset:02d}")
     return tuple(queries)
 
 
-def _episode_bases(candidate: TitleCandidate) -> tuple[str, ...]:
-    """Return the shortest spellings of *candidate* worth putting in front of an episode number."""
-    bases: list[str] = []
-    for name in (candidate.romaji, candidate.english):
-        base: str = base_title(name or "")
-        if base and base not in bases:
-            bases.append(base)
-    return tuple(bases[:MAX_EPISODE_BASES])
+def _episode_base(candidate: TitleCandidate) -> str:
+    """Return the shortest spelling of *candidate* worth putting in front of an episode number."""
+    return base_title(candidate.english or candidate.romaji)
 
 
 def _episode_numbers(episodes: EpisodeRange | None) -> tuple[int, ...]:
@@ -512,11 +569,19 @@ def _episode_numbers(episodes: EpisodeRange | None) -> tuple[int, ...]:
     return tuple(range(int(first), int(last) + 1))
 
 
+def _group_categories(group: SeriesGroup) -> tuple[str, ...]:
+    """Return the single category the releases of *group* were seen in."""
+    if group.subtitle_language == _NON_ENGLISH_LANGUAGE:
+        return (CATEGORY_NON_ENGLISH_TRANSLATED,)
+    return (CATEGORY_ENGLISH_TRANSLATED,)
+
+
 def _group_queries(catalog: ReleaseCatalog, budget: int) -> tuple[SeriesGroup, ...]:
     """Return the matching groups whose own listing is worth asking for, best seeded first.
 
     Seeders of the episodes belonging to the chosen season decide, so a group that has served
-    the whole season for months outranks one that only uploaded the newest episode.
+    the whole season for months outranks one that only uploaded the newest episode. *budget*
+    counts the HTTP requests still free, one per group.
     """
     ranked: list[tuple[SeriesGroup, int]] = []
     for group in catalog.groups:
@@ -538,10 +603,14 @@ def _merge(merged: dict[str, Release], releases: Sequence[Release]) -> None:
         merged.setdefault(release.info_hash.casefold(), release)
 
 
-def _is_hidden(release: Release, name: ReleaseName, min_resolution: int) -> bool:
-    """Whether one release is never worth listing, whatever the episode filter says."""
-    below_quality: bool = name.resolution is None or name.resolution < min_resolution
-    return below_quality or name.dubbed or release.subtitle_language is None
+def _is_hidden(name: ReleaseName, min_resolution: int) -> bool:
+    """Whether one release stays below the quality worth listing."""
+    return name.resolution is None or name.resolution < min_resolution
+
+
+def _is_excluded(release: Release, name: ReleaseName) -> bool:
+    """Whether one release carries the wrong audio or a subtitle language the index never stated."""
+    return name.dubbed or release.subtitle_language is None
 
 
 def _is_filtered(name: ReleaseName, reading: EpisodeReading, episodes: EpisodeRange) -> bool:
@@ -568,20 +637,13 @@ def _series_group(
         choices=tuple(sorted(choices, key=_choice_order)),
         subtitle_language=languages.most_common(1)[0][0] if languages else None,
         newest=max(published) if published else None,
-        matches_title=bool(_forms(series) & alias_keys),
+        matches_title=bool(series_forms(series) & alias_keys),
     )
 
 
-def _forms(text: str) -> frozenset[str]:
-    """Return the normalized spellings *text* may be recognized by, empty ones dropped."""
-    return frozenset(form for raw in title_forms(text) if (form := _normalize(raw)))
-
-
-def _normalize(text: str) -> str:
-    """Fold *text* to letters, digits, and single spaces, so spelling never splits one series."""
-    folded: str = unicodedata.normalize("NFKC", text).casefold()
-    kept: str = "".join(character for character in folded if character.isalnum() or character.isspace())
-    return " ".join(kept.split())
+def _seeding_stops(preferences: Mapping[str, object]) -> bool:
+    """Whether the client stops a torrent right after its download completes."""
+    return all(preferences.get(key) == value for key, value in SEEDING_STOP_PREFERENCES.items())
 
 
 def _choice_order(choice: ReleaseChoice) -> tuple[int, int, Decimal, int]:

@@ -1,0 +1,41 @@
+{
+ "data": {
+  "Media": {
+   "id": 108465,
+   "episodes": 11,
+   "format": "TV",
+   "title": {
+    "romaji": "Mushoku Tensei: Isekai Ittara Honki Dasu",
+    "english": "Mushoku Tensei: Jobless Reincarnation"
+   },
+   "relations": {
+    "edges": [
+     {
+      "relationType": "ADAPTATION",
+      "node": {
+       "id": 85470,
+       "episodes": null,
+       "format": "NOVEL"
+      }
+     },
+     {
+      "relationType": "ALTERNATIVE",
+      "node": {
+       "id": 85564,
+       "episodes": null,
+       "format": "MANGA"
+      }
+     },
+     {
+      "relationType": "SEQUEL",
+      "node": {
+       "id": 127720,
+       "episodes": 12,
+       "format": "TV"
+      }
+     }
+    ]
+   }
+  }
+ }
+}

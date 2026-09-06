@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
 from anishift.application.artifacts import ArtifactKind, ArtifactLifetime, ArtifactState
@@ -44,22 +43,6 @@ _PRODUCT_ARTIFACTS: Final[Mapping[ProductKind, ArtifactKind]] = {
 """Artifact kind whose presence proves that one requested product already exists."""
 
 
-class WatchOutcome(StrEnum):
-    """State one group reached inside the current watch process."""
-
-    STARTED = "started"
-    DONE = "done"
-    FAILED = "failed"
-
-
-_OUTCOME_ORDER: Final[Mapping[WatchOutcome, int]] = {
-    WatchOutcome.FAILED: 0,
-    WatchOutcome.STARTED: 1,
-    WatchOutcome.DONE: 2,
-}
-"""Reporting priority putting the outcomes a user must react to first."""
-
-
 @dataclass(frozen=True, slots=True)
 class SourceSnapshot:
     """Size, modification time and first sighting of one source file."""
@@ -68,16 +51,6 @@ class SourceSnapshot:
     size: int
     mtime_ns: int
     first_seen: float
-
-
-@dataclass(frozen=True, slots=True)
-class WatchRow:
-    """One group and the outcome the current watch process recorded for it."""
-
-    group_id: str
-    stem: str
-    outcome: WatchOutcome
-    exit_code: int | None = None
 
 
 def snapshot_sources(
@@ -129,9 +102,8 @@ class WatchLedger:
 
     def __init__(self) -> None:
         self._snapshots: dict[str, tuple[SourceSnapshot, ...]] = {}
-        self._stems: dict[str, str] = {}
         self._started: dict[str, tuple[tuple[str, int, int], ...]] = {}
-        self._outcomes: dict[str, _RecordedOutcome] = {}
+        self._finished: dict[str, tuple[tuple[str, int, int], ...]] = {}
 
     def candidates(self, workspace: InspectedWorkspace, preset: AutoPreset, now: float) -> tuple[str, ...]:
         """Refresh every group snapshot and return the groups a batch window may take now."""
@@ -146,27 +118,15 @@ class WatchLedger:
         """Bind the groups of one batch window to the input fingerprint it was started for."""
         for group_id in group_ids:
             self._started[group_id] = source_fingerprint(self._snapshots.get(group_id, ()))
-            self._outcomes.pop(group_id, None)
+            self._finished.pop(group_id, None)
 
-    def record_exit(self, group_ids: Sequence[str], exit_code: int) -> None:
-        """Record the exit code one batch window returned for the groups it processed."""
-        outcome: WatchOutcome = WatchOutcome.DONE if exit_code == 0 else WatchOutcome.FAILED
+    def mark_finished(self, group_ids: Sequence[str]) -> None:
+        """Bind every group of one closed batch window to the input it was run for."""
         for group_id in group_ids:
             fingerprint: tuple[tuple[str, int, int], ...] | None = self._started.pop(group_id, None)
             if fingerprint is None:
                 fingerprint = source_fingerprint(self._snapshots.get(group_id, ()))
-            self._outcomes[group_id] = _RecordedOutcome(outcome, fingerprint, exit_code)
-
-    def rows(self) -> tuple[WatchRow, ...]:
-        """Return one row per running or finished group, failures first, then by stem."""
-        rows: list[WatchRow] = [
-            WatchRow(group_id, self._stem(group_id), WatchOutcome.STARTED) for group_id in self._started
-        ]
-        rows.extend(
-            WatchRow(group_id, self._stem(group_id), record.outcome, record.exit_code)
-            for group_id, record in self._outcomes.items()
-        )
-        return tuple(sorted(rows, key=lambda row: (_OUTCOME_ORDER[row.outcome], row.stem)))
+            self._finished[group_id] = fingerprint
 
     def _refresh(self, group: InspectedSourceGroup, now: float) -> tuple[SourceSnapshot, ...]:
         previous: dict[Path, SourceSnapshot] = {
@@ -174,7 +134,6 @@ class WatchLedger:
         }
         snapshots: tuple[SourceSnapshot, ...] = snapshot_sources(group, previous, now)
         self._snapshots[group.group_id] = snapshots
-        self._stems[group.group_id] = group.source.stem
         return snapshots
 
     def _is_candidate(
@@ -188,22 +147,10 @@ class WatchLedger:
             return False
         if not snapshots or not all(is_stable(snapshot, now) for snapshot in snapshots):
             return False
-        record: _RecordedOutcome | None = self._outcomes.get(group.group_id)
-        if record is None:
+        finished: tuple[tuple[str, int, int], ...] | None = self._finished.get(group.group_id)
+        if finished is None:
             return True
-        return record.fingerprint != source_fingerprint(snapshots)
-
-    def _stem(self, group_id: str) -> str:
-        return self._stems.get(group_id, group_id)
-
-
-@dataclass(frozen=True, slots=True)
-class _RecordedOutcome:
-    """Outcome of one batch window together with the input fingerprint it referred to."""
-
-    outcome: WatchOutcome
-    fingerprint: tuple[tuple[str, int, int], ...]
-    exit_code: int
+        return finished != source_fingerprint(snapshots)
 
 
 def _snapshot_file(path: Path, previous: SourceSnapshot | None, now: float) -> SourceSnapshot | None:

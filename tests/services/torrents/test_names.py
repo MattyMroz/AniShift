@@ -285,6 +285,105 @@ _CASES: Final[tuple[tuple[str, ReleaseName], ...]] = (
         ),
     ),
     (
+        "[Erai-raws] Shingeki no Kyojin - The Final Season - 05 [1080p]",
+        ReleaseName(
+            group="Erai-raws",
+            series="Shingeki no Kyojin - The Final Season",
+            episode=Decimal("5"),
+            season=None,
+            resolution=1080,
+            batch=False,
+            version=None,
+        ),
+    ),
+    (
+        "[Erai-raws] Mushoku Tensei III - Isekai Ittara Honki Dasu - 10 [1080p CR WEB-DL AVC AAC][MultiSub][63594405]",
+        ReleaseName(
+            group="Erai-raws",
+            series="Mushoku Tensei III - Isekai Ittara Honki Dasu",
+            episode=Decimal("10"),
+            season=None,
+            resolution=1080,
+            batch=False,
+            version=None,
+            subtitle_language="multi",
+        ),
+    ),
+    (
+        "[SubsPlease] Kusuriya no Hitorigoto - Season 2 - 05 (1080p)",
+        ReleaseName(
+            group="SubsPlease",
+            series="Kusuriya no Hitorigoto - Season 2",
+            episode=Decimal("5"),
+            season=None,
+            resolution=1080,
+            batch=False,
+            version=None,
+        ),
+    ),
+    (
+        "[Group] Show - 01-12 (1080p)",
+        ReleaseName(
+            group="Group",
+            series="Show",
+            episode=None,
+            season=None,
+            resolution=1080,
+            batch=True,
+            version=None,
+        ),
+    ),
+    (
+        "[Group] Show - 01~12 (1080p)",
+        ReleaseName(
+            group="Group",
+            series="Show",
+            episode=None,
+            season=None,
+            resolution=1080,
+            batch=True,
+            version=None,
+        ),
+    ),
+    (
+        "[Group] Show - 01 - 12 (1080p)",
+        ReleaseName(
+            group="Group",
+            series="Show",
+            episode=None,
+            season=None,
+            resolution=1080,
+            batch=True,
+            version=None,
+        ),
+    ),
+    (
+        "Mushoku Tensei Jobless Reincarnation S02E13 My Dream Home 1080p AMZN WEB-DL DDP2.0 H 264-VARYG "
+        "(Mushoku Tensei: Isekai Ittara Honki Dasu, Multi-Subs)",
+        ReleaseName(
+            group="VARYG",
+            series="Mushoku Tensei Jobless Reincarnation",
+            episode=Decimal("13"),
+            season=2,
+            resolution=1080,
+            batch=False,
+            version=None,
+            subtitle_language="multi",
+        ),
+    ),
+    (
+        "[Doomdos] - Mushoku Tensei Jobless Reincarnation Season 3 - 10 [2160p IQ WEB-DL]",
+        ReleaseName(
+            group="Doomdos",
+            series="Mushoku Tensei Jobless Reincarnation Season 3",
+            episode=Decimal("10"),
+            season=None,
+            resolution=2160,
+            batch=False,
+            version=None,
+        ),
+    ),
+    (
         "Solo Leveling S02E13 MULTi 1080p WEB x264 AAC -Tsundere-Raws (CR) "
         "(VF, FRENCH, VOSTFR, Multi-Audio, Ore dake Level Up na Ken)",
         ReleaseName(
@@ -315,6 +414,15 @@ def test_parse_release_name_collapses_repeated_whitespace() -> None:
 def test_parse_release_name_reads_a_season_pack_as_a_pack_without_an_episode() -> None:
     parsed = parse_release_name("Solo.Leveling.Arise.from.the.Shadow.S02.MULTi.1080p.WEBRiP.x265-T3KASHi")
     assert parsed.is_pack is True
+
+
+def test_parse_release_name_reads_a_bare_episode_range_as_a_pack() -> None:
+    assert parse_release_name("[Group] Show - 01-12 (1080p)").is_pack is True
+
+
+def test_parse_release_name_keeps_a_season_written_in_the_series_of_a_numbered_release() -> None:
+    parsed = parse_release_name("[SubsPlease] Kusuriya no Hitorigoto - Season 2 - 05 (1080p)")
+    assert season_hint(parsed.series) == 2
 
 
 def test_parse_release_name_reads_a_single_episode_as_no_pack() -> None:
