@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: proposed
+status: accepted-in-progress
 baseline: 097df5b (work/local-automation/01-watch, PR #51)
 branch: work/local-automation/04-smart-search
 created: 2026-09-06
@@ -57,7 +57,8 @@ zaznaczyć zakres odcinków jednym poleceniem. Klawisz `O` bez zmian: od tego od
 - [ ] M07: `O` zapisuje subskrypcję z `query = "{tytuł} {grupa}"`; stare wpisy działają bez migracji.
 - [ ] M12: po wyborze tytułu wiersz grupy zachowuje zapis grupy (`[SubsPlease · EN] Mushoku Tensei S3`), nagłówek
       pokazuje nazwę kanoniczną (romaji · angielska), a pobranie i subskrypcja z tego ekranu zapisują pliki do jednego
-      folderu `workspace/<romaji>/` niezależnie od grupy (`series_directory_name(romaji)`); `Subscription` dostaje
+      folderu `workspace/<tytuł angielski, a gdy AniList go nie ma: romaji>/` niezależnie od grupy
+      (`series_directory_name(candidate.folder_title())`; decyzja właściciela 2026-09-06); `Subscription` dostaje
       opcjonalne pole `directory` (brak = dotychczasowa nazwa z serii, stare wpisy bez migracji).
 - [ ] M13: numeracja sezonów. `TitleCandidate` dostaje `episode_offset` = suma odcinków łańcucha PREQUEL (TV/ONA,
       bez MOVIE/SPECIAL) z AniList (Solo Leveling S2: 12; Mushoku Tensei III: 36). Numer z nazwy wydania jest
@@ -71,6 +72,14 @@ zaznaczyć zakres odcinków jednym poleceniem. Klawisz `O` bez zmian: od tego od
       więc plan tylko upewnia się, że `pol` jest pierwsze w priorytecie (ustawienie właściciela, nie kod).
 - [ ] M15: wydania z dubbingiem (`English Dub`, `Dual-Audio` bez napisów, grupy Yameii) są ukryte jak < 1080p,
       z licznikiem w stopce; `Dual-Audio` z napisami zostaje.
+- [ ] M16: qBittorrent jako wymaganie. `anishift doctor` ma wiersz `torrent client`: OK gdy port Web UI odpowiada,
+      WARN „qBittorrent not running or Web UI off” z podpowiedzią `anishift qbit setup`, WARN „not installed” z
+      `winget install qBittorrent.qBittorrent`, gdy brak `qbittorrent.exe` w standardowych lokalizacjach (sprawdzenie
+      gniazdem i ścieżką, bez ładowania backendu). `anishift qbit setup`, gdy Web UI nie odpowiada, a proces
+      qBittorrenta nie działa: dopisuje do `%APPDATA%\qBittorrent\qBittorrent.ini` klucze Web UI (localhost, port 8080,
+      bez logowania z localhost, losowe hasło admina wymagane przez qBittorrent 5) po zrobieniu kopii `.anishift.bak`,
+      i mówi „start qBittorrent, then run qbit setup again”; gdy proces działa, prosi o zamknięcie (ini jest nadpisywane
+      przy wyjściu). Instalacji nie wykonuje.
 - [ ] M10: `search_releases` odpytuje kategorie `1_2` i `1_3` (dwa zapytania, scalone po infoHash); `Release`
       dostaje `subtitle_language: "en" | "fr" | "multi" | None` rozpoznany z nazwy (`VOSTFR`, `SUBFRENCH`, `VF`,
       `FRENCH` → fr; `MULTi` → multi; kategoria English-translated bez znaczników → en); wiersz grupy pokazuje
@@ -231,6 +240,10 @@ Ekran Anime:
    Sonda na żywo przez fasadę: M08.
 3. **Ekran Anime**: TITLES, Z/A/S/F, prompt zakresu, stopka; testy ekranu (istniejące 26 + nowe klawisze).
 4. **Dokumentacja**: README (sekcja Searching), AGENTS `services/catalog`, wynik w tym pliku, README pakietu.
+5. **qBittorrent jako wymaganie** (M16): wiersz doctora, `qbit setup` piszący konfigurację Web UI, README Requirements.
+
+Decyzje właściciela 2026-09-06 (czat): ekran Tytuł zawsze; dubbing angielski ukryty; folder angielski/romaji;
+kolejność grup najnowsze + `S`; wybór „najlepszej grupy” i grupa zapasowa (R06) → plan 05 po odbiorze.
 
 Sprzężenie: literówka niepokryta skróceniem słów = poza zakresem (nie wracać po RapidFuzz w tym planie);
 AniList zmieni schemat lub limit → fallback do surowego hasła musi działać, test tego fallbacku jest w M02/M03;
