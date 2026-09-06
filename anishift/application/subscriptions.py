@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -51,6 +52,12 @@ SUBSCRIPTIONS_FILE_NAME: Final[str] = "subscriptions.json"
 
 CHECK_INTERVAL_S: Final[float] = 3600.0
 """Delay between two consecutive checks of every subscription."""
+
+CONFIRM_ATTEMPTS: Final[int] = 3
+"""How many times a check looks for a just-added release in the client before giving up on it."""
+
+CONFIRM_DELAY_S: Final[float] = 1.0
+"""Pause between two looks for a just-added release, because the client adds torrents asynchronously."""
 
 SCHEMA_VERSION: Final[int] = 1
 """Current schema of the persisted subscription file."""
@@ -178,10 +185,12 @@ class SubscriptionService:
         store: SubscriptionStore,
         acquisition: AcquisitionService,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._store: SubscriptionStore = store
         self._acquisition: AcquisitionService = acquisition
         self._clock: Callable[[], datetime] = clock
+        self._sleep: Callable[[float], None] = sleep
 
     def subscribe(
         self,
@@ -266,13 +275,15 @@ class SubscriptionService:
             )
             if chosen:
                 self._acquisition.download(chosen, directory_name=subscription.directory)
-            updated: Subscription = self._advance(subscription, selected, offered)
+            confirmed: dict[Decimal, ReleaseChoice] = self._confirmed(selected, queued) if selected else {}
+            sent: int = sum(1 for choice in chosen if choice in confirmed.values())
+            updated: Subscription = self._advance(subscription, confirmed, offered)
             self._replace(updated)
         except AniShiftError as problem:
             logger.warning("Subscription check failed", error_class=type(problem).__name__)
             return CheckOutcome(subscription, 0, problem=str(problem))
-        logger.info("Subscription checked", downloaded=len(chosen), taken=len(updated.taken))
-        return CheckOutcome(updated, len(chosen))
+        logger.info("Subscription checked", downloaded=sent, taken=len(updated.taken))
+        return CheckOutcome(updated, sent)
 
     def check_all(self) -> tuple[CheckOutcome, ...]:
         """Check every subscription in stored order; a failing one does not stop the rest."""
@@ -301,6 +312,25 @@ class SubscriptionService:
             logger.warning("Subscription catch-up search failed", error_class=type(problem).__name__)
             return ReleaseCatalog((), 0)
 
+    def _confirmed(
+        self, selected: dict[Decimal, ReleaseChoice], queued: frozenset[str]
+    ) -> dict[Decimal, ReleaseChoice]:
+        """Keep the selected releases the client really holds; an add it silently dropped is retried later."""
+        present: frozenset[str] = queued
+        for attempt in range(CONFIRM_ATTEMPTS):
+            missing: bool = any(choice.release.info_hash.casefold() not in present for choice in selected.values())
+            if not missing:
+                break
+            if attempt:
+                self._sleep(CONFIRM_DELAY_S)
+            present = self._acquisition.queued_hashes()
+        confirmed: dict[Decimal, ReleaseChoice] = {
+            episode: choice for episode, choice in selected.items() if choice.release.info_hash.casefold() in present
+        }
+        if len(confirmed) != len(selected):
+            logger.warning("Torrent client did not keep every added release", dropped=len(selected) - len(confirmed))
+        return confirmed
+
     def _advance(
         self,
         subscription: Subscription,
@@ -308,10 +338,15 @@ class SubscriptionService:
         offered: dict[Decimal, ReleaseChoice],
     ) -> Subscription:
         checked_at: str = _timestamp(self._clock())
-        if not selected:
+        known: dict[Decimal, ReleaseChoice] = {
+            episode: choice
+            for episode, choice in offered.items()
+            if episode in selected or choice.release.info_hash.casefold() in {h.casefold() for h in subscription.taken}
+        }
+        if not known:
             return replace(subscription, checked_at=checked_at)
         taken: frozenset[str] = subscription.taken | {choice.release.info_hash for choice in selected.values()}
-        episodes: tuple[str, ...] = _recorded_episodes(subscription.taken_episodes, offered)
+        episodes: tuple[str, ...] = _recorded_episodes(subscription.taken_episodes, known)
         return replace(
             subscription,
             next_episode=_next_episode(subscription.next_episode, episodes),
