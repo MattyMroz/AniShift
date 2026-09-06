@@ -657,8 +657,8 @@ def _translation_specs(
         ),
         SettingSpec(
             setting_id="translation_chunk_chars",
-            label="Translation context size",
-            description="Set how much text one translation request carries at once.",
+            label="TXT fragment size",
+            description="Limit characters per narrated fragment when the source is a plain TXT file.",
             value_type=SettingValueType.INTEGER,
             default=defaults.translation_chunk_chars,
             scope=SettingScope.GLOBAL,
@@ -669,7 +669,7 @@ def _translation_specs(
         SettingSpec(
             setting_id="translation_batch_size",
             label="Translation batch size",
-            description="Set lines per request; zero uses the selected engine default.",
+            description="Set subtitle lines per request; zero means the engine default or, for LLM, the whole file.",
             value_type=SettingValueType.INTEGER,
             default=defaults.translation_batch_size,
             scope=SettingScope.GLOBAL,
@@ -679,8 +679,8 @@ def _translation_specs(
         ),
         SettingSpec(
             setting_id="translation_concurrency",
-            label="Translation concurrency",
-            description="Limit concurrent translation batches for one file.",
+            label="Translation file concurrency",
+            description="Limit files translated concurrently by the Google or DeepL engine.",
             value_type=SettingValueType.INTEGER,
             default=defaults.translation_concurrency,
             scope=SettingScope.GLOBAL,
@@ -926,7 +926,7 @@ def _profile_specs(context: SettingCatalogContext) -> tuple[SettingSpec, ...]:
             SettingSpec(
                 setting_id="tts_profile.concurrency",
                 label="TTS concurrency",
-                description="Limit simultaneous requests for the active engine and voice.",
+                description="Limit simultaneous synthesis requests within one file for the active engine and voice.",
                 value_type=SettingValueType.INTEGER,
                 default=profile.concurrency or 1,
                 scope=SettingScope.ENGINE_PROFILE,

@@ -2,8 +2,22 @@ from __future__ import annotations
 
 import pytest
 
+from anishift.application.intents import (
+    AutoPreset,
+    BurnSubtitleProduct,
+    MkvTrackProduct,
+    Mp4AudioSource,
+    ProductIntent,
+    ProductKind,
+    SubtitleOutputFormat,
+    SubtitleSourcePolicy,
+    TranslationAction,
+)
 from anishift.config.field_access import (
     assign_setting_value,
+    preset_setting_is_active,
+    preset_with_value,
+    read_preset_value,
     read_setting_value,
     setting_is_active,
     setting_is_persisted,
@@ -17,6 +31,7 @@ from anishift.config.field_catalog import (
     SettingValueType,
     setting_catalog,
 )
+from anishift.config.presets import _encode_preset, default_preset_file
 from anishift.config.user_settings import CustomVoiceSetting, UserSettings, tts_profile_key
 from anishift.services.tts.engines.edge.constants import DEFAULT_PITCH, MAREK_VOICE_ID, ZOFIA_VOICE_ID
 from anishift.services.tts.engines.elevenbytes.constants import DALLIN_ALIAS, DALLIN_VOICE_ID
@@ -57,6 +72,31 @@ def _with_custom_voice(alias: str, *, active: bool) -> UserSettings:
         settings.tts_voice_id = alias
         settings.ensure_active_tts_profile()
     return settings
+
+
+def _preset_specs() -> dict[str, SettingSpec]:
+    return {spec.setting_id: spec for spec in setting_catalog() if spec.scope is SettingScope.AUTO_PRESET}
+
+
+def _full_preset() -> AutoPreset:
+    return AutoPreset(
+        preset_id="default",
+        name="Polish lector",
+        products=ProductIntent(
+            requested_products=frozenset({ProductKind.FULL_PL, ProductKind.MKV, ProductKind.MP4}),
+            burn_subtitle_product=BurnSubtitleProduct.DISPLAYED_PL,
+            mkv_tracks=frozenset({MkvTrackProduct.NARRATION_AUDIO}),
+            mp4_audio_source=Mp4AudioSource.NARRATION,
+        ),
+        subtitle_source_policy=SubtitleSourcePolicy.EMBEDDED,
+        translation_action=TranslationAction.TRANSLATE,
+        source_subtitle_language="eng",
+        subtitle_output_format=SubtitleOutputFormat.SRT,
+    )
+
+
+def _flat_values(preset: AutoPreset) -> dict[str, SettingValue]:
+    return {setting_id: read_preset_value(preset, spec) for setting_id, spec in _preset_specs().items()}
 
 
 def test_field_access_covers_every_persisted_setting_value_type() -> None:
@@ -267,3 +307,131 @@ def test_setting_is_active_matches_a_condition_against_a_stored_sequence() -> No
     settings.audio_language_priority = ("jpn", "eng")
 
     assert setting_is_active(spec, settings)
+
+
+def test_every_preset_spec_reads_a_valid_value_that_writes_back_unchanged() -> None:
+    preset: AutoPreset = _full_preset()
+    specs: dict[str, SettingSpec] = _preset_specs()
+
+    assert set(specs) == {
+        "subtitle_source_policy",
+        "translation_action",
+        "source_subtitle_language",
+        "subtitle_output_format",
+        "requested_products",
+        "burn_subtitle_product",
+        "mkv_tracks",
+        "mp4_audio_source",
+    }
+    for spec in specs.values():
+        value: SettingValue = read_preset_value(preset, spec)
+        spec.validate_value(value)
+        assert preset_with_value(preset, spec, value) == preset
+
+
+def test_preset_reads_use_flat_ids_while_the_serializer_nests_products() -> None:
+    preset: AutoPreset = _full_preset()
+    encoded: dict[str, object] = _encode_preset(preset)
+
+    assert "mkv_tracks" not in encoded
+    assert isinstance(encoded["products"], dict)
+    assert "mkv_tracks" in encoded["products"]
+    assert read_preset_value(preset, _preset_specs()["mkv_tracks"]) == frozenset({"narration_audio"})
+    assert read_preset_value(preset, _preset_specs()["requested_products"]) == frozenset({"full_pl", "mkv", "mp4"})
+
+
+@pytest.mark.parametrize(
+    ("setting_id", "value"),
+    [
+        ("subtitle_source_policy", "sidecar"),
+        ("translation_action", "do_not_translate"),
+        ("source_subtitle_language", "jpn"),
+        ("subtitle_output_format", "ass"),
+        ("burn_subtitle_product", "source"),
+        ("mkv_tracks", frozenset({"source_subtitles", "full_pl_subtitles"})),
+        ("mp4_audio_source", "original"),
+    ],
+)
+def test_a_preset_write_changes_only_the_addressed_field(setting_id: str, value: SettingValue) -> None:
+    preset: AutoPreset = _full_preset()
+    before: dict[str, SettingValue] = _flat_values(preset)
+
+    updated: AutoPreset = preset_with_value(preset, _preset_specs()[setting_id], value)
+
+    after: dict[str, SettingValue] = _flat_values(updated)
+    assert after.pop(setting_id) == value
+    assert before.pop(setting_id) != value
+    assert after == before
+    assert (updated.preset_id, updated.name) == (preset.preset_id, preset.name)
+
+
+def test_container_fields_follow_the_requested_products() -> None:
+    default: AutoPreset = default_preset_file().presets[0]
+    specs: dict[str, SettingSpec] = _preset_specs()
+
+    assert not preset_setting_is_active(specs["burn_subtitle_product"], default)
+    assert not preset_setting_is_active(specs["mkv_tracks"], default)
+    assert not preset_setting_is_active(specs["mp4_audio_source"], default)
+    assert preset_setting_is_active(specs["subtitle_source_policy"], default)
+
+    with_mp4: AutoPreset = preset_with_value(default, specs["requested_products"], frozenset({"full_pl", "mp4"}))
+
+    assert preset_setting_is_active(specs["burn_subtitle_product"], with_mp4)
+    assert preset_setting_is_active(specs["mp4_audio_source"], with_mp4)
+    assert not preset_setting_is_active(specs["mkv_tracks"], with_mp4)
+
+
+def test_dropping_a_container_clears_the_choices_that_needed_it() -> None:
+    preset: AutoPreset = _full_preset()
+
+    without: AutoPreset = preset_with_value(preset, _preset_specs()["requested_products"], frozenset({"full_pl"}))
+
+    assert without.products == ProductIntent(requested_products=frozenset({ProductKind.FULL_PL}))
+    assert without.subtitle_source_policy is SubtitleSourcePolicy.EMBEDDED
+    assert without.translation_action is TranslationAction.TRANSLATE
+    assert without.source_subtitle_language == "eng"
+    assert without.subtitle_output_format is SubtitleOutputFormat.SRT
+
+
+def test_an_empty_language_override_is_stored_as_none() -> None:
+    spec: SettingSpec = _preset_specs()["source_subtitle_language"]
+
+    cleared: AutoPreset = preset_with_value(_full_preset(), spec, None)
+
+    assert cleared.source_subtitle_language is None
+    assert read_preset_value(cleared, spec) is None
+
+
+def test_preset_adapter_rejects_values_outside_the_catalog() -> None:
+    preset: AutoPreset = _full_preset()
+    specs: dict[str, SettingSpec] = _preset_specs()
+
+    with pytest.raises(ValueError, match="not allowed"):
+        preset_with_value(preset, specs["subtitle_source_policy"], "external")
+    with pytest.raises(TypeError, match="does not match its declared type"):
+        preset_with_value(preset, specs["source_subtitle_language"], 5)
+    with pytest.raises(ValueError, match="not allowed"):
+        preset_with_value(preset, specs["mkv_tracks"], frozenset({"video"}))
+
+
+def test_preset_adapter_rejects_preferences_and_preset_identity() -> None:
+    settings: UserSettings = UserSettings()
+    preset: AutoPreset = _full_preset()
+    preference: SettingSpec = _spec(settings, "translation_engine")
+    identity: SettingSpec = SettingSpec(
+        setting_id="preset_id",
+        label="Identity",
+        description="Names the preset instead of configuring it.",
+        value_type=SettingValueType.STRING,
+        default="default",
+        scope=SettingScope.AUTO_PRESET,
+    )
+
+    with pytest.raises(ValueError, match="not an automatic preset field"):
+        read_preset_value(preset, preference)
+    with pytest.raises(ValueError, match="not an automatic preset field"):
+        preset_with_value(preset, preference, "google")
+    with pytest.raises(ValueError, match="not an automatic preset field"):
+        read_preset_value(preset, identity)
+    with pytest.raises(ValueError, match="not an automatic preset field"):
+        preset_setting_is_active(_spec(settings, "llm_temperature"), preset)

@@ -202,6 +202,7 @@ def test_a_stepped_number_shows_up_before_it_reaches_storage(
         ("category:general",),
         ("category:subtitles",),
         ("category:output",),
+        ("category:auto",),
         ("category:connections",),
         ("category:connections", "connection:gemini"),
         ("category:tts", f"setting:{'elevenbytes_custom_voices'}"),

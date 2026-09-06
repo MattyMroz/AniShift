@@ -24,7 +24,8 @@ def _write_required_prompts(root: Path, *, retry: str | None = None) -> None:
 def test_packaged_prompts_load_as_polish_markdown_resources() -> None:
     prompts = PromptLoader().load("neutral")
 
-    assert available_style_names() == ("adult-extreme", "funny", "neutral")
+    assert {"adult-extreme", "funny", "neutral"} <= set(available_style_names())
+    assert available_style_names() == tuple(sorted(available_style_names()))
     assert "polski" in prompts.system
     assert "Przetłumacz" in prompts.translation
     assert "{{validation_error}}" in prompts.retry

@@ -28,6 +28,9 @@ _BYTES_PER_MB: Final[int] = 1024 * 1024
 _NVIDIA_SMI_TIMEOUT_S: Final[float] = 2.0
 """Timeout for the nvidia-smi subprocess probe."""
 
+_NO_WINDOW: Final[int] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+"""Windows flag keeping a console child from opening its own window when the parent has none."""
+
 
 @dataclass(frozen=True, slots=True)
 class DeviceInfo:
@@ -65,6 +68,7 @@ def _query_cuda_via_nvidia_smi() -> tuple[str, int] | None:
             text=True,
             timeout=_NVIDIA_SMI_TIMEOUT_S,
             check=True,
+            creationflags=_NO_WINDOW,
         )
     except subprocess.SubprocessError, OSError:
         return None

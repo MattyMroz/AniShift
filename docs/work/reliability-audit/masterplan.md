@@ -1,6 +1,6 @@
 ---
 kind: masterplan
-status: active
+status: maintenance-deferred
 updated: 2026-09-05
 ---
 
@@ -15,9 +15,9 @@ a następnie przygotowanie pod audiobook i automatyzację. Obowiązują
 stany produktu, nie każdą czynność wykonawcy.
 
 Właściciel zatwierdził realizację 2026-09-04, również naprawy współdzielonych utils.
-Aktualny zakres wykonania i podział odpowiedzialności opisuje
-[Plan 04 — terminal](plans/04-terminal-polish.md). Akceptacja wyglądu i odsłuch pozostają osobnymi
-checkpointami człowieka, niezależnie od zgody na implementację.
+Dostarczone poprawki dokumentują wyniki poniżej. Aktualny kierunek rozwoju jest
+w [automatyzacji](../../plans/automation/README.md); ten audyt nie wyznacza
+obowiązkowej kolejki przed nowymi funkcjami.
 
 ## Etapy
 
@@ -43,22 +43,18 @@ naraz; nie uruchamiać kilku writerów modyfikujących kontrakt postępu/cancell
 
 ## Aktualny punkt decyzji
 
-Naprawy niezawodności opisuje [outcome](outcomes/02-hardening.md). Feedback właściciela
-z 2026-09-05 skierował bieżącą iterację na terminal i ustawienia —
-[Plan 04](plans/04-terminal-polish.md). Po jego odbiorze wracamy do
-[akceptacji produktu](plans/03-product-acceptance.md), nie automatycznej rozbudowy.
-Pomiary nie wykazały tańszego kodowania maskotki. Pierwsza klatka nadal czeka
-na docelowy obraz zgodnie z decyzją właściciela; nie wraca placeholder.
+Właściciel potwierdził codzienne Auto oraz poprawkę przewijania 83150d8.
+Osiem opcji presetu dostarczono w 4dc99dc; pełnego human check wszystkich ustawień
+nie zakładamy. Bieżące testy kodu: 3102 PASS, 13 skip; 30 smoke mediów PASS.
 
-Następne rezultaty po odbiorze terminala:
+Ogólne hardening, wydajność, kompletna kwalifikacja produktu i layout są odłożone.
+[Issues #42–#48 oraz istniejące tematy napisów](../../plans/automation/README.md#odłożone-dopracowanie)
+przechowują otwarty dług. Bezpieczeństwo konkretnej nowej funkcji nadal jest wymagane.
 
-1. Dostęp do siedmiu zaawansowanych opcji domyślnego AutoPreset w panelu, bez zmiany
-   schema i utraty pozostałych pól — [Plan 05](plans/05-auto-preset-controls.md).
-2. Spójne instrukcje tłumaczenia i porównanie krótszego promptu:
-   [rekomendacje i ewaluacja](prompt-recommendations.md). Najpierw wierność znaczeniu,
-   dopiero później koszt i naturalność. Nie wdrażać propozycji bez A/B.
-3. Pełny odcinek, odsłuch/synchronizacja, świeży Windows i scenariusze graniczne
-   pozostałe w Planie 03; potem kontrakt TXT → audiobook.
+Teraz przygotowujemy wizję i plan jednego użytecznego kroku automatyzacji, nie
+wracamy automatycznie do Planu 03 ani porównań promptów. Źródłem kierunku jest
+[aktualny masterplan](../../plans/automation/masterplan.md).
+Poniższe sekcje opisują historyczną kolejność audytu.
 
 ## Pierwszy rezultat
 

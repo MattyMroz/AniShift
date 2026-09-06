@@ -167,9 +167,18 @@ def _plan(
             for group in groups
         }
         group_plans = [
-            replace(group_plan, artifact_ids=source_ids_by_group[group_plan.group_id], task_ids=())
+            replace(
+                group_plan,
+                artifact_ids=source_ids_by_group[group_plan.group_id],
+                task_ids=(),
+                problems=tuple(
+                    _without_planned_artifacts(problem, source_ids_by_group[group_plan.group_id])
+                    for problem in group_plan.problems
+                ),
+            )
             for group_plan in group_plans
         ]
+        problems = [problem for group_plan in group_plans for problem in group_plan.problems]
         artifacts = list(source_artifacts)
         tasks = []
     ordered_tasks: tuple[PlanTask, ...] = stable_topological_order(tasks)
@@ -180,6 +189,14 @@ def _plan(
         settings=settings,
         problems=tuple(problems),
     )
+
+
+def _without_planned_artifacts(problem: PlanProblem, source_ids: tuple[str, ...]) -> PlanProblem:
+    """Drop references to artifacts a blocked plan no longer carries, keeping source ones."""
+    kept: tuple[str, ...] = tuple(artifact_id for artifact_id in problem.artifact_ids if artifact_id in source_ids)
+    if kept == problem.artifact_ids:
+        return problem
+    return replace(problem, artifact_ids=kept)
 
 
 class _GroupPlanner:

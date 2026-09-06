@@ -4,6 +4,14 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
+    from anishift.application.acquisition import (
+        AcquisitionService,
+        ClientStatus,
+        DownloadReceipt,
+        ReleaseCatalog,
+        ReleaseChoice,
+        SeriesGroup,
+    )
     from anishift.application.discovery import (
         PRIMARY_SOURCE_SUFFIXES,
         DiscoveryResult,
@@ -25,6 +33,8 @@ if TYPE_CHECKING:
         SettingsDraft,
         TranslationModelOption,
     )
+    from anishift.application.subscriptions import CHECK_INTERVAL_S as SUBSCRIPTION_CHECK_INTERVAL_S
+    from anishift.application.subscriptions import CheckOutcome, Subscription, SubscriptionService
     from anishift.setup.doctor import CheckResult
     from anishift.setup.installer import ResourceResult
 
@@ -80,9 +90,13 @@ from anishift.application.results import (
     TaskResult,
 )
 from anishift.application.selection import group_is_ready, ready_group_ids
+from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger
 
 __all__ = [
     "PRIMARY_SOURCE_SUFFIXES",
+    "SCAN_INTERVAL_S",
+    "SUBSCRIPTION_CHECK_INTERVAL_S",
+    "AcquisitionService",
     "AppService",
     "Artifact",
     "ArtifactKind",
@@ -93,9 +107,12 @@ __all__ = [
     "AutoPresetDraft",
     "BurnSubtitleProduct",
     "CancellationToken",
+    "CheckOutcome",
     "CheckResult",
+    "ClientStatus",
     "DiscoveryResult",
     "DiscoveryWarning",
+    "DownloadReceipt",
     "EnvironmentSettingStatus",
     "EventCancellationToken",
     "ExecutionHandlerFactory",
@@ -120,6 +137,8 @@ __all__ = [
     "ProducedArtifact",
     "ProductIntent",
     "ProductKind",
+    "ReleaseCatalog",
+    "ReleaseChoice",
     "ResourceResult",
     "RunEvent",
     "RunEventEmitter",
@@ -128,8 +147,11 @@ __all__ = [
     "RunMode",
     "RunResult",
     "RunSettingsSnapshot",
+    "SeriesGroup",
     "SettingsDraft",
     "SourceGroup",
+    "Subscription",
+    "SubscriptionService",
     "SubtitleOutputFormat",
     "SubtitleSourcePolicy",
     "TaskKind",
@@ -137,6 +159,7 @@ __all__ = [
     "TaskState",
     "TranslationAction",
     "TranslationModelOption",
+    "WatchLedger",
     "WorkerNotification",
     "WorkerNotificationKind",
     "WorkspaceInspector",
@@ -149,7 +172,17 @@ __all__ = [
 _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "PRIMARY_SOURCE_SUFFIXES": ("anishift.application.discovery", "PRIMARY_SOURCE_SUFFIXES"),
     "AppService": ("anishift.application.service", "AppService"),
+    "CheckOutcome": ("anishift.application.subscriptions", "CheckOutcome"),
+    "SUBSCRIPTION_CHECK_INTERVAL_S": ("anishift.application.subscriptions", "CHECK_INTERVAL_S"),
+    "Subscription": ("anishift.application.subscriptions", "Subscription"),
+    "SubscriptionService": ("anishift.application.subscriptions", "SubscriptionService"),
+    "AcquisitionService": ("anishift.application.acquisition", "AcquisitionService"),
     "AutoPresetDraft": ("anishift.application.service", "AutoPresetDraft"),
+    "ClientStatus": ("anishift.application.acquisition", "ClientStatus"),
+    "DownloadReceipt": ("anishift.application.acquisition", "DownloadReceipt"),
+    "ReleaseCatalog": ("anishift.application.acquisition", "ReleaseCatalog"),
+    "ReleaseChoice": ("anishift.application.acquisition", "ReleaseChoice"),
+    "SeriesGroup": ("anishift.application.acquisition", "SeriesGroup"),
     "EnvironmentSettingStatus": ("anishift.application.service", "EnvironmentSettingStatus"),
     "CheckResult": ("anishift.setup.doctor", "CheckResult"),
     "DiscoveryResult": ("anishift.application.discovery", "DiscoveryResult"),

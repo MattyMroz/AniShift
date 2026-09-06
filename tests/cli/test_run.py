@@ -26,6 +26,8 @@ from anishift.application import (
 )
 from anishift.application.planning import PlanProblem
 from anishift.application.results import GroupResult, GroupStatus, ProducedArtifact, RunResult
+from anishift.cli import exit_codes
+from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, prepare_auto_run
 from anishift.errors import ConfigError, ErrorCode, ErrorContext, ExecutionError, PlanningError
 
 cli_main = importlib.import_module("anishift.cli.main")
@@ -200,7 +202,7 @@ def test_a_run_where_every_group_succeeds_reports_them_and_exits_zero(
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_SUCCESS
+    assert result.exit_code == exit_codes.EXIT_SUCCESS
     assert "group anime-01: succeeded" in result.output
     assert "1 of 1 groups succeeded." in result.output
 
@@ -226,7 +228,7 @@ def test_a_run_with_a_failed_group_reports_the_error_and_exits_with_the_incomple
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_INCOMPLETE
+    assert result.exit_code == exit_codes.EXIT_INCOMPLETE
     assert "group anime-02: failed" in result.output
     assert "  error: The speech engine refused the request." in result.output
     assert "1 of 2 groups succeeded." in result.output
@@ -253,7 +255,7 @@ def test_a_run_with_a_partial_group_exits_with_the_incomplete_code(
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_INCOMPLETE
+    assert result.exit_code == exit_codes.EXIT_INCOMPLETE
     assert "group anime-01: partial" in result.output
     assert "  product: anime-01.pl.srt" in result.output
 
@@ -279,7 +281,7 @@ def test_a_cancelled_group_exits_with_the_cancelled_code_even_beside_a_failure(
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_CANCELLED
+    assert result.exit_code == exit_codes.EXIT_CANCELLED
     assert "group anime-02: cancelled" in result.output
 
 
@@ -291,7 +293,7 @@ def test_an_interrupted_run_states_the_cancellation_and_exits_with_the_cancelled
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_CANCELLED
+    assert result.exit_code == exit_codes.EXIT_CANCELLED
     assert "The run was cancelled before it finished." in result.output
     assert facade.calls == ["discover", "get_preset", "plan_auto", "execute"]
 
@@ -304,7 +306,7 @@ def test_a_terminal_execution_error_is_stated_and_exits_with_the_incomplete_code
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_INCOMPLETE
+    assert result.exit_code == exit_codes.EXIT_INCOMPLETE
     assert "Another AniShift workflow is already active" in result.output
 
 
@@ -316,7 +318,7 @@ def test_an_unknown_preset_is_refused_by_a_sentence_and_never_plans_anything(
 
     result: Result = _invoke_run(monkeypatch, facade, preset="nope")
 
-    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert result.exit_code == exit_codes.EXIT_REFUSED
     assert "Unknown automatic preset: nope" in result.output
     assert facade.planned == []
     assert facade.executed == []
@@ -330,7 +332,7 @@ def test_a_workspace_without_sources_is_refused_before_planning(
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert result.exit_code == exit_codes.EXIT_REFUSED
     assert "The workspace holds no source group to run." in result.output
     assert facade.planned == []
     assert facade.executed == []
@@ -355,7 +357,7 @@ def test_only_the_groups_the_application_layer_reports_ready_reach_the_planner(
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_SUCCESS
+    assert result.exit_code == exit_codes.EXIT_SUCCESS
     assert facade.planned == [(ready_group_ids(facade.workspace.groups), "preset:default")]
     assert "anime-02" not in [group_id for planned, _ in facade.planned for group_id in planned]
 
@@ -368,7 +370,7 @@ def test_a_workspace_whose_every_group_is_unready_is_refused_before_planning(
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert result.exit_code == exit_codes.EXIT_REFUSED
     assert "No discovered source group is ready to run." in result.output
     assert "The workspace holds no source group to run." not in result.output
     assert facade.planned == []
@@ -391,7 +393,7 @@ def test_the_run_takes_its_groups_from_one_discovery_of_the_workspace(
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_SUCCESS
+    assert result.exit_code == exit_codes.EXIT_SUCCESS
     assert facade.calls.count("discover") == 1
     assert facade.planned[0][0] == ready_group_ids(facade.workspace.groups)
     assert len(facade.planned[0][0]) < len(facade.workspace.groups)
@@ -413,7 +415,7 @@ def test_a_blocked_plan_states_every_blocker_and_is_never_executed(
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert result.exit_code == exit_codes.EXIT_REFUSED
     assert "The plan cannot run because of a blocking problem." in result.output
     assert "  anime-01: No usable subtitle source." in result.output
     assert "Nothing was selected." not in result.output
@@ -440,7 +442,7 @@ def test_the_run_executes_exactly_the_plan_the_facade_built_from_its_own_preset(
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_SUCCESS
+    assert result.exit_code == exit_codes.EXIT_SUCCESS
     assert facade.calls == ["discover", "get_preset", "plan_auto", "execute"]
     assert facade.planned == [(("anime-01", "anime-02"), "preset:default")]
     assert facade.executed == [plan]
@@ -466,7 +468,7 @@ def test_the_report_locates_products_relative_to_the_workspace_root(
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_SUCCESS
+    assert result.exit_code == exit_codes.EXIT_SUCCESS
     assert "  product: season/anime-01.pl.mkv" in result.output
     assert str(tmp_path) not in result.output
 
@@ -513,7 +515,7 @@ def test_an_unusable_configuration_is_refused_together_with_its_suggestion(
 
     result: Result = CliRunner().invoke(cli_main.app, ["run", "--preset", "default"])
 
-    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert result.exit_code == exit_codes.EXIT_REFUSED
     assert "The workspace root could not be resolved." in result.output
     assert "  Set ANISHIFT_WORKSPACE_ROOT or run from a repo checkout." in result.output
 
@@ -526,7 +528,7 @@ def test_a_private_location_in_a_refusal_is_redacted_before_it_is_printed(
 
     result: Result = _invoke_run(monkeypatch, facade)
 
-    assert result.exit_code == cli_main.EXIT_INCOMPLETE
+    assert result.exit_code == exit_codes.EXIT_INCOMPLETE
     assert _PRIVATE_LOCATION not in result.output
     assert "<path>" in result.output
 
@@ -535,8 +537,8 @@ def test_a_missing_preset_option_is_a_usage_error_that_keeps_two_reserved() -> N
     result: Result = CliRunner().invoke(cli_main.app, ["run"])
 
     assert result.exit_code == 2
-    assert cli_main.EXIT_INCOMPLETE != 2
-    assert cli_main.EXIT_CANCELLED != 2
+    assert exit_codes.EXIT_INCOMPLETE != 2
+    assert exit_codes.EXIT_CANCELLED != 2
 
 
 def test_the_bare_invocation_lazily_launches_interactive_with_one_service(
@@ -559,7 +561,7 @@ def test_the_bare_invocation_lazily_launches_interactive_with_one_service(
     monkeypatch.setattr(interactive, "run_interactive", launched.append)
     result: Result = CliRunner().invoke(cli_main.app, [])
 
-    assert result.exit_code == cli_main.EXIT_SUCCESS
+    assert result.exit_code == exit_codes.EXIT_SUCCESS
     assert launched == [cast("AppService", facade)]
     assert facade.calls == []
 
@@ -582,7 +584,7 @@ def test_the_named_run_does_not_launch_the_interactive_frontend(
 
     result: Result = CliRunner().invoke(cli_main.app, ["run", "--preset", "default"])
 
-    assert result.exit_code == cli_main.EXIT_SUCCESS
+    assert result.exit_code == exit_codes.EXIT_SUCCESS
     assert launched == []
     assert facade.calls == ["discover", "get_preset", "plan_auto", "execute"]
 
@@ -598,8 +600,79 @@ def test_the_run_command_loads_no_textual_module() -> None:
 
     assert probe.returncode == 0, probe.stderr
     report: dict[str, Any] = json.loads(probe.stdout)
-    assert report["code"] == cli_main.EXIT_SUCCESS
+    assert report["code"] == exit_codes.EXIT_SUCCESS
     assert report["loaded"] == []
+
+
+def test_a_requested_subset_plans_only_those_groups_in_workspace_order(tmp_path: Path) -> None:
+    facade: _Facade = _Facade(root=tmp_path, group_ids=("anime-01", "anime-02", "anime-03"))
+
+    prepared: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(
+        cast("AppService", facade),
+        "default",
+        group_ids=("anime-03", "anime-01"),
+    )
+
+    assert isinstance(prepared, PreparedAutoRun)
+    assert prepared.group_ids == ("anime-01", "anime-03")
+    assert facade.planned == [(("anime-01", "anime-03"), "preset:default")]
+
+
+def test_a_requested_group_the_workspace_never_discovered_is_refused_before_planning(tmp_path: Path) -> None:
+    facade: _Facade = _Facade(root=tmp_path, group_ids=("anime-01", "anime-02"))
+
+    prepared: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(
+        cast("AppService", facade),
+        "default",
+        group_ids=("anime-01", "anime-77"),
+    )
+
+    assert isinstance(prepared, AutoRunRefusal)
+    assert prepared.message == "The run cannot take every requested source group."
+    assert [(blocker.scope, blocker.message) for blocker in prepared.blockers] == [
+        ("anime-77", "The workspace holds no such source group."),
+    ]
+    assert facade.planned == []
+
+
+def test_a_requested_group_that_is_not_ready_is_refused_before_planning(tmp_path: Path) -> None:
+    facade: _Facade = _Facade(root=tmp_path, group_ids=("anime-01", "anime-02"), unready=("anime-02",))
+
+    prepared: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(
+        cast("AppService", facade),
+        "default",
+        group_ids=("anime-01", "anime-02"),
+    )
+
+    assert isinstance(prepared, AutoRunRefusal)
+    assert [(blocker.scope, blocker.message) for blocker in prepared.blockers] == [
+        ("anime-02", "This source group is not ready to run."),
+    ]
+    assert facade.planned == []
+
+
+def test_a_run_without_a_requested_selection_still_plans_every_ready_group(tmp_path: Path) -> None:
+    facade: _Facade = _Facade(root=tmp_path, group_ids=("anime-01", "anime-02", "anime-03"), unready=("anime-02",))
+
+    prepared: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(cast("AppService", facade), "default")
+
+    assert isinstance(prepared, PreparedAutoRun)
+    assert prepared.group_ids == ready_group_ids(facade.workspace.groups)
+    assert facade.planned == [(("anime-01", "anime-03"), "preset:default")]
+
+
+def test_an_empty_requested_selection_is_refused_instead_of_planning_every_group(tmp_path: Path) -> None:
+    facade: _Facade = _Facade(root=tmp_path, group_ids=("anime-01", "anime-02"))
+
+    prepared: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(
+        cast("AppService", facade),
+        "default",
+        group_ids=(),
+    )
+
+    assert isinstance(prepared, AutoRunRefusal)
+    assert prepared.message == "No discovered source group is ready to run."
+    assert facade.planned == []
 
 
 def _invoke_run(monkeypatch: pytest.MonkeyPatch, facade: _Facade, *, preset: str = "default") -> Result:

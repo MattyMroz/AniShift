@@ -4,12 +4,22 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 
 ## Pliki
 
-- `main.py` — Typer app, `main()` (console script), subkomendy `doctor`/`setup`/`run --preset`, bare = Interactive CLI
+- `main.py` — Typer app, `main()` (console script), subkomendy `doctor`/`setup`/`run --preset`, grupy `watch` i `autostart`, bare = Interactive CLI
 - `console.py` — jedyny właściciel rekonfiguracji stdout/stderr na UTF-8 + check dla doctora
-- `run.py` — wspólny, UI-neutralny preflight Auto oraz wykonanie zaakceptowanego planu
+- `run.py` — wspólny, UI-neutralny preflight Auto (także dla wskazanego podzbioru grup) oraz wykonanie zaakceptowanego planu
+- `exit_codes.py` — kody wyjścia 0/1/3/4 i `run_exit_code()` wspólne dla `run --preset` i okna partii
+- `watch.py` — pętla czuwania bez UI: blokada instancji, skan biblioteki, uruchamianie okna partii, flaga stop, godzinne sprawdzanie subskrypcji między skanami
 - `interactive/` — lazy-loaded Home, jeden renderer Prompt Toolkit, maskotka, Settings, Manual i wspólny postęp
 
 ## Pułapki
+
+- Czuwanie (`anishift watch`) NIE importuje `anishift.cli.interactive` ani Prompt Toolkit: proces
+  startuje z `pythonw.exe` bez konsoli. Okno partii to osobny proces `anishift watch batch ID...`
+  uruchamiany z `CREATE_NEW_CONSOLE`; czuwanie zna tylko jego kod wyjścia. Jedno okno naraz.
+  `watch.py`, `main.py`
+- `run_interactive(service, batch=...)` zwraca kod wyjścia jak `run --preset` i po wyniku odlicza
+  10 s w `_handle_idle`, dowolny klawisz zamyka; `interrupt` w partii anuluje run i kończy kodem 4.
+  Test buduje aplikację ręcznie? Ustaw też `_batch` i `_closing_at`. `interactive/app.py`
 
 - `main()` woła `configure_utf8_streams()` PRZED jakimkolwiek outputem, a dopiero
   potem konfiguruje logger; nie odwracaj tej kolejności. `main.py`
@@ -64,12 +74,22 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Run niepełny, anulowany albo z ostrzeżeniami pokazuje przewijany wynik grup:
   przyczyny błędów, zapisane i zachowane produkty oraz lokalizację logu.
   Treść przechodzi przez sanitizację i ten sam renderer. `interactive/app.py`
-- Home ma dokładnie `Auto`, `Ręczny`, `Ustawienia`, `Wyjście`. Settings działa w tym
+- Home ma dokładnie `Auto`, `Ręczny`, `Anime`, `Ustawienia`, `Wyjście`. Settings działa w tym
   samym rendererze, a mutacje `settings.json`, `presets.json` i `.env` przechodzą
   przez `AppService`. Manual przechowuje drafty wyłącznie lokalnie, rejestruje pliki
   zewnętrzne przez `AppService`, waliduje przez `plan_manual()` i przekazuje zaakceptowany
   plan do tej samej ścieżki wykonania oraz postępu co Auto.
   `interactive/app.py`, `interactive/settings.py`, `interactive/manual.py`, `run.py`
+- `AnimeController` jest jedynym właścicielem stanu ekranu Anime (QUERY → BUSY → RESULTS →
+  DONE/PROBLEM); `app.py` tylko go tworzy, przekazuje klawisze i renderuje. Sieć
+  (`AppService.acquisition.search`/`download`) idzie do wątku `anishift-anime`, a licznik
+  generacji odrzuca wynik spóźniony po `Esc`; `render()` nigdy nie blokuje i nie robi I/O.
+  Piąty wiersz Home zmienia indeksy pozycji — `_HOME_MENU_ROWS` i `_HOME_CHROME_ROWS`
+  liczą wiersze menu, a testy budujące aplikację ręcznie muszą ustawić `_anime`.
+  `interactive/anime.py`, `interactive/app.py`, `interactive/prompts.py`
+- `O` w wynikach Anime obserwuje PODŚWIETLONY odcinek, nie zaznaczone wiersze: paczka lub brak numeru
+  daje wyłącznie jednolinijkową notkę zamiast stopki, kasowaną następnym klawiszem, a `subscribe` +
+  `check` idą do tego samego wątku i licznika generacji co szukanie. `interactive/anime.py`
 - `SettingsController.render()` korzysta wyłącznie z lokalnego, odświeżonego snapshotu;
   nie wykonuj w nim I/O ani wywołań sieciowych, bo renderer odświeża klatkę cyklicznie.
   Katalog modeli jest tylko do odczytu, a probe działa wyłącznie po jawnej akcji.
@@ -132,8 +152,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `_open_scoped_reset` → `_EditorAction.RESET_SCOPE` → `_reset_scope`, a pytanie ma
   zawsze kształt `PRZYWRÓCIĆ DOMYŚLNE · <ZAKRES>?` (root = scope `all`, tytuł
   `WSZYSTKO`). Root przywraca wszystko DOSŁOWNIE: obok `reset_settings()` woła
-  `_restore_default_products()`, bo produkty siedzą w presecie, nie w katalogu pól, i
-  bez tego przeżywały reset, który obiecywał całość. Reset idzie polami w kolejności
+  `_restore_default_preset()`, bo produkty i polityki Auto siedzą w presecie, nie
+  w preferencjach. Auto i Wynik przywracają cały preset pod zachowaną tożsamością;
+  częściowy błąd resetu root pokazuje, który zapis zawiódł. Reset preferencji idzie polami w kolejności
   ekranu i pomija te, które po drodze przestały być aktywne, bo zmiana silnika
   przebudowuje resztę. JEDEN wyjątek od kolejności ekranu: zakres `translation`
   zaczyna się od `_TRANSLATION_MODEL_FIELDS`, bo `llm_provider` i
@@ -154,7 +175,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   MUSI być osiągalne z panelu albo mieć wpis z powodem w `_FIELDS_COVERED_ELSEWHERE`.
   `interactive/settings.py`
 - Home ma skaczącego slime'a z `assets/mascot/idle/01.gif`, responsywny
-  wordmark, cztery akcje, hint i stopkę z cwd/version. GIF ma być
+  wordmark, pięć akcji, hint i stopkę z cwd/version. GIF ma być
   animowany: `TerminalRenderer.after_render` wysyła kolejne klatki SIXEL. Pierwsza
   klatka interaktywna ma już gotową maskotkę; nie dodawaj startup placeholdera.
   Konstruktor renderera nie koduje obrazu. `run()` sprawdza obsługę SIXEL i metryki,

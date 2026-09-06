@@ -215,7 +215,7 @@ def test_external_audio_beyond_tolerance_is_rejected(tmp_path: Path) -> None:
     audio.write_bytes(b"audio")
     inspector = WorkspaceInspector(
         _FakeProbe({}),
-        runner=_FakeRunner(11_000_001),
+        runner=_FakeRunner(20_000_001),
         ffmpeg=Path("ffmpeg.exe"),
     )
     with pytest.raises(ExecutionError, match="beyond tolerance"):
