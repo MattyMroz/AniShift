@@ -43,10 +43,23 @@ the renderer. TXT-only workspaces do not trigger media-tool downloads.
 
 ## Searching and downloading
 
-The **Anime** row in the interactive interface searches nyaa.si for a title, lists the
-1080p+ releases grouped by release group, and sends the episodes you tick (Space) to
-qBittorrent with Enter. Files are saved into `workspace/<Series>/`, so the watch picks
-every finished download up on its own.
+The **Anime** row in the interactive interface takes a title the way you would say it:
+`solo leveling`, `mushoku tensei`, `frieren 2`, `solo leveling 1` (the trailing number is
+an episode, `4-10` a range). AniList turns the phrase into one series with its romaji and
+English names, so you pick the season from a short list that shows year, format, episode
+count and whether the series is finished or still airing. nyaa.si is then searched with
+every name of that series, in both the English and the non-English subtitle categories,
+and the 1080p+ releases are listed by release group with the subtitle language (`EN`,
+`FR`, `MULTI`), newest release first. English dubs and releases of unknown language stay
+hidden. When a release group numbers episodes across seasons (`Solo Leveling - 13` for
+the first episode of season 2), the row shows both numbers: `odc. 1 (13)`.
+
+In the results, Space ticks one episode, **A** ticks every episode of the highlighted
+group, **Z** asks for a range (`4-10`, `5-`, `-3`), **S** switches between newest and
+most seeded, **F** drops the episode filter from your phrase, and Enter sends the ticked
+episodes to qBittorrent. Files of one series always land in one folder,
+`workspace/<English title>/` (romaji when AniList has no English title), whichever
+group you took. If AniList does not answer, the phrase goes to nyaa.si as typed.
 
 qBittorrent needs its Web UI once: Options → Web UI → enable the Web User Interface and
 tick "Bypass authentication for clients on localhost" (or set

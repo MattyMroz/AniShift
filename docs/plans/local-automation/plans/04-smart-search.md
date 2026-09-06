@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: accepted-in-progress
+status: implemented-awaiting-owner-acceptance
 baseline: 097df5b (work/local-automation/01-watch, PR #51)
 branch: work/local-automation/04-smart-search
 created: 2026-09-06
@@ -41,38 +41,38 @@ zaznaczyć zakres odcinków jednym poleceniem. Klawisz `O` bez zmian: od tego od
 
 ## Warunki końcowe
 
-- [ ] M01: `parse_query("solo leveling 1")` → tytuł `solo leveling`, odcinki `{1}`; `"frieren 4-10"` → zakres
+- [x] M01: `parse_query("solo leveling 1")` → tytuł `solo leveling`, odcinki `{1}`; `"frieren 4-10"` → zakres
       4–10; `"mushoku tensei"` → brak filtra; `"odc 3"`, `"ep 3"`, `"e03"` rozpoznane; rok/`1080p` nie są odcinkiem.
-- [ ] M02: `AniListCatalog.search(text)` zwraca do 7 kandydatów (romaji, angielski, synonimy, rok, sezon, format,
+- [x] M02: `AniListCatalog.search(text)` zwraca do 7 kandydatów (romaji, angielski, synonimy, rok, sezon, format,
       liczba odcinków, status) w kolejności AniList; pusty wynik → jedna ponowna próba ze skróconymi słowami
       (`levell` → `leve`); błąd sieci/limitu → `TitleCatalogError` (transient), nigdy traceback.
-- [ ] M03: `AcquisitionService.search_title(candidate, episodes)` odpytuje nyaa tytułem romaji i angielskim,
+- [x] M03: `AcquisitionService.search_title(candidate, episodes)` odpytuje nyaa tytułem romaji i angielskim,
       potem `"{tytuł} {grupa}"` dla ≤ 5 grup z numerowanymi odcinkami, scala po infoHash; grupy, których seria
       pasuje do aliasu kandydata, są przed resztą; w obrębie tej kolejności grupy od najnowszej publikacji.
-- [ ] M04: filtr odcinków z hasła ukrywa inne odcinki i paczki; `F` pokazuje wszystko; licznik w stopce.
-- [ ] M05: `Z` (zakres) i `A` (cała grupa) zaznaczają; zakres poza dostępnymi odcinkami zaznacza część i mówi ile.
-- [ ] M06: `S` przełącza kolejność grup najnowsze ↔ seedy; wybór trwa do końca sesji ekranu.
-- [ ] M06a: status AniList jest mapowany `FINISHED → zakończone`, `RELEASING → w emisji`, `NOT_YET_RELEASED → zapowiedź`,
+- [x] M04: filtr odcinków z hasła ukrywa inne odcinki i paczki; `F` pokazuje wszystko; licznik w stopce.
+- [x] M05: `Z` (zakres) i `A` (cała grupa) zaznaczają; zakres poza dostępnymi odcinkami zaznacza część i mówi ile.
+- [x] M06: `S` przełącza kolejność grup najnowsze ↔ seedy; wybór trwa do końca sesji ekranu.
+- [x] M06a: status AniList jest mapowany `FINISHED → zakończone`, `RELEASING → w emisji`, `NOT_YET_RELEASED → zapowiedź`,
       `CANCELLED/HIATUS → przerwane`; widoczny w wierszu tytułu i w nagłówku wyników; stopka wyników zależy od statusu.
-- [ ] M07: `O` zapisuje subskrypcję z `query = "{tytuł} {grupa}"`; stare wpisy działają bez migracji.
-- [ ] M12: po wyborze tytułu wiersz grupy zachowuje zapis grupy (`[SubsPlease · EN] Mushoku Tensei S3`), nagłówek
+- [x] M07: `O` zapisuje subskrypcję z `query = "{tytuł} {grupa}"`; stare wpisy działają bez migracji.
+- [x] M12: po wyborze tytułu wiersz grupy zachowuje zapis grupy (`[SubsPlease · EN] Mushoku Tensei S3`), nagłówek
       pokazuje nazwę kanoniczną (romaji · angielska), a pobranie i subskrypcja z tego ekranu zapisują pliki do jednego
       folderu `workspace/<tytuł angielski, a gdy AniList go nie ma: romaji>/` niezależnie od grupy
       (`series_directory_name(candidate.folder_title())`; decyzja właściciela 2026-09-06); `Subscription` dostaje
       opcjonalne pole `directory` (brak = dotychczasowa nazwa z serii, stare wpisy bez migracji).
-- [ ] M13: numeracja sezonów. `TitleCandidate` dostaje `episode_offset` = suma odcinków łańcucha PREQUEL (TV/ONA,
+- [x] M13: numeracja sezonów. `TitleCandidate` dostaje `episode_offset` = suma odcinków łańcucha PREQUEL (TV/ONA,
       bez MOVIE/SPECIAL) z AniList (Solo Leveling S2: 12; Mushoku Tensei III: 36). Numer z nazwy wydania jest
       interpretowany: nazwa ze znacznikiem sezonu (`S02`, `S2`, `Season 2`, `2nd Season`, `II`/`III`, `Part 2`) →
       numer per sezon; bez znacznika i numer > liczba odcinków wybranego sezonu → numer absolutny, pokazywany jako
       `odc. 1 (13)`; bez znacznika i numer ≤ liczba odcinków, gdy sezon ma offset > 0 → prawdopodobnie inny sezon,
       wiersz trafia na koniec grupy z dopiskiem `sezon?`. Filtr z hasła, `Z`, subskrypcja i `next_episode` liczą
       w numeracji sezonu (jak lista właściciela), a `taken` po hashu, więc obie konwencje grup są bezpieczne.
-- [ ] M14: polskie napisy. Wydania ze znacznikiem `MultiSub`/`Multi-Subs`/`MULTi` dostają etykietę `multi` w wierszu
+- [x] M14: polskie napisy. Wydania ze znacznikiem `MultiSub`/`Multi-Subs`/`MULTi` dostają etykietę `multi` w wierszu
       grupy (możliwe PL); pipeline już wybiera ścieżkę wg `subtitle_language_priority` i przy `pol` pomija tłumaczenie,
       więc plan tylko upewnia się, że `pol` jest pierwsze w priorytecie (ustawienie właściciela, nie kod).
-- [ ] M15: wydania z dubbingiem (`English Dub`, `Dual-Audio` bez napisów, grupy Yameii) są ukryte jak < 1080p,
+- [x] M15: wydania z dubbingiem (`English Dub`, `Dual-Audio` bez napisów, grupy Yameii) są ukryte jak < 1080p,
       z licznikiem w stopce; `Dual-Audio` z napisami zostaje.
-- [ ] M16: qBittorrent jako wymaganie. `anishift doctor` ma wiersz `torrent client`: OK gdy port Web UI odpowiada,
+- [x] M16: qBittorrent jako wymaganie. `anishift doctor` ma wiersz `torrent client`: OK gdy port Web UI odpowiada,
       WARN „qBittorrent not running or Web UI off” z podpowiedzią `anishift qbit setup`, WARN „not installed” z
       `winget install qBittorrent.qBittorrent`, gdy brak `qbittorrent.exe` w standardowych lokalizacjach (sprawdzenie
       gniazdem i ścieżką, bez ładowania backendu). `anishift qbit setup`, gdy Web UI nie odpowiada, a proces
@@ -80,17 +80,17 @@ zaznaczyć zakres odcinków jednym poleceniem. Klawisz `O` bez zmian: od tego od
       bez logowania z localhost, losowe hasło admina wymagane przez qBittorrent 5) po zrobieniu kopii `.anishift.bak`,
       i mówi „start qBittorrent, then run qbit setup again”; gdy proces działa, prosi o zamknięcie (ini jest nadpisywane
       przy wyjściu). Instalacji nie wykonuje.
-- [ ] M10: `search_releases` odpytuje kategorie `1_2` i `1_3` (dwa zapytania, scalone po infoHash); `Release`
+- [x] M10: `search_releases` odpytuje kategorie `1_2` i `1_3` (dwa zapytania, scalone po infoHash); `Release`
       dostaje `subtitle_language: "en" | "fr" | "multi" | None` rozpoznany z nazwy (`VOSTFR`, `SUBFRENCH`, `VF`,
       `FRENCH` → fr; `MULTi` → multi; kategoria English-translated bez znaczników → en); wiersz grupy pokazuje
       `· FR` / `· EN` / `· MULTI`.
-- [ ] M11: `parse_release_name` rozpoznaje: `SxxEyy` w środku nazwy (seria = tekst przed), grupę na końcu po
+- [x] M11: `parse_release_name` rozpoznaje: `SxxEyy` w środku nazwy (seria = tekst przed), grupę na końcu po
       myślniku (`-Tsundere-Raws`, `-VARYG`, `-T3KASHi`) gdy brak `[Grupa]` z przodu, nazwy z kropkami zamiast spacji,
       rok po tytule, i usuwa z serii znaczniki techniczne (`1080p`, `720p`, `WEB-DL`, `WEBRiP`, `BILI`, `CR`, `NF`,
       `AAC2.0`, `DDP`, `H.264`, `x265`, `HEVC`, `Dual-Audio`, `MULTi`, `VOSTFR`, `SUBFRENCH`, `VF`, `READNFO`,
       tytuł odcinka po `SxxEyy`). Zestaw testów z 12 prawdziwych nazw z nyaa (2026-09-06), w tym ToonsHub, Cytox,
       AnoZu, Feibanyama, Breeze, VARYG, Tsundere-Raws, Xspitfire911, T3KASHi.
-- [ ] M08: bramki root zielone; próba na żywo przez fasadę: „solo leveling 1” → SubsPlease odc. 1;
+- [x] M08: bramki root zielone; próba na żywo przez fasadę: „solo leveling 1” → SubsPlease odc. 1;
       „solo leveling season 2” + odc. 1 → SubsPlease `odc. 1 (13)`;
       „mushoku tensei” → 4 kandydatów, sezon III ma odc. 1–10 z ≥ 3 grup.
 - [ ] M09: właściciel: przeszedł hasło → tytuł → zakres → Enter na klawiaturze i dostał pliki w `workspace/<Seria>/`.
@@ -255,3 +255,31 @@ Unit: parser (12 przypadków), AniList (5), katalog i scalanie (8), ekran (klawi
 fasadę: M08. Human: M09 na klawiaturze, z uwagą na to, czy ekran Tytuł nie jest jednym krokiem za dużo, gdy
 AniList daje jeden oczywisty wynik (decyzja właściciela po próbie: auto-wybór przy jednym kandydacie czy zawsze
 lista).
+
+## Wynik wykonania (2026-09-06)
+
+Gałąź `work/local-automation/04-smart-search` od `097df5b` (PR #51). Commity: plan (2), parser hasła i katalog
+AniList (`1ebdb6b`), nazwy wydań i dwie kategorie nyaa (`f2e7297`), qBittorrent w doctorze i `qbit setup`
+piszący Web UI (`a550c5e`), fasada z numeracją sezonów i jednym folderem (`b19682f`), poprawki po sondach
+(`46667bd`, `945f9ff`), ekran Anime (`a52a99d`). Wykonanie: cztery wykonawcy Opus po fazach, integracja
+i sondy na żywo po każdej fazie.
+
+Sondy M08 przez fasadę (nyaa + AniList na żywo):
+
+- „solo leveling 1” → AniList: 4 kandydatów (S1 2024 TV 12 odc. zakończone, film, film, S2) → S1: 10 grup,
+  SubsPlease odc. 1 (97 seedów), ASW, Erai-raws, Valenciano; wydania S2 czytane jako `sezon?` i na końcu listy.
+- „mushoku tensei” → 6 kandydatów, sezon III `w emisji 14 odc.` → `SeasonContext(index=3, offset=48)`
+  (cour „Part 2” nie podbija numeru sezonu), 15 grup, odc. 10 czytany poprawnie u Erai-raws (III), SubsPlease
+  (S3), Cytox/AnoZu/ToonsHub (S03E10), Tsundere-Raws · FR; VARYG S02Exx jako `sezon?`.
+- „solo leveling season 2 1” → `index=2, offset=12`, 21 grup, odc. 1 u ToonsHub, VARYG, T3KASHi, Tsundere-Raws,
+  EMBER, Erai-raws; numer absolutny 13 pokazany jako `odc. 1 (13)`.
+
+Zmiany poza planem, wymuszone sondami: zapytania o konkretny odcinek (`Tytuł - 01`, `S02E01`, numer absolutny),
+bo RSS nyaa daje tylko 75 najnowszych trafień; wybór grup do doprecyzowania po seedach, nie po dacie; dopasowanie
+tytułu ignoruje podtytuł po `" - "`, `": "`, `" –"` i `" ("`; `PrequelEntry` z flagą cour; `Subscription` dostał
+poza `directory` także `season_index`, `episode_offset`, `season_episodes` (bez migracji, stare wpisy czytają się
+z domyślnymi). Literówki inne niż ucięte końcówki nadal nie są łapane (AniList: „sollo leveling” → 0).
+
+Bramki: ruff, format, mypy win32 i linux czyste; pytest zielony poza dwoma testami stylów tłumaczenia z
+nieśledzonego pliku właściciela (poprawka list w PR #51 już je toleruje). Nie wykonano: M09 (odbiór właściciela
+klawiaturą) i decyzja „ekran Tytuł przy jednym kandydacie” (zostawiono: zawsze).
