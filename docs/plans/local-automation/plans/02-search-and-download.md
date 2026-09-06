@@ -213,3 +213,10 @@ separatora „ - ” (np. ToonsHub) mają w nazwie serii resztę tytułu.
 
 Nie wykonano: A08 (odbiór właściciela: włączenie WebUI, `qbit setup`, wyszukanie, pobranie, przejęcie przez
 czuwanie).
+
+Domknięcie (2026-09-06): Web UI qBittorrenta 5.2.3 włączone w `qBittorrent.ini` właściciela (nasłuch tylko
+`127.0.0.1:8080`, bez logowania z localhost; qBittorrent 5 wymaga też ustawionego hasła admina, więc dostało
+losowe). `anishift qbit setup` na żywo: `reachable: yes (v5.2.3)`, `incomplete extension: on`. Wersja z API ma
+prefiks `v`, klient go zdejmuje (wcześniej CLI pokazywało `vv5.2.3`). Próba pobrania prawdziwego wydania nie
+została wykonana; A08 (wyszukanie, Space/Enter, plik w `workspace/<Seria>/`, przejęcie przez czuwanie) pozostaje
+odbiorem właściciela.
