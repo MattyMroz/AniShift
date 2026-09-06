@@ -22,6 +22,7 @@ from anishift.application.acquisition import (
     series_forms,
 )
 from anishift.errors import AniShiftError, ConfigError, ErrorCode, ErrorContext
+from anishift.services.torrents.names import season_hint
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -350,7 +351,7 @@ def _new_episodes(
     group: str = subscription.group.casefold()
     best: dict[Decimal, ReleaseChoice] = {}
     for series_group in catalog.groups:
-        if not _matches(series_group, series, group):
+        if not _matches(series_group, subscription, series, group):
             continue
         for choice in series_group.choices:
             reading: EpisodeReading = read_episode(choice.name, context)
@@ -365,8 +366,13 @@ def _new_episodes(
     return best
 
 
-def _matches(series_group: SeriesGroup, series: frozenset[str], group: str) -> bool:
-    return bool(series_forms(series_group.series) & series) and series_group.group.casefold() == group
+def _matches(series_group: SeriesGroup, subscription: Subscription, series: frozenset[str], group: str) -> bool:
+    """Whether the group carries the followed series: same wording family, same uploader, same season marker."""
+    if series_group.group.casefold() != group or not series_forms(series_group.series) & series:
+        return False
+    wanted: int | None = season_hint(subscription.series)
+    offered: int | None = season_hint(series_group.series)
+    return wanted is None or offered is None or wanted == offered
 
 
 def _keep_best(offered: dict[Decimal, ReleaseChoice], extra: dict[Decimal, ReleaseChoice]) -> None:

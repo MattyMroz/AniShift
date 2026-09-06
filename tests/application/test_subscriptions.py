@@ -337,6 +337,25 @@ def test_check_without_new_episodes_only_records_the_check_time(tmp_path: Path) 
     assert service.list()[0].checked_at == _TIMESTAMP
 
 
+def test_check_ignores_another_season_of_the_same_series(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition(
+        {
+            "kanojo": _catalog(
+                _choice(Decimal(11), series="100-nin no Kanojo S2"),
+                _choice(Decimal(7), series="100-nin no Kanojo S3"),
+            )
+        }
+    )
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("kanojo", _choice(Decimal(7), series="100-nin no Kanojo S3"))
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert [choice.name.series for choice in acquisition.downloaded[0]] == ["100-nin no Kanojo S3"]
+    assert outcome.downloaded == 1
+    assert service.list()[0].next_episode == Decimal(8)
+
+
 def test_check_ignores_other_groups_and_other_series(tmp_path: Path) -> None:
     acquisition: _Acquisition = _Acquisition(
         {
