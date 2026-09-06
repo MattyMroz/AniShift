@@ -8,7 +8,7 @@ from typing import Final
 
 from anishift.services.torrents.types import ReleaseName
 
-__all__ = ["parse_release_name"]
+__all__ = ["parse_release_name", "season_hint", "strip_season"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -92,6 +92,22 @@ _FRENCH_SUBTITLES: Final[str] = "fr"
 _MULTI_SUBTITLES: Final[str] = "multi"
 """Subtitle language reported for a release carrying several languages."""
 
+_ROMAN_SEASONS: Final[dict[str, int]] = {
+    "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10,
+}  # fmt: skip
+"""Roman numerals read as a season; a lone ``I`` is too ambiguous to count."""
+
+_SEASON_MARKER_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:S(?P<compact>\d{1,2})"
+    r"|(?P<ordinal>\d{1,2})(?:st|nd|rd|th)\s+Season"
+    r"|Season\s+(?P<numbered>\d{1,2})"
+    r"|(?P<roman>VIII|VII|VI|IV|IX|III|II|V|X)(?=\s*[:\-]|$))"
+    r"(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+"""Season marker inside a series text; ``Part`` numbers a cour, not a season, and never matches."""
+
 
 def parse_release_name(title: str) -> ReleaseName:
     """Recognize group, series, episode, season, resolution, batch, version, and language in *title*.
@@ -120,6 +136,38 @@ def parse_release_name(title: str) -> ReleaseName:
         subtitle_language=_subtitle_language(remainder),
         dubbed=_DUBBED_RE.search(remainder) is not None,
     )
+
+
+def season_hint(series: str) -> int | None:
+    """Return the season *series* names, or ``None`` when it names none or several.
+
+    Two markers mean a pack spanning seasons, which no single number describes.
+    """
+    marker: re.Match[str] | None = _season_marker(series)
+    return None if marker is None else _marker_season(marker)
+
+
+def strip_season(series: str) -> str:
+    """Return *series* without the marker :func:`season_hint` reads, with spaces collapsed."""
+    marker: re.Match[str] | None = _season_marker(series)
+    if marker is None:
+        return " ".join(series.split())
+    return " ".join(f"{series[: marker.start()]} {series[marker.end() :]}".split())
+
+
+def _season_marker(series: str) -> re.Match[str] | None:
+    """Return the only season marker of *series*, or ``None`` for none or several."""
+    markers: list[re.Match[str]] = list(_SEASON_MARKER_RE.finditer(series))
+    return markers[0] if len(markers) == 1 else None
+
+
+def _marker_season(marker: re.Match[str]) -> int:
+    """Return the season number one marker carries."""
+    roman: str | None = marker.group("roman")
+    if roman is not None:
+        return _ROMAN_SEASONS[roman.upper()]
+    number: str = marker.group("compact") or marker.group("ordinal") or marker.group("numbered")
+    return int(number)
 
 
 def _clean(title: str) -> str:

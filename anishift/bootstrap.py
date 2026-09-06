@@ -91,6 +91,7 @@ def _acquisition_service(context: AppContext) -> AcquisitionService:
     import httpx  # noqa: PLC0415
 
     from anishift.application.acquisition import AcquisitionService  # noqa: PLC0415
+    from anishift.services.catalog import AniListCatalog  # noqa: PLC0415
     from anishift.services.torrents import QBittorrentClient, parse_release_name, search_releases  # noqa: PLC0415
 
     http: httpx.Client = httpx.Client(follow_redirects=True)
@@ -113,6 +114,7 @@ def _acquisition_service(context: AppContext) -> AcquisitionService:
         client=client,
         workspace_root=context.workspace_root,
         parse_name=parse_release_name,
+        title_catalog=AniListCatalog(http),
     )
 
 

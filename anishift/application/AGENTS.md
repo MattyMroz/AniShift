@@ -7,10 +7,12 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `artifacts.py`, `intents.py`, `planning.py`, `selection.py` i `planner.py` nie importują I/O,
   `anishift.services`, `anishift.config` ani CLI.
 - Kontrolowane I/O należy do `discovery.py`, `inspection.py`, `publisher.py`,
-  `sessions.py`, `acquisition.py` (katalog wydań i wysyłka do klienta torrent przez
-  wstrzyknięte protokoły `TorrentSource`/`TorrentClient`; typy z `services.torrents` tylko
-  pod `TYPE_CHECKING`), handlerów oraz fasady `service.py`; koordynator publikuje zwalidowany
-  staging przez `scheduler_runtime.py`. Decyzje produktowe pozostają w plannerze.
+  `sessions.py`, `acquisition.py` (katalog wydań, katalog tytułów i wysyłka do klienta torrent
+  przez wstrzyknięte protokoły `TorrentSource`/`TitleCatalog`/`TorrentClient`; typy z
+  `services.torrents` i `services.catalog` tylko pod `TYPE_CHECKING`, jedyny import runtime to
+  czyste `season_hint`/`strip_season` z `services.torrents.names`), handlerów oraz fasady
+  `service.py`; koordynator publikuje zwalidowany staging przez `scheduler_runtime.py`.
+  Decyzje produktowe pozostają w plannerze.
 - CLI używa publicznej fasady `anishift.application`; nie importuje
   wewnętrznych helperów I/O ani schedulera.
 - Oczekiwany konflikt wejścia jest `PlanProblem`. `PlanningError` oznacza uszkodzony
@@ -25,6 +27,24 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `watch.py` to czyste reguły czuwania (stabilność pliku, `needs_work`, `WatchLedger`);
   `open("r+b")` wykrywa writer bez współdzielenia (Explorer, qBittorrent), nie drugi
   pythonowy uchwyt. Eksport przez fasadę: `SCAN_INTERVAL_S`, `WatchLedger`. `watch.py`
+- Numer odcinka widziany przez aplikację to `choice.episode`, nigdy `choice.name.episode`:
+  `read_episode` interpretuje nazwę w `SeasonContext` (indeks sezonu, offset odcinków, liczba
+  odcinków). Nazwa ze znacznikiem sezonu (`name.season` albo `season_hint(series)`) zachowuje
+  numer i dostaje `other_season`, gdy znacznik wskazuje inny sezon; nazwa bez znacznika i z
+  numerem powyżej offsetu jest numeracją absolutną (`absolute`), a poniżej offsetu to inny
+  sezon. `acquisition.py`
+- `catalog_releases` ukrywa wydania poniżej `min_resolution`, dubbingowane oraz te, którym
+  indeks nie podał języka napisów; `filtered` liczy odrzucone filtrem odcinków (paczki i numery
+  spoza zakresu). Klucz grupy powstaje z serii złożonej do liter, cyfr i spacji, więc
+  `Mushoku Tensei: Jobless Reincarnation` i wersja bez dwukropka to jedna grupa — etykietą
+  zostaje pierwszy napotkany zapis. `acquisition.py`
+- `search_title` odpytuje indeks tytułem romaji i angielskim, a potem `"{seria} {grupa}"` dla
+  maks. `MAX_GROUP_QUERIES` grup pasujących do aliasów kandydata; scalanie idzie po
+  `info_hash` casefold, pierwszy wpis wygrywa. `acquisition.py`
+- `Subscription` trzyma `directory` (jeden folder biblioteki niezależny od serii w nazwie
+  wydania) i trójkę `season_index`/`episode_offset`/`season_episodes`. Cztery pola są opcjonalne
+  przy odczycie, więc pliki sprzed numeracji sezonów wczytują się bez migracji, a
+  `SCHEMA_VERSION` zostaje `1`. `subscriptions.py`
 - ID grup i odkrytych artefaktów powstają wyłącznie z normalizowanych ścieżek
   względnych. Ręcznie zarejestrowany plik spoza workspace używa znormalizowanej
   ścieżki zewnętrznej wyłącznie jako wejścia stabilnego skrótu; nie używaj `hash()`

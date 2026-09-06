@@ -267,10 +267,12 @@ def test_episode_offset_sums_the_prequel_chain_and_ignores_movies_and_cycles() -
     catalog, http = _catalog(handler)
     with http:
         candidate: TitleCandidate = catalog.search("solo leveling")[0]
+        per_hop: tuple[int, ...] = catalog.prequel_episodes(candidate)
         offset: int = catalog.episode_offset(candidate)
 
+    assert per_hop == (12, 11)
     assert offset == 23
-    assert asked == [151807, 140501]
+    assert asked == [151807, 140501, 151807, 140501]
 
 
 def test_episode_offset_counts_an_unknown_episode_count_as_zero() -> None:
@@ -295,3 +297,13 @@ def test_episode_offset_is_zero_without_a_prequel() -> None:
     with http:
         candidate: TitleCandidate = catalog.search("mushoku tensei")[0]
         assert catalog.episode_offset(candidate) == 0
+
+
+def test_prequel_episodes_is_empty_without_a_prequel() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_page([_MUSHOKU]))
+
+    catalog, http = _catalog(handler)
+    with http:
+        candidate: TitleCandidate = catalog.search("mushoku tensei")[0]
+        assert catalog.prequel_episodes(candidate) == ()

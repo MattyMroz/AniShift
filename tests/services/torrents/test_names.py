@@ -5,7 +5,7 @@ from typing import Final
 
 import pytest
 
-from anishift.services.torrents.names import parse_release_name
+from anishift.services.torrents.names import parse_release_name, season_hint, strip_season
 from anishift.services.torrents.types import ReleaseName
 
 _CASES: Final[tuple[tuple[str, ReleaseName], ...]] = (
@@ -324,3 +324,34 @@ def test_parse_release_name_reads_a_single_episode_as_no_pack() -> None:
 def test_parse_release_name_does_not_call_dual_audio_dubbed() -> None:
     title = "[Cytox] Mushoku Tensei Jobless Reincarnation 2021 S03E08 1080p CR WEB-DL Dual-Audio DDP 2.0 H.264"
     assert parse_release_name(title).dubbed is False
+
+
+_SEASON_CASES: Final[tuple[tuple[str, int | None, str], ...]] = (
+    ("Mushoku Tensei S3", 3, "Mushoku Tensei"),
+    ("Sousou no Frieren 2nd Season", 2, "Sousou no Frieren"),
+    ("Solo Leveling Season 2", 2, "Solo Leveling"),
+    ("Re:Zero 3rd Season", 3, "Re:Zero"),
+    ("Mushoku Tensei III: Isekai Ittara Honki Dasu", 3, "Mushoku Tensei : Isekai Ittara Honki Dasu"),
+    ("Mushoku Tensei II: Isekai Ittara Honki Dasu Part 2", 2, "Mushoku Tensei : Isekai Ittara Honki Dasu Part 2"),
+    ("Solo Leveling", None, "Solo Leveling"),
+    ("Lv999 no Murabito", None, "Lv999 no Murabito"),
+    ("Solo Leveling S01 + S02", None, "Solo Leveling S01 + S02"),
+)
+
+
+@pytest.mark.parametrize(
+    ("series", "expected"),
+    [(series, season) for series, season, _ in _SEASON_CASES],
+    ids=[series for series, _, _ in _SEASON_CASES],
+)
+def test_season_hint_reads_a_single_season_marker(series: str, expected: int | None) -> None:
+    assert season_hint(series) == expected
+
+
+@pytest.mark.parametrize(
+    ("series", "expected"),
+    [(series, stripped) for series, _, stripped in _SEASON_CASES],
+    ids=[series for series, _, _ in _SEASON_CASES],
+)
+def test_strip_season_drops_the_marker_season_hint_reads(series: str, expected: str) -> None:
+    assert strip_season(series) == expected

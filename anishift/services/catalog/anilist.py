@@ -108,31 +108,37 @@ class AniListCatalog:
         logger.info("Searched AniList for titles", hits=len(candidates), retried=retried)
         return candidates
 
-    def episode_offset(self, candidate: TitleCandidate) -> int:
-        """Return how many episodes aired before *candidate*, following its prequel chain.
+    def prequel_episodes(self, candidate: TitleCandidate) -> tuple[int, ...]:
+        """Return the episode count of every entry airing before *candidate*, direct prequel first.
 
-        Only television and web formats count, unknown episode counts count as zero, and
-        the walk stops after ``MAX_PREQUEL_HOPS`` entries.
+        Only television and web formats count, an unknown episode count reads as zero, and
+        the walk stops after ``MAX_PREQUEL_HOPS`` entries. The length of the answer is how
+        many seasons precede *candidate*.
 
         Raises:
             TitleCatalogError: AniList is unreachable or rejects one of the requests.
         """
         seen: set[int] = {candidate.anilist_id}
         pending: list[int] = [prequel_id for prequel_id in candidate.prequel_ids if prequel_id not in seen]
-        total: int = 0
-        hops: int = 0
-        while pending and hops < MAX_PREQUEL_HOPS:
+        episodes: list[int] = []
+        while pending and len(episodes) < MAX_PREQUEL_HOPS:
             current: int = pending.pop(0)
             if current in seen:
                 continue
             seen.add(current)
-            hops += 1
             media: Mapping[str, Any] | None = self._media(current)
-            if media is None:
-                continue
-            total += _episodes(media) or 0
-            pending.extend(prequel_id for prequel_id in _prequel_ids(media) if prequel_id not in seen)
-        return total
+            episodes.append(0 if media is None else _episodes(media) or 0)
+            if media is not None:
+                pending.extend(prequel_id for prequel_id in _prequel_ids(media) if prequel_id not in seen)
+        return tuple(episodes)
+
+    def episode_offset(self, candidate: TitleCandidate) -> int:
+        """Return how many episodes aired before *candidate*, following its prequel chain.
+
+        Raises:
+            TitleCatalogError: AniList is unreachable or rejects one of the requests.
+        """
+        return sum(self.prequel_episodes(candidate))
 
     def _search_once(self, text: str, limit: int) -> tuple[TitleCandidate, ...]:
         """Send one search request and read its media list."""
