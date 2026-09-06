@@ -71,8 +71,16 @@ W tym samym priorytecie: starsze pierwsze.
 | `wymaga uwagi` | ponowienia wyczerpane albo awaria trwała | powiadomienie; zostaje do decyzji właściciela (ponów / pomiń) |
 | `anulowane` | właściciel anulował albo źródło zniknęło | wpis w historii |
 
-Wywłaszczenie: worker kończy bieżące zadanie, potem bierze zadanie o najwyższym priorytecie, więc ręczny plik
-wchodzi zaraz po bieżącym odcinku. Ile zadań naraz: decyzja D2.
+Współbieżność etapów bez zmian: ekstrakcja równolegle wg rdzeni, tłumaczenie do 4 naraz (`llm_max_concurrency`),
+lektor 1 naraz, każdy etap ma własną kolejkę i limit (dzisiejszy `GraphScheduler`). „Zadanie” jest jednostką
+kolejki, priorytetu i stanu, nie jednostką wykonania.
+
+Wywłaszczenie w istniejącym schedulerze, bez nowego systemu: działający `GraphScheduler` przyjmuje nową grupę
+w trakcie pracy, a jej kroki trafiają **na początek** istniejących kolejek etapów zamiast na koniec. Kroki w toku
+(trwające wywołanie LLM, trwający lektor) dokańczają się, a każdy zwalniany slot etapu bierze najpierw ręczny plik.
+Nic nie jest przerywane w połowie; ręczny plik czeka najwyżej na jeden trwający krok każdego etapu, nie na koniec
+partii. Plan przestaje być „jednorazowy i niezmienny”: czuwanie dokłada grupy do jednego długo żyjącego przebiegu,
+kolejność w kolejce etapu wynika z priorytetu i wieku zadania.
 
 Restart komputera albo czuwania: lista jest na dysku; `w toku` wraca do `w kolejce`, produkty częściowe z `temp/`
 są odrzucane, produkty gotowe zostają (nic nie tłumaczy się drugi raz).
@@ -193,7 +201,7 @@ qBittorrent; przerywanie zadania w połowie; miks głośności bez ponownego lek
 | Nr | Pytanie | Rekomendacja |
 | --- | --- | --- |
 | D1 | Nazwa zakładki w menu: „Stan”, „Kolejka”, „Czuwanie”? | „Stan” |
-| D2 | Ile zadań naraz: jedno (najszybsza reakcja na ręczny plik, dłuższa kolejka wolniej) czy dwa (LLM dwóch odcinków nakłada się, ręczny plik czeka najwyżej jeden odcinek dłużej)? | dwa |
+| D2 | skreślone (właściciel 2026-09-07): współbieżność etapów zostaje jak dziś, tłumaczenie do 4 naraz, lektor 1 naraz; wywłaszczenie na granicy etapu | — |
 | D3 | Okno terminala per partia: usunąć całkiem, czy zostawić jako opcję w Ustawieniach? | usunąć |
 | D4 | Zakończona subskrypcja: znika sama po 7 dniach, czy zostaje aż ją usuniesz? | znika po 7 dniach |
 | D5 | Po jakim czasie bez postępu torrent liczy się jako utknięty i szukamy zamiennika? | 6 h |
@@ -202,7 +210,7 @@ qBittorrent; przerywanie zadania w połowie; miks głośności bez ponownego lek
 
 | Etap | Zakres | Dowód końca (na żywo, sprawdzasz Ty) |
 | --- | --- | --- |
-| 06a Kolejka i Stan | zadania na dysku, worker w czuwaniu bez okien, priorytety i wywłaszczenie, wznowienie po restarcie, `state.json`, ekran Stan (Teraz, Kolejka, Katalogi z Auto/Ręczny, Historia), powiadomienie „gotowy” | wrzucasz plik w trakcie partii → w Stanie widzisz, że idzie zaraz po bieżącym; zamykasz aplikację, praca trwa; restart czuwania nie tłumaczy nic drugi raz |
+| 06a Kolejka i Stan | zadania na dysku, worker w czuwaniu bez okien, priorytety i wywłaszczenie na granicy etapu przy dzisiejszych limitach etapów, wznowienie po restarcie, `state.json`, ekran Stan (Teraz, Kolejka, Katalogi z Auto/Ręczny, Historia), powiadomienie „gotowy” | wrzucasz plik w trakcie partii → w Stanie widzisz, że idzie zaraz po bieżącym; zamykasz aplikację, praca trwa; restart czuwania nie tłumaczy nic drugi raz |
 | 06b Awarie | tabela awarii, ponowienia, `wymaga uwagi`, sekcja Problemy, powiadomienia o awariach, torrent utknął | odłączasz sieć na chwilę → Problemy pokazują powód i termin, po powrocie sieci odcinek się kończy sam |
 | 06c Subskrypcje | sekcja Subskrypcje z akcjami, koniec sezonu, uśpienie, rytm premier, feed uploadera, sprawdzenia obok kolejki | najbliższa premiera: odcinek w kolejce w oknie premiery; anulujesz subskrypcję z aplikacji |
 | 06d Regeneracja | Katalogi → Regeneruj z zakresem i trybem, stare produkty w `temp/` | zmieniasz głos, regenerujesz 3 odcinki, słuchasz |
