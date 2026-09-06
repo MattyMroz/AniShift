@@ -6,12 +6,15 @@ import shutil
 import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
+from socket import create_connection
 from typing import Any, Final
+from urllib.parse import SplitResult, urlsplit
 
 from anishift.config.settings import Settings
 from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_root
 from anishift.errors import AniShiftError
 from anishift.platform.binaries import Binary, is_windows, resolve_binary
+from anishift.platform.qbittorrent_config import installed_executable
 from anishift.utils.logger import get_logger
 
 __all__ = [
@@ -41,6 +44,21 @@ _API_KEYS: Final[dict[str, str]] = {
     "openai_compatible_api_key": "OpenAI-compatible",
 }
 """API keys surfaced by the doctor: Settings attribute name -> display label."""
+
+_WEB_UI_HOST: Final[str] = "127.0.0.1"
+"""Host probed when the configured Web UI address names none."""
+
+_WEB_UI_PORT: Final[int] = 8080
+"""Port probed when the configured Web UI address names none."""
+
+_WEB_UI_TIMEOUT: Final[float] = 1.0
+"""Seconds the doctor waits for the Web UI socket before calling it unreachable."""
+
+_TORRENT_INSTALL_HINT: Final[str] = "winget install qBittorrent.qBittorrent, then run `anishift qbit setup`"
+"""Advice offered when no qBittorrent installation was found."""
+
+_TORRENT_SETUP_HINT: Final[str] = "Run `anishift qbit setup` (close qBittorrent first) and start qBittorrent"
+"""Advice offered when qBittorrent is installed but its Web UI stays silent."""
 
 logger = get_logger(__name__)
 
@@ -167,6 +185,56 @@ def check_workspace() -> CheckResult:
     )
 
 
+def check_torrent_client(settings: Settings | None = None) -> CheckResult:
+    """Check the qBittorrent Web UI answers and, when it stays silent, whether the client exists."""
+    if not is_windows():
+        return CheckResult(
+            name="torrent_client",
+            status=CheckStatus.SKIP,
+            message="qBittorrent is managed on Windows only",
+        )
+    resolved = settings if settings is not None else Settings()
+    host, port = _web_ui_endpoint(resolved.qbittorrent_url)
+    if _web_ui_answers(host, port):
+        return CheckResult(
+            name="torrent_client",
+            status=CheckStatus.OK,
+            message=f"Web UI answers on {host}:{port}",
+        )
+    if installed_executable() is None:
+        return CheckResult(
+            name="torrent_client",
+            status=CheckStatus.WARN,
+            message="qBittorrent is not installed",
+            suggestion=_TORRENT_INSTALL_HINT,
+        )
+    return CheckResult(
+        name="torrent_client",
+        status=CheckStatus.WARN,
+        message="qBittorrent Web UI is not reachable",
+        suggestion=_TORRENT_SETUP_HINT,
+    )
+
+
+def _web_ui_endpoint(url: str) -> tuple[str, int]:
+    """Split the configured Web UI address into the host and port to probe."""
+    parts: SplitResult = urlsplit(url)
+    try:
+        port: int | None = parts.port
+    except ValueError:
+        port = None
+    return parts.hostname or _WEB_UI_HOST, port or _WEB_UI_PORT
+
+
+def _web_ui_answers(host: str, port: int) -> bool:
+    """Report whether something accepts a connection on the Web UI endpoint."""
+    try:
+        with create_connection((host, port), timeout=_WEB_UI_TIMEOUT):
+            return True
+    except OSError:
+        return False
+
+
 def run_doctor(settings: Settings | None = None) -> list[CheckResult]:
     """Run every diagnostic check in order and return the collected list."""
     from anishift.cli.console import console_encoding_check  # noqa: PLC0415 - avoid circular import
@@ -179,6 +247,7 @@ def run_doctor(settings: Settings | None = None) -> list[CheckResult]:
         check_api_keys(settings),
         check_workspace(),
         console_encoding_check(),
+        check_torrent_client(settings),
     ]
     logger.info(
         "Environment diagnostics completed",

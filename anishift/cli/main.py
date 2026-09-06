@@ -111,6 +111,22 @@ _QBIT_EXTENSION: Final[str] = "incomplete extension: {state}"
 _QBIT_ABSENT: Final[str] = "This session has no torrent client composed."
 """Refusal stated when the facade was built without the acquisition boundary."""
 
+_QBIT_NOT_INSTALLED: Final[str] = (
+    "qBittorrent is not installed. Install it with `winget install qBittorrent.qBittorrent`."
+)
+"""Refusal stated when no qBittorrent installation was found to configure."""
+
+_QBIT_RUNNING: Final[str] = "Close qBittorrent, then run `anishift qbit setup` again"
+"""Refusal stated while the client still runs and would undo the written keys."""
+
+_QBIT_WEB_UI_READY: Final[str] = (
+    "Web UI enabled in the qBittorrent settings. Start qBittorrent and run `anishift qbit setup` again."
+)
+"""Confirmation printed once the Web UI keys are in the client settings."""
+
+_QBIT_WEB_UI_PASSWORD: Final[str] = "Web UI password (admin): {password}"  # noqa: S105 - a template, not a secret
+"""Line carrying the freshly generated Web UI password to the user."""
+
 _WATCH_SUGGESTION: Final[str] = "Run `anishift autostart enable` so the library is watched now and after every logon"
 """Advice printed by the doctor when nothing watches the library."""
 
@@ -162,7 +178,7 @@ def _default(ctx: typer.Context) -> None:
 
 @app.command()
 def doctor() -> None:
-    """Run diagnostics and report the state of binaries, keys, workspace, watch and autostart."""
+    """Run diagnostics: binaries, keys, workspace, torrent client, watch and autostart."""
     results = run_doctor()
     results.extend(_automation_checks())
     _print_doctor_report(results)
@@ -288,8 +304,38 @@ def qbit_status() -> None:
 
 @qbit_app.command("setup")
 def qbit_setup() -> None:
-    """Make qBittorrent mark incomplete files, so the watch never takes a partial download."""
-    _print_client_status(_acquisition(_composed_service()).setup_client())
+    """Prepare the qBittorrent Web UI and make it mark incomplete files."""
+    status: ClientStatus = _acquisition(_composed_service()).setup_client()
+    if not status.reachable:
+        _prepare_web_ui()
+        return
+    _print_client_status(status)
+
+
+def _prepare_web_ui() -> None:
+    """Write the Web UI keys into the qBittorrent settings, or state what blocks that."""
+    from anishift.platform.qbittorrent_config import (  # noqa: PLC0415 - keep the settings writer lazy
+        QBittorrentConfigError,
+        WebUiSetup,
+        enable_web_ui,
+        installed_executable,
+        is_running,
+    )
+
+    if installed_executable() is None:
+        typer.echo(_QBIT_NOT_INSTALLED)
+        raise typer.Exit(code=EXIT_REFUSED)
+    try:
+        prepared: WebUiSetup | None = None if is_running() else enable_web_ui()
+    except QBittorrentConfigError as problem:
+        _refuse_command(problem)
+    if prepared is None:
+        typer.echo(_QBIT_RUNNING)
+        raise typer.Exit(code=EXIT_REFUSED)
+    typer.echo(_QBIT_WEB_UI_READY)
+    if prepared.password is not None:
+        # The password must reach the user verbatim, so it skips the redacting output path.
+        typer.echo(_QBIT_WEB_UI_PASSWORD.format(password=prepared.password))
 
 
 @subs_app.command("list")

@@ -21,8 +21,9 @@ from anishift.cli import interactive as interactive_package
 from anishift.cli import watch as cli_watch
 from anishift.config.workspace import ENV_WORKSPACE_ROOT, WorkspaceRootNotResolvedError
 from anishift.errors import ErrorCode, ErrorContext
-from anishift.platform import autostart
+from anishift.platform import autostart, qbittorrent_config
 from anishift.platform.autostart import AutostartStatus, AutostartUnsupportedError
+from anishift.platform.qbittorrent_config import QBittorrentConfigError, WebUiSetup
 
 cli_main = importlib.import_module("anishift.cli.main")
 
@@ -359,6 +360,87 @@ def test_qbit_setup_reports_the_state_after_switching_the_extension_on(monkeypat
 
     assert result.exit_code == 0
     assert result.output.splitlines()[-1] == "incomplete extension: on"
+
+
+def _unreachable_service() -> AppService:
+    return _service_with_client(ClientStatus(reachable=False, problem="Web UI is not reachable"))
+
+
+def _prepared_client(monkeypatch: pytest.MonkeyPatch, *, installed: bool, running: bool) -> None:
+    monkeypatch.setattr(bootstrap, "production_service", _unreachable_service)
+    monkeypatch.setattr(
+        qbittorrent_config,
+        "installed_executable",
+        lambda: Path("C:/Program Files/qBittorrent/qbittorrent.exe") if installed else None,
+    )
+    monkeypatch.setattr(qbittorrent_config, "is_running", lambda: running)
+
+
+def test_qbit_setup_points_at_the_installer_when_qbittorrent_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    _prepared_client(monkeypatch, installed=False, running=False)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
+
+    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert "winget install qBittorrent.qBittorrent" in result.output
+
+
+def test_qbit_setup_asks_for_a_closed_client_before_writing(monkeypatch: pytest.MonkeyPatch) -> None:
+    _prepared_client(monkeypatch, installed=True, running=True)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
+
+    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert result.output.strip() == "Close qBittorrent, then run `anishift qbit setup` again"
+
+
+def test_qbit_setup_enables_the_web_ui_and_prints_the_generated_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    _prepared_client(monkeypatch, installed=True, running=False)
+    monkeypatch.setattr(
+        qbittorrent_config,
+        "enable_web_ui",
+        lambda: WebUiSetup(path_written=True, password="s3cret-token"),  # noqa: S106
+    )
+
+    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
+
+    assert result.exit_code == 0
+    assert "Start qBittorrent and run `anishift qbit setup` again." in result.output
+    assert "Web UI password (admin): s3cret-token" in result.output
+
+
+def test_qbit_setup_prints_no_password_when_the_settings_already_hold_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    _prepared_client(monkeypatch, installed=True, running=False)
+    monkeypatch.setattr(
+        qbittorrent_config,
+        "enable_web_ui",
+        lambda: WebUiSetup(path_written=True, password=None),
+    )
+
+    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
+
+    assert result.exit_code == 0
+    assert "password" not in result.output
+
+
+def test_qbit_setup_states_one_sentence_when_the_settings_cannot_be_written(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse() -> WebUiSetup:
+        raise QBittorrentConfigError(
+            context=ErrorContext(
+                code=ErrorCode.TORRENT_CLIENT_UNAVAILABLE,
+                message="qBittorrent has no settings file yet",
+                suggestion="Start qBittorrent once",
+            ),
+        )
+
+    _prepared_client(monkeypatch, installed=True, running=False)
+    monkeypatch.setattr(qbittorrent_config, "enable_web_ui", refuse)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
+
+    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert "qBittorrent has no settings file yet" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_qbit_refuses_a_session_without_a_torrent_client(monkeypatch: pytest.MonkeyPatch) -> None:

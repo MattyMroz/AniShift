@@ -134,6 +134,11 @@ configured.
 - Python 3.14+
 - MKVToolNix and FFmpeg (`external/bin/` on Windows; installed on demand or by
   `anishift setup`; non-Windows systems can use tools already on `PATH`)
+- qBittorrent, which downloads the releases the Anime screen and the followed
+  series pick (`winget install qBittorrent.qBittorrent`). `anishift qbit setup`
+  prepares its Web UI on `127.0.0.1:8080` — close qBittorrent first, because it
+  rewrites its own settings on exit — and `anishift doctor` reports whether the
+  Web UI answers.
 - API credentials required by the selected translation or TTS engines
 - Optional Windows SAPI voices must be installed separately with a valid license
   and be available to the Python process architecture. AniShift does not install
