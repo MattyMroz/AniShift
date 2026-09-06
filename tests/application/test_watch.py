@@ -268,6 +268,18 @@ def test_a_batch_exiting_with_zero_is_recorded_as_done(tmp_path: Path) -> None:
     assert ledger.rows() == (WatchRow("group-a", "episode", WatchOutcome.DONE, 0),)
 
 
+def test_a_finished_batch_is_not_restarted_for_the_same_input(tmp_path: Path) -> None:
+    group: InspectedSourceGroup = _text_group(tmp_path, "group-a", "episode")
+    workspace: InspectedWorkspace = _workspace(group)
+    preset: AutoPreset = _preset(ProductKind.MKV)
+    ledger: WatchLedger = WatchLedger()
+    ledger.candidates(workspace, preset, 100.0)
+    ledger.mark_started(ledger.candidates(workspace, preset, 100.0 + QUIET_S))
+    ledger.record_exit(("group-a",), 0)
+    assert ledger.candidates(workspace, preset, 200.0) == ()
+    assert ledger.candidates(workspace, preset, 400.0) == ()
+
+
 def test_rows_report_failures_first_then_running_then_finished(tmp_path: Path) -> None:
     groups: tuple[InspectedSourceGroup, ...] = (
         _text_group(tmp_path, "group-done", "aaa"),

@@ -189,7 +189,7 @@ class WatchLedger:
         if not snapshots or not all(is_stable(snapshot, now) for snapshot in snapshots):
             return False
         record: _RecordedOutcome | None = self._outcomes.get(group.group_id)
-        if record is None or record.outcome is not WatchOutcome.FAILED:
+        if record is None:
             return True
         return record.fingerprint != source_fingerprint(snapshots)
 
