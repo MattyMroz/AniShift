@@ -325,7 +325,10 @@ def test_setup_client_switches_the_incomplete_extension_on(tmp_path: Path) -> No
     status: ClientStatus = _service(client, tmp_path).setup_client()
 
     assert client.preference_values["incomplete_files_ext"] is True
+    assert client.preference_values["max_ratio"] == 0
+    assert client.preference_values["max_seeding_time"] == 0
     assert status.incomplete_extension is True
+    assert status.seeding_stops is True
 
 
 def test_setup_client_does_not_touch_an_unreachable_client(tmp_path: Path) -> None:

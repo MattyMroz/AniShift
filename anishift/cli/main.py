@@ -115,6 +115,9 @@ _QBIT_UNREACHABLE: Final[str] = "reachable: no"
 _QBIT_EXTENSION: Final[str] = "incomplete extension: {state}"
 """Status line naming whether the client marks files still being downloaded."""
 
+_QBIT_SEEDING: Final[str] = "seeding after download: {state}"
+"""Status line naming whether the client stops a torrent once its download completes."""
+
 _QBIT_ABSENT: Final[str] = "This session has no torrent client composed."
 """Refusal stated when the facade was built without the acquisition boundary."""
 
@@ -460,6 +463,7 @@ def _print_client_status(status: ClientStatus) -> None:
         raise typer.Exit(code=EXIT_REFUSED)
     typer.echo(_QBIT_REACHABLE.format(version=_safe(status.version)))
     typer.echo(_QBIT_EXTENSION.format(state="on" if status.incomplete_extension else "off"))
+    typer.echo(_QBIT_SEEDING.format(state="off" if status.seeding_stops else "on"))
 
 
 def _automation_checks() -> list[CheckResult]:

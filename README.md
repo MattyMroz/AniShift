@@ -78,8 +78,8 @@ tick "Bypass authentication for clients on localhost" (or set
 `ANISHIFT_QBITTORRENT_URL` overrides the default `http://127.0.0.1:8080`). Then run:
 
 ```bash
-uv run anishift qbit setup    # make qBittorrent mark unfinished files with .!qB
-uv run anishift qbit status   # reachable: yes (v5.2.3) / incomplete extension: on
+uv run anishift qbit setup    # mark unfinished files with .!qB and stop seeding once a download completes
+uv run anishift qbit status   # reachable: yes (v5.2.3) / incomplete extension: on / seeding after download: off
 ```
 
 The `.!qB` suffix matters: torrent files are created at full size before they are

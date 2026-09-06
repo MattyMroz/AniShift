@@ -79,6 +79,15 @@ TITLE_SEARCH_LIMIT: Final[int] = 7
 INCOMPLETE_EXTENSION_PREFERENCE: Final[str] = "incomplete_files_ext"
 """Client preference appending ``.!qB`` to files still being downloaded, which the watch skips."""
 
+SEEDING_STOP_PREFERENCES: Final[Mapping[str, object]] = {
+    "max_ratio_enabled": True,
+    "max_ratio": 0,
+    "max_ratio_act": 0,
+    "max_seeding_time_enabled": True,
+    "max_seeding_time": 0,
+}
+"""Client preferences stopping every torrent the moment its download completes, so nothing is seeded."""
+
 _INVALID_NAME_CHARACTERS: Final[re.Pattern[str]] = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 """Characters Windows refuses inside one path component."""
 
@@ -236,6 +245,7 @@ class ClientStatus:
     reachable: bool
     version: str = ""
     incomplete_extension: bool = False
+    seeding_stops: bool = False
     problem: str = ""
     suggestion: str = ""
 
@@ -482,15 +492,16 @@ class AcquisitionService:
             reachable=True,
             version=version,
             incomplete_extension=bool(preferences.get(INCOMPLETE_EXTENSION_PREFERENCE, False)),
+            seeding_stops=_seeding_stops(preferences),
         )
 
     def setup_client(self) -> ClientStatus:
-        """Make the client mark incomplete files, so the watch never takes a partial download."""
+        """Make the client mark incomplete files and stop seeding once a download completes."""
         status: ClientStatus = self.client_status()
         if not status.reachable:
             return status
-        self._client.set_preferences({INCOMPLETE_EXTENSION_PREFERENCE: True})
-        logger.info("Torrent client configured for incomplete-file suffixes")
+        self._client.set_preferences({INCOMPLETE_EXTENSION_PREFERENCE: True, **SEEDING_STOP_PREFERENCES})
+        logger.info("Torrent client configured for incomplete-file suffixes and no seeding")
         return self.client_status()
 
 
@@ -628,6 +639,11 @@ def _series_group(
         newest=max(published) if published else None,
         matches_title=bool(series_forms(series) & alias_keys),
     )
+
+
+def _seeding_stops(preferences: Mapping[str, object]) -> bool:
+    """Whether the client stops a torrent right after its download completes."""
+    return all(preferences.get(key) == value for key, value in SEEDING_STOP_PREFERENCES.items())
 
 
 def _choice_order(choice: ReleaseChoice) -> tuple[int, int, Decimal, int]:

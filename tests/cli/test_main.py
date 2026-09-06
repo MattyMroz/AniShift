@@ -362,13 +362,19 @@ def _service_with_client(status: object, *, setup: object | None = None) -> AppS
 
 
 def test_qbit_status_prints_the_version_and_the_incomplete_extension(monkeypatch: pytest.MonkeyPatch) -> None:
-    service: AppService = _service_with_client(ClientStatus(reachable=True, version="5.2.3", incomplete_extension=True))
+    service: AppService = _service_with_client(
+        ClientStatus(reachable=True, version="5.2.3", incomplete_extension=True, seeding_stops=True)
+    )
     monkeypatch.setattr(bootstrap, "production_service", lambda: service)
 
     result: Result = CliRunner().invoke(cli_main.app, ["qbit", "status"])
 
     assert result.exit_code == 0
-    assert result.output.splitlines() == ["reachable: yes (v5.2.3)", "incomplete extension: on"]
+    assert result.output.splitlines() == [
+        "reachable: yes (v5.2.3)",
+        "incomplete extension: on",
+        "seeding after download: off",
+    ]
 
 
 def test_qbit_status_refuses_with_the_hint_when_the_client_is_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -386,13 +392,13 @@ def test_qbit_status_refuses_with_the_hint_when_the_client_is_unreachable(monkey
 
 def test_qbit_setup_reports_the_state_after_switching_the_extension_on(monkeypatch: pytest.MonkeyPatch) -> None:
     before: ClientStatus = ClientStatus(reachable=True, version="5.2.3", incomplete_extension=False)
-    after: ClientStatus = ClientStatus(reachable=True, version="5.2.3", incomplete_extension=True)
+    after: ClientStatus = ClientStatus(reachable=True, version="5.2.3", incomplete_extension=True, seeding_stops=True)
     monkeypatch.setattr(bootstrap, "production_service", lambda: _service_with_client(before, setup=after))
 
     result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
 
     assert result.exit_code == 0
-    assert result.output.splitlines()[-1] == "incomplete extension: on"
+    assert result.output.splitlines()[-2:] == ["incomplete extension: on", "seeding after download: off"]
 
 
 def _unreachable_service() -> AppService:
