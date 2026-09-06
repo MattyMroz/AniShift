@@ -8,7 +8,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `console.py` — jedyny właściciel rekonfiguracji stdout/stderr na UTF-8 + check dla doctora
 - `run.py` — wspólny, UI-neutralny preflight Auto (także dla wskazanego podzbioru grup) oraz wykonanie zaakceptowanego planu
 - `exit_codes.py` — kody wyjścia 0/1/3/4 i `run_exit_code()` wspólne dla `run --preset` i okna partii
-- `watch.py` — pętla czuwania bez UI: blokada instancji, skan biblioteki, uruchamianie okna partii, flaga stop
+- `watch.py` — pętla czuwania bez UI: blokada instancji, skan biblioteki, uruchamianie okna partii, flaga stop, godzinne sprawdzanie subskrypcji między skanami
 - `interactive/` — lazy-loaded Home, jeden renderer Prompt Toolkit, maskotka, Settings, Manual i wspólny postęp
 
 ## Pułapki
@@ -87,6 +87,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Piąty wiersz Home zmienia indeksy pozycji — `_HOME_MENU_ROWS` i `_HOME_CHROME_ROWS`
   liczą wiersze menu, a testy budujące aplikację ręcznie muszą ustawić `_anime`.
   `interactive/anime.py`, `interactive/app.py`, `interactive/prompts.py`
+- `O` w wynikach Anime obserwuje PODŚWIETLONY odcinek, nie zaznaczone wiersze: paczka lub brak numeru
+  daje wyłącznie jednolinijkową notkę zamiast stopki, kasowaną następnym klawiszem, a `subscribe` +
+  `check` idą do tego samego wątku i licznika generacji co szukanie. `interactive/anime.py`
 - `SettingsController.render()` korzysta wyłącznie z lokalnego, odświeżonego snapshotu;
   nie wykonuj w nim I/O ani wywołań sieciowych, bo renderer odświeża klatkę cyklicznie.
   Katalog modeli jest tylko do odczytu, a probe działa wyłącznie po jawnej akcji.

@@ -14,9 +14,12 @@ from rich.text import Text
 from anishift.application import (
     AcquisitionService,
     AppService,
+    CheckOutcome,
     DownloadReceipt,
     ReleaseCatalog,
     ReleaseChoice,
+    Subscription,
+    SubscriptionService,
 )
 from anishift.application.events import sanitize_event_message
 from anishift.errors import AniShiftError
@@ -61,8 +64,20 @@ _SEARCHING: Final[str] = "Szukam…"
 _SENDING: Final[str] = "Wysyłam…"
 """Sentence shown while the torrent client takes the chosen releases."""
 
+_SUBSCRIBING: Final[str] = "Zapisuję obserwację…"
+"""Sentence shown while the subscription is stored and checked for the first time."""
+
 _UNAVAILABLE: Final[str] = "Pobieranie jest niedostępne w tej sesji"
 """Sentence shown when the session was built without an acquisition boundary."""
+
+_NO_SUBSCRIPTIONS: Final[str] = "Subskrypcje są niedostępne w tej sesji"
+"""Sentence shown when the session was built without a subscription boundary."""
+
+_EPISODE_ONLY: Final[str] = "Obserwuj działa tylko na numerowanym odcinku"
+"""Notice shown when the highlighted release carries no episode number to watch from."""
+
+_CHECK_CADENCE: Final[str] = "sprawdzam co godzinę"
+"""Tail of the confirmation naming how often the watch looks for new episodes."""
 
 _EMPTY_CATALOG: Final[str] = f"Brak wydań w {_MIN_RESOLUTION_LABEL}+ dla tego tytułu"
 """Sentence shown when the query matched nothing of the required quality."""
@@ -111,6 +126,7 @@ class AnimeController:
         self._worker: threading.Thread | None = None
         self._screen: _Screen = _Screen.QUERY
         self._query: str = ""
+        self._searched: str = ""
         self._rows: tuple[_Row, ...] = ()
         self._choices: tuple[int, ...] = ()
         self._marked: set[int] = set()
@@ -118,6 +134,7 @@ class AnimeController:
         self._hidden: int = 0
         self._busy: str = _SEARCHING
         self._done: str = ""
+        self._notice: str = ""
         self._problem: str = ""
         self._suggestion: str = ""
         self._problem_return: _Screen = _Screen.QUERY
@@ -180,6 +197,7 @@ class AnimeController:
         return AnimeResult.CONTINUE
 
     def _handle_results(self, key: str) -> AnimeResult:
+        self._notice = ""
         if key in {"escape", "interrupt"}:
             self._screen = _Screen.QUERY
             return AnimeResult.CONTINUE
@@ -193,6 +211,8 @@ class AnimeController:
             self._toggle()
         elif key == "enter":
             self._start_download()
+        elif key in {"text:o", "text:O"}:
+            self._start_subscription()
         return AnimeResult.CONTINUE
 
     def _handle_problem(self, key: str) -> AnimeResult:
@@ -214,6 +234,7 @@ class AnimeController:
         self._marked.add(self._selected)
 
     def _start_search(self, query: str) -> None:
+        self._searched = query
         generation: int = self._start_work(_SEARCHING)
         self._spawn(self._search, (query, generation))
 
@@ -228,6 +249,16 @@ class AnimeController:
             chosen = (highlighted,)
         generation: int = self._start_work(_SENDING)
         self._spawn(self._download, (chosen, generation))
+
+    def _start_subscription(self) -> None:
+        choice: ReleaseChoice | None = self._rows[self._selected].choice
+        if choice is None:
+            return
+        if choice.name.batch or choice.name.episode is None:
+            self._notice = _EPISODE_ONLY
+            return
+        generation: int = self._start_work(_SUBSCRIBING)
+        self._spawn(self._subscribe, (choice, self._searched, generation))
 
     def _start_work(self, sentence: str) -> int:
         self._generation += 1
@@ -264,7 +295,31 @@ class AnimeController:
             logger.warning("Anime download failed", error_class=type(problem).__name__)
             self._fail(generation, _safe(str(problem)), _hint(problem), _Screen.RESULTS)
             return
-        self._show_done(generation, receipt)
+        self._show_done(generation, f"Wysłano {receipt.count} do qBittorrenta → {_safe(receipt.directory.name)}")
+
+    def _subscribe(self, choice: ReleaseChoice, query: str, generation: int) -> None:
+        subscriptions: SubscriptionService | None = self._service.subscriptions
+        if subscriptions is None:
+            self._fail(generation, _NO_SUBSCRIPTIONS, "", _Screen.RESULTS)
+            return
+        try:
+            subscription: Subscription = subscriptions.subscribe(query, choice)
+            outcome: CheckOutcome = subscriptions.check(subscription)
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("Anime subscription failed", error_class=type(problem).__name__)
+            self._fail(generation, _safe(str(problem)), _hint(problem), _Screen.RESULTS)
+            return
+        result: str = (
+            f"sprawdzenie nie powiodło się: {_safe(outcome.problem)}"
+            if outcome.problem
+            else f"pobrano {outcome.downloaded}"
+        )
+        self._show_done(
+            generation,
+            f"Obserwuję [{_safe(subscription.group)}] {_safe(subscription.series)} "
+            f"od {_episode_number(subscription.next_episode)}"
+            f"{_HINT_SEPARATOR}{result}{_HINT_SEPARATOR}{_CHECK_CADENCE}",
+        )
 
     def _show_results(self, generation: int, catalog: ReleaseCatalog) -> None:
         with self._lock:
@@ -278,12 +333,12 @@ class AnimeController:
             self._screen = _Screen.RESULTS
         self._invalidate()
 
-    def _show_done(self, generation: int, receipt: DownloadReceipt) -> None:
+    def _show_done(self, generation: int, sentence: str) -> None:
         with self._lock:
             if generation != self._generation:
                 return
             self._worker = None
-            self._done = f"Wysłano {receipt.count} do qBittorrenta → {_safe(receipt.directory.name)}"
+            self._done = sentence
             self._screen = _Screen.DONE
         self._invalidate()
 
@@ -323,7 +378,7 @@ class AnimeController:
         content = _header(_TITLE, columns, rows, end - start)
         for index in range(start, end):
             self._append_row(content, left, labels[index], index)
-        return _finish(content, left, self._results_hint(), columns)
+        return _finish(content, left, self._notice or self._results_hint(), columns)
 
     def _append_row(self, content: Text, left: int, label: str, index: int) -> None:
         if self._rows[index].choice is None:
@@ -352,7 +407,10 @@ class AnimeController:
         return _finish(content, left, _PROBLEM_HINT, columns)
 
     def _results_hint(self) -> str:
-        return f"zaznaczone: {len(self._marked)} · {self._hidden_label()} · Space zaznacz · Enter pobierz · Esc wróć"
+        return (
+            f"zaznaczone: {len(self._marked)} · {self._hidden_label()} · "
+            "Space zaznacz · Enter pobierz · O obserwuj · Esc wróć"
+        )
 
     def _hidden_label(self) -> str:
         return f"ukryte poniżej {_MIN_RESOLUTION_LABEL}: {self._hidden}"
@@ -384,6 +442,10 @@ def _episode_label(choice: ReleaseChoice) -> str:
     episode: Decimal | None = choice.name.episode
     if episode is None:
         return "paczka" if choice.name.batch else "wydanie"
+    return _episode_number(episode)
+
+
+def _episode_number(episode: Decimal) -> str:
     return f"odc. {format(episode.normalize(), 'f')}"
 
 
@@ -434,7 +496,7 @@ def _truncate_right(value: str, width: int) -> str:
     return f"{value[: width - 1]}…"
 
 
-def _hint(problem: AniShiftError | OSError) -> str:
+def _hint(problem: AniShiftError | OSError | ValueError) -> str:
     if not isinstance(problem, AniShiftError):
         return ""
     return _safe(problem.context.suggestion)

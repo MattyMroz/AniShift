@@ -72,11 +72,20 @@ def _catalog(choices: Sequence[ReleaseChoice], hidden: int = 0) -> ReleaseCatalo
 def _service(
     search: Callable[[str], ReleaseCatalog] | None = None,
     download: Callable[[Sequence[ReleaseChoice]], DownloadReceipt] | None = None,
+    subscriptions: SimpleNamespace | None = None,
 ) -> AppService:
     acquisition: SimpleNamespace | None = None
     if search is not None or download is not None:
         acquisition = SimpleNamespace(search=search, download=download)
-    return cast("AppService", SimpleNamespace(acquisition=acquisition))
+    return cast("AppService", SimpleNamespace(acquisition=acquisition, subscriptions=subscriptions))
+
+
+def _subscription(episode: str = "9") -> SimpleNamespace:
+    return SimpleNamespace(series="Oshi no Ko", group="SubsPlease", next_episode=Decimal(episode))
+
+
+def _outcome(downloaded: int = 0, problem: str = "") -> SimpleNamespace:
+    return SimpleNamespace(downloaded=downloaded, problem=problem)
 
 
 def _controller(service: AppService) -> AnimeController:
@@ -377,6 +386,198 @@ def test_a_session_without_the_acquisition_boundary_reports_it_and_escape_return
     assert _screen(controller) is _Screen.PROBLEM
     assert "Pobieranie jest niedostępne w tej sesji" in _frame(controller)
     assert controller.handle_key("escape") is AnimeResult.HOME
+
+
+def test_o_on_a_numbered_episode_subscribes_to_it_and_reports_the_download_count() -> None:
+    subscribed: list[tuple[str, ReleaseChoice]] = []
+    checked: list[object] = []
+    wanted: ReleaseChoice = _choice("9")
+    created: SimpleNamespace = _subscription()
+
+    def subscribe(query: str, choice: ReleaseChoice) -> SimpleNamespace:
+        subscribed.append((query, choice))
+        return created
+
+    def check(subscription: object) -> SimpleNamespace:
+        checked.append(subscription)
+        return _outcome(downloaded=3)
+
+    controller: AnimeController = _controller(
+        _service(
+            search=lambda query: _catalog((_choice("11"), wanted)),
+            subscriptions=SimpleNamespace(subscribe=subscribe, check=check),
+        )
+    )
+    _type(controller, "oshi no ko")
+    controller.handle_key("enter")
+    _settle(controller)
+    controller.handle_key("down")
+    controller.handle_key("text:o")
+    _settle(controller)
+    watched: str = _frame(controller)
+
+    assert subscribed == [("oshi no ko", wanted)]
+    assert checked == [created]
+    assert _screen(controller) is _Screen.DONE
+    assert "Obserwuję [SubsPlease] Oshi no Ko od odc. 9 · pobrano 3 · sprawdzam co godzinę" in watched
+    assert controller.handle_key("any") is AnimeResult.HOME
+
+
+def test_o_on_a_batch_reports_that_only_a_numbered_episode_can_be_watched() -> None:
+    calls: list[str] = []
+
+    def subscribe(query: str, choice: ReleaseChoice) -> SimpleNamespace:
+        calls.append("subscribe")
+        return _subscription()
+
+    def check(subscription: object) -> SimpleNamespace:
+        calls.append("check")
+        return _outcome()
+
+    controller: AnimeController = _controller(
+        _service(
+            search=lambda query: _catalog((_choice("11"), _choice(None, batch=True))),
+            subscriptions=SimpleNamespace(subscribe=subscribe, check=check),
+        )
+    )
+    _type(controller, "oshi")
+    controller.handle_key("enter")
+    _settle(controller)
+    controller.handle_key("down")
+    controller.handle_key("text:o")
+    noticed: str = _frame(controller)
+
+    assert calls == []
+    assert controller._worker is None
+    assert _screen(controller) is _Screen.RESULTS
+    assert "Obserwuj działa tylko na numerowanym odcinku" in noticed
+
+    controller.handle_key("up")
+
+    assert "Obserwuj działa tylko na numerowanym odcinku" not in _frame(controller)
+
+
+def test_o_without_the_subscriptions_boundary_reports_it_and_enter_returns_to_the_results() -> None:
+    controller: AnimeController = _controller(_service(search=lambda query: _catalog((_choice("11"),))))
+    _type(controller, "oshi")
+    controller.handle_key("enter")
+    _settle(controller)
+    controller.handle_key("text:O")
+    _settle(controller)
+
+    assert _screen(controller) is _Screen.PROBLEM
+    assert "Subskrypcje są niedostępne w tej sesji" in _frame(controller)
+
+    controller.handle_key("enter")
+
+    assert _screen(controller) is _Screen.RESULTS
+
+
+def test_a_failed_first_check_replaces_the_download_count_with_the_problem() -> None:
+    def subscribe(query: str, choice: ReleaseChoice) -> SimpleNamespace:
+        return _subscription()
+
+    def check(subscription: object) -> SimpleNamespace:
+        return _outcome(problem="Nyaa nie odpowiedziało")
+
+    controller: AnimeController = _controller(
+        _service(
+            search=lambda query: _catalog((_choice("9"),)),
+            subscriptions=SimpleNamespace(subscribe=subscribe, check=check),
+        )
+    )
+    _type(controller, "oshi")
+    controller.handle_key("enter")
+    _settle(controller)
+    controller.handle_key("text:o")
+    _settle(controller)
+    watched: str = _frame(controller)
+
+    assert _screen(controller) is _Screen.DONE
+    assert (
+        "Obserwuję [SubsPlease] Oshi no Ko od odc. 9 · sprawdzenie nie powiodło się: "
+        "Nyaa nie odpowiedziało · sprawdzam co godzinę"
+    ) in watched
+    assert "pobrano" not in watched
+
+
+def test_a_failed_subscribe_shows_its_suggestion_and_enter_returns_to_the_results() -> None:
+    def subscribe(query: str, choice: ReleaseChoice) -> SimpleNamespace:
+        raise AniShiftError(
+            context=ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message="Nie mogę zapisać obserwacji",
+                suggestion="Sprawdź katalog config",
+            )
+        )
+
+    def check(subscription: object) -> SimpleNamespace:
+        return _outcome()
+
+    controller: AnimeController = _controller(
+        _service(
+            search=lambda query: _catalog((_choice("9"),)),
+            subscriptions=SimpleNamespace(subscribe=subscribe, check=check),
+        )
+    )
+    _type(controller, "oshi")
+    controller.handle_key("enter")
+    _settle(controller)
+    controller.handle_key("text:o")
+    _settle(controller)
+    reported: str = _frame(controller)
+
+    assert _screen(controller) is _Screen.PROBLEM
+    assert "Nie mogę zapisać obserwacji" in reported
+    assert "Sprawdź katalog config" in reported
+    assert "Traceback" not in reported
+
+    controller.handle_key("enter")
+
+    assert _screen(controller) is _Screen.RESULTS
+
+
+def test_escape_during_the_subscription_discards_a_late_result() -> None:
+    release: threading.Event = threading.Event()
+
+    def subscribe(query: str, choice: ReleaseChoice) -> SimpleNamespace:
+        assert release.wait(timeout=5)
+        return _subscription()
+
+    def check(subscription: object) -> SimpleNamespace:
+        return _outcome(downloaded=3)
+
+    controller: AnimeController = _controller(
+        _service(
+            search=lambda query: _catalog((_choice("9"),)),
+            subscriptions=SimpleNamespace(subscribe=subscribe, check=check),
+        )
+    )
+    _type(controller, "oshi")
+    controller.handle_key("enter")
+    _settle(controller)
+    controller.handle_key("text:o")
+    worker: threading.Thread | None = controller._worker
+
+    assert _screen(controller) is _Screen.BUSY
+    assert "Zapisuję obserwację…" in _frame(controller)
+
+    controller.handle_key("escape")
+    release.set()
+    assert worker is not None
+    worker.join(timeout=5)
+
+    assert _screen(controller) is _Screen.QUERY
+    assert "Obserwuję" not in _frame(controller)
+
+
+def test_the_results_footer_offers_the_watch_key() -> None:
+    controller: AnimeController = _controller(_service(search=lambda query: _catalog((_choice("11"),))))
+    _type(controller, "oshi")
+    controller.handle_key("enter")
+    _settle(controller)
+
+    assert "O obserwuj" in _frame(controller)
 
 
 @pytest.mark.parametrize("size", [(120, 30), (80, 24), (60, 10), (40, 6)])
