@@ -365,6 +365,7 @@ _BASE_CASES: Final[tuple[tuple[str, str], ...]] = (
     ("Sousou no Frieren – Beyond Journey's End", "Sousou no Frieren"),
     ("Solo Leveling", "Solo Leveling"),
     ("Re:Zero 3rd Season", "Re:Zero"),
+    ("Solo Leveling (Ore dake Level Up na Ken) S2", "Solo Leveling"),
 )
 
 

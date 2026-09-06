@@ -179,6 +179,7 @@ _NAMES: dict[str, ReleaseName] = {
     "sp-5": replace(_BASE_NAME, episode=Decimal(5)),
     "sp-13": replace(_BASE_NAME, episode=Decimal(13)),
     "sp-s1-4": replace(_BASE_NAME, episode=Decimal(4), season=1),
+    "dkb-s1-4": replace(_BASE_NAME, group="DKB", episode=Decimal(4), season=1),
     "mt-colon": replace(_BASE_NAME, series="Mushoku Tensei: Jobless Reincarnation", episode=Decimal(10)),
     "mt-plain": replace(_BASE_NAME, series="Mushoku Tensei Jobless Reincarnation", episode=Decimal(9)),
     "other-9": replace(_BASE_NAME, series="Zombie Land", group="DKB", episode=Decimal(9)),
@@ -466,6 +467,18 @@ def test_catalog_lists_a_release_of_another_season_after_the_chosen_one() -> Non
     assert [choice.episode for choice in choices] == [Decimal(1), Decimal(4)]
     assert choices[0].absolute == Decimal(13)
     assert choices[1].other_season is True
+
+
+def test_catalog_sinks_a_group_that_only_carries_another_season() -> None:
+    catalog: ReleaseCatalog = catalog_releases(
+        (_release("dkb-s1-4", seeders=900, published=_MOMENT), _release("sp-13", seeders=1)),
+        _parse,
+        order=CatalogOrder.NEWEST,
+        context=SeasonContext(index=2, offset=12, episodes=13),
+    )
+
+    assert [group.group for group in catalog.groups] == ["SubsPlease", "DKB"]
+    assert catalog.groups[1].choices[0].other_season is True
 
 
 def test_find_titles_returns_nothing_without_a_composed_catalog(tmp_path: Path) -> None:

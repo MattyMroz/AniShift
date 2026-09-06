@@ -591,12 +591,13 @@ def _choice_order(choice: ReleaseChoice) -> tuple[int, int, Decimal, int]:
     return (int(choice.other_season), 0, -episode, -(choice.name.version or 0))
 
 
-def _group_order(group: SeriesGroup, order: CatalogOrder, *, ranked: bool) -> tuple[int, int, float, str, str]:
+def _group_order(group: SeriesGroup, order: CatalogOrder, *, ranked: bool) -> tuple[int, int, int, float, str, str]:
     priority: int = int(not group.matches_title) if ranked else 0
+    foreign: int = int(all(choice.other_season for choice in group.choices))
     if order is CatalogOrder.NEWEST:
         missing: int = int(group.newest is None)
         weight: float = 0.0 if group.newest is None else -group.newest.timestamp()
     else:
         missing = 0
         weight = -float(sum(choice.release.seeders for choice in group.choices))
-    return (priority, missing, weight, group.series.casefold(), group.group.casefold())
+    return (priority, foreign, missing, weight, group.series.casefold(), group.group.casefold())

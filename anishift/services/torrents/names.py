@@ -108,7 +108,7 @@ _SEASON_MARKER_RE: Final[re.Pattern[str]] = re.compile(
 )
 """Season marker inside a series text; ``Part`` numbers a cour, not a season, and never matches."""
 
-_SUBTITLE_SEPARATORS: Final[tuple[str, ...]] = (" - ", " -", ": ", " –")
+_SUBTITLE_SEPARATORS: Final[tuple[str, ...]] = (" - ", " -", ": ", " –", " (")
 """Marks opening the subtitle that release names and catalog names drop or keep at will."""
 
 
