@@ -14,7 +14,7 @@ from anishift.utils.logger import get_logger
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
-    from anishift.services.torrents import Release, ReleaseName
+    from anishift.services.torrents import Release, ReleaseName, TorrentInfo
 
 __all__ = [
     "DOWNLOAD_CATEGORY",
@@ -81,6 +81,10 @@ class TorrentClient(Protocol):
 
     def add_torrent(self, torrent_url: str, *, save_path: Path, category: str) -> None:
         """Queue one torrent so its files land in *save_path*."""
+        ...
+
+    def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
+        """Return the torrents the client tracks under *category*."""
         ...
 
 
@@ -207,6 +211,10 @@ class AcquisitionService:
             )
         logger.info("Releases queued in the torrent client", count=len(choices))
         return DownloadReceipt(len(choices), directory)
+
+    def queued_hashes(self) -> frozenset[str]:
+        """Lowercase info hashes of every torrent the client already tracks under the AniShift category."""
+        return frozenset(info.info_hash.casefold() for info in self._client.torrents(self._category))
 
     def series_directory(self, choice: ReleaseChoice) -> Path:
         """Return the library directory the files of *choice* will be saved into."""

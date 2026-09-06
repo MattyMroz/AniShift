@@ -94,6 +94,7 @@ class _Acquisition(AcquisitionService):
         self.failing: frozenset[str] = frozenset(failing)
         self.queries: list[str] = []
         self.downloaded: list[tuple[ReleaseChoice, ...]] = []
+        self.queued: set[str] = set()
 
     def search(self, query: str) -> ReleaseCatalog:
         self.queries.append(query)
@@ -110,6 +111,9 @@ class _Acquisition(AcquisitionService):
     def download(self, choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
         self.downloaded.append(tuple(choices))
         return DownloadReceipt(len(choices), Path("library"))
+
+    def queued_hashes(self) -> frozenset[str]:
+        return frozenset(self.queued)
 
 
 def _store(tmp_path: Path) -> SubscriptionStore:
@@ -274,6 +278,20 @@ def test_check_skips_releases_already_handed_to_the_client(tmp_path: Path) -> No
     assert [choice.release.info_hash for choice in acquisition.downloaded[0]] == ["SubsPlease-Neko to Ryuu-10-v1"]
     assert outcome.downloaded == 1
     assert service.list()[0].next_episode == Decimal(11)
+
+
+def test_check_treats_a_torrent_already_in_the_client_as_taken(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)), _choice(Decimal(10)))})
+    acquisition.queued = {"subsplease-neko to ryuu-9-v1"}
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("neko", _choice(Decimal(9)))
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert [choice.release.info_hash for choice in acquisition.downloaded[0]] == ["SubsPlease-Neko to Ryuu-10-v1"]
+    assert outcome.downloaded == 1
+    assert service.list()[0].next_episode == Decimal(11)
+    assert service.list()[0].taken == frozenset({"SubsPlease-Neko to Ryuu-9-v1", "SubsPlease-Neko to Ryuu-10-v1"})
 
 
 def test_check_without_new_episodes_only_records_the_check_time(tmp_path: Path) -> None:

@@ -205,7 +205,12 @@ class SubscriptionService:
         try:
             catalog: ReleaseCatalog = self._acquisition.search(subscription.query)
             selected: dict[Decimal, ReleaseChoice] = _new_episodes(catalog, subscription)
-            chosen: tuple[ReleaseChoice, ...] = tuple(selected[episode] for episode in sorted(selected))
+            queued: frozenset[str] = self._acquisition.queued_hashes() if selected else frozenset()
+            chosen: tuple[ReleaseChoice, ...] = tuple(
+                selected[episode]
+                for episode in sorted(selected)
+                if selected[episode].release.info_hash.casefold() not in queued
+            )
             if chosen:
                 self._acquisition.download(chosen)
             updated: Subscription = self._advance(subscription, selected)

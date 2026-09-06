@@ -17,7 +17,7 @@ from anishift.application.acquisition import (
     series_directory_name,
 )
 from anishift.errors import ErrorCode, ErrorContext, FatalError
-from anishift.services.torrents import Release, ReleaseName
+from anishift.services.torrents import Release, ReleaseName, TorrentInfo
 
 
 class _ClientDownError(FatalError):
@@ -39,6 +39,7 @@ class _Client:
         self.reachable: bool = reachable
         self.preference_values: dict[str, object] = {"incomplete_files_ext": extension}
         self.added: list[tuple[str, Path, str]] = []
+        self.tracked: list[TorrentInfo] = []
 
     def version(self) -> str:
         self._require()
@@ -55,6 +56,10 @@ class _Client:
     def add_torrent(self, torrent_url: str, *, save_path: Path, category: str) -> None:
         self._require()
         self.added.append((torrent_url, save_path, category))
+
+    def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
+        self._require()
+        return tuple(self.tracked)
 
     def _require(self) -> None:
         if not self.reachable:
@@ -175,6 +180,13 @@ def test_download_queues_every_choice_into_the_series_directory(tmp_path: Path) 
     assert receipt == DownloadReceipt(2, tmp_path / "Neko to Ryuu")
     assert [entry[1:] for entry in client.added] == [(tmp_path / "Neko to Ryuu", "AniShift")] * 2
     assert client.added[0][0].startswith("https://nyaa.si/download/")
+
+
+def test_queued_hashes_lists_the_tracked_torrents_in_lowercase(tmp_path: Path) -> None:
+    client: _Client = _Client()
+    client.tracked.append(TorrentInfo(name="ep", info_hash="ABCDEF", progress=0.5, state="downloading", save_path="x"))
+
+    assert _service(client, tmp_path).queued_hashes() == frozenset({"abcdef"})
 
 
 def test_download_refuses_an_empty_choice(tmp_path: Path) -> None:
