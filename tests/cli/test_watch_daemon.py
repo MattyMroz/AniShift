@@ -91,8 +91,21 @@ class _Clock:
         return self.now
 
 
-class _Service:
+class _Subscriptions:
     def __init__(self, failure: Exception | None = None) -> None:
+        self.failure: Exception | None = failure
+        self.checks: int = 0
+
+    def check_all(self) -> tuple[SimpleNamespace, ...]:
+        self.checks += 1
+        if self.failure is not None:
+            raise self.failure
+        return (SimpleNamespace(downloaded=2, problem=""),)
+
+
+class _Service:
+    def __init__(self, failure: Exception | None = None, subscriptions: _Subscriptions | None = None) -> None:
+        self.subscriptions: _Subscriptions | None = subscriptions
         self.failure: Exception | None = failure
         self.discoveries: int = 0
 
@@ -367,3 +380,51 @@ def test_spawn_window_opens_its_own_console_on_windows(monkeypatch: pytest.Monke
         assert recorder.creationflags is None
         return
     assert recorder.creationflags == subprocess.CREATE_NEW_CONSOLE
+
+
+def test_subscriptions_are_checked_at_start_and_again_after_the_interval(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_ledger(monkeypatch, _Ledger([(), (), ()]))
+    subscriptions: _Subscriptions = _Subscriptions()
+    monkeypatch.setattr(cli_watch, "SUBSCRIPTION_CHECK_INTERVAL_S", 3.0)
+
+    run_daemon(
+        _as_service(_Service(subscriptions=subscriptions)),
+        state_dir=tmp_path,
+        spawner=_Spawner(),
+        clock=_Clock(),
+        sleep=_Sleeper(tmp_path, 3),
+    )
+
+    assert subscriptions.checks == 2
+
+
+def test_a_failing_subscription_check_keeps_the_watch_alive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_ledger(monkeypatch, _Ledger([(), ()]))
+    subscriptions: _Subscriptions = _Subscriptions(ExecutionError("index down"))
+
+    code: int = run_daemon(
+        _as_service(_Service(subscriptions=subscriptions)),
+        state_dir=tmp_path,
+        spawner=_Spawner(),
+        clock=_Clock(),
+        sleep=_Sleeper(tmp_path, 2),
+    )
+
+    assert code == EXIT_SUCCESS
+    assert subscriptions.checks == 1
+
+
+def test_a_service_without_subscriptions_skips_the_check(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_ledger(monkeypatch, _Ledger([()]))
+
+    code: int = run_daemon(
+        _as_service(_Service()),
+        state_dir=tmp_path,
+        spawner=_Spawner(),
+        clock=_Clock(),
+        sleep=_Sleeper(tmp_path, 1),
+    )
+
+    assert code == EXIT_SUCCESS

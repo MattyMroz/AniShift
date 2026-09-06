@@ -16,7 +16,15 @@ from anishift.utils.logger import get_logger
 from anishift.utils.rich_console import StatusType, console, get_status_icon
 
 if TYPE_CHECKING:
-    from anishift.application import AcquisitionService, AppService, ClientStatus, RunResult
+    from anishift.application import (
+        AcquisitionService,
+        AppService,
+        CheckOutcome,
+        ClientStatus,
+        RunResult,
+        Subscription,
+        SubscriptionService,
+    )
     from anishift.application.events import RunEvent
     from anishift.cli.run import AutoRunRefusal, PreparedAutoRun
     from anishift.cli.watch import WatchStatus
@@ -39,9 +47,12 @@ autostart_app = typer.Typer(help="Manage the Windows logon task that starts the 
 
 qbit_app = typer.Typer(help="Check and prepare the qBittorrent Web UI that downloads into the library.")
 
+subs_app = typer.Typer(help="Followed series whose new episodes download on their own.")
+
 app.add_typer(watch_app, name="watch")
 app.add_typer(autostart_app, name="autostart")
 app.add_typer(qbit_app, name="qbit")
+app.add_typer(subs_app, name="subs")
 
 logger = get_logger(__name__)
 
@@ -99,6 +110,24 @@ _QBIT_EXTENSION: Final[str] = "incomplete extension: {state}"
 
 _QBIT_ABSENT: Final[str] = "This session has no torrent client composed."
 """Refusal stated when the facade was built without the acquisition boundary."""
+
+_SUBS_EMPTY: Final[str] = "No followed series."
+"""Line printed when the subscription list is empty."""
+
+_SUBS_ROW: Final[str] = "{id} [{group}] {series} · next: {episode} · checked: {checked}"
+"""One list row per followed series."""
+
+_SUBS_REMOVED: Final[str] = "Removed."
+"""Confirmation printed once a followed series is gone."""
+
+_SUBS_UNKNOWN: Final[str] = "No followed series has that id."
+"""Refusal printed when the id to remove does not exist."""
+
+_SUBS_CHECKED: Final[str] = "[{group}] {series}: downloaded {count}"
+"""Result row of one manual check."""
+
+_SUBS_PROBLEM: Final[str] = "[{group}] {series}: {problem}"
+"""Result row of one manual check that failed."""
 
 
 def _print_doctor_report(results: list[CheckResult]) -> None:
@@ -257,6 +286,59 @@ def qbit_status() -> None:
 def qbit_setup() -> None:
     """Make qBittorrent mark incomplete files, so the watch never takes a partial download."""
     _print_client_status(_acquisition(_composed_service()).setup_client())
+
+
+@subs_app.command("list")
+def subs_list() -> None:
+    """List every followed series with its next episode and last check."""
+    followed: tuple[Subscription, ...] = _subscriptions(_composed_service()).list()
+    if not followed:
+        typer.echo(_SUBS_EMPTY)
+        return
+    for entry in followed:
+        row: str = _SUBS_ROW.format(
+            id=entry.subscription_id,
+            group=entry.group,
+            series=entry.series,
+            episode=entry.next_episode,
+            checked=entry.checked_at or "never",
+        )
+        typer.echo(_safe(row))
+
+
+@subs_app.command("remove")
+def subs_remove(
+    subscription_id: Annotated[str, typer.Argument(help="Id shown by `anishift subs list`.")],
+) -> None:
+    """Stop following one series; downloaded files stay where they are."""
+    if not _subscriptions(_composed_service()).remove(subscription_id):
+        typer.echo(_SUBS_UNKNOWN)
+        raise typer.Exit(code=EXIT_REFUSED)
+    typer.echo(_SUBS_REMOVED)
+
+
+@subs_app.command("check")
+def subs_check() -> None:
+    """Check every followed series now and queue the new episodes."""
+    outcomes: tuple[CheckOutcome, ...] = _subscriptions(_composed_service()).check_all()
+    if not outcomes:
+        typer.echo(_SUBS_EMPTY)
+        return
+    for outcome in outcomes:
+        entry: Subscription = outcome.subscription
+        if outcome.problem:
+            typer.echo(_safe(_SUBS_PROBLEM.format(group=entry.group, series=entry.series, problem=outcome.problem)))
+            continue
+        typer.echo(_safe(_SUBS_CHECKED.format(group=entry.group, series=entry.series, count=outcome.downloaded)))
+
+
+def _subscriptions(service: AppService) -> SubscriptionService:
+    """Return the composed subscription boundary or refuse with one sentence."""
+    subscriptions: SubscriptionService | None = service.subscriptions
+    if subscriptions is None:
+        typer.echo(_QBIT_ABSENT)
+        raise typer.Exit(code=EXIT_REFUSED)
+    return subscriptions
 
 
 def _acquisition(service: AppService) -> AcquisitionService:

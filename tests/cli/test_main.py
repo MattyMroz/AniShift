@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Final, cast
@@ -330,3 +331,82 @@ def test_qbit_refuses_a_session_without_a_torrent_client(monkeypatch: pytest.Mon
 
     assert result.exit_code == cli_main.EXIT_REFUSED
     assert "no torrent client" in result.output
+
+
+def _service_with_subscriptions(subscriptions: object) -> AppService:
+    return cast("AppService", SimpleNamespace(subscriptions=subscriptions))
+
+
+def _followed(series: str, group: str, episode: int, checked: str | None) -> SimpleNamespace:
+    return SimpleNamespace(
+        subscription_id="ab12cd34ef56",
+        series=series,
+        group=group,
+        next_episode=Decimal(episode),
+        checked_at=checked,
+    )
+
+
+def test_subs_list_prints_one_row_per_followed_series(monkeypatch: pytest.MonkeyPatch) -> None:
+    followed: tuple[SimpleNamespace, ...] = (_followed("Neko to Ryuu", "SubsPlease", 12, None),)
+    service: AppService = _service_with_subscriptions(SimpleNamespace(list=lambda: followed))
+    monkeypatch.setattr(bootstrap, "production_service", lambda: service)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["subs", "list"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "ab12cd34ef56 [SubsPlease] Neko to Ryuu · next: 12 · checked: never"
+
+
+def test_subs_list_states_when_nothing_is_followed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        bootstrap, "production_service", lambda: _service_with_subscriptions(SimpleNamespace(list=lambda: ()))
+    )
+
+    result: Result = CliRunner().invoke(cli_main.app, ["subs", "list"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "No followed series."
+
+
+def test_subs_remove_reports_an_unknown_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    removed: list[str] = []
+
+    def remove(subscription_id: str) -> bool:
+        removed.append(subscription_id)
+        return False
+
+    monkeypatch.setattr(
+        bootstrap, "production_service", lambda: _service_with_subscriptions(SimpleNamespace(remove=remove))
+    )
+
+    result: Result = CliRunner().invoke(cli_main.app, ["subs", "remove", "zzz"])
+
+    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert removed == ["zzz"]
+    assert "No followed series has that id." in result.output
+
+
+def test_subs_check_prints_downloads_and_problems_per_series(monkeypatch: pytest.MonkeyPatch) -> None:
+    outcomes: tuple[SimpleNamespace, ...] = (
+        SimpleNamespace(subscription=_followed("Neko to Ryuu", "SubsPlease", 12, "x"), downloaded=2, problem=""),
+        SimpleNamespace(subscription=_followed("Oshi no Ko", "DKB", 3, "x"), downloaded=0, problem="Nyaa timed out"),
+    )
+    service: AppService = _service_with_subscriptions(SimpleNamespace(check_all=lambda: outcomes))
+    monkeypatch.setattr(bootstrap, "production_service", lambda: service)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["subs", "check"])
+
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        "[SubsPlease] Neko to Ryuu: downloaded 2",
+        "[DKB] Oshi no Ko: Nyaa timed out",
+    ]
+
+
+def test_subs_refuses_a_session_without_subscriptions(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bootstrap, "production_service", lambda: _service_with_subscriptions(None))
+
+    result: Result = CliRunner().invoke(cli_main.app, ["subs", "list"])
+
+    assert result.exit_code == cli_main.EXIT_REFUSED

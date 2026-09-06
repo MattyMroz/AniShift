@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from anishift.application.cancellation import CancellationToken
     from anishift.application.discovery import DiscoveryResult
     from anishift.application.service import AppService
+    from anishift.application.subscriptions import SubscriptionService
     from anishift.services.torrents import Release
 
 __all__ = ["AppContext", "bootstrap", "create_app_service", "production_service"]
@@ -69,6 +70,7 @@ def create_app_service(context: AppContext) -> AppService:
     from anishift.application.service import AppService  # noqa: PLC0415
     from anishift.services.media import DefaultMediaProbe  # noqa: PLC0415
 
+    acquisition: AcquisitionService = _acquisition_service(context)
     service: AppService = AppService(
         workspace_root=context.workspace_root,
         settings=context.settings,
@@ -78,7 +80,8 @@ def create_app_service(context: AppContext) -> AppService:
         handler_factory=ProductionHandlerFactory(
             lambda: service.current_settings(),  # noqa: PLW0108 - defers the lookup until the service exists
         ),
-        acquisition=_acquisition_service(context),
+        acquisition=acquisition,
+        subscriptions=_subscription_service(acquisition),
     )
     return service
 
@@ -111,6 +114,19 @@ def _acquisition_service(context: AppContext) -> AcquisitionService:
         workspace_root=context.workspace_root,
         parse_name=parse_release_name,
     )
+
+
+def _subscription_service(acquisition: AcquisitionService) -> SubscriptionService:
+    """Wire the followed-series store beside the panel preferences onto the acquisition boundary."""
+    from anishift.application.subscriptions import (  # noqa: PLC0415
+        SUBSCRIPTIONS_FILE_NAME,
+        SubscriptionService,
+        SubscriptionStore,
+    )
+    from anishift.paths import config_path  # noqa: PLC0415
+
+    store: SubscriptionStore = SubscriptionStore(config_path().parent / SUBSCRIPTIONS_FILE_NAME)
+    return SubscriptionService(store=store, acquisition=acquisition)
 
 
 def _prepare_workspace_binaries(discovery: DiscoveryResult, cancel: CancellationToken) -> None:

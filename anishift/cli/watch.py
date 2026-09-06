@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
 
-from anishift.application import SCAN_INTERVAL_S, WatchLedger
+from anishift.application import SCAN_INTERVAL_S, SUBSCRIPTION_CHECK_INTERVAL_S, WatchLedger
 from anishift.cli.exit_codes import EXIT_REFUSED, EXIT_SUCCESS
 from anishift.errors import AniShiftError
 from anishift.paths import config_path
@@ -20,7 +20,7 @@ from anishift.utils.logger import get_logger
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    from anishift.application import AppService, AutoPreset, InspectedWorkspace
+    from anishift.application import AppService, AutoPreset, CheckOutcome, InspectedWorkspace
 
 __all__ = [
     "ERROR_BACKOFF_S",
@@ -163,6 +163,7 @@ def _watch_loop(
     ledger: WatchLedger = WatchLedger()
     child: Child | None = None
     started: tuple[str, ...] = ()
+    checked_at: float | None = None
     try:
         while not _stop_requested(state_dir):
             exit_code: int | None = None if child is None else child.poll()
@@ -173,6 +174,7 @@ def _watch_loop(
                 ledger.record_exit(started, exit_code)
                 logger.info("Batch window finished", groups=len(started), exit_code=exit_code)
             child, started = None, ()
+            checked_at = _check_subscriptions(service, clock(), checked_at)
             candidates: tuple[str, ...] | None = _scan(service, ledger, clock())
             if candidates is None:
                 sleep(ERROR_BACKOFF_S)
@@ -200,6 +202,26 @@ def _scan(service: AppService, ledger: WatchLedger, now: float) -> tuple[str, ..
         logger.warning("Watch scan failed", error_class=type(problem).__name__)
         return None
     return candidates
+
+
+def _check_subscriptions(service: AppService, now: float, checked_at: float | None) -> float | None:
+    """Check every followed series once per interval; return when the last check happened."""
+    if service.subscriptions is None:
+        return checked_at
+    if checked_at is not None and now - checked_at < SUBSCRIPTION_CHECK_INTERVAL_S:
+        return checked_at
+    try:
+        outcomes: tuple[CheckOutcome, ...] = service.subscriptions.check_all()
+    except (AniShiftError, OSError) as problem:
+        logger.warning("Subscription check failed", error_class=type(problem).__name__)
+        return now
+    logger.info(
+        "Subscriptions checked",
+        subscriptions=len(outcomes),
+        downloaded=sum(outcome.downloaded for outcome in outcomes),
+        problems=sum(1 for outcome in outcomes if outcome.problem),
+    )
+    return now
 
 
 def _stop_requested(state_dir: Path) -> bool:

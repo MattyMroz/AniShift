@@ -66,6 +66,7 @@ from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from anishift.application.acquisition import AcquisitionService
+    from anishift.application.subscriptions import SubscriptionService
     from anishift.services.llm import LlmConfig
 
 __all__ = [
@@ -213,6 +214,7 @@ class AppService:
         env_file: Path | None = None,
         prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = None,
         acquisition: AcquisitionService | None = None,
+        subscriptions: SubscriptionService | None = None,
     ) -> None:
         self._workspace_root: Path = workspace_root
         self._settings: Settings = settings
@@ -235,11 +237,17 @@ class AppService:
         self._discover_lock: threading.Lock = threading.Lock()
         self._prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = prepare_workspace
         self._acquisition: AcquisitionService | None = acquisition
+        self._subscriptions: SubscriptionService | None = subscriptions
 
     @property
     def acquisition(self) -> AcquisitionService | None:
         """Release search and download hand-off, absent when no torrent client was composed."""
         return self._acquisition
+
+    @property
+    def subscriptions(self) -> SubscriptionService | None:
+        """Followed series and their hourly checks, absent when no torrent client was composed."""
+        return self._subscriptions
 
     @property
     def workspace_root(self) -> Path:
