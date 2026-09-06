@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: accepted-in-progress
+status: specification-under-revision
 baseline: 167a181 (work/local-automation/05-polish)
 branch: work/local-automation/06-efficiency
 created: 2026-09-06
@@ -122,3 +122,20 @@ bramki, smoke i przegląd diffu.
 
 Unit per warunek (wyżej), integracja na nagranych feedach (E01/E03 przez `tests/integration`), pomiary E05 i E09
 zapisane w sekcji „Wynik wykonania”, smoke E10 na żywo, przegląd całości przez prowadzącego przed PR.
+
+## Rewizja specyfikacji (2026-09-06, wieczór)
+
+Właściciel zatrzymał wykonanie po pierwszych korektach: specyfikacja jest za wąska i w kilku miejscach błędna.
+Wykonawcy przerwani, ich szkice w `git stash` („plan06 partial executor work”). Ustalenia z rozmowy, które
+obowiązują przy poszerzeniu:
+
+- Rytm subskrypcji: przed premierą **wcale** (przez tydzień nic się nie zmienia; bez sprawdzenia dobowego);
+  w oknie premiery (−10 min … +6 h) co 10 min; po oknie bez trafienia co godzinę do trafienia; bez historii
+  co godzinę; seria zakończona **nigdy automatycznie**, tylko ręczne `subs check`.
+- Termin premiery: najpierw godzina emisji z AniList (`nextAiringEpisode.airingAt`) + opóźnienie grupy (uczone,
+  domyślnie 45 min); gdy AniList nie odpowie, historia publikacji grupy (jeden odstęp wystarczy); dopiero bez obu
+  rytm godzinny.
+- Właściciel: „widzę, że nie myślisz” — specyfikacja ma być przemyślana od nowa, szerzej (więcej scenariuszy
+  szybkości, poprawności i nadmiarowości zużycia zasobów w czuwaniu i działaniu), zanim ruszy wykonanie.
+
+Kolejny krok: poszerzona specyfikacja tego planu (nowa wersja tego dokumentu) do akceptacji właściciela.
