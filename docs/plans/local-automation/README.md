@@ -74,3 +74,22 @@ P10 (odtwarzanie) nie ma na tej maszynie odtwarzacza obsługującego zewnętrzn�
 źródła; P14 scenariusze awarii są testami jednostkowymi planów 01–03; P15 to ten katalog.
 
 Wykonawca zaczyna od [handoff.md](handoff.md), potem od aktualnego planu w `plans/`. Cały katalog można umieścić w `docs/work/local-automation/`. Zachowanie nazw plików utrzymuje linki względne.
+
+## Przegląd niezależny i poprawki (2026-09-06)
+
+[reviews/2026-09-06-local-automation-review.md](reviews/2026-09-06-local-automation-review.md): werdykt FAIL dla
+odbioru z 7 poważnymi i 10 mniejszymi findingami, wszystkie naprawione na gałęzi `work/local-automation/05-polish`
+(commity `e909aa8`, `600fff4`): licznik subskrypcji przesuwa się do pierwszego niepobranego odcinka (7.5 i luki nie
+gubią odcinków), seria porównywana po znormalizowanej postaci (bez cichego „pobrano 0”), zapytanie doganiające o
+brakujący numer, nazwy z drugim „ - ”, paczki „01-12”, grupa po `H 264-`, myślnik wiodący, pusty ekran po filtrze
+z działającym `F`, komendy `subs`/`qbit` bez tracebacków, `qbit setup` uczciwy o niezapisanych kluczach, jedna reguła
+kolejności grup, polskie komunikaty błędów w ekranie Anime, `anishift watch` mówi przy odmowie, wklejanie w polu
+tytułu, notka o niedostępnej numeracji sezonu, doctor czyta `.env`, README zgodny z menu, Esc wraca do listy tytułów,
+martwe raportowanie ledgera usunięte, budżet nyaa liczony w żądaniach HTTP (≤ 16). N9 (ruff) nie potwierdził się na
+całym drzewie (reviewer użył `--exclude`).
+
+Testy integracyjne `tests/integration/` odtwarzają 59 nagranych odpowiedzi nyaa i AniList przez złożoną fasadę
+(wyszukanie, numeracja sezonów, subskrypcja z fałszywym qBittorrentem, budżet zapytań); wariant na żywo pod
+markerem `network`.
+
+Odbiór właściciela klawiaturą (W08, A08, S06, M09) pozostaje jedynym otwartym punktem.
