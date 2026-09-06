@@ -61,6 +61,21 @@ uv run anishift qbit status   # reachable: yes (v5.2.3) / incomplete extension: 
 The `.!qB` suffix matters: torrent files are created at full size before they are
 complete, and the watch ignores that suffix until the download finishes.
 
+### Following a series
+
+In the Anime results press **O** on an episode to follow that series from that
+episode on, with that release group. AniShift queues the episodes already available
+and the watch process checks nyaa.si every hour for new ones. Highlight the first
+episode to collect the whole season, the latest one to get only what comes next.
+
+```bash
+uv run anishift subs list        # followed series, next episode, last check
+uv run anishift subs check       # check every followed series now
+uv run anishift subs remove ID   # stop following; downloaded files stay
+```
+
+Followed series live in `config/subscriptions.json`.
+
 ## Watching the library
 
 `workspace/` may hold one subfolder per series, for example `workspace/Frieren/`.
