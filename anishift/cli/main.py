@@ -111,6 +111,9 @@ _QBIT_EXTENSION: Final[str] = "incomplete extension: {state}"
 _QBIT_ABSENT: Final[str] = "This session has no torrent client composed."
 """Refusal stated when the facade was built without the acquisition boundary."""
 
+_WATCH_SUGGESTION: Final[str] = "Run `anishift autostart enable` so the library is watched now and after every logon"
+"""Advice printed by the doctor when nothing watches the library."""
+
 _SUBS_EMPTY: Final[str] = "No followed series."
 """Line printed when the subscription list is empty."""
 
@@ -159,8 +162,9 @@ def _default(ctx: typer.Context) -> None:
 
 @app.command()
 def doctor() -> None:
-    """Run diagnostics and report the state of binaries, keys and workspace."""
+    """Run diagnostics and report the state of binaries, keys, workspace, watch and autostart."""
     results = run_doctor()
+    results.extend(_automation_checks())
     _print_doctor_report(results)
     if any(r.status is CheckStatus.FAIL for r in results):
         raise typer.Exit(code=1)
@@ -360,6 +364,36 @@ def _print_client_status(status: ClientStatus) -> None:
         raise typer.Exit(code=EXIT_REFUSED)
     typer.echo(_QBIT_REACHABLE.format(version=_safe(status.version)))
     typer.echo(_QBIT_EXTENSION.format(state="on" if status.incomplete_extension else "off"))
+
+
+def _automation_checks() -> list[CheckResult]:
+    """Report whether the library is watched now and after every logon."""
+    from anishift.cli.watch import watch_state_dir, watch_status  # noqa: PLC0415 - keep the watch loop lazy
+    from anishift.platform.autostart import AutostartStatus, status  # noqa: PLC0415 - keep the scheduler lazy
+
+    watch: WatchStatus = watch_status(watch_state_dir())
+    checks: list[CheckResult] = [
+        CheckResult(
+            "watch",
+            CheckStatus.OK if watch.running else CheckStatus.WARN,
+            _watch_status_line(watch),
+            suggestion=_WATCH_SUGGESTION,
+        )
+    ]
+    try:
+        task: AutostartStatus = status()
+    except AniShiftError as problem:
+        checks.append(CheckResult("autostart", CheckStatus.SKIP, str(problem)))
+        return checks
+    checks.append(
+        CheckResult(
+            "autostart",
+            CheckStatus.OK if task is AutostartStatus.ENABLED else CheckStatus.WARN,
+            task.value,
+            suggestion=_WATCH_SUGGESTION,
+        )
+    )
+    return checks
 
 
 def _watch_status_line(state: WatchStatus) -> str:

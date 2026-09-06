@@ -160,6 +160,43 @@ def test_the_technical_subcommands_load_no_interactive_toolkit(tmp_path: Path) -
     assert report["codes"][2:] == [0, 0]
 
 
+def test_doctor_reports_the_watch_and_the_logon_task(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cli_main, "run_doctor", list)
+    monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli_watch, "watch_status", lambda _dir: cli_watch.WatchStatus(running=True, pid=7))
+    monkeypatch.setattr(autostart, "status", lambda: autostart.AutostartStatus.MISSING)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "watch: running (pid 7)" in result.output
+    assert "autostart: missing" in result.output
+    assert "anishift autostart enable" in result.output
+
+
+def test_doctor_skips_the_logon_task_where_the_scheduler_refuses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def refuse() -> autostart.AutostartStatus:
+        raise autostart.AutostartUnsupportedError(
+            context=ErrorContext(
+                code=ErrorCode.AUTOSTART_UNSUPPORTED,
+                message="Autostart needs the Windows Task Scheduler",
+                suggestion="Run the watch by hand",
+            )
+        )
+
+    monkeypatch.setattr(cli_main, "run_doctor", list)
+    monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(autostart, "status", refuse)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "watch: stopped" in result.output
+    assert "autostart: Autostart needs the Windows Task Scheduler" in result.output
+
+
 def test_watch_status_reports_a_stopped_watch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
 
