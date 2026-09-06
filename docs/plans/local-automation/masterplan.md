@@ -1,13 +1,18 @@
 ---
 kind: masterplan-and-implementation-plan
-status: proposed
-updated: 2026-09-05
+status: partially-superseded
+updated: 2026-09-06
 baseline: bc74425b487fb9110da76911c26dca4194b2aad9
-implementation: not-executed
+implementation: plans/01-watch-mode.md, plans/02-search-and-download.md, plans/03-subscriptions.md (branch work/local-automation/01-watch)
 language: pl
 ---
 
 # AniShift: pełna automatyzacja lokalna | masterplan implementacji
+
+**Stan 2026-09-06:** cel właściciela (wyszukanie, pobranie, czuwanie z oknem, autostart, subskrypcje)
+zrealizowały trzy plany w `plans/`. Fazy P02–P04, P06, P07, P09, P11 i P12 są zastąpione tymi planami.
+Pozostałe fazy (katalog tytułów, paczki, biblioteka i odtwarzanie, MAL, scenariusze awarii, odbiór) nie mają
+kolejki wykonania; powstaną jako osobne plany dopiero na życzenie właściciela.
 
 **Cel:** od wyboru anime lub wrzucenia pliku do gotowego polskiego odcinka, bez ponawiania codziennych ręcznych czynności.
 
@@ -3998,6 +4003,8 @@ uv run pytest tests/automation/test_search_generation.py
 
 ## P06. Wydania, Nyaa, RSS oraz polityka jakości
 
+**Status fazy:** superseded-by: [plans/02-search-and-download.md](plans/02-search-and-download.md). Karty poniżej pozostają historią projektu; nie są kolejką wykonania.
+
 **Wynik fazy:** Wydania są filtrowane i dopasowane przed pobraniem.
 
 **Wejście:** P05: potwierdzona tożsamość; P01: polityki.
@@ -5026,6 +5033,8 @@ uv run pytest tests/automation/test_release_decision.py
 <a id="p07"></a>
 
 ## P07. qBittorrent: uzgadnianie transferów i izolacja własności
+
+**Status fazy:** superseded-by: [plans/02-search-and-download.md](plans/02-search-and-download.md). Karty poniżej pozostają historią projektu; nie są kolejką wykonania.
 
 **Wynik fazy:** Własne transfery są kontrolowane, obce pozostają nietknięte.
 
@@ -7093,6 +7102,8 @@ uv run pytest tests/automation/test_batch_summary.py
 
 ## P09. Subskrypcje, harmonogram i nadrabianie zaległości
 
+**Status fazy:** superseded-by: [plans/03-subscriptions.md](plans/03-subscriptions.md). Karty poniżej pozostają historią projektu; nie są kolejką wykonania.
+
 **Wynik fazy:** Wybrana raz seria jest pozyskiwana bez cotygodniowego klikania.
 
 **Wejście:** P05–P08: katalog, wydania i download.
@@ -9158,6 +9169,8 @@ uv run pytest tests/automation/test_library_paging.py
 <a id="p11"></a>
 
 ## P11. Wyszukiwanie i automatyzacja w obecnym terminalu
+
+**Status fazy:** superseded-by: [plans/02-search-and-download.md](plans/02-search-and-download.md). Karty poniżej pozostają historią projektu; nie są kolejką wykonania.
 
 **Wynik fazy:** Pełny workflow jest dostępny w aktualnym terminalu.
 

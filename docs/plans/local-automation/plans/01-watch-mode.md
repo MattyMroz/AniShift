@@ -327,7 +327,7 @@ def source_fingerprint(snapshots) -> tuple[tuple[str, int, int], ...]
 
 class WatchLedger:
     def candidates(self, workspace: InspectedWorkspace, preset: AutoPreset, now: float) -> tuple[str, ...]
-        # aktualizuje snapshoty; zwraca ID grup: needs_work, stabilne, bez wpisu failed z tym samym fingerprintem
+        # aktualizuje snapshoty; zwraca ID grup: needs_work, stabilne, bez wpisu (done/failed) z tym samym fingerprintem
     def mark_started(self, group_ids) -> None
     def record_exit(self, group_ids, exit_code: int) -> None    # 0 -> done, inaczej failed(kod)
     def rows(self) -> tuple[WatchRow, ...]                       # do statusu/logów
@@ -400,7 +400,7 @@ anishift autostart status       0 i jedna linia: enabled | disabled | missing
 2. Plik jest stabilny, gdy nazwa nie kończy się sufiksem częściowym, `now - first_seen >= QUIET_S`
    i otwarcie `r+b` powiodło się (uchwyt zamknięty natychmiast).
 3. Grupa jest kandydatem, gdy każdy jej plik źródłowy jest stabilny, `needs_work` jest prawdą i
-   ledger nie ma wpisu `failed` z tym samym fingerprintem.
+   ledger nie ma żadnego wpisu (`done` ani `failed`) z tym samym fingerprintem; jedno okno na jedno wejście.
 
 ### Zachowanie okna partii
 
@@ -644,6 +644,10 @@ na każdym uruchomieniu narzędzi medialnych i `nvidia-smi`. Po fixie: `autostar
 
 W06 spełnione (zadanie zarejestrowane bez admina, czuwanie działa). Nie wykonano: wylogowanie i zalogowanie,
 W08 (odbiór), PR do `main`.
+
+Domknięcie (2026-09-06): ledger nie otwiera drugiego okna dla grupy, którą już przetworzył, dopóki jej pliki
+źródłowe się nie zmienią, niezależnie od kodu wyjścia (wcześniej blokował tylko kod ≠ 0, więc partia kończąca
+się kodem 0 bez produktu mogła wracać co skan). Test `test_a_finished_batch_is_not_restarted_for_the_same_input`.
 
 ## Kontrakt wyniku
 

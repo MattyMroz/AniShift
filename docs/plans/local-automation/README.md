@@ -1,9 +1,9 @@
 ---
 kind: package-index
-status: proposed
-updated: 2026-09-05
+status: implemented-awaiting-owner-acceptance
+updated: 2026-09-06
 baseline: bc74425b487fb9110da76911c26dca4194b2aad9
-implementation: not-executed
+implementation: plans/01-watch-mode.md, plans/02-search-and-download.md, plans/03-subscriptions.md (branch work/local-automation/01-watch)
 language: pl
 ---
 
@@ -49,8 +49,17 @@ To komplet dokumentów planistycznych. Nie jest implementacją. Nie instalowano 
 
 Dokument zawiera rozstrzygnięte decyzje i konkretne testy dla niepewnych integracji. Nie daje nieuzasadnionej gwarancji, że wszystkie zewnętrzne API pozostaną niezmienne albo że nie ma błędów.
 
-## Początek implementacji
+## Implementacja
 
-Pierwszy rezultat do wykonania: [plans/01-watch-mode.md](plans/01-watch-mode.md) (tryb Czuwaj na istniejącym Auto, podfoldery serii, autostart). Zastępuje fazy P02–P04 i P12 masterplanu. Kolejne plany powstają po odbiorze poprzedniego.
+Wykonane na gałęzi `work/local-automation/01-watch` (2026-09-05/06), każdy plan z sekcją „Wynik wykonania”:
+
+| Plan | Rezultat | Zastępuje fazy |
+| --- | --- | --- |
+| [plans/01-watch-mode.md](plans/01-watch-mode.md) | czuwanie na istniejącym Auto, podfoldery serii, okno partii, autostart | P02–P04, P12 |
+| [plans/02-search-and-download.md](plans/02-search-and-download.md) | ekran Anime: nyaa, 1080p+, grupy, Space/Enter, qBittorrent, `qbit` | P06, P07, P11 |
+| [plans/03-subscriptions.md](plans/03-subscriptions.md) | klawisz `O`, sprawdzanie co godzinę w czuwaniu, `subs` | P09 |
+
+Do odbioru właściciela pozostają W08, A08 i S06 (wymagają włączonego Web UI qBittorrenta na localhost i
+`anishift qbit setup`). Pozostałe fazy masterplanu nie mają kolejki wykonania.
 
 Wykonawca zaczyna od [handoff.md](handoff.md), potem od aktualnego planu w `plans/`. Cały katalog można umieścić w `docs/work/local-automation/`. Zachowanie nazw plików utrzymuje linki względne.
