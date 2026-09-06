@@ -116,3 +116,25 @@ def test_run_doctor_returns_all_checks(monkeypatch: pytest.MonkeyPatch) -> None:
         "console_encoding",
         "torrent_client",
     ]
+
+
+def test_run_doctor_reads_the_repository_env_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    env_file: Path = tmp_path / ".env"
+    env_file.write_text("ANISHIFT_QBITTORRENT_URL=http://127.0.0.1:9999\n", encoding="utf-8")
+    probed: list[tuple[str, int]] = []
+
+    def connect(endpoint: tuple[str, int], timeout: float) -> NoReturn:
+        del timeout
+        probed.append(endpoint)
+        raise OSError
+
+    monkeypatch.chdir(tmp_path.parent)
+    monkeypatch.delenv("ANISHIFT_QBITTORRENT_URL", raising=False)
+    monkeypatch.setattr(doctor, "env_path", lambda: env_file)
+    monkeypatch.setattr(doctor, "is_windows", lambda: True)
+    monkeypatch.setattr(doctor, "installed_executable", lambda: None)
+    monkeypatch.setattr(doctor, "create_connection", connect)
+
+    run_doctor()
+
+    assert probed == [("127.0.0.1", 9999)]

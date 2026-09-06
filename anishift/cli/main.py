@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import signal
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Final, NoReturn
 
@@ -93,6 +94,12 @@ _WATCH_STOPPED: Final[str] = "stopped"
 _WATCH_STOP_REQUESTED: Final[str] = "Stop requested; the watch ends after its current scan."
 """Confirmation of a stop request, which is accepted even with nothing running."""
 
+_WATCH_BUSY: Final[str] = "Another watch process is already running; see `anishift watch status`"
+"""Refusal stated when a second watch would take a lock somebody else holds."""
+
+_WATCH_STARTED: Final[str] = "Watching the library; Ctrl+C or `anishift watch stop` ends it"
+"""Opening line of a watch running in a terminal, so the session never looks stuck."""
+
 _AUTOSTART_ENABLED: Final[str] = "Autostart is on; the watch runs now and after every logon."
 """Confirmation printed once the logon task exists and the watch was started."""
 
@@ -123,6 +130,12 @@ _QBIT_WEB_UI_READY: Final[str] = (
     "Web UI enabled in the qBittorrent settings. Start qBittorrent and run `anishift qbit setup` again."
 )
 """Confirmation printed once the Web UI keys are in the client settings."""
+
+_QBIT_WEB_UI_PRESENT: Final[str] = (
+    "Web UI keys already exist in the qBittorrent settings; enable the Web UI in qBittorrent "
+    "→ Options → Web UI (localhost, port 8080, bypass authentication for localhost)"
+)
+"""Refusal stated when the settings already carry the keys, so nothing was written."""
 
 _QBIT_WEB_UI_PASSWORD: Final[str] = "Web UI password (admin): {password}"  # noqa: S105 - a template, not a secret
 """Line carrying the freshly generated Web UI password to the user."""
@@ -220,10 +233,22 @@ def _watch(ctx: typer.Context) -> None:
     """Watch the library in this terminal until `anishift watch stop`."""
     if ctx.invoked_subcommand is not None:
         return
-    from anishift.cli.watch import run_daemon, watch_state_dir  # noqa: PLC0415 - keep the watch loop lazy
+    from anishift.cli.watch import run_daemon, watch_state_dir, watch_status  # noqa: PLC0415 - keep the loop lazy
 
+    state_dir: Path = watch_state_dir()
+    if watch_status(state_dir).running:
+        _tell(_WATCH_BUSY)
+        raise typer.Exit(code=EXIT_REFUSED)
     service: AppService = _composed_service()
-    raise typer.Exit(code=run_daemon(service, state_dir=watch_state_dir()))
+    _tell(_WATCH_STARTED)
+    raise typer.Exit(code=run_daemon(service, state_dir=state_dir))
+
+
+def _tell(sentence: str) -> None:
+    """State one line of the watch, staying silent in the windowless logon process."""
+    if sys.stdout is None:
+        return
+    typer.echo(sentence)
 
 
 @watch_app.command("stop")
@@ -299,13 +324,22 @@ def autostart_state() -> None:
 @qbit_app.command("status")
 def qbit_status() -> None:
     """Report whether the qBittorrent Web UI answers and marks incomplete files."""
-    _print_client_status(_acquisition(_composed_service()).client_status())
+    acquisition: AcquisitionService = _acquisition(_composed_service())
+    try:
+        status: ClientStatus = acquisition.client_status()
+    except AniShiftError as problem:
+        _refuse_command(problem)
+    _print_client_status(status)
 
 
 @qbit_app.command("setup")
 def qbit_setup() -> None:
     """Prepare the qBittorrent Web UI and make it mark incomplete files."""
-    status: ClientStatus = _acquisition(_composed_service()).setup_client()
+    acquisition: AcquisitionService = _acquisition(_composed_service())
+    try:
+        status: ClientStatus = acquisition.setup_client()
+    except AniShiftError as problem:
+        _refuse_command(problem)
     if not status.reachable:
         _prepare_web_ui()
         return
@@ -332,6 +366,9 @@ def _prepare_web_ui() -> None:
     if prepared is None:
         typer.echo(_QBIT_RUNNING)
         raise typer.Exit(code=EXIT_REFUSED)
+    if not prepared.path_written:
+        typer.echo(_QBIT_WEB_UI_PRESENT)
+        raise typer.Exit(code=EXIT_REFUSED)
     typer.echo(_QBIT_WEB_UI_READY)
     if prepared.password is not None:
         # The password must reach the user verbatim, so it skips the redacting output path.
@@ -341,7 +378,11 @@ def _prepare_web_ui() -> None:
 @subs_app.command("list")
 def subs_list() -> None:
     """List every followed series with its next episode and last check."""
-    followed: tuple[Subscription, ...] = _subscriptions(_composed_service()).list()
+    subscriptions: SubscriptionService = _subscriptions(_composed_service())
+    try:
+        followed: tuple[Subscription, ...] = subscriptions.list()
+    except AniShiftError as problem:
+        _refuse_command(problem)
     if not followed:
         typer.echo(_SUBS_EMPTY)
         return
@@ -361,7 +402,12 @@ def subs_remove(
     subscription_id: Annotated[str, typer.Argument(help="Id shown by `anishift subs list`.")],
 ) -> None:
     """Stop following one series; downloaded files stay where they are."""
-    if not _subscriptions(_composed_service()).remove(subscription_id):
+    subscriptions: SubscriptionService = _subscriptions(_composed_service())
+    try:
+        removed: bool = subscriptions.remove(subscription_id)
+    except AniShiftError as problem:
+        _refuse_command(problem)
+    if not removed:
         typer.echo(_SUBS_UNKNOWN)
         raise typer.Exit(code=EXIT_REFUSED)
     typer.echo(_SUBS_REMOVED)
@@ -370,7 +416,11 @@ def subs_remove(
 @subs_app.command("check")
 def subs_check() -> None:
     """Check every followed series now and queue the new episodes."""
-    outcomes: tuple[CheckOutcome, ...] = _subscriptions(_composed_service()).check_all()
+    subscriptions: SubscriptionService = _subscriptions(_composed_service())
+    try:
+        outcomes: tuple[CheckOutcome, ...] = subscriptions.check_all()
+    except AniShiftError as problem:
+        _refuse_command(problem)
     if not outcomes:
         typer.echo(_SUBS_EMPTY)
         return

@@ -28,10 +28,11 @@ from anishift.application import (
     SubscriptionService,
     TitleCandidate,
     TitleStatus,
+    order_groups,
     parse_query,
 )
 from anishift.application.events import sanitize_event_message
-from anishift.errors import AniShiftError
+from anishift.errors import AniShiftError, ErrorCode
 from anishift.utils.logger import get_logger
 
 __all__ = ["AnimeController", "AnimeResult"]
@@ -115,6 +116,27 @@ _CHECK_CADENCE: Final[str] = "sprawdzam co godzinę"
 _EMPTY_CATALOG: Final[str] = f"Brak wydań w {_MIN_RESOLUTION_LABEL}+ dla tego tytułu"
 """Sentence shown when the query matched nothing of the required quality."""
 
+_EMPTY_FILTERED: Final[str] = "Brak odc. {episodes} w " + _MIN_RESOLUTION_LABEL + "+ dla tego tytułu"
+"""Sentence shown when only the episode filter left the listing empty."""
+
+_NO_SEASON_NUMBERING: Final[str] = "numeracja sezonu niedostępna"
+"""Footer note shown when the season chain failed and episodes are numbered as named."""
+
+_NOT_WATCHABLE: Final[str] = "To wydanie nie nadaje się do obserwowania"
+"""Sentence shown when the subscription boundary refuses the chosen release."""
+
+_PROBLEM_TEXTS: Final[dict[ErrorCode, tuple[str, str]]] = {
+    ErrorCode.TORRENT_SOURCE_FAILED: ("Nyaa nie odpowiada", "Sprawdź połączenie i spróbuj ponownie"),
+    ErrorCode.TORRENT_CLIENT_UNAVAILABLE: ("qBittorrent nie odpowiada", "Uruchom qBittorrenta z włączonym Web UI"),
+    ErrorCode.TORRENT_CLIENT_UNAUTHORIZED: (
+        "qBittorrent odrzucił logowanie",
+        "Sprawdź login i hasło Web UI w pliku .env",
+    ),
+    ErrorCode.TORRENT_CLIENT_REFUSED: ("qBittorrent odrzucił żądanie", "Sprawdź ustawienia Web UI i spróbuj ponownie"),
+    ErrorCode.TITLE_CATALOG_FAILED: ("AniList nie odpowiada", "Spróbuj ponownie za chwilę"),
+}
+"""Polish sentence and hint of every failure this screen can meet."""
+
 _CHOICE_SEPARATOR: Final[str] = "  "
 """Separation between the facts of one release row."""
 
@@ -156,6 +178,16 @@ class _Screen(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class _Listing:
+    """How one catalog was asked for, carried from the worker thread into the screen state."""
+
+    order: CatalogOrder
+    episodes: EpisodeRange | None = None
+    context: SeasonContext | None = None
+    fallback: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class _Row:
     """One rendered result line: a group header, or one selectable release.
 
@@ -194,6 +226,7 @@ class AnimeController:
         self._marked: set[int] = set()
         self._selected: int = 0
         self._hidden: int = 0
+        self._excluded: int = 0
         self._filtered: int = 0
         self._range: str | None = None
         self._fallback: str = ""
@@ -252,6 +285,8 @@ class AnimeController:
             self._query += " "
         elif key.startswith("text:"):
             self._query += key.removeprefix("text:")
+        elif key.startswith("paste:"):
+            self._query += _pasted(key.removeprefix("paste:"))
         elif key == "enter" and self._query.strip():
             self._start_search(self._query.strip())
         return AnimeResult.CONTINUE
@@ -279,14 +314,22 @@ class AnimeController:
             return self._handle_range(key)
         self._notice = ""
         if key in {"escape", "interrupt"}:
-            self._screen = _Screen.QUERY
+            self._leave_results()
             return AnimeResult.CONTINUE
         if not self._choices:
-            if key == "enter":
-                self._screen = _Screen.QUERY
-            return AnimeResult.CONTINUE
+            return self._handle_empty(key)
         self._apply_results_key(key)
         return AnimeResult.CONTINUE
+
+    def _handle_empty(self, key: str) -> AnimeResult:
+        if key in {"text:f", "text:F"} and self._episodes is not None:
+            self._start_unfiltered_search()
+        elif key == "enter":
+            self._leave_results()
+        return AnimeResult.CONTINUE
+
+    def _leave_results(self) -> None:
+        self._screen = _Screen.TITLES if self._candidates else _Screen.QUERY
 
     def _apply_results_key(self, key: str) -> None:
         if key in {"up", "down"}:
@@ -365,13 +408,14 @@ class AnimeController:
         highlighted: ReleaseChoice | None = self._rows[self._selected].choice
         self._order = CatalogOrder.SEEDERS if self._order is CatalogOrder.NEWEST else CatalogOrder.NEWEST
         ranked: bool = any(group.matches_title for group in self._groups)
-        self._groups = tuple(sorted(self._groups, key=lambda group: _group_order(group, self._order, ranked=ranked)))
+        self._groups = order_groups(self._groups, self._order, ranked=ranked)
         self._rows, self._choices = _catalog_rows(self._groups)
         self._marked = {index for index in self._choices if _has_hash(self._rows[index].choice, marked)}
         self._selected = _same_choice(self._rows, self._choices, highlighted)
 
     def _start_search(self, text: str) -> None:
         self._searched = text
+        self._candidates = ()
         self._candidate = None
         self._context = None
         self._folder = None
@@ -392,7 +436,8 @@ class AnimeController:
         if candidate is None:
             return
         generation: int = self._start_work(_SEARCHING_RELEASES)
-        self._spawn(self._search_releases, (candidate, None, self._order, self._context, generation))
+        listing: _Listing = _Listing(self._order, context=self._context, fallback=self._fallback)
+        self._spawn(self._search_releases, (candidate, listing, generation))
 
     def _start_download(self) -> None:
         chosen: tuple[ReleaseChoice, ...] = tuple(
@@ -461,9 +506,9 @@ class AnimeController:
             catalog: ReleaseCatalog = acquisition.search(query)
         except (AniShiftError, OSError) as problem:
             logger.warning("Anime search failed", error_class=type(problem).__name__)
-            self._fail(generation, _safe(str(problem)), _hint(problem), _Screen.QUERY)
+            self._report(generation, problem, _Screen.QUERY)
             return
-        self._show_results(generation, catalog, fallback=fallback)
+        self._show_results(generation, catalog, _Listing(CatalogOrder.SEEDERS, fallback=fallback))
 
     def _search_title(
         self,
@@ -476,34 +521,29 @@ class AnimeController:
         if acquisition is None:
             self._fail(generation, _UNAVAILABLE, "", _Screen.QUERY)
             return
+        note: str = ""
         try:
             context: SeasonContext | None = acquisition.season_context(candidate)
         except (AniShiftError, OSError) as problem:
             logger.warning("Anime season lookup failed", error_class=type(problem).__name__)
             context = None
-        self._search_releases(candidate, episodes, order, context, generation)
+            note = _NO_SEASON_NUMBERING
+        self._search_releases(candidate, _Listing(order, episodes, context, note), generation)
 
-    def _search_releases(
-        self,
-        candidate: TitleCandidate,
-        episodes: EpisodeRange | None,
-        order: CatalogOrder,
-        context: SeasonContext | None,
-        generation: int,
-    ) -> None:
+    def _search_releases(self, candidate: TitleCandidate, listing: _Listing, generation: int) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
         if acquisition is None:
             self._fail(generation, _UNAVAILABLE, "", _Screen.QUERY)
             return
         try:
             catalog: ReleaseCatalog = acquisition.search_title(
-                candidate, episodes=episodes, order=order, context=context
+                candidate, episodes=listing.episodes, order=listing.order, context=listing.context
             )
         except (AniShiftError, OSError) as problem:
             logger.warning("Anime title search failed", error_class=type(problem).__name__)
-            self._fail(generation, _safe(str(problem)), _hint(problem), _Screen.QUERY)
+            self._report(generation, problem, _Screen.QUERY)
             return
-        self._show_results(generation, catalog, episodes=episodes, context=context)
+        self._show_results(generation, catalog, listing)
 
     def _download(self, choices: Sequence[ReleaseChoice], directory: str | None, generation: int) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
@@ -514,7 +554,7 @@ class AnimeController:
             receipt: DownloadReceipt = acquisition.download(choices, directory_name=directory)
         except (AniShiftError, OSError) as problem:
             logger.warning("Anime download failed", error_class=type(problem).__name__)
-            self._fail(generation, _safe(str(problem)), _hint(problem), _Screen.RESULTS)
+            self._report(generation, problem, _Screen.RESULTS)
             return
         self._show_done(generation, f"Wysłano {receipt.count} do qBittorrenta → {_safe(receipt.directory.name)}")
 
@@ -537,7 +577,7 @@ class AnimeController:
             outcome: CheckOutcome = subscriptions.check(subscription)
         except (AniShiftError, OSError, ValueError) as problem:
             logger.warning("Anime subscription failed", error_class=type(problem).__name__)
-            self._fail(generation, _safe(str(problem)), _hint(problem), _Screen.RESULTS)
+            self._report(generation, problem, _Screen.RESULTS)
             return
         result: str = (
             f"sprawdzenie nie powiodło się: {_safe(outcome.problem)}"
@@ -561,25 +601,19 @@ class AnimeController:
             self._screen = _Screen.TITLES
         self._invalidate()
 
-    def _show_results(
-        self,
-        generation: int,
-        catalog: ReleaseCatalog,
-        *,
-        episodes: EpisodeRange | None = None,
-        context: SeasonContext | None = None,
-        fallback: str = "",
-    ) -> None:
+    def _show_results(self, generation: int, catalog: ReleaseCatalog, listing: _Listing) -> None:
         with self._lock:
             if generation != self._generation:
                 return
             self._worker = None
-            self._episodes = episodes
-            self._context = context
-            self._fallback = fallback
+            self._order = listing.order
+            self._episodes = listing.episodes
+            self._context = listing.context
+            self._fallback = listing.fallback
             self._groups = catalog.groups
             self._rows, self._choices = _catalog_rows(catalog.groups)
             self._hidden = catalog.hidden
+            self._excluded = catalog.excluded
             self._filtered = catalog.filtered
             self._marked = set()
             self._range = None
@@ -596,6 +630,11 @@ class AnimeController:
             self._done = sentence
             self._screen = _Screen.DONE
         self._invalidate()
+
+    def _report(self, generation: int, problem: AniShiftError | OSError | ValueError, back: _Screen) -> None:
+        """State one failure of this screen in Polish and return the user to *back*."""
+        sentence, hint = _stated(problem)
+        self._fail(generation, sentence, hint, back)
 
     def _fail(self, generation: int, sentence: str, suggestion: str, back: _Screen) -> None:
         with self._lock:
@@ -651,12 +690,25 @@ class AnimeController:
         return content
 
     def _render_empty(self, columns: int, rows: int, subtitle: str) -> Text:
+        sentence: str = self._empty_sentence()
         content: Text = _header(_TITLE, columns, rows, 2, subtitle)
-        left: int = max((columns - len(_EMPTY_CATALOG)) // 2, 0)
-        content.append(f"{' ' * left}{_EMPTY_CATALOG}\n", style="warning")
+        left: int = max((columns - len(sentence)) // 2, 0)
+        content.append(f"{' ' * left}{sentence}\n", style="warning")
+        return _finish(content, left, _HINT_SEPARATOR.join(self._empty_hints()), columns)
+
+    def _empty_sentence(self) -> str:
+        if self._filtered and self._episodes is not None:
+            return _EMPTY_FILTERED.format(episodes=self._episodes.text)
+        return _EMPTY_CATALOG
+
+    def _empty_hints(self) -> tuple[str, ...]:
         hints: list[str] = [self._fallback] if self._fallback else []
-        hints.extend((self._hidden_label(), "Enter wróć"))
-        return _finish(content, left, _HINT_SEPARATOR.join(hints), columns)
+        if self._filtered and self._episodes is not None:
+            hints.extend((f"poza filtrem: {self._filtered}", "F pokaż wszystkie", "Esc wróć"))
+            return tuple(hints)
+        hints.extend(self._counters())
+        hints.append("Enter wróć")
+        return tuple(hints)
 
     def _append_row(self, content: Text, left: int, label: str, index: int) -> None:
         if self._rows[index].choice is None:
@@ -705,8 +757,8 @@ class AnimeController:
         hints: list[str] = [self._fallback] if self._fallback else []
         hints.append(f"zaznaczone: {len(self._marked)}")
         if self._episodes is not None:
-            hints.append(f"filtr: {self._episodes.label}")
-        hints.append(self._hidden_label())
+            hints.append(f"filtr: odc. {self._episodes.text}")
+        hints.extend(self._counters())
         if self._filtered:
             hints.append(f"poza filtrem: {self._filtered}")
         hints.extend(self._marking_hints())
@@ -723,8 +775,11 @@ class AnimeController:
     def _order_hint(self) -> str:
         return "S najnowsze" if self._order is CatalogOrder.SEEDERS else "S seedy"
 
-    def _hidden_label(self) -> str:
-        return f"ukryte poniżej {_MIN_RESOLUTION_LABEL}: {self._hidden}"
+    def _counters(self) -> tuple[str, ...]:
+        counters: list[str] = [f"ukryte poniżej {_MIN_RESOLUTION_LABEL}: {self._hidden}"]
+        if self._excluded:
+            counters.append(f"bez napisów/dubbing: {self._excluded}")
+        return tuple(counters)
 
 
 def _catalog_rows(groups: Sequence[SeriesGroup]) -> tuple[tuple[_Row, ...], tuple[int, ...]]:
@@ -846,16 +901,6 @@ def _same_choice(rows: Sequence[_Row], choices: Sequence[int], wanted: ReleaseCh
     return choices[0] if choices else 0
 
 
-def _group_order(group: SeriesGroup, order: CatalogOrder, *, ranked: bool) -> tuple[int, float, str, str]:
-    """Order one group the way the facade does, so a local reorder needs no new search."""
-    priority: int = int(not group.matches_title) if ranked else 0
-    if order is CatalogOrder.NEWEST:
-        weight: float = float("inf") if group.newest is None else -group.newest.timestamp()
-    else:
-        weight = -float(sum(choice.release.seeders for choice in group.choices))
-    return (priority, weight, group.series.casefold(), group.group.casefold())
-
-
 def _row_label(row: _Row, width: int) -> str:
     full: str = f"{row.label}{row.detail}"
     return _truncate_right(full if len(full) <= width else row.label, width)
@@ -916,10 +961,21 @@ def _truncate_right(value: str, width: int) -> str:
     return f"{value[: width - 1]}…"
 
 
-def _hint(problem: AniShiftError | OSError | ValueError) -> str:
-    if not isinstance(problem, AniShiftError):
-        return ""
-    return _safe(problem.context.suggestion)
+def _stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:
+    """Return the Polish sentence and hint of *problem*, falling back to its own text."""
+    if isinstance(problem, AniShiftError):
+        stated: tuple[str, str] | None = _PROBLEM_TEXTS.get(problem.context.code)
+        if stated is not None:
+            return stated
+        return _safe(str(problem)), _safe(problem.context.suggestion)
+    if isinstance(problem, ValueError):
+        return _NOT_WATCHABLE, ""
+    return _safe(str(problem)), ""
+
+
+def _pasted(text: str) -> str:
+    """Return one pasted fragment without the control characters and newlines a title never carries."""
+    return "".join(character for character in text if character.isprintable())
 
 
 def _safe(value: str) -> str:

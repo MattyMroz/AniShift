@@ -92,13 +92,22 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   albo `other_season` daje wyłącznie jednolinijkową notkę zamiast stopki, kasowaną następnym
   klawiszem, a `subscribe` + `check` idą do tego samego wątku i licznika generacji co szukanie.
   Po wyborze tytułu `O` zapisuje hasło „seria grupa" PODŚWIETLONEJ grupy. `interactive/anime.py`
+- Pusta lista wyników nie jest ślepym zaułkiem: przy `filtered > 0` nazywa filtr, a `F` i `Esc`
+  działają jak na pełnej liście. `Esc` z wyników wraca do TITLES, gdy kandydaci są w pamięci —
+  dlatego nowe hasło czyści `_candidates`. Teksty błędów tłumaczy `_PROBLEM_TEXTS`
+  (`ErrorCode` → polskie zdanie), a nie warstwa domenowa. `interactive/anime.py`
 - Wyniki Anime mają jeden filtr odcinków i jedną kolejność na sesję ekranu: `A` zaznacza całą
   podświetloną grupę (bez paczek i `other_season`), `Z` otwiera prompt zakresu w stopce, `S`
-  przestawia grupy LOKALNIE — bez sieci, a znaczniki wracają po `info_hash`, nie po numerze wiersza —
+  przestawia grupy LOKALNIE przez `order_groups` fasady — bez sieci, bez drugiej reguły porządku,
+  a znaczniki wracają po `info_hash`, nie po numerze wiersza —
   a `F` powtarza `search_title` bez filtra. Pobranie i subskrypcja z tego ekranu idą do jednego
   folderu `candidate.folder_title()`. `interactive/anime.py`
 - Gdy AniList nie odpowiada albo nie zna tytułu, ekran pomija TITLES i pokazuje wyniki surowego
   hasła z notką w stopce; ta notka jest osobnym polem, bo `_notice` znika po następnym klawiszu.
+  Ta ścieżka wraca posortowana po seedach, więc `_show_results` przyjmuje `_Listing` z faktyczną
+  kolejnością katalogu — podpowiedź `S` kłamałaby, gdyby `_order` został przy `NEWEST`.
+  Nieudany `season_context` nie przerywa wyszukiwania: zostawia w tym samym polu notkę
+  „numeracja sezonu niedostępna", bo bez niej te same wyniki znaczą dwie różne rzeczy.
   Wysokość listy liczy się PO zmierzeniu stopki (`_visible_window(..., reserved)`): dłuższa stopka
   zabiera wiersze listy, zamiast wypchnąć klatkę poza ekran. `interactive/anime.py`
 - `SettingsController.render()` korzysta wyłącznie z lokalnego, odświeżonego snapshotu;

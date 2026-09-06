@@ -22,8 +22,6 @@ from anishift.application.watch import (
     QUIET_S,
     SourceSnapshot,
     WatchLedger,
-    WatchOutcome,
-    WatchRow,
     is_stable,
     needs_work,
     snapshot_sources,
@@ -233,10 +231,9 @@ def test_a_started_group_leaves_the_candidate_list_until_its_window_exits(tmp_pa
     assert ledger.candidates(workspace, preset, 100.0 + QUIET_S) == ("group-a",)
     ledger.mark_started(("group-a",))
     assert ledger.candidates(workspace, preset, 100.0 + QUIET_S) == ()
-    assert ledger.rows() == (WatchRow("group-a", "episode", WatchOutcome.STARTED, None),)
 
 
-def test_a_failed_batch_is_not_retried_until_its_source_changes(tmp_path: Path) -> None:
+def test_a_closed_batch_is_not_retried_until_its_source_changes(tmp_path: Path) -> None:
     text: Path = tmp_path / "episode.txt"
     text.write_text("one", encoding="utf-8")
     group: InspectedSourceGroup = _group(
@@ -249,23 +246,11 @@ def test_a_failed_batch_is_not_retried_until_its_source_changes(tmp_path: Path) 
     ledger: WatchLedger = WatchLedger()
     ledger.candidates(workspace, preset, 100.0)
     ledger.mark_started(ledger.candidates(workspace, preset, 100.0 + QUIET_S))
-    ledger.record_exit(("group-a",), 3)
-    assert ledger.rows() == (WatchRow("group-a", "episode", WatchOutcome.FAILED, 3),)
+    ledger.mark_finished(("group-a",))
     assert ledger.candidates(workspace, preset, 200.0) == ()
     text.write_text("one two three", encoding="utf-8")
     assert ledger.candidates(workspace, preset, 300.0) == ()
     assert ledger.candidates(workspace, preset, 300.0 + QUIET_S) == ("group-a",)
-
-
-def test_a_batch_exiting_with_zero_is_recorded_as_done(tmp_path: Path) -> None:
-    group: InspectedSourceGroup = _text_group(tmp_path, "group-a", "episode")
-    workspace: InspectedWorkspace = _workspace(group)
-    preset: AutoPreset = _preset(ProductKind.MKV)
-    ledger: WatchLedger = WatchLedger()
-    ledger.candidates(workspace, preset, 100.0)
-    ledger.mark_started(ledger.candidates(workspace, preset, 100.0 + QUIET_S))
-    ledger.record_exit(("group-a",), 0)
-    assert ledger.rows() == (WatchRow("group-a", "episode", WatchOutcome.DONE, 0),)
 
 
 def test_a_finished_batch_is_not_restarted_for_the_same_input(tmp_path: Path) -> None:
@@ -275,30 +260,9 @@ def test_a_finished_batch_is_not_restarted_for_the_same_input(tmp_path: Path) ->
     ledger: WatchLedger = WatchLedger()
     ledger.candidates(workspace, preset, 100.0)
     ledger.mark_started(ledger.candidates(workspace, preset, 100.0 + QUIET_S))
-    ledger.record_exit(("group-a",), 0)
+    ledger.mark_finished(("group-a",))
     assert ledger.candidates(workspace, preset, 200.0) == ()
     assert ledger.candidates(workspace, preset, 400.0) == ()
-
-
-def test_rows_report_failures_first_then_running_then_finished(tmp_path: Path) -> None:
-    groups: tuple[InspectedSourceGroup, ...] = (
-        _text_group(tmp_path, "group-done", "aaa"),
-        _text_group(tmp_path, "group-failed-late", "ccc"),
-        _text_group(tmp_path, "group-started", "bbb"),
-        _text_group(tmp_path, "group-failed-early", "aab"),
-    )
-    ledger: WatchLedger = WatchLedger()
-    ledger.candidates(_workspace(*groups), _preset(ProductKind.MKV), 100.0)
-    ledger.mark_started(("group-started",))
-    ledger.record_exit(("group-done",), 0)
-    ledger.record_exit(("group-failed-late",), 4)
-    ledger.record_exit(("group-failed-early",), 1)
-    assert ledger.rows() == (
-        WatchRow("group-failed-early", "aab", WatchOutcome.FAILED, 1),
-        WatchRow("group-failed-late", "ccc", WatchOutcome.FAILED, 4),
-        WatchRow("group-started", "bbb", WatchOutcome.STARTED, None),
-        WatchRow("group-done", "aaa", WatchOutcome.DONE, 0),
-    )
 
 
 if sys.platform == "win32":

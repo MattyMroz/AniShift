@@ -10,6 +10,7 @@ from socket import create_connection
 from typing import Any, Final
 from urllib.parse import SplitResult, urlsplit
 
+from anishift.config.env_file import env_path
 from anishift.config.settings import Settings
 from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_root
 from anishift.errors import AniShiftError
@@ -240,14 +241,17 @@ def run_doctor(settings: Settings | None = None) -> list[CheckResult]:
     from anishift.cli.console import console_encoding_check  # noqa: PLC0415 - avoid circular import
 
     logger.info("Environment diagnostics started")
+    # The .env file sits beside the repository, so it is read the way bootstrap reads it
+    # instead of relying on the current working directory.
+    resolved: Settings = settings if settings is not None else Settings(_env_file=env_path())
     results = [
         check_python_version(),
         check_uv_installed(),
         check_binaries(),
-        check_api_keys(settings),
+        check_api_keys(resolved),
         check_workspace(),
         console_encoding_check(),
-        check_torrent_client(settings),
+        check_torrent_client(resolved),
     ]
     logger.info(
         "Environment diagnostics completed",

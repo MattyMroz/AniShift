@@ -22,9 +22,10 @@ See [uv project environment documentation](https://docs.astral.sh/uv/concepts/pr
 Running `anishift` without a subcommand opens the interactive interface:
 
 - **Auto** processes every ready workspace group with the default preset.
-- **Manual** lets you choose sources, output, and per-run overrides before execution.
-- **Settings** edits supported preferences and provides a read-only model catalogue.
-- **Exit** closes the interface immediately.
+- **Ręczny** lets you choose sources, output, and per-run overrides before execution.
+- **Anime** searches nyaa.si for a title and hands the chosen releases to qBittorrent.
+- **Ustawienia** edits supported preferences and provides a read-only model catalogue.
+- **Wyjście** closes the interface immediately.
 
 The interface uses one Prompt Toolkit renderer. Home and Auto display the packaged animated
 pixel-art slime on terminals with SIXEL support. The animation is prepared before
@@ -59,7 +60,8 @@ group, **Z** asks for a range (`4-10`, `5-`, `-3`), **S** switches between newes
 most seeded, **F** drops the episode filter from your phrase, and Enter sends the ticked
 episodes to qBittorrent. Files of one series always land in one folder,
 `workspace/<English title>/` (romaji when AniList has no English title), whichever
-group you took. If AniList does not answer, the phrase goes to nyaa.si as typed.
+group you took. If AniList does not answer, the phrase goes to nyaa.si as typed and the
+groups arrive ordered by seeders instead of by newest release; **S** switches that too.
 
 qBittorrent needs its Web UI once: Options → Web UI → enable the Web User Interface and
 tick "Bypass authentication for clients on localhost" (or set
