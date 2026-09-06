@@ -80,16 +80,27 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   zewnętrzne przez `AppService`, waliduje przez `plan_manual()` i przekazuje zaakceptowany
   plan do tej samej ścieżki wykonania oraz postępu co Auto.
   `interactive/app.py`, `interactive/settings.py`, `interactive/manual.py`, `run.py`
-- `AnimeController` jest jedynym właścicielem stanu ekranu Anime (QUERY → BUSY → RESULTS →
-  DONE/PROBLEM); `app.py` tylko go tworzy, przekazuje klawisze i renderuje. Sieć
-  (`AppService.acquisition.search`/`download`) idzie do wątku `anishift-anime`, a licznik
-  generacji odrzuca wynik spóźniony po `Esc`; `render()` nigdy nie blokuje i nie robi I/O.
+- `AnimeController` jest jedynym właścicielem stanu ekranu Anime (QUERY → BUSY → TITLES → BUSY →
+  RESULTS → DONE/PROBLEM); `app.py` tylko go tworzy, przekazuje klawisze i renderuje. Sieć
+  (`AppService.acquisition.find_titles`/`season_context`/`search_title`/`search`/`download`) idzie do
+  wątku `anishift-anime`, a licznik generacji odrzuca wynik spóźniony po `Esc`; `render()` nigdy nie
+  blokuje i nie robi I/O.
   Piąty wiersz Home zmienia indeksy pozycji — `_HOME_MENU_ROWS` i `_HOME_CHROME_ROWS`
   liczą wiersze menu, a testy budujące aplikację ręcznie muszą ustawić `_anime`.
   `interactive/anime.py`, `interactive/app.py`, `interactive/prompts.py`
-- `O` w wynikach Anime obserwuje PODŚWIETLONY odcinek, nie zaznaczone wiersze: paczka lub brak numeru
-  daje wyłącznie jednolinijkową notkę zamiast stopki, kasowaną następnym klawiszem, a `subscribe` +
-  `check` idą do tego samego wątku i licznika generacji co szukanie. `interactive/anime.py`
+- `O` w wynikach Anime obserwuje PODŚWIETLONY odcinek, nie zaznaczone wiersze: paczka, brak numeru
+  albo `other_season` daje wyłącznie jednolinijkową notkę zamiast stopki, kasowaną następnym
+  klawiszem, a `subscribe` + `check` idą do tego samego wątku i licznika generacji co szukanie.
+  Po wyborze tytułu `O` zapisuje hasło „seria grupa" PODŚWIETLONEJ grupy. `interactive/anime.py`
+- Wyniki Anime mają jeden filtr odcinków i jedną kolejność na sesję ekranu: `A` zaznacza całą
+  podświetloną grupę (bez paczek i `other_season`), `Z` otwiera prompt zakresu w stopce, `S`
+  przestawia grupy LOKALNIE — bez sieci, a znaczniki wracają po `info_hash`, nie po numerze wiersza —
+  a `F` powtarza `search_title` bez filtra. Pobranie i subskrypcja z tego ekranu idą do jednego
+  folderu `candidate.folder_title()`. `interactive/anime.py`
+- Gdy AniList nie odpowiada albo nie zna tytułu, ekran pomija TITLES i pokazuje wyniki surowego
+  hasła z notką w stopce; ta notka jest osobnym polem, bo `_notice` znika po następnym klawiszu.
+  Wysokość listy liczy się PO zmierzeniu stopki (`_visible_window(..., reserved)`): dłuższa stopka
+  zabiera wiersze listy, zamiast wypchnąć klatkę poza ekran. `interactive/anime.py`
 - `SettingsController.render()` korzysta wyłącznie z lokalnego, odświeżonego snapshotu;
   nie wykonuj w nim I/O ani wywołań sieciowych, bo renderer odświeża klatkę cyklicznie.
   Katalog modeli jest tylko do odczytu, a probe działa wyłącznie po jawnej akcji.
