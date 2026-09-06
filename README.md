@@ -10,9 +10,18 @@ Durable products are written beside their source; temporary run data stays in
 ## Quick start
 
 ```bash
-uv sync
-uv run anishift
+uv sync                                   # Python dependencies
+uv run anishift setup                     # MKVToolNix and FFmpeg into external/bin/ (Windows)
+winget install qBittorrent.qBittorrent    # once, if qBittorrent is not installed yet
+uv run anishift qbit setup                # with qBittorrent closed: enables its Web UI; start qBittorrent, run again
+uv run anishift doctor                    # everything green? then:
+uv run anishift autostart enable          # watch the library now and after every logon
+uv run anishift                           # the interactive interface
 ```
+
+API keys go into `.env` (see "Configuration"); `doctor` lists which engines have one.
+On a fresh machine every step above is needed once; afterwards `uv run anishift`
+is the only command you use.
 
 If the shell still has another project's virtual environment active, start with
 `uv run --no-active anishift`. This selects AniShift's `.venv` and silences the
