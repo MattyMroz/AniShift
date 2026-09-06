@@ -10,7 +10,7 @@ import pytest
 from anishift.errors import ErrorCode
 from anishift.services.catalog.anilist import ANILIST_URL, AniListCatalog
 from anishift.services.catalog.errors import TitleCatalogError
-from anishift.services.catalog.types import TitleCandidate, TitleStatus
+from anishift.services.catalog.types import PrequelEntry, TitleCandidate, TitleStatus
 
 _SOLO_LEVELING: Final[dict[str, Any]] = {
     "id": 176496,
@@ -267,10 +267,10 @@ def test_episode_offset_sums_the_prequel_chain_and_ignores_movies_and_cycles() -
     catalog, http = _catalog(handler)
     with http:
         candidate: TitleCandidate = catalog.search("solo leveling")[0]
-        per_hop: tuple[int, ...] = catalog.prequel_episodes(candidate)
+        per_hop: tuple[PrequelEntry, ...] = catalog.prequel_episodes(candidate)
         offset: int = catalog.episode_offset(candidate)
 
-    assert per_hop == (12, 11)
+    assert per_hop == (PrequelEntry(episodes=12, cour=False), PrequelEntry(episodes=11, cour=False))
     assert offset == 23
     assert asked == [151807, 140501, 151807, 140501]
 
@@ -307,3 +307,39 @@ def test_prequel_episodes_is_empty_without_a_prequel() -> None:
     with http:
         candidate: TitleCandidate = catalog.search("mushoku tensei")[0]
         assert catalog.prequel_episodes(candidate) == ()
+
+
+def test_prequel_episodes_marks_an_entry_whose_title_names_a_cour() -> None:
+    relations: dict[int, dict[str, Any]] = {
+        151807: {
+            "id": 151807,
+            "episodes": 12,
+            "format": "TV",
+            "title": {"romaji": "Mushoku Tensei II: Isekai Ittara Honki Dasu Part 2", "english": None},
+            "relations": {
+                "edges": [{"relationType": "PREQUEL", "node": {"id": 140501, "episodes": 12, "format": "TV"}}]
+            },
+        },
+        140501: {
+            "id": 140501,
+            "episodes": 12,
+            "format": "TV",
+            "title": {"romaji": "Mushoku Tensei II: Isekai Ittara Honki Dasu", "english": None},
+            "relations": {"edges": []},
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        variables: dict[str, Any] = json.loads(request.content)["variables"]
+        if "search" in variables:
+            return httpx.Response(200, json=_page([_SOLO_LEVELING]))
+        return httpx.Response(200, json={"data": {"Media": relations[int(variables["id"])]}})
+
+    catalog, http = _catalog(handler)
+    with http:
+        candidate: TitleCandidate = catalog.search("mushoku tensei")[0]
+        entries: tuple[PrequelEntry, ...] = catalog.prequel_episodes(candidate)
+        offset: int = catalog.episode_offset(candidate)
+
+    assert entries == (PrequelEntry(episodes=12, cour=True), PrequelEntry(episodes=12, cour=False))
+    assert offset == 24

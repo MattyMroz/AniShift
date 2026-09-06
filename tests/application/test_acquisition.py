@@ -24,7 +24,7 @@ from anishift.application.acquisition import (
     series_directory_name,
 )
 from anishift.errors import ErrorCode, ErrorContext, FatalError
-from anishift.services.catalog import TitleCandidate, TitleStatus
+from anishift.services.catalog import PrequelEntry, TitleCandidate, TitleStatus
 from anishift.services.torrents import Release, ReleaseName, TorrentInfo
 from anishift.services.torrents.query import EpisodeRange
 
@@ -51,16 +51,20 @@ class _Source:
 
 
 class _TitleCatalog:
-    def __init__(self, candidates: tuple[TitleCandidate, ...] = (), prequels: tuple[int, ...] = ()) -> None:
+    def __init__(
+        self,
+        candidates: tuple[TitleCandidate, ...] = (),
+        prequels: tuple[PrequelEntry, ...] = (),
+    ) -> None:
         self.candidates: tuple[TitleCandidate, ...] = candidates
-        self.prequels: tuple[int, ...] = prequels
+        self.prequels: tuple[PrequelEntry, ...] = prequels
         self.searched: list[str] = []
 
     def search(self, text: str, *, limit: int = 7) -> tuple[TitleCandidate, ...]:
         self.searched.append(text)
         return self.candidates[:limit]
 
-    def prequel_episodes(self, candidate: TitleCandidate) -> tuple[int, ...]:
+    def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
         return self.prequels
 
 
@@ -104,19 +108,33 @@ class _Client:
 
 _MOMENT: Final[datetime] = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
 
-_CANDIDATE: Final[TitleCandidate] = TitleCandidate(
-    anilist_id=1,
-    romaji="Neko to Ryuu",
-    english="The Cat and the Dragon",
-    native="猫と竜",
-    synonyms=(),
-    year=2026,
-    season="SPRING",
-    format="TV",
-    episodes=13,
-    status=TitleStatus.RELEASING,
-    prequel_ids=(),
+
+def _title(romaji: str, english: str | None = None) -> TitleCandidate:
+    return TitleCandidate(
+        anilist_id=1,
+        romaji=romaji,
+        english=english,
+        native="猫と竜",
+        synonyms=(),
+        year=2026,
+        season="SPRING",
+        format="TV",
+        episodes=13,
+        status=TitleStatus.RELEASING,
+        prequel_ids=(),
+    )
+
+
+_CANDIDATE: Final[TitleCandidate] = _title("Neko to Ryuu", "The Cat and the Dragon")
+
+_SOLO: Final[TitleCandidate] = _title(
+    "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+    "Solo Leveling Season 2 -Arise from the Shadow-",
 )
+
+_SEASON: Final[PrequelEntry] = PrequelEntry(episodes=12, cour=False)
+
+_COUR: Final[PrequelEntry] = PrequelEntry(episodes=12, cour=True)
 
 
 def _release(
@@ -164,6 +182,14 @@ _NAMES: dict[str, ReleaseName] = {
     "mt-colon": replace(_BASE_NAME, series="Mushoku Tensei: Jobless Reincarnation", episode=Decimal(10)),
     "mt-plain": replace(_BASE_NAME, series="Mushoku Tensei Jobless Reincarnation", episode=Decimal(9)),
     "other-9": replace(_BASE_NAME, series="Zombie Land", group="DKB", episode=Decimal(9)),
+    "dkb-s2-11": replace(_BASE_NAME, group="DKB", episode=Decimal(11), season=2),
+    "sl-plain": replace(_BASE_NAME, series="Solo Leveling", group="Tsundere-Raws", episode=Decimal(13)),
+    "sl-romaji": replace(
+        _BASE_NAME,
+        series="Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+        group="Erai-raws",
+        episode=Decimal(1),
+    ),
     **{f"g{index}-1": replace(_BASE_NAME, group=f"G{index}", episode=Decimal(1)) for index in range(1, 7)},
 }
 
@@ -455,10 +481,115 @@ def test_find_titles_hands_the_phrase_to_the_catalog(tmp_path: Path) -> None:
     assert titles.searched == ["neko"]
 
 
-def test_season_context_counts_the_prequel_hops_and_their_episodes(tmp_path: Path) -> None:
-    service: AcquisitionService = _service(_Client(), tmp_path, title_catalog=_TitleCatalog(prequels=(12, 11)))
+_CONTEXT_CASES: tuple[tuple[str, TitleCandidate, tuple[PrequelEntry, ...], int, int], ...] = (
+    (
+        "third season after two cours",
+        _title("Mushoku Tensei III: Isekai Ittara Honki Dasu"),
+        (_COUR, _SEASON, _COUR, _SEASON),
+        3,
+        48,
+    ),
+    (
+        "second season second cour",
+        _title("Mushoku Tensei II: Isekai Ittara Honki Dasu Part 2"),
+        (_SEASON, _COUR, _SEASON),
+        2,
+        36,
+    ),
+    ("first season second cour", _title("Mushoku Tensei: Isekai Ittara Honki Dasu Part 2"), (_SEASON,), 1, 12),
+    ("first season", _title("Mushoku Tensei: Isekai Ittara Honki Dasu"), (), 1, 0),
+    ("second season", _title("Ore dake Level Up na Ken Season 2"), (_SEASON,), 2, 12),
+)
 
-    assert service.season_context(_CANDIDATE) == SeasonContext(index=3, offset=23, episodes=13)
+
+@pytest.mark.parametrize(
+    ("candidate", "prequels", "index", "offset"),
+    [(candidate, prequels, index, offset) for _, candidate, prequels, index, offset in _CONTEXT_CASES],
+    ids=[label for label, _, _, _, _ in _CONTEXT_CASES],
+)
+def test_season_context_counts_seasons_without_counting_cours(
+    candidate: TitleCandidate,
+    prequels: tuple[PrequelEntry, ...],
+    index: int,
+    offset: int,
+    tmp_path: Path,
+) -> None:
+    service: AcquisitionService = _service(_Client(), tmp_path, title_catalog=_TitleCatalog(prequels=prequels))
+
+    assert service.season_context(candidate) == SeasonContext(index=index, offset=offset, episodes=13)
+
+
+def test_catalog_matches_a_title_whichever_part_of_its_subtitle_a_release_keeps() -> None:
+    catalog: ReleaseCatalog = catalog_releases(
+        (_release("sl-plain"), _release("sl-romaji"), _release("other-9")),
+        _parse,
+        aliases=_SOLO.aliases(),
+    )
+
+    assert {(group.series, group.matches_title) for group in catalog.groups} == {
+        ("Solo Leveling", True),
+        ("Ore dake Level Up na Ken Season 2: Arise from the Shadow", True),
+        ("Zombie Land", False),
+    }
+
+
+def test_search_title_asks_for_a_numbered_episode_in_both_numberings(tmp_path: Path) -> None:
+    source: _Source = _Source()
+    service: AcquisitionService = _service(_Client(), tmp_path, source=source)
+
+    service.search_title(
+        _SOLO,
+        episodes=EpisodeRange(Decimal(1), Decimal(1)),
+        context=SeasonContext(index=2, offset=12, episodes=13),
+    )
+
+    assert source.queries == [
+        "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+        "Solo Leveling Season 2 -Arise from the Shadow-",
+        "Ore dake Level Up na Ken - 01",
+        "Ore dake Level Up na Ken S02E01",
+        "Ore dake Level Up na Ken - 13",
+        "Solo Leveling - 01",
+        "Solo Leveling S02E01",
+        "Solo Leveling - 13",
+    ]
+
+
+def test_search_title_does_not_number_a_range_wider_than_three_episodes(tmp_path: Path) -> None:
+    source: _Source = _Source()
+    service: AcquisitionService = _service(_Client(), tmp_path, source=source)
+
+    service.search_title(_SOLO, episodes=EpisodeRange(Decimal(1), Decimal(12)))
+
+    assert source.queries == [
+        "Ore dake Level Up na Ken Season 2: Arise from the Shadow",
+        "Solo Leveling Season 2 -Arise from the Shadow-",
+    ]
+
+
+def test_search_title_refines_the_best_seeded_matching_groups_first(tmp_path: Path) -> None:
+    source: _Source = _Source(
+        answers={
+            "Neko to Ryuu": (
+                _release("dkb-11", seeders=5, published=_MOMENT),
+                _release("sp-10", seeders=500, published=_MOMENT - timedelta(days=200)),
+            )
+        }
+    )
+    service: AcquisitionService = _service(_Client(), tmp_path, source=source)
+
+    service.search_title(_CANDIDATE)
+
+    assert source.queries[2:] == ["Neko to Ryuu SubsPlease", "Neko to Ryuu DKB"]
+
+
+def test_search_title_skips_a_group_without_an_episode_of_the_chosen_season(tmp_path: Path) -> None:
+    source: _Source = _Source(answers={"Neko to Ryuu": (_release("sp-s1-4"), _release("dkb-s2-11"))})
+    service: AcquisitionService = _service(_Client(), tmp_path, source=source)
+
+    service.search_title(_CANDIDATE, context=SeasonContext(index=2, offset=12, episodes=13))
+
+    assert source.queries[2:] == ["Neko to Ryuu DKB"]
 
 
 def test_search_title_asks_the_index_per_matching_group_and_merges_by_hash(tmp_path: Path) -> None:

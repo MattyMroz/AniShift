@@ -38,9 +38,19 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   spoza zakresu). Klucz grupy powstaje z serii złożonej do liter, cyfr i spacji, więc
   `Mushoku Tensei: Jobless Reincarnation` i wersja bez dwukropka to jedna grupa — etykietą
   zostaje pierwszy napotkany zapis. `acquisition.py`
-- `search_title` odpytuje indeks tytułem romaji i angielskim, a potem `"{seria} {grupa}"` dla
-  maks. `MAX_GROUP_QUERIES` grup pasujących do aliasów kandydata; scalanie idzie po
-  `info_hash` casefold, pierwszy wpis wygrywa. `acquisition.py`
+- `matches_title` porównuje zbiory `title_forms`: zapis wprost, bez znacznika sezonu i `base_title`
+  (bez sezonu i bez podtytułu po `" - "`, `" -"`, `":"` albo `" –"`). Dzięki temu `Solo Leveling`
+  Tsundere-Raws trafia w alias `Solo Leveling Season 2 -Arise from the Shadow-`. `acquisition.py`
+- `search_title` odpytuje indeks tytułem romaji i angielskim; przy zakresie najwyżej
+  `MAX_EPISODE_SPAN` odcinków dokłada zapytania po numerze (`"{base} - 01"`, a przy sezonie > 1
+  także `"{base} S02E01"` i numer absolutny), bo RSS oddaje tylko 75 najnowszych trafień i stary
+  odcinek inaczej nie wypłynie. Potem `"{seria} {grupa}"` dla maks. `MAX_GROUP_QUERIES` pasujących
+  grup wybranych po sumie seedów odcinków wybranego sezonu — nie po dacie, żeby wieloletni
+  uploader nie wypadł za nowszymi. Cała operacja mieści się w `MAX_QUERIES` zapytaniach; scalanie
+  idzie po `info_hash` casefold, pierwszy wpis wygrywa. `acquisition.py`
+- `season_context` liczy sezony, nie wpisy: `PrequelEntry.cour` (tytuł z `Part N`/`Cour N`) podnosi
+  offset, ale nie indeks, a kandydat będący cour zostaje w sezonie swojego poprzednika. Bez tego
+  Mushoku Tensei III wychodziło jako sezon 5. `acquisition.py`, `services/catalog/anilist.py`
 - `Subscription` trzyma `directory` (jeden folder biblioteki niezależny od serii w nazwie
   wydania) i trójkę `season_index`/`episode_offset`/`season_episodes`. Cztery pola są opcjonalne
   przy odczycie, więc pliki sprzed numeracji sezonów wczytują się bez migracji, a

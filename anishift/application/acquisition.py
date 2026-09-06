@@ -13,19 +13,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.errors import AniShiftError
-from anishift.services.torrents.names import season_hint, strip_season
+from anishift.services.torrents.names import base_title, season_hint, title_forms
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
-    from anishift.services.catalog import TitleCandidate
+    from anishift.services.catalog import PrequelEntry, TitleCandidate
     from anishift.services.torrents import Release, ReleaseName, TorrentInfo
     from anishift.services.torrents.query import EpisodeRange
 
 __all__ = [
     "DOWNLOAD_CATEGORY",
     "MAX_GROUP_QUERIES",
+    "MAX_QUERIES",
     "MIN_RESOLUTION",
     "TITLE_SEARCH_LIMIT",
     "AcquisitionService",
@@ -57,6 +58,15 @@ DOWNLOAD_CATEGORY: Final[str] = "AniShift"
 
 MAX_GROUP_QUERIES: Final[int] = 5
 """Release groups asked for their own complete listing after a title search."""
+
+MAX_QUERIES: Final[int] = 12
+"""Requests one title search may send to the index, episode and group refinement included."""
+
+MAX_EPISODE_SPAN: Final[int] = 3
+"""Widest episode range still asked for by number, one set of queries per episode."""
+
+MAX_EPISODE_BASES: Final[int] = 2
+"""Title spellings used when asking the index for one episode by number."""
 
 TITLE_SEARCH_LIMIT: Final[int] = 7
 """Title candidates a catalog is asked for by default."""
@@ -91,8 +101,8 @@ class TitleCatalog(Protocol):
         """Return the candidates the catalog proposes for *text*, in its own order."""
         ...
 
-    def prequel_episodes(self, candidate: TitleCandidate) -> tuple[int, ...]:
-        """Return the episode count of every entry airing before *candidate*, direct prequel first."""
+    def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
+        """Return every entry airing before *candidate*, direct prequel first."""
         ...
 
 
@@ -270,7 +280,7 @@ def catalog_releases(  # noqa: PLR0913 - every listing rule stays an explicit ca
         key: tuple[str, str] = (_normalize(name.series), group.casefold())
         labels.setdefault(key, (name.series, group))
         buckets.setdefault(key, []).append(ReleaseChoice(release, name, reading))
-    alias_keys: frozenset[str] = frozenset(_normalize(strip_season(alias)) for alias in aliases)
+    alias_keys: frozenset[str] = frozenset(form for alias in aliases for form in _forms(alias))
     groups: list[SeriesGroup] = [
         _series_group(labels[key][0], labels[key][1], choices, alias_keys) for key, choices in buckets.items()
     ]
@@ -331,13 +341,21 @@ class AcquisitionService:
     def season_context(self, candidate: TitleCandidate) -> SeasonContext:
         """Return which season *candidate* is and how many episodes aired before it.
 
+        A cour continues the season before it, so it raises the offset without raising the
+        season index, and a candidate that is itself a cour keeps the index of its own season.
+
         Raises:
             TitleCatalogError: The catalog is unreachable or rejects one of the requests.
         """
         if self._title_catalog is None:
             return SeasonContext(index=1, offset=0, episodes=candidate.episodes)
-        prequels: tuple[int, ...] = self._title_catalog.prequel_episodes(candidate)
-        return SeasonContext(index=len(prequels) + 1, offset=sum(prequels), episodes=candidate.episodes)
+        prequels: tuple[PrequelEntry, ...] = self._title_catalog.prequel_episodes(candidate)
+        seasons: int = sum(1 for entry in prequels if not entry.cour)
+        return SeasonContext(
+            index=seasons + (0 if candidate.is_cour() else 1),
+            offset=sum(entry.episodes for entry in prequels),
+            episodes=candidate.episodes,
+        )
 
     def search_title(
         self,
@@ -349,20 +367,20 @@ class AcquisitionService:
     ) -> ReleaseCatalog:
         """Return the complete listing for *candidate*, asking the index once per matching group.
 
-        The index answers one free-text query with its newest entries only, so the titles of
-        *candidate* are searched first and every group they reveal is then asked for its own
-        episodes.
+        The index answers one free-text query with its newest entries only, so a narrow episode
+        request names the episode itself, and the groups revealed by the title queries are then
+        asked for their own episodes.
         """
         aliases: tuple[str, ...] = candidate.aliases()
         merged: dict[str, Release] = {}
         queries: int = 0
-        for query in _title_queries(candidate):
+        for query in _search_queries(candidate, episodes, context):
             queries += 1
             _merge(merged, self._source.search(query))
         preliminary: ReleaseCatalog = catalog_releases(
             tuple(merged.values()), self._parse_name, aliases=aliases, order=order, context=context
         )
-        for group in _group_queries(preliminary):
+        for group in _group_queries(preliminary, MAX_QUERIES - queries):
             queries += 1
             _merge(merged, self._source.search(f"{group.series} {group.group}"))
         catalog: ReleaseCatalog = catalog_releases(
@@ -434,14 +452,84 @@ def _title_queries(candidate: TitleCandidate) -> tuple[str, ...]:
     return (candidate.romaji, english)
 
 
-def _group_queries(catalog: ReleaseCatalog) -> tuple[SeriesGroup, ...]:
-    """Return the groups whose own listing is worth asking for, in catalog order."""
-    matching: list[SeriesGroup] = [
-        group
-        for group in catalog.groups
-        if group.matches_title and any(choice.episode is not None for choice in group.choices)
-    ]
-    return tuple(matching[:MAX_GROUP_QUERIES])
+def _search_queries(
+    candidate: TitleCandidate,
+    episodes: EpisodeRange | None,
+    context: SeasonContext | None,
+) -> tuple[str, ...]:
+    """Return the queries one title search sends before refining per group, without repeats."""
+    planned: list[str] = []
+    for query in (*_title_queries(candidate), *_episode_queries(candidate, episodes, context)):
+        if query not in planned:
+            planned.append(query)
+    return tuple(planned[:MAX_QUERIES])
+
+
+def _episode_queries(
+    candidate: TitleCandidate,
+    episodes: EpisodeRange | None,
+    context: SeasonContext | None,
+) -> tuple[str, ...]:
+    """Return the queries naming every episode a narrow request asks for, in both numberings.
+
+    A title query brings back the newest entries only, so an episode that aired long ago is
+    reachable only through a query carrying its own number.
+    """
+    numbers: tuple[int, ...] = _episode_numbers(episodes)
+    if not numbers:
+        return ()
+    queries: list[str] = []
+    for base in _episode_bases(candidate):
+        for number in numbers:
+            queries.append(f"{base} - {number:02d}")
+            if context is not None and context.index > 1:
+                queries.append(f"{base} S{context.index:02d}E{number:02d}")
+                queries.append(f"{base} - {number + context.offset:02d}")
+    return tuple(queries)
+
+
+def _episode_bases(candidate: TitleCandidate) -> tuple[str, ...]:
+    """Return the shortest spellings of *candidate* worth putting in front of an episode number."""
+    bases: list[str] = []
+    for name in (candidate.romaji, candidate.english):
+        base: str = base_title(name or "")
+        if base and base not in bases:
+            bases.append(base)
+    return tuple(bases[:MAX_EPISODE_BASES])
+
+
+def _episode_numbers(episodes: EpisodeRange | None) -> tuple[int, ...]:
+    """Return the whole episode numbers a narrow closed range names, none when it names no such span."""
+    if episodes is None or episodes.first is None or episodes.last is None:
+        return ()
+    first: Decimal = episodes.first
+    last: Decimal = episodes.last
+    if first != int(first) or last != int(last):
+        return ()
+    span: int = int(last) - int(first) + 1
+    if span < 1 or span > MAX_EPISODE_SPAN:
+        return ()
+    return tuple(range(int(first), int(last) + 1))
+
+
+def _group_queries(catalog: ReleaseCatalog, budget: int) -> tuple[SeriesGroup, ...]:
+    """Return the matching groups whose own listing is worth asking for, best seeded first.
+
+    Seeders of the episodes belonging to the chosen season decide, so a group that has served
+    the whole season for months outranks one that only uploaded the newest episode.
+    """
+    ranked: list[tuple[SeriesGroup, int]] = []
+    for group in catalog.groups:
+        if not group.matches_title:
+            continue
+        listed: list[ReleaseChoice] = [
+            choice for choice in group.choices if choice.episode is not None and not choice.other_season
+        ]
+        if listed:
+            ranked.append((group, sum(choice.release.seeders for choice in listed)))
+    ranked.sort(key=lambda entry: -entry[1])
+    limit: int = min(MAX_GROUP_QUERIES, max(budget, 0))
+    return tuple(group for group, _ in ranked[:limit])
 
 
 def _merge(merged: dict[str, Release], releases: Sequence[Release]) -> None:
@@ -480,8 +568,13 @@ def _series_group(
         choices=tuple(sorted(choices, key=_choice_order)),
         subtitle_language=languages.most_common(1)[0][0] if languages else None,
         newest=max(published) if published else None,
-        matches_title=_normalize(strip_season(series)) in alias_keys,
+        matches_title=bool(_forms(series) & alias_keys),
     )
+
+
+def _forms(text: str) -> frozenset[str]:
+    """Return the normalized spellings *text* may be recognized by, empty ones dropped."""
+    return frozenset(form for raw in title_forms(text) if (form := _normalize(raw)))
 
 
 def _normalize(text: str) -> str:

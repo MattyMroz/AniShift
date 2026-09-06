@@ -8,7 +8,7 @@ from typing import Final
 
 from anishift.services.torrents.types import ReleaseName
 
-__all__ = ["parse_release_name", "season_hint", "strip_season"]
+__all__ = ["base_title", "parse_release_name", "season_hint", "strip_season", "title_forms"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -108,6 +108,9 @@ _SEASON_MARKER_RE: Final[re.Pattern[str]] = re.compile(
 )
 """Season marker inside a series text; ``Part`` numbers a cour, not a season, and never matches."""
 
+_SUBTITLE_SEPARATORS: Final[tuple[str, ...]] = (" - ", " -", ": ", " –")
+"""Marks opening the subtitle that release names and catalog names drop or keep at will."""
+
 
 def parse_release_name(title: str) -> ReleaseName:
     """Recognize group, series, episode, season, resolution, batch, version, and language in *title*.
@@ -153,6 +156,24 @@ def strip_season(series: str) -> str:
     if marker is None:
         return " ".join(series.split())
     return " ".join(f"{series[: marker.start()]} {series[marker.end() :]}".split())
+
+
+def base_title(text: str) -> str:
+    """Return *text* without its season marker and without the subtitle that follows it.
+
+    Release names and catalog names disagree on how much of a subtitle they keep, so the
+    shortest shared form is the one both sides can be compared on.
+    """
+    stripped: str = strip_season(text)
+    cuts: list[int] = [at for separator in _SUBTITLE_SEPARATORS if (at := stripped.find(separator)) >= 0]
+    head: str = stripped[: min(cuts)] if cuts else stripped
+    return " ".join(head.rstrip("- ").split())
+
+
+def title_forms(text: str) -> frozenset[str]:
+    """Return every spelling *text* may be recognized by: as written, without the season, and its base."""
+    forms: set[str] = {" ".join(text.split()), strip_season(text), base_title(text)}
+    return frozenset(form for form in forms if form)
 
 
 def _season_marker(series: str) -> re.Match[str] | None:

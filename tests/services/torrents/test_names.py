@@ -5,7 +5,7 @@ from typing import Final
 
 import pytest
 
-from anishift.services.torrents.names import parse_release_name, season_hint, strip_season
+from anishift.services.torrents.names import base_title, parse_release_name, season_hint, strip_season, title_forms
 from anishift.services.torrents.types import ReleaseName
 
 _CASES: Final[tuple[tuple[str, ReleaseName], ...]] = (
@@ -355,3 +355,31 @@ def test_season_hint_reads_a_single_season_marker(series: str, expected: int | N
 )
 def test_strip_season_drops_the_marker_season_hint_reads(series: str, expected: str) -> None:
     assert strip_season(series) == expected
+
+
+_BASE_CASES: Final[tuple[tuple[str, str], ...]] = (
+    ("Solo Leveling Season 2 -Arise from the Shadow-", "Solo Leveling"),
+    ("Ore dake Level Up na Ken Season 2: Arise from the Shadow", "Ore dake Level Up na Ken"),
+    ("Mushoku Tensei III: Isekai Ittara Honki Dasu", "Mushoku Tensei"),
+    ("Neko to Ryuu - The Cat and the Dragon", "Neko to Ryuu"),
+    ("Sousou no Frieren – Beyond Journey's End", "Sousou no Frieren"),
+    ("Solo Leveling", "Solo Leveling"),
+    ("Re:Zero 3rd Season", "Re:Zero"),
+)
+
+
+@pytest.mark.parametrize(("title", "expected"), _BASE_CASES, ids=[title for title, _ in _BASE_CASES])
+def test_base_title_drops_the_season_marker_and_the_subtitle(title: str, expected: str) -> None:
+    assert base_title(title) == expected
+
+
+def test_title_forms_meet_when_a_release_drops_the_subtitle() -> None:
+    english: frozenset[str] = title_forms("Solo Leveling Season 2 -Arise from the Shadow-")
+    romaji: frozenset[str] = title_forms("Ore dake Level Up na Ken Season 2: Arise from the Shadow")
+
+    assert title_forms("Solo Leveling") & english
+    assert title_forms("Ore dake Level Up na Ken") & romaji
+
+
+def test_title_forms_of_unrelated_titles_do_not_meet() -> None:
+    assert not (title_forms("Solo Leveling") & title_forms("Ore dake Level Up na Ken"))

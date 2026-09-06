@@ -11,7 +11,7 @@ import httpx
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.catalog.errors import TitleCatalogError
-from anishift.services.catalog.types import TitleCandidate, TitleStatus
+from anishift.services.catalog.types import PrequelEntry, TitleCandidate, TitleStatus, is_cour_title
 from anishift.utils.logger import get_logger
 
 __all__ = [
@@ -49,7 +49,7 @@ query ($search: String, $limit: Int) { Page(perPage: $limit) { media(search: $se
 """Search request returning the candidate fields and the direct relation edges."""
 
 RELATIONS_QUERY: Final[str] = """
-query ($id: Int) { Media(id: $id) { id episodes format
+query ($id: Int) { Media(id: $id) { id episodes format title { romaji english }
   relations { edges { relationType node { id episodes format } } } } }
 """
 """Single-title request used while walking the prequel chain."""
@@ -108,29 +108,29 @@ class AniListCatalog:
         logger.info("Searched AniList for titles", hits=len(candidates), retried=retried)
         return candidates
 
-    def prequel_episodes(self, candidate: TitleCandidate) -> tuple[int, ...]:
-        """Return the episode count of every entry airing before *candidate*, direct prequel first.
+    def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
+        """Return every entry airing before *candidate*, direct prequel first.
 
         Only television and web formats count, an unknown episode count reads as zero, and
-        the walk stops after ``MAX_PREQUEL_HOPS`` entries. The length of the answer is how
-        many seasons precede *candidate*.
+        the walk stops after ``MAX_PREQUEL_HOPS`` entries. An entry whose title names a cour
+        continues the season before it, so only the other entries count as earlier seasons.
 
         Raises:
             TitleCatalogError: AniList is unreachable or rejects one of the requests.
         """
         seen: set[int] = {candidate.anilist_id}
         pending: list[int] = [prequel_id for prequel_id in candidate.prequel_ids if prequel_id not in seen]
-        episodes: list[int] = []
-        while pending and len(episodes) < MAX_PREQUEL_HOPS:
+        entries: list[PrequelEntry] = []
+        while pending and len(entries) < MAX_PREQUEL_HOPS:
             current: int = pending.pop(0)
             if current in seen:
                 continue
             seen.add(current)
             media: Mapping[str, Any] | None = self._media(current)
-            episodes.append(0 if media is None else _episodes(media) or 0)
+            entries.append(_prequel_entry(media))
             if media is not None:
                 pending.extend(prequel_id for prequel_id in _prequel_ids(media) if prequel_id not in seen)
-        return tuple(episodes)
+        return tuple(entries)
 
     def episode_offset(self, candidate: TitleCandidate) -> int:
         """Return how many episodes aired before *candidate*, following its prequel chain.
@@ -138,7 +138,7 @@ class AniListCatalog:
         Raises:
             TitleCatalogError: AniList is unreachable or rejects one of the requests.
         """
-        return sum(self.prequel_episodes(candidate))
+        return sum(entry.episodes for entry in self.prequel_episodes(candidate))
 
     def _search_once(self, text: str, limit: int) -> tuple[TitleCandidate, ...]:
         """Send one search request and read its media list."""
@@ -229,6 +229,18 @@ def _prequel_ids(node: Mapping[str, Any]) -> tuple[int, ...]:
         if isinstance(child_id, int):
             ids.append(child_id)
     return tuple(ids)
+
+
+def _prequel_entry(media: Mapping[str, Any] | None) -> PrequelEntry:
+    """Build one hop of the prequel chain; an entry AniList cannot serve counts as a season of zero."""
+    if media is None:
+        return PrequelEntry(episodes=0, cour=False)
+    title: object = media.get("title")
+    names: Mapping[str, Any] = title if isinstance(title, Mapping) else {}
+    return PrequelEntry(
+        episodes=_episodes(media) or 0,
+        cour=is_cour_title(_text(names.get("romaji")), _text(names.get("english"))),
+    )
 
 
 def _episodes(media: Mapping[str, Any]) -> int | None:
