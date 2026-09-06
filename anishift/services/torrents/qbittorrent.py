@@ -110,7 +110,7 @@ class QBittorrentClient:
             data={"urls": torrent_url, "savepath": str(save_path), "category": category},
             accept_errors=True,
         )
-        if response.status_code != HTTPStatus.OK or response.text.strip() != OK_BODY:
+        if not _torrent_accepted(response):
             raise TorrentClientError(
                 context=ErrorContext(
                     code=ErrorCode.TORRENT_CLIENT_REFUSED,
@@ -216,6 +216,19 @@ class QBittorrentClient:
                 details={"operation": "qbittorrent_request", "reason": refusal.value},
             )
         )
+
+
+def _torrent_accepted(response: httpx.Response) -> bool:
+    """Whether ``torrents/add`` took the torrent: ``Ok.`` before Web API 2.11, else a 202 report without failures."""
+    if response.status_code == HTTPStatus.OK:
+        return response.text.strip() == OK_BODY
+    if response.status_code != HTTPStatus.ACCEPTED:
+        return False
+    try:
+        report: object = response.json()
+    except ValueError:
+        return False
+    return isinstance(report, dict) and report.get("failure_count") == 0
 
 
 def _torrent_info(entry: Mapping[str, object]) -> TorrentInfo:

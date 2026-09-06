@@ -87,6 +87,28 @@ def test_add_torrent_sends_the_save_path_and_category() -> None:
     assert form["category"] == ["AniShift"]
 
 
+def test_add_torrent_accepts_the_pending_report_of_a_newer_web_api() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        report = {"added_torrent_ids": [], "failure_count": 0, "pending_count": 1, "success_count": 0}
+        return httpx.Response(202, json=report)
+
+    client, http = _client(handler)
+    with http:
+        client.add_torrent("https://nyaa.si/download/1.torrent", save_path=Path("C:/w"), category="AniShift")
+
+
+def test_add_torrent_reports_a_failed_pending_report() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        report = {"added_torrent_ids": [], "failure_count": 1, "pending_count": 0, "success_count": 0}
+        return httpx.Response(202, json=report)
+
+    client, http = _client(handler)
+    with http, pytest.raises(TorrentClientError) as error:
+        client.add_torrent("https://nyaa.si/download/1.torrent", save_path=Path("C:/w"), category="AniShift")
+
+    assert error.value.context.code is ErrorCode.TORRENT_CLIENT_REFUSED
+
+
 def test_add_torrent_reports_a_refusal_body() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="Fails.")
