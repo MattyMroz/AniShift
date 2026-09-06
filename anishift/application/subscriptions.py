@@ -251,10 +251,11 @@ class SubscriptionService:
         """Download every episode *subscription* still misses and record what was taken."""
         try:
             offered: dict[Decimal, ReleaseChoice] = self._offered(subscription)
+            taken_hashes: frozenset[str] = frozenset(info_hash.casefold() for info_hash in subscription.taken)
             selected: dict[Decimal, ReleaseChoice] = {
                 episode: choice
                 for episode, choice in offered.items()
-                if choice.release.info_hash not in subscription.taken
+                if choice.release.info_hash.casefold() not in taken_hashes
             }
             queued: frozenset[str] = self._acquisition.queued_hashes() if selected else frozenset()
             chosen: tuple[ReleaseChoice, ...] = tuple(

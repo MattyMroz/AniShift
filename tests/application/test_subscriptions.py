@@ -297,6 +297,18 @@ def test_check_skips_releases_already_handed_to_the_client(tmp_path: Path) -> No
     assert service.list()[0].next_episode == Decimal(11)
 
 
+def test_check_skips_a_taken_release_whatever_the_hash_case(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)), _choice(Decimal(10)))})
+    store: SubscriptionStore = _store(tmp_path)
+    stored: Subscription = _subscription(taken=("SUBSPLEASE-NEKO TO RYUU-9-V1",))
+    store.save((stored,))
+    service: SubscriptionService = _service(tmp_path, acquisition)
+
+    service.check(stored)
+
+    assert [choice.release.info_hash for choice in acquisition.downloaded[0]] == ["SubsPlease-Neko to Ryuu-10-v1"]
+
+
 def test_check_treats_a_torrent_already_in_the_client_as_taken(tmp_path: Path) -> None:
     acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)), _choice(Decimal(10)))})
     acquisition.queued = {"subsplease-neko to ryuu-9-v1"}
