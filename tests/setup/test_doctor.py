@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -11,9 +13,23 @@ from anishift.setup.doctor import (
     check_api_keys,
     check_binaries,
     check_python_version,
+    check_torrent_client,
     check_workspace,
     run_doctor,
 )
+
+
+def _accepts(*_args: object, **_kwargs: object) -> contextlib.AbstractContextManager[None]:
+    return contextlib.nullcontext()
+
+
+def _refuses(*_args: object, **_kwargs: object) -> NoReturn:
+    raise OSError
+
+
+@pytest.fixture
+def on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor, "is_windows", lambda: True)
 
 
 def test_python_version_ok_on_current_interpreter() -> None:
@@ -54,7 +70,42 @@ def test_workspace_ok_with_env_override(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert (tmp_path / "temp").is_dir()
 
 
-def test_run_doctor_returns_all_checks() -> None:
+@pytest.mark.usefixtures("on_windows")
+def test_torrent_client_ok_when_the_web_ui_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor, "create_connection", _accepts)
+    result = check_torrent_client(Settings(_env_file=None))
+    assert result.status is CheckStatus.OK
+    assert result.message == "Web UI answers on 127.0.0.1:8080"
+
+
+@pytest.mark.usefixtures("on_windows")
+def test_torrent_client_warns_when_qbittorrent_is_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor, "create_connection", _refuses)
+    monkeypatch.setattr(doctor, "installed_executable", lambda: None)
+    result = check_torrent_client(Settings(_env_file=None))
+    assert result.status is CheckStatus.WARN
+    assert result.message == "qBittorrent is not installed"
+    assert "winget install qBittorrent.qBittorrent" in result.suggestion
+
+
+@pytest.mark.usefixtures("on_windows")
+def test_torrent_client_warns_when_the_web_ui_is_unreachable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(doctor, "create_connection", _refuses)
+    monkeypatch.setattr(doctor, "installed_executable", lambda: tmp_path / "qbittorrent.exe")
+    result = check_torrent_client(Settings(_env_file=None))
+    assert result.status is CheckStatus.WARN
+    assert result.message == "qBittorrent Web UI is not reachable"
+    assert "anishift qbit setup" in result.suggestion
+
+
+def test_torrent_client_is_skipped_off_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor, "is_windows", lambda: False)
+    result = check_torrent_client(Settings(_env_file=None))
+    assert result.status is CheckStatus.SKIP
+
+
+def test_run_doctor_returns_all_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor, "is_windows", lambda: False)
     names = [r.name for r in run_doctor(Settings(_env_file=None))]
     assert names == [
         "python_version",
@@ -63,4 +114,5 @@ def test_run_doctor_returns_all_checks() -> None:
         "api_keys",
         "workspace",
         "console_encoding",
+        "torrent_client",
     ]

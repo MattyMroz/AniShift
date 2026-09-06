@@ -58,6 +58,7 @@ Wykonane na gałęzi `work/local-automation/01-watch` (2026-09-05/06), każdy pl
 | [plans/01-watch-mode.md](plans/01-watch-mode.md) | czuwanie na istniejącym Auto, podfoldery serii, okno partii, autostart | P02–P04, P12 |
 | [plans/02-search-and-download.md](plans/02-search-and-download.md) | ekran Anime: nyaa, 1080p+, grupy, Space/Enter, qBittorrent, `qbit` | P06, P07, P11 |
 | [plans/03-subscriptions.md](plans/03-subscriptions.md) | klawisz `O`, sprawdzanie co godzinę w czuwaniu, `subs` | P09 |
+| [plans/04-smart-search.md](plans/04-smart-search.md) | tytuł po ludzku (AniList), komplet odcinków, numeracja sezonów, grupy EN/FR, zakresy, jeden folder, qBittorrent w doctorze | P05 (część), P08 (część), P13 (część) |
 
 Przebieg e2e z 2026-09-06 (plan 03, sekcja „Przebieg e2e”): Web UI qBittorrenta włączone na localhost, `qbit setup`,
 subskrypcja Solo Leveling od odc. 25 → pobranie → okno partii → `.pl.ass` i `.eac3` w 2,5 min. Po drodze naprawiono
@@ -67,7 +68,7 @@ w inspekcji i ponowne otwieranie okna dla grupy zakończonej kodem 0. `anishift 
 Właścicielowi zostaje obserwacja: nowy odcinek obserwowanej serii ma dopłynąć sam (sprawdzanie co godzinę) oraz
 przejście przez ekran Anime klawiaturą (Space/Enter/O), które w e2e wykonano przez fasadę, nie przez TUI.
 
-Fazy masterplanu bez planu wykonania i powód: P05 (katalog AniList) i P13 MAL to nie-cele właściciela (KISS);
+Fazy masterplanu bez planu wykonania i powód: P05 pokrywa plan 04 w zakresie AniList jako tożsamości serii (bez lokalnego katalogu aliasów); P13 MAL to nie-cel właściciela (KISS);
 P08 (paczki) pokrywa wiersz paczki w ekranie Anime plus rekurencyjne discovery podfolderu qBittorrenta;
 P10 (odtwarzanie) nie ma na tej maszynie odtwarzacza obsługującego zewnętrzną ścieżkę audio, produkty leżą obok
 źródła; P14 scenariusze awarii są testami jednostkowymi planów 01–03; P15 to ten katalog.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,20 @@ from typing import cast
 import pytest
 from rich.text import Text
 
-from anishift.application import AppService, DownloadReceipt, ReleaseCatalog, ReleaseChoice, SeriesGroup
+from anishift.application import (
+    AppService,
+    CatalogOrder,
+    DownloadReceipt,
+    EpisodeRange,
+    EpisodeReading,
+    ReleaseCatalog,
+    ReleaseChoice,
+    SeasonContext,
+    SeriesGroup,
+    TitleCandidate,
+    TitleCatalogError,
+    TitleStatus,
+)
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive.anime import AnimeController, AnimeResult, _Screen
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext
@@ -42,13 +56,26 @@ class _Renderer:
         self.exits += 1
 
 
+def _reading(episode: str, *, absolute: str | None = None, other_season: bool = False) -> EpisodeReading:
+    return EpisodeReading(
+        Decimal(episode),
+        absolute=None if absolute is None else Decimal(absolute),
+        other_season=other_season,
+    )
+
+
 def _choice(
-    episode: str | None, *, batch: bool = False, seeders: int = 159, series: str = "Oshi no Ko"
+    episode: str | None,
+    *,
+    batch: bool = False,
+    seeders: int = 159,
+    series: str = "Oshi no Ko",
+    reading: EpisodeReading | None = None,
 ) -> ReleaseChoice:
     release: Release = Release(
         title=f"[SubsPlease] {series}",
         torrent_url=f"https://nyaa.si/download/{episode or 'batch'}.torrent",
-        info_hash=f"hash-{episode or 'batch'}",
+        info_hash=f"hash-{series}-{episode or 'batch'}",
         seeders=seeders,
         size_text="227.4 MiB",
         published=None,
@@ -62,21 +89,68 @@ def _choice(
         batch=batch,
         version=None,
     )
-    return ReleaseChoice(release, name)
+    return ReleaseChoice(release, name, reading)
 
 
-def _catalog(choices: Sequence[ReleaseChoice], hidden: int = 0) -> ReleaseCatalog:
-    return ReleaseCatalog((SeriesGroup("Oshi no Ko", "SubsPlease", tuple(choices)),), hidden)
+def _group(
+    choices: Sequence[ReleaseChoice],
+    *,
+    series: str = "Oshi no Ko",
+    group: str = "SubsPlease",
+    language: str | None = None,
+    newest: datetime | None = None,
+) -> SeriesGroup:
+    return SeriesGroup(series, group, tuple(choices), language, newest)
+
+
+def _catalog(choices: Sequence[ReleaseChoice], hidden: int = 0, filtered: int = 0) -> ReleaseCatalog:
+    return ReleaseCatalog((_group(choices),), hidden, filtered)
+
+
+def _title(
+    romaji: str = "Oshi no Ko",
+    *,
+    english: str | None = None,
+    year: int | None = 2023,
+    episodes: int | None = 11,
+    status: TitleStatus = TitleStatus.FINISHED,
+) -> TitleCandidate:
+    return TitleCandidate(
+        anilist_id=1,
+        romaji=romaji,
+        english=english,
+        native=None,
+        synonyms=(),
+        year=year,
+        season=None,
+        format="TV",
+        episodes=episodes,
+        status=status,
+        prequel_ids=(),
+    )
+
+
+def _season(index: int = 1, offset: int = 0, episodes: int | None = 11) -> SeasonContext:
+    return SeasonContext(index=index, offset=offset, episodes=episodes)
 
 
 def _service(
     search: Callable[[str], ReleaseCatalog] | None = None,
-    download: Callable[[Sequence[ReleaseChoice]], DownloadReceipt] | None = None,
+    download: Callable[..., DownloadReceipt] | None = None,
     subscriptions: SimpleNamespace | None = None,
+    extra: dict[str, object] | None = None,
 ) -> AppService:
     acquisition: SimpleNamespace | None = None
-    if search is not None or download is not None:
-        acquisition = SimpleNamespace(search=search, download=download)
+    if search is not None or download is not None or extra is not None:
+        fields: dict[str, object] = {
+            "search": search,
+            "download": download,
+            "find_titles": lambda text: (),
+            "season_context": lambda candidate: _season(),
+            "search_title": lambda candidate, **options: _catalog(()),
+        }
+        fields.update(extra or {})
+        acquisition = SimpleNamespace(**fields)
     return cast("AppService", SimpleNamespace(acquisition=acquisition, subscriptions=subscriptions))
 
 
@@ -117,11 +191,20 @@ def _frame(controller: AnimeController, columns: int = 120, rows: int = 30) -> s
     return controller.render(columns, rows).plain
 
 
-def _receipt(directory: str = "Oshi no Ko") -> Callable[[Sequence[ReleaseChoice]], DownloadReceipt]:
-    def download(choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
+def _receipt(directory: str = "Oshi no Ko") -> Callable[..., DownloadReceipt]:
+    def download(choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
+        del directory_name
         return DownloadReceipt(len(choices), Path("workspace") / directory)
 
     return download
+
+
+def _chosen(controller: AnimeController, phrase: str = "oshi no ko") -> None:
+    _type(controller, phrase)
+    controller.handle_key("enter")
+    _settle(controller)
+    controller.handle_key("enter")
+    _settle(controller)
 
 
 def _application(monkeypatch: pytest.MonkeyPatch, service: AppService) -> interactive_app._InteractiveApplication:
@@ -242,7 +325,8 @@ def test_enter_sends_exactly_the_marked_releases_and_names_the_directory() -> No
     sent: list[tuple[ReleaseChoice, ...]] = []
     wanted: ReleaseChoice = _choice("10")
 
-    def download(choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
+    def download(choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
+        del directory_name
         sent.append(tuple(choices))
         return DownloadReceipt(len(choices), Path("workspace") / "Oshi no Ko")
 
@@ -268,7 +352,8 @@ def test_enter_without_a_mark_sends_the_highlighted_release() -> None:
     sent: list[tuple[ReleaseChoice, ...]] = []
     newest: ReleaseChoice = _choice("11")
 
-    def download(choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
+    def download(choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
+        del directory_name
         sent.append(tuple(choices))
         return DownloadReceipt(len(choices), Path("workspace") / "Oshi no Ko")
 
@@ -325,8 +410,8 @@ def test_a_failed_search_shows_the_sentence_with_its_suggestion_and_no_traceback
 
 
 def test_a_failed_download_returns_to_the_results_and_escape_leaves_home() -> None:
-    def download(choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
-        del choices
+    def download(choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
+        del choices, directory_name
         raise AniShiftError(
             context=ErrorContext(
                 code=ErrorCode.TORRENT_CLIENT_UNAVAILABLE,
@@ -368,7 +453,7 @@ def test_escape_during_the_search_discards_a_late_result() -> None:
     worker: threading.Thread | None = controller._worker
 
     assert _screen(controller) is _Screen.BUSY
-    assert "Szukam…" in _frame(controller)
+    assert "Szukam tytułu…" in _frame(controller)
 
     controller.handle_key("escape")
     release.set()
@@ -394,7 +479,14 @@ def test_o_on_a_numbered_episode_subscribes_to_it_and_reports_the_download_count
     wanted: ReleaseChoice = _choice("9")
     created: SimpleNamespace = _subscription()
 
-    def subscribe(query: str, choice: ReleaseChoice) -> SimpleNamespace:
+    def subscribe(
+        query: str,
+        choice: ReleaseChoice,
+        *,
+        directory_name: str | None = None,
+        context: SeasonContext | None = None,
+    ) -> SimpleNamespace:
+        del directory_name, context
         subscribed.append((query, choice))
         return created
 
@@ -426,7 +518,7 @@ def test_o_on_a_numbered_episode_subscribes_to_it_and_reports_the_download_count
 def test_o_on_a_batch_reports_that_only_a_numbered_episode_can_be_watched() -> None:
     calls: list[str] = []
 
-    def subscribe(query: str, choice: ReleaseChoice) -> SimpleNamespace:
+    def subscribe(query: str, choice: ReleaseChoice, **options: object) -> SimpleNamespace:
         calls.append("subscribe")
         return _subscription()
 
@@ -474,7 +566,7 @@ def test_o_without_the_subscriptions_boundary_reports_it_and_enter_returns_to_th
 
 
 def test_a_failed_first_check_replaces_the_download_count_with_the_problem() -> None:
-    def subscribe(query: str, choice: ReleaseChoice) -> SimpleNamespace:
+    def subscribe(query: str, choice: ReleaseChoice, **options: object) -> SimpleNamespace:
         return _subscription()
 
     def check(subscription: object) -> SimpleNamespace:
@@ -502,7 +594,7 @@ def test_a_failed_first_check_replaces_the_download_count_with_the_problem() -> 
 
 
 def test_a_failed_subscribe_shows_its_suggestion_and_enter_returns_to_the_results() -> None:
-    def subscribe(query: str, choice: ReleaseChoice) -> SimpleNamespace:
+    def subscribe(query: str, choice: ReleaseChoice, **options: object) -> SimpleNamespace:
         raise AniShiftError(
             context=ErrorContext(
                 code=ErrorCode.CONFIG_INVALID,
@@ -540,7 +632,7 @@ def test_a_failed_subscribe_shows_its_suggestion_and_enter_returns_to_the_result
 def test_escape_during_the_subscription_discards_a_late_result() -> None:
     release: threading.Event = threading.Event()
 
-    def subscribe(query: str, choice: ReleaseChoice) -> SimpleNamespace:
+    def subscribe(query: str, choice: ReleaseChoice, **options: object) -> SimpleNamespace:
         assert release.wait(timeout=5)
         return _subscription()
 
@@ -592,6 +684,393 @@ def test_the_results_fit_inside_every_terminal_height(size: tuple[int, int]) -> 
 
     assert len(lines) <= rows
     assert any("\u276f" in line for line in lines)
+
+
+def test_enter_lists_every_title_candidate_with_its_year_format_and_status() -> None:
+    asked: list[str] = []
+
+    def find_titles(text: str) -> tuple[TitleCandidate, ...]:
+        asked.append(text)
+        return (
+            _title("Solo Leveling", english="Solo Leveling", year=2024, episodes=12),
+            _title(
+                "Ore dake Level Up na Ken Season 2",
+                english="Solo Leveling Season 2",
+                year=2025,
+                episodes=13,
+                status=TitleStatus.RELEASING,
+            ),
+        )
+
+    controller: AnimeController = _controller(_service(extra={"find_titles": find_titles}))
+    _type(controller, "solo leveling 1")
+    controller.handle_key("enter")
+    _settle(controller)
+    listed: str = _frame(controller)
+
+    assert asked == ["solo leveling"]
+    assert _screen(controller) is _Screen.TITLES
+    assert "Solo Leveling · 2024 · TV · 12 odc. · zakończone" in listed
+    assert "Ore dake Level Up na Ken Season 2 · 2025 · TV · 13 odc. · w emisji · Solo Leveling Season 2" in listed
+    assert "Enter wybierz · Esc wróć" in listed
+
+    controller.handle_key("escape")
+
+    assert _screen(controller) is _Screen.QUERY
+
+
+def test_choosing_a_candidate_searches_its_releases_with_the_parsed_filter_and_the_season_context() -> None:
+    calls: list[dict[str, object]] = []
+    candidate: TitleCandidate = _title("Ore dake Level Up na Ken", english="Solo Leveling")
+    context: SeasonContext = _season(index=2, offset=12, episodes=13)
+
+    def search_title(chosen: TitleCandidate, **options: object) -> ReleaseCatalog:
+        calls.append({"candidate": chosen, **options})
+        return _catalog((_choice("1"),))
+
+    controller: AnimeController = _controller(
+        _service(
+            extra={
+                "find_titles": lambda text: (candidate,),
+                "season_context": lambda chosen: context,
+                "search_title": search_title,
+            }
+        )
+    )
+    _chosen(controller, "solo leveling 1")
+    episodes: EpisodeRange = cast("EpisodeRange", calls[0]["episodes"])
+
+    assert _screen(controller) is _Screen.RESULTS
+    assert calls[0]["candidate"] is candidate
+    assert calls[0]["context"] is context
+    assert calls[0]["order"] is CatalogOrder.NEWEST
+    assert (episodes.first, episodes.last) == (Decimal(1), Decimal(1))
+
+
+def test_a_broken_title_catalog_falls_back_to_the_typed_phrase() -> None:
+    searched: list[str] = []
+
+    def find_titles(text: str) -> tuple[TitleCandidate, ...]:
+        del text
+        raise TitleCatalogError(
+            context=ErrorContext(code=ErrorCode.TITLE_CATALOG_FAILED, message="AniList nie odpowiada")
+        )
+
+    def search(query: str) -> ReleaseCatalog:
+        searched.append(query)
+        return _catalog((_choice("11"),))
+
+    controller: AnimeController = _controller(_service(search=search, extra={"find_titles": find_titles}))
+    _type(controller, "oshi no ko 1")
+    controller.handle_key("enter")
+    _settle(controller)
+    listed: str = _frame(controller)
+
+    assert searched == ["oshi no ko 1"]
+    assert _screen(controller) is _Screen.RESULTS
+    assert "AniList nie odpowiada, wyniki dla hasła" in listed
+    assert "filtr:" not in listed
+
+
+def test_an_unknown_title_falls_back_to_the_typed_phrase() -> None:
+    searched: list[str] = []
+
+    def search(query: str) -> ReleaseCatalog:
+        searched.append(query)
+        return _catalog((_choice("11"),))
+
+    controller: AnimeController = _controller(_service(search=search, extra={"find_titles": lambda text: ()}))
+    _type(controller, "oshi no ko")
+    controller.handle_key("enter")
+    _settle(controller)
+    listed: str = _frame(controller)
+
+    assert searched == ["oshi no ko"]
+    assert "Brak tytułu w AniList, wyniki dla hasła" in listed
+
+
+def test_the_results_name_the_chosen_title_and_carry_the_group_language() -> None:
+    candidate: TitleCandidate = _title(
+        "Ore dake Level Up na Ken",
+        english="Solo Leveling",
+        year=2024,
+        episodes=13,
+        status=TitleStatus.RELEASING,
+    )
+    group: SeriesGroup = _group(
+        (
+            _choice("1", series="Solo Leveling", reading=_reading("1", absolute="13")),
+            _choice("3", series="Solo Leveling", reading=_reading("3", other_season=True)),
+        ),
+        series="Solo Leveling",
+        language="en",
+        newest=datetime(2026, 9, 4, tzinfo=UTC),
+    )
+    multi: SeriesGroup = _group((_choice("1", series="Solo"),), series="Solo", group="MTBB", language="multi")
+    controller: AnimeController = _controller(
+        _service(
+            extra={
+                "find_titles": lambda text: (candidate,),
+                "search_title": lambda chosen, **options: ReleaseCatalog((group, multi), 2),
+            }
+        )
+    )
+    _chosen(controller, "solo leveling")
+    listed: str = _frame(controller)
+
+    assert "Ore dake Level Up na Ken · Solo Leveling · w emisji · 13 odc." in listed
+    assert "[SubsPlease · EN] Solo Leveling  najnowsze: 04.09.2026" in listed
+    assert "[MTBB · MULTI] Solo" in listed
+    assert "odc. 1 (13)" in listed
+    assert "odc. 3 · sezon?" in listed
+
+
+def test_a_marks_every_numbered_episode_of_the_highlighted_group() -> None:
+    group: SeriesGroup = _group(
+        (
+            _choice("2"),
+            _choice("1"),
+            _choice("5", reading=_reading("5", other_season=True)),
+            _choice(None, batch=True),
+        )
+    )
+    controller: AnimeController = _controller(
+        _service(
+            extra={
+                "find_titles": lambda text: (_title(),),
+                "search_title": lambda chosen, **options: ReleaseCatalog((group,), 0),
+            }
+        )
+    )
+    _chosen(controller)
+    controller.handle_key("text:a")
+    marked: str = _frame(controller)
+
+    assert "zaznaczono 2" in marked
+    assert len(controller._marked) == 2
+
+
+def test_z_marks_the_typed_range_and_names_the_missing_episodes() -> None:
+    group: SeriesGroup = _group((_choice("6"), _choice("5"), _choice("4"), _choice("2")))
+    controller: AnimeController = _controller(
+        _service(
+            extra={
+                "find_titles": lambda text: (_title(),),
+                "search_title": lambda chosen, **options: ReleaseCatalog((group,), 0),
+            }
+        )
+    )
+    _chosen(controller)
+    controller.handle_key("text:z")
+
+    assert "zakres (np. 4-10): ▌" in _frame(controller)
+
+    _type(controller, "4-10")
+
+    assert "zakres (np. 4-10): 4-10▌" in _frame(controller)
+
+    controller.handle_key("enter")
+
+    assert "zaznaczono 3 z 7" in _frame(controller)
+    assert len(controller._marked) == 3
+
+
+def test_z_with_an_open_range_marks_every_later_episode() -> None:
+    group: SeriesGroup = _group((_choice("6"), _choice("5"), _choice("4")))
+    controller: AnimeController = _controller(
+        _service(
+            extra={
+                "find_titles": lambda text: (_title(),),
+                "search_title": lambda chosen, **options: ReleaseCatalog((group,), 0),
+            }
+        )
+    )
+    _chosen(controller)
+    controller.handle_key("text:z")
+    _type(controller, "5-")
+    controller.handle_key("enter")
+
+    assert "zaznaczono 2" in _frame(controller)
+
+
+def test_an_unreadable_range_says_how_to_type_it_and_escape_closes_the_prompt() -> None:
+    controller: AnimeController = _controller(_service(search=lambda query: _catalog((_choice("4"),))))
+    _type(controller, "oshi")
+    controller.handle_key("enter")
+    _settle(controller)
+    controller.handle_key("text:z")
+    _type(controller, "-")
+    controller.handle_key("enter")
+
+    assert "zakres: podaj np. 4-10" in _frame(controller)
+    assert controller._marked == set()
+
+    controller.handle_key("text:z")
+    controller.handle_key("escape")
+
+    assert "zakres (np. 4-10)" not in _frame(controller)
+    assert _screen(controller) is _Screen.RESULTS
+
+
+def test_s_reorders_the_groups_without_a_new_search_and_keeps_the_marks() -> None:
+    searches: list[object] = []
+    fresh: SeriesGroup = _group(
+        (_choice("9", seeders=5, series="Fresh"),),
+        series="Fresh",
+        group="Erai-raws",
+        newest=datetime(2026, 9, 5, tzinfo=UTC),
+    )
+    seeded: SeriesGroup = _group(
+        (_choice("9", seeders=900, series="Seeded"),),
+        series="Seeded",
+        newest=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    def search_title(chosen: TitleCandidate, **options: object) -> ReleaseCatalog:
+        searches.append(chosen)
+        return ReleaseCatalog((fresh, seeded), 0)
+
+    controller: AnimeController = _controller(
+        _service(extra={"find_titles": lambda text: (_title(),), "search_title": search_title})
+    )
+    _chosen(controller)
+    controller.handle_key("space")
+    before: str = _frame(controller)
+    controller.handle_key("text:s")
+    after: str = _frame(controller)
+
+    assert before.index("Fresh") < before.index("Seeded")
+    assert after.index("Seeded") < after.index("Fresh")
+    assert len(searches) == 1
+    assert "zaznaczone: 1" in after
+    assert "S najnowsze" in after
+    assert controller._rows[next(iter(controller._marked))].choice is fresh.choices[0]
+
+
+def test_f_searches_the_title_again_without_the_episode_filter() -> None:
+    asked: list[object] = []
+
+    def search_title(chosen: TitleCandidate, **options: object) -> ReleaseCatalog:
+        asked.append(options["episodes"])
+        return _catalog((_choice("1"),), filtered=4)
+
+    controller: AnimeController = _controller(
+        _service(extra={"find_titles": lambda text: (_title(),), "search_title": search_title})
+    )
+    _chosen(controller, "oshi no ko 1")
+    filtered: str = _frame(controller)
+
+    assert "filtr: odc. 1" in filtered
+    assert "poza filtrem: 4" in filtered
+    assert "F pokaż wszystkie" in filtered
+
+    controller.handle_key("text:f")
+    _settle(controller)
+    everything: str = _frame(controller)
+
+    assert asked[1] is None
+    assert "filtr:" not in everything
+    assert "F pokaż wszystkie" not in everything
+
+
+def test_o_follows_the_highlighted_group_of_the_chosen_title() -> None:
+    recorded: list[tuple[str, str | None, SeasonContext | None]] = []
+    candidate: TitleCandidate = _title("Ore dake Level Up na Ken", english="Solo Leveling")
+    context: SeasonContext = _season(index=2, offset=12, episodes=13)
+
+    def subscribe(
+        query: str,
+        choice: ReleaseChoice,
+        *,
+        directory_name: str | None = None,
+        context: SeasonContext | None = None,
+    ) -> SimpleNamespace:
+        del choice
+        recorded.append((query, directory_name, context))
+        return _subscription()
+
+    group: SeriesGroup = _group((_choice("1", series="Solo Leveling"),), series="Solo Leveling")
+    controller: AnimeController = _controller(
+        _service(
+            subscriptions=SimpleNamespace(subscribe=subscribe, check=lambda subscription: _outcome(downloaded=1)),
+            extra={
+                "find_titles": lambda text: (candidate,),
+                "season_context": lambda chosen: context,
+                "search_title": lambda chosen, **options: ReleaseCatalog((group,), 0),
+            },
+        )
+    )
+    _chosen(controller, "solo leveling")
+    controller.handle_key("text:o")
+    _settle(controller)
+
+    assert recorded == [("Solo Leveling SubsPlease", "Solo Leveling", context)]
+
+
+def test_o_refuses_a_release_that_belongs_to_another_season() -> None:
+    calls: list[str] = []
+    group: SeriesGroup = _group((_choice("3", reading=_reading("3", other_season=True)),))
+
+    def subscribe(query: str, choice: ReleaseChoice, **options: object) -> SimpleNamespace:
+        calls.append(query)
+        return _subscription()
+
+    controller: AnimeController = _controller(
+        _service(
+            subscriptions=SimpleNamespace(subscribe=subscribe, check=lambda subscription: _outcome()),
+            extra={
+                "find_titles": lambda text: (_title(),),
+                "search_title": lambda chosen, **options: ReleaseCatalog((group,), 0),
+            },
+        )
+    )
+    _chosen(controller)
+    controller.handle_key("text:o")
+
+    assert calls == []
+    assert _screen(controller) is _Screen.RESULTS
+    assert "To wydanie wygląda na inny sezon" in _frame(controller)
+
+
+def test_enter_downloads_into_the_folder_of_the_chosen_title() -> None:
+    sent: list[str | None] = []
+    candidate: TitleCandidate = _title("Ore dake Level Up na Ken", english="Solo Leveling")
+
+    def download(choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
+        sent.append(directory_name)
+        return DownloadReceipt(len(choices), Path("workspace") / "Solo Leveling")
+
+    controller: AnimeController = _controller(
+        _service(
+            download=download,
+            extra={
+                "find_titles": lambda text: (candidate,),
+                "search_title": lambda chosen, **options: _catalog((_choice("1"),)),
+            },
+        )
+    )
+    _chosen(controller, "solo leveling")
+    controller.handle_key("enter")
+    _settle(controller)
+
+    assert sent == ["Solo Leveling"]
+    assert "Wysłano 1 do qBittorrenta → Solo Leveling" in _frame(controller)
+
+
+def test_a_finished_title_offers_the_whole_group_first() -> None:
+    controller: AnimeController = _controller(
+        _service(
+            extra={
+                "find_titles": lambda text: (_title(status=TitleStatus.FINISHED),),
+                "search_title": lambda chosen, **options: _catalog((_choice("1"),)),
+            }
+        )
+    )
+    _chosen(controller)
+    listed: str = _frame(controller)
+
+    assert "A cała grupa" in listed
+    assert listed.index("A cała grupa") < listed.index("Space/Z zaznacz")
 
 
 def test_the_anime_row_opens_the_screen_and_a_home_result_returns_to_the_menu(

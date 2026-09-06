@@ -9,7 +9,14 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Final
 
-from anishift.application.acquisition import MIN_RESOLUTION, AcquisitionService, ReleaseChoice
+from anishift.application.acquisition import (
+    MIN_RESOLUTION,
+    AcquisitionService,
+    EpisodeReading,
+    ReleaseChoice,
+    SeasonContext,
+    read_episode,
+)
 from anishift.errors import AniShiftError, ConfigError, ErrorCode, ErrorContext
 from anishift.utils.logger import get_logger
 
@@ -18,7 +25,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from anishift.application.acquisition import ReleaseCatalog, SeriesGroup
-    from anishift.services.torrents import ReleaseName
 
 __all__ = [
     "CHECK_INTERVAL_S",
@@ -63,7 +69,12 @@ _ENTRY_KEYS: Final[frozenset[str]] = frozenset(
         "checked_at",
     }
 )
-"""Only keys accepted for one serialized subscription."""
+"""Keys every serialized subscription must carry."""
+
+_OPTIONAL_ENTRY_KEYS: Final[frozenset[str]] = frozenset(
+    {"directory", "season_index", "episode_offset", "season_episodes"}
+)
+"""Keys a subscription written before seasons were numbered may omit."""
 
 _INVALID_MESSAGE: Final[str] = "Subscriptions file is invalid"
 """Sentence shown when the stored file cannot be trusted."""
@@ -85,6 +96,10 @@ class Subscription:
     taken: frozenset[str]
     added_at: str
     checked_at: str | None
+    directory: str | None = None
+    season_index: int = 1
+    episode_offset: int = 0
+    season_episodes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,15 +169,29 @@ class SubscriptionService:
         self._acquisition: AcquisitionService = acquisition
         self._clock: Callable[[], datetime] = clock
 
-    def subscribe(self, query: str, choice: ReleaseChoice) -> Subscription:
+    def subscribe(
+        self,
+        query: str,
+        choice: ReleaseChoice,
+        *,
+        directory_name: str | None = None,
+        context: SeasonContext | None = None,
+    ) -> Subscription:
         """Follow the series and group of *choice* from its episode on, replacing an earlier order.
 
+        The episode is read in the numbering of *context*, so a check later compares the same
+        numbers the user saw, and *directory_name* pins every download to one library folder.
+
         Raises:
-            ValueError: The chosen release is a batch or carries no episode number.
+            ValueError: The chosen release is a pack, carries no episode number, or belongs
+                to another season than the one being followed.
         """
-        episode: Decimal | None = choice.name.episode
-        if choice.name.batch or episode is None:
+        episode: Decimal | None = choice.episode
+        if choice.name.is_pack or episode is None:
             msg = "A subscription needs a numbered episode"
+            raise ValueError(msg)
+        if choice.other_season:
+            msg = "A subscription needs a release of the season being followed"
             raise ValueError(msg)
         series: str = choice.name.series
         group: str = choice.name.group or "?"
@@ -179,6 +208,10 @@ class SubscriptionService:
             taken=earlier.taken if earlier is not None else frozenset(),
             added_at=earlier.added_at if earlier is not None else _timestamp(self._clock()),
             checked_at=None,
+            directory=directory_name,
+            season_index=context.index if context is not None else 1,
+            episode_offset=context.offset if context is not None else 0,
+            season_episodes=context.episodes if context is not None else None,
         )
         remaining: list[Subscription] = [item for item in stored if item.subscription_id != identifier]
         remaining.append(subscription)
@@ -204,7 +237,7 @@ class SubscriptionService:
         """Download every episode *subscription* still misses and record what was taken."""
         try:
             catalog: ReleaseCatalog = self._acquisition.search(subscription.query)
-            selected: dict[Decimal, ReleaseChoice] = _new_episodes(catalog, subscription)
+            selected: dict[Decimal, ReleaseChoice] = _new_episodes(catalog, subscription, _context(subscription))
             queued: frozenset[str] = self._acquisition.queued_hashes() if selected else frozenset()
             chosen: tuple[ReleaseChoice, ...] = tuple(
                 selected[episode]
@@ -212,7 +245,7 @@ class SubscriptionService:
                 if selected[episode].release.info_hash.casefold() not in queued
             )
             if chosen:
-                self._acquisition.download(chosen)
+                self._acquisition.download(chosen, directory_name=subscription.directory)
             updated: Subscription = self._advance(subscription, selected)
             self._replace(updated)
         except AniShiftError as problem:
@@ -244,7 +277,21 @@ class SubscriptionService:
         )
 
 
-def _new_episodes(catalog: ReleaseCatalog, subscription: Subscription) -> dict[Decimal, ReleaseChoice]:
+def _context(subscription: Subscription) -> SeasonContext | None:
+    if subscription.season_index <= 1 and subscription.episode_offset <= 0:
+        return None
+    return SeasonContext(
+        index=subscription.season_index,
+        offset=subscription.episode_offset,
+        episodes=subscription.season_episodes,
+    )
+
+
+def _new_episodes(
+    catalog: ReleaseCatalog,
+    subscription: Subscription,
+    context: SeasonContext | None,
+) -> dict[Decimal, ReleaseChoice]:
     series: str = subscription.series.casefold()
     group: str = subscription.group.casefold()
     best: dict[Decimal, ReleaseChoice] = {}
@@ -252,11 +299,11 @@ def _new_episodes(catalog: ReleaseCatalog, subscription: Subscription) -> dict[D
         if not _matches(series_group, series, group):
             continue
         for choice in series_group.choices:
-            name: ReleaseName = choice.name
-            episode: Decimal | None = name.episode
-            if episode is None or name.batch or episode < subscription.next_episode:
+            reading: EpisodeReading = read_episode(choice.name, context)
+            episode: Decimal | None = reading.episode
+            if episode is None or reading.other_season or choice.name.is_pack:
                 continue
-            if choice.release.info_hash in subscription.taken:
+            if episode < subscription.next_episode or choice.release.info_hash in subscription.taken:
                 continue
             current: ReleaseChoice | None = best.get(episode)
             if current is None or _quality(choice) > _quality(current):
@@ -305,6 +352,10 @@ def _encode(subscription: Subscription) -> dict[str, object]:
         "taken": sorted(subscription.taken),
         "added_at": subscription.added_at,
         "checked_at": subscription.checked_at,
+        "directory": subscription.directory,
+        "season_index": subscription.season_index,
+        "episode_offset": subscription.episode_offset,
+        "season_episodes": subscription.season_episodes,
     }
 
 
@@ -322,7 +373,7 @@ def _decode_document(raw: object) -> tuple[Subscription, ...]:
 
 
 def _decode_entry(raw: object) -> Subscription:
-    document: dict[str, object] = _strict_object(raw, _ENTRY_KEYS, "subscription")
+    document: dict[str, object] = _strict_object(raw, _ENTRY_KEYS, "subscription", optional=_OPTIONAL_ENTRY_KEYS)
     min_resolution: object = document["min_resolution"]
     taken: object = document["taken"]
     checked_at: object = document["checked_at"]
@@ -342,15 +393,25 @@ def _decode_entry(raw: object) -> Subscription:
         taken=frozenset(_list_string(value) for value in taken),
         added_at=_required_string(document, "added_at"),
         checked_at=checked_at,
+        directory=_optional_string(document, "directory"),
+        season_index=_optional_count(document, "season_index", 1),
+        episode_offset=_optional_count(document, "episode_offset", 0),
+        season_episodes=_optional_int(document, "season_episodes"),
     )
 
 
-def _strict_object(raw: object, expected_keys: frozenset[str], label: str) -> dict[str, object]:
+def _strict_object(
+    raw: object,
+    expected_keys: frozenset[str],
+    label: str,
+    *,
+    optional: frozenset[str] = frozenset(),
+) -> dict[str, object]:
     if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
         msg = f"Serialized {label} must be an object with text keys"
         raise TypeError(msg)
     document: dict[str, object] = raw
-    if frozenset(document) != expected_keys:
+    if frozenset(document) - optional != expected_keys:
         msg = f"Serialized {label} has missing or unknown fields"
         raise ValueError(msg)
     return document
@@ -362,6 +423,27 @@ def _required_string(document: dict[str, object], key: str) -> str:
         msg = f"Subscription field {key!r} must be text"
         raise TypeError(msg)
     return value
+
+
+def _optional_string(document: dict[str, object], key: str) -> str | None:
+    value: object = document.get(key)
+    if value is not None and not isinstance(value, str):
+        msg = f"Subscription field {key!r} must be text or null"
+        raise TypeError(msg)
+    return value
+
+
+def _optional_int(document: dict[str, object], key: str) -> int | None:
+    value: object = document.get(key)
+    if value is not None and type(value) is not int:
+        msg = f"Subscription field {key!r} must be a whole number or null"
+        raise TypeError(msg)
+    return value
+
+
+def _optional_count(document: dict[str, object], key: str, default: int) -> int:
+    value: int | None = _optional_int(document, key)
+    return default if value is None else value
 
 
 def _list_string(value: object) -> str:

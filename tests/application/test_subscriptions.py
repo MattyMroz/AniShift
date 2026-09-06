@@ -13,8 +13,10 @@ from anishift.application.acquisition import (
     MIN_RESOLUTION,
     AcquisitionService,
     DownloadReceipt,
+    EpisodeReading,
     ReleaseCatalog,
     ReleaseChoice,
+    SeasonContext,
     SeriesGroup,
 )
 from anishift.application.subscriptions import (
@@ -48,15 +50,17 @@ def _clock() -> datetime:
     return datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
 
 
-def _choice(
+def _choice(  # noqa: PLR0913
     episode: Decimal | None,
     *,
     series: str = "Neko to Ryuu",
     group: str = "SubsPlease",
     version: int | None = None,
     seeders: int = 10,
+    season: int | None = None,
+    reading: EpisodeReading | None = None,
 ) -> ReleaseChoice:
-    name: ReleaseName = replace(_BASE_NAME, series=series, group=group, episode=episode, version=version)
+    name: ReleaseName = replace(_BASE_NAME, series=series, group=group, episode=episode, version=version, season=season)
     label: str = f"{group}-{series}-{episode}-v{version or 1}"
     release: Release = Release(
         title=f"[{group}] {series} - {episode}",
@@ -66,7 +70,7 @@ def _choice(
         size_text="1.0 GiB",
         published=None,
     )
-    return ReleaseChoice(release, name)
+    return ReleaseChoice(release, name, reading)
 
 
 def _batch(episode: Decimal) -> ReleaseChoice:
@@ -94,6 +98,7 @@ class _Acquisition(AcquisitionService):
         self.failing: frozenset[str] = frozenset(failing)
         self.queries: list[str] = []
         self.downloaded: list[tuple[ReleaseChoice, ...]] = []
+        self.directories: list[str | None] = []
         self.queued: set[str] = set()
 
     def search(self, query: str) -> ReleaseCatalog:
@@ -108,8 +113,9 @@ class _Acquisition(AcquisitionService):
             )
         return self.catalogs.get(query, _catalog())
 
-    def download(self, choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
+    def download(self, choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
         self.downloaded.append(tuple(choices))
+        self.directories.append(directory_name)
         return DownloadReceipt(len(choices), Path("library"))
 
     def queued_hashes(self) -> frozenset[str]:
@@ -124,13 +130,17 @@ def _service(tmp_path: Path, acquisition: _Acquisition) -> SubscriptionService:
     return SubscriptionService(store=_store(tmp_path), acquisition=acquisition, clock=_clock)
 
 
-def _subscription(
+def _subscription(  # noqa: PLR0913
     *,
     series: str = "Neko to Ryuu",
     group: str = "SubsPlease",
     query: str = "neko",
     next_episode: str = "9",
     taken: Sequence[str] = (),
+    directory: str | None = None,
+    season_index: int = 1,
+    episode_offset: int = 0,
+    season_episodes: int | None = None,
 ) -> Subscription:
     return Subscription(
         subscription_id=subscription_id(series, group),
@@ -142,6 +152,10 @@ def _subscription(
         taken=frozenset(taken),
         added_at=_TIMESTAMP,
         checked_at=None,
+        directory=directory,
+        season_index=season_index,
+        episode_offset=episode_offset,
+        season_episodes=season_episodes,
     )
 
 
@@ -368,3 +382,104 @@ def test_remove_reports_whether_the_subscription_existed(tmp_path: Path) -> None
     assert service.remove(subscription.subscription_id) is True
     assert service.remove(subscription.subscription_id) is False
     assert service.list() == ()
+
+
+def test_subscribe_stores_the_library_folder_and_the_season_numbers(tmp_path: Path) -> None:
+    service: SubscriptionService = _service(tmp_path, _Acquisition())
+    context: SeasonContext = SeasonContext(index=2, offset=12, episodes=13)
+
+    subscription: Subscription = service.subscribe(
+        "solo leveling subsplease",
+        _choice(Decimal(13), reading=EpisodeReading(Decimal(1), absolute=Decimal(13))),
+        directory_name="Solo Leveling Season 2",
+        context=context,
+    )
+
+    assert subscription.next_episode == Decimal(1)
+    assert subscription.directory == "Solo Leveling Season 2"
+    assert (subscription.season_index, subscription.episode_offset) == (2, 12)
+    assert subscription.season_episodes == 13
+    assert service.list()[0] == subscription
+
+
+def test_subscribe_refuses_a_release_of_another_season(tmp_path: Path) -> None:
+    service: SubscriptionService = _service(tmp_path, _Acquisition())
+
+    with pytest.raises(ValueError, match="season being followed"):
+        service.subscribe("neko", _choice(Decimal(4), reading=EpisodeReading(Decimal(4), other_season=True)))
+
+
+def test_check_reads_absolute_numbering_and_skips_another_season(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition(
+        {
+            "solo leveling subsplease": _catalog(
+                _choice(Decimal(13)),
+                _choice(Decimal(3), season=1),
+                _choice(Decimal(5)),
+            )
+        }
+    )
+    store: SubscriptionStore = _store(tmp_path)
+    stored: Subscription = _subscription(
+        query="solo leveling subsplease",
+        next_episode="1",
+        directory="Solo Leveling Season 2",
+        season_index=2,
+        episode_offset=12,
+        season_episodes=13,
+    )
+    store.save((stored,))
+    service: SubscriptionService = _service(tmp_path, acquisition)
+
+    outcome: CheckOutcome = service.check(stored)
+
+    assert [choice.release.info_hash for choice in acquisition.downloaded[0]] == ["SubsPlease-Neko to Ryuu-13-v1"]
+    assert acquisition.directories == ["Solo Leveling Season 2"]
+    assert outcome.downloaded == 1
+    assert service.list()[0].next_episode == Decimal(2)
+
+
+def test_check_of_a_first_season_still_sends_no_library_folder(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)))})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("neko", _choice(Decimal(9)))
+
+    service.check(service.list()[0])
+
+    assert acquisition.directories == [None]
+
+
+def test_store_loads_an_entry_written_before_seasons_were_numbered(tmp_path: Path) -> None:
+    document: dict[str, object] = {
+        "schema_version": 1,
+        "subscriptions": [
+            {
+                "subscription_id": subscription_id("Neko to Ryuu", "SubsPlease"),
+                "query": "neko",
+                "series": "Neko to Ryuu",
+                "group": "SubsPlease",
+                "next_episode": "9",
+                "min_resolution": MIN_RESOLUTION,
+                "taken": [],
+                "added_at": _TIMESTAMP,
+                "checked_at": None,
+            }
+        ],
+    }
+    (tmp_path / "subscriptions.json").write_text(json.dumps(document), encoding="utf-8")
+
+    assert _store(tmp_path).load() == (_subscription(),)
+
+
+def test_store_round_trip_keeps_the_library_folder_and_the_season_numbers(tmp_path: Path) -> None:
+    store: SubscriptionStore = _store(tmp_path)
+    subscription: Subscription = _subscription(
+        directory="Solo Leveling Season 2",
+        season_index=2,
+        episode_offset=12,
+        season_episodes=13,
+    )
+
+    store.save((subscription,))
+
+    assert store.load() == (subscription,)

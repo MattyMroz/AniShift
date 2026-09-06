@@ -17,6 +17,7 @@ class Release:
     seeders: int
     size_text: str
     published: datetime | None
+    subtitle_language: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +31,13 @@ class ReleaseName:
     resolution: int | None
     batch: bool
     version: int | None
+    subtitle_language: str | None = None
+    dubbed: bool = False
+
+    @property
+    def is_pack(self) -> bool:
+        """Whether the release covers a whole season or an episode range instead of one episode."""
+        return self.batch or (self.season is not None and self.episode is None)
 
 
 @dataclass(frozen=True, slots=True)

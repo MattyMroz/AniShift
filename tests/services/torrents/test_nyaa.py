@@ -11,6 +11,7 @@ from anishift.errors import ErrorCode
 from anishift.services.torrents.errors import TorrentSourceError
 from anishift.services.torrents.nyaa import (
     CATEGORY_ENGLISH_TRANSLATED,
+    CATEGORY_NON_ENGLISH_TRANSLATED,
     MAX_BODY_BYTES,
     USER_AGENT,
     parse_feed,
@@ -65,6 +66,43 @@ _FEED: Final[str] = """<?xml version="1.0" encoding="UTF-8"?>
 </channel>
 </rss>
 """
+
+
+_FRENCH_FEED: Final[str] = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:nyaa="https://nyaa.si/xmlns/nyaa">
+<channel>
+<item>
+<title>[DKB] Neko to Ryuu - S01E11 [1080p][HEVC x265 10bit][Multi-Subs][weekly]</title>
+<link>https://nyaa.si/download/2156981.torrent</link>
+<pubDate>Sat, 05 Sep 2026 19:51:11 -0000</pubDate>
+<nyaa:seeders>4</nyaa:seeders>
+<nyaa:infoHash>B456EB3845297C1C99CD359274981AE904328084</nyaa:infoHash>
+<nyaa:size>261.2 MiB</nyaa:size>
+</item>
+<item>
+<title>Neko to Ryuu S01E12 SUBFRENCH 1080p CR WEB-DL AAC2.0 H.264-Tsundere-Raws</title>
+<link>https://nyaa.si/download/2156990.torrent</link>
+<pubDate>Sat, 05 Sep 2026 22:00:00 -0000</pubDate>
+<nyaa:seeders>9</nyaa:seeders>
+<nyaa:infoHash>d123eb3845297c1c99cd359274981ae904328084</nyaa:infoHash>
+<nyaa:size>1.2 GiB</nyaa:size>
+</item>
+<item>
+<title>Neko to Ryuu S01E13 1080p WEB-DL H.264-Anon</title>
+<link>https://nyaa.si/download/2156991.torrent</link>
+<pubDate>Sat, 05 Sep 2026 23:00:00 -0000</pubDate>
+<nyaa:seeders>2</nyaa:seeders>
+<nyaa:infoHash>e456eb3845297c1c99cd359274981ae904328084</nyaa:infoHash>
+<nyaa:size>1.3 GiB</nyaa:size>
+</item>
+</channel>
+</rss>
+"""
+
+
+def _category_handler(request: httpx.Request) -> httpx.Response:
+    body: str = _FEED if request.url.params["c"] == CATEGORY_ENGLISH_TRANSLATED else _FRENCH_FEED
+    return httpx.Response(200, text=body, headers={"content-type": "application/xml; charset=UTF-8"})
 
 
 def _feed_client(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.Client:
@@ -167,3 +205,54 @@ def test_search_releases_maps_a_transport_failure() -> None:
     with _feed_client(handler) as http, pytest.raises(TorrentSourceError) as error:
         search_releases("neko", http=http)
     assert error.value.context.suggestion == "Check the connection and try again"
+
+
+def test_search_releases_queries_both_anime_categories_with_the_same_query() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _category_handler(request)
+
+    with _feed_client(handler) as http:
+        search_releases("neko to ryuu", http=http)
+
+    assert [request.url.params["c"] for request in seen] == [
+        CATEGORY_ENGLISH_TRANSLATED,
+        CATEGORY_NON_ENGLISH_TRANSLATED,
+    ]
+    assert {request.url.params["q"] for request in seen} == {"neko to ryuu"}
+
+
+def test_search_releases_merges_a_shared_info_hash_keeping_the_english_entry() -> None:
+    with _feed_client(_category_handler) as http:
+        releases = search_releases("neko to ryuu", http=http)
+
+    shared: list[Release] = [release for release in releases if release.info_hash.casefold().startswith("b456eb38")]
+    assert len(shared) == 1
+    assert shared[0].seeders == 66
+
+
+def test_search_releases_returns_english_releases_before_non_english_ones() -> None:
+    with _feed_client(_category_handler) as http:
+        releases = search_releases("neko to ryuu", http=http)
+
+    assert [release.info_hash.casefold()[:4] for release in releases] == ["b456", "c789", "d123", "e456"]
+
+
+def test_search_releases_tags_the_subtitle_language_of_every_release() -> None:
+    with _feed_client(_category_handler) as http:
+        releases = search_releases("neko to ryuu", http=http)
+
+    assert [release.subtitle_language for release in releases] == ["multi", "en", "fr", None]
+
+
+def test_search_releases_fails_when_the_second_category_fails() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params["c"] == CATEGORY_ENGLISH_TRANSLATED:
+            return _category_handler(request)
+        return httpx.Response(503, text="", headers={"content-type": "application/xml"})
+
+    with _feed_client(handler) as http, pytest.raises(TorrentSourceError) as error:
+        search_releases("neko to ryuu", http=http)
+    assert error.value.context.code is ErrorCode.TORRENT_SOURCE_FAILED
