@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from enum import StrEnum
@@ -13,11 +14,13 @@ import httpx
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.torrents.errors import TorrentSourceError
+from anishift.services.torrents.names import parse_release_name
 from anishift.services.torrents.types import Release
 from anishift.utils.logger import get_logger
 
 __all__ = [
     "CATEGORY_ENGLISH_TRANSLATED",
+    "CATEGORY_NON_ENGLISH_TRANSLATED",
     "MAX_BODY_BYTES",
     "NYAA_NAMESPACE",
     "NYAA_RSS_URL",
@@ -38,6 +41,18 @@ NYAA_NAMESPACE: Final[str] = "https://nyaa.si/xmlns/nyaa"
 
 CATEGORY_ENGLISH_TRANSLATED: Final[str] = "1_2"
 """Nyaa category identifier for English-translated anime."""
+
+CATEGORY_NON_ENGLISH_TRANSLATED: Final[str] = "1_3"
+"""Nyaa category identifier for anime translated into another language."""
+
+_ENGLISH_SUBTITLES: Final[str] = "en"
+"""Subtitle language assumed for an English-category release that declares no other one."""
+
+_SEARCH_CATEGORIES: Final[tuple[tuple[str, str | None], ...]] = (
+    (CATEGORY_ENGLISH_TRANSLATED, _ENGLISH_SUBTITLES),
+    (CATEGORY_NON_ENGLISH_TRANSLATED, None),
+)
+"""Categories searched in order, each with the subtitle language assumed for its releases."""
 
 MAX_BODY_BYTES: Final[int] = 4 * 1024 * 1024
 """Largest feed body accepted before the response is rejected."""
@@ -98,15 +113,38 @@ def search_releases(
     http: httpx.Client,
     timeout_s: float = DEFAULT_SEARCH_TIMEOUT_S,
 ) -> tuple[Release, ...]:
-    """Search Nyaa for *query* and return the released entries of the anime category.
+    """Search every anime category for *query*, English-translated releases first.
+
+    Entries sharing an info hash across categories are reported once, keeping the first one seen, and
+    each release carries the subtitle language read from its title.
 
     Raises:
-        TorrentSourceError: The index is unreachable, rejects the request, or answers with no feed.
+        TorrentSourceError: One category is unreachable, rejects the request, or answers with no feed.
     """
+    merged: dict[str, Release] = {}
+    for category, default_language in _SEARCH_CATEGORIES:
+        for release in _search_category(query, category, http=http, timeout_s=timeout_s):
+            key: str = release.info_hash.casefold()
+            if key in merged:
+                continue
+            language: str | None = parse_release_name(release.title).subtitle_language or default_language
+            merged[key] = replace(release, subtitle_language=language)
+    logger.info("Searched Nyaa for releases", releases=len(merged), categories=len(_SEARCH_CATEGORIES))
+    return tuple(merged.values())
+
+
+def _search_category(
+    query: str,
+    category: str,
+    *,
+    http: httpx.Client,
+    timeout_s: float,
+) -> tuple[Release, ...]:
+    """Run one search request and read the feed it answers with."""
     try:
         response: httpx.Response = http.get(
             NYAA_RSS_URL,
-            params={"page": "rss", "q": query, "c": CATEGORY_ENGLISH_TRANSLATED, "f": "0"},
+            params={"page": "rss", "q": query, "c": category, "f": "0"},
             headers={"User-Agent": USER_AGENT},
             timeout=timeout_s,
         )
@@ -119,9 +157,7 @@ def search_releases(
     content_type: str = response.headers.get("content-type", "").lower()
     if _XML_CONTENT_TYPES not in content_type:
         raise _source_error(_SourceFailure.NOT_A_FEED)
-    releases: tuple[Release, ...] = parse_feed(response.text)
-    logger.info("Searched Nyaa for releases", releases=len(releases))
-    return releases
+    return parse_feed(response.text)
 
 
 def _release_from_item(item: ElementTree.Element) -> Release | None:

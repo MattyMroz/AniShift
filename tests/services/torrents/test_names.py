@@ -43,6 +43,7 @@ _CASES: Final[tuple[tuple[str, ReleaseName], ...]] = (
             resolution=1080,
             batch=False,
             version=None,
+            subtitle_language="multi",
         ),
     ),
     (
@@ -55,6 +56,7 @@ _CASES: Final[tuple[tuple[str, ReleaseName], ...]] = (
             resolution=1080,
             batch=False,
             version=None,
+            subtitle_language="multi",
         ),
     ),
     (
@@ -141,6 +143,161 @@ _CASES: Final[tuple[tuple[str, ReleaseName], ...]] = (
             version=None,
         ),
     ),
+    (
+        "[Erai-raws] Mushoku Tensei III: Isekai Ittara Honki Dasu - 10 [1080p CR WEB-DL AVC AAC][MultiSub][183A368D]",
+        ReleaseName(
+            group="Erai-raws",
+            series="Mushoku Tensei III: Isekai Ittara Honki Dasu",
+            episode=Decimal("10"),
+            season=None,
+            resolution=1080,
+            batch=False,
+            version=None,
+            subtitle_language="multi",
+        ),
+    ),
+    (
+        "[ToonsHub] Mushoku Tensei Jobless Reincarnation S03E10 1080p BILI WEB-DL AAC2.0 H.265",
+        ReleaseName(
+            group="ToonsHub",
+            series="Mushoku Tensei Jobless Reincarnation",
+            episode=Decimal("10"),
+            season=3,
+            resolution=1080,
+            batch=False,
+            version=None,
+        ),
+    ),
+    (
+        "[Cytox] Mushoku Tensei Jobless Reincarnation 2021 S03E08 1080p CR WEB-DL Dual-Audio DDP 2.0 H.264",
+        ReleaseName(
+            group="Cytox",
+            series="Mushoku Tensei Jobless Reincarnation",
+            episode=Decimal("8"),
+            season=3,
+            resolution=1080,
+            batch=False,
+            version=None,
+        ),
+    ),
+    (
+        "Mushoku Tensei Jobless Reincarnation S03E07 Phase Four 1080p CR WEB-DL DUAL AAC2.0 H.264-VARYG",
+        ReleaseName(
+            group="VARYG",
+            series="Mushoku Tensei Jobless Reincarnation",
+            episode=Decimal("7"),
+            season=3,
+            resolution=1080,
+            batch=False,
+            version=None,
+        ),
+    ),
+    (
+        "Mushoku Tensei Jobless Reincarnation S03E10 SUBFRENCH 1080p CR WEB-DL AAC2.0 "
+        "H.264-Tsundere-Raws (READNFO, VOSTFR, Mushoku Tensei)",
+        ReleaseName(
+            group="Tsundere-Raws",
+            series="Mushoku Tensei Jobless Reincarnation",
+            episode=Decimal("10"),
+            season=3,
+            resolution=1080,
+            batch=False,
+            version=None,
+            subtitle_language="fr",
+        ),
+    ),
+    (
+        "Solo.Leveling.Arise.from.the.Shadow.S02.MULTi.1080p.WEBRiP.x265-T3KASHi",
+        ReleaseName(
+            group="T3KASHi",
+            series="Solo Leveling Arise from the Shadow",
+            episode=None,
+            season=2,
+            resolution=1080,
+            batch=False,
+            version=None,
+            subtitle_language="multi",
+        ),
+    ),
+    (
+        "[Xspitfire911] Ore dake Level Up na Ken - Solo Leveling S01 + S02 BDRIP 1080p X265 10bit VOSTFR",
+        ReleaseName(
+            group="Xspitfire911",
+            series="Ore dake Level Up na Ken",
+            episode=None,
+            season=2,
+            resolution=1080,
+            batch=False,
+            version=None,
+            subtitle_language="fr",
+        ),
+    ),
+    (
+        "[Breeze] Mushoku Tensei S03E08",
+        ReleaseName(
+            group="Breeze",
+            series="Mushoku Tensei",
+            episode=Decimal("8"),
+            season=3,
+            resolution=None,
+            batch=False,
+            version=None,
+        ),
+    ),
+    (
+        "[Yameii] Solo Leveling - S02E13 [English Dub] [CR WEB-DL 1080p] [93CA9D52] "
+        "(Ore dake Level Up na Ken: Arise from the Shadow | Season 2 | S2)",
+        ReleaseName(
+            group="Yameii",
+            series="Solo Leveling",
+            episode=Decimal("13"),
+            season=2,
+            resolution=1080,
+            batch=False,
+            version=None,
+            dubbed=True,
+        ),
+    ),
+    (
+        "[Feibanyama] Mushoku Tensei Jobless Reincarnation S03E09",
+        ReleaseName(
+            group="Feibanyama",
+            series="Mushoku Tensei Jobless Reincarnation",
+            episode=Decimal("9"),
+            season=3,
+            resolution=None,
+            batch=False,
+            version=None,
+        ),
+    ),
+    (
+        "[Judas] Ore dake Level Up na Ken (Solo Leveling) (Season 02) [1080p][HEVC x265 10bit]"
+        "[Dual-Audio][Multi-Subs] (Batch)",
+        ReleaseName(
+            group="Judas",
+            series="Ore dake Level Up na Ken",
+            episode=None,
+            season=None,
+            resolution=1080,
+            batch=True,
+            version=None,
+            subtitle_language="multi",
+        ),
+    ),
+    (
+        "Solo Leveling S02E13 MULTi 1080p WEB x264 AAC -Tsundere-Raws (CR) "
+        "(VF, FRENCH, VOSTFR, Multi-Audio, Ore dake Level Up na Ken)",
+        ReleaseName(
+            group="Tsundere-Raws",
+            series="Solo Leveling",
+            episode=Decimal("13"),
+            season=2,
+            resolution=1080,
+            batch=False,
+            version=None,
+            subtitle_language="fr",
+        ),
+    ),
 )
 
 
@@ -153,3 +310,17 @@ def test_parse_release_name_collapses_repeated_whitespace() -> None:
     parsed = parse_release_name("[Group]   Title   -   05   (1080p)")
     assert parsed.series == "Title"
     assert parsed.episode == Decimal("5")
+
+
+def test_parse_release_name_reads_a_season_pack_as_a_pack_without_an_episode() -> None:
+    parsed = parse_release_name("Solo.Leveling.Arise.from.the.Shadow.S02.MULTi.1080p.WEBRiP.x265-T3KASHi")
+    assert parsed.is_pack is True
+
+
+def test_parse_release_name_reads_a_single_episode_as_no_pack() -> None:
+    assert parse_release_name("[Breeze] Mushoku Tensei S03E08").is_pack is False
+
+
+def test_parse_release_name_does_not_call_dual_audio_dubbed() -> None:
+    title = "[Cytox] Mushoku Tensei Jobless Reincarnation 2021 S03E08 1080p CR WEB-DL Dual-Audio DDP 2.0 H.264"
+    assert parse_release_name(title).dubbed is False
