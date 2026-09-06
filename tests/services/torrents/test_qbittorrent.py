@@ -38,7 +38,7 @@ def test_version_returns_the_trimmed_body() -> None:
 
     client, http = _client(handler)
     with http:
-        assert client.version() == "v5.2.3"
+        assert client.version() == "5.2.3"
 
 
 def test_preferences_returns_the_decoded_mapping() -> None:
@@ -126,7 +126,7 @@ def test_request_logs_in_once_after_forbidden_and_retries() -> None:
 
     client, http = _client(handler)
     with http:
-        assert client.version() == "v5.2.3"
+        assert client.version() == "5.2.3"
 
     assert seen == ["/api/v2/app/version", "/api/v2/auth/login", "/api/v2/app/version"]
 

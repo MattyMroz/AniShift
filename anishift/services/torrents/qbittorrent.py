@@ -84,8 +84,8 @@ class QBittorrentClient:
         self._timeout_s: float = timeout_s
 
     def version(self) -> str:
-        """Return the running qBittorrent version."""
-        return self._request("GET", "/app/version").text.strip()
+        """Return the running qBittorrent version without its ``v`` prefix."""
+        return self._request("GET", "/app/version").text.strip().removeprefix("v")
 
     def preferences(self) -> dict[str, object]:
         """Return the current Web UI preferences."""
