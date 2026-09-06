@@ -1,0 +1,41 @@
+{
+ "data": {
+  "Media": {
+   "id": 151807,
+   "episodes": 12,
+   "format": "TV",
+   "title": {
+    "romaji": "Ore dake Level Up na Ken",
+    "english": "Solo Leveling"
+   },
+   "relations": {
+    "edges": [
+     {
+      "relationType": "ADAPTATION",
+      "node": {
+       "id": 105398,
+       "episodes": null,
+       "format": "MANGA"
+      }
+     },
+     {
+      "relationType": "SEQUEL",
+      "node": {
+       "id": 176496,
+       "episodes": 13,
+       "format": "TV"
+      }
+     },
+     {
+      "relationType": "SUMMARY",
+      "node": {
+       "id": 184694,
+       "episodes": 1,
+       "format": "MOVIE"
+      }
+     }
+    ]
+   }
+  }
+ }
+}
