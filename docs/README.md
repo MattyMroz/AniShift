@@ -9,7 +9,9 @@ Plany nie są instrukcją obecnego interfejsu.
 
 ## Aktualny kierunek rozwoju
 
-[Lokalna automatyzacja: od wyboru anime do gotowego odcinka](plans/local-automation/README.md).
+[Lokalna automatyzacja: od wyboru anime do gotowego odcinka](plans/local-automation/README.md), plany 01–04
+wykonane. Następny kierunek: [AniShift zdalnie: worker na VPS Oracle, produkt na Google Drive](plans/remote-automation/README.md)
+(research, specyfikacja, masterplan, plan 01 headless).
 Kolejność: specyfikacja → research → brief → masterplan → plany kolejnych rezultatów w `plans/`.
 Wcześniejszy pakiet [plans/automation/](plans/automation/README.md) jest historią i źródłem
 ustaleń właściciela U01–U18. Otwarte odłożone zadania mają status w GitHub Issues.
