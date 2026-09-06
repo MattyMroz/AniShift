@@ -31,7 +31,7 @@ z Drive i ma te same pliki na komputerze po synchronizacji. Lokalny tryb Windows
 
 | Nr | Etap | Rezultat | Zależności | Warunek wyjścia | Status |
 | --- | --- | --- | --- | --- | --- |
-| 01 | Tryb bez okna | `watch --headless` wykonuje partie w procesie, loguje wynik, działa bez TTY; jednostka systemd i doctor dla Linuksa w repo | plany 01–04 | test integracyjny headless zielony na Windows; `mypy --platform linux`; smoke `anishift watch --headless` z syntetycznym plikiem | current |
+| 01 | Tryb bez okna | `watch --headless` wykonuje partie w procesie, loguje wynik, działa bez TTY; jednostka systemd i doctor dla Linuksa w repo | plany 01–04 | test integracyjny headless zielony na Windows; `mypy --platform linux`; smoke `anishift watch --headless` z syntetycznym plikiem | implemented, czeka na odbiór H08 |
 | 02 | Proof na instancji | AniShift zainstalowany na jednej instancji Oracle z `apt` binariami, `uv`, `.env`; `doctor` zielony; jeden ręcznie wrzucony MKV przechodzi Auto do MP4 | 01, instancja od właściciela | log `Batch finished exit 0`, MP4 odtwarzalny; pomiar czasu enkodowania i RAM | planned |
 | 03 | Dostawa na Drive | preset `remote`, rclone, ledger `delivered.json`, weryfikacja hash, `delivery list/retry`, retencja | 02, remote rclone od właściciela | odcinek pojawia się w `AniShift/<Seria>/`, odtwarza się na telefonie, źródło znika po progu | planned |
 | 04 | Pobieranie na serwerze | qbittorrent-nox za WireGuard z kill-switchem, subskrypcje na serwerze, progi dysku | 02, decyzja VPN | nowy odcinek obserwowanej serii ląduje na Drive bez ingerencji; test kill-switch: bez tunelu klient nie ma sieci | blocked (VPN) |
@@ -48,8 +48,9 @@ i daje kod, który na instancji trzeba tylko uruchomić.
 **Największa niewiadoma:** czy wykonanie partii w procesie czuwania nie psuje reguły „jedno okno naraz”
 i anulowania; rozstrzyga test z fałszywą partią i z sygnałem stop w trakcie.
 
-**Następny artefakt lub decyzja:** po odbiorze 01 właściciel podaje adres instancji lub wykonuje
-`docs/plans/remote-automation/deploy.md` krok po kroku; decyzja VPN przed etapem 04.
+**Następny artefakt lub decyzja:** etap 01 wykonany 2026-09-06 (PR z gałęzi `work/remote-automation/01-headless`);
+właściciel odbiera H08, podaje adres instancji lub wykonuje [deploy.md](deploy.md) krok po kroku; decyzja VPN
+przed etapem 04.
 
 ## Późniejsze etapy
 

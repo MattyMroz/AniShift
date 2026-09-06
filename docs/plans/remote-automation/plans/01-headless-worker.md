@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: accepted-in-progress
+status: implemented-awaiting-owner-acceptance
 baseline: work/local-automation/05-polish (po planach 01–04)
 branch: work/remote-automation/01-headless
 created: 2026-09-06
@@ -30,21 +30,21 @@ więc całość jest testowalna lokalnie.
 
 ## Warunki końcowe
 
-- [ ] H01: `run_daemon(..., batch=run_batch_in_process)` — czuwanie przyjmuje strategię partii; domyślna to dzisiejsze
+- [x] H01: `run_daemon(..., batch=run_batch_in_process)` — czuwanie przyjmuje strategię partii; domyślna to dzisiejsze
       okno, `--headless` wybiera wykonanie w procesie; ledger, kody wyjścia, jedna partia naraz i sprawdzanie
       subskrypcji między partiami bez zmian.
-- [ ] H02: partia w procesie używa `prepare_auto_run(service, preset, group_ids=..., cancel=token)` i
+- [x] H02: partia w procesie używa `prepare_auto_run(service, preset, group_ids=..., cancel=token)` i
       `execute_plan(service, plan, sink)`, gdzie sink loguje `Stage started/finished` i błędy grup; kod wyjścia z
       `run_exit_code(result)`; flaga stop w trakcie → `cancel.cancel()` → kod 4.
-- [ ] H03: wyjątek w partii (AniShiftError/OSError) nie zabija czuwania: log warning, kod 1 w ledgerze, następny skan.
-- [ ] H04: `anishift watch --headless` działa bez TTY (test: `subprocess.run` z `stdin=DEVNULL`, `stdout=PIPE`,
+- [x] H03: wyjątek w partii (AniShiftError/OSError) nie zabija czuwania: log warning, kod 1 w ledgerze, następny skan.
+- [x] H04: `anishift watch --headless` działa bez TTY (test: `subprocess.run` z `stdin=DEVNULL`, `stdout=PIPE`,
       syntetyczny `workspace/Test/probe.txt`, stop po pierwszej partii).
-- [ ] H05: doctor na Linuksie: `check_binaries` mówi „from PATH”, `autostart` → SKIP z powodem, bez importu
+- [x] H05: doctor na Linuksie: `check_binaries` mówi „from PATH”, `autostart` → SKIP z powodem, bez importu
       `msvcrt`; `mypy --platform linux` i testy z `sys.platform` monkeypatchowanym na `linux`.
-- [ ] H06: `deploy/anishift-watch.service`, `deploy/README.md` (co skopiować, jakie uprawnienia) i
+- [x] H06: `deploy/anishift-watch.service`, `deploy/README.md` (co skopiować, jakie uprawnienia) i
       `docs/plans/remote-automation/deploy.md` (Ubuntu 24.04 ARM64: użytkownik, `apt` binaria, `uv`, klon, `.env`,
       presety, `doctor`, `systemctl enable --now`); żadnych sekretów, żadnych wartości przykładowych kluczy.
-- [ ] H07: README sekcja „Watching the library” opisuje `--headless`; AGENTS `cli` i `platform` zaktualizowane;
+- [x] H07: README sekcja „Watching the library” opisuje `--headless`; AGENTS `cli` i `platform` zaktualizowane;
       bramki root zielone.
 - [ ] H08: właściciel: `anishift watch --headless` na Windows przetworzył wrzucony plik bez okna.
 
@@ -105,3 +105,21 @@ stop → `cancel.cancel()`; wątek kończy się kodem 4; wyjątek w wątku → k
 
 Unit: strategia partii, stop w trakcie, wyjątek, kody; doctor na `linux`. Integracja: H04 subprocess bez TTY
 z fałszywym presetem TXT (jak sonda z planu 01 lokalnego). Human: H08.
+
+## Wynik wykonania (2026-09-06)
+
+Gałąź `work/remote-automation/01-headless`. `BatchRunner` (`start`, `stop`) z dwiema strategiami: `WindowBatch`
+(dzisiejsze okno) i `InProcessBatch` (wątek `anishift-batch`, sam jest `Child`); `run_daemon(batch=...)`;
+`anishift/cli/headless.py` z sinkiem logującym etapy bez ścieżek; `watch --headless`; doctor poza Windows:
+binaria z PATH, autostart SKIP („systemd manages the service on this system”); `deploy/anishift-watch.service`,
+`deploy/README.md`, `docs/plans/remote-automation/deploy.md`.
+
+Smoke bez TTY (H04, test `tests/integration/test_headless_watch.py` ~4 s oraz próba ręczna): `Watch started
+headless=true` → `Batch started groups=1` w `MainThread` → partia w wątku `anishift-batch` → `Batch finished
+exit_code=1` (sonda TXT celowo nieprzetwarzalna) → `Watch stopped on request`; zero okien, stan czuwania sprzątnięty.
+
+Odchylenia: anulowanie trwającego wykonania idzie przez `AppService.cancel(run_id)` z sinka (serwis buduje własny
+token), token z zewnątrz obejmuje przygotowanie; komunikaty logu `Batch window started/finished` → `Batch
+started/finished`; `Group failed` niesie stan zadania, nie klasę błędu (tę loguje scheduler); jednostka systemd bez
+`ExecStop` (różnica `systemctl stop` vs `anishift watch stop` opisana w deploy.md §9). Bramki: ruff, format, mypy
+win32 i linux czyste; pytest 3570 passed. Nie wykonano: H08 (próba właściciela na Windows).
