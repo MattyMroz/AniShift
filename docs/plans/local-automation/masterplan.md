@@ -12,7 +12,8 @@ language: pl
 **Stan 2026-09-06:** cel właściciela (wyszukanie, pobranie, czuwanie z oknem, autostart, subskrypcje)
 zrealizowały trzy plany w `plans/`. Fazy P02–P04, P06, P07, P09, P11 i P12 są zastąpione tymi planami.
 Pozostałe fazy (katalog tytułów, paczki, biblioteka i odtwarzanie, MAL, scenariusze awarii, odbiór) nie mają
-kolejki wykonania; powstaną jako osobne plany dopiero na życzenie właściciela.
+kolejki wykonania; uzasadnienie per faza w [README.md](README.md), sekcja „Implementacja”. Przebieg e2e z 2026-09-06
+(Solo Leveling odc. 25 od subskrypcji do lektora) opisany w [plans/03-subscriptions.md](plans/03-subscriptions.md).
 
 **Cel:** od wyboru anime lub wrzucenia pliku do gotowego polskiego odcinka, bez ponawiania codziennych ręcznych czynności.
 

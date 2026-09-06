@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: implemented-awaiting-owner-acceptance
+status: implemented-e2e-verified
 baseline: 4eb90cf (work/local-automation/01-watch)
 branch: work/local-automation/01-watch
 created: 2026-09-06
@@ -87,3 +87,21 @@ ekranu). Bramki: ruff, format, mypy (win32 i linux) czyste; pytest 3312 passed, 
 `shadow-slave.md` właściciela. `anishift subs list` na żywo: „No followed series.”
 
 Nie wykonano: S06 (odbiór właściciela z włączonym WebUI qBittorrenta).
+
+## Przebieg e2e (2026-09-06)
+
+Na polecenie właściciela („pobierz 1 odcinek Solo Leveling”) wykonano ścieżkę klawisza `O` przez fasadę:
+`subscribe("Solo Leveling", SubsPlease odc. 25)` → `check` → qBittorrent pobrał 1,3 GiB do `workspace/Solo Leveling/`
+w niecałą minutę → czuwanie po 10 s ciszy otworzyło okno partii → tłumaczenie 280 linii (LLM) i lektor `.eac3`
+w 2,5 min → kod wyjścia 0. Produkty: `.pl.ass`, `.eac3` obok źródła.
+
+Przebieg odsłonił dwa błędy, naprawione i pokryte testami:
+
+- qBittorrent 5.2 (Web API 2.15) odpowiada na `torrents/add` kodem 202 z raportem JSON zamiast `Ok.`; klient
+  uznawał udane dodanie za odmowę, a subskrypcja nie zapisywała pobrania. Klient akceptuje oba formaty.
+- ponowne sprawdzenie dodawało ten sam torrent drugi raz; `check` pomija teraz hashe już obecne w kliencie
+  (`AcquisitionService.queued_hashes`) i zapisuje je jako wzięte. Po naprawie `subs check` przesunął
+  subskrypcję na odc. 26 bez drugiego pobrania.
+
+S06 w części „nowy odcinek dopłynął sam po godzinie” pozostaje do obserwacji właściciela (odc. 26 wychodzi
+w przyszłym tygodniu); mechanizm sprawdzania co godzinę potwierdził wpis `Subscriptions checked` w logu.

@@ -649,6 +649,12 @@ Domknięcie (2026-09-06): ledger nie otwiera drugiego okna dla grupy, którą ju
 źródłowe się nie zmienią, niezależnie od kodu wyjścia (wcześniej blokował tylko kod ≠ 0, więc partia kończąca
 się kodem 0 bez produktu mogła wracać co skan). Test `test_a_finished_batch_is_not_restarted_for_the_same_input`.
 
+Przyczyna pętli w bibliotece właściciela: inspekcja odrzucała poprawne `.eac3` (`audio_duration_mismatch`), bo ścieżka
+audio źródła bywa o 1,5 s krótsza od kontenera MKV (CR WEB-DL), a lektor może wyjść 3,9 s za koniec; tolerancja 1 s
+była za ciasna, więc grupa po udanym renderze nadal „wymagała pracy”. Pomiar 29 odcinków: 26 w granicach 0,04 s,
+trzy legalne odchyłki 1,5–3,9 s. Inspekcja lektora ma własną tolerancję 10 s (`NARRATION_DURATION_TOLERANCE_US`);
+po zmianie biblioteka ma 0 grup zawieszonych. Przebieg e2e (Solo Leveling odc. 25) opisany w planie 03.
+
 ## Kontrakt wyniku
 
 ```text

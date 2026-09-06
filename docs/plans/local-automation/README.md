@@ -1,6 +1,6 @@
 ---
 kind: package-index
-status: implemented-awaiting-owner-acceptance
+status: implemented-e2e-verified
 updated: 2026-09-06
 baseline: bc74425b487fb9110da76911c26dca4194b2aad9
 implementation: plans/01-watch-mode.md, plans/02-search-and-download.md, plans/03-subscriptions.md (branch work/local-automation/01-watch)
@@ -59,7 +59,17 @@ Wykonane na gałęzi `work/local-automation/01-watch` (2026-09-05/06), każdy pl
 | [plans/02-search-and-download.md](plans/02-search-and-download.md) | ekran Anime: nyaa, 1080p+, grupy, Space/Enter, qBittorrent, `qbit` | P06, P07, P11 |
 | [plans/03-subscriptions.md](plans/03-subscriptions.md) | klawisz `O`, sprawdzanie co godzinę w czuwaniu, `subs` | P09 |
 
-Do odbioru właściciela pozostają W08, A08 i S06 (wymagają włączonego Web UI qBittorrenta na localhost i
-`anishift qbit setup`). Pozostałe fazy masterplanu nie mają kolejki wykonania.
+Przebieg e2e z 2026-09-06 (plan 03, sekcja „Przebieg e2e”): Web UI qBittorrenta włączone na localhost, `qbit setup`,
+subskrypcja Solo Leveling od odc. 25 → pobranie → okno partii → `.pl.ass` i `.eac3` w 2,5 min. Po drodze naprawiono
+raport 202 Web API 2.15, podwójne dodawanie torrenta przy kolejnym sprawdzeniu, tolerancję długości lektora
+w inspekcji i ponowne otwieranie okna dla grupy zakończonej kodem 0. `anishift doctor` raportuje czuwanie i autostart.
+
+Właścicielowi zostaje obserwacja: nowy odcinek obserwowanej serii ma dopłynąć sam (sprawdzanie co godzinę) oraz
+przejście przez ekran Anime klawiaturą (Space/Enter/O), które w e2e wykonano przez fasadę, nie przez TUI.
+
+Fazy masterplanu bez planu wykonania i powód: P05 (katalog AniList) i P13 MAL to nie-cele właściciela (KISS);
+P08 (paczki) pokrywa wiersz paczki w ekranie Anime plus rekurencyjne discovery podfolderu qBittorrenta;
+P10 (odtwarzanie) nie ma na tej maszynie odtwarzacza obsługującego zewnętrzną ścieżkę audio, produkty leżą obok
+źródła; P14 scenariusze awarii są testami jednostkowymi planów 01–03; P15 to ten katalog.
 
 Wykonawca zaczyna od [handoff.md](handoff.md), potem od aktualnego planu w `plans/`. Cały katalog można umieścić w `docs/work/local-automation/`. Zachowanie nazw plików utrzymuje linki względne.

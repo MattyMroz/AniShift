@@ -103,7 +103,7 @@ default preset are never reprocessed.
 
 ```bash
 uv run anishift run --preset ID   # run one stored preset without interaction
-uv run anishift doctor            # inspect tools, credentials, workspace, and encoding
+uv run anishift doctor            # inspect tools, credentials, workspace, encoding, watch, autostart
 uv run anishift setup [--force]   # download and verify tools in external/bin/
 ```
 
