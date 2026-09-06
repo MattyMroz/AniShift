@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: proposed
+status: accepted-in-progress
 baseline: work/local-automation/05-polish (po planach 01–04)
 branch: work/remote-automation/01-headless
 created: 2026-09-06
