@@ -8,7 +8,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `console.py` — jedyny właściciel rekonfiguracji stdout/stderr na UTF-8 + check dla doctora
 - `run.py` — wspólny, UI-neutralny preflight Auto (także dla wskazanego podzbioru grup) oraz wykonanie zaakceptowanego planu
 - `exit_codes.py` — kody wyjścia 0/1/3/4 i `run_exit_code()` wspólne dla `run --preset` i okna partii
-- `watch.py` — pętla czuwania bez UI: blokada instancji, skan biblioteki, uruchamianie okna partii, flaga stop, godzinne sprawdzanie subskrypcji między skanami
+- `watch.py` — pętla czuwania bez UI: blokada instancji, skan biblioteki, strategia partii (okno albo w procesie), flaga stop, godzinne sprawdzanie subskrypcji między skanami
+- `headless.py` — jedna partia w tym procesie: `prepare_auto_run` + `execute_plan` + sink logujący etapy, bez Prompt Toolkit
 - `interactive/` — lazy-loaded Home, jeden renderer Prompt Toolkit, maskotka, Settings, Manual i wspólny postęp
 
 ## Pułapki
@@ -17,6 +18,19 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   startuje z `pythonw.exe` bez konsoli. Okno partii to osobny proces `anishift watch batch ID...`
   uruchamiany z `CREATE_NEW_CONSOLE`; czuwanie zna tylko jego kod wyjścia. Jedno okno naraz.
   `watch.py`, `main.py`
+- Partia ma DWIE strategie za jednym `BatchRunner` (`start(group_ids) -> Child`, `stop() -> int | None`):
+  `WindowBatch` (domyślna, dzisiejsze okno) i `InProcessBatch` wybierana przez `watch --headless`.
+  `InProcessBatch` biegnie w wątku `anishift-batch`, JEST swoim `Child`, a `stop()` anuluje token i czeka
+  na wątek. `WindowBatch.stop()` zwraca `None`: otwarte okno kończy się samo, więc czuwanie niczego nie
+  zapisuje. Kod wyjścia trafia do ledgera dokładnie raz. `watch.py`
+- `run_batch` anuluje wykonanie przez `AppService.cancel(run_id)` wołane z sinka przy każdym evencie po
+  ustawieniu tokenu — `service.execute()` tworzy WŁASNY token i nie przyjmuje zewnętrznego, więc sam
+  `cancel` przekazany do `prepare_auto_run` nie zatrzyma wykonania. Sink loguje `Stage started/finished`
+  i `Group failed`; nazwa etapu pochodzi z `TaskKind` planu, bo event niesie tylko `task_id`.
+  `headless.py`
+- Poza Windows wiersz `autostart` doktora to SKIP z powodem o systemd — `_automation_checks` sprawdza
+  `is_windows()` PRZED wywołaniem `autostart.status()`, żeby diagnostyka nie opierała się na treści
+  wyjątku scheduler'a. `main.py`
 - `run_interactive(service, batch=...)` zwraca kod wyjścia jak `run --preset` i po wyniku odlicza
   10 s w `_handle_idle`, dowolny klawisz zamyka; `interrupt` w partii anuluje run i kończy kodem 4.
   Test buduje aplikację ręcznie? Ustaw też `_batch` i `_closing_at`. `interactive/app.py`

@@ -247,6 +247,40 @@ def test_watch_runs_the_daemon_on_the_composed_service(monkeypatch: pytest.Monke
     assert seen == [(service, tmp_path)]
 
 
+def test_watch_headless_hands_the_daemon_an_in_process_batch_runner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    service: AppService = cast("AppService", object())
+    runners: list[object] = []
+
+    def daemon(passed: AppService, *, state_dir: Path, batch: object) -> int:
+        del passed, state_dir
+        runners.append(batch)
+        return 0
+
+    monkeypatch.setattr(bootstrap, "production_service", lambda: service)
+    monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli_watch, "run_daemon", daemon)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["watch", "--headless"])
+
+    assert result.exit_code == 0
+    assert [type(runner) for runner in runners] == [cli_watch.InProcessBatch]
+
+
+def test_doctor_skips_the_logon_task_where_systemd_owns_the_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(cli_main, "run_doctor", list)
+    monkeypatch.setattr(cli_main, "is_windows", lambda: False)
+    monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "autostart: systemd manages the service on this system" in result.output
+
+
 def test_watch_refuses_a_second_process_with_one_sentence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     started: list[Path] = []
 

@@ -1,17 +1,20 @@
-"""UI-neutral watch loop opening one automatic batch window at a time."""
+"""UI-neutral watch loop running one automatic batch at a time, in a window or in this process."""
 
 from __future__ import annotations
 
 import os
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application import SCAN_INTERVAL_S, SUBSCRIPTION_CHECK_INTERVAL_S, WatchLedger
+from anishift.application.cancellation import EventCancellationToken
 from anishift.cli.exit_codes import EXIT_REFUSED, EXIT_SUCCESS
+from anishift.cli.headless import run_batch
 from anishift.errors import AniShiftError
 from anishift.paths import config_path
 from anishift.platform.process_lock import ProcessLock
@@ -23,16 +26,20 @@ if TYPE_CHECKING:
     from anishift.application import AppService, AutoPreset, CheckOutcome, InspectedWorkspace
 
 __all__ = [
+    "BATCH_THREAD_NAME",
     "ERROR_BACKOFF_S",
     "LOCK_FILE_NAME",
     "PID_FILE_NAME",
     "STATE_DIR_NAME",
     "STOP_FILE_NAME",
+    "BatchRunner",
     "Child",
     "Clock",
+    "InProcessBatch",
     "Sleeper",
     "Spawner",
     "WatchStatus",
+    "WindowBatch",
     "batch_command",
     "request_stop",
     "run_daemon",
@@ -60,6 +67,9 @@ STOP_FILE_NAME: Final[str] = "stop"
 ERROR_BACKOFF_S: Final[float] = 30.0
 """Delay after a failed scan, so a broken environment is not retried every scan."""
 
+BATCH_THREAD_NAME: Final[str] = "anishift-batch"
+"""Name of the thread a headless watch runs one batch in."""
+
 _CONSOLE_SCRIPT_NAME: Final[str] = "anishift.exe"
 """Installed console script preferred over a module launch for a batch window."""
 
@@ -68,10 +78,22 @@ _REFUSED_MESSAGE: Final[str] = "Another watch process already holds the lock"
 
 
 class Child(Protocol):
-    """Live batch window the watch loop only ever polls for its exit code."""
+    """Live batch the watch loop only ever polls for its exit code."""
 
     def poll(self) -> int | None:
-        """Return the exit code once the window ended, ``None`` while it runs."""
+        """Return the exit code once the batch ended, ``None`` while it runs."""
+        ...
+
+
+class BatchRunner(Protocol):
+    """Strategy processing one batch of source groups for the watch loop."""
+
+    def start(self, group_ids: Sequence[str]) -> Child:
+        """Begin one batch for *group_ids* and return the live child to poll."""
+        ...
+
+    def stop(self) -> int | None:
+        """End a batch still running, returning its exit code when this call ended it."""
         ...
 
 
@@ -114,6 +136,73 @@ def spawn_window(command: Sequence[str]) -> subprocess.Popen[bytes]:
     return subprocess.Popen(command)  # noqa: S603 - argv built here
 
 
+class WindowBatch:
+    """Batch strategy opening one console window per batch, as a watch on a desktop does."""
+
+    __slots__ = ("_spawner",)
+
+    def __init__(self, spawner: Spawner = spawn_window) -> None:
+        """Take the function opening one window for a batch argv."""
+        self._spawner: Spawner = spawner
+
+    def start(self, group_ids: Sequence[str]) -> Child:
+        """Open one batch window and return the live process."""
+        return self._spawner(batch_command(group_ids))
+
+    def stop(self) -> int | None:
+        """Leave an open window alone, because it reports its outcome and closes itself."""
+        return None
+
+
+class InProcessBatch:
+    """Batch strategy executing one plan inside the watch process, for a run without a window."""
+
+    __slots__ = ("_code", "_service", "_thread", "_token")
+
+    def __init__(self, service: AppService) -> None:
+        """Take the facade every batch of this watch runs on."""
+        self._service: AppService = service
+        self._thread: threading.Thread | None = None
+        self._token: EventCancellationToken | None = None
+        self._code: int = EXIT_REFUSED
+
+    def start(self, group_ids: Sequence[str]) -> Child:
+        """Run one batch in a daemon thread and return this runner as the child to poll."""
+        token: EventCancellationToken = EventCancellationToken()
+        self._token = token
+        self._code = EXIT_REFUSED
+        thread: threading.Thread = threading.Thread(
+            target=self._execute,
+            args=(tuple(group_ids), token),
+            name=BATCH_THREAD_NAME,
+            daemon=True,
+        )
+        self._thread = thread
+        thread.start()
+        return self
+
+    def poll(self) -> int | None:
+        """Return the exit code the batch recorded once its thread ended."""
+        thread: threading.Thread | None = self._thread
+        if thread is None or thread.is_alive():
+            return None
+        return self._code
+
+    def stop(self) -> int | None:
+        """Cancel a live batch, wait for its thread and return the code it recorded."""
+        thread: threading.Thread | None = self._thread
+        if thread is None:
+            return None
+        if self._token is not None:
+            self._token.cancel()
+        thread.join()
+        self._thread = None
+        return self._code
+
+    def _execute(self, group_ids: tuple[str, ...], token: EventCancellationToken) -> None:
+        self._code = run_batch(self._service, group_ids, cancel=token)
+
+
 def request_stop(state_dir: Path) -> None:
     """Ask the running daemon to finish after its current scan."""
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -129,24 +218,30 @@ def watch_status(state_dir: Path) -> WatchStatus:
     return WatchStatus(running=True, pid=_recorded_pid(state_dir))
 
 
-def run_daemon(
+def run_daemon(  # noqa: PLR0913 - every extra parameter is one injected collaborator
     service: AppService,
     *,
     state_dir: Path,
     spawner: Spawner = spawn_window,
     clock: Clock = time.monotonic,
     sleep: Sleeper = time.sleep,
+    batch: BatchRunner | None = None,
 ) -> int:
-    """Watch the library until a stop is requested, running one batch window at a time."""
+    """Watch the library until a stop is requested, running one batch at a time.
+
+    ``batch`` replaces the console window every batch opens by default; a headless
+    watch passes :class:`InProcessBatch`, which keeps the whole run in this process.
+    """
     lock: ProcessLock = ProcessLock(state_dir / LOCK_FILE_NAME)
     if not lock.acquire():
         logger.warning(_REFUSED_MESSAGE)
         return EXIT_REFUSED
     _clear_stop(state_dir)
     _write_pid(state_dir)
-    logger.info("Watch started")
+    runner: BatchRunner = WindowBatch(spawner) if batch is None else batch
+    logger.info("Watch started", headless=batch is not None)
     try:
-        return _watch_loop(service, state_dir, spawner, clock, sleep)
+        return _watch_loop(service, state_dir, runner, clock, sleep)
     finally:
         lock.release()
         _remove(state_dir / PID_FILE_NAME)
@@ -155,11 +250,11 @@ def run_daemon(
 def _watch_loop(
     service: AppService,
     state_dir: Path,
-    spawner: Spawner,
+    runner: BatchRunner,
     clock: Clock,
     sleep: Sleeper,
 ) -> int:
-    """Scan, spawn and poll until the stop flag appears or an interrupt arrives."""
+    """Scan, start and poll until the stop flag appears or an interrupt arrives."""
     ledger: WatchLedger = WatchLedger()
     child: Child | None = None
     started: tuple[str, ...] = ()
@@ -171,8 +266,7 @@ def _watch_loop(
                 sleep(SCAN_INTERVAL_S)
                 continue
             if exit_code is not None:
-                ledger.mark_finished(started)
-                logger.info("Batch window finished", groups=len(started), exit_code=exit_code)
+                _record_finished(ledger, started, exit_code)
             child, started = None, ()
             checked_at = _check_subscriptions(service, clock(), checked_at)
             candidates: tuple[str, ...] | None = _scan(service, ledger, clock())
@@ -181,19 +275,42 @@ def _watch_loop(
                 continue
             if candidates:
                 ledger.mark_started(candidates)
-                child, started = spawner(batch_command(candidates)), candidates
-                logger.info("Batch window started", groups=len(candidates))
+                child, started = runner.start(candidates), candidates
+                logger.info("Batch started", groups=len(candidates))
             sleep(SCAN_INTERVAL_S)
     except KeyboardInterrupt:
+        _end_live_batch(runner, ledger, child, started)
         logger.info("Watch stopped by an interrupt")
         return EXIT_SUCCESS
+    _end_live_batch(runner, ledger, child, started)
     _clear_stop(state_dir)
     logger.info("Watch stopped on request")
     return EXIT_SUCCESS
 
 
+def _end_live_batch(
+    runner: BatchRunner,
+    ledger: WatchLedger,
+    child: Child | None,
+    started: tuple[str, ...],
+) -> None:
+    """End a batch the watch is leaving behind, recording the code the runner reports."""
+    if child is None:
+        return
+    exit_code: int | None = runner.stop()
+    if exit_code is None:
+        return
+    _record_finished(ledger, started, exit_code)
+
+
+def _record_finished(ledger: WatchLedger, started: tuple[str, ...], exit_code: int) -> None:
+    """Release the groups of a finished batch and state the code it left."""
+    ledger.mark_finished(started)
+    logger.info("Batch finished", groups=len(started), exit_code=exit_code)
+
+
 def _scan(service: AppService, ledger: WatchLedger, now: float) -> tuple[str, ...] | None:
-    """Return the groups a batch window may take, or ``None`` when the scan failed."""
+    """Return the groups the next batch may take, or ``None`` when the scan failed."""
     try:
         workspace: InspectedWorkspace = service.discover()
         preset: AutoPreset = service.get_preset(service.default_preset_id())

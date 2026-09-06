@@ -47,8 +47,27 @@ def test_binaries_fail_when_all_missing(monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_binaries_ok_when_required_present(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(doctor, "resolve_binary", lambda _b: tmp_path / "bin")
+    monkeypatch.setattr(doctor, "is_windows", lambda: True)
     result = check_binaries()
     assert result.status is CheckStatus.OK
+    assert result.message == "mkvextract, mkvmerge, ffmpeg present"
+
+
+def test_binaries_come_from_the_path_off_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(doctor, "resolve_binary", lambda _b: tmp_path / "bin")
+    monkeypatch.setattr(doctor, "is_windows", lambda: False)
+    result = check_binaries()
+    assert result.status is CheckStatus.OK
+    assert result.message == "ffmpeg, mkvextract, mkvmerge from PATH"
+
+
+def test_missing_binaries_off_windows_point_at_the_package_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor, "resolve_binary", lambda _b: None)
+    monkeypatch.setattr(doctor, "is_windows", lambda: False)
+    result = check_binaries()
+    assert result.status is CheckStatus.FAIL
+    assert "apt install ffmpeg mkvtoolnix" in result.suggestion
+    assert "anishift setup" not in result.suggestion
 
 
 def test_api_keys_warn_when_none_configured() -> None:

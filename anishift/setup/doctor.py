@@ -34,6 +34,17 @@ _REQUIRED_BINARIES: Final[tuple[Binary, ...]] = (
 )
 """Binaries required on every platform."""
 
+_BUNDLED_BINARIES_HINT: Final[str] = (
+    "Run `anishift setup` to download them into external/bin/ "
+    "(on Windows binaries must be bundled there, not just on PATH)"
+)
+"""Advice offered on Windows, where only bundled binaries resolve."""
+
+_PATH_BINARIES_HINT: Final[str] = (
+    "Install them with the package manager of the system, e.g. `apt install ffmpeg mkvtoolnix`"
+)
+"""Advice offered elsewhere, where binaries are resolved from PATH."""
+
 _API_KEYS: Final[dict[str, str]] = {
     "deepl_api_key": "DeepL",
     "elevenlabs_api_key": "ElevenLabs",
@@ -123,19 +134,22 @@ def check_uv_installed() -> CheckResult:
 
 
 def check_binaries() -> CheckResult:
-    """Check that the required external binaries resolve."""
+    """Check that the required external binaries resolve, naming where they come from."""
     missing = [b.value for b in _REQUIRED_BINARIES if resolve_binary(b) is None]
     details: dict[str, Any] = {"missing": missing}
     if missing:
-        suggestion = "Run `anishift setup` to download them into external/bin/"
-        if is_windows():
-            # On Windows only bundled binaries count — PATH is not searched.
-            suggestion += " (on Windows binaries must be bundled there, not just on PATH)"
         return CheckResult(
             name="binaries",
             status=CheckStatus.FAIL,
             message=f"missing external binaries: {', '.join(missing)}",
-            suggestion=suggestion,
+            suggestion=_BUNDLED_BINARIES_HINT if is_windows() else _PATH_BINARIES_HINT,
+            details=details,
+        )
+    if not is_windows():
+        return CheckResult(
+            name="binaries",
+            status=CheckStatus.OK,
+            message=f"{', '.join(binary.value for binary in _REQUIRED_BINARIES)} from PATH",
             details=details,
         )
     return CheckResult(

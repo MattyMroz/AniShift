@@ -1,0 +1,15 @@
+[Unit]
+Description=AniShift watch (headless)
+After=network-online.target qbittorrent-nox.service
+Wants=network-online.target
+
+[Service]
+User=anishift
+WorkingDirectory=/srv/anishift/app
+Environment=ANISHIFT_WORKSPACE_ROOT=/srv/anishift/workspace
+ExecStart=/srv/anishift/app/.venv/bin/anishift watch --headless
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

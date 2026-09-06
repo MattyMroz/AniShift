@@ -11,6 +11,7 @@ import typer
 
 from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_INCOMPLETE, EXIT_REFUSED, run_exit_code
 from anishift.errors import AniShiftError
+from anishift.platform.binaries import is_windows
 from anishift.setup.doctor import CheckResult, CheckStatus, run_doctor
 from anishift.setup.installer import run_setup
 from anishift.utils.logger import get_logger
@@ -40,7 +41,7 @@ app = typer.Typer(
 )
 
 watch_app = typer.Typer(
-    help="Watch the library and hand every new file to one automatic window.",
+    help="Watch the library and hand every new file to one automatic batch.",
     no_args_is_help=False,
 )
 
@@ -99,6 +100,12 @@ _WATCH_BUSY: Final[str] = "Another watch process is already running; see `anishi
 
 _WATCH_STARTED: Final[str] = "Watching the library; Ctrl+C or `anishift watch stop` ends it"
 """Opening line of a watch running in a terminal, so the session never looks stuck."""
+
+_HEADLESS_HELP: Final[str] = "Run batches inside this process instead of opening a window; for services and servers."
+"""Help of the flag a watch under systemd or another service manager runs with."""
+
+_AUTOSTART_SYSTEMD: Final[str] = "systemd manages the service on this system"
+"""Reason the doctor skips the logon task where no Windows scheduler exists."""
 
 _AUTOSTART_ENABLED: Final[str] = "Autostart is on; the watch runs now and after every logon."
 """Confirmation printed once the logon task exists and the watch was started."""
@@ -229,11 +236,22 @@ def run(
 
 
 @watch_app.callback(invoke_without_command=True)
-def _watch(ctx: typer.Context) -> None:
+def _watch(
+    ctx: typer.Context,
+    headless: Annotated[
+        bool,
+        typer.Option("--headless", help=_HEADLESS_HELP),
+    ] = False,
+) -> None:
     """Watch the library in this terminal until `anishift watch stop`."""
     if ctx.invoked_subcommand is not None:
         return
-    from anishift.cli.watch import run_daemon, watch_state_dir, watch_status  # noqa: PLC0415 - keep the loop lazy
+    from anishift.cli.watch import (  # noqa: PLC0415 - keep the loop lazy
+        InProcessBatch,
+        run_daemon,
+        watch_state_dir,
+        watch_status,
+    )
 
     state_dir: Path = watch_state_dir()
     if watch_status(state_dir).running:
@@ -241,6 +259,8 @@ def _watch(ctx: typer.Context) -> None:
         raise typer.Exit(code=EXIT_REFUSED)
     service: AppService = _composed_service()
     _tell(_WATCH_STARTED)
+    if headless:
+        raise typer.Exit(code=run_daemon(service, state_dir=state_dir, batch=InProcessBatch(service)))
     raise typer.Exit(code=run_daemon(service, state_dir=state_dir))
 
 
@@ -476,6 +496,9 @@ def _automation_checks() -> list[CheckResult]:
             suggestion=_WATCH_SUGGESTION,
         )
     ]
+    if not is_windows():
+        checks.append(CheckResult("autostart", CheckStatus.SKIP, _AUTOSTART_SYSTEMD))
+        return checks
     try:
         task: AutostartStatus = status()
     except AniShiftError as problem:

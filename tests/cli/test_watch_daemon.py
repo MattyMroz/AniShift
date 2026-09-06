@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,13 +12,16 @@ from typing import Any, Final, cast
 import pytest
 
 from anishift.application import AppService
+from anishift.application.cancellation import CancellationToken
 from anishift.cli import watch as cli_watch
-from anishift.cli.exit_codes import EXIT_REFUSED, EXIT_SUCCESS
+from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_REFUSED, EXIT_SUCCESS
 from anishift.cli.watch import (
+    BATCH_THREAD_NAME,
     ERROR_BACKOFF_S,
     LOCK_FILE_NAME,
     PID_FILE_NAME,
     STOP_FILE_NAME,
+    InProcessBatch,
     WatchStatus,
     batch_command,
     request_stop,
@@ -31,6 +36,10 @@ from anishift.platform.process_lock import ProcessLock
 _SCAN_INTERVAL: Final[float] = 5.0
 
 _PRESET_ID: Final[str] = "default"
+
+_JOIN_TIMEOUT: Final[float] = 5.0
+
+_CANCEL_POLL_S: Final[float] = 0.001
 
 
 class _Ledger:
@@ -121,6 +130,39 @@ class _Service:
     def get_preset(self, preset_id: str) -> object:
         del preset_id
         return SimpleNamespace(products=SimpleNamespace(requested_products=()))
+
+
+class _Batch:
+    def __init__(self, code: int) -> None:
+        self.code: int = code
+        self.groups: list[tuple[str, ...]] = []
+        self.threads: list[str] = []
+        self.cancelled: list[bool] = []
+        self.entered: threading.Event = threading.Event()
+
+    def __call__(self, service: AppService, group_ids: Sequence[str], *, cancel: CancellationToken) -> int:
+        del service
+        self.groups.append(tuple(group_ids))
+        self.threads.append(threading.current_thread().name)
+        self.entered.set()
+        while not cancel.is_cancelled():
+            time.sleep(_CANCEL_POLL_S)
+        self.cancelled.append(True)
+        return self.code
+
+
+class _SpyRunner:
+    def __init__(self, inner: cli_watch.InProcessBatch) -> None:
+        self.inner: cli_watch.InProcessBatch = inner
+        self.stopped: list[int | None] = []
+
+    def start(self, group_ids: Sequence[str]) -> cli_watch.Child:
+        return self.inner.start(group_ids)
+
+    def stop(self) -> int | None:
+        code: int | None = self.inner.stop()
+        self.stopped.append(code)
+        return code
 
 
 class _PopenRecorder:
@@ -428,3 +470,83 @@ def test_a_service_without_subscriptions_skips_the_check(monkeypatch: pytest.Mon
     )
 
     assert code == EXIT_SUCCESS
+
+
+def test_an_in_process_batch_replaces_the_window_and_runs_in_its_own_thread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ledger: _Ledger = _Ledger([("a", "b")])
+    _install_ledger(monkeypatch, ledger)
+    batch: _Batch = _Batch(EXIT_CANCELLED)
+    monkeypatch.setattr(cli_watch, "run_batch", batch)
+    spawner: _Spawner = _Spawner()
+
+    code: int = run_daemon(
+        _as_service(_Service()),
+        state_dir=tmp_path,
+        spawner=spawner,
+        clock=_Clock(),
+        sleep=_Sleeper(tmp_path, 1),
+        batch=InProcessBatch(_as_service(_Service())),
+    )
+
+    assert code == EXIT_SUCCESS
+    assert batch.groups == [("a", "b")]
+    assert batch.threads == [BATCH_THREAD_NAME]
+    assert spawner.commands == []
+    assert ledger.started == [("a", "b")]
+
+
+def test_a_stop_during_an_in_process_batch_cancels_it_and_records_the_cancelled_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ledger: _Ledger = _Ledger([("a",)])
+    _install_ledger(monkeypatch, ledger)
+    batch: _Batch = _Batch(EXIT_CANCELLED)
+    monkeypatch.setattr(cli_watch, "run_batch", batch)
+    runner: _SpyRunner = _SpyRunner(InProcessBatch(_as_service(_Service())))
+
+    run_daemon(
+        _as_service(_Service()),
+        state_dir=tmp_path,
+        spawner=_Spawner(),
+        clock=_Clock(),
+        sleep=_Sleeper(tmp_path, 1),
+        batch=runner,
+    )
+
+    assert batch.cancelled == [True]
+    assert runner.stopped == [EXIT_CANCELLED]
+    assert ledger.finished == [("a",)]
+
+
+def test_a_stop_leaves_an_open_batch_window_alone_and_records_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ledger: _Ledger = _Ledger([("a",)])
+    _install_ledger(monkeypatch, ledger)
+    spawner: _Spawner = _Spawner(_Child([None, None]))
+
+    run_daemon(
+        _as_service(_Service()),
+        state_dir=tmp_path,
+        spawner=spawner,
+        clock=_Clock(),
+        sleep=_Sleeper(tmp_path, 1),
+    )
+
+    assert ledger.started == [("a",)]
+    assert ledger.finished == []
+
+
+def test_an_in_process_batch_reports_no_code_before_its_thread_ends(monkeypatch: pytest.MonkeyPatch) -> None:
+    batch: _Batch = _Batch(EXIT_CANCELLED)
+    monkeypatch.setattr(cli_watch, "run_batch", batch)
+    runner: InProcessBatch = InProcessBatch(_as_service(_Service()))
+
+    child: cli_watch.Child = runner.start(("a",))
+    batch.entered.wait(_JOIN_TIMEOUT)
+
+    assert child.poll() is None
+    assert runner.stop() == EXIT_CANCELLED
+    assert runner.stop() is None

@@ -102,6 +102,7 @@ uv run anishift autostart enable    # register the logon task and start watching
 uv run anishift autostart disable   # remove the task and stop watching
 uv run anishift autostart status    # enabled | disabled | missing
 uv run anishift watch               # watch in this terminal instead of the logon task
+uv run anishift watch --headless    # watch without opening a window, for services and servers
 uv run anishift watch status        # running (pid N) | stopped
 uv run anishift watch stop          # stop the watching process
 ```
@@ -113,6 +114,12 @@ seconds, and closes itself. Any key closes it earlier; closing it mid-run cancel
 batch only, and the batch is not retried until its files change. Files that appear
 during a batch wait for the next scan. Groups that already hold every product of the
 default preset are never reprocessed.
+
+`--headless` keeps the batch inside the watching process instead of opening a window:
+the run reports its stages to the structured log and the loop records the same exit
+code, so a service manager can host it where no terminal exists. `watch stop` still
+ends the loop after the current scan, cancelling a batch that is still running.
+Installing it as a systemd service is described in [deploy/](deploy/).
 
 ## Technical commands
 
