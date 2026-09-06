@@ -1,19 +1,102 @@
 ---
-kind: specification
-status: awaiting-owner-acceptance
+kind: notes
+status: agreements-and-open-questions
 baseline: 167a181 (work/local-automation/05-polish)
 branch: work/local-automation/06-efficiency
 created: 2026-09-06
 updated: 2026-09-07
 ---
 
-# Plan 06: Kolejka, widoczność, awarie, regeneracja, subskrypcje
+# Plan 06: ustalenia z właścicielem i pytania otwarte
+
+Spisane z rozmów 2026-09-06 i 2026-09-07. To nie jest specyfikacja ani plan. To lista tego, co właściciel
+powiedział, i tego, czego jeszcze nie przegadaliśmy. Plan powstanie dopiero po tych rozmowach. Odrzucona
+specyfikacja jest w załączniku na dole, żeby nic nie zginęło.
+
+## Co właściciel ustalił
+
+### Jak ma się pracować nad tym tematem
+
+- Nie brać wypowiedzi właściciela za święte. Pracować z nim nad pomysłem: pytania i odpowiedzi, wspólne
+  myślenie, a nie zamiana jednego zdania w gotowy dokument.
+- Nie pisać liczb bez pokrycia. Liczba jest albo zmierzona, albo jest ustawieniem, albo jej nie ma.
+- Nie pisać rzeczy technicznych tam, gdzie właściciel ma zatwierdzać zachowanie programu.
+- Pokazywać małymi kawałkami, żeby błąd wyszedł po jednym kawałku.
+- Nie dodawać nowych mechanizmów tam, gdzie istniejący da się rozszerzyć („dodajesz to do kolejki istniejącej,
+  a nie robisz nowy system”).
+- Współbieżność etapów (ile tłumaczeń naraz, ile lektorów naraz) to ustawienia, nie stałe. Nie ustalać ich w dokumencie.
+
+### Subskrypcje i premiery
+
+- Co godzinę wszystkie serie to marnotrawstwo, bo są dokładne daty premier.
+- Przed premierą nie pytać wcale („przez tydzień nic się nie zmieni”). Co godzinę jest w porządku dopiero po dacie premiery.
+- Seria zakończona: nie sprawdzać samoczynnie. „Raz na tydzień” odrzucone.
+- Termin premiery: najpierw godzina emisji z AniList plus typowe opóźnienie grupy, potem historia publikacji grupy.
+- Licznik na liście MAL właściciela (`Matty_Mroz`) to odcinek, który ma obejrzeć jako następny. Subskrypcja startuje od tego numeru, nie od numeru plus jeden.
+- Subskrypcję dodaje się i anuluje z aplikacji.
+- Subskrypcja sama się kończy, gdy sezon się skończy, i ma to być widoczne, żeby właściciel miał kontrolę.
+
+### Kolejka i pierwszeństwo
+
+- Kolejka ma być asynchroniczna i wywłaszczeniowa.
+- Nowy odcinek wrzucony ręcznie do folderu ma pierwszeństwo przed wszystkim. To, co się właśnie robi, dokańcza się, potem od razu ręczne.
+- Nie przerywać w połowie.
+- Realizować to w istniejącej kolejce (scheduler ma kolejki per etap), nie budować nowego systemu.
+
+### Widoczność i sterowanie
+
+- Wszystko przez aplikację terminalową. Właściciel nie chce pamiętać komend.
+- W menu głównym ma być zakładka ze stanem: subskrypcje, co się robi, i stamtąd regeneracja oraz Auto/Ręczny dla wybranego katalogu.
+- Powiadomienia Windows to dobra myśl.
+
+### Klient torrent
+
+- qBittorrent nie powinien musieć działać cały czas. Ma być zależnością, która działa, gdy jest potrzebna.
+- Ręcznie otwartego qBittorrenta nie wolno zamykać.
+- Nie seedujemy (ustawione dziś: bez wysyłania po pobraniu).
+
+### Zasady ogólne
+
+- Ma działać tak samo albo lepiej. Zero regresji.
+- Zero nowych zależności, zero zmian w formacie produktów i presetów.
+- Zdalna praca (VPS Oracle, Google Drive) wycofana przez właściciela.
+
+## Pytania właściciela, na które nie ma jeszcze wspólnej odpowiedzi
+
+Właściciel je zadał; ja odpowiedziałem dokumentem zamiast rozmową. Do przegadania po kolei, po jednym.
+
+1. Skąd mam widzieć, że to działa? Czy okno terminala otwierające się przy każdej partii nie będzie męczące?
+2. Co jeśli coś się wywali: torrent nie działa, nie pobiera się, nie ma seedów, LLM nie działa, TTS nie działa?
+   Co wtedy widzę i co robi program?
+3. Co jeśli coś się zepsuło i trzeba przerobić: zmieniony głos, za cicho, połowa odcinków do regeneracji?
+   Jak to ma wyglądać w aplikacji?
+4. Jak dokładnie ma wyglądać zakładka ze stanem: co na niej jest, co można z niej zrobić, jak się nazywa?
+5. Jak ma wyglądać koniec sezonu subskrypcji: znika sama, zostaje na liście, przez ile czasu?
+6. Kiedy uznać, że torrent utknął, i co wtedy: szukać innego wydania, powiadomić, czekać?
+7. O czym powiadamiać, a o czym nie.
+8. Co z pobraniami rozpoczętymi ręcznie z ekranu Anime: to samo pierwszeństwo co plik w folderze, czy niżej?
+9. Czy w ogóle zostawić okno terminala per partia jako opcję.
+
+## Stan na koniec 2026-09-07
+
+- Kod: bez zmian od `167a181` (PR #53). Czuwanie działa, subskrypcje działają co godzinę jak dotąd.
+- Gałąź `work/local-automation/06-efficiency`: tylko dokumenty. Szkice wykonawców w `git stash`
+  („plan06 partial executor work”), nieaktualne.
+- Następny krok: rozmowa nad pytaniami wyżej, jedno po drugim, zanim powstanie plan.
+
+---
+
+# Załącznik: odrzucona specyfikacja z 2026-09-07 (zachowana, żeby nic nie zginęło)
+
+Właściciel odrzucił ją jako zbyt techniczną i pisaną bez wspólnego myślenia. Zostaje wyłącznie jako materiał.
+
+## Plan 06: Kolejka, widoczność, awarie, regeneracja, subskrypcje
 
 Specyfikacja zamawianego zachowania. Zastępuje wersję „wydajnościową” odrzuconą przez właściciela 2026-09-06
 („liczby bez pokrycia, bez scenariuszy”). Nie ma tu liczb docelowych; są tylko pomiary z logu i sond, każdy ze
 źródłem, oraz wartości domyślne oznaczone jako domyślne. Po akceptacji powstaje szczegółowy plan tylko dla etapu 06a.
 
-## Ustalenia właściciela (obowiązujące)
+### Ustalenia właściciela (obowiązujące)
 
 - Wszystko przez aplikację terminalową `anishift` (menu, strzałki, Enter). Żadnych komend do pamiętania.
   Komendy CLI zostają jako narzędzie techniczne, nie jako droga użytkownika.
@@ -28,7 +111,7 @@ Specyfikacja zamawianego zachowania. Zastępuje wersję „wydajnościową” od
 - qBittorrent nie musi działać stale, ale ręcznie otwartego nie wolno zamykać.
 - Ma działać tak samo albo lepiej; zero nowych zależności; zero zmian w plikach i presetach.
 
-## Jak jest dziś (sprawdzone w kodzie i logu 2026-09-06)
+### Jak jest dziś (sprawdzone w kodzie i logu 2026-09-06)
 
 | Sytuacja | Dziś | Źródło |
 | --- | --- | --- |
@@ -46,7 +129,7 @@ Specyfikacja zamawianego zachowania. Zastępuje wersję „wydajnościową” od
 | qBittorrent bezczynny | 101 MB, 342 węzły DHT, CPU także bez pobierań | Web API |
 | Powiadomienie Windows | możliwe przez wbudowane API systemu z PowerShella, bez zależności | sonda 2026-09-06 23:4x (wysłane) |
 
-## Model: jedno zadanie na odcinek
+### Model: jedno zadanie na odcinek
 
 Wszystkie sytuacje sprowadzają się do listy **zadań** trzymanej na dysku (`config/queue.json`, zapis atomowy).
 Zadanie = jedna grupa źródłowa (odcinek) + co ma z niej powstać. Pola: pochodzenie, priorytet, stan, powód, liczba
@@ -71,8 +154,9 @@ W tym samym priorytecie: starsze pierwsze.
 | `wymaga uwagi` | ponowienia wyczerpane albo awaria trwała | powiadomienie; zostaje do decyzji właściciela (ponów / pomiń) |
 | `anulowane` | właściciel anulował albo źródło zniknęło | wpis w historii |
 
-Współbieżność etapów bez zmian: ekstrakcja równolegle wg rdzeni, tłumaczenie do 4 naraz (`llm_max_concurrency`),
-lektor 1 naraz, każdy etap ma własną kolejkę i limit (dzisiejszy `GraphScheduler`). „Zadanie” jest jednostką
+Współbieżność etapów bez zmian: limity każdego etapu pochodzą z Ustawień (współbieżność tłumaczenia i LLM,
+współbieżność głosów) i z liczby rdzeni, tak jak dziś w `GraphScheduler`; ta specyfikacja żadnej wartości nie
+ustala ani nie zmienia. „Zadanie” jest jednostką
 kolejki, priorytetu i stanu, nie jednostką wykonania.
 
 Wywłaszczenie w istniejącym schedulerze, bez nowego systemu: działający `GraphScheduler` przyjmuje nową grupę
@@ -88,7 +172,7 @@ są odrzucane, produkty gotowe zostają (nic nie tłumaczy się drugi raz).
 Praca dzieje się **w procesie czuwania**, bez otwierania okien terminala (decyzja D3). Czuwanie zapisuje co kilka
 sekund `config/watch/state.json` (bieżące zadanie, etap, postęp, kolejka, problemy); aplikacja to czyta i pokazuje.
 
-## Ekran „Stan” w menu głównym (nazwa: decyzja D1)
+### Ekran „Stan” w menu głównym (nazwa: decyzja D1)
 
 Sekcje, strzałki + Enter, Esc wraca:
 
@@ -103,7 +187,7 @@ Sekcje, strzałki + Enter, Esc wraca:
 
 Aplikacja nie musi być otwarta, żeby cokolwiek działało. Otwarta pokazuje stan na żywo.
 
-## Regeneracja (ekran Stan → Katalogi → Regeneruj)
+### Regeneracja (ekran Stan → Katalogi → Regeneruj)
 
 Kroki: katalog → odcinki (wszystkie / zakres jak „4-10” / zaznaczone) → co od nowa → potwierdzenie z liczbą
 odcinków → zadania w kolejce.
@@ -119,7 +203,7 @@ brak produktu i wytwarza go bieżącymi ustawieniami. Właściciel może wróci�
 Regeneracja zmienionej tylko głośności bez ponownego TTS: nie-cel (miks powstaje z klipów TTS, więc ponowny
 lektor jest tą samą operacją).
 
-## Awarie: wykrycie → stan → co widzisz → co robi program
+### Awarie: wykrycie → stan → co widzisz → co robi program
 
 Ponowienia rosnące (domyślnie: 5 min, 15 min, 1 h, potem co godzinę do 24 h) kończą się stanem `wymaga uwagi`
 i powiadomieniem. Wartości domyślne do zmiany w Ustawieniach, nie w kodzie.
@@ -140,7 +224,7 @@ i powiadomieniem. Wartości domyślne do zmiany w Ustawieniach, nie w kodzie.
 | Ten sam odcinek z dwóch grup | dwie grupy w bibliotece | dwa zadania | Kolejka | oba przetwarza (jak dziś); ostrzeżenie w Katalogach |
 | Właściciel anuluje zadanie w toku | Enter → anuluj | `anulowane` | Kolejka | bieżący etap dokańcza się do bezpiecznego punktu (jak dzisiejsze anulowanie Auto), pliki pośrednie sprzątane |
 
-## Powiadomienia Windows
+### Powiadomienia Windows
 
 | Zdarzenie | Treść |
 | --- | --- |
@@ -152,9 +236,9 @@ i powiadomieniem. Wartości domyślne do zmiany w Ustawieniach, nie w kodzie.
 Bez powiadomień o każdej próbie i o każdym sprawdzeniu. Wyłączane w Ustawieniach. Realizacja: wbudowane API
 Windows z PowerShella, bez nowej zależności (potwierdzone sondą).
 
-## Subskrypcje
+### Subskrypcje
 
-### W aplikacji
+#### W aplikacji
 
 - Dodanie: ekran Anime, klawisz O na numerowanym odcinku (jak dziś); od razu zaległości jako zadania priorytetu 3.
 - Lista i akcje: ekran Stan → Subskrypcje: szczegóły, sprawdź teraz, zmień następny odcinek, anuluj.
@@ -164,7 +248,7 @@ Windows z PowerShella, bez nowej zależności (potwierdzone sondą).
 - Bez informacji o końcu: po N kolejnych przegapionych terminach subskrypcja przechodzi w `uśpiona · brak nowych
   odcinków od 2 tyg.` i nie pyta sama; „sprawdź teraz” ją budzi (N domyślnie 2).
 
-### Rytm sprawdzeń (jak ustalono)
+#### Rytm sprawdzeń (jak ustalono)
 
 | Stan subskrypcji | Rytm |
 | --- | --- |
@@ -180,7 +264,7 @@ jedna publikacja → założone 7 dni, oznaczone „założone”). Sprawdzenie 
 (`?page=rss&u=<grupa>`, 75 najnowszych wydań grupy) obsługuje wszystkie subskrypcje tej grupy; zapytanie per seria
 tylko dla luki w numeracji. Sprawdzenia biegną obok kolejki, nie blokują jej ani skanu.
 
-## Oszczędności (dopiero po powyższym, bez liczb docelowych)
+### Oszczędności (dopiero po powyższym, bez liczb docelowych)
 
 - Inspekcja z dysku: wynik inspekcji każdego pliku zapamiętany pod kluczem ścieżka + rozmiar + czas zmiany;
   nowy proces sonduje tylko zmienione pliki. Dziś rozruch to głównie dekodowanie każdego lektora.
@@ -188,25 +272,25 @@ tylko dla luki w numeracji. Sprawdzenia biegną obok kolejki, nie blokują jej a
   nic nie pobiera, nie ma cudzych aktywnych torrentów i minął czas bezczynności (domyślnie 10 min). Ręcznie otwarty
   nigdy. Ustawienie do wyłączenia.
 - Ekran Anime: powtórne wejście w ten sam tytuł bez powtarzania zapytań; AniList z pamięci, gdy leży.
-- Pomiar partii: TTS po jednej grupie naraz jest dziś wąskim gardłem; pomiar 1 vs 2 na kopii realnych odcinków,
-  decyzja po wyniku.
+- Pomiar partii: etap lektora idzie dziś grupa po grupie (stała w kodzie, nie ustawienie); pomiar na kopii
+  realnych odcinków, czy dopuszczenie drugiej grupy naraz skraca partię bez błędów TTS; decyzja po wyniku.
 
-## Nie-cele
+### Nie-cele
 
 VPS; nowe zależności; zmiana formatu produktów i presetów; zmiana silników; scraping HTML nyaa; inne klienty niż
 qBittorrent; przerywanie zadania w połowie; miks głośności bez ponownego lektora; import listy MAL (osobna funkcja).
 
-## Decyzje właściciela
+### Decyzje właściciela
 
 | Nr | Pytanie | Rekomendacja |
 | --- | --- | --- |
 | D1 | Nazwa zakładki w menu: „Stan”, „Kolejka”, „Czuwanie”? | „Stan” |
-| D2 | skreślone (właściciel 2026-09-07): współbieżność etapów zostaje jak dziś, tłumaczenie do 4 naraz, lektor 1 naraz; wywłaszczenie na granicy etapu | — |
+| D2 | skreślone (właściciel 2026-09-07): współbieżność etapów zostaje jak dziś, według Ustawień; wywłaszczenie na granicy etapu | — |
 | D3 | Okno terminala per partia: usunąć całkiem, czy zostawić jako opcję w Ustawieniach? | usunąć |
 | D4 | Zakończona subskrypcja: znika sama po 7 dniach, czy zostaje aż ją usuniesz? | znika po 7 dniach |
 | D5 | Po jakim czasie bez postępu torrent liczy się jako utknięty i szukamy zamiennika? | 6 h |
 
-## Mapa etapów (po akceptacji szczegółowy plan tylko dla 06a)
+### Mapa etapów (po akceptacji szczegółowy plan tylko dla 06a)
 
 | Etap | Zakres | Dowód końca (na żywo, sprawdzasz Ty) |
 | --- | --- | --- |
@@ -220,7 +304,7 @@ Każdy etap: szczegółowy plan → jeden wykonawca Opus po skillach `simple` i 
 prowadzącego → smoke na żywo → Twoje sprawdzenie z tabeli → PR stacked. Błąd lokalny → poprawka w etapie; fałszywe
 założenie → przeplanowanie etapu; zmiana wymagania → do Ciebie.
 
-## Authority
+### Authority
 
 Właściciel 2026-09-06/07 (wypowiedzi w „Ustalenia właściciela”); spec local-automation R09, R11, R12, R13, R17, R18,
 R23, R24, R25; masterplan 3.3 (kolejność tick), 10.1, 10.2, 10.4. Kod: `cli/watch.py`, `application/watch.py`,
