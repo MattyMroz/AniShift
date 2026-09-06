@@ -11,11 +11,8 @@ __all__ = ["EpisodeRange", "SearchQuery", "parse_query"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-EPISODE_LABEL_PREFIX: Final[str] = "odc."
-"""Polish word opening the episode label shown by the interface."""
-
 RANGE_DASH: Final[str] = "–"
-"""En dash separating both ends of an episode label."""
+"""En dash separating both ends of an episode span."""
 
 FIRST_CALENDAR_YEAR: Final[int] = 1900
 """Lowest bare number read as a release year instead of an episode."""
@@ -43,13 +40,16 @@ class EpisodeRange:
     last: Decimal | None
 
     @property
-    def label(self) -> str:
-        """Return the Polish label shown next to the results, such as ``odc. 4–10``."""
+    def text(self) -> str:
+        """Return the span written for the interface, such as ``4–10``, ``5–`` or ``1``.
+
+        The wording naming it an episode belongs to the interface, not here.
+        """
         if self.first is not None and self.first == self.last:
-            return f"{EPISODE_LABEL_PREFIX} {self.first}"
+            return str(self.first)
         first_text: str = "" if self.first is None else str(self.first)
         last_text: str = "" if self.last is None else str(self.last)
-        return f"{EPISODE_LABEL_PREFIX} {first_text}{RANGE_DASH}{last_text}"
+        return f"{first_text}{RANGE_DASH}{last_text}"
 
     def contains(self, episode: Decimal) -> bool:
         """Whether *episode* falls inside this span."""

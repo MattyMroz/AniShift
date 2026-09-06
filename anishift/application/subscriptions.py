@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -13,9 +14,12 @@ from anishift.application.acquisition import (
     MIN_RESOLUTION,
     AcquisitionService,
     EpisodeReading,
+    ReleaseCatalog,
     ReleaseChoice,
     SeasonContext,
+    normalize_series,
     read_episode,
+    series_forms,
 )
 from anishift.errors import AniShiftError, ConfigError, ErrorCode, ErrorContext
 from anishift.utils.logger import get_logger
@@ -24,7 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
 
-    from anishift.application.acquisition import ReleaseCatalog, SeriesGroup
+    from anishift.application.acquisition import SeriesGroup
 
 __all__ = [
     "CHECK_INTERVAL_S",
@@ -72,9 +76,9 @@ _ENTRY_KEYS: Final[frozenset[str]] = frozenset(
 """Keys every serialized subscription must carry."""
 
 _OPTIONAL_ENTRY_KEYS: Final[frozenset[str]] = frozenset(
-    {"directory", "season_index", "episode_offset", "season_episodes"}
+    {"directory", "season_index", "episode_offset", "season_episodes", "taken_episodes"}
 )
-"""Keys a subscription written before seasons were numbered may omit."""
+"""Keys a subscription written before seasons and taken episode numbers may omit."""
 
 _INVALID_MESSAGE: Final[str] = "Subscriptions file is invalid"
 """Sentence shown when the stored file cannot be trusted."""
@@ -85,7 +89,11 @@ _INVALID_SUGGESTION: Final[str] = "Fix or delete config/subscriptions.json"
 
 @dataclass(frozen=True, slots=True)
 class Subscription:
-    """One standing order: which series and group to follow, and from which episode on."""
+    """One standing order: which series and group to follow, and from which episode on.
+
+    ``taken`` identifies the releases already handed to the client, ``taken_episodes`` the
+    numbers they carried, which is what keeps ``next_episode`` from stepping over a gap.
+    """
 
     subscription_id: str
     query: str
@@ -100,6 +108,7 @@ class Subscription:
     season_index: int = 1
     episode_offset: int = 0
     season_episodes: int | None = None
+    taken_episodes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,8 +121,12 @@ class CheckOutcome:
 
 
 def subscription_id(series: str, group: str) -> str:
-    """Return the stable identifier of the series and release group pair."""
-    seed: str = f"{series.casefold()}|{group.casefold()}"
+    """Return the stable identifier of the series and release group pair.
+
+    The series is normalized first, so the spelling a single release happens to use never
+    splits one followed series into two orders.
+    """
+    seed: str = f"{normalize_series(series)}|{group.casefold()}"
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:_ID_LENGTH]
 
 
@@ -206,6 +219,7 @@ class SubscriptionService:
             next_episode=episode,
             min_resolution=MIN_RESOLUTION,
             taken=earlier.taken if earlier is not None else frozenset(),
+            taken_episodes=earlier.taken_episodes if earlier is not None else (),
             added_at=earlier.added_at if earlier is not None else _timestamp(self._clock()),
             checked_at=None,
             directory=directory_name,
@@ -236,8 +250,12 @@ class SubscriptionService:
     def check(self, subscription: Subscription) -> CheckOutcome:
         """Download every episode *subscription* still misses and record what was taken."""
         try:
-            catalog: ReleaseCatalog = self._acquisition.search(subscription.query)
-            selected: dict[Decimal, ReleaseChoice] = _new_episodes(catalog, subscription, _context(subscription))
+            offered: dict[Decimal, ReleaseChoice] = self._offered(subscription)
+            selected: dict[Decimal, ReleaseChoice] = {
+                episode: choice
+                for episode, choice in offered.items()
+                if choice.release.info_hash not in subscription.taken
+            }
             queued: frozenset[str] = self._acquisition.queued_hashes() if selected else frozenset()
             chosen: tuple[ReleaseChoice, ...] = tuple(
                 selected[episode]
@@ -246,7 +264,7 @@ class SubscriptionService:
             )
             if chosen:
                 self._acquisition.download(chosen, directory_name=subscription.directory)
-            updated: Subscription = self._advance(subscription, selected)
+            updated: Subscription = self._advance(subscription, selected, offered)
             self._replace(updated)
         except AniShiftError as problem:
             logger.warning("Subscription check failed", error_class=type(problem).__name__)
@@ -258,15 +276,45 @@ class SubscriptionService:
         """Check every subscription in stored order; a failing one does not stop the rest."""
         return tuple(self.check(subscription) for subscription in self.list())
 
-    def _advance(self, subscription: Subscription, selected: dict[Decimal, ReleaseChoice]) -> Subscription:
+    def _offered(self, subscription: Subscription) -> dict[Decimal, ReleaseChoice]:
+        """Return the best release of every episode the index offers from ``next_episode`` on.
+
+        The index answers a free-text query with its newest entries only, so an episode still
+        missing after that query is asked for once more by its own number.
+        """
+        context: SeasonContext | None = _context(subscription)
+        catalog: ReleaseCatalog = self._acquisition.search(subscription.query)
+        offered: dict[Decimal, ReleaseChoice] = _new_episodes(catalog, subscription, context)
+        if subscription.next_episode in offered or not _is_whole(subscription.next_episode):
+            return offered
+        _keep_best(offered, _new_episodes(self._catch_up(subscription), subscription, context))
+        return offered
+
+    def _catch_up(self, subscription: Subscription) -> ReleaseCatalog:
+        """Ask the index for the missing episode by number, answering with nothing when it fails."""
+        query: str = f"{subscription.query} {int(subscription.next_episode):02d}"
+        try:
+            return self._acquisition.search(query)
+        except AniShiftError as problem:
+            logger.warning("Subscription catch-up search failed", error_class=type(problem).__name__)
+            return ReleaseCatalog((), 0)
+
+    def _advance(
+        self,
+        subscription: Subscription,
+        selected: dict[Decimal, ReleaseChoice],
+        offered: dict[Decimal, ReleaseChoice],
+    ) -> Subscription:
         checked_at: str = _timestamp(self._clock())
         if not selected:
             return replace(subscription, checked_at=checked_at)
         taken: frozenset[str] = subscription.taken | {choice.release.info_hash for choice in selected.values()}
+        episodes: tuple[str, ...] = _recorded_episodes(subscription.taken_episodes, offered)
         return replace(
             subscription,
-            next_episode=max(selected) + 1,
+            next_episode=_next_episode(subscription.next_episode, episodes),
             taken=taken,
+            taken_episodes=episodes,
             checked_at=checked_at,
         )
 
@@ -292,7 +340,12 @@ def _new_episodes(
     subscription: Subscription,
     context: SeasonContext | None,
 ) -> dict[Decimal, ReleaseChoice]:
-    series: str = subscription.series.casefold()
+    """Return the best release of every episode of the followed group from ``next_episode`` on.
+
+    Releases already taken stay in the answer, because their number still tells the counter
+    that the episode is not missing any more.
+    """
+    series: frozenset[str] = series_forms(subscription.series)
     group: str = subscription.group.casefold()
     best: dict[Decimal, ReleaseChoice] = {}
     for series_group in catalog.groups:
@@ -303,7 +356,7 @@ def _new_episodes(
             episode: Decimal | None = reading.episode
             if episode is None or reading.other_season or choice.name.is_pack:
                 continue
-            if episode < subscription.next_episode or choice.release.info_hash in subscription.taken:
+            if episode < subscription.next_episode:
                 continue
             current: ReleaseChoice | None = best.get(episode)
             if current is None or _quality(choice) > _quality(current):
@@ -311,8 +364,43 @@ def _new_episodes(
     return best
 
 
-def _matches(series_group: SeriesGroup, series: str, group: str) -> bool:
-    return series_group.series.casefold() == series and series_group.group.casefold() == group
+def _matches(series_group: SeriesGroup, series: frozenset[str], group: str) -> bool:
+    return bool(series_forms(series_group.series) & series) and series_group.group.casefold() == group
+
+
+def _keep_best(offered: dict[Decimal, ReleaseChoice], extra: dict[Decimal, ReleaseChoice]) -> None:
+    """Add the episodes only the second listing carries, keeping the better release of a shared one."""
+    for episode, choice in extra.items():
+        current: ReleaseChoice | None = offered.get(episode)
+        if current is None or _quality(choice) > _quality(current):
+            offered[episode] = choice
+
+
+def _recorded_episodes(stored: tuple[str, ...], offered: dict[Decimal, ReleaseChoice]) -> tuple[str, ...]:
+    """Return every episode number known to be taken, the ones this check saw included."""
+    numbers: set[str] = {*stored, *(str(episode) for episode in offered)}
+    return tuple(sorted(numbers, key=Decimal))
+
+
+def _next_episode(current: Decimal, recorded: tuple[str, ...]) -> Decimal:
+    """Return the first whole episode from *current* on that no check has taken yet.
+
+    A fractional number such as 7.5 never moves the counter, and a gap left by an episode
+    that has not shown up yet keeps the counter waiting for exactly that number.
+    """
+    taken: set[int] = set()
+    for value in recorded:
+        number: Decimal = Decimal(value)
+        if _is_whole(number):
+            taken.add(int(number))
+    candidate: int = math.ceil(current)
+    while candidate in taken:
+        candidate += 1
+    return Decimal(candidate)
+
+
+def _is_whole(episode: Decimal) -> bool:
+    return episode == int(episode)
 
 
 def _quality(choice: ReleaseChoice) -> tuple[int, int]:
@@ -356,6 +444,7 @@ def _encode(subscription: Subscription) -> dict[str, object]:
         "season_index": subscription.season_index,
         "episode_offset": subscription.episode_offset,
         "season_episodes": subscription.season_episodes,
+        "taken_episodes": list(subscription.taken_episodes),
     }
 
 
@@ -397,6 +486,7 @@ def _decode_entry(raw: object) -> Subscription:
         season_index=_optional_count(document, "season_index", 1),
         episode_offset=_optional_count(document, "episode_offset", 0),
         season_episodes=_optional_int(document, "season_episodes"),
+        taken_episodes=_optional_strings(document, "taken_episodes"),
     )
 
 
@@ -444,6 +534,16 @@ def _optional_int(document: dict[str, object], key: str) -> int | None:
 def _optional_count(document: dict[str, object], key: str, default: int) -> int:
     value: int | None = _optional_int(document, key)
     return default if value is None else value
+
+
+def _optional_strings(document: dict[str, object], key: str) -> tuple[str, ...]:
+    value: object = document.get(key)
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        msg = f"Subscription field {key!r} must be a list of text or null"
+        raise TypeError(msg)
+    return tuple(_list_string(item) for item in value)
 
 
 def _list_string(value: object) -> str:

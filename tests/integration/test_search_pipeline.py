@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from harness import Composed, Resolved, composed_fixture  # noqa: F401
 
-from anishift.application.acquisition import MAX_QUERIES, ReleaseChoice, SeasonContext
+from anishift.application.acquisition import MAX_REQUESTS, ReleaseChoice, SeasonContext
 from anishift.services.catalog import TitleStatus
 from anishift.services.torrents.nyaa import CATEGORY_ENGLISH_TRANSLATED, CATEGORY_NON_ENGLISH_TRANSLATED
 
@@ -100,7 +100,12 @@ def test_mushoku_tensei_third_season_merges_series_titles_differing_only_in_punc
 def test_mushoku_tensei_third_season_reads_second_season_releases_as_another_season(composed: Composed) -> None:
     found = composed.resolve("mushoku tensei", MUSHOKU_SEASON_3)
 
-    second = [choice for group in found.groups_of("VARYG") for choice in group.choices if choice.name.season == 2]
+    second = [
+        choice
+        for group in found.groups_of("VARYG")
+        for choice in group.choices
+        if choice.name.season == 2 and choice.episode is not None
+    ]
     assert second
     assert all(choice.other_season for choice in second)
 
@@ -127,14 +132,21 @@ def test_solo_leveling_season_two_recognizes_the_french_group_as_the_searched_ti
     assert tsundere[0].matches_title
 
 
-def test_one_title_search_stays_inside_the_query_budget_and_asks_both_categories(composed: Composed) -> None:
+def test_one_title_search_stays_inside_the_request_budget(composed: Composed) -> None:
     composed.resolve("solo leveling season 2 1", SOLO_SEASON_2)
+
+    assert composed.nyaa_queries
+    assert len(composed.nyaa_queries) <= MAX_REQUESTS
+
+
+def test_a_title_search_asks_both_categories_for_a_title_and_one_for_a_group(composed: Composed) -> None:
+    found = composed.resolve("solo leveling season 2 1", SOLO_SEASON_2)
 
     asked: dict[str, set[str]] = {}
     for query, category in composed.nyaa_queries:
         asked.setdefault(query, set()).add(category)
-    assert len(asked) <= MAX_QUERIES
-    assert all(
-        categories == {CATEGORY_ENGLISH_TRANSLATED, CATEGORY_NON_ENGLISH_TRANSLATED} for categories in asked.values()
-    )
-    assert len(composed.nyaa_queries) == 2 * len(asked)
+    listings: set[str] = {f"{group.series} {group.group}" for group in found.catalog.groups}
+    refined: dict[str, set[str]] = {query: categories for query, categories in asked.items() if query in listings}
+    assert asked[found.candidate.romaji] == {CATEGORY_ENGLISH_TRANSLATED, CATEGORY_NON_ENGLISH_TRANSLATED}
+    assert refined
+    assert all(len(categories) == 1 for categories in refined.values())

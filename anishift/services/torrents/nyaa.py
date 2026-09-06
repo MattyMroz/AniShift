@@ -7,16 +7,24 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from enum import StrEnum
 from http import HTTPStatus
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from xml.etree import ElementTree
 
 import httpx
 
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.services.torrents.categories import (
+    CATEGORY_ENGLISH_TRANSLATED,
+    CATEGORY_NON_ENGLISH_TRANSLATED,
+    SEARCH_CATEGORIES,
+)
 from anishift.services.torrents.errors import TorrentSourceError
 from anishift.services.torrents.names import parse_release_name
 from anishift.services.torrents.types import Release
 from anishift.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 __all__ = [
     "CATEGORY_ENGLISH_TRANSLATED",
@@ -24,6 +32,7 @@ __all__ = [
     "MAX_BODY_BYTES",
     "NYAA_NAMESPACE",
     "NYAA_RSS_URL",
+    "SEARCH_CATEGORIES",
     "USER_AGENT",
     "parse_feed",
     "search_releases",
@@ -39,20 +48,14 @@ NYAA_RSS_URL: Final[str] = "https://nyaa.si/"
 NYAA_NAMESPACE: Final[str] = "https://nyaa.si/xmlns/nyaa"
 """XML namespace carrying the index-specific item fields."""
 
-CATEGORY_ENGLISH_TRANSLATED: Final[str] = "1_2"
-"""Nyaa category identifier for English-translated anime."""
-
-CATEGORY_NON_ENGLISH_TRANSLATED: Final[str] = "1_3"
-"""Nyaa category identifier for anime translated into another language."""
-
 _ENGLISH_SUBTITLES: Final[str] = "en"
 """Subtitle language assumed for an English-category release that declares no other one."""
 
-_SEARCH_CATEGORIES: Final[tuple[tuple[str, str | None], ...]] = (
-    (CATEGORY_ENGLISH_TRANSLATED, _ENGLISH_SUBTITLES),
-    (CATEGORY_NON_ENGLISH_TRANSLATED, None),
-)
-"""Categories searched in order, each with the subtitle language assumed for its releases."""
+_DEFAULT_LANGUAGES: Final[dict[str, str | None]] = {
+    CATEGORY_ENGLISH_TRANSLATED: _ENGLISH_SUBTITLES,
+    CATEGORY_NON_ENGLISH_TRANSLATED: None,
+}
+"""Subtitle language assumed for a release of each category that declares none."""
 
 MAX_BODY_BYTES: Final[int] = 4 * 1024 * 1024
 """Largest feed body accepted before the response is rejected."""
@@ -112,8 +115,9 @@ def search_releases(
     *,
     http: httpx.Client,
     timeout_s: float = DEFAULT_SEARCH_TIMEOUT_S,
+    categories: Sequence[str] = SEARCH_CATEGORIES,
 ) -> tuple[Release, ...]:
-    """Search every anime category for *query*, English-translated releases first.
+    """Search *categories* for *query* with one request each, in the order given.
 
     Entries sharing an info hash across categories are reported once, keeping the first one seen, and
     each release carries the subtitle language read from its title.
@@ -122,14 +126,15 @@ def search_releases(
         TorrentSourceError: One category is unreachable, rejects the request, or answers with no feed.
     """
     merged: dict[str, Release] = {}
-    for category, default_language in _SEARCH_CATEGORIES:
+    for category in categories:
+        default_language: str | None = _DEFAULT_LANGUAGES.get(category)
         for release in _search_category(query, category, http=http, timeout_s=timeout_s):
             key: str = release.info_hash.casefold()
             if key in merged:
                 continue
             language: str | None = parse_release_name(release.title).subtitle_language or default_language
             merged[key] = replace(release, subtitle_language=language)
-    logger.info("Searched Nyaa for releases", releases=len(merged), categories=len(_SEARCH_CATEGORIES))
+    logger.info("Searched Nyaa for releases", releases=len(merged), requests=len(categories))
     return tuple(merged.values())
 
 

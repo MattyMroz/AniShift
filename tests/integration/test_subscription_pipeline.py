@@ -8,6 +8,7 @@ from harness import Composed, composed_fixture  # noqa: F401
 from anishift.application.acquisition import DOWNLOAD_CATEGORY, INCOMPLETE_EXTENSION_PREFERENCE, ReleaseChoice
 from anishift.errors import ErrorCode
 from anishift.services.torrents import TorrentClientError, parse_release_name
+from anishift.services.torrents.categories import CATEGORY_ENGLISH_TRANSLATED
 
 FOLLOWED_QUERY = "Solo Leveling SubsPlease"
 LIBRARY_DIRECTORY = "Solo Leveling"
@@ -41,11 +42,24 @@ def test_following_the_first_season_downloads_every_listed_episode_into_the_libr
 
     assert outcome.problem == ""
     assert outcome.downloaded == LISTED_FIRST_SEASON_EPISODES
-    assert outcome.subscription.next_episode == Decimal(26)
     assert outcome.subscription.taken == {torrent.info_hash for torrent in composed.client.added}
     assert {torrent.category for torrent in composed.client.added} == {DOWNLOAD_CATEGORY}
     assert all(torrent.save_path.endswith(LIBRARY_DIRECTORY) for torrent in composed.client.added)
     assert all(torrent.title.startswith("[SubsPlease] Solo Leveling - ") for torrent in composed.client.added)
+
+
+def test_following_a_series_waits_for_an_episode_the_feed_of_the_group_never_listed(composed: Composed) -> None:
+    subscription = composed.subscriptions.subscribe(
+        FOLLOWED_QUERY, _first_season_choice(composed), directory_name=LIBRARY_DIRECTORY
+    )
+
+    outcome = composed.subscriptions.check(subscription)
+
+    printed = [parse_release_name(torrent.title).episode for torrent in composed.client.added]
+    assert Decimal(1) not in printed
+    assert Decimal("7.5") in printed
+    assert outcome.subscription.next_episode == Decimal(1)
+    assert (FOLLOWED_QUERY + " 01", CATEGORY_ENGLISH_TRANSLATED) in composed.nyaa_queries
 
 
 def test_a_second_check_of_a_followed_series_downloads_nothing_more(composed: Composed) -> None:

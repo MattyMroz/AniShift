@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         ReleaseChoice,
         SeasonContext,
         SeriesGroup,
+        order_groups,
         read_episode,
     )
     from anishift.application.discovery import (
@@ -178,6 +179,7 @@ __all__ = [
     "WorkerNotificationKind",
     "WorkspaceInspector",
     "group_is_ready",
+    "order_groups",
     "parse_query",
     "plan_auto",
     "plan_manual",
@@ -209,6 +211,7 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "ReleaseCatalog": ("anishift.application.acquisition", "ReleaseCatalog"),
     "ReleaseChoice": ("anishift.application.acquisition", "ReleaseChoice"),
     "SeriesGroup": ("anishift.application.acquisition", "SeriesGroup"),
+    "order_groups": ("anishift.application.acquisition", "order_groups"),
     "EnvironmentSettingStatus": ("anishift.application.service", "EnvironmentSettingStatus"),
     "CheckResult": ("anishift.setup.doctor", "CheckResult"),
     "DiscoveryResult": ("anishift.application.discovery", "DiscoveryResult"),

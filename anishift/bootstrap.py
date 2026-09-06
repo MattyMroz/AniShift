@@ -13,6 +13,8 @@ from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_ro
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from anishift.application.acquisition import AcquisitionService
     from anishift.application.cancellation import CancellationToken
     from anishift.application.discovery import DiscoveryResult
@@ -93,15 +95,16 @@ def _acquisition_service(context: AppContext) -> AcquisitionService:
     from anishift.application.acquisition import AcquisitionService  # noqa: PLC0415
     from anishift.services.catalog import AniListCatalog  # noqa: PLC0415
     from anishift.services.torrents import QBittorrentClient, parse_release_name, search_releases  # noqa: PLC0415
+    from anishift.services.torrents.categories import SEARCH_CATEGORIES  # noqa: PLC0415
 
     http: httpx.Client = httpx.Client(follow_redirects=True)
 
     class NyaaSource:
         """Public nyaa.si index queried through the shared HTTP client."""
 
-        def search(self, query: str) -> tuple[Release, ...]:
-            """Return the English-translated anime releases matching *query*."""
-            return search_releases(query, http=http)
+        def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> tuple[Release, ...]:
+            """Return the anime releases matching *query* in *categories*."""
+            return search_releases(query, http=http, categories=categories)
 
     client: QBittorrentClient = QBittorrentClient(
         context.settings.qbittorrent_url,

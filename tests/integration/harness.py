@@ -15,11 +15,12 @@ from anishift.application.acquisition import AcquisitionService, CatalogOrder
 from anishift.application.subscriptions import SUBSCRIPTIONS_FILE_NAME, SubscriptionService, SubscriptionStore
 from anishift.services.catalog import AniListCatalog
 from anishift.services.torrents import QBittorrentClient, parse_release_name, search_releases
+from anishift.services.torrents.categories import SEARCH_CATEGORIES
 from anishift.services.torrents.nyaa import NYAA_NAMESPACE
 from anishift.services.torrents.query import parse_query
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterator, Sequence
 
     from anishift.application.acquisition import ReleaseCatalog, SeasonContext, SeriesGroup
     from anishift.services.catalog import TitleCandidate
@@ -38,6 +39,10 @@ ANILIST_HOST: Final[str] = "graphql.anilist.co"
 XML_CONTENT_TYPE: Final[str] = "application/xml; charset=utf-8"
 
 JSON_CONTENT_TYPE: Final[str] = "application/json; charset=utf-8"
+
+UNRECORDED_FEED: Final[str] = (
+    f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:nyaa="{NYAA_NAMESPACE}"><channel /></rss>'
+)
 
 ADD_ACCEPTED: Final[dict[str, object]] = {
     "added_torrent_ids": [],
@@ -225,8 +230,8 @@ def composed_fixture(tmp_path: Path) -> Iterator[Composed]:
 
 def _build(client: FakeQBittorrent, http: httpx.Client, tmp_path: Path, queries: list[tuple[str, str]]) -> Composed:
     class NyaaSource:
-        def search(self, query: str) -> tuple[Release, ...]:
-            return search_releases(query, http=http)
+        def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> tuple[Release, ...]:
+            return search_releases(query, http=http, categories=categories)
 
     workspace_root: Path = tmp_path / "workspace"
     workspace_root.mkdir(parents=True, exist_ok=True)
@@ -254,9 +259,7 @@ def handler(client: FakeQBittorrent, queries: list[tuple[str, str]]) -> Callable
         if host == NYAA_HOST:
             key: tuple[str, str] = (request.url.params.get("q", ""), request.url.params.get("c", ""))
             queries.append(key)
-            body: str | None = NYAA_BODIES.get(key)
-            if body is None:
-                return httpx.Response(HTTPStatus.NOT_FOUND, text="")
+            body: str = NYAA_BODIES.get(key, UNRECORDED_FEED)
             return httpx.Response(
                 HTTPStatus.OK, content=body.encode("utf-8"), headers={"content-type": XML_CONTENT_TYPE}
             )

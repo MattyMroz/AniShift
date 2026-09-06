@@ -33,11 +33,13 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   numer i dostaje `other_season`, gdy znacznik wskazuje inny sezon; nazwa bez znacznika i z
   numerem powyżej offsetu jest numeracją absolutną (`absolute`), a poniżej offsetu to inny
   sezon. `acquisition.py`
-- `catalog_releases` ukrywa wydania poniżej `min_resolution`, dubbingowane oraz te, którym
-  indeks nie podał języka napisów; `filtered` liczy odrzucone filtrem odcinków (paczki i numery
-  spoza zakresu). Klucz grupy powstaje z serii złożonej do liter, cyfr i spacji, więc
+- `catalog_releases` rozdziela trzy powody pominięcia: `hidden` to wydania poniżej
+  `min_resolution`, `excluded` — dubbingowane oraz te, którym indeks nie podał języka napisów,
+  `filtered` — odrzucone filtrem odcinków (paczki i numery spoza zakresu). Klucz grupy powstaje
+  z serii złożonej do liter, cyfr i spacji (`normalize_series`), więc
   `Mushoku Tensei: Jobless Reincarnation` i wersja bez dwukropka to jedna grupa — etykietą
-  zostaje pierwszy napotkany zapis. `acquisition.py`
+  zostaje pierwszy napotkany zapis. Kolejność grup ma jedno źródło, `order_groups`; ekran nie
+  powtarza tej reguły u siebie. `acquisition.py`
 - `matches_title` porównuje zbiory `title_forms`: zapis wprost, bez znacznika sezonu i `base_title`
   (bez sezonu i bez podtytułu po `" - "`, `" -"`, `":"` albo `" –"`). Dzięki temu `Solo Leveling`
   Tsundere-Raws trafia w alias `Solo Leveling Season 2 -Arise from the Shadow-`. `acquisition.py`
@@ -46,15 +48,29 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   także `"{base} S02E01"` i numer absolutny), bo RSS oddaje tylko 75 najnowszych trafień i stary
   odcinek inaczej nie wypłynie. Potem `"{seria} {grupa}"` dla maks. `MAX_GROUP_QUERIES` pasujących
   grup wybranych po sumie seedów odcinków wybranego sezonu — nie po dacie, żeby wieloletni
-  uploader nie wypadł za nowszymi. Cała operacja mieści się w `MAX_QUERIES` zapytaniach; scalanie
-  idzie po `info_hash` casefold, pierwszy wpis wygrywa. `acquisition.py`
+  uploader nie wypadł za nowszymi. Zapytania po numerze idą tylko dla jednego zapisu tytułu —
+  angielskiego, a bez niego romaji. Budżet liczy się w żądaniach HTTP, nie w zapytaniach:
+  `MAX_REQUESTS`, gdzie zapytanie tytułem albo numerem kosztuje dwa (obie kategorie), a
+  doprecyzowanie grupy jeden — grupę pyta się wyłącznie w kategorii, w której ją widziano
+  (`fr` → `1_3`, reszta → `1_2`). Scalanie idzie po `info_hash` casefold, pierwszy wpis wygrywa.
+  `acquisition.py`
 - `season_context` liczy sezony, nie wpisy: `PrequelEntry.cour` (tytuł z `Part N`/`Cour N`) podnosi
   offset, ale nie indeks, a kandydat będący cour zostaje w sezonie swojego poprzednika. Bez tego
   Mushoku Tensei III wychodziło jako sezon 5. `acquisition.py`, `services/catalog/anilist.py`
 - `Subscription` trzyma `directory` (jeden folder biblioteki niezależny od serii w nazwie
-  wydania) i trójkę `season_index`/`episode_offset`/`season_episodes`. Cztery pola są opcjonalne
-  przy odczycie, więc pliki sprzed numeracji sezonów wczytują się bez migracji, a
-  `SCHEMA_VERSION` zostaje `1`. `subscriptions.py`
+  wydania), trójkę `season_index`/`episode_offset`/`season_episodes` oraz `taken_episodes`
+  (numery odcinków jako teksty dziesiętne). Pięć pól jest opcjonalnych przy odczycie, więc pliki
+  sprzed numeracji sezonów i sprzed zapisu numerów wczytują się bez migracji, a `SCHEMA_VERSION`
+  zostaje `1`. `subscriptions.py`
+- `subscription_id` i `_matches` porównują serię po postaci znormalizowanej (`normalize_series`,
+  `series_forms`), nie po surowym zapisie wybranego wydania. Etykietą grupy w katalogu jest
+  pierwszy napotkany zapis, więc dosłowne porównanie cicho zabijało subskrypcję. `subscriptions.py`
+- `next_episode` przesuwa się do PIERWSZEGO całkowitego numeru od siebie w górę, którego nie ma
+  w `taken_episodes` ani wśród odcinków widzianych w tym sprawdzeniu — nigdy za lukę. Numer
+  ułamkowy (7.5) trafia do `taken_episodes`, ale licznika nie rusza. `subscriptions.py`
+- Gdy surowe wyszukanie nie ma odcinka równego `next_episode`, `check` dokłada jedno zapytanie
+  `"{query} NN"`; jego awaria jest logowana i nie przerywa sprawdzenia, bo główne wyszukanie już
+  się udało. `subscriptions.py`
 - ID grup i odkrytych artefaktów powstają wyłącznie z normalizowanych ścieżek
   względnych. Ręcznie zarejestrowany plik spoza workspace używa znormalizowanej
   ścieżki zewnętrznej wyłącznie jako wejścia stabilnego skrótu; nie używaj `hash()`
