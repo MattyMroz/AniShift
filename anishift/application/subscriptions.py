@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
 from anishift.application.acquisition import (
@@ -34,10 +35,15 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CHECK_INTERVAL_S",
+    "MAX_DELAY_SAMPLES",
     "SCHEMA_VERSION",
     "SUBSCRIPTIONS_FILE_NAME",
+    "AiringSource",
     "CheckOutcome",
+    "EpisodeOrder",
+    "EpisodeState",
     "Subscription",
+    "SubscriptionEnd",
     "SubscriptionService",
     "SubscriptionStore",
     "subscription_id",
@@ -59,8 +65,20 @@ CONFIRM_ATTEMPTS: Final[int] = 3
 CONFIRM_DELAY_S: Final[float] = 1.0
 """Pause between two looks for a just-added release, because the client adds torrents asynchronously."""
 
-SCHEMA_VERSION: Final[int] = 1
+SCHEMA_VERSION: Final[int] = 2
 """Current schema of the persisted subscription file."""
+
+_SUPPORTED_VERSIONS: Final[frozenset[int]] = frozenset({1, SCHEMA_VERSION})
+"""Schemas a load still understands, the one migrated on the way in included."""
+
+_V1_BACKUP_SUFFIX: Final[str] = ".v1.bak"
+"""Ending of the one copy a schema 1 file leaves behind before it is rewritten."""
+
+MAX_DELAY_SAMPLES: Final[int] = 8
+"""Release delays kept per subscription, enough to estimate without storing a history."""
+
+_DISABLED_PROBLEM: Final[str] = "Subscription is disabled"
+"""Reported instead of a check when the standing order is switched off."""
 
 _ID_LENGTH: Final[int] = 12
 """Hexadecimal characters kept from the digest, short enough to retype in a command."""
@@ -84,9 +102,36 @@ _ENTRY_KEYS: Final[frozenset[str]] = frozenset(
 """Keys every serialized subscription must carry."""
 
 _OPTIONAL_ENTRY_KEYS: Final[frozenset[str]] = frozenset(
-    {"directory", "season_index", "episode_offset", "season_episodes", "taken_episodes"}
+    {
+        "directory",
+        "season_index",
+        "episode_offset",
+        "season_episodes",
+        "taken_episodes",
+        "enabled",
+        "generation",
+        "anilist_id",
+        "end_state",
+        "episodes",
+        "release_delay_s",
+        "delay_samples_s",
+    }
 )
-"""Keys a subscription written before seasons and taken episode numbers may omit."""
+"""Keys a subscription written before seasons, episode numbers and control may omit."""
+
+_EPISODE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "number",
+        "airing_at",
+        "airing_source",
+        "due_at",
+        "window_until",
+        "state",
+        "info_hash",
+        "acquisition_id",
+    }
+)
+"""Keys a serialized episode of the ordered range must carry."""
 
 _INVALID_MESSAGE: Final[str] = "Subscriptions file is invalid"
 """Sentence shown when the stored file cannot be trusted."""
@@ -95,12 +140,60 @@ _INVALID_SUGGESTION: Final[str] = "Fix or delete config/subscriptions.json"
 """Only recovery a user can perform on a broken subscription file."""
 
 
+class SubscriptionEnd(StrEnum):
+    """How the followed season ended for one standing order."""
+
+    ACTIVE = "active"
+    COMPLETE = "complete"
+    MISSING = "missing"
+    UNCERTAIN = "uncertain"
+
+
+class AiringSource(StrEnum):
+    """Where the airing time of one episode came from."""
+
+    ANILIST = "anilist"
+    USER = "user"
+    ESTIMATE = "estimate"
+
+
+class EpisodeState(StrEnum):
+    """What is known about one episode of the ordered range."""
+
+    PENDING = "pending"
+    DUE = "due"
+    ORDERED = "ordered"
+    COMPLETE = "complete"
+    EXPIRED = "expired"
+    MISSING = "missing"
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeOrder:
+    """One episode of the ordered range, its deadlines and the release it was handed.
+
+    ``ORDERED`` means a release was handed to the client; only ``COMPLETE`` proves the file
+    is really there.
+    """
+
+    number: Decimal
+    airing_at: str | None = None
+    airing_source: AiringSource | None = None
+    due_at: str | None = None
+    window_until: str | None = None
+    state: EpisodeState = EpisodeState.PENDING
+    info_hash: str | None = None
+    acquisition_id: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class Subscription:
     """One standing order: which series and group to follow, and from which episode on.
 
     ``taken`` identifies the releases already handed to the client, ``taken_episodes`` the
     numbers they carried, which is what keeps ``next_episode`` from stepping over a gap.
+    ``generation`` counts the deliberate changes of the order, so a late answer of an
+    earlier one is recognizable.
     """
 
     subscription_id: str
@@ -117,6 +210,18 @@ class Subscription:
     episode_offset: int = 0
     season_episodes: int | None = None
     taken_episodes: tuple[str, ...] = ()
+    enabled: bool = True
+    generation: int = 1
+    anilist_id: int | None = None
+    end_state: SubscriptionEnd = SubscriptionEnd.ACTIVE
+    episodes: tuple[EpisodeOrder, ...] = ()
+    release_delay_s: int | None = None
+    delay_samples_s: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if len(self.delay_samples_s) > MAX_DELAY_SAMPLES:
+            msg = "A subscription keeps at most MAX_DELAY_SAMPLES release delays"
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +252,9 @@ class SubscriptionStore:
     def load(self) -> tuple[Subscription, ...]:
         """Read every stored subscription, or none when the file was never written.
 
+        A schema 1 file is migrated on the way in: it leaves one copy of itself behind and
+        is rewritten in the current schema, so a second load finds nothing left to do.
+
         Raises:
             ConfigError: The file exists but carries an unreadable or unsupported document.
         """
@@ -157,9 +265,11 @@ class SubscriptionStore:
         except OSError as problem:
             raise _invalid_file() from problem
         try:
-            subscriptions: tuple[Subscription, ...] = _decode_document(json.loads(text))
+            version, subscriptions = _decode_document(json.loads(text))
         except (json.JSONDecodeError, KeyError, TypeError, ValueError, InvalidOperation) as problem:
             raise _invalid_file() from problem
+        if version != SCHEMA_VERSION:
+            self._upgrade(text, subscriptions)
         return subscriptions
 
     def save(self, subscriptions: Sequence[Subscription]) -> None:
@@ -174,6 +284,13 @@ class SubscriptionStore:
         temporary: Path = self._path.with_name(f"{self._path.name}.tmp")
         temporary.write_text(payload, encoding="utf-8")
         temporary.replace(self._path)
+
+    def _upgrade(self, text: str, subscriptions: Sequence[Subscription]) -> None:
+        backup: Path = self._path.with_name(f"{self._path.name}{_V1_BACKUP_SUFFIX}")
+        if not backup.exists():
+            backup.write_text(text, encoding="utf-8")
+        self.save(subscriptions)
+        logger.info("Subscriptions migrated", total=len(subscriptions))
 
 
 class SubscriptionService:
@@ -216,8 +333,32 @@ class SubscriptionService:
         if choice.other_season:
             msg = "A subscription needs a release of the season being followed"
             raise ValueError(msg)
-        series: str = choice.name.series
-        group: str = choice.name.group or "?"
+        return self.add(
+            choice.name.series,
+            choice.name.group or "?",
+            query=query,
+            first_episode=episode,
+            directory_name=directory_name,
+            context=context,
+        )
+
+    def add(  # noqa: PLR0913 - one standing order is described by every one of these facts
+        self,
+        series: str,
+        group: str,
+        *,
+        query: str,
+        first_episode: Decimal,
+        directory_name: str | None = None,
+        context: SeasonContext | None = None,
+        anilist_id: int | None = None,
+    ) -> Subscription:
+        """Follow *series* by *group* from *first_episode* on, replacing an earlier order.
+
+        The first episode is ordered too, so a season followed from 9 starts at 9. Replacing
+        an order keeps what it already took and raises its generation, so a late answer of
+        the earlier range cannot be mistaken for an answer of the new one.
+        """
         identifier: str = subscription_id(series, group)
         stored: tuple[Subscription, ...] = self._store.load()
         earlier: Subscription | None = _find(stored, identifier)
@@ -226,7 +367,7 @@ class SubscriptionService:
             query=query,
             series=series,
             group=group,
-            next_episode=episode,
+            next_episode=first_episode,
             min_resolution=MIN_RESOLUTION,
             taken=earlier.taken if earlier is not None else frozenset(),
             taken_episodes=earlier.taken_episodes if earlier is not None else (),
@@ -236,12 +377,33 @@ class SubscriptionService:
             season_index=context.index if context is not None else 1,
             episode_offset=context.offset if context is not None else 0,
             season_episodes=context.episodes if context is not None else None,
+            generation=earlier.generation + 1 if earlier is not None else 1,
+            anilist_id=anilist_id,
+            episodes=earlier.episodes if earlier is not None else (),
         )
         remaining: list[Subscription] = [item for item in stored if item.subscription_id != identifier]
         remaining.append(subscription)
         self._store.save(remaining)
         logger.info("Subscription stored", replaced=earlier is not None, total=len(remaining))
         return subscription
+
+    def enable(self, subscription_id: str) -> Subscription:
+        """Let that standing order look for episodes again, keeping everything it already took."""
+        return self._switch(subscription_id, enabled=True)
+
+    def disable(self, subscription_id: str) -> Subscription:
+        """Stop the automatic checks of that standing order, keeping its range and history."""
+        return self._switch(subscription_id, enabled=False)
+
+    def set_anilist_id(self, subscription_id: str, anilist_id: int | None) -> Subscription:
+        """Bind that standing order to the catalog entry proving which season it follows."""
+        current: Subscription = self._required(subscription_id)
+        if current.anilist_id == anilist_id:
+            return current
+        updated: Subscription = replace(current, anilist_id=anilist_id, generation=current.generation + 1)
+        self._replace(updated)
+        logger.info("Subscription bound to a catalog entry", generation=updated.generation)
+        return updated
 
     def list(self) -> tuple[Subscription, ...]:
         """Return every stored subscription."""
@@ -258,7 +420,12 @@ class SubscriptionService:
         return True
 
     def check(self, subscription: Subscription) -> CheckOutcome:
-        """Download every episode *subscription* still misses and record what was taken."""
+        """Download every episode *subscription* still misses and record what was taken.
+
+        A switched-off order answers with its problem instead, without asking any source.
+        """
+        if not subscription.enabled:
+            return CheckOutcome(subscription, 0, problem=_DISABLED_PROBLEM)
         try:
             offered: dict[Decimal, ReleaseChoice] = self._offered(subscription)
             taken_hashes: frozenset[str] = frozenset(info_hash.casefold() for info_hash in subscription.taken)
@@ -286,8 +453,31 @@ class SubscriptionService:
         return CheckOutcome(updated, sent)
 
     def check_all(self) -> tuple[CheckOutcome, ...]:
-        """Check every subscription in stored order; a failing one does not stop the rest."""
-        return tuple(self.check(subscription) for subscription in self.list())
+        """Check every active subscription in stored order; a failing one does not stop the rest.
+
+        Switched-off and finished orders are skipped entirely, so they reach no source.
+        """
+        return tuple(
+            self.check(subscription)
+            for subscription in self.list()
+            if subscription.enabled and subscription.end_state is SubscriptionEnd.ACTIVE
+        )
+
+    def _switch(self, subscription_id: str, *, enabled: bool) -> Subscription:
+        current: Subscription = self._required(subscription_id)
+        if current.enabled == enabled:
+            return current
+        updated: Subscription = replace(current, enabled=enabled, generation=current.generation + 1)
+        self._replace(updated)
+        logger.info("Subscription switched", enabled=enabled, generation=updated.generation)
+        return updated
+
+    def _required(self, subscription_id: str) -> Subscription:
+        current: Subscription | None = _find(self._store.load(), subscription_id)
+        if current is None:
+            msg = "No subscription carries that identifier"
+            raise ValueError(msg)
+        return current
 
     def _offered(self, subscription: Subscription) -> dict[Decimal, ReleaseChoice]:
         """Return the best release of every episode the index offers from ``next_episode`` on.
@@ -487,23 +677,43 @@ def _encode(subscription: Subscription) -> dict[str, object]:
         "episode_offset": subscription.episode_offset,
         "season_episodes": subscription.season_episodes,
         "taken_episodes": list(subscription.taken_episodes),
+        "enabled": subscription.enabled,
+        "generation": subscription.generation,
+        "anilist_id": subscription.anilist_id,
+        "end_state": subscription.end_state.value,
+        "episodes": [_encode_episode(episode) for episode in subscription.episodes],
+        "release_delay_s": subscription.release_delay_s,
+        "delay_samples_s": list(subscription.delay_samples_s),
     }
 
 
-def _decode_document(raw: object) -> tuple[Subscription, ...]:
+def _encode_episode(episode: EpisodeOrder) -> dict[str, object]:
+    return {
+        "number": str(episode.number),
+        "airing_at": episode.airing_at,
+        "airing_source": None if episode.airing_source is None else episode.airing_source.value,
+        "due_at": episode.due_at,
+        "window_until": episode.window_until,
+        "state": episode.state.value,
+        "info_hash": episode.info_hash,
+        "acquisition_id": episode.acquisition_id,
+    }
+
+
+def _decode_document(raw: object) -> tuple[int, tuple[Subscription, ...]]:
     document: dict[str, object] = _strict_object(raw, _ROOT_KEYS, "subscription file")
     schema_version: object = document["schema_version"]
     entries: object = document["subscriptions"]
-    if type(schema_version) is not int or schema_version != SCHEMA_VERSION:
+    if type(schema_version) is not int or schema_version not in _SUPPORTED_VERSIONS:
         msg = "Unsupported subscription schema version"
         raise ValueError(msg)
     if not isinstance(entries, list):
         msg = "Serialized subscriptions must be a list"
         raise TypeError(msg)
-    return tuple(_decode_entry(entry) for entry in entries)
+    return schema_version, tuple(_decode_entry(entry, schema_version) for entry in entries)
 
 
-def _decode_entry(raw: object) -> Subscription:
+def _decode_entry(raw: object, version: int) -> Subscription:
     document: dict[str, object] = _strict_object(raw, _ENTRY_KEYS, "subscription", optional=_OPTIONAL_ENTRY_KEYS)
     min_resolution: object = document["min_resolution"]
     taken: object = document["taken"]
@@ -514,7 +724,7 @@ def _decode_entry(raw: object) -> Subscription:
     if checked_at is not None and not isinstance(checked_at, str):
         msg = "Subscription check time must be text or null"
         raise TypeError(msg)
-    return Subscription(
+    subscription: Subscription = Subscription(
         subscription_id=_required_string(document, "subscription_id"),
         query=_required_string(document, "query"),
         series=_required_string(document, "series"),
@@ -529,6 +739,41 @@ def _decode_entry(raw: object) -> Subscription:
         episode_offset=_optional_count(document, "episode_offset", 0),
         season_episodes=_optional_int(document, "season_episodes"),
         taken_episodes=_optional_strings(document, "taken_episodes"),
+        enabled=_optional_flag(document, "enabled", default=True),
+        generation=_optional_count(document, "generation", 1),
+        anilist_id=_optional_int(document, "anilist_id"),
+        end_state=SubscriptionEnd(_optional_string(document, "end_state") or SubscriptionEnd.ACTIVE.value),
+        episodes=_optional_episodes(document, "episodes"),
+        release_delay_s=_optional_int(document, "release_delay_s"),
+        delay_samples_s=_optional_whole_numbers(document, "delay_samples_s"),
+    )
+    return _migrate_v1(subscription) if version != SCHEMA_VERSION else subscription
+
+
+def _migrate_v1(subscription: Subscription) -> Subscription:
+    """Turn every episode number a schema 1 entry took into one recorded order.
+
+    A taken release proves it was handed to the client, never that the file is complete, so
+    the episode becomes ``ORDERED`` and waits for a real confirmation.
+    """
+    episodes: tuple[EpisodeOrder, ...] = tuple(
+        EpisodeOrder(number=Decimal(number), state=EpisodeState.ORDERED) for number in subscription.taken_episodes
+    )
+    return replace(subscription, episodes=episodes)
+
+
+def _decode_episode(raw: object) -> EpisodeOrder:
+    document: dict[str, object] = _strict_object(raw, _EPISODE_KEYS, "episode")
+    airing_source: str | None = _optional_string(document, "airing_source")
+    return EpisodeOrder(
+        number=Decimal(_required_string(document, "number")),
+        airing_at=_optional_string(document, "airing_at"),
+        airing_source=None if airing_source is None else AiringSource(airing_source),
+        due_at=_optional_string(document, "due_at"),
+        window_until=_optional_string(document, "window_until"),
+        state=EpisodeState(_required_string(document, "state")),
+        info_hash=_optional_string(document, "info_hash"),
+        acquisition_id=_optional_string(document, "acquisition_id"),
     )
 
 
@@ -576,6 +821,36 @@ def _optional_int(document: dict[str, object], key: str) -> int | None:
 def _optional_count(document: dict[str, object], key: str, default: int) -> int:
     value: int | None = _optional_int(document, key)
     return default if value is None else value
+
+
+def _optional_flag(document: dict[str, object], key: str, *, default: bool) -> bool:
+    value: object = document.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        msg = f"Subscription field {key!r} must be a flag or null"
+        raise TypeError(msg)
+    return value
+
+
+def _optional_episodes(document: dict[str, object], key: str) -> tuple[EpisodeOrder, ...]:
+    value: object = document.get(key)
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        msg = f"Subscription field {key!r} must be a list of episodes or null"
+        raise TypeError(msg)
+    return tuple(_decode_episode(item) for item in value)
+
+
+def _optional_whole_numbers(document: dict[str, object], key: str) -> tuple[int, ...]:
+    value: object = document.get(key)
+    if value is None:
+        return ()
+    if not isinstance(value, list) or any(type(item) is not int for item in value):
+        msg = f"Subscription field {key!r} must be a list of whole numbers or null"
+        raise TypeError(msg)
+    return tuple(value)
 
 
 def _optional_strings(document: dict[str, object], key: str) -> tuple[str, ...]:

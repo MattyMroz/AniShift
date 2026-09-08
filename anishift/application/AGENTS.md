@@ -4,10 +4,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 
 ## Kierunek zależności
 
-- `artifacts.py`, `intents.py`, `planning.py`, `selection.py` i `planner.py` nie importują I/O,
-  `anishift.services`, `anishift.config` ani CLI.
+- `artifacts.py`, `control.py`, `intents.py`, `planning.py`, `selection.py` i `planner.py`
+  nie importują I/O, `anishift.services`, `anishift.config` ani CLI.
 - Kontrolowane I/O należy do `discovery.py`, `inspection.py`, `publisher.py`,
-  `sessions.py`, `acquisition.py` (katalog wydań, katalog tytułów i wysyłka do klienta torrent
+  `sessions.py`, `watch_state.py`, `acquisition.py` (katalog wydań, katalog tytułów i wysyłka do klienta torrent
   przez wstrzyknięte protokoły `TorrentSource`/`TitleCatalog`/`TorrentClient`; typy z
   `services.torrents` i `services.catalog` tylko pod `TYPE_CHECKING`, jedyny import runtime to
   czyste `season_hint`/`strip_season` z `services.torrents.names`), handlerów oraz fasady
@@ -59,9 +59,26 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   Mushoku Tensei III wychodziło jako sezon 5. `acquisition.py`, `services/catalog/anilist.py`
 - `Subscription` trzyma `directory` (jeden folder biblioteki niezależny od serii w nazwie
   wydania), trójkę `season_index`/`episode_offset`/`season_episodes` oraz `taken_episodes`
-  (numery odcinków jako teksty dziesiętne). Pięć pól jest opcjonalnych przy odczycie, więc pliki
-  sprzed numeracji sezonów i sprzed zapisu numerów wczytują się bez migracji, a `SCHEMA_VERSION`
-  zostaje `1`. `subscriptions.py`
+  (numery odcinków jako teksty dziesiętne). Wszystkie pola spoza pierwotnej dziewiątki są
+  opcjonalne przy odczycie, więc starsze pliki wczytują się bez ręcznej naprawy; zapis jest
+  zawsze pełny. `subscriptions.py`
+- `SCHEMA_VERSION` to `2`, a loader przyjmuje 1 i 2. Plik w wersji 1 `load()` migruje raz: zostawia
+  kopię `subscriptions.json.v1.bak` i przepisuje plik w wersji 2, więc drugi `load()` nie zmienia
+  już bajtów. Każdy numer z `taken_episodes` staje się `EpisodeOrder(..., ORDERED)` bez hasha —
+  `taken` dowodzi przekazania wydania klientowi, nigdy kompletnego pliku. `subscriptions.py`
+- `enable`/`disable`/`set_anilist_id` są idempotentne: bez zmiany wartości nie zapisują i nie
+  podnoszą `generation`; ze zmianą podnoszą je o 1. `check_all` pomija wpisy wyłączone i te z
+  `end_state != ACTIVE`, a `check` wyłączonego wpisu zwraca `CheckOutcome` z problemem i nie
+  dotyka źródła. `subscriptions.py`
+- `AutomationPolicy.effective_auto`: globalne wyłączenie wygrywa zawsze, inaczej decyduje
+  najbliższy jawny wyjątek katalogu idąc w górę do roota (`""`), a katalog bez wyjątku dziedziczy
+  ustawienie biblioteki. Rezerwacje i marker ręcznej obsługi (R-028) kluczuje para
+  `(group_id, source_fingerprint)` z `watch.py`, więc publikacja produktu nie unieważnia decyzji
+  użytkownika. `control.py`
+- `WatchStateStore` zapisuje atomowo: `state.json.tmp` + `fsync`, kopia czytelnego `state.json`
+  do `state.json.bak`, dopiero potem `replace`. Uszkodzony JSON, nieznany klucz i nieznana wersja
+  schematu dają `ConfigError`, nigdy pustego stanu; brak pliku to stan domyślny z wyłączonym Auto.
+  `watch_state.py`
 - `subscription_id` i `_matches` porównują serię po postaci znormalizowanej (`normalize_series`,
   `series_forms`), nie po surowym zapisie wybranego wydania. Etykietą grupy w katalogu jest
   pierwszy napotkany zapis, więc dosłowne porównanie cicho zabijało subskrypcję. `subscriptions.py`

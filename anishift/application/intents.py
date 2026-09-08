@@ -19,6 +19,13 @@ class RunMode(StrEnum):
     MANUAL = "manual"
 
 
+class RequestOrigin(StrEnum):
+    """Precedence class of one processing request."""
+
+    USER = "user"
+    BACKGROUND = "background"
+
+
 class ProductKind(StrEnum):
     """Durable products that a user can request."""
 
@@ -115,6 +122,18 @@ class ProductIntent:
             and ProductKind.MP4 not in self.requested_products
         ):
             msg = "Burned subtitles require an MP4 product"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class RebuildRequest:
+    """Products a request must produce again instead of reusing a ready artifact."""
+
+    products: frozenset[ProductKind]
+
+    def __post_init__(self) -> None:
+        if not self.products:
+            msg = "A rebuild request must name at least one product"
             raise ValueError(msg)
 
 

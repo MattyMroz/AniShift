@@ -20,8 +20,14 @@ from anishift.application.acquisition import (
     SeriesGroup,
 )
 from anishift.application.subscriptions import (
+    MAX_DELAY_SAMPLES,
+    SCHEMA_VERSION,
+    AiringSource,
     CheckOutcome,
+    EpisodeOrder,
+    EpisodeState,
     Subscription,
+    SubscriptionEnd,
     SubscriptionService,
     SubscriptionStore,
     subscription_id,
@@ -189,7 +195,7 @@ def test_store_rejects_a_corrupt_document(tmp_path: Path) -> None:
 
 def test_store_rejects_an_unsupported_schema_version(tmp_path: Path) -> None:
     (tmp_path / "subscriptions.json").write_text(
-        json.dumps({"schema_version": 2, "subscriptions": []}), encoding="utf-8"
+        json.dumps({"schema_version": SCHEMA_VERSION + 1, "subscriptions": []}), encoding="utf-8"
     )
 
     with pytest.raises(ConfigError) as failure:
@@ -671,3 +677,222 @@ def test_store_round_trip_keeps_the_library_folder_and_the_season_numbers(tmp_pa
     store.save((subscription,))
 
     assert store.load() == (subscription,)
+
+
+def _v1_document(**overrides: object) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "subscription_id": subscription_id("Neko to Ryuu", "SubsPlease"),
+        "query": "neko",
+        "series": "Neko to Ryuu",
+        "group": "SubsPlease",
+        "next_episode": "9",
+        "min_resolution": MIN_RESOLUTION,
+        "taken": ["aaa", "bbb"],
+        "added_at": _TIMESTAMP,
+        "checked_at": None,
+        "directory": "Neko to Ryuu",
+        "season_index": 1,
+        "episode_offset": 0,
+        "season_episodes": None,
+        "taken_episodes": ["7", "8"],
+    }
+    entry.update(overrides)
+    return {"schema_version": 1, "subscriptions": [entry]}
+
+
+def _write_v1(tmp_path: Path, **overrides: object) -> Path:
+    path: Path = tmp_path / "subscriptions.json"
+    path.write_text(json.dumps(_v1_document(**overrides)), encoding="utf-8")
+    return path
+
+
+def test_loading_a_schema_one_file_records_its_taken_episodes_as_handed_over(tmp_path: Path) -> None:
+    _write_v1(tmp_path)
+
+    stored: tuple[Subscription, ...] = _store(tmp_path).load()
+
+    assert stored[0].episodes == (
+        EpisodeOrder(Decimal(7), state=EpisodeState.ORDERED),
+        EpisodeOrder(Decimal(8), state=EpisodeState.ORDERED),
+    )
+    assert all(episode.info_hash is None for episode in stored[0].episodes)
+    assert stored[0].taken_episodes == ("7", "8")
+    assert stored[0].taken == frozenset({"aaa", "bbb"})
+
+
+def test_loading_a_schema_one_file_keeps_a_copy_and_rewrites_it_in_the_current_schema(tmp_path: Path) -> None:
+    path: Path = _write_v1(tmp_path)
+
+    _store(tmp_path).load()
+
+    backup: Path = tmp_path / "subscriptions.json.v1.bak"
+    assert json.loads(backup.read_text(encoding="utf-8"))["schema_version"] == 1
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == SCHEMA_VERSION
+
+
+def test_loading_a_migrated_file_again_changes_neither_the_file_nor_the_copy(tmp_path: Path) -> None:
+    path: Path = _write_v1(tmp_path)
+    store: SubscriptionStore = _store(tmp_path)
+    backup: Path = tmp_path / "subscriptions.json.v1.bak"
+    first: tuple[Subscription, ...] = store.load()
+    migrated: bytes = path.read_bytes()
+    copied: bytes = backup.read_bytes()
+
+    assert store.load() == first
+    assert path.read_bytes() == migrated
+    assert backup.read_bytes() == copied
+
+
+def test_a_schema_one_entry_without_the_optional_fields_migrates_with_the_defaults(tmp_path: Path) -> None:
+    document: dict[str, object] = _v1_document()
+    entries: object = document["subscriptions"]
+    assert isinstance(entries, list)
+    entry: dict[str, object] = entries[0]
+    for key in ("directory", "season_index", "episode_offset", "season_episodes", "taken_episodes"):
+        del entry[key]
+    (tmp_path / "subscriptions.json").write_text(json.dumps(document), encoding="utf-8")
+
+    stored: tuple[Subscription, ...] = _store(tmp_path).load()
+
+    assert stored[0] == _subscription(taken=("aaa", "bbb"))
+    assert (stored[0].enabled, stored[0].generation, stored[0].anilist_id) == (True, 1, None)
+    assert stored[0].end_state is SubscriptionEnd.ACTIVE
+    assert stored[0].episodes == ()
+
+
+def test_store_round_trip_keeps_the_control_fields_and_the_ordered_episodes(tmp_path: Path) -> None:
+    store: SubscriptionStore = _store(tmp_path)
+    subscription: Subscription = replace(
+        _subscription(taken_episodes=("7",)),
+        enabled=False,
+        generation=4,
+        anilist_id=176496,
+        end_state=SubscriptionEnd.COMPLETE,
+        episodes=(
+            EpisodeOrder(
+                number=Decimal("7.5"),
+                airing_at=_TIMESTAMP,
+                airing_source=AiringSource.ANILIST,
+                due_at=_TIMESTAMP,
+                window_until=_TIMESTAMP,
+                state=EpisodeState.COMPLETE,
+                info_hash="aaa",
+                acquisition_id="operation-1",
+            ),
+        ),
+        release_delay_s=7200,
+        delay_samples_s=(3600, 5400),
+    )
+
+    store.save((subscription,))
+
+    assert store.load() == (subscription,)
+
+
+def test_a_subscription_refuses_more_delay_samples_than_it_keeps() -> None:
+    with pytest.raises(ValueError, match="release delays"):
+        replace(_subscription(), delay_samples_s=tuple(range(MAX_DELAY_SAMPLES + 1)))
+
+
+def test_add_orders_the_first_episode_it_is_given(tmp_path: Path) -> None:
+    service: SubscriptionService = _service(tmp_path, _Acquisition())
+
+    subscription: Subscription = service.add(
+        "Neko to Ryuu",
+        "SubsPlease",
+        query="neko",
+        first_episode=Decimal(9),
+        directory_name="Neko to Ryuu",
+        anilist_id=176496,
+    )
+
+    assert subscription.next_episode == Decimal(9)
+    assert subscription.anilist_id == 176496
+    assert subscription.directory == "Neko to Ryuu"
+    assert subscription.subscription_id == subscription_id("Neko to Ryuu", "SubsPlease")
+    assert service.list() == (subscription,)
+
+
+def test_binding_a_catalog_entry_raises_the_generation_once(tmp_path: Path) -> None:
+    service: SubscriptionService = _service(tmp_path, _Acquisition())
+    subscription: Subscription = service.subscribe("neko", _choice(Decimal(9)))
+
+    bound: Subscription = service.set_anilist_id(subscription.subscription_id, 176496)
+    repeated: Subscription = service.set_anilist_id(subscription.subscription_id, 176496)
+
+    assert (bound.anilist_id, bound.generation) == (176496, 2)
+    assert repeated == bound
+
+
+def test_disabling_twice_writes_once_and_raises_the_generation_once(tmp_path: Path) -> None:
+    service: SubscriptionService = _service(tmp_path, _Acquisition())
+    subscription: Subscription = service.subscribe("neko", _choice(Decimal(9)))
+
+    disabled: Subscription = service.disable(subscription.subscription_id)
+    written: bytes = (tmp_path / "subscriptions.json").read_bytes()
+    repeated: Subscription = service.disable(subscription.subscription_id)
+
+    assert (disabled.enabled, disabled.generation) == (False, 2)
+    assert repeated == disabled
+    assert (tmp_path / "subscriptions.json").read_bytes() == written
+
+
+def test_enabling_again_keeps_one_entry_with_everything_it_already_took(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)))})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    subscription: Subscription = service.subscribe("neko", _choice(Decimal(9)))
+    checked: Subscription = service.check(subscription).subscription
+    service.disable(subscription.subscription_id)
+
+    enabled: Subscription = service.enable(subscription.subscription_id)
+
+    assert len(service.list()) == 1
+    assert enabled.enabled is True
+    assert enabled.generation == 3
+    assert enabled.taken_episodes == checked.taken_episodes
+    assert enabled.taken == checked.taken
+    assert enabled.next_episode == checked.next_episode
+
+
+def test_checking_a_disabled_subscription_reports_it_without_asking_the_source(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)))})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    subscription: Subscription = service.subscribe("neko", _choice(Decimal(9)))
+    disabled: Subscription = service.disable(subscription.subscription_id)
+    acquisition.queries.clear()
+
+    outcome: CheckOutcome = service.check(disabled)
+
+    assert outcome == CheckOutcome(disabled, 0, problem="Subscription is disabled")
+    assert acquisition.queries == []
+
+
+def test_check_all_skips_a_disabled_subscription_without_asking_the_source(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)))})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    subscription: Subscription = service.subscribe("neko", _choice(Decimal(9)))
+    service.disable(subscription.subscription_id)
+    acquisition.queries.clear()
+
+    assert service.check_all() == ()
+    assert acquisition.queries == []
+    assert acquisition.downloaded == []
+
+
+def test_check_all_skips_a_finished_subscription(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)))})
+    store: SubscriptionStore = _store(tmp_path)
+    store.save((replace(_subscription(), end_state=SubscriptionEnd.COMPLETE),))
+    service: SubscriptionService = _service(tmp_path, acquisition)
+
+    assert service.check_all() == ()
+    assert acquisition.queries == []
+
+
+def test_remove_leaves_every_other_subscription(tmp_path: Path) -> None:
+    service: SubscriptionService = _service(tmp_path, _Acquisition())
+    first: Subscription = service.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9))
+    second: Subscription = service.add("Zombie Land", "SubsPlease", query="zombie", first_episode=Decimal(1))
+
+    assert service.remove(first.subscription_id) is True
+    assert service.list() == (second,)
