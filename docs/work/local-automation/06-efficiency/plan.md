@@ -16,7 +16,7 @@ Zaimplementować [spec.md](spec.md): Manual wybiera odcinki, Auto reaguje na got
 
 **Najpierw przeczytaj specyfikację. Ten plan opisuje HOW, nie zastępuje WHAT.** Kolejność prac: P01–P08. Nie zaczynaj od przebudowy wyszukiwarki, wyglądu terminala ani nowego modelu mediów. Nie realizuj starego wielkiego masterplanu lokalnej automatyzacji; jest historią wcześniejszych decyzji. Kontekst kodu i ograniczenia źródeł: [research](research/2026-09-08-control-model-research.md).
 
-Plan jest gotowy do rozpoczęcia implementacji. Nie dowodzi działania API na komputerze właściciela. Bramki G1–G3 weryfikują wąskie granice platformowe; wynik negatywny blokuje tylko zależny etap i wymaga korekty tej decyzji, a nie cichego zastąpienia wymagań gorszym zachowaniem.
+Plan jest gotowy do rozpoczęcia implementacji; decyzje domykające luki z przeglądu wykonawcy są w sekcji 15. Nie dowodzi działania API na komputerze właściciela. Bramki G1–G3 weryfikują wąskie granice platformowe; wynik negatywny blokuje tylko zależny etap i wymaga korekty tej decyzji, a nie cichego zastąpienia wymagań gorszym zachowaniem.
 
 ### Reguły pracy
 
@@ -413,3 +413,33 @@ Wolno dopasować nazwy prywatnych helperów i podział dużego modułu do istnie
 P01–P08: niewykonane. G1–G3: nieprzeprowadzone. Pełna suite i pomiary Windows wymagają środowiska agenta implementującego. Ocena kodu w researchu jest statyczna dla wskazanego baseline; historyczne wyniki z odrzuconych planów nie są nowymi pomiarami.
 
 Po każdym etapie wykonawca dopisuje tutaj: commit, zakres, uruchomione komendy i rzeczywiste wyniki, dowiedzione AC oraz pozostały problem. Końcowe ukończenie oznacza pokrycie wszystkich AC-001–042 i I-001–005 wraz z dowodem Windows, a nie samo skompilowanie nowej struktury.
+
+## 15. Korekty po przeglądzie wykonawcy (2026-09-08)
+
+Przegląd planu względem spec.md i kodu `a7d319f` (przeczytane w całości: `scheduler*.py`, `service.py`, `sessions.py`, `intents.py`, wejścia `planner.py`, `cli/watch.py`, `application/watch.py`, `cli/run.py`, `interactive/app.py`, `subscriptions.py`, `acquisition.py`, `qbittorrent.py`, wszystkie scoped AGENTS). Plan jest zgodny ze specyfikacją; poniższe decyzje domykają luki, w których wykonawca musiałby zgadywać. Obowiązują razem z sekcjami 1–13; przy sprzeczności wygrywa ta sekcja.
+
+**D-01. Rezydent planuje, panel wysyła zamiary.** Panel nigdy nie serializuje `ExecutionPlan`. Polecenie podglądu niesie listę `group_id`, identyfikator presetu albo jednorazowe nadpisania (`AutoPresetDraft`, run-only overrides ustawień, żądanie odtworzenia), a dla zaawansowanego Manual pola `GroupIntent` oraz rejestracje plików zewnętrznych (ścieżka, rola, język). Rezydent wykonuje `discover`, `register_external_*`, `plan_auto`/`plan_manual` i odpowiada podglądem: dla każdej grupy produkty zachowane, do wykonania, blokery i ostrzeżenia, plus `preview_id` i fingerprint wejść. Start = `preview_id`; nieaktualny fingerprint odsyła do ponownego podglądu. Jedyna inspekcja i jej cache żyją w rezydencie. Gdy rezydent nie działa, panel uruchamia go (`pythonw`, bez konsoli) i dopiero potem się łączy.
+
+**D-02. Postęp przez kanał.** `RunEvent` jest serializowany polami (`run_id`, `group_id`, `task_id`, rodzaj, stan, procent, komunikat po sanitizacji) i wysyłany do podłączonych paneli; rezydent scala zaległe zdarzenia per `task_id`, więc wolny panel dostaje ostatni stan, nie kolejkę. Przy podłączeniu panel otrzymuje snapshot aktywnych zleceń (grupy, etykiety źródeł, taski z rodzajem i stanem, procenty, wyniki) i odtwarza z niego wiersze `RichRunProgress`. `RichRunProgress` dostaje konstruktor ze snapshotu; obecny konstruktor z `PreparedRun` zostaje adapterem dla testów.
+
+**D-03. Migracja subskrypcji bez identyfikatora AniList.** Obecne 25 wpisów nie ma `anilist_id`. Migracja wykonuje jedno wyszukanie tytułu na wpis i wiąże automatycznie, gdy `series_forms` kandydata pokrywa serię, a sezon zgadza się ze znacznikiem; pozostałe wpisy są widoczne w Stanie jako „wymaga powiązania" z akcją Powiąż. Wpis bez terminu ponawia pobranie kalendarza w rytmie ustawień retry (nie Nyaa), a gdy nie da się powiązać, nie szuka co godzinę (spec R-009). To odstępstwo od wcześniejszej notatki właściciela („bez historii co godzinę") wymaga jego potwierdzenia przed P06; do tego czasu obowiązuje spec.
+
+**D-04. Ikona i powiadomienia.** „Otwórz" uruchamia panel w nowym oknie konsoli (`wt.exe`, gdy jest w PATH, inaczej domyślna konsola) z argumentem otwierającym Stan; gdy panel jest już podłączony, rezydent wysyła mu polecenie pokazania Stanu zamiast otwierać drugie okno. Powiadomienia Windows to balon ikony (`Shell_NotifyIcon`, `NIF_INFO`), bez procesu PowerShell.
+
+**D-05. Home.** Pozycja „Auto" prowadzi do Stanu z przełącznikiem Auto oraz akcjami „Uruchom teraz" (wszystkie gotowe grupy, jak dzisiejsze Auto) i „Auto dla zaznaczonych". Ręczny, Anime, Ustawienia i Wyjście bez zmian pozycji. Wyjście z panelu nie kończy rezydenta.
+
+**D-06. Techniczne komendy.** `anishift watch` = rezydent (to samo zadanie autostartu). `run --preset` i `subs check` przy działającym rezydencie delegują do niego i czekają na wynik przez kanał, drukując dotychczasowy raport; bez rezydenta `run --preset` wykonuje plan w procesie przez adapter `run(plan)` pod tą samą blokadą procesu, więc nigdy nie ma dwóch właścicieli. `watch stop` = „Zakończ AniShift". `watch batch` znika w P08 z komunikatem migracyjnym.
+
+**D-07. Wspólne limity.** Koordynator dostaje dostawcę limitów czytającego bieżące preferencje; `plan.settings` nie wyznacza limitów zasobów. Executor ma `max_workers` równe maksimum dopuszczanemu przez katalog ustawień, a faktyczne dopuszczanie liczy aktywne taski per zasób względem aktualnego limitu. Reguła SAPI = 1 i liczenie ekstrakcji z rdzeni pozostają.
+
+**D-08. Żądanie odtworzenia w plannerze.** `plan_auto` przyjmuje `RebuildRequest` (zbiór `ProductKind` do odtworzenia) i nadpisania run-only. Planner nie reużywa READY dla wskazanych rodzajów i ich zależnych konsumentów; tworzy nowe deskryptory `MISSING`/`DURABLE` z `planned_destination` równym ścieżce istniejącego produktu i `preserved_path` na tę ścieżkę, korzystając z istniejącej semantyki `preserved_path` w `_durable_target`. Identyfikator nowego deskryptora różni się od odkrytego produktu. Publikacja `replace` zastępuje stary plik dopiero po walidacji.
+
+**D-09. Ustawienia z panelu.** Panel zapisuje `settings.json`, `presets.json` i `.env` istniejącą drogą `AppService`, a po zapisie wysyła rezydentowi polecenie przeładowania; rezydent przeładowuje preferencje pod własną blokadą, a trwające zlecenia zachowują swój snapshot.
+
+**D-10. Dowód pod G3.** Zainstalowana binarka (`C:\Program Files\qBittorrent\qbittorrent.exe`) zawiera parametry `--profile=`, `--configuration=` i `--webui-port=` (sprawdzone 2026-09-08). Profil zarządzany: `config/qbittorrent/` z własnym portem Web UI z ustawień, własnym hasłem i kategorią; osobista instancja właściciela na porcie 8080 pozostaje nietknięta. Uzgodnienie migrowanych `taken` sprawdza hash w obu instancjach tylko do odczytu.
+
+**D-11. Testy platformowe.** Testy realnego Win32 i potoków są oznaczone `integration` i pomijane poza Windows przez `sys.platform`; nazwy potoków i kluczy są losowe per test, bo suite biegnie równolegle.
+
+**D-12. Rozwój przy działającym czuwaniu.** Stare czuwanie działa z tego drzewa roboczego i uruchamia okna partii importujące bieżący kod. Każdy commit etapu przechodzi bramki, nowe moduły wchodzą przed przepięciem, a stara droga pozostaje domyślna do P08; wtedy stare czuwanie zostaje zatrzymane i zadanie autostartu uruchamia rezydenta.
+
+**D-13. Rezerwacje i marker ręcznej obsługi.** Rezerwacja i marker R-028 są kluczowane `(group_id, fingerprint źródeł)` z `source_fingerprint` z `application/watch.py`; produkty AniShift nie wchodzą do fingerprintu, więc publikacja nie unieważnia własnej decyzji.
