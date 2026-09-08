@@ -414,6 +414,14 @@ P01–P08: niewykonane. G1–G3: nieprzeprowadzone. Pełna suite i pomiary Windo
 
 Po każdym etapie wykonawca dopisuje tutaj: commit, zakres, uruchomione komendy i rzeczywiste wyniki, dowiedzione AC oraz pozostały problem. Końcowe ukończenie oznacza pokrycie wszystkich AC-001–042 i I-001–005 wraz z dowodem Windows, a nie samo skompilowanie nowej struktury.
 
+### P01 — wykonane 2026-09-08
+
+- Commity: `5d8d848` (kontrakty `application/control.py`, ledger `application/watch_state.py`, `RequestOrigin`/`RebuildRequest`, schemat 2 subskrypcji z migracją v1), `8135508` (poprawki po niezależnym przeglądzie: ponowne `add`/`subscribe` zachowuje `enabled`/`end_state`/`anilist_id`/korektę opóźnienia; plik stanu nie do zdekodowania daje `ConfigError`, a `save` nadal działa; migracja tylko z wersji 1; `save` zawsze pisze bieżącą wersję schematu).
+- Bramki po `8135508`: `ruff check` czysto, `ruff format --check` czysto, `mypy` win32 i linux czysto, `pytest` exit 0 (3598 testów po `5d8d848`, plus 5 nowych), `pre-commit run --all-files` czysto.
+- Przegląd niezależny (świeży kontekst, Opus): PASS WITH FINDINGS; 2 poważne i 2 mniejsze naprawione w `8135508`; sugestie (wyprowadzanie kluczy z `dataclasses.fields`, parametr `policy` w `auto_admissible` obok `state.policy`) odłożone do P02/P04.
+- Migracja produkcyjna: `config/subscriptions.json` przeszedł na schemat 2 przy pierwszym `load()` nowego czuwania (09:40), kopia `subscriptions.json.v1.bak`, 25 wpisów, 58 odcinków `ORDERED`; cofnięcie wersji = przywrócenie kopii i restart czuwania (opisane w `application/AGENTS.md`).
+- Kolejność etapów: P03 przed P02, żeby rezydent powstał na finalnym API koordynatora.
+
 ## 15. Korekty po przeglądzie wykonawcy (2026-09-08)
 
 Przegląd planu względem spec.md i kodu `a7d319f` (przeczytane w całości: `scheduler*.py`, `service.py`, `sessions.py`, `intents.py`, wejścia `planner.py`, `cli/watch.py`, `application/watch.py`, `cli/run.py`, `interactive/app.py`, `subscriptions.py`, `acquisition.py`, `qbittorrent.py`, wszystkie scoped AGENTS). Plan jest zgodny ze specyfikacją; poniższe decyzje domykają luki, w których wykonawca musiałby zgadywać. Obowiązują razem z sekcjami 1–13; przy sprzeczności wygrywa ta sekcja.
@@ -422,7 +430,7 @@ Przegląd planu względem spec.md i kodu `a7d319f` (przeczytane w całości: `sc
 
 **D-02. Postęp przez kanał.** `RunEvent` jest serializowany polami (`run_id`, `group_id`, `task_id`, rodzaj, stan, procent, komunikat po sanitizacji) i wysyłany do podłączonych paneli; rezydent scala zaległe zdarzenia per `task_id`, więc wolny panel dostaje ostatni stan, nie kolejkę. Przy podłączeniu panel otrzymuje snapshot aktywnych zleceń (grupy, etykiety źródeł, taski z rodzajem i stanem, procenty, wyniki) i odtwarza z niego wiersze `RichRunProgress`. `RichRunProgress` dostaje konstruktor ze snapshotu; obecny konstruktor z `PreparedRun` zostaje adapterem dla testów.
 
-**D-03. Migracja subskrypcji bez identyfikatora AniList.** Obecne 25 wpisów nie ma `anilist_id`. Migracja wykonuje jedno wyszukanie tytułu na wpis i wiąże automatycznie, gdy `series_forms` kandydata pokrywa serię, a sezon zgadza się ze znacznikiem; pozostałe wpisy są widoczne w Stanie jako „wymaga powiązania" z akcją Powiąż. Wpis bez terminu ponawia pobranie kalendarza w rytmie ustawień retry (nie Nyaa), a gdy nie da się powiązać, nie szuka co godzinę (spec R-009). To odstępstwo od wcześniejszej notatki właściciela („bez historii co godzinę") wymaga jego potwierdzenia przed P06; do tego czasu obowiązuje spec.
+**D-03. Migracja subskrypcji bez identyfikatora AniList.** Obecne 25 wpisów nie ma `anilist_id`. Migracja wykonuje jedno wyszukanie tytułu na wpis i wiąże automatycznie, gdy `series_forms` kandydata pokrywa serię, a sezon zgadza się ze znacznikiem; pozostałe wpisy są widoczne w Stanie jako „wymaga powiązania" z akcją Powiąż. Decyzja właściciela z 2026-09-08: wpis bez powiązania z AniList NIE zatrzymuje się. Sprawdza dalej co godzinę jak dziś (`recheck_interval_s`), jest w Stanie podpisany „bez kalendarza, sprawdzanie co godzinę", a próba powiązania ponawia się w rytmie ustawień retry. Gdy powiązanie się uda (automatycznie albo przez Powiąż), wpis przechodzi na rytm według premier. Spec R-009 („bez terminu wpis czeka") obowiązuje tylko dla wpisu powiązanego, którego kalendarz nie podaje daty.
 
 **D-04. Ikona i powiadomienia.** „Otwórz" uruchamia panel w nowym oknie konsoli (`wt.exe`, gdy jest w PATH, inaczej domyślna konsola) z argumentem otwierającym Stan; gdy panel jest już podłączony, rezydent wysyła mu polecenie pokazania Stanu zamiast otwierać drugie okno. Powiadomienia Windows to balon ikony (`Shell_NotifyIcon`, `NIF_INFO`), bez procesu PowerShell.
 
