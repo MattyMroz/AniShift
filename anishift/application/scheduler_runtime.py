@@ -8,15 +8,15 @@ import re
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final, Never
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
-from anishift.application.cancellation import CommitCancellationToken
+from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import RunEventEmitter, RunEventKind, WorkerNotification, sanitize_event_message
-from anishift.application.planning import ExecutionPlan, PlanTask, ProcessingOrderPolicy, TaskState
+from anishift.application.intents import RequestOrigin
+from anishift.application.planning import ExecutionPlan, PlanTask, ProcessingOrderPolicy, TaskKind, TaskState
 from anishift.application.results import (
     ArtifactSnapshot,
     GroupResult,
@@ -25,7 +25,13 @@ from anishift.application.results import (
     RunResult,
     TaskResult,
 )
-from anishift.application.scheduler_contracts import NaturalOrderGate, normalize_resource_key
+from anishift.application.scheduler_contracts import (
+    NaturalOrderGate,
+    RunRequest,
+    TaskHandler,
+    normalize_resource_key,
+)
+from anishift.application.sessions import RunSession
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext, ExecutionError
 from anishift.utils.logger import get_logger
 
@@ -50,6 +56,11 @@ _PUBLICATION_LOCK_RETRY_DELAY_S: Final[float] = 0.25
 _WINDOWS_TRANSIENT_ERRORS: Final[frozenset[int]] = frozenset({5, 32, 33})
 """Windows denials that disappear once a scanner, mapping or reader handle closes."""
 
+_EXTRACTION_TASK_KINDS: Final[frozenset[TaskKind]] = frozenset(
+    {TaskKind.EXTRACT_AUDIO, TaskKind.EXTRACT_SUBTITLES, TaskKind.EXTRACT_TRACKS}
+)
+"""Task kinds competing for the shared media extraction pool."""
+
 
 @dataclass(frozen=True, slots=True)
 class TaskStarted:
@@ -62,8 +73,53 @@ class TaskStarted:
 class SubmittedTask:
     """Future ownership needed to maintain one resource admission window."""
 
+    run_id: str
     task: PlanTask
     resource_key: str
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class ReadyTask:
+    """One admissible task ordered by precedence, acceptance, then plan position."""
+
+    rank: int
+    sequence: int
+    task_index: int
+    run_id: str
+    task_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RunUpdate:
+    """One worker notification tagged with the graph context that produced it."""
+
+    run_id: str
+    update: TaskStarted | WorkerNotification
+
+
+class UpdateChannel:
+    """Worker-to-coordinator queue that also wakes the sleeping coordination loop."""
+
+    __slots__ = ("_queue", "_wake")
+
+    def __init__(self, wake: Callable[[], None]) -> None:
+        """Bind the queue to the callback that wakes the coordination thread."""
+        self._wake: Callable[[], None] = wake
+        self._queue: queue.SimpleQueue[RunUpdate] = queue.SimpleQueue()
+
+    def put(self, run_id: str, update: TaskStarted | WorkerNotification) -> None:
+        """Queue one worker update and wake the coordinator immediately."""
+        self._queue.put(RunUpdate(run_id, update))
+        self._wake()
+
+    def drain(self) -> tuple[RunUpdate, ...]:
+        """Remove and return every queued update without blocking."""
+        drained: list[RunUpdate] = []
+        while True:
+            try:
+                drained.append(self._queue.get_nowait())
+            except queue.Empty:
+                return tuple(drained)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,22 +159,26 @@ class RunState:
 
 @dataclass(slots=True)
 class SchedulerRuntime:
-    """Per-run objects shared by small coordinator methods."""
+    """One independent graph context; only ``ready`` and ``updates`` are shared."""
 
+    run_id: str
+    origin: RequestOrigin
+    sequence: int
     plan: ExecutionPlan
-    cancel: CommitCancellationToken
+    session: RunSession
+    handler: TaskHandler
+    cancel: EventCancellationToken
     emitter: RunEventEmitter
     generation: int
     store: ArtifactStore
     state: RunState
     gate: NaturalOrderGate | None
-    ready: dict[str, deque[PlanTask]]
-    executors: dict[str, ThreadPoolExecutor]
-    futures: dict[Future[TaskResult], SubmittedTask]
-    submitted: dict[str, int]
+    ready: dict[str, list[ReadyTask]]
     held: dict[str, list[tuple[PlanTask, TaskResult]]]
-    updates: queue.SimpleQueue[TaskStarted | WorkerNotification]
+    updates: UpdateChannel
     task_by_id: dict[str, PlanTask]
+    task_index: dict[str, int]
+    extraction_groups: frozenset[str]
     commit_if_current: Callable[[Callable[[], None]], bool]
     pending_publications: dict[str, PendingPublication] = field(default_factory=dict)
 
@@ -126,18 +186,19 @@ class SchedulerRuntime:
 class QueuedProgressSink:
     """Validate task ownership before queueing one worker notification."""
 
-    __slots__ = ("_task_id", "_updates")
+    __slots__ = ("_run_id", "_task_id", "_updates")
 
-    def __init__(self, task_id: str, updates: queue.SimpleQueue[TaskStarted | WorkerNotification]) -> None:
+    def __init__(self, task_id: str, run_id: str, updates: UpdateChannel) -> None:
         self._task_id: str = task_id
-        self._updates: queue.SimpleQueue[TaskStarted | WorkerNotification] = updates
+        self._run_id: str = run_id
+        self._updates: UpdateChannel = updates
 
     def emit(self, notification: WorkerNotification) -> None:
         """Queue a notification belonging to this sink's task."""
         if notification.task_id != self._task_id:
             msg = "Worker notification task ID does not match its running task"
             raise ExecutionError(msg)
-        self._updates.put(notification)
+        self._updates.put(self._run_id, notification)
 
 
 class ArtifactStore:
@@ -266,6 +327,63 @@ def create_run_state(plan: ExecutionPlan) -> RunState:
     return RunState(task_states, unresolved, dependants, task_groups)
 
 
+def create_runtime(
+    request: RunRequest,
+    *,
+    sequence: int,
+    ready: dict[str, list[ReadyTask]],
+    updates: UpdateChannel,
+) -> SchedulerRuntime:
+    """Build one graph context bound to the coordinator's shared ready queues."""
+    plan: ExecutionPlan = request.plan
+    run_cancel: EventCancellationToken = EventCancellationToken(parent=request.cancel)
+    generation: int = request.session.generation
+    group_roots: dict[str, Path] = {group.group_id: request.session.group_temp(group.group_id) for group in plan.groups}
+    return SchedulerRuntime(
+        run_id=request.run_id,
+        origin=request.origin,
+        sequence=sequence,
+        plan=plan,
+        session=request.session,
+        handler=request.handler,
+        cancel=run_cancel,
+        emitter=RunEventEmitter(request.run_id, request.events),
+        generation=generation,
+        store=ArtifactStore(plan.artifacts, group_roots),
+        state=create_run_state(plan),
+        gate=natural_gate(plan),
+        ready=ready,
+        held=defaultdict(list),
+        updates=updates,
+        task_by_id={task.task_id: task for task in plan.tasks},
+        task_index={task.task_id: index for index, task in enumerate(plan.tasks)},
+        extraction_groups=extraction_group_ids(plan),
+        commit_if_current=_commit_gate(request.session, run_cancel, generation),
+    )
+
+
+def extraction_group_ids(plan: ExecutionPlan) -> frozenset[str]:
+    """Return the groups of one plan that compete for the shared extraction pool."""
+    return frozenset(task.group_id for task in plan.tasks if task.kind in _EXTRACTION_TASK_KINDS)
+
+
+def _commit_gate(
+    session: RunSession,
+    cancel: EventCancellationToken,
+    generation: int,
+) -> Callable[[Callable[[], None]], bool]:
+    def commit_if_current(action: Callable[[], None]) -> bool:
+        committed: bool = False
+
+        def commit_if_active() -> None:
+            nonlocal committed
+            committed = cancel.commit_if_active(action)
+
+        return session.commit_if_generation(generation, commit_if_active) and committed
+
+    return commit_if_current
+
+
 def natural_gate(plan: ExecutionPlan) -> NaturalOrderGate | None:
     """Create the ordered forwarding gate only for strict-natural runs."""
     if plan.settings.processing_order_policy is ProcessingOrderPolicy.READY_FIRST:
@@ -274,10 +392,18 @@ def natural_gate(plan: ExecutionPlan) -> NaturalOrderGate | None:
 
 
 def queue_task(task: PlanTask, runtime: SchedulerRuntime) -> None:
-    """Move one dependency-ready task into its bounded resource queue."""
+    """Move one dependency-ready task into the shared queue of its resource."""
     runtime.state.task_states[task.task_id] = TaskState.QUEUED
     resource_key: str = normalize_resource_key(task.resource_key)
-    runtime.ready[resource_key].append(task)
+    runtime.ready.setdefault(resource_key, []).append(
+        ReadyTask(
+            rank=0 if runtime.origin is RequestOrigin.USER else 1,
+            sequence=runtime.sequence,
+            task_index=runtime.task_index[task.task_id],
+            run_id=runtime.run_id,
+            task_id=task.task_id,
+        )
+    )
     runtime.emitter.emit(
         RunEventKind.TASK_QUEUED,
         group_id=task.group_id,

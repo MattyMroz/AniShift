@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         InspectionWarning,
         WorkspaceInspector,
     )
+    from anishift.application.scheduler import RunHandle
     from anishift.application.service import (
         AppService,
         AutoPresetDraft,
@@ -194,6 +195,7 @@ __all__ = [
     "RunEventEmitter",
     "RunEventKind",
     "RunEventSink",
+    "RunHandle",
     "RunMode",
     "RunResult",
     "RunSettingsSnapshot",
@@ -240,6 +242,7 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "EpisodeState": ("anishift.application.subscriptions", "EpisodeState"),
     "SubscriptionEnd": ("anishift.application.subscriptions", "SubscriptionEnd"),
     "WatchStateStore": ("anishift.application.watch_state", "WatchStateStore"),
+    "RunHandle": ("anishift.application.scheduler", "RunHandle"),
     "SUBSCRIPTION_CHECK_INTERVAL_S": ("anishift.application.subscriptions", "CHECK_INTERVAL_S"),
     "Subscription": ("anishift.application.subscriptions", "Subscription"),
     "SubscriptionService": ("anishift.application.subscriptions", "SubscriptionService"),

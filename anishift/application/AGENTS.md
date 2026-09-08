@@ -119,8 +119,29 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Worker otrzymuje w `ArtifactSnapshot` gotowe wejścia i niezmienne deskryptory
   planowanych wyjść, po czym zwraca `TaskResult`; mutable store pozostaje prywatny
   dla schedulera.
-- `GraphScheduler.run()` anuluje własny token powiązany z tokenem wywołującego
-  przed czekaniem na executory, również przy Ctrl+C i błędzie koordynatora.
+- `GraphCoordinator` przyjmuje wiele niezależnych kontekstów planów (`RunRequest` →
+  `RunHandle`). Kontekst ma własny plan, sesję, handler, emitter, `ArtifactStore`,
+  cancellation i `NaturalOrderGate`; wspólne są wyłącznie kolejki gotowych tasków per
+  zasób, executory i limity z `limits_provider()`. `GraphScheduler.run()` to adapter
+  jednego planu: prywatny koordynator, `submit`, czekanie na wynik, `close()`. Błąd
+  pętli koordynatora anuluje tokeny wszystkich kontekstów przed joinem executorów i
+  wraca do wywołującego przez `RunHandle.result()`. `scheduler.py`
+- Element wspólnej kolejki to `(rank, sequence, task_index, run_id, task_id)`, gdzie
+  `rank` = 0 dla `RequestOrigin.USER` i 1 dla `BACKGROUND`. Wybór następuje dopiero przy
+  realnie wolnym slocie, a liczba wysłanych tasków per zasób nie przekracza
+  `worker_limit` — koordynator nie dokłada zapasu `max_pending_per_resource` do puli
+  executora. Limity liczbowe pochodzą z `ResourceLimits` (`plan.settings` tylko dla
+  domyślnego profilu tłumaczenia), pula ekstrakcji z liczby grup ekstrakcyjnych
+  WSZYSTKICH aktywnych kontekstów. `scheduler.py`, `scheduler_contracts.py`
+- Wątek `anishift-coordinator` istnieje tylko wtedy, gdy koordynator ma zlecenia:
+  `submit` go startuje, pusta runda zamyka executory i kończy wątek, `close()` anuluje
+  resztę i dołącza go. Bezczynny koordynator nie budzi się (licznik `wakeups`).
+- `AppService` prowadzi rejestr aktywnych runów: `submit_plan` nie blokuje, `execute`
+  to `submit_plan(...).result()`, a `cancel(run_id)` działa dla każdego aktywnego runu.
+  Druga praca nad tą samą grupą jest odrzucana (`RunConflictError`, I-001), a
+  `cleanup_orphaned_temp` dostaje komplet aktywnych `run_id`. Sesję zamyka wątek
+  domykający run — bez nazwy `anishift-`, bo ten prefiks jest zarezerwowany dla pul,
+  które muszą zostać dołączone. `service.py`
 - Blokada docelowego produktu odkłada ponowienie atomowego `replace` w koordynatorze.
   Nie usypiaj całej koordynacji na czas retry: niezależne grupy nadal przekazują
   postęp i kończą pracę, a każda próba ponownie sprawdza cancellation i generację sesji.

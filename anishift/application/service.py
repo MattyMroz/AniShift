@@ -23,16 +23,17 @@ from anishift.application.intents import (
     ExternalAudioRole,
     GroupIntent,
     ProductIntent,
+    RequestOrigin,
     SubtitleOutputFormat,
     SubtitleSourcePolicy,
     TranslationAction,
 )
 from anishift.application.planner import plan_auto as build_auto_plan
 from anishift.application.planner import plan_manual as build_manual_plan
-from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot, TaskKind
+from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
 from anishift.application.results import RunResult
-from anishift.application.scheduler import GraphScheduler, ResourceLimits
-from anishift.application.scheduler_contracts import TaskHandler
+from anishift.application.scheduler import GraphCoordinator, ResourceLimits, RunHandle
+from anishift.application.scheduler_contracts import RunRequest, TaskHandler
 from anishift.application.sessions import RunSession
 from anishift.config.env_file import env_path, update_env_value
 from anishift.config.field_access import assign_setting_value, setting_is_active, setting_is_persisted
@@ -97,9 +98,6 @@ type WorkspaceFingerprint = tuple[tuple[str, int, int], ...]
 
 _PALANTIR_ENGINE_ID: Final[str] = "palantir"
 """LLM engine whose readiness needs an enrollment address and a catalog alias."""
-
-_EXTRACTION_IO_HEADROOM: Final[int] = 2
-"""Legacy number of extraction workers added above the CPU-count square root."""
 
 _DISCOVERY_LOCK_POLL_S: Final[float] = 0.1
 """Maximum cancellation delay while another discovery prepares media tools."""
@@ -231,8 +229,9 @@ class AppService:
         self._env_file: Path = env_file if env_file is not None else env_path()
         self._workspace: InspectedWorkspace | None = None
         self._workspace_fingerprint: WorkspaceFingerprint | None = None
-        self._active_run_id: str | None = None
-        self._active_cancel: EventCancellationToken | None = None
+        self._active_runs: dict[str, EventCancellationToken] = {}
+        self._active_groups: dict[str, str] = {}
+        self._coordinator: GraphCoordinator | None = None
         self._run_lock: threading.Lock = threading.Lock()
         self._discover_lock: threading.Lock = threading.Lock()
         self._prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = prepare_workspace
@@ -366,49 +365,133 @@ class AppService:
         return build_manual_plan(groups, intent_by_group, self._settings_snapshot())
 
     def execute(self, plan: ExecutionPlan, sink: RunEventSink) -> RunResult:
-        """Execute one accepted immutable plan through a private run session."""
+        """Execute one accepted immutable plan and wait for its complete result."""
+        return self.submit_plan(plan, sink, origin=RequestOrigin.USER).result()
+
+    def submit_plan(
+        self,
+        plan: ExecutionPlan,
+        sink: RunEventSink,
+        *,
+        origin: RequestOrigin,
+        run_id: str | None = None,
+    ) -> RunHandle:
+        """Hand one accepted plan to the shared coordinator without waiting for it."""
         if not plan.can_execute:
             msg = "A plan with blocking problems cannot be executed"
             raise ExecutionError(msg)
-        run_id: str = f"run-{token_hex(8)}"
+        identity: str = run_id if run_id is not None else f"run-{token_hex(8)}"
         cancel = EventCancellationToken()
-        self._claim_run(run_id, cancel)
-        run_root: Path = run_temp_dir(self._workspace_root, run_id)
-        active_ids: tuple[str, ...] = (run_id,)
+        group_ids: tuple[str, ...] = tuple(item.group_id for item in plan.groups)
+        self._claim_run(identity, cancel, group_ids)
         try:
-            cleanup_orphaned_temp(self._workspace_root, active_run_ids=active_ids)
-            source_groups: dict[str, InspectedSourceGroup] = {
-                group.group_id: group for group in self._selected_groups(tuple(item.group_id for item in plan.groups))
-            }
-            session = RunSession(run_root)
-            with session:
-                handler: TaskHandler = self._handler_factory(run_root, plan, source_groups)
-                scheduler = GraphScheduler(
-                    handler,
-                    limits=ResourceLimits.from_settings(
-                        plan.settings,
-                        extraction=_extraction_worker_count(plan),
-                    ),
-                    run_id=run_id,
-                    session=session,
-                )
-                try:
-                    result: RunResult = scheduler.run(plan, cancel=cancel, events=sink)
-                finally:
-                    _close_handler(handler)
-            if session.cleanup_warnings:
-                result = replace(result, warnings=(*result.warnings, *session.cleanup_warnings))
-            return result
-        finally:
-            self._release_run(run_id)
+            return self._start_run(plan, sink, identity, cancel, origin)
+        except BaseException:
+            self._release_run(identity)
+            raise
 
     def cancel(self, run_id: str) -> bool:
-        """Request cancellation only when *run_id* is the active local run."""
+        """Request cancellation only when *run_id* is one of the active local runs."""
         with self._run_lock:
-            if self._active_run_id != run_id or self._active_cancel is None:
-                return False
-            self._active_cancel.cancel()
-            return True
+            cancel: EventCancellationToken | None = self._active_runs.get(run_id)
+        if cancel is None:
+            return False
+        cancel.cancel()
+        return True
+
+    def active_run_ids(self) -> tuple[str, ...]:
+        """Return every run this service still owns a temporary directory for."""
+        with self._run_lock:
+            return tuple(self._active_runs)
+
+    def set_background_admission(self, enabled: bool) -> None:
+        """Allow or hold back admission of tasks belonging to background requests."""
+        self._graph_coordinator().set_background_admission(enabled)
+
+    def close(self) -> None:
+        """Cancel unfinished runs and release the coordinator's worker threads."""
+        with self._run_lock:
+            coordinator: GraphCoordinator | None = self._coordinator
+            self._coordinator = None
+        if coordinator is not None:
+            coordinator.close()
+
+    def _start_run(
+        self,
+        plan: ExecutionPlan,
+        sink: RunEventSink,
+        run_id: str,
+        cancel: EventCancellationToken,
+        origin: RequestOrigin,
+    ) -> RunHandle:
+        cleanup_orphaned_temp(self._workspace_root, active_run_ids=self.active_run_ids())
+        source_groups: dict[str, InspectedSourceGroup] = {
+            group.group_id: group for group in self._selected_groups(tuple(item.group_id for item in plan.groups))
+        }
+        run_root: Path = run_temp_dir(self._workspace_root, run_id)
+        session = RunSession(run_root)
+        # The session outlives this call; _finish_run closes it once the coordinator resolves.
+        session.__enter__()
+        try:
+            handler: TaskHandler = self._handler_factory(run_root, plan, source_groups)
+        except BaseException:
+            session.__exit__(None, None, None)
+            raise
+        try:
+            submitted: RunHandle = self._graph_coordinator().submit(
+                RunRequest(
+                    run_id=run_id,
+                    plan=plan,
+                    session=session,
+                    handler=handler,
+                    cancel=cancel,
+                    events=sink,
+                    origin=origin,
+                )
+            )
+        except BaseException:
+            _close_handler(handler)
+            session.__exit__(None, None, None)
+            raise
+        handle = RunHandle(run_id, submitted.cancel)
+        # An unnamed thread keeps the "anishift-" prefix reserved for pools that must be joined.
+        threading.Thread(
+            target=self._finish_run,
+            args=(submitted, handle, session, handler),
+            daemon=True,
+        ).start()
+        return handle
+
+    def _finish_run(
+        self,
+        submitted: RunHandle,
+        handle: RunHandle,
+        session: RunSession,
+        handler: TaskHandler,
+    ) -> None:
+        try:
+            result: RunResult = submitted.result()
+        except BaseException as error:  # noqa: BLE001 - one boundary forwarding any coordinator fault
+            _close_handler(handler)
+            session.__exit__(type(error), error, error.__traceback__)
+            self._release_run(handle.run_id)
+            handle.fail(error)
+            return
+        _close_handler(handler)
+        session.__exit__(None, None, None)
+        if session.cleanup_warnings:
+            result = replace(result, warnings=(*result.warnings, *session.cleanup_warnings))
+        self._release_run(handle.run_id)
+        handle.resolve(result)
+
+    def _graph_coordinator(self) -> GraphCoordinator:
+        with self._run_lock:
+            if self._coordinator is None:
+                self._coordinator = GraphCoordinator(self._resource_limits)
+            return self._coordinator
+
+    def _resource_limits(self) -> ResourceLimits:
+        return ResourceLimits.from_settings(self._settings_snapshot())
 
     def settings_catalog(self, draft: SettingsDraft | None = None) -> tuple[SettingSpec, ...]:
         """Return fields active for saved or explicitly supplied draft selections."""
@@ -806,22 +889,24 @@ class AppService:
 
         return probe_palantir_model
 
-    def _claim_run(self, run_id: str, cancel: EventCancellationToken) -> None:
+    def _claim_run(self, run_id: str, cancel: EventCancellationToken, group_ids: tuple[str, ...]) -> None:
         with self._run_lock:
-            if self._active_run_id is not None:
+            busy: bool = run_id in self._active_runs or any(group_id in self._active_groups for group_id in group_ids)
+            if busy:
                 context = ErrorContext(
                     code=ErrorCode.IO_ERROR,
                     message="Another AniShift workflow is already active",
                 )
                 raise RunConflictError(context=context)
-            self._active_run_id = run_id
-            self._active_cancel = cancel
+            self._active_runs[run_id] = cancel
+            self._active_groups.update(dict.fromkeys(group_ids, run_id))
 
     def _release_run(self, run_id: str) -> None:
         with self._run_lock:
-            if self._active_run_id == run_id:
-                self._active_run_id = None
-                self._active_cancel = None
+            self._active_runs.pop(run_id, None)
+            for group_id in tuple(self._active_groups):
+                if self._active_groups[group_id] == run_id:
+                    del self._active_groups[group_id]
 
 
 def _env_variable(setting_id: str) -> str:
@@ -839,17 +924,6 @@ def _is_placeholder_model_id(model_id: str) -> bool:
     """Reject example tokens that cannot identify a real provider model."""
     normalized: str = model_id.strip().casefold()
     return normalized.startswith("replace-with-") or normalized.startswith("<select-")
-
-
-def _extraction_worker_count(plan: ExecutionPlan) -> int:
-    """Return the exact legacy I/O pool size for groups requiring extraction."""
-    extraction_kinds: frozenset[TaskKind] = frozenset(
-        {TaskKind.EXTRACT_AUDIO, TaskKind.EXTRACT_SUBTITLES, TaskKind.EXTRACT_TRACKS}
-    )
-    group_ids: frozenset[str] = frozenset(task.group_id for task in plan.tasks if task.kind in extraction_kinds)
-    cores: int = os.cpu_count() or 1
-    scaled_workers: int = round(cores**0.5) + _EXTRACTION_IO_HEADROOM
-    return max(1, min(len(group_ids), scaled_workers))
 
 
 def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:

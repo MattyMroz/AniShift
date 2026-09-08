@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,16 +29,19 @@ from anishift.application.handlers import (
     TranslationTaskHandler,
 )
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
-from anishift.application.intents import ProductIntent, ProductKind
+from anishift.application.intents import ProductIntent, ProductKind, RequestOrigin
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, TaskKind
 from anishift.application.results import GroupStatus, RunResult
-from anishift.application.scheduler_contracts import ResourceLimits, TaskHandler
+from anishift.application.scheduler import RunHandle
+from anishift.application.scheduler_contracts import ResourceLimits, TaskHandler, extraction_worker_count
+from anishift.application.scheduler_runtime import extraction_group_ids
 from anishift.application.service import AppService, AutoPresetDraft
 from anishift.bootstrap import AppContext, bootstrap, create_app_service
 from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
 from anishift.config.presets import AutoPresetFile, default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
+from anishift.config.workspace import cleanup_orphaned_temp
 from anishift.errors import ErrorCode, ExecutionError, RunConflictError
 from anishift.services.extraction import ExtractionRequest, ExtractionResult
 from anishift.services.media import DefaultMediaProbe
@@ -200,6 +203,48 @@ def test_active_run_rejects_a_second_execute_before_creating_another_scope(tmp_p
     assert not any((tmp_path / "temp").iterdir())
 
 
+def test_two_submitted_plans_stay_independent_and_share_one_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_text_source(tmp_path / "Episode 1.txt", "Text")
+    write_text_source(tmp_path / "Episode 2.txt", "Text")
+    entered = threading.Event()
+    release = threading.Event()
+    service: AppService = _service(tmp_path, FakeTranslationService(entered=entered, release=release))
+    groups = service.discover().groups
+    draft = AutoPresetDraft("preview", "Preview", ProductIntent(frozenset({ProductKind.FULL_PL})))
+    first_plan: ExecutionPlan = service.plan_auto((groups[0].group_id,), draft)
+    second_plan: ExecutionPlan = service.plan_auto((groups[1].group_id,), draft)
+    cleaned: list[tuple[str, ...]] = []
+
+    def spy(root: Path, *, active_run_ids: Collection[str]) -> tuple[Path, ...]:
+        cleaned.append(tuple(active_run_ids))
+        return cleanup_orphaned_temp(root, active_run_ids=active_run_ids)
+
+    monkeypatch.setattr(service_module, "cleanup_orphaned_temp", spy)
+
+    first: RunHandle = service.submit_plan(first_plan, CollectingRunSink(), origin=RequestOrigin.USER)
+    assert entered.wait(timeout=2.0)
+    second: RunHandle = service.submit_plan(second_plan, CollectingRunSink(), origin=RequestOrigin.BACKGROUND)
+    try:
+        assert set(cleaned[-1]) == {first.run_id, second.run_id}
+        assert service.cancel(second.run_id)
+        release.set()
+
+        assert first.result(timeout=10.0).succeeded
+        assert second.result(timeout=10.0).cancelled
+        assert (tmp_path / "Episode 1.pl.srt").is_file()
+        assert not (tmp_path / "Episode 2.pl.srt").exists()
+        assert not any((tmp_path / "temp").iterdir())
+
+        replayed: RunResult = service.execute(second_plan, CollectingRunSink())
+        assert replayed.succeeded
+        assert (tmp_path / "Episode 2.pl.srt").is_file()
+    finally:
+        service.close()
+
+
 def test_settings_draft_and_plan_snapshot_are_detached(tmp_path: Path) -> None:
     write_text_source(tmp_path / "Episode.txt", "Text")
     service: AppService = _service(tmp_path, FakeTranslationService())
@@ -269,7 +314,7 @@ def test_auto_uses_the_legacy_extraction_pool_size(
     plan: ExecutionPlan = cast("ExecutionPlan", SimpleNamespace(tasks=tasks))
     monkeypatch.setattr(os, "cpu_count", lambda: 16)
 
-    assert service_module._extraction_worker_count(plan) == 6
+    assert extraction_worker_count(len(extraction_group_ids(plan))) == 6
 
 
 def test_engine_availability_exposes_reasons_without_secret_values(tmp_path: Path) -> None:
