@@ -1190,3 +1190,48 @@ def test_finished_contexts_leave_no_named_worker_threads(tmp_path: Path) -> None
         coordinator.close()
 
     assert _named_worker_threads() == ()
+
+
+def test_a_snapshot_failure_during_admission_finishes_the_run_instead_of_sleeping_forever(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "only-task"),))
+    original: Callable[[scheduler_runtime.ArtifactStore, PlanTask], ArtifactSnapshot] = (
+        scheduler_runtime.ArtifactStore.snapshot
+    )
+
+    def broken_snapshot(store: scheduler_runtime.ArtifactStore, task: PlanTask) -> ArtifactSnapshot:
+        if task.task_id == "only-task":
+            msg = "Scheduler admitted task with unready artifact: broken"
+            raise ExecutionError(msg)
+        return original(store, task)
+
+    monkeypatch.setattr(scheduler_runtime.ArtifactStore, "snapshot", broken_snapshot)
+    coordinator = GraphCoordinator(_single_slot_limits)
+    try:
+        with ExitStack() as stack:
+            handle, handler, _ = _submit(coordinator, stack, tmp_path, "run-broken", plan, _FakeHandler)
+
+            result: RunResult = handle.result(timeout=5.0)
+
+            assert result.groups[0].status is GroupStatus.FAILED
+            assert handler.calls == []
+    finally:
+        coordinator.close()
+
+
+def test_shared_limits_come_from_the_provider_and_not_from_the_plan_settings(tmp_path: Path) -> None:
+    plan: ExecutionPlan = _plan(
+        tmp_path,
+        tuple(_TaskSpec("group-1", f"llm-{index}", resource_key="llm:gemini") for index in range(3)),
+    )
+    assert plan.settings.llm_max_concurrency > 1
+    coordinator = GraphCoordinator(_single_slot_limits)
+    try:
+        with ExitStack() as stack:
+            handle, handler, _ = _submit(coordinator, stack, tmp_path, "run-llm", plan, _FakeHandler)
+
+            assert handle.result(timeout=5.0).succeeded is True
+            assert handler.max_active["llm:gemini"] == 1
+    finally:
+        coordinator.close()

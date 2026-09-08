@@ -56,8 +56,8 @@ type CommandOutcome = Mapping[str, str | int | bool | None]
 _NO_EXCEPTIONS: Final[Mapping[str, bool]] = MappingProxyType({})
 """Directory table of a policy carrying nothing but the global switch."""
 
-_SECRET_MARKERS: Final[tuple[str, ...]] = ("token", "key", "password", "secret")
-"""Substrings marking a settings key whose value must never reach the ledger."""
+_SECRET_MARKERS: Final[frozenset[str]] = frozenset({"token", "key", "password", "secret"})
+"""Name segments marking a settings key whose value must never reach the ledger."""
 
 _DEFAULT_RELEASE_DELAY_S: Final[int] = 3 * 3600
 """Wait after airing before the first release search of an episode without history."""
@@ -182,8 +182,7 @@ class ProcessingRequest:
 
     def __post_init__(self) -> None:
         for key in self.settings:
-            folded: str = key.casefold()
-            if any(marker in folded for marker in _SECRET_MARKERS):
+            if _SECRET_MARKERS.intersection(key.casefold().split("_")):
                 msg = "A request settings snapshot cannot carry a secret"
                 raise ValueError(msg)
 

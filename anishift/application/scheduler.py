@@ -61,8 +61,8 @@ __all__ = [
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-EXECUTOR_THREAD_CEILING: Final[int] = 16
-"""Largest thread pool one resource may own; admission enforces the real limit."""
+EXECUTOR_THREAD_CEILING: Final[int] = 100
+"""Thread pool size per resource, matching the largest settable limit; admission enforces the real limit."""
 
 _COORDINATOR_THREAD_NAME: Final[str] = "anishift-coordinator"
 """Name of the single thread owning every graph transition."""
@@ -449,6 +449,8 @@ class GraphCoordinator:
             snapshot: ArtifactSnapshot = context.store.snapshot(task)
         except ExecutionError as error:
             finish_failed(task, error, context)
+            # The failure happened after this round's terminal check, so the loop must run again.
+            self._wake()
             return
         executor: ThreadPoolExecutor = self._executor(resource_key)
         future: Future[TaskResult] = executor.submit(self._execute_task, context, task, snapshot)

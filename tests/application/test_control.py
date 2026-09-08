@@ -245,6 +245,13 @@ def test_an_accepted_command_identifier_is_recorded_once() -> None:
     assert recorded.command_receipts == (receipt,)
 
 
-def test_a_request_refuses_a_settings_snapshot_carrying_a_secret() -> None:
+@pytest.mark.parametrize("secret", ["palantir_token", "deepl_api_key", "qbittorrent_password", "client_secret"])
+def test_a_request_refuses_a_settings_snapshot_carrying_a_secret(secret: str) -> None:
     with pytest.raises(ValueError, match="secret"):
-        replace(_request(), settings={"palantir_token": "abc"})
+        replace(_request(), settings={secret: "abc"})
+
+
+def test_a_request_accepts_a_setting_whose_name_only_resembles_a_secret() -> None:
+    request: ProcessingRequest = replace(_request(), settings={"llm_max_output_tokens": 32000, "keyframe_gap": 2})
+
+    assert request.settings["llm_max_output_tokens"] == 32000

@@ -74,7 +74,7 @@ class RunRequest:
 
 @dataclass(frozen=True, slots=True)
 class ResourceLimits:
-    """Bounded worker and pending-future limits shared by every active graph."""
+    """Bounded worker limits shared by every active graph; the pending-future field stays for API compatibility only."""
 
     extraction: int
     translation: Mapping[str, int]
