@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         SubscriptionService,
     )
     from anishift.application.events import RunEvent
+    from anishift.cli.control import ResidentStatus
     from anishift.cli.run import AutoRunRefusal, PreparedAutoRun
     from anishift.cli.watch import WatchStatus
     from anishift.platform.autostart import AutostartStatus
@@ -90,6 +91,9 @@ _WATCH_RUNNING_UNKNOWN: Final[str] = "running"
 
 _WATCH_STOPPED: Final[str] = "stopped"
 """Status line stated when no process watches the library."""
+
+_RESIDENT_LINE: Final[str] = "resident: {state}"
+"""Second status line, naming the process that owns the automation."""
 
 _WATCH_STOP_REQUESTED: Final[str] = "Stop requested; the watch ends after its current scan."
 """Confirmation of a stop request, which is accepted even with nothing running."""
@@ -265,11 +269,23 @@ def watch_stop() -> None:
 
 @watch_app.command("status")
 def watch_state() -> None:
-    """Report whether a watch process is running."""
+    """Report whether a watch process and a resident are running."""
+    from anishift.cli.control import resident_status  # noqa: PLC0415 - keep the transport lazy
     from anishift.cli.watch import watch_state_dir, watch_status  # noqa: PLC0415 - keep the watch loop lazy
 
-    state: WatchStatus = watch_status(watch_state_dir())
+    state_dir: Path = watch_state_dir()
+    state: WatchStatus = watch_status(state_dir)
     typer.echo(_safe(_watch_status_line(state)))
+    resident: ResidentStatus = resident_status(state_dir)
+    typer.echo(_safe(_RESIDENT_LINE.format(state=_resident_status_line(resident))))
+
+
+@watch_app.command("resident", hidden=True)
+def watch_resident() -> None:
+    """Own the automation of this library until a shutdown command ends the process."""
+    from anishift.cli.watch import run_resident, watch_state_dir  # noqa: PLC0415 - keep the loop lazy
+
+    raise typer.Exit(code=run_resident(_composed_service(), state_dir=watch_state_dir()))
 
 
 @watch_app.command("batch", hidden=True)
@@ -498,6 +514,15 @@ def _automation_checks() -> list[CheckResult]:
 
 def _watch_status_line(state: WatchStatus) -> str:
     """Render one stable line describing the state of the watch process."""
+    if not state.running:
+        return _WATCH_STOPPED
+    if state.pid is None:
+        return _WATCH_RUNNING_UNKNOWN
+    return _WATCH_RUNNING.format(pid=state.pid)
+
+
+def _resident_status_line(state: ResidentStatus) -> str:
+    """Render one stable line describing the state of the resident."""
     if not state.running:
         return _WATCH_STOPPED
     if state.pid is None:

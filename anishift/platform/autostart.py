@@ -28,6 +28,7 @@ __all__ = [
     "Runner",
     "disable",
     "enable",
+    "resident_command",
     "status",
     "watch_command",
 ]
@@ -142,6 +143,15 @@ def watch_command() -> list[str]:
             ),
         )
     return [str(launcher), "-m", _WATCH_MODULE, "watch"]
+
+
+def resident_command() -> list[str]:
+    """Return the argv starting the resident without a window.
+
+    Raises:
+        AutostartError: The windowless interpreter is missing beside this one.
+    """
+    return [*watch_command(), "resident"]
 
 
 def enable(command: Sequence[str], *, run: Runner = _default_run) -> None:

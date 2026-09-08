@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from secrets import token_hex
 from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application import SCAN_INTERVAL_S, SUBSCRIPTION_CHECK_INTERVAL_S, WatchLedger
@@ -26,6 +29,7 @@ __all__ = [
     "ERROR_BACKOFF_S",
     "LOCK_FILE_NAME",
     "PID_FILE_NAME",
+    "RESIDENT_LOCK_FILE_NAME",
     "STATE_DIR_NAME",
     "STOP_FILE_NAME",
     "Child",
@@ -36,6 +40,8 @@ __all__ = [
     "batch_command",
     "request_stop",
     "run_daemon",
+    "run_resident",
+    "spawn_resident",
     "spawn_window",
     "watch_state_dir",
     "watch_status",
@@ -54,6 +60,13 @@ LOCK_FILE_NAME: Final[str] = "daemon.lock"
 PID_FILE_NAME: Final[str] = "daemon.pid"
 """File carrying the identifier of the process that currently holds the lock."""
 
+RESIDENT_LOCK_FILE_NAME: Final[str] = "resident.lock"
+"""File whose operating-system lock admits exactly one resident.
+
+The resident keeps a lock of its own beside the watch loop's, because both may exist
+until the resident replaces the loop.
+"""
+
 STOP_FILE_NAME: Final[str] = "stop"
 """Flag asking the running daemon to end its loop after the current scan."""
 
@@ -63,8 +76,14 @@ ERROR_BACKOFF_S: Final[float] = 30.0
 _CONSOLE_SCRIPT_NAME: Final[str] = "anishift.exe"
 """Installed console script preferred over a module launch for a batch window."""
 
+_INSTANCE_ID_BYTES: Final[int] = 8
+"""Random bytes making the identity of one resident unique between restarts."""
+
 _REFUSED_MESSAGE: Final[str] = "Another watch process already holds the lock"
 """Reason logged when a second daemon leaves without touching the library."""
+
+_RESIDENT_REFUSED: Final[str] = "Another resident already holds the lock"
+"""Reason logged when a second resident leaves without recording itself."""
 
 
 class Child(Protocol):
@@ -256,3 +275,103 @@ def _remove(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         logger.debug("Watch could not remove one of its state files")
+
+
+def spawn_resident() -> subprocess.Popen[bytes]:
+    """Start the resident detached from this process, without a console of its own.
+
+    Raises:
+        AutostartError: The windowless interpreter is missing beside this one.
+    """
+    from anishift.platform.autostart import resident_command  # noqa: PLC0415 - keep the scheduler lazy
+
+    command: list[str] = resident_command()
+    if sys.platform == "win32":
+        return subprocess.Popen(  # noqa: S603 - argv built here
+            command,
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    return subprocess.Popen(  # noqa: S603 - argv built here
+        command,
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def run_resident(
+    service: AppService,
+    *,
+    state_dir: Path,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    on_ready: Callable[[], None] | None = None,
+) -> int:
+    """Own the automation of *state_dir* until a shutdown command ends the process.
+
+    The lock is taken before anything is recorded, so a second resident racing this one
+    leaves without ever naming itself as the owner.
+    """
+    from anishift.application import (  # noqa: PLC0415 - keep the owner off the Typer import path
+        WATCH_STATE_FILE_NAME,
+        AutomationOwner,
+        WatchStateStore,
+    )
+    from anishift.platform.local_control import (  # noqa: PLC0415 - keep the transport off the CLI import
+        ControlServer,
+        InstanceRecord,
+        control_endpoint,
+        ensure_authkey,
+        remove_instance,
+        write_instance,
+    )
+
+    lock: ProcessLock = ProcessLock(state_dir / RESIDENT_LOCK_FILE_NAME)
+    if not lock.acquire():
+        logger.warning(_RESIDENT_REFUSED)
+        return EXIT_REFUSED
+    try:
+        instance_id: str = f"instance-{token_hex(_INSTANCE_ID_BYTES)}"
+        owner = AutomationOwner(
+            service,
+            WatchStateStore(state_dir / WATCH_STATE_FILE_NAME),
+            instance_id=instance_id,
+            clock=clock,
+        )
+        endpoint: str = control_endpoint(state_dir)
+        server = ControlServer(endpoint, ensure_authkey(state_dir), owner.handle)
+        owner.attach_broadcast(server.broadcast)
+        try:
+            write_instance(
+                state_dir,
+                InstanceRecord(
+                    instance_id=instance_id,
+                    pid=os.getpid(),
+                    endpoint=endpoint,
+                    started_at=clock().astimezone(UTC).isoformat(),
+                ),
+            )
+            _on_signal(owner.request_shutdown)
+            logger.info("Resident started")
+            if on_ready is not None:
+                on_ready()
+            owner.serve()
+        finally:
+            server.close()
+            remove_instance(state_dir)
+    finally:
+        lock.release()
+    logger.info("Resident stopped")
+    return EXIT_SUCCESS
+
+
+def _on_signal(request_shutdown: Callable[[], None]) -> None:
+    """Ask the owner to shut down when the process is asked to terminate."""
+    try:
+        signal.signal(signal.SIGTERM, lambda _number, _frame: request_shutdown())
+    except OSError, ValueError:
+        logger.debug("Termination signals are not deliverable in this process")

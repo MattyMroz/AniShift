@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         order_groups,
         read_episode,
     )
+    from anishift.application.automation import AutomationOwner
     from anishift.application.discovery import (
         PRIMARY_SOURCE_SUFFIXES,
         DiscoveryResult,
@@ -49,7 +50,7 @@ if TYPE_CHECKING:
         SubscriptionEnd,
         SubscriptionService,
     )
-    from anishift.application.watch_state import WatchStateStore
+    from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
     from anishift.services.catalog import TitleCandidate, TitleCatalogError, TitleStatus
     from anishift.services.torrents.query import EpisodeRange, SearchQuery, parse_query
     from anishift.setup.doctor import CheckResult
@@ -129,6 +130,7 @@ __all__ = [
     "PRIMARY_SOURCE_SUFFIXES",
     "SCAN_INTERVAL_S",
     "SUBSCRIPTION_CHECK_INTERVAL_S",
+    "WATCH_STATE_FILE_NAME",
     "AcquisitionConfirmation",
     "AcquisitionService",
     "AcquisitionState",
@@ -141,6 +143,7 @@ __all__ = [
     "ArtifactState",
     "AutoPreset",
     "AutoPresetDraft",
+    "AutomationOwner",
     "AutomationPolicy",
     "BurnSubtitleProduct",
     "CancellationToken",
@@ -242,6 +245,8 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "EpisodeState": ("anishift.application.subscriptions", "EpisodeState"),
     "SubscriptionEnd": ("anishift.application.subscriptions", "SubscriptionEnd"),
     "WatchStateStore": ("anishift.application.watch_state", "WatchStateStore"),
+    "WATCH_STATE_FILE_NAME": ("anishift.application.watch_state", "WATCH_STATE_FILE_NAME"),
+    "AutomationOwner": ("anishift.application.automation", "AutomationOwner"),
     "RunHandle": ("anishift.application.scheduler", "RunHandle"),
     "SUBSCRIPTION_CHECK_INTERVAL_S": ("anishift.application.subscriptions", "CHECK_INTERVAL_S"),
     "Subscription": ("anishift.application.subscriptions", "Subscription"),

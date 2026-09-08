@@ -203,6 +203,52 @@ def test_active_run_rejects_a_second_execute_before_creating_another_scope(tmp_p
     assert not any((tmp_path / "temp").iterdir())
 
 
+def test_an_interrupted_execute_cancels_its_run_and_leaves_no_temporary_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_text_source(tmp_path / "Episode.txt", "Text")
+    entered = threading.Event()
+    release = threading.Event()
+    service: AppService = _service(tmp_path, FakeTranslationService(entered=entered, release=release))
+    group_id: str = service.discover().groups[0].group_id
+    plan: ExecutionPlan = service.plan_auto(
+        (group_id,),
+        AutoPresetDraft("preview", "Preview", ProductIntent(frozenset({ProductKind.FULL_PL}))),
+    )
+    original: Callable[..., RunResult] = RunHandle.result
+    interrupted: list[str] = []
+    raised: list[BaseException] = []
+
+    def once(self: RunHandle, timeout: float | None = None) -> RunResult:
+        if threading.current_thread() is thread and not interrupted:
+            assert entered.wait(timeout=5.0)
+            interrupted.append(self.run_id)
+            raise KeyboardInterrupt
+        return original(self, timeout)
+
+    def run() -> None:
+        try:
+            service.execute(plan, CollectingRunSink())
+        except KeyboardInterrupt as interrupt:
+            raised.append(interrupt)
+
+    monkeypatch.setattr(RunHandle, "result", once)
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert entered.wait(timeout=5.0)
+    thread.join(timeout=0.5)
+    waiting: bool = thread.is_alive()
+    release.set()
+    thread.join(timeout=10.0)
+
+    assert waiting
+    assert not thread.is_alive()
+    assert len(raised) == 1
+    assert service.active_run_ids() == ()
+    assert not any((tmp_path / "temp").iterdir())
+
+
 def test_two_submitted_plans_stay_independent_and_share_one_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

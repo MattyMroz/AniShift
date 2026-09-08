@@ -1,6 +1,6 @@
 # platform
 
-Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokada jednej instancji procesu (`process_lock.py`), zadanie Windows przy logowaniu (`autostart.py`), klucze Web UI w ustawieniach qBittorrenta (`qbittorrent_config.py`). `__init__.py` to re-eksport binarek.
+Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokada jednej instancji procesu (`process_lock.py`), lokalny kanał sterowania rezydenta (`local_control.py`), zadanie Windows przy logowaniu (`autostart.py`), klucze Web UI w ustawieniach qBittorrenta (`qbittorrent_config.py`). `__init__.py` to re-eksport binarek.
 
 ## Pułapki
 
@@ -18,6 +18,28 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 
 - `ProcessLock` trzyma uchwyt przez cały czas życia procesu; plik blokady zostaje po zakończeniu i jego
   istnienie NIE oznacza zajętej blokady. Sprawdzaj przez nieblokujące `acquire()`. `process_lock.py`
+- Kanał sterowania to `\\.\pipe\anishift-<12 hex
+  z sha256 katalogu stanu>`, poza nim `<state_dir>/control.sock`. Nigdy TCP i nigdy `send`/`recv`
+  (pickle) — wyłącznie `send_bytes`/`recv_bytes` z JSON i limitem `MAX_FRAME_BYTES`; `recv_bytes`
+  z limitem podnosi `OSError` i psuje połączenie, więc ramka ponad limit kończy je bez odpowiedzi.
+  `local_control.py`
+- `PipeListener.accept()` blokuje na `WaitForMultipleObjects(..., INFINITE)`, więc `close()` budzi
+  wątek accept własnym połączeniem do siebie; samo zamknięcie listenera go nie odblokuje.
+  `local_control.py`
+- `instance.json` NIE dowodzi działania rezydenta — dowodem jest udane połączenie i odpowiedź na
+  `status`. Plik powstaje dopiero PO zdobyciu `resident.lock`, więc przegrany wyścig go nie dotyka.
+  `local_control.py`, `cli/watch.py`
+- Klucz `control.key` powstaje przez `os.open(..., O_CREAT|O_EXCL|O_WRONLY, 0o600)`, a na Windows
+  dodatkowo `icacls /inheritance:r /grant:r "<konto>:F"`; nieudany `icacls` to warning, nie awaria.
+  Klucza nie ma w logach ani w komunikatach. `local_control.py`
+- Rozgałęzienie po systemie idzie przez `is_windows()`, nie przez `sys.platform`, żeby test mógł
+  wymusić obie ścieżki; wyjątkiem jest alias `ChannelConnection`, bo `PipeConnection` istnieje w
+  typeshed tylko na win32. `local_control.py`
+- Wolny subskrybent nie rośnie w nieskończoność: `_EventOutbox` trzyma ostatnie zdarzenie per
+  `task_id` i najwyżej `MAX_OUTBOX_EVENTS` pozycji, a nadmiarowe połączenie dostaje `REFUSED`.
+  `local_control.py`
+- `resident_command()` to `watch_command()` z dopiskiem `resident`, więc obie drogi startu mają
+  jedno źródło ścieżki `pythonw.exe`. `autostart.py`
 - `autostart.py` zarządza wyłącznie zadaniem `AniShift Watch`. Rejestruje je z pliku XML
   (`schtasks /Create /XML`: LogonTrigger i Principal bieżącego konta, InteractiveToken,
   LeastPrivilege), bo `schtasks /SC ONLOGON` odmawia zwykłemu użytkownikowi. Stan czyta z

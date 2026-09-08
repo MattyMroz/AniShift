@@ -205,7 +205,7 @@ def test_watch_status_reports_a_stopped_watch(monkeypatch: pytest.MonkeyPatch, t
     result: Result = CliRunner().invoke(cli_main.app, ["watch", "status"])
 
     assert result.exit_code == 0
-    assert result.output.strip() == "stopped"
+    assert result.output.splitlines() == ["stopped", "resident: stopped"]
 
 
 def test_watch_status_names_the_running_process(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -215,7 +215,7 @@ def test_watch_status_names_the_running_process(monkeypatch: pytest.MonkeyPatch,
     result: Result = CliRunner().invoke(cli_main.app, ["watch", "status"])
 
     assert result.exit_code == 0
-    assert result.output.strip() == "running (pid 99)"
+    assert result.output.splitlines() == ["running (pid 99)", "resident: stopped"]
 
 
 def test_watch_stop_records_the_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

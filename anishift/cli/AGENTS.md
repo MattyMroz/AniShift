@@ -9,6 +9,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `run.py` — wspólny, UI-neutralny preflight Auto (także dla wskazanego podzbioru grup) oraz wykonanie zaakceptowanego planu
 - `exit_codes.py` — kody wyjścia 0/1/3/4 i `run_exit_code()` wspólne dla `run --preset` i okna partii
 - `watch.py` — pętla czuwania bez UI: blokada instancji, skan biblioteki, uruchamianie okna partii, flaga stop, godzinne sprawdzanie subskrypcji między skanami
+- `control.py` — cienki klient rezydenta: `open_control()` (start na żądanie) i `resident_status()`
 - `interactive/` — lazy-loaded Home, jeden renderer Prompt Toolkit, maskotka, Settings, Manual i wspólny postęp
 
 ## Pułapki
@@ -17,6 +18,18 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   startuje z `pythonw.exe` bez konsoli. Okno partii to osobny proces `anishift watch batch ID...`
   uruchamiany z `CREATE_NEW_CONSOLE`; czuwanie zna tylko jego kod wyjścia. Jedno okno naraz.
   `watch.py`, `main.py`
+- `anishift watch` bez podkomendy NADAL uruchamia stare `run_daemon` (D-12); rezydent jest ukrytą
+  komendą `anishift watch resident` i osobną blokadą `resident.lock`, bo do P08 oba procesy mogą
+  istnieć obok siebie. `watch status` raportuje obie drogi. `main.py`, `watch.py`
+- `run_resident()` zdobywa blokadę PRZED zapisem `instance.json` i klucza, więc przegrany wyścig
+  kończy się `EXIT_REFUSED` bez śladu w katalogu stanu. Rezydent nie importuje `cli.interactive`
+  ani Prompt Toolkit. `watch.py`
+- `spawn_resident()` startuje `pythonw -m anishift.cli.main watch resident` z
+  `DETACHED_PROCESS | CREATE_NO_WINDOW` i strumieniami do `DEVNULL`; poza Windows
+  `start_new_session=True`. `watch.py`
+- `resident_status()` nie startuje rezydenta — czyta `instance.json` i próbuje `status`; tylko
+  udana odpowiedź dowodzi działania. `open_control()` jest jedynym miejscem, które uruchamia
+  rezydenta na żądanie klienta. `control.py`
 - `run_interactive(service, batch=...)` zwraca kod wyjścia jak `run --preset` i po wyniku odlicza
   10 s w `_handle_idle`, dowolny klawisz zamyka; `interrupt` w partii anuluje run i kończy kodem 4.
   Test buduje aplikację ręcznie? Ustaw też `_batch` i `_closing_at`. `interactive/app.py`

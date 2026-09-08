@@ -6,6 +6,7 @@ import os
 import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -41,7 +42,7 @@ from anishift.config.field_catalog import SettingCatalogContext, SettingSpec, Se
 from anishift.config.model_catalog import ModelCatalog, ModelCatalogError, load_model_catalog
 from anishift.config.presets import AutoPresetFile, load_presets, save_presets
 from anishift.config.settings import Settings
-from anishift.config.user_settings import UserSettings, save_user_settings
+from anishift.config.user_settings import UserSettings, load_user_settings, save_user_settings
 from anishift.config.workspace import cleanup_orphaned_temp, run_temp_dir
 from anishift.errors import (
     AniShiftError,
@@ -104,6 +105,9 @@ _DISCOVERY_LOCK_POLL_S: Final[float] = 0.1
 
 _TTS_GROUP_JOBS: Final[int] = 1
 """Legacy file-level limit keeping one episode in synthesis at a time."""
+
+_UNRESOLVED_RUN: Final[str] = "The coordinator produced neither a result nor a failure"
+"""Failure a run is settled with when its context ended without either outcome."""
 
 
 class ModelAvailability(StrEnum):
@@ -365,8 +369,20 @@ class AppService:
         return build_manual_plan(groups, intent_by_group, self._settings_snapshot())
 
     def execute(self, plan: ExecutionPlan, sink: RunEventSink) -> RunResult:
-        """Execute one accepted immutable plan and wait for its complete result."""
-        return self.submit_plan(plan, sink, origin=RequestOrigin.USER).result()
+        """Execute one accepted immutable plan and wait for its complete result.
+
+        An interrupt leaving this call cancels the run and waits for its context to close,
+        so no task, tool process or temporary directory outlives the caller.
+        """
+        handle: RunHandle = self.submit_plan(plan, sink, origin=RequestOrigin.USER)
+        try:
+            return handle.result()
+        except BaseException:
+            handle.cancel()
+            # The cancelled run's own failure is expected here; the caller's exception wins.
+            with suppress(Exception):
+                handle.result()
+            raise
 
     def submit_plan(
         self,
@@ -469,20 +485,21 @@ class AppService:
         session: RunSession,
         handler: TaskHandler,
     ) -> None:
+        result: RunResult | None = None
+        failure: BaseException | None = None
         try:
-            result: RunResult = submitted.result()
+            result = submitted.result()
         except BaseException as error:  # noqa: BLE001 - one boundary forwarding any coordinator fault
+            failure = error
+        try:
             _close_handler(handler)
-            session.__exit__(type(error), error, error.__traceback__)
+            _close_session(session, failure)
+            if result is not None and session.cleanup_warnings:
+                result = replace(result, warnings=(*result.warnings, *session.cleanup_warnings))
+        finally:
+            # Every exit resolves the handle; an unresolved one would hang `execute` forever.
             self._release_run(handle.run_id)
-            handle.fail(error)
-            return
-        _close_handler(handler)
-        session.__exit__(None, None, None)
-        if session.cleanup_warnings:
-            result = replace(result, warnings=(*result.warnings, *session.cleanup_warnings))
-        self._release_run(handle.run_id)
-        handle.resolve(result)
+            _settle(handle, result, failure)
 
     def _graph_coordinator(self) -> GraphCoordinator:
         with self._run_lock:
@@ -710,6 +727,17 @@ class AppService:
             spec.validate_value(value)
         update_env_value(_env_variable(spec.setting_id), value, path=self._env_file)
         self._reload_settings()
+
+    def reload_preferences(self) -> None:
+        """Re-read the panel preferences and the environment file this service runs on.
+
+        A request already accepted keeps the settings snapshot it carries in its plan.
+        """
+        preferences: UserSettings = load_user_settings()
+        reloaded: Settings = Settings(_env_file=self._env_file)
+        with self._run_lock:
+            self._user_settings = deepcopy(preferences)
+            self._settings = reloaded
 
     def reload_environment(self) -> Mapping[str, bool]:
         """Re-read the environment file and report which env settings are configured."""
@@ -977,8 +1005,32 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
 
 def _close_handler(handler: TaskHandler) -> None:
     close: object = getattr(handler, "close", None)
-    if callable(close):
+    if not callable(close):
+        return
+    try:
         close()
+    except Exception:  # noqa: BLE001 - a handler that cannot close must not strand the run
+        logger.warning("A task handler failed to close", handler_type=type(handler).__name__)
+
+
+def _close_session(session: RunSession, failure: BaseException | None) -> None:
+    try:
+        if failure is None:
+            session.__exit__(None, None, None)
+        else:
+            session.__exit__(type(failure), failure, failure.__traceback__)
+    except Exception:  # noqa: BLE001 - a session that cannot close must not strand the run
+        logger.warning("A run session failed to close")
+
+
+def _settle(handle: RunHandle, result: RunResult | None, failure: BaseException | None) -> None:
+    if failure is not None:
+        handle.fail(failure)
+        return
+    if result is not None:
+        handle.resolve(result)
+        return
+    handle.fail(ExecutionError(_UNRESOLVED_RUN))
 
 
 def _workspace_fingerprint(discovery: DiscoveryResult) -> WorkspaceFingerprint:

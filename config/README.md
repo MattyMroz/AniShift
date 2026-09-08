@@ -10,6 +10,9 @@ the code:
 - `anishift.models.jsonc` is the local model catalog copied from
   `anishift.models.example.jsonc`.
 
+`ANISHIFT_CONFIG_DIR` replaces this directory entirely, so a test or a second
+account can keep its own preferences, watch state and subscriptions elsewhere.
+
 Durable products are always written beside their source, never here.
 Per-machine files are gitignored; only this README and the model-catalog
 example are tracked.

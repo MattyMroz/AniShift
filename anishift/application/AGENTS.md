@@ -79,6 +79,28 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   ustawienie biblioteki. Rezerwację kluczuje `group_id` (jej `fingerprint` służy tylko do
   unieważnienia podglądu), a marker ręcznej obsługi (R-028) para `(group_id, source_fingerprint)`
   z `watch.py`, więc publikacja produktu nie unieważnia decyzji użytkownika. `control.py`
+- `AutomationOwner` (`automation.py`) jest jedynym właścicielem `WatchState`: jeden wątek
+  `anishift-owner` zdejmuje polecenia z kolejki, a `preview` i `subscriptions_check` idą na pulę
+  `anishift-owner-io`, więc `set_auto` nie czeka na skan biblioteki ani na sieć. Pętla śpi na
+  kolejce bez timeoutu — bezczynny rezydent nie wykonuje pracy. `automation.py`
+- Polecenie mutujące zapisuje stan RAZEM z `CommandReceipt` PRZED pozytywną odpowiedzią; nieudany
+  zapis daje `INTERNAL` i zero skutku, a powtórzony `command_id` zwraca zapisany wynik bez
+  drugiego wykonania (AC-042). `automation.py`
+- Pętla właściciela kończy się dopiero, gdy po `shutdown` nie ma ani aktywnych runów, ani
+  zleceń nierozliczonych przez samego właściciela (`_drained`). Sam `active_run_ids()` nie
+  wystarcza: run bywa zdjęty z rejestru fasady, zanim właściciel zapisze jego stan końcowy.
+  `automation.py`
+- `ProcessingRequest.settings` bierze jawną listę `_SNAPSHOT_FIELDS`, nie wszystkie pola
+  `RunSettingsSnapshot`: ledger odrzuca każdą nazwę wyglądającą na sekret, a
+  `llm_max_output_tokens` zawiera `token`. `automation.py`, `control.py`
+- Aktualność podglądu sprawdza się przez ponowny `source_fingerprint` grup podglądu (kilka
+  `stat`), nie przez pełny `discover()` na wątku właściciela. `automation.py`
+- `AppService.reload_preferences()` wczytuje ponownie `settings.json` i `.env` pod `_run_lock`;
+  trwające zlecenia zachowują snapshot ustawień, który mają w planie (D-09). `service.py`
+- `AppService.execute()` po przerwaniu anuluje run i CZEKA na domknięcie kontekstu, zanim
+  przekaże wyjątek dalej — inaczej taski, procesy narzędzi i katalog `temp/` przeżyłyby
+  wywołującego. `_finish_run` zawsze zamyka handler i sesję oraz zawsze rozwiązuje `RunHandle`,
+  bo nierozwiązany handle wiesza `execute` na zawsze. `service.py`
 - `WatchStateStore` zapisuje atomowo: `state.json.tmp` + `fsync`, kopia czytelnego `state.json`
   do `state.json.bak`, dopiero potem `replace`. Uszkodzony JSON, nieznany klucz i nieznana wersja
   schematu dają `ConfigError`, nigdy pustego stanu; brak pliku to stan domyślny z wyłączonym Auto.
