@@ -1,95 +1,27 @@
 ---
-kind: package-index
-status: implemented-e2e-verified
-updated: 2026-09-06
-baseline: bc74425b487fb9110da76911c26dca4194b2aad9
-implementation: plans/01-watch-mode.md, plans/02-search-and-download.md, plans/03-subscriptions.md (branch work/local-automation/01-watch)
-language: pl
+kind: historical-package-index
+status: superseded-for-current-work
+updated: 2026-09-08
+current_workstream: docs/work/local-automation/06-efficiency
 ---
 
-# AniShift | pełny pakiet lokalnej automatyzacji
+# Lokalna automatyzacja: historia etapów i dawnego pakietu
 
-## Pliki do przekazania wykonawcy
+**Aktualny wykonawca zaczyna od [nowego pakietu etapu 06](../../work/local-automation/06-efficiency/README.md): [specyfikacja](../../work/local-automation/06-efficiency/spec.md) -> [plan implementacji](../../work/local-automation/06-efficiency/plan.md).**
 
-**[Masterplan implementacji](masterplan.md): kontrakt projektowy (sekcje 1–14), 16 faz i 128 uporządkowanych kart zadań ze scenariuszami weryfikacji.**
+Ten katalog nie jest równoległą kolejką do wdrożenia. Dawne `spec.md`, `research.md`, `brief.md`, `masterplan.md` i `handoff.md` opisują wcześniejszy projekt i są źródłami historycznymi. W szczególności ich SQLite, osobny inbox, katalogi rewizji i wielki podział zadań nie obowiązują w nowym etapie 06. Aktualny plan rozwija istniejący rdzeń i strukturę biblioteki.
 
-| Dokument | Zawartość |
+## Zachowane materiały implementacji
+
+| Materiał | Znaczenie historyczne |
 | --- | --- |
-| [spec.md](spec.md) | Cel, sześć przepływów, 30 wymagań, granice i odbiór. |
-| [research.md](research.md) | Aktualny kod, integracje, biblioteki, alternatywy, 43 źródła i ograniczenia dowodu. |
-| [brief.md](brief.md) | Wybrany stos, kompromisy, konfiguracja i rzeczywiste decyzje właściciela. |
-| [masterplan.md](masterplan.md) | Architektura, schemat danych, kontrakty, foldery, stany, fazy i zadania plik po pliku. |
-| [handoff.md](handoff.md) | Instrukcja dla agenta kodującego, granice lokalnej adaptacji i bramki. |
+| [01-watch-mode](plans/01-watch-mode.md) | Pierwsze czuwanie, podfoldery biblioteki, okno partii i autostart. |
+| [02-search-and-download](plans/02-search-and-download.md) | Wyszukiwanie i przekazanie pobrań do qBittorrenta. |
+| [03-subscriptions](plans/03-subscriptions.md) | Pierwsze subskrypcje i godzinne sprawdzanie. |
+| [04-smart-search](plans/04-smart-search.md) | Tożsamość tytułu, AniList, sezon i numeracja odcinków. |
+| [Przegląd 2026-09-06](reviews/2026-09-06-local-automation-review.md) | Ustalenia przeglądu wcześniejszej implementacji. |
+| [06-queue-and-control](plans/06-queue-and-control.md) | Stały odnośnik przekierowujący do nowego kontraktu etapu 06. |
 
-## Co ma powstać
+Sekcje wyników starszych planów dotyczą podanych tam commitów i scenariuszy. Nie są dowodem wykonania nowej specyfikacji, której implementacja ma dopiero nastąpić. Aktualne działanie opisuje [README aplikacji](../../../README.md).
 
-Wpisujesz tytuł, wybierasz sezon/grupę albo zapisujesz subskrypcję. Worker pobiera wskazane pliki przez qBittorrent, kopiuje je bez naruszania oryginałów, uruchamia obecny rdzeń i układa wyniki w bibliotece. Każdy gotowy fizyczny plik jest dostępny niezależnie od reszty paczki.
-
-Wrzucenie własnego MKV/MP4 do inbox działa bez otwierania Auto. Po świadomym włączeniu autostartu worker czuwa po zalogowaniu. Jedno opcjonalne okno pokazuje postęp i może zostać zamknięte bez przerwania obróbki.
-
-## Rozstrzygnięcia
-
-Lokalny worker, SQLite, obecne AppService/GraphScheduler i Prompt Toolkit, qBittorrent WebUI loopback, AniList, Nyaa RSS + historia, dodatkowy publiczny RSS, własny inbox i katalogi rewizji. Bez VPS, chmury, nowego UI, Redis/Celery/Docker i przepisywania TTS.
-
-Wybór qBittorrent jest rekomendacją techniczną, nie stwierdzeniem, że jest to obecny klient właściciela. Dwie ulubione grupy nie zostały nazwane, więc pakiet ich nie zgaduje.
-
-**MAL:** opcjonalny import XML i lokalne obejrzane; bez automatycznego zapisu na konto lub pełnej synchronizacji w tej edycji.
-
-## Relacja do wcześniejszego pakietu
-
-[docs/plans/automation/](../automation/README.md) z tego samego dnia zakładał najbliższy mały wycinek (A01) i zostawiał otwarte SQLite/JSON oraz VPS. Ten pakiet jest odpowiedzią na tamten brief i zastępuje tamten masterplan kierunkowo: pełny zakres lokalny, SQLite, bez VPS. Tamte dokumenty pozostają historią i źródłem ustaleń właściciela U01–U14; nie są równoległą kolejką wykonania.
-
-## Stan pakietu
-
-Plan przygotowano na bazie `MattyMroz/AniShift` z commitu `bc74425b487fb9110da76911c26dca4194b2aad9`. Starszy brief „tylko jeden wycinek” nie ogranicza obecnego pełnego zlecenia.
-
-Po przeglądzie właściciela z 2026-09-05 usunięto pliki pomocnicze generatora (eksport zadań, mapę pokrycia, sumy kontrolne, raport walidacji dokumentów, rejestr źródeł zdublowany z research.md) i zmieniono limity równoległości na ustawienia użytkownika. Pokrycie wymagań jest w polu **Realizacja** każdego R w spec.md.
-
-To komplet dokumentów planistycznych. Nie jest implementacją. Nie instalowano klienta, nie włączano autostartu, nie zmieniano kont, nie pobierano odcinków użytkownika i nie uruchamiano suite aplikacji. T003/T004 oraz końcowe próby Windows/live/human mają dopiero dostarczyć właściwy dowód runtime.
-
-Dokument zawiera rozstrzygnięte decyzje i konkretne testy dla niepewnych integracji. Nie daje nieuzasadnionej gwarancji, że wszystkie zewnętrzne API pozostaną niezmienne albo że nie ma błędów.
-
-## Implementacja
-
-Wykonane na gałęzi `work/local-automation/01-watch` (2026-09-05/06), każdy plan z sekcją „Wynik wykonania”:
-
-| Plan | Rezultat | Zastępuje fazy |
-| --- | --- | --- |
-| [plans/01-watch-mode.md](plans/01-watch-mode.md) | czuwanie na istniejącym Auto, podfoldery serii, okno partii, autostart | P02–P04, P12 |
-| [plans/02-search-and-download.md](plans/02-search-and-download.md) | ekran Anime: nyaa, 1080p+, grupy, Space/Enter, qBittorrent, `qbit` | P06, P07, P11 |
-| [plans/03-subscriptions.md](plans/03-subscriptions.md) | klawisz `O`, sprawdzanie co godzinę w czuwaniu, `subs` | P09 |
-| [plans/04-smart-search.md](plans/04-smart-search.md) | tytuł po ludzku (AniList), komplet odcinków, numeracja sezonów, grupy EN/FR, zakresy, jeden folder, qBittorrent w doctorze | P05 (część), P08 (część), P13 (część) |
-
-Przebieg e2e z 2026-09-06 (plan 03, sekcja „Przebieg e2e”): Web UI qBittorrenta włączone na localhost, `qbit setup`,
-subskrypcja Solo Leveling od odc. 25 → pobranie → okno partii → `.pl.ass` i `.eac3` w 2,5 min. Po drodze naprawiono
-raport 202 Web API 2.15, podwójne dodawanie torrenta przy kolejnym sprawdzeniu, tolerancję długości lektora
-w inspekcji i ponowne otwieranie okna dla grupy zakończonej kodem 0. `anishift doctor` raportuje czuwanie i autostart.
-
-Właścicielowi zostaje obserwacja: nowy odcinek obserwowanej serii ma dopłynąć sam (sprawdzanie co godzinę) oraz
-przejście przez ekran Anime klawiaturą (Space/Enter/O), które w e2e wykonano przez fasadę, nie przez TUI.
-
-Fazy masterplanu bez planu wykonania i powód: P05 pokrywa plan 04 w zakresie AniList jako tożsamości serii (bez lokalnego katalogu aliasów); P13 MAL to nie-cel właściciela (KISS);
-P08 (paczki) pokrywa wiersz paczki w ekranie Anime plus rekurencyjne discovery podfolderu qBittorrenta;
-P10 (odtwarzanie) nie ma na tej maszynie odtwarzacza obsługującego zewnętrzną ścieżkę audio, produkty leżą obok
-źródła; P14 scenariusze awarii są testami jednostkowymi planów 01–03; P15 to ten katalog.
-
-Wykonawca zaczyna od [handoff.md](handoff.md), potem od aktualnego planu w `plans/`. Cały katalog można umieścić w `docs/work/local-automation/`. Zachowanie nazw plików utrzymuje linki względne.
-
-## Przegląd niezależny i poprawki (2026-09-06)
-
-[reviews/2026-09-06-local-automation-review.md](reviews/2026-09-06-local-automation-review.md): werdykt FAIL dla
-odbioru z 7 poważnymi i 10 mniejszymi findingami, wszystkie naprawione na gałęzi `work/local-automation/05-polish`
-(commity `e909aa8`, `600fff4`): licznik subskrypcji przesuwa się do pierwszego niepobranego odcinka (7.5 i luki nie
-gubią odcinków), seria porównywana po znormalizowanej postaci (bez cichego „pobrano 0”), zapytanie doganiające o
-brakujący numer, nazwy z drugim „ - ”, paczki „01-12”, grupa po `H 264-`, myślnik wiodący, pusty ekran po filtrze
-z działającym `F`, komendy `subs`/`qbit` bez tracebacków, `qbit setup` uczciwy o niezapisanych kluczach, jedna reguła
-kolejności grup, polskie komunikaty błędów w ekranie Anime, `anishift watch` mówi przy odmowie, wklejanie w polu
-tytułu, notka o niedostępnej numeracji sezonu, doctor czyta `.env`, README zgodny z menu, Esc wraca do listy tytułów,
-martwe raportowanie ledgera usunięte, budżet nyaa liczony w żądaniach HTTP (≤ 16). N9 (ruff) nie potwierdził się na
-całym drzewie (reviewer użył `--exclude`).
-
-Testy integracyjne `tests/integration/` odtwarzają 59 nagranych odpowiedzi nyaa i AniList przez złożoną fasadę
-(wyszukanie, numeracja sezonów, subskrypcja z fałszywym qBittorrentem, budżet zapytań); wariant na żywo pod
-markerem `network`.
-
-Odbiór właściciela klawiaturą (W08, A08, S06, M09) pozostaje jedynym otwartym punktem.
+Pełna poprzednia wersja tego indeksu i jej ustalenia pozostają w [historii sprzed aktualizacji](https://github.com/MattyMroz/AniShift/blob/a7d319f334a062d0fe016c774d9a5fb4fccbe9b6/docs/plans/local-automation/README.md). Plików źródłowych dawnego pakietu nie usunięto ani masowo nie przeniesiono.
