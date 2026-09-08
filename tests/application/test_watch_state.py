@@ -174,6 +174,39 @@ def test_a_temporary_file_left_by_a_crash_changes_nothing(tmp_path: Path) -> Non
     assert store.load() == state
 
 
+def test_saving_overwrites_a_temporary_file_left_by_a_crash(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    (tmp_path / f"{WATCH_STATE_FILE_NAME}.tmp").write_text("{ not json", encoding="utf-8")
+
+    store.save(_state())
+
+    assert not (tmp_path / f"{WATCH_STATE_FILE_NAME}.tmp").exists()
+    assert store.load() == _state()
+
+
+def test_store_rejects_a_file_that_is_not_valid_text_and_can_still_save(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    (tmp_path / WATCH_STATE_FILE_NAME).write_bytes(b'{"schema_version": 1, "policy": "\xff\xfe')
+
+    with pytest.raises(ConfigError) as failure:
+        store.load()
+    store.save(_state())
+
+    assert failure.value.context.code is ErrorCode.CONFIG_INVALID
+    assert store.load() == _state()
+
+
+def test_saving_always_writes_the_current_schema_version(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+
+    store.save(replace(_state(), schema_version=99))
+
+    assert json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))["schema_version"] == (
+        WATCH_STATE_SCHEMA_VERSION
+    )
+    assert store.load().schema_version == WATCH_STATE_SCHEMA_VERSION
+
+
 def test_the_state_lives_beside_the_other_watch_files() -> None:
     path: Path = watch_state_path()
 

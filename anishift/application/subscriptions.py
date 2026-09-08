@@ -378,8 +378,12 @@ class SubscriptionService:
             episode_offset=context.offset if context is not None else 0,
             season_episodes=context.episodes if context is not None else None,
             generation=earlier.generation + 1 if earlier is not None else 1,
-            anilist_id=anilist_id,
+            anilist_id=anilist_id if anilist_id is not None or earlier is None else earlier.anilist_id,
             episodes=earlier.episodes if earlier is not None else (),
+            enabled=earlier.enabled if earlier is not None else True,
+            end_state=earlier.end_state if earlier is not None else SubscriptionEnd.ACTIVE,
+            release_delay_s=earlier.release_delay_s if earlier is not None else None,
+            delay_samples_s=earlier.delay_samples_s if earlier is not None else (),
         )
         remaining: list[Subscription] = [item for item in stored if item.subscription_id != identifier]
         remaining.append(subscription)
@@ -747,7 +751,7 @@ def _decode_entry(raw: object, version: int) -> Subscription:
         release_delay_s=_optional_int(document, "release_delay_s"),
         delay_samples_s=_optional_whole_numbers(document, "delay_samples_s"),
     )
-    return _migrate_v1(subscription) if version != SCHEMA_VERSION else subscription
+    return _migrate_v1(subscription) if version == 1 else subscription
 
 
 def _migrate_v1(subscription: Subscription) -> Subscription:

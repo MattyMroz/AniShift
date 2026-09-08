@@ -65,16 +65,20 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `SCHEMA_VERSION` to `2`, a loader przyjmuje 1 i 2. Plik w wersji 1 `load()` migruje raz: zostawia
   kopię `subscriptions.json.v1.bak` i przepisuje plik w wersji 2, więc drugi `load()` nie zmienia
   już bajtów. Każdy numer z `taken_episodes` staje się `EpisodeOrder(..., ORDERED)` bez hasha —
-  `taken` dowodzi przekazania wydania klientowi, nigdy kompletnego pliku. `subscriptions.py`
+  `taken` dowodzi przekazania wydania klientowi, nigdy kompletnego pliku. Kod sprzed schematu 2
+  odrzuca plik w wersji 2 (`ConfigError`), więc cofnięcie wersji wymaga przywrócenia kopii
+  `subscriptions.json.v1.bak` na miejsce `subscriptions.json` i restartu czuwania. Ponowne
+  `add`/`subscribe` tej samej pary seria+grupa podnosi `generation` i zachowuje `enabled`,
+  `end_state`, `anilist_id`, korektę i próbki opóźnienia. `subscriptions.py`
 - `enable`/`disable`/`set_anilist_id` są idempotentne: bez zmiany wartości nie zapisują i nie
   podnoszą `generation`; ze zmianą podnoszą je o 1. `check_all` pomija wpisy wyłączone i te z
   `end_state != ACTIVE`, a `check` wyłączonego wpisu zwraca `CheckOutcome` z problemem i nie
   dotyka źródła. `subscriptions.py`
 - `AutomationPolicy.effective_auto`: globalne wyłączenie wygrywa zawsze, inaczej decyduje
   najbliższy jawny wyjątek katalogu idąc w górę do roota (`""`), a katalog bez wyjątku dziedziczy
-  ustawienie biblioteki. Rezerwacje i marker ręcznej obsługi (R-028) kluczuje para
-  `(group_id, source_fingerprint)` z `watch.py`, więc publikacja produktu nie unieważnia decyzji
-  użytkownika. `control.py`
+  ustawienie biblioteki. Rezerwację kluczuje `group_id` (jej `fingerprint` służy tylko do
+  unieważnienia podglądu), a marker ręcznej obsługi (R-028) para `(group_id, source_fingerprint)`
+  z `watch.py`, więc publikacja produktu nie unieważnia decyzji użytkownika. `control.py`
 - `WatchStateStore` zapisuje atomowo: `state.json.tmp` + `fsync`, kopia czytelnego `state.json`
   do `state.json.bak`, dopiero potem `replace`. Uszkodzony JSON, nieznany klucz i nieznana wersja
   schematu dają `ConfigError`, nigdy pustego stanu; brak pliku to stan domyślny z wyłączonym Auto.

@@ -79,7 +79,7 @@ def _admissible(state: WatchState, *, directory: str = "", products: frozenset[P
 
 
 @pytest.mark.parametrize("auto_enabled", [True, False])
-def test_automatic_admission_asks_the_switch_alone_and_never_a_subscription(auto_enabled: bool) -> None:
+def test_automatic_admission_follows_the_global_switch(auto_enabled: bool) -> None:
     policy: AutomationPolicy = AutomationPolicy(auto_enabled=auto_enabled)
     state: WatchState = WatchState(policy=policy)
 
@@ -155,6 +155,15 @@ def test_a_release_by_another_client_leaves_the_reservation_alone() -> None:
 
 def test_an_accepted_request_refuses_a_reservation_and_automatic_work() -> None:
     state: WatchState = record_request(WatchState(policy=AutomationPolicy(auto_enabled=True)), _request())
+
+    assert reserve(state, _reservation()) is None
+    assert _admissible(state) is False
+
+
+def test_a_running_request_refuses_a_reservation_and_automatic_work() -> None:
+    state: WatchState = record_request(
+        WatchState(policy=AutomationPolicy(auto_enabled=True)), _request(state=RequestState.RUNNING)
+    )
 
     assert reserve(state, _reservation()) is None
     assert _admissible(state) is False

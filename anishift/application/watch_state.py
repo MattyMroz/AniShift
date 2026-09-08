@@ -172,7 +172,7 @@ class WatchStateStore:
             text: str = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return WatchState()
-        except OSError as problem:
+        except (OSError, UnicodeDecodeError) as problem:
             raise _invalid_file() from problem
         return _parse(text)
 
@@ -191,7 +191,7 @@ class WatchStateStore:
     def _back_up(self) -> None:
         try:
             text: str = self._path.read_text(encoding="utf-8")
-        except OSError:
+        except OSError, UnicodeDecodeError:
             return
         try:
             _parse(text)
@@ -220,7 +220,7 @@ def _invalid_file() -> ConfigError:
 
 def _encode_state(state: WatchState) -> dict[str, object]:
     return {
-        "schema_version": state.schema_version,
+        "schema_version": WATCH_STATE_SCHEMA_VERSION,
         "policy": _encode_policy(state.policy),
         "reservations": [_encode_reservation(item) for item in state.reservations],
         "markers": [_encode_marker(item) for item in state.markers],

@@ -251,6 +251,22 @@ def test_subscribe_again_moves_the_start_and_keeps_the_taken_hashes(tmp_path: Pa
     assert len(service.list()) == 1
 
 
+def test_subscribe_again_keeps_the_switch_the_catalog_binding_and_the_delay_history(tmp_path: Path) -> None:
+    service: SubscriptionService = _service(tmp_path, _Acquisition())
+    first: Subscription = service.subscribe("neko", _choice(Decimal(9)))
+    service.disable(first.subscription_id)
+    bound: Subscription = service.set_anilist_id(first.subscription_id, 4242)
+    _store(tmp_path).save([replace(bound, release_delay_s=1800, delay_samples_s=(1500, 2100))])
+
+    second: Subscription = service.subscribe("neko", _choice(Decimal(12)))
+
+    assert second.enabled is False
+    assert second.anilist_id == 4242
+    assert second.release_delay_s == 1800
+    assert second.delay_samples_s == (1500, 2100)
+    assert second.generation == bound.generation + 1
+
+
 def test_subscribe_refuses_a_batch(tmp_path: Path) -> None:
     service: SubscriptionService = _service(tmp_path, _Acquisition())
 
