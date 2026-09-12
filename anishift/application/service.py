@@ -16,6 +16,7 @@ from secrets import token_hex
 from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application.cancellation import CancellationToken, EventCancellationToken, NeverCancelledToken
+from anishift.application.control_payloads import decode_overrides
 from anishift.application.discovery import DiscoveryResult, discover_groups
 from anishift.application.events import RunEventSink
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
@@ -363,22 +364,32 @@ class AppService:
     ) -> ExecutionPlan:
         """Plan selected groups from a stored or one-shot automatic preset."""
         resolved: AutoPreset = preset.to_preset() if isinstance(preset, AutoPresetDraft) else preset
+        settings: RunSettingsSnapshot = self._settings_snapshot()
+        if overrides:
+            settings = decode_overrides(settings, overrides)
         return build_auto_plan(
             self._selected_groups(group_ids),
             resolved,
-            self._settings_snapshot(),
+            settings,
             rebuild=rebuild,
-            overrides=overrides,
         )
 
-    def plan_manual(self, intents: Sequence[GroupIntent]) -> ExecutionPlan:
+    def plan_manual(
+        self,
+        intents: Sequence[GroupIntent],
+        *,
+        overrides: Mapping[str, object] | None = None,
+    ) -> ExecutionPlan:
         """Plan one independent explicit intent for every selected group."""
         intent_by_group: dict[str, GroupIntent] = {intent.group_id: intent for intent in intents}
         if len(intent_by_group) != len(intents):
             msg = "Manual intent group IDs must be unique"
             raise PlanningError(msg)
         groups: tuple[InspectedSourceGroup, ...] = self._selected_groups(tuple(intent_by_group))
-        return build_manual_plan(groups, intent_by_group, self._settings_snapshot())
+        settings: RunSettingsSnapshot = self._settings_snapshot()
+        if overrides:
+            settings = decode_overrides(settings, overrides)
+        return build_manual_plan(groups, intent_by_group, settings)
 
     def execute(self, plan: ExecutionPlan, sink: RunEventSink) -> RunResult:
         """Execute one accepted immutable plan and wait for its complete result."""

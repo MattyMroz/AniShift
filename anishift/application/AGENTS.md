@@ -101,9 +101,11 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   zleceń nierozliczonych przez samego właściciela (`_drained`). Sam `active_run_ids()` nie
   wystarcza: run bywa zdjęty z rejestru fasady, zanim właściciel zapisze jego stan końcowy.
   `automation.py`
-- `ProcessingRequest.settings` bierze jawną listę `_SNAPSHOT_FIELDS`, nie wszystkie pola
-  `RunSettingsSnapshot`: ledger odrzuca każdą nazwę wyglądającą na sekret, a
-  `llm_max_output_tokens` zawiera `token`. `automation.py`, `control.py`
+- `ProcessingRequest` zachowuje pełny niejawny dla UI `RunSettingsSnapshot`, wybrane
+  `GroupIntent` i `RebuildRequest`. Zagnieżdżone listy ustawień z JSON wracają do krotek;
+  nazwy pól zawierające segment sekretu są odrzucane. Stare zlecenia bez `intents` nadal
+  się wczytują, ale nie pozwalają odtworzyć wyborów, których dawny zapis nie zachował.
+  `automation.py`, `control.py`, `control_payloads.py`, `watch_state.py`
 - Aktualność podglądu sprawdza się przez ponowny `source_fingerprint` grup podglądu (kilka
   `stat`), nie przez pełny `discover()` na wątku właściciela. `automation.py`
 - `AppService.reload_preferences()` wczytuje ponownie `settings.json` i `.env` pod `_run_lock`;

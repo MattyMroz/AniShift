@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
 from queue import SimpleQueue
 from secrets import token_hex
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 from anishift.application.artifacts import ArtifactLifetime, ArtifactState
 from anishift.application.control import (
@@ -26,8 +27,9 @@ from anishift.application.control import (
     release,
     reserve,
 )
+from anishift.application.control_payloads import decode_intent
 from anishift.application.events import sanitize_event_message
-from anishift.application.intents import RequestOrigin
+from anishift.application.intents import AutoPreset, GroupIntent, RebuildRequest, RequestOrigin, RunMode
 from anishift.application.results import GroupStatus
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids
@@ -37,12 +39,12 @@ from anishift.platform.local_control import ControlErrorCode, ControlRequest, Co
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
 
     from anishift.application.control import CommandOutcome, SettingsSnapshot, SourceFingerprint
     from anishift.application.events import RunEvent
     from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace
-    from anishift.application.intents import AutoPreset, ProductKind
+    from anishift.application.intents import ProductKind
     from anishift.application.planning import ExecutionPlan, RunSettingsSnapshot
     from anishift.application.results import RunResult
     from anishift.application.scheduler import RunHandle
@@ -139,25 +141,6 @@ _RESULT_STATES: Final[Mapping[GroupStatus, RequestState]] = {
 }
 """Terminal group outcome mapped onto the state one request is recorded with."""
 
-_SNAPSHOT_FIELDS: Final[tuple[str, ...]] = (
-    "translation_profile_id",
-    "translation_concurrency",
-    "llm_profile_id",
-    "llm_model_id",
-    "llm_translation_style",
-    "llm_max_concurrency",
-    "tts_profile_id",
-    "tts_model_id",
-    "tts_voice_id",
-    "tts_voice_label",
-    "tts_group_jobs",
-    "audio_profile_id",
-    "audio_output_profile",
-    "composition_profile_id",
-    "processing_order_policy",
-)
-"""Planning settings identifying how one request was accepted."""
-
 _WORST_FIRST: Final[tuple[RequestState, ...]] = (
     RequestState.CANCELLED,
     RequestState.FAILED,
@@ -185,6 +168,7 @@ class _Preview:
     origin: RequestOrigin
     source_selection: SourceSelection
     session_id: str | None
+    rebuild: RebuildRequest | None
 
 
 @dataclass(slots=True)
@@ -510,20 +494,26 @@ class AutomationOwner:
         selection: SourceSelection | None = _selection(request.payload)
         if client_id is None or origin is None or selection is None:
             return _invalid("A preview needs a `client_id`, a known `origin` and `source_selection`")
-        planned: tuple[ExecutionPlan, tuple[InspectedSourceGroup, ...], AutoPreset] | None = self._plan(request.payload)
+        planned: tuple[ExecutionPlan, tuple[InspectedSourceGroup, ...], RebuildRequest | None] | None = self._plan(
+            request.payload,
+            selection,
+        )
         if planned is None:
             return ControlResponse.refused(ControlErrorCode.INVALID_PAYLOAD, _NOT_PLANNABLE)
-        plan, groups, preset = planned
+        plan, groups, rebuild = planned
         preview = _Preview(
             preview_id=f"preview-{token_hex(_ID_BYTES)}",
             client_id=client_id,
             plan=plan,
             groups=groups,
             fingerprints={group.group_id: _group_fingerprint(group) for group in groups},
-            products=preset.products.requested_products,
+            products=frozenset(
+                product for group in plan.groups for product in group.intent.products.requested_products
+            ),
             origin=origin,
             source_selection=selection,
             session_id=request.session_id,
+            rebuild=rebuild,
         )
         with self._previews_lock:
             if request.session_id is not None and request.session_id not in self._sessions:
@@ -541,17 +531,58 @@ class AutomationOwner:
     def _plan(
         self,
         payload: Mapping[str, object],
-    ) -> tuple[ExecutionPlan, tuple[InspectedSourceGroup, ...], AutoPreset] | None:
-        preset_id: str | None = _text(payload, "preset_id")
+        selection: SourceSelection,
+    ) -> tuple[ExecutionPlan, tuple[InspectedSourceGroup, ...], RebuildRequest | None] | None:
         try:
             workspace: InspectedWorkspace = self._service.discover()
-            preset: AutoPreset = self._service.get_preset(preset_id or self._service.default_preset_id())
             groups: tuple[InspectedSourceGroup, ...] = _requested_groups(workspace, payload)
-            plan: ExecutionPlan = self._service.plan_auto(tuple(group.group_id for group in groups), preset)
-        except (AniShiftError, OSError, KeyError, ValueError) as problem:
+            rebuild: RebuildRequest | None = (
+                decode_intent(RebuildRequest, payload["rebuild"]) if payload.get("rebuild") is not None else None
+            )
+            plan: ExecutionPlan = self._plan_selection(payload, groups, selection, rebuild)
+        except (AniShiftError, OSError, KeyError, TypeError, ValueError) as problem:
             logger.warning("A preview could not be planned", error_class=type(problem).__name__)
             return None
-        return plan, groups, preset
+        return plan, groups, rebuild
+
+    def _plan_selection(
+        self,
+        payload: Mapping[str, object],
+        groups: tuple[InspectedSourceGroup, ...],
+        selection: SourceSelection,
+        rebuild: RebuildRequest | None,
+    ) -> ExecutionPlan:
+        overrides: object = payload.get("overrides", {})
+        if not isinstance(overrides, Mapping):
+            msg = "Run setting overrides must be an object"
+            raise TypeError(msg)
+        if selection is SourceSelection.MANUAL:
+            entries: object = payload.get("intents")
+            if not isinstance(entries, list) or rebuild is not None:
+                msg = "Manual selection requires group intents and cannot carry Auto rebuilds"
+                raise ValueError(msg)
+            intents: tuple[GroupIntent, ...] = tuple(decode_intent(GroupIntent, item) for item in entries)
+            if {intent.group_id for intent in intents} != {group.group_id for group in groups} or any(
+                intent.mode is not RunMode.MANUAL for intent in intents
+            ):
+                msg = "Manual intents must match the selected groups"
+                raise ValueError(msg)
+            return self._service.plan_manual(intents, overrides=overrides)
+        if "intents" in payload:
+            msg = "Automatic selection cannot carry manual intents"
+            raise ValueError(msg)
+        preset_id: str | None = _text(payload, "preset_id")
+        preset: AutoPreset = (
+            decode_intent(AutoPreset, payload["preset"])
+            if "preset" in payload
+            else self._service.get_preset(preset_id or self._service.default_preset_id())
+        )
+        return self._service.plan_auto(
+            tuple(group.group_id for group in groups),
+            preset,
+            rebuild=rebuild,
+            overrides=overrides,
+        )
 
     def _start(self, request: ControlRequest) -> ControlResponse:
         if self._shutting_down:
@@ -599,11 +630,12 @@ class AutomationOwner:
             fingerprints=dict(preview.fingerprints),
             origin=preview.origin,
             source_selection=preview.source_selection,
-            rebuild=None,
+            rebuild=preview.rebuild,
             settings=_settings_snapshot(preview.plan.settings),
             state=RequestState.ACCEPTED,
             attempts=1,
             accepted_at=self._now(),
+            intents=tuple(group.intent for group in preview.plan.groups),
         )
         candidate: WatchState = record_request(self._state, accepted)
         for group_id in group_ids:
@@ -846,6 +878,9 @@ def _marked(
     moment: str,
 ) -> WatchState:
     marked: WatchState = state
+    selected: dict[str, frozenset[ProductKind]] = {
+        intent.group_id: intent.products.requested_products for intent in request.intents
+    }
     for group_id in request.group_ids:
         fingerprint: SourceFingerprint | None = request.fingerprints.get(group_id)
         if fingerprint is None:
@@ -855,7 +890,7 @@ def _marked(
             ManualHandledMarker(
                 group_id=group_id,
                 fingerprint=fingerprint,
-                products=products,
+                products=selected.get(group_id, products),
                 request_id=request.request_id,
                 recorded_at=moment,
             ),
@@ -901,8 +936,7 @@ def _product_projection(plan: ExecutionPlan) -> list[dict[str, object]]:
 
 
 def _settings_snapshot(settings: RunSettingsSnapshot) -> SettingsSnapshot:
-    known: frozenset[str] = frozenset(field.name for field in fields(settings))
-    return {name: getattr(settings, name) for name in _SNAPSHOT_FIELDS if name in known}
+    return cast("SettingsSnapshot", {field.name: getattr(settings, field.name) for field in fields(settings)})
 
 
 def _group_fingerprint(group: InspectedSourceGroup) -> SourceFingerprint:
@@ -911,6 +945,9 @@ def _group_fingerprint(group: InspectedSourceGroup) -> SourceFingerprint:
 
 def _requested_groups(workspace: InspectedWorkspace, payload: Mapping[str, object]) -> tuple[InspectedSourceGroup, ...]:
     requested: tuple[str, ...] | None = _identifiers(payload, "group_ids")
+    if "group_ids" in payload and (requested is None or not requested or len(set(requested)) != len(requested)):
+        msg = "Selected group IDs must be a nonempty unique list"
+        raise ValueError(msg)
     by_id: Mapping[str, InspectedSourceGroup] = {group.group_id: group for group in workspace.groups}
     selected: tuple[str, ...] = requested if requested is not None else ready_group_ids(workspace.groups)
     return tuple(by_id[group_id] for group_id in selected)

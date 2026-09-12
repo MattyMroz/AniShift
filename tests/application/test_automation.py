@@ -14,7 +14,7 @@ from fakes import write_text_source
 from anishift.application.automation import AutomationOwner
 from anishift.application.control import AutomationPolicy, RequestState, SourceSelection, WatchState
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
-from anishift.application.intents import ProductIntent, ProductKind, RequestOrigin
+from anishift.application.intents import ProductIntent, ProductKind, RebuildRequest, RequestOrigin
 from anishift.application.planning import ExecutionPlan
 from anishift.application.results import GroupResult, GroupStatus, RunResult
 from anishift.application.scheduler import RunHandle
@@ -121,8 +121,15 @@ class _Service:
         del preset_id
         return _PRESET.to_preset()
 
-    def plan_auto(self, group_ids: Sequence[str], preset: object) -> ExecutionPlan:
-        del group_ids, preset
+    def plan_auto(
+        self,
+        group_ids: Sequence[str],
+        preset: object,
+        *,
+        rebuild: RebuildRequest | None = None,
+        overrides: Mapping[str, object] | None = None,
+    ) -> ExecutionPlan:
+        del group_ids, preset, rebuild, overrides
         return self._plan
 
     def submit_plan(
@@ -167,13 +174,126 @@ class _Service:
         self.reloads += 1
 
 
-def _owner(service: _Service, store: WatchStateStore) -> AutomationOwner:
+def _owner(service: _Service | AppService, store: WatchStateStore) -> AutomationOwner:
     return AutomationOwner(
         cast("AppService", service),
         store,
         instance_id=_INSTANCE,
         clock=lambda: _MOMENT,
     )
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_the_resident_accepts_scoped_intents_and_keeps_their_complete_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    manual: bool,
+) -> None:
+    for number in (1, 3, 8):
+        write_text_source(tmp_path / f"Episode {number}.txt", "Text")
+    service: AppService = _real_service(tmp_path)
+    selected: list[str] = [group.group_id for group in service.discover().groups[1:]]
+    submitted: list[ExecutionPlan] = []
+
+    def submit(
+        plan: ExecutionPlan,
+        sink: object,
+        *,
+        origin: RequestOrigin,
+        run_id: str | None = None,
+    ) -> RunHandle:
+        del sink, origin
+        assert run_id is not None
+        submitted.append(plan)
+        handle: RunHandle = RunHandle(run_id, lambda: None)
+        handle.resolve(
+            RunResult(run_id, tuple(GroupResult(group.group_id, GroupStatus.SUCCEEDED) for group in plan.groups))
+        )
+        return handle
+
+    monkeypatch.setattr(service, "submit_plan", submit)
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    key: bytes = os.urandom(32)
+    server: ControlServer = ControlServer(control_endpoint(tmp_path), key, owner.handle, on_disconnect=owner.disconnect)
+    client: ControlClient = ControlClient(control_endpoint(tmp_path), key, timeout_s=_TIMEOUT_S)
+    products: dict[str, object] = {"requested_products": ["full_pl"]}
+    payload: dict[str, object] = {
+        "client_id": _CLIENT,
+        "group_ids": selected,
+        "overrides": {
+            "tts_voice_id": "chosen-voice",
+            "tts_postprocess_tempo": 1.2,
+            "subtitle_language_priority": ["eng", "pol"],
+            "tts_engine_options": [["normalize", True]],
+            "llm_max_output_tokens": 1234,
+        },
+    }
+    if manual:
+        payload.update(
+            source_selection="manual",
+            intents=[{"group_id": group_id, "mode": "manual", "products": products} for group_id in selected],
+        )
+    else:
+        payload.update(
+            preset={"preset_id": "once", "name": "Once", "products": products}, rebuild={"products": ["full_pl"]}
+        )
+    try:
+        preview: Mapping[str, object] = client.call("preview", payload)
+        assert preview["can_execute"]
+        started: Mapping[str, object] = client.call(
+            "start", {"client_id": _CLIENT, "preview_id": preview["preview_id"]}
+        )
+        request = store.load().requests[0]
+        assert request.request_id == started["run_id"]
+        assert request.group_ids == tuple(selected)
+        assert request.settings["tts_voice_id"] == "chosen-voice"
+        assert request.settings["tts_postprocess_tempo"] == 1.2
+        assert request.settings["llm_max_output_tokens"] == 1234
+        assert request.settings["subtitle_language_priority"] == ("eng", "pol")
+        assert request.settings["tts_engine_options"] == (("normalize", True),)
+        assert request.intents == tuple(group.intent for group in submitted[0].groups)
+        assert (request.rebuild is None) is manual
+        assert service.plan_auto(selected, _PRESET).settings.tts_voice_id != "chosen-voice"
+    finally:
+        client.close()
+        server.close()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"group_ids": []},
+        {"group_ids": "all"},
+        {"overrides": {"tts_group_jobs": True}},
+        {"overrides": {"typo": 3}},
+        {"rebuild": {"products": ["unknown"]}},
+        {"source_selection": "manual", "intents": []},
+        {"preset": {"preset_id": "x", "name": "X", "products": {"requested_products": ["full_pl"], "typo": True}}},
+    ],
+)
+def test_invalid_preview_inputs_never_fall_back_to_processing_the_library(
+    tmp_path: Path,
+    invalid: dict[str, object],
+) -> None:
+    write_text_source(tmp_path / "Episode.txt", "Text")
+    service: AppService = _real_service(tmp_path)
+    owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME))
+    thread: threading.Thread = _serving(owner)
+    try:
+        response: ControlResponse = owner.handle(_request("preview", {"client_id": _CLIENT, **invalid}))
+        assert not response.ok
+        assert response.code is ControlErrorCode.INVALID_PAYLOAD
+        assert not owner.state.requests
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
 
 
 def _serving(owner: AutomationOwner) -> threading.Thread:

@@ -7,7 +7,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
-from anishift.application.intents import ProductKind, RebuildRequest, RequestOrigin
+from anishift.application.intents import GroupIntent, ProductKind, RebuildRequest, RequestOrigin
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -47,7 +47,10 @@ type SourceFingerprint = tuple[tuple[str, int, int], ...]
 type NotificationKey = tuple[str, str, str]
 """Group or episode, generation and kind, deduplicating one announcement."""
 
-type SettingsSnapshot = Mapping[str, str | int | float | bool | None]
+type SettingValue = str | int | float | bool | None | tuple[SettingValue, ...]
+"""Scalar or ordered non-secret configuration values retained by a request."""
+
+type SettingsSnapshot = Mapping[str, SettingValue]
 """Immutable settings a request was accepted under, holding no secret."""
 
 type CommandOutcome = Mapping[str, str | int | bool | None]
@@ -167,6 +170,7 @@ class ProcessingRequest:
     state: RequestState
     attempts: int
     accepted_at: str
+    intents: tuple[GroupIntent, ...] = ()
 
     def __post_init__(self) -> None:
         for key in self.settings:

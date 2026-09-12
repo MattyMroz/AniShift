@@ -105,6 +105,16 @@ def test_store_round_trips_every_recorded_fact(tmp_path: Path) -> None:
     assert store.load() == state
 
 
+def test_legacy_requests_without_group_intents_still_load(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    store.save(_state())
+    document = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+    document["requests"][0].pop("intents")
+    _write(tmp_path, document)
+
+    assert store.load() == _state()
+
+
 def test_store_lowercases_the_info_hash_of_an_acquisition(tmp_path: Path) -> None:
     store: WatchStateStore = _store(tmp_path)
 

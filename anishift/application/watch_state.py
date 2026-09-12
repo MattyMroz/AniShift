@@ -22,7 +22,8 @@ from anishift.application.control import (
     SourceSelection,
     WatchState,
 )
-from anishift.application.intents import ProductKind, RebuildRequest, RequestOrigin
+from anishift.application.control_payloads import decode_intent, encode_intent
+from anishift.application.intents import GroupIntent, ProductKind, RebuildRequest, RequestOrigin
 from anishift.errors import ConfigError, ErrorCode, ErrorContext
 from anishift.paths import config_path
 from anishift.utils.logger import get_logger
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
         CommandOutcome,
         NotificationKey,
         SettingsSnapshot,
+        SettingValue,
         SourceFingerprint,
     )
 
@@ -276,6 +278,7 @@ def _encode_request(request: ProcessingRequest) -> dict[str, object]:
         "state": request.state.value,
         "attempts": request.attempts,
         "accepted_at": request.accepted_at,
+        "intents": [encode_intent(intent) for intent in request.intents],
     }
 
 
@@ -381,7 +384,11 @@ def _decode_marker(raw: object) -> ManualHandledMarker:
 
 
 def _decode_request(raw: object) -> ProcessingRequest:
-    document: dict[str, object] = _strict_object(raw, _REQUEST_KEYS, "processing request")
+    document: dict[str, object] = _strict_mapping(raw, "processing request")
+    intents: tuple[GroupIntent, ...] = tuple(
+        decode_intent(GroupIntent, item) for item in _list(document.pop("intents", []), "group intents")
+    )
+    document = _strict_object(document, _REQUEST_KEYS, "processing request")
     fingerprints: dict[str, object] = _strict_mapping(document["fingerprints"], "request fingerprints")
     rebuild: object = document["rebuild"]
     return ProcessingRequest(
@@ -396,6 +403,7 @@ def _decode_request(raw: object) -> ProcessingRequest:
         state=RequestState(_text(document, "state")),
         attempts=_whole(document, "attempts"),
         accepted_at=_text(document, "accepted_at"),
+        intents=intents,
     )
 
 
@@ -485,13 +493,16 @@ def _decode_whole_numbers(raw: object, label: str) -> tuple[int, ...]:
 
 def _decode_settings(raw: object) -> SettingsSnapshot:
     document: dict[str, object] = _strict_mapping(raw, "request settings")
-    settings: dict[str, str | int | float | bool | None] = {}
-    for key, value in document.items():
-        if value is not None and not isinstance(value, str | int | float | bool):
-            msg = "A request setting must be text, a number, a flag or null"
-            raise TypeError(msg)
-        settings[key] = value
-    return settings
+    return {key: _setting_value(value) for key, value in document.items()}
+
+
+def _setting_value(value: object) -> SettingValue:
+    if isinstance(value, list):
+        return tuple(_setting_value(item) for item in value)
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    msg = "A request setting must be a scalar or an ordered collection"
+    raise TypeError(msg)
 
 
 def _decode_outcome(raw: object) -> CommandOutcome:
