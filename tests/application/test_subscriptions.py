@@ -323,6 +323,43 @@ def test_check_skips_releases_already_handed_to_the_client(tmp_path: Path) -> No
     assert service.list()[0].next_episode == Decimal(11)
 
 
+def test_check_does_not_replace_a_taken_episode_while_an_earlier_gap_remains(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(10)))})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("neko", _choice(Decimal(9)))
+    service.check(service.list()[0])
+    acquisition.catalogs["neko"] = _catalog(_choice(Decimal(10), version=2, seeders=100))
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert outcome.downloaded == 0
+    assert len(acquisition.downloaded) == 1
+    assert service.list()[0].next_episode == Decimal(9)
+    assert service.list()[0].taken_episodes == ("10",)
+
+
+def test_check_of_a_first_season_rejects_an_explicit_second_season(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9), season=2))})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("neko", _choice(Decimal(9)))
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert outcome.downloaded == 0
+    assert acquisition.downloaded == []
+
+
+def test_check_rejects_episodes_beyond_the_known_season_length(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(12)), _choice(Decimal(13)))})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.subscribe("neko", _choice(Decimal(12)), context=SeasonContext(index=1, offset=0, episodes=12))
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert outcome.downloaded == 1
+    assert [choice.episode for choice in acquisition.downloaded[0]] == [Decimal(12)]
+
+
 def test_check_skips_a_taken_release_whatever_the_hash_case(tmp_path: Path) -> None:
     acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)), _choice(Decimal(10)))})
     store: SubscriptionStore = _store(tmp_path)

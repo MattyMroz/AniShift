@@ -396,10 +396,11 @@ class SubscriptionService:
         try:
             offered: dict[Decimal, ReleaseChoice] = self._offered(subscription)
             taken_hashes: frozenset[str] = frozenset(info_hash.casefold() for info_hash in subscription.taken)
+            taken_episodes: frozenset[Decimal] = frozenset(Decimal(number) for number in subscription.taken_episodes)
             selected: dict[Decimal, ReleaseChoice] = {
                 episode: choice
                 for episode, choice in offered.items()
-                if choice.release.info_hash.casefold() not in taken_hashes
+                if episode not in taken_episodes and choice.release.info_hash.casefold() not in taken_hashes
             }
             queued: frozenset[str] = self._acquisition.queued_hashes() if selected else frozenset()
             chosen: tuple[ReleaseChoice, ...] = tuple(
@@ -444,7 +445,6 @@ class SubscriptionService:
         return current
 
     def _offered(self, subscription: Subscription) -> dict[Decimal, ReleaseChoice]:
-        """Return the best release of every episode the index offers from ``next_episode`` on."""
         context: SeasonContext | None = _context(subscription)
         catalog: ReleaseCatalog = self._acquisition.search(subscription.query)
         offered: dict[Decimal, ReleaseChoice] = _new_episodes(catalog, subscription, context)
@@ -454,7 +454,6 @@ class SubscriptionService:
         return offered
 
     def _catch_up(self, subscription: Subscription) -> ReleaseCatalog:
-        """Ask the index for the missing episode by number, answering with nothing when it fails."""
         query: str = f"{subscription.query} {int(subscription.next_episode):02d}"
         try:
             return self._acquisition.search(query)
@@ -465,7 +464,6 @@ class SubscriptionService:
     def _confirmed(
         self, selected: dict[Decimal, ReleaseChoice], queued: frozenset[str]
     ) -> dict[Decimal, ReleaseChoice]:
-        """Keep the selected releases the client really holds; an add it silently dropped is retried later."""
         present: frozenset[str] = queued
         for attempt in range(CONFIRM_ATTEMPTS):
             missing: bool = any(choice.release.info_hash.casefold() not in present for choice in selected.values())
@@ -488,10 +486,12 @@ class SubscriptionService:
         offered: dict[Decimal, ReleaseChoice],
     ) -> Subscription:
         checked_at: str = _timestamp(self._clock())
+        taken_episodes: frozenset[Decimal] = frozenset(Decimal(number) for number in subscription.taken_episodes)
+        taken_hashes: frozenset[str] = frozenset(info_hash.casefold() for info_hash in subscription.taken)
         known: dict[Decimal, ReleaseChoice] = {
             episode: choice
             for episode, choice in offered.items()
-            if episode in selected or choice.release.info_hash.casefold() in {h.casefold() for h in subscription.taken}
+            if episode in selected or episode in taken_episodes or choice.release.info_hash.casefold() in taken_hashes
         }
         if not known:
             return replace(subscription, checked_at=checked_at)
@@ -512,11 +512,12 @@ class SubscriptionService:
         )
 
 
-def _context(subscription: Subscription) -> SeasonContext | None:
-    if subscription.season_index <= 1 and subscription.episode_offset <= 0:
-        return None
+def _context(subscription: Subscription) -> SeasonContext:
+    index: int = subscription.season_index
+    if index == 1:
+        index = season_hint(subscription.series) or index
     return SeasonContext(
-        index=subscription.season_index,
+        index=index,
         offset=subscription.episode_offset,
         episodes=subscription.season_episodes,
     )
@@ -527,7 +528,6 @@ def _new_episodes(
     subscription: Subscription,
     context: SeasonContext | None,
 ) -> dict[Decimal, ReleaseChoice]:
-    """Return the best release of every episode of the followed group from ``next_episode`` on."""
     series: frozenset[str] = series_forms(subscription.series)
     group: str = subscription.group.casefold()
     best: dict[Decimal, ReleaseChoice] = {}
@@ -541,6 +541,8 @@ def _new_episodes(
                 continue
             if episode < subscription.next_episode:
                 continue
+            if subscription.season_episodes is not None and episode > subscription.season_episodes:
+                continue
             current: ReleaseChoice | None = best.get(episode)
             if current is None or _quality(choice) > _quality(current):
                 best[episode] = choice
@@ -548,7 +550,6 @@ def _new_episodes(
 
 
 def _matches(series_group: SeriesGroup, subscription: Subscription, series: frozenset[str], group: str) -> bool:
-    """Whether the group carries the followed series: same wording family, same uploader, same season marker."""
     if series_group.group.casefold() != group or not series_forms(series_group.series) & series:
         return False
     wanted: int | None = season_hint(subscription.series)
@@ -557,7 +558,6 @@ def _matches(series_group: SeriesGroup, subscription: Subscription, series: froz
 
 
 def _keep_best(offered: dict[Decimal, ReleaseChoice], extra: dict[Decimal, ReleaseChoice]) -> None:
-    """Add the episodes only the second listing carries, keeping the better release of a shared one."""
     for episode, choice in extra.items():
         current: ReleaseChoice | None = offered.get(episode)
         if current is None or _quality(choice) > _quality(current):
@@ -565,13 +565,11 @@ def _keep_best(offered: dict[Decimal, ReleaseChoice], extra: dict[Decimal, Relea
 
 
 def _recorded_episodes(stored: tuple[str, ...], offered: dict[Decimal, ReleaseChoice]) -> tuple[str, ...]:
-    """Return every episode number known to be taken, the ones this check saw included."""
     numbers: set[str] = {*stored, *(str(episode) for episode in offered)}
     return tuple(sorted(numbers, key=Decimal))
 
 
 def _next_episode(current: Decimal, recorded: tuple[str, ...]) -> Decimal:
-    """Return the first whole episode from *current* on that no check has taken yet."""
     taken: set[int] = set()
     for value in recorded:
         number: Decimal = Decimal(value)
@@ -703,7 +701,6 @@ def _decode_entry(raw: object, version: int) -> Subscription:
 
 
 def _migrate_v1(subscription: Subscription) -> Subscription:
-    """Turn every episode number a schema 1 entry took into one recorded order."""
     episodes: tuple[EpisodeOrder, ...] = tuple(
         EpisodeOrder(number=Decimal(number), state=EpisodeState.ORDERED) for number in subscription.taken_episodes
     )
