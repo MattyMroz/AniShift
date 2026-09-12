@@ -564,7 +564,7 @@ def test_a_changed_workspace_file_forces_a_new_inspection(tmp_path: Path) -> Non
     assert probe.calls == 2
 
 
-def test_a_new_workspace_file_forces_a_new_inspection(tmp_path: Path) -> None:
+def test_a_new_episode_is_inspected_without_probing_unchanged_episodes(tmp_path: Path) -> None:
     write_media_source(tmp_path / "Episode 1.mkv")
     probe = _CountingProbe()
     service: AppService = _service(
@@ -577,8 +577,50 @@ def test_a_new_workspace_file_forces_a_new_inspection(tmp_path: Path) -> None:
     write_media_source(tmp_path / "Episode 2.mkv")
     workspace = service.discover()
 
-    assert probe.calls == 3
+    assert probe.calls == 2
     assert len(workspace.groups) == 2
+
+
+def test_later_subtitles_are_inspected_without_probing_the_same_media_again(tmp_path: Path) -> None:
+    write_media_source(tmp_path / "Episode 1.mkv")
+    probe = _CountingProbe()
+    service: AppService = _service(
+        tmp_path,
+        FakeTranslationService(),
+        inspector=WorkspaceInspector(cast("DefaultMediaProbe", probe)),
+    )
+    service.discover()
+    subtitle: Path = tmp_path / "Episode 1.srt"
+    subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+
+    updated = service.discover()
+    assert probe.calls == 1
+    assert any(artifact.path == subtitle for artifact in updated.groups[0].artifacts)
+
+    subtitle.unlink()
+    removed = service.discover()
+    assert probe.calls == 1
+    assert all(artifact.path != subtitle for artifact in removed.groups[0].artifacts)
+
+
+def test_replacing_one_episode_only_invalidates_its_own_inspection(tmp_path: Path) -> None:
+    for number in (1, 2, 3):
+        write_media_source(tmp_path / f"Episode {number}.mkv")
+    probe = _CountingProbe()
+    service: AppService = _service(
+        tmp_path,
+        FakeTranslationService(),
+        inspector=WorkspaceInspector(cast("DefaultMediaProbe", probe)),
+    )
+    first = service.discover()
+    (tmp_path / "Episode 2.mkv").write_bytes(b"a different complete file")
+
+    changed = service.discover()
+
+    assert probe.calls == 4
+    assert changed.groups[0] is first.groups[0]
+    assert changed.groups[1] is not first.groups[1]
+    assert changed.groups[2] is first.groups[2]
 
 
 def test_discovery_can_cancel_while_prewarm_prepares_tools(tmp_path: Path) -> None:

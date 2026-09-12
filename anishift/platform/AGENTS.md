@@ -4,6 +4,10 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 
 ## Pułapki
 
+- `DirectoryWatch` zakłada pierwszy odczyt `ReadDirectoryChangesW` przed uruchomieniem wątku.
+  Oczekiwanie jest blokujące, a stop używa osobnego zdarzenia; przed zamknięciem uchwytów
+  anuluje i rozlicza overlapped I/O. Pusty bufor oznacza overflow i pełne uzgodnienie, nie brak
+  zmian. Niewspierany nośnik przechodzi w jawny `polling`. `directory_watch.py`
 - qBittorrent nadpisuje `%APPDATA%\qBittorrent\qBittorrent.ini` przy wyjściu, więc `enable_web_ui` odmawia,
   dopóki proces działa (`tasklist`), a przed zapisem kopiuje plik do `qBittorrent.ini.anishift.bak`. Dopisuje
   wyłącznie BRAKUJĄCE klucze na końcu sekcji `[Preferences]`, zachowując CRLF/LF i każdą inną linię bez zmian.

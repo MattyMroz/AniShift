@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -35,6 +36,8 @@ from anishift.services.media.probe import MediaProbe
 from anishift.services.media.types import MediaCatalog
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.service import load_subtitles
+
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 _DEFAULT_PROBE_TIMEOUT_SECONDS: Final[float] = 120.0
 """Default upper bound for one media or audio inspection subprocess."""
@@ -94,6 +97,13 @@ class InspectedWorkspace:
     warnings: tuple[InspectionWarning, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _CachedInspection:
+    fingerprints: Mapping[str, tuple[str, int, int]]
+    group: InspectedSourceGroup
+    warnings: tuple[InspectionWarning, ...]
+
+
 class WorkspaceInspector:
     """Validate discovery results without mutating their source artifacts."""
 
@@ -114,6 +124,7 @@ class WorkspaceInspector:
         self._ffmpeg: Path | None = ffmpeg
         self._timeout_s: float = timeout_s
         self._audio_tolerance_us: int = audio_tolerance_us
+        self._cache: dict[str, _CachedInspection] = {}
 
     def inspect(
         self,
@@ -125,18 +136,34 @@ class WorkspaceInspector:
         cancel.raise_if_cancelled()
         sources: tuple[SourceGroup, ...] = discovery.groups
         if not sources:
+            self._cache.clear()
             return InspectedWorkspace(groups=(), warnings=())
         with ThreadPoolExecutor(
             max_workers=min(len(sources), _MAX_INSPECTION_WORKERS),
             thread_name_prefix="anishift-inspect",
         ) as pool:
-            inspected: tuple[tuple[InspectedSourceGroup, tuple[InspectionWarning, ...]], ...] = tuple(
-                pool.map(lambda source: self._inspect_group(source, cancel=cancel), sources)
+            inspected: tuple[_CachedInspection, ...] = tuple(
+                pool.map(lambda source: self._inspect_cached(source, cancel=cancel), sources)
             )
+        cancel.raise_if_cancelled()
+        self._cache = {item.group.group_id: item for item in inspected}
         return InspectedWorkspace(
-            groups=tuple(group for group, _ in inspected),
-            warnings=tuple(warning for _, group_warnings in inspected for warning in group_warnings),
+            groups=tuple(item.group for item in inspected),
+            warnings=tuple(warning for item in inspected for warning in item.warnings),
         )
+
+    def _inspect_cached(self, source: SourceGroup, *, cancel: CancellationToken) -> _CachedInspection:
+        cancel.raise_if_cancelled()
+        fingerprints: dict[str, tuple[str, int, int]] = {
+            artifact.artifact_id: _file_stamp(artifact.path) for artifact in source.artifacts
+        }
+        previous: _CachedInspection | None = self._cache.get(source.group_id)
+        if previous is not None and previous.fingerprints == fingerprints and previous.group.source == source:
+            return previous
+        group: InspectedSourceGroup
+        warnings: tuple[InspectionWarning, ...]
+        group, warnings = self._inspect_group(source, cancel=cancel, previous=previous, fingerprints=fingerprints)
+        return _CachedInspection(fingerprints, group, warnings)
 
     def register_external_subtitle(
         self,
@@ -203,6 +230,8 @@ class WorkspaceInspector:
         source: SourceGroup,
         *,
         cancel: CancellationToken,
+        previous: _CachedInspection | None,
+        fingerprints: Mapping[str, tuple[str, int, int]],
     ) -> tuple[InspectedSourceGroup, tuple[InspectionWarning, ...]]:
         cancel.raise_if_cancelled()
         catalogs: dict[str, MediaCatalog] = {}
@@ -210,7 +239,12 @@ class WorkspaceInspector:
         warnings: list[InspectionWarning] = []
         for artifact in source.artifacts:
             if artifact.kind in {ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4}:
-                inspected, catalog, warning = self._inspect_video(artifact, cancel=cancel)
+                inspected, catalog, warning = self._inspect_changed_video(
+                    artifact,
+                    cancel=cancel,
+                    previous=previous,
+                    fingerprint=fingerprints[artifact.artifact_id],
+                )
                 artifacts.append(inspected)
                 if catalog is not None:
                     catalogs[artifact.artifact_id] = catalog
@@ -238,6 +272,23 @@ class WorkspaceInspector:
             ),
             tuple(warnings),
         )
+
+    def _inspect_changed_video(
+        self,
+        artifact: Artifact,
+        *,
+        cancel: CancellationToken,
+        previous: _CachedInspection | None,
+        fingerprint: tuple[str, int, int],
+    ) -> tuple[Artifact, MediaCatalog | None, InspectionWarning | None]:
+        if previous is None or previous.fingerprints.get(artifact.artifact_id) != fingerprint:
+            return self._inspect_video(artifact, cancel=cancel)
+        known: Artifact = next(item for item in previous.group.artifacts if item.artifact_id == artifact.artifact_id)
+        warning: InspectionWarning | None = next(
+            (item for item in previous.warnings if item.artifact_id == artifact.artifact_id),
+            None,
+        )
+        return known, previous.group.media_catalogs.get(artifact.artifact_id), warning
 
     def _inspect_video(
         self,
@@ -415,6 +466,16 @@ class WorkspaceInspector:
                 artifact_id=artifact.artifact_id,
             ),
         )
+
+
+def _file_stamp(path: Path | None) -> tuple[str, int, int]:
+    if path is None:
+        return "", 0, 0
+    try:
+        status: os.stat_result = path.stat()
+    except OSError:
+        return path.as_posix(), -1, -1
+    return path.as_posix(), status.st_size, status.st_mtime_ns
 
 
 def _append_external_artifact(group: InspectedSourceGroup, artifact: Artifact) -> InspectedSourceGroup:

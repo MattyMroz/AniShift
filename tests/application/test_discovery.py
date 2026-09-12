@@ -14,6 +14,7 @@ from anishift.application.artifacts import (
 )
 from anishift.application.discovery import (
     ArtifactName,
+    DiscoveryIndex,
     DiscoveryWarningKind,
     classify_artifact,
     discover_groups,
@@ -241,3 +242,43 @@ def test_nested_discovery_is_independent_of_filesystem_order(
     descending = discover_groups(tmp_path)
     assert descending == ascending
     assert len(ascending.groups) == 3
+
+
+def test_changed_paths_update_the_index_without_walking_unchanged_directories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _touch(tmp_path, "Series/01.mkv", "Other/01.mkv")
+    index: DiscoveryIndex = DiscoveryIndex(tmp_path)
+    initial = index.discover()
+    source: Path = tmp_path / "Series" / "02.mkv"
+    source.touch()
+    visited: list[Path] = []
+
+    def forbidden(path: Path) -> Iterator[Path]:
+        visited.append(path)
+        raise AssertionError("An individual file change must not walk directories")
+
+    monkeypatch.setattr(Path, "iterdir", forbidden)
+    updated = index.discover((source, source))
+    assert len(updated.groups) == len(initial.groups) + 1
+    assert not visited
+    assert index.discover(()) == updated
+    source.unlink()
+    assert index.discover((source,)) == initial
+
+
+def test_a_directory_rename_replaces_its_indexed_groups_and_preserves_exclusions(tmp_path: Path) -> None:
+    _touch(tmp_path, "Series/01.mkv", "Series/.hidden/02.mkv", "temp/work/03.mkv", ".hidden/04.mkv")
+    index: DiscoveryIndex = DiscoveryIndex(tmp_path)
+    initial = index.discover()
+    original: Path = tmp_path / "Series"
+    renamed: Path = tmp_path / "Renamed"
+    original.rename(renamed)
+
+    changed = index.discover((original, renamed, tmp_path / "temp" / "work"))
+
+    assert len(changed.groups) == 1
+    assert changed.groups[0].directory == renamed
+    assert changed.groups[0].group_id != initial.groups[0].group_id
+    assert index.discover((tmp_path,)) == discover_groups(tmp_path) == changed

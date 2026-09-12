@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Final
 from anishift.application.artifacts import ArtifactKind, ArtifactLifetime, ArtifactState
 from anishift.application.intents import ProductKind
 from anishift.application.selection import group_is_ready
+from anishift.platform.directory_watch import source_is_available
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -76,7 +77,7 @@ def is_stable(snapshot: SourceSnapshot, now: float) -> bool:
         return False
     if now - snapshot.first_seen < QUIET_S:
         return False
-    return _is_openable_for_writing(snapshot.path)
+    return source_is_available(snapshot.path)
 
 
 def needs_work(group: InspectedSourceGroup, preset: AutoPreset) -> bool:
@@ -160,12 +161,3 @@ def _snapshot_file(path: Path, previous: SourceSnapshot | None, now: float) -> S
     if previous is not None and previous.size == stat.st_size and previous.mtime_ns == stat.st_mtime_ns:
         first_seen = previous.first_seen
     return SourceSnapshot(path=path, size=stat.st_size, mtime_ns=stat.st_mtime_ns, first_seen=first_seen)
-
-
-def _is_openable_for_writing(path: Path) -> bool:
-    try:
-        with path.open("r+b"):
-            pass
-    except OSError:
-        return False
-    return True

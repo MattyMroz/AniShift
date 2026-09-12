@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application.cancellation import CancellationToken, EventCancellationToken, NeverCancelledToken
 from anishift.application.control_payloads import decode_overrides
-from anishift.application.discovery import DiscoveryResult, discover_groups
+from anishift.application.discovery import DiscoveryIndex, DiscoveryResult
 from anishift.application.events import RunEventSink
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
 from anishift.application.intents import (
@@ -235,6 +235,7 @@ class AppService:
         self._model_prober: ModelProber | None = model_prober
         self._env_file: Path = env_file if env_file is not None else env_path()
         self._workspace: InspectedWorkspace | None = None
+        self._discovery: DiscoveryIndex = DiscoveryIndex(workspace_root)
         self._workspace_fingerprint: WorkspaceFingerprint | None = None
         self._active_runs: dict[str, EventCancellationToken] = {}
         self._active_groups: dict[str, str] = {}
@@ -261,14 +262,19 @@ class AppService:
         """The directory every discovered group and planned product lives under."""
         return self._workspace_root
 
-    def discover(self, *, cancel: CancellationToken | None = None) -> InspectedWorkspace:
+    def discover(
+        self,
+        *,
+        cancel: CancellationToken | None = None,
+        changed_paths: Sequence[Path] | None = None,
+    ) -> InspectedWorkspace:
         """Inspect the workspace once, reusing the last inspection of unchanged files."""
         token: CancellationToken = cancel or NeverCancelledToken()
         while not self._discover_lock.acquire(timeout=_DISCOVERY_LOCK_POLL_S):
             token.raise_if_cancelled()
         try:
             token.raise_if_cancelled()
-            discovery: DiscoveryResult = discover_groups(self._workspace_root)
+            discovery: DiscoveryResult = self._discovery.discover(changed_paths)
             if self._prepare_workspace is not None:
                 self._prepare_workspace(discovery, token)
             token.raise_if_cancelled()

@@ -449,8 +449,17 @@ Po każdym etapie wykonawca dopisuje tutaj: commit, zakres, uruchomione komendy 
 - Bramki po poprawkach P02: pełny pytest — 3748 passed, 11 skipped, 52,88 s; Ruff check i format PASS; mypy win32 i linux PASS (498 plików).
 - Podgląd rezydenta przyjmuje jednorazowy preset, nadpisania ustawień i istniejący `RebuildRequest`, a w Manual pełne `GroupIntent` wybranego zakresu. Wadliwy lub pusty `group_ids` jest odrzucany, zamiast uruchamiać całą bibliotekę. Walidacja JSON korzysta z już używanego Pydantic. Przyjęty zamiar zachowuje wszystkie ustawienia i produkty per grupa; stare zapisy bez tych danych nadal się wczytują.
 - Dowód granicy planowania: rzeczywisty lokalny kanał przyjmuje tylko 3 i 8, zachowuje wybór głosu, tempo, priorytet języków, opcje silnika oraz pełne zamiary po zapisie/odczycie; preferencje globalne pozostają niezależne. Pełne bramki: 3758 passed, 11 skipped, 28,24 s; Ruff i mypy win32/linux PASS (499 plików).
-- Otwarte: integracja zdalnego panelu i rejestracja jego zewnętrznych źródeł; rozliczanie wyników subskrypcji przez właściciela z generacją; odtworzenie po awarii; wymagane dowody publikacji częściowej. P05–P08 pozostają niewykonane.
+- Otwarte: integracja zdalnego panelu i rejestracja jego zewnętrznych źródeł; rozliczanie wyników subskrypcji przez właściciela z generacją; odtworzenie po awarii; wymagane dowody publikacji częściowej. P05 jest w toku; P06–P08 pozostają niewykonane.
 - Organizacja: dalsza praca bez subagentów na życzenie właściciela; spójne poprawki i ukończone części otrzymują osobne commity po bramkach.
+
+### P05 — komponenty obserwacji i cache, w toku
+
+- `DiscoveryIndex` aktualizuje wskazane pliki i poddrzewa; pojedyncze zdarzenie pliku nie przechodzi pozostałych katalogów. Pełne uzgodnienie pozostaje dostępne jawnie. Nazwy grup i produktów korzystają z dotychczasowej klasyfikacji; indeks pomija `temp`, ukryte katalogi i symlinki.
+- Inspekcja zachowuje wyniki niezmienionych grup. Nowy odcinek dodaje tylko jedno probe; dodanie lub usunięcie napisów nie wymusza ponownego probe niezmienionego MKV. Podmiana jednego odcinka unieważnia tylko jego wynik.
+- `DirectoryWatch` używa natywnego [ReadDirectoryChangesW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw), bufora 64 KiB i overlapped I/O. W idle czeka na zdarzenie bez pollingu. Overflow lub niewspierany nośnik żąda uzgodnienia; fallback jest jawnie opisany jako `polling`.
+- Test na rzeczywistym Windows, w tymczasowym katalogu: utworzenie pliku z polską nazwą, rename, podfolder, usunięcie, brak zdarzeń w idle i zamknięcie oczekiwania PASS. Osobny test dopuszcza plik tylko do odczytu i blokuje plik z aktywnym writerem.
+- Pełne bramki: 3770 passed, 11 skipped, 28,78 s; Ruff check/format i mypy win32/linux PASS (501 plików). Po uzupełnieniu adnotacji typów ponowiono Ruff, oba cele mypy i cały moduł testów natywnych.
+- Do zakończenia P05 pozostaje podłączenie do kolejki właściciela z debounce/stabilnością, uzgodnienie po wznowieniu systemu oraz pomiar na docelowej bibliotece. Komponenty nie zastąpiły jeszcze starego runtime.
 
 ## 15. Korekty po przeglądzie wykonawcy (2026-09-08)
 

@@ -81,12 +81,60 @@ class DiscoveryResult:
     warnings: tuple[DiscoveryWarning, ...]
 
 
+class DiscoveryIndex:
+    """Apply filesystem notifications to the library's in-memory filename index."""
+
+    def __init__(self, root: Path) -> None:
+        self._root: Path = root
+        self._candidates: dict[Path, ArtifactName] | None = None
+
+    def discover(self, changed_paths: Sequence[Path] | None = None) -> DiscoveryResult:
+        """Reconcile the library or inspect only paths named by filesystem notifications."""
+        if changed_paths is None or self._candidates is None:
+            candidates: dict[Path, ArtifactName] = {
+                path: candidate
+                for path in _iter_source_paths(self._root)
+                if (candidate := classify_artifact(path)) is not None
+            }
+        else:
+            candidates = dict(self._candidates)
+            for path in set(changed_paths):
+                candidates = {known: item for known, item in candidates.items() if not known.is_relative_to(path)}
+                if not self._visible(path):
+                    continue
+                sources: Iterator[Path] = (
+                    _iter_source_paths(self._root) if path == self._root else _iter_entry_sources(path)
+                )
+                for source in sources:
+                    if (candidate := classify_artifact(source)) is not None:
+                        candidates[source] = candidate
+        self._candidates = candidates
+        ordered: tuple[ArtifactName, ...] = tuple(
+            candidates[path] for path in sorted(candidates, key=lambda path: _relative_sort_key(path, self._root))
+        )
+        return _discovered(ordered, self._root)
+
+    def _visible(self, path: Path) -> bool:
+        if not path.is_relative_to(self._root):
+            return False
+        relative: Path = path.relative_to(self._root)
+        if relative.parts and relative.parts[0].casefold() == _MANAGED_TEMP_DIRECTORY:
+            return False
+        if any(part.startswith(".") or part == ".." for part in relative.parts):
+            return False
+        return not any(parent.is_symlink() for parent in (path, *path.parents) if parent.is_relative_to(self._root))
+
+
 def discover_groups(root: Path) -> DiscoveryResult:
     """Read *root* with its subfolders once and deterministically group supported artifact names."""
     paths: tuple[Path, ...] = tuple(sorted(_iter_source_paths(root), key=lambda path: _relative_sort_key(path, root)))
     candidates: tuple[ArtifactName, ...] = tuple(
         candidate for path in paths if (candidate := classify_artifact(path)) is not None
     )
+    return _discovered(candidates, root)
+
+
+def _discovered(candidates: Sequence[ArtifactName], root: Path) -> DiscoveryResult:
     groups: tuple[SourceGroup, ...] = group_candidates(candidates, root)
     grouped_keys: set[tuple[str, str]] = {
         (group.directory.as_posix().casefold(), group.stem.casefold()) for group in groups
@@ -156,10 +204,9 @@ def _iter_source_paths(root: Path) -> Iterator[Path]:
 
 
 def _iter_entry_sources(entry: Path) -> Iterator[Path]:
+    if entry.is_symlink():
+        return
     if entry.is_dir():
-        # A symlinked directory can point back into the workspace and loop the scan.
-        if entry.is_symlink():
-            return
         for child in _iter_visible_entries(entry):
             yield from _iter_entry_sources(child)
         return

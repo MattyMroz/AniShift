@@ -26,9 +26,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   katalogi i pliki od kropki oraz nie wchodzi w dowiązania symboliczne. ID grupy liczy się
   z katalogu względem roota i stemu, więc `A/01.mkv` i `B/01.mkv` to dwie grupy, a plik
   w root zachowuje dotychczasowe ID. `discovery.py`
-- `watch.py` to czyste reguły czuwania (stabilność pliku, `needs_work`, `WatchLedger`);
-  `open("r+b")` wykrywa writer bez współdzielenia (Explorer, qBittorrent), nie drugi
-  pythonowy uchwyt. Eksport przez fasadę: `SCAN_INTERVAL_S`, `WatchLedger`. `watch.py`
+- `watch.py` sprawdza stabilność pliku, `needs_work` i `WatchLedger`; dostępność źródła
+  deleguje do `platform/directory_watch.py`. Windows otwiera plik do odczytu ze współdzieleniem
+  wyłącznie odczytu: blokuje aktywnych writerów, dopuszcza odtwarzacz i pliki tylko do odczytu.
+  Eksport przez fasadę: `SCAN_INTERVAL_S`, `WatchLedger`. `watch.py`
 - Numer odcinka widziany przez aplikację to `choice.episode`, nigdy `choice.name.episode`:
   `read_episode` interpretuje nazwę w `SeasonContext` (indeks sezonu, offset odcinków, liczba
   odcinków). Nazwa ze znacznikiem sezonu (`name.season` albo `season_hint(series)`) zachowuje
@@ -185,11 +186,11 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   bo każda grupa to osobny `mkvmerge`. Kolejność grup i ostrzeżeń pozostaje
   kolejnością discovery — nie zbieraj wyników w kolejności ukończenia.
   `inspection.py`
-- `AppService.discover()` jest serializowane (`_discover_lock`) i reużywa poprzednią
-  inspekcję, gdy odcisk workspace (ścieżka + rozmiar + mtime każdego odkrytego pliku)
-  jest identyczny. Dzięki temu wielokrotne `discover()` w jednej sesji nie powtarza
-  probowania, a zmiana pliku wymusza pełną inspekcję. Nie omijaj tego przez własny
-  cache w UI. `service.py`
+- `AppService.discover()` jest serializowane (`_discover_lock`). Bez `changed_paths` uzgadnia
+  pełną listę plików; z listą zdarzeń aktualizuje `DiscoveryIndex` bez przechodzenia pozostałych
+  katalogów. `WorkspaceInspector` zachowuje inspekcję niezmienionych grup i katalogi ścieżek
+  niezmienionych mediów, również po dodaniu napisów. Usunięte grupy wypadają z cache.
+  Nie dodawaj osobnego cache w UI. `service.py`, `discovery.py`, `inspection.py`
 - Produkcyjne `discover()` przygotowuje brakujące narzędzia przed probe, przez
   callback z `bootstrap.py` i istniejący instalator. MKV wymaga MKVToolNix i FFmpeg,
   MP4/audio — FFmpeg; sam TXT lub napisy nie uruchamiają instalacji. Przygotowanie
