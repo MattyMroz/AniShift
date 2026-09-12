@@ -13,6 +13,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   czyste `season_hint`/`strip_season` z `services.torrents.names`), handlerów oraz fasady
   `service.py`; koordynator publikuje zwalidowany staging przez `scheduler_runtime.py`.
   Decyzje produktowe pozostają w plannerze.
+- Nazwy trwałych produktów pochodzą wyłącznie z `products.py`; żaden inny moduł nie zapisuje
+  literałów `.pl`, `.spoken.pl`, `.displayed.pl`, `.pl.mkv`, `.pl.mp4` ani `.m4a`.
 - CLI używa publicznej fasady `anishift.application`; nie importuje
   wewnętrznych helperów I/O ani schedulera.
 - Oczekiwany konflikt wejścia jest `PlanProblem`. `PlanningError` oznacza uszkodzony

@@ -39,7 +39,6 @@ from anishift.services.audio.fingerprint import (
 from anishift.services.audio.normalize import NormalizationContext, normalize_clip
 from anishift.services.audio.output import (
     RenderInputs,
-    mixed_audio_path,
     render_command,
     validate_output_probe,
 )
@@ -200,10 +199,7 @@ class AudioService:
             channel_plan=channel_plan,
             config=self._config,
         )
-        destination: Path = mixed_audio_path(
-            request.source_path,
-            self._config.codec_profile,
-        )
+        destination: Path = request.destination
         expected_duration_ms: int = max(
             narrator_probe.duration_ms,
             original_duration_ms,

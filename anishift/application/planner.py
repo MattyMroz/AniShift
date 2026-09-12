@@ -39,6 +39,7 @@ from anishift.application.planning import (
     TaskKind,
     stable_topological_order,
 )
+from anishift.application.products import product_path
 from anishift.application.selection import choose_auto_sidecar, choose_primary_video
 from anishift.errors import PlanningError
 
@@ -319,7 +320,7 @@ class _GroupPlanner:
             is_network=self.settings.translation_is_network,
             is_paid=self.settings.translation_is_paid,
         )
-        self._publish_subtitle(translated, ArtifactKind.FULL_PL, ".pl.srt")
+        self._publish_subtitle(translated, ArtifactKind.FULL_PL)
 
     def _build_media_plan(self) -> None:
         products = self.intent.products
@@ -365,14 +366,11 @@ class _GroupPlanner:
         if ProductKind.SOURCE_SUBTITLES in requested and self._source_subtitles is not None:
             self._publish_source_subtitles(self._source_subtitles)
         if ProductKind.FULL_PL in requested and self._full_pl is not None:
-            suffix: str = f".pl.{self._subtitle_format(self._full_pl)}"
-            self._publish_subtitle(self._full_pl, ArtifactKind.FULL_PL, suffix)
+            self._publish_subtitle(self._full_pl, ArtifactKind.FULL_PL)
         if ProductKind.SPOKEN_PL in requested and self._spoken_pl is not None:
-            suffix = f".spoken.pl.{self._subtitle_format(self._spoken_pl)}"
-            self._publish_subtitle(self._spoken_pl, ArtifactKind.SPOKEN_PL, suffix)
+            self._publish_subtitle(self._spoken_pl, ArtifactKind.SPOKEN_PL)
         if ProductKind.DISPLAYED_PL in requested and self._displayed_pl is not None:
-            suffix = f".displayed.pl.{self._subtitle_format(self._displayed_pl)}"
-            self._publish_subtitle(self._displayed_pl, ArtifactKind.DISPLAYED_PL, suffix)
+            self._publish_subtitle(self._displayed_pl, ArtifactKind.DISPLAYED_PL)
         if ProductKind.NARRATION_AUDIO in requested and self._narration is not None:
             self._publish_audio(self._narration)
 
@@ -889,14 +887,20 @@ class _GroupPlanner:
         self._add_publish(source, target)
         return target
 
-    def _publish_subtitle(self, source: Artifact, kind: ArtifactKind, suffix: str) -> Artifact:
-        destination: Path = self.group.source.directory / f"{self.group.source.stem}{suffix}"
+    def _publish_subtitle(self, source: Artifact, kind: ArtifactKind) -> Artifact:
+        subtitle_format: str = self._subtitle_format(source)
+        destination: Path = product_path(
+            self.group.source.directory,
+            self.group.source.stem,
+            kind,
+            subtitle_format=subtitle_format,
+        )
         if source.state is ArtifactState.READY and source.path is not None and _same_path(source.path, destination):
             return source
         target: Artifact = self._durable_target(
             kind,
             destination,
-            subtitle_format=self._subtitle_format(source),
+            subtitle_format=subtitle_format,
             language="pol",
         )
         self._add_publish(source, target)
@@ -904,7 +908,6 @@ class _GroupPlanner:
 
     def _publish_audio(self, source: Artifact) -> Artifact:
         profile: str = self.settings.audio_output_profile.casefold()
-        extension: str = _audio_product_extension(profile)
         publish_source: Artifact = source
         if (
             source.lifetime is ArtifactLifetime.SOURCE
@@ -924,7 +927,12 @@ class _GroupPlanner:
                 resource_key=f"audio:{self.settings.audio_profile_id}",
                 parameters=(("output_profile", profile),),
             )
-        destination: Path = self.group.source.directory / f"{self.group.source.stem}{extension}"
+        destination: Path = product_path(
+            self.group.source.directory,
+            self.group.source.stem,
+            ArtifactKind.NARRATION_AUDIO,
+            audio_profile=profile,
+        )
         if (
             publish_source.state is ArtifactState.READY
             and publish_source.path is not None
@@ -959,7 +967,7 @@ class _GroupPlanner:
             tracks.append(track.value)
         target: Artifact = self._durable_target(
             ArtifactKind.FINAL_MKV,
-            self.group.source.directory / f"{self.group.source.stem}.pl.mkv",
+            product_path(self.group.source.directory, self.group.source.stem, ArtifactKind.FINAL_MKV),
         )
         self._add_task(
             TaskKind.COMPOSE_MKV,
@@ -991,7 +999,7 @@ class _GroupPlanner:
                 requires.append(self._narration)
         target: Artifact = self._durable_target(
             ArtifactKind.FINAL_MP4,
-            self.group.source.directory / f"{self.group.source.stem}.pl.mp4",
+            product_path(self.group.source.directory, self.group.source.stem, ArtifactKind.FINAL_MP4),
         )
         self._add_task(
             TaskKind.COMPOSE_MP4,
@@ -1257,7 +1265,3 @@ def _unique_artifacts(artifacts: Sequence[Artifact]) -> tuple[Artifact, ...]:
     for artifact in artifacts:
         unique.setdefault(artifact.artifact_id, artifact)
     return tuple(unique.values())
-
-
-def _audio_product_extension(profile: str) -> str:
-    return ".m4a" if profile == "aac" else f".{profile}"

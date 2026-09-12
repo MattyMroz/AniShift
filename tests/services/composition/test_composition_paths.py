@@ -2,37 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from anishift.services.composition.paths import (
     escape_filter_path,
     filter_safe_copy,
-    output_path,
     temporary_sibling,
 )
-from anishift.services.composition.types import OutputVariant
-
-
-@pytest.mark.parametrize(
-    ("variant", "expected"),
-    [
-        (OutputVariant.MERGE, "Episode.pl.mkv"),
-        (OutputVariant.BURN, "Episode.pl.mp4"),
-    ],
-)
-def test_output_path_uses_polish_infix(tmp_path: Path, variant: OutputVariant, expected: str) -> None:
-    result = output_path(tmp_path / "Episode.mkv", variant, tmp_path / "output")
-
-    assert result.name == expected
-    assert result.parent == tmp_path / "output"
-
-
-def test_output_path_keeps_polish_characters_and_spaces(tmp_path: Path) -> None:
-    source = tmp_path / "Zażółć gęślą jaźń - 04 [1080p].mkv"
-
-    result = output_path(source, OutputVariant.MERGE, tmp_path)
-
-    assert result.name == "Zażółć gęślą jaźń - 04 [1080p].pl.mkv"
 
 
 def test_escape_filter_path_escapes_drive_colon_and_brackets() -> None:

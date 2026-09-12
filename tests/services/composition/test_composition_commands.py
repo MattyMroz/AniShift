@@ -45,7 +45,7 @@ def _plan(tmp_path: Path, **overrides: object) -> CompositionPlan:
         "source_path": tmp_path / "Episode.mkv",
         "variant": OutputVariant.MERGE,
         "temporary_root": tmp_path / "tmp",
-        "destination_dir": tmp_path / "output",
+        "destination": tmp_path / "output" / "Episode.pl.mkv",
     }
     defaults.update(overrides)
     return CompositionPlan(**defaults)  # type: ignore[arg-type]

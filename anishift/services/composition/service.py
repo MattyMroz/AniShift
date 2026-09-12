@@ -25,7 +25,7 @@ from anishift.services.composition.commands import (
 from anishift.services.composition.config import CompositionConfig
 from anishift.services.composition.errors import CompositionConfigError
 from anishift.services.composition.fonts import font_embedding_warnings
-from anishift.services.composition.paths import filter_safe_copy, output_path, temporary_sibling
+from anishift.services.composition.paths import filter_safe_copy, temporary_sibling
 from anishift.services.composition.probe import (
     audio_codec_name,
     source_duration_us,
@@ -339,7 +339,7 @@ class CompositionService:
         cancel: threading.Event | None,
     ) -> CompositionResult:
         """Mux the lector and subtitle tracks into a new container."""
-        destination: Path = output_path(plan.source_path, plan.variant, plan.destination_dir)
+        destination: Path = plan.destination
         temporary: Path = temporary_sibling(destination)
         expected: tuple[str, ...] = _appended_track_names(plan)
         warnings: tuple[str, ...] = self._font_warnings(plan, cancel=cancel)
@@ -392,7 +392,7 @@ class CompositionService:
         cancel: threading.Event | None,
     ) -> CompositionResult:
         """Render an MP4 with the subtitles composited into the picture."""
-        destination: Path = output_path(plan.source_path, plan.variant, plan.destination_dir)
+        destination: Path = plan.destination
         temporary: Path = temporary_sibling(destination)
         ffprobe: Path = self.ffprobe
         video_us: int

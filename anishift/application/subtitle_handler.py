@@ -12,6 +12,7 @@ from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.planning import PlanTask, TaskKind
+from anishift.application.products import product_path
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
 from anishift.application.scheduler_contracts import TaskProgressSink
 from anishift.application.task_paths import task_staging_path
@@ -75,9 +76,9 @@ class LegacySubtitleAdapter:
     def write_polish(self, split: SubtitleSplit, base: Path, kind: SubtitleKind) -> LegacySubtitleProducts:
         """Write complete, spoken, and displayed products from a Polish source."""
         return LegacySubtitleProducts(
-            write_full(split, base.with_name(f"{base.name}.pl.{kind}")),
-            write_spoken(split, base.with_name(f"{base.name}.spoken.pl.{kind}")),
-            write_displayed(split, base.with_name(f"{base.name}.displayed.pl.{kind}")),
+            write_full(split, _product_path(base, ArtifactKind.FULL_PL, kind)),
+            write_spoken(split, _product_path(base, ArtifactKind.SPOKEN_PL, kind)),
+            write_displayed(split, _product_path(base, ArtifactKind.DISPLAYED_PL, kind)),
         )
 
     def write_translated_products(
@@ -90,9 +91,9 @@ class LegacySubtitleAdapter:
     ) -> LegacySubtitleProducts:
         """Write the three translated products with the existing layout policy."""
         return LegacySubtitleProducts(
-            write_translated(split, displayed, spoken, base.with_name(f"{base.name}.pl.{kind}")),
-            write_translated_spoken(split, spoken, base.with_name(f"{base.name}.spoken.pl.{kind}")),
-            write_translated_displayed(split, displayed, base.with_name(f"{base.name}.displayed.pl.{kind}")),
+            write_translated(split, displayed, spoken, _product_path(base, ArtifactKind.FULL_PL, kind)),
+            write_translated_spoken(split, spoken, _product_path(base, ArtifactKind.SPOKEN_PL, kind)),
+            write_translated_displayed(split, displayed, _product_path(base, ArtifactKind.DISPLAYED_PL, kind)),
         )
 
 
@@ -167,6 +168,10 @@ class SubtitleTaskHandler:
                 raise ExecutionError(msg)
             produced.append(ProducedArtifact(output.artifact_id, written, {}))
         return TaskResult(task.task_id, tuple(produced))
+
+
+def _product_path(base: Path, kind: ArtifactKind, subtitle_format: SubtitleKind) -> Path:
+    return product_path(base.parent, base.name, kind, subtitle_format=subtitle_format)
 
 
 def _subtitle_path(artifact: Artifact) -> Path:

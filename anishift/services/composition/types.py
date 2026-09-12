@@ -120,7 +120,7 @@ class CompositionPlan:
     source_subtitle_kind: str = "ass"
     scope_id: str = ""
     temporary_root: Path = Path()
-    destination_dir: Path = Path()
+    destination: Path = Path()
 
     @property
     def has_material(self) -> bool:

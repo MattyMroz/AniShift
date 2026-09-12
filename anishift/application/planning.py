@@ -10,6 +10,7 @@ from typing import Final
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
 from anishift.application.intents import GroupIntent
+from anishift.application.products import AUDIO_PRODUCT_PROFILES
 from anishift.errors import PlanningError
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -205,8 +206,7 @@ def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
     _require_range(settings.tts_max_retries, 0, 10, "TTS retries")
     _require_range(settings.tts_group_jobs, 1, 100, "TTS group jobs")
     _require_range(settings.tts_request_concurrency, 1, 100, "TTS request concurrency")
-    supported_audio_profiles: frozenset[str] = frozenset({"aac", "eac3", "mp3", "opus", "flac", "wav"})
-    if settings.audio_output_profile.casefold() not in supported_audio_profiles:
+    if settings.audio_output_profile.casefold() not in AUDIO_PRODUCT_PROFILES:
         msg = "Audio output profile is unsupported"
         raise ValueError(msg)
     if settings.audio_duration_tolerance_us < 0:

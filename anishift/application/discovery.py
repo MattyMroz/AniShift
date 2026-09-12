@@ -21,6 +21,7 @@ from anishift.application.artifacts import (
     create_artifact_id,
     create_group_id,
 )
+from anishift.application.products import ProductName, classify_product
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -116,19 +117,20 @@ def is_derived_product(path: Path) -> bool:
 
 def classify_artifact(path: Path) -> ArtifactName | None:
     """Classify one supported filename without touching its contents."""
+    product: ProductName | None = classify_product(path.name)
+    if product is not None:
+        return _artifact_name(
+            path,
+            product.stem,
+            product.kind,
+            subtitle_format=product.subtitle_format,
+            audio_codec=product.audio_codec,
+        )
     lowered: str = path.name.casefold()
-    classifiers = (
-        _classify_derived_subtitle,
-        _classify_final_container,
-        _classify_source_subtitle,
-        _classify_audio_product,
-        _classify_primary_source,
-    )
-    for classifier in classifiers:
-        candidate: ArtifactName | None = classifier(path, lowered)
-        if candidate is not None:
-            return candidate
-    return None
+    source_subtitle: ArtifactName | None = _classify_source_subtitle(path, lowered)
+    if source_subtitle is not None:
+        return source_subtitle
+    return _classify_primary_source(path, lowered)
 
 
 def group_candidates(candidates: Sequence[ArtifactName], root: Path) -> tuple[SourceGroup, ...]:
@@ -174,37 +176,6 @@ def _relative_sort_key(path: Path, root: Path) -> tuple[str, str]:
     return relative.casefold(), relative
 
 
-def _classify_derived_subtitle(path: Path, lowered: str) -> ArtifactName | None:
-    variants: tuple[tuple[str, ArtifactKind], ...] = (
-        (".spoken.pl.ass", ArtifactKind.SPOKEN_PL),
-        (".spoken.pl.srt", ArtifactKind.SPOKEN_PL),
-        (".displayed.pl.ass", ArtifactKind.DISPLAYED_PL),
-        (".displayed.pl.srt", ArtifactKind.DISPLAYED_PL),
-        (".pl.ass", ArtifactKind.FULL_PL),
-        (".pl.srt", ArtifactKind.FULL_PL),
-    )
-    for suffix, kind in variants:
-        if lowered.endswith(suffix):
-            return _artifact_name(
-                path,
-                path.name[: -len(suffix)],
-                kind,
-                subtitle_format=suffix.rsplit(".", maxsplit=1)[-1],
-            )
-    return None
-
-
-def _classify_final_container(path: Path, lowered: str) -> ArtifactName | None:
-    variants: tuple[tuple[str, ArtifactKind], ...] = (
-        (".pl.mkv", ArtifactKind.FINAL_MKV),
-        (".pl.mp4", ArtifactKind.FINAL_MP4),
-    )
-    for suffix, kind in variants:
-        if lowered.endswith(suffix):
-            return _artifact_name(path, path.name[: -len(suffix)], kind)
-    return None
-
-
 def _classify_source_subtitle(path: Path, lowered: str) -> ArtifactName | None:
     if not (lowered.endswith(".ass") or lowered.endswith(".srt")):
         return None
@@ -214,20 +185,6 @@ def _classify_source_subtitle(path: Path, lowered: str) -> ArtifactName | None:
         ArtifactKind.SOURCE_SUBTITLES,
         subtitle_format=path.suffix[1:].casefold(),
     )
-
-
-def _classify_audio_product(path: Path, lowered: str) -> ArtifactName | None:
-    codecs: tuple[str, ...] = ("eac3", "m4a", "mp3", "opus", "flac", "wav")
-    for codec in codecs:
-        suffix: str = f".{codec}"
-        if lowered.endswith(suffix):
-            return _artifact_name(
-                path,
-                path.name[: -len(suffix)],
-                ArtifactKind.NARRATION_AUDIO,
-                audio_codec=codec,
-            )
-    return None
 
 
 def _classify_primary_source(path: Path, lowered: str) -> ArtifactName | None:

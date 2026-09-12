@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Final, Never
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState, SourceGroup
+from anishift.application.products import PRODUCT_SUFFIXES, SUBTITLE_FORMATS
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError
 from anishift.platform.binaries import Binary, BinaryNotFoundError, require_binary
 from anishift.services.audio.commands import SubprocessRunner
@@ -23,12 +24,17 @@ __all__ = ["ArtifactPublisher", "PublishRequest"]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
+_SUBTITLE_SUFFIXES: Final[frozenset[str]] = frozenset(f".{subtitle_format}" for subtitle_format in SUBTITLE_FORMATS)
+"""Extensions a published subtitle product can carry."""
+
 _EXPECTED_SUFFIXES: Final[dict[ArtifactKind, frozenset[str]]] = {
-    ArtifactKind.FULL_PL: frozenset({".ass", ".srt"}),
-    ArtifactKind.SOURCE_SUBTITLES: frozenset({".ass", ".srt"}),
-    ArtifactKind.SPOKEN_PL: frozenset({".ass", ".srt"}),
-    ArtifactKind.DISPLAYED_PL: frozenset({".ass", ".srt"}),
-    ArtifactKind.NARRATION_AUDIO: frozenset({".aac", ".ac3", ".eac3", ".flac", ".m4a", ".mp3", ".opus", ".wav"}),
+    ArtifactKind.FULL_PL: _SUBTITLE_SUFFIXES,
+    ArtifactKind.SOURCE_SUBTITLES: _SUBTITLE_SUFFIXES,
+    ArtifactKind.SPOKEN_PL: _SUBTITLE_SUFFIXES,
+    ArtifactKind.DISPLAYED_PL: _SUBTITLE_SUFFIXES,
+    ArtifactKind.NARRATION_AUDIO: frozenset(
+        entry.suffix for entry in PRODUCT_SUFFIXES if entry.kind is ArtifactKind.NARRATION_AUDIO
+    ),
 }
 """Allowed file suffixes for durable products published by the workflow."""
 

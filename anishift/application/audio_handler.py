@@ -11,6 +11,7 @@ from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.planning import PlanTask, TaskKind
+from anishift.application.products import product_suffix
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
 from anishift.application.scheduler_contracts import TaskProgressSink
 from anishift.application.task_paths import task_staging_path
@@ -161,6 +162,12 @@ class AudioTaskHandler:
             for clip in manifest.clips
         )
         synthetic_source: Path = task_staging_path(self._run_root, task, output, ".source")
+        destination: Path = task_staging_path(
+            self._run_root,
+            task,
+            output,
+            product_suffix(ArtifactKind.NARRATION_AUDIO, audio_profile=profile),
+        )
         observer: _ProgressObserver = _ProgressObserver(task.task_id, progress)
         rendered: AudioRenderResult = self._mixer.render(
             AudioRenderRequest(
@@ -169,6 +176,7 @@ class AudioTaskHandler:
                 source.path,
                 clips,
                 self._run_root / task.group_id / "audio",
+                destination,
             ),
             callbacks=observer,
             on_percent=observer.on_percent,
@@ -177,7 +185,7 @@ class AudioTaskHandler:
         if rendered.status not in {AudioRenderStatus.COMPLETED, AudioRenderStatus.RESUME_HIT}:
             _raise_execution("Narration audio was not rendered")
         path: Path | None = rendered.output_path
-        if path is None or not path.is_file() or path.suffix.casefold() != _profile_suffix(profile):
+        if path != destination or not path.is_file():
             _raise_execution("Narration renderer returned an invalid output")
         return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, path, {"validated": True}),))
 
@@ -195,7 +203,12 @@ class AudioTaskHandler:
         if source.path is None or source.kind is not ArtifactKind.NARRATION_AUDIO:
             _raise_execution("Audio transcoding requires ready narration audio")
         profile: str = _profile(task, output)
-        destination: Path = task_staging_path(self._run_root, task, output, _profile_suffix(profile))
+        destination: Path = task_staging_path(
+            self._run_root,
+            task,
+            output,
+            product_suffix(ArtifactKind.NARRATION_AUDIO, audio_profile=profile),
+        )
         observer: _ProgressObserver = _ProgressObserver(task.task_id, progress)
         observer.on_audio_phase(task.group_id, "transcoding")
         path: Path = self._transcoder.transcode(
@@ -221,10 +234,6 @@ def _profile(task: PlanTask, output: Artifact) -> str:
     if not isinstance(value, str) or output.audio_codec != value:
         _raise_execution("Audio output profile does not match the planned artifact")
     return value
-
-
-def _profile_suffix(profile: str) -> str:
-    return ".m4a" if profile == "aac" else f".{profile}"
 
 
 def _mirror_cancel(cancel: CancellationToken, event: threading.Event, stop: threading.Event) -> None:
