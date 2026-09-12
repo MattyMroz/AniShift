@@ -4,7 +4,8 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,8 +23,10 @@ from fakes import (
 
 import anishift.application.service as service_module
 import anishift.application.watch as watch_module
+from anishift.application.automation import AutomationOwner
 from anishift.application.cancellation import CancellationToken, EventCancellationToken
 from anishift.application.control import ProcessingRequest, RequestState
+from anishift.application.control_views import PlanPreview
 from anishift.application.discovery import DiscoveryResult
 from anishift.application.handlers import (
     ExecutionHandlers,
@@ -33,7 +36,17 @@ from anishift.application.handlers import (
     TranslationTaskHandler,
 )
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
-from anishift.application.intents import AutoPreset, ProductIntent, ProductKind, RebuildRequest, RequestOrigin
+from anishift.application.intents import (
+    AutoPreset,
+    ExternalAudioRole,
+    GroupIntent,
+    ProductIntent,
+    ProductKind,
+    RebuildRequest,
+    RequestOrigin,
+    RunMode,
+    SubtitleSourcePolicy,
+)
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, TaskKind
 from anishift.application.results import GroupStatus, RunResult
 from anishift.application.scheduler import RunHandle
@@ -42,6 +55,8 @@ from anishift.application.scheduler_runtime import extraction_group_ids
 from anishift.application.service import AppService, AutoPresetDraft
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.bootstrap import AppContext, bootstrap, create_app_service
+from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
+from anishift.cli.resident import ResidentSession
 from anishift.cli.watch import run_resident
 from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
 from anishift.config.presets import AutoPresetFile, default_preset_file
@@ -49,9 +64,17 @@ from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.config.workspace import cleanup_orphaned_temp
 from anishift.errors import ErrorCode, ExecutionError, RunConflictError
-from anishift.platform.local_control import ControlClient, connect
+from anishift.platform.local_control import (
+    ControlClient,
+    ControlError,
+    ControlErrorCode,
+    ControlServer,
+    connect,
+    control_endpoint,
+)
 from anishift.services.extraction import ExtractionRequest, ExtractionResult
 from anishift.services.media import DefaultMediaProbe
+from anishift.services.media._process import ProcessResult
 from anishift.services.media.types import MediaCatalog
 
 _PALANTIR_TOKEN = "palantir-token-sentinel-deadbeef"  # noqa: S105
@@ -121,6 +144,211 @@ def _catalog() -> ModelCatalog:
     }
     """
     return parse_model_catalog(source)
+
+
+@contextmanager
+def _panel_owner(service: AppService, tmp_path: Path) -> Iterator[tuple[ResidentSession, WatchStateStore]]:
+    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME)
+    owner: AutomationOwner = AutomationOwner(service, store, instance_id="panel-test")
+    thread: threading.Thread = threading.Thread(target=owner.serve, daemon=True)
+    thread.start()
+    endpoint: str = control_endpoint(tmp_path / ".control")
+    key: bytes = os.urandom(32)
+    server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+    owner.attach_broadcast(server.broadcast)
+    session: ResidentSession = ResidentSession(
+        service.workspace_root, lambda: ControlClient(endpoint, key, timeout_s=5.0)
+    )
+    try:
+        yield session, store
+    finally:
+        session.close()
+        server.close()
+        owner.request_shutdown()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("regenerate", [False, True])
+def test_panel_executes_only_selected_episodes_through_the_resident(tmp_path: Path, *, regenerate: bool) -> None:
+    for number in (1, 3, 8):
+        write_text_source(tmp_path / f"{number:02d}.txt", f"Episode {number}")
+    previous: str = "1\n00:00:00,000 --> 00:00:01,000\nPrevious translation\n"
+    (tmp_path / "03.pl.srt").write_text(previous, encoding="utf-8")
+    translation: FakeTranslationService = FakeTranslationService()
+    service: AppService = _service(tmp_path, translation)
+    preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
+    rendered: threading.Event = threading.Event()
+    with _panel_owner(service, tmp_path) as (session, store):
+        controller: ManualController = ManualController(session, session.discover(), preset, rendered.set)
+        keys: tuple[str, ...] = ("down", "space", "down", "space", "end")
+        for key in (*keys, *(("down",) * 3 if regenerate else ()), "enter"):
+            assert controller.handle_key(key) is ManualResult.STAY
+        assert rendered.wait(5.0)
+        assert "2 odcinków" in controller.render(120, 40).plain
+        assert translation.calls == []
+        assert len(store.load().reservations) == 2
+        assert controller.handle_key("enter") is ManualResult.START_RUN
+        prepared: ManualRun | None = controller.take_ready_run()
+        assert prepared is not None
+        assert isinstance(prepared.plan, PlanPreview)
+        sink: CollectingRunSink = CollectingRunSink()
+        result: RunResult = session.execute(prepared.plan, sink)
+        assert result.succeeded
+        assert sink.events
+        assert {group.group_id for group in result.groups} == {group.group_id for group in prepared.plan.groups}
+        assert store.load().requests[0].state is RequestState.SUCCEEDED
+        assert len(store.load().markers) == 2
+        assert store.load().reservations == ()
+        assert not (tmp_path / "01.pl.srt").exists()
+        assert "PL Episode 8" in (tmp_path / "08.pl.srt").read_text(encoding="utf-8")
+        assert ("PL Episode 3" if regenerate else "Previous translation") in (tmp_path / "03.pl.srt").read_text(
+            encoding="utf-8"
+        )
+        assert len(translation.calls) == (2 if regenerate else 1)
+
+
+@pytest.mark.integration
+def test_panel_escape_releases_the_scope_for_another_session(tmp_path: Path) -> None:
+    write_text_source(tmp_path / "03.txt", "Original")
+    service: AppService = _service(tmp_path, FakeTranslationService())
+    preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
+    rendered: threading.Event = threading.Event()
+    with _panel_owner(service, tmp_path) as (session, store):
+        workspace: InspectedWorkspace = session.discover()
+        controller: ManualController = ManualController(session, workspace, preset, rendered.set)
+        for key in ("space", "end", "enter"):
+            controller.handle_key(key)
+        assert rendered.wait(5.0)
+        second: ResidentSession = session.new_session()
+        try:
+            with pytest.raises(ControlError) as held:
+                second.reserve((workspace.groups[0].group_id,))
+            assert held.value.code is ControlErrorCode.CONFLICT
+            assert controller.handle_key("escape") is ManualResult.STAY
+            assert store.load().reservations == ()
+            second.reserve((workspace.groups[0].group_id,))
+        finally:
+            second.close()
+
+
+@pytest.mark.integration
+def test_panel_start_rejects_a_source_changed_after_preview(tmp_path: Path) -> None:
+    source: Path = tmp_path / "03.txt"
+    write_text_source(source, "Original")
+    translation: FakeTranslationService = FakeTranslationService()
+    service: AppService = _service(tmp_path, translation)
+    preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
+    with _panel_owner(service, tmp_path) as (session, store):
+        group_id: str = session.discover().groups[0].group_id
+        session.reserve((group_id,))
+        preview: PlanPreview = session.plan_auto((group_id,), preset)
+        source.write_text("A different source", encoding="utf-8")
+        with pytest.raises(ControlError) as changed:
+            session.execute(preview, CollectingRunSink())
+        assert changed.value.code is ControlErrorCode.STALE_PREVIEW
+        assert translation.calls == []
+        assert store.load().requests == ()
+
+
+class _AudioDecode:
+    def __init__(self, entered: threading.Event | None = None, release: threading.Event | None = None) -> None:
+        self.entered: threading.Event | None = entered
+        self.release: threading.Event | None = release
+
+    def run(self, command: Sequence[str], *, cancel: CancellationToken, timeout_s: float) -> ProcessResult:
+        del command, timeout_s
+        if self.entered is not None:
+            self.entered.set()
+        if self.release is not None:
+            assert self.release.wait(5.0)
+        cancel.raise_if_cancelled()
+        return ProcessResult("out_time_us=10000000\nprogress=end\n", "", 0)
+
+
+@pytest.mark.integration
+def test_panel_preserves_external_sources_when_another_group_changes(tmp_path: Path) -> None:
+    write_media_source(tmp_path / "03.mkv")
+    outside: Path = tmp_path / ".external"
+    outside.mkdir()
+    subtitle: Path = outside / "translated.srt"
+    subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\nExternal text\n", encoding="utf-8")
+    audio: Path = outside / "audio.wav"
+    audio.write_bytes(b"audio")
+    translation: FakeTranslationService = FakeTranslationService()
+    inspector: WorkspaceInspector = WorkspaceInspector(FakeMediaProbe(), runner=_AudioDecode(), ffmpeg=Path("ffmpeg"))
+    service: AppService = _service(tmp_path, translation, inspector=inspector)
+    with _panel_owner(service, tmp_path) as (session, _):
+        group_id: str = session.discover().groups[0].group_id
+        session.reserve((group_id,))
+        subtitles: InspectedSourceGroup = session.register_external_subtitle(group_id, subtitle, "en")
+        sources: InspectedSourceGroup = session.register_external_audio(group_id, audio, ExternalAudioRole.SOURCE_AUDIO)
+        intent: GroupIntent = GroupIntent(
+            group_id,
+            RunMode.MANUAL,
+            ProductIntent(frozenset({ProductKind.FULL_PL})),
+            subtitle_source_policy=SubtitleSourcePolicy.EXTERNAL,
+            selected_subtitle_artifact_id=subtitles.artifacts[-1].artifact_id,
+            selected_audio_artifact_id=sources.artifacts[-1].artifact_id,
+            external_audio_role=ExternalAudioRole.SOURCE_AUDIO,
+        )
+        write_text_source(tmp_path / "08.txt", "Another episode")
+        preview: PlanPreview = session.plan_manual((intent,))
+        assert preview.can_execute
+        assert preview.groups[0].intent == intent
+        result: RunResult = session.execute(preview, CollectingRunSink())
+        assert result.succeeded
+        assert translation.calls == [("External text",)]
+        assert audio.read_bytes() == b"audio"
+        assert "External text" in subtitle.read_text(encoding="utf-8")
+
+
+@pytest.mark.integration
+def test_closed_panel_cannot_register_a_late_external_source(tmp_path: Path) -> None:
+    write_media_source(tmp_path / "03.mkv")
+    audio: Path = tmp_path / ".external.wav"
+    audio.write_bytes(b"audio")
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    inspector: WorkspaceInspector = WorkspaceInspector(
+        FakeMediaProbe(), runner=_AudioDecode(entered, release), ffmpeg=Path("ffmpeg")
+    )
+    service: AppService = _service(tmp_path, FakeTranslationService(), inspector=inspector)
+    with _panel_owner(service, tmp_path) as (session, _):
+        group_id: str = session.discover().groups[0].group_id
+        session.reserve((group_id,))
+        errors: list[ControlError | OSError] = []
+
+        def register() -> None:
+            try:
+                session.register_external_audio(group_id, audio, ExternalAudioRole.SOURCE_AUDIO)
+            except (ControlError, OSError) as error:
+                errors.append(error)
+
+        worker: threading.Thread = threading.Thread(target=register, daemon=True)
+        worker.start()
+        second: ResidentSession = session.new_session()
+        try:
+            assert entered.wait(5.0)
+            session.close()
+            deadline: float = time.monotonic() + 5.0
+            while True:
+                try:
+                    second.reserve((group_id,))
+                    break
+                except ControlError as error:
+                    if error.code is not ControlErrorCode.CONFLICT:
+                        raise
+                    assert time.monotonic() < deadline
+                    time.sleep(0.01)
+        finally:
+            release.set()
+            worker.join(timeout=5.0)
+            second.close()
+        assert not worker.is_alive()
+        assert errors
+        assert all(artifact.path != audio for artifact in service.discover().groups[0].artifacts)
 
 
 def test_real_service_flows_from_discovery_through_partial_execution(tmp_path: Path) -> None:

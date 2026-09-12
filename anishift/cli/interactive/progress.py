@@ -20,6 +20,7 @@ from anishift.application import (
     ExecutionPlan,
     InspectedSourceGroup,
     InspectedWorkspace,
+    PlanPreview,
     RunEvent,
     RunEventKind,
     TaskKind,
@@ -141,7 +142,7 @@ class _PreparedRun(Protocol):
         ...
 
     @property
-    def plan(self) -> ExecutionPlan:
+    def plan(self) -> ExecutionPlan | PlanPreview:
         """Return the accepted execution plan."""
         ...
 

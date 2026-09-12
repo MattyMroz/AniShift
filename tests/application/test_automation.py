@@ -996,7 +996,8 @@ def test_every_state_change_reaches_the_subscribers(tmp_path: Path) -> None:
         owner.request_shutdown()
         thread.join(timeout=_TIMEOUT_S)
 
-    assert {frame["event"] for frame in frames} == {"state_changed"}
+    assert {frame["event"] for frame in frames} == {"state_changed", "run_finished"}
+    assert sum(frame["event"] == "run_finished" for frame in frames) == 1
     assert frames[-1]["payload"]
 
 

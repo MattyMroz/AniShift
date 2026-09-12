@@ -27,15 +27,19 @@ from anishift.application import (
     InspectedSourceGroup,
     InspectedWorkspace,
     Mp4AudioSource,
+    PlanPreview,
     ProductIntent,
     ProductKind,
     RebuildRequest,
     RunMode,
     SubtitleOutputFormat,
     SubtitleSourcePolicy,
+    TaskKind,
     TranslationAction,
+    preview_plan,
 )
 from anishift.application.events import sanitize_event_message
+from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
 
 __all__ = ["ManualController", "ManualDraft", "ManualResult", "ManualRun", "default_draft", "materialize_intent"]
@@ -70,6 +74,13 @@ _PRODUCTS: Final[tuple[tuple[ProductKind, str], ...]] = (
     (ProductKind.MP4, "MP4"),
 )
 """Public products selectable for one source group."""
+
+_PREVIEW_STAGES: Final[tuple[tuple[TaskKind, str], ...]] = (
+    (TaskKind.TRANSLATE_SUBTITLES, "tłumaczenie"),
+    (TaskKind.SYNTHESIZE_SPEECH, "synteza mowy"),
+    (TaskKind.MIX_NARRATION, "miks audio"),
+)
+"""Potentially costly work made explicit before starting a preview."""
 
 _SUBTITLE_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
     {
@@ -151,7 +162,8 @@ class ManualRun:
     """Carry the inspected workspace and accepted manual plan to shared execution."""
 
     workspace: InspectedWorkspace
-    plan: ExecutionPlan
+    plan: ExecutionPlan | PlanPreview
+    resident: ResidentSession | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,12 +374,12 @@ class ManualController:
 
     def __init__(
         self,
-        service: AppService,
+        service: AppService | ResidentSession,
         workspace: InspectedWorkspace,
         preset: AutoPreset,
         invalidate: Callable[[], None],
     ) -> None:
-        self._service: AppService = service
+        self._service: AppService | ResidentSession = service
         self._workspace: InspectedWorkspace = workspace
         self._preset: AutoPreset = preset
         self._invalidate: Callable[[], None] = invalidate
@@ -384,7 +396,7 @@ class ManualController:
         self._edit_index: int = 0
         self._product_selection: set[ProductKind] = set()
         self._source_choices: tuple[_SourceChoice, ...] = ()
-        self._plan: ExecutionPlan | None = None
+        self._plan: ExecutionPlan | PlanPreview | None = None
         self._automatic_preview: bool = False
         self._ready_run: ManualRun | None = None
         self._input_kind: _InputKind | None = None
@@ -420,6 +432,8 @@ class ManualController:
                 result = self._handle_preview(key)
             else:
                 result = ManualResult.STAY
+        if result is ManualResult.BACK_HOME and isinstance(self._service, ResidentSession):
+            self._service.close()
         return result
 
     def render(self, columns: int, rows: int) -> Text:
@@ -448,6 +462,8 @@ class ManualController:
             self._cancel = None
         if token is not None:
             token.cancel()
+        if isinstance(self._service, ResidentSession):
+            self._service.close()
 
     def take_ready_run(self) -> ManualRun | None:
         """Return and clear the run accepted by the preview."""
@@ -459,6 +475,9 @@ class ManualController:
     def _handle_busy_key(self, key: str) -> ManualResult:
         if key not in {"escape", "interrupt"}:
             return ManualResult.STAY
+        if isinstance(self._service, ResidentSession):
+            self._generation += 1
+            return ManualResult.BACK_HOME
         self._generation += 1
         token: EventCancellationToken | None = self._cancel
         self._cancel = None
@@ -476,20 +495,26 @@ class ManualController:
             self._move(1, row_count)
         elif key in {"space", "enter"} and self._selected < len(self._group_ids):
             group_id: str = self._group_ids[self._selected]
-            if group_id in self._selected_groups:
-                self._selected_groups.remove(group_id)
-            else:
-                self._selected_groups.add(group_id)
-            self._feedback = None
+            self._select_scope(self._selected_groups ^ {group_id})
         elif key == "enter":
             return self._handle_scope_action(self._selected - len(self._group_ids))
         elif key == "a":
-            self._selected_groups = set() if self._selected_groups else set(self._group_ids)
+            self._select_scope(set() if self._selected_groups else set(self._group_ids))
         elif key == "home":
             self._selected = 0
         elif key == "end":
             self._selected = len(self._group_ids)
         return ManualResult.STAY
+
+    def _select_scope(self, selected: set[str]) -> None:
+        if isinstance(self._service, ResidentSession):
+            try:
+                self._service.reserve(tuple(group for group in self._group_ids if group in selected))
+            except (AniShiftError, OSError) as problem:
+                self._feedback = f"✗ Nie można zarezerwować odcinków · {_safe(str(problem))}"
+                return
+        self._selected_groups = selected
+        self._feedback = None
 
     def _handle_scope_action(self, action: int) -> ManualResult:
         if action == len(_GROUP_ACTIONS) - 1:
@@ -500,6 +525,9 @@ class ManualController:
         self._edit_ids = tuple(group_id for group_id in self._group_ids if group_id in self._selected_groups)
         self._edit_index = 0
         self._automatic_preview = action != 1
+        if isinstance(self._service, ResidentSession):
+            self._start_remote_preview(action)
+            return ManualResult.STAY
         if action == 1:
             self._open(_Screen.GROUP_ACTION)
             return ManualResult.STAY
@@ -512,6 +540,41 @@ class ManualController:
             self._feedback = f"✗ Nie można zbudować planu · {_safe(str(problem))}"
         self._open(_Screen.PREVIEW, clear_feedback=False)
         return ManualResult.STAY
+
+    def _start_remote_preview(self, action: int | None = None) -> None:
+        service: AppService | ResidentSession = self._service
+        if not isinstance(service, ResidentSession):
+            return
+        self._generation += 1
+        generation: int = self._generation
+        self._screen = _Screen.BUSY
+        self._feedback = None
+        group_ids: tuple[str, ...] = self._edit_ids
+        intents: tuple[GroupIntent, ...] = tuple(materialize_intent(self._drafts[group_id]) for group_id in group_ids)
+
+        def prepare() -> None:
+            plan: PlanPreview | None = None
+            problem: str | None = None
+            try:
+                service.reserve(group_ids)
+                if action is None:
+                    plan = service.plan_manual(intents)
+                elif action != 1:
+                    product: ProductKind | None = _GROUP_ACTIONS[action][1]
+                    rebuild: RebuildRequest | None = None if product is None else RebuildRequest(frozenset({product}))
+                    plan = service.plan_auto(group_ids, self._preset, rebuild=rebuild)
+            except (AniShiftError, OSError, TypeError, ValueError) as error:
+                problem = f"✗ Nie można przygotować odcinków · {_safe(str(error))}"
+            with self._lock:
+                if generation != self._generation:
+                    return
+                self._plan = plan
+                self._feedback = problem
+                target: _Screen = _Screen.GROUP_ACTION if action == 1 and problem is None else _Screen.PREVIEW
+                self._open(target, clear_feedback=False)
+            self._invalidate()
+
+        threading.Thread(target=prepare, name="anishift-manual-preview", daemon=True).start()
 
     def _handle_group_action(self, key: str) -> ManualResult:
         if not self._navigate(key, 3):
@@ -615,12 +678,13 @@ class ManualController:
         self._open(_Screen.CUSTOM)
 
     def _handle_preview(self, key: str) -> ManualResult:
-        plan: ExecutionPlan | None = self._plan
+        plan: ExecutionPlan | PlanPreview | None = self._plan
         option_count: int = 3 if plan is not None and plan.can_execute else 2
         if not self._navigate(key, option_count):
             return ManualResult.STAY
         if plan is not None and plan.can_execute and self._selected == 0:
-            self._ready_run = ManualRun(self._workspace, plan)
+            resident: ResidentSession | None = self._service if isinstance(self._service, ResidentSession) else None
+            self._ready_run = ManualRun(self._workspace, plan, resident)
             return ManualResult.START_RUN
         back_index: int = 1 if plan is not None and plan.can_execute else 0
         if self._selected == back_index:
@@ -787,6 +851,9 @@ class ManualController:
         return ManualResult.STAY
 
     def _build_preview(self) -> None:
+        if isinstance(self._service, ResidentSession):
+            self._start_remote_preview()
+            return
         try:
             intents: tuple[GroupIntent, ...] = tuple(
                 materialize_intent(self._drafts[group_id]) for group_id in self._edit_ids
@@ -830,6 +897,8 @@ class ManualController:
         self._feedback = None
 
     def _open(self, screen: _Screen, *, clear_feedback: bool = True) -> None:
+        if screen is _Screen.GROUPS and isinstance(self._service, ResidentSession):
+            self._service.release()
         self._screen = screen
         self._selected = 0
         if clear_feedback:
@@ -931,7 +1000,7 @@ class ManualController:
         return self._finish(content, left, _MENU_HINT)
 
     def _render_preview(self, columns: int, rows: int) -> Text:
-        plan: ExecutionPlan | None = self._plan
+        plan: ExecutionPlan | PlanPreview | None = self._plan
         summary: tuple[str, ...] = _fit_entries(self._preview_summary(plan), columns)
         blockers: tuple[str, ...] = _fit_entries(self._blocker_lines(plan), columns)
         warnings: tuple[str, ...] = _fit_entries(self._warning_lines(plan), columns)
@@ -956,7 +1025,7 @@ class ManualController:
             _append_row(content, left, label, index == self._selected)
         return self._finish(content, left, _MENU_HINT)
 
-    def _preview_summary(self, plan: ExecutionPlan | None) -> tuple[str, ...]:
+    def _preview_summary(self, plan: ExecutionPlan | PlanPreview | None) -> tuple[str, ...]:
         if plan is None:
             return ("Plan nie jest dostępny",)
         counts: Counter[ProductKind] = Counter(
@@ -964,9 +1033,26 @@ class ManualController:
         )
         lines: list[str] = [f"{len(plan.groups)} odcinków"]
         lines.extend(f"{label}: {counts[product]}" for product, label in _PRODUCTS if counts[product])
+        view: PlanPreview = plan if isinstance(plan, PlanPreview) else preview_plan(plan, "", "")
+        for label, attribute in (("Zachowane", "preserved_products"), ("Do wykonania", "planned_products")):
+            products: Counter[str] = Counter(
+                product.value for group in view.groups for product in getattr(group, attribute)
+            )
+            shown: list[str] = [
+                f"{name.lower()} ({products[kind.value]})" for kind, name in _PRODUCTS if products[kind.value]
+            ]
+            if shown:
+                lines.append(f"{label}: {', '.join(shown)}")
+        work: list[str] = [
+            f"{label} ({len({task.group_id for task in view.tasks if task.kind is kind})})"
+            for kind, label in _PREVIEW_STAGES
+            if any(task.kind is kind for task in view.tasks)
+        ]
+        if work:
+            lines.append(f"Wymagane: {', '.join(work)}")
         return tuple(lines)
 
-    def _blocker_lines(self, plan: ExecutionPlan | None) -> tuple[str, ...]:
+    def _blocker_lines(self, plan: ExecutionPlan | PlanPreview | None) -> tuple[str, ...]:
         if plan is None:
             return ()
         return tuple(
@@ -976,7 +1062,7 @@ class ManualController:
             if problem.is_blocking
         )
 
-    def _warning_lines(self, plan: ExecutionPlan | None) -> tuple[str, ...]:
+    def _warning_lines(self, plan: ExecutionPlan | PlanPreview | None) -> tuple[str, ...]:
         if plan is None:
             return ()
         return tuple(

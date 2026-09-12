@@ -186,14 +186,23 @@ def _print_setup_report(results: list[ResourceResult]) -> None:
 
 
 @app.callback(invoke_without_command=True)
-def _default(ctx: typer.Context) -> None:
+def _default(ctx: typer.Context, resident: bool = typer.Option(False, "--resident", hidden=True)) -> None:
     """Open the interactive command line when invoked without a subcommand."""
     if ctx.invoked_subcommand is not None:
         return
     service: AppService = _composed_service()
     from anishift.cli.interactive import run_interactive  # noqa: PLC0415 - keep prompts off technical commands
 
-    run_interactive(service)
+    if resident:
+        from anishift.cli.control import open_control  # noqa: PLC0415
+        from anishift.cli.resident import ResidentSession  # noqa: PLC0415
+        from anishift.cli.watch import watch_state_dir  # noqa: PLC0415
+
+        run_interactive(
+            service, resident=ResidentSession(service.workspace_root, lambda: open_control(watch_state_dir()))
+        )
+    else:
+        run_interactive(service)
 
 
 @app.command()

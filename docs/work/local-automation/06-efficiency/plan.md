@@ -410,7 +410,9 @@ Wolno dopasować nazwy prywatnych helperów i podział dużego modułu do istnie
 
 ## 14. Stan wykonania
 
-**Stan 2026-09-12:** P01 i P03 zaimplementowane; P02 zaimplementowany, lecz audyt wykazał opisane niżej błędy integracji. P04 jest w toku: planner regeneracji i prosty wybór zakresu w panelu działają, integracja z właścicielem wymaga dokończenia. P05–P08 nie są wdrożone. Domyślny runtime nadal korzysta ze starego czuwania.
+**Stan 2026-09-12:** P01 i P03 zaimplementowane; P02 ma poprawki audytu opisane poniżej. P04 i P05 są częściowe, bez odbioru całych przepływów. P06 ma trzy commity cząstkowe; dalszy kalendarz i podłączenie terminów zachowano w stash `wip(application): retain P06 calendar work while closing P04 integration`. P07 i P08 nie zostały wykonane. Domyślny runtime nadal korzysta ze starego czuwania.
+
+**Korekta kolejności po feedbacku właściciela:** aktywny etap to P04, następnie P05, dopiero potem wznowienie P06. Podłączenie P06 przed spełnieniem zależności P01–P05 było błędem wykonawczym. Commit komponentu i zielone testy jednostkowe nie zamykają etapu: wymagany jest jego scenariusz odbioru przez rzeczywiste granice aplikacji w izolowanym workspace. P04 obejmuje także powiązanie istniejącego panelu z rezydentem, rezerwacje podczas edycji, zewnętrzne źródła i wynik po Start. D-12 nadal odracza domyślne przełączenie produkcji do P08.
 
 G1 ma wcześniejszy dowód dla sterowania opisany przy P02; część plikowa G1 oraz G2/G3 i pomiary całości pozostają do wykonania. Historyczne wyniki nie zastępują odbioru końcowej integracji.
 
@@ -453,6 +455,15 @@ Po każdym etapie wykonawca dopisuje tutaj: commit, zakres, uruchomione komendy 
 - Dowód granicy planowania: rzeczywisty lokalny kanał przyjmuje tylko 3 i 8, zachowuje wybór głosu, tempo, priorytet języków, opcje silnika oraz pełne zamiary po zapisie/odczycie; preferencje globalne pozostają niezależne. Pełne bramki: 3758 passed, 11 skipped, 28,24 s; Ruff i mypy win32/linux PASS (499 plików).
 - Otwarte: integracja zdalnego panelu i rejestracja jego zewnętrznych źródeł; rozliczanie wyników subskrypcji przez właściciela z generacją; odtworzenie po awarii; wymagane dowody publikacji częściowej. P05 jest w toku; P06–P08 pozostają niewykonane.
 - Organizacja: dalsza praca bez subagentów na życzenie właściciela; spójne poprawki i ukończone części otrzymują osobne commity po bramkach.
+
+### P04 — podłączenie panelu do rezydenta, 2026-09-12
+
+- Istniejący panel ma jawną ścieżkę testową `anishift --resident`, zgodną z D-12: domyślne wejście nadal pozostaje przy starym runtime. Auto jednorazowo, Ręczny i regeneracja wysyłają zamiary oraz `preview_id`; nie budują grafu w panelu. Rezydent zwraca bibliotekę i `PlanPreview`, postęp oraz końcowy wynik. Renderer korzysta z tych samych widoków co wcześniej.
+- Rezerwacja następuje przy zaznaczeniu grupy. Esc zwalnia zakres, a rozłączenie sesji anuluje oczekującą rejestrację zewnętrznego źródła i unieważnia spóźniony podgląd. Stary panel nie może odzyskać zamkniętej sesji przez opóźnione polecenie.
+- Podgląd pokazuje produkty zachowane, planowane oraz potrzebę tłumaczenia, TTS i miksu. Zewnętrzne napisy/audio przechodzą walidację rezydenta; odświeżenie innej grupy nie gubi wybranych źródeł.
+- Dowody: sześć scenariuszy integracyjnych w `tests/application/test_service.py` przez rzeczywisty lokalny kanał Windows, rzeczywisty planner, koordynator i publikację plików w katalogu tymczasowym. Sprawdzone: tylko odcinki 3 i 8, force istniejącego produktu, Esc, zmiana źródła przed Start, zewnętrzne źródła po zmianie biblioteki i odrzucona spóźniona rejestracja po zamknięciu panelu. Tłumacz oraz dekodowanie zewnętrznego audio są zastąpione na granicy usług. Nie uruchamiano płatnego tłumaczenia/TTS ani produkcyjnych mediów.
+- Bramki końcowe: `uv run ruff check anishift/ tests/`, `uv run ruff format --check anishift/ tests/`, mypy dla Windows i Linux — PASS; `uv run pytest` — **3847 passed, 11 skipped** (28,31 s). Pominięcia dotyczą sieci oraz dwóch testów dowiązań niedostępnych na tym koncie.
+- **P04 nadal częściowe.** Odbiór po częściowej publikacji i wznowienie po restarcie nie są wykonane. Plan odraczał recovery do P08, choć wymaga go już w odbiorze P04; minimalne recovery konieczne do tego odbioru należy wykonać przed zamknięciem P04. P05/P06 nie są teraz rozszerzane. Ocena ergonomii panelu przez właściciela również pozostaje do wykonania.
 
 ### P05 — komponenty obserwacji i cache, w toku
 

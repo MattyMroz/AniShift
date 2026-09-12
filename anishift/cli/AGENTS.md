@@ -10,6 +10,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `exit_codes.py` — kody wyjścia 0/1/3/4 i `run_exit_code()` wspólne dla `run --preset` i okna partii
 - `watch.py` — pętla czuwania bez UI: blokada instancji, skan biblioteki, uruchamianie okna partii, flaga stop, godzinne sprawdzanie subskrypcji między skanami
 - `control.py` — cienki klient rezydenta: `open_control()` (start na żądanie) i `resident_status()`
+- `resident.py` — sesja panelu: biblioteka, rezerwacje, podgląd zamiaru, zewnętrzne źródła, Start i wynik przez kanał
 - `interactive/` — lazy-loaded Home, jeden renderer Prompt Toolkit, maskotka, Settings, Manual i wspólny postęp
 
 ## Pułapki
@@ -33,6 +34,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `resident_status()` nie startuje rezydenta — czyta `instance.json` i próbuje `status`; tylko
   udana odpowiedź dowodzi działania. `open_control()` jest jedynym miejscem, które uruchamia
   rezydenta na żądanie klienta. `control.py`
+- Ukryte `anishift --resident` podłącza istniejący panel do rezydenta przed domyślnym
+  przełączeniem w P08. Auto, Ręczny i regeneracja korzystają wtedy z `ResidentSession`;
+  panel dostaje `PlanPreview`, nie graf wykonania. Oddzielna sesja edycji chroni wybrane
+  grupy od zaznaczenia do Start lub Esc. Wyjście z panelu odłącza go bez anulowania runu.
+  Zewnętrzne źródła są ponownie rejestrowane przy podglądzie po odświeżeniu biblioteki.
+  Nie traktuj tej ścieżki jako zakończonego P04: recovery częściowej publikacji pozostaje otwarte.
 - `run_interactive(service, batch=...)` zwraca kod wyjścia jak `run --preset` i po wyniku odlicza
   10 s w `_handle_idle`, dowolny klawisz zamyka; `interrupt` w partii anuluje run i kończy kodem 4.
   Test buduje aplikację ręcznie? Ustaw też `_batch` i `_closing_at`. `interactive/app.py`

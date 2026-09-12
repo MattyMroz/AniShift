@@ -18,6 +18,8 @@ if TYPE_CHECKING:
         read_episode,
     )
     from anishift.application.automation import AutomationOwner
+    from anishift.application.control_payloads import encode_intent
+    from anishift.application.control_views import PlanPreview, decode_view, encode_view, preview_plan
     from anishift.application.discovery import (
         PRIMARY_SOURCE_SUFFIXES,
         DiscoveryResult,
@@ -178,6 +180,7 @@ __all__ = [
     "ModelAvailability",
     "ModelProbeResult",
     "Mp4AudioSource",
+    "PlanPreview",
     "PlanProblem",
     "PlanTask",
     "ProcessingOrderPolicy",
@@ -227,16 +230,25 @@ __all__ = [
     "WorkerNotification",
     "WorkerNotificationKind",
     "WorkspaceInspector",
+    "decode_view",
+    "encode_intent",
+    "encode_view",
     "group_is_ready",
     "order_groups",
     "parse_query",
     "plan_auto",
     "plan_manual",
+    "preview_plan",
     "read_episode",
     "ready_group_ids",
 ]
 
 _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "PlanPreview": ("anishift.application.control_views", "PlanPreview"),
+    "decode_view": ("anishift.application.control_views", "decode_view"),
+    "encode_intent": ("anishift.application.control_payloads", "encode_intent"),
+    "encode_view": ("anishift.application.control_views", "encode_view"),
+    "preview_plan": ("anishift.application.control_views", "preview_plan"),
     "PRIMARY_SOURCE_SUFFIXES": ("anishift.application.discovery", "PRIMARY_SOURCE_SUFFIXES"),
     "AppService": ("anishift.application.service", "AppService"),
     "AiringSource": ("anishift.application.subscriptions", "AiringSource"),

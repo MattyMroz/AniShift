@@ -28,6 +28,8 @@ def _application(
     application._manual = None
     application._anime = None
     application._batch = None
+    application._resident = None
+    application._execution = None
     application._closing_at = None
     application._mascot = cast("MascotController", SimpleNamespace(state=MascotState.IDLE))
     application._renderer = cast("TerminalRenderer", SimpleNamespace(native_mascot_size=(18, 10)))

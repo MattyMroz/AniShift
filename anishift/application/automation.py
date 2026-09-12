@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Final, cast
 
 from anishift.application.acquisition import series_directory_name
 from anishift.application.artifacts import ArtifactLifetime, ArtifactState, create_group_id
+from anishift.application.cancellation import EventCancellationToken
 from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
@@ -34,10 +35,18 @@ from anishift.application.control import (
     reserve,
 )
 from anishift.application.control_payloads import decode_intent
+from anishift.application.control_views import encode_view, preview_plan
 from anishift.application.discovery import ArtifactName, classify_artifact, is_derived_product
 from anishift.application.events import sanitize_event_message
 from anishift.application.inspection import InspectedWorkspace
-from anishift.application.intents import AutoPreset, GroupIntent, RebuildRequest, RequestOrigin, RunMode
+from anishift.application.intents import (
+    AutoPreset,
+    ExternalAudioRole,
+    GroupIntent,
+    RebuildRequest,
+    RequestOrigin,
+    RunMode,
+)
 from anishift.application.results import GroupStatus
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids
@@ -140,7 +149,7 @@ _MUTATING_KINDS: Final[frozenset[str]] = frozenset(
 )
 """Commands whose outcome is recorded, so repeating an identifier repeats no effect."""
 
-_SLOW_KINDS: Final[frozenset[str]] = frozenset({"preview", "subscriptions_check"})
+_SLOW_KINDS: Final[frozenset[str]] = frozenset({"discover", "register_external", "preview", "subscriptions_check"})
 """Commands performed on the pool, because they scan the library or reach the network."""
 
 _INSTANCE_CHECKED_KINDS: Final[frozenset[str]] = frozenset({"start", "reserve", "release", "cancel"})
@@ -260,9 +269,12 @@ class AutomationOwner:
         )
         self._previews: dict[str, _Preview] = {}
         self._previews_lock: threading.Lock = threading.Lock()
+        self._source_checks: dict[str, EventCancellationToken] = {}
+        self._closed_sessions: set[str] = set()
         self._sessions: set[str] = set()
         self._client_sessions: dict[str, str] = {}
         self._pending: dict[str, frozenset[ProductKind]] = {}
+        self._run_results: dict[str, RunResult] = {}
         self._shutting_down: bool = False
         self._active_io: int = 0
         self._transfers: TransferInspector | None = (
@@ -564,6 +576,8 @@ class AutomationOwner:
             return True
         client_id: str | None = _text(request.payload, "client_id")
         with self._previews_lock:
+            if request.session_id in self._closed_sessions:
+                return False
             self._sessions.add(request.session_id)
             if client_id is None:
                 return True
@@ -575,6 +589,10 @@ class AutomationOwner:
     def _release_session(self, session_id: str) -> None:
         with self._previews_lock:
             self._sessions.discard(session_id)
+            self._closed_sessions.add(session_id)
+            token: EventCancellationToken | None = self._source_checks.pop(session_id, None)
+            if token is not None:
+                token.cancel()
             client_ids: set[str] = {
                 client for client, session in self._client_sessions.items() if session == session_id
             }
@@ -600,7 +618,7 @@ class AutomationOwner:
             else:
                 command.answer(ControlResponse.refused(ControlErrorCode.INTERNAL, _COMMAND_FAILED))
 
-    def _perform(self, request: ControlRequest) -> ControlResponse:  # noqa: PLR0911 - one branch per command kind
+    def _perform(self, request: ControlRequest) -> ControlResponse:  # noqa: PLR0911, PLR0912
         match request.kind:
             case "status":
                 return ControlResponse.succeeded(self._status())
@@ -612,8 +630,14 @@ class AutomationOwner:
                 return self._reserve(request)
             case "release":
                 return self._release(request)
+            case "discover":
+                return ControlResponse.succeeded(encode_view(self._service.discover()))
+            case "register_external":
+                return self._register_external(request)
             case "preview":
                 return self._preview(request)
+            case "run_result":
+                return self._run_result(request)
             case "start":
                 return self._start(request)
             case "cancel":
@@ -747,6 +771,46 @@ class AutomationOwner:
 
     # ── Preview and start ─────────────────────────────────────────────────────
 
+    def _register_external(self, request: ControlRequest) -> ControlResponse:
+        client_id: str | None = _text(request.payload, "client_id")
+        group_id: str | None = _text(request.payload, "group_id")
+        path: str | None = _text(request.payload, "path")
+        if client_id is None or group_id is None or path is None:
+            return _invalid("External registration needs a client, a group and a path")
+        if not self._on_owner(
+            lambda: any(item.group_id == group_id and item.client_id == client_id for item in self._state.reservations)
+        ):
+            return ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD)
+        token: EventCancellationToken = EventCancellationToken()
+        identity: str = request.session_id or client_id
+        with self._previews_lock:
+            if identity in self._closed_sessions:
+                return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
+            self._source_checks[identity] = token
+        try:
+            return self._register_source(request, group_id, Path(path), token)
+        finally:
+            with self._previews_lock:
+                self._source_checks.pop(identity, None)
+
+    def _register_source(
+        self, request: ControlRequest, group_id: str, path: Path, token: EventCancellationToken
+    ) -> ControlResponse:
+        updated: InspectedSourceGroup
+        if request.payload.get("kind") == "subtitle":
+            language: str | None = _text(request.payload, "language")
+            updated = self._service.register_external_subtitle(group_id, path, language, cancel=token)
+        elif request.payload.get("kind") == "audio":
+            role: ExternalAudioRole = ExternalAudioRole(str(request.payload.get("role")))
+            updated = self._service.register_external_audio(group_id, path, role, cancel=token)
+        else:
+            return _invalid("External registration needs a subtitle or audio kind")
+        with self._previews_lock:
+            self._previews = {
+                key: preview for key, preview in self._previews.items() if group_id not in preview.fingerprints
+            }
+        return ControlResponse.succeeded(encode_view(updated))
+
     def _preview(self, request: ControlRequest) -> ControlResponse:
         with self._previews_lock:
             version: int = self._file_version
@@ -756,7 +820,7 @@ class AutomationOwner:
         if client_id is None or origin is None or selection is None:
             return _invalid("A preview needs a `client_id`, a known `origin` and `source_selection`")
         planned: tuple[ExecutionPlan, tuple[InspectedSourceGroup, ...], RebuildRequest | None] | None = self._plan(
-            request.payload,
+            request,
             selection,
         )
         if planned is None:
@@ -790,16 +854,31 @@ class AutomationOwner:
                 "instance_id": self._instance_id,
                 "can_execute": plan.can_execute,
                 "groups": _product_projection(plan),
+                "preview": encode_view(preview_plan(plan, preview.preview_id, self._instance_id)),
             }
         )
 
     def _plan(
         self,
-        payload: Mapping[str, object],
+        request: ControlRequest,
         selection: SourceSelection,
     ) -> tuple[ExecutionPlan, tuple[InspectedSourceGroup, ...], RebuildRequest | None] | None:
         try:
+            payload: Mapping[str, object] = request.payload
             workspace: InspectedWorkspace = self._service.discover()
+            registrations: object = payload.get("external_sources", [])
+            if not isinstance(registrations, list):
+                return None
+            for entry in registrations:
+                if not isinstance(entry, dict):
+                    return None
+                registered: ControlResponse = self._register_external(
+                    replace(request, payload={**entry, "client_id": payload.get("client_id")})
+                )
+                if not registered.ok:
+                    return None
+            if registrations:
+                workspace = self._service.discover()
             groups: tuple[InspectedSourceGroup, ...] = _requested_groups(workspace, payload)
             rebuild: RebuildRequest | None = (
                 decode_intent(RebuildRequest, payload["rebuild"]) if payload.get("rebuild") is not None else None
@@ -962,6 +1041,8 @@ class AutomationOwner:
         threading.Thread(target=wait, daemon=True).start()
 
     def _record_completion(self, completion: _Completion) -> None:
+        if completion.result is not None:
+            self._run_results[completion.request_id] = completion.result
         products: frozenset[ProductKind] = self._pending.pop(completion.request_id, frozenset())
         recorded: ProcessingRequest | None = next(
             (item for item in self._state.requests if item.request_id == completion.request_id),
@@ -976,6 +1057,25 @@ class AutomationOwner:
         self._save(candidate)
         self._ledger.mark_finished(recorded.group_ids)
         self._publish_state()
+        self._publish(
+            {"event": "run_finished", "payload": {"run_id": completion.request_id}},
+            terminal=True,
+        )
+
+    def _run_result(self, request: ControlRequest) -> ControlResponse:
+        run_id: str | None = _text(request.payload, "run_id")
+        recorded: ProcessingRequest | None = next(
+            (item for item in self._state.requests if item.request_id == run_id), None
+        )
+        if recorded is None:
+            return _invalid("The resident holds no such run")
+        result: RunResult | None = self._run_results.get(recorded.request_id)
+        return ControlResponse.succeeded(
+            {
+                "state": recorded.state.value,
+                "result": encode_view(result) if result is not None else None,
+            }
+        )
 
     # ── Settings, subscriptions and shutdown ──────────────────────────────────
 

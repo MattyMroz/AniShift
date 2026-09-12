@@ -12,7 +12,7 @@ from typing import Final
 from rich.text import Text
 
 from anishift import __version__
-from anishift.application import AppService, AutoPreset, InspectedWorkspace, RunResult
+from anishift.application import AppService, AutoPreset, InspectedWorkspace, PlanPreview, RunResult, ready_group_ids
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import sanitize_event_message
 from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS, run_exit_code
@@ -32,6 +32,7 @@ from anishift.cli.interactive.prompts import (
     status_line,
 )
 from anishift.cli.interactive.settings import SettingsController, SettingsResult
+from anishift.cli.resident import ResidentSession
 from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, execute_plan, prepare_auto_run
 from anishift.errors import AniShiftError
 from anishift.utils.logger import get_logger
@@ -151,8 +152,12 @@ class _ViewMode(StrEnum):
 class _InteractiveApplication:
     """Coordinate application work with one Prompt Toolkit renderer."""
 
-    def __init__(self, service: AppService, *, batch: tuple[str, ...] | None = None) -> None:
+    def __init__(
+        self, service: AppService, *, batch: tuple[str, ...] | None = None, resident: ResidentSession | None = None
+    ) -> None:
         self._service: AppService = service
+        self._resident: ResidentSession | None = resident
+        self._execution: ResidentSession | None = None
         self._batch: tuple[str, ...] | None = batch
         self._exit_code: int = EXIT_SUCCESS
         self._closing_at: float | None = None
@@ -196,7 +201,7 @@ class _InteractiveApplication:
     def _cancel_active_work(self) -> None:
         """Signal every active operation before the terminal owner closes."""
         with self._lock:
-            self._cancel_requested = True
+            self._cancel_requested = self._resident is None
             preflight: EventCancellationToken | None = self._preflight_cancel
             progress: RichRunProgress | None = self._progress
             manual: ManualController | None = self._manual
@@ -207,6 +212,11 @@ class _InteractiveApplication:
             manual.cancel()
         if anime is not None:
             anime.cancel()
+        if self._resident is not None:
+            self._resident.close()
+            if self._execution is not None:
+                self._execution.close()
+            return
         if progress is not None and progress.run_id is not None:
             self._service.cancel(progress.run_id)
 
@@ -225,7 +235,7 @@ class _InteractiveApplication:
 
     def _prewarm_workspace(self) -> None:
         try:
-            self._service.discover()
+            (self._resident or self._service).discover()
         except (AniShiftError, OSError) as problem:
             logger.info("Workspace prewarm skipped", error_class=type(problem).__name__)
 
@@ -414,7 +424,7 @@ class _InteractiveApplication:
                 self._progress = None
             run_id: str | None = progress.run_id if progress is not None else None
             if run_id is not None:
-                self._service.cancel(run_id)
+                self._cancel_run(run_id)
             self._mascot.reset()
             self._renderer.invalidate()
             return
@@ -464,12 +474,16 @@ class _InteractiveApplication:
         worker.start()
 
     def _prepare_manual(self, generation: int) -> None:
+        backend: AppService | ResidentSession = self._service
+        attached: bool = False
         try:
+            if self._resident is not None:
+                backend = self._resident.new_session()
             with self._lock:
                 preflight_cancel: EventCancellationToken | None = self._preflight_cancel
             if preflight_cancel is None:
                 return
-            workspace: InspectedWorkspace = self._service.discover(cancel=preflight_cancel)
+            workspace: InspectedWorkspace = backend.discover(cancel=preflight_cancel)
             preflight_cancel.raise_if_cancelled()
             if not workspace.groups:
                 self._finish_with_message(
@@ -478,7 +492,7 @@ class _InteractiveApplication:
                 return
             preset: AutoPreset = self._service.get_preset(self._service.default_preset_id())
             controller: ManualController = ManualController(
-                self._service,
+                backend,
                 workspace,
                 preset,
                 self._renderer.invalidate,
@@ -488,6 +502,7 @@ class _InteractiveApplication:
                     return
                 self._preflight_cancel = None
                 self._manual = controller
+                attached = True
                 self._mode = _ViewMode.MANUAL
                 self._worker = None
             self._mascot.reset()
@@ -498,6 +513,9 @@ class _InteractiveApplication:
                     return
             logger.warning("Interactive manual discovery failed", error_class=type(problem).__name__)
             self._finish_with_message(generation, _problem_text(problem))
+        finally:
+            if isinstance(backend, ResidentSession) and not attached:
+                backend.close()
 
     def _start_manual_run(self, prepared: ManualRun) -> None:
         with self._lock:
@@ -527,9 +545,11 @@ class _InteractiveApplication:
             if preflight_cancel is None:
                 return
             preset_id: str = self._service.default_preset_id()
-            preparation: PreparedAutoRun | AutoRunRefusal = self._prepared_auto(preset_id, preflight_cancel)
+            preparation: PreparedAutoRun | ManualRun | AutoRunRefusal = self._prepared_auto(preset_id, preflight_cancel)
             with self._lock:
                 if generation != self._generation:
+                    if isinstance(preparation, ManualRun) and preparation.resident is not None:
+                        preparation.resident.close()
                     return
                 self._preflight_cancel = None
             if isinstance(preparation, AutoRunRefusal):
@@ -546,13 +566,40 @@ class _InteractiveApplication:
             self._finish_batch(EXIT_REFUSED)
             self._finish_with_message(generation, _problem_text(problem))
 
-    def _prepared_auto(self, preset_id: str, cancel: EventCancellationToken) -> PreparedAutoRun | AutoRunRefusal:
+    def _prepared_auto(
+        self, preset_id: str, cancel: EventCancellationToken
+    ) -> PreparedAutoRun | ManualRun | AutoRunRefusal:
         """Plan every ready group, or only the groups one batch window was opened for."""
+        if self._resident is not None:
+            return self._prepare_resident_auto(preset_id, cancel)
         if self._batch is None:
             return prepare_auto_run(self._service, preset_id, cancel=cancel)
         return prepare_auto_run(self._service, preset_id, cancel=cancel, group_ids=self._batch)
 
+    def _prepare_resident_auto(self, preset_id: str, cancel: EventCancellationToken) -> ManualRun | AutoRunRefusal:
+        if self._resident is None:
+            msg = "The panel has no resident session"
+            raise ValueError(msg)
+        session: ResidentSession = self._resident.new_session()
+        prepared: ManualRun | None = None
+        try:
+            workspace: InspectedWorkspace = session.discover(cancel=cancel)
+            group_ids: tuple[str, ...] = self._batch or ready_group_ids(workspace.groups)
+            if not group_ids:
+                return AutoRunRefusal("Nie znaleziono gotowych odcinków")
+            session.reserve(group_ids)
+            preview: PlanPreview = session.plan_auto(group_ids, self._service.get_preset(preset_id))
+            cancel.raise_if_cancelled()
+            if not preview.can_execute:
+                return AutoRunRefusal("Nie można przygotować wybranych odcinków")
+            prepared = ManualRun(workspace, preview, session)
+            return prepared  # noqa: RET504
+        finally:
+            if prepared is None:
+                session.close()
+
     def _execute_run(self, generation: int, prepared: PreparedAutoRun | ManualRun) -> None:
+        backend: ResidentSession | None = prepared.resident if isinstance(prepared, ManualRun) else None
         try:
             progress: RichRunProgress = RichRunProgress(
                 prepared,
@@ -564,10 +611,18 @@ class _InteractiveApplication:
                 if generation != self._generation:
                     return
                 self._progress = progress
+                self._execution = backend
                 self._mode = _ViewMode.AUTO
             self._renderer.invalidate()
             with progress:
-                result: RunResult = execute_plan(self._service, prepared.plan, progress)
+                result: RunResult
+                if isinstance(prepared.plan, PlanPreview):
+                    if backend is None:
+                        msg = "A resident preview requires its session"
+                        raise ValueError(msg)
+                    result = backend.execute(prepared.plan, progress)
+                else:
+                    result = execute_plan(self._service, prepared.plan, progress)
             self._finish_batch(run_exit_code(result))
             if not result.succeeded or result.warnings:
                 self._finish_with_message(generation, _result_message(result, prepared.workspace))
@@ -586,6 +641,9 @@ class _InteractiveApplication:
             logger.warning("Interactive run failed", error_class=type(problem).__name__)
             self._finish_batch(EXIT_INCOMPLETE)
             self._finish_with_message(generation, _problem_text(problem))
+        finally:
+            if backend is not None and backend is not self._resident:
+                backend.close()
 
     def _finish_batch(self, exit_code: int) -> None:
         """Record the outcome of a batch window and start the countdown that closes it."""
@@ -599,6 +657,12 @@ class _InteractiveApplication:
         with self._lock:
             cancel_requested: bool = self._cancel_requested
         if cancel_requested:
+            self._cancel_run(run_id)
+
+    def _cancel_run(self, run_id: str) -> None:
+        if self._execution is not None:
+            self._execution.cancel(run_id)
+        else:
             self._service.cancel(run_id)
 
     def _finish_with_message(self, generation: int, message: Text) -> None:
@@ -689,10 +753,12 @@ class _InteractiveApplication:
         return _fit_frame(content, __version__, footer, columns, rows)
 
 
-def run_interactive(service: AppService, *, batch: Sequence[str] | None = None) -> int:
+def run_interactive(
+    service: AppService, *, batch: Sequence[str] | None = None, resident: ResidentSession | None = None
+) -> int:
     """Run the single-owner interactive session; a batch runs its groups and closes on its own."""
     groups: tuple[str, ...] | None = tuple(batch) if batch is not None else None
-    return _InteractiveApplication(service, batch=groups).run()
+    return _InteractiveApplication(service, batch=groups, resident=resident).run()
 
 
 def _closing_label(closing_at: float) -> str:
