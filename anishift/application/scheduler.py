@@ -146,6 +146,7 @@ class GraphCoordinator:
         "_completions",
         "_condition",
         "_contexts",
+        "_draining",
         "_executors",
         "_futures",
         "_handles",
@@ -176,6 +177,7 @@ class GraphCoordinator:
         self._futures: dict[Future[TaskResult], SubmittedTask] = {}
         self._background_admission: bool = True
         self._closing: bool = False
+        self._draining: bool = False
         self._sequence: int = 0
         self._signal: int = 0
         self._wakeups: int = 0
@@ -224,6 +226,14 @@ class GraphCoordinator:
         """Return every accepted or pending run that has not produced a result."""
         with self._condition:
             return (*self._contexts, *(context.run_id for context in self._inbox))
+
+    def drain(self) -> None:
+        """Finish active tasks and pause their remaining graphs without cancelling workers."""
+        with self._condition:
+            self._closing = True
+            self._draining = True
+            self._signal += 1
+            self._condition.notify_all()
 
     def close(self, *, wait: bool = True) -> None:
         """Cancel unfinished contexts, close executors, and stop the loop."""
@@ -364,6 +374,8 @@ class GraphCoordinator:
                 self._cancel_unfinished(context)
             else:
                 self._release_results(context)
+                if self._draining:
+                    self._pause_pending(context)
             if all_tasks_terminal(context.state):
                 self._finish_context(context)
             elif _is_stalled(context):
@@ -376,7 +388,12 @@ class GraphCoordinator:
         groups: tuple[GroupResult, ...] = tuple(
             build_group_result(group.group_id, context) for group in context.plan.groups
         )
-        result: RunResult = RunResult(run_id=context.run_id, groups=groups)
+        paused: bool = (
+            self._draining
+            and not context.cancel.is_cancelled()
+            and TaskState.CANCELLED in context.state.task_states.values()
+        )
+        result: RunResult = RunResult(run_id=context.run_id, groups=groups, paused=paused)
         context.emitter.emit(RunEventKind.RUN_FINISHED, state=run_result_state(result))
         handle: RunHandle | None = self._detach(context.run_id)
         if handle is not None:
@@ -406,9 +423,11 @@ class GraphCoordinator:
             extraction=extraction_worker_count(self._extraction_group_count()),
         )
         with self._condition:
+            if self._draining:
+                return
             background_admitted: bool = self._background_admission
-        for resource_key in tuple(self._ready):
-            self._admit_resource(resource_key, limits, background_admitted=background_admitted)
+            for resource_key in tuple(self._ready):
+                self._admit_resource(resource_key, limits, background_admitted=background_admitted)
 
     def _admit_resource(
         self,
@@ -589,6 +608,15 @@ class GraphCoordinator:
             if task_state not in _ADMISSIBLE_STATES or task_id in active_task_ids:
                 continue
             finish_cancelled(context.task_by_id[task_id], context, message="Cancelled before admission")
+
+    def _pause_pending(self, context: SchedulerRuntime) -> None:
+        active: frozenset[str] = frozenset(
+            item.task.task_id for item in self._futures.values() if item.run_id == context.run_id
+        )
+        self._drop_ready(context.run_id)
+        for task_id, state in tuple(context.state.task_states.items()):
+            if state in _ADMISSIBLE_STATES and task_id not in active:
+                finish_cancelled(context.task_by_id[task_id], context, message="Paused before admission")
 
     def _shutdown_executors(self) -> None:
         executors: tuple[ThreadPoolExecutor, ...] = tuple(self._executors.values())

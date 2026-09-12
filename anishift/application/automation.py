@@ -29,6 +29,7 @@ from anishift.application.control import (
 from anishift.application.events import sanitize_event_message
 from anishift.application.intents import RequestOrigin
 from anishift.application.results import GroupStatus
+from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids
 from anishift.application.watch import snapshot_sources, source_fingerprint
 from anishift.errors import AniShiftError
@@ -125,7 +126,9 @@ _SLOW_KINDS: Final[frozenset[str]] = frozenset({"preview", "subscriptions_check"
 _INSTANCE_CHECKED_KINDS: Final[frozenset[str]] = frozenset({"start", "reserve", "release", "cancel"})
 """Commands a client may only send to the instance it last read the state from."""
 
-_ACTIVE_STATES: Final[frozenset[RequestState]] = frozenset({RequestState.ACCEPTED, RequestState.RUNNING})
+_ACTIVE_STATES: Final[frozenset[RequestState]] = frozenset(
+    {RequestState.ACCEPTED, RequestState.RUNNING, RequestState.PAUSED}
+)
 """Request states that still own their groups."""
 
 _RESULT_STATES: Final[Mapping[GroupStatus, RequestState]] = {
@@ -165,8 +168,8 @@ _WORST_FIRST: Final[tuple[RequestState, ...]] = (
 type Clock = Callable[[], datetime]
 """Source of the moment a command or a record was accepted."""
 
-type Broadcast = Callable[[Mapping[str, object]], None]
-"""Hands one event to every subscriber of the control channel."""
+type Broadcast = Callable[[Mapping[str, object], bool], None]
+"""Hands one event and its terminality to every subscriber of the control channel."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +184,7 @@ class _Preview:
     products: frozenset[ProductKind]
     origin: RequestOrigin
     source_selection: SourceSelection
+    session_id: str | None
 
 
 @dataclass(slots=True)
@@ -205,6 +209,11 @@ class _Completion:
     result: RunResult | None
 
 
+@dataclass(frozen=True, slots=True)
+class _Disconnected:
+    session_id: str
+
+
 class AutomationOwner:
     """Owns the watch state, admits requests and answers every control command."""
 
@@ -224,12 +233,19 @@ class AutomationOwner:
         self._clock: Clock = clock
         self._broadcast: Broadcast | None = broadcast
         self._state: WatchState = store.load()
-        self._queue: SimpleQueue[_Command | _Completion] = SimpleQueue()
+        service.retain_runs(tuple(item.request_id for item in self._state.requests if item.state in _ACTIVE_STATES))
+        if self._state.reservations:
+            self._state = replace(self._state, reservations=())
+            self._save(self._state)
+        self._queue: SimpleQueue[_Command | _Completion | _Disconnected] = SimpleQueue()
         self._pool: ThreadPoolExecutor = ThreadPoolExecutor(
             max_workers=IO_WORKERS,
             thread_name_prefix=IO_THREAD_PREFIX,
         )
         self._previews: dict[str, _Preview] = {}
+        self._previews_lock: threading.Lock = threading.Lock()
+        self._sessions: set[str] = set()
+        self._client_sessions: dict[str, str] = {}
         self._pending: dict[str, frozenset[ProductKind]] = {}
         self._shutting_down: bool = False
 
@@ -262,6 +278,10 @@ class AutomationOwner:
         shutdown = ControlRequest(command_id=f"shutdown-{token_hex(_ID_BYTES)}", kind="shutdown", payload={})
         self._queue.put(_Command(request=shutdown, done=threading.Event()))
 
+    def disconnect(self, session_id: str) -> None:
+        """Release the editing state owned by a closed control connection."""
+        self._queue.put(_Disconnected(session_id))
+
     def serve(self) -> None:
         """Run the owner loop until a shutdown drains every active request."""
         threading.current_thread().name = OWNER_THREAD_NAME
@@ -274,7 +294,7 @@ class AutomationOwner:
     def _loop(self) -> None:
         while True:
             try:
-                item: _Command | _Completion = self._queue.get()
+                item: _Command | _Completion | _Disconnected = self._queue.get()
             except KeyboardInterrupt:
                 self._begin_shutdown()
                 if self._drained():
@@ -282,19 +302,23 @@ class AutomationOwner:
                 continue
             if isinstance(item, _Completion):
                 self._record_completion(item)
+            elif isinstance(item, _Disconnected):
+                self._release_session(item.session_id)
             else:
                 self._dispatch(item)
             if self._drained():
                 return
 
     def _drained(self) -> bool:
-        """Whether a shutdown may end the loop: nothing runs and every request was recorded."""
         if not self._shutting_down:
             return False
         return not self._pending and not self._service.active_run_ids()
 
     def _dispatch(self, command: _Command) -> None:
         request: ControlRequest = command.request
+        if not self._bind_session(request):
+            command.answer(ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD))
+            return
         receipt: CommandReceipt | None = self._receipt(request)
         if receipt is not None:
             command.answer(ControlResponse.succeeded(dict(receipt.outcome)))
@@ -307,13 +331,46 @@ class AutomationOwner:
             return
         self._answer(command)
 
+    def _bind_session(self, request: ControlRequest) -> bool:
+        if request.session_id is None:
+            return True
+        client_id: str | None = _text(request.payload, "client_id")
+        with self._previews_lock:
+            self._sessions.add(request.session_id)
+            if client_id is None:
+                return True
+            if self._client_sessions.get(client_id) not in {None, request.session_id}:
+                return False
+            self._client_sessions[client_id] = request.session_id
+        return True
+
+    def _release_session(self, session_id: str) -> None:
+        with self._previews_lock:
+            self._sessions.discard(session_id)
+            client_ids: set[str] = {
+                client for client, session in self._client_sessions.items() if session == session_id
+            }
+            for client_id in client_ids:
+                self._client_sessions.pop(client_id)
+            self._previews = {
+                key: preview for key, preview in self._previews.items() if preview.session_id != session_id
+            }
+        reservations: tuple[Reservation, ...] = tuple(
+            item for item in self._state.reservations if item.client_id not in client_ids
+        )
+        if reservations != self._state.reservations:
+            self._save(replace(self._state, reservations=reservations))
+
     def _answer(self, command: _Command) -> None:
-        """Answer one command, keeping a faulty one from ending the owner loop."""
         try:
             command.answer(self._perform(command.request))
         except Exception:  # noqa: BLE001 - the owner must survive any single faulty command
             logger.warning("A control command failed", command_kind=command.request.kind)
-            command.answer(ControlResponse.refused(ControlErrorCode.INTERNAL, _COMMAND_FAILED))
+            receipt: CommandReceipt | None = self._receipt(command.request)
+            if command.request.kind == "start" and receipt is not None:
+                command.answer(ControlResponse.succeeded(dict(receipt.outcome)))
+            else:
+                command.answer(ControlResponse.refused(ControlErrorCode.INTERNAL, _COMMAND_FAILED))
 
     def _perform(self, request: ControlRequest) -> ControlResponse:  # noqa: PLR0911 - one branch per command kind
         match request.kind:
@@ -435,6 +492,12 @@ class AutomationOwner:
         candidate: WatchState = self._state
         for group_id in group_ids:
             candidate = release(candidate, group_id, client_id)
+        with self._previews_lock:
+            self._previews = {
+                key: preview
+                for key, preview in self._previews.items()
+                if preview.client_id != client_id or not set(group_ids).intersection(preview.fingerprints)
+            }
         outcome: dict[str, str | int | bool | None] = {"released": len(group_ids)}
         refusal: ControlResponse | None = self._commit(request, candidate, outcome)
         return refusal if refusal is not None else ControlResponse.succeeded(outcome)
@@ -460,8 +523,12 @@ class AutomationOwner:
             products=preset.products.requested_products,
             origin=origin,
             source_selection=selection,
+            session_id=request.session_id,
         )
-        self._previews[preview.preview_id] = preview
+        with self._previews_lock:
+            if request.session_id is not None and request.session_id not in self._sessions:
+                return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
+            self._previews[preview.preview_id] = preview
         return ControlResponse.succeeded(
             {
                 "preview_id": preview.preview_id,
@@ -493,14 +560,16 @@ class AutomationOwner:
         preview_id: str | None = _text(request.payload, "preview_id")
         if client_id is None or preview_id is None:
             return _invalid("A start needs a `client_id` and a `preview_id`")
-        preview: _Preview | None = self._previews.get(preview_id)
+        with self._previews_lock:
+            preview: _Preview | None = self._previews.get(preview_id)
+        if preview is not None and preview.session_id != request.session_id:
+            return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
         refusal: ControlResponse | None = self._unstartable(preview, client_id)
         if refusal is not None or preview is None:
             return refusal if refusal is not None else _invalid(_UNKNOWN_PREVIEW)
         return self._admit(request, preview, tuple(group.group_id for group in preview.groups), client_id)
 
     def _unstartable(self, preview: _Preview | None, client_id: str) -> ControlResponse | None:
-        """Return why *preview* cannot become a request, or ``None`` when it can."""
         if preview is None:
             return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _UNKNOWN_PREVIEW)
         if preview.client_id != client_id:
@@ -508,7 +577,8 @@ class AutomationOwner:
         if not preview.plan.can_execute:
             return ControlResponse.refused(ControlErrorCode.INVALID_PAYLOAD, _NOT_PLANNABLE)
         if any(_group_fingerprint(group) != preview.fingerprints[group.group_id] for group in preview.groups):
-            self._previews.pop(preview.preview_id, None)
+            with self._previews_lock:
+                self._previews.pop(preview.preview_id, None)
             return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
         if self._blocked(tuple(group.group_id for group in preview.groups), client_id):
             return ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD)
@@ -542,8 +612,10 @@ class AutomationOwner:
         refusal: ControlResponse | None = self._commit(request, candidate, outcome)
         if refusal is not None:
             return refusal
-        self._previews.pop(preview.preview_id, None)
+        with self._previews_lock:
+            self._previews.pop(preview.preview_id, None)
         self._pending[run_id] = preview.products
+        submitted: bool = False
         try:
             handle: RunHandle = self._service.submit_plan(
                 preview.plan,
@@ -551,11 +623,11 @@ class AutomationOwner:
                 origin=preview.origin,
                 run_id=run_id,
             )
-        except (AniShiftError, OSError) as problem:
-            logger.warning("An accepted request could not be submitted", error_class=type(problem).__name__)
-            self._pending.pop(run_id, None)
-            self._save(record_request(self._state, replace(accepted, state=RequestState.FAILED)))
-            return ControlResponse.refused(ControlErrorCode.INTERNAL, _NOT_PLANNABLE)
+            submitted = True
+        finally:
+            if not submitted:
+                self._pending.pop(run_id, None)
+                self._save(record_request(self._state, replace(accepted, state=RequestState.FAILED)))
         self._watch_run(run_id, handle)
         self._publish_state()
         return ControlResponse.succeeded(outcome)
@@ -570,17 +642,15 @@ class AutomationOwner:
         return refusal if refusal is not None else ControlResponse.succeeded(outcome)
 
     def _watch_run(self, run_id: str, handle: RunHandle) -> None:
-        """Report the terminal outcome of one accepted request back to the owner thread."""
 
         def wait() -> None:
             try:
                 result: RunResult | None = handle.result()
-            except (AniShiftError, OSError, TimeoutError) as problem:
+            except BaseException as problem:  # noqa: BLE001 - RunHandle forwards every coordinator failure
                 logger.warning("A request ended in a terminal fault", error_class=type(problem).__name__)
                 result = None
             self._queue.put(_Completion(request_id=run_id, result=result))
 
-        # An unnamed thread keeps the "anishift-" prefix for the threads that must be joined.
         threading.Thread(target=wait, daemon=True).start()
 
     def _record_completion(self, completion: _Completion) -> None:
@@ -593,7 +663,7 @@ class AutomationOwner:
             return
         finished: ProcessingRequest = replace(recorded, state=_request_state(completion.result))
         candidate: WatchState = record_request(self._state, finished)
-        if finished.origin is RequestOrigin.USER and products:
+        if finished.origin is RequestOrigin.USER and finished.state is not RequestState.PAUSED and products:
             candidate = _marked(candidate, finished, products, self._now())
         self._save(candidate)
         self._publish_state()
@@ -621,6 +691,7 @@ class AutomationOwner:
             return
         self._shutting_down = True
         self._service.set_background_admission(False)
+        self._service.drain()
         logger.info("The resident is shutting down", active_runs=len(self._service.active_run_ids()))
         self._publish_state()
 
@@ -681,7 +752,6 @@ class AutomationOwner:
         candidate: WatchState,
         outcome: CommandOutcome,
     ) -> ControlResponse | None:
-        """Persist *candidate* with the receipt of *request*; a response means it failed."""
         if request.kind not in _MUTATING_KINDS:
             self._state = candidate
             return None
@@ -718,16 +788,17 @@ class AutomationOwner:
                     "progress_percent": event.progress_percent,
                     "message": event.message,
                 },
-            }
+            },
+            terminal=event.state in TERMINAL_TASK_STATES,
         )
 
     def _publish_state(self) -> None:
-        self._publish({"event": "state_changed", "payload": self._status()})
+        self._publish({"event": "state_changed", "payload": self._status()}, terminal=False)
 
-    def _publish(self, frame: Mapping[str, object]) -> None:
+    def _publish(self, frame: Mapping[str, object], *, terminal: bool) -> None:
         broadcast: Broadcast | None = self._broadcast
         if broadcast is not None:
-            broadcast(frame)
+            broadcast(frame, terminal)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -744,8 +815,9 @@ class AutomationOwner:
         return bool(active.intersection(group_ids))
 
     def _previewed_fingerprint(self, group_id: str) -> SourceFingerprint:
-        """Source version a preview already measured, or none when the group was not previewed."""
-        for preview in self._previews.values():
+        with self._previews_lock:
+            previews: tuple[_Preview, ...] = tuple(self._previews.values())
+        for preview in previews:
             known: SourceFingerprint | None = preview.fingerprints.get(group_id)
             if known is not None:
                 return known
@@ -773,7 +845,6 @@ def _marked(
     products: frozenset[ProductKind],
     moment: str,
 ) -> WatchState:
-    """Record what the user settled for every group of one finished explicit request."""
     marked: WatchState = state
     for group_id in request.group_ids:
         fingerprint: SourceFingerprint | None = request.fingerprints.get(group_id)
@@ -795,6 +866,8 @@ def _marked(
 def _request_state(result: RunResult | None) -> RequestState:
     if result is None:
         return RequestState.FAILED
+    if result.paused:
+        return RequestState.PAUSED
     states: frozenset[RequestState] = frozenset(
         _RESULT_STATES.get(group.status, RequestState.FAILED) for group in result.groups
     )
@@ -802,7 +875,6 @@ def _request_state(result: RunResult | None) -> RequestState:
 
 
 def _product_projection(plan: ExecutionPlan) -> list[dict[str, object]]:
-    """Report the durable products every planned group keeps and the ones it produces."""
     preserved: dict[str, set[str]] = {group.group_id: set() for group in plan.groups}
     planned: dict[str, set[str]] = {group.group_id: set() for group in plan.groups}
     for artifact in plan.artifacts:
@@ -829,7 +901,6 @@ def _product_projection(plan: ExecutionPlan) -> list[dict[str, object]]:
 
 
 def _settings_snapshot(settings: RunSettingsSnapshot) -> SettingsSnapshot:
-    """Keep the planning settings identifying how one request was accepted."""
     known: frozenset[str] = frozenset(field.name for field in fields(settings))
     return {name: getattr(settings, name) for name in _SNAPSHOT_FIELDS if name in known}
 

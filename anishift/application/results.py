@@ -184,6 +184,7 @@ class RunResult:
     run_id: str
     groups: tuple[GroupResult, ...]
     warnings: tuple[str, ...] = ()
+    paused: bool = False
 
     def __post_init__(self) -> None:
         if not self.run_id.strip() or not self.groups:
@@ -200,7 +201,7 @@ class RunResult:
     @property
     def succeeded(self) -> bool:
         """Return whether every group completed successfully."""
-        return all(group.status is GroupStatus.SUCCEEDED for group in self.groups)
+        return not self.paused and all(group.status is GroupStatus.SUCCEEDED for group in self.groups)
 
     @property
     def cancelled(self) -> bool:

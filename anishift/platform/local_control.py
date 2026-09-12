@@ -10,10 +10,13 @@ import sys
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from contextlib import suppress
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from hashlib import sha256
 from multiprocessing import AuthenticationError
+from pathlib import Path
+from queue import Empty, Full, Queue, SimpleQueue
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
@@ -23,9 +26,9 @@ from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
-    from pathlib import Path
 
 __all__ = [
+    "HANDSHAKE_TIMEOUT_S",
     "INSTANCE_FILE_NAME",
     "KEY_FILE_NAME",
     "MAX_FRAME_BYTES",
@@ -39,6 +42,7 @@ __all__ = [
     "ControlResponse",
     "ControlServer",
     "InstanceRecord",
+    "clear_endpoint",
     "connect",
     "connect_or_start",
     "control_endpoint",
@@ -57,6 +61,7 @@ else:
     type ChannelConnection = ipc.Connection[Any, Any]
     """One accepted or opened end of the channel, a Unix socket on this platform."""
 
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 PROTOCOL_VERSION: Final[int] = 1
@@ -66,7 +71,7 @@ MAX_FRAME_BYTES: Final[int] = 1_048_576
 """Largest accepted frame; the biggest answer is one page of a paged snapshot."""
 
 MAX_OUTBOX_EVENTS: Final[int] = 512
-"""Events held for one subscriber before the oldest unmerged one is dropped."""
+"""Events held for one subscriber before the oldest unfinished one is dropped."""
 
 INSTANCE_FILE_NAME: Final[str] = "instance.json"
 """File naming the running resident; its presence alone proves nothing."""
@@ -79,6 +84,9 @@ SOCKET_FILE_NAME: Final[str] = "control.sock"
 
 DEFAULT_TIMEOUT_S: Final[float] = 30.0
 """Wait for one answer before a client gives up on the resident."""
+
+HANDSHAKE_TIMEOUT_S: Final[float] = 5.0
+"""Budget for one side to prove the shared key before its connection is dropped."""
 
 _AUTHKEY_BYTES: Final[int] = 32
 """Length of the random key both sides prove knowledge of before any frame."""
@@ -115,6 +123,15 @@ _HANDLER_FAILED: Final[str] = "The resident could not complete the command"
 
 _ACCEPT_JOIN_S: Final[float] = 5.0
 """Wait for the accept thread to notice that the server is closing."""
+
+_FLUSH_JOIN_S: Final[float] = 2.0
+"""Wait for a connection in the middle of an answer before the server drops it."""
+
+_NO_CONNECTION: Final[str] = "The resident did not accept a connection in time"
+"""Reason raised when the endpoint never opened within the client's budget."""
+
+_NO_HANDSHAKE: Final[str] = "The resident did not complete the key exchange"
+"""Reason raised when the shared key was never proved on a fresh connection."""
 
 _COMMAND_ID_BYTES: Final[int] = 8
 """Random bytes making one client-generated command identifier unique."""
@@ -158,6 +175,7 @@ class ControlRequest:
     kind: str
     payload: Mapping[str, object]
     instance_id: str | None = None
+    session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,13 +311,15 @@ def connect_or_start(
 class ControlServer:
     """Accepts authenticated local clients and answers their validated JSON frames."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         endpoint: str,
         authkey: bytes,
         handler: Callable[[ControlRequest], ControlResponse],
         *,
         max_connections: int = 8,
+        handshake_timeout_s: float = HANDSHAKE_TIMEOUT_S,
+        on_disconnect: Callable[[str], None] | None = None,
     ) -> None:
         """Bind *endpoint* for this account and start accepting clients."""
         _require_local_endpoint(endpoint)
@@ -307,10 +327,12 @@ class ControlServer:
         self._authkey: bytes = authkey
         self._handler: Callable[[ControlRequest], ControlResponse] = handler
         self._max_connections: int = max_connections
+        self._handshake_timeout_s: float = handshake_timeout_s
+        self._on_disconnect: Callable[[str], None] | None = on_disconnect
         self._lock: threading.Lock = threading.Lock()
         self._served: list[_ServedConnection] = []
         self._closing: threading.Event = threading.Event()
-        self._listener: ipc.Listener = ipc.Listener(endpoint, authkey=authkey)
+        self._listener: ipc.Listener = ipc.Listener(endpoint)
         self._accepting: threading.Thread = threading.Thread(
             target=self._accept_loop,
             name="anishift-control",
@@ -318,13 +340,13 @@ class ControlServer:
         )
         self._accepting.start()
 
-    def broadcast(self, event: Mapping[str, object]) -> None:
-        """Hand one event to every subscriber without waiting for a slow one."""
+    def broadcast(self, event: Mapping[str, object], terminal: bool = False) -> None:
+        """Hand one event to every subscriber, keeping a terminal one through an overflow."""
         frame: dict[str, object] = {"v": PROTOCOL_VERSION, **event}
         with self._lock:
             subscribers: tuple[_ServedConnection, ...] = tuple(item for item in self._served if item.subscribed)
         for subscriber in subscribers:
-            subscriber.publish(frame)
+            subscriber.publish(frame, terminal)
 
     def close(self) -> None:
         """Stop accepting, drop every connection and join the channel's threads."""
@@ -337,6 +359,7 @@ class ControlServer:
             served: tuple[_ServedConnection, ...] = tuple(self._served)
             self._served.clear()
         for item in served:
+            item.settle(_FLUSH_JOIN_S)
             item.close()
         try:
             self._listener.close()
@@ -347,17 +370,33 @@ class ControlServer:
         while not self._closing.is_set():
             try:
                 accepted: ChannelConnection = self._listener.accept()
-            except AuthenticationError:
-                logger.warning("Refused a control client that proved no key")
-                continue
             except OSError:
-                if not self._closing.is_set():
-                    logger.warning("The control listener stopped accepting clients")
-                return
+                if self._closing.is_set():
+                    return
+                logger.warning("The control listener refused one client")
+                continue
             if self._closing.is_set():
                 accepted.close()
                 return
-            self._admit(accepted)
+            threading.Thread(
+                target=self._greet,
+                args=(accepted,),
+                name="anishift-control-client",
+                daemon=True,
+            ).start()
+
+    def _greet(self, accepted: ChannelConnection) -> None:
+        try:
+            _prove_key(accepted, self._authkey, self._handshake_timeout_s, listening=True)
+        except AuthenticationError:
+            logger.warning("Refused a control client that proved no key")
+            _close_quietly(accepted)
+            return
+        except EOFError, OSError:
+            logger.debug("A control client left before it proved the shared key")
+            _close_quietly(accepted)
+            return
+        self._admit(accepted)
 
     def _admit(self, accepted: ChannelConnection) -> None:
         served = _ServedConnection(accepted)
@@ -370,12 +409,7 @@ class ControlServer:
             served.send(_error_frame("", ControlErrorCode.REFUSED, _TOO_MANY_CONNECTIONS))
             served.close()
             return
-        threading.Thread(
-            target=self._serve,
-            args=(served,),
-            name="anishift-control-client",
-            daemon=True,
-        ).start()
+        self._serve(served)
 
     def _serve(self, served: _ServedConnection) -> None:
         try:
@@ -392,28 +426,33 @@ class ControlServer:
     def _answer(self, served: _ServedConnection, raw: bytes) -> bool:
         request: ControlRequest | None = _decode_request(raw)
         if request is None:
-            return served.send(_error_frame("", ControlErrorCode.INVALID_PAYLOAD, _UNREADABLE_FRAME))
+            return served.answer(lambda: _error_frame("", ControlErrorCode.INVALID_PAYLOAD, _UNREADABLE_FRAME))
         if request.kind == _SUBSCRIBE_KIND:
-            served.subscribe()
-            return served.send(_result_frame(request.command_id, {"subscribed": True}))
+            return served.subscribe(_result_frame(request.command_id, {"subscribed": True}))
+        authenticated: ControlRequest = replace(request, session_id=served.session_id)
+        return served.start_answer(lambda: self._respond(authenticated))
+
+    def _respond(self, request: ControlRequest) -> Mapping[str, object]:
         try:
             response: ControlResponse = self._handler(request)
         except Exception:  # noqa: BLE001 - one boundary keeping a faulty command off the channel
             logger.warning("A control command failed", command_kind=request.kind)
-            return served.send(_error_frame(request.command_id, ControlErrorCode.INTERNAL, _HANDLER_FAILED))
-        return served.send(_response_frame(request.command_id, response))
+            return _error_frame(request.command_id, ControlErrorCode.INTERNAL, _HANDLER_FAILED)
+        return _response_frame(request.command_id, response)
 
     def _forget(self, served: _ServedConnection) -> None:
         with self._lock:
             if served in self._served:
                 self._served.remove(served)
+        if self._on_disconnect is not None:
+            self._on_disconnect(served.session_id)
 
     def _wake_accept(self) -> None:
         try:
-            waker: ChannelConnection = ipc.Client(self._endpoint, authkey=self._authkey)
-        except OSError, AuthenticationError:
+            waker: ChannelConnection = _connected(self._endpoint, _ACCEPT_JOIN_S)
+        except OSError, ControlError:
             return
-        waker.close()
+        _close_quietly(waker)
 
 
 class ControlClient:
@@ -423,8 +462,16 @@ class ControlClient:
         """Connect to *endpoint*, proving knowledge of *authkey* before the first frame."""
         _require_local_endpoint(endpoint)
         self._timeout_s: float = timeout_s
-        self._connection: ChannelConnection = ipc.Client(endpoint, authkey=authkey)
+        self._connection: ChannelConnection = _connected(endpoint, timeout_s)
         self._subscribed: bool = False
+        try:
+            _prove_key(self._connection, authkey, timeout_s, listening=False)
+        except (EOFError, OSError) as problem:
+            _close_quietly(self._connection)
+            raise ControlError(_NO_HANDSHAKE, code=ControlErrorCode.REFUSED) from problem
+        except AuthenticationError:
+            _close_quietly(self._connection)
+            raise
 
     def call(
         self,
@@ -503,28 +550,67 @@ class _ServedConnection:
     """One accepted connection, its send lock and the bounded outbox of its events."""
 
     def __init__(self, connection: ChannelConnection) -> None:
+        self.session_id: str = os.urandom(16).hex()
         self._connection: ChannelConnection = connection
         self._send_lock: threading.Lock = threading.Lock()
         self._outbox: _EventOutbox = _EventOutbox(MAX_OUTBOX_EVENTS)
         self._pending: threading.Event = threading.Event()
         self._closed: threading.Event = threading.Event()
+        self._idle: threading.Event = threading.Event()
+        self._idle.set()
         self._writer: threading.Thread | None = None
+        self._answers: Queue[Callable[[], Mapping[str, object]] | None] = Queue(maxsize=1)
+        self._responder: threading.Thread | None = None
 
     @property
     def subscribed(self) -> bool:
         """Whether this connection was turned into an event stream."""
         return self._writer is not None
 
-    def subscribe(self) -> None:
-        """Start publishing merged events to this connection."""
+    def subscribe(self, acknowledgement: Mapping[str, object]) -> bool:
+        """Acknowledge the subscription and only then start publishing events here."""
         if self._writer is not None:
-            return
+            return self.answer(lambda: acknowledgement)
         self._writer = threading.Thread(target=self._publish_loop, name="anishift-control-events", daemon=True)
+        if not self.answer(lambda: acknowledgement):
+            return False
         self._writer.start()
+        return True
 
-    def publish(self, frame: Mapping[str, object]) -> None:
-        """Queue one event, replacing the pending state of the same task."""
-        self._outbox.put(frame)
+    def answer(self, produce: Callable[[], Mapping[str, object]]) -> bool:
+        """Produce one answer and send it, so a closing server does not cut it short."""
+        self._idle.clear()
+        try:
+            return self.send(produce())
+        finally:
+            self._idle.set()
+
+    def start_answer(self, produce: Callable[[], Mapping[str, object]]) -> bool:
+        """Answer one command while the reader monitors the connection for disconnection."""
+        try:
+            self._answers.put_nowait(produce)
+        except Full:
+            return False
+        self._idle.clear()
+        if self._responder is None:
+            self._responder = threading.Thread(target=self._answer_loop, daemon=True)
+            self._responder.start()
+        return True
+
+    def _answer_loop(self) -> None:
+        while not self._closed.is_set():
+            produce: Callable[[], Mapping[str, object]] | None = self._answers.get()
+            if produce is None:
+                return
+            self.answer(produce)
+
+    def settle(self, timeout_s: float) -> None:
+        """Wait until this connection is no longer in the middle of an answer."""
+        self._idle.wait(timeout_s)
+
+    def publish(self, frame: Mapping[str, object], terminal: bool) -> None:
+        """Queue one event, replacing the pending event of the same task or state."""
+        self._outbox.put(frame, terminal=terminal)
         self._pending.set()
 
     def send(self, frame: Mapping[str, object]) -> bool:
@@ -551,10 +637,9 @@ class _ServedConnection:
         """Close the connection and let its event writer end."""
         self._closed.set()
         self._pending.set()
-        try:
-            self._connection.close()
-        except OSError:
-            logger.debug("A control connection was already closed")
+        with suppress(Full):
+            self._answers.put_nowait(None)
+        _close_quietly(self._connection)
 
     def _publish_loop(self) -> None:
         while not self._closed.is_set():
@@ -566,39 +651,102 @@ class _ServedConnection:
 
 
 class _EventOutbox:
-    """Latest event per task plus the other events, bounded so no client grows the queue."""
+    """Latest event per task, run and state change, bounded so no client grows the queue."""
 
     def __init__(self, limit: int) -> None:
         self._limit: int = limit
         self._lock: threading.Lock = threading.Lock()
-        self._pending: dict[tuple[str, str], Mapping[str, object]] = {}
-        self._sequence: int = 0
+        self._pending: dict[tuple[str, str, str], tuple[Mapping[str, object], bool]] = {}
 
-    def put(self, frame: Mapping[str, object]) -> None:
-        """Store *frame*, replacing the pending event of the same task."""
+    def put(self, frame: Mapping[str, object], *, terminal: bool) -> None:
+        """Store *frame*, replacing the pending event of the same task, run or state."""
         with self._lock:
-            key: tuple[str, str] = self._key(frame)
-            if key in self._pending:
-                self._pending[key] = frame
-                return
-            if len(self._pending) >= self._limit:
-                self._pending.pop(next(iter(self._pending)))
-            self._pending[key] = frame
+            key: tuple[str, str, str] = _event_key(frame)
+            if key not in self._pending and len(self._pending) >= self._limit:
+                self._drop_expendable()
+            self._pending[key] = (frame, terminal)
 
     def drain(self) -> tuple[Mapping[str, object], ...]:
         """Take everything queued so far, in the order the events were first seen."""
         with self._lock:
-            drained: tuple[Mapping[str, object], ...] = tuple(self._pending.values())
+            drained: tuple[Mapping[str, object], ...] = tuple(frame for frame, _ in self._pending.values())
             self._pending.clear()
         return drained
 
-    def _key(self, frame: Mapping[str, object]) -> tuple[str, str]:
-        payload: object = frame.get("payload")
-        task_id: object = payload.get("task_id") if isinstance(payload, dict) else None
-        if isinstance(task_id, str) and task_id:
-            return ("task", task_id)
-        self._sequence += 1
-        return ("event", str(self._sequence))
+    def _drop_expendable(self) -> None:
+        oldest_progress: tuple[str, str, str] | None = next(
+            (key for key, (_, terminal) in self._pending.items() if not terminal),
+            None,
+        )
+        self._pending.pop(oldest_progress if oldest_progress is not None else next(iter(self._pending)))
+
+
+def clear_endpoint(endpoint: str) -> None:
+    """Remove the socket file a stopped resident left behind; a Windows pipe leaves none."""
+    if is_windows() or endpoint.startswith(_WINDOWS_PIPE_PREFIX):
+        return
+    try:
+        Path(endpoint).unlink(missing_ok=True)
+    except OSError:
+        logger.debug("Could not remove the control socket of a stopped resident")
+
+
+def _prove_key(connection: ChannelConnection, authkey: bytes, timeout_s: float, *, listening: bool) -> None:
+    guard: threading.Timer = threading.Timer(timeout_s, _close_quietly, args=(connection,))
+    guard.start()
+    try:
+        if listening:
+            ipc.deliver_challenge(connection, authkey)
+            ipc.answer_challenge(connection, authkey)
+        else:
+            ipc.answer_challenge(connection, authkey)
+            ipc.deliver_challenge(connection, authkey)
+    finally:
+        guard.cancel()
+
+
+def _connected(endpoint: str, timeout_s: float) -> ChannelConnection:
+    answers: SimpleQueue[ChannelConnection | OSError] = SimpleQueue()
+    abandoned: threading.Event = threading.Event()
+    threading.Thread(target=_dial, args=(endpoint, answers, abandoned), daemon=True).start()
+    try:
+        answer: ChannelConnection | OSError = answers.get(timeout=timeout_s)
+    except Empty:
+        abandoned.set()
+        raise ControlError(_NO_CONNECTION, code=ControlErrorCode.REFUSED) from None
+    if isinstance(answer, OSError):
+        raise answer
+    return answer
+
+
+def _dial(endpoint: str, answers: SimpleQueue[ChannelConnection | OSError], abandoned: threading.Event) -> None:
+    try:
+        connection: ChannelConnection = ipc.Client(endpoint)
+    except OSError as problem:
+        answers.put(problem)
+        return
+    if abandoned.is_set():
+        _close_quietly(connection)
+        return
+    answers.put(connection)
+
+
+def _close_quietly(connection: ChannelConnection) -> None:
+    try:
+        connection.close()
+    except OSError:
+        logger.debug("A control connection was already closed")
+
+
+def _event_key(frame: Mapping[str, object]) -> tuple[str, str, str]:
+    payload: object = frame.get("payload")
+    fields: Mapping[str, object] = payload if isinstance(payload, Mapping) else {}
+    subject: str = _key_text(fields.get("task_id")) or _key_text(fields.get("group_id"))
+    return (_key_text(frame.get("event")), _key_text(fields.get("run_id")), subject)
+
+
+def _key_text(value: object) -> str:
+    return value if isinstance(value, str) else ""
 
 
 def _encode_frame(frame: Mapping[str, object]) -> bytes:
@@ -697,7 +845,6 @@ def _read_authkey(path: Path) -> bytes:
 
 
 def _restrict_to_current_user(path: Path) -> None:
-    """Take inheritance off the key file and grant the current account alone."""
     if not is_windows():
         return
     account: str | None = os.environ.get("USERNAME")

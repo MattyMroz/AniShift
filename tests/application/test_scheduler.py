@@ -1235,3 +1235,36 @@ def test_shared_limits_come_from_the_provider_and_not_from_the_plan_settings(tmp
             assert handler.max_active["llm:gemini"] == 1
     finally:
         coordinator.close()
+
+
+@pytest.mark.parametrize("origin", [RequestOrigin.USER, RequestOrigin.BACKGROUND])
+def test_draining_finishes_active_work_and_pauses_the_remaining_graph(tmp_path: Path, origin: RequestOrigin) -> None:
+    plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
+    hold: threading.Barrier = threading.Barrier(2)
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    try:
+        with ExitStack() as stack:
+            handle, handler, _ = _submit(
+                coordinator,
+                stack,
+                tmp_path,
+                "run-draining",
+                plan,
+                lambda run_root: _FakeHandler(run_root, barriers={"active": hold}),
+                origin=origin,
+            )
+            assert _wait_until(lambda: "active" in handler.started)
+            coordinator.drain()
+            assert not handle.done()
+            hold.wait(timeout=5)
+
+            result: RunResult = handle.result(timeout=5)
+
+            assert result.paused
+            assert not result.succeeded
+            assert handler.calls == ["active"]
+            assert result.groups[0].task_results
+            assert coordinator.active_run_ids() == ()
+    finally:
+        hold.abort()
+        coordinator.close()

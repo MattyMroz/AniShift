@@ -87,7 +87,16 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   kolejce bez timeoutu — bezczynny rezydent nie wykonuje pracy. `automation.py`
 - Polecenie mutujące zapisuje stan RAZEM z `CommandReceipt` PRZED pozytywną odpowiedzią; nieudany
   zapis daje `INTERNAL` i zero skutku, a powtórzony `command_id` zwraca zapisany wynik bez
-  drugiego wykonania (AC-042). `automation.py`
+  drugiego wykonania (AC-042). `start` zapisuje `ProcessingRequest` razem z receipt przed
+  `submit_plan`: odpowiedź potwierdza przyjęcie zamiaru; późniejsza awaria wykonania ma stan
+  `FAILED`, a ponowienie polecenia zwraca ten sam `run_id`. `automation.py`
+- Rezerwacje są własnością sesji klientów jednej instancji: `AutomationOwner` porzuca je przy
+  wczytaniu stanu i po rozłączeniu panelu. Rozłączenie unieważnia także podglądy, również
+  kończące się po zwolnieniu rezerwacji.
+  `automation.py`
+- `shutdown` zamyka dopuszczanie tasków; aktywne zadania kończą się bez anulowania, pozostały
+  graf otrzymuje `PAUSED`. Staging zatrzymanych runów pozostaje chroniony przed cleanup.
+  `scheduler.py`, `service.py`, `sessions.py`
 - Pętla właściciela kończy się dopiero, gdy po `shutdown` nie ma ani aktywnych runów, ani
   zleceń nierozliczonych przez samego właściciela (`_drained`). Sam `active_run_ids()` nie
   wystarcza: run bywa zdjęty z rejestru fasady, zanim właściciel zapisze jego stan końcowy.

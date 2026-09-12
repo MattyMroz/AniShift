@@ -174,7 +174,6 @@ def _watch_loop(
     clock: Clock,
     sleep: Sleeper,
 ) -> int:
-    """Scan, spawn and poll until the stop flag appears or an interrupt arrives."""
     ledger: WatchLedger = WatchLedger()
     child: Child | None = None
     started: tuple[str, ...] = ()
@@ -208,7 +207,6 @@ def _watch_loop(
 
 
 def _scan(service: AppService, ledger: WatchLedger, now: float) -> tuple[str, ...] | None:
-    """Return the groups a batch window may take, or ``None`` when the scan failed."""
     try:
         workspace: InspectedWorkspace = service.discover()
         preset: AutoPreset = service.get_preset(service.default_preset_id())
@@ -220,7 +218,6 @@ def _scan(service: AppService, ledger: WatchLedger, now: float) -> tuple[str, ..
 
 
 def _check_subscriptions(service: AppService, now: float, checked_at: float | None) -> float | None:
-    """Check every followed series once per interval; return when the last check happened."""
     if service.subscriptions is None:
         return checked_at
     if checked_at is not None and now - checked_at < SUBSCRIPTION_CHECK_INTERVAL_S:
@@ -240,17 +237,14 @@ def _check_subscriptions(service: AppService, now: float, checked_at: float | No
 
 
 def _stop_requested(state_dir: Path) -> bool:
-    """Whether somebody asked the daemon to finish."""
     return (state_dir / STOP_FILE_NAME).exists()
 
 
 def _clear_stop(state_dir: Path) -> None:
-    """Drop a stop flag, so a request never outlives the run that consumed it."""
     _remove(state_dir / STOP_FILE_NAME)
 
 
 def _write_pid(state_dir: Path) -> None:
-    """Record this process identifier beside the lock for the status command."""
     try:
         (state_dir / PID_FILE_NAME).write_text(str(os.getpid()), encoding="utf-8")
     except OSError:
@@ -258,7 +252,6 @@ def _write_pid(state_dir: Path) -> None:
 
 
 def _recorded_pid(state_dir: Path) -> int | None:
-    """Read the identifier the running daemon wrote, or ``None`` when unreadable."""
     try:
         return int((state_dir / PID_FILE_NAME).read_text(encoding="utf-8").strip())
     except OSError, ValueError:
@@ -266,7 +259,6 @@ def _recorded_pid(state_dir: Path) -> int | None:
 
 
 def _remove(path: Path) -> None:
-    """Delete one state file, tolerating a directory somebody already cleaned."""
     try:
         path.unlink(missing_ok=True)
     except OSError:
@@ -312,6 +304,7 @@ def run_resident(
     from anishift.platform.local_control import (  # noqa: PLC0415 - keep the transport off the CLI import
         ControlServer,
         InstanceRecord,
+        clear_endpoint,
         control_endpoint,
         ensure_authkey,
         remove_instance,
@@ -331,7 +324,8 @@ def run_resident(
             clock=clock,
         )
         endpoint: str = control_endpoint(state_dir)
-        server = ControlServer(endpoint, ensure_authkey(state_dir), owner.handle)
+        clear_endpoint(endpoint)
+        server = ControlServer(endpoint, ensure_authkey(state_dir), owner.handle, on_disconnect=owner.disconnect)
         owner.attach_broadcast(server.broadcast)
         try:
             write_instance(
@@ -358,7 +352,6 @@ def run_resident(
 
 
 def _on_signal(request_shutdown: Callable[[], None]) -> None:
-    """Ask the owner to shut down when the process is asked to terminate."""
     try:
         signal.signal(signal.SIGTERM, lambda _number, _frame: request_shutdown())
     except OSError, ValueError:

@@ -243,6 +243,7 @@ class AppService:
         self._prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = prepare_workspace
         self._acquisition: AcquisitionService | None = acquisition
         self._subscriptions: SubscriptionService | None = subscriptions
+        self._retained_runs: set[str] = set()
 
     @property
     def acquisition(self) -> AcquisitionService | None:
@@ -438,6 +439,15 @@ class AppService:
         if coordinator is not None:
             coordinator.close()
 
+    def drain(self) -> None:
+        """Finish active tasks and retain unfinished runs for recovery."""
+        self._graph_coordinator().drain()
+
+    def retain_runs(self, run_ids: Sequence[str]) -> None:
+        """Protect durable unfinished requests from orphaned-temp cleanup."""
+        with self._run_lock:
+            self._retained_runs.update(run_ids)
+
     def _start_run(
         self,
         plan: ExecutionPlan,
@@ -446,7 +456,9 @@ class AppService:
         cancel: EventCancellationToken,
         origin: RequestOrigin,
     ) -> RunHandle:
-        cleanup_orphaned_temp(self._workspace_root, active_run_ids=self.active_run_ids())
+        with self._run_lock:
+            protected: tuple[str, ...] = (*self._active_runs, *self._retained_runs)
+        cleanup_orphaned_temp(self._workspace_root, active_run_ids=protected)
         source_groups: dict[str, InspectedSourceGroup] = {
             group.group_id: group for group in self._selected_groups(tuple(item.group_id for item in plan.groups))
         }
@@ -497,6 +509,9 @@ class AppService:
             failure = error
         try:
             _close_handler(handler)
+            if result is not None and result.paused:
+                session.preserve()
+                self.retain_runs((handle.run_id,))
             _close_session(session, failure)
             if result is not None and session.cleanup_warnings:
                 result = replace(result, warnings=(*result.warnings, *session.cleanup_warnings))

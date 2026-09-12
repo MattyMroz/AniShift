@@ -90,6 +90,7 @@ class RequestState(StrEnum):
 
     ACCEPTED = "accepted"
     RUNNING = "running"
+    PAUSED = "paused"
     SUCCEEDED = "succeeded"
     PARTIAL = "partial"
     FAILED = "failed"
@@ -315,7 +316,8 @@ def _reservation(state: WatchState, group_id: str) -> Reservation | None:
 
 def _has_active_request(state: WatchState, group_id: str) -> bool:
     return any(
-        group_id in request.group_ids and request.state in {RequestState.ACCEPTED, RequestState.RUNNING}
+        group_id in request.group_ids
+        and request.state in {RequestState.ACCEPTED, RequestState.RUNNING, RequestState.PAUSED}
         for request in state.requests
     )
 

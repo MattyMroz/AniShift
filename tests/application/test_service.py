@@ -203,6 +203,50 @@ def test_active_run_rejects_a_second_execute_before_creating_another_scope(tmp_p
     assert not any((tmp_path / "temp").iterdir())
 
 
+def test_draining_retains_staging_and_protects_it_from_the_next_runs_cleanup(tmp_path: Path) -> None:
+    write_text_source(tmp_path / "Episode.txt", "Text")
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    service: AppService = _service(tmp_path, FakeTranslationService(entered=entered, release=release))
+    group_id: str = service.discover().groups[0].group_id
+    preset: AutoPresetDraft = AutoPresetDraft(
+        "preview",
+        "Preview",
+        ProductIntent(frozenset({ProductKind.FULL_PL})),
+    )
+    handle: RunHandle = service.submit_plan(
+        service.plan_auto((group_id,), preset),
+        CollectingRunSink(),
+        origin=RequestOrigin.USER,
+    )
+    try:
+        assert entered.wait(timeout=2.0)
+        service.drain()
+    finally:
+        release.set()
+    result: RunResult = handle.result(timeout=5.0)
+    retained: Path = tmp_path / "temp" / handle.run_id
+    staged: dict[Path, bytes] = {path: path.read_bytes() for path in retained.rglob("*") if path.is_file()}
+    service.close()
+
+    assert result.paused
+    assert staged
+    assert not service.active_run_ids()
+    assert not (tmp_path / "Episode.pl.srt").exists()
+
+    write_text_source(tmp_path / "Another.txt", "Other text")
+    restarted: AppService = _service(tmp_path, FakeTranslationService())
+    restarted.retain_runs((handle.run_id,))
+    other_id: str = next(group.group_id for group in restarted.discover().groups if group.group_id != group_id)
+    try:
+        completed: RunResult = restarted.execute(restarted.plan_auto((other_id,), preset), CollectingRunSink())
+    finally:
+        restarted.close()
+
+    assert completed.succeeded
+    assert {path: path.read_bytes() for path in staged} == staged
+
+
 def test_an_interrupted_execute_cancels_its_run_and_leaves_no_temporary_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

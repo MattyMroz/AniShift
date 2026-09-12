@@ -26,6 +26,11 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 - `PipeListener.accept()` blokuje na `WaitForMultipleObjects(..., INFINITE)`, więc `close()` budzi
   wątek accept własnym połączeniem do siebie; samo zamknięcie listenera go nie odblokuje.
   `local_control.py`
+- `ipc.Listener` powstaje BEZ `authkey`: klucza dowodzi wątek danego połączenia
+  (`deliver_challenge`/`answer_challenge` z terminem `HANDSHAKE_TIMEOUT_S` pilnowanym przez
+  `threading.Timer` zamykający połączenie). Klient milczący albo rozłączony psuje wtedy tylko swój
+  wątek, a nie pętlę accept. Po stronie klienta `ipc.Client` idzie na wątek pomocniczy, bo
+  `PipeClient` sam ponawia `WaitNamedPipe` i żaden timer go nie przerwie. `local_control.py`
 - `instance.json` NIE dowodzi działania rezydenta — dowodem jest udane połączenie i odpowiedź na
   `status`. Plik powstaje dopiero PO zdobyciu `resident.lock`, więc przegrany wyścig go nie dotyka.
   `local_control.py`, `cli/watch.py`
@@ -36,8 +41,13 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
   wymusić obie ścieżki; wyjątkiem jest alias `ChannelConnection`, bo `PipeConnection` istnieje w
   typeshed tylko na win32. `local_control.py`
 - Wolny subskrybent nie rośnie w nieskończoność: `_EventOutbox` trzyma ostatnie zdarzenie per
-  `task_id` i najwyżej `MAX_OUTBOX_EVENTS` pozycji, a nadmiarowe połączenie dostaje `REFUSED`.
+  (zdarzenie, `run_id`, `task_id`/`group_id`), więc `state_changed` scala się do jednej pozycji,
+  a przy `MAX_OUTBOX_EVENTS` pierwszy wylatuje wpis nieterminalny. Gdy wszystkie są terminalne,
+  usuwany jest najstarszy; pełny stan odtwarza snapshot. Nadmiarowe połączenie dostaje `REFUSED`.
   `local_control.py`
+- Serwer przypisuje `session_id` połączenia, którego klient nie może podać w JSON. Odpowiedzi
+  obsługuje osobny wątek z ograniczoną kolejką, więc wolny podgląd nie blokuje odczytu EOF
+  i zwolnienia rezerwacji przez `on_disconnect`. `local_control.py`
 - `resident_command()` to `watch_command()` z dopiskiem `resident`, więc obie drogi startu mają
   jedno źródło ścieżki `pythonw.exe`. `autostart.py`
 - `autostart.py` zarządza wyłącznie zadaniem `AniShift Watch`. Rejestruje je z pliku XML

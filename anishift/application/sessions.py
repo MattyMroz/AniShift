@@ -38,6 +38,7 @@ class RunSession:
         "_generation",
         "_lock",
         "_owner_token",
+        "_preserved",
         "_registry_key",
         "_run_root",
     )
@@ -53,6 +54,7 @@ class RunSession:
         self._owner_token: str = token_hex(32)
         self._generation: int = 1
         self._active: bool = False
+        self._preserved: bool = False
         self._cleanup_warnings: list[str] = []
         self._lock: threading.Lock = threading.Lock()
 
@@ -100,16 +102,22 @@ class RunSession:
         exception: BaseException | None,
         traceback: TracebackType | None,
     ) -> Literal[False]:
-        """Close the generation gate and remove every file owned by this run."""
+        """Close ownership and clean staging unless this run was preserved for recovery."""
         del exception_type, traceback
         with self._lock:
             self._active = False
             self._generation += 1
         try:
-            self._cleanup(exception)
+            if not self._preserved:
+                self._cleanup(exception)
         finally:
             _release_root(self._registry_key)
         return False
+
+    def preserve(self) -> None:
+        """Retain this run's staged files when its ownership gate closes."""
+        with self._lock:
+            self._preserved = True
 
     @property
     def generation(self) -> int:

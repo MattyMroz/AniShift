@@ -52,6 +52,18 @@ def test_run_session_cleans_scope_after_cancel(tmp_path: Path) -> None:
     assert not run_root.exists()
 
 
+def test_preserved_session_keeps_staging_and_rejects_late_publication(tmp_path: Path) -> None:
+    run_root: Path = tmp_path / "temp" / "run-paused"
+    with RunSession(run_root) as session:
+        generation: int = session.generation
+        staged: Path = session.group_temp("group-1") / "clip.wav"
+        staged.write_bytes(b"audio")
+        session.preserve()
+
+    assert staged.read_bytes() == b"audio"
+    assert not session.accepts_generation(generation)
+
+
 def test_run_session_refuses_existing_directory_without_deleting_it(tmp_path: Path) -> None:
     run_root = tmp_path / "temp" / "run-1"
     run_root.mkdir(parents=True)

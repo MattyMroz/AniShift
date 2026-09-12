@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Final, cast
@@ -50,6 +51,12 @@ class _Service:
     def close(self):
         pass
 
+    def drain(self):
+        pass
+
+    def retain_runs(self, run_ids):
+        del run_ids
+
 
 state_dir = Path(sys.argv[1])
 ready = Path(sys.argv[2])
@@ -72,6 +79,12 @@ class _Service:
 
     def set_background_admission(self, enabled: bool) -> None:
         self.admissions.append(enabled)
+
+    def drain(self) -> None:
+        pass
+
+    def retain_runs(self, run_ids: Sequence[str]) -> None:
+        del run_ids
 
 
 def _as_service(service: _Service) -> AppService:

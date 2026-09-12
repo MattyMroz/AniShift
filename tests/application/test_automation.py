@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -24,7 +25,15 @@ from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ExecutionError
-from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
+from anishift.platform.local_control import (
+    ControlClient,
+    ControlError,
+    ControlErrorCode,
+    ControlRequest,
+    ControlResponse,
+    ControlServer,
+    control_endpoint,
+)
 from anishift.services.media import DefaultMediaProbe
 
 _TIMEOUT_S: Final[float] = 5.0
@@ -93,6 +102,7 @@ class _Service:
         self.submitted: list[str] = []
         self.cancelled: list[str] = []
         self.reloads: int = 0
+        self.submit_failure: Exception | None = None
         self.handles: dict[str, RunHandle] = {}
         self.active: list[str] = []
         self.discover_entered: threading.Event = threading.Event()
@@ -124,6 +134,8 @@ class _Service:
         run_id: str | None = None,
     ) -> RunHandle:
         del plan, sink, origin
+        if self.submit_failure is not None:
+            raise self.submit_failure
         identity: str = run_id or "run-1"
         self.submitted.append(identity)
         self.active.append(identity)
@@ -144,6 +156,12 @@ class _Service:
 
     def set_background_admission(self, enabled: bool) -> None:
         self.background_admission.append(enabled)
+
+    def drain(self) -> None:
+        pass
+
+    def retain_runs(self, run_ids: Sequence[str]) -> None:
+        del run_ids
 
     def reload_preferences(self) -> None:
         self.reloads += 1
@@ -437,14 +455,15 @@ def test_a_shutdown_waits_for_the_active_request_and_admits_no_new_one(tmp_path:
     assert service.background_admission[-1] is False
 
 
-def test_a_terminal_run_fault_is_recorded_as_a_failed_request(tmp_path: Path) -> None:
+@pytest.mark.parametrize("failure", [ExecutionError("coordinator"), RuntimeError("handler"), SystemExit(1)])
+def test_a_terminal_run_fault_is_recorded_as_a_failed_request(tmp_path: Path, failure: BaseException) -> None:
     service, store, _ = _library(tmp_path)
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
     try:
         run_id: str = _started(owner)
         service.active.remove(run_id)
-        service.handles[run_id].fail(ExecutionError("coordinator"))
+        service.handles[run_id].fail(failure)
     finally:
         owner.request_shutdown()
         thread.join(timeout=_TIMEOUT_S)
@@ -466,6 +485,23 @@ def test_status_reports_the_instance_the_switch_and_the_subscription_counts(tmp_
     assert answer.result["instance_id"] == _INSTANCE
     assert answer.result["auto_enabled"] is True
     assert answer.result["subscriptions"] == {"enabled": 1, "disabled": 0}
+
+
+def test_a_paused_request_keeps_its_intent_without_marking_manual_work_complete(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        run_id: str = _started(owner)
+        service.active.remove(run_id)
+        service.handles[run_id].resolve(RunResult(run_id, (GroupResult(group_id, GroupStatus.CANCELLED),), paused=True))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert not thread.is_alive()
+    assert [item.state for item in store.load().requests] == [RequestState.PAUSED]
+    assert store.load().markers == ()
 
 
 def test_a_directory_exception_is_stored_and_cleared(tmp_path: Path) -> None:
@@ -530,7 +566,12 @@ def test_every_state_change_reaches_the_subscribers(tmp_path: Path) -> None:
     service, store, group_id = _library(tmp_path)
     owner: AutomationOwner = _owner(service, store)
     frames: list[Mapping[str, object]] = []
-    owner.attach_broadcast(frames.append)
+
+    def record(frame: Mapping[str, object], terminal: bool) -> None:
+        del terminal
+        frames.append(frame)
+
+    owner.attach_broadcast(record)
     thread: threading.Thread = _serving(owner)
     try:
         owner.handle(_request("set_auto", {"enabled": True}))
@@ -542,6 +583,69 @@ def test_every_state_change_reaches_the_subscribers(tmp_path: Path) -> None:
 
     assert {frame["event"] for frame in frames} == {"state_changed"}
     assert frames[-1]["payload"]
+
+
+def test_a_restart_drops_the_reservations_of_the_previous_instance(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    first: AutomationOwner = _owner(service, store)
+    first_thread: threading.Thread = _serving(first)
+    try:
+        held: ControlResponse = first.handle(
+            _request("reserve", {"client_id": _CLIENT, "group_ids": [group_id]}, command_id="reserve-1")
+        )
+    finally:
+        first.request_shutdown()
+        first_thread.join(timeout=_TIMEOUT_S)
+    restarted: AutomationOwner = _owner(service, store)
+    second_thread: threading.Thread = _serving(restarted)
+    try:
+        reported: ControlResponse = restarted.handle(_request("status", command_id="status-1"))
+        taken: ControlResponse = restarted.handle(
+            _request("reserve", {"client_id": "panel-2", "group_ids": [group_id]}, command_id="reserve-2")
+        )
+    finally:
+        restarted.request_shutdown()
+        second_thread.join(timeout=_TIMEOUT_S)
+
+    assert held.ok
+    assert reported.result["reservations"] == []
+    assert taken.ok
+
+
+@pytest.mark.parametrize("failure", [ExecutionError("coordinator"), RuntimeError("handler")])
+def test_a_submission_failure_keeps_the_accepted_request_identity(tmp_path: Path, failure: Exception) -> None:
+    service, store, _ = _library(tmp_path)
+    service.submit_failure = failure
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        preview: ControlResponse = owner.handle(
+            _request("preview", {"client_id": _CLIENT, "preset_id": "preview"}, command_id="preview-1")
+        )
+        assert preview.ok
+        first: ControlResponse = owner.handle(
+            _request(
+                "start",
+                {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]},
+                command_id="start-1",
+            )
+        )
+        repeated: ControlResponse = owner.handle(
+            _request(
+                "start",
+                {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]},
+                command_id="start-1",
+            )
+        )
+    finally:
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+
+    assert first.ok
+    assert repeated == first
+    assert "run_id" in repeated.result
+    assert not thread.is_alive()
+    assert [item.state for item in store.load().requests] == [RequestState.FAILED]
 
 
 def test_serving_applies_the_persisted_switch_before_any_command(tmp_path: Path) -> None:
@@ -556,3 +660,59 @@ def test_serving_applies_the_persisted_switch_before_any_command(tmp_path: Path)
         thread.join(timeout=_TIMEOUT_S)
 
     assert service.background_admission[0] is True
+
+
+@pytest.mark.parametrize("slow_preview", [False, True])
+def test_a_closed_editor_releases_its_groups_and_invalidates_previews(tmp_path: Path, slow_preview: bool) -> None:
+    service, store, group_id = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    disconnected: threading.Event = threading.Event()
+
+    def closed(session_id: str) -> None:
+        owner.disconnect(session_id)
+        disconnected.set()
+
+    endpoint: str = control_endpoint(tmp_path)
+    key: bytes = os.urandom(32)
+    server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=closed)
+    client: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    waiting: threading.Thread | None = None
+    try:
+        client.call("reserve", {"client_id": _CLIENT, "group_ids": [group_id]}, instance_id=_INSTANCE)
+        preview: Mapping[str, object] = client.call("preview", {"client_id": _CLIENT})
+        if slow_preview:
+            service.discover_entered.clear()
+            service.discover_release = threading.Event()
+
+            def preview_again() -> None:
+                try:
+                    client.call("preview", {"client_id": _CLIENT})
+                except ControlError:
+                    return
+
+            waiting = threading.Thread(target=preview_again, daemon=True)
+            waiting.start()
+            assert service.discover_entered.wait(_TIMEOUT_S)
+        client.close()
+        assert disconnected.wait(_TIMEOUT_S)
+        owner.handle(_request("status"))
+        assert store.load().reservations == ()
+        replacement: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+        try:
+            with pytest.raises(ControlError) as refused:
+                replacement.call("start", {"client_id": _CLIENT, "preview_id": preview["preview_id"]})
+            assert refused.value.code is ControlErrorCode.STALE_PREVIEW
+            replacement.call("reserve", {"client_id": _CLIENT, "group_ids": [group_id]}, instance_id=_INSTANCE)
+        finally:
+            replacement.close()
+    finally:
+        if service.discover_release is not None:
+            service.discover_release.set()
+        if waiting is not None:
+            waiting.join(_TIMEOUT_S)
+        client.close()
+        server.close()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()

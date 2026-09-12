@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import multiprocessing.connection as ipc
 import os
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Final
@@ -18,6 +20,8 @@ from anishift.platform.local_control import (
     MAX_FRAME_BYTES,
     MAX_OUTBOX_EVENTS,
     PROTOCOL_VERSION,
+    SOCKET_FILE_NAME,
+    ChannelConnection,
     ControlClient,
     ControlError,
     ControlErrorCode,
@@ -25,6 +29,7 @@ from anishift.platform.local_control import (
     ControlResponse,
     ControlServer,
     InstanceRecord,
+    clear_endpoint,
     connect,
     connect_or_start,
     control_endpoint,
@@ -40,6 +45,8 @@ _FLOOD_EVENTS: Final[int] = 2000
 _KEY_BYTES: Final[int] = 32
 
 _TASK_COUNT: Final[int] = 3
+
+_HANDSHAKE_S: Final[float] = 0.3
 
 _UNREADABLE_FRAME: Final[str] = "The frame is not a valid control request"
 
@@ -82,10 +89,28 @@ def _serving(
     handler: Callable[[ControlRequest], ControlResponse] = _echo,
     *,
     max_connections: int = 8,
+    handshake_timeout_s: float = _TIMEOUT_S,
 ) -> tuple[ControlServer, str, bytes]:
     endpoint: str = control_endpoint(state_dir)
     key: bytes = ensure_authkey(state_dir)
-    return ControlServer(endpoint, key, handler, max_connections=max_connections), endpoint, key
+    server = ControlServer(
+        endpoint,
+        key,
+        handler,
+        max_connections=max_connections,
+        handshake_timeout_s=handshake_timeout_s,
+    )
+    return server, endpoint, key
+
+
+def _closed_within(connection: ChannelConnection, timeout_s: float) -> bool:
+    try:
+        if not connection.poll(timeout_s):
+            return False
+        connection.recv_bytes()
+    except EOFError, OSError:
+        return True
+    return False
 
 
 def _child_verdict(endpoint: str, key_path: Path, kind: str, variant: str) -> str:
@@ -225,7 +250,7 @@ def test_the_outbox_never_holds_more_than_its_limit() -> None:
     outbox = local_control._EventOutbox(MAX_OUTBOX_EVENTS)
 
     for sequence in range(_FLOOD_EVENTS):
-        outbox.put({"event": "state_changed", "payload": {"sequence": sequence}})
+        outbox.put({"event": "run_event", "payload": {"task_id": f"task-{sequence}"}}, terminal=False)
 
     assert len(outbox.drain()) == MAX_OUTBOX_EVENTS
 
@@ -234,11 +259,160 @@ def test_the_outbox_keeps_only_the_latest_event_of_one_task() -> None:
     outbox = local_control._EventOutbox(MAX_OUTBOX_EVENTS)
 
     for percent in (10, 40, 90):
-        outbox.put({"event": "run_event", "payload": {"task_id": "task-1", "progress_percent": percent}})
+        outbox.put(
+            {"event": "run_event", "payload": {"task_id": "task-1", "progress_percent": percent}},
+            terminal=False,
+        )
     drained: tuple[Mapping[str, object], ...] = outbox.drain()
 
     assert len(drained) == 1
     assert _payload(drained[0])["progress_percent"] == 90
+
+
+def test_the_outbox_merges_every_state_change_into_one_entry() -> None:
+    outbox = local_control._EventOutbox(MAX_OUTBOX_EVENTS)
+
+    for sequence in range(_FLOOD_EVENTS):
+        outbox.put({"event": "state_changed", "payload": {"auto_enabled": sequence % 2 == 0}}, terminal=False)
+    drained: tuple[Mapping[str, object], ...] = outbox.drain()
+
+    assert len(drained) == 1
+    assert _payload(drained[0])["auto_enabled"] is False
+
+
+def test_the_outbox_drops_progress_before_a_terminal_event() -> None:
+    outbox = local_control._EventOutbox(MAX_OUTBOX_EVENTS)
+
+    outbox.put({"event": "run_event", "payload": {"task_id": "done", "state": "succeeded"}}, terminal=True)
+    for sequence in range(_FLOOD_EVENTS):
+        outbox.put({"event": "run_event", "payload": {"task_id": f"task-{sequence}"}}, terminal=False)
+    drained: tuple[Mapping[str, object], ...] = outbox.drain()
+
+    assert len(drained) == MAX_OUTBOX_EVENTS
+    assert [frame for frame in drained if _payload(frame).get("task_id") == "done"]
+
+
+def test_a_subscription_is_acknowledged_before_any_queued_event() -> None:
+    reader, writer = ipc.Pipe(duplex=False)
+    served = local_control._ServedConnection(writer)
+    try:
+        served.publish({"event": "run_event", "payload": {"task_id": "task-1"}}, False)
+        acknowledged: bool = served.subscribe({"ok": True})
+        first: object = json.loads(reader.recv_bytes().decode("utf-8"))
+        second: object = json.loads(reader.recv_bytes().decode("utf-8"))
+    finally:
+        served.close()
+        reader.close()
+
+    assert acknowledged
+    assert first == {"ok": True}
+    assert isinstance(second, dict)
+    assert _payload(second) == {"task_id": "task-1"}
+
+
+def test_an_event_published_while_subscribe_returns_is_delivered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_dir: Path = _state_dir(tmp_path)
+    server, endpoint, key = _serving(state_dir)
+    answer: Callable[[local_control._ServedConnection, Callable[[], Mapping[str, object]]], bool] = (
+        local_control._ServedConnection.answer
+    )
+
+    def publish_after_ack(served: local_control._ServedConnection, produce: Callable[[], Mapping[str, object]]) -> bool:
+        acknowledged: bool = answer(served, produce)
+        server.broadcast({"event": "run_event", "payload": {"task_id": "done", "state": "succeeded"}}, terminal=True)
+        return acknowledged
+
+    monkeypatch.setattr(local_control._ServedConnection, "answer", publish_after_ack)
+    client: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    try:
+        client.subscribe()
+        assert client._connection.poll(_HANDSHAKE_S)
+        assert _payload(next(client.events())) == {"task_id": "done", "state": "succeeded"}
+    finally:
+        client.close()
+        server.close()
+
+
+def test_a_client_that_leaves_before_the_key_exchange_keeps_the_server_serving(tmp_path: Path) -> None:
+    state_dir: Path = _state_dir(tmp_path)
+    server, endpoint, key = _serving(state_dir)
+    try:
+        ipc.Client(endpoint).close()
+        client = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+        try:
+            answer: Mapping[str, object] = client.call("echo", {"echo": "value"})
+        finally:
+            client.close()
+    finally:
+        server.close()
+
+    assert answer == {"kind": "echo", "echo": "value"}
+
+
+def test_a_silent_client_is_dropped_after_the_handshake_deadline(tmp_path: Path) -> None:
+    state_dir: Path = _state_dir(tmp_path)
+    server, endpoint, key = _serving(state_dir, handshake_timeout_s=_HANDSHAKE_S)
+    silent: ChannelConnection = ipc.Client(endpoint)
+    try:
+        assert silent.poll(_TIMEOUT_S)
+        challenge: bytes = silent.recv_bytes()
+        dropped: bool = _closed_within(silent, _TIMEOUT_S)
+        client = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+        try:
+            answer: Mapping[str, object] = client.call("echo", {"echo": "value"})
+        finally:
+            client.close()
+    finally:
+        silent.close()
+        server.close()
+
+    assert challenge
+    assert dropped
+    assert answer == {"kind": "echo", "echo": "value"}
+
+
+def test_a_peer_that_never_answers_the_challenge_refuses_the_client_in_time(tmp_path: Path) -> None:
+    state_dir: Path = _state_dir(tmp_path)
+    endpoint: str = control_endpoint(state_dir)
+    key: bytes = ensure_authkey(state_dir)
+    listener = ipc.Listener(endpoint)
+    release = threading.Event()
+
+    def mute() -> None:
+        accepted: ChannelConnection = listener.accept()
+        release.wait(timeout=_TIMEOUT_S)
+        accepted.close()
+
+    mute_thread = threading.Thread(target=mute, daemon=True)
+    mute_thread.start()
+    started: float = time.monotonic()
+    try:
+        with pytest.raises(ControlError) as refusal:
+            ControlClient(endpoint, key, timeout_s=_HANDSHAKE_S)
+        elapsed: float = time.monotonic() - started
+    finally:
+        release.set()
+        mute_thread.join(timeout=_TIMEOUT_S)
+        listener.close()
+
+    assert refusal.value.code is ControlErrorCode.REFUSED
+    assert elapsed < _TIMEOUT_S
+
+
+def test_a_stale_socket_file_is_cleared_and_a_missing_one_is_tolerated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(local_control, "is_windows", lambda: False)
+    stale: Path = tmp_path / SOCKET_FILE_NAME
+    stale.write_bytes(b"")
+
+    clear_endpoint(str(stale))
+    clear_endpoint(str(stale))
+
+    assert not stale.exists()
 
 
 def test_connect_or_start_starts_one_resident_and_reuses_the_running_one(tmp_path: Path) -> None:
