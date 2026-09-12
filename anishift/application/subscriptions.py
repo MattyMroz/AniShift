@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -79,6 +80,12 @@ MAX_DELAY_SAMPLES: Final[int] = 8
 
 _DISABLED_PROBLEM: Final[str] = "Subscription is disabled"
 """Reported instead of a check when the standing order is switched off."""
+
+_STALE_PROBLEM: Final[str] = "Subscription changed during the check"
+"""Reported when the checked order no longer admits releases from that search."""
+
+_CHECKING_PROBLEM: Final[str] = "Subscription is already being checked"
+"""Reported when another check still owns the same standing order."""
 
 _ID_LENGTH: Final[int] = 12
 """Hexadecimal characters kept from the digest, short enough to retype in a command."""
@@ -287,6 +294,8 @@ class SubscriptionService:
         self._acquisition: AcquisitionService = acquisition
         self._clock: Callable[[], datetime] = clock
         self._sleep: Callable[[float], None] = sleep
+        self._lock: threading.RLock = threading.RLock()
+        self._checking: dict[str, bool] = {}
 
     def subscribe(
         self,
@@ -325,37 +334,39 @@ class SubscriptionService:
         anilist_id: int | None = None,
     ) -> Subscription:
         """Follow *series* by *group* from *first_episode* on, replacing an earlier order."""
-        identifier: str = subscription_id(series, group)
-        stored: tuple[Subscription, ...] = self._store.load()
-        earlier: Subscription | None = _find(stored, identifier)
-        subscription: Subscription = Subscription(
-            subscription_id=identifier,
-            query=query,
-            series=series,
-            group=group,
-            next_episode=first_episode,
-            min_resolution=MIN_RESOLUTION,
-            taken=earlier.taken if earlier is not None else frozenset(),
-            taken_episodes=earlier.taken_episodes if earlier is not None else (),
-            added_at=earlier.added_at if earlier is not None else _timestamp(self._clock()),
-            checked_at=None,
-            directory=directory_name,
-            season_index=context.index if context is not None else 1,
-            episode_offset=context.offset if context is not None else 0,
-            season_episodes=context.episodes if context is not None else None,
-            generation=earlier.generation + 1 if earlier is not None else 1,
-            anilist_id=anilist_id if anilist_id is not None or earlier is None else earlier.anilist_id,
-            episodes=earlier.episodes if earlier is not None else (),
-            enabled=earlier.enabled if earlier is not None else True,
-            end_state=earlier.end_state if earlier is not None else SubscriptionEnd.ACTIVE,
-            release_delay_s=earlier.release_delay_s if earlier is not None else None,
-            delay_samples_s=earlier.delay_samples_s if earlier is not None else (),
-        )
-        remaining: list[Subscription] = [item for item in stored if item.subscription_id != identifier]
-        remaining.append(subscription)
-        self._store.save(remaining)
-        logger.info("Subscription stored", replaced=earlier is not None, total=len(remaining))
-        return subscription
+        with self._lock:
+            identifier: str = subscription_id(series, group)
+            stored: tuple[Subscription, ...] = self._store.load()
+            earlier: Subscription | None = _find(stored, identifier)
+            subscription: Subscription = Subscription(
+                subscription_id=identifier,
+                query=query,
+                series=series,
+                group=group,
+                next_episode=first_episode,
+                min_resolution=MIN_RESOLUTION,
+                taken=earlier.taken if earlier is not None else frozenset(),
+                taken_episodes=earlier.taken_episodes if earlier is not None else (),
+                added_at=earlier.added_at if earlier is not None else _timestamp(self._clock()),
+                checked_at=None,
+                directory=directory_name,
+                season_index=context.index if context is not None else 1,
+                episode_offset=context.offset if context is not None else 0,
+                season_episodes=context.episodes if context is not None else None,
+                generation=earlier.generation + 1 if earlier is not None else 1,
+                anilist_id=anilist_id if anilist_id is not None or earlier is None else earlier.anilist_id,
+                episodes=earlier.episodes if earlier is not None else (),
+                enabled=earlier.enabled if earlier is not None else True,
+                end_state=earlier.end_state if earlier is not None else SubscriptionEnd.ACTIVE,
+                release_delay_s=earlier.release_delay_s if earlier is not None else None,
+                delay_samples_s=earlier.delay_samples_s if earlier is not None else (),
+            )
+            remaining: list[Subscription] = [item for item in stored if item.subscription_id != identifier]
+            remaining.append(subscription)
+            self._store.save(remaining)
+            self._invalidate_check(identifier)
+            logger.info("Subscription stored", replaced=earlier is not None, total=len(remaining))
+            return subscription
 
     def enable(self, subscription_id: str) -> Subscription:
         """Let that standing order look for episodes again, keeping everything it already took."""
@@ -367,32 +378,52 @@ class SubscriptionService:
 
     def set_anilist_id(self, subscription_id: str, anilist_id: int | None) -> Subscription:
         """Bind that standing order to the catalog entry proving which season it follows."""
-        current: Subscription = self._required(subscription_id)
-        if current.anilist_id == anilist_id:
-            return current
-        updated: Subscription = replace(current, anilist_id=anilist_id, generation=current.generation + 1)
-        self._replace(updated)
-        logger.info("Subscription bound to a catalog entry", generation=updated.generation)
-        return updated
+        with self._lock:
+            current: Subscription = self._required(subscription_id)
+            if current.anilist_id == anilist_id:
+                return current
+            updated: Subscription = replace(current, anilist_id=anilist_id, generation=current.generation + 1)
+            self._replace(updated)
+            self._invalidate_check(subscription_id)
+            logger.info("Subscription bound to a catalog entry", generation=updated.generation)
+            return updated
 
     def list(self) -> tuple[Subscription, ...]:
         """Return every stored subscription."""
-        return self._store.load()
+        with self._lock:
+            return self._store.load()
 
     def remove(self, subscription_id: str) -> bool:
         """Drop the subscription with that identifier, reporting whether it existed."""
-        stored: tuple[Subscription, ...] = self._store.load()
-        remaining: tuple[Subscription, ...] = tuple(item for item in stored if item.subscription_id != subscription_id)
-        if len(remaining) == len(stored):
-            return False
-        self._store.save(remaining)
-        logger.info("Subscription removed", total=len(remaining))
-        return True
+        with self._lock:
+            stored: tuple[Subscription, ...] = self._store.load()
+            remaining: tuple[Subscription, ...] = tuple(
+                item for item in stored if item.subscription_id != subscription_id
+            )
+            if len(remaining) == len(stored):
+                return False
+            self._store.save(remaining)
+            self._invalidate_check(subscription_id)
+            logger.info("Subscription removed", total=len(remaining))
+            return True
 
     def check(self, subscription: Subscription) -> CheckOutcome:
         """Download every episode *subscription* still misses and record what was taken."""
         if not subscription.enabled:
             return CheckOutcome(subscription, 0, problem=_DISABLED_PROBLEM)
+        with self._lock:
+            if subscription.subscription_id in self._checking:
+                return CheckOutcome(subscription, 0, problem=_CHECKING_PROBLEM)
+            if not self._current(subscription):
+                return CheckOutcome(subscription, 0, problem=_STALE_PROBLEM)
+            self._checking[subscription.subscription_id] = True
+        try:
+            return self._check(subscription)
+        finally:
+            with self._lock:
+                self._checking.pop(subscription.subscription_id)
+
+    def _check(self, subscription: Subscription) -> CheckOutcome:
         try:
             offered: dict[Decimal, ReleaseChoice] = self._offered(subscription)
             taken_hashes: frozenset[str] = frozenset(info_hash.casefold() for info_hash in subscription.taken)
@@ -403,22 +434,44 @@ class SubscriptionService:
                 if episode not in taken_episodes and choice.release.info_hash.casefold() not in taken_hashes
             }
             queued: frozenset[str] = self._acquisition.queued_hashes() if selected else frozenset()
-            chosen: tuple[ReleaseChoice, ...] = tuple(
-                selected[episode]
-                for episode in sorted(selected)
-                if selected[episode].release.info_hash.casefold() not in queued
-            )
-            if chosen:
-                self._acquisition.download(chosen, directory_name=subscription.directory)
-            confirmed: dict[Decimal, ReleaseChoice] = self._confirmed(selected, queued) if selected else {}
+            chosen: tuple[ReleaseChoice, ...] = self._download(subscription, selected, queued)
+            admitted: dict[Decimal, ReleaseChoice] = {
+                episode: choice
+                for episode, choice in selected.items()
+                if choice in chosen or choice.release.info_hash.casefold() in queued
+            }
+            confirmed: dict[Decimal, ReleaseChoice] = self._confirmed(admitted, queued) if admitted else {}
             sent: int = sum(1 for choice in chosen if choice in confirmed.values())
-            updated: Subscription = self._advance(subscription, confirmed, offered)
-            self._replace(updated)
+            with self._lock:
+                current: Subscription | None = _find(self._store.load(), subscription.subscription_id)
+                if not self._current(subscription):
+                    return CheckOutcome(current or subscription, sent, problem=_STALE_PROBLEM)
+                updated: Subscription = self._advance(subscription, confirmed, offered)
+                self._replace(updated)
         except AniShiftError as problem:
             logger.warning("Subscription check failed", error_class=type(problem).__name__)
             return CheckOutcome(subscription, 0, problem=str(problem))
         logger.info("Subscription checked", downloaded=sent, taken=len(updated.taken))
         return CheckOutcome(updated, sent)
+
+    def _download(
+        self,
+        subscription: Subscription,
+        selected: dict[Decimal, ReleaseChoice],
+        queued: frozenset[str],
+    ) -> tuple[ReleaseChoice, ...]:
+        chosen: list[ReleaseChoice] = []
+        for episode in sorted(selected):
+            choice: ReleaseChoice = selected[episode]
+            if choice.release.info_hash.casefold() in queued:
+                continue
+            with self._lock:
+                current: bool = self._current(subscription)
+            if not current:
+                break
+            self._acquisition.download((choice,), directory_name=subscription.directory)
+            chosen.append(choice)
+        return tuple(chosen)
 
     def check_all(self) -> tuple[CheckOutcome, ...]:
         """Check every active subscription in stored order; a failing one does not stop the rest."""
@@ -429,13 +482,15 @@ class SubscriptionService:
         )
 
     def _switch(self, subscription_id: str, *, enabled: bool) -> Subscription:
-        current: Subscription = self._required(subscription_id)
-        if current.enabled == enabled:
-            return current
-        updated: Subscription = replace(current, enabled=enabled, generation=current.generation + 1)
-        self._replace(updated)
-        logger.info("Subscription switched", enabled=enabled, generation=updated.generation)
-        return updated
+        with self._lock:
+            current: Subscription = self._required(subscription_id)
+            if current.enabled == enabled:
+                return current
+            updated: Subscription = replace(current, enabled=enabled, generation=current.generation + 1)
+            self._replace(updated)
+            self._invalidate_check(subscription_id)
+            logger.info("Subscription switched", enabled=enabled, generation=updated.generation)
+            return updated
 
     def _required(self, subscription_id: str) -> Subscription:
         current: Subscription | None = _find(self._store.load(), subscription_id)
@@ -444,9 +499,26 @@ class SubscriptionService:
             raise ValueError(msg)
         return current
 
+    def _current(self, subscription: Subscription) -> bool:
+        current: Subscription | None = _find(self._store.load(), subscription.subscription_id)
+        return (
+            current is not None
+            and current.enabled
+            and current.end_state is SubscriptionEnd.ACTIVE
+            and current.generation == subscription.generation
+            and self._checking.get(subscription.subscription_id, True)
+        )
+
+    def _invalidate_check(self, subscription_id: str) -> None:
+        if subscription_id in self._checking:
+            self._checking[subscription_id] = False
+
     def _offered(self, subscription: Subscription) -> dict[Decimal, ReleaseChoice]:
         context: SeasonContext | None = _context(subscription)
         catalog: ReleaseCatalog = self._acquisition.search(subscription.query)
+        with self._lock:
+            if not self._current(subscription):
+                return {}
         offered: dict[Decimal, ReleaseChoice] = _new_episodes(catalog, subscription, context)
         if subscription.next_episode in offered or not _is_whole(subscription.next_episode):
             return offered

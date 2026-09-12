@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -298,7 +299,7 @@ def test_check_takes_the_best_version_of_every_new_episode(tmp_path: Path) -> No
 
     outcome: CheckOutcome = service.check(service.list()[0])
 
-    assert [choice.release.info_hash for choice in acquisition.downloaded[0]] == [
+    assert [choice.release.info_hash for batch in acquisition.downloaded for choice in batch] == [
         "SubsPlease-Neko to Ryuu-9-v1",
         "SubsPlease-Neko to Ryuu-10-v2",
     ]
@@ -949,3 +950,93 @@ def test_remove_leaves_every_other_subscription(tmp_path: Path) -> None:
 
     assert service.remove(first.subscription_id) is True
     assert service.list() == (second,)
+
+
+@pytest.mark.parametrize("action", ["disable", "remove", "replace", "remove_and_add"])
+@pytest.mark.parametrize("has_release", [False, True])
+def test_late_search_cannot_override_a_disabled_or_removed_subscription(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+    has_release: bool,
+) -> None:
+    acquisition: _Acquisition = _Acquisition()
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    subscription: Subscription = service.subscribe("neko", _choice(Decimal(9)))
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    outcomes: list[CheckOutcome] = []
+
+    def search(query: str) -> ReleaseCatalog:
+        del query
+        entered.set()
+        assert release.wait(timeout=5.0)
+        return _catalog(_choice(Decimal(9))) if has_release else _catalog()
+
+    monkeypatch.setattr(acquisition, "search", search)
+    worker: threading.Thread = threading.Thread(target=lambda: outcomes.append(service.check(subscription)))
+    worker.start()
+    try:
+        assert entered.wait(timeout=2.0)
+        if action == "disable":
+            service.disable(subscription.subscription_id)
+        elif action == "remove":
+            service.remove(subscription.subscription_id)
+        elif action == "replace":
+            service.subscribe("neko", _choice(Decimal(10)))
+        else:
+            service.remove(subscription.subscription_id)
+            service.subscribe("neko", _choice(Decimal(9)))
+        expected: tuple[Subscription, ...] = service.list()
+    finally:
+        release.set()
+        worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert service.list() == expected
+    assert not acquisition.downloaded
+    assert len(outcomes) == 1
+    assert outcomes[0].downloaded == 0
+
+
+@pytest.mark.parametrize("action", ["disable", "remove"])
+def test_stopping_a_subscription_during_an_add_prevents_the_next_add(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    first: ReleaseChoice = _choice(Decimal(9))
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(first, _choice(Decimal(10)))})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    subscription: Subscription = service.subscribe("neko", first)
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    outcomes: list[CheckOutcome] = []
+
+    def download(choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
+        entered.set()
+        assert release.wait(timeout=5.0)
+        return _Acquisition.download(acquisition, choices, directory_name=directory_name)
+
+    monkeypatch.setattr(acquisition, "download", download)
+    worker: threading.Thread = threading.Thread(target=lambda: outcomes.append(service.check(subscription)))
+    worker.start()
+    try:
+        assert entered.wait(timeout=2.0)
+        duplicate: CheckOutcome = service.check(subscription)
+        if action == "disable":
+            service.disable(subscription.subscription_id)
+        else:
+            service.remove(subscription.subscription_id)
+        expected: tuple[Subscription, ...] = service.list()
+    finally:
+        release.set()
+        worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert service.list() == expected
+    assert acquisition.downloaded == [(first,)]
+    assert duplicate.downloaded == 0
+    assert duplicate.problem == "Subscription is already being checked"
+    assert len(outcomes) == 1
+    assert outcomes[0].downloaded == 1

@@ -465,6 +465,13 @@ Po każdym etapie wykonawca dopisuje tutaj: commit, zakres, uruchomione komendy 
 - Test pełnej ścieżki na Windows: lokalny kanał → Auto on → plik TXT → natywne zdarzenie → prawdziwy koordynator i publikacja SRT → idle bez nowych skanów. Tylko zewnętrzne tłumaczenie jest zastąpione fixture. Zmiana gotowego produktu nie powtarza tłumaczenia. Bramki: 3777 passed, 11 skipped, 29,74 s; Ruff i mypy win32/linux PASS (501 plików).
 - Do zakończenia P05 pozostają ograniczenie inspekcji podczas długiego kopiowania, uzgodnienie po wznowieniu systemu oraz pomiar na docelowej bibliotece. Nowy runtime nadal jest dostępny przez ukryte `watch resident`; domyślne przełączenie nastąpi w P08.
 
+### P06 — ochrona mutacji subskrypcji, w toku
+
+- Odtworzony błąd: wynik wyszukiwania po Wyłącz przywracał `enabled` i starą generację; po Usuń mógł zlecić pobranie. Spóźniona odpowiedź nie dopuszcza już nowych odcinków ani nie nadpisuje nowszego wpisu.
+- Dopuszczenie jest sprawdzane osobno przed każdym dodaniem. Wyłącz/Usuń podczas trwającego pierwszego add blokuje następny; rozpoczęty add może się zakończyć. Mutacje lokalnego serwisu są serializowane, ale blokada nie obejmuje HTTP ani oczekiwania na potwierdzenie. Drugi równoczesny check tego samego wpisu jest odrzucany.
+- Testy obejmują również zmianę zakresu oraz Usuń → Dodaj tej samej subskrypcji podczas wyszukiwania. Dziesięć nowych przypadków; cały moduł 64 passed. Pełny pytest: 3787 passed, 11 skipped, 29,93 s.
+- Do wykonania pozostają trwały zapis zamiaru pobrania i rozliczanie potwierdzeń przez właściciela, odzyskanie niepewnego add, terminy emisji, kontrola HTTP i dowód kompletności plików. To ukończona poprawka konkurencji lokalnego serwisu, nie zakończenie P06.
+
 ## 15. Korekty po przeglądzie wykonawcy (2026-09-08)
 
 Przegląd planu względem spec.md i kodu `a7d319f` (przeczytane w całości: `scheduler*.py`, `service.py`, `sessions.py`, `intents.py`, wejścia `planner.py`, `cli/watch.py`, `application/watch.py`, `cli/run.py`, `interactive/app.py`, `subscriptions.py`, `acquisition.py`, `qbittorrent.py`, wszystkie scoped AGENTS). Plan jest zgodny ze specyfikacją; poniższe decyzje domykają luki, w których wykonawca musiałby zgadywać. Obowiązują razem z sekcjami 1–13; przy sprzeczności wygrywa ta sekcja.

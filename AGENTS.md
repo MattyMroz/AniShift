@@ -34,8 +34,10 @@ Python 3.14+. Standard pracy: `.agents/skills/coding/SKILL.md`; standard Pythona
 Reguły bez lintera (agent je łamie, nic ich nie łapie):
 
 - Typuj też zmienne lokalne i atrybuty, nie tylko parametry/zwroty (te wymusza mypy). Puste kolekcje z jawnym typem (`items: list[str] = []`).
-- Docstring stałej `Final` pod nią, nie nad (hook sprawdza że JEST, nie czy pod). Stałe grupuj w sekcji `# ── Constants ──`.
-- Docstring/komentarz mówi CO kod robi, nigdy historii zmian ani planu. Komentarze WHY, nie WHAT. Guard clauses, early return, max 2 poziomy zagnieżdżeń.
+- Docstring stałej `Final` pod nią, nie nad (hook sprawdza że JEST, nie czy pod). Zachowuj dekoracyjne nagłówki sekcji; stałe grupuj pod `# ── Constants ─────────────────────────────────────────────────────────────────`.
+- Nie dodawaj zwykłych komentarzy opisowych w kodzie. Wyjątki: dekoracyjne nagłówki sekcji oraz wymagane dyrektywy narzędzi (`# noqa`, `# type:`, `# pragma`).
+- Docstringi pisz w jednej linii; dłuższe tylko dla istotnego kontraktu, którego nie da się jasno opisać jednym zdaniem. Prywatne funkcje i metody nie potrzebują docstringów, jeśli ich cel wynika z nazwy i kodu. Opisuj kontrakt, nigdy historię zmian ani plan pracy. W testach obowiązuje całkowity zakaz opisowej prozy wskazany niżej.
+- Guard clauses, early return, max 2 poziomy zagnieżdżeń.
 
 Specyfika AniShift:
 
