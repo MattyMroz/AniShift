@@ -24,7 +24,9 @@ from anishift.application.intents import (
     GroupIntent,
     MkvTrackProduct,
     Mp4AudioSource,
+    ProductIntent,
     ProductKind,
+    RebuildRequest,
     RunMode,
     SubtitleOutputFormat,
     SubtitleSourcePolicy,
@@ -85,14 +87,22 @@ def plan_auto(
     groups: Sequence[InspectedSourceGroup],
     preset: AutoPreset,
     settings: RunSettingsSnapshot,
+    *,
+    rebuild: RebuildRequest | None = None,
+    overrides: Mapping[str, object] | None = None,
 ) -> ExecutionPlan:
     """Build one fresh automatic plan for every selected inspected group."""
     ordered_groups: tuple[InspectedSourceGroup, ...] = _ordered_unique_groups(groups)
+    products: ProductIntent = (
+        preset.products
+        if rebuild is None
+        else replace(preset.products, requested_products=preset.products.requested_products | rebuild.products)
+    )
     intents: dict[str, GroupIntent] = {
         group.group_id: GroupIntent(
             group_id=group.group_id,
             mode=RunMode.AUTO,
-            products=preset.products,
+            products=products,
             subtitle_source_policy=preset.subtitle_source_policy,
             translation_action=preset.translation_action,
             source_subtitle_language=preset.source_subtitle_language,
@@ -100,7 +110,8 @@ def plan_auto(
         )
         for group in ordered_groups
     }
-    return _plan(ordered_groups, intents, settings)
+    snapshot: RunSettingsSnapshot = settings if overrides is None else settings.with_overrides(overrides)
+    return _plan(ordered_groups, intents, snapshot, rebuild=rebuild)
 
 
 def plan_manual(
@@ -141,6 +152,8 @@ def _plan(
     groups: tuple[InspectedSourceGroup, ...],
     intents: Mapping[str, GroupIntent],
     settings: RunSettingsSnapshot,
+    *,
+    rebuild: RebuildRequest | None = None,
 ) -> ExecutionPlan:
     group_plans: list[GroupPlan] = []
     artifacts: list[Artifact] = []
@@ -148,7 +161,7 @@ def _plan(
     problems: list[PlanProblem] = []
     for group in groups:
         intent: GroupIntent = intents[group.group_id]
-        builder = _GroupPlanner(group, intent, settings)
+        builder: _GroupPlanner = _GroupPlanner(group, intent, settings, rebuild=rebuild)
         group_plan, group_artifacts, group_tasks = builder.build()
         group_plans.append(group_plan)
         artifacts.extend(group_artifacts)
@@ -193,7 +206,6 @@ def _plan(
 
 
 def _without_planned_artifacts(problem: PlanProblem, source_ids: tuple[str, ...]) -> PlanProblem:
-    """Drop references to artifacts a blocked plan no longer carries, keeping source ones."""
     kept: tuple[str, ...] = tuple(artifact_id for artifact_id in problem.artifact_ids if artifact_id in source_ids)
     if kept == problem.artifact_ids:
         return problem
@@ -206,10 +218,14 @@ class _GroupPlanner:
         group: InspectedSourceGroup,
         intent: GroupIntent,
         settings: RunSettingsSnapshot,
+        *,
+        rebuild: RebuildRequest | None = None,
     ) -> None:
         self.group: InspectedSourceGroup = group
         self.intent: GroupIntent = intent
         self.settings: RunSettingsSnapshot = settings
+        self._rebuild: frozenset[ProductKind] = frozenset() if rebuild is None else rebuild.products
+        self._invalidated: frozenset[ArtifactKind] = _invalidated_products(intent, self._rebuild)
         self.artifacts: dict[str, Artifact] = {artifact.artifact_id: artifact for artifact in group.artifacts}
         self.tasks: list[PlanTask] = []
         self.producer_by_artifact: dict[str, str] = {}
@@ -297,6 +313,8 @@ class _GroupPlanner:
                 "Standalone TXT can produce only full Polish SRT subtitles",
             )
             return
+        if self._ready_product(ArtifactKind.FULL_PL) is not None:
+            return
         source: Artifact | None = self._ready_artifact(ArtifactKind.STANDALONE_TEXT)
         if source is None:
             self._problem("txt_invalid", "Standalone TXT source is not ready")
@@ -323,36 +341,45 @@ class _GroupPlanner:
         self._publish_subtitle(translated, ArtifactKind.FULL_PL)
 
     def _build_media_plan(self) -> None:
-        products = self.intent.products
+        products: ProductIntent = self.intent.products
         requested: frozenset[ProductKind] = products.requested_products
+        compose_mkv: bool = ProductKind.MKV in requested and self._ready_product(ArtifactKind.FINAL_MKV) is None
+        compose_mp4: bool = ProductKind.MP4 in requested and self._ready_product(ArtifactKind.FINAL_MP4) is None
+        mkv_tracks: frozenset[MkvTrackProduct] = products.mkv_tracks if compose_mkv else frozenset()
+        burn: BurnSubtitleProduct = products.burn_subtitle_product if compose_mp4 else BurnSubtitleProduct.NONE
         needs_narration: bool = (
             ProductKind.NARRATION_AUDIO in requested
-            or MkvTrackProduct.NARRATION_AUDIO in products.mkv_tracks
-            or products.mp4_audio_source is Mp4AudioSource.NARRATION
+            or MkvTrackProduct.NARRATION_AUDIO in mkv_tracks
+            or (compose_mp4 and _mp4_uses_narration(products))
         )
-        if products.mp4_audio_source is Mp4AudioSource.AUTO and ProductKind.NARRATION_AUDIO in requested:
-            needs_narration = True
+        self._full_pl = self._ready_product(ArtifactKind.FULL_PL)
+        self._spoken_pl = self._ready_product(ArtifactKind.SPOKEN_PL)
+        self._displayed_pl = self._ready_product(ArtifactKind.DISPLAYED_PL)
+        if needs_narration:
+            self._narration = self._ready_product(ArtifactKind.NARRATION_AUDIO)
         self._adopt_manual_narration()
         needs_generated_narration: bool = needs_narration and self._narration is None
         needs_spoken: bool = ProductKind.SPOKEN_PL in requested or needs_generated_narration
         needs_displayed: bool = (
             ProductKind.DISPLAYED_PL in requested
-            or products.burn_subtitle_product is BurnSubtitleProduct.DISPLAYED_PL
-            or MkvTrackProduct.DISPLAYED_PL_SUBTITLES in products.mkv_tracks
+            or burn is BurnSubtitleProduct.DISPLAYED_PL
+            or MkvTrackProduct.DISPLAYED_PL_SUBTITLES in mkv_tracks
         )
         needs_full: bool = (
             ProductKind.FULL_PL in requested
-            or products.burn_subtitle_product is BurnSubtitleProduct.FULL_PL
-            or MkvTrackProduct.FULL_PL_SUBTITLES in products.mkv_tracks
+            or burn is BurnSubtitleProduct.FULL_PL
+            or MkvTrackProduct.FULL_PL_SUBTITLES in mkv_tracks
         )
         needs_source: bool = (
             ProductKind.SOURCE_SUBTITLES in requested
-            or products.burn_subtitle_product is BurnSubtitleProduct.SOURCE
-            or MkvTrackProduct.SOURCE_SUBTITLES in products.mkv_tracks
+            or burn is BurnSubtitleProduct.SOURCE
+            or MkvTrackProduct.SOURCE_SUBTITLES in mkv_tracks
         )
-        needs_any_subtitles: bool = needs_source or needs_full or needs_spoken or needs_displayed
+        needs_fresh_full: bool = self._full_pl is None and (
+            needs_full or (needs_spoken and self._spoken_pl is None) or (needs_displayed and self._displayed_pl is None)
+        )
 
-        if needs_any_subtitles:
+        if needs_source or needs_fresh_full:
             self._select_subtitle_input()
         self._prepare_bulk_extraction(needs_generated_narration=needs_generated_narration)
         if needs_source:
@@ -374,9 +401,9 @@ class _GroupPlanner:
         if ProductKind.NARRATION_AUDIO in requested and self._narration is not None:
             self._publish_audio(self._narration)
 
-        if ProductKind.MKV in requested:
+        if compose_mkv:
             self._compose_mkv()
-        if ProductKind.MP4 in requested:
+        if compose_mp4:
             self._compose_mp4()
 
     def _select_video(self) -> Artifact | None:
@@ -537,6 +564,13 @@ class _GroupPlanner:
                     artifacts=(selected,),
                 )
                 return None
+            if ProductKind.SOURCE_SUBTITLES in self._rebuild and selected.lifetime is ArtifactLifetime.SOURCE:
+                self._problem(
+                    "source_product_not_rebuildable",
+                    "Source subtitle files cannot be replaced by a generated product",
+                    artifacts=(selected,),
+                )
+                return None
             language: str | None = self._source_language(selected.language)
             if selected.language != language:
                 selected = replace(selected, language=language)
@@ -564,7 +598,6 @@ class _GroupPlanner:
         return extracted
 
     def _prepare_bulk_extraction(self, *, needs_generated_narration: bool) -> None:
-        """Plan one legacy MKV extraction when subtitles and source audio are both required."""
         selected: Artifact | _EmbeddedTrack | None = self._subtitle_input
         if (
             not needs_generated_narration
@@ -689,9 +722,13 @@ class _GroupPlanner:
         return full
 
     def _ensure_split_outputs(self, *, needs_spoken: bool, needs_displayed: bool) -> None:
+        needs_spoken = needs_spoken and self._spoken_pl is None
+        needs_displayed = needs_displayed and self._displayed_pl is None
         if not needs_spoken and not needs_displayed:
             return
-        selected: Artifact | _EmbeddedTrack | None = self._subtitle_input or self._select_subtitle_input()
+        selected: Artifact | _EmbeddedTrack | None = (
+            self._full_pl or self._subtitle_input or self._select_subtitle_input()
+        )
         if isinstance(selected, Artifact) and selected.kind is ArtifactKind.SPOKEN_PL:
             self._spoken_pl = self._convert_partial_product(selected, ProductKind.SPOKEN_PL)
             if needs_displayed:
@@ -1029,6 +1066,19 @@ class _GroupPlanner:
         )
         return min(candidates, key=_artifact_path_key, default=None)
 
+    def _ready_product(self, kind: ArtifactKind) -> Artifact | None:
+        if self.intent.mode is not RunMode.AUTO or kind in self._invalidated:
+            return None
+        candidates: tuple[Artifact, ...] = tuple(
+            artifact
+            for artifact in self.group.artifacts
+            if artifact.kind is kind
+            and artifact.state is ArtifactState.READY
+            and artifact.lifetime is ArtifactLifetime.DURABLE
+            and (artifact.subtitle_format is None or self._requested_format_matches(artifact))
+        )
+        return min(candidates, key=_artifact_path_key, default=None)
+
     def _intermediate(
         self,
         kind: ArtifactKind,
@@ -1080,10 +1130,8 @@ class _GroupPlanner:
                 artifacts=(existing,),
                 is_blocking=False,
             )
-        artifact_id: str = (
-            existing.artifact_id
-            if existing is not None
-            else create_artifact_id(self.group.group_id, kind, Path(destination.name))
+        artifact_id: str = create_artifact_id(
+            self.group.group_id, kind, Path(destination.name), variant="durable-output"
         )
         target = Artifact(
             artifact_id=artifact_id,
@@ -1237,6 +1285,50 @@ def _track_rank(track: _MediaTrackView, priorities: tuple[str, ...]) -> tuple[in
         priority = len(normalized_priorities)
         preferred = 1
     return preferred, priority, 0 if track.is_default else 1, track.track_id
+
+
+def _mp4_uses_narration(products: ProductIntent) -> bool:
+    return products.mp4_audio_source is Mp4AudioSource.NARRATION or (
+        products.mp4_audio_source is Mp4AudioSource.AUTO
+        and (
+            ProductKind.NARRATION_AUDIO in products.requested_products
+            or MkvTrackProduct.NARRATION_AUDIO in products.mkv_tracks
+        )
+    )
+
+
+def _invalidated_products(intent: GroupIntent, rebuild: frozenset[ProductKind]) -> frozenset[ArtifactKind]:
+    if not rebuild:
+        return frozenset()
+    invalidated: set[ProductKind] = set(rebuild)
+    if ProductKind.SOURCE_SUBTITLES in invalidated:
+        invalidated.add(ProductKind.FULL_PL)
+    if ProductKind.FULL_PL in invalidated:
+        invalidated.update({ProductKind.SPOKEN_PL, ProductKind.DISPLAYED_PL})
+    if ProductKind.SPOKEN_PL in invalidated:
+        invalidated.add(ProductKind.NARRATION_AUDIO)
+    products: ProductIntent = intent.products
+    track_products: dict[MkvTrackProduct, ProductKind] = {
+        MkvTrackProduct.SOURCE_SUBTITLES: ProductKind.SOURCE_SUBTITLES,
+        MkvTrackProduct.FULL_PL_SUBTITLES: ProductKind.FULL_PL,
+        MkvTrackProduct.DISPLAYED_PL_SUBTITLES: ProductKind.DISPLAYED_PL,
+        MkvTrackProduct.NARRATION_AUDIO: ProductKind.NARRATION_AUDIO,
+    }
+    if any(track_products[track] in invalidated for track in products.mkv_tracks):
+        invalidated.add(ProductKind.MKV)
+    burn: BurnSubtitleProduct = products.burn_subtitle_product
+    burned_product: ProductKind | None = {
+        BurnSubtitleProduct.NONE: None,
+        BurnSubtitleProduct.SOURCE: ProductKind.SOURCE_SUBTITLES,
+        BurnSubtitleProduct.FULL_PL: ProductKind.FULL_PL,
+        BurnSubtitleProduct.DISPLAYED_PL: ProductKind.DISPLAYED_PL,
+    }[burn]
+    if burned_product in invalidated or (ProductKind.NARRATION_AUDIO in invalidated and _mp4_uses_narration(products)):
+        invalidated.add(ProductKind.MP4)
+    return frozenset(
+        ArtifactKind(f"final_{product.value}" if product in {ProductKind.MKV, ProductKind.MP4} else product.value)
+        for product in invalidated
+    )
 
 
 def _task_id(group_id: str, kind: TaskKind, variant: str) -> str:

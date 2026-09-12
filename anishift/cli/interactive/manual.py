@@ -29,6 +29,7 @@ from anishift.application import (
     Mp4AudioSource,
     ProductIntent,
     ProductKind,
+    RebuildRequest,
     RunMode,
     SubtitleOutputFormat,
     SubtitleSourcePolicy,
@@ -49,6 +50,15 @@ _MENU_HINT: Final[str] = "↑↓ · Enter · Esc"
 
 _MULTI_HINT: Final[str] = "↑↓ · Enter/Space zmień · Esc wróć"
 """Keyboard hint used by multi-choice menus."""
+
+_GROUP_ACTIONS: Final[tuple[tuple[str, ProductKind | None], ...]] = (
+    ("Podgląd", None),
+    ("Dostosuj źródła i produkty", None),
+    ("Regeneruj lektora", ProductKind.NARRATION_AUDIO),
+    ("Regeneruj polskie napisy", ProductKind.FULL_PL),
+    ("Anuluj", None),
+)
+"""Actions applied to the selected episode scope."""
 
 _INPUT_HINT: Final[str] = "Enter zatwierdź · Esc wróć"
 """Keyboard hint used by external path input."""
@@ -364,7 +374,7 @@ class ManualController:
         self._groups: dict[str, InspectedSourceGroup] = {group.group_id: group for group in workspace.groups}
         self._group_ids: tuple[str, ...] = tuple(self._groups)
         self._labels: dict[str, str] = _group_labels(workspace.groups, service.workspace_root)
-        self._selected_groups: set[str] = {group.group_id for group in workspace.groups if not group.conflicts}
+        self._selected_groups: set[str] = set()
         self._drafts: dict[str, ManualDraft] = {
             group_id: default_draft(group_id, preset) for group_id in self._group_ids
         }
@@ -375,6 +385,7 @@ class ManualController:
         self._product_selection: set[ProductKind] = set()
         self._source_choices: tuple[_SourceChoice, ...] = ()
         self._plan: ExecutionPlan | None = None
+        self._automatic_preview: bool = False
         self._ready_run: ManualRun | None = None
         self._input_kind: _InputKind | None = None
         self._input_buffer: str = ""
@@ -458,7 +469,7 @@ class ManualController:
         return ManualResult.STAY
 
     def _handle_groups(self, key: str) -> ManualResult:
-        row_count: int = len(self._group_ids) + 2
+        row_count: int = len(self._group_ids) + len(_GROUP_ACTIONS)
         if key == "up":
             self._move(-1, row_count)
         elif key == "down":
@@ -470,15 +481,36 @@ class ManualController:
             else:
                 self._selected_groups.add(group_id)
             self._feedback = None
-        elif key == "enter" and self._selected == len(self._group_ids):
-            if not self._selected_groups:
-                self._feedback = "✗ Wybierz co najmniej jeden odcinek"
-            else:
-                self._edit_ids = tuple(group_id for group_id in self._group_ids if group_id in self._selected_groups)
-                self._edit_index = 0
-                self._open(_Screen.GROUP_ACTION)
         elif key == "enter":
+            return self._handle_scope_action(self._selected - len(self._group_ids))
+        elif key == "a":
+            self._selected_groups = set() if self._selected_groups else set(self._group_ids)
+        elif key == "home":
+            self._selected = 0
+        elif key == "end":
+            self._selected = len(self._group_ids)
+        return ManualResult.STAY
+
+    def _handle_scope_action(self, action: int) -> ManualResult:
+        if action == len(_GROUP_ACTIONS) - 1:
             return ManualResult.BACK_HOME
+        if not self._selected_groups:
+            self._feedback = "✗ Wybierz co najmniej jeden odcinek"
+            return ManualResult.STAY
+        self._edit_ids = tuple(group_id for group_id in self._group_ids if group_id in self._selected_groups)
+        self._edit_index = 0
+        self._automatic_preview = action != 1
+        if action == 1:
+            self._open(_Screen.GROUP_ACTION)
+            return ManualResult.STAY
+        product: ProductKind | None = _GROUP_ACTIONS[action][1]
+        rebuild: RebuildRequest | None = None if product is None else RebuildRequest(frozenset({product}))
+        try:
+            self._plan = self._service.plan_auto(self._edit_ids, self._preset, rebuild=rebuild)
+        except (AniShiftError, OSError, TypeError, ValueError) as problem:
+            self._plan = None
+            self._feedback = f"✗ Nie można zbudować planu · {_safe(str(problem))}"
+        self._open(_Screen.PREVIEW, clear_feedback=False)
         return ManualResult.STAY
 
     def _handle_group_action(self, key: str) -> ManualResult:
@@ -593,7 +625,7 @@ class ManualController:
         back_index: int = 1 if plan is not None and plan.can_execute else 0
         if self._selected == back_index:
             self._edit_index = 0
-            self._open(_Screen.GROUP_ACTION)
+            self._open(_Screen.GROUPS if self._automatic_preview else _Screen.GROUP_ACTION)
             return ManualResult.STAY
         return ManualResult.BACK_HOME
 
@@ -782,7 +814,7 @@ class ManualController:
             self._open(target)
             return ManualResult.STAY
         self._edit_index = 0
-        self._open(_Screen.GROUP_ACTION)
+        self._open(_Screen.GROUPS if self._automatic_preview else _Screen.GROUP_ACTION)
         return ManualResult.STAY
 
     def _navigate(self, key: str, count: int) -> bool:
@@ -841,7 +873,7 @@ class ManualController:
 
     def _render_groups(self, columns: int, rows: int) -> Text:
         labels: tuple[str, ...] = tuple(self._labels[group_id] for group_id in self._group_ids)
-        entries: tuple[str, ...] = (*labels, "Dalej", "Anuluj")
+        entries: tuple[str, ...] = (*labels, *(label for label, _ in _GROUP_ACTIONS))
         shown: tuple[str, ...] = _fit_entries(entries, columns)
         start, end = _visible_window(len(entries), self._selected, rows)
         content: Text = _header("WYBIERZ ODCINKI", columns, rows, end - start)
@@ -851,7 +883,7 @@ class ManualController:
                 f"{'●' if self._group_ids[index] in self._selected_groups else '○'} " if index < len(labels) else "  "
             )
             _append_row(content, left, shown[index], index == self._selected, marker)
-        return self._finish(content, left, _MULTI_HINT)
+        return self._finish(content, left, "↑↓ · Space wybierz · A wszystkie · End podgląd · Esc wróć")
 
     def _render_group_action(self, columns: int, rows: int) -> Text:
         entries: tuple[str, ...] = ("Użyj ustawień domyślnych", "Dostosuj ten odcinek", "Wróć")

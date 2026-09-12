@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, fields, replace
 from enum import StrEnum
-from typing import Final
+from types import UnionType
+from typing import Final, get_args, get_origin, get_type_hints
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
 from anishift.application.intents import GroupIntent
@@ -187,6 +188,37 @@ class RunSettingsSnapshot:
         _validate_runtime_settings(self)
         _require_unique(self.subtitle_language_priority, "subtitle language priorities")
         _require_unique(self.audio_language_priority, "audio language priorities")
+
+    def with_overrides(self, overrides: Mapping[str, object]) -> RunSettingsSnapshot:
+        """Validate run-only overrides and return an independent settings snapshot."""
+        values: dict[str, object] = dict(overrides)
+        names: set[str] = {field.name for field in fields(self)}
+        if values.keys() - names:
+            msg: str = "Unknown run setting override"
+            raise ValueError(msg)
+        annotations: dict[str, object] = get_type_hints(type(self))
+        for name, value in values.items():
+            if not _matches_setting_type(value, annotations[name]):
+                msg = f"Invalid value type for run setting {name}"
+                raise ValueError(msg)
+        return replace(self, **values)  # type: ignore[arg-type]  # Values match the dataclass annotations above.
+
+
+def _matches_setting_type(value: object, annotation: object) -> bool:
+    arguments: tuple[object, ...] = get_args(annotation)
+    if get_origin(annotation) is UnionType:
+        return any(_matches_setting_type(value, member) for member in arguments)
+    if get_origin(annotation) is tuple:
+        if not isinstance(value, tuple):
+            return False
+        if arguments and arguments[-1] is Ellipsis:
+            return all(_matches_setting_type(item, arguments[0]) for item in value)
+        return len(value) == len(arguments) and all(
+            _matches_setting_type(item, member) for item, member in zip(value, arguments, strict=True)
+        )
+    if annotation in {float, int, bool, str}:
+        return type(value) is annotation or (annotation is float and type(value) is int)
+    return isinstance(annotation, type) and isinstance(value, annotation)
 
 
 def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:

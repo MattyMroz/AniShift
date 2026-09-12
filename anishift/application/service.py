@@ -24,6 +24,7 @@ from anishift.application.intents import (
     ExternalAudioRole,
     GroupIntent,
     ProductIntent,
+    RebuildRequest,
     RequestOrigin,
     SubtitleOutputFormat,
     SubtitleSourcePolicy,
@@ -94,6 +95,7 @@ type ModelProber = Callable[[LlmConfig], None]
 
 type WorkspaceFingerprint = tuple[tuple[str, int, int], ...]
 """Path, size and modification time of every discovered file in scan order."""
+
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -354,10 +356,19 @@ class AppService:
         self,
         group_ids: Sequence[str],
         preset: AutoPreset | AutoPresetDraft,
+        *,
+        rebuild: RebuildRequest | None = None,
+        overrides: Mapping[str, object] | None = None,
     ) -> ExecutionPlan:
         """Plan selected groups from a stored or one-shot automatic preset."""
         resolved: AutoPreset = preset.to_preset() if isinstance(preset, AutoPresetDraft) else preset
-        return build_auto_plan(self._selected_groups(group_ids), resolved, self._settings_snapshot())
+        return build_auto_plan(
+            self._selected_groups(group_ids),
+            resolved,
+            self._settings_snapshot(),
+            rebuild=rebuild,
+            overrides=overrides,
+        )
 
     def plan_manual(self, intents: Sequence[GroupIntent]) -> ExecutionPlan:
         """Plan one independent explicit intent for every selected group."""
@@ -375,7 +386,6 @@ class AppService:
             return handle.result()
         except BaseException:
             handle.cancel()
-            # The cancelled run's own failure is expected here; the caller's exception wins.
             with suppress(Exception):
                 handle.result()
             raise
@@ -442,7 +452,6 @@ class AppService:
         }
         run_root: Path = run_temp_dir(self._workspace_root, run_id)
         session = RunSession(run_root)
-        # The session outlives this call; _finish_run closes it once the coordinator resolves.
         session.__enter__()
         try:
             handler: TaskHandler = self._handler_factory(run_root, plan, source_groups)
@@ -466,7 +475,6 @@ class AppService:
             session.__exit__(None, None, None)
             raise
         handle = RunHandle(run_id, submitted.cancel)
-        # An unnamed thread keeps the "anishift-" prefix reserved for pools that must be joined.
         threading.Thread(
             target=self._finish_run,
             args=(submitted, handle, session, handler),
@@ -493,7 +501,6 @@ class AppService:
             if result is not None and session.cleanup_warnings:
                 result = replace(result, warnings=(*result.warnings, *session.cleanup_warnings))
         finally:
-            # Every exit resolves the handle; an unresolved one would hang `execute` forever.
             self._release_run(handle.run_id)
             _settle(handle, result, failure)
 
@@ -689,7 +696,6 @@ class AppService:
         return deepcopy(candidate)
 
     def _valid_custom_model_id(self, model_id: str) -> bool:
-        """Accept provider identifiers without paths, control characters, or configured secrets."""
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*(?:/[A-Za-z0-9][A-Za-z0-9._:-]*)*", model_id) is None:
             return False
         if re.match(r"[A-Za-z]:", model_id) or any(part in {".", ".."} for part in model_id.split("/")):
@@ -855,7 +861,6 @@ class AppService:
         return _run_settings_snapshot(preferences)
 
     def _palantir_readiness(self, *, require_selected_model: bool = True) -> tuple[bool, str]:
-        """Report whether a token-configured Palantir provider could really run."""
         preferences: UserSettings = self.settings_snapshot()
         if not preferences.palantir_enrollment_base_url.strip():
             return False, "missing palantir_enrollment_base_url; set the enrollment address in Tools"
@@ -871,7 +876,6 @@ class AppService:
         return True, "ready"
 
     def _palantir_model_options(self) -> tuple[TranslationModelOption, ...]:
-        """Return configured Foundry aliases while rejecting example placeholders."""
         catalog: ModelCatalog = self.model_catalog()
         options: list[TranslationModelOption] = []
         for entry in catalog.models.values():
@@ -891,7 +895,6 @@ class AppService:
         return tuple(options)
 
     def _palantir_config(self, alias: str) -> LlmConfig:
-        """Resolve one alias into the configuration a connection test would use."""
         from anishift.application.runtime import palantir_llm_config  # noqa: PLC0415 - avoids an import cycle
 
         preferences: UserSettings = self.settings_snapshot()
@@ -903,7 +906,6 @@ class AppService:
         )
 
     def _prober(self) -> ModelProber:
-        """Return the injected connection test, or the production one."""
         if self._model_prober is not None:
             return self._model_prober
         from anishift.application.runtime import probe_palantir_model  # noqa: PLC0415 - avoids an import cycle
@@ -942,7 +944,6 @@ def _has_system_override(setting_id: str) -> bool:
 
 
 def _is_placeholder_model_id(model_id: str) -> bool:
-    """Reject example tokens that cannot identify a real provider model."""
     normalized: str = model_id.strip().casefold()
     return normalized.startswith("replace-with-") or normalized.startswith("<select-")
 

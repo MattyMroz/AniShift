@@ -1,8 +1,8 @@
 ---
 kind: implementation-plan
-status: READY
+status: IN_PROGRESS
 created: 2026-09-08
-updated: 2026-09-08
+updated: 2026-09-12
 baseline: a7d319f334a062d0fe016c774d9a5fb4fccbe9b6
 branch: work/local-automation/06-efficiency
 specification: spec.md
@@ -408,9 +408,9 @@ Wolno dopasować nazwy prywatnych helperów i podział dużego modułu do istnie
 
 ## 14. Stan wykonania
 
-**Ten commit dostarcza specyfikację, research i plan. Kod aplikacji nie został zmieniony.**
+**Stan 2026-09-12:** P01 i P03 zaimplementowane; P02 zaimplementowany, lecz audyt wykazał opisane niżej błędy integracji. P04 jest w toku: planner regeneracji i prosty wybór zakresu w panelu działają, integracja z właścicielem wymaga dokończenia. P05–P08 nie są wdrożone. Domyślny runtime nadal korzysta ze starego czuwania.
 
-P01–P08: niewykonane. G1–G3: nieprzeprowadzone. Pełna suite i pomiary Windows wymagają środowiska agenta implementującego. Ocena kodu w researchu jest statyczna dla wskazanego baseline; historyczne wyniki z odrzuconych planów nie są nowymi pomiarami.
+G1 ma wcześniejszy dowód dla sterowania opisany przy P02; część plikowa G1 oraz G2/G3 i pomiary całości pozostają do wykonania. Historyczne wyniki nie zastępują odbioru końcowej integracji.
 
 Po każdym etapie wykonawca dopisuje tutaj: commit, zakres, uruchomione komendy i rzeczywiste wyniki, dowiedzione AC oraz pozostały problem. Końcowe ukończenie oznacza pokrycie wszystkich AC-001–042 i I-001–005 wraz z dowodem Windows, a nie samo skompilowanie nowej struktury.
 
@@ -435,6 +435,17 @@ Po każdym etapie wykonawca dopisuje tutaj: commit, zakres, uruchomione komendy 
 - G1 (sterowanie) na tym Windows z katalogami tymczasowymi: rezydent przez `pythonw`, `status`, `set_auto` zapisany przed odpowiedzią, powtórzony `command_id` bez skutku, zły klucz odrzucony (`AuthenticationError`), `icacls control.key` = tylko bieżące konto, brak nasłuchu TCP (`netstat`), `shutdown` → kod 0 i usunięty `instance.json`.
 - Bramki po commicie: ruff, format, mypy (win32 i linux), pełny pytest exit 0, pre-commit czysto (po usunięciu pięciu komentarzy w testach, które hook odrzucił).
 - Odchylenia: snapshot ustawień zlecenia z jawnej listy 15 pól; `start` sprawdza aktualność przez `stat` źródeł grup podglądu, nie pełny `discover()`; `preview` na razie tylko w wariancie Auto (zaawansowany Manual w P04); `COMMAND_TIMEOUT_S = 300` dobrany, nie zmierzony.
+
+### Audyt i częściowe P04 — 2026-09-12
+
+- `61d743f`: trzy odtworzone błędy pozyskania: ponowne zamówienie nowszej wersji odcinka przy wcześniejszej luce, przepuszczanie jawnego sezonu 2 przez subskrypcję sezonu 1, brak ograniczenia znaną długością sezonu. Trzy nowe testy najpierw FAIL, po poprawkach cały moduł subskrypcji PASS.
+- P04: `plan_auto` i fasada przyjmują istniejący `RebuildRequest` oraz nadpisania ustawień ograniczone do zlecenia. Auto wykorzystuje gotowe produkty; force odtwarza wskazane produkty i ich rzeczywistych konsumentów. Stare pliki pozostają do poprawnej publikacji. Gotowy miks nie zastępuje brakującego suchego głosu.
+- Ręczny rozpoczyna z pustym zaznaczeniem. Wybrane odcinki przechodzą bezpośrednio do zbiorczego podglądu; dostępne są również dotychczasowa edycja zaawansowana, regeneracja lektora oraz polskich napisów. Test klawiatury wykonuje wybór wyłącznie 3 i 8. Planowanie i wykonanie panelu nadal wymagają przepięcia na rezydenta.
+- Korekta testów starego zachowania: gotowe polskie napisy mogą być wejściem zwykłego Auto (R-017), więc dawny bezwarunkowy zakaz ich użycia obowiązuje tylko przy jawnym force. Test własności sprawdza oba warianty i zachowanie oryginalnego deskryptora.
+- Kontrole po integracji: `uv run pytest` — 3743 passed, 11 skipped (9 sieciowych, 2 wymagające niedostępnych symlinków), 32,68 s; Ruff check i format PASS; mypy win32 i linux PASS, 498 plików. Po tym przebiegu zmieniono wyłącznie nazwy parametrów pomocniczej fabryki testowej dla zgodności z protokołem i odstępy przy nagłówkach sekcji; obie platformy mypy sprawdzono ponownie.
+- Audyt P02 odtworzył gubienie zdarzenia przy ACK subskrypcji, osierocone rezerwacje, brak rozliczenia nieoczekiwanego błędu runu, niepewne przyjęcie przy awarii zapisu receipt, zawieszenie shutdown przy oczekujących taskach tła oraz nadpisanie Wyłącz przez spóźniony wynik wyszukiwania. Poprawki są w toku; nie oznacza to ukończenia P02/P04 ani recovery.
+- Otwarte: bezpieczne zakończenie aktywnego grafu z zachowaniem niewykonanej pracy; rozliczanie wyników subskrypcji przez właściciela z generacją; snapshot całych ustawień i odtworzenie po awarii; wymagane dowody publikacji częściowej. P05–P08 pozostają niewykonane.
+- Organizacja: dalsza praca bez subagentów na życzenie właściciela; spójne poprawki i ukończone części otrzymują osobne commity po bramkach.
 
 ## 15. Korekty po przeglądzie wykonawcy (2026-09-08)
 

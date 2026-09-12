@@ -23,6 +23,7 @@ from anishift.application.intents import (
     Mp4AudioSource,
     ProductIntent,
     ProductKind,
+    RebuildRequest,
     RunMode,
     SubtitleOutputFormat,
     SubtitleSourcePolicy,
@@ -36,6 +37,7 @@ from anishift.application.planning import (
     RunSettingsSnapshot,
     TaskKind,
 )
+from anishift.application.products import product_path
 from anishift.application.scheduler import ResourceLimits
 from anishift.errors import PlanningError
 from anishift.services.media.types import ContainerKind, MediaCatalog, MediaTrack, MediaTrackKind
@@ -176,6 +178,209 @@ def _task_kinds(plan: ExecutionPlan) -> tuple[TaskKind, ...]:
 
 def _task(plan: ExecutionPlan, kind: TaskKind) -> PlanTask:
     return next(task for task in plan.tasks if task.kind is kind)
+
+
+def _complete_products() -> tuple[InspectedSourceGroup, AutoPreset]:
+    artifacts: list[Artifact] = [
+        _artifact(ArtifactKind.VIDEO_MKV, "1.mkv"),
+        _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", language="eng", subtitle_format="ass"),
+    ]
+    artifacts.extend(
+        _artifact(
+            kind,
+            product_path(Path("workspace"), "1", kind, subtitle_format="ass").name,
+            language="pol",
+            subtitle_format="ass",
+        )
+        for kind in (ArtifactKind.FULL_PL, ArtifactKind.SPOKEN_PL, ArtifactKind.DISPLAYED_PL)
+    )
+    artifacts.extend(
+        _artifact(kind, product_path(Path("workspace"), "1", kind).name)
+        for kind in (ArtifactKind.FINAL_MKV, ArtifactKind.FINAL_MP4)
+    )
+    artifacts.append(
+        _artifact(
+            ArtifactKind.NARRATION_AUDIO,
+            product_path(Path("workspace"), "1", ArtifactKind.NARRATION_AUDIO, audio_profile="eac3").name,
+            audio_codec="eac3",
+        )
+    )
+    products: ProductIntent = ProductIntent(
+        frozenset(ProductKind),
+        burn_subtitle_product=BurnSubtitleProduct.DISPLAYED_PL,
+        mkv_tracks=frozenset({MkvTrackProduct.FULL_PL_SUBTITLES, MkvTrackProduct.NARRATION_AUDIO}),
+        mp4_audio_source=Mp4AudioSource.NARRATION,
+    )
+    return _group(*artifacts), _preset(products)
+
+
+def test_complete_auto_reuses_products_without_work() -> None:
+    group: InspectedSourceGroup
+    preset: AutoPreset
+    group, preset = _complete_products()
+
+    plan: ExecutionPlan = plan_auto((group,), preset, _settings())
+
+    assert plan.can_execute
+    assert plan.tasks == ()
+    assert set(plan.artifacts) == set(group.artifacts)
+
+
+@pytest.mark.parametrize(
+    ("product", "replaced"),
+    [
+        (ProductKind.MKV, {ArtifactKind.FINAL_MKV}),
+        (ProductKind.MP4, {ArtifactKind.FINAL_MP4}),
+        (
+            ProductKind.NARRATION_AUDIO,
+            {ArtifactKind.NARRATION_AUDIO, ArtifactKind.FINAL_MKV, ArtifactKind.FINAL_MP4},
+        ),
+        (ProductKind.DISPLAYED_PL, {ArtifactKind.DISPLAYED_PL, ArtifactKind.FINAL_MP4}),
+        (
+            ProductKind.SPOKEN_PL,
+            {ArtifactKind.SPOKEN_PL, ArtifactKind.NARRATION_AUDIO, ArtifactKind.FINAL_MKV, ArtifactKind.FINAL_MP4},
+        ),
+        (
+            ProductKind.FULL_PL,
+            {
+                ArtifactKind.FULL_PL,
+                ArtifactKind.SPOKEN_PL,
+                ArtifactKind.DISPLAYED_PL,
+                ArtifactKind.NARRATION_AUDIO,
+                ArtifactKind.FINAL_MKV,
+                ArtifactKind.FINAL_MP4,
+            },
+        ),
+    ],
+)
+def test_force_replaces_only_requested_products_and_actual_consumers(
+    product: ProductKind, replaced: set[ArtifactKind]
+) -> None:
+    group: InspectedSourceGroup
+    preset: AutoPreset
+    group, preset = _complete_products()
+
+    plan: ExecutionPlan = plan_auto((group,), preset, _settings(), rebuild=RebuildRequest(frozenset({product})))
+
+    outputs: tuple[Artifact, ...] = tuple(
+        artifact
+        for artifact in plan.artifacts
+        if artifact.lifetime is ArtifactLifetime.DURABLE and artifact.state is ArtifactState.MISSING
+    )
+    assert plan.can_execute
+    assert plan.tasks
+    assert {artifact.kind for artifact in outputs} == replaced
+    assert set(group.artifacts).issubset(plan.artifacts)
+    assert all(artifact.planned_destination == artifact.preserved_path for artifact in outputs)
+    assert not {artifact.artifact_id for artifact in outputs} & {artifact.artifact_id for artifact in group.artifacts}
+    if product is not ProductKind.FULL_PL:
+        assert TaskKind.TRANSLATE_SUBTITLES not in _task_kinds(plan)
+    if product in {ProductKind.MKV, ProductKind.MP4, ProductKind.DISPLAYED_PL}:
+        assert TaskKind.SYNTHESIZE_SPEECH not in _task_kinds(plan)
+
+
+def test_narration_rebuild_reuses_full_translation_without_original_subtitles() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    full: Artifact = _artifact(ArtifactKind.FULL_PL, "1.pl.ass", language="pol", subtitle_format="ass")
+    narration: Artifact = _artifact(ArtifactKind.NARRATION_AUDIO, "1.eac3", audio_codec="eac3")
+    group: InspectedSourceGroup = _group(video, full, narration)
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.NARRATION_AUDIO}))
+    settings: RunSettingsSnapshot = _settings()
+
+    plan: ExecutionPlan = plan_auto(
+        (group,),
+        _preset(products),
+        settings,
+        rebuild=RebuildRequest(frozenset({ProductKind.NARRATION_AUDIO})),
+        overrides={"tts_voice_id": "replacement-voice", "voice_mix_offset_db": 2.0},
+    )
+
+    assert plan.can_execute
+    assert TaskKind.TRANSLATE_SUBTITLES not in _task_kinds(plan)
+    assert TaskKind.EXTRACT_SUBTITLES not in _task_kinds(plan)
+    assert _task(plan, TaskKind.SPLIT_SUBTITLES).requires == (full.artifact_id,)
+    assert TaskKind.SYNTHESIZE_SPEECH in _task_kinds(plan)
+    assert narration.artifact_id not in {artifact_id for task in plan.tasks for artifact_id in task.requires}
+    assert plan.settings.tts_voice_id == "replacement-voice"
+    assert plan.settings.voice_mix_offset_db == 2.0
+    assert settings == _settings()
+
+
+def test_export_rebuild_does_not_need_deleted_translation_or_tts_inputs() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    narration: Artifact = _artifact(ArtifactKind.NARRATION_AUDIO, "1.eac3", audio_codec="eac3")
+    final: Artifact = _artifact(ArtifactKind.FINAL_MKV, "1.pl.mkv")
+    products: ProductIntent = ProductIntent(
+        frozenset({ProductKind.MKV}), mkv_tracks=frozenset({MkvTrackProduct.NARRATION_AUDIO})
+    )
+
+    plan: ExecutionPlan = plan_auto(
+        (_group(video, narration, final),),
+        _preset(products),
+        _settings(),
+        rebuild=RebuildRequest(frozenset({ProductKind.MKV})),
+    )
+
+    assert plan.can_execute
+    assert _task_kinds(plan) == (TaskKind.COMPOSE_MKV,)
+    assert set(plan.tasks[0].requires) == {video.artifact_id, narration.artifact_id}
+
+
+def test_rebuild_includes_explicit_product_missing_from_preset() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.FULL_PL}))
+
+    plan: ExecutionPlan = plan_auto(
+        (_group(video),),
+        _preset(products),
+        _settings(),
+        rebuild=RebuildRequest(frozenset({ProductKind.NARRATION_AUDIO})),
+    )
+
+    assert plan.can_execute
+    assert TaskKind.SYNTHESIZE_SPEECH in _task_kinds(plan)
+    assert plan.groups[0].intent.products.requested_products == {ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO}
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"unknown_setting": "value"},
+        {"tts_voice_id": 1},
+        {"tts_voice_id": ""},
+        {"tts_postprocess_tempo": 0.0},
+        {"tts_postprocess_tempo": float("nan")},
+        {"tts_request_concurrency": True},
+        {"tts_request_concurrency": 0},
+        {"tts_engine_options": (("rate", object()),)},
+        {"audio_language_priority": ("jpn", 1)},
+    ],
+)
+def test_run_only_overrides_reject_unknown_fields_invalid_types_and_invalid_values(
+    overrides: dict[str, object],
+) -> None:
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.MKV}))
+
+    with pytest.raises(ValueError, match=r"[Uu]nknown run|[Ii]nvalid value|[Rr]untime IDs|tempo|concurrency"):
+        plan_auto((), _preset(products), _settings(), overrides=overrides)
+
+
+def test_source_rebuild_cannot_overwrite_an_original_sidecar() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    source: Artifact = _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", language="eng", subtitle_format="ass")
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.SOURCE_SUBTITLES}))
+
+    plan: ExecutionPlan = plan_auto(
+        (_group(video, source),),
+        _preset(products),
+        _settings(),
+        rebuild=RebuildRequest(frozenset({ProductKind.SOURCE_SUBTITLES})),
+    )
+
+    assert not plan.can_execute
+    assert any(problem.code == "source_product_not_rebuildable" for problem in plan.problems)
+    assert source in plan.artifacts
+    assert plan.tasks == ()
 
 
 def test_auto_embedded_subtitles_translate_and_burn_to_mp4() -> None:
@@ -600,11 +805,16 @@ def test_auto_chooses_mkv_and_ass_regardless_of_input_order() -> None:
     assert mp4.artifact_id not in compose.requires
 
 
-def test_auto_never_uses_existing_derived_product_as_input() -> None:
+def test_forced_translation_never_uses_existing_derived_product_as_input() -> None:
     video = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
     previous = _artifact(ArtifactKind.FULL_PL, "1.pl.ass", language="pol", subtitle_format="ass")
     products = ProductIntent(frozenset({ProductKind.FULL_PL}))
-    plan = plan_auto((_group(video, previous),), _preset(products), _settings())
+    plan: ExecutionPlan = plan_auto(
+        (_group(video, previous),),
+        _preset(products),
+        _settings(),
+        rebuild=RebuildRequest(frozenset({ProductKind.FULL_PL})),
+    )
     required = {artifact_id for task in plan.tasks for artifact_id in task.requires}
     assert previous.artifact_id not in required
     assert TaskKind.EXTRACT_SUBTITLES in _task_kinds(plan)
@@ -618,6 +828,8 @@ def test_auto_never_uses_existing_derived_product_as_input() -> None:
         and artifact.lifetime is ArtifactLifetime.DURABLE
     )
     assert target.preserved_path == previous.path
+    assert target.artifact_id != previous.artifact_id
+    assert previous in plan.artifacts
 
 
 def test_forced_translation_translates_declared_polish_source() -> None:

@@ -29,7 +29,7 @@ from anishift.application.handlers import (
     TranslationTaskHandler,
 )
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
-from anishift.application.intents import ProductIntent, ProductKind, RequestOrigin
+from anishift.application.intents import AutoPreset, ProductIntent, ProductKind, RebuildRequest, RequestOrigin
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, TaskKind
 from anishift.application.results import GroupStatus, RunResult
 from anishift.application.scheduler import RunHandle
@@ -315,6 +315,71 @@ def test_settings_draft_and_plan_snapshot_are_detached(tmp_path: Path) -> None:
     assert plan.settings.tts_request_concurrency == 85
     assert plan.settings.processing_order_policy is ProcessingOrderPolicy.READY_FIRST
     assert service.settings_snapshot().translation_concurrency == 3
+
+
+def test_service_rebuild_preview_preserves_files_and_run_only_settings(tmp_path: Path) -> None:
+    write_text_source(tmp_path / "Episode.txt", "Text")
+    target: Path = tmp_path / "Episode.pl.srt"
+    previous: bytes = b"1\n00:00:00,000 --> 00:00:01,000\nPrevious Polish text\n"
+    target.write_bytes(previous)
+    translation: FakeTranslationService = FakeTranslationService()
+    service: AppService = _service(tmp_path, translation)
+    group_id: str = service.discover().groups[0].group_id
+    preset: AutoPresetDraft = AutoPresetDraft("preview", "Preview", ProductIntent(frozenset({ProductKind.FULL_PL})))
+    preferences: UserSettings = service.settings_snapshot()
+    stored_presets: tuple[AutoPreset, ...] = service.list_presets()
+
+    ordinary: ExecutionPlan = service.plan_auto((group_id,), preset)
+    forced: ExecutionPlan = service.plan_auto(
+        (group_id,),
+        preset,
+        rebuild=RebuildRequest(frozenset({ProductKind.FULL_PL})),
+        overrides={"tts_voice_id": "one-run-voice", "tts_postprocess_tempo": 1.5},
+    )
+
+    assert ordinary.tasks == ()
+    assert forced.can_execute
+    assert TaskKind.TRANSLATE_SUBTITLES in {task.kind for task in forced.tasks}
+    assert forced.settings.tts_voice_id == "one-run-voice"
+    assert forced.settings.tts_postprocess_tempo == 1.5
+    assert target.read_bytes() == previous
+    assert translation.calls == []
+    assert service.settings_snapshot() == preferences
+    assert service.list_presets() == stored_presets
+    assert service.plan_auto((group_id,), preset).settings == ordinary.settings
+
+    try:
+        result: RunResult = service.execute(forced, CollectingRunSink())
+        assert result.succeeded
+        assert target.read_bytes() != previous
+        assert len(translation.calls) == 1
+    finally:
+        service.close()
+
+
+def test_failed_rebuild_preserves_previous_product(tmp_path: Path) -> None:
+    write_media_source(tmp_path / "Episode.mkv")
+    previous: bytes = b"1\n00:00:00,000 --> 00:00:01,000\nPrevious Polish text\n"
+    (tmp_path / "Episode.pl.srt").write_bytes(previous)
+    target: Path = tmp_path / "Episode.spoken.pl.srt"
+    target.write_bytes(previous)
+    inspector: WorkspaceInspector = WorkspaceInspector(FakeMediaProbe())
+    service: AppService = _service(tmp_path, FakeTranslationService(), inspector=inspector)
+    group_id: str = service.discover().groups[0].group_id
+    service = _service(tmp_path, FakeTranslationService(), fail_group_id=group_id, inspector=inspector)
+    service.discover()
+    preset: AutoPresetDraft = AutoPresetDraft("preview", "Preview", ProductIntent(frozenset({ProductKind.SPOKEN_PL})))
+    plan: ExecutionPlan = service.plan_auto(
+        (group_id,), preset, rebuild=RebuildRequest(frozenset({ProductKind.SPOKEN_PL}))
+    )
+
+    try:
+        result: RunResult = service.execute(plan, CollectingRunSink())
+        assert not result.succeeded
+        assert target.read_bytes() == previous
+        assert (tmp_path / "Episode.pl.srt").read_bytes() == previous
+    finally:
+        service.close()
 
 
 def test_auto_plan_preserves_ready_first_four_file_llm_queue(tmp_path: Path) -> None:
