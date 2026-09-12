@@ -17,6 +17,7 @@ from anishift.application import SCAN_INTERVAL_S, SUBSCRIPTION_CHECK_INTERVAL_S,
 from anishift.cli.exit_codes import EXIT_REFUSED, EXIT_SUCCESS
 from anishift.errors import AniShiftError
 from anishift.paths import config_path
+from anishift.platform.directory_watch import DirectoryChange, DirectoryWatch
 from anishift.platform.process_lock import ProcessLock
 from anishift.utils.logger import get_logger
 
@@ -327,7 +328,15 @@ def run_resident(
         clear_endpoint(endpoint)
         server = ControlServer(endpoint, ensure_authkey(state_dir), owner.handle, on_disconnect=owner.disconnect)
         owner.attach_broadcast(server.broadcast)
+        file_watch: DirectoryWatch | None = None
         try:
+            file_watch = DirectoryWatch(service.workspace_root, owner.files_changed)
+            owner.files_changed(
+                DirectoryChange(
+                    reconcile=True,
+                    reason="polling_fallback" if file_watch.mode == "polling" else "startup",
+                )
+            )
             write_instance(
                 state_dir,
                 InstanceRecord(
@@ -343,6 +352,8 @@ def run_resident(
                 on_ready()
             owner.serve()
         finally:
+            if file_watch is not None:
+                file_watch.close()
             server.close()
             remove_instance(state_dir)
     finally:

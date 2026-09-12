@@ -65,6 +65,7 @@ class RunRequest:
     cancel: CommitCancellationToken
     events: RunEventSink
     origin: RequestOrigin = RequestOrigin.USER
+    automatic: bool = False
 
     def __post_init__(self) -> None:
         if not self.run_id.strip():

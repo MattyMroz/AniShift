@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from typing import Final, cast
 import pytest
 from fakes import write_text_source
 
+import anishift.application.watch as watch_module
 from anishift.application.automation import AutomationOwner
 from anishift.application.control import AutomationPolicy, RequestState, SourceSelection, WatchState
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
@@ -25,6 +27,7 @@ from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ExecutionError
+from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import (
     ControlClient,
     ControlError,
@@ -106,9 +109,13 @@ class _Service:
         self.handles: dict[str, RunHandle] = {}
         self.active: list[str] = []
         self.discover_entered: threading.Event = threading.Event()
+        self.discover_calls: int = 0
+        self.submitted_event: threading.Event = threading.Event()
         self.discover_release: threading.Event | None = None
 
-    def discover(self) -> object:
+    def discover(self, *, changed_paths: Sequence[Path] | None = None) -> object:
+        del changed_paths
+        self.discover_calls += 1
         self.discover_entered.set()
         if self.discover_release is not None:
             assert self.discover_release.wait(timeout=_TIMEOUT_S)
@@ -139,8 +146,9 @@ class _Service:
         *,
         origin: RequestOrigin,
         run_id: str | None = None,
+        automatic: bool = False,
     ) -> RunHandle:
-        del plan, sink, origin
+        del plan, sink, origin, automatic
         if self.submit_failure is not None:
             raise self.submit_failure
         identity: str = run_id or "run-1"
@@ -148,6 +156,7 @@ class _Service:
         self.active.append(identity)
         handle = RunHandle(identity, lambda: None)
         self.handles[identity] = handle
+        self.submitted_event.set()
         return handle
 
     def finish(self, run_id: str, status: GroupStatus, group_id: str) -> None:
@@ -201,8 +210,9 @@ def test_the_resident_accepts_scoped_intents_and_keeps_their_complete_settings(
         *,
         origin: RequestOrigin,
         run_id: str | None = None,
+        automatic: bool = False,
     ) -> RunHandle:
-        del sink, origin
+        del sink, origin, automatic
         assert run_id is not None
         submitted.append(plan)
         handle: RunHandle = RunHandle(run_id, lambda: None)
@@ -522,7 +532,8 @@ def test_a_failed_state_save_refuses_the_command_and_changes_nothing(
 
     assert answer.code is ControlErrorCode.INTERNAL
     assert owner.state.policy.auto_enabled is False
-    assert service.background_admission == [False]
+    assert service.background_admission == [False, False]
+    assert not thread.is_alive()
 
 
 def test_a_slow_preview_never_delays_switching_auto(tmp_path: Path) -> None:
@@ -833,6 +844,125 @@ def test_a_closed_editor_releases_its_groups_and_invalidates_previews(tmp_path: 
             waiting.join(_TIMEOUT_S)
         client.close()
         server.close()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows file sharing")
+def test_file_events_wait_for_writers_and_manual_reservations_before_admitting_one_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    held: bool,
+) -> None:
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
+    monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
+    service, store, group_id = _library(tmp_path)
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True)))
+    owner: AutomationOwner = _owner(service, store)
+    observed: threading.Event = threading.Event()
+
+    def broadcast(frame: Mapping[str, object], terminal: bool) -> None:
+        del terminal
+        payload: object = frame.get("payload")
+        if isinstance(payload, Mapping) and payload.get("library_groups") == 1:
+            observed.set()
+
+    owner.attach_broadcast(broadcast)
+    thread: threading.Thread = _serving(owner)
+    source: Path = tmp_path / "Episode.txt"
+    try:
+        if held:
+            assert owner.handle(_request("reserve", {"client_id": _CLIENT, "group_ids": [group_id]})).ok
+        with source.open("r+b"):
+            owner.files_changed(DirectoryChange(paths=(source,)))
+            assert observed.wait(_TIMEOUT_S)
+            assert not service.submitted_event.wait(0.06)
+        if held:
+            assert not service.submitted_event.wait(0.04)
+            assert owner.handle(
+                _request(
+                    "release",
+                    {"client_id": _CLIENT, "group_ids": [group_id]},
+                    command_id="release",
+                )
+            ).ok
+        assert service.submitted_event.wait(_TIMEOUT_S)
+        assert len(service.submitted) == 1
+        assert store.load().requests[0].origin is RequestOrigin.USER
+        for _ in range(20):
+            owner.files_changed(DirectoryChange(paths=(source,)))
+        service.finish(service.submitted[0], GroupStatus.SUCCEEDED, group_id)
+    finally:
+        for run_id in tuple(service.active):
+            service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+    assert len(service.submitted) == 1
+
+
+def test_auto_off_keeps_the_library_current_and_auto_on_admits_without_another_file_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
+    monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
+    service, store, group_id = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    observed: threading.Event = threading.Event()
+
+    def broadcast(frame: Mapping[str, object], terminal: bool) -> None:
+        del terminal
+        payload: object = frame.get("payload")
+        if isinstance(payload, Mapping) and payload.get("library_groups") == 1:
+            observed.set()
+
+    owner.attach_broadcast(broadcast)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        assert observed.wait(_TIMEOUT_S)
+        assert not service.submitted_event.wait(0.06)
+        checks: int = service.discover_calls
+        assert owner.handle(_request("set_auto", {"enabled": True})).ok
+        assert service.submitted_event.wait(_TIMEOUT_S)
+        assert service.discover_calls == checks
+        assert store.load().requests[0].origin is RequestOrigin.BACKGROUND
+        service.finish(service.submitted[0], GroupStatus.SUCCEEDED, group_id)
+    finally:
+        for run_id in tuple(service.active):
+            service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+    assert len(service.submitted) == 1
+
+
+@pytest.mark.parametrize("name", ["Episode.srt", "Episode.pl.srt"])
+def test_new_sidecars_and_changed_products_invalidate_the_affected_preview(tmp_path: Path, name: str) -> None:
+    service, store, _ = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        preview: ControlResponse = owner.handle(_request("preview", {"client_id": _CLIENT}))
+        assert preview.ok
+        source: Path = tmp_path / name
+        source.write_text("1\n00:00:00,000 --> 00:00:01,000\nText\n", encoding="utf-8")
+        owner.files_changed(DirectoryChange(paths=(source,)))
+        started: ControlResponse = owner.handle(
+            _request(
+                "start",
+                {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]},
+                command_id="start",
+            )
+        )
+        assert not started.ok
+        assert started.code is ControlErrorCode.STALE_PREVIEW
+        assert not service.submitted
+    finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
     assert not thread.is_alive()

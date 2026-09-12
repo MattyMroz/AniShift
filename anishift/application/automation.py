@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
-from queue import SimpleQueue
+from pathlib import Path
+from queue import Empty, SimpleQueue
 from secrets import token_hex
 from typing import TYPE_CHECKING, Final, cast
 
-from anishift.application.artifacts import ArtifactLifetime, ArtifactState
+from anishift.application.artifacts import ArtifactLifetime, ArtifactState, create_group_id
 from anishift.application.control import (
+    AcquisitionState,
     CommandReceipt,
     ManualHandledMarker,
     ProcessingRequest,
@@ -21,6 +24,7 @@ from anishift.application.control import (
     Reservation,
     SourceSelection,
     WatchState,
+    auto_admissible,
     mark_manual_handled,
     record_command,
     record_request,
@@ -28,13 +32,16 @@ from anishift.application.control import (
     reserve,
 )
 from anishift.application.control_payloads import decode_intent
+from anishift.application.discovery import ArtifactName, classify_artifact, is_derived_product
 from anishift.application.events import sanitize_event_message
+from anishift.application.inspection import InspectedWorkspace
 from anishift.application.intents import AutoPreset, GroupIntent, RebuildRequest, RequestOrigin, RunMode
 from anishift.application.results import GroupStatus
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids
-from anishift.application.watch import snapshot_sources, source_fingerprint
+from anishift.application.watch import WatchLedger, snapshot_sources, source_fingerprint
 from anishift.errors import AniShiftError
+from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
 from anishift.utils.logger import get_logger
 
@@ -43,7 +50,7 @@ if TYPE_CHECKING:
 
     from anishift.application.control import CommandOutcome, SettingsSnapshot, SourceFingerprint
     from anishift.application.events import RunEvent
-    from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace
+    from anishift.application.inspection import InspectedSourceGroup
     from anishift.application.intents import ProductKind
     from anishift.application.planning import ExecutionPlan, RunSettingsSnapshot
     from anishift.application.results import RunResult
@@ -66,6 +73,9 @@ IO_THREAD_PREFIX: Final[str] = "anishift-owner-io"
 
 IO_WORKERS: Final[int] = 2
 """Slow commands performed beside each other while the owner keeps answering."""
+
+_MAX_CHANGED_PATHS: Final[int] = 4096
+"""Pending changed paths retained before falling back to one full reconciliation."""
 
 COMMAND_TIMEOUT_S: Final[float] = 300.0
 """Wait for one command before the connection is answered with an internal fault."""
@@ -169,6 +179,8 @@ class _Preview:
     source_selection: SourceSelection
     session_id: str | None
     rebuild: RebuildRequest | None
+    automatic: bool = False
+    file_version: int = 0
 
 
 @dataclass(slots=True)
@@ -198,6 +210,16 @@ class _Disconnected:
     session_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class _FilesChanged:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _Inspected:
+    workspace: InspectedWorkspace | None
+
+
 class AutomationOwner:
     """Owns the watch state, admits requests and answers every control command."""
 
@@ -221,7 +243,9 @@ class AutomationOwner:
         if self._state.reservations:
             self._state = replace(self._state, reservations=())
             self._save(self._state)
-        self._queue: SimpleQueue[_Command | _Completion | _Disconnected] = SimpleQueue()
+        self._queue: SimpleQueue[_Command | _Completion | _Disconnected | _FilesChanged | _Inspected | None] = (
+            SimpleQueue()
+        )
         self._pool: ThreadPoolExecutor = ThreadPoolExecutor(
             max_workers=IO_WORKERS,
             thread_name_prefix=IO_THREAD_PREFIX,
@@ -232,6 +256,64 @@ class AutomationOwner:
         self._client_sessions: dict[str, str] = {}
         self._pending: dict[str, frozenset[ProductKind]] = {}
         self._shutting_down: bool = False
+        self._files_lock: threading.Lock = threading.Lock()
+        self._changed_paths: set[Path] = set()
+        self._reconcile: bool = False
+        self._files_queued: bool = False
+        self._inspecting: bool = False
+        self._library: InspectedWorkspace | None = None
+        self._ledger: WatchLedger = WatchLedger()
+        self._settle_at: float | None = None
+        self._watch_mode: str = "inactive"
+        self._fresh_sources: set[Path] = set()
+        self._file_version: int = 0
+        self._group_versions: dict[str, int] = {}
+        self._reconciled_version: int = 0
+
+    def files_changed(self, change: DirectoryChange) -> None:
+        """Coalesce filesystem changes into one bounded owner notification."""
+        paths: set[Path] = {path for path in change.paths if self._watched_path(path)}
+        if not paths and not change.reconcile:
+            return
+        self._invalidate_changed_inputs(paths, reconcile=change.reconcile)
+        with self._files_lock:
+            self._watch_mode = "polling" if change.reason == "polling_fallback" else "native"
+            self._changed_paths.update(paths)
+            self._fresh_sources.update(path for path in paths if not is_derived_product(path))
+            self._reconcile |= change.reconcile or len(self._changed_paths) > _MAX_CHANGED_PATHS
+            if self._reconcile:
+                self._changed_paths.clear()
+            if self._files_queued or (not self._changed_paths and not self._reconcile):
+                return
+            self._files_queued = True
+        self._queue.put(_FilesChanged())
+
+    def _invalidate_changed_inputs(self, paths: set[Path], *, reconcile: bool) -> None:
+        with self._previews_lock:
+            self._file_version += 1
+            if reconcile:
+                self._reconciled_version = self._file_version
+            for path in paths:
+                candidate: ArtifactName | None = classify_artifact(path)
+                if candidate is not None:
+                    identity: str = create_group_id(
+                        path.parent.relative_to(self._service.workspace_root), candidate.stem
+                    )
+                    self._group_versions[identity] = self._file_version
+                    continue
+                affected: set[str] = {
+                    group.group_id
+                    for preview in self._previews.values()
+                    for group in preview.groups
+                    if group.source.directory.is_relative_to(path)
+                }
+                self._group_versions.update(dict.fromkeys(affected, self._file_version))
+
+    def _watched_path(self, path: Path) -> bool:
+        if not path.is_relative_to(self._service.workspace_root):
+            return False
+        parts: tuple[str, ...] = path.relative_to(self._service.workspace_root).parts
+        return not any(part.startswith(".") for part in parts) and (not parts or parts[0].casefold() != "temp")
 
     @property
     def instance_id(self) -> str:
@@ -259,8 +341,7 @@ class AutomationOwner:
 
     def request_shutdown(self) -> None:
         """Ask the owner to stop admitting work and end once the active requests finish."""
-        shutdown = ControlRequest(command_id=f"shutdown-{token_hex(_ID_BYTES)}", kind="shutdown", payload={})
-        self._queue.put(_Command(request=shutdown, done=threading.Event()))
+        self._queue.put(None)
 
     def disconnect(self, session_id: str) -> None:
         """Release the editing state owned by a closed control connection."""
@@ -278,16 +359,39 @@ class AutomationOwner:
     def _loop(self) -> None:
         while True:
             try:
-                item: _Command | _Completion | _Disconnected = self._queue.get()
+                timeout: float | None = (
+                    None if self._settle_at is None else max(0.0, self._settle_at - time.monotonic())
+                )
+                item = self._queue.get(timeout=timeout)
+            except Empty:
+                self._refresh_automatic()
+                continue
             except KeyboardInterrupt:
                 self._begin_shutdown()
                 if self._drained():
                     return
                 continue
-            if isinstance(item, _Completion):
+            if item is None:
+                self._begin_shutdown()
+            elif isinstance(item, _Completion):
                 self._record_completion(item)
+                self._refresh_automatic()
             elif isinstance(item, _Disconnected):
                 self._release_session(item.session_id)
+                self._refresh_automatic()
+            elif isinstance(item, _FilesChanged):
+                self._inspect_changes()
+            elif isinstance(item, _Inspected):
+                self._inspecting = False
+                if item.workspace is not None:
+                    self._library = item.workspace
+                    with self._files_lock:
+                        self._fresh_sources.intersection_update(
+                            artifact.path for group in item.workspace.groups for artifact in group.artifacts
+                        )
+                    self._refresh_automatic()
+                    self._publish_state()
+                self._inspect_changes()
             else:
                 self._dispatch(item)
             if self._drained():
@@ -296,7 +400,101 @@ class AutomationOwner:
     def _drained(self) -> bool:
         if not self._shutting_down:
             return False
-        return not self._pending and not self._service.active_run_ids()
+        return not self._pending and not self._service.active_run_ids() and not self._inspecting
+
+    def _inspect_changes(self) -> None:
+        if self._inspecting or self._shutting_down:
+            return
+        with self._files_lock:
+            self._files_queued = False
+            if not self._changed_paths and not self._reconcile:
+                return
+            paths: tuple[Path, ...] | None = None if self._reconcile else tuple(self._changed_paths)
+            self._changed_paths.clear()
+            self._reconcile = False
+        self._inspecting = True
+        self._pool.submit(self._inspect_library, paths)
+
+    def _inspect_library(self, paths: tuple[Path, ...] | None) -> None:
+        workspace: InspectedWorkspace | None = None
+        try:
+            workspace = self._service.discover(changed_paths=paths)
+        except (AniShiftError, OSError) as problem:
+            logger.warning("Library reconciliation failed", error_class=type(problem).__name__)
+        finally:
+            self._queue.put(_Inspected(workspace))
+
+    def _refresh_automatic(self) -> None:
+        self._settle_at = None
+        workspace: InspectedWorkspace | None = self._library
+        if self._shutting_down or not self._state.policy.auto_enabled or workspace is None or not workspace.groups:
+            return
+        try:
+            self._admit_library(workspace)
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("Automatic library admission failed", error_class=type(problem).__name__)
+
+    def _admit_library(self, workspace: InspectedWorkspace) -> None:
+        preset: AutoPreset = self._service.get_preset(self._service.default_preset_id())
+        eligible: tuple[InspectedSourceGroup, ...] = tuple(
+            group
+            for group in workspace.groups
+            if auto_admissible(
+                self._state,
+                self._state.policy,
+                group.group_id,
+                ""
+                if group.source.directory == self._service.workspace_root
+                else group.source.directory.relative_to(self._service.workspace_root).as_posix(),
+                _group_fingerprint(group),
+                preset.products.requested_products,
+            )
+        )
+        ready: tuple[str, ...] = self._ledger.candidates(InspectedWorkspace(eligible, ()), preset, time.monotonic())
+        self._settle_at = self._ledger.next_check_at
+        for group in eligible:
+            if group.group_id not in ready:
+                continue
+            self._start_automatic(group, preset)
+
+    def _start_automatic(self, group: InspectedSourceGroup, preset: AutoPreset) -> None:
+        origin: RequestOrigin | None = self._file_origin(group)
+        if origin is None:
+            return
+        plan: ExecutionPlan = self._service.plan_auto((group.group_id,), preset)
+        if not plan.can_execute or not plan.tasks:
+            return
+        preview: _Preview = _Preview(
+            preview_id=f"preview-{token_hex(_ID_BYTES)}",
+            client_id=self._instance_id,
+            plan=plan,
+            groups=(group,),
+            fingerprints={group.group_id: _group_fingerprint(group)},
+            products=preset.products.requested_products,
+            origin=origin,
+            source_selection=SourceSelection.AUTO,
+            session_id=None,
+            rebuild=None,
+            automatic=True,
+        )
+        command: ControlRequest = ControlRequest(command_id=f"auto-{token_hex(_ID_BYTES)}", kind="start", payload={})
+        response: ControlResponse = self._admit(command, preview, (group.group_id,), self._instance_id)
+        if response.ok:
+            self._ledger.mark_started((group.group_id,))
+            with self._files_lock:
+                self._fresh_sources.difference_update(artifact.path for artifact in group.artifacts)
+
+    def _file_origin(self, group: InspectedSourceGroup) -> RequestOrigin | None:
+        paths: set[Path | None] = {artifact.path for artifact in group.artifacts}
+        for acquisition in reversed(self._state.acquisitions):
+            if not any(
+                self._service.workspace_root / acquisition.directory / name in paths
+                for name in acquisition.required_files
+            ):
+                continue
+            return acquisition.origin if acquisition.state is AcquisitionState.COMPLETE else None
+        with self._files_lock:
+            return RequestOrigin.USER if self._fresh_sources.intersection(paths) else RequestOrigin.BACKGROUND
 
     def _dispatch(self, command: _Command) -> None:
         request: ControlRequest = command.request
@@ -391,6 +589,8 @@ class AutomationOwner:
             "instance_id": self._instance_id,
             "pid": os.getpid(),
             "auto_enabled": policy.auto_enabled,
+            "watch_mode": self._watch_mode,
+            "library_groups": 0 if self._library is None else len(self._library.groups),
             "directory_exceptions": dict(policy.directory_exceptions),
             "requests": [
                 {
@@ -421,6 +621,7 @@ class AutomationOwner:
         if refusal is not None:
             return refusal
         self._service.set_background_admission(enabled)
+        self._refresh_automatic()
         self._publish_state()
         return ControlResponse.succeeded(outcome)
 
@@ -439,6 +640,7 @@ class AutomationOwner:
         refusal: ControlResponse | None = self._commit(request, replace(self._state, policy=policy), outcome)
         if refusal is not None:
             return refusal
+        self._refresh_automatic()
         self._publish_state()
         return ControlResponse.succeeded(outcome)
 
@@ -484,11 +686,15 @@ class AutomationOwner:
             }
         outcome: dict[str, str | int | bool | None] = {"released": len(group_ids)}
         refusal: ControlResponse | None = self._commit(request, candidate, outcome)
+        if refusal is None:
+            self._refresh_automatic()
         return refusal if refusal is not None else ControlResponse.succeeded(outcome)
 
     # ── Preview and start ─────────────────────────────────────────────────────
 
     def _preview(self, request: ControlRequest) -> ControlResponse:
+        with self._previews_lock:
+            version: int = self._file_version
         client_id: str | None = _text(request.payload, "client_id")
         origin: RequestOrigin | None = _origin(request.payload)
         selection: SourceSelection | None = _selection(request.payload)
@@ -514,10 +720,14 @@ class AutomationOwner:
             source_selection=selection,
             session_id=request.session_id,
             rebuild=rebuild,
+            file_version=version,
         )
         with self._previews_lock:
             if request.session_id is not None and request.session_id not in self._sessions:
                 return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
+            if self._preview_changed(preview):
+                return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
+            self._previews = {key: value for key, value in self._previews.items() if value.client_id != client_id}
             self._previews[preview.preview_id] = preview
         return ControlResponse.succeeded(
             {
@@ -605,15 +815,24 @@ class AutomationOwner:
             return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _UNKNOWN_PREVIEW)
         if preview.client_id != client_id:
             return ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD)
+        with self._previews_lock:
+            changed: bool = self._preview_changed(preview)
         if not preview.plan.can_execute:
             return ControlResponse.refused(ControlErrorCode.INVALID_PAYLOAD, _NOT_PLANNABLE)
-        if any(_group_fingerprint(group) != preview.fingerprints[group.group_id] for group in preview.groups):
+        if changed or any(
+            _group_fingerprint(group) != preview.fingerprints[group.group_id] for group in preview.groups
+        ):
             with self._previews_lock:
                 self._previews.pop(preview.preview_id, None)
             return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
         if self._blocked(tuple(group.group_id for group in preview.groups), client_id):
             return ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD)
         return None
+
+    def _preview_changed(self, preview: _Preview) -> bool:
+        return self._reconciled_version > preview.file_version or any(
+            self._group_versions.get(group.group_id, 0) > preview.file_version for group in preview.groups
+        )
 
     def _admit(
         self,
@@ -636,6 +855,7 @@ class AutomationOwner:
             attempts=1,
             accepted_at=self._now(),
             intents=tuple(group.intent for group in preview.plan.groups),
+            automatic=preview.automatic,
         )
         candidate: WatchState = record_request(self._state, accepted)
         for group_id in group_ids:
@@ -654,6 +874,7 @@ class AutomationOwner:
                 _OwnerSink(self._publish_event),
                 origin=preview.origin,
                 run_id=run_id,
+                automatic=preview.automatic,
             )
             submitted = True
         finally:
@@ -698,6 +919,7 @@ class AutomationOwner:
         if finished.origin is RequestOrigin.USER and finished.state is not RequestState.PAUSED and products:
             candidate = _marked(candidate, finished, products, self._now())
         self._save(candidate)
+        self._ledger.mark_finished(recorded.group_ids)
         self._publish_state()
 
     # ── Settings, subscriptions and shutdown ──────────────────────────────────
@@ -722,6 +944,7 @@ class AutomationOwner:
         if self._shutting_down:
             return
         self._shutting_down = True
+        self._settle_at = None
         self._service.set_background_admission(False)
         self._service.drain()
         logger.info("The resident is shutting down", active_runs=len(self._service.active_run_ids()))

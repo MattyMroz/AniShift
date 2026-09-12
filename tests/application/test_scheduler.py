@@ -303,6 +303,7 @@ def _submit(  # noqa: PLR0913 - one coordinator context needs every collaborator
     handler_factory: Callable[[Path], _FakeHandler],
     *,
     origin: RequestOrigin = RequestOrigin.USER,
+    automatic: bool = False,
 ) -> tuple[RunHandle, _FakeHandler, _CollectingSink]:
     run_root: Path = tmp_path / "temp" / run_id
     session: RunSession = stack.enter_context(RunSession(run_root))
@@ -317,6 +318,7 @@ def _submit(  # noqa: PLR0913 - one coordinator context needs every collaborator
             cancel=NeverCancelledToken(),
             events=sink,
             origin=origin,
+            automatic=automatic,
         )
     )
     return handle, handler, sink
@@ -1039,7 +1041,11 @@ def test_strict_natural_background_does_not_hold_an_independent_manual_result(tm
         coordinator.close()
 
 
-def test_paused_background_admission_finishes_started_work_and_lets_manual_run(tmp_path: Path) -> None:
+@pytest.mark.parametrize("origin", [RequestOrigin.BACKGROUND, RequestOrigin.USER])
+def test_paused_automatic_admission_finishes_started_work_and_lets_manual_run(
+    tmp_path: Path,
+    origin: RequestOrigin,
+) -> None:
     background: ExecutionPlan = _plan(
         tmp_path,
         (_TaskSpec("background", "background-0"), _TaskSpec("background", "background-1")),
@@ -1056,7 +1062,8 @@ def test_paused_background_admission_finishes_started_work_and_lets_manual_run(t
                 "run-background",
                 background,
                 lambda run_root: _FakeHandler(run_root, barriers={"background-0": hold}),
-                origin=RequestOrigin.BACKGROUND,
+                origin=origin,
+                automatic=True,
             )
             assert _wait_until(lambda: "background-0" in background_handler.started)
             coordinator.set_background_admission(False)

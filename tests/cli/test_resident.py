@@ -12,7 +12,7 @@ from typing import Any, Final, cast
 
 import pytest
 
-from anishift.application import AppService
+from anishift.application import AppService, InspectedWorkspace
 from anishift.cli import control as cli_control
 from anishift.cli.exit_codes import EXIT_REFUSED, EXIT_SUCCESS
 from anishift.cli.watch import RESIDENT_LOCK_FILE_NAME, run_resident, spawn_resident
@@ -35,12 +35,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
-from anishift.application import AppService
+from anishift.application import AppService, InspectedWorkspace
 from anishift.cli.watch import run_resident
 
 
 class _Service:
     subscriptions = None
+
+    def __init__(self, workspace_root):
+        self.workspace_root = workspace_root
+        workspace_root.mkdir(parents=True, exist_ok=True)
+
+    def discover(self, *, changed_paths=None):
+        return InspectedWorkspace((), ())
 
     def active_run_ids(self):
         return ()
@@ -61,7 +68,7 @@ class _Service:
 state_dir = Path(sys.argv[1])
 ready = Path(sys.argv[2])
 code = run_resident(
-    cast(AppService, _Service()),
+    cast(AppService, _Service(state_dir / "workspace")),
     state_dir=state_dir,
     on_ready=lambda: ready.write_text("ready", encoding="utf-8"),
 )
@@ -70,9 +77,15 @@ Path(sys.argv[3]).write_text(str(code), encoding="utf-8")
 
 
 class _Service:
-    def __init__(self) -> None:
+    def __init__(self, workspace_root: Path) -> None:
+        self.workspace_root: Path = workspace_root
+        workspace_root.mkdir(parents=True, exist_ok=True)
         self.subscriptions: None = None
         self.admissions: list[bool] = []
+
+    def discover(self, *, changed_paths: Sequence[Path] | None = None) -> InspectedWorkspace:
+        del changed_paths
+        return InspectedWorkspace((), ())
 
     def active_run_ids(self) -> tuple[str, ...]:
         return ()
@@ -95,7 +108,7 @@ def test_a_second_resident_is_refused_and_records_no_instance(tmp_path: Path) ->
     lock: ProcessLock = ProcessLock(tmp_path / RESIDENT_LOCK_FILE_NAME)
     assert lock.acquire()
     try:
-        code: int = run_resident(_as_service(_Service()), state_dir=tmp_path)
+        code: int = run_resident(_as_service(_Service(tmp_path / "workspace")), state_dir=tmp_path)
     finally:
         lock.release()
 
@@ -104,7 +117,7 @@ def test_a_second_resident_is_refused_and_records_no_instance(tmp_path: Path) ->
 
 
 def test_a_resident_serves_commands_and_stops_on_the_shutdown_command(tmp_path: Path) -> None:
-    service = _Service()
+    service = _Service(tmp_path / "workspace")
     ready = threading.Event()
     codes: list[int] = []
     thread = threading.Thread(
@@ -138,7 +151,7 @@ def test_a_resident_serves_commands_and_stops_on_the_shutdown_command(tmp_path: 
 
 
 def test_a_started_resident_records_itself_and_answers_on_its_endpoint(tmp_path: Path) -> None:
-    service = _Service()
+    service = _Service(tmp_path / "workspace")
     ready = threading.Event()
     thread = threading.Thread(
         target=lambda: run_resident(_as_service(service), state_dir=tmp_path, on_ready=ready.set),

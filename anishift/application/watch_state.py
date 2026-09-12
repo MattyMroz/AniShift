@@ -279,6 +279,7 @@ def _encode_request(request: ProcessingRequest) -> dict[str, object]:
         "attempts": request.attempts,
         "accepted_at": request.accepted_at,
         "intents": [encode_intent(intent) for intent in request.intents],
+        "automatic": request.automatic,
     }
 
 
@@ -385,6 +386,7 @@ def _decode_marker(raw: object) -> ManualHandledMarker:
 
 def _decode_request(raw: object) -> ProcessingRequest:
     document: dict[str, object] = _strict_mapping(raw, "processing request")
+    automatic: bool = _flag({"automatic": document.pop("automatic", False)}, "automatic")
     intents: tuple[GroupIntent, ...] = tuple(
         decode_intent(GroupIntent, item) for item in _list(document.pop("intents", []), "group intents")
     )
@@ -404,6 +406,7 @@ def _decode_request(raw: object) -> ProcessingRequest:
         attempts=_whole(document, "attempts"),
         accepted_at=_text(document, "accepted_at"),
         intents=intents,
+        automatic=automatic,
     )
 
 

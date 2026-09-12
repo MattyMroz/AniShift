@@ -95,6 +95,13 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   wczytaniu stanu i po rozłączeniu panelu. Rozłączenie unieważnia także podglądy, również
   kończące się po zwolnieniu rezerwacji.
   `automation.py`
+- Zdarzenia plików są scalane w jednym oczekującym powiadomieniu; ponad 4096 ścieżek zastępuje
+  pełne uzgodnienie. Inspekcja działa w puli I/O, a właściciel decyduje o Auto po stabilizacji.
+  Zmiana źródeł lub produktów unieważnia podgląd właściwej grupy; nowy podgląd klienta zastępuje
+  poprzedni. `automation.py`
+- Sygnał zakończenia procesu omija zapis receipt i zawsze rozpoczyna drain, także gdy zapis
+  stanu zawodzi. Polecenia sterowania nadal zachowują trwałość przed potwierdzeniem.
+  `automation.py`
 - `shutdown` zamyka dopuszczanie tasków; aktywne zadania kończą się bez anulowania, pozostały
   graf otrzymuje `PAUSED`. Staging zatrzymanych runów pozostaje chroniony przed cleanup.
   `scheduler.py`, `service.py`, `sessions.py`
@@ -169,6 +176,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   executora. Limity liczbowe pochodzą z `ResourceLimits` (`plan.settings` tylko dla
   domyślnego profilu tłumaczenia), pula ekstrakcji z liczby grup ekstrakcyjnych
   WSZYSTKICH aktywnych kontekstów. `scheduler.py`, `scheduler_contracts.py`
+- `RequestOrigin` określa priorytet, a `RunRequest.automatic` dodatkowo podporządkowuje
+  pilny plik przełącznikowi Auto. Wyłączone Auto zatrzymuje kolejne taski takiego pliku,
+  ale jawny Manual nadal działa. Dotychczasowe `BACKGROUND` zawsze podlega temu przełącznikowi.
+  `scheduler_runtime.py`, `scheduler.py`
 - Wątek `anishift-coordinator` istnieje tylko wtedy, gdy koordynator ma zlecenia:
   `submit` go startuje, pusta runda zamyka executory i kończy wątek, `close()` anuluje
   resztę i dołącza go. Bezczynny koordynator nie budzi się (licznik `wakeups`).

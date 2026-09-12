@@ -154,6 +154,8 @@ Brak wymaganych napisów pozostawia czytelny stan oczekiwania. Ich późniejsze 
 
 **R-017. Auto wykonuje potrzebne operacje.** Poprawne dostępne produkty są ponownie wykorzystywane. Dodanie jednego odcinka nie powoduje ponownej inspekcji/dekodowania wszystkich niezmienionych mediów. Zmiana ustawień lub presetu sama nie regeneruje historii. Przyjęte zlecenie ma ustalone ustawienia; edycja innego przebiegu go nie zmienia. Nowe ustawienia stosuje się do nowych zleceń lub jawnie zmienionego oczekującego zakresu.
 
+**R-029. Wspólny folder gotowych odcinków — ustalenie właściciela 2026-09-12.** Ręczne wejście pozostaje w głównym `workspace`, bez wymaganego `input`. Po udanym przetworzeniu źródło i związane produkty trafiają do jednego płaskiego `workspace/ready`. Regeneracja działa na odcinku bezpośrednio w `ready`; użytkownik nie przenosi go z powrotem. Relokacja nie tworzy nowego zlecenia Auto, a kolizja nazw nie nadpisuje innego odcinka. Na tym samym woluminie źródło jest przenoszone bez przepisywania zawartości. To ustalenie zastępuje wcześniejszy wymóg pozostawiania wszystkich produktów w pierwotnym katalogu źródła.
+
 **R-018. Ręczna praca ma pierwszeństwo bez zrywania operacji.** Dotyczy Manual, jawnego Auto, regeneracji, świeżo wrzuconego własnego pliku i ręcznie wybranego pobrania, gdy plik będzie gotowy. Pochodzenie wynika z faktycznego zdarzenia/zamówienia, nie z nazwy katalogu ani samego istnienia subskrypcji.
 
 Gotowa pilna operacja bierze następny pasujący wolny slot przed tłem. Rozpoczęty task kończy się normalnie; nie czeka się na całą partię. Operacja ukryta w buforze, ale nierozpoczęta, nie może omijać tej reguły. Czekanie na emisję, retry lub transfer nie zajmuje zasobu przetwarzania. Zależności i aktualne limity nadal obowiązują. Porządek naturalny nie blokuje pilnego wyniku za niezależną pracą tła. Przy stałym napływie ręcznej pracy tło może czekać; nie obiecujemy równocześnie bezwarunkowego priorytetu i braku zagłodzenia.
@@ -263,6 +265,7 @@ ID zachowują ciągłość z poprzednim projektem specyfikacji. Nowe AC-036–04
 | AC-040 | R-020, R-028 | Ręczna regeneracja innym głosem nie jest cofnięta przez Auto; celowo pominięte produkty nie dorabiają się same. |
 | AC-041 | R-020 | Wymuszenie bez zmiany ustawień rzeczywiście przebudowuje zakres przez Auto; zwykłe Auto go pomija. |
 | AC-042 | R-002, R-024, I-005 | Stary panel po restarcie nie wykonuje nieaktualnego podglądu; ponowiona zaakceptowana komenda nie dubluje skutku. |
+| AC-043 | R-029 | Plik wrzucony do roota po przetworzeniu trafia wraz z produktami do `ready`; regeneracja działa tam bez ręcznego przenoszenia. Kolizja zachowuje oba odcinki, a relokacja nie wywołuje kolejnego Auto. |
 
 Dowód wydajności obejmuje ten sam Windows, bibliotekę i ustawienia przed/po: start, idle, jedną premierę, równoczesne premiery, ręczny plik podczas pracy i powrót po uśpieniu. Mierzyć rzeczywiste żądania według powodu/dostawcy, narzędzia, skany/inspekcje, czas CPU, pamięć i reakcję. Podać czas obserwacji i liczbę plików. Mniejszy ruch nie jest sukcesem, jeżeli pominięto odcinki.
 

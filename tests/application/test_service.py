@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
-from collections.abc import Callable, Collection, Mapping
+import time
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +21,9 @@ from fakes import (
 )
 
 import anishift.application.service as service_module
+import anishift.application.watch as watch_module
 from anishift.application.cancellation import CancellationToken, EventCancellationToken
+from anishift.application.control import ProcessingRequest, RequestState
 from anishift.application.discovery import DiscoveryResult
 from anishift.application.handlers import (
     ExecutionHandlers,
@@ -28,7 +32,7 @@ from anishift.application.handlers import (
     SubtitleTaskHandler,
     TranslationTaskHandler,
 )
-from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
+from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
 from anishift.application.intents import AutoPreset, ProductIntent, ProductKind, RebuildRequest, RequestOrigin
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, TaskKind
 from anishift.application.results import GroupStatus, RunResult
@@ -36,13 +40,16 @@ from anishift.application.scheduler import RunHandle
 from anishift.application.scheduler_contracts import ResourceLimits, TaskHandler, extraction_worker_count
 from anishift.application.scheduler_runtime import extraction_group_ids
 from anishift.application.service import AppService, AutoPresetDraft
+from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.bootstrap import AppContext, bootstrap, create_app_service
+from anishift.cli.watch import run_resident
 from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
 from anishift.config.presets import AutoPresetFile, default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.config.workspace import cleanup_orphaned_temp
 from anishift.errors import ErrorCode, ExecutionError, RunConflictError
+from anishift.platform.local_control import ControlClient, connect
 from anishift.services.extraction import ExtractionRequest, ExtractionResult
 from anishift.services.media import DefaultMediaProbe
 from anishift.services.media.types import MediaCatalog
@@ -658,3 +665,68 @@ def test_discovery_can_cancel_while_prewarm_prepares_tools(tmp_path: Path) -> No
         waiting.join(timeout=1.0)
 
     assert not prewarm.is_alive()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows native resident file notifications")
+def test_the_resident_processes_a_new_file_once_and_returns_to_idle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
+    monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
+    workspace: Path = tmp_path / "workspace"
+    workspace.mkdir()
+    state_dir: Path = tmp_path / "watch"
+    translation: FakeTranslationService = FakeTranslationService()
+    preset: AutoPresetDraft = AutoPresetDraft("watch", "Watch", ProductIntent(frozenset({ProductKind.FULL_PL})))
+    service: AppService = _service(
+        workspace, translation, preset_store=[AutoPresetFile(1, (preset.to_preset(),), "watch")]
+    )
+    original: Callable[..., InspectedWorkspace] = service.discover
+    scans: list[Sequence[Path] | None] = []
+
+    def discover(
+        *,
+        cancel: CancellationToken | None = None,
+        changed_paths: Sequence[Path] | None = None,
+    ) -> InspectedWorkspace:
+        scans.append(changed_paths)
+        return original(cancel=cancel, changed_paths=changed_paths)
+
+    monkeypatch.setattr(service, "discover", discover)
+    ready: threading.Event = threading.Event()
+    thread: threading.Thread = threading.Thread(
+        target=lambda: run_resident(service, state_dir=state_dir, on_ready=ready.set)
+    )
+    thread.start()
+    assert ready.wait(timeout=5.0)
+    client: ControlClient | None = connect(state_dir)
+    assert client is not None
+    store: WatchStateStore = WatchStateStore(state_dir / WATCH_STATE_FILE_NAME)
+    try:
+        client.call("set_auto", {"enabled": True})
+        write_text_source(workspace / "Episode.txt", "One episode")
+        deadline: float = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            requests: tuple[ProcessingRequest, ...] = store.load().requests
+            if requests and requests[0].state is RequestState.SUCCEEDED:
+                break
+            time.sleep(0.01)
+        assert (workspace / "Episode.pl.srt").is_file()
+        assert len(store.load().requests) == 1
+        assert store.load().requests[0].automatic
+        assert len(translation.calls) == 1
+        (workspace / "Episode.pl.srt").touch()
+        time.sleep(0.1)
+        settled: int = len(scans)
+        time.sleep(0.1)
+        assert len(scans) == settled
+        assert len(translation.calls) == 1
+        assert not service.active_run_ids()
+    finally:
+        client.call("shutdown")
+        client.close()
+        thread.join(timeout=5.0)
+        service.close()
+    assert not thread.is_alive()

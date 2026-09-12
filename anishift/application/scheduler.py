@@ -454,7 +454,7 @@ class GraphCoordinator:
             if context is None:
                 entries.remove(entry)
                 continue
-            if background_admitted or context.origin is RequestOrigin.USER:
+            if background_admitted or not context.automatic:
                 admissible.append(entry)
         return min(admissible) if admissible else None
 

@@ -102,10 +102,12 @@ class WatchLedger:
         self._snapshots: dict[str, tuple[SourceSnapshot, ...]] = {}
         self._started: dict[str, tuple[tuple[str, int, int], ...]] = {}
         self._finished: dict[str, tuple[tuple[str, int, int], ...]] = {}
+        self.next_check_at: float | None = None
 
     def candidates(self, workspace: InspectedWorkspace, preset: AutoPreset, now: float) -> tuple[str, ...]:
         """Refresh every group snapshot and return the groups a batch window may take now."""
         ready: list[str] = []
+        self.next_check_at = None
         for group in workspace.groups:
             snapshots: tuple[SourceSnapshot, ...] = self._refresh(group, now)
             if self._is_candidate(group, snapshots, preset, now):
@@ -143,12 +145,15 @@ class WatchLedger:
     ) -> bool:
         if group.group_id in self._started or not needs_work(group, preset):
             return False
-        if not snapshots or not all(is_stable(snapshot, now) for snapshot in snapshots):
+        if not snapshots:
             return False
         finished: tuple[tuple[str, int, int], ...] | None = self._finished.get(group.group_id)
-        if finished is None:
-            return True
-        return finished != source_fingerprint(snapshots)
+        if finished == source_fingerprint(snapshots):
+            return False
+        if not all(is_stable(snapshot, now) for snapshot in snapshots):
+            self.next_check_at = now + SCAN_INTERVAL_S
+            return False
+        return True
 
 
 def _snapshot_file(path: Path, previous: SourceSnapshot | None, now: float) -> SourceSnapshot | None:

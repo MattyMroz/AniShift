@@ -171,6 +171,7 @@ class ProcessingRequest:
     attempts: int
     accepted_at: str
     intents: tuple[GroupIntent, ...] = ()
+    automatic: bool = False
 
     def __post_init__(self) -> None:
         for key in self.settings:

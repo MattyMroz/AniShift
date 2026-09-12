@@ -181,6 +181,7 @@ class SchedulerRuntime:
     extraction_groups: frozenset[str]
     commit_if_current: Callable[[Callable[[], None]], bool]
     pending_publications: dict[str, PendingPublication] = field(default_factory=dict)
+    automatic: bool = False
 
 
 class QueuedProgressSink:
@@ -342,6 +343,7 @@ def create_runtime(
     return SchedulerRuntime(
         run_id=request.run_id,
         origin=request.origin,
+        automatic=request.automatic or request.origin is RequestOrigin.BACKGROUND,
         sequence=sequence,
         plan=plan,
         session=request.session,

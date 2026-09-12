@@ -415,6 +415,7 @@ class AppService:
         *,
         origin: RequestOrigin,
         run_id: str | None = None,
+        automatic: bool = False,
     ) -> RunHandle:
         """Hand one accepted plan to the shared coordinator without waiting for it."""
         if not plan.can_execute:
@@ -425,7 +426,7 @@ class AppService:
         group_ids: tuple[str, ...] = tuple(item.group_id for item in plan.groups)
         self._claim_run(identity, cancel, group_ids)
         try:
-            return self._start_run(plan, sink, identity, cancel, origin)
+            return self._start_run(plan, sink, identity, cancel, origin, automatic=automatic)
         except BaseException:
             self._release_run(identity)
             raise
@@ -465,13 +466,15 @@ class AppService:
         with self._run_lock:
             self._retained_runs.update(run_ids)
 
-    def _start_run(
+    def _start_run(  # noqa: PLR0913
         self,
         plan: ExecutionPlan,
         sink: RunEventSink,
         run_id: str,
         cancel: EventCancellationToken,
         origin: RequestOrigin,
+        *,
+        automatic: bool,
     ) -> RunHandle:
         with self._run_lock:
             protected: tuple[str, ...] = (*self._active_runs, *self._retained_runs)
@@ -497,6 +500,7 @@ class AppService:
                     cancel=cancel,
                     events=sink,
                     origin=origin,
+                    automatic=automatic,
                 )
             )
         except BaseException:
