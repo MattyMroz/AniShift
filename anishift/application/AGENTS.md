@@ -109,6 +109,11 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   zleceń nierozliczonych przez samego właściciela (`_drained`). Sam `active_run_ids()` nie
   wystarcza: run bywa zdjęty z rejestru fasady, zanim właściciel zapisze jego stan końcowy.
   `automation.py`
+- Dopuszczenie pobrania i zapis wyniku subskrypcji wracają z puli I/O do właściciela;
+  drain czeka także na te komendy. `AcquisitionConfirmation` jest zapisywane przed add,
+  a niepewne przekazanie blokuje ponowne dodanie hasha i innej wersji tego samego numeru.
+  Usunięcie subskrypcji nie usuwa potwierdzenia. Obecność hasha w kliencie oznacza
+  `ACCEPTED`, nigdy kompletność pliku. `automation.py`, `subscriptions.py`
 - `ProcessingRequest` zachowuje pełny niejawny dla UI `RunSettingsSnapshot`, wybrane
   `GroupIntent` i `RebuildRequest`. Zagnieżdżone listy ustawień z JSON wracają do krotek;
   nazwy pól zawierające segment sekretu są odrzucane. Stare zlecenia bez `intents` nadal

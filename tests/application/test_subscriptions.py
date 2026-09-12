@@ -933,6 +933,21 @@ def test_check_all_skips_a_disabled_subscription_without_asking_the_source(tmp_p
     assert acquisition.downloaded == []
 
 
+def test_an_older_check_snapshot_cannot_erase_confirmed_episode_history(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)))})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    original: Subscription = service.subscribe("neko", _choice(Decimal(9)))
+    assert service.check(original).downloaded == 1
+    expected: tuple[Subscription, ...] = service.list()
+    acquisition.catalogs.clear()
+
+    stale: CheckOutcome = service.check(original)
+
+    assert stale.downloaded == 0
+    assert stale.problem == "Subscription changed during the check"
+    assert service.list() == expected
+
+
 def test_check_all_skips_a_finished_subscription(tmp_path: Path) -> None:
     acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)))})
     store: SubscriptionStore = _store(tmp_path)

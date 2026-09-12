@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import sys
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Final, cast
@@ -13,8 +15,16 @@ import pytest
 from fakes import write_text_source
 
 import anishift.application.watch as watch_module
+from anishift.application.acquisition import AcquisitionService, TorrentClient
 from anishift.application.automation import AutomationOwner
-from anishift.application.control import AutomationPolicy, RequestState, SourceSelection, WatchState
+from anishift.application.control import (
+    AcquisitionConfirmation,
+    AcquisitionState,
+    AutomationPolicy,
+    RequestState,
+    SourceSelection,
+    WatchState,
+)
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.intents import ProductIntent, ProductKind, RebuildRequest, RequestOrigin
 from anishift.application.planning import ExecutionPlan
@@ -22,11 +32,18 @@ from anishift.application.results import GroupResult, GroupStatus, RunResult
 from anishift.application.scheduler import RunHandle
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.service import AppService, AutoPresetDraft
+from anishift.application.subscriptions import (
+    CheckRecorder,
+    Subscription,
+    SubscriptionAdmission,
+    SubscriptionService,
+    SubscriptionStore,
+)
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
-from anishift.errors import ExecutionError
+from anishift.errors import ErrorCode, ErrorContext, ExecutionError
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import (
     ControlClient,
@@ -38,6 +55,8 @@ from anishift.platform.local_control import (
     control_endpoint,
 )
 from anishift.services.media import DefaultMediaProbe
+from anishift.services.torrents import Release, TorrentClientError, TorrentInfo, parse_release_name
+from anishift.services.torrents.categories import SEARCH_CATEGORIES
 
 _TIMEOUT_S: Final[float] = 5.0
 
@@ -52,6 +71,51 @@ _PRESET: Final[AutoPresetDraft] = AutoPresetDraft(
     "Preview",
     ProductIntent(frozenset({ProductKind.FULL_PL})),
 )
+
+
+class _TorrentNetwork:
+    def __init__(self) -> None:
+        self.releases: tuple[Release, ...] = tuple(
+            Release(
+                title=f"[SubsPlease] Neko to Ryuu - {number:02d} (1080p)",
+                torrent_url=f"https://example.test/{number}.torrent",
+                info_hash=str(number),
+                seeders=10,
+                size_text="1 GiB",
+                published=None,
+                subtitle_language="en",
+            )
+            for number in (9, 10)
+        )
+        self.added: list[str] = []
+        self.tracked: dict[str, TorrentInfo] = {}
+        self.before_search: Callable[[], None] | None = None
+        self.before_add: Callable[[], None] | None = None
+        self.lose_response: bool = False
+
+    def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> tuple[Release, ...]:
+        del query, categories
+        if self.before_search is not None:
+            self.before_search()
+        return self.releases
+
+    def add_torrent(self, torrent_url: str, *, save_path: Path, category: str) -> None:
+        del category
+        release: Release = next(item for item in self.releases if item.torrent_url == torrent_url)
+        self.added.append(release.info_hash)
+        if self.before_add is not None:
+            self.before_add()
+        self.tracked[release.info_hash] = TorrentInfo(
+            release.title, release.info_hash, 0.1, "downloading", str(save_path)
+        )
+        if self.lose_response:
+            raise TorrentClientError(
+                context=ErrorContext(code=ErrorCode.TORRENT_CLIENT_UNAVAILABLE, message="Response lost")
+            )
+
+    def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
+        del category
+        return tuple(self.tracked.values())
 
 
 class _Subscriptions:
@@ -71,7 +135,13 @@ class _Subscriptions:
     def list(self) -> tuple[SimpleNamespace, ...]:
         return tuple(self.entries)
 
-    def check_all(self) -> tuple[SimpleNamespace, ...]:
+    def check_all(
+        self,
+        *,
+        admit: SubscriptionAdmission | None = None,
+        record: CheckRecorder | None = None,
+    ) -> tuple[SimpleNamespace, ...]:
+        del admit, record
         self.checks += 1
         return (SimpleNamespace(downloaded=2, problem=""),)
 
@@ -99,6 +169,7 @@ class _Service:
     ) -> None:
         self.workspace_root: Path = workspace_root
         self.subscriptions: _Subscriptions | None = subscriptions
+        self.acquisition: AcquisitionService | None = None
         self._discovered: object = discovered
         self._plan: ExecutionPlan = plan
         self.background_admission: list[bool] = []
@@ -337,7 +408,12 @@ def _library(tmp_path: Path) -> tuple[_Service, WatchStateStore, str]:
     return service, WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME), group_id
 
 
-def _real_service(tmp_path: Path) -> AppService:
+def _real_service(
+    tmp_path: Path,
+    *,
+    acquisition: AcquisitionService | None = None,
+    subscriptions: SubscriptionService | None = None,
+) -> AppService:
     def unused(
         run_root: Path,
         plan: ExecutionPlan,
@@ -355,6 +431,30 @@ def _real_service(tmp_path: Path) -> AppService:
         preset_loader=default_preset_file,
         preset_saver=lambda value: None,
         settings_saver=lambda value: None,
+        acquisition=acquisition,
+        subscriptions=subscriptions,
+    )
+
+
+def _subscription_library(tmp_path: Path) -> tuple[AppService, WatchStateStore, _TorrentNetwork, Subscription]:
+    network: _TorrentNetwork = _TorrentNetwork()
+    acquisition: AcquisitionService = AcquisitionService(
+        source=network,
+        client=cast("TorrentClient", network),
+        workspace_root=tmp_path,
+        parse_name=parse_release_name,
+    )
+    subscriptions: SubscriptionService = SubscriptionService(
+        store=SubscriptionStore(tmp_path / "subscriptions.json"),
+        acquisition=acquisition,
+        sleep=lambda _: None,
+    )
+    subscription: Subscription = subscriptions.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9))
+    return (
+        _real_service(tmp_path, acquisition=acquisition, subscriptions=subscriptions),
+        WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME),
+        network,
+        subscription,
     )
 
 
@@ -691,6 +791,139 @@ def test_a_subscription_check_runs_off_the_owner_thread(tmp_path: Path) -> None:
     assert answer.result == {"checked": 1, "downloaded": 2, "problems": 0}
     assert service.subscriptions is not None
     assert service.subscriptions.checks == 1
+
+
+@pytest.mark.parametrize("phase", ["search", "add"])
+@pytest.mark.parametrize("action", ["disable", "remove", "shutdown"])
+def test_subscription_control_blocks_late_adds_and_keeps_admitted_transfers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    action: str,
+) -> None:
+    service, store, network, subscription = _subscription_library(tmp_path)
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    saves: list[str] = []
+    save: Callable[[WatchState], None] = store.save
+
+    def saving(state: WatchState) -> None:
+        saves.append(threading.current_thread().name)
+        save(state)
+
+    def blocked() -> None:
+        if phase == "add":
+            persisted: WatchState = store.load()
+            assert len(persisted.acquisitions) == 1
+            assert persisted.acquisitions[0].state is AcquisitionState.PENDING_SEND
+            assert persisted.acquisitions[0].info_hash == "9"
+        entered.set()
+        assert release.wait(_TIMEOUT_S)
+
+    monkeypatch.setattr(store, "save", saving)
+    if phase == "search":
+        network.before_search = blocked
+    else:
+        network.before_add = blocked
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    answers: list[ControlResponse] = []
+    checking: threading.Thread = threading.Thread(
+        target=lambda: answers.append(owner.handle(_request("subscriptions_check", command_id="check")))
+    )
+    checking.start()
+    try:
+        assert entered.wait(_TIMEOUT_S)
+        kind: str = "shutdown" if action == "shutdown" else f"subscription_{action}"
+        changed: ControlResponse = owner.handle(_request(kind, {"subscription_id": subscription.subscription_id}))
+        assert changed.ok
+        if action == "shutdown":
+            assert thread.is_alive()
+    finally:
+        release.set()
+        checking.join(_TIMEOUT_S)
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+    assert not thread.is_alive()
+    assert not checking.is_alive()
+    assert len(answers) == 1
+    assert answers[0].ok
+    assert network.added == (["9"] if phase == "add" else [])
+    assert set(saves) == {"anishift-owner"}
+    acquisitions: tuple[AcquisitionConfirmation, ...] = store.load().acquisitions
+    assert len(acquisitions) == (1 if phase == "add" else 0)
+    if acquisitions:
+        assert acquisitions[0].state is AcquisitionState.ACCEPTED
+
+
+@pytest.mark.parametrize("remove", [False, True])
+@pytest.mark.parametrize("retained", [False, True])
+def test_a_restart_reconciles_a_lost_add_response_without_adding_again(
+    tmp_path: Path, *, remove: bool, retained: bool
+) -> None:
+    service, store, network, subscription = _subscription_library(tmp_path)
+    network.releases = network.releases[:1]
+    network.lose_response = True
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        answer: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check"))
+        assert answer.ok
+        assert answer.result["problems"] == 1
+        if remove:
+            assert owner.handle(_request("subscription_remove", {"subscription_id": subscription.subscription_id})).ok
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+    uncertain: tuple[AcquisitionConfirmation, ...] = store.load().acquisitions
+    assert len(uncertain) == 1
+    assert uncertain[0].state is AcquisitionState.UNCERTAIN
+    network.lose_response = False
+    if not retained:
+        network.tracked.clear()
+        network.releases = (replace(network.releases[0], info_hash="replacement-9"),)
+    owner = _owner(service, store)
+    thread = _serving(owner)
+    try:
+        answer = owner.handle(_request("subscriptions_check", command_id="recheck"))
+        assert answer.ok
+        assert answer.result["downloaded"] == 0
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+    assert not thread.is_alive()
+    assert network.added == ["9"]
+    confirmed: tuple[AcquisitionConfirmation, ...] = store.load().acquisitions
+    assert confirmed[0].operation_id == uncertain[0].operation_id
+    assert confirmed[0].state is (AcquisitionState.ACCEPTED if retained else AcquisitionState.UNCERTAIN)
+
+
+def test_a_failed_acquisition_journal_save_prevents_the_add(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service, store, network, _ = _subscription_library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+
+    def refuse(state: WatchState) -> None:
+        del state
+        raise OSError("no disk")
+
+    monkeypatch.setattr(store, "save", refuse)
+    thread: threading.Thread = _serving(owner)
+    try:
+        answer: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check"))
+        assert not answer.ok
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+    assert not thread.is_alive()
+    assert not network.added
+    assert not store.load().acquisitions
 
 
 def test_every_state_change_reaches_the_subscribers(tmp_path: Path) -> None:

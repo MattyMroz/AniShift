@@ -6,7 +6,7 @@ import os
 import threading
 import time
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,8 +14,10 @@ from queue import Empty, SimpleQueue
 from secrets import token_hex
 from typing import TYPE_CHECKING, Final, cast
 
+from anishift.application.acquisition import series_directory_name
 from anishift.application.artifacts import ArtifactLifetime, ArtifactState, create_group_id
 from anishift.application.control import (
+    AcquisitionConfirmation,
     AcquisitionState,
     CommandReceipt,
     ManualHandledMarker,
@@ -47,7 +49,9 @@ from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from decimal import Decimal
 
+    from anishift.application.acquisition import AcquisitionService, ReleaseChoice
     from anishift.application.control import CommandOutcome, SettingsSnapshot, SourceFingerprint
     from anishift.application.events import RunEvent
     from anishift.application.inspection import InspectedSourceGroup
@@ -56,7 +60,7 @@ if TYPE_CHECKING:
     from anishift.application.results import RunResult
     from anishift.application.scheduler import RunHandle
     from anishift.application.service import AppService
-    from anishift.application.subscriptions import Subscription, SubscriptionService
+    from anishift.application.subscriptions import CheckOutcome, Subscription, SubscriptionService
     from anishift.application.watch_state import WatchStateStore
 
 __all__ = ["AutomationOwner"]
@@ -243,9 +247,9 @@ class AutomationOwner:
         if self._state.reservations:
             self._state = replace(self._state, reservations=())
             self._save(self._state)
-        self._queue: SimpleQueue[_Command | _Completion | _Disconnected | _FilesChanged | _Inspected | None] = (
-            SimpleQueue()
-        )
+        self._queue: SimpleQueue[
+            _Command | _Completion | _Disconnected | _FilesChanged | _Inspected | Callable[[], None] | None
+        ] = SimpleQueue()
         self._pool: ThreadPoolExecutor = ThreadPoolExecutor(
             max_workers=IO_WORKERS,
             thread_name_prefix=IO_THREAD_PREFIX,
@@ -256,6 +260,7 @@ class AutomationOwner:
         self._client_sessions: dict[str, str] = {}
         self._pending: dict[str, frozenset[ProductKind]] = {}
         self._shutting_down: bool = False
+        self._active_io: int = 0
         self._files_lock: threading.Lock = threading.Lock()
         self._changed_paths: set[Path] = set()
         self._reconcile: bool = False
@@ -367,10 +372,7 @@ class AutomationOwner:
                 self._refresh_automatic()
                 continue
             except KeyboardInterrupt:
-                self._begin_shutdown()
-                if self._drained():
-                    return
-                continue
+                item = None
             if item is None:
                 self._begin_shutdown()
             elif isinstance(item, _Completion):
@@ -381,6 +383,8 @@ class AutomationOwner:
                 self._refresh_automatic()
             elif isinstance(item, _FilesChanged):
                 self._inspect_changes()
+            elif callable(item):
+                item()
             elif isinstance(item, _Inspected):
                 self._inspecting = False
                 if item.workspace is not None:
@@ -400,7 +404,19 @@ class AutomationOwner:
     def _drained(self) -> bool:
         if not self._shutting_down:
             return False
-        return not self._pending and not self._service.active_run_ids() and not self._inspecting
+        return not self._pending and not self._service.active_run_ids() and not self._inspecting and not self._active_io
+
+    def _on_owner[T](self, action: Callable[[], T]) -> T:
+        future: Future[T] = Future()
+
+        def invoke() -> None:
+            try:
+                future.set_result(action())
+            except Exception as problem:  # noqa: BLE001
+                future.set_exception(problem)
+
+        self._queue.put(invoke)
+        return future.result()
 
     def _inspect_changes(self) -> None:
         if self._inspecting or self._shutting_down:
@@ -509,9 +525,22 @@ class AutomationOwner:
             command.answer(ControlResponse.refused(ControlErrorCode.STALE_INSTANCE, _STALE_INSTANCE))
             return
         if request.kind in _SLOW_KINDS:
-            self._pool.submit(self._answer, command)
+            if self._shutting_down:
+                command.answer(ControlResponse.refused(ControlErrorCode.REFUSED, _SHUTTING_DOWN))
+                return
+            self._active_io += 1
+            self._pool.submit(self._answer_slow, command)
             return
         self._answer(command)
+
+    def _answer_slow(self, command: _Command) -> None:
+        try:
+            self._answer(command)
+        finally:
+            self._queue.put(self._finish_io)
+
+    def _finish_io(self) -> None:
+        self._active_io -= 1
 
     def _bind_session(self, request: ControlRequest) -> bool:
         if request.session_id is None:
@@ -607,6 +636,15 @@ class AutomationOwner:
                 {"group_id": item.group_id, "client_id": item.client_id} for item in self._state.reservations
             ],
             "subscriptions": self._subscription_counts(),
+            "acquisitions": [
+                {
+                    "operation_id": item.operation_id,
+                    "subscription_id": item.subscription_id,
+                    "episode": item.episode,
+                    "state": item.state.value,
+                }
+                for item in self._state.acquisitions
+            ],
             "shutting_down": self._shutting_down,
             "updated_at": self._now(),
         }
@@ -957,7 +995,21 @@ class AutomationOwner:
         if request.kind == "subscriptions_list":
             return ControlResponse.succeeded({"subscriptions": [_subscription_view(item) for item in service.list()]})
         if request.kind == "subscriptions_check":
-            outcomes = service.check_all()
+            acquisition: AcquisitionService | None = self._service.acquisition
+            if acquisition is not None and self._on_owner(lambda: bool(self._state.acquisitions)):
+                present: frozenset[str] = acquisition.queued_hashes()
+                self._on_owner(lambda: self._reconcile_acquisitions(present))
+            try:
+                outcomes: tuple[CheckOutcome, ...] = service.check_all(
+                    admit=lambda subscription, episode, choice: self._on_owner(
+                        lambda: self._admit_subscription(service, subscription, episode, choice)
+                    ),
+                    record=lambda subscription, confirmed, offered: self._on_owner(
+                        lambda: self._record_subscription(service, subscription, confirmed, offered)
+                    ),
+                )
+            finally:
+                self._on_owner(lambda: self._reconcile_acquisitions(frozenset()))
             return ControlResponse.succeeded(
                 {
                     "checked": len(outcomes),
@@ -966,6 +1018,83 @@ class AutomationOwner:
                 }
             )
         return self._subscription_mutation(request, service)
+
+    def _admit_subscription(
+        self,
+        service: SubscriptionService,
+        subscription: Subscription,
+        episode: Decimal,
+        choice: ReleaseChoice,
+    ) -> bool:
+        if self._shutting_down or not service.is_current(subscription):
+            return False
+        info_hash: str = choice.release.info_hash.casefold()
+        if any(
+            item.info_hash == info_hash
+            or (item.subscription_id == subscription.subscription_id and item.episode == str(episode))
+            for item in self._state.acquisitions
+        ):
+            return False
+        confirmation: AcquisitionConfirmation = self._new_acquisition(
+            subscription, episode, choice, AcquisitionState.PENDING_SEND
+        )
+        if not self._save(replace(self._state, acquisitions=(*self._state.acquisitions, confirmation))):
+            raise OSError(_STATE_NOT_SAVED)
+        self._publish_state()
+        return True
+
+    def _new_acquisition(
+        self,
+        subscription: Subscription,
+        episode: Decimal,
+        choice: ReleaseChoice,
+        state: AcquisitionState,
+    ) -> AcquisitionConfirmation:
+        return AcquisitionConfirmation(
+            operation_id=token_hex(_ID_BYTES),
+            info_hash=choice.release.info_hash,
+            directory=series_directory_name(subscription.directory or choice.name.series),
+            required_files=(),
+            state=state,
+            origin=RequestOrigin.USER,
+            subscription_id=subscription.subscription_id,
+            episode=str(episode),
+            updated_at=self._now(),
+        )
+
+    def _record_subscription(
+        self,
+        service: SubscriptionService,
+        subscription: Subscription,
+        confirmed: dict[Decimal, ReleaseChoice],
+        offered: dict[Decimal, ReleaseChoice],
+    ) -> Subscription | None:
+        hashes: frozenset[str] = frozenset(choice.release.info_hash.casefold() for choice in confirmed.values())
+        known: frozenset[str] = frozenset(item.info_hash for item in self._state.acquisitions)
+        existing: tuple[AcquisitionConfirmation, ...] = tuple(
+            self._new_acquisition(subscription, episode, choice, AcquisitionState.ACCEPTED)
+            for episode, choice in confirmed.items()
+            if choice.release.info_hash.casefold() not in known
+        )
+        if existing and not self._save(replace(self._state, acquisitions=(*self._state.acquisitions, *existing))):
+            raise OSError(_STATE_NOT_SAVED)
+        self._reconcile_acquisitions(hashes)
+        return service.record_check(subscription, confirmed, offered)
+
+    def _reconcile_acquisitions(self, present: frozenset[str]) -> None:
+        acquisitions: list[AcquisitionConfirmation] = []
+        for item in self._state.acquisitions:
+            state: AcquisitionState = item.state
+            if item.info_hash in present and state in {AcquisitionState.PENDING_SEND, AcquisitionState.UNCERTAIN}:
+                state = AcquisitionState.ACCEPTED
+            elif state is AcquisitionState.PENDING_SEND:
+                state = AcquisitionState.UNCERTAIN
+            acquisitions.append(replace(item, state=state, updated_at=self._now()) if state is not item.state else item)
+        if tuple(acquisitions) == self._state.acquisitions:
+            return
+        if not self._save(replace(self._state, acquisitions=tuple(acquisitions))):
+            raise OSError(_STATE_NOT_SAVED)
+        self._publish_state()
 
     def _subscription_mutation(self, request: ControlRequest, service: SubscriptionService) -> ControlResponse:
         identifier: str | None = _text(request.payload, "subscription_id")

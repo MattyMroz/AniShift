@@ -41,9 +41,11 @@ __all__ = [
     "SUBSCRIPTIONS_FILE_NAME",
     "AiringSource",
     "CheckOutcome",
+    "CheckRecorder",
     "EpisodeOrder",
     "EpisodeState",
     "Subscription",
+    "SubscriptionAdmission",
     "SubscriptionEnd",
     "SubscriptionService",
     "SubscriptionStore",
@@ -230,6 +232,15 @@ class CheckOutcome:
     problem: str = ""
 
 
+type SubscriptionAdmission = Callable[[Subscription, Decimal, ReleaseChoice], bool]
+"""Decides whether one current release may be handed to the torrent client."""
+
+type CheckRecorder = Callable[
+    [Subscription, dict[Decimal, ReleaseChoice], dict[Decimal, ReleaseChoice]], Subscription | None
+]
+"""Records confirmed releases without replacing a newer standing order."""
+
+
 def subscription_id(series: str, group: str) -> str:
     """Return the stable identifier of the series and release group pair."""
     seed: str = f"{normalize_series(series)}|{group.casefold()}"
@@ -407,7 +418,13 @@ class SubscriptionService:
             logger.info("Subscription removed", total=len(remaining))
             return True
 
-    def check(self, subscription: Subscription) -> CheckOutcome:
+    def check(
+        self,
+        subscription: Subscription,
+        *,
+        admit: SubscriptionAdmission | None = None,
+        record: CheckRecorder | None = None,
+    ) -> CheckOutcome:
         """Download every episode *subscription* still misses and record what was taken."""
         if not subscription.enabled:
             return CheckOutcome(subscription, 0, problem=_DISABLED_PROBLEM)
@@ -418,12 +435,17 @@ class SubscriptionService:
                 return CheckOutcome(subscription, 0, problem=_STALE_PROBLEM)
             self._checking[subscription.subscription_id] = True
         try:
-            return self._check(subscription)
+            return self._check(subscription, admit, record or self.record_check)
         finally:
             with self._lock:
                 self._checking.pop(subscription.subscription_id)
 
-    def _check(self, subscription: Subscription) -> CheckOutcome:
+    def _check(
+        self,
+        subscription: Subscription,
+        admit: SubscriptionAdmission | None,
+        record: CheckRecorder,
+    ) -> CheckOutcome:
         try:
             offered: dict[Decimal, ReleaseChoice] = self._offered(subscription)
             taken_hashes: frozenset[str] = frozenset(info_hash.casefold() for info_hash in subscription.taken)
@@ -434,7 +456,7 @@ class SubscriptionService:
                 if episode not in taken_episodes and choice.release.info_hash.casefold() not in taken_hashes
             }
             queued: frozenset[str] = self._acquisition.queued_hashes() if selected else frozenset()
-            chosen: tuple[ReleaseChoice, ...] = self._download(subscription, selected, queued)
+            chosen: tuple[ReleaseChoice, ...] = self._download(subscription, selected, queued, admit)
             admitted: dict[Decimal, ReleaseChoice] = {
                 episode: choice
                 for episode, choice in selected.items()
@@ -442,12 +464,10 @@ class SubscriptionService:
             }
             confirmed: dict[Decimal, ReleaseChoice] = self._confirmed(admitted, queued) if admitted else {}
             sent: int = sum(1 for choice in chosen if choice in confirmed.values())
-            with self._lock:
-                current: Subscription | None = _find(self._store.load(), subscription.subscription_id)
-                if not self._current(subscription):
-                    return CheckOutcome(current or subscription, sent, problem=_STALE_PROBLEM)
-                updated: Subscription = self._advance(subscription, confirmed, offered)
-                self._replace(updated)
+            updated: Subscription | None = record(subscription, confirmed, offered)
+            if updated is None:
+                current: Subscription | None = _find(self.list(), subscription.subscription_id)
+                return CheckOutcome(current or subscription, sent, problem=_STALE_PROBLEM)
         except AniShiftError as problem:
             logger.warning("Subscription check failed", error_class=type(problem).__name__)
             return CheckOutcome(subscription, 0, problem=str(problem))
@@ -459,6 +479,7 @@ class SubscriptionService:
         subscription: Subscription,
         selected: dict[Decimal, ReleaseChoice],
         queued: frozenset[str],
+        admit: SubscriptionAdmission | None,
     ) -> tuple[ReleaseChoice, ...]:
         chosen: list[ReleaseChoice] = []
         for episode in sorted(selected):
@@ -469,17 +490,43 @@ class SubscriptionService:
                 current: bool = self._current(subscription)
             if not current:
                 break
+            if admit is not None and not admit(subscription, episode, choice):
+                continue
             self._acquisition.download((choice,), directory_name=subscription.directory)
             chosen.append(choice)
         return tuple(chosen)
 
-    def check_all(self) -> tuple[CheckOutcome, ...]:
+    def check_all(
+        self,
+        *,
+        admit: SubscriptionAdmission | None = None,
+        record: CheckRecorder | None = None,
+    ) -> tuple[CheckOutcome, ...]:
         """Check every active subscription in stored order; a failing one does not stop the rest."""
         return tuple(
-            self.check(subscription)
+            self.check(subscription, admit=admit, record=record)
             for subscription in self.list()
             if subscription.enabled and subscription.end_state is SubscriptionEnd.ACTIVE
         )
+
+    def is_current(self, subscription: Subscription) -> bool:
+        """Check whether that snapshot still admits releases from its search."""
+        with self._lock:
+            return self._current(subscription)
+
+    def record_check(
+        self,
+        subscription: Subscription,
+        confirmed: dict[Decimal, ReleaseChoice],
+        offered: dict[Decimal, ReleaseChoice],
+    ) -> Subscription | None:
+        """Record a current check or leave a changed order untouched."""
+        with self._lock:
+            if not self._current(subscription):
+                return None
+            updated: Subscription = self._advance(subscription, confirmed, offered)
+            self._replace(updated)
+            return updated
 
     def _switch(self, subscription_id: str, *, enabled: bool) -> Subscription:
         with self._lock:
@@ -505,7 +552,7 @@ class SubscriptionService:
             current is not None
             and current.enabled
             and current.end_state is SubscriptionEnd.ACTIVE
-            and current.generation == subscription.generation
+            and current == subscription
             and self._checking.get(subscription.subscription_id, True)
         )
 
