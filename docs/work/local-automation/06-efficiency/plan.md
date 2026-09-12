@@ -422,6 +422,20 @@ Po każdym etapie wykonawca dopisuje tutaj: commit, zakres, uruchomione komendy 
 - Migracja produkcyjna: `config/subscriptions.json` przeszedł na schemat 2 przy pierwszym `load()` nowego czuwania (09:40), kopia `subscriptions.json.v1.bak`, 25 wpisów, 58 odcinków `ORDERED`; cofnięcie wersji = przywrócenie kopii i restart czuwania (opisane w `application/AGENTS.md`).
 - Kolejność etapów: P03 przed P02, żeby rezydent powstał na finalnym API koordynatora.
 
+### P03 — wykonane 2026-09-08
+
+- Commity: `2913de9` (`GraphCoordinator` z niezależnymi kontekstami, wspólne kolejki per zasób z rangą `USER`/`BACKGROUND`, brak zapasu future, pętla na `Condition` bez pollingu, `GraphScheduler.run` jako adapter, `AppService.submit_plan/cancel/set_background_admission/active_run_ids/close`), `119ad71` (poprawki po przeglądzie: obudzenie pętli po awarii snapshotu przy dopuszczeniu, sufit puli równy największemu ustawieniu, filtr sekretów w ledgerze po segmentach nazwy) oraz `_finish_run` w `try/finally` i anulowanie z czekaniem przy Ctrl+C w `execute()` (w commicie P02).
+- Przegląd niezależny: FAIL na trzech ścieżkach awaryjnych (zawieszenie przy błędzie snapshotu, brak `finally` w domknięciu runu, Ctrl+C bez anulowania) — wszystkie naprawione i pokryte testami, które bez poprawki padają (sprawdzone ręcznie). Pozytywnie zweryfikowane: pierwszeństwo realne, limity wspólne, handshake `_signal`, księgowość future, sesje.
+- Dowiedzione AC: AC-020 (ręczny gotowy task dostaje następny slot przed buforowanym tłem, testy dla tłumaczenia/TTS/publikacji), część AC-002 (sterowanie `set_background_admission` podczas trwającego taska), AC-006 (wyłączenie tła kończy rozpoczęte i nie startuje nowych).
+- Otwarte: `max_pending_per_resource` zostaje w API do P08; `RunHandle.resolve/fail` publiczne.
+
+### P02 — wykonane 2026-09-08
+
+- Commit: `feat(cli): add the resident owner with an authenticated local control channel` (po `119ad71`): `platform/local_control.py` (AF_PIPE/AF_UNIX, `authkey`, JSON `send_bytes`/`recv_bytes`, limit ramki 1 MiB, outbox scalający per `task_id`), `application/automation.py` (`AutomationOwner`: jeden wątek właściciela, pula I/O 2, trwałość przed odpowiedzią, `CommandReceipt`, `STALE_INSTANCE`/`STALE_PREVIEW`/`CONFLICT`, marker R-028, `shutdown` czekające na aktywne zlecenia, synchronizacja przełącznika Auto z zapisanym stanem przy starcie), `cli/watch.py::run_resident` pod `resident.lock`, ukryta komenda `anishift watch resident`, `cli/control.py` klient, `ANISHIFT_CONFIG_DIR` w `paths.py`, `watch status` z linią rezydenta. Stara droga (`anishift watch` z oknami partii) pozostaje domyślna (D-12).
+- G1 (sterowanie) na tym Windows z katalogami tymczasowymi: rezydent przez `pythonw`, `status`, `set_auto` zapisany przed odpowiedzią, powtórzony `command_id` bez skutku, zły klucz odrzucony (`AuthenticationError`), `icacls control.key` = tylko bieżące konto, brak nasłuchu TCP (`netstat`), `shutdown` → kod 0 i usunięty `instance.json`.
+- Bramki po commicie: ruff, format, mypy (win32 i linux), pełny pytest exit 0, pre-commit czysto (po usunięciu pięciu komentarzy w testach, które hook odrzucił).
+- Odchylenia: snapshot ustawień zlecenia z jawnej listy 15 pól; `start` sprawdza aktualność przez `stat` źródeł grup podglądu, nie pełny `discover()`; `preview` na razie tylko w wariancie Auto (zaawansowany Manual w P04); `COMMAND_TIMEOUT_S = 300` dobrany, nie zmierzony.
+
 ## 15. Korekty po przeglądzie wykonawcy (2026-09-08)
 
 Przegląd planu względem spec.md i kodu `a7d319f` (przeczytane w całości: `scheduler*.py`, `service.py`, `sessions.py`, `intents.py`, wejścia `planner.py`, `cli/watch.py`, `application/watch.py`, `cli/run.py`, `interactive/app.py`, `subscriptions.py`, `acquisition.py`, `qbittorrent.py`, wszystkie scoped AGENTS). Plan jest zgodny ze specyfikacją; poniższe decyzje domykają luki, w których wykonawca musiałby zgadywać. Obowiązują razem z sekcjami 1–13; przy sprzeczności wygrywa ta sekcja.
