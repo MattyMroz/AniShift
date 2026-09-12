@@ -58,10 +58,7 @@ def snapshot_sources(
     previous: Mapping[Path, SourceSnapshot],
     now: float,
 ) -> tuple[SourceSnapshot, ...]:
-    """Snapshot every source file of *group*, keeping `first_seen` of unchanged files.
-
-    Files that vanish between discovery and the scan are skipped instead of failing the scan.
-    """
+    """Snapshot every source file of *group*, keeping `first_seen` of unchanged files."""
     snapshots: list[SourceSnapshot] = []
     for artifact in group.artifacts:
         if artifact.lifetime is not ArtifactLifetime.SOURCE or artifact.path is None:

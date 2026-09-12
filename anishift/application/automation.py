@@ -1,9 +1,4 @@
-"""The one owner of the automation state, its reservations and its processing requests.
-
-Every command reaches this owner through the local control channel and is performed on one
-thread, so a panel, the CLI and the watch never own the same group at the same time. Slow
-input and output is handed to a small pool, so switching Auto off never waits for a scan.
-"""
+"""The one owner of the automation state, its reservations and its processing requests."""
 
 from __future__ import annotations
 
@@ -158,11 +153,7 @@ _SNAPSHOT_FIELDS: Final[tuple[str, ...]] = (
     "composition_profile_id",
     "processing_order_policy",
 )
-"""Planning settings identifying how one request was accepted.
-
-The list is explicit because the ledger refuses any name that reads like a secret, which
-``llm_max_output_tokens`` does, and because a request needs its identity, not every knob.
-"""
+"""Planning settings identifying how one request was accepted."""
 
 _WORST_FIRST: Final[tuple[RequestState, ...]] = (
     RequestState.CANCELLED,
@@ -272,10 +263,7 @@ class AutomationOwner:
         self._queue.put(_Command(request=shutdown, done=threading.Event()))
 
     def serve(self) -> None:
-        """Run the owner loop until a shutdown drains every active request.
-
-        The loop sleeps on its queue without a timeout, so an idle resident does no work.
-        """
+        """Run the owner loop until a shutdown drains every active request."""
         threading.current_thread().name = OWNER_THREAD_NAME
         self._service.set_background_admission(self._state.policy.auto_enabled)
         try:

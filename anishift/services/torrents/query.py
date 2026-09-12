@@ -31,20 +31,14 @@ _EPISODE_MARKER_RE: Final[re.Pattern[str]] = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class EpisodeRange:
-    """Closed, half-open, or open-ended span of episode numbers.
-
-    At least one end is always known; ``first`` alone means "from here on".
-    """
+    """Closed, half-open, or open-ended span of episode numbers."""
 
     first: Decimal | None
     last: Decimal | None
 
     @property
     def text(self) -> str:
-        """Return the span written for the interface, such as ``4–10``, ``5–`` or ``1``.
-
-        The wording naming it an episode belongs to the interface, not here.
-        """
+        """Return the span written for the interface, such as ``4–10``, ``5–`` or ``1``."""
         if self.first is not None and self.first == self.last:
             return str(self.first)
         first_text: str = "" if self.first is None else str(self.first)
@@ -67,11 +61,7 @@ class SearchQuery:
 
 
 def parse_query(text: str) -> SearchQuery:
-    """Split *text* into a title and the episode range its trailing marker asks for.
-
-    A number that reads as a year or carries a resolution suffix stays part of the title,
-    and a marker that would leave no title is kept as the title instead.
-    """
+    """Split *text* into a title and the episode range its trailing marker asks for."""
     collapsed: str = " ".join(text.split())
     match: re.Match[str] | None = _EPISODE_MARKER_RE.search(collapsed)
     if match is None:

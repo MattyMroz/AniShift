@@ -26,12 +26,7 @@ class ResidentStatus:
 
 
 def open_control(state_dir: Path) -> ControlClient:
-    """Reach the resident of *state_dir*, starting one without a window when none runs.
-
-    Raises:
-        ControlError: No resident answered after one was started.
-        AutostartError: The windowless interpreter is missing beside this one.
-    """
+    """Reach the resident of *state_dir*, starting one without a window when none runs."""
     from anishift.cli.watch import spawn_resident  # noqa: PLC0415 - keep the process launch lazy
 
     def start() -> None:
@@ -42,10 +37,7 @@ def open_control(state_dir: Path) -> ControlClient:
 
 
 def resident_status(state_dir: Path) -> ResidentStatus:
-    """Report whether a resident answers, without ever starting one.
-
-    A recorded instance file proves nothing; only a completed ``status`` command does.
-    """
+    """Report whether a resident answers, without ever starting one."""
     client: ControlClient | None = connect(state_dir)
     if client is None:
         return ResidentStatus(running=False, pid=None)

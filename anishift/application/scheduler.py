@@ -83,11 +83,7 @@ def wait_for_updates(
     timeout: float | None,
     has_work: Callable[[], bool],
 ) -> bool:
-    """Sleep until a wake-up call or deadline; return whether the loop really slept.
-
-    Checking *has_work* under the condition closes the window in which a producer
-    signalled while the coordinator was working outside the lock.
-    """
+    """Sleep until a wake-up call or deadline; return whether the loop really slept."""
     with condition:
         if has_work():
             return False

@@ -189,11 +189,7 @@ class _Listing:
 
 @dataclass(frozen=True, slots=True)
 class _Row:
-    """One rendered result line: a group header, or one selectable release.
-
-    ``group`` names the listed group the line belongs to, and ``detail`` carries the tail
-    shown only when the terminal is wide enough for it.
-    """
+    """One rendered result line: a group header, or one selectable release."""
 
     label: str
     choice: ReleaseChoice | None = None

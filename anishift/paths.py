@@ -26,11 +26,7 @@ def _repo_root() -> Path:
 
 
 def config_dir() -> Path:
-    """Return the directory holding every runtime configuration file.
-
-    ``ANISHIFT_CONFIG_DIR`` replaces ``<repo>/config`` entirely, so a test or a second
-    machine account can keep its own preferences, watch state and subscriptions.
-    """
+    """Return the directory holding every runtime configuration file."""
     override: str | None = os.environ.get(ENV_CONFIG_DIR)
     if override is not None and override.strip():
         return Path(override.strip()).expanduser().resolve()

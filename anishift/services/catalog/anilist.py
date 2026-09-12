@@ -92,14 +92,7 @@ class AniListCatalog:
         self._timeout_s: float = timeout_s
 
     def search(self, text: str, *, limit: int = DEFAULT_SEARCH_LIMIT) -> tuple[TitleCandidate, ...]:
-        """Return the candidates AniList proposes for *text*, in its own order.
-
-        An empty answer is retried once with every word cut to sixty percent of its length,
-        which recovers phrases typed with an extra letter at the end.
-
-        Raises:
-            TitleCatalogError: AniList is unreachable, rejects the request, or answers with no media.
-        """
+        """Return the candidates AniList proposes for *text*, in its own order."""
         candidates: tuple[TitleCandidate, ...] = self._search_once(text, limit)
         shortened: str | None = _shorten_words(text) if not candidates else None
         retried: bool = shortened is not None
@@ -109,15 +102,7 @@ class AniListCatalog:
         return candidates
 
     def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
-        """Return every entry airing before *candidate*, direct prequel first.
-
-        Only television and web formats count, an unknown episode count reads as zero, and
-        the walk stops after ``MAX_PREQUEL_HOPS`` entries. An entry whose title names a cour
-        continues the season before it, so only the other entries count as earlier seasons.
-
-        Raises:
-            TitleCatalogError: AniList is unreachable or rejects one of the requests.
-        """
+        """Return every entry airing before *candidate*, direct prequel first."""
         seen: set[int] = {candidate.anilist_id}
         pending: list[int] = [prequel_id for prequel_id in candidate.prequel_ids if prequel_id not in seen]
         entries: list[PrequelEntry] = []
@@ -133,11 +118,7 @@ class AniListCatalog:
         return tuple(entries)
 
     def episode_offset(self, candidate: TitleCandidate) -> int:
-        """Return how many episodes aired before *candidate*, following its prequel chain.
-
-        Raises:
-            TitleCatalogError: AniList is unreachable or rejects one of the requests.
-        """
+        """Return how many episodes aired before *candidate*, following its prequel chain."""
         return sum(entry.episodes for entry in self.prequel_episodes(candidate))
 
     def _search_once(self, text: str, limit: int) -> tuple[TitleCandidate, ...]:
@@ -163,12 +144,7 @@ class AniListCatalog:
         return media
 
     def _post(self, query: str, variables: Mapping[str, object]) -> Mapping[str, Any]:
-        """Send one GraphQL request and return its ``data`` object.
-
-        Raises:
-            TitleCatalogError: The endpoint is unreachable, answers with an error status,
-                or returns a body without a ``data`` object.
-        """
+        """Send one GraphQL request and return its ``data`` object."""
         try:
             response: httpx.Response = self._http.post(
                 ANILIST_URL,
@@ -278,11 +254,7 @@ def _number(raw: object) -> int | None:
 
 
 def _shorten_words(text: str) -> str | None:
-    """Cut every word of *text* to sixty percent of its length, never below three letters.
-
-    Returns ``None`` when no word is long enough to lose a letter, so the caller skips a
-    retry that would repeat the same request.
-    """
+    """Cut every word of *text* to sixty percent of its length, never below three letters."""
     words: list[str] = text.split()
     shortened: list[str] = [word[: max(_MIN_SHORTENED_WORD, int(len(word) * _SHORTENED_WORD_RATIO))] for word in words]
     if shortened == words:

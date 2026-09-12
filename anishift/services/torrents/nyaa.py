@@ -91,13 +91,7 @@ _SOURCE_TEXTS: Final[dict[_SourceFailure, tuple[str, str]]] = {
 
 
 def parse_feed(xml_text: str) -> tuple[Release, ...]:
-    """Read releases from one Nyaa RSS body, in document order.
-
-    Items without an info hash or a torrent link are skipped.
-
-    Raises:
-        TorrentSourceError: The body is not well-formed XML.
-    """
+    """Read releases from one Nyaa RSS body, in document order."""
     try:
         root: ElementTree.Element = ElementTree.fromstring(xml_text)  # noqa: S314 - bounded public feed
     except ElementTree.ParseError as error:
@@ -117,14 +111,7 @@ def search_releases(
     timeout_s: float = DEFAULT_SEARCH_TIMEOUT_S,
     categories: Sequence[str] = SEARCH_CATEGORIES,
 ) -> tuple[Release, ...]:
-    """Search *categories* for *query* with one request each, in the order given.
-
-    Entries sharing an info hash across categories are reported once, keeping the first one seen, and
-    each release carries the subtitle language read from its title.
-
-    Raises:
-        TorrentSourceError: One category is unreachable, rejects the request, or answers with no feed.
-    """
+    """Search *categories* for *query* with one request each, in the order given."""
     merged: dict[str, Release] = {}
     for category in categories:
         default_language: str | None = _DEFAULT_LANGUAGES.get(category)

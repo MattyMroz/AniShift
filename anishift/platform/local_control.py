@@ -1,9 +1,4 @@
-"""Authenticated local control channel between the resident and its panel or CLI clients.
-
-The channel is a Windows named pipe or a Unix socket owned by the current account; it never
-listens on a network port. Only explicitly validated JSON frames cross it, sent through
-``send_bytes``/``recv_bytes``, so no pickled Python object is ever deserialized.
-"""
+"""Authenticated local control channel between the resident and its panel or CLI clients."""
 
 from __future__ import annotations
 
@@ -204,11 +199,7 @@ def control_endpoint(state_dir: Path) -> str:
 
 
 def ensure_authkey(state_dir: Path) -> bytes:
-    """Return the shared key of *state_dir*, creating it for this account when absent.
-
-    Raises:
-        ControlError: The existing key file is unreadable or has the wrong length.
-    """
+    """Return the shared key of *state_dir*, creating it for this account when absent."""
     path: Path = state_dir / KEY_FILE_NAME
     state_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -284,14 +275,7 @@ def connect_or_start(
     spawn: Callable[[], None],
     timeout_s: float = DEFAULT_TIMEOUT_S,
 ) -> ControlClient:
-    """Reach the resident of *state_dir*, starting exactly one when none answers.
-
-    Two clients racing here end up with one resident: the second start bounces off the
-    process lock and both clients connect to the winner.
-
-    Raises:
-        ControlError: No resident answered before *timeout_s* elapsed.
-    """
+    """Reach the resident of *state_dir*, starting exactly one when none answers."""
     running: ControlClient | None = connect(state_dir, timeout_s=timeout_s)
     if running is not None:
         return running
@@ -307,11 +291,7 @@ def connect_or_start(
 
 
 class ControlServer:
-    """Accepts authenticated local clients and answers their validated JSON frames.
-
-    Every connection is parsed and validated on its own thread; *handler* runs
-    synchronously there, so the owner of the state decides how it queues the work.
-    """
+    """Accepts authenticated local clients and answers their validated JSON frames."""
 
     def __init__(
         self,
@@ -454,12 +434,7 @@ class ControlClient:
         command_id: str | None = None,
         instance_id: str | None = None,
     ) -> Mapping[str, object]:
-        """Send one command and return its result.
-
-        Raises:
-            ControlError: The resident refused the command, answered nothing in time, or
-                the connection was already turned into an event stream.
-        """
+        """Send one command and return its result."""
         if self._subscribed:
             msg = "A subscribed connection carries events, not commands"
             raise ControlError(msg, code=ControlErrorCode.REFUSED)
@@ -476,20 +451,12 @@ class ControlClient:
         return _accepted_result(self._receive(), identity)
 
     def subscribe(self) -> None:
-        """Turn this connection into the event stream of the resident.
-
-        Raises:
-            ControlError: The resident refused the subscription or answered nothing.
-        """
+        """Turn this connection into the event stream of the resident."""
         self.call(_SUBSCRIBE_KIND)
         self._subscribed = True
 
     def events(self) -> Iterator[Mapping[str, object]]:
-        """Yield every event frame until the resident or this client closes the stream.
-
-        Raises:
-            ControlError: The connection was never subscribed.
-        """
+        """Yield every event frame until the resident or this client closes the stream."""
         if not self._subscribed:
             msg = "Only a subscribed connection carries events"
             raise ControlError(msg, code=ControlErrorCode.REFUSED)

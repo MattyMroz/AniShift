@@ -96,11 +96,7 @@ def prepare_auto_run(
     cancel: CancellationToken | None = None,
     group_ids: Sequence[str] | None = None,
 ) -> PreparedAutoRun | AutoRunRefusal:
-    """Discover, validate and plan one automatic run without rendering UI.
-
-    ``group_ids`` limits the run to the requested groups, kept in workspace order;
-    ``None`` takes every ready group.
-    """
+    """Discover, validate and plan one automatic run without rendering UI."""
     token: CancellationToken = cancel or NeverCancelledToken()
     workspace: InspectedWorkspace = service.discover(cancel=token)
     token.raise_if_cancelled()

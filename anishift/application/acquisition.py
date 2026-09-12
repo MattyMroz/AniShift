@@ -107,10 +107,7 @@ class TorrentSource(Protocol):
     """Index of public releases answering one free-text title query."""
 
     def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> tuple[Release, ...]:
-        """Return the releases matching *query* in *categories*, newest first as the index lists them.
-
-        One category costs one HTTP request, which is the unit :data:`MAX_REQUESTS` counts.
-        """
+        """Return the releases matching *query* in *categories*, newest first as the index lists them."""
         ...
 
 
@@ -168,11 +165,7 @@ class SeasonContext:
 
 @dataclass(frozen=True, slots=True)
 class EpisodeReading:
-    """Episode of one release read in the numbering of the chosen season.
-
-    ``absolute`` carries the number printed on the release when it counts from the
-    first season, and ``other_season`` marks a release that belongs elsewhere.
-    """
+    """Episode of one release read in the numbering of the chosen season."""
 
     episode: Decimal | None
     absolute: Decimal | None = None
@@ -217,12 +210,7 @@ class SeriesGroup:
 
 @dataclass(frozen=True, slots=True)
 class ReleaseCatalog:
-    """Listed release groups and the three reasons a release was left out of them.
-
-    ``hidden`` counts releases below the quality floor, ``excluded`` dubbed ones and ones
-    whose subtitle language the index never stated, ``filtered`` the ones outside the
-    episode filter.
-    """
+    """Listed release groups and the three reasons a release was left out of them."""
 
     groups: tuple[SeriesGroup, ...]
     hidden: int
@@ -251,13 +239,7 @@ class ClientStatus:
 
 
 def read_episode(name: ReleaseName, context: SeasonContext | None) -> EpisodeReading:
-    """Read the episode of *name* in the numbering of the season *context* describes.
-
-    A name carrying its own season marker keeps its number and is flagged when the marker
-    names another season. A name without one is read as absolute numbering once its number
-    passes the episodes aired before the season, and is flagged as another season when it
-    does not, because a season that follows others never restarts below its own offset.
-    """
+    """Read the episode of *name* in the numbering of the season *context* describes."""
     episode: Decimal | None = name.episode
     if episode is None:
         return EpisodeReading(None)
@@ -283,13 +265,7 @@ def catalog_releases(  # noqa: PLR0913 - every listing rule stays an explicit ca
     episodes: EpisodeRange | None = None,
     context: SeasonContext | None = None,
 ) -> ReleaseCatalog:
-    """Group listable releases by series and release group, reading every episode in *context*.
-
-    Releases below *min_resolution* are hidden, dubbed ones and ones whose subtitle language
-    the index never stated are excluded. When *episodes* is given, releases outside that span,
-    packs, and releases without a number are counted as filtered instead. Series titles are
-    compared with punctuation and case removed, so one series never splits over its own spelling.
-    """
+    """Group listable releases by series and release group, reading every episode in *context*."""
     buckets: dict[tuple[str, str], list[ReleaseChoice]] = {}
     labels: dict[tuple[str, str], tuple[str, str]] = {}
     hidden: int = 0
@@ -319,11 +295,7 @@ def catalog_releases(  # noqa: PLR0913 - every listing rule stays an explicit ca
 
 
 def order_groups(groups: Sequence[SeriesGroup], order: CatalogOrder, *, ranked: bool) -> tuple[SeriesGroup, ...]:
-    """Return *groups* in the order a catalog lists them, so no caller reinvents the rule.
-
-    Groups matching the searched title come first when *ranked*, then the ones carrying at
-    least one release of the chosen season, then the requested order.
-    """
+    """Return *groups* in the order a catalog lists them, so no caller reinvents the rule."""
     return tuple(sorted(groups, key=lambda group: _group_order(group, order, ranked=ranked)))
 
 
@@ -383,24 +355,13 @@ class AcquisitionService:
         return catalog
 
     def find_titles(self, text: str) -> tuple[TitleCandidate, ...]:
-        """Return the title candidates for *text*, or none when no catalog is composed.
-
-        Raises:
-            TitleCatalogError: The catalog is unreachable or rejects the search.
-        """
+        """Return the title candidates for *text*, or none when no catalog is composed."""
         if self._title_catalog is None:
             return ()
         return self._title_catalog.search(text)
 
     def season_context(self, candidate: TitleCandidate) -> SeasonContext:
-        """Return which season *candidate* is and how many episodes aired before it.
-
-        A cour continues the season before it, so it raises the offset without raising the
-        season index, and a candidate that is itself a cour keeps the index of its own season.
-
-        Raises:
-            TitleCatalogError: The catalog is unreachable or rejects one of the requests.
-        """
+        """Return which season *candidate* is and how many episodes aired before it."""
         if self._title_catalog is None:
             return SeasonContext(index=1, offset=0, episodes=candidate.episodes)
         prequels: tuple[PrequelEntry, ...] = self._title_catalog.prequel_episodes(candidate)
@@ -419,14 +380,7 @@ class AcquisitionService:
         order: CatalogOrder = CatalogOrder.NEWEST,
         context: SeasonContext | None = None,
     ) -> ReleaseCatalog:
-        """Return the complete listing for *candidate*, asking the index once per matching group.
-
-        The index answers one free-text query with its newest entries only, so a narrow episode
-        request names the episode itself, and the groups revealed by the title queries are then
-        asked for their own episodes. Title and episode queries cover both categories; a group is
-        asked only in the category its releases were seen in, and the whole search stays inside
-        :data:`MAX_REQUESTS` HTTP requests.
-        """
+        """Return the complete listing for *candidate*, asking the index once per matching group."""
         aliases: tuple[str, ...] = candidate.aliases()
         merged: dict[str, Release] = {}
         requests: int = 0
@@ -531,12 +485,7 @@ def _episode_queries(
     episodes: EpisodeRange | None,
     context: SeasonContext | None,
 ) -> tuple[str, ...]:
-    """Return the queries naming every episode a narrow request asks for, in both numberings.
-
-    A title query brings back the newest entries only, so an episode that aired long ago is
-    reachable only through a query carrying its own number. One spelling carries them all,
-    because every further one doubles the requests without widening the answer much.
-    """
+    """Return the queries naming every episode a narrow request asks for, in both numberings."""
     numbers: tuple[int, ...] = _episode_numbers(episodes)
     base: str = _episode_base(candidate)
     if not numbers or not base:
@@ -577,12 +526,7 @@ def _group_categories(group: SeriesGroup) -> tuple[str, ...]:
 
 
 def _group_queries(catalog: ReleaseCatalog, budget: int) -> tuple[SeriesGroup, ...]:
-    """Return the matching groups whose own listing is worth asking for, best seeded first.
-
-    Seeders of the episodes belonging to the chosen season decide, so a group that has served
-    the whole season for months outranks one that only uploaded the newest episode. *budget*
-    counts the HTTP requests still free, one per group.
-    """
+    """Return the matching groups whose own listing is worth asking for, best seeded first."""
     ranked: list[tuple[SeriesGroup, int]] = []
     for group in catalog.groups:
         if not group.matches_title:

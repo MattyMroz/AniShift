@@ -108,11 +108,7 @@ class AcquisitionState(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class AutomationPolicy:
-    """Global automatic processing switch, its directory exceptions and the schedule settings.
-
-    A directory is written relative to the library root in POSIX form, where an empty text
-    is the root itself. Every duration is expressed in seconds.
-    """
+    """Global automatic processing switch, its directory exceptions and the schedule settings."""
 
     auto_enabled: bool = False
     directory_exceptions: Mapping[str, bool] = _NO_EXCEPTIONS
@@ -124,12 +120,7 @@ class AutomationPolicy:
     retry_delays_s: tuple[int, ...] = _DEFAULT_RETRY_DELAYS_S
 
     def effective_auto(self, directory: str) -> bool:
-        """Whether automatic processing may start in *directory*.
-
-        The global switch wins whenever it is off. Otherwise the nearest explicit exception
-        found walking from *directory* up to the root decides, and a directory without one
-        inherits the library setting.
-        """
+        """Whether automatic processing may start in *directory*."""
         if not self.auto_enabled:
             return False
         for candidate in _directory_chain(directory):
@@ -151,11 +142,7 @@ class Reservation:
 
 @dataclass(frozen=True, slots=True)
 class ManualHandledMarker:
-    """Products a user deliberately settled for one version of the sources of one group.
-
-    Automatic processing may not add a product outside *products* for that version, which
-    keeps a manual decision from being undone by the default preset.
-    """
+    """Products a user deliberately settled for one version of the sources of one group."""
 
     group_id: str
     fingerprint: SourceFingerprint
@@ -252,11 +239,7 @@ class WatchState:
 
 
 def reserve(state: WatchState, reservation: Reservation) -> WatchState | None:
-    """Return *state* holding *reservation*, or ``None`` when its group is not free.
-
-    A client may renew a reservation it already holds; a hold of another client and an
-    active request on that group both refuse it.
-    """
+    """Return *state* holding *reservation*, or ``None`` when its group is not free."""
     held: Reservation | None = _reservation(state, reservation.group_id)
     if held is not None and held.client_id != reservation.client_id:
         return None
@@ -309,13 +292,7 @@ def auto_admissible(  # noqa: PLR0913 - every admission condition stays an expli
     fingerprint: SourceFingerprint,
     requested_products: frozenset[ProductKind],
 ) -> bool:
-    """Whether automatic processing may take *group_id* for that version of its sources.
-
-    Effective automatic processing must allow *directory*, the group must carry neither a
-    reservation nor an active request, a manual decision recorded for *fingerprint* must
-    cover every requested product, and the retry budget of the last failed request for that
-    version must be left.
-    """
+    """Whether automatic processing may take *group_id* for that version of its sources."""
     if not policy.effective_auto(directory):
         return False
     if _reservation(state, group_id) is not None:

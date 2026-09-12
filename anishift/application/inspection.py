@@ -40,8 +40,7 @@ _DEFAULT_PROBE_TIMEOUT_SECONDS: Final[float] = 120.0
 """Default upper bound for one media or audio inspection subprocess."""
 
 NARRATION_DURATION_TOLERANCE_US: Final[int] = 10_000_000
-"""Accepted gap between a narration track and the container: the source audio track may end seconds
-before the video, and the narrator may run past it, while a truncated render is off by far more."""
+"""Accepted gap between a narration track and its container; a truncated render is off by far more."""
 
 
 _MAX_INSPECTION_WORKERS: Final[int] = 8

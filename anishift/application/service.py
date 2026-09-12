@@ -369,11 +369,7 @@ class AppService:
         return build_manual_plan(groups, intent_by_group, self._settings_snapshot())
 
     def execute(self, plan: ExecutionPlan, sink: RunEventSink) -> RunResult:
-        """Execute one accepted immutable plan and wait for its complete result.
-
-        An interrupt leaving this call cancels the run and waits for its context to close,
-        so no task, tool process or temporary directory outlives the caller.
-        """
+        """Execute one accepted immutable plan and wait for its complete result."""
         handle: RunHandle = self.submit_plan(plan, sink, origin=RequestOrigin.USER)
         try:
             return handle.result()
@@ -729,10 +725,7 @@ class AppService:
         self._reload_settings()
 
     def reload_preferences(self) -> None:
-        """Re-read the panel preferences and the environment file this service runs on.
-
-        A request already accepted keeps the settings snapshot it carries in its plan.
-        """
+        """Re-read the panel preferences and the environment file this service runs on."""
         preferences: UserSettings = load_user_settings()
         reloaded: Settings = Settings(_env_file=self._env_file)
         with self._run_lock:

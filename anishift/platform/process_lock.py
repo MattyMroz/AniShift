@@ -30,12 +30,7 @@ _LOCK_FILE_MODE: Final[int] = 0o644
 
 
 class ProcessLock:
-    """Advisory lock on one file, owned by this process until it is released.
-
-    The lock lives in the operating system, not in the file: the file survives
-    every process, so its presence proves nothing. Only a failed :meth:`acquire`
-    proves that another process is running.
-    """
+    """Advisory lock on one file, owned by this process until it is released."""
 
     def __init__(self, path: Path) -> None:
         """Bind the lock to *path*, without creating or opening anything yet."""

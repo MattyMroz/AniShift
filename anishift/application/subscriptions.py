@@ -170,11 +170,7 @@ class EpisodeState(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class EpisodeOrder:
-    """One episode of the ordered range, its deadlines and the release it was handed.
-
-    ``ORDERED`` means a release was handed to the client; only ``COMPLETE`` proves the file
-    is really there.
-    """
+    """One episode of the ordered range, its deadlines and the release it was handed."""
 
     number: Decimal
     airing_at: str | None = None
@@ -188,13 +184,7 @@ class EpisodeOrder:
 
 @dataclass(frozen=True, slots=True)
 class Subscription:
-    """One standing order: which series and group to follow, and from which episode on.
-
-    ``taken`` identifies the releases already handed to the client, ``taken_episodes`` the
-    numbers they carried, which is what keeps ``next_episode`` from stepping over a gap.
-    ``generation`` counts the deliberate changes of the order, so a late answer of an
-    earlier one is recognizable.
-    """
+    """One standing order: which series and group to follow, and from which episode on."""
 
     subscription_id: str
     query: str
@@ -234,11 +224,7 @@ class CheckOutcome:
 
 
 def subscription_id(series: str, group: str) -> str:
-    """Return the stable identifier of the series and release group pair.
-
-    The series is normalized first, so the spelling a single release happens to use never
-    splits one followed series into two orders.
-    """
+    """Return the stable identifier of the series and release group pair."""
     seed: str = f"{normalize_series(series)}|{group.casefold()}"
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:_ID_LENGTH]
 
@@ -250,14 +236,7 @@ class SubscriptionStore:
         self._path: Path = path
 
     def load(self) -> tuple[Subscription, ...]:
-        """Read every stored subscription, or none when the file was never written.
-
-        A schema 1 file is migrated on the way in: it leaves one copy of itself behind and
-        is rewritten in the current schema, so a second load finds nothing left to do.
-
-        Raises:
-            ConfigError: The file exists but carries an unreadable or unsupported document.
-        """
+        """Read every stored subscription, or none when the file was never written."""
         try:
             text: str = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -317,15 +296,7 @@ class SubscriptionService:
         directory_name: str | None = None,
         context: SeasonContext | None = None,
     ) -> Subscription:
-        """Follow the series and group of *choice* from its episode on, replacing an earlier order.
-
-        The episode is read in the numbering of *context*, so a check later compares the same
-        numbers the user saw, and *directory_name* pins every download to one library folder.
-
-        Raises:
-            ValueError: The chosen release is a pack, carries no episode number, or belongs
-                to another season than the one being followed.
-        """
+        """Follow the series and group of *choice* from its episode on, replacing an earlier order."""
         episode: Decimal | None = choice.episode
         if choice.name.is_pack or episode is None:
             msg = "A subscription needs a numbered episode"
@@ -353,12 +324,7 @@ class SubscriptionService:
         context: SeasonContext | None = None,
         anilist_id: int | None = None,
     ) -> Subscription:
-        """Follow *series* by *group* from *first_episode* on, replacing an earlier order.
-
-        The first episode is ordered too, so a season followed from 9 starts at 9. Replacing
-        an order keeps what it already took and raises its generation, so a late answer of
-        the earlier range cannot be mistaken for an answer of the new one.
-        """
+        """Follow *series* by *group* from *first_episode* on, replacing an earlier order."""
         identifier: str = subscription_id(series, group)
         stored: tuple[Subscription, ...] = self._store.load()
         earlier: Subscription | None = _find(stored, identifier)
@@ -424,10 +390,7 @@ class SubscriptionService:
         return True
 
     def check(self, subscription: Subscription) -> CheckOutcome:
-        """Download every episode *subscription* still misses and record what was taken.
-
-        A switched-off order answers with its problem instead, without asking any source.
-        """
+        """Download every episode *subscription* still misses and record what was taken."""
         if not subscription.enabled:
             return CheckOutcome(subscription, 0, problem=_DISABLED_PROBLEM)
         try:
@@ -457,10 +420,7 @@ class SubscriptionService:
         return CheckOutcome(updated, sent)
 
     def check_all(self) -> tuple[CheckOutcome, ...]:
-        """Check every active subscription in stored order; a failing one does not stop the rest.
-
-        Switched-off and finished orders are skipped entirely, so they reach no source.
-        """
+        """Check every active subscription in stored order; a failing one does not stop the rest."""
         return tuple(
             self.check(subscription)
             for subscription in self.list()
@@ -484,11 +444,7 @@ class SubscriptionService:
         return current
 
     def _offered(self, subscription: Subscription) -> dict[Decimal, ReleaseChoice]:
-        """Return the best release of every episode the index offers from ``next_episode`` on.
-
-        The index answers a free-text query with its newest entries only, so an episode still
-        missing after that query is asked for once more by its own number.
-        """
+        """Return the best release of every episode the index offers from ``next_episode`` on."""
         context: SeasonContext | None = _context(subscription)
         catalog: ReleaseCatalog = self._acquisition.search(subscription.query)
         offered: dict[Decimal, ReleaseChoice] = _new_episodes(catalog, subscription, context)
@@ -571,11 +527,7 @@ def _new_episodes(
     subscription: Subscription,
     context: SeasonContext | None,
 ) -> dict[Decimal, ReleaseChoice]:
-    """Return the best release of every episode of the followed group from ``next_episode`` on.
-
-    Releases already taken stay in the answer, because their number still tells the counter
-    that the episode is not missing any more.
-    """
+    """Return the best release of every episode of the followed group from ``next_episode`` on."""
     series: frozenset[str] = series_forms(subscription.series)
     group: str = subscription.group.casefold()
     best: dict[Decimal, ReleaseChoice] = {}
@@ -619,11 +571,7 @@ def _recorded_episodes(stored: tuple[str, ...], offered: dict[Decimal, ReleaseCh
 
 
 def _next_episode(current: Decimal, recorded: tuple[str, ...]) -> Decimal:
-    """Return the first whole episode from *current* on that no check has taken yet.
-
-    A fractional number such as 7.5 never moves the counter, and a gap left by an episode
-    that has not shown up yet keeps the counter waiting for exactly that number.
-    """
+    """Return the first whole episode from *current* on that no check has taken yet."""
     taken: set[int] = set()
     for value in recorded:
         number: Decimal = Decimal(value)
@@ -755,11 +703,7 @@ def _decode_entry(raw: object, version: int) -> Subscription:
 
 
 def _migrate_v1(subscription: Subscription) -> Subscription:
-    """Turn every episode number a schema 1 entry took into one recorded order.
-
-    A taken release proves it was handed to the client, never that the file is complete, so
-    the episode becomes ``ORDERED`` and waits for a real confirmation.
-    """
+    """Turn every episode number a schema 1 entry took into one recorded order."""
     episodes: tuple[EpisodeOrder, ...] = tuple(
         EpisodeOrder(number=Decimal(number), state=EpisodeState.ORDERED) for number in subscription.taken_episodes
     )

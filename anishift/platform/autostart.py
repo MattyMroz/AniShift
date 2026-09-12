@@ -146,11 +146,7 @@ def watch_command() -> list[str]:
 
 
 def resident_command() -> list[str]:
-    """Return the argv starting the resident without a window.
-
-    Raises:
-        AutostartError: The windowless interpreter is missing beside this one.
-    """
+    """Return the argv starting the resident without a window."""
     return [*watch_command(), "resident"]
 
 

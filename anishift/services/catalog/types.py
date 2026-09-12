@@ -55,11 +55,7 @@ class TitleCandidate:
     prequel_ids: tuple[int, ...]
 
     def aliases(self) -> tuple[str, ...]:
-        """Return the Latin-script names of this title, in catalog order, without repeats.
-
-        Names written in another script are dropped because the release index is searched
-        with these values and only matches Latin release titles.
-        """
+        """Return the Latin-script names of this title, in catalog order, without repeats."""
         names: tuple[str | None, ...] = (self.romaji, self.english, *self.synonyms)
         seen: set[str] = set()
         aliases: list[str] = []

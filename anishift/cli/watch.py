@@ -61,11 +61,7 @@ PID_FILE_NAME: Final[str] = "daemon.pid"
 """File carrying the identifier of the process that currently holds the lock."""
 
 RESIDENT_LOCK_FILE_NAME: Final[str] = "resident.lock"
-"""File whose operating-system lock admits exactly one resident.
-
-The resident keeps a lock of its own beside the watch loop's, because both may exist
-until the resident replaces the loop.
-"""
+"""File whose operating-system lock admits exactly one resident."""
 
 STOP_FILE_NAME: Final[str] = "stop"
 """Flag asking the running daemon to end its loop after the current scan."""
@@ -278,11 +274,7 @@ def _remove(path: Path) -> None:
 
 
 def spawn_resident() -> subprocess.Popen[bytes]:
-    """Start the resident detached from this process, without a console of its own.
-
-    Raises:
-        AutostartError: The windowless interpreter is missing beside this one.
-    """
+    """Start the resident detached from this process, without a console of its own."""
     from anishift.platform.autostart import resident_command  # noqa: PLC0415 - keep the scheduler lazy
 
     command: list[str] = resident_command()
@@ -311,11 +303,7 @@ def run_resident(
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     on_ready: Callable[[], None] | None = None,
 ) -> int:
-    """Own the automation of *state_dir* until a shutdown command ends the process.
-
-    The lock is taken before anything is recorded, so a second resident racing this one
-    leaves without ever naming itself as the owner.
-    """
+    """Own the automation of *state_dir* until a shutdown command ends the process."""
     from anishift.application import (  # noqa: PLC0415 - keep the owner off the Typer import path
         WATCH_STATE_FILE_NAME,
         AutomationOwner,

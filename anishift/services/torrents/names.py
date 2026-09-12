@@ -22,10 +22,7 @@ _TECHNICAL_TAGS: Final[tuple[str, ...]] = (
     "Dual-Audio", "DUAL", "MULTi", "MultiSub", "Multi-Subs", "SUBFRENCH", "VOSTFR",
     "VF", "FRENCH", "READNFO",
 )  # fmt: skip
-"""Source, codec, and language markers that never belong to the series text.
-
-Codec tags appear with a space instead of the dot, as in ``H 264-VARYG``.
-"""
+"""Source, codec, and language markers that never belong to the series text."""
 
 _TAG_ALTERNATION: Final[str] = "|".join(re.escape(tag) for tag in sorted(_TECHNICAL_TAGS, key=len, reverse=True))
 """Technical tags as one regex branch, longest first so ``AAC2.0`` wins over ``AAC``."""
@@ -120,12 +117,7 @@ _SUBTITLE_SEPARATORS: Final[tuple[str, ...]] = (" - ", " -", ": ", " –", " (")
 
 
 def parse_release_name(title: str) -> ReleaseName:
-    """Recognize group, series, episode, season, resolution, batch, version, and language in *title*.
-
-    Reads the group from a leading ``[Group]`` bracket or from a scene-style ``-Group`` suffix, and the
-    season and episode from ``SxxEyy``, a lone ``Sxx`` season pack, or the number after the separator.
-    Unknown patterns keep the whole cleaned title as the series and leave the rest empty.
-    """
+    """Recognize group, series, episode, season, resolution, batch, version, and language in *title*."""
     cleaned: str = _clean(title)
     group_match: re.Match[str] | None = _GROUP_RE.match(cleaned)
     remainder: str = cleaned[group_match.end() :] if group_match is not None else cleaned
@@ -149,10 +141,7 @@ def parse_release_name(title: str) -> ReleaseName:
 
 
 def season_hint(series: str) -> int | None:
-    """Return the season *series* names, or ``None`` when it names none or several.
-
-    Two markers mean a pack spanning seasons, which no single number describes.
-    """
+    """Return the season *series* names, or ``None`` when it names none or several."""
     marker: re.Match[str] | None = _season_marker(series)
     return None if marker is None else _marker_season(marker)
 
@@ -166,11 +155,7 @@ def strip_season(series: str) -> str:
 
 
 def base_title(text: str) -> str:
-    """Return *text* without its season marker and without the subtitle that follows it.
-
-    Release names and catalog names disagree on how much of a subtitle they keep, so the
-    shortest shared form is the one both sides can be compared on.
-    """
+    """Return *text* without its season marker and without the subtitle that follows it."""
     stripped: str = strip_season(text)
     cuts: list[int] = [at for separator in _SUBTITLE_SEPARATORS if (at := stripped.find(separator)) >= 0]
     head: str = stripped[: min(cuts)] if cuts else stripped
@@ -251,11 +236,7 @@ def _split_series(body: str, marker: re.Match[str] | None) -> tuple[str, str]:
 
 
 def _episode_separator(body: str) -> int:
-    """Return where the episode part opens: the last separator a number follows, else the first.
-
-    A series carrying its own ``" - "``, as in ``Shingeki no Kyojin - The Final Season - 05``,
-    keeps every separator but the numbered one.
-    """
+    """Return where the episode part opens: the last separator a number follows, else the first."""
     at: int = body.find(SERIES_SEPARATOR)
     chosen: int = at
     while at >= 0:

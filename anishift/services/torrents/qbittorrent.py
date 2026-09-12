@@ -99,11 +99,7 @@ class QBittorrentClient:
         self._request("POST", "/app/setPreferences", data={"json": json.dumps(dict(values))})
 
     def add_torrent(self, torrent_url: str, *, save_path: Path, category: str) -> None:
-        """Hand one torrent URL to the client, saving it under *save_path*.
-
-        Raises:
-            TorrentClientError: The client refused the torrent, for example as a duplicate.
-        """
+        """Hand one torrent URL to the client, saving it under *save_path*."""
         response: httpx.Response = self._request(
             "POST",
             "/torrents/add",

@@ -163,11 +163,7 @@ class WatchStateStore:
         self._path: Path = path
 
     def load(self) -> WatchState:
-        """Read the stored automation state, or the default one when nothing was written yet.
-
-        Raises:
-            ConfigError: The file exists but carries an unreadable or unsupported document.
-        """
+        """Read the stored automation state, or the default one when nothing was written yet."""
         try:
             text: str = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
