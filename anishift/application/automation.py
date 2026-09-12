@@ -41,6 +41,7 @@ from anishift.application.intents import AutoPreset, GroupIntent, RebuildRequest
 from anishift.application.results import GroupStatus
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids
+from anishift.application.transfers import TransferInspector
 from anishift.application.watch import WatchLedger, snapshot_sources, source_fingerprint
 from anishift.errors import AniShiftError
 from anishift.platform.directory_watch import DirectoryChange
@@ -77,6 +78,9 @@ IO_THREAD_PREFIX: Final[str] = "anishift-owner-io"
 
 IO_WORKERS: Final[int] = 2
 """Slow commands performed beside each other while the owner keeps answering."""
+
+TRANSFER_CHECK_INTERVAL_S: Final[float] = 10.0
+"""Delay between shared client reads while accepted transfers need completion proof."""
 
 _MAX_CHANGED_PATHS: Final[int] = 4096
 """Pending changed paths retained before falling back to one full reconciliation."""
@@ -261,6 +265,11 @@ class AutomationOwner:
         self._pending: dict[str, frozenset[ProductKind]] = {}
         self._shutting_down: bool = False
         self._active_io: int = 0
+        self._transfers: TransferInspector | None = (
+            TransferInspector(service.acquisition, service.workspace_root) if service.acquisition is not None else None
+        )
+        self._transfers_at: float | None = None
+        self._transfers_inspecting: bool = False
         self._files_lock: threading.Lock = threading.Lock()
         self._changed_paths: set[Path] = set()
         self._reconcile: bool = False
@@ -282,7 +291,8 @@ class AutomationOwner:
             return
         self._invalidate_changed_inputs(paths, reconcile=change.reconcile)
         with self._files_lock:
-            self._watch_mode = "polling" if change.reason == "polling_fallback" else "native"
+            if change.reason != "transfer_complete":
+                self._watch_mode = "polling" if change.reason == "polling_fallback" else "native"
             self._changed_paths.update(paths)
             self._fresh_sources.update(path for path in paths if not is_derived_product(path))
             self._reconcile |= change.reconcile or len(self._changed_paths) > _MAX_CHANGED_PATHS
@@ -356,6 +366,7 @@ class AutomationOwner:
         """Run the owner loop until a shutdown drains every active request."""
         threading.current_thread().name = OWNER_THREAD_NAME
         self._service.set_background_admission(self._state.policy.auto_enabled)
+        self._schedule_transfers()
         try:
             self._loop()
         finally:
@@ -364,12 +375,14 @@ class AutomationOwner:
     def _loop(self) -> None:
         while True:
             try:
-                timeout: float | None = (
-                    None if self._settle_at is None else max(0.0, self._settle_at - time.monotonic())
+                deadlines: tuple[float, ...] = tuple(
+                    deadline for deadline in (self._settle_at, self._transfers_at) if deadline is not None
                 )
+                timeout: float | None = max(0.0, min(deadlines) - time.monotonic()) if deadlines else None
                 item = self._queue.get(timeout=timeout)
             except Empty:
                 self._refresh_automatic()
+                self._poll_transfers()
                 continue
             except KeyboardInterrupt:
                 item = None
@@ -398,6 +411,7 @@ class AutomationOwner:
                 self._inspect_changes()
             else:
                 self._dispatch(item)
+            self._poll_transfers()
             if self._drained():
                 return
 
@@ -503,10 +517,13 @@ class AutomationOwner:
     def _file_origin(self, group: InspectedSourceGroup) -> RequestOrigin | None:
         paths: set[Path | None] = {artifact.path for artifact in group.artifacts}
         for acquisition in reversed(self._state.acquisitions):
-            if not any(
-                self._service.workspace_root / acquisition.directory / name in paths
-                for name in acquisition.required_files
-            ):
+            directory: Path = self._service.workspace_root / acquisition.directory
+            matches: bool = (
+                any(directory / name in paths for name in acquisition.required_files)
+                if acquisition.required_files
+                else any(path is not None and path.is_relative_to(directory) for path in paths)
+            )
+            if not matches:
                 continue
             return acquisition.origin if acquisition.state is AcquisitionState.COMPLETE else None
         with self._files_lock:
@@ -983,6 +1000,7 @@ class AutomationOwner:
             return
         self._shutting_down = True
         self._settle_at = None
+        self._transfers_at = None
         self._service.set_background_admission(False)
         self._service.drain()
         logger.info("The resident is shutting down", active_runs=len(self._service.active_run_ids()))
@@ -1079,6 +1097,7 @@ class AutomationOwner:
         if existing and not self._save(replace(self._state, acquisitions=(*self._state.acquisitions, *existing))):
             raise OSError(_STATE_NOT_SAVED)
         self._reconcile_acquisitions(hashes)
+        self._schedule_transfers()
         return service.record_check(subscription, confirmed, offered)
 
     def _reconcile_acquisitions(self, present: frozenset[str]) -> None:
@@ -1094,7 +1113,57 @@ class AutomationOwner:
             return
         if not self._save(replace(self._state, acquisitions=tuple(acquisitions))):
             raise OSError(_STATE_NOT_SAVED)
+        self._schedule_transfers()
         self._publish_state()
+
+    def _schedule_transfers(self, delay: float = 0.0) -> None:
+        if self._shutting_down or self._transfers is None or self._transfers_inspecting:
+            return
+        active: bool = any(item.state is AcquisitionState.ACCEPTED for item in self._state.acquisitions)
+        self._transfers_at = time.monotonic() + delay if active else None
+
+    def _poll_transfers(self) -> None:
+        if self._transfers_at is None or self._transfers_at > time.monotonic():
+            return
+        acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
+            item for item in self._state.acquisitions if item.state is AcquisitionState.ACCEPTED
+        )
+        self._transfers_at = None
+        self._transfers_inspecting = True
+        self._active_io += 1
+        self._pool.submit(self._inspect_transfers, acquisitions)
+
+    def _inspect_transfers(self, acquisitions: tuple[AcquisitionConfirmation, ...]) -> None:
+        results: tuple[AcquisitionConfirmation, ...] = ()
+        try:
+            if self._transfers is not None:
+                results = self._transfers.inspect(acquisitions)
+        except Exception as problem:  # noqa: BLE001
+            logger.warning("Transfer reconciliation failed", error_class=type(problem).__name__)
+        finally:
+            self._queue.put(lambda: self._record_transfers(results))
+
+    def _record_transfers(self, results: tuple[AcquisitionConfirmation, ...]) -> None:
+        self._active_io -= 1
+        self._transfers_inspecting = False
+        updated: dict[str, AcquisitionConfirmation] = {item.operation_id: item for item in results}
+        acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
+            updated.get(item.operation_id, item) if item.state is AcquisitionState.ACCEPTED else item
+            for item in self._state.acquisitions
+        )
+        if acquisitions != self._state.acquisitions and self._save(replace(self._state, acquisitions=acquisitions)):
+            self._publish_state()
+            paths: tuple[Path, ...] = tuple(
+                self._service.workspace_root / item.directory / name
+                for item in results
+                if item.state is AcquisitionState.COMPLETE
+                for name in item.required_files
+            )
+            if paths:
+                self.files_changed(DirectoryChange(paths=paths, reason="transfer_complete"))
+            else:
+                self._refresh_automatic()
+        self._schedule_transfers(TRANSFER_CHECK_INTERVAL_S)
 
     def _subscription_mutation(self, request: ControlRequest, service: SubscriptionService) -> ControlResponse:
         identifier: str | None = _text(request.payload, "subscription_id")

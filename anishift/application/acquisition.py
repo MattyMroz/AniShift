@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from anishift.services.catalog import PrequelEntry, TitleCandidate
-    from anishift.services.torrents import Release, ReleaseName, TorrentInfo
+    from anishift.services.torrents import Release, ReleaseName, TorrentFile, TorrentInfo
     from anishift.services.torrents.query import EpisodeRange
 
 __all__ = [
@@ -144,6 +144,10 @@ class TorrentClient(Protocol):
 
     def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
         """Return the torrents the client tracks under *category*."""
+        ...
+
+    def files(self, info_hash: str) -> tuple[TorrentFile, ...]:
+        """Return selection and completion of the torrent files."""
         ...
 
 
@@ -429,6 +433,14 @@ class AcquisitionService:
     def queued_hashes(self) -> frozenset[str]:
         """Lowercase info hashes of every torrent the client already tracks under the AniShift category."""
         return frozenset(info.info_hash.casefold() for info in self._client.torrents(self._category))
+
+    def transfers(self) -> tuple[TorrentInfo, ...]:
+        """Read the current state of every transfer in the AniShift category."""
+        return self._client.torrents(self._category)
+
+    def transfer_files(self, info_hash: str) -> tuple[TorrentFile, ...]:
+        """Read selection and completion for one tracked transfer."""
+        return self._client.files(info_hash)
 
     def series_directory(self, choice: ReleaseChoice) -> Path:
         """Return the library directory the files of *choice* will be saved into."""

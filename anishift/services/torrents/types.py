@@ -49,3 +49,22 @@ class TorrentInfo:
     progress: float
     state: str
     save_path: str
+    amount_left: int | None = None
+    completed: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TorrentFile:
+    """Selection and completion of one path relative to the torrent save directory."""
+
+    index: int
+    name: str
+    size: int
+    progress: float
+    priority: int
+    is_seed: bool
+
+    def __post_init__(self) -> None:
+        if not self.name or self.index < 0 or self.size < 0 or not 0.0 <= self.progress <= 1.0 or self.priority < 0:
+            msg = "Torrent file metadata is invalid"
+            raise ValueError(msg)

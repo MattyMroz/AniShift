@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import Final
 
 import httpx
+from pydantic import TypeAdapter, ValidationError
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.torrents.errors import TorrentClientError
-from anishift.services.torrents.types import TorrentInfo
+from anishift.services.torrents.types import TorrentFile, TorrentInfo
 from anishift.utils.logger import get_logger
 
 __all__ = ["QBittorrentClient"]
@@ -45,6 +46,9 @@ _UNAVAILABLE_SUGGESTION: Final[str] = (
 _REFUSAL_SUGGESTION: Final[str] = "Check the qBittorrent Web UI version and permissions"
 """Recovery hint for a request the Web UI refused."""
 
+_TORRENT_FILES: Final[TypeAdapter[tuple[TorrentFile, ...]]] = TypeAdapter(tuple[TorrentFile, ...])
+"""Validates the file list before selection and completion affect local processing."""
+
 
 class _Refusal(StrEnum):
     """Ways one Web UI answer can be unusable."""
@@ -52,6 +56,7 @@ class _Refusal(StrEnum):
     REQUEST = "request"
     PREFERENCES = "preferences"
     TORRENT_LIST = "torrent_list"
+    TORRENT_FILES = "torrent_files"
     BODY = "body"
 
 
@@ -59,6 +64,7 @@ _REFUSAL_MESSAGES: Final[dict[_Refusal, str]] = {
     _Refusal.REQUEST: "qBittorrent rejected the request",
     _Refusal.PREFERENCES: "qBittorrent returned unreadable preferences",
     _Refusal.TORRENT_LIST: "qBittorrent returned an unreadable torrent list",
+    _Refusal.TORRENT_FILES: "qBittorrent returned unreadable file metadata",
     _Refusal.BODY: "qBittorrent returned an unreadable response",
 }
 """Message shown for each refused Web UI answer."""
@@ -123,6 +129,14 @@ class QBittorrentClient:
         if not isinstance(payload, list):
             raise self._refused(_Refusal.TORRENT_LIST)
         return tuple(_torrent_info(entry) for entry in payload if isinstance(entry, dict))
+
+    def files(self, info_hash: str) -> tuple[TorrentFile, ...]:
+        """Return selection and completion of every file in one torrent."""
+        response: httpx.Response = self._request("GET", "/torrents/files", params={"hash": info_hash})
+        try:
+            return _TORRENT_FILES.validate_json(response.content, strict=True)
+        except ValidationError as error:
+            raise self._refused(_Refusal.TORRENT_FILES) from error
 
     def _request(
         self,
@@ -228,12 +242,17 @@ def _torrent_accepted(response: httpx.Response) -> bool:
 
 
 def _torrent_info(entry: Mapping[str, object]) -> TorrentInfo:
-    """Map one torrent list entry onto the neutral contract."""
     progress: object = entry.get("progress", 0.0)
     return TorrentInfo(
         name=str(entry.get("name", "")),
         info_hash=str(entry.get("hash", "")),
-        progress=float(progress) if isinstance(progress, int | float) else 0.0,
+        progress=float(progress) if isinstance(progress, int | float) and not isinstance(progress, bool) else 0.0,
         state=str(entry.get("state", "")),
         save_path=str(entry.get("save_path", "")),
+        amount_left=_nonnegative_integer(entry.get("amount_left")),
+        completed=_nonnegative_integer(entry.get("completed")),
     )
+
+
+def _nonnegative_integer(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None

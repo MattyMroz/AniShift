@@ -114,6 +114,12 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   a niepewne przekazanie blokuje ponowne dodanie hasha i innej wersji tego samego numeru.
   Usunięcie subskrypcji nie usuwa potwierdzenia. Obecność hasha w kliencie oznacza
   `ACCEPTED`, nigdy kompletność pliku. `automation.py`, `subscriptions.py`
+- `TransferInspector` odczytuje zbiorczą listę aktywnych transferów; metadane plików
+  odświeża po ich uzyskaniu i przy przejściu do kompletności. Do Auto dopuszcza wybrane
+  pliki po dowodzie klienta, zgodności rozmiaru i lokalnej dostępności. Nieznane nazwy
+  przyjętego transferu blokują Auto w jego katalogu do odczytania metadanych. Po `COMPLETE`
+  właściciel zleca zwykłą inspekcję plików; gdy brak `ACCEPTED`, nie odpytuje klienta.
+  `transfers.py`, `automation.py`
 - `ProcessingRequest` zachowuje pełny niejawny dla UI `RunSettingsSnapshot`, wybrane
   `GroupIntent` i `RebuildRequest`. Zagnieżdżone listy ustawień z JSON wracają do krotek;
   nazwy pól zawierające segment sekretu są odrzucane. Stare zlecenia bez `intents` nadal

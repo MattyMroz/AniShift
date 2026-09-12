@@ -11,7 +11,7 @@ import pytest
 from anishift.errors import ErrorCode
 from anishift.services.torrents.errors import TorrentClientError
 from anishift.services.torrents.qbittorrent import QBittorrentClient
-from anishift.services.torrents.types import TorrentInfo
+from anishift.services.torrents.types import TorrentFile, TorrentInfo
 
 BASE_URL = "http://127.0.0.1:8080"
 CREDENTIAL = "s3cr3t"
@@ -236,6 +236,56 @@ def test_torrents_maps_progress_state_and_save_path() -> None:
             save_path="C:\\workspace\\Neko to Ryuu",
         ),
     )
+
+
+def test_torrent_files_preserve_selection_and_completion() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v2/torrents/files"
+        assert request.url.params["hash"] == "abc"
+        return httpx.Response(
+            200,
+            json=[
+                {"index": 0, "name": "Folder/Episode.mkv", "size": 4, "progress": 1.0, "priority": 1, "is_seed": True}
+            ],
+        )
+
+    client, http = _client(handler)
+    with http:
+        assert client.files("abc") == (TorrentFile(0, "Folder/Episode.mkv", 4, 1.0, 1, True),)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"), [("size", -1), ("size", True), ("progress", "1"), ("progress", 1.1), ("is_seed", "true")]
+)
+def test_invalid_file_metadata_cannot_prove_completion(key: str, value: object) -> None:
+    entry: dict[str, object] = {
+        "index": 0,
+        "name": "Episode.mkv",
+        "size": 4,
+        "progress": 1.0,
+        "priority": 1,
+        "is_seed": True,
+    }
+    entry[key] = value
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[entry])
+
+    client, http = _client(handler)
+    with http, pytest.raises(TorrentClientError):
+        client.files("abc")
+
+
+@pytest.mark.parametrize("remaining", [None, 0, 3, -1, True, "0"])
+def test_only_valid_remaining_byte_counts_can_prove_completion(remaining: object) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"hash": "abc", "amount_left": remaining, "completed": 4}])
+
+    client, http = _client(handler)
+    with http:
+        transfer: TorrentInfo = client.torrents("AniShift")[0]
+    assert transfer.amount_left == (remaining if type(remaining) is int and remaining >= 0 else None)
+    assert transfer.completed == 4
 
 
 def test_torrents_rejects_an_unreadable_payload() -> None:

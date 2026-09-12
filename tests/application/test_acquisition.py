@@ -26,7 +26,7 @@ from anishift.application.acquisition import (
 )
 from anishift.errors import ErrorCode, ErrorContext, FatalError
 from anishift.services.catalog import PrequelEntry, TitleCandidate, TitleStatus
-from anishift.services.torrents import Release, ReleaseName, TorrentInfo
+from anishift.services.torrents import Release, ReleaseName, TorrentFile, TorrentInfo
 from anishift.services.torrents.categories import (
     CATEGORY_ENGLISH_TRANSLATED,
     CATEGORY_NON_ENGLISH_TRANSLATED,
@@ -102,6 +102,10 @@ class _Client:
     def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
         self._require()
         return tuple(self.tracked)
+
+    def files(self, info_hash: str) -> tuple[TorrentFile, ...]:
+        del info_hash
+        return ()
 
     def _require(self) -> None:
         if not self.reachable:

@@ -14,6 +14,7 @@ from typing import Final, cast
 import pytest
 from fakes import write_text_source
 
+import anishift.application.automation as automation_module
 import anishift.application.watch as watch_module
 from anishift.application.acquisition import AcquisitionService, TorrentClient
 from anishift.application.automation import AutomationOwner
@@ -55,7 +56,7 @@ from anishift.platform.local_control import (
     control_endpoint,
 )
 from anishift.services.media import DefaultMediaProbe
-from anishift.services.torrents import Release, TorrentClientError, TorrentInfo, parse_release_name
+from anishift.services.torrents import Release, TorrentClientError, TorrentFile, TorrentInfo, parse_release_name
 from anishift.services.torrents.categories import SEARCH_CATEGORIES
 
 _TIMEOUT_S: Final[float] = 5.0
@@ -92,6 +93,8 @@ class _TorrentNetwork:
         self.before_search: Callable[[], None] | None = None
         self.before_add: Callable[[], None] | None = None
         self.lose_response: bool = False
+        self.entries: tuple[TorrentFile, ...] = ()
+        self.info_calls: int = 0
 
     def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> tuple[Release, ...]:
         del query, categories
@@ -115,7 +118,12 @@ class _TorrentNetwork:
 
     def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
         del category
+        self.info_calls += 1
         return tuple(self.tracked.values())
+
+    def files(self, info_hash: str) -> tuple[TorrentFile, ...]:
+        del info_hash
+        return self.entries
 
 
 class _Subscriptions:
@@ -924,6 +932,49 @@ def test_a_failed_acquisition_journal_save_prevents_the_add(tmp_path: Path, monk
     assert not thread.is_alive()
     assert not network.added
     assert not store.load().acquisitions
+
+
+def test_accepted_transfer_waits_for_file_completion_then_enters_auto_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.02)
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
+    monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
+    service, store, group_id = _library(tmp_path)
+    source: Path = tmp_path / "Episode.txt"
+    size: int = source.stat().st_size
+    network: _TorrentNetwork = _TorrentNetwork()
+    network.tracked["9"] = TorrentInfo(source.name, "9", 0.5, "downloading", str(tmp_path), 1, size - 1)
+    network.entries = (TorrentFile(0, source.name, size, 0.5, 1, False),)
+    service.acquisition = AcquisitionService(
+        source=network, client=cast("TorrentClient", network), workspace_root=tmp_path, parse_name=parse_release_name
+    )
+    confirmation: AcquisitionConfirmation = AcquisitionConfirmation(
+        "transfer", "9", "", (), AcquisitionState.ACCEPTED, RequestOrigin.USER, None, "9", _MOMENT.isoformat()
+    )
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(confirmation,)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True))
+        assert service.discover_entered.wait(_TIMEOUT_S)
+        assert not service.submitted_event.wait(0.1)
+        partial: WatchState = owner.state
+        assert partial.acquisitions[0].state is AcquisitionState.ACCEPTED
+        network.entries = (replace(network.entries[0], progress=1.0, is_seed=True),)
+        network.tracked["9"] = replace(network.tracked["9"], progress=1.0, amount_left=0, state="stoppedUP")
+        assert service.submitted_event.wait(_TIMEOUT_S)
+        completed: WatchState = owner.state
+        assert completed.acquisitions[0].state is AcquisitionState.COMPLETE
+        service.finish(service.submitted[0], GroupStatus.SUCCEEDED, group_id)
+        calls: int = network.info_calls
+        assert not threading.Event().wait(0.1)
+        assert network.info_calls == calls
+        assert len(service.submitted) == 1
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
 
 
 def test_every_state_change_reaches_the_subscribers(tmp_path: Path) -> None:

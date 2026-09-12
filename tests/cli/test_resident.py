@@ -41,6 +41,7 @@ from anishift.cli.watch import run_resident
 
 class _Service:
     subscriptions = None
+    acquisition = None
 
     def __init__(self, workspace_root):
         self.workspace_root = workspace_root
@@ -81,6 +82,7 @@ class _Service:
         self.workspace_root: Path = workspace_root
         workspace_root.mkdir(parents=True, exist_ok=True)
         self.subscriptions: None = None
+        self.acquisition: None = None
         self.admissions: list[bool] = []
 
     def discover(self, *, changed_paths: Sequence[Path] | None = None) -> InspectedWorkspace:

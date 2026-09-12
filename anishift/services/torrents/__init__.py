@@ -4,7 +4,7 @@ from anishift.services.torrents.errors import TorrentClientError, TorrentError, 
 from anishift.services.torrents.names import parse_release_name
 from anishift.services.torrents.nyaa import parse_feed, search_releases
 from anishift.services.torrents.qbittorrent import QBittorrentClient
-from anishift.services.torrents.types import Release, ReleaseName, TorrentInfo
+from anishift.services.torrents.types import Release, ReleaseName, TorrentFile, TorrentInfo
 
 __all__ = [
     "QBittorrentClient",
@@ -12,6 +12,7 @@ __all__ = [
     "ReleaseName",
     "TorrentClientError",
     "TorrentError",
+    "TorrentFile",
     "TorrentInfo",
     "TorrentSourceError",
     "parse_feed",

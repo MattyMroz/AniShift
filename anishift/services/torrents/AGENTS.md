@@ -6,7 +6,7 @@ te decyzje należą do warstwy aplikacyjnej.
 
 ## Pliki
 
-- `types.py` — `Release`, `ReleaseName`, `TorrentInfo` (frozen, slots)
+- `types.py` — `Release`, `ReleaseName`, `TorrentInfo`, `TorrentFile` (frozen, slots)
 - `errors.py` — `TorrentError`, `TorrentSourceError` (transient), `TorrentClientError`
 - `categories.py` — identyfikatory kategorii nyaa i `SEARCH_CATEGORIES`; czysty moduł, który
   warstwa aplikacyjna może importować w runtime
@@ -42,6 +42,9 @@ te decyzje należą do warstwy aplikacyjnej.
 - qBittorrent: 403 wywołuje jednorazowy `auth/login` i jedno ponowienie; drugi 403 lub `Fails.`
   to `TORRENT_CLIENT_UNAUTHORIZED`, brak połączenia to `TORRENT_CLIENT_UNAVAILABLE`.
 - Hasło klienta nie trafia do logów ani do `ErrorContext.details`.
+- `TorrentInfo.amount_left` jest `None`, gdy brak poprawnej liczby bajtów; brak pola nie
+  oznacza zera. `files()` waliduje typy i zakresy metadanych przed użyciem ich jako dowodu
+  kompletności. Priorytet pliku `0` oznacza pominięcie. `qbittorrent.py`, `types.py`
 
 ## Testy
 

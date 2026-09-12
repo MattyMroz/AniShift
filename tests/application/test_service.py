@@ -709,13 +709,11 @@ def test_the_resident_processes_a_new_file_once_and_returns_to_idle(
         write_text_source(workspace / "Episode.txt", "One episode")
         deadline: float = time.monotonic() + 5.0
         while time.monotonic() < deadline:
-            requests: tuple[ProcessingRequest, ...] = store.load().requests
-            if requests and requests[0].state is RequestState.SUCCEEDED:
+            status: Mapping[str, object] = client.call("status")
+            if (workspace / "Episode.pl.srt").is_file() and not status["requests"]:
                 break
             time.sleep(0.01)
         assert (workspace / "Episode.pl.srt").is_file()
-        assert len(store.load().requests) == 1
-        assert store.load().requests[0].automatic
         assert len(translation.calls) == 1
         (workspace / "Episode.pl.srt").touch()
         time.sleep(0.1)
@@ -730,3 +728,7 @@ def test_the_resident_processes_a_new_file_once_and_returns_to_idle(
         thread.join(timeout=5.0)
         service.close()
     assert not thread.is_alive()
+    requests: tuple[ProcessingRequest, ...] = store.load().requests
+    assert len(requests) == 1
+    assert requests[0].state is RequestState.SUCCEEDED
+    assert requests[0].automatic
