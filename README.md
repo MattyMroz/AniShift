@@ -19,7 +19,7 @@ uv run anishift                           # the interactive interface
 API keys go into `.env` (see "Configuration"); `doctor` lists which engines have one.
 Opening the interface starts or connects to one background resident. A new configuration
 starts with Auto off and no subscriptions. Enable Auto and select subscription ranges explicitly
-in **Stan i automatyzacja**. Optionally run `uv run anishift autostart enable` to start the resident
+in **Stan**. Optionally run `uv run anishift autostart enable` to start the resident
 after every logon; this does not enable Auto or add subscriptions.
 
 If the shell still has another project's virtual environment active, start with
@@ -30,9 +30,9 @@ See [uv project environment documentation](https://docs.astral.sh/uv/concepts/pr
 Running `anishift` without a subcommand opens the interactive interface:
 
 - **Auto** processes every ready workspace group with the default preset.
-- **Stan i automatyzacja** shows progress, transfers, subscriptions and files while work continues.
 - **Ręczny** lets you choose sources, output, and per-run overrides before execution.
 - **Anime** searches nyaa.si for a title and hands the chosen releases to qBittorrent.
+- **Stan** shows progress, transfers, subscriptions and files while work continues.
 - **Ustawienia** edits supported preferences and provides a read-only model catalogue.
 - **Wyjście** closes the interface; accepted work continues in the resident.
 
@@ -46,6 +46,13 @@ to go back. Text editors support cursor movement, Delete and paste; secret value
 are masked and require explicit confirmation. Auto supports arrows, PageUp/PageDown
 and Home to browse the queue; End resumes following the active file. Resizing keeps
 the same application screen and preserves the previous console history on exit.
+
+All text fields share Prompt Toolkit's editing buffer: Ctrl+Left/Right moves by words,
+Ctrl+Backspace/Delete removes words, Shift with arrows or Home/End selects text,
+Ctrl+A selects all, and Ctrl+Z/Y undo or redo. Selected text is replaced when typing.
+Ctrl+C copies a selection to the application clipboard; without a selection it retains
+the screen's interrupt action. Ctrl+X/V cut and paste between fields; terminal paste
+also accepts text from outside the application. Secrets remain masked.
 
 Before inspecting media, AniShift prepares missing MKVToolNix and FFmpeg tools from
 the verified manifest. Windows downloads use SHA256 verification and run outside

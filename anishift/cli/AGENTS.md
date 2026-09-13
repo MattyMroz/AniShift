@@ -99,7 +99,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Run niepełny, anulowany albo z ostrzeżeniami pokazuje przewijany wynik grup:
   przyczyny błędów, zapisane i zachowane produkty oraz lokalizację logu.
   Treść przechodzi przez sanitizację i ten sam renderer. `interactive/app.py`
-- Home rezydenta dodaje `Stan i automatyzacja` przed `Auto`, `Ręczny`, `Anime`, `Ustawienia`, `Wyjście`. Settings działa w tym
+- Home rezydenta ma kolejność `Auto`, `Ręczny`, `Anime`, `Stan`, `Ustawienia`, `Wyjście`. Settings działa w tym
   samym rendererze, a mutacje `settings.json`, `presets.json` i `.env` przechodzą
   przez `AppService`. Manual przechowuje drafty wyłącznie lokalnie, rejestruje pliki
   zewnętrzne przez `AppService`, waliduje przez `plan_manual()` i przekazuje zaakceptowany
@@ -148,6 +148,11 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Wklejenie jest osobnym `Keys.BracketedPaste` → `paste:`; edytor odrzuca znaki
   sterujące i maskuje sekrety. Left/Right/Home/End w tekście ruszają kursor,
   poza tekstem służą nawigacji lub zmianie wartości. `interactive/settings.py`
+- Edycja pól tekstowych ma jeden model `interactive/text_input.py`, oparty na `Buffer`
+  i `Document` Prompt Toolkit. Wyszukiwarka, zakres odcinków, ścieżki Manual, ustawienia
+  i formularz subskrypcji używają tego samego kursora, zaznaczenia, kasowania i undo.
+  Nie dopisuj osobnych operacji na stringach w kontrolerach. Kopiowanie zaznaczenia
+  ma pierwszeństwo przed wyjściem przez Ctrl+C; walidacja i moment zapisu należą do pola.
 - Nieudany zapis zachowuje `_pending` i widoczny błąd; idle nie ponawia go co klatkę.
   Kolejne klawisze mogą ponowić zapis, a dwa kolejne Ctrl+C po ostrzeżeniu jawnie
   porzucają edycję. Brak zmiany nie zapisuje pliku. `interactive/settings.py`

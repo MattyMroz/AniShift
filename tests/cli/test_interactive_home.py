@@ -18,13 +18,13 @@ from anishift.cli.interactive.prompts import (
 )
 
 
-def test_home_without_resident_offers_five_actions_in_the_required_order() -> None:
+def test_home_places_state_between_anime_and_settings() -> None:
     content: Text = _home_content(120, 40, 0, MascotState.IDLE)
-    labels: list[str] = ["Auto", "Ręczny", "Anime", "Ustawienia", "Wyjście"]
+    labels: list[str] = ["Auto", "Ręczny", "Anime", "Stan", "Ustawienia", "Wyjście"]
     rows: list[str] = [line.strip().removeprefix("\u276f").strip() for line in content.plain.split("\n")]
 
-    assert [row for row in rows if row][-6:] == [*labels, "↑↓ · Enter"]
-    assert len(set(HomeAction) - {HomeAction.STATE}) == len(labels)
+    assert [row for row in rows if row][-7:] == [*labels, "↑↓ · Enter"]
+    assert len(HomeAction) == len(labels)
 
 
 def test_the_footer_keeps_the_directory_and_version_at_opposite_edges() -> None:
@@ -139,13 +139,13 @@ def test_the_text_slime_bounces_without_changing_its_reservation() -> None:
 
 
 @pytest.mark.parametrize("rows", [3, 4, 6, 8, 10, 12, 24])
-@pytest.mark.parametrize("selected", [0, 1, 2, 3, 4])
+@pytest.mark.parametrize("selected", [0, 1, 2, 3, 4, 5])
 def test_small_home_always_keeps_the_selected_action_visible(rows: int, selected: int) -> None:
     content = _home_content(80, rows, selected, MascotState.IDLE)
     frame = _fit_frame(content, "1.0.0", "workspace", 80, rows)
 
     assert "\u276f" in frame.plain
-    assert ("Auto", "Ręczny", "Anime", "Ustawienia", "Wyjście")[selected] in frame.plain
+    assert ("Auto", "Ręczny", "Anime", "Stan", "Ustawienia", "Wyjście")[selected] in frame.plain
     assert frame.plain.split("\n")[-1].endswith("v1.0.0")
 
 

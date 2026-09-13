@@ -25,6 +25,7 @@ from anishift.application import (
 )
 from anishift.application.events import RunEvent, sanitize_event_message
 from anishift.cli.interactive.progress import RichRunProgress
+from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
 from anishift.platform.local_control import ControlError
@@ -81,7 +82,7 @@ class StateController:
         self._busy: bool = False
         self._notice: str = "Łączenie z procesem w tle…"
         self._form: list[str] | None = None
-        self._typed: str = ""
+        self._input: TextInput = TextInput()
         self._binding: Subscription | None = None
         self._candidates: tuple[TitleCandidate, ...] = ()
         self._thread: threading.Thread = threading.Thread(target=self._watch, name="anishift-state", daemon=True)
@@ -135,7 +136,8 @@ class StateController:
         elif key == "f" and self._tab == _Tab.SUBSCRIPTIONS:
             self._command("subscriptions_check")
         elif key == "d" and self._tab == _Tab.SUBSCRIPTIONS:
-            self._form, self._typed = [], ""
+            self._form = []
+            self._input.reset()
         elif self._tab == _Tab.SUBSCRIPTIONS and self._subscriptions and key in {"w", "x"}:
             item: Mapping[str, object] = self._subscriptions[min(self._selected, len(self._subscriptions) - 1)]
             kind: str = (
@@ -222,24 +224,22 @@ class StateController:
         self._invalidate()
 
     def _edit_form(self, key: str) -> None:
+        if self._input.handle(key):
+            self._invalidate()
+            return
         if key in {"escape", "interrupt"}:
             self._form = None
-        elif key == "backspace":
-            self._typed = self._typed[:-1]
-        elif key == "space":
-            self._typed += " "
-        elif key.startswith(("text:", "paste:")):
-            self._typed += "".join(character for character in key.split(":", 1)[1] if character.isprintable())
         elif key == "enter" and self._form is not None:
             self._accept_field()
         self._invalidate()
 
     def _accept_field(self) -> None:
-        if self._form is None or not self._typed.strip():
+        if self._form is None or not self._input.text.strip():
             return
-        values: list[str] = [*self._form, self._typed.strip()]
+        values: list[str] = [*self._form, self._input.text.strip()]
         if len(values) < len(_ADD_FIELDS):
-            self._form, self._typed = values, "1" if len(values) == len(_ADD_FIELDS) - 1 else ""
+            self._form = values
+            self._input.reset("1" if len(values) == len(_ADD_FIELDS) - 1 else "")
             return
         try:
             order: SubscriptionOrder = SubscriptionOrder(
@@ -358,48 +358,85 @@ class StateController:
                 self._runs[run_id] = (snapshot.preview.preview_id, restored)
 
     def render(self, columns: int, rows: int) -> Text:
-        """Render only cached state, keeping settings and navigation available during work."""
+        """Render cached state using the same menu palette and spacing as the other screens."""
         with self._lock:
-            result: Text = Text("Stan · ", style="bold")
-            result.append("Auto włączone" if self._snapshot.get("auto_enabled") else "Auto wyłączone")
-            if not self._connected:
-                result.append(" · rozłączono, dane mogą być nieaktualne", style="yellow")
-            result.append("\n")
-            for index, name in enumerate(_TABS):
-                result.append(f" {name} ", style="reverse" if self._tab == index else "")
-            result.append("\n\n")
-            content: list[Text] = self._content(columns)
-            visible: int = max(rows - 9, 1)
+            content: list[Text] = self._content(max(columns - 4, 1))
+            width: int = min(max(columns - 4, 1), max(48, max((line.cell_len + 2 for line in content), default=0)))
+            left: int = max((columns - width) // 2, 0)
+            footer: list[Text] = self._footer(width)
+            visible: int = max(rows - len(footer) - 7, 1)
             self._selected = min(self._selected, max(len(content) - 1, 0))
             self._offset = min(self._offset, self._selected)
             self._offset = max(self._offset, self._selected - visible + 1)
+            body: list[Text] = [
+                Text("STAN", style="white_bold"),
+                Text(),
+                self._tabs(),
+                self._automation_label(),
+                Text(),
+            ]
             for index in range(self._offset, min(len(content), self._offset + visible)):
-                result.append("\u276f " if index == self._selected else "  ")
-                result.append_text(content[index])
-                result.append("\n")
+                selected: bool = index == self._selected
+                line: Text = Text("\u276f " if selected else "  ", style="brand_accent" if selected else "white_bold")
+                line.append_text(content[index])
+                if selected and self._tab != _Tab.PROGRESS:
+                    line.stylize("brand_accent")
+                body.append(line)
             if not content:
-                result.append("Brak pozycji\n", style="dim")
-            result.append("\n" + self._notice + "\n", style="yellow")
-            if self._tab == _Tab.SUBSCRIPTIONS and self._snapshot.get("subscriptions_problem"):
-                result.append(_safe_text(self._snapshot["subscriptions_problem"]) + "\n", style="yellow")
-            if self._form is not None:
-                result.append(f"{_ADD_FIELDS[len(self._form)]}: {self._typed}▏\nEnter · Esc anuluje")
-            else:
-                result.append(
-                    "Tab widok · O Auto wł./wył. · R uruchom teraz · M wybierz pliki · U ustawienia · Esc menu\n",
-                    style="dim",
-                )
-                if self._tab == _Tab.SUBSCRIPTIONS:
-                    result.append("D dodaj · W włącz/wyłącz · X usuń wpis · B powiąż sezon · F sprawdź", style="dim")
-                elif self._tab == _Tab.TRANSFERS:
-                    result.append("P wstrzymaj · W wznów · X anuluj (pliki zostają) · A inne wydanie", style="dim")
-                elif self._tab == _Tab.PROGRESS:
-                    result.append("C anuluj zaznaczone zlecenie", style="dim")
-                elif self._tab == _Tab.FILES:
-                    result.append(
-                        "W Auto katalogu · M wybór i regeneracja · F folder · P ponów przenoszenie", style="dim"
-                    )
+                body.append(Text("Brak pozycji", style="gray"))
+            body.extend(footer)
+            result: Text = Text("\n" * max((rows - 1 - len(body)) // 2, 0))
+            for line in body:
+                line.truncate(width, overflow="ellipsis")
+                result.append(" " * left)
+                result.append_text(line)
+                result.append("\n")
             return result
+
+    def _tabs(self) -> Text:
+        tabs: Text = Text()
+        for index, name in enumerate(_TABS):
+            if index:
+                tabs.append(" · ", style="gray")
+            tabs.append(name, style="brand_accent" if self._tab == index else "gray")
+        return tabs
+
+    def _automation_label(self) -> Text:
+        label: Text = Text("Auto · ", style="gray")
+        enabled: bool = bool(self._snapshot.get("auto_enabled"))
+        label.append("włączone" if enabled else "wyłączone", style="brand_accent" if enabled else "white_bold")
+        if not self._connected:
+            label.append(" · brak połączenia", style="warning")
+        return label
+
+    def _footer(self, width: int) -> list[Text]:
+        footer: list[Text] = [Text(self._notice, style="gray")]
+        if self._tab == _Tab.SUBSCRIPTIONS and self._snapshot.get("subscriptions_problem"):
+            footer.append(Text(_safe_text(self._snapshot["subscriptions_problem"]), style="warning"))
+        if self._form is not None:
+            prompt: Text = Text(f"{_ADD_FIELDS[len(self._form)]}: ", style="white_bold")
+            prompt.append_text(self._input.render(max(width - prompt.cell_len, 1)))
+            footer.append(prompt)
+            footer.append(Text("Enter zatwierdź · Esc anuluj", style="gray"))
+            return footer
+        hints: str = "Tab widok · O Auto · R uruchom · M ręczny · U ustawienia · Esc wróć"
+        if self._tab == _Tab.SUBSCRIPTIONS:
+            hints += " · D dodaj · W włącz/wyłącz · X usuń wpis · B powiąż sezon · F sprawdź"
+        elif self._tab == _Tab.TRANSFERS:
+            hints += " · P wstrzymaj · W wznów · X anuluj (pliki zostają) · A inne wydanie"
+        elif self._tab == _Tab.PROGRESS:
+            hints += " · C anuluj zlecenie"
+        elif self._tab == _Tab.FILES:
+            hints += " · W Auto katalogu · F folder · P ponów przenoszenie"
+        line: str = ""
+        for hint in hints.split(" · "):
+            candidate: str = f"{line} · {hint}" if line else hint
+            if len(candidate) > width and line:
+                footer.append(Text(line, style="gray"))
+                candidate = hint
+            line = candidate
+        footer.append(Text(line, style="gray"))
+        return footer
 
     def _content(self, columns: int) -> list[Text]:
         if self._binding is not None:
@@ -409,7 +446,7 @@ class StateController:
                 line for _, progress in self._runs.values() for line in progress.render(max(columns - 2, 1)).split("\n")
             ]
             progress.extend(
-                Text(f"{_safe_text(item.get('problem'))} · M wybierz pliki i dokończ pracę", style="yellow")
+                Text(f"{_safe_text(item.get('problem'))} · M wybierz pliki i dokończ pracę", style="warning")
                 for item in _rows(self._snapshot.get("recovery_problems"))
             )
             return progress
@@ -424,13 +461,13 @@ class StateController:
                 )
                 + Text(
                     f" · {messages[str(item['info_hash'])]}" if messages.get(str(item.get("info_hash"))) else "",
-                    style="yellow",
+                    style="warning",
                 )
                 for item in self._transfer_rows()
             ]
             problem: object = self._snapshot.get("transfers_problem")
             if problem:
-                content.append(Text(_safe_text(str(problem)), style="yellow"))
+                content.append(Text(_safe_text(str(problem)), style="warning"))
             return content
         if self._tab == _Tab.FILES:
             policy: AutomationPolicy = self._policy()
@@ -451,7 +488,7 @@ class StateController:
             content.extend(
                 Text(
                     f"{_safe_text(item.get('name'))} · {_safe_text(item.get('problem') or 'przenoszenie do ready')}",
-                    style="yellow",
+                    style="warning",
                 )
                 for item in _rows(self._snapshot.get("relocations"))
             )

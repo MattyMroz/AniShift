@@ -33,6 +33,7 @@ from anishift.application import (
     parse_query,
 )
 from anishift.application.events import sanitize_event_message
+from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError, ErrorCode
 from anishift.utils.logger import get_logger
@@ -108,9 +109,6 @@ _RANGE_PROMPT: Final[str] = "zakres (np. 4-10)"
 
 _RANGE_INVALID: Final[str] = "zakres: podaj np. 4-10"
 """Notice shown when the typed span cannot be read."""
-
-_RANGE_CHARACTERS: Final[frozenset[str]] = frozenset("0123456789-")
-"""Characters the range prompt accepts."""
 
 _CHECK_CADENCE: Final[str] = "sprawdzam co godzinę"
 """Tail of the confirmation naming how often the watch looks for new episodes."""
@@ -217,7 +215,7 @@ class AnimeController:
         self._generation: int = 0
         self._worker: threading.Thread | None = None
         self._screen: _Screen = _Screen.QUERY
-        self._query: str = ""
+        self._query_input: TextInput = TextInput()
         self._searched: str = ""
         self._candidates: tuple[TitleCandidate, ...] = ()
         self._highlighted: int = 0
@@ -234,7 +232,7 @@ class AnimeController:
         self._hidden: int = 0
         self._excluded: int = 0
         self._filtered: int = 0
-        self._range: str | None = None
+        self._range_input: TextInput | None = None
         self._fallback: str = ""
         self._busy: str = _SEARCHING_TITLE
         self._done: str = ""
@@ -283,19 +281,31 @@ class AnimeController:
             self._generation += 1
 
     def _handle_query(self, key: str) -> AnimeResult:
+        if self._query_input.handle(key):
+            return AnimeResult.CONTINUE
         if key in {"escape", "interrupt"}:
             return AnimeResult.HOME
-        if key == "backspace":
-            self._query = self._query[:-1]
-        elif key == "space":
-            self._query += " "
-        elif key.startswith("text:"):
-            self._query += key.removeprefix("text:")
-        elif key.startswith("paste:"):
-            self._query += _pasted(key.removeprefix("paste:"))
-        elif key == "enter" and self._query.strip():
+        if key == "enter" and self._query.strip():
             self._start_search(self._query.strip())
         return AnimeResult.CONTINUE
+
+    @property
+    def _query(self) -> str:
+        return self._query_input.text
+
+    @property
+    def _range(self) -> str | None:
+        return None if self._range_input is None else self._range_input.text
+
+    @_range.setter
+    def _range(self, value: str | None) -> None:
+        self._range_input = None if value is None else TextInput(value)
+
+    def copy_selection(self) -> bool:
+        """Copy selected input text while leaving an unselected Ctrl+C to navigation."""
+        with self._lock:
+            editor: TextInput | None = self._query_input if self._screen is _Screen.QUERY else self._range_input
+            return editor is not None and editor.handle("interrupt")
 
     def _handle_titles(self, key: str) -> AnimeResult:
         if key in {"escape", "interrupt"} or not self._candidates:
@@ -357,15 +367,13 @@ class AnimeController:
 
     def _handle_range(self, key: str) -> AnimeResult:
         typed: str = self._range or ""
+        if self._range_input is not None and self._range_input.handle(key):
+            return AnimeResult.CONTINUE
         if key in {"escape", "interrupt"}:
             self._range = None
         elif key == "enter":
             self._range = None
             self._apply_range(typed)
-        elif key == "backspace":
-            self._range = typed[:-1]
-        elif key.startswith("text:") and key.removeprefix("text:") in _RANGE_CHARACTERS:
-            self._range = typed + key.removeprefix("text:")
         return AnimeResult.CONTINUE
 
     def _handle_problem(self, key: str) -> AnimeResult:
@@ -675,8 +683,11 @@ class AnimeController:
         content: Text = _header(_TITLE, columns, rows, 2)
         left: int = max((columns - min(max(len(self._query) + 3, 32), columns)) // 2, 0)
         width: int = max(columns - left - 3, 1)
-        content.append(f"{' ' * left}> {self._query[-width:]}▌\n", style="white_bold")
-        return _finish(content, left, _QUERY_HINT, columns)
+        content.append(f"{' ' * left}> ", style="white_bold")
+        content.append_text(self._query_input.render(width))
+        content.append("\n")
+        hint_left: int = max((columns - Text(_QUERY_HINT).cell_len) // 2, 0)
+        return _finish(content, hint_left, _QUERY_HINT, columns)
 
     def _render_titles(self, columns: int, rows: int) -> Text:
         labels: tuple[str, ...] = tuple(
@@ -710,7 +721,13 @@ class AnimeController:
         content: Text = _header(_TITLE, columns, rows, end - start + len(lines) - 1 + int(bool(subtitle)), subtitle)
         for index in range(start, end):
             self._append_row(content, left, labels[index], index)
-        _append_hint(content, left, lines)
+        if self._range_input is not None:
+            prompt: Text = Text(f"{_RANGE_PROMPT}: ", style="gray")
+            content.append(" " * left)
+            content.append_text(prompt)
+            content.append_text(self._range_input.render(max(columns - left - prompt.cell_len, 1)))
+        else:
+            _append_hint(content, left, lines)
         return content
 
     def _render_empty(self, columns: int, rows: int, subtitle: str) -> Text:
@@ -995,11 +1012,6 @@ def _stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:
     if isinstance(problem, ValueError):
         return _NOT_WATCHABLE, ""
     return _safe(str(problem)), ""
-
-
-def _pasted(text: str) -> str:
-    """Return one pasted fragment without the control characters and newlines a title never carries."""
-    return "".join(character for character in text if character.isprintable())
 
 
 def _safe(value: str) -> str:

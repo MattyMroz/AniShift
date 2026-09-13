@@ -77,7 +77,7 @@ _TERMINAL_SIZE_POLL_SECONDS: Final[float] = 0.1
 _AUTO_REFRESH_SECONDS: Final[float] = 0.1
 """Interval used by the single event loop to advance visible elapsed time."""
 
-_NORMALISED_KEYS: Final[tuple[tuple[Keys | str, str], ...]] = (
+_NORMALISED_KEYS: Final[tuple[tuple[Keys | str | tuple[Keys | str, ...], str], ...]] = (
     (Keys.Up, "up"),
     (Keys.Down, "down"),
     (Keys.Left, "left"),
@@ -94,6 +94,30 @@ _NORMALISED_KEYS: Final[tuple[tuple[Keys | str, str], ...]] = (
     (Keys.BackTab, "backtab"),
     (Keys.Escape, "escape"),
     (Keys.ControlC, "interrupt"),
+    (Keys.ControlLeft, "ctrl-left"),
+    (Keys.ControlRight, "ctrl-right"),
+    (Keys.ControlHome, "ctrl-home"),
+    (Keys.ControlEnd, "ctrl-end"),
+    (Keys.ControlW, "ctrl-backspace"),
+    (Keys.ControlDelete, "ctrl-delete"),
+    (Keys.ShiftLeft, "shift-left"),
+    (Keys.ShiftRight, "shift-right"),
+    (Keys.ShiftHome, "shift-home"),
+    (Keys.ShiftEnd, "shift-end"),
+    (Keys.ControlShiftLeft, "ctrl-shift-left"),
+    (Keys.ControlShiftRight, "ctrl-shift-right"),
+    (Keys.ControlShiftHome, "ctrl-shift-home"),
+    (Keys.ControlShiftEnd, "ctrl-shift-end"),
+    (Keys.ControlA, "select-all"),
+    (Keys.ControlX, "cut"),
+    (Keys.ControlV, "paste"),
+    (Keys.ControlZ, "undo"),
+    (Keys.ControlY, "redo"),
+    (Keys.ControlInsert, "copy"),
+    (Keys.ShiftInsert, "paste"),
+    (Keys.ShiftDelete, "cut"),
+    ((Keys.Escape, "d"), "ctrl-delete"),
+    ((Keys.Escape, Keys.Backspace), "ctrl-backspace"),
 )
 """Terminal keys the session forwards under a stable name."""
 
@@ -339,7 +363,8 @@ class TerminalRenderer:
     def _key_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
         for key, name in _NORMALISED_KEYS:
-            bindings.add(key)(self._forward(name))
+            sequence: tuple[Keys | str, ...] = key if isinstance(key, tuple) else (key,)
+            bindings.add(*sequence)(self._forward(name))
 
         @bindings.add(Keys.BracketedPaste)
         def paste(event: KeyPressEvent) -> None:

@@ -196,6 +196,37 @@ def _frame(controller: AnimeController, columns: int = 120, rows: int = 30) -> s
     return controller.render(columns, rows).plain
 
 
+@pytest.mark.parametrize("query", ["", "frieren", "a longer anime title with a release group"])
+def test_search_hint_stays_centered_independently_of_input_width(query: str) -> None:
+    controller: AnimeController = _controller(_service(extra={}))
+    _type(controller, query)
+    frame: str = _frame(controller, columns=80)
+    hint: str = next(line for line in frame.splitlines() if "Enter szukaj" in line)
+    assert len(hint) - len(hint.lstrip()) == (80 - Text(hint.strip()).cell_len) // 2
+
+
+def test_search_edits_selected_words_before_submitting_the_final_query() -> None:
+    searched: list[str] = []
+
+    def find_titles(text: str) -> tuple[TitleCandidate, ...]:
+        searched.append(text)
+        return ()
+
+    controller: AnimeController = _controller(
+        _service(search=lambda text: _catalog(()), extra={"find_titles": find_titles})
+    )
+    _type(controller, "old title")
+    controller.handle_key("ctrl-shift-left")
+    controller.handle_key("text:anime")
+    assert controller._query == "old anime"
+    controller.handle_key("home")
+    controller.handle_key("ctrl-delete")
+    controller.handle_key("delete")
+    controller.handle_key("enter")
+    _settle(controller)
+    assert searched == ["anime"]
+
+
 def _receipt(directory: str = "Oshi no Ko") -> Callable[..., DownloadReceipt]:
     def download(choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
         del directory_name

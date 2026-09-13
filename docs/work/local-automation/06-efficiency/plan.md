@@ -600,7 +600,7 @@ Przegląd planu względem spec.md i kodu `a7d319f` (przeczytane w całości: `sc
 
 **D-04. Ikona i powiadomienia.** „Otwórz" uruchamia panel w nowym oknie konsoli (`wt.exe`, gdy jest w PATH, inaczej domyślna konsola) z argumentem otwierającym Stan; gdy panel jest już podłączony, rezydent wysyła mu polecenie pokazania Stanu zamiast otwierać drugie okno. Powiadomienia Windows to balon ikony (`Shell_NotifyIcon`, `NIF_INFO`), bez procesu PowerShell.
 
-**D-05. Home.** Zgodnie z doprecyzowaniem właściciela Stan jest elementem głównego interfejsu: „Stan i automatyzacja” poprzedza dotychczasowe akcje. „Auto” zachowuje jednorazowy start z domyślnego presetu; przełącznik automatyzacji znajduje się w Stanie. Wyjście z panelu nie kończy rezydenta.
+**D-05. Home.** Po odbiorze właściciela obowiązuje kolejność: „Auto”, „Ręczny”, „Anime”, „Stan”, „Ustawienia”, „Wyjście”. „Stan” ma jedno słowo i wspólny styl z innymi ekranami. „Auto” zachowuje jednorazowy start z domyślnego presetu; przełącznik automatyzacji znajduje się w Stanie. Wyjście z panelu nie kończy rezydenta.
 
 **D-06. Techniczne komendy.** `anishift watch` = rezydent (to samo zadanie autostartu). `run --preset` i zapisujące komendy `subs` delegują do właściciela i czekają na wynik przez kanał, drukując dotychczasowy raport. Korekta implementacyjna P08: bez rezydenta uruchamiają go tą samą drogą co panel, zamiast utrzymywać drugi wariant wykonania lokalnego. Zachowano kody wyjścia i jawny zakres polecenia; samo uruchomienie procesu nie włącza automatów. `watch stop` = „Zakończ AniShift". `watch batch` odmawia z komunikatem migracyjnym.
 
@@ -624,8 +624,27 @@ Przegląd planu względem spec.md i kodu `a7d319f` (przeczytane w całości: `sc
 
 Właściciel odkłada poniższe kwestie do osobnej rozmowy po wykonaniu obecnego planu. To pytania i propozycje, nie zlecenie implementacji, nowe warunki odbioru P07/P08 ani zgoda na zmianę obecnych reguł wejścia. Obowiązujące wymagania zachowania wyników, ograniczonych retry i recovery nadal należą do tego planu.
 
+Uwagi z odbioru interfejsu 2026-09-13 są osobną listą wykonawczą poniżej. Nie odkładać ich razem z niezdecydowanymi funkcjami produktu.
+
 - **Modele i usługi:** co robić po wycofaniu modelu, zmianie API lub dłuższej awarii; czy utrzymywać jedną listę dozwolonych zamienników i ich kolejność. Ustalić granicę automatycznego przejścia, koszt, jakość i spójność tłumaczenia oraz kiedy pozostawić zlecenie do ręcznego wznowienia. Nie zakładać dowolnego modelu zastępczego ani ponowień bez końca.
 - **Niepewne płatne operacje:** jak pokazywać brak odpowiedzi po możliwym wykonaniu LLM/TTS, kiedy ponawiać i jak zachowywać gotowe produkty bez ponownej zapłaty za niezależną ukończoną pracę. Nie obiecywać exactly-once u zewnętrznej usługi.
 - **Samodzielne napisy i tekst:** oczekiwane produkty z TXT, ASS, SRT i innych formatów bez MKV; tłumaczenie i lektor, rozpoznanie lub jawne wskazanie języka, wykorzystanie gotowych polskich napisów. Obecne discovery traktuje ASS/SRT bez głównego MKV/MP4/TXT jako osierocone, a standalone TXT ma ograniczony zakres; docelowego zachowania jeszcze nie ustalono.
 - **Moment rozpoczęcia Auto i wybór źródła:** MKV przed napisami, napisy przed MKV, dodanie polskich napisów po rozpoczęciu lub zakończeniu pracy, kilka źródeł i identyczne nazwy. Obecne Auto może wybrać napisy z MKV, zanim użytkownik dołoży zewnętrzne; czas stabilności nie dowodzi kompletności zamiaru użytkownika. Rozstrzygnąć oczekiwanie na sidecar, jawne zatwierdzenie, przełączniki i ewentualne wyjątki per katalog. Dodatkowy folder jest tylko propozycją, nie wymaganiem.
 - **Przepływ po publikacji i obsługa całodobowa:** późniejsze wejścia po przeniesieniu odcinka do ready, przypisanie do właściwej grupy, regeneracja, niezależność ręcznej pracy i Auto oraz prezentacja awarii i następnej akcji. Przejść konkretne scenariusze użytkownika po uruchomieniu systemu; nie uznawać obecnego planu za dowód rozwiązania tych odłożonych przypadków.
+
+## 17. Uwagi właściciela z odbioru interfejsu — 2026-09-13
+
+Kolejność: dokończyć bieżące poprawki interfejsu i edytora, następnie zająć się ikoną, powiadomieniami i klientem. Poniższe zgłoszenia nie są jeszcze dowodem ustalonej przyczyny ani potwierdzeniem naprawy.
+
+- [x] Jednowyrazowe „Stan” po „Anime” w głównym menu; wspólne kolory, nagłówki, odstępy i podpowiedzi. Odwrócone kolory pozostają wyłącznie zaznaczeniem tekstu, nie stylem zakładek.
+- [x] Wspólna edycja wszystkich pól tekstowych przez `TextInput`, oparta na istniejących `Buffer` i `Document` Prompt Toolkit: kursor, wyrazy, zaznaczanie Shift, Ctrl+A, undo/redo, kopiowanie i wycinanie między polami oraz wklejanie z terminala. Zachowano reguły zapisu ustawień i jawnego zatwierdzania sekretów. Ctrl+C z zaznaczeniem kopiuje; bez zaznaczenia zachowuje dotychczasową akcję wyjścia/anulowania.
+- [x] „Enter szukaj · Esc wróć” wyśrodkowane niezależnie od długości zapytania. Nie dodano logo ani maskotki do wyszukiwarki.
+- [ ] Zbadać nieklikalną ikonę w obszarze powiadomień; odtworzyć i poprawić otwieranie właściwego widoku.
+- [ ] Zbadać powtarzające się powiadomienia o zakończeniu i problem z ich zamykaniem. Ustalić ich emitenta przed zmianą.
+- [ ] Powiadomienia aplikacji powinny identyfikować AniShift i używać jego maskotki, zamiast nazwy Python i ogólnej ikony.
+- [ ] Kliknięcie powiadomienia dotyczącego pobrań powinno otworzyć GUI prywatnego qBittorrenta należącego do AniShift, z jego listą transferów, bez otwierania osobistej instalacji i bez automatycznego wznowienia pobierania.
+- [ ] Sprawdzić limity i ustawienia szybkości prywatnego klienta względem osobistego oraz skuteczne porty i brak kolizji; nie deklarować maksymalnej szybkości ani poprawności portów bez odczytu i sprawdzenia. Nie zmieniać osobistego klienta.
+
+Sprzątanie na jawne polecenie właściciela: wszystkie 25 katalogów tytułów przeniesiono do Kosza (najpierw 12 bez filmów, następnie pozostałe 13 wraz z zawartością po ponowionym poleceniu). Zachowano root workspace, `CC`, `CCC`, `output` i `temp`. Usunięcie katalogów nie oznacza skasowania wpisów transferów w qBittorrencie.
+
+Odhaczone pozycje oznaczają wdrożony kod i wykonane kontrole; ocena wygody przez właściciela nadal pozostaje częścią odbioru. Sprawdzono render Anime i Stanu w 80×24. Pełny pytest z czterema workerami: **3939 passed, 11 skipped, 46,27 s**; poprzedni przebieg z automatyczną liczbą workerów miał dwa przekroczenia czasu w testach awarii. Nie zwiększano ich limitów. Po dodaniu alternatywnych terminalowych sekwencji kasowania wyrazów: **41 passed** dla mapowania klawiszy i wspólnego bufora. Ruff check/format i mypy Windows/Linux PASS (521 plików). Nie dodano zależności runtime ani osobnej implementacji historii undo.

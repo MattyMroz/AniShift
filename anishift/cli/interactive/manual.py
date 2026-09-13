@@ -39,6 +39,7 @@ from anishift.application import (
     preview_plan,
 )
 from anishift.application.events import sanitize_event_message
+from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
 
@@ -404,7 +405,7 @@ class ManualController:
         self._automatic_preview: bool = False
         self._ready_run: ManualRun | None = None
         self._input_kind: _InputKind | None = None
-        self._input_buffer: str = ""
+        self._input: TextInput = TextInput()
         self._feedback: str | None = None
         self._cancel: EventCancellationToken | None = None
         self._generation: int = 0
@@ -669,7 +670,7 @@ class ManualController:
                 if choice.audio_role is ExternalAudioRole.SOURCE_AUDIO
                 else _InputKind.NARRATION_MIX
             )
-            self._input_buffer = ""
+            self._input.reset()
             self._open(_Screen.INPUT)
             return
         group_id: str = self._current_group_id()
@@ -699,17 +700,18 @@ class ManualController:
             return ManualResult.STAY
         return ManualResult.BACK_HOME
 
+    def copy_selection(self) -> bool:
+        """Copy the selected external-source path without leaving its editor."""
+        with self._lock:
+            return self._screen is _Screen.INPUT and self._input.handle("interrupt")
+
     def _handle_input_key(self, key: str) -> None:
+        if self._input.handle(key):
+            return
         if key in {"escape", "interrupt"}:
             self._open(_Screen.CUSTOM)
-        elif key == "backspace":
-            self._input_buffer = self._input_buffer[:-1]
-        elif key == "space":
-            self._input_buffer += " "
-        elif key.startswith("text:"):
-            self._input_buffer += key.removeprefix("text:")
         elif key == "enter":
-            raw_path: str = self._input_buffer.strip().strip('"')
+            raw_path: str = self._input.text.strip().strip('"')
             if not raw_path:
                 self._feedback = "✗ Podaj ścieżkę pliku"
                 return
@@ -1080,10 +1082,10 @@ class ManualController:
     def _render_input(self, columns: int, rows: int) -> Text:
         title: str = "ZEWNĘTRZNE NAPISY" if self._input_kind is _InputKind.SUBTITLE else "ZEWNĘTRZNE AUDIO"
         content: Text = _header(title, columns, rows, 3)
-        left: int = max((columns - min(max(len(self._input_buffer) + 3, 24), columns)) // 2, 0)
+        left: int = max((columns - min(max(len(self._input.text) + 3, 24), columns)) // 2, 0)
         width: int = max(columns - left - 3, 1)
-        shown: str = self._input_buffer[-width:]
-        content.append(f"{' ' * left}> {shown}▌", style="white_bold")
+        content.append(f"{' ' * left}> ", style="white_bold")
+        content.append_text(self._input.render(width))
         content.append("\n")
         return self._finish(content, left, _INPUT_HINT)
 

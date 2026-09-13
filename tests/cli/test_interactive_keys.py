@@ -31,6 +31,18 @@ _EXPECTED_KEYS = [
     (Keys.BackTab, "backtab"),
     (Keys.Escape, "escape"),
     (Keys.ControlC, "interrupt"),
+    (Keys.ControlLeft, "ctrl-left"),
+    (Keys.ControlRight, "ctrl-right"),
+    (Keys.ControlDelete, "ctrl-delete"),
+    (Keys.ControlW, "ctrl-backspace"),
+    (Keys.ShiftLeft, "shift-left"),
+    (Keys.ShiftEnd, "shift-end"),
+    (Keys.ControlShiftLeft, "ctrl-shift-left"),
+    (Keys.ControlA, "select-all"),
+    (Keys.ControlX, "cut"),
+    (Keys.ControlV, "paste"),
+    (Keys.ControlZ, "undo"),
+    (Keys.ControlY, "redo"),
 ]
 
 
@@ -72,6 +84,20 @@ def test_normalised_names_are_all_distinct() -> None:
 def test_space_is_reported_separately_from_printable_text(renderer: TerminalRenderer, seen: list[str]) -> None:
     _press(renderer, " ")
     assert seen == ["space"]
+
+
+@pytest.mark.parametrize(
+    ("sequence", "expected"), [((Keys.Escape, "d"), "ctrl-delete"), ((Keys.Escape, Keys.Backspace), "ctrl-backspace")]
+)
+def test_terminal_word_deletion_sequences_use_the_shared_editor_action(
+    renderer: TerminalRenderer, seen: list[str], sequence: tuple[Keys | str, ...], expected: str
+) -> None:
+    bindings = renderer._application.key_bindings
+    assert bindings is not None
+    matches = bindings.get_bindings_for_keys(sequence)
+    assert matches
+    matches[-1].handler(cast("KeyPressEvent", object()))
+    assert seen == [expected]
 
 
 def test_bracketed_paste_arrives_as_one_literal_edit(renderer: TerminalRenderer, seen: list[str]) -> None:

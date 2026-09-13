@@ -10,7 +10,6 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Final
 
-from rich.cells import get_character_cell_size, set_cell_size
 from rich.text import Text
 
 from anishift.application import (
@@ -24,6 +23,7 @@ from anishift.application import (
     TranslationModelOption,
 )
 from anishift.cli.interactive.settings_editors import format_voice_input, parse_setting_input, parse_voice_input
+from anishift.cli.interactive.text_input import TextInput, is_edit_key
 from anishift.config.field_access import (
     preset_setting_is_active,
     preset_with_value,
@@ -392,11 +392,17 @@ class _Editor:
     offset: int = 0
     visible_count: int = 0
     current_value: str = ""
-    buffer: str = ""
-    pristine: bool = True
-    cursor: int | None = None
+    input: TextInput = field(default_factory=lambda: TextInput(pristine=True))
     provider_id: str = ""
     selected_values: set[str] = field(default_factory=set)
+
+    @property
+    def buffer(self) -> str:
+        return self.input.text
+
+    @buffer.setter
+    def buffer(self, value: str) -> None:
+        self.input.reset(value)
 
 
 @dataclass(slots=True)
@@ -466,6 +472,8 @@ class SettingsController:
 
     def handle_key(self, key: str) -> SettingsResult:
         """Apply one normalized terminal key without performing render-time I/O."""
+        if key == "interrupt" and self._editor is not None and self._editor.input.selected:
+            key = "copy"
         if self._discard_armed and key == "interrupt":
             self._pending = None
             self._editor = None
@@ -514,6 +522,12 @@ class SettingsController:
         return len(self._items)
 
     def _defers_save(self, key: str) -> bool:
+        if (
+            self._editor is not None
+            and self._editor.kind not in {_EditorKind.SELECT, _EditorKind.MULTI_SELECT, _EditorKind.CONFIRM}
+            and is_edit_key(key)
+        ):
+            return True
         if key in {"left", "right"}:
             if self._editor is not None:
                 return self._editor.kind not in {_EditorKind.SELECT, _EditorKind.MULTI_SELECT, _EditorKind.CONFIRM}
@@ -586,21 +600,6 @@ class SettingsController:
     def _schedule(self, pending: _PendingEdit) -> None:
         self._pending = pending
         self._feedback = None
-
-    def _typed(self, editor: _Editor, text: str) -> None:
-        if text and not text.isprintable():
-            self._feedback = _Feedback("✗ Wpisz jedną linię bez znaków sterujących", "error")
-            return
-        if editor.pristine:
-            # The stored value is shown as the starting point, so the first typed
-            # character replaces it instead of appending a second number to it.
-            editor.buffer = ""
-            editor.pristine = False
-            editor.cursor = 0
-        cursor: int = len(editor.buffer) if editor.cursor is None else editor.cursor
-        editor.buffer = editor.buffer[:cursor] + text + editor.buffer[cursor:]
-        editor.cursor = cursor + len(text)
-        self._schedule_typed_save(editor)
 
     def _schedule_typed_save(self, editor: _Editor) -> None:
         self._feedback = None
@@ -771,29 +770,18 @@ class SettingsController:
         self._handle_text_key(editor, key)
 
     def _handle_text_key(self, editor: _Editor, key: str) -> None:
-        cursor: int = len(editor.buffer) if editor.cursor is None else editor.cursor
-        if key in {"left", "right", "home", "end"}:
-            editor.pristine = False
-            if key in {"home", "end"}:
-                editor.cursor = 0 if key == "home" else len(editor.buffer)
-            else:
-                editor.cursor = min(max(cursor + (1 if key == "right" else -1), 0), len(editor.buffer))
-            return
-        if key in {"backspace", "delete"}:
-            editor.pristine = False
-            start: int = max(cursor - 1, 0) if key == "backspace" else cursor
-            stop: int = cursor if key == "backspace" else min(cursor + 1, len(editor.buffer))
-            editor.buffer = editor.buffer[:start] + editor.buffer[stop:]
-            editor.cursor = start
-            self._schedule_typed_save(editor)
-            return
-        if key == "space":
-            self._typed(editor, " ")
-            return
         if key.startswith(("text:", "paste:")):
-            self._typed(editor, key.partition(":")[2])
-            return
-        if key == "enter":
+            text: str = key.partition(":")[2]
+            if text and not text.isprintable():
+                self._feedback = _Feedback(
+                    "\u2717 Wpisz jedn\u0105 lini\u0119 bez znak\u00f3w steruj\u0105cych", "error"
+                )
+                return
+        previous: str = editor.input.text
+        if editor.input.handle(key):
+            if previous != editor.input.text:
+                self._schedule_typed_save(editor)
+        elif key == "enter":
             self._submit_editor(editor)
 
     def _handle_choice_editor(self, editor: _Editor, key: str) -> None:
@@ -1042,7 +1030,7 @@ class SettingsController:
             action=_EditorAction.UPDATE_VOICE,
             setting_id=_VOICES_SETTING_ID,
             current_value=voice.alias if voice is not None else "",
-            buffer=format_voice_input(voice) if voice is not None else "",
+            input=TextInput(format_voice_input(voice) if voice is not None else "", pristine=True),
         )
 
     def _connection_items(self) -> tuple[_MenuItem, ...]:
@@ -1158,7 +1146,7 @@ class SettingsController:
             kind=_EditorKind.TEXT,
             action=action,
             setting_id=setting_id,
-            buffer=_format_input(current),
+            input=TextInput(_format_input(current), pristine=True),
         )
 
     def _voices_after_edit(self, editor: _Editor, raw_value: str) -> tuple[CustomVoiceSetting, ...]:
@@ -1234,7 +1222,9 @@ class SettingsController:
             action=_EditorAction.SELECT_CUSTOM_MODEL,
             setting_id="llm_provider_model_id",
             provider_id=provider_id,
-            buffer=settings.llm_provider_model_id if settings.llm_provider == provider_id else "",
+            input=TextInput(
+                settings.llm_provider_model_id if settings.llm_provider == provider_id else "", pristine=True
+            ),
         )
 
     def _open_scoped_reset(self, scope: str) -> None:
@@ -1308,7 +1298,7 @@ class SettingsController:
             kind=_EditorKind.TEXT,
             action=action,
             setting_id=connection.address_id,
-            buffer=current,
+            input=TextInput(current, pristine=True),
         )
 
     def _open_remove_confirmation(self) -> None:
@@ -1950,23 +1940,9 @@ def _stepped_value(spec: SettingSpec, current: SettingValue, direction: int) -> 
 
 
 def _append_editor_buffer(content: Text, editor: _Editor, columns: int, left: int) -> None:
-    """Render one clipped input line with a visible cursor and masked secret."""
-    shown: str = "•" * len(editor.buffer) if editor.kind is _EditorKind.PASSWORD else editor.buffer
-    available: int = max(columns - left - 4, 1)
-    cursor: int = len(shown) if editor.cursor is None else editor.cursor
-    start: int = cursor
-    used: int = 0
-    while start > 0:
-        width: int = get_character_cell_size(shown[start - 1])
-        if used + width > available - 1:
-            break
-        used += width
-        start -= 1
     content.append(" " * left)
     content.append(f"{_POINTER} ", style="brand_accent")
-    content.append(shown[start:cursor], style="white_bold")
-    content.append("█", style="brand_accent")
-    content.append(set_cell_size(shown[cursor : cursor + available], available - used - 1), style="white_bold")
+    content.append_text(editor.input.render(max(columns - left - 4, 1), masked=editor.kind is _EditorKind.PASSWORD))
     content.append("\n")
 
 

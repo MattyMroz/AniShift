@@ -52,6 +52,7 @@ _HOME_CHOICES: Final[tuple[tuple[str, HomeAction], ...]] = (
     ("Auto", HomeAction.AUTO),
     ("Ręczny", HomeAction.MANUAL),
     ("Anime", HomeAction.ANIME),
+    ("Stan", HomeAction.STATE),
     ("Ustawienia", HomeAction.SETTINGS),
     ("Wyjście", HomeAction.EXIT),
 )
@@ -167,7 +168,9 @@ class _InteractiveApplication:
         self._service: AppService = service
         self._resident: ResidentSession | None = resident
         self._home_choices: tuple[tuple[str, HomeAction], ...] = (
-            (("Stan i automatyzacja", HomeAction.STATE), *_HOME_CHOICES) if resident is not None else _HOME_CHOICES
+            _HOME_CHOICES
+            if resident is not None
+            else tuple(item for item in _HOME_CHOICES if item[1] is not HomeAction.STATE)
         )
         self._terminal_window: str | None = terminal_window
         self._execution: ResidentSession | None = None
@@ -259,6 +262,12 @@ class _InteractiveApplication:
         except (AniShiftError, OSError) as problem:
             logger.info("Workspace prewarm skipped", error_class=type(problem).__name__)
 
+    def _copy_selection(self, mode: _ViewMode) -> bool:
+        controller: AnimeController | ManualController | None = (
+            self._anime if mode is _ViewMode.ANIME else self._manual if mode is _ViewMode.MANUAL else None
+        )
+        return controller is not None and controller.copy_selection()
+
     def _handle_key(self, key: str) -> None:
         with self._lock:
             mode: _ViewMode = self._mode
@@ -269,7 +278,10 @@ class _InteractiveApplication:
             self._handle_state_key(key)
             return
         if key == "interrupt":
-            self._interrupt(mode)
+            if self._copy_selection(mode):
+                self._renderer.invalidate()
+            else:
+                self._interrupt(mode)
             return
         screen: Callable[[str], None] | None = {
             _ViewMode.HOME: self._handle_home_key,

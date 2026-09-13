@@ -922,7 +922,7 @@ def test_wide_or_combining_input_fits_the_terminal_with_a_visible_cursor(
         panel.handle_key(key)
         frame: str = panel.render(60, 20).plain
         assert max(cell_len(line) for line in frame.splitlines()) <= 60
-        assert "█" in frame
+        assert "▌" in frame
 
 
 def test_repeated_interrupt_can_discard_an_unsaved_edit_after_a_write_failure(

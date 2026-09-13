@@ -82,6 +82,12 @@ def test_reopened_state_restores_progress_and_keeps_settings_available_without_r
         frame: str = controller.render(120, 35).plain
         assert "Episode.mkv" in frame
         assert "37%" in frame
+        styled = controller.render(120, 35)
+        assert frame.splitlines()[0].strip() == ""
+        assert "STAN" in frame
+        assert any(span.style == "brand_accent" for span in styled.spans)
+        assert not any(span.style in {"reverse", "yellow", "dim"} for span in styled.spans)
+        assert "Stan · Auto" not in frame
         count: int = len(calls)
         for _ in range(20):
             controller.render(120, 35)
