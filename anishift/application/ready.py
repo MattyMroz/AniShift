@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Final
 
 from pydantic import TypeAdapter
 
@@ -18,6 +20,17 @@ from anishift.paths import READY_DIRECTORY, ready_dir
 from anishift.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_TRANSIENT_DENIALS: Final[frozenset[int]] = frozenset({5, 32, 33})
+"""Windows denials that disappear once a reader or scanner closes its handle."""
+
+_RELEASE_ATTEMPTS: Final[int] = 40
+"""Extra attempts allowed while a concurrent reader still holds a relocated file."""
+
+_RELEASE_DELAY_S: Final[float] = 0.05
+"""Delay between attempts of one relocated file."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,7 +206,7 @@ class ReadyStore:
     def execute(self, move: ReadyMove) -> None:
         """Finish exclusive same-volume moves, recovering even between link and unlink."""
         for item in move.files:
-            self._move_file(item)
+            self._relocate(item)
         logger.info("Completed group moved to ready", files=len(move.files))
 
     def acknowledge(self, move: ReadyMove) -> None:
@@ -212,6 +225,20 @@ class ReadyStore:
             message = "Relocation would give two group files the same destination"
             raise ExecutionError(message)
         return tuple(destinations)
+
+    def _relocate(self, item: ReadyFile) -> None:
+        attempts: int = 0
+        while True:
+            try:
+                self._move_file(item)
+            except OSError as error:
+                if attempts >= _RELEASE_ATTEMPTS or getattr(error, "winerror", None) not in _TRANSIENT_DENIALS:
+                    raise
+                attempts += 1
+                logger.debug("Relocation waits for a reader to release a file", attempts=attempts)
+                time.sleep(_RELEASE_DELAY_S)
+                continue
+            return
 
     def _move_file(self, item: ReadyFile) -> None:
         source: Path = self._workspace / item.source
