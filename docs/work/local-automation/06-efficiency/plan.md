@@ -644,6 +644,7 @@ Kolejność: dokończyć bieżące poprawki interfejsu i edytora, następnie zaj
 - [ ] Powiadomienia aplikacji powinny identyfikować AniShift i używać jego maskotki, zamiast nazwy Python i ogólnej ikony.
 - [ ] Kliknięcie powiadomienia dotyczącego pobrań powinno otworzyć GUI prywatnego qBittorrenta należącego do AniShift, z jego listą transferów, bez otwierania osobistej instalacji i bez automatycznego wznowienia pobierania.
 - [ ] Sprawdzić limity i ustawienia szybkości prywatnego klienta względem osobistego oraz skuteczne porty i brak kolizji; nie deklarować maksymalnej szybkości ani poprawności portów bez odczytu i sprawdzenia. Nie zmieniać osobistego klienta.
+- [ ] Rozdzielić czytelnie „Zamknij panel” i „Zakończ AniShift”. Całkowite zakończenie udostępnić również w Stanie, nie tylko w menu ikony. Obecny shutdown kończy aktywne taski do bezpiecznej granicy, zachowuje resztę grafu i zamyka rezydenta, ale nie zamyka działającego prywatnego qBittorrenta. Domknąć zachowanie własnych pobrań, procesu klienta i otwartych paneli; zachować dane wznowienia i ochronę osobistej oraz niepewnej instancji.
 
 Sprzątanie na jawne polecenie właściciela: wszystkie 25 katalogów tytułów przeniesiono do Kosza (najpierw 12 bez filmów, następnie pozostałe 13 wraz z zawartością po ponowionym poleceniu). Zachowano root workspace, `CC`, `CCC`, `output` i `temp`. Usunięcie katalogów nie oznacza skasowania wpisów transferów w qBittorrencie.
 
