@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -352,6 +353,42 @@ def test_closed_panel_cannot_register_a_late_external_source(tmp_path: Path) -> 
         assert not worker.is_alive()
         assert errors
         assert all(artifact.path != audio for artifact in service.discover().groups[0].artifacts)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("changed_file", ["03.txt", "03.pl.srt"])
+def test_resident_preserves_user_edits_made_during_translation(tmp_path: Path, changed_file: str) -> None:
+    write_text_source(tmp_path / "03.txt", "Original text")
+    product: Path = tmp_path / "03.pl.srt"
+    previous: str = "1\n00:00:00,000 --> 00:00:01,000\nPrevious translation\n"
+    product.write_text(previous, encoding="utf-8")
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    translation: FakeTranslationService = FakeTranslationService(entered=entered, release=release)
+    service: AppService = _service(tmp_path, translation)
+    preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
+    edited: str = "1\n00:00:00,000 --> 00:00:01,000\nUser correction during translation\n"
+    with _panel_owner(service, tmp_path) as (session, store), ThreadPoolExecutor(max_workers=1) as pool:
+        group_id: str = session.discover().groups[0].group_id
+        session.reserve((group_id,))
+        preview: PlanPreview = session.plan_auto(
+            (group_id,), preset, rebuild=RebuildRequest(frozenset({ProductKind.FULL_PL}))
+        )
+        pending: Future[RunResult] = pool.submit(session.execute, preview, CollectingRunSink())
+        try:
+            assert entered.wait(2.0)
+            (tmp_path / changed_file).write_text(edited, encoding="utf-8")
+        finally:
+            release.set()
+        result: RunResult = pending.result(timeout=5.0)
+        assert not result.succeeded
+        assert result.groups[0].products == ()
+        assert store.load().products == ()
+        assert product.read_text(encoding="utf-8") == (edited if changed_file == product.name else previous)
+        assert len(translation.calls) == 1
+        session.reserve((group_id,))
+        with pytest.raises(ControlError):
+            session.plan_resume((group_id,))
 
 
 @pytest.mark.integration
