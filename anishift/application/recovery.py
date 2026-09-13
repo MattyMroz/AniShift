@@ -106,16 +106,24 @@ class RunJournal:
                 raise ExecutionError(msg)
         return journal
 
-    def validate_inputs(self) -> None:
-        """Reject publication when any original input or preserved product has changed."""
+    def validate_inputs(self, group_id: str | None = None) -> None:
+        """Reject changed inputs in the selected group or the complete saved run."""
         self._require_writable()
-        if any(_proof(item.path) != item for item in self._checkpoint.inputs):
+        paths: set[Path] = {
+            path
+            for artifact in self.plan.artifacts
+            if group_id is None or artifact.group_id == group_id
+            for path in (artifact.path, artifact.preserved_path)
+            if path is not None
+        }
+        if any(_proof(item.path) != item for item in self._checkpoint.inputs if group_id is None or item.path in paths):
             msg = "An input or preserved product changed after the run was accepted"
             raise ExecutionError(msg)
 
     def prepare(self, task: PlanTask, result: TaskResult) -> None:
         """Record a validated staging file before the coordinator can replace its destination."""
         self._require_writable()
+        self._reconcile_publication()
         artifacts: dict[str, Artifact] = {artifact.artifact_id: artifact for artifact in self.plan.artifacts}
         if not any(artifacts[artifact_id].lifetime is ArtifactLifetime.DURABLE for artifact_id in task.produces):
             return

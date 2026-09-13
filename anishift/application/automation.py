@@ -385,6 +385,7 @@ class AutomationOwner:
     def serve(self) -> None:
         """Run the owner loop until a shutdown drains every active request."""
         threading.current_thread().name = OWNER_THREAD_NAME
+        self._finish_pending_commands()
         self._service.set_background_admission(self._state.policy.auto_enabled)
         self._schedule_transfers()
         try:
@@ -476,6 +477,8 @@ class AutomationOwner:
 
     def _refresh_automatic(self) -> None:
         self._settle_at = None
+        if any(receipt.pending is not None for receipt in self._state.command_receipts):
+            return
         workspace: InspectedWorkspace | None = self._library
         if self._shutting_down or not self._state.policy.auto_enabled or workspace is None or not workspace.groups:
             return
@@ -551,6 +554,9 @@ class AutomationOwner:
 
     def _dispatch(self, command: _Command) -> None:
         request: ControlRequest = command.request
+        if request.kind not in {"status", "shutdown"} and not self._finish_pending_commands():
+            command.answer(ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED))
+            return
         if not self._bind_session(request):
             command.answer(ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD))
             return
@@ -669,6 +675,11 @@ class AutomationOwner:
             "instance_id": self._instance_id,
             "pid": os.getpid(),
             "auto_enabled": policy.auto_enabled,
+            "pending_commands": [
+                {"command_id": receipt.command_id, "kind": receipt.pending}
+                for receipt in self._state.command_receipts
+                if receipt.pending is not None
+            ],
             "watch_mode": self._watch_mode,
             "library_groups": 0 if self._library is None else len(self._library.groups),
             "directory_exceptions": dict(policy.directory_exceptions),
@@ -1092,10 +1103,9 @@ class AutomationOwner:
         run_id: str | None = _text(request.payload, "run_id")
         if run_id is None:
             return _invalid("A cancellation needs a `run_id`")
-        cancelled: bool = self._service.cancel(run_id)
+        cancelled: bool = run_id in self._service.active_run_ids()
         outcome: dict[str, str | int | bool | None] = {"run_id": run_id, "cancelled": cancelled}
-        refusal: ControlResponse | None = self._commit(request, self._state, outcome)
-        return refusal if refusal is not None else ControlResponse.succeeded(outcome)
+        return self._accept_local_command(request, outcome)
 
     def _watch_run(self, run_id: str, handle: RunHandle) -> None:
 
@@ -1234,6 +1244,8 @@ class AutomationOwner:
     ) -> bool:
         if self._shutting_down or not service.is_current(subscription):
             return False
+        if any(receipt.pending is not None for receipt in self._state.command_receipts):
+            return False
         info_hash: str = choice.release.info_hash.casefold()
         if any(
             item.info_hash == info_hash
@@ -1359,20 +1371,72 @@ class AutomationOwner:
             return _invalid("A subscription command needs a `subscription_id`")
         outcome: dict[str, str | int | bool | None]
         try:
+            present: bool = any(item.subscription_id == identifier for item in service.list())
+            if not present and request.kind != "subscription_remove":
+                return _invalid("The subscription no longer exists")
             match request.kind:
                 case "subscription_enable":
-                    outcome = {"subscription_id": identifier, "enabled": service.enable(identifier).enabled}
+                    outcome = {"subscription_id": identifier, "enabled": True}
                 case "subscription_disable":
-                    outcome = {"subscription_id": identifier, "enabled": service.disable(identifier).enabled}
+                    outcome = {"subscription_id": identifier, "enabled": False}
                 case "subscription_remove":
-                    outcome = {"subscription_id": identifier, "removed": service.remove(identifier)}
+                    outcome = {"subscription_id": identifier, "removed": present}
                 case _:
                     return ControlResponse.refused(ControlErrorCode.UNKNOWN_COMMAND, _UNKNOWN_COMMAND)
         except (AniShiftError, OSError) as problem:
             logger.warning("A subscription command failed", error_class=type(problem).__name__)
             return ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED)
-        refusal: ControlResponse | None = self._commit(request, self._state, outcome)
-        return refusal if refusal is not None else ControlResponse.succeeded(outcome)
+        return self._accept_local_command(request, outcome)
+
+    def _accept_local_command(self, request: ControlRequest, outcome: CommandOutcome) -> ControlResponse:
+        receipt: CommandReceipt = CommandReceipt(request.command_id, self._now(), outcome, pending=request.kind)
+        if not self._save(record_command(self._state, receipt)) or not self._finish_pending_commands():
+            return ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED)
+        return ControlResponse.succeeded(dict(outcome))
+
+    def _finish_pending_commands(self) -> bool:
+        for receipt in self._state.command_receipts:
+            if receipt.pending is not None and not self._finish_local_command(receipt):
+                return False
+        return True
+
+    def _finish_local_command(self, receipt: CommandReceipt) -> bool:
+        candidate: WatchState = self._state
+        try:
+            if receipt.pending == "cancel":
+                run_id: str = str(receipt.outcome["run_id"])
+                self._service.cancel(run_id)
+                candidate = replace(
+                    candidate,
+                    requests=tuple(
+                        replace(item, state=RequestState.CANCELLED)
+                        if item.request_id == run_id and item.state in _ACTIVE_STATES
+                        else item
+                        for item in candidate.requests
+                    ),
+                )
+            else:
+                service: SubscriptionService | None = self._service.subscriptions
+                if service is None:
+                    return False
+                identifier: str = str(receipt.outcome["subscription_id"])
+                if receipt.pending == "subscription_enable":
+                    service.enable(identifier)
+                elif receipt.pending == "subscription_disable":
+                    service.disable(identifier)
+                else:
+                    service.remove(identifier)
+        except (AniShiftError, OSError) as problem:
+            logger.warning("An accepted local command remains pending", error_class=type(problem).__name__)
+            return False
+        candidate = replace(
+            candidate,
+            command_receipts=tuple(
+                replace(item, pending=None) if item.command_id == receipt.command_id else item
+                for item in candidate.command_receipts
+            ),
+        )
+        return self._save(candidate)
 
     def _subscription_counts(self) -> dict[str, int]:
         service: SubscriptionService | None = self._service.subscriptions

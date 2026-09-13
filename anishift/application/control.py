@@ -226,6 +226,16 @@ class CommandReceipt:
     command_id: str
     accepted_at: str
     outcome: CommandOutcome
+    pending: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.pending not in {None, "cancel", "subscription_enable", "subscription_disable", "subscription_remove"}:
+            msg = "A pending command must identify a supported local operation"
+            raise ValueError(msg)
+        key: str = "run_id" if self.pending == "cancel" else "subscription_id"
+        if self.pending is not None and (not isinstance(self.outcome.get(key), str) or not self.outcome[key]):
+            msg = "A pending command requires its target identifier"
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)

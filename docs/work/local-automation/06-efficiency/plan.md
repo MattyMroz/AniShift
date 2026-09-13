@@ -2,7 +2,7 @@
 kind: implementation-plan
 status: IN_PROGRESS
 created: 2026-09-08
-updated: 2026-09-12
+updated: 2026-09-13
 baseline: a7d319f334a062d0fe016c774d9a5fb4fccbe9b6
 branch: work/local-automation/06-efficiency
 specification: spec.md
@@ -410,7 +410,7 @@ Wolno dopasować nazwy prywatnych helperów i podział dużego modułu do istnie
 
 ## 14. Stan wykonania
 
-**Stan 2026-09-12:** P01 i P03 zaimplementowane; P02 ma poprawki audytu opisane poniżej. P04 i P05 są częściowe, bez odbioru całych przepływów. P06 ma trzy commity cząstkowe; dalszy kalendarz i podłączenie terminów zachowano w stash `wip(application): retain P06 calendar work while closing P04 integration`. P07 i P08 nie zostały wykonane. Domyślny runtime nadal korzysta ze starego czuwania.
+**Stan 2026-09-13:** P01 i P03 mają wcześniejszy odbiór; poprawki P02 oraz implementacja i automatyczny odbiór P04 zostały domknięte poniżej. Ocena ergonomii panelu przez właściciela pozostaje otwarta. Kolejną pracą implementacyjną jest P05. P06 ma commity cząstkowe; dalszy kalendarz zachowano w stash `wip(application): retain P06 calendar work while closing P04 integration`. P07 i P08 nie zostały wykonane. Domyślny runtime nadal korzysta ze starego czuwania zgodnie z D-12; cały system nie jest ukończony.
 
 **Korekta kolejności po feedbacku właściciela:** aktywny etap to P04, następnie P05, dopiero potem wznowienie P06. Podłączenie P06 przed spełnieniem zależności P01–P05 było błędem wykonawczym. Commit komponentu i zielone testy jednostkowe nie zamykają etapu: wymagany jest jego scenariusz odbioru przez rzeczywiste granice aplikacji w izolowanym workspace. P04 obejmuje także powiązanie istniejącego panelu z rezydentem, rezerwacje podczas edycji, zewnętrzne źródła i wynik po Start. D-12 nadal odracza domyślne przełączenie produkcji do P08.
 
@@ -474,6 +474,14 @@ Po każdym etapie wykonawca dopisuje tutaj: commit, zakres, uruchomione komendy 
 - Osobny smoke w katalogu tymczasowym: rzeczywisty MKV wygenerowany FFmpeg, rzeczywisty probe MKVToolNix, Auto oraz force polskich napisów przez kanał rezydenta — PASS; źródłowy MKV zachowuje ID, rozmiar i czas modyfikacji. Tłumaczenie zastąpione lokalnym fixture; żadnych płatnych wywołań ani zmian w bibliotece użytkownika.
 - Bramki: Ruff check/format oraz mypy Windows/Linux — PASS; pełny `uv run pytest` — **3850 passed, 11 skipped**, 34,88 s. P04 pozostaje w toku do końcowej oceny integracji i ergonomii; nie oznacza to ukończenia P05 ani P08. Nagłe zabicie aktywnego rezydenta, automatyczne odzyskanie takich zleceń i domyślne przełączenie runtime pozostają w P08.
 - Dodatkowa ochrona I-003: dwa testy przez kanał rezydenta zmieniają źródło albo zachowane polskie napisy podczas zablokowanego tłumaczenia. Publikacja jest odrzucona, plik użytkownika pozostaje bez nadpisania, a wznowienie z nieaktualnymi wejściami nie jest dostępne. Pełne bramki ponownie PASS: **3852 passed, 11 skipped**, 27,11 s; Ruff oraz mypy Windows/Linux bez błędów.
+
+### Domknięcie poprawek P02 i implementacji P04 — 2026-09-13
+
+- Polecenia anulowania oraz Włącz/Wyłącz/Usuń subskrypcję zapisują przyjęcie przed efektem. Opcjonalne `CommandReceipt.pending` wskazuje operację do dokończenia; zakończone i starsze potwierdzenia zachowują dotychczasowy format. Awaria pierwszego zapisu daje zero efektu. Awaria potwierdzenia po efekcie zachowuje zamiar, który właściciel kończy po restarcie lub przed kolejnym poleceniem. Idempotentna zmiana nie podnosi ponownie generacji. Nierozliczone polecenie jest widoczne w statusie i blokuje nowe zależne zlecenia.
+- Poprawiono dwie przyczyny blokowania niezależnego odcinka: podmianę pliku zakończoną przed zgłoszeniem błędu trzeba uzgodnić przed kolejnym wynikiem; aktualność wejść przy publikacji dotyczy grupy danego zadania. Zmiana źródła lub napisów odcinka 3 nie blokuje wyniku odcinka 8. Wznowienie całego zakresu nadal odrzuca nieaktualne wejścia.
+- P04 ma dowody wyboru tylko 3 i 8 przez kontroler panelu i rzeczywisty kanał, zwolnienia rezerwacji przez Esc, odrzucenia nieaktualnego Start, zewnętrznych źródeł, force oraz wznowienia częściowej publikacji w świeżym procesie. Pozostałe reguły planowania — zmiana głosu bez tłumaczenia, zwykły komplet bez zadań, brak suchego głosu i marker ręcznej decyzji — pokrywają istniejące scenariusze planera oraz właściciela. Nie powstał osobny tryb ani wykonawca regeneracji.
+- Jeden końcowy przebieg po komplecie zmian: Ruff check/format i mypy Windows/Linux PASS; pełny pytest **3856 passed, 11 skipped**, 28,63 s. Zewnętrzne płatne usługi pozostają zastąpione w automatycznych scenariuszach P04. To zakończenie implementacji P04 i jej automatycznego odbioru, nie odbiór ergonomii ani wdrożenie całego systemu.
+- Scenariusz odbioru użytkownika: w odseparowanej bibliotece i konfiguracji uruchomić `uv run anishift --resident`, wejść w Ręczny, zaznaczyć 3 i 8, sprawdzić zakres podglądu i uruchomić; pozostałe odcinki mają pozostać bez produktów. Ponowić przez Regeneruj, sprawdzając podgląd zachowanych i odtwarzanych produktów. Po przygotowanej awarii częściowego zapisu ten sam zakres i „Dokończ poprzednią pracę” mają zachować potwierdzone wyniki. Zwykłe wejście pozostaje stare do P08; nie należy uruchamiać tej próby na bibliotece obsługiwanej równocześnie przez stary watcher.
 
 ### P05 — komponenty obserwacji i cache, w toku
 

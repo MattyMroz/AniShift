@@ -359,6 +359,7 @@ def test_closed_panel_cannot_register_a_late_external_source(tmp_path: Path) -> 
 @pytest.mark.parametrize("changed_file", ["03.txt", "03.pl.srt"])
 def test_resident_preserves_user_edits_made_during_translation(tmp_path: Path, changed_file: str) -> None:
     write_text_source(tmp_path / "03.txt", "Original text")
+    write_text_source(tmp_path / "08.txt", "Unaffected episode")
     product: Path = tmp_path / "03.pl.srt"
     previous: str = "1\n00:00:00,000 --> 00:00:01,000\nPrevious translation\n"
     product.write_text(previous, encoding="utf-8")
@@ -369,10 +370,10 @@ def test_resident_preserves_user_edits_made_during_translation(tmp_path: Path, c
     preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
     edited: str = "1\n00:00:00,000 --> 00:00:01,000\nUser correction during translation\n"
     with _panel_owner(service, tmp_path) as (session, store), ThreadPoolExecutor(max_workers=1) as pool:
-        group_id: str = session.discover().groups[0].group_id
-        session.reserve((group_id,))
+        group_ids: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
+        session.reserve(group_ids)
         preview: PlanPreview = session.plan_auto(
-            (group_id,), preset, rebuild=RebuildRequest(frozenset({ProductKind.FULL_PL}))
+            group_ids, preset, rebuild=RebuildRequest(frozenset({ProductKind.FULL_PL}))
         )
         pending: Future[RunResult] = pool.submit(session.execute, preview, CollectingRunSink())
         try:
@@ -383,16 +384,18 @@ def test_resident_preserves_user_edits_made_during_translation(tmp_path: Path, c
         result: RunResult = pending.result(timeout=5.0)
         assert not result.succeeded
         assert result.groups[0].products == ()
-        assert store.load().products == ()
+        assert result.groups[1].status is GroupStatus.SUCCEEDED
+        assert "PL Unaffected episode" in (tmp_path / "08.pl.srt").read_text(encoding="utf-8")
+        assert len(store.load().products) == 1
         assert product.read_text(encoding="utf-8") == (edited if changed_file == product.name else previous)
-        assert len(translation.calls) == 1
-        session.reserve((group_id,))
+        assert len(translation.calls) == 2
+        session.reserve(group_ids)
         with pytest.raises(ControlError):
-            session.plan_resume((group_id,))
+            session.plan_resume(group_ids)
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("failure_at", ["before_replace", "after_replace", "checkpoint"])
+@pytest.mark.parametrize("failure_at", ["before_replace", "after_replace", "checkpoint", "after_replace_other_group"])
 def test_resident_resumes_partial_publication_without_translating_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_at: str
 ) -> None:
@@ -401,6 +404,9 @@ def test_resident_resumes_partial_publication_without_translating_again(
     previous: str = "1\n00:00:00,000 --> 00:00:01,000\nPrevious translation\n"
     for name in ("03.pl.srt", "03.spoken.pl.srt"):
         (tmp_path / name).write_text(previous, encoding="utf-8")
+    if failure_at == "after_replace_other_group":
+        write_media_source(tmp_path / "08.mkv")
+        write_text_source(tmp_path / "08.srt", "1\n00:00:00,000 --> 00:00:01,000\nAnother episode\n")
     translation: FakeTranslationService = FakeTranslationService()
     service: AppService = _service(tmp_path, translation, inspector=WorkspaceInspector(FakeMediaProbe()))
     preset: AutoPreset = AutoPreset(
@@ -412,19 +418,23 @@ def test_resident_resumes_partial_publication_without_translating_again(
     def replace_product(source: Path, destination: Path) -> Path:
         if failure_at == "checkpoint" and published and destination.parent.name == "runs":
             raise OSError(errno.ENOSPC, "Injected checkpoint failure")
-        if destination.parent == tmp_path and destination.name.endswith(".pl.srt"):
+        if (
+            destination.parent == tmp_path
+            and destination.name.startswith("03.")
+            and destination.name.endswith(".pl.srt")
+        ):
             if published:
-                if failure_at == "after_replace":
+                if failure_at.startswith("after_replace"):
                     original_replace(source, destination)
                 raise OSError(errno.EIO, "Injected publication failure")
             published.append(destination)
         return original_replace(source, destination)
 
     with _panel_owner(service, tmp_path) as (session, store):
-        group_id: str = session.discover().groups[0].group_id
-        session.reserve((group_id,))
+        group_ids: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
+        session.reserve(group_ids)
         preview: PlanPreview = session.plan_auto(
-            (group_id,), preset, rebuild=RebuildRequest(frozenset({ProductKind.FULL_PL}))
+            group_ids, preset, rebuild=RebuildRequest(frozenset({ProductKind.FULL_PL}))
         )
         with monkeypatch.context() as failure:
             assert preview.can_execute, preview.problems
@@ -433,16 +443,18 @@ def test_resident_resumes_partial_publication_without_translating_again(
         assert result.groups[0].status is GroupStatus.PARTIAL
         assert len(result.groups[0].error_messages) == 1, result.groups[0].error_messages
         assert len(published) == 1
-        assert len(translation.calls) == 1
+        assert len(translation.calls) == len(group_ids)
+        if len(group_ids) == 2:
+            assert result.groups[1].status is GroupStatus.SUCCEEDED
         assert store.load().requests[0].state is RequestState.PARTIAL
         preserved: bytes = published[0].read_bytes()
         identity: tuple[int, int] = (published[0].stat().st_ino, published[0].stat().st_mtime_ns)
         untouched: Path = next(
             tmp_path / name for name in ("03.pl.srt", "03.spoken.pl.srt") if tmp_path / name not in published
         )
-        assert ("PL Original text" if failure_at == "after_replace" else "Previous translation") in untouched.read_text(
-            encoding="utf-8"
-        )
+        assert (
+            "PL Original text" if failure_at.startswith("after_replace") else "Previous translation"
+        ) in untouched.read_text(encoding="utf-8")
     script: str = """
 import json
 import sys
@@ -456,14 +468,14 @@ root = Path(sys.argv[1])
 translation = FakeTranslationService()
 service = _service(root, translation, inspector=WorkspaceInspector(FakeMediaProbe()))
 with _panel_owner(service, root) as (session, store):
-    group_id = session.discover().groups[0].group_id
-    session.reserve((group_id,))
-    remaining = session.plan_resume((group_id,))
+    group_ids = tuple(group.group_id for group in session.discover().groups)
+    session.reserve(group_ids)
+    remaining = session.plan_resume(group_ids)
     assert TaskKind.TRANSLATE_SUBTITLES not in {task.kind for task in remaining.tasks}
     result = session.execute(remaining, CollectingRunSink())
     print(json.dumps({
         "succeeded": result.succeeded,
-        "products": len(result.groups[0].products),
+        "products": sum(len(group.products) for group in result.groups),
         "run_id": result.run_id,
         "translations": len(translation.calls),
         "generation": store.load().requests[0].generation,
@@ -480,7 +492,13 @@ with _panel_owner(service, root) as (session, store):
     )
     assert completed.returncode == 0, completed.stderr
     outcome: dict[str, object] = json.loads(completed.stdout)
-    assert outcome == {"succeeded": True, "products": 2, "run_id": result.run_id, "translations": 0, "generation": 2}
+    assert outcome == {
+        "succeeded": True,
+        "products": 2 * len(group_ids),
+        "run_id": result.run_id,
+        "translations": 0,
+        "generation": 2,
+    }
     assert published[0].read_bytes() == preserved
     assert (published[0].stat().st_ino, published[0].stat().st_mtime_ns) == identity
     assert "PL Original text" in untouched.read_text(encoding="utf-8")

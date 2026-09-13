@@ -364,7 +364,7 @@ def create_runtime(
         task_by_id={task.task_id: task for task in plan.tasks},
         task_index={task.task_id: index for index, task in enumerate(plan.tasks)},
         extraction_groups=extraction_group_ids(plan),
-        commit_if_current=_commit_gate(request.session, run_cancel, generation, request.journal),
+        commit_if_current=_commit_gate(request.session, run_cancel, generation),
         journal=request.journal,
     )
 
@@ -378,15 +378,15 @@ def _commit_gate(
     session: RunSession,
     cancel: EventCancellationToken,
     generation: int,
-    journal: RunJournal | None = None,
+    validate: Callable[[], None] | None = None,
 ) -> Callable[[Callable[[], None]], bool]:
     def commit_if_current(action: Callable[[], None]) -> bool:
         committed: bool = False
 
         def commit_if_active() -> None:
             nonlocal committed
-            if journal is not None:
-                journal.validate_inputs()
+            if validate is not None:
+                validate()
             committed = cancel.commit_if_active(action)
 
         return session.commit_if_generation(generation, commit_if_active) and committed
@@ -424,10 +424,15 @@ def queue_task(task: PlanTask, runtime: SchedulerRuntime) -> None:
 
 def commit_success(task: PlanTask, result: TaskResult, runtime: SchedulerRuntime) -> None:
     """Register outputs and forward readiness to direct dependants."""
+    commit: Callable[[Callable[[], None]], bool] = runtime.commit_if_current
+    journal: RunJournal | None = runtime.journal
     try:
-        if runtime.journal is not None:
-            runtime.journal.prepare(task, result)
-        registered: TaskResult = runtime.store.register(task, result, runtime.commit_if_current)
+        if journal is not None:
+            journal.prepare(task, result)
+            commit = _commit_gate(
+                runtime.session, runtime.cancel, runtime.generation, lambda: journal.validate_inputs(task.group_id)
+            )
+        registered: TaskResult = runtime.store.register(task, result, commit)
     except PublicationLockedError as locked:
         _defer_publication(task, result, runtime, locked)
         return

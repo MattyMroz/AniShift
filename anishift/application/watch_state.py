@@ -324,6 +324,7 @@ def _encode_receipt(receipt: CommandReceipt) -> dict[str, object]:
         "command_id": receipt.command_id,
         "accepted_at": receipt.accepted_at,
         "outcome": dict(receipt.outcome),
+        **({"pending": receipt.pending} if receipt.pending is not None else {}),
     }
 
 
@@ -454,11 +455,17 @@ def _decode_provider_lock(raw: object) -> ProviderLock:
 
 
 def _decode_receipt(raw: object) -> CommandReceipt:
-    document: dict[str, object] = _strict_object(raw, _RECEIPT_KEYS, "command receipt")
+    document: dict[str, object] = dict(_strict_mapping(raw, "command receipt"))
+    pending: object = document.pop("pending", None)
+    document = _strict_object(document, _RECEIPT_KEYS, "command receipt")
+    if pending is not None and not isinstance(pending, str):
+        msg = "A pending command kind must be text"
+        raise TypeError(msg)
     return CommandReceipt(
         command_id=_text(document, "command_id"),
         accepted_at=_text(document, "accepted_at"),
         outcome=_decode_outcome(document["outcome"]),
+        pending=pending,
     )
 
 

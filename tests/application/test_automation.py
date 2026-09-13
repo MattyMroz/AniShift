@@ -503,6 +503,75 @@ def test_switching_auto_persists_the_state_before_it_answers(tmp_path: Path) -> 
     assert admitted is True
 
 
+def test_cancellation_never_reaches_the_run_when_acceptance_cannot_be_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, store, group_id = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    run_id: str = _started(owner)
+
+    def fail_save(state: WatchState) -> None:
+        del state
+        raise OSError("Injected write failure")
+
+    try:
+        with monkeypatch.context() as failure:
+            failure.setattr(store, "save", fail_save)
+            answer: ControlResponse = owner.handle(_request("cancel", {"run_id": run_id}))
+        assert not answer.ok
+        assert service.cancelled == []
+        assert store.load().requests[0].state is RequestState.ACCEPTED
+    finally:
+        service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("fail_confirmation", [False, True])
+def test_subscription_changes_survive_the_gap_between_intent_and_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, fail_confirmation: bool
+) -> None:
+    service, store, _, subscription = _subscription_library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    save: Callable[[WatchState], None] = store.save
+    command: ControlRequest = _request("subscription_disable", {"subscription_id": subscription.subscription_id})
+
+    def fail_save(state: WatchState) -> None:
+        pending: bool = any(receipt.pending is not None for receipt in state.command_receipts)
+        if pending != fail_confirmation:
+            raise OSError("Injected write failure")
+        save(state)
+
+    try:
+        with monkeypatch.context() as failure:
+            failure.setattr(store, "save", fail_save)
+            answer: ControlResponse = owner.handle(command)
+        assert not answer.ok
+        assert service.subscriptions is not None
+        assert service.subscriptions.list()[0].enabled is not fail_confirmation
+        assert bool(store.load().command_receipts) is fail_confirmation
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+    restored: AutomationOwner = _owner(service, store)
+    thread = _serving(restored)
+    try:
+        assert restored.handle(command).ok
+        assert restored.handle(command).ok
+        assert service.subscriptions.list()[0].enabled is False
+        assert service.subscriptions.list()[0].generation == subscription.generation + 1
+        assert all(receipt.pending is None for receipt in store.load().command_receipts)
+    finally:
+        restored.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+
+
 def test_a_repeated_command_identifier_replays_its_outcome_without_a_second_effect(tmp_path: Path) -> None:
     service, store, _ = _library(tmp_path)
     owner: AutomationOwner = _owner(service, store)
