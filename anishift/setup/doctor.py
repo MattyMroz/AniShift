@@ -14,7 +14,7 @@ from anishift.config.env_file import env_path
 from anishift.config.settings import Settings
 from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_root
 from anishift.errors import AniShiftError
-from anishift.platform.binaries import Binary, is_windows, resolve_binary
+from anishift.platform.binaries import Binary, external_bin_root, is_windows, resolve_binary
 from anishift.platform.qbittorrent_config import installed_executable
 from anishift.utils.logger import get_logger
 
@@ -236,7 +236,23 @@ def _web_ui_answers(host: str, port: int) -> bool:
         return False
 
 
-def run_doctor(settings: Settings | None = None) -> list[CheckResult]:
+def check_managed_torrent_client() -> CheckResult:
+    """Report private binary readiness without starting a client or touching its profile."""
+    if not is_windows():
+        return CheckResult("torrent_client", CheckStatus.SKIP, "Managed qBittorrent requires Windows")
+    files: tuple[str, ...] = ("qbittorrent/qbittorrent.exe", "qbittorrent/qt.conf")
+    installed: bool = all(
+        (external_bin_root() / name).is_file() and (external_bin_root() / name).stat().st_size > 0 for name in files
+    )
+    message: str = (
+        "Private qBittorrent prepared in external/bin/qbittorrent; starts for downloads only"
+        if installed
+        else "Private qBittorrent will be downloaded and verified on the first download order"
+    )
+    return CheckResult("torrent_client", CheckStatus.OK, message)
+
+
+def run_doctor(settings: Settings | None = None, *, managed_torrents: bool = False) -> list[CheckResult]:
     """Run every diagnostic check in order and return the collected list."""
     from anishift.cli.console import console_encoding_check  # noqa: PLC0415 - avoid circular import
 
@@ -251,7 +267,7 @@ def run_doctor(settings: Settings | None = None) -> list[CheckResult]:
         check_api_keys(resolved),
         check_workspace(),
         console_encoding_check(),
-        check_torrent_client(resolved),
+        check_managed_torrent_client() if managed_torrents else check_torrent_client(resolved),
     ]
     logger.info(
         "Environment diagnostics completed",

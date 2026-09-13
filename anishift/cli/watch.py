@@ -7,10 +7,12 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from secrets import token_hex
+from shutil import which
 from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application import SCAN_INTERVAL_S, SUBSCRIPTION_CHECK_INTERVAL_S, WatchLedger
@@ -295,6 +297,7 @@ def run_resident(
     state_dir: Path,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     on_ready: Callable[[], None] | None = None,
+    enable_tray: bool = False,
 ) -> int:
     """Own the automation of *state_dir* until a shutdown command ends the process."""
     from anishift.application import (  # noqa: PLC0415 - keep the owner off the Typer import path
@@ -311,6 +314,7 @@ def run_resident(
         remove_instance,
         write_instance,
     )
+    from anishift.platform.tray import TrayIcon  # noqa: PLC0415 - desktop resources belong to the resident
 
     lock: ProcessLock = ProcessLock(state_dir / RESIDENT_LOCK_FILE_NAME)
     if not lock.acquire():
@@ -323,11 +327,28 @@ def run_resident(
             WatchStateStore(state_dir / WATCH_STATE_FILE_NAME),
             instance_id=instance_id,
             clock=clock,
+            open_panel=_spawn_panel,
         )
         endpoint: str = control_endpoint(state_dir)
         clear_endpoint(endpoint)
         server = ControlServer(endpoint, ensure_authkey(state_dir), owner.handle, on_disconnect=owner.disconnect)
-        owner.attach_broadcast(server.broadcast)
+        tray: TrayIcon | None = TrayIcon(owner.tray_action) if enable_tray else None
+
+        def broadcast(frame: Mapping[str, object], terminal: bool) -> None:
+            server.broadcast(frame, terminal)
+            payload: object = frame.get("payload")
+            if tray is None or not isinstance(payload, Mapping):
+                return
+            if frame.get("event") == "state_changed":
+                tray.update(
+                    auto_enabled=bool(payload.get("auto_enabled")),
+                    busy=bool(payload.get("requests")),
+                    problem=bool(payload.get("transfers_problem") or payload.get("subscriptions_problem")),
+                )
+            elif frame.get("event") == "notification":
+                tray.notify(str(payload.get("title", "AniShift")), str(payload.get("message", "")))
+
+        owner.attach_broadcast(broadcast)
         file_watch: DirectoryWatch | None = None
         try:
             file_watch = DirectoryWatch(service.workspace_root, owner.files_changed)
@@ -352,14 +373,36 @@ def run_resident(
                 on_ready()
             owner.serve()
         finally:
+            if tray is not None:
+                tray.close()
             if file_watch is not None:
                 file_watch.close()
             server.close()
+            if service.acquisition is not None:
+                service.acquisition.close()
             remove_instance(state_dir)
     finally:
         lock.release()
     logger.info("Resident stopped")
     return EXIT_SUCCESS
+
+
+def _spawn_panel() -> None:
+    python: Path = Path(sys.executable)
+    if python.name.casefold() == "pythonw.exe":
+        python = python.with_name("python.exe")
+    command: list[str] = [str(python), "-m", "anishift.cli.main", "--resident", "--state"]
+    terminal: str | None = which("wt.exe")
+    if terminal is not None:
+        window: str = f"AniShift-{token_hex(8)}"
+        command = [terminal, "-w", window, *command, "--terminal-window", window]
+    try:
+        if terminal is not None:
+            subprocess.Popen(command, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # noqa: S603 - explicit panel launcher
+        else:
+            spawn_window(command)
+    except OSError as error:
+        logger.warning("Could not open the panel", error_class=type(error).__name__)
 
 
 def _on_signal(request_shutdown: Callable[[], None]) -> None:

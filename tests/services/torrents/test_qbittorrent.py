@@ -17,6 +17,27 @@ BASE_URL = "http://127.0.0.1:8080"
 CREDENTIAL = "s3cr3t"
 
 
+def test_current_login_cookies_stay_with_their_instance() -> None:
+    calls: list[tuple[int | None, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        port: int | None = request.url.port
+        cookie: str = f"QBT_SID_{port}=session-{port}"
+        calls.append((port, request.headers.get("cookie", "")))
+        if request.url.path.endswith("/login"):
+            return httpx.Response(204, headers={"Set-Cookie": cookie + "; Path=/; HttpOnly"})
+        if request.headers.get("cookie") != cookie:
+            return httpx.Response(403)
+        return httpx.Response(200, text="v5.2.3")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        first: QBittorrentClient = QBittorrentClient("http://127.0.0.1:18081", http=http)
+        second: QBittorrentClient = QBittorrentClient("http://127.0.0.1:18082", http=http)
+        assert first.version() == second.version() == first.version() == "5.2.3"
+    assert calls[-1] == (18081, "QBT_SID_18081=session-18081")
+    assert all(not cookie or str(port) in cookie for port, cookie in calls)
+
+
 def _client(
     handler: Callable[[httpx.Request], httpx.Response],
     *,

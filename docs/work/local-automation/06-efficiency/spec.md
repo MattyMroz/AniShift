@@ -2,7 +2,7 @@
 kind: specification
 status: READY
 created: 2026-09-07
-updated: 2026-09-08
+updated: 2026-09-13
 baseline: a7d319f334a062d0fe016c774d9a5fb4fccbe9b6
 source_branch: work/local-automation/06-efficiency
 ---
@@ -162,6 +162,10 @@ Gotowa pilna operacja bierze następny pasujący wolny slot przed tłem. Rozpocz
 
 **R-030. Pierwsze pobranie na nowym komputerze — ustalenie właściciela 2026-09-12.** Brak zainstalowanego qBittorrenta ani wcześniejszego profilu nie wymaga ręcznej instalacji i konfiguracji Web UI. Przy pierwszej rzeczywistej potrzebie transferu AniShift przygotowuje klienta ze zweryfikowanego oficjalnego źródła oraz własny profil, lokalne uwierzytelnienie i dostępny port sterowania. Instalacja nie jest skutkiem samego otwarcia panelu lub pustego wyszukania. Port jest sprawdzany przy uruchomieniu; kolizja powoduje ograniczoną ponowną próbę z innym portem i aktualizację adresu klienta. AniShift nie przejmuje obcej usługi ani osobistego profilu qBittorrenta. Błąd pobrania, przygotowania lub startu pozostawia czytelny stan do ponowienia, bez fałszywego potwierdzenia zlecenia.
 
+Doprecyzowanie właściciela 2026-09-13: zarządzana binarka znajduje się w `external/bin/qbittorrent/`, niezależnie od osobistej instalacji. Profil, lista torrentów, historia i dane wznowienia są osobne, pod `config/qbittorrent/`; media pozostają w workspace. Obie instancje mogą działać jednocześnie. Nowe pobrania AniShift nie trafiają do osobistego klienta również po awarii zarządzanego. Przy pierwszym przygotowaniu można jednorazowo przejąć zgodne ustawienia szybkości i liczby połączeń z osobistego profilu, bez jego modyfikacji; brak profilu nie blokuje przygotowania. Nie kopiować listy torrentów, danych wznowienia, historii, ścieżek pobierania, portów ani uwierzytelnienia. Wymagania zarządzanego klienta mają pierwszeństwo przed importowanymi preferencjami.
+
+**R-031. Równoległe pobieranie.** Wszystkie przyjęte, niewstrzymane pobrania mogą być aktywne jednocześnie; AniShift i kolejka qBittorrenta nie ograniczają ich do określonej liczby ani nie czekają na zakończenie wcześniejszego. Wolny lub zablokowany torrent nie zatrzymuje pozostałych. Każdy ukończony odcinek niezależnie przechodzi do oceny gotowości przez Auto. Nie oznacza to nieograniczonej liczby połączeń, żądań API, tłumaczeń lub syntez ani gwarancji szybkości sieci. Obowiązujące limity usług i zasobów przetwarzania pozostają w mocy.
+
 ## 8. Awarie i regeneracja
 
 **R-019. Problem ma ograniczone ponowienia i widoczny skutek.** Pokazywać etap, przyczynę, zachowane wyniki i następną akcję. Retry klienta i nadzoru nie mnożą swoich budżetów. Brak klucza, uprawnień, miejsca lub uszkodzone wejście wymaga uwagi bez bezowocnego wywoływania usług. Awaria jednego dostawcy nie blokuje niezależnych prac, a jego powrót nie zwalnia lawiny requestów.
@@ -269,9 +273,12 @@ ID zachowują ciągłość z poprzednim projektem specyfikacji. Nowe AC-036–04
 | AC-042 | R-002, R-024, I-005 | Stary panel po restarcie nie wykonuje nieaktualnego podglądu; ponowiona zaakceptowana komenda nie dubluje skutku. |
 | AC-043 | R-029 | Plik wrzucony do roota po przetworzeniu trafia wraz z produktami do `ready`; regeneracja działa tam bez ręcznego przenoszenia. Kolizja zachowuje oba odcinki, a relokacja nie wywołuje kolejnego Auto. |
 | AC-044 | R-030, R-015 | Na czystym Windows bez qBittorrenta i jego profilu pierwsze zlecenie przygotowuje klienta i skuteczne połączenie Web UI. Zajęty port, przerwane pobranie instalacji i ponowne uruchomienie nie psują obcej instancji ani nie dublują zlecenia; pusty check niczego nie instaluje. |
+| AC-045 | R-030, R-031, R-015 | Osobista i zarządzana instancja działają równocześnie z rozłącznymi listami torrentów i profilami; zarządzana używa binarki z external. Kilka własnych torrentów pobiera się równocześnie, a zastój jednego nie blokuje ukończenia pozostałych. Ukończony torrent przestaje seedować bez zatrzymania innych pobrań. Import preferencji nie przenosi historii, sekretów ani kolejki ograniczającej aktywne pobrania. |
 
 Dowód wydajności obejmuje ten sam Windows, bibliotekę i ustawienia przed/po: start, idle, jedną premierę, równoczesne premiery, ręczny plik podczas pracy i powrót po uśpieniu. Mierzyć rzeczywiste żądania według powodu/dostawcy, narzędzia, skany/inspekcje, czas CPU, pamięć i reakcję. Podać czas obserwacji i liczbę plików. Mniejszy ruch nie jest sukcesem, jeżeli pominięto odcinki.
 
 ## 12. Przekazanie
 
 Wykonawca realizuje [plan.md](plan.md), nie dopowiada osobnych trybów i systemów. Materiał dla niego jest kompletnym kontraktem zmiany, ale empiryczne bramki Windows, qBittorrent i pomiary pozostają pracą implementacji. Nie ma otwartego wyboru podstawowej architektury. Późniejsza istotna zmiana zachowania wymaga aktualizacji tej specyfikacji i odpowiadającej części planu, nie sprzecznego dokumentu obok.
+
+Tematy odłożone przez właściciela do rozmowy po wykonaniu obecnego planu są zapisane w [planie, sekcja 16](plan.md#16-tematy-do-ustalenia-po-wykonaniu-planu). Nie są zaakceptowanymi zmianami zachowania ani dodatkowymi kryteriami odbioru tej wersji.

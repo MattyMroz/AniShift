@@ -43,9 +43,9 @@ from anishift.application.control import (
     reserve,
 )
 from anishift.application.control_payloads import decode_intent
-from anishift.application.control_views import decode_view, encode_view, preview_plan
+from anishift.application.control_views import RunProgressSnapshot, decode_view, encode_view, preview_plan
 from anishift.application.discovery import ArtifactName, classify_artifact, is_derived_product
-from anishift.application.events import sanitize_event_message
+from anishift.application.events import RunEventKind, sanitize_event_message
 from anishift.application.inspection import InspectedWorkspace
 from anishift.application.intents import (
     AutoPreset,
@@ -55,6 +55,7 @@ from anishift.application.intents import (
     RequestOrigin,
     RunMode,
 )
+from anishift.application.planning import TaskState
 from anishift.application.recovery import RunJournal
 from anishift.application.results import GroupStatus
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
@@ -110,6 +111,12 @@ TRANSFER_CHECK_INTERVAL_S: Final[float] = 10.0
 _MAX_CHANGED_PATHS: Final[int] = 4096
 """Pending changed paths retained before falling back to one full reconciliation."""
 
+_FINISHED_PROGRESS_LIMIT: Final[int] = 12
+"""Recent completed runs kept in memory for reconnecting progress panels."""
+
+_PANEL_START_GRACE_S: Final[float] = 5.0
+"""Time allowed for a launched panel to connect before another tray launch."""
+
 COMMAND_TIMEOUT_S: Final[float] = 300.0
 """Wait for one command before the connection is answered with an internal fault."""
 
@@ -163,6 +170,7 @@ _MUTATING_KINDS: Final[frozenset[str]] = frozenset(
         "subscription_remove",
         "subscription_add",
         "download",
+        "transfer",
     }
 )
 """Commands whose outcome is recorded, so repeating an identifier repeats no effect."""
@@ -261,7 +269,7 @@ class _Inspected:
 class AutomationOwner:
     """Owns the watch state, admits requests and answers every control command."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913,PLR0915 - explicit owner state and composition dependencies
         self,
         service: AppService,
         store: WatchStateStore,
@@ -269,6 +277,7 @@ class AutomationOwner:
         instance_id: str,
         clock: Clock = lambda: datetime.now(UTC),
         broadcast: Broadcast | None = None,
+        open_panel: Callable[[], None] | None = None,
     ) -> None:
         """Load the persisted state and prepare the owner thread and its pool."""
         self._service: AppService = service
@@ -276,6 +285,9 @@ class AutomationOwner:
         self._instance_id: str = instance_id
         self._clock: Clock = clock
         self._broadcast: Broadcast | None = broadcast
+        self._open_panel: Callable[[], None] | None = open_panel
+        self._panels: set[str] = set()
+        self._panel_opening_at: float = 0.0
         self._state: WatchState = store.load()
         service.retain_runs(
             tuple(item.request_id for item in self._state.requests if item.state is not RequestState.SUCCEEDED)
@@ -298,6 +310,9 @@ class AutomationOwner:
         self._client_sessions: dict[str, str] = {}
         self._pending: dict[str, frozenset[ProductKind]] = {}
         self._run_results: dict[str, RunResult] = {}
+        self._progress_lock: threading.Lock = threading.Lock()
+        self._run_views: dict[str, RunProgressSnapshot] = {}
+        self._run_events: dict[str, dict[tuple[str, str | None, str | None], RunEvent]] = {}
         self._run_products: dict[str, dict[str, ArtifactKind]] = {}
         self._shutting_down: bool = False
         self._active_io: int = 0
@@ -306,6 +321,7 @@ class AutomationOwner:
         )
         self._transfers_at: float | None = None
         self._transfers_inspecting: bool = False
+        self._transfers_problem: str | None = None
         self._subscriptions_at: float | None = None
         self._subscriptions_checking: bool = False
         self._subscriptions_problem: str | None = None
@@ -405,6 +421,27 @@ class AutomationOwner:
     def disconnect(self, session_id: str) -> None:
         """Release the editing state owned by a closed control connection."""
         self._queue.put(_Disconnected(session_id))
+
+    def tray_action(self, action: str) -> None:
+        """Queue a desktop action without blocking the Windows message thread."""
+        self._queue.put(lambda: self._tray_action(action))
+
+    def _tray_action(self, action: str) -> None:
+        if action == "open":
+            if self._panels:
+                self._publish({"event": "panel_open", "payload": {}}, terminal=False)
+            elif self._open_panel is not None and time.monotonic() - self._panel_opening_at > _PANEL_START_GRACE_S:
+                self._panel_opening_at = time.monotonic()
+                self._open_panel()
+            return
+        kind: str = "set_auto" if action == "toggle_auto" else "shutdown"
+        self._perform(
+            ControlRequest(
+                command_id=f"tray-{token_hex(_ID_BYTES)}",
+                kind=kind,
+                payload={"enabled": not self._state.policy.auto_enabled} if kind == "set_auto" else {},
+            )
+        )
 
     def serve(self) -> None:
         """Run the owner loop until a shutdown drains every active request."""
@@ -644,6 +681,7 @@ class AutomationOwner:
         return True
 
     def _release_session(self, session_id: str) -> None:
+        self._panels.discard(session_id)
         with self._previews_lock:
             self._sessions.discard(session_id)
             self._closed_sessions.add(session_id)
@@ -679,6 +717,11 @@ class AutomationOwner:
         match request.kind:
             case "status":
                 return ControlResponse.succeeded(self._status())
+            case "panel_attach":
+                if request.session_id is None:
+                    return _invalid("A panel requires a connected session")
+                self._panels.add(request.session_id)
+                return ControlResponse.succeeded({"attached": True})
             case "set_auto":
                 return self._set_auto(request)
             case "set_directory_auto":
@@ -697,6 +740,19 @@ class AutomationOwner:
                 return self._resume_preview(request)
             case "run_result":
                 return self._run_result(request)
+            case "run_progress":
+                run_id: str = str(request.payload.get("run_id", ""))
+                with self._progress_lock:
+                    view: RunProgressSnapshot | None = self._run_views.get(run_id)
+                    if view is None:
+                        return _invalid("The run progress is no longer available")
+                    events: tuple[RunEvent, ...] = tuple(
+                        sorted(
+                            self._run_events[run_id].values(),
+                            key=lambda event: event.sequence,
+                        )
+                    )
+                    return ControlResponse.succeeded(encode_view(replace(view, events=events)))
             case "start":
                 return self._start(request)
             case "cancel":
@@ -709,6 +765,8 @@ class AutomationOwner:
                 return self._acquisition_command(request)
             case "download":
                 return self._download_command(request)
+            case "transfer":
+                return self._transfer_command(request)
             case kind if kind.startswith("subscription"):
                 return self._subscription_command(request)
             case _:
@@ -722,6 +780,7 @@ class AutomationOwner:
         return {
             "instance_id": self._instance_id,
             "pid": os.getpid(),
+            "run_progress": self._progress_views(),
             "auto_enabled": policy.auto_enabled,
             "pending_commands": [
                 {"command_id": receipt.command_id, "kind": receipt.pending}
@@ -760,12 +819,33 @@ class AutomationOwner:
             "acquisitions": [
                 {
                     "operation_id": item.operation_id,
+                    "info_hash": item.info_hash,
+                    "directory": item.directory,
+                    "action": item.requested_action,
+                    "action_pending": item.action_pending,
+                    "problem": item.problem,
                     "subscription_id": item.subscription_id,
                     "episode": item.episode,
                     "state": item.state.value,
                     "stalled": self._transfers is not None and item.info_hash in self._transfers.stalled,
                 }
                 for item in self._state.acquisitions
+            ],
+            "transfers": [
+                {"info_hash": item.info_hash, "name": item.name, "progress": item.progress, "state": item.state}
+                for item in (() if self._transfers is None else self._transfers.snapshot())
+            ],
+            "transfers_problem": self._transfers_problem,
+            "library": []
+            if self._library is None
+            else [
+                {
+                    "group_id": group.group_id,
+                    "name": group.source.stem,
+                    "directory": group.source.directory.relative_to(self._service.workspace_root).as_posix(),
+                    "products": [{"kind": item.kind.value, "state": item.state.value} for item in group.artifacts],
+                }
+                for group in self._library.groups
             ],
             "shutting_down": self._shutting_down,
             "updated_at": self._now(),
@@ -1139,6 +1219,26 @@ class AutomationOwner:
         self._pending[run_id] = preview.products
         self._run_results.pop(run_id, None)
         self._run_products[run_id] = {artifact.artifact_id: artifact.kind for artifact in preview.plan.artifacts}
+        with self._progress_lock:
+            self._run_views[run_id] = RunProgressSnapshot(
+                run_id,
+                preview_plan(preview.plan, preview.preview_id, self._instance_id),
+                {
+                    group.group_id: next(
+                        (
+                            artifact.path.name
+                            for artifact in preview.plan.artifacts
+                            if artifact.group_id == group.group_id
+                            and artifact.path is not None
+                            and artifact.kind
+                            in {ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4, ArtifactKind.STANDALONE_TEXT}
+                        ),
+                        group.group_id,
+                    )
+                    for group in preview.plan.groups
+                },
+            )
+            self._run_events[run_id] = {}
         submitted: bool = False
         try:
             handle: RunHandle = self._service.submit_plan(
@@ -1367,7 +1467,9 @@ class AutomationOwner:
             return (), ControlResponse.succeeded(dict(receipt.outcome))
         if self._shutting_down or not self._finish_pending_commands():
             return (), ControlResponse.refused(ControlErrorCode.REFUSED, _SHUTTING_DOWN)
-        existing: set[str] = {item.info_hash for item in self._state.acquisitions}
+        existing: set[str] = {
+            item.info_hash for item in self._state.acquisitions if item.state is not AcquisitionState.FAILED
+        }
         unique: dict[str, ReleaseChoice] = {choice.release.info_hash.casefold(): choice for choice in choices}
         chosen: tuple[ReleaseChoice, ...] = tuple(choice for key, choice in unique.items() if key not in existing)
         confirmations: list[AcquisitionConfirmation] = []
@@ -1392,9 +1494,16 @@ class AutomationOwner:
                 )
             )
         outcome: CommandOutcome = {"count": len(chosen), "directory": str(destination)}
+        replaced_hashes: set[str] = {item.info_hash for item in confirmations}
         failure: ControlResponse | None = self._commit(
             request,
-            replace(self._state, acquisitions=(*self._state.acquisitions, *confirmations)),
+            replace(
+                self._state,
+                acquisitions=(
+                    *(item for item in self._state.acquisitions if item.info_hash not in replaced_hashes),
+                    *confirmations,
+                ),
+            ),
             outcome,
         )
         return chosen, failure or ControlResponse.succeeded(dict(outcome))
@@ -1601,14 +1710,16 @@ class AutomationOwner:
     def _schedule_transfers(self, delay: float = 0.0) -> None:
         if self._shutting_down or self._transfers is None or self._transfers_inspecting:
             return
-        active: bool = any(item.state is AcquisitionState.ACCEPTED for item in self._state.acquisitions)
+        active: bool = any(
+            item.state is AcquisitionState.ACCEPTED or item.action_pending for item in self._state.acquisitions
+        )
         self._transfers_at = time.monotonic() + delay if active else None
 
     def _poll_transfers(self) -> None:
         if self._transfers_at is None or self._transfers_at > time.monotonic():
             return
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
-            item for item in self._state.acquisitions if item.state is AcquisitionState.ACCEPTED
+            item for item in self._state.acquisitions if item.state is AcquisitionState.ACCEPTED or item.action_pending
         )
         self._transfers_at = None
         self._transfers_inspecting = True
@@ -1617,27 +1728,35 @@ class AutomationOwner:
 
     def _inspect_transfers(self, acquisitions: tuple[AcquisitionConfirmation, ...]) -> None:
         results: tuple[AcquisitionConfirmation, ...] = ()
+        failure: str | None = None
         try:
             if self._transfers is not None:
                 acquisition: AcquisitionService | None = self._service.acquisition
                 if acquisition is not None:
                     with acquisition.requests("transfer"):
+                        acquisitions = tuple(self._apply_transfer_action(acquisition, item) for item in acquisitions)
+                        results = acquisitions
                         results = self._transfers.inspect(
                             acquisitions, stall_after_s=self._state.policy.transfer_stall_s
                         )
+                        acquisition.finish_transfers()
         except Exception as problem:  # noqa: BLE001
+            failure = sanitize_event_message(str(problem))
             if self._transfers is not None:
                 self._transfers.reset_clock()
             logger.warning("Transfer reconciliation failed", error_class=type(problem).__name__)
         finally:
-            self._queue.put(lambda: self._record_transfers(results))
+            self._queue.put(lambda: self._record_transfers(results, failure))
 
-    def _record_transfers(self, results: tuple[AcquisitionConfirmation, ...]) -> None:
+    def _record_transfers(self, results: tuple[AcquisitionConfirmation, ...], failure: str | None = None) -> None:
+        self._transfers_problem = failure
         self._active_io -= 1
         self._transfers_inspecting = False
         updated: dict[str, AcquisitionConfirmation] = {item.operation_id: item for item in results}
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
-            updated.get(item.operation_id, item) if item.state is AcquisitionState.ACCEPTED else item
+            updated.get(item.operation_id, item)
+            if updated.get(item.operation_id, item).action_id == item.action_id
+            else item
             for item in self._state.acquisitions
         )
         if acquisitions != self._state.acquisitions and self._save(replace(self._state, acquisitions=acquisitions)):
@@ -1654,6 +1773,46 @@ class AutomationOwner:
             else:
                 self._refresh_automatic()
         self._schedule_transfers(TRANSFER_CHECK_INTERVAL_S)
+        self._publish_state()
+
+    def _transfer_command(self, request: ControlRequest) -> ControlResponse:
+        info_hash: str = str(request.payload.get("info_hash", "")).casefold()
+        action: str = str(request.payload.get("action", ""))
+        if action not in {"stop", "resume", "cancel"} or not any(
+            item.info_hash == info_hash for item in self._state.acquisitions
+        ):
+            return _invalid("A transfer command needs a known hash and stop, resume or cancel")
+        acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
+            replace(item, requested_action=action, action_id=request.command_id, action_pending=True, problem=None)
+            if item.info_hash == info_hash
+            else item
+            for item in self._state.acquisitions
+        )
+        outcome: dict[str, str | bool] = {"info_hash": info_hash, "action": action, "accepted": True}
+        refusal: ControlResponse | None = self._commit(
+            request, replace(self._state, acquisitions=acquisitions), outcome
+        )
+        if refusal is not None:
+            return refusal
+        self._schedule_transfers()
+        self._publish_state()
+        return ControlResponse.succeeded(outcome)
+
+    def _apply_transfer_action(
+        self, service: AcquisitionService, item: AcquisitionConfirmation
+    ) -> AcquisitionConfirmation:
+        if not item.action_pending:
+            return item
+        try:
+            service.control_transfer(item.info_hash, str(item.requested_action))
+        except (AniShiftError, OSError, ValueError) as problem:
+            return replace(item, action_pending=False, problem=sanitize_event_message(str(problem)))
+        return replace(
+            item,
+            action_pending=False,
+            problem=None,
+            state=AcquisitionState.FAILED if item.requested_action == "cancel" else AcquisitionState.ACCEPTED,
+        )
 
     def _reconcile_subscription_sources(self) -> None:
         if self._service.subscriptions is None or not self._state.acquisitions:
@@ -1787,6 +1946,12 @@ class AutomationOwner:
         return next((item for item in self._state.command_receipts if item.command_id == request.command_id), None)
 
     def _publish_event(self, event: RunEvent) -> None:
+        with self._progress_lock:
+            events: dict[tuple[str, str | None, str | None], RunEvent] | None = self._run_events.get(event.run_id)
+            if events is not None:
+                events[event.kind.value, event.group_id, event.task_id] = event
+        if event.kind is RunEventKind.GROUP_FINISHED:
+            self._queue.put(lambda: self._notify_group(event))
         self._publish(
             {
                 "event": "run_event",
@@ -1806,6 +1971,42 @@ class AutomationOwner:
 
     def _publish_state(self) -> None:
         self._publish({"event": "state_changed", "payload": self._status()}, terminal=False)
+
+    def _progress_views(self) -> list[dict[str, object]]:
+        with self._progress_lock:
+            active: set[str] = {item.request_id for item in self._state.requests if item.state in _ACTIVE_STATES}
+            finished: list[str] = [run_id for run_id in self._run_views if run_id not in active]
+            for run_id in finished[:-_FINISHED_PROGRESS_LIMIT]:
+                self._run_views.pop(run_id, None)
+                self._run_events.pop(run_id, None)
+            return [
+                {"run_id": run_id, "preview_id": view.preview.preview_id} for run_id, view in self._run_views.items()
+            ]
+
+    def _notify_group(self, event: RunEvent) -> None:
+        request: ProcessingRequest | None = next(
+            (item for item in self._state.requests if item.request_id == event.run_id),
+            None,
+        )
+        if request is None or event.group_id is None:
+            return
+        key: tuple[str, str, str] = (event.group_id, f"{request.request_id}:{request.generation}", str(event.state))
+        if key in self._state.notified or not self._save(replace(self._state, notified=self._state.notified | {key})):
+            return
+        with self._progress_lock:
+            view: RunProgressSnapshot | None = self._run_views.get(event.run_id)
+            label: str = view.labels.get(event.group_id, event.group_id) if view is not None else event.group_id
+        message: str = "Gotowy odcinek" if event.state is TaskState.SUCCEEDED else "Odcinek wymaga uwagi"
+        self._publish(
+            {
+                "event": "notification",
+                "payload": {
+                    "title": message,
+                    "message": sanitize_event_message(label),
+                },
+            },
+            terminal=True,
+        )
 
     def _publish(self, frame: Mapping[str, object], *, terminal: bool) -> None:
         broadcast: Broadcast | None = self._broadcast
@@ -1941,6 +2142,8 @@ def _subscription_view(subscription: Subscription) -> dict[str, object]:
         "next_episode": str(subscription.next_episode),
         "enabled": subscription.enabled,
         "end_state": subscription.end_state.value,
+        "anilist_id": subscription.anilist_id,
+        "episodes": [encode_view(episode) for episode in subscription.episodes],
     }
 
 

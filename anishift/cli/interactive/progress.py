@@ -23,6 +23,7 @@ from anishift.application import (
     PlanPreview,
     RunEvent,
     RunEventKind,
+    RunProgressSnapshot,
     TaskKind,
     TaskState,
 )
@@ -160,12 +161,21 @@ class RichRunProgress:
     ) -> None:
         """Create naturally ordered file rows without taking over the terminal."""
         labels: dict[str, str] = {group.group_id: _source_label(group) for group in prepared.workspace.groups}
+        self._initialize(labels, prepared.plan, invalidate, on_run_started, mascot)
+
+    def _initialize(
+        self,
+        labels: dict[str, str],
+        plan: ExecutionPlan | PlanPreview,
+        invalidate: Callable[[], None],
+        on_run_started: Callable[[str], None] | None,
+        mascot: MascotController | None,
+    ) -> None:
         self._files: dict[str, _FileState] = {
-            group.group_id: _new_file_state(labels.get(group.group_id, group.group_id))
-            for group in prepared.plan.groups
+            group.group_id: _new_file_state(labels.get(group.group_id, group.group_id)) for group in plan.groups
         }
-        self._task_kinds: dict[str, TaskKind] = {task.task_id: task.kind for task in prepared.plan.tasks}
-        self._stage_tasks: dict[tuple[str, str], tuple[str, ...]] = _index_stage_tasks(prepared)
+        self._task_kinds: dict[str, TaskKind] = {task.task_id: task.kind for task in plan.tasks}
+        self._stage_tasks: dict[tuple[str, str], tuple[str, ...]] = _index_stage_tasks(plan)
         self._invalidate: Callable[[], None] = invalidate
         self._on_run_started: Callable[[str], None] | None = on_run_started
         self._mascot: MascotController | None = mascot
@@ -173,6 +183,16 @@ class RichRunProgress:
         self._run_id: str | None = None
         self._last_sequence: int = 0
         self._open: bool = False
+
+    @classmethod
+    def from_snapshot(cls, snapshot: RunProgressSnapshot, invalidate: Callable[[], None]) -> RichRunProgress:
+        """Restore the same progress bars after a panel reconnects to the owner."""
+        progress: RichRunProgress = cls.__new__(cls)
+        progress._initialize(snapshot.labels, snapshot.preview, invalidate, None, None)
+        progress._open = True
+        for event in snapshot.events:
+            progress.emit(event)
+        return progress
 
     @property
     def row_count(self) -> int:
@@ -539,10 +559,10 @@ def _stage_for(kind: TaskKind | None) -> str | None:
     return _DETERMINATE_STAGE.get(kind)
 
 
-def _index_stage_tasks(prepared: _PreparedRun) -> dict[tuple[str, str], tuple[str, ...]]:
+def _index_stage_tasks(plan: ExecutionPlan | PlanPreview) -> dict[tuple[str, str], tuple[str, ...]]:
     """Index measurable task IDs by source group and public stage."""
     grouped: dict[tuple[str, str], list[str]] = {}
-    for task in prepared.plan.tasks:
+    for task in plan.tasks:
         stage: str | None = _stage_for(task.kind)
         if stage is not None:
             grouped.setdefault((task.group_id, stage), []).append(task.task_id)

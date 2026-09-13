@@ -29,6 +29,9 @@ class Binary(StrEnum):
     FFPROBE = "ffprobe"
     MKVEXTRACT = "mkvextract"
     MKVMERGE = "mkvmerge"
+    QBITTORRENT = "qbittorrent"
+    SEVEN_ZIP = "7z"
+    SEVEN_ZIP_REDUCED = "7zr"
 
 
 class BinaryNotFoundError(FatalError):
@@ -42,6 +45,9 @@ TOOL_DIR: Final[dict[Binary, str]] = {
     Binary.FFPROBE: "ffmpeg",
     Binary.MKVEXTRACT: "mkvtoolnix",
     Binary.MKVMERGE: "mkvtoolnix",
+    Binary.QBITTORRENT: "qbittorrent",
+    Binary.SEVEN_ZIP: "7zip",
+    Binary.SEVEN_ZIP_REDUCED: "7zip",
 }
 """Subdirectory of ``external/bin/`` that holds each binary."""
 

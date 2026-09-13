@@ -157,6 +157,26 @@ class TorrentClient(Protocol):
         ...
 
 
+class TorrentManagement(Protocol):
+    """Lifecycle operations supplied only for a separately owned torrent client."""
+
+    def download_scope(self, hashes: frozenset[str]) -> AbstractContextManager[None]:
+        """Record ownership before downloads are submitted."""
+        ...
+
+    def finish_transfers(self) -> None:
+        """Stop completed seeds and an idle owned process."""
+        ...
+
+    def transfer_action(self, info_hash: str, action: str) -> None:
+        """Apply an explicit action to a managed transfer."""
+        ...
+
+    def close(self) -> None:
+        """Release process management resources."""
+        ...
+
+
 class CatalogOrder(StrEnum):
     """Order the release groups of one catalog are listed in."""
 
@@ -345,6 +365,7 @@ class AcquisitionService:
         category: str = DOWNLOAD_CATEGORY,
         title_catalog: TitleCatalog | None = None,
         request_control: RequestControl | None = None,
+        torrent_management: TorrentManagement | None = None,
     ) -> None:
         self._source: TorrentSource = source
         self._client: TorrentClient = client
@@ -353,6 +374,7 @@ class AcquisitionService:
         self._category: str = category
         self._title_catalog: TitleCatalog | None = title_catalog
         self.request_control: RequestControl | None = request_control
+        self._torrent_management: TorrentManagement | None = torrent_management
 
     def requests(self, reason: str) -> AbstractContextManager[None]:
         """Share one metadata budget across the adapters used by an operation."""
@@ -439,12 +461,17 @@ class AcquisitionService:
         chosen_directory: str | None = None if directory_name is None else series_directory_name(directory_name)
         fixed: Path | None = None if chosen_directory is None else self._workspace_root / chosen_directory
         directory: Path = fixed if fixed is not None else self.series_directory(choices[0])
-        for choice in choices:
-            self._client.add_torrent(
-                choice.release.torrent_url,
-                save_path=directory if fixed is not None else self.series_directory(choice),
-                category=self._category,
-            )
+        hashes: frozenset[str] = frozenset(choice.release.info_hash.casefold() for choice in choices)
+        scope: AbstractContextManager[None] = (
+            self._torrent_management.download_scope(hashes) if self._torrent_management is not None else nullcontext()
+        )
+        with scope:
+            for choice in choices:
+                self._client.add_torrent(
+                    choice.release.torrent_url,
+                    save_path=directory if fixed is not None else self.series_directory(choice),
+                    category=self._category,
+                )
         logger.info("Releases queued in the torrent client", count=len(choices), fixed_directory=fixed is not None)
         return DownloadReceipt(len(choices), directory)
 
@@ -466,6 +493,23 @@ class AcquisitionService:
     def transfer_files(self, info_hash: str) -> tuple[TorrentFile, ...]:
         """Read selection and completion for one tracked transfer."""
         return self._client.files(info_hash)
+
+    def finish_transfers(self) -> None:
+        """Release completed seeds only through the private process owner."""
+        if self._torrent_management is not None:
+            self._torrent_management.finish_transfers()
+
+    def control_transfer(self, info_hash: str, action: str) -> None:
+        """Apply an explicit operation to a private transfer without deleting media."""
+        if self._torrent_management is None:
+            msg = "This torrent client is external and cannot be managed automatically"
+            raise ValueError(msg)
+        self._torrent_management.transfer_action(info_hash, action)
+
+    def close(self) -> None:
+        """Release private torrent process resources."""
+        if self._torrent_management is not None:
+            self._torrent_management.close()
 
     def series_directory(self, choice: ReleaseChoice) -> Path:
         """Return the library directory the files of *choice* will be saved into."""

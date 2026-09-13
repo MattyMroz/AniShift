@@ -36,6 +36,33 @@ _WEB_UI_KEYS: Final[tuple[str, ...]] = (
 _INSTALL_VARIABLES: Final[tuple[str, ...]] = ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA")
 
 
+def test_managed_profile_imports_only_connection_preferences_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    credential: str = "isolated"
+    source: Path = tmp_path / "personal.ini"
+    original: str = (
+        "[BitTorrent]\nSession\\MaxConnections=321\nSession\\QueueingSystemEnabled=true\n"
+        "Session\\DefaultSavePath=C:/Personal\n[Preferences]\nWebUI\\Port=8080\nWebUI\\Username=personal\n"
+    )
+    source.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(qbittorrent_config, "settings_path", lambda: source)
+    root: Path = tmp_path / "managed"
+    qbittorrent_config.write_managed_profile(root, web_port=18081, torrent_port=18082, password=credential)
+    target: Path = root / "qBittorrent/config/qBittorrent.ini"
+    content: str = target.read_text(encoding="utf-8")
+    assert "Session\\MaxConnections=321" in content
+    assert "Session\\QueueingSystemEnabled=false" in content
+    assert "WebUI\\Port=18081" in content
+    assert "WebUI\\LocalHostAuth=true" in content
+    assert "Personal" not in content
+    assert "personal" not in content
+    assert source.read_text(encoding="utf-8") == original
+    source.write_text(original.replace("321", "999"), encoding="utf-8")
+    qbittorrent_config.write_managed_profile(root, web_port=18083, torrent_port=18084, password=credential)
+    assert "Session\\MaxConnections=321" in target.read_text(encoding="utf-8")
+
+
 class _Tasklist:
     def __init__(self, stdout: bytes) -> None:
         self.stdout: bytes = stdout

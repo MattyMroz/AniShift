@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import configparser
 import hashlib
 import os
 import secrets
@@ -27,6 +28,7 @@ __all__ = [
     "installed_executable",
     "is_running",
     "settings_path",
+    "write_managed_profile",
 ]
 
 logger = get_logger(__name__)
@@ -121,6 +123,16 @@ _MISSING_SETTINGS_MESSAGE: Final[str] = "qBittorrent has no settings file yet"
 _MISSING_SETTINGS_HINT: Final[str] = "Start qBittorrent once, close it, then run `anishift qbit setup` again"
 """Suggestion offered when the settings file is absent."""
 
+_IMPORTED_SESSION_KEYS: Final[tuple[str, ...]] = (
+    "MaxConnections",
+    "MaxConnectionsPerTorrent",
+    "MaxUploads",
+    "MaxUploadsPerTorrent",
+    "GlobalDLSpeedLimit",
+    "GlobalUPSpeedLimit",
+)
+"""Numeric connection and speed preferences copied once into a new managed profile."""
+
 
 @dataclass(frozen=True, slots=True)
 class WebUiSetup:
@@ -132,6 +144,69 @@ class WebUiSetup:
 
 class QBittorrentConfigError(FatalError):
     """Raised when the Web UI keys cannot be written into the client settings."""
+
+
+class _ProfileIni(configparser.ConfigParser):
+    def optionxform(self, optionstr: str) -> str:
+        return optionstr
+
+
+def write_managed_profile(root: Path, *, web_port: int, torrent_port: int, password: str) -> None:
+    """Prepare only the private profile, retaining its existing settings between starts."""
+    target: Path = root / "qBittorrent" / "config" / "qBittorrent.ini"
+    parser: configparser.ConfigParser = _ProfileIni(interpolation=None)
+    if target.exists():
+        parser.read(target, encoding="utf-8")
+    else:
+        _import_connection_settings(parser)
+    values: dict[str, dict[str, str]] = {
+        "LegalNotice": {"Accepted": "true"},
+        "Preferences": {
+            "WebUI\\Enabled": "true",
+            "WebUI\\Address": _LOOPBACK,
+            "WebUI\\Port": str(web_port),
+            "WebUI\\Username": _WEB_UI_USER,
+            "WebUI\\LocalHostAuth": "true",
+            "WebUI\\AuthSubnetWhitelistEnabled": "false",
+            _PASSWORD_KEY: _password_value(password),
+            "General\\StartMinimized": "true",
+            "General\\MinimizeToTray": "true",
+        },
+        "BitTorrent": {
+            "Session\\Port": str(torrent_port),
+            "Session\\QueueingSystemEnabled": "false",
+            "Session\\AddExtensionToIncompleteFiles": "true",
+            "Session\\GlobalMaxRatio": "0",
+            "Session\\GlobalMaxSeedingMinutes": "0",
+            "Session\\DefaultSavePath": (root / "qBittorrent" / "downloads").as_posix(),
+        },
+    }
+    for section, entries in values.items():
+        if not parser.has_section(section):
+            parser.add_section(section)
+        parser[section].update(entries)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path = target.with_suffix(".tmp")
+    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+        parser.write(handle, space_around_delimiters=False)
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary.replace(target)
+
+
+def _import_connection_settings(target: configparser.ConfigParser) -> None:
+    source: configparser.ConfigParser = _ProfileIni(interpolation=None)
+    try:
+        source.read(settings_path(), encoding="utf-8")
+    except QBittorrentConfigError, OSError, configparser.Error, UnicodeError:
+        logger.info("Personal torrent preferences unavailable; using managed defaults")
+        return
+    target.add_section("BitTorrent")
+    for name in _IMPORTED_SESSION_KEYS:
+        key: str = f"Session\\{name}"
+        raw: str = source.get("BitTorrent", key, fallback="")
+        if raw.lstrip("-").isdigit() and int(raw) >= -1:
+            target.set("BitTorrent", key, raw)
 
 
 def _default_run(command: Sequence[str]) -> subprocess.CompletedProcess[bytes]:

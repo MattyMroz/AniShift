@@ -11,8 +11,14 @@
       "size_bytes": 89387603,
       "archive": "zip",
       "members": [
-        { "archive_path": "mkvtoolnix/mkvextract.exe", "dest": "mkvtoolnix/mkvextract.exe" },
-        { "archive_path": "mkvtoolnix/mkvmerge.exe", "dest": "mkvtoolnix/mkvmerge.exe" }
+        {
+          "archive_path": "mkvtoolnix/mkvextract.exe",
+          "dest": "mkvtoolnix/mkvextract.exe"
+        },
+        {
+          "archive_path": "mkvtoolnix/mkvmerge.exe",
+          "dest": "mkvtoolnix/mkvmerge.exe"
+        }
       ]
     },
     "ffmpeg": {
@@ -25,8 +31,70 @@
       "size_bytes": 168700637,
       "archive": "zip",
       "members": [
-        { "archive_path": "ffmpeg-N-125628-ga5e6c0175a-win64-gpl/bin/ffmpeg.exe", "dest": "ffmpeg/ffmpeg.exe" },
-        { "archive_path": "ffmpeg-N-125628-ga5e6c0175a-win64-gpl/bin/ffprobe.exe", "dest": "ffmpeg/ffprobe.exe" }
+        {
+          "archive_path": "ffmpeg-N-125628-ga5e6c0175a-win64-gpl/bin/ffmpeg.exe",
+          "dest": "ffmpeg/ffmpeg.exe"
+        },
+        {
+          "archive_path": "ffmpeg-N-125628-ga5e6c0175a-win64-gpl/bin/ffprobe.exe",
+          "dest": "ffmpeg/ffprobe.exe"
+        }
+      ]
+    },
+    "7zr": {
+      "kind": "binary",
+      "source": {
+        "type": "url",
+        "url": "https://github.com/ip7z/7zip/releases/download/26.03/7zr.exe"
+      },
+      "sha256": "ad4c82fadcbdf93c03b4fc440f300509c7d60c5c2f4d183e35d9d70d6957037d",
+      "size_bytes": 602624,
+      "archive": "raw",
+      "members": [
+        {
+          "archive_path": "7zr.exe",
+          "dest": "7zip/7zr.exe"
+        }
+      ]
+    },
+    "7zip": {
+      "kind": "binary",
+      "source": {
+        "type": "url",
+        "url": "https://github.com/ip7z/7zip/releases/download/26.03/7z2603-x64.exe"
+      },
+      "sha256": "0859c524b8a63551848f0c246abddcb1d0b7b656b0fbfe879f8d85e61a9e6edd",
+      "size_bytes": 1661239,
+      "archive": "7z",
+      "members": [
+        {
+          "archive_path": "7z.exe",
+          "dest": "7zip/7z.exe"
+        },
+        {
+          "archive_path": "7z.dll",
+          "dest": "7zip/7z.dll"
+        }
+      ]
+    },
+    "qbittorrent": {
+      "kind": "binary",
+      "source": {
+        "type": "url",
+        "url": "https://downloads.sourceforge.net/project/qbittorrent/qbittorrent-win32/qbittorrent-5.2.3/qbittorrent_5.2.3_x64_setup.exe"
+      },
+      "sha256": "ff508e2f912d59c9eabaf03633ebacfd45c2049f38dcac027b8a7d7ad867ab2f",
+      "size_bytes": 43100219,
+      "archive": "nsis",
+      "members": [
+        {
+          "archive_path": "qbittorrent.exe",
+          "dest": "qbittorrent/qbittorrent.exe"
+        },
+        {
+          "archive_path": "qt.conf",
+          "dest": "qbittorrent/qt.conf"
+        }
       ]
     }
   }

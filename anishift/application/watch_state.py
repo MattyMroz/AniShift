@@ -117,6 +117,10 @@ _REQUEST_KEYS: Final[frozenset[str]] = frozenset(
 _ACQUISITION_KEYS: Final[frozenset[str]] = frozenset(
     {
         "operation_id",
+        "requested_action",
+        "action_id",
+        "action_pending",
+        "problem",
         "info_hash",
         "directory",
         "required_files",
@@ -301,6 +305,10 @@ def _encode_acquisition(confirmation: AcquisitionConfirmation) -> dict[str, obje
         "subscription_id": confirmation.subscription_id,
         "episode": confirmation.episode,
         "updated_at": confirmation.updated_at,
+        "requested_action": confirmation.requested_action,
+        "action_id": confirmation.action_id,
+        "action_pending": confirmation.action_pending,
+        "problem": confirmation.problem,
     }
 
 
@@ -419,6 +427,13 @@ def _decode_request(raw: object) -> ProcessingRequest:
 
 
 def _decode_acquisition(raw: object) -> AcquisitionConfirmation:
+    raw = {
+        "requested_action": None,
+        "action_id": None,
+        "action_pending": False,
+        "problem": None,
+        **_strict_mapping(raw, "acquisition confirmation"),
+    }
     document: dict[str, object] = _strict_object(raw, _ACQUISITION_KEYS, "acquisition confirmation")
     return AcquisitionConfirmation(
         operation_id=_text(document, "operation_id"),
@@ -430,6 +445,10 @@ def _decode_acquisition(raw: object) -> AcquisitionConfirmation:
         subscription_id=_optional_text(document, "subscription_id"),
         episode=_optional_text(document, "episode"),
         updated_at=_text(document, "updated_at"),
+        requested_action=_optional_text(document, "requested_action"),
+        action_id=_optional_text(document, "action_id"),
+        action_pending=_flag(document, "action_pending"),
+        problem=_optional_text(document, "problem"),
     )
 
 

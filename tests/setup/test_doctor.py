@@ -37,6 +37,17 @@ def test_python_version_ok_on_current_interpreter() -> None:
     assert result.status is CheckStatus.OK
 
 
+def test_managed_diagnostics_do_not_prepare_tools_or_touch_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(doctor, "is_windows", lambda: True)
+    monkeypatch.setattr(doctor, "external_bin_root", lambda: tmp_path / "bin")
+    result = doctor.check_managed_torrent_client()
+    assert result.status is CheckStatus.OK
+    assert "first download order" in result.message
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_binaries_fail_when_all_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(doctor, "resolve_binary", lambda _b: None)
     monkeypatch.setattr(doctor, "is_windows", lambda: False)

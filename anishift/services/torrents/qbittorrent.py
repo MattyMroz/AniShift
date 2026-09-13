@@ -88,6 +88,7 @@ class QBittorrentClient:
         self._password: str = password
         self._http: httpx.Client = http
         self._timeout_s: float = timeout_s
+        self._session_cookie: str = ""
 
     def version(self) -> str:
         """Return the running qBittorrent version without its ``v`` prefix."""
@@ -129,6 +130,29 @@ class QBittorrentClient:
         if not isinstance(payload, list):
             raise self._refused(_Refusal.TORRENT_LIST)
         return tuple(_torrent_info(entry) for entry in payload if isinstance(entry, dict))
+
+    def all_torrents(self) -> tuple[TorrentInfo, ...]:
+        """Read every torrent before deciding whether a private process may be stopped."""
+        payload: object = self._decode(self._request("GET", "/torrents/info"))
+        if not isinstance(payload, list):
+            raise self._refused(_Refusal.TORRENT_LIST)
+        return tuple(_torrent_info(entry) for entry in payload if isinstance(entry, dict))
+
+    def stop(self, info_hash: str) -> None:
+        """Stop one torrent without removing its downloaded files."""
+        self._request("POST", "/torrents/stop", data={"hashes": info_hash})
+
+    def resume(self, info_hash: str) -> None:
+        """Resume one stopped torrent."""
+        self._request("POST", "/torrents/start", data={"hashes": info_hash})
+
+    def remove(self, info_hash: str) -> None:
+        """Remove one transfer from the client while retaining every downloaded file."""
+        self._request("POST", "/torrents/delete", data={"hashes": info_hash, "deleteFiles": "false"})
+
+    def shutdown(self) -> None:
+        """Request shutdown of the complete client instance."""
+        self._request("POST", "/app/shutdown")
 
     def files(self, info_hash: str) -> tuple[TorrentFile, ...]:
         """Return selection and completion of every file in one torrent."""
@@ -174,7 +198,7 @@ class QBittorrentClient:
                 f"{self._base_url}{API_PREFIX}{path}",
                 data=dict(data) if data is not None else None,
                 params=dict(params) if params is not None else None,
-                headers=dict(headers) if headers is not None else None,
+                headers={"Cookie": self._session_cookie, **dict(headers or {})},
                 timeout=self._timeout_s,
             )
         except httpx.TransportError as error:
@@ -195,8 +219,16 @@ class QBittorrentClient:
             data={"username": self._username, "password": self._password},
             headers={"Referer": self._base_url},
         )
-        if response.status_code != HTTPStatus.OK or response.text.strip() != OK_BODY:
+        cookie: str = "; ".join(
+            f"{name}={value}"
+            for name, value in response.cookies.items()
+            if name == "SID" or name.startswith("QBT_SID_")
+        )
+        legacy: bool = response.status_code == HTTPStatus.OK and response.text.strip() == OK_BODY
+        current: bool = response.status_code == HTTPStatus.NO_CONTENT and bool(cookie)
+        if not legacy and not current:
             raise self._unauthorized()
+        self._session_cookie = cookie
 
     def _decode(self, response: httpx.Response) -> object:
         """Return the decoded JSON body of one response."""

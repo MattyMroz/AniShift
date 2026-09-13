@@ -54,6 +54,35 @@ def test_sha256_file_matches_hashlib(tmp_path: Path) -> None:
     assert sha256_file(file) == hashlib.sha256(b"hello world").hexdigest()
 
 
+def test_interrupted_raw_install_leaves_no_binary_and_retries_verified_bytes(tmp_path: Path) -> None:
+    payload: bytes = b"MZ verified bootstrap"
+    resource: Resource = Resource(
+        name="bootstrap",
+        kind="binary",
+        source=UrlSource(type="url", url="https://example.test/bootstrap.exe"),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size_bytes=len(payload),
+        archive="raw",
+        members=(Member("bootstrap.exe", "7zip/bootstrap.exe"),),
+    )
+    root: Path = tmp_path / "bin"
+
+    def interrupted(_resource: Resource, target: Path) -> None:
+        target.write_bytes(payload[:4])
+        raise InstallCancelledError
+
+    with pytest.raises(InstallCancelledError):
+        install_resource(resource, dest_root=root, download=interrupted)
+    assert not is_installed(resource, root)
+
+    def completed(_resource: Resource, target: Path) -> None:
+        assert target.suffix == ".exe"
+        target.write_bytes(payload)
+
+    install_resource(resource, dest_root=root, download=completed)
+    assert (root / "7zip/bootstrap.exe").read_bytes() == payload
+
+
 def test_extract_members_writes_dest_tree(tmp_path: Path) -> None:
     archive = _zip(tmp_path, {"root/bin/tool.exe": b"MZbinary", "root/README.txt": b"junk"})
     resource = _resource(archive, [Member("root/bin/tool.exe", "tool/tool.exe")])

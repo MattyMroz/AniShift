@@ -65,14 +65,14 @@ def bootstrap(
     )
 
 
-def create_app_service(context: AppContext) -> AppService:
+def create_app_service(context: AppContext, *, managed_torrents: bool = False) -> AppService:
     """Build the shared application facade while keeping providers lazy."""
     from anishift.application.inspection import WorkspaceInspector  # noqa: PLC0415
     from anishift.application.runtime import ProductionHandlerFactory  # noqa: PLC0415
     from anishift.application.service import AppService  # noqa: PLC0415
     from anishift.services.media import DefaultMediaProbe  # noqa: PLC0415
 
-    acquisition: AcquisitionService = _acquisition_service(context)
+    acquisition: AcquisitionService = _acquisition_service(context, managed_torrents=managed_torrents)
     service: AppService = AppService(
         workspace_root=context.workspace_root,
         settings=context.settings,
@@ -88,11 +88,13 @@ def create_app_service(context: AppContext) -> AppService:
     return service
 
 
-def _acquisition_service(context: AppContext) -> AcquisitionService:
+def _acquisition_service(context: AppContext, *, managed_torrents: bool = False) -> AcquisitionService:
     """Wire the public release index and the local torrent client from the environment settings."""
     import httpx  # noqa: PLC0415
 
-    from anishift.application.acquisition import AcquisitionService  # noqa: PLC0415
+    from anishift.application.acquisition import AcquisitionService, TorrentClient  # noqa: PLC0415
+    from anishift.paths import config_path  # noqa: PLC0415
+    from anishift.platform.qbittorrent_process import ManagedQBittorrent  # noqa: PLC0415
     from anishift.services.catalog import AniListCatalog  # noqa: PLC0415
     from anishift.services.http_requests import RequestControl  # noqa: PLC0415
     from anishift.services.torrents import QBittorrentClient, parse_release_name, search_releases  # noqa: PLC0415
@@ -108,12 +110,18 @@ def _acquisition_service(context: AppContext) -> AcquisitionService:
             """Return the anime releases matching *query* in *categories*."""
             return search_releases(query, http=http, categories=categories)
 
-    client: QBittorrentClient = QBittorrentClient(
+    external: QBittorrentClient = QBittorrentClient(
         context.settings.qbittorrent_url,
         username=context.settings.qbittorrent_username,
         password=context.settings.qbittorrent_password,
         http=http,
     )
+    managed: ManagedQBittorrent | None = (
+        ManagedQBittorrent(config_path().parent / "qbittorrent", http=http, previous=external)
+        if managed_torrents
+        else None
+    )
+    client: TorrentClient = managed if managed is not None else external
     return AcquisitionService(
         source=NyaaSource(),
         client=client,
@@ -121,6 +129,7 @@ def _acquisition_service(context: AppContext) -> AcquisitionService:
         parse_name=parse_release_name,
         title_catalog=AniListCatalog(http),
         request_control=request_control,
+        torrent_management=managed,
     )
 
 
@@ -166,6 +175,6 @@ def _prepare_workspace_binaries(discovery: DiscoveryResult, cancel: Cancellation
     cancel.raise_if_cancelled()
 
 
-def production_service() -> AppService:
+def production_service(*, managed_torrents: bool = False) -> AppService:
     """Compose the one application facade every production entry point runs on."""
-    return create_app_service(bootstrap())
+    return create_app_service(bootstrap(), managed_torrents=managed_torrents)

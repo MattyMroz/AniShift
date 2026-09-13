@@ -193,8 +193,15 @@ class AcquisitionConfirmation:
     subscription_id: str | None
     episode: str | None
     updated_at: str
+    requested_action: str | None = None
+    action_id: str | None = None
+    action_pending: bool = False
+    problem: str | None = None
 
     def __post_init__(self) -> None:
+        if self.requested_action not in {None, "stop", "resume", "cancel"}:
+            msg = "Unknown transfer action"
+            raise ValueError(msg)
         object.__setattr__(self, "info_hash", self.info_hash.casefold())
 
 

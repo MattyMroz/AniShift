@@ -19,7 +19,13 @@ if TYPE_CHECKING:
     )
     from anishift.application.automation import AutomationOwner
     from anishift.application.control_payloads import encode_intent
-    from anishift.application.control_views import PlanPreview, decode_view, encode_view, preview_plan
+    from anishift.application.control_views import (
+        PlanPreview,
+        RunProgressSnapshot,
+        decode_view,
+        encode_view,
+        preview_plan,
+    )
     from anishift.application.discovery import (
         PRIMARY_SOURCE_SUFFIXES,
         DiscoveryResult,
@@ -204,6 +210,7 @@ __all__ = [
     "RunEventSink",
     "RunHandle",
     "RunMode",
+    "RunProgressSnapshot",
     "RunResult",
     "RunSettingsSnapshot",
     "SearchQuery",
@@ -247,6 +254,7 @@ __all__ = [
 
 _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "PlanPreview": ("anishift.application.control_views", "PlanPreview"),
+    "RunProgressSnapshot": ("anishift.application.control_views", "RunProgressSnapshot"),
     "decode_view": ("anishift.application.control_views", "decode_view"),
     "encode_intent": ("anishift.application.control_payloads", "encode_intent"),
     "encode_view": ("anishift.application.control_views", "encode_view"),

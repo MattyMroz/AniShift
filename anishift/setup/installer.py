@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 import tempfile
 import threading
 import zipfile
@@ -12,6 +13,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -67,6 +69,18 @@ _WAIT_POLL_SECONDS: Final[float] = 0.2
 
 _EXE_SUFFIX: Final[str] = ".exe"
 """Extension stripped from a member destination to read its binary stem."""
+
+_EXTRACTION_TIMEOUT_S: Final[float] = 60.0
+"""Maximum duration of one verified archive member extraction."""
+
+_TOOLCHAIN_LOCK: Final[threading.RLock] = threading.RLock()
+"""Serializes preparation and use of the shared extraction executables."""
+
+_EXTRACTORS: Final[dict[str, tuple[str, str]]] = {
+    "7z": ("7zr", "7zip/7zr.exe"),
+    "nsis": ("7zip", "7zip/7z.exe"),
+}
+"""Manifest resources and installed executables needed by non-ZIP archives."""
 
 logger = get_logger(__name__)
 
@@ -127,8 +141,11 @@ def _fail(message: str) -> InstallerError:
     )
 
 
-def _read_member(archive: Path, resource: Resource, archive_path: str) -> bytes:
-    """Read one member's bytes from a zip archive."""
+def _read_member(archive: Path, resource: Resource, archive_path: str, extractor: Path | None) -> bytes:
+    if resource.archive == "raw":
+        return archive.read_bytes()
+    if resource.archive != "zip":
+        return _extract_member(archive, archive_path, extractor)
     try:
         with zipfile.ZipFile(archive) as zf:
             if archive_path not in zf.namelist():
@@ -140,7 +157,28 @@ def _read_member(archive: Path, resource: Resource, archive_path: str) -> bytes:
         raise _fail(msg) from exc
 
 
-def extract_members(archive: Path, resource: Resource, dest_root: Path) -> None:
+def _extract_member(archive: Path, archive_path: str, extractor: Path | None) -> bytes:
+    if extractor is None:
+        message: str = "Archive extraction requires a prepared executable"
+        raise _fail(message)
+    try:
+        result: subprocess.CompletedProcess[bytes] = subprocess.run(  # noqa: S603 - verified extractor and manifest member
+            [str(extractor), "e", "-so", "-y", "-spd", str(archive), archive_path],
+            capture_output=True,
+            check=False,
+            timeout=_EXTRACTION_TIMEOUT_S,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired as error:
+        message = "Archive member extraction timed out"
+        raise _fail(message) from error
+    if result.returncode != 0 or not result.stdout:
+        message = "Archive member extraction failed or returned an empty member"
+        raise _fail(message)
+    return result.stdout
+
+
+def extract_members(archive: Path, resource: Resource, dest_root: Path, *, extractor: Path | None = None) -> None:
     """Extract *resource*'s named members from *archive* into *dest_root*."""
     root = dest_root.resolve()
     for member in resource.members:
@@ -148,7 +186,7 @@ def extract_members(archive: Path, resource: Resource, dest_root: Path) -> None:
         if not target.is_relative_to(root):
             msg = f"member dest escapes the install root: {member.dest}"
             raise _fail(msg)
-        data = _read_member(archive, resource, member.archive_path)
+        data = _read_member(archive, resource, member.archive_path, extractor)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
 
@@ -192,6 +230,17 @@ def install_resource(
     force: bool = False,
 ) -> ResourceResult:
     """Install one resource, skipping when already present."""
+    with _TOOLCHAIN_LOCK if resource.archive != "zip" else nullcontext():
+        return _install_resource(resource, dest_root=dest_root, download=download, force=force)
+
+
+def _install_resource(
+    resource: Resource,
+    *,
+    dest_root: Path,
+    download: DownloadFn,
+    force: bool,
+) -> ResourceResult:
     if not force and is_installed(resource, dest_root):
         logger.debug("External resource installation skipped", resource=resource.name, reason="already_present")
         return ResourceResult(resource.name, "skipped", "already present")
@@ -200,7 +249,8 @@ def install_resource(
     dest_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=dest_root, ignore_cleanup_errors=True) as tmp:
         tmp_dir: Path = Path(tmp)
-        archive: Path = tmp_dir / f"{resource.name}.{resource.archive}"
+        suffix: str = Path(urlsplit(resource.source.url).path).suffix or f".{resource.archive}"
+        archive: Path = tmp_dir / f"{resource.name}{suffix}"
         download(resource, archive)
 
         actual: str = sha256_file(archive)
@@ -215,7 +265,8 @@ def install_resource(
             )
 
         staged: Path = tmp_dir / "staged"
-        extract_members(archive, resource, staged)
+        extractor: Path | None = _prepare_extractor(resource, dest_root, download)
+        extract_members(archive, resource, staged, extractor=extractor)
         for member in resource.members:
             final: Path = dest_root / member.dest
             final.parent.mkdir(parents=True, exist_ok=True)
@@ -223,6 +274,16 @@ def install_resource(
 
     logger.info("External resource installation completed", resource=resource.name)
     return ResourceResult(resource.name, "installed", "downloaded and verified")
+
+
+def _prepare_extractor(resource: Resource, dest_root: Path, download: DownloadFn) -> Path | None:
+    dependency: tuple[str, str] | None = _EXTRACTORS.get(resource.archive)
+    if dependency is None:
+        return None
+    name, relative = dependency
+    helper: Resource = next(entry for entry in load_manifest() if entry.name == name)
+    install_resource(helper, dest_root=dest_root, download=download)
+    return (dest_root / relative).resolve()
 
 
 # ── Lazy ensure (domain entry point) ─────────────────────────────────────────

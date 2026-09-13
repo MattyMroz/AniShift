@@ -186,7 +186,12 @@ def _print_setup_report(results: list[ResourceResult]) -> None:
 
 
 @app.callback(invoke_without_command=True)
-def _default(ctx: typer.Context, resident: bool = typer.Option(False, "--resident", hidden=True)) -> None:
+def _default(
+    ctx: typer.Context,
+    resident: bool = typer.Option(False, "--resident", hidden=True),
+    state: bool = typer.Option(False, "--state", hidden=True),
+    terminal_window: str | None = typer.Option(None, "--terminal-window", hidden=True),
+) -> None:
     """Open the interactive command line when invoked without a subcommand."""
     if ctx.invoked_subcommand is not None:
         return
@@ -199,16 +204,19 @@ def _default(ctx: typer.Context, resident: bool = typer.Option(False, "--residen
         from anishift.cli.watch import watch_state_dir  # noqa: PLC0415
 
         run_interactive(
-            service, resident=ResidentSession(service.workspace_root, lambda: open_control(watch_state_dir()))
+            service,
+            resident=ResidentSession(service.workspace_root, lambda: open_control(watch_state_dir())),
+            show_state=state,
+            terminal_window=terminal_window,
         )
     else:
         run_interactive(service)
 
 
 @app.command()
-def doctor() -> None:
+def doctor(resident: bool = typer.Option(False, "--resident", hidden=True)) -> None:
     """Run diagnostics: binaries, keys, workspace, torrent client, watch and autostart."""
-    results = run_doctor()
+    results = run_doctor(managed_torrents=True) if resident else run_doctor()
     results.extend(_automation_checks())
     _print_doctor_report(results)
     if any(r.status is CheckStatus.FAIL for r in results):
@@ -294,7 +302,9 @@ def watch_resident() -> None:
     """Own the automation of this library until a shutdown command ends the process."""
     from anishift.cli.watch import run_resident, watch_state_dir  # noqa: PLC0415 - keep the loop lazy
 
-    raise typer.Exit(code=run_resident(_composed_service(), state_dir=watch_state_dir()))
+    raise typer.Exit(
+        code=run_resident(_composed_service(managed_torrents=True), state_dir=watch_state_dir(), enable_tray=True)
+    )
 
 
 @watch_app.command("batch", hidden=True)
@@ -312,12 +322,16 @@ def watch_batch(
 
 
 @autostart_app.command("enable")
-def autostart_enable() -> None:
+def autostart_enable(resident: bool = typer.Option(False, "--resident", hidden=True)) -> None:
     """Register the logon task and start watching right away."""
-    from anishift.platform.autostart import enable, watch_command  # noqa: PLC0415 - keep the scheduler lazy
+    from anishift.platform.autostart import (  # noqa: PLC0415 - keep the scheduler lazy
+        enable,
+        resident_command,
+        watch_command,
+    )
 
     try:
-        enable(watch_command())
+        enable(resident_command() if resident else watch_command())
     except AniShiftError as problem:
         _refuse_command(problem)
     typer.echo(_safe(_AUTOSTART_ENABLED))
@@ -573,12 +587,12 @@ class _QuietRunEvents:
         """Drop one progress event, keeping the consumable report free of interleaving."""
 
 
-def _composed_service() -> AppService:
+def _composed_service(*, managed_torrents: bool = False) -> AppService:
     """Compose the one production facade every entry point runs on."""
     from anishift.bootstrap import production_service  # noqa: PLC0415 - keep the backend off the Typer import path
 
     try:
-        service: AppService = production_service()
+        service: AppService = production_service(managed_torrents=True) if managed_torrents else production_service()
     except (AniShiftError, OSError) as problem:
         _refuse_problem(problem)
     return service

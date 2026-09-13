@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, cast
 from pydantic import TypeAdapter
 
 from anishift.application.artifacts import ArtifactKind, ArtifactLifetime, ArtifactState
+from anishift.application.events import RunEvent
 from anishift.application.intents import GroupIntent
 from anishift.application.planning import PlanProblem, TaskKind
 from anishift.services.torrents import Release, ReleaseName
@@ -50,6 +51,16 @@ class PlanPreview:
     def can_execute(self) -> bool:
         """Whether every selected group can be accepted for execution."""
         return not any(problem.is_blocking for problem in self.problems)
+
+
+@dataclass(frozen=True, slots=True)
+class RunProgressSnapshot:
+    """Reconstruct progress from public task identities and coalesced events."""
+
+    run_id: str
+    preview: PlanPreview
+    labels: dict[str, str]
+    events: tuple[RunEvent, ...] = ()
 
 
 def preview_plan(plan: ExecutionPlan, preview_id: str, instance_id: str) -> PlanPreview:

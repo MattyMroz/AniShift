@@ -343,6 +343,55 @@ def _assert_download_receipt(store: WatchStateStore) -> None:
     assert any(item.outcome.get("count") == 2 for item in state.command_receipts)
 
 
+def test_transfer_action_survives_restart_and_receipt_replay_does_not_repeat_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, store, _ = _library(tmp_path)
+    item: AcquisitionConfirmation = AcquisitionConfirmation(
+        "download", "a", "", (), AcquisitionState.ACCEPTED, RequestOrigin.USER, None, "1", _MOMENT.isoformat()
+    )
+    store.save(WatchState(acquisitions=(item,)))
+    command: ControlRequest = _request("transfer", {"info_hash": "a", "action": "stop"})
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(command).ok
+        assert store.load().acquisitions[0].action_pending
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    network: _TorrentNetwork = _TorrentNetwork()
+    acquisition: AcquisitionService = AcquisitionService(
+        source=network, client=cast("TorrentClient", network), workspace_root=tmp_path, parse_name=parse_release_name
+    )
+    service.acquisition = acquisition
+    calls: list[tuple[str, str]] = []
+    finished: threading.Event = threading.Event()
+
+    def control(info_hash: str, action: str) -> None:
+        assert store.load().acquisitions[0].action_pending
+        calls.append((info_hash, action))
+
+    def observe(frame: Mapping[str, object], terminal: bool) -> None:
+        del terminal
+        if frame.get("event") == "state_changed" and not store.load().acquisitions[0].action_pending:
+            finished.set()
+
+    monkeypatch.setattr(acquisition, "control_transfer", control)
+    owner = _owner(service, store)
+    owner.attach_broadcast(observe)
+    thread = _serving(owner)
+    try:
+        assert finished.wait(_TIMEOUT_S)
+        assert owner.handle(command).ok
+        assert calls == [("a", "stop")]
+        assert not store.load().acquisitions[0].action_pending
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
 def test_subscription_addition_replays_after_its_confirmation_could_not_be_saved(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

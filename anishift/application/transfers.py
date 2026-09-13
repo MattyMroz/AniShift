@@ -69,6 +69,12 @@ class TransferInspector:
         self._progress: dict[str, _Progress] = {}
         self._progress_lock: threading.Lock = threading.Lock()
         self._stalled: frozenset[str] = frozenset()
+        self._snapshot: tuple[TorrentInfo, ...] = ()
+
+    def snapshot(self) -> tuple[TorrentInfo, ...]:
+        """Read the last transfer observations without contacting the client."""
+        with self._progress_lock:
+            return self._snapshot
 
     @property
     def stalled(self) -> frozenset[str]:
@@ -97,6 +103,9 @@ class TransferInspector:
         self._files = {key: value for key, value in self._files.items() if key in active}
         results: list[AcquisitionConfirmation] = []
         for acquisition in acquisitions:
+            if acquisition.state is AcquisitionState.FAILED or acquisition.problem is not None:
+                results.append(acquisition)
+                continue
             try:
                 result: AcquisitionConfirmation = self._inspect(acquisition, transfers.get(acquisition.info_hash))
             except (AniShiftError, OSError) as problem:
@@ -109,6 +118,7 @@ class TransferInspector:
         now: float = self._clock()
         progress: dict[str, _Progress] = {}
         with self._progress_lock:
+            self._snapshot = tuple(transfers.values())
             for key, transfer in transfers.items():
                 previous: _Progress | None = self._progress.get(key)
                 value: tuple[float, int | None] = (transfer.progress, transfer.completed)

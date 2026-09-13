@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from secrets import token_hex
 from typing import TYPE_CHECKING
@@ -121,6 +121,32 @@ class ResidentSession:
         """Add a durable standing order and let the owner's schedule check it."""
         answer: Mapping[str, object] = self._call("subscription_add", {"order": encode_view(order)})
         return decode_view(Subscription, self._call("subscription_get", {"subscription_id": answer["subscription_id"]}))
+
+    def command(self, kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
+        """Send a validated user action through the owner's command boundary."""
+        return self._call(kind, payload)
+
+    def observe(self) -> Iterator[Mapping[str, object]]:
+        """Subscribe before reading the snapshot so concurrent progress is not lost."""
+        events: ControlClient = self._connect()
+        self._events = events
+        try:
+            events.subscribe()
+            yield {"event": "state_changed", "payload": self._call("status")}
+            yield from events.events()
+        finally:
+            events.close()
+            self._events = None
+
+    def start(self, preview: PlanPreview) -> str:
+        """Accept a preview and return immediately while execution stays with the owner."""
+        answer: Mapping[str, object] = self._call(
+            "start",
+            {"preview_id": preview.preview_id},
+            instance_id=preview.instance_id,
+        )
+        self._reserved = ()
+        return str(answer["run_id"])
 
     def reserve(self, group_ids: Sequence[str]) -> None:
         """Protect the complete selected scope before opening its editor."""

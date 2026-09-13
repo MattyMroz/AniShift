@@ -32,6 +32,7 @@ from anishift.cli.interactive.prompts import (
     status_line,
 )
 from anishift.cli.interactive.settings import SettingsController, SettingsResult
+from anishift.cli.interactive.state import StateController, StateResult
 from anishift.cli.resident import ResidentSession
 from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, execute_plan, prepare_auto_run
 from anishift.errors import AniShiftError
@@ -146,6 +147,7 @@ class _ViewMode(StrEnum):
     AUTO = "auto"
     AUTO_DONE = "auto_done"
     SETTINGS = "settings"
+    STATE = "state"
     MESSAGE = "message"
 
 
@@ -153,22 +155,30 @@ class _InteractiveApplication:
     """Coordinate application work with one Prompt Toolkit renderer."""
 
     def __init__(
-        self, service: AppService, *, batch: tuple[str, ...] | None = None, resident: ResidentSession | None = None
+        self,
+        service: AppService,
+        *,
+        batch: tuple[str, ...] | None = None,
+        resident: ResidentSession | None = None,
+        show_state: bool = False,
+        terminal_window: str | None = None,
     ) -> None:
         self._service: AppService = service
         self._resident: ResidentSession | None = resident
+        self._terminal_window: str | None = terminal_window
         self._execution: ResidentSession | None = None
         self._batch: tuple[str, ...] | None = batch
         self._exit_code: int = EXIT_SUCCESS
         self._closing_at: float | None = None
         self._lock: threading.Lock = threading.Lock()
-        self._mode: _ViewMode = _ViewMode.HOME
+        self._mode: _ViewMode = _ViewMode.STATE if show_state else _ViewMode.HOME
         self._selected: int = 0
         self._message: Text = Text()
         self._message_view: _QueueView = _QueueView(following=False)
         self._progress: RichRunProgress | None = None
         self._queue: _QueueView = _QueueView()
         self._settings: SettingsController | None = None
+        self._state: StateController | None = None
         self._manual: ManualController | None = None
         self._anime: AnimeController | None = None
         self._cancel_requested: bool = False
@@ -186,6 +196,8 @@ class _InteractiveApplication:
 
     def run(self) -> int:
         """Run the session until Home exits, or until one batch finishes and its window closes."""
+        if self._resident is not None:
+            self._state = StateController(self._resident, self._renderer.invalidate)
         if self._batch is None:
             self._start_prewarm()
         else:
@@ -193,6 +205,8 @@ class _InteractiveApplication:
         try:
             self._renderer.run()
         finally:
+            if self._state is not None:
+                self._state.close()
             self._cancel_active_work()
             self._close_settings()
             self._mascot.close()
@@ -226,6 +240,8 @@ class _InteractiveApplication:
             controller: SettingsController | None = self._settings
         if controller is not None:
             controller.close()
+            if self._resident is not None:
+                self._resident.command("reload_settings")
         with self._lock:
             self._settings = None
 
@@ -244,6 +260,9 @@ class _InteractiveApplication:
             mode: _ViewMode = self._mode
         if mode is _ViewMode.SETTINGS:
             self._handle_settings_key(key)
+            return
+        if mode is _ViewMode.STATE:
+            self._handle_state_key(key)
             return
         if key == "interrupt":
             self._interrupt(mode)
@@ -281,6 +300,12 @@ class _InteractiveApplication:
         self._renderer.exit()
 
     def _handle_idle(self) -> None:
+        if self._state is not None and self._state.take_open_request():
+            from anishift.platform.tray import raise_panel  # noqa: PLC0415
+
+            raise_panel(self._terminal_window)
+            if self._mode is not _ViewMode.SETTINGS:
+                self._show_state()
         with self._lock:
             controller: SettingsController | None = self._settings if self._mode is _ViewMode.SETTINGS else None
             closing_at: float | None = self._closing_at
@@ -333,7 +358,10 @@ class _InteractiveApplication:
         if action is HomeAction.EXIT:
             self._renderer.exit()
         elif action is HomeAction.AUTO:
-            self._start_auto()
+            if self._resident is not None:
+                self._show_state()
+            else:
+                self._start_auto()
         elif action is HomeAction.ANIME:
             self._start_anime()
         elif action is HomeAction.SETTINGS:
@@ -601,6 +629,15 @@ class _InteractiveApplication:
     def _execute_run(self, generation: int, prepared: PreparedAutoRun | ManualRun) -> None:
         backend: ResidentSession | None = prepared.resident if isinstance(prepared, ManualRun) else None
         try:
+            if backend is not None and isinstance(prepared.plan, PlanPreview):
+                backend.start(prepared.plan)
+                with self._lock:
+                    if generation != self._generation:
+                        return
+                    self._worker = None
+                    self._manual = None
+                self._show_state()
+                return
             progress: RichRunProgress = RichRunProgress(
                 prepared,
                 self._renderer.invalidate,
@@ -699,6 +736,29 @@ class _InteractiveApplication:
             self._message = Text()
         self._renderer.invalidate()
 
+    def _show_state(self) -> None:
+        self._close_settings()
+        if self._state is None and self._resident is not None:
+            self._state = StateController(self._resident, self._renderer.invalidate)
+        with self._lock:
+            self._mode = _ViewMode.STATE
+        self._renderer.invalidate()
+
+    def _handle_state_key(self, key: str) -> None:
+        if self._state is None:
+            self._show_home()
+            return
+        result: StateResult = self._state.handle_key(key)
+        action: Callable[[], None] | None = {
+            StateResult.HOME: self._show_home,
+            StateResult.SETTINGS: self._show_settings,
+            StateResult.AUTO: self._start_auto,
+            StateResult.MANUAL: self._start_manual,
+            StateResult.ANIME: self._start_anime,
+        }.get(result)
+        if action is not None:
+            action()
+
     def _show_home(self) -> None:
         self._close_settings()
         self._mascot.reset()
@@ -747,6 +807,8 @@ class _InteractiveApplication:
             )
         elif mode is _ViewMode.SETTINGS and settings is not None:
             content = settings.render(columns, rows)
+        elif mode is _ViewMode.STATE and self._state is not None:
+            content = self._state.render(columns, rows)
         else:
             content = _message_content(columns, rows, message, mascot_state, view=message_view)
         footer: str = self._directory if closing_at is None else _closing_label(closing_at)
@@ -754,11 +816,18 @@ class _InteractiveApplication:
 
 
 def run_interactive(
-    service: AppService, *, batch: Sequence[str] | None = None, resident: ResidentSession | None = None
+    service: AppService,
+    *,
+    batch: Sequence[str] | None = None,
+    resident: ResidentSession | None = None,
+    show_state: bool = False,
+    terminal_window: str | None = None,
 ) -> int:
     """Run the single-owner interactive session; a batch runs its groups and closes on its own."""
     groups: tuple[str, ...] | None = tuple(batch) if batch is not None else None
-    return _InteractiveApplication(service, batch=groups, resident=resident).run()
+    return _InteractiveApplication(
+        service, batch=groups, resident=resident, show_state=show_state, terminal_window=terminal_window
+    ).run()
 
 
 def _closing_label(closing_at: float) -> str:
