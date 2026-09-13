@@ -910,6 +910,28 @@ def test_bootstrap_builds_the_shared_service_without_creating_provider_clients(t
     assert not workspace_root.exists()
 
 
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows writer sharing")
+def test_inspection_waits_for_writers_and_reuses_video_after_subtitle_copy(tmp_path: Path) -> None:
+    source: Path = tmp_path / "03.mkv"
+    write_media_source(source)
+    probe: _CountingProbe = _CountingProbe()
+    service: AppService = _service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(probe))
+    with source.open("r+b"):
+        for _ in range(3):
+            assert service.discover(changed_paths=(source,)).pending_paths == (source,)
+        assert probe.calls == 0
+    assert service.discover(changed_paths=(source,)).pending_paths == ()
+    assert probe.calls == 1
+    subtitles: Path = tmp_path / "03.srt"
+    write_text_source(subtitles, "1\n00:00:00,000 --> 00:00:01,000\nNew subtitles\n")
+    with subtitles.open("r+b"):
+        assert service.discover(changed_paths=(subtitles,)).pending_paths == (subtitles,)
+        assert probe.calls == 1
+    assert service.discover(changed_paths=(subtitles,)).pending_paths == ()
+    assert probe.calls == 1
+
+
 class _CountingProbe(FakeMediaProbe):
     def __init__(self) -> None:
         self.calls: int = 0

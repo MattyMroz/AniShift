@@ -11,9 +11,12 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from anishift.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from _ctypes import CFuncPtr
 
 logger = get_logger(__name__)
 
@@ -46,6 +49,9 @@ _DIRECTORY_FLAGS: Final[int] = 0x42000000
 _NOTIFY_FILTER: Final[int] = 0x0000001F
 """Watch names, directories, attributes, size and last-write changes."""
 
+_DIRECTORY_NAMES: Final[int] = 0x00000002
+"""Observe root replacement through directory names in its immediate parent."""
+
 _INFINITE: Final[int] = 0xFFFFFFFF
 """Wait for an event without periodic wakeups."""
 
@@ -57,6 +63,12 @@ _ERROR_NOTIFY_ENUM_DIR: Final[int] = 1022
 
 _CLOSE_TIMEOUT_S: Final[float] = 5.0
 """Time allowed for the notification thread to acknowledge cancellation."""
+
+_DEVICE_NOTIFY_CALLBACK: Final[int] = 2
+"""Register a power callback without creating a window or polling the clock."""
+
+_RESUME_EVENTS: Final[frozenset[int]] = frozenset({7, 18})
+"""PBT_APMRESUMESUSPEND and PBT_APMRESUMEAUTOMATIC trigger library reconciliation."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,18 +103,45 @@ class DirectoryWatch:
         self._root: Path = root
         self._changed: Callable[[DirectoryChange], None] = changed
         self._stopped: threading.Event = threading.Event()
+        self._retry: threading.Event = threading.Event()
         self._native: _WindowsChanges | None = None
+        self._parent: _WindowsChanges | None = None
+        self._parent_thread: threading.Thread | None = None
+        self._power: _PowerNotifications | None = None
         self.mode: str = "native"
         try:
             self._native = _WindowsChanges(root)
         except OSError:
             self.mode = "polling"
+        if sys.platform == "win32":
+            try:
+                self._power = _PowerNotifications(self._resumed)
+                self._parent = _WindowsChanges(root.parent, recursive=False, notify_filter=_DIRECTORY_NAMES)
+                self._parent_thread = threading.Thread(target=self._observe_root, name="anishift-root", daemon=True)
+                self._parent_thread.start()
+            except OSError:
+                if self._native is not None:
+                    self._native.close()
+                    self._native = None
+                self.mode = "polling"
+                logger.warning("Power notifications are unavailable; using periodic reconciliation")
         self._thread: threading.Thread = threading.Thread(target=self._run, name="anishift-files", daemon=True)
         self._thread.start()
 
     def close(self) -> None:
         """Cancel the outstanding wait and release directory and event handles."""
         self._stopped.set()
+        self._retry.set()
+        if self._parent is not None:
+            self._parent.stop()
+        if self._parent_thread is not None:
+            self._parent_thread.join(_CLOSE_TIMEOUT_S)
+            if self._parent_thread.is_alive():
+                msg = "The root watcher did not acknowledge cancellation"
+                raise TimeoutError(msg)
+        if self._power is not None:
+            self._power.close()
+            self._power = None
         native: _WindowsChanges | None = self._native
         if native is not None:
             native.stop()
@@ -112,21 +151,58 @@ class DirectoryWatch:
             raise TimeoutError(msg)
 
     def _run(self) -> None:
+        while not self._stopped.is_set():
+            self._retry.clear()
+            self._observe_native()
+            if self._stopped.is_set():
+                return
+            self.mode = "polling"
+            self._changed(DirectoryChange(reconcile=True, reason="polling_fallback"))
+            self._retry.wait(FALLBACK_INTERVAL_S)
+
+    def _observe_native(self) -> None:
         native: _WindowsChanges | None = self._native
-        if native is not None:
-            try:
+        try:
+            if native is None and self._power is not None and self._parent is not None:
+                native = _WindowsChanges(self._root)
+                self._native = native
+                self.mode = "native"
+                self._changed(DirectoryChange(reconcile=True, reason="reconnected"))
+            if native is not None:
                 self._run_native(native)
-            except OSError:
-                self.mode = "polling"
-                logger.warning("Native directory notifications failed; using periodic reconciliation")
-            finally:
+        except OSError:
+            logger.warning("Native directory notifications failed; using periodic reconciliation")
+        finally:
+            if native is not None:
                 native.close()
                 self._native = None
-        if self._stopped.is_set():
+
+    def _observe_root(self) -> None:
+        parent: _WindowsChanges | None = self._parent
+        if parent is None:
             return
-        self._changed(DirectoryChange(reconcile=True, reason="polling_fallback"))
-        while not self._stopped.wait(FALLBACK_INTERVAL_S):
-            self._changed(DirectoryChange(reconcile=True, reason="polling_fallback"))
+        try:
+            while not self._stopped.is_set():
+                change: DirectoryChange | None = parent.read()
+                if change is None:
+                    return
+                if change.reconcile or self._root in change.paths:
+                    native: _WindowsChanges | None = self._native
+                    if native is not None:
+                        native.stop()
+                    self._retry.set()
+        except OSError:
+            logger.warning("Library root notifications failed; using periodic reconciliation")
+            native = self._native
+            if native is not None:
+                native.stop()
+        finally:
+            parent.close()
+            self._parent = None
+
+    def _resumed(self) -> None:
+        if not self._stopped.is_set():
+            self._changed(DirectoryChange(reconcile=True, reason="resume"))
 
     def _run_native(self, native: _WindowsChanges) -> None:
         while not self._stopped.is_set():
@@ -134,6 +210,48 @@ class DirectoryWatch:
             if change is None:
                 return
             self._changed(change)
+
+
+class _PowerParameters(ctypes.Structure):
+    _fields_ = [("callback", ctypes.c_void_p), ("context", ctypes.c_void_p)]
+
+
+class _PowerNotifications:
+    def __init__(self, resumed: Callable[[], None]) -> None:
+        if sys.platform != "win32":
+            msg = "Power notifications require Windows"
+            raise OSError(msg)
+        self._resumed: Callable[[], None] = resumed
+        self._api: ctypes.CDLL = ctypes.WinDLL("powrprof", use_last_error=True)
+        self._api.PowerRegisterSuspendResumeNotification.argtypes = [wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p]
+        self._api.PowerRegisterSuspendResumeNotification.restype = wintypes.DWORD
+        self._api.PowerUnregisterSuspendResumeNotification.argtypes = [ctypes.c_void_p]
+        self._api.PowerUnregisterSuspendResumeNotification.restype = wintypes.DWORD
+        self._callback: CFuncPtr = ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG, ctypes.c_void_p)(
+            self._notify
+        )
+        self._parameters: _PowerParameters = _PowerParameters(ctypes.cast(self._callback, ctypes.c_void_p), None)
+        self._handle: ctypes.c_void_p = ctypes.c_void_p()
+        error: int = self._api.PowerRegisterSuspendResumeNotification(
+            _DEVICE_NOTIFY_CALLBACK, ctypes.byref(self._parameters), ctypes.byref(self._handle)
+        )
+        if error:
+            raise OSError(error, "Could not register power notifications")
+
+    def close(self) -> None:
+        """Unregister the callback before releasing its Python callable."""
+        if self._handle.value is None:
+            return
+        error: int = self._api.PowerUnregisterSuspendResumeNotification(self._handle)
+        if error:
+            raise OSError(error, "Could not unregister power notifications")
+        self._handle = ctypes.c_void_p()
+
+    def _notify(self, context: int | None, event: int, setting: int | None) -> int:
+        del context, setting
+        if event in _RESUME_EVENTS:
+            self._resumed()
+        return 0
 
 
 class _Overlapped(ctypes.Structure):
@@ -147,9 +265,11 @@ class _Overlapped(ctypes.Structure):
 
 
 class _WindowsChanges:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, recursive: bool = True, notify_filter: int = _NOTIFY_FILTER) -> None:
         self._api: ctypes.CDLL = _kernel32()
         self._root: Path = root
+        self._recursive: bool = recursive
+        self._notify_filter: int = notify_filter
         self._lock: threading.Lock = threading.Lock()
         self._closed: bool = False
         self._directory: int = int(
@@ -187,8 +307,8 @@ class _WindowsChanges:
                 self._directory,
                 self._buffer,
                 BUFFER_BYTES,
-                True,
-                _NOTIFY_FILTER,
+                self._recursive,
+                self._notify_filter,
                 None,
                 ctypes.byref(self._overlapped),
                 None,

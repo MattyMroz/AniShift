@@ -53,7 +53,7 @@ from anishift.application.results import GroupStatus
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids
 from anishift.application.transfers import TransferInspector
-from anishift.application.watch import WatchLedger, snapshot_sources, source_fingerprint
+from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
 from anishift.errors import AniShiftError
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
@@ -295,6 +295,7 @@ class AutomationOwner:
         self._reconcile: bool = False
         self._files_queued: bool = False
         self._inspecting: bool = False
+        self._inspection_at: float | None = None
         self._library: InspectedWorkspace | None = None
         self._ledger: WatchLedger = WatchLedger()
         self._settle_at: float | None = None
@@ -311,7 +312,7 @@ class AutomationOwner:
             return
         self._invalidate_changed_inputs(paths, reconcile=change.reconcile)
         with self._files_lock:
-            if change.reason != "transfer_complete":
+            if change.reason not in {"transfer_complete", "resume"}:
                 self._watch_mode = "polling" if change.reason == "polling_fallback" else "native"
             self._changed_paths.update(paths)
             self._fresh_sources.update(path for path in paths if not is_derived_product(path))
@@ -397,11 +398,14 @@ class AutomationOwner:
         while True:
             try:
                 deadlines: tuple[float, ...] = tuple(
-                    deadline for deadline in (self._settle_at, self._transfers_at) if deadline is not None
+                    deadline
+                    for deadline in (self._settle_at, self._transfers_at, self._inspection_at)
+                    if deadline is not None
                 )
                 timeout: float | None = max(0.0, min(deadlines) - time.monotonic()) if deadlines else None
                 item = self._queue.get(timeout=timeout)
             except Empty:
+                self._inspect_changes()
                 self._refresh_automatic()
                 self._poll_transfers()
                 continue
@@ -416,20 +420,12 @@ class AutomationOwner:
                 self._release_session(item.session_id)
                 self._refresh_automatic()
             elif isinstance(item, _FilesChanged):
+                self._inspection_at = None
                 self._inspect_changes()
             elif callable(item):
                 item()
             elif isinstance(item, _Inspected):
-                self._inspecting = False
-                if item.workspace is not None:
-                    self._library = item.workspace
-                    with self._files_lock:
-                        self._fresh_sources.intersection_update(
-                            artifact.path for group in item.workspace.groups for artifact in group.artifacts
-                        )
-                    self._refresh_automatic()
-                    self._publish_state()
-                self._inspect_changes()
+                self._record_inspection(item.workspace)
             else:
                 self._dispatch(item)
             self._poll_transfers()
@@ -440,6 +436,21 @@ class AutomationOwner:
         if not self._shutting_down:
             return False
         return not self._pending and not self._service.active_run_ids() and not self._inspecting and not self._active_io
+
+    def _record_inspection(self, workspace: InspectedWorkspace | None) -> None:
+        self._inspecting = False
+        if workspace is not None:
+            self._library = workspace
+            with self._files_lock:
+                self._fresh_sources.intersection_update(
+                    artifact.path for group in workspace.groups for artifact in group.artifacts
+                )
+                self._changed_paths.update(workspace.pending_paths)
+            self._refresh_automatic()
+            self._publish_state()
+            if workspace.pending_paths:
+                self._inspection_at = time.monotonic() + SCAN_INTERVAL_S
+        self._inspect_changes()
 
     def _on_owner[T](self, action: Callable[[], T]) -> T:
         future: Future[T] = Future()
@@ -456,6 +467,9 @@ class AutomationOwner:
     def _inspect_changes(self) -> None:
         if self._inspecting or self._shutting_down:
             return
+        if self._inspection_at is not None and time.monotonic() < self._inspection_at:
+            return
+        self._inspection_at = None
         with self._files_lock:
             self._files_queued = False
             if not self._changed_paths and not self._reconcile:

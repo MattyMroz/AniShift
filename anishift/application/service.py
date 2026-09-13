@@ -901,7 +901,9 @@ class AppService:
 
     def _unchanged_workspace(self, fingerprint: WorkspaceFingerprint) -> InspectedWorkspace | None:
         with self._run_lock:
-            if self._workspace_fingerprint != fingerprint:
+            if self._workspace_fingerprint != fingerprint or (
+                self._workspace is not None and self._workspace.pending_paths
+            ):
                 return None
             return self._workspace
 

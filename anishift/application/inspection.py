@@ -26,6 +26,7 @@ from anishift.application.intents import ExternalAudioRole
 from anishift.application.selection import choose_primary_video
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, MediaProbeError
 from anishift.platform.binaries import Binary, require_binary
+from anishift.platform.directory_watch import source_is_available
 from anishift.services.media._process import (
     ProcessExecutionError,
     ProcessFailureReason,
@@ -96,6 +97,17 @@ class InspectedWorkspace:
     groups: tuple[InspectedSourceGroup, ...]
     warnings: tuple[InspectionWarning, ...]
 
+    @property
+    def pending_paths(self) -> tuple[Path, ...]:
+        """Return sources waiting for an active writer to release them."""
+        pending: set[str] = {warning.artifact_id for warning in self.warnings if warning.code == "source_busy"}
+        return tuple(
+            artifact.path
+            for group in self.groups
+            for artifact in group.artifacts
+            if artifact.artifact_id in pending and artifact.path is not None
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class _CachedInspection:
@@ -146,7 +158,12 @@ class WorkspaceInspector:
                 pool.map(lambda source: self._inspect_cached(source, cancel=cancel), sources)
             )
         cancel.raise_if_cancelled()
-        self._cache = {item.group.group_id: item for item in inspected}
+        self._cache = {
+            item.group.group_id: self._cache.get(item.group.group_id, item)
+            if any(warning.code == "source_busy" for warning in item.warnings)
+            else item
+            for item in inspected
+        }
         return InspectedWorkspace(
             groups=tuple(item.group for item in inspected),
             warnings=tuple(warning for item in inspected for warning in item.warnings),
@@ -158,6 +175,32 @@ class WorkspaceInspector:
             artifact.artifact_id: _file_stamp(artifact.path) for artifact in source.artifacts
         }
         previous: _CachedInspection | None = self._cache.get(source.group_id)
+        busy: tuple[Artifact, ...] = tuple(
+            artifact
+            for artifact in source.artifacts
+            if artifact.path is not None and artifact.path.is_file() and not source_is_available(artifact.path)
+        )
+        if busy:
+            return _CachedInspection(
+                fingerprints,
+                InspectedSourceGroup(
+                    source,
+                    tuple(replace(artifact, state=ArtifactState.MISSING) for artifact in source.artifacts),
+                    {},
+                    source.conflicts,
+                ),
+                tuple(
+                    InspectionWarning(
+                        "source_busy",
+                        "File is still being written or is unavailable",
+                        source.group_id,
+                        artifact.artifact_id,
+                    )
+                    for artifact in busy
+                ),
+            )
+        if previous is not None and any(warning.code == "source_busy" for warning in previous.warnings):
+            previous = None
         if previous is not None and previous.fingerprints == fingerprints and previous.group.source == source:
             return previous
         group: InspectedSourceGroup

@@ -17,6 +17,44 @@ def _packet(name: str, following: int = 0) -> bytes:
     return struct.pack("<III", following, 1, len(encoded)) + encoded
 
 
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows power notification registration")
+def test_power_callback_registers_and_forwards_resume_notifications() -> None:
+    resumed: list[bool] = []
+    notifications: watch_module._PowerNotifications = watch_module._PowerNotifications(lambda: resumed.append(True))
+    try:
+        assert notifications._handle.value
+        assert notifications._callback(None, 4, None) == 0
+        assert resumed == []
+        assert notifications._callback(None, 18, None) == 0
+        assert resumed == [True]
+    finally:
+        notifications.close()
+    notifications.close()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows root replacement notifications")
+def test_native_watcher_reopens_a_replaced_library_root(tmp_path: Path) -> None:
+    root: Path = tmp_path / "library"
+    root.mkdir()
+    changes: queue.Queue[DirectoryChange] = queue.Queue()
+    watch: DirectoryWatch = DirectoryWatch(root, changes.put)
+    try:
+        assert watch.mode == "native"
+        root.rename(tmp_path / "old-library")
+        root.mkdir()
+        while changes.get(timeout=5.0).reason != "reconnected":
+            pass
+        source: Path = root / "new.mkv"
+        source.write_bytes(b"complete")
+        while source not in changes.get(timeout=5.0).paths:
+            pass
+        assert watch.mode == "native"
+    finally:
+        watch.close()
+
+
 @pytest.mark.parametrize("payload", [b"", b"short", _packet("a", 4), _packet("../a")])
 def test_lost_or_invalid_notifications_request_reconciliation(tmp_path: Path, payload: bytes) -> None:
     change: DirectoryChange = watch_module._decode_changes(tmp_path, payload)
