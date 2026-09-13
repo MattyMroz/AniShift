@@ -7,8 +7,10 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable
+from contextlib import ExitStack
 from ctypes import wintypes
 from enum import IntEnum
+from importlib.resources import as_file, files
 from secrets import token_hex
 from shutil import which
 from typing import Final
@@ -24,12 +26,22 @@ logger = get_logger(__name__)
 _START_TIMEOUT_S: Final[float] = 5.0
 """Maximum wait for the hidden tray window to be created or closed."""
 
+_ICON_PARTS: Final[tuple[str, ...]] = ("cli", "interactive", "assets", "mascot", "app.ico")
+"""Packaged mascot icon loaded without importing the interactive frontend."""
+
+_APP_ID: Final[str] = "AniShift.Desktop"
+"""Stable Windows identity shared by resident windows and their notifications."""
+
 
 class _Message(IntEnum):
     DESTROY = 0x0002
     CLOSE = 0x0010
     LEFT_UP = 0x0202
     RIGHT_UP = 0x0205
+    CONTEXT_MENU = 0x007B
+    SELECT = 0x0400
+    KEY_SELECT = 0x0401
+    BALLOON_CLICK = 0x0405
     TRAY = 0x8001
     UPDATE = 0x8002
 
@@ -132,14 +144,15 @@ class TrayIcon:
 
     def _run(self) -> None:
         try:
-            self._message_loop()
+            with ExitStack() as resources:
+                self._message_loop(resources)
         except (OSError, ValueError) as error:
             logger.warning("Windows tray unavailable", error_class=type(error).__name__)
         finally:
             self._window = 0
             self._ready.set()
 
-    def _message_loop(self) -> None:  # noqa: PLR0915 - native signatures and callbacks share one window lifetime
+    def _message_loop(self, resources: ExitStack) -> None:  # noqa: PLR0915
         if sys.platform != "win32":
             return
         user = ctypes.WinDLL("user32", use_last_error=True)
@@ -182,8 +195,18 @@ class TrayIcon:
         user.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
         user.DefWindowProcW.restype = ctypes.c_ssize_t
         user.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-        user.LoadIconW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR]
-        user.LoadIconW.restype = wintypes.HICON
+        user.LoadImageW.argtypes = [
+            wintypes.HINSTANCE,
+            wintypes.LPCWSTR,
+            wintypes.UINT,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
+        user.LoadImageW.restype = wintypes.HICON
+        user.DestroyIcon.argtypes = [wintypes.HICON]
+        user.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        user.SendMessageW.restype = ctypes.c_ssize_t
         user.DestroyWindow.argtypes = [wintypes.HWND]
         user.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
         user.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
@@ -191,6 +214,9 @@ class TrayIcon:
         user.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
         user.RegisterWindowMessageW.argtypes = [wintypes.LPCWSTR]
         shell.Shell_NotifyIconW.argtypes = [wintypes.DWORD, ctypes.POINTER(_NotifyIcon)]
+        shell.SetCurrentProcessExplicitAppUserModelID.argtypes = [wintypes.LPCWSTR]
+        shell.SetCurrentProcessExplicitAppUserModelID.restype = ctypes.c_long
+        shell.SetCurrentProcessExplicitAppUserModelID(_APP_ID)
         kernel.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
         kernel.GetModuleHandleW.restype = wintypes.HMODULE
         self._post = user.PostMessageW
@@ -198,7 +224,8 @@ class TrayIcon:
         data: _NotifyIcon = _NotifyIcon()
         data.cbSize, data.uID = ctypes.sizeof(data), 1
         data.uCallbackMessage = _Message.TRAY
-        data.hIcon = user.LoadIconW(None, ctypes.cast(ctypes.c_void_p(32512), wintypes.LPCWSTR))
+        data.hIcon = _load_mascot_icon(user, resources, user.GetSystemMetrics(49), user.GetSystemMetrics(50))
+        data.hBalloonIcon = _load_mascot_icon(user, resources, user.GetSystemMetrics(11), user.GetSystemMetrics(12))
 
         def update(operation: int) -> None:
             with self._lock:
@@ -207,24 +234,33 @@ class TrayIcon:
                 problem: bool = self._problem
                 notification: tuple[str, str] | None = self._notification
                 self._notification = None
-            data.uFlags = 1 | 2 | 4
+            data.uFlags = 1 | 2 | 4 | 128
             activity: str = "wymaga uwagi" if problem else ("praca trwa" if busy else "czuwanie")
             data.szTip = f"AniShift · Auto {'włączone' if enabled else 'wyłączone'} · {activity}"
             data.szInfo, data.szInfoTitle = "", ""
             if notification is not None:
                 data.uFlags |= 16
                 data.szInfoTitle, data.szInfo = notification[0][:63], notification[1][:255]
-                data.dwInfoFlags = 1
+                data.dwInfoFlags = 4 | 32 | 128
             shell.Shell_NotifyIconW(operation, ctypes.byref(data))
+            if operation == 0:
+                data.uTimeoutOrVersion = 4
+                shell.Shell_NotifyIconW(4, ctypes.byref(data))
 
         def procedure(window: int, message: int, parameter: int, detail: int) -> int:
+            event: int = detail & 0xFFFF
             if message == taskbar_created:
                 update(0)
             elif message == _Message.UPDATE:
                 update(1)
-            elif message == _Message.TRAY and detail == _Message.LEFT_UP:
+            elif message == _Message.TRAY and event in {
+                _Message.LEFT_UP,
+                _Message.SELECT,
+                _Message.KEY_SELECT,
+                _Message.BALLOON_CLICK,
+            }:
                 self._action("open")
-            elif message == _Message.TRAY and detail == _Message.RIGHT_UP:
+            elif message == _Message.TRAY and event in {_Message.RIGHT_UP, _Message.CONTEXT_MENU}:
                 self._menu(window)
             elif message == _Message.CLOSE:
                 shell.Shell_NotifyIconW(2, ctypes.byref(data))
@@ -240,6 +276,7 @@ class TrayIcon:
         name: str = f"AniShiftTray-{token_hex(8)}"
         definition: WindowClass = WindowClass()
         definition.procedure, definition.instance, definition.name = callback, instance, name
+        definition.icon = data.hBalloonIcon
         if not user.RegisterClassW(ctypes.byref(definition)):
             raise ctypes.WinError(ctypes.get_last_error())
         window: int = user.CreateWindowExW(0, name, "AniShift", 0, 0, 0, 0, 0, None, None, instance, None)
@@ -247,6 +284,8 @@ class TrayIcon:
             user.UnregisterClassW(name, instance)
             raise ctypes.WinError(ctypes.get_last_error())
         self._window, data.hWnd = window, window
+        user.SendMessageW(window, 0x0080, 0, data.hIcon)
+        user.SendMessageW(window, 0x0080, 1, data.hBalloonIcon)
         try:
             update(0)
             self._ready.set()
@@ -289,3 +328,15 @@ class TrayIcon:
                 self._action(action)
         finally:
             user.DestroyMenu(menu)
+
+
+def _load_mascot_icon(user: ctypes.CDLL, resources: ExitStack, width: int, height: int) -> int:
+    if sys.platform != "win32":
+        message: str = "Notification icons require Windows"
+        raise OSError(message)
+    with as_file(files("anishift").joinpath(*_ICON_PARTS)) as path:
+        icon: int = user.LoadImageW(None, str(path), 1, width, height, 16)
+    if not icon:
+        raise ctypes.WinError(ctypes.get_last_error())
+    resources.callback(user.DestroyIcon, icon)
+    return icon

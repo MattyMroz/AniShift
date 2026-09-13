@@ -43,6 +43,22 @@ _ADD_FIELDS: Final[tuple[str, ...]] = ("Tytuł serii", "Grupa wydająca", "Pierw
 _RECONNECT_S: Final[float] = 2.0
 """Delay before reconnecting a lost panel event stream."""
 
+_CLIENT_PROBLEMS: Final[dict[str, str]] = {
+    "The private torrent window was closed; downloads remain stopped until explicitly resumed": (
+        "Prywatny qBittorrent jest zamknięty. Pobieranie pozostaje wstrzymane."
+    ),
+    "The private torrent client was taken over; automatic control is disabled": (
+        "Prywatny qBittorrent jest sterowany ręcznie w swoim oknie."
+    ),
+    "The private torrent client was opened manually; automatic control stopped": (
+        "Otwarto okno prywatnego qBittorrenta; sterowanie automatyczne zostało wstrzymane."
+    ),
+    "The private torrent client could not start; resolve the problem and explicitly resume": (
+        "Nie udało się uruchomić prywatnego qBittorrenta. Po usunięciu przyczyny wybierz Wznów."
+    ),
+}
+"""Polish explanations of private client states surfaced by the transport boundary."""
+
 
 class _Tab(IntEnum):
     PROGRESS = 0
@@ -460,7 +476,9 @@ class StateController:
                     f"{_safe_text(item.get('name', ''))}"
                 )
                 + Text(
-                    f" · {messages[str(item['info_hash'])]}" if messages.get(str(item.get("info_hash"))) else "",
+                    f" · {_safe_text(messages[str(item['info_hash'])])}"
+                    if messages.get(str(item.get("info_hash")))
+                    else "",
                     style="warning",
                 )
                 for item in self._transfer_rows()
@@ -546,7 +564,8 @@ def _schedule_label(item: Mapping[str, object]) -> str:
 
 
 def _safe_text(value: object) -> str:
-    return sanitize_event_message(str(value)) or ""
+    message: str = sanitize_event_message(str(value)) or ""
+    return _CLIENT_PROBLEMS.get(message, message)
 
 
 def _open_folder(root: Path, directory: str) -> None:

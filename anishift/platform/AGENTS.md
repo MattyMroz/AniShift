@@ -10,6 +10,11 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 - `ManagedQBittorrent` dowodzi własności przez PID, czas utworzenia, własną binarkę
   i katalog profilu potwierdzony w API. GUI przejęte przez użytkownika blokuje automatyczne
   zamknięcie. Zwolnienie ukończonego torrenta zachowuje media (`deleteFiles=false`).
+- Odczyt transferów prywatnego GUI pozostaje dostępny po ręcznym przejęciu; mutacje nadal
+  wymagają własności. Zamknięcie przejętego klienta nie jest awarią startu i nie uruchamia go ponownie.
+- `tray.py` ładuje oryginalną maskotkę z pakietowego `app.ico` bez importowania frontendu.
+  Protokół ikony v4 wymaga odczytu zdarzenia z dolnego słowa `lParam`; kliknięcie powiadomienia
+  (`NIN_BALLOONUSERCLICK`) otwiera panel tak jak kliknięcie ikony.
 - `DirectoryWatch` zakłada pierwszy odczyt `ReadDirectoryChangesW` przed uruchomieniem wątku.
   Oczekiwanie jest blokujące, a stop używa osobnego zdarzenia; przed zamknięciem uchwytów
   anuluje i rozlicza overlapped I/O. Pusty bufor oznacza overflow i pełne uzgodnienie, nie brak

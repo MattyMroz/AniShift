@@ -140,9 +140,36 @@ def test_uncertain_or_taken_over_process_is_never_closed(
             if reason == "visible_window":
                 with pytest.raises(TorrentClientError, match="opened manually"):
                     manager.finish_transfers()
+                assert json.loads((root / "process.json").read_text(encoding="utf-8"))["start_failed"] is False
+                assert len(manager.torrents("AniShift")) == 1
             else:
                 manager.finish_transfers()
             assert not any(path.endswith(("/shutdown", "/stop", "/delete", "/setPreferences")) for path in requests)
+        finally:
+            manager.close()
+
+
+def test_closed_manual_window_is_not_reported_as_a_start_failure_or_restarted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root: Path = tmp_path / "profile"
+    _receipt(root, tmp_path / "bin/qbittorrent/qbittorrent.exe")
+    path: Path = root / "process.json"
+    receipt: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**receipt, "taken_over": True, "start_failed": True}), encoding="utf-8")
+    monkeypatch.setattr(processes, "_process_identity", lambda pid: None)
+    requests: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        return httpx.Response(503)
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        manager: ManagedQBittorrent = ManagedQBittorrent(root, http=http, bin_root=tmp_path / "bin")
+        try:
+            with pytest.raises(TorrentClientError, match="window was closed"):
+                manager.torrents("AniShift")
+            assert requests == []
         finally:
             manager.close()
 

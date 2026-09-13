@@ -143,7 +143,7 @@ class ManagedQBittorrent:
         with self._lock:
             state: _ProcessState = self._load()
             own: tuple[TorrentInfo, ...] = (
-                self._ensure().torrents(category) if state.active or self._matches_process(state) else ()
+                self._required_client().torrents(category) if state.active or self._matches_process(state) else ()
             )
             prior: tuple[TorrentInfo, ...] = self._previous_transfers(category)
             return (*own, *(item for item in prior if item.info_hash.casefold() not in state.hashes))
@@ -277,6 +277,11 @@ class ManagedQBittorrent:
 
     def _required_client(self) -> QBittorrentClient:
         state: _ProcessState = self._load()
+        if self._matches_process(state):
+            client: QBittorrentClient = self._client or self._make_client(state.port)
+            self._assert_profile(client)
+            self._client = client
+            return client
         if not state.active and not self._matches_process(state):
             message: str = "The private torrent client starts when a download is ordered"
             raise _unavailable(message)
@@ -284,20 +289,25 @@ class ManagedQBittorrent:
 
     def _ensure(self) -> QBittorrentClient:
         state: _ProcessState = self._load()
+        if state.taken_over:
+            message: str = (
+                "The private torrent client was taken over; automatic control is disabled"
+                if self._matches_process(state)
+                else "The private torrent window was closed; downloads remain stopped until explicitly resumed"
+            )
+            raise _unavailable(message)
         if state.start_failed:
-            message: str = "The private torrent client could not start; resolve the problem and explicitly resume"
+            message = "The private torrent client could not start; resolve the problem and explicitly resume"
             raise _unavailable(message)
         try:
             return self._connect_or_start()
         except AniShiftError, OSError, subprocess.SubprocessError:
-            self._save(replace(self._load(), start_failed=True))
+            if not self._load().taken_over:
+                self._save(replace(self._load(), start_failed=True))
             raise
 
     def _connect_or_start(self) -> QBittorrentClient:
         state: _ProcessState = self._load()
-        if state.taken_over:
-            message: str = "The private torrent client was taken over; automatic control is disabled"
-            raise _unavailable(message)
         if self._matches_process(state):
             client: QBittorrentClient = self._client or self._make_client(state.port)
             self._assert_ownership(client)
@@ -406,14 +416,19 @@ class ManagedQBittorrent:
         if not self._matches_process(state) or state.taken_over:
             message: str = "Private torrent process ownership could not be confirmed"
             raise _unavailable(message)
-        preferences: dict[str, object] = client.preferences()
-        save_path: object = preferences.get("save_path")
-        if not isinstance(save_path, str) or Path(save_path).resolve() != torrent_download_dir(self._root):
-            message = "The torrent endpoint does not match the private profile"
-            raise _unavailable(message)
+        self._assert_profile(client)
         if not starting and _visible_process_window(state.pid):
             self._save(replace(state, taken_over=True))
             message = "The private torrent client was opened manually; automatic control stopped"
+            raise _unavailable(message)
+
+    def _assert_profile(self, client: QBittorrentClient) -> None:
+        if not self._matches_process(self._load()):
+            message: str = "Private torrent process ownership could not be confirmed"
+            raise _unavailable(message)
+        save_path: object = client.preferences().get("save_path")
+        if not isinstance(save_path, str) or Path(save_path).resolve() != torrent_download_dir(self._root):
+            message = "The torrent endpoint does not match the private profile"
             raise _unavailable(message)
 
     def _wait_for_exit(self, state: _ProcessState) -> None:
