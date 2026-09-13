@@ -19,7 +19,7 @@ uv run anishift                           # the interactive interface
 API keys go into `.env` (see "Configuration"); `doctor` lists which engines have one.
 Opening the interface starts or connects to one background resident. A new configuration
 starts with Auto off and no subscriptions. Enable Auto and select subscription ranges explicitly
-in **Stan**. Optionally run `uv run anishift autostart enable` to start the resident
+in **Panel**. Optionally run `uv run anishift autostart enable` to start the resident
 after every logon; this does not enable Auto or add subscriptions.
 
 If the shell still has another project's virtual environment active, start with
@@ -32,7 +32,7 @@ Running `anishift` without a subcommand opens the interactive interface:
 - **Auto** processes every ready workspace group with the default preset.
 - **Ręczny** lets you choose sources, output, and per-run overrides before execution.
 - **Anime** searches nyaa.si for a title and hands the chosen releases to qBittorrent.
-- **Stan** shows progress, transfers, subscriptions and files while work continues.
+- **Panel** shows progress, transfers, subscriptions and files while work continues.
 - **Ustawienia** edits supported preferences and provides a read-only model catalogue.
 - **Wyjście** closes the interface; accepted work continues in the resident.
 

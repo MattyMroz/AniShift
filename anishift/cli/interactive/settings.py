@@ -22,6 +22,7 @@ from anishift.application import (
     ProductKind,
     TranslationModelOption,
 )
+from anishift.cli.interactive.menu import with_footer
 from anishift.cli.interactive.settings_editors import format_voice_input, parse_setting_input, parse_voice_input
 from anishift.cli.interactive.text_input import TextInput, is_edit_key
 from anishift.config.field_access import (
@@ -1537,9 +1538,7 @@ class SettingsController:
             )
             content.append("\n")
         self._append_feedback(content, left, columns)
-        content.append(" " * left)
-        content.append(_MENU_HINT, style="gray")
-        return content
+        return self._finish(content, _MENU_HINT, columns, rows)
 
     def _render_output(self, columns: int, rows: int) -> Text:
         reset_index: int = len(_PRODUCTS)
@@ -1591,9 +1590,7 @@ class SettingsController:
             )
             content.append("\n")
         self._append_feedback(content, left, columns)
-        content.append(" " * left)
-        content.append(_truncate_right(_MULTI_HINT, max(columns - left, 1)), style="gray")
-        return content
+        return self._finish(content, _MULTI_HINT, columns, rows)
 
     def _render_editor(self, columns: int, rows: int, editor: _Editor) -> Text:
         start, end, body_rows = _editor_window(
@@ -1638,7 +1635,6 @@ class SettingsController:
         else:
             _append_editor_buffer(content, editor, columns, left)
         self._append_feedback(content, left, columns)
-        content.append(" " * left)
         hint: str = _INPUT_HINT if not editor.options else _SELECT_HINT
         if editor.kind is _EditorKind.MULTI_SELECT:
             hint = _MULTI_SELECT_HINT
@@ -1648,8 +1644,13 @@ class SettingsController:
             hint = _SECRET_HINT
         elif editor.action is _EditorAction.SELECT_CUSTOM_MODEL:
             hint = "ID modelu · Enter zatwierdź · Esc anuluj"
-        content.append(_truncate_right(hint, max(columns - left, 1)), style="gray")
-        return content
+        return self._finish(content, hint, columns, rows)
+
+    def _finish(self, content: Text, hint: str, columns: int, rows: int) -> Text:
+        lines: list[Text] = list(content.split("\n", allow_blank=True))
+        feedback: Text = lines[-2]
+        feedback = feedback[len(feedback.plain) - len(feedback.plain.lstrip()) :]
+        return with_footer(Text("\n").join(lines[:-2]), (feedback, hint), columns, rows)
 
     def _append_feedback(self, content: Text, left: int, columns: int) -> None:
         # The row is always spent, empty or not: a status appearing between two key

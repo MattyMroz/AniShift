@@ -403,7 +403,7 @@ def _spawn_panel() -> None:
     python: Path = Path(sys.executable)
     if python.name.casefold() == "pythonw.exe":
         python = python.with_name("python.exe")
-    command: list[str] = [str(python), "-m", "anishift.cli.main", "--resident", "--state"]
+    command: list[str] = [str(python), "-m", "anishift.cli.main", "--resident"]
     terminal: str | None = which("wt.exe")
     if terminal is not None:
         window: str = f"AniShift-{token_hex(8)}"

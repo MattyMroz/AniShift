@@ -39,6 +39,22 @@ from anishift.application import (
     preview_plan,
 )
 from anishift.application.events import sanitize_event_message
+from anishift.cli.interactive.menu import (
+    append_row as _append_row,
+)
+from anishift.cli.interactive.menu import (
+    fit_entries as _fit_entries,
+)
+from anishift.cli.interactive.menu import (
+    header as _header,
+)
+from anishift.cli.interactive.menu import (
+    left_padding as _left_padding,
+)
+from anishift.cli.interactive.menu import (
+    visible_window as _visible_window,
+)
+from anishift.cli.interactive.menu import with_footer
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
@@ -46,9 +62,6 @@ from anishift.errors import AniShiftError
 __all__ = ["ManualController", "ManualDraft", "ManualResult", "ManualRun", "default_draft", "materialize_intent"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-
-_POINTER: Final[str] = "\u276f"
-"""Marker placed before the active row."""
 
 _MENU_HINT: Final[str] = "↑↓ · Enter · Esc"
 """Keyboard hint used by single-choice menus."""
@@ -960,7 +973,7 @@ class ManualController:
                 f"{'●' if self._group_ids[index] in self._selected_groups else '○'} " if index < len(labels) else "  "
             )
             _append_row(content, left, shown[index], index == self._selected, marker)
-        return self._finish(content, left, "↑↓ · Space wybierz · A wszystkie · End podgląd · Esc wróć")
+        return self._finish(content, columns, rows, "↑↓ · Space wybierz · A wszystkie · End podgląd · Esc wróć")
 
     def _render_group_action(self, columns: int, rows: int) -> Text:
         entries: tuple[str, ...] = ("Użyj ustawień domyślnych", "Dostosuj ten odcinek", "Wróć")
@@ -984,7 +997,7 @@ class ManualController:
                 f"{'●' if _PRODUCTS[index][0] in self._product_selection else '○'} " if index < len(_PRODUCTS) else "  "
             )
             _append_row(content, left, shown[index], index == self._selected, marker)
-        return self._finish(content, left, _MULTI_HINT)
+        return self._finish(content, columns, rows, _MULTI_HINT)
 
     def _render_sources(self, columns: int, rows: int) -> Text:
         title: str = {
@@ -1005,7 +1018,7 @@ class ManualController:
                 else f"{'●' if index == current else '○'} "
             )
             _append_row(content, left, shown[index], index == self._selected, marker)
-        return self._finish(content, left, _MENU_HINT)
+        return self._finish(content, columns, rows, _MENU_HINT)
 
     def _render_preview(self, columns: int, rows: int) -> Text:
         plan: ExecutionPlan | PlanPreview | None = self._plan
@@ -1031,7 +1044,7 @@ class ManualController:
         content.append("\n")
         for index, label in enumerate(entries):
             _append_row(content, left, label, index == self._selected)
-        return self._finish(content, left, _MENU_HINT)
+        return self._finish(content, columns, rows, _MENU_HINT)
 
     def _preview_summary(self, plan: ExecutionPlan | PlanPreview | None) -> tuple[str, ...]:
         if plan is None:
@@ -1087,7 +1100,7 @@ class ManualController:
         content.append(f"{' ' * left}> ", style="white_bold")
         content.append_text(self._input.render(width))
         content.append("\n")
-        return self._finish(content, left, _INPUT_HINT)
+        return self._finish(content, columns, rows, _INPUT_HINT)
 
     def _render_busy(self, columns: int, rows: int) -> Text:
         spinner: str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(time.monotonic() * 10) % 10]
@@ -1095,7 +1108,7 @@ class ManualController:
         content: Text = _header("TRYB RĘCZNY", columns, rows, 2)
         left: int = max((columns - len(line)) // 2, 0)
         content.append(f"{' ' * left}{line}", style="brand_accent")
-        return self._finish(content, left, "Esc anuluj")
+        return self._finish(content, columns, rows, "Esc anuluj")
 
     def _render_menu(self, title: str, entries: tuple[str, ...], columns: int, rows: int) -> Text:
         shown: tuple[str, ...] = _fit_entries(entries, columns)
@@ -1104,40 +1117,12 @@ class ManualController:
         left: int = _left_padding(columns, shown)
         for index in range(start, end):
             _append_row(content, left, shown[index], index == self._selected)
-        return self._finish(content, left, _MENU_HINT)
+        return self._finish(content, columns, rows, _MENU_HINT)
 
-    def _finish(self, content: Text, left: int, hint: str) -> Text:
+    def _finish(self, content: Text, columns: int, rows: int, hint: str) -> Text:
         if self._feedback is not None:
-            content.append(f"{' ' * left}{self._feedback}\n", style="error")
-        content.append(f"{' ' * left}{hint}", style="gray")
-        return content
-
-
-def _header(title: str, columns: int, rows: int, content_rows: int) -> Text:
-    top: int = max((rows - content_rows - 5) // 2, 0)
-    shown: str = _truncate_right(title, max(columns - 2, 1))
-    left: int = max((columns - len(shown)) // 2, 0)
-    content = Text("\n" * top)
-    content.append(f"{' ' * left}{shown}\n\n", style="white_bold")
-    return content
-
-
-def _append_row(content: Text, left: int, label: str, active: bool, marker: str = "  ") -> None:
-    content.append(" " * left)
-    content.append(f"{_POINTER} " if active else "  ", style="brand_accent" if active else "white_bold")
-    content.append(marker, style="brand_accent" if active else "white_bold")
-    content.append(label, style="brand_accent" if active else "white_bold")
-    content.append("\n")
-
-
-def _left_padding(columns: int, entries: Sequence[str]) -> int:
-    width: int = max((len(entry) for entry in entries), default=1) + 4
-    return max((columns - min(width, columns)) // 2, 0)
-
-
-def _fit_entries(entries: Sequence[str], columns: int) -> tuple[str, ...]:
-    width: int = max(columns - 8, 1)
-    return tuple(_truncate_right(entry, width) for entry in entries)
+            content.append(self._feedback + "\n", style="error")
+        return with_footer(content, (hint,), columns, rows)
 
 
 def _limit_problems(
@@ -1158,22 +1143,6 @@ def _limit_problems(
     if visible_warnings:
         return visible_blockers, (*visible_warnings[:-1], marker)
     return (*visible_blockers[:-1], marker), ()
-
-
-def _truncate_right(value: str, width: int) -> str:
-    if len(value) <= width:
-        return value
-    if width <= 1:
-        return "…"
-    return f"{value[: width - 1]}…"
-
-
-def _visible_window(count: int, selected: int, rows: int) -> tuple[int, int]:
-    budget: int = max(rows - 7, 1)
-    if count <= budget:
-        return 0, count
-    start: int = min(max(selected - budget // 2, 0), count - budget)
-    return start, start + budget
 
 
 def _safe(value: str) -> str:

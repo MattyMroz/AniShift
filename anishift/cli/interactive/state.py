@@ -7,7 +7,6 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable, Mapping
-from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from enum import IntEnum, StrEnum
 from pathlib import Path
@@ -16,7 +15,9 @@ from typing import Final
 from rich.text import Text
 
 from anishift.application import (
-    AutomationPolicy,
+    ArtifactKind,
+    InspectedSourceGroup,
+    InspectedWorkspace,
     RunProgressSnapshot,
     Subscription,
     SubscriptionOrder,
@@ -24,6 +25,15 @@ from anishift.application import (
     decode_view,
 )
 from anishift.application.events import RunEvent, sanitize_event_message
+from anishift.cli.interactive.menu import (
+    append_wrapped_row,
+    fit_entries,
+    header,
+    left_padding,
+    visible_window,
+    with_footer,
+    wrap_entries,
+)
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
@@ -34,8 +44,33 @@ __all__ = ["StateController", "StateResult"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_TABS: Final[tuple[str, ...]] = ("Postęp", "Pobrania", "Subskrypcje", "Pliki")
+_TABS: Final[tuple[str, ...]] = ("Przetwarzanie", "Pobrania", "Subskrypcje", "Biblioteka")
 """Views of the same resident snapshot, switched without network requests."""
+
+
+_TRANSFER_LABELS: Final[dict[str, str]] = {
+    "downloading": "pobieranie",
+    "forcedDL": "pobieranie",
+    "stalledDL": "czeka na źródła",
+    "metaDL": "szuka metadanych",
+    "forcedMetaDL": "szuka metadanych",
+    "queuedDL": "w kolejce",
+    "pausedDL": "wstrzymane",
+    "stoppedDL": "wstrzymane",
+    "checkingDL": "sprawdzanie",
+    "checkingUP": "sprawdzanie",
+    "checkingResumeData": "sprawdzanie",
+    "moving": "przenoszenie",
+    "uploading": "pobrane",
+    "stalledUP": "pobrane",
+    "forcedUP": "pobrane",
+    "queuedUP": "pobrane",
+    "pausedUP": "pobrane",
+    "stoppedUP": "pobrane",
+    "missingFiles": "brakuje plików",
+    "error": "błąd klienta",
+}
+"""User-facing download states returned by qBittorrent."""
 
 _ADD_FIELDS: Final[tuple[str, ...]] = ("Tytuł serii", "Grupa wydająca", "Pierwszy odcinek")
 """Fields needed to follow a series even before its first torrent exists."""
@@ -45,16 +80,14 @@ _RECONNECT_S: Final[float] = 2.0
 
 _CLIENT_PROBLEMS: Final[dict[str, str]] = {
     "The private torrent window was closed; downloads remain stopped until explicitly resumed": (
-        "Prywatny qBittorrent jest zamknięty. Pobieranie pozostaje wstrzymane."
+        "qBittorrent wyłączony · zlecenia czekają na wznowienie"
     ),
-    "The private torrent client was taken over; automatic control is disabled": (
-        "Prywatny qBittorrent jest sterowany ręcznie w swoim oknie."
-    ),
+    "The private torrent client was taken over; automatic control is disabled": ("qBittorrent sterowany ręcznie"),
     "The private torrent client was opened manually; automatic control stopped": (
-        "Otwarto okno prywatnego qBittorrenta; sterowanie automatyczne zostało wstrzymane."
+        "Otwarto qBittorrenta · sterowanie automatyczne wstrzymane"
     ),
     "The private torrent client could not start; resolve the problem and explicitly resume": (
-        "Nie udało się uruchomić prywatnego qBittorrenta. Po usunięciu przyczyny wybierz Wznów."
+        "Nie udało się uruchomić qBittorrenta · usuń przyczynę i wybierz Wznów"
     ),
 }
 """Polish explanations of private client states surfaced by the transport boundary."""
@@ -79,7 +112,7 @@ class StateResult(StrEnum):
 
 
 class StateController:
-    """Keep a local snapshot while events and explicit commands run outside rendering."""
+    """Present resident work through the shared selectable-list interface."""
 
     def __init__(self, session: ResidentSession, invalidate: Callable[[], None]) -> None:
         self._parent: ResidentSession = session
@@ -93,7 +126,6 @@ class StateController:
         self._runs: dict[str, tuple[str, RichRunProgress]] = {}
         self._tab: int = 0
         self._selected: int = 0
-        self._offset: int = 0
         self._connected: bool = False
         self._busy: bool = False
         self._notice: str = "Łączenie z procesem w tle…"
@@ -117,8 +149,21 @@ class StateController:
         self._open_requested.clear()
         return requested
 
+    def show_processing(self) -> None:
+        """Select current processing after the user starts a run."""
+        with self._lock:
+            self._tab = _Tab.PROGRESS
+            self._selected = 0
+        self._invalidate()
+
+    def set_notice(self, message: str) -> None:
+        """Show preparation or submission feedback without changing the selected view."""
+        with self._lock:
+            self._notice = _safe_text(message).rstrip(".")
+        self._invalidate()
+
     def handle_key(self, key: str) -> StateResult:
-        """Navigate cached views or queue one explicit user action."""
+        """Navigate the shared list or submit one explicit action."""
         with self._lock:
             if self._form is not None:
                 self._edit_form(key)
@@ -126,13 +171,22 @@ class StateController:
             if self._binding is not None:
                 self._binding_key(key)
                 return StateResult.CONTINUE
-            if key in {"escape", "interrupt"}:
+            if key in {"escape", "interrupt", "backspace"}:
                 return StateResult.HOME
-            if key in {"tab", "right", "left", "backtab"}:
+            if key in {"tab", "backtab", "left", "right"}:
                 self._tab = (self._tab + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS)
-                self._selected = self._offset = 0
-            elif key in {"up", "down"}:
-                self._selected = max(0, self._selected + (-1 if key == "up" else 1))
+                self._selected = 0
+                self._notice = ""
+            elif key in {"up", "down", "home", "end"}:
+                count: int = max(len(self._entries(120)), 1)
+                if key in {"home", "end"}:
+                    self._selected = 0 if key == "home" else count - 1
+                else:
+                    self._selected = (self._selected + (-1 if key == "up" else 1)) % count
+            elif key in {"space", "enter"} and self._tab == _Tab.SUBSCRIPTIONS:
+                return self._action_key("w")
+            elif key == "enter" and self._tab == _Tab.FILES:
+                self._file_action("open")
             elif key.startswith("text:"):
                 return self._action_key(key.removeprefix("text:").casefold())
             self._invalidate()
@@ -169,10 +223,10 @@ class StateController:
         elif self._tab == _Tab.PROGRESS and key == "c":
             offset: int = self._selected
             for run_id, (_, progress) in self._runs.items():
-                if offset < progress.row_count:
+                if offset < progress.pending_row_count:
                     self._command("cancel", {"run_id": run_id})
                     break
-                offset -= progress.row_count
+                offset -= progress.pending_row_count
         elif self._tab == _Tab.TRANSFERS and key in {"p", "w", "x"}:
             transfers: list[Mapping[str, object]] = self._transfer_rows()
             if transfers:
@@ -191,15 +245,12 @@ class StateController:
             self._command("ready_retry")
             return
         library: list[Mapping[str, object]] = _rows(self._snapshot.get("library"))
-        if key not in {"w", "f"} or self._selected >= len(library):
+        if key not in {"open", "f"} or self._selected >= len(library):
             return
         directory: str = str(library[self._selected]["directory"])
         directory = "" if directory == "." else directory
-        if key == "f":
-            self._work(lambda session: _open_folder(session.workspace_root, directory))
-            return
-        enabled: bool = not self._policy(auto_enabled=True).effective_auto(directory)
-        self._command("set_directory_auto", {"directory": directory, "enabled": enabled})
+        group_id: str = str(library[self._selected]["group_id"])
+        self._work(lambda session: _open_episode(session, group_id, directory, show_folder=key == "f"))
 
     def _binding_candidates(self, session: ResidentSession, identifier: str) -> None:
         subscription: Subscription = decode_view(
@@ -374,40 +425,40 @@ class StateController:
                 self._runs[run_id] = (snapshot.preview.preview_id, restored)
 
     def render(self, columns: int, rows: int) -> Text:
-        """Render cached state using the same menu palette and spacing as the other screens."""
+        """Render tabs and the same centered selectable list used by Manual."""
         with self._lock:
-            content: list[Text] = self._content(max(columns - 4, 1))
-            width: int = min(max(columns - 4, 1), max(48, max((line.cell_len + 2 for line in content), default=0)))
-            left: int = max((columns - width) // 2, 0)
-            footer: list[Text] = self._footer(width)
-            visible: int = max(rows - len(footer) - 7, 1)
-            self._selected = min(self._selected, max(len(content) - 1, 0))
-            self._offset = min(self._offset, self._selected)
-            self._offset = max(self._offset, self._selected - visible + 1)
-            body: list[Text] = [
-                Text("STAN", style="white_bold"),
-                Text(),
-                self._tabs(),
-                self._automation_label(),
-                Text(),
-            ]
-            for index in range(self._offset, min(len(content), self._offset + visible)):
-                selected: bool = index == self._selected
-                line: Text = Text("\u276f " if selected else "  ", style="brand_accent" if selected else "white_bold")
-                line.append_text(content[index])
-                if selected and self._tab != _Tab.PROGRESS:
-                    line.stylize("brand_accent")
-                body.append(line)
-            if not content:
-                body.append(Text("Brak pozycji", style="gray"))
-            body.extend(footer)
-            result: Text = Text("\n" * max((rows - 1 - len(body)) // 2, 0))
-            for line in body:
-                line.truncate(width, overflow="ellipsis")
-                result.append(" " * left)
-                result.append_text(line)
-                result.append("\n")
-            return result
+            entries: list[tuple[str | Text, bool | None]] = self._entries(max(columns - 8, 1))
+            self._selected = min(self._selected, max(len(entries) - 1, 0))
+            labels: tuple[str, ...] = fit_entries(
+                tuple(label.plain if isinstance(label, Text) else label for label, _ in entries), columns
+            )
+            footer: list[str | Text] = self._footer()
+            list_rows: int = rows - max(len(footer) - 2, 0) - int(self._form is not None)
+            wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(tuple(label for label, _ in entries), columns)
+            start, end = visible_window(len(labels), self._selected, list_rows, heights=tuple(map(len, wrapped)))
+            left: int = left_padding(columns, labels)
+            content: Text = header("PANEL", columns, rows, max(rows - 5, 1))
+            tabs: Text = self._tabs()
+            tabs.truncate(max(columns - 2, 1), overflow="ellipsis")
+            content.append(" " * max((columns - tabs.cell_len) // 2, 0))
+            content.append_text(tabs)
+            content.append("\n\n")
+            remaining: int = max(list_rows - 7, 1)
+            for index in range(start, end):
+                checked: bool | None = entries[index][1]
+                marker: str = "" if checked is None else ("● " if checked else "○ ")
+                lines: tuple[str | Text, ...] = wrapped[index][:remaining]
+                append_wrapped_row(content, left, lines, index == self._selected, marker)
+                remaining -= len(lines)
+            if not entries:
+                empty: str = "Brak zadań" if self._tab == _Tab.PROGRESS else "Brak pozycji"
+                content.append(" " * max((columns - len(empty)) // 2, 0) + empty + "\n", style="gray")
+            if self._form is not None:
+                prompt: str = f"{_ADD_FIELDS[len(self._form)]}: "
+                content.append(" " * left + prompt, style="white_bold")
+                content.append_text(self._input.render(max(columns - left - len(prompt) - 1, 1)))
+                content.append("\n")
+            return with_footer(content, footer, columns, rows)
 
     def _tabs(self) -> Text:
         tabs: Text = Text()
@@ -417,117 +468,64 @@ class StateController:
             tabs.append(name, style="brand_accent" if self._tab == index else "gray")
         return tabs
 
-    def _automation_label(self) -> Text:
-        label: Text = Text("Auto · ", style="gray")
-        enabled: bool = bool(self._snapshot.get("auto_enabled"))
-        label.append("włączone" if enabled else "wyłączone", style="brand_accent" if enabled else "white_bold")
+    def _footer(self) -> list[str | Text]:
+        result: list[str | Text] = []
+        if self._notice:
+            result.append(self._notice.rstrip("."))
         if not self._connected:
-            label.append(" · brak połączenia", style="warning")
-        return label
-
-    def _footer(self, width: int) -> list[Text]:
-        footer: list[Text] = [Text(self._notice, style="gray")]
-        if self._tab == _Tab.SUBSCRIPTIONS and self._snapshot.get("subscriptions_problem"):
-            footer.append(Text(_safe_text(self._snapshot["subscriptions_problem"]), style="warning"))
+            result.append("Brak połączenia")
         if self._form is not None:
-            prompt: Text = Text(f"{_ADD_FIELDS[len(self._form)]}: ", style="white_bold")
-            prompt.append_text(self._input.render(max(width - prompt.cell_len, 1)))
-            footer.append(prompt)
-            footer.append(Text("Enter zatwierdź · Esc anuluj", style="gray"))
-            return footer
-        hints: str = "Tab widok · O Auto · R uruchom · M ręczny · U ustawienia · Esc wróć"
-        if self._tab == _Tab.SUBSCRIPTIONS:
-            hints += " · D dodaj · W włącz/wyłącz · X usuń wpis · B powiąż sezon · F sprawdź"
-        elif self._tab == _Tab.TRANSFERS:
-            hints += " · P wstrzymaj · W wznów · X anuluj (pliki zostają) · A inne wydanie"
-        elif self._tab == _Tab.PROGRESS:
-            hints += " · C anuluj zlecenie"
-        elif self._tab == _Tab.FILES:
-            hints += " · W Auto katalogu · F folder · P ponów przenoszenie"
-        line: str = ""
-        for hint in hints.split(" · "):
-            candidate: str = f"{line} · {hint}" if line else hint
-            if len(candidate) > width and line:
-                footer.append(Text(line, style="gray"))
-                candidate = hint
-            line = candidate
-        footer.append(Text(line, style="gray"))
-        return footer
-
-    def _content(self, columns: int) -> list[Text]:
+            return [*result, "Enter zatwierdź · Esc anuluj"]
         if self._binding is not None:
-            return [Text(_safe_text(candidate.romaji)) for candidate in self._candidates]
-        if self._tab == _Tab.PROGRESS:
-            progress: list[Text] = [
-                line for _, progress in self._runs.values() for line in progress.render(max(columns - 2, 1)).split("\n")
-            ]
-            progress.extend(
-                Text(f"{_safe_text(item.get('problem'))} · M wybierz pliki i dokończ pracę", style="warning")
-                for item in _rows(self._snapshot.get("recovery_problems"))
-            )
-            return progress
-        if self._tab == _Tab.TRANSFERS:
-            messages: dict[str, object] = {
-                str(item.get("info_hash")): item.get("problem") for item in _rows(self._snapshot.get("acquisitions"))
-            }
-            content: list[Text] = [
-                Text(
-                    f"{float(str(item.get('progress', 0))) * 100:5.1f}% · {item.get('state')} · "
-                    f"{_safe_text(item.get('name', ''))}"
-                )
-                + Text(
-                    f" · {_safe_text(messages[str(item['info_hash'])])}"
-                    if messages.get(str(item.get("info_hash")))
-                    else "",
-                    style="warning",
-                )
-                for item in self._transfer_rows()
-            ]
-            problem: object = self._snapshot.get("transfers_problem")
-            if problem:
-                content.append(Text(_safe_text(str(problem)), style="warning"))
-            return content
-        if self._tab == _Tab.FILES:
-            policy: AutomationPolicy = self._policy()
-            content = [
-                Text(
-                    _safe_text(str(item.get("name")))
-                    + (
-                        " · Auto włączone · "
-                        if policy.effective_auto(str(item["directory"]))
-                        else " · Auto wyłączone · "
-                    )
-                    + ", ".join(
-                        f"{product.get('kind')}: {product.get('state')}" for product in _rows(item.get("products"))
-                    )
-                )
-                for item in _rows(self._snapshot.get("library"))
-            ]
-            content.extend(
-                Text(
-                    f"{_safe_text(item.get('name'))} · {_safe_text(item.get('problem') or 'przenoszenie do ready')}",
-                    style="warning",
-                )
-                for item in _rows(self._snapshot.get("relocations"))
-            )
-            return content
-        return [
-            Text(
-                f"{'włączona' if item.get('enabled') else 'wyłączona'} · {_safe_text(str(item.get('series')))} "
-                f"[{_safe_text(str(item.get('group')))}] · odc. {item.get('next_episode')} · "
-                f"{item.get('end_state')}" + _schedule_label(item)
-            )
-            for item in self._subscriptions
-        ]
-
-    def _policy(self, *, auto_enabled: bool | None = None) -> AutomationPolicy:
-        exceptions: object = self._snapshot.get("directory_exceptions", {})
-        return AutomationPolicy(
-            auto_enabled=bool(self._snapshot.get("auto_enabled")) if auto_enabled is None else auto_enabled,
-            directory_exceptions={str(key): value for key, value in exceptions.items() if isinstance(value, bool)}
-            if isinstance(exceptions, Mapping)
-            else {},
+            return [*result, "↑↓ · Enter wybierz · Esc wróć"]
+        hints: tuple[str | Text, ...] = (
+            Text("R uruchom · M ręczny · ", style="gray")
+            + Text(f"O {'●' if self._snapshot.get('auto_enabled') else '○'} Auto", style="brand_accent")
+            + Text(" · C anuluj zlecenie", style="gray"),
+            "P wstrzymaj · W wznów · X anuluj",
+            "Space wybierz · D dodaj · X usuń · B sezon · F sprawdź",
+            "Enter odtwórz · F folder · M ręczny · P ponów",
         )
+        result.append("←→ widok · ↑↓ wybierz · Esc wróć")
+        result.append(hints[self._tab])
+        return result
+
+    def _entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
+        if self._binding is not None:
+            return [(_safe_text(item.romaji), None) for item in self._candidates]
+        if self._tab == _Tab.PROGRESS:
+            return [
+                (line, None)
+                for _, progress in self._runs.values()
+                for line in progress.render(columns, include_completed=False).split("\n")
+                if line.plain.strip()
+            ]
+        if self._tab == _Tab.SUBSCRIPTIONS:
+            return [
+                (
+                    f"{_safe_text(item.get('series', ''))} [{_safe_text(item.get('group', ''))}]"
+                    f" · {item.get('next_episode', '')}",
+                    bool(item.get("enabled")),
+                )
+                for item in self._subscriptions
+            ]
+        if self._tab == _Tab.FILES:
+            return [(_safe_text(item.get("name", "")), None) for item in _rows(self._snapshot.get("library"))]
+        measured: bool = self._connected and not self._snapshot.get("transfers_problem")
+        entries: list[tuple[str | Text, bool | None]] = []
+        for item in self._transfer_rows():
+            value: object = item.get("progress")
+            progress_text: str = (
+                f"{float(str(value)) * 100:.1f}%" if measured and isinstance(value, (int, float)) else "—"
+            )
+            state: str = _TRANSFER_LABELS.get(str(item.get("state")), "") if measured else ""
+            entries.append(
+                (
+                    f"{_safe_text(item.get('name', ''))} · {progress_text}" + (f" · {state}" if state else ""),
+                    None,
+                )
+            )
+        return entries
 
     def _transfer_rows(self) -> list[Mapping[str, object]]:
         rows: list[Mapping[str, object]] = _rows(self._snapshot.get("transfers"))
@@ -537,7 +535,7 @@ class StateController:
                 "info_hash": item["info_hash"],
                 "name": f"{item.get('directory', '')} · odc. {item.get('episode', '?')}",
                 "state": "wymaga uwagi" if item.get("problem") else "brak potwierdzenia klienta",
-                "progress": 0,
+                "progress": None,
             }
             for item in _rows(self._snapshot.get("acquisitions"))
             if str(item.get("info_hash")) not in known
@@ -551,18 +549,6 @@ def _rows(value: object) -> list[Mapping[str, object]]:
     return [item for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
 
 
-def _schedule_label(item: Mapping[str, object]) -> str:
-    if item.get("anilist_id") is None:
-        return " · bez kalendarza, sprawdzanie co godzinę"
-    episodes: list[Mapping[str, object]] = _rows(item.get("episodes"))
-    dates: list[str] = [
-        str(episode["due_at"]) for episode in episodes if episode.get("due_at") and episode.get("state") == "pending"
-    ]
-    if not dates:
-        return " · brak następnego terminu"
-    return " · sprawdzenie " + datetime.fromisoformat(min(dates)).astimezone().strftime("%d.%m %H:%M")
-
-
 def _safe_text(value: object) -> str:
     message: str = sanitize_event_message(str(value)) or ""
     return _CLIENT_PROBLEMS.get(message, message)
@@ -573,7 +559,40 @@ def _open_folder(root: Path, directory: str) -> None:
     if not folder.is_relative_to(root.resolve()) or not folder.is_dir():
         message: str = "Folder is no longer available in the workspace"
         raise ValueError(message)
+    _open_path(folder)
+
+
+def _open_episode(session: ResidentSession, group_id: str, directory: str, *, show_folder: bool = False) -> None:
+    workspace: InspectedWorkspace = session.discover()
+    group: InspectedSourceGroup | None = next((item for item in workspace.groups if item.group_id == group_id), None)
+    if group is None:
+        _open_folder(session.workspace_root, directory)
+        return
+    kinds: tuple[ArtifactKind, ...] = (
+        ArtifactKind.FINAL_MKV,
+        ArtifactKind.FINAL_MP4,
+        ArtifactKind.VIDEO_MKV,
+        ArtifactKind.VIDEO_MP4,
+    )
+    paths: dict[ArtifactKind, Path] = {
+        item.kind: item.path.resolve()
+        for item in group.artifacts
+        if item.path is not None and item.kind in kinds and item.path.is_file()
+    }
+    selected: Path | None = next((paths[kind] for kind in kinds if kind in paths), None)
+    if selected is None or not selected.is_relative_to(session.workspace_root.resolve()):
+        _open_folder(session.workspace_root, directory)
+        return
+    _open_path(selected, show_folder=show_folder)
+
+
+def _open_path(path: Path, *, show_folder: bool = False) -> None:
     if sys.platform == "win32":
-        os.startfile(folder)  # noqa: S606 - explicitly selected workspace directory
+        if show_folder:
+            explorer: Path = Path(os.environ["SYSTEMROOT"]) / "explorer.exe"
+            subprocess.Popen([str(explorer), "/select,", str(path)])  # noqa: S603 - explicitly selected workspace file
+        else:
+            os.startfile(path)  # noqa: S606 - explicitly selected workspace file or directory
     else:
-        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(folder)])  # noqa: S603 - desktop opener
+        target: Path = path.parent if show_folder else path
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(target)])  # noqa: S603 - desktop opener

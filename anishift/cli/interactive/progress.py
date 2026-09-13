@@ -253,7 +253,15 @@ class RichRunProgress:
                     return index
             return max(len(self._files) - 1, 0)
 
-    def render(self, columns: int, *, offset: int = 0, limit: int | None = None) -> Text:
+    @property
+    def pending_row_count(self) -> int:
+        """Count rows that have not completed successfully."""
+        with self._lock:
+            return sum(not (state.terminal and state.completed == _COMPLETE) for state in self._files.values())
+
+    def render(
+        self, columns: int, *, offset: int = 0, limit: int | None = None, include_completed: bool = True
+    ) -> Text:
         """Render one width-fitted window of the queue through shared Rich bars."""
         now: float = time.monotonic()
         start: int = min(max(offset, 0), max(len(self._files) - 1, 0))
@@ -268,6 +276,7 @@ class RichRunProgress:
                     state.determinate,
                 )
                 for state in islice(self._files.values(), start, end)
+                if include_completed or not (state.terminal and state.completed == _COMPLETE)
             )
         return _render_rows(rows, columns)
 

@@ -99,7 +99,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Run niepełny, anulowany albo z ostrzeżeniami pokazuje przewijany wynik grup:
   przyczyny błędów, zapisane i zachowane produkty oraz lokalizację logu.
   Treść przechodzi przez sanitizację i ten sam renderer. `interactive/app.py`
-- Home rezydenta ma kolejność `Auto`, `Ręczny`, `Anime`, `Stan`, `Ustawienia`, `Wyjście`. Settings działa w tym
+- Home rezydenta ma kolejność `Panel`, `Auto`, `Ręczny`, `Anime`, `Ustawienia`, `Wyjście`. Settings działa w tym
   samym rendererze, a mutacje `settings.json`, `presets.json` i `.env` przechodzą
   przez `AppService`. Manual przechowuje drafty wyłącznie lokalnie, rejestruje pliki
   zewnętrzne przez `AppService`, waliduje przez `plan_manual()` i przekazuje zaakceptowany

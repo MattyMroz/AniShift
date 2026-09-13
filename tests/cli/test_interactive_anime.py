@@ -203,6 +203,7 @@ def test_search_hint_stays_centered_independently_of_input_width(query: str) -> 
     frame: str = _frame(controller, columns=80)
     hint: str = next(line for line in frame.splitlines() if "Enter szukaj" in line)
     assert len(hint) - len(hint.lstrip()) == (80 - Text(hint.strip()).cell_len) // 2
+    assert frame.splitlines()[-1] == hint
 
 
 def test_search_edits_selected_words_before_submitting_the_final_query() -> None:

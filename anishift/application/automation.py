@@ -2214,6 +2214,7 @@ class AutomationOwner:
         saved: bool = self._save(candidate)
         if saved:
             self._schedule_subscriptions()
+            self._publish_state()
         return saved
 
     def _subscription_counts(self) -> dict[str, int]:
@@ -2302,11 +2303,16 @@ class AutomationOwner:
         )
         if request is None or event.group_id is None:
             return
+        with self._progress_lock:
+            view: RunProgressSnapshot | None = self._run_views.get(event.run_id)
+        if event.state is TaskState.SUCCEEDED and (
+            view is None or not any(task.group_id == event.group_id for task in view.preview.tasks)
+        ):
+            return
         key: tuple[str, str, str] = (event.group_id, f"{request.request_id}:{request.generation}", str(event.state))
         if key in self._state.notified or not self._save(replace(self._state, notified=self._state.notified | {key})):
             return
         with self._progress_lock:
-            view: RunProgressSnapshot | None = self._run_views.get(event.run_id)
             label: str = view.labels.get(event.group_id, event.group_id) if view is not None else event.group_id
         message: str = "Gotowy odcinek" if event.state is TaskState.SUCCEEDED else "Odcinek wymaga uwagi"
         self._publish(

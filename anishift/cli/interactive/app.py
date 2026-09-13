@@ -21,6 +21,7 @@ from anishift.cli.interactive.home import HomeAction, brand_for_geometry, workin
 from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
 from anishift.cli.interactive.mascot import MascotController, MascotState
 from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS, NATIVE_MASCOT_ANCHOR
+from anishift.cli.interactive.menu import with_footer
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.prompts import (
     TEXT_MASCOT_SIZE,
@@ -49,10 +50,10 @@ _LOG_LOCATION: Final[str] = log_path().relative_to(config_dir().parent).as_posix
 """Relative location of the process diagnostic log."""
 
 _HOME_CHOICES: Final[tuple[tuple[str, HomeAction], ...]] = (
+    ("Panel", HomeAction.STATE),
     ("Auto", HomeAction.AUTO),
     ("Ręczny", HomeAction.MANUAL),
     ("Anime", HomeAction.ANIME),
-    ("Stan", HomeAction.STATE),
     ("Ustawienia", HomeAction.SETTINGS),
     ("Wyjście", HomeAction.EXIT),
 )
@@ -60,6 +61,9 @@ _HOME_CHOICES: Final[tuple[tuple[str, HomeAction], ...]] = (
 
 _HOME_HINT: Final[str] = "↑↓ · Enter"
 """Compact keyboard hint shown below Home choices."""
+
+_HOME_FOOTER_ROWS: Final[int] = 2
+"""Rows reserved for the keyboard hint and application status."""
 
 _HOME_POINTER: Final[str] = "\u276f"
 """Pointer glyph shown beside the active Home choice."""
@@ -321,7 +325,7 @@ class _InteractiveApplication:
 
             raise_panel(self._terminal_window)
             if self._mode is not _ViewMode.SETTINGS:
-                self._show_state()
+                self._show_home()
         with self._lock:
             controller: SettingsController | None = self._settings if self._mode is _ViewMode.SETTINGS else None
             closing_at: float | None = self._closing_at
@@ -493,6 +497,8 @@ class _InteractiveApplication:
             worker: threading.Thread = self._worker
         self._renderer.invalidate()
         self._mascot.show(MascotState.DISCOVER)
+        if self._resident is not None:
+            self._show_state(processing=True, notice="Przygotowanie")
         worker.start()
 
     def _start_manual(self) -> None:
@@ -579,6 +585,8 @@ class _InteractiveApplication:
             worker: threading.Thread = self._worker
         self._mascot.reset()
         self._renderer.invalidate()
+        if self._resident is not None:
+            self._show_state(processing=True, notice="Przygotowanie")
         worker.start()
 
     def _prepare_and_run(self, generation: int) -> None:
@@ -597,7 +605,7 @@ class _InteractiveApplication:
                 self._preflight_cancel = None
             if isinstance(preparation, AutoRunRefusal):
                 self._finish_batch(EXIT_REFUSED)
-                self._finish_with_message(generation, _refusal_text(preparation))
+                self._report_processing(generation, _refusal_text(preparation))
                 return
             self._mascot.reset()
             self._execute_run(generation, preparation)
@@ -607,7 +615,18 @@ class _InteractiveApplication:
                     return
             logger.warning("Interactive automatic run failed", error_class=type(problem).__name__)
             self._finish_batch(EXIT_REFUSED)
-            self._finish_with_message(generation, _problem_text(problem))
+            self._report_processing(generation, _problem_text(problem))
+
+    def _report_processing(self, generation: int, message: Text) -> None:
+        if self._resident is None or self._state is None:
+            self._finish_with_message(generation, message)
+            return
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._worker = None
+            self._preflight_cancel = None
+        self._state.set_notice(message.plain)
 
     def _prepared_auto(
         self, preset_id: str, cancel: EventCancellationToken
@@ -635,6 +654,8 @@ class _InteractiveApplication:
             cancel.raise_if_cancelled()
             if not preview.can_execute:
                 return AutoRunRefusal("Nie można przygotować wybranych odcinków")
+            if not preview.tasks:
+                return AutoRunRefusal("Wszystkie odcinki są już gotowe")
             prepared = ManualRun(workspace, preview, session)
             return prepared  # noqa: RET504
         finally:
@@ -651,7 +672,7 @@ class _InteractiveApplication:
                         return
                     self._worker = None
                     self._manual = None
-                self._show_state()
+                self._report_processing(generation, Text())
                 return
             progress: RichRunProgress = RichRunProgress(
                 prepared,
@@ -692,7 +713,7 @@ class _InteractiveApplication:
                     return
             logger.warning("Interactive run failed", error_class=type(problem).__name__)
             self._finish_batch(EXIT_INCOMPLETE)
-            self._finish_with_message(generation, _problem_text(problem))
+            self._report_processing(generation, _problem_text(problem))
         finally:
             if backend is not None and backend is not self._resident:
                 backend.close()
@@ -751,10 +772,14 @@ class _InteractiveApplication:
             self._message = Text()
         self._renderer.invalidate()
 
-    def _show_state(self) -> None:
+    def _show_state(self, *, processing: bool = False, notice: str | None = None) -> None:
         self._close_settings()
         if self._state is None and self._resident is not None:
             self._state = StateController(self._resident, self._renderer.invalidate)
+        if processing and self._state is not None:
+            self._state.show_processing()
+        if notice is not None and self._state is not None:
+            self._state.set_notice(notice)
         with self._lock:
             self._mode = _ViewMode.STATE
         self._renderer.invalidate()
@@ -866,7 +891,7 @@ def _home_content(  # noqa: PLR0913
     animation_phase: int = 0,
     choices: tuple[tuple[str, HomeAction], ...] = _HOME_CHOICES,
 ) -> Text:
-    if rows < _MINIMUM_BRANDED_ROWS:
+    if rows < max(_MINIMUM_BRANDED_ROWS, len(choices) + 3):
         return _small_home_content(columns, rows, selected, choices)
     geometry: HomeGeometry = resolve_home_geometry(columns, rows, native_size or TEXT_MASCOT_SIZE)
     brand: Text = brand_for_geometry(
@@ -903,24 +928,22 @@ def _home_content(  # noqa: PLR0913
         else:
             content.append(f"  {label}", style="white_bold")
         content.append("\n")
-    content.append(" " * geometry.left_padding)
-    content.append(f"  {_HOME_HINT}", style="gray")
-    return content
+    return with_footer(content, (_HOME_HINT,), columns, rows)
 
 
 def _small_home_content(
     columns: int, rows: int, selected: int, choices: tuple[tuple[str, HomeAction], ...] = _HOME_CHOICES
 ) -> Text:
     """Keep the selected Home action reachable when branding cannot fit."""
-    visible: int = min(len(choices), max(rows - 1, 1))
+    visible: int = min(len(choices), max(rows - _HOME_FOOTER_ROWS, 1))
     start: int = max(selected - visible + 1, 0)
     content = Text()
     for index in range(start, min(start + visible, len(choices))):
         label: str = choices[index][0]
         pointer: str = _HOME_POINTER if index == selected else " "
         content.append(f"{pointer} {label}\n", style="brand_accent" if index == selected else "white_bold")
-    if rows > len(choices) + 1:
-        content.append(_HOME_HINT[:columns], style="gray")
+    if rows > _HOME_FOOTER_ROWS:
+        return with_footer(content, (_HOME_HINT,), columns, rows)
     return content
 
 
@@ -988,8 +1011,7 @@ def _message_content(
     window: _QueueView = view if view is not None else _QueueView(following=False)
     window.fit(len(lines) - 1, len(lines), budget)
     content.append_text(Text("\n").join(lines[window.offset : window.offset + budget]))
-    content.append("\n\n↑↓ przewijanie · dowolny inny klawisz: powrót", style="gray")
-    return content
+    return with_footer(content, ("↑↓ przewijanie · dowolny inny klawisz: powrót",), columns, rows)
 
 
 def _result_message(result: RunResult, workspace: InspectedWorkspace) -> Text:

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
 from prompt_toolkit.application.current import create_app_session
-from prompt_toolkit.input import DummyInput
+from prompt_toolkit.input import DummyInput, create_pipe_input
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 from rich.text import Text
@@ -107,3 +108,20 @@ def test_bracketed_paste_arrives_as_one_literal_edit(renderer: TerminalRenderer,
     binding.handler(cast("KeyPressEvent", SimpleNamespace(data="local/model\nsecond line")))
 
     assert seen == ["paste:local/model\nsecond line"]
+
+
+def test_escape_is_delivered_without_waiting_for_a_one_second_key_prefix() -> None:
+    seen: list[str] = []
+
+    async def run() -> None:
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+
+            def key_received(key: str) -> None:
+                seen.append(key)
+                escape_renderer.exit()
+
+            escape_renderer: TerminalRenderer = TerminalRenderer(lambda _columns, _rows: Text(), key_received)
+            await asyncio.wait_for(escape_renderer._application.run_async(pre_run=lambda: pipe.send_text("\x1b")), 0.3)
+
+    asyncio.run(run())
+    assert seen == ["escape"]

@@ -337,7 +337,7 @@ def test_home_balances_the_three_gaps_around_the_resting_brand_and_menu() -> Non
     lines: list[str] = [line.plain for line in content.split("\n")]
 
     assert next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line) == 5
-    assert next(index for index, line in enumerate(lines) if "Auto" in line) == 23
+    assert next(index for index, line in enumerate(lines) if "Panel" in line) == 23
 
 
 def test_resting_padding_matches_the_packaged_gif_silhouette() -> None:

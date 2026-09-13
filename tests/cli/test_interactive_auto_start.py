@@ -4,12 +4,16 @@ import threading
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
 from rich.text import Text
 
 from anishift.application import AppService
 from anishift.cli.interactive import app as interactive_app
+from anishift.cli.interactive.manual import ManualRun
 from anishift.cli.interactive.mascot import MascotController, MascotState
 from anishift.cli.interactive.prompts import TerminalRenderer
+from anishift.cli.interactive.state import StateController
+from anishift.cli.resident import ResidentSession
 from anishift.errors import ExecutionError
 
 
@@ -70,3 +74,31 @@ def test_a_failed_prewarm_does_not_break_home() -> None:
     application = _application(interactive_app._ViewMode.HOME, SimpleNamespace(discover=failing_discover))
 
     application._prewarm_workspace()
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_resident_work_opens_processing_before_starting_its_worker(
+    monkeypatch: pytest.MonkeyPatch, manual: bool
+) -> None:
+    application: interactive_app._InteractiveApplication = _application(interactive_app._ViewMode.HOME)
+    application._generation = 0
+    application._worker = None
+    application._resident = cast("ResidentSession", object())
+    notices: list[str] = []
+    application._state = cast(
+        "StateController", SimpleNamespace(show_processing=lambda: None, set_notice=notices.append)
+    )
+    application._mascot = MascotController(lambda: None)
+    application._renderer = cast("TerminalRenderer", SimpleNamespace(invalidate=lambda: None))
+    modes: list[interactive_app._ViewMode] = []
+
+    def make_thread(**_kwargs: object) -> threading.Thread:
+        return cast("threading.Thread", SimpleNamespace(start=lambda: modes.append(application._mode)))
+
+    monkeypatch.setattr(threading, "Thread", make_thread)
+    if manual:
+        application._start_manual_run(cast("ManualRun", object()))
+    else:
+        application._start_auto()
+    assert modes == [interactive_app._ViewMode.STATE]
+    assert notices == ["Przygotowanie"]

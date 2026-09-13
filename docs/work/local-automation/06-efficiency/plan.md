@@ -439,11 +439,15 @@ Wolno dopasować nazwy prywatnych helperów i podział dużego modułu do istnie
 
 ## 14. Stan wykonania
 
-**Stan 2026-09-13:** P01 i P03 mają wcześniejszy odbiór; poprawki P02 oraz implementacja i automatyczny odbiór P04 zostały domknięte poniżej. Ocena ergonomii panelu przez właściciela pozostaje otwarta. P05 wraz z próbą rzeczywistego uśpienia/wznowienia Windows jest odebrane. P06 ma domknięty kod, odbiór automatyczny i G2 opisany poniżej. P07 ma kod i kontrole automatyczne opisane przy etapie, lecz oczekuje na odbiór UI/G3. P08 nie został wykonany. Domyślny runtime nadal korzysta ze starego czuwania zgodnie z D-12; cały system nie jest ukończony.
+**Stan 2026-09-13 po poprawkach interfejsu:** kod wszystkich ośmiu etapów został dostarczony, ale cały plan pozostaje **IN_PROGRESS** — nie zakończono odbioru użytkowego i wszystkich prób końcowych P07/P08
 
-**Korekta kolejności po feedbacku właściciela:** wznowienie P06 następuje po domknięciu P04 i P05. Wcześniejsze podłączenie P06 przed spełnieniem zależności P01–P05 było błędem wykonawczym. Commit komponentu i zielone testy jednostkowe nie zamykają etapu: wymagany jest jego scenariusz odbioru przez rzeczywiste granice aplikacji w izolowanym workspace. P04 obejmuje także powiązanie istniejącego panelu z rezydentem, rezerwacje podczas edycji, zewnętrzne źródła i wynik po Start. D-12 nadal odracza domyślne przełączenie produkcji do P08.
+P01–P06 mają dowody opisane niżej, w tym rzeczywiste uśpienie/wznowienie w P05 i kontrolowany transfer G2 w P06 — P07 dostarczył sterowanie oraz prywatnego klienta, P08 przełączył domyślne wejścia na rezydenta i dodał recovery oraz `ready` — wcześniejsze zdanie o niewykonanym P08 i domyślnym starym watcherze było nieaktualne
 
-G1 ma wcześniejszy dowód dla sterowania opisany przy P02; część plikowa G1 oraz G2/G3 i pomiary całości pozostają do wykonania. Historyczne wyniki nie zastępują odbioru końcowej integracji.
+**Bieżący punkt przekazania znajduje się w sekcji 18** — sekcje etapów i 17 zachowują historię wykonania, nie stanowią potwierdzenia, że każdy dawny komunikat, układ menu albo otwarta uwaga nadal opisuje aktualny kod
+
+**Historyczna korekta kolejności po feedbacku właściciela:** wznowienie P06 uzależniono od domknięcia P04 i P05 — wcześniejsze podłączenie P06 przed spełnieniem zależności P01–P05 było błędem wykonawczym — commit komponentu i zielone testy jednostkowe nie zamykają etapu, wymagany jest jego scenariusz odbioru przez rzeczywiste granice aplikacji w izolowanym workspace — P04 obejmuje także powiązanie panelu z rezydentem, rezerwacje podczas edycji, zewnętrzne źródła i wynik po Start — odroczenie domyślnego przełączenia z D-12 zakończyło się wraz z implementacją P08
+
+G1 ma dowody sterowania i integracji plikowej przy P02/P04, G2 ma dowód przy P06, a próby recovery i ograniczony pomiar obserwacji opisuje P08 — pozostałe granice G3 i pomiarów końcowych wymieniają P08 oraz sekcja 18 — historyczne wyniki nie zastępują odbioru końcowej integracji
 
 Po każdym etapie wykonawca dopisuje tutaj: commit, zakres, uruchomione komendy i rzeczywiste wyniki, dowiedzione AC oraz pozostały problem. Końcowe ukończenie oznacza pokrycie wszystkich AC-001–042 i I-001–005 wraz z dowodem Windows, a nie samo skompilowanie nowej struktury.
 
@@ -634,6 +638,52 @@ Uwagi z odbioru interfejsu 2026-09-13 są osobną listą wykonawczą poniżej. N
 
 ## 17. Uwagi właściciela z odbioru interfejsu — 2026-09-13
 
+Styl tekstów UI: krótkie opisy i komunikaty bez kropek kończących zdania
+
+Aktualna kolejność po kolejnych zgłoszeniach właściciela: jedna poprawka naraz — ikona zaakceptowana, commit `d9e36b8`
+
+Właściciel zlecił przebudowę całego ekranu oraz umieszczenie „Panelu” na pierwszej pozycji głównego menu — Enter domyślnie otwiera podgląd, a nie uruchamia przetwarzania
+
+Główne menu zachowuje jednowyrazowe etykiety — Panel, Auto, Ręczny, Anime, Ustawienia, Wyjście
+
+Właściciel odrzucił wcześniejszą przebudowę i polecił zastąpić cały `state.py` — plik został usunięty i zapisany ponownie
+
+Aktualny wariant do oceny to „Panel” — zachowuje górne zakładki, a listy używają tych samych funkcji nagłówka, wierszy, szerokości i przewijania co Manual, przeniesionych bez zmiany algorytmu do `menu.py`
+
+Usunięto opisy zakładek i słowne oznaczenia przełączników — pozostały kropki `●`/`○`, niebieski wybór, krótkie skróty oraz przejście z pierwszego wiersza na ostatni i odwrotnie
+
+Nagłówek i zakładki mają stałe położenie, stopka pozostaje przy dolnej krawędzi — nie zmieniano rzeczywistych subskrypcji, pobrań ani powiadomień
+
+Dowody: kontrole Ruff oraz mypy Windows/Linux PASS, zestaw CLI wykazał jedynie osiem nieaktualnych oczekiwań nazwy „Stan” — po aktualizacji nazwy testy Home i Panelu przeszły, podobnie jak wcześniejsze kontrole Manuala
+
+Właściciel nie zaakceptował całego przepływu produktu — na zakończenie zlecił zapis obecnych zmian w commicie i push oraz dokładny raport w tym planie, a nową specyfikację przygotuje sam — aktualny zakres i weryfikację zbiera sekcja 18
+
+Osobne wymaganie do kolejnego kroku: prywatny qBittorrent ma uruchamiać się razem z aplikacją — obecny start dopiero przy zleceniu pobrania nie spełnia tej nowej decyzji
+
+Dalsze poprawki po zgłoszeniach właściciela
+
+- Panel jest pierwszą pozycją menu, a rozpoczęcie Auto lub Manuala wybiera zakładkę przetwarzania
+- Paski zachowują oryginalne kolory Rich, ukończone odcinki znikają z bieżącej kolejki, nieudane pozostają widoczne
+- Auto nie wysyła nowego zlecenia dla planu bez zadań, a owner nie powiadamia o ponownym wykorzystaniu gotowego wyniku
+- Zmiana subskrypcji publikuje stan od razu po potwierdzonym zapisie — wcześniej panel czekał na niezwiązane zdarzenie
+- Kropki w Bibliotece usunięto — Enter uruchamia odcinek przez domyślne skojarzenie Windows, F otwiera folder z zaznaczonym plikiem
+- Tytuły na listach zawijają się, wysokość listy uwzględnia rzeczywistą liczbę wierszy, pusty slot przełącznika nie odsuwa nazw pobrań
+- Esc czeka na sekwencję terminala najwyżej 50 ms zamiast domyślnej sekundy — test rzeczywistego wejścia klawiatury przechodzi z limitem 300 ms
+- Podpowiedzi używają wspólnego `with_footer` w Manualu, ustawieniach, Anime, Panelu, ekranie startowym i ekranie wyników — położenie nie zależy od szerokości listy
+- C dotyczy całego zlecenia, a nie pojedynczego odcinka — etykieta mówi „anuluj zlecenie”
+
+Do kolejnych kroków po ocenie tej partii: Anime dostępne z Panelu, licznik do następnego odcinka w subskrypcjach, akcje kliknięcia powiadomień (pobranie → prywatny klient, gotowy wynik → wskazany plik w folderze), ponowienie wybranego błędu oraz ustawienie sposobu otwierania pozycji Biblioteki
+
+Auto przechodzi do Panelu przed rozpoczęciem przygotowania, a Manual po zatwierdzeniu wyborów — podgląd przygotowania, odmowa bezczynnego uruchomienia oraz błędy startu pozostają w Panelu bez osobnego ekranu wyniku
+
+Docelowa obsługa subskrypcji według właściciela: Space przełącza aktywność, Enter otwiera kartę odcinków danej serii z historią i możliwością zlecenia pobrania — karta nie jest jeszcze zaimplementowana, obecnie Enter jest aliasem Space
+
+Pobrania pozostają wspólną listą zleconych transferów wszystkich serii — nie zastępują karty odcinków ani Biblioteki
+
+Sprawdzono zestaw CLI i AutomationOwner — 784 scenariusze przeszły w zbiorczym przebiegu, nowy scenariusz braku powiadomienia dla planu bez zadań przeszedł osobno po poprawieniu danych testowych tak, by reprezentowały istniejące wyniki
+
+Nie restartowano procesu właściciela ani nie zmieniano aktywności istniejących subskrypcji — zmiany publikacji zdarzeń i powiadomień wymagają restartu właściciela, nie samego panelu
+
 Kolejność: dokończyć bieżące poprawki interfejsu i edytora, następnie zająć się ikoną, powiadomieniami i klientem. Poniższe zgłoszenia nie są jeszcze dowodem ustalonej przyczyny ani potwierdzeniem naprawy.
 
 - [x] Jednowyrazowe „Stan” po „Anime” w głównym menu; wspólne kolory, nagłówki, odstępy i podpowiedzi. Odwrócone kolory pozostają wyłącznie zaznaczeniem tekstu, nie stylem zakładek.
@@ -655,3 +705,123 @@ Sprzątanie na jawne polecenie właściciela: wszystkie 25 katalogów tytułów 
 Kontrole poprawki ikony i klasyfikacji klienta: Ruff check/format oraz mypy Windows/Linux PASS. Pełny pytest: **3942 passed, 11 skipped, 45,20 s**. Poprzedni przebieg nie zakończył przetwarzania testowego pliku w limicie 5 s; zachowany stan zawierał staging i zlecenie wstrzymane podczas zamykania testu. Osobne uruchomienie oraz kolejny pełny przebieg przeszły bez zmiany kodu i limitu. Przyczyna sporadycznego przekroczenia terminu pozostaje do sprawdzenia; nie uznawać go za naprawiony błąd ready. Powiadomień nie usunięto.
 
 Odhaczone pozycje oznaczają wdrożony kod i wykonane kontrole; ocena wygody przez właściciela nadal pozostaje częścią odbioru. Sprawdzono render Anime i Stanu w 80×24. Pełny pytest z czterema workerami: **3939 passed, 11 skipped, 46,27 s**; poprzedni przebieg z automatyczną liczbą workerów miał dwa przekroczenia czasu w testach awarii. Nie zwiększano ich limitów. Po dodaniu alternatywnych terminalowych sekwencji kasowania wyrazów: **41 passed** dla mapowania klawiszy i wspólnego bufora. Ruff check/format i mypy Windows/Linux PASS (521 plików). Nie dodano zależności runtime ani osobnej implementacji historii undo.
+
+## 18. Raport przekazania — 2026-09-13
+
+### Zakres i status
+
+Na ostatnie polecenie właściciela zapisujemy aktualny kod, wykonujemy bramki i wypychamy gałąź `work/local-automation/06-efficiency` — nie tworzymy nowej specyfikacji ani kolejnego planu implementacji
+
+Właściciel przygotuje specyfikację sam — poniższe opisy rozdzielają aktualny kod od propozycji, nie nadają nowym pomysłom statusu uzgodnionych wymagań
+
+**Plan nie jest ukończony jako odebrany produkt** — implementacja etapów istnieje, lecz właściciel zgłosił nieczytelny przepływ, odrzucił wcześniejszy interfejs i nie potwierdził działania wszystkich scenariuszy końcowych
+
+| Etap | Dostarczony rezultat | Dowód i pozostała granica |
+| --- | --- | --- |
+| P01 | Kontrakty sterowania, trwały ledger, migracja subskrypcji | Commity `5d8d848`, `8135508` oraz kontrole opisane przy P01 |
+| P02 | Jeden właściciel pracy, uwierzytelnione IPC, polecenia i rezerwacje panelu | Próby rzeczywistego kanału Windows, izolacja klientów i trwałość przyjęcia — późniejsze poprawki opisane przy P02/P04 |
+| P03 | Wspólny koordynator grafów, limity zasobów, pierwszeństwo ręcznej pracy | `2913de9`, `119ad71` oraz testy kolejności rzeczywistych startów tasków |
+| P04 | Auto, zaawansowany Manual, podgląd, zewnętrzne źródła i regeneracja przez właściciela | Integracja IPC → planner → wykonanie → publikacja w tymczasowym workspace — usługi płatne zastąpione na granicy |
+| P05 | Obserwacja plików, stabilizacja wejścia i wspólna inspekcja | Testy oraz rzeczywiste uśpienie/wznowienie Windows — to nie dowód rozstrzygnięcia późno dodanych napisów |
+| P06 | Terminy sprawdzania subskrypcji, rejestrowanie pozyskania i sprawdzanie kompletności transferu | `4be33de` i opis G2 — model nie zawiera historii obejrzenia odcinków |
+| P07 | Sterowanie rezydentem, tray i prywatny qBittorrent | `7567954`, poprawki `d9e36b8` — ikona zaakceptowana, pozostały odbiór UI i cyklu klienta |
+| P08 | Domyślny rezydent, recovery, płaski `ready`, regeneracja na miejscu i wspólne ścieżki | `9640fed`, osiem prób śmierci procesu i pomiar lokalnej obserwacji — pełny benchmark i odbiór końcowy pozostają otwarte |
+
+Wcześniejsze ogłaszanie ukończenia na podstawie samego kodu lub testów komponentów było zbyt szerokie — zielony test nie potwierdza wygody obsługi ani kompletu rzeczywistych usług i zachowań Windows
+
+### Zmiany zapisane w bieżącej partii
+
+| Obszar i pliki | Co zmieniono | Aktualne ograniczenie |
+| --- | --- | --- |
+| `interactive/state.py`, `menu.py`, `manual.py` | Przepisano ekran Panelu, wydzielono wspólne funkcje list istniejącego Manuala, zachowano górne zakładki, niebieski wybór i przewijanie pierwsza ↔ ostatnia pozycja | Brak końcowej akceptacji wyglądu przez właściciela |
+| `menu.py`, `anime.py`, `settings.py`, `app.py` | Wspólna wyśrodkowana stopka niezależna od szerokości listy, zawijanie długich etykiet, budżet wysokości uwzględniający fizyczne wiersze | Paski postępu zachowują własny układ kolumn i skracanie etykiet |
+| `app.py`, README i instrukcja CLI | Menu: Panel, Auto, Ręczny, Anime, Ustawienia, Wyjście — Enter na starcie wybiera Panel | Auto i Ręczny nadal są osobnymi wejściami w menu |
+| `app.py` | Auto pokazuje Panel/Przetwarzanie przed przygotowaniem, Manual po zatwierdzeniu wyborów — przyjęcie, odmowa i błąd startu pozostają w Panelu | Nie dodano wyszukiwarki jako zakładki Panelu |
+| `progress.py`, `state.py` | Przywrócono kolory pasków Rich, ukryto zakończone sukcesem pozycje bieżącego przetwarzania, zachowano nieudane | Nie ma historii dziennej ani osobnej akcji ponowienia wybranego odcinka |
+| `app.py`, `application/automation.py` | Auto odmawia nowego zlecenia bez zadań, właściciel nie emituje sukcesu za samo użycie gotowych produktów | Nie rozwiązano wszystkich przypadków powtarzania i kierowania powiadomień |
+| `application/automation.py` | Po potwierdzonym zapisie zmiany subskrypcji właściciel od razu publikuje stan | Nie jest to optymistyczna zmiana przed zapisem — czas operacji nadal zależy od odpowiedzi właściciela |
+| `state.py` | Biblioteka bez kółek wyboru — Enter otwiera film domyślnym odtwarzaczem, F wskazuje plik w folderze | Brak ustawienia wyboru MPV/odtwarzacza/folderu — otwarcie systemowe sprawdzone automatycznie z zastąpioną granicą procesu |
+| `prompts.py` | Skrócono oczekiwanie na sekwencję Esc do 50 ms | Test wejścia terminala potwierdza wyjście przed 300 ms, nie pomiar każdej operacji UI |
+| `cli/__init__.py`, `cli/watch.py`, `app.py` | Usunięto wcześniejszy import `cli.main` powodujący ostrzeżenie runpy — otwarcie z tray kieruje na Home | Uruchomiony wcześniej właściciel wymaga restartu, żeby używać nowego launchera |
+| `tests/application/`, `tests/cli/` | Dodano lub zmieniono scenariusze obsługi klawiatury, układu, przejścia Auto/Manual, kolorów, otwierania filmu, publikacji stanu i braku fałszywego powiadomienia | Testy nie zastępują odbioru wszystkich interakcji na rzeczywistym pulpicie |
+
+Nie dodano zależności runtime — edycja tekstu korzysta z Prompt Toolkit, zawijanie i style z Rich, odtwarzanie ze skojarzenia Windows
+
+### Obecny przepływ i znaczenie ekranów
+
+1. Uruchomienie aplikacji pokazuje Home i łączy panel z jednym rezydentem — rezydent posiada kolejkę i stan pracy, panel wysyła polecenia oraz pokazuje zdarzenia
+2. Panel jest pierwszą pozycją menu — jego otwarcie samo nie jest poleceniem rozpoczęcia przetwarzania, ale wcześniej włączone automaty mogą już działać w tle
+3. Auto w głównym menu przygotowuje jednorazowe przetwarzanie według presetu — przełącznik `O` w Panelu zmienia osobno automatyczną obsługę nowych wejść
+4. Ręczny pozwala wybrać odcinki i opcje, a po zatwierdzeniu przekazuje zamiar właścicielowi i pokazuje postęp w Panelu
+5. Włączone subskrypcje wyszukują wydania według zapisanego zakresu i terminów — pozyskanie jest rejestrowane, klient pobiera, a do przetwarzania dopuszczane są dopiero potwierdzone kompletne pliki
+6. Planner sprawdza dostępne produkty, więc może wykorzystać istniejące napisy lub audio — sukces zbiera źródło i produkty w `workspace/ready`, regeneracja działa tam na miejscu
+7. Zamknięcie panelu nie oznacza zakończenia rezydenta — pełny cykl zamykania prywatnego klienta pozostaje odnotowaną luką
+
+| Zakładka | Co pokazuje i robi teraz | Czego nie oznacza |
+| --- | --- | --- |
+| Przetwarzanie | Bieżące zlecenia, postęp i nieudane wyniki — `R` uruchamia, `M` otwiera wybór ręczny, `O` przełącza Auto, `C` anuluje całe zlecenie zawierające wskazaną pozycję | Nie jest dziennikiem dnia — `C` nie anuluje wyłącznie jednego odcinka |
+| Pobrania | Obserwowane transfery oraz zachowane wpisy pozyskania — procent/status pochodzą z dostępnej obserwacji klienta | Końcowa kreska `—` oznacza brak bieżącej obserwacji — nie potwierdza pobrania, oglądania, zera procent ani aktywnego pobierania |
+| Subskrypcje | Lista zapisanych subskrypcji — kółko oznacza włączenie, Space i obecnie Enter przełączają wpis | Enter nie otwiera jeszcze karty odcinków — zapisany kursor ani `taken_episodes` nie są historią obejrzenia |
+| Biblioteka | Odkryte lokalne grupy i produkty — Enter odtwarza znaleziony wynik wideo, ewentualnie źródło, F pokazuje jego lokalizację | Nie jest listą wszystkich historycznie pobranych ani obejrzanych odcinków — brak filmu może skutkować otwarciem katalogu |
+
+`Pobrania` i końcowe `—` nadal są nieczytelne dla właściciela — nie usunięto zakładki i nie nadano jej nowej roli bez osobnej specyfikacji
+
+### Przyczyny rozpoznanych problemów
+
+- Białe/niebieskie paski wynikały z utraty stylów Rich podczas zamiany wiersza na zwykły tekst — renderer zachowuje teraz stylowany `Text`
+- Spóźniony efekt Space wynikał z braku publikacji stanu po zakończonym zapisie polecenia — odbiorca czekał na inne zdarzenie
+- Oczekiwanie po Esc wynikało z czasu rozpoznawania sekwencji klawiszy — zmieniono oba odpowiednie limity Prompt Toolkit
+- Powiadomienia o wcześniej gotowych odcinkach mogły pochodzić z planów bez zadań — w odczytanych trzech dziennikach runów były grupy zakończone sukcesem i zero tasków, co nie stanowi dowodu ponownego tłumaczenia
+- Ostrzeżenie runpy powstawało przez import modułu wykonywalnego podczas importu pakietu `cli` — usunięto eager import
+- Brak potwierdzenia klienta i zachowanie po ręcznym przejęciu były osobnym problemem cyklu qBittorrenta — commit `d9e36b8` poprawia klasyfikację, ale nie dowodzi rozwiązania wszystkich obecnych zgłoszeń pobierania
+
+### Otwarte sprawy do specyfikacji właściciela
+
+Ta lista zachowuje zgłoszenia — nie jest zatwierdzonym projektem ani kolejnością kolejnych implementacji
+
+- Rola zakładki Pobrania: pozostawienie, połączenie z przetwarzaniem albo zastąpienie wyszukiwaniem — bez decyzji
+- Wyszukiwanie Anime w Panelu i przejście z wyniku do ustawienia subskrypcji
+- Karta subskrypcji pod Enter: odcinki dostępne, zamówione, pobrane, lokalne i obejrzane oraz ręczne pobranie wskazanego odcinka
+- Oznaczanie obejrzanych odcinków i zakresu, którego automat nie ma pobierać — tych informacji nie wolno wywnioskować z usunięcia pliku, `taken` ani zakończenia transferu
+- Data kolejnego odcinka i licznik — rozróżnienie emisji, szacowanego wydania przez grupę i następnego sprawdzenia
+- Historia przetwarzania z dnia i kalendarz — właściciel wyraźnie odłożył tę funkcję
+- Powiadomienie pobrania → prywatny qBittorrent, gotowego odcinka → Explorer z zaznaczonym plikiem — obecny callback otwiera panel, nie te docelowe miejsca
+- Ograniczenie powiadomień przy otwartym ekranie śledzenia oraz pozostałe przypadki powtórzeń
+- Start prywatnego qBittorrenta razem z aplikacją, ustawienia szybkości i portów, zachowanie przy osobistej instancji oraz pełne zakończenie aplikacji
+- Ponowienie konkretnego nieudanego odcinka i zakres anulowania, konfiguracja akcji Enter w Bibliotece
+- Tematy z sekcji 16: fallback usług, niepewne operacje płatne, samodzielne napisy, późne pliki towarzyszące oraz kompletność wejścia przed Auto
+- Integracja MAL/AniList i ograniczanie przepisywania danych przy remuksowaniu pozostają wcześniejszymi tematami do rozważenia, bez nowej implementacji
+
+Rozjazdy z dotychczasowym dokumentem: R-015/R-030 opisują uruchamianie klienta na żądanie, późniejsze zgłoszenie oczekuje startu z aplikacją — R-021 i D-04 wskazują Stan po kliknięciu ikony, późniejszy feedback kieruje do Home — D-05 opisuje dawną kolejność menu, kod ma Panel jako pierwszy
+
+`spec.md` nie został zmieniony w tej partii — powyższe różnice są materiałem wejściowym do specyfikacji właściciela
+
+### Granice wykonania i odbioru
+
+- Nie restartowano rzeczywistego właściciela w ramach tych poprawek — już uruchomiony proces nie wczytuje automatycznie zmian w publikacji stanu, powiadomieniach i launcherze
+- Nie wznawiano rzeczywistych transferów ani nie zmieniano w tej partii włączonych subskrypcji — wcześniejszy zapis Auto OFF i 0 włączonych jest historyczny, nie opisuje gwarantowanego bieżącego stanu po ręcznych działaniach właściciela
+- Nie uruchamiano płatnego tłumaczenia ani lektora dla mediów właściciela w celu sprawdzenia tej partii
+- Poprzednie sprzątanie folderów było osobnym, jawnym poleceniem — ta partia nie usuwa mediów
+- Pozostaje ręczny odbiór layoutu, odtwarzacza, zaznaczenia pliku w Explorer, kliknięć powiadomień, zachowania ikony po restarcie Explorer i współistnienia klientów
+- Pomiar P08 obejmował detekcję i bezczynność na syntetycznych danych — nie pełną wydajność biblioteki, zimny start, przepustowość mediów ani rzeczywiste premiery
+
+Do sprawdzenia interfejsu po wczytaniu aktualnego kodu: Enter z Home otwiera Panel, strzałki zawijają wybór, długi tytuł zawija wiersze, stopka pozostaje wyśrodkowana, Biblioteka Enter odtwarza lokalny film i F wskazuje go w folderze — sprawdzenie Auto/Manual wymaga świadomego wyboru zakresu, a nie uruchomienia całej rzeczywistej biblioteki
+
+### Weryfikacja partii i zapis Git
+
+Końcowe kontrole przed commitem tej partii:
+
+- `uv run ruff check anishift/ tests/` — PASS
+- `uv run ruff format --check anishift/ tests/` — PASS, 520 plików — przed końcową kontrolą formatter poprawił jeden plik testowy
+- `uv run mypy anishift/ tests/` — PASS, 522 pliki
+- `uv run mypy --platform linux anishift/ tests/` — PASS, 522 pliki
+- `uv run pytest -n 4 --tb=short -q` — PASS, exit 0, pełne skonfigurowane testpaths — 11 pominięć: 9 testów sieci zewnętrznej i 2 testy niedostępnych dowiązań katalogowych
+- `git diff --check` — PASS
+
+Pytest zgłosił ostrzeżenie deprecacji w zależności `google.genai` — nie było błędem testów i nie zmieniano zależności w tej partii
+
+Wcześniejsze liczby w sekcji 17 dotyczą wcześniejszych wersji drzewa — końcowy przebieg obejmuje również późniejsze przejście Auto/Manual do Panelu i poprawione dane testu planu bez zadań
+
+Punkt Git przed zapisem: `d9e36b8`, gałąź 27 commitów przed upstream — bieżący commit zawiera poprawki Panelu, współdzielony układ, obsługę zdarzeń i ten raport — push ma opublikować również wcześniej niewypchnięte commity tej gałęzi, bez merge do `main`
+
+Zapis w Git nie oznacza akceptacji produktu ani zamknięcia P07/P08 — następny zakres określi specyfikacja właściciela

@@ -18,13 +18,14 @@ from anishift.cli.interactive.prompts import (
 )
 
 
-def test_home_places_state_between_anime_and_settings() -> None:
+def test_home_selects_panel_before_processing_actions() -> None:
     content: Text = _home_content(120, 40, 0, MascotState.IDLE)
-    labels: list[str] = ["Auto", "Ręczny", "Anime", "Stan", "Ustawienia", "Wyjście"]
+    labels: list[str] = ["Panel", "Auto", "Ręczny", "Anime", "Ustawienia", "Wyjście"]
     rows: list[str] = [line.strip().removeprefix("\u276f").strip() for line in content.plain.split("\n")]
 
     assert [row for row in rows if row][-7:] == [*labels, "↑↓ · Enter"]
     assert len(HomeAction) == len(labels)
+    assert "\u276f Panel" in content.plain
 
 
 def test_the_footer_keeps_the_directory_and_version_at_opposite_edges() -> None:
@@ -145,7 +146,7 @@ def test_small_home_always_keeps_the_selected_action_visible(rows: int, selected
     frame = _fit_frame(content, "1.0.0", "workspace", 80, rows)
 
     assert "\u276f" in frame.plain
-    assert ("Auto", "Ręczny", "Anime", "Stan", "Ustawienia", "Wyjście")[selected] in frame.plain
+    assert ("Panel", "Auto", "Ręczny", "Anime", "Ustawienia", "Wyjście")[selected] in frame.plain
     assert frame.plain.split("\n")[-1].endswith("v1.0.0")
 
 
@@ -155,15 +156,15 @@ def test_home_balances_the_gaps_above_and_below_the_menu(size: tuple[int, int]) 
     content = _home_content(columns, rows, 0, MascotState.IDLE, native_size=(18, 11))
     frame = _fit_frame(content, "1.0.0", "workspace", columns, rows)
     lines: list[str] = frame.plain.split("\n")
-    menu_top: int = next(index for index, line in enumerate(lines) if "Auto" in line)
-    menu_bottom: int = next(index for index, line in enumerate(lines) if "↑↓" in line)
+    menu_top: int = next(index for index, line in enumerate(lines) if "Panel" in line)
+    menu_bottom: int = next(index for index, line in enumerate(lines) if "Wyjście" in line)
     brand_bottom: int = max(index for index, line in enumerate(lines[:menu_top]) if line.strip())
     geometry = resolve_home_geometry(columns, rows, (18, 11))
     if geometry.show_mascot:
         anchor: int = next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line)
         brand_bottom = max(brand_bottom, anchor + geometry.mascot_rows - 1)
     above: int = menu_top - brand_bottom - 1
-    below: int = rows - menu_bottom - 2
+    below: int = rows - menu_bottom - 3
 
     assert abs(above - below) <= 1
 
@@ -176,9 +177,9 @@ def test_home_padding_uses_resting_silhouette_and_excludes_footer(size: tuple[in
     frame = _fit_frame(content, "1.0.0", "workspace", columns, rows)
     lines: list[str] = frame.plain.split("\n")
     anchor: int = next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line)
-    menu_top: int = next(index for index, line in enumerate(lines) if "Auto" in line)
-    menu_bottom: int = next(index for index, line in enumerate(lines) if "↑↓" in line)
-    gaps: tuple[int, int, int] = (anchor + 3, menu_top - anchor - 11, rows - menu_bottom - 2)
+    menu_top: int = next(index for index, line in enumerate(lines) if "Panel" in line)
+    menu_bottom: int = next(index for index, line in enumerate(lines) if "Wyjście" in line)
+    gaps: tuple[int, int, int] = (anchor + 3, menu_top - anchor - 11, rows - menu_bottom - 3)
 
     assert max(gaps) - min(gaps) <= 1
     assert lines[-1].endswith("v1.0.0")

@@ -16,7 +16,9 @@ from fakes import write_text_source
 
 import anishift.application.automation as automation_module
 import anishift.application.watch as watch_module
+from anishift.application import TaskState
 from anishift.application.acquisition import AcquisitionService, DownloadReceipt, ReleaseCatalog, TorrentClient
+from anishift.application.artifacts import ArtifactState
 from anishift.application.automation import AutomationOwner
 from anishift.application.control import (
     AcquisitionConfirmation,
@@ -27,6 +29,7 @@ from anishift.application.control import (
     WatchState,
 )
 from anishift.application.control_views import encode_view
+from anishift.application.events import RunEvent, RunEventKind
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.intents import ProductIntent, ProductKind, RebuildRequest, RequestOrigin
 from anishift.application.planning import ExecutionPlan
@@ -732,11 +735,19 @@ def test_subscription_changes_survive_the_gap_between_intent_and_confirmation(
         thread.join(_TIMEOUT_S)
     assert not thread.is_alive()
     restored: AutomationOwner = _owner(service, store)
+    updates: list[Mapping[str, object]] = []
+
+    def record_update(frame: Mapping[str, object], terminal: bool) -> None:
+        del terminal
+        updates.append(frame)
+
+    restored.attach_broadcast(record_update)
     thread = _serving(restored)
     try:
         assert restored.handle(command).ok
         assert restored.handle(command).ok
         assert service.subscriptions.list()[0].enabled is False
+        assert any(frame.get("event") == "state_changed" for frame in updates)
         assert service.subscriptions.list()[0].generation == subscription.generation + 1
         assert all(receipt.pending is None for receipt in store.load().command_receipts)
     finally:
@@ -1255,6 +1266,50 @@ def test_every_state_change_reaches_the_subscribers(tmp_path: Path) -> None:
     assert {frame["event"] for frame in frames} == {"state_changed", "run_finished"}
     assert sum(frame["event"] == "run_finished" for frame in frames) == 1
     assert frames[-1]["payload"]
+
+
+def test_reusing_ready_results_does_not_emit_a_new_ready_notification(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    service._plan = replace(
+        service._plan,
+        groups=tuple(replace(group, task_ids=()) for group in service._plan.groups),
+        tasks=(),
+        artifacts=tuple(
+            replace(
+                item,
+                state=ArtifactState.READY,
+                path=item.path or item.planned_destination or tmp_path / item.artifact_id,
+            )
+            for item in service._plan.artifacts
+        ),
+    )
+    for item in service._plan.artifacts:
+        assert item.path is not None
+        assert item.path.is_relative_to(tmp_path)
+        if not item.path.exists():
+            item.path.parent.mkdir(parents=True, exist_ok=True)
+            item.path.write_bytes(b"ready")
+    owner: AutomationOwner = _owner(service, store)
+    frames: list[Mapping[str, object]] = []
+
+    def record(frame: Mapping[str, object], terminal: bool) -> None:
+        del terminal
+        frames.append(frame)
+
+    owner.attach_broadcast(record)
+    thread: threading.Thread = _serving(owner)
+    run_id: str = _started(owner)
+    try:
+        owner._publish_event(
+            RunEvent(run_id, 1, RunEventKind.GROUP_FINISHED, group_id=group_id, state=TaskState.SUCCEEDED)
+        )
+        assert owner.handle(_request("status")).ok
+        assert not any(frame.get("event") == "notification" for frame in frames)
+        assert not owner.state.notified
+    finally:
+        service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
 
 
 def test_a_restart_drops_the_reservations_of_the_previous_instance(tmp_path: Path) -> None:

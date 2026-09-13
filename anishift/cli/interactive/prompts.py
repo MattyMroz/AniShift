@@ -47,6 +47,9 @@ _HOME_MENU_WIDTH: Final[int] = 13
 _HOME_MENU_ROWS: Final[int] = 7
 """Rows occupied by the choices and keyboard hint."""
 
+_KEY_SEQUENCE_TIMEOUT_S: Final[float] = 0.05
+"""Wait for a terminal key sequence without delaying a standalone Escape."""
+
 TEXT_MASCOT_SIZE: Final[tuple[int, int]] = (18, 10)
 """Cells covered by the half-block mascot used without a native image."""
 
@@ -233,6 +236,8 @@ class TerminalRenderer:
             before_render=self._before_render,
             after_render=self._after_render,
         )
+        self._application.timeoutlen = _KEY_SEQUENCE_TIMEOUT_S
+        self._application.ttimeoutlen = _KEY_SEQUENCE_TIMEOUT_S
 
     @property
     def native_mascot_size(self) -> tuple[int, int] | None:

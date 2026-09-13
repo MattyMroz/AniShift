@@ -1,7 +1,3 @@
-"""CLI layer — Typer app + interactive shell (shell arrives in stage 2)."""
+"""Command-line entry points and the interactive application."""
 
 from __future__ import annotations
-
-from anishift.cli.main import app, main
-
-__all__ = ["app", "main"]

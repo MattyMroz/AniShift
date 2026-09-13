@@ -33,6 +33,7 @@ from anishift.application import (
     parse_query,
 )
 from anishift.application.events import sanitize_event_message
+from anishift.cli.interactive.menu import with_footer
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError, ErrorCode
@@ -686,8 +687,7 @@ class AnimeController:
         content.append(f"{' ' * left}> ", style="white_bold")
         content.append_text(self._query_input.render(width))
         content.append("\n")
-        hint_left: int = max((columns - Text(_QUERY_HINT).cell_len) // 2, 0)
-        return _finish(content, hint_left, _QUERY_HINT, columns)
+        return _finish(content, _QUERY_HINT, columns, rows)
 
     def _render_titles(self, columns: int, rows: int) -> Text:
         labels: tuple[str, ...] = tuple(
@@ -701,13 +701,13 @@ class AnimeController:
             content.append(" " * left)
             content.append(f"{_POINTER} " if index == self._highlighted else "  ", style=style)
             content.append(f"{labels[index]}\n", style=style)
-        return _finish(content, left, _TITLES_HINT, columns)
+        return _finish(content, _TITLES_HINT, columns, rows)
 
     def _render_busy(self, columns: int, rows: int) -> Text:
         content: Text = _header(_TITLE, columns, rows, 2)
         left: int = max((columns - len(self._busy)) // 2, 0)
         content.append(f"{' ' * left}{self._busy}\n", style="brand_accent")
-        return _finish(content, left, _BUSY_HINT, columns)
+        return _finish(content, _BUSY_HINT, columns, rows)
 
     def _render_results(self, columns: int, rows: int) -> Text:
         subtitle: str = self._title_header()
@@ -716,8 +716,8 @@ class AnimeController:
         labels: tuple[str, ...] = tuple(_row_label(row, max(columns - 8, 1)) for row in self._rows)
         left: int = max((columns - min(max((len(label) for label in labels), default=1) + 8, columns)) // 2, 0)
         heading: int = 2 + int(bool(subtitle))
-        lines: tuple[str, ...] = _wrapped_hint(self._footer(), max(columns - left, 1))[: max(rows - heading - 1, 1)]
-        start, end = _visible_window(len(self._rows), self._selected, rows, heading + len(lines))
+        lines: tuple[str, ...] = _wrapped_hint(self._footer(), max(columns - 2, 1))[: max(rows - heading - 2, 1)]
+        start, end = _visible_window(len(self._rows), self._selected, max(rows - 1, 1), heading + len(lines))
         content: Text = _header(_TITLE, columns, rows, end - start + len(lines) - 1 + int(bool(subtitle)), subtitle)
         for index in range(start, end):
             self._append_row(content, left, labels[index], index)
@@ -727,15 +727,15 @@ class AnimeController:
             content.append_text(prompt)
             content.append_text(self._range_input.render(max(columns - left - prompt.cell_len, 1)))
         else:
-            _append_hint(content, left, lines)
-        return content
+            return with_footer(content, lines, columns, rows)
+        return with_footer(content, ("Enter zatwierdź · Esc anuluj",), columns, rows)
 
     def _render_empty(self, columns: int, rows: int, subtitle: str) -> Text:
         sentence: str = self._empty_sentence()
         content: Text = _header(_TITLE, columns, rows, 2, subtitle)
         left: int = max((columns - len(sentence)) // 2, 0)
         content.append(f"{' ' * left}{sentence}\n", style="warning")
-        return _finish(content, left, _HINT_SEPARATOR.join(self._empty_hints()), columns)
+        return _finish(content, _HINT_SEPARATOR.join(self._empty_hints()), columns, rows)
 
     def _empty_sentence(self) -> str:
         if self._filtered and self._episodes is not None:
@@ -765,7 +765,7 @@ class AnimeController:
         content: Text = _header(_TITLE, columns, rows, 2)
         left: int = max((columns - len(self._done)) // 2, 0)
         content.append(f"{' ' * left}{self._done}\n", style="brand_accent")
-        return _finish(content, left, _DONE_HINT, columns)
+        return _finish(content, _DONE_HINT, columns, rows)
 
     def _render_problem(self, columns: int, rows: int) -> Text:
         lines: tuple[str, ...] = tuple(
@@ -775,7 +775,7 @@ class AnimeController:
         left: int = max((columns - min(max((len(line) for line in lines), default=1), columns)) // 2, 0)
         for index, line in enumerate(lines):
             content.append(f"{' ' * left}{line}\n", style="error" if index == 0 else "gray")
-        return _finish(content, left, _PROBLEM_HINT, columns)
+        return _finish(content, _PROBLEM_HINT, columns, rows)
 
     def _title_header(self) -> str:
         candidate: TitleCandidate | None = self._candidate
@@ -960,16 +960,8 @@ def _header(title: str, columns: int, rows: int, content_rows: int, subtitle: st
     return content
 
 
-def _finish(content: Text, left: int, hint: str, columns: int) -> Text:
-    _append_hint(content, left, _wrapped_hint(hint, max(columns - left, 1)))
-    return content
-
-
-def _append_hint(content: Text, left: int, lines: Sequence[str]) -> None:
-    for index, line in enumerate(lines):
-        if index:
-            content.append("\n")
-        content.append(f"{' ' * left}{line}", style="gray")
+def _finish(content: Text, hint: str, columns: int, rows: int) -> Text:
+    return with_footer(content, (hint,), columns, rows)
 
 
 def _wrapped_hint(hint: str, width: int) -> tuple[str, ...]:
@@ -983,7 +975,7 @@ def _wrapped_hint(hint: str, width: int) -> tuple[str, ...]:
             continue
         current = candidate
     lines.append(current)
-    return tuple(lines)
+    return tuple(_truncate_right(line, width) for line in lines)
 
 
 def _visible_window(count: int, selected: int, rows: int, reserved: int = _HEADER_ROWS) -> tuple[int, int]:

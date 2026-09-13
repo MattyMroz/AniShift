@@ -581,6 +581,8 @@ def test_completed_progress_keeps_the_brand_gradient_and_leading_checkmark() -> 
     assert _rows(progress) == [("✓ Done Episode.mkv", 100)]
     assert "success" not in _styles(progress)
     assert {"#0062fa", "#f9011a"} <= _styles(progress)
+    assert progress.pending_row_count == 0
+    assert "Episode" not in progress.render(120, include_completed=False).plain
 
 
 @pytest.mark.parametrize("columns", [120, 160, 240])
