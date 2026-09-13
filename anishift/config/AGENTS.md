@@ -35,4 +35,4 @@ Ustawienia i `Settings` (pydantic-settings, prefix `ANISHIFT_`, z `.env`), prefe
 - System env ma pierwszeństwo nad `.env`; nieznane klucze ignorowane (`extra="ignore"`, `case_sensitive=False`). `settings.py:102-107`
 - Zapis preferencji i presetów atomowy: `<name>.tmp` + `replace`. `user_settings.py:908-910`, `presets.py:122-124`
 - `load_user_settings` nigdy nie rzuca — brak/nieczytelny/zły-typ/poza-zakresem cicho wraca do defaultów, nieznane klucze odfiltrowane po `__dataclass_fields__`. `user_settings.py:826,849`
-- `DEFAULT_SUBDIRS` = dokładnie `("temp",)`. Run scope ma marker PID/run ID, a cleanup usuwa tylko bezpiecznie zweryfikowane, nieaktywne katalogi bez żywego właściciela. `workspace.py:52,55`
+- `DEFAULT_SUBDIRS` = `("temp", *TASK_DIRECTORIES)`, czyli `temp` plus foldery zadaniowe `subs`, `translate`, `audiobook`, `cover`. `ensure_workspace_dir` zwraca `WorkspaceConflict` dla każdej zarezerwowanej nazwy zajętej plikiem albo dowiązaniem: to miejsce zostaje nietknięte, pozostałe powstają. Run scope ma marker PID/run ID, a cleanup usuwa tylko bezpiecznie zweryfikowane, nieaktywne katalogi bez żywego właściciela. `workspace.py`

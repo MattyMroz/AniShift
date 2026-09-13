@@ -150,9 +150,15 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   wywołującego. `_finish_run` zawsze zamyka handler i sesję oraz zawsze rozwiązuje `RunHandle`,
   bo nierozwiązany handle wiesza `execute` na zawsze. `service.py`
 - `WatchStateStore` zapisuje atomowo: `state.json.tmp` + `fsync`, kopia czytelnego `state.json`
-  do `state.json.bak`, dopiero potem `replace`. Uszkodzony JSON, nieznany klucz i nieznana wersja
-  schematu dają `ConfigError`, nigdy pustego stanu; brak pliku to stan domyślny z wyłączonym Auto.
-  `watch_state.py`
+  do `state.json.bak`, dopiero potem `replace`. Uszkodzony JSON, nieznany klucz i nieobsługiwana
+  wersja schematu dają `ConfigError`, nigdy pustego stanu; brak pliku to stan domyślny z wyłączonym
+  Auto. `WATCH_STATE_SCHEMA_VERSION` to `2`, a loader przyjmuje 1 i 2: starszy plik `load()` migruje
+  raz, zostawia kopię `state.json.v1.bak` i przepisuje plik, więc drugi `load()` nie zmienia bajtów.
+  Walidacja jest wersjonowana — dokument wersji 2 musi zawierać wszystkie sekcje schematu 2
+  (`recipes`, `ready_groups`, `pause_owned_transfers`, `pending_deletions`, `complete_files`), a
+  dokument wersji 1 nie może zawierać żadnej z nich. Migracja nadaje `complete_files` z
+  `required_files` wyłącznie potwierdzeniom w stanie `COMPLETE`. Trwałe ścieżki `ReadyGroup`
+  i `PendingDeletion` przechodzą przez `require_relative_paths`. `watch_state.py`, `control.py`
 - `subscription_id` i `_matches` porównują serię po postaci znormalizowanej (`normalize_series`,
   `series_forms`), nie po surowym zapisie wybranego wydania. Etykietą grupy w katalogu jest
   pierwszy napotkany zapis, więc dosłowne porównanie cicho zabijało subskrypcję. `subscriptions.py`
