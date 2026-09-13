@@ -22,6 +22,7 @@ from anishift.application.artifacts import (
     create_group_id,
 )
 from anishift.application.products import ProductName, classify_product
+from anishift.application.workflows import WorkflowRoute, route_within
 from anishift.paths import TEMP_DIRECTORY
 
 # ── Constants ──────────────────────────────────────────────────────────────
@@ -120,7 +121,9 @@ class DiscoveryIndex:
             return False
         if any(part.startswith(".") or part == ".." for part in relative.parts):
             return False
-        return not any(parent.is_symlink() for parent in (path, *path.parents) if parent.is_relative_to(self._root))
+        return not any(
+            _leads_elsewhere(parent) for parent in (path, *path.parents) if parent.is_relative_to(self._root)
+        )
 
 
 def discover_groups(root: Path) -> DiscoveryResult:
@@ -185,12 +188,17 @@ def group_candidates(candidates: Sequence[ArtifactName], root: Path) -> tuple[So
     for candidate in candidates:
         buckets.setdefault(_candidate_group_key(candidate), []).append(candidate)
 
+    resolved_root: Path = root.resolve()
+    routes: dict[Path, WorkflowRoute] = {}
     groups: list[SourceGroup] = []
     for key in sorted(buckets):
         bucket: tuple[ArtifactName, ...] = tuple(sorted(buckets[key], key=_candidate_sort_key))
         if not any(candidate.is_primary for candidate in bucket):
             continue
-        groups.append(_build_source_group(bucket, root))
+        directory: Path = bucket[0].path.parent
+        if directory not in routes:
+            routes[directory] = route_within(resolved_root, directory.resolve())
+        groups.append(_build_source_group(bucket, root, routes[directory]))
     return tuple(groups)
 
 
@@ -202,7 +210,7 @@ def _iter_source_paths(root: Path) -> Iterator[Path]:
 
 
 def _iter_entry_sources(entry: Path) -> Iterator[Path]:
-    if entry.is_symlink():
+    if _leads_elsewhere(entry):
         return
     if entry.is_dir():
         for child in _iter_visible_entries(entry):
@@ -214,6 +222,10 @@ def _iter_entry_sources(entry: Path) -> Iterator[Path]:
 
 def _iter_visible_entries(directory: Path) -> Iterator[Path]:
     return (entry for entry in directory.iterdir() if not entry.name.startswith("."))
+
+
+def _leads_elsewhere(place: Path) -> bool:
+    return place.is_symlink() or place.is_junction()
 
 
 def _relative_sort_key(path: Path, root: Path) -> tuple[str, str]:
@@ -269,7 +281,7 @@ def _artifact_name(
     )
 
 
-def _build_source_group(candidates: tuple[ArtifactName, ...], root: Path) -> SourceGroup:
+def _build_source_group(candidates: tuple[ArtifactName, ...], root: Path, route: WorkflowRoute) -> SourceGroup:
     first: ArtifactName = candidates[0]
     group_id: str = create_group_id(first.path.parent.relative_to(root), first.stem)
     discovered_artifacts: tuple[Artifact, ...] = tuple(_to_artifact(candidate, group_id) for candidate in candidates)
@@ -282,6 +294,7 @@ def _build_source_group(candidates: tuple[ArtifactName, ...], root: Path) -> Sou
         directory=first.path.parent,
         artifacts=tuple(artifacts_by_id.values()),
         conflicts=_find_conflicts(candidates),
+        route=route,
     )
 
 

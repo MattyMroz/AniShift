@@ -8,22 +8,38 @@ import os
 import re
 import sys
 from collections.abc import Collection
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
-from typing import Final
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Final
 
 from anishift.errors import ErrorCode, ErrorContext, FatalError
-from anishift.paths import TEMP_DIRECTORY, default_workspace_dir, repo_root, temp_dir
+from anishift.paths import (
+    TASK_DIRECTORIES,
+    TEMP_DIRECTORY,
+    default_workspace_dir,
+    repo_root,
+    task_dir,
+    temp_dir,
+)
 from anishift.utils.logger import get_logger
 from anishift.utils.safe_fs import safe_rmtree
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 __all__ = [
     "DEFAULT_SUBDIRS",
     "ENV_WORKSPACE_ROOT",
     "RUN_OWNER_MARKER_NAME",
+    "ReservedNameConflict",
+    "WorkspaceConflict",
     "WorkspaceRootNotResolvedError",
     "cleanup_orphaned_temp",
     "ensure_workspace_dir",
     "group_temp_dir",
+    "occupied_task_dirs",
     "resolve_workspace_root",
     "run_temp_dir",
 ]
@@ -36,7 +52,7 @@ ENV_WORKSPACE_ROOT: Final[str] = "ANISHIFT_WORKSPACE_ROOT"
 _REPO_MARKER: Final[str] = "pyproject.toml"
 """File whose presence identifies the repository root."""
 
-DEFAULT_SUBDIRS: Final[tuple[str, ...]] = (TEMP_DIRECTORY,)
+DEFAULT_SUBDIRS: Final[tuple[str, ...]] = (TEMP_DIRECTORY, *TASK_DIRECTORIES)
 """Subdirectories materialised by :func:`ensure_workspace_dir`."""
 
 RUN_OWNER_MARKER_NAME: Final[str] = ".anishift-owner"
@@ -57,8 +73,37 @@ _STILL_ACTIVE: Final[int] = 259
 logger = get_logger(__name__)
 
 
+class ReservedNameConflict(StrEnum):
+    """Why one reserved workspace name keeps whatever it already holds."""
+
+    NOT_A_DIRECTORY = "not_a_directory"
+    LINK = "link"
+
+
+_CONFLICT_REASONS: Final[Mapping[ReservedNameConflict, str]] = MappingProxyType(
+    {
+        ReservedNameConflict.NOT_A_DIRECTORY: "zarezerwowaną nazwę zajmuje plik, nic nie zostało ruszone",
+        ReservedNameConflict.LINK: "zarezerwowana nazwa jest dowiązaniem, nic nie zostało ruszone",
+    }
+)
+"""Polish reason shown for one reserved workspace name left exactly as it was found."""
+
+
 class WorkspaceRootNotResolvedError(FatalError):
     """Raised when the workspace root cannot be resolved."""
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceConflict:
+    """One reserved workspace name that could not become a directory and was left untouched."""
+
+    name: str
+    kind: ReservedNameConflict
+
+    @property
+    def message(self) -> str:
+        """Return the Polish sentence naming the refused place and its reason."""
+        return f"{self.name}: {_CONFLICT_REASONS[self.kind]}"
 
 
 def _read_env_override() -> Path | None:
@@ -101,15 +146,26 @@ def resolve_workspace_root(*, override: str | Path | None = None) -> Path:
     return inferred
 
 
-def ensure_workspace_dir(root: Path) -> None:
-    """Create ``root`` and every entry in :data:`DEFAULT_SUBDIRS`."""
+def ensure_workspace_dir(root: Path) -> tuple[WorkspaceConflict, ...]:
+    """Create ``root`` and every entry in :data:`DEFAULT_SUBDIRS`, reporting each name left untouched."""
     if root.exists() and not root.is_dir():
         msg = f"workspace root exists but is not a directory: {root}"
         raise NotADirectoryError(msg)
     root.mkdir(parents=True, exist_ok=True)
+    conflicts: list[WorkspaceConflict] = []
     for sub in DEFAULT_SUBDIRS:
-        (root / sub).mkdir(parents=True, exist_ok=True)
+        conflict: WorkspaceConflict | None = _prepare_subdirectory(root / sub, sub)
+        if conflict is None:
+            continue
+        conflicts.append(conflict)
+        logger.warning("Reserved workspace name left untouched", place=sub, reason=conflict.kind.value)
     logger.debug("Workspace directories ready", workspace_name=root.name, subdirectories=DEFAULT_SUBDIRS)
+    return tuple(conflicts)
+
+
+def occupied_task_dirs(root: Path) -> tuple[str, ...]:
+    """Return the task folders that already hold content, reading the workspace without changing it."""
+    return tuple(name for name in TASK_DIRECTORIES if _holds_content(task_dir(root, name)))
 
 
 def run_temp_dir(root: Path, run_id: str) -> Path:
@@ -154,6 +210,22 @@ def cleanup_orphaned_temp(root: Path, *, active_run_ids: Collection[str]) -> tup
             continue
         removed.append(candidate)
     return tuple(removed)
+
+
+def _prepare_subdirectory(place: Path, name: str) -> WorkspaceConflict | None:
+    if place.is_symlink() or place.is_junction():
+        return WorkspaceConflict(name=name, kind=ReservedNameConflict.LINK)
+    if place.exists() and not place.is_dir():
+        return WorkspaceConflict(name=name, kind=ReservedNameConflict.NOT_A_DIRECTORY)
+    if not place.is_dir():
+        place.mkdir(parents=True, exist_ok=True)
+    return None
+
+
+def _holds_content(place: Path) -> bool:
+    if place.is_symlink() or place.is_junction() or not place.is_dir():
+        return False
+    return any(place.iterdir())
 
 
 def _validate_runtime_id(value: str, label: str) -> None:

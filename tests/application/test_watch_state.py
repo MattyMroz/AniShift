@@ -10,25 +10,35 @@ from anishift.application.control import (
     WATCH_STATE_SCHEMA_VERSION,
     AcquisitionConfirmation,
     AcquisitionState,
+    AudiobookRecipe,
     AutomationPolicy,
     CommandReceipt,
     ManualHandledMarker,
+    NarrationTimeline,
+    PendingDeletion,
     ProcessingRequest,
     ProductConfirmation,
     ProviderLock,
+    ReadyGroup,
+    RecipePreferences,
     RequestState,
     Reservation,
     SourceFingerprint,
     SourceSelection,
+    TextResultFormat,
+    TranslateRecipe,
     WatchState,
 )
-from anishift.application.intents import ProductKind, RebuildRequest, RequestOrigin
+from anishift.application.intents import ProductKind, RebuildRequest, RequestOrigin, TranslationAction
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore, watch_state_path
+from anishift.application.workflows import WorkflowTarget
 from anishift.errors import ConfigError, ErrorCode
 
 _TIMESTAMP: str = "2026-09-08T12:00:00+00:00"
 
 _FINGERPRINT: SourceFingerprint = (("episode-01.mkv", 1024, 111),)
+
+_SCHEMA_TWO_SECTIONS: tuple[str, ...] = ("recipes", "ready_groups", "pause_owned_transfers", "pending_deletions")
 
 
 def _store(tmp_path: Path) -> WatchStateStore:
@@ -94,6 +104,23 @@ def _state() -> WatchState:
 
 def _write(tmp_path: Path, document: object) -> None:
     (tmp_path / WATCH_STATE_FILE_NAME).write_text(json.dumps(document), encoding="utf-8")
+
+
+def _schema_one_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
+    _store(tmp_path).save(state)
+    document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+    document["schema_version"] = 1
+    for key in _SCHEMA_TWO_SECTIONS:
+        document.pop(key)
+    for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
+        acquisition.pop("complete_files")
+    return document
+
+
+def _write_schema_one(tmp_path: Path, state: WatchState) -> str:
+    text: str = json.dumps(_schema_one_document(tmp_path, state))
+    (tmp_path / WATCH_STATE_FILE_NAME).write_text(text, encoding="utf-8")
+    return text
 
 
 def test_store_round_trips_every_recorded_fact(tmp_path: Path) -> None:
@@ -215,6 +242,192 @@ def test_saving_always_writes_the_current_schema_version(tmp_path: Path) -> None
         WATCH_STATE_SCHEMA_VERSION
     )
     assert store.load().schema_version == WATCH_STATE_SCHEMA_VERSION
+
+
+def test_a_schema_one_state_is_migrated_once_and_keeps_every_recorded_fact(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    original: str = _write_schema_one(tmp_path, _state())
+
+    migrated: WatchState = store.load()
+
+    assert migrated == _state()
+    assert migrated.schema_version == WATCH_STATE_SCHEMA_VERSION
+    assert (tmp_path / f"{WATCH_STATE_FILE_NAME}.v1.bak").read_text(encoding="utf-8") == original
+    after: str = (tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8")
+    assert store.load() == migrated
+    assert (tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8") == after
+
+
+def test_migrating_a_schema_one_state_fills_the_new_facts_with_their_defaults(tmp_path: Path) -> None:
+    _write_schema_one(tmp_path, _state())
+
+    migrated: WatchState = _store(tmp_path).load()
+
+    assert migrated.recipes == RecipePreferences()
+    assert migrated.recipes.translate.text_result is TextResultFormat.TEXT
+    assert migrated.recipes.audiobook.timeline is NarrationTimeline.CONTINUOUS
+    assert (migrated.ready_groups, migrated.pause_owned_transfers, migrated.pending_deletions) == ((), (), ())
+    assert migrated.acquisitions[0].complete_files == ()
+
+
+def test_migration_never_overwrites_a_backup_left_by_an_earlier_attempt(tmp_path: Path) -> None:
+    _write_schema_one(tmp_path, _state())
+    backup: Path = tmp_path / f"{WATCH_STATE_FILE_NAME}.v1.bak"
+    backup.write_text("kept", encoding="utf-8")
+
+    _store(tmp_path).load()
+
+    assert backup.read_text(encoding="utf-8") == "kept"
+
+
+@pytest.mark.parametrize("section", _SCHEMA_TWO_SECTIONS)
+def test_a_schema_two_state_missing_a_section_it_must_carry_is_refused(tmp_path: Path, section: str) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    store.save(_state())
+    document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+    document.pop(section)
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        store.load()
+
+
+@pytest.mark.parametrize("section", _SCHEMA_TWO_SECTIONS)
+def test_a_schema_two_state_with_a_malformed_section_is_refused(tmp_path: Path, section: str) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    store.save(_state())
+    document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+    document[section] = "nonsense"
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        store.load()
+
+
+def test_a_schema_two_acquisition_without_its_completeness_is_refused(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    store.save(_state())
+    document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+    for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
+        acquisition.pop("complete_files")
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        store.load()
+
+
+@pytest.mark.parametrize("section", _SCHEMA_TWO_SECTIONS)
+def test_a_schema_one_state_carrying_a_schema_two_section_is_refused(tmp_path: Path, section: str) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    document: dict[str, object] = _schema_one_document(tmp_path, _state())
+    document[section] = []
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        store.load()
+
+
+def test_a_schema_one_acquisition_claiming_completeness_is_refused(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    document: dict[str, object] = _schema_one_document(tmp_path, _state())
+    for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
+        acquisition["complete_files"] = []
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        store.load()
+
+
+def test_a_truncated_state_still_raises_instead_of_answering_with_defaults(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    store.save(_state())
+    full: str = (tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8")
+    (tmp_path / WATCH_STATE_FILE_NAME).write_text(full[: len(full) // 2], encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        store.load()
+
+
+def test_migrating_a_completed_download_keeps_every_required_file_complete(tmp_path: Path) -> None:
+    complete: AcquisitionConfirmation = AcquisitionConfirmation(
+        operation_id="operation-2",
+        info_hash="ddeeff",
+        directory="Solo Leveling",
+        required_files=("one.mkv", "two.mkv"),
+        state=AcquisitionState.COMPLETE,
+        origin=RequestOrigin.BACKGROUND,
+        subscription_id=None,
+        episode="1",
+        updated_at=_TIMESTAMP,
+        complete_files=("one.mkv", "two.mkv"),
+    )
+    _write_schema_one(tmp_path, replace(_state(), acquisitions=(complete,)))
+
+    migrated: WatchState = _store(tmp_path).load()
+
+    assert migrated.acquisitions[0].complete_files == ("one.mkv", "two.mkv")
+
+
+@pytest.mark.parametrize(
+    "state",
+    [AcquisitionState.PENDING_SEND, AcquisitionState.UNCERTAIN, AcquisitionState.ACCEPTED, AcquisitionState.FAILED],
+)
+def test_migrating_an_unfinished_download_invents_no_completeness(tmp_path: Path, state: AcquisitionState) -> None:
+    unfinished: AcquisitionConfirmation = replace(
+        _state().acquisitions[0], state=state, required_files=("one.mkv", "two.mkv")
+    )
+    _write_schema_one(tmp_path, replace(_state(), acquisitions=(unfinished,)))
+
+    migrated: WatchState = _store(tmp_path).load()
+
+    assert (migrated.acquisitions[0].state, migrated.acquisitions[0].complete_files) == (state, ())
+
+
+def test_a_migrated_state_keeps_automatic_work_switched_off(tmp_path: Path) -> None:
+    _write_schema_one(tmp_path, replace(_state(), policy=AutomationPolicy(auto_enabled=False)))
+
+    assert _store(tmp_path).load().policy.auto_enabled is False
+
+
+def test_the_store_round_trips_the_facts_added_by_schema_two(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    state: WatchState = replace(
+        _state(),
+        recipes=RecipePreferences(
+            translate=TranslateRecipe(TextResultFormat.SUBTITLES, TranslationAction.TRANSLATE),
+            audiobook=AudiobookRecipe(TranslationAction.DO_NOT_TRANSLATE, NarrationTimeline.SOURCE_TIMES),
+        ),
+        ready_groups=(
+            ReadyGroup(
+                set_id="set-1",
+                group_id="ready-episode-01",
+                stem="episode-01",
+                source_directory="audiobook/Solo Leveling",
+                source_stem="episode-01",
+                target=WorkflowTarget.AUDIOBOOK,
+                sources=("ready/episode-01.mkv",),
+                products=("ready/episode-01.m4a",),
+                main_result="ready/episode-01.m4a",
+                pending_source=None,
+                recipe=RecipePreferences(audiobook=AudiobookRecipe(timeline=NarrationTimeline.SOURCE_TIMES)),
+            ),
+        ),
+        pause_owned_transfers=("aabbcc",),
+        pending_deletions=(
+            PendingDeletion(
+                operation_id="deletion-1",
+                set_id="set-1",
+                requested_at=_TIMESTAMP,
+                files=(("ready/episode-01.mkv", 1024, 111), ("ready/episode-01.m4a", 2048, 222)),
+                recycled=("ready/episode-01.mkv",),
+            ),
+        ),
+        acquisitions=(replace(_state().acquisitions[0], complete_files=("episode-01.mkv",)),),
+    )
+
+    store.save(state)
+
+    assert store.load() == state
 
 
 def test_the_state_lives_beside_the_other_watch_files() -> None:

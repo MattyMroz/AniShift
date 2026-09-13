@@ -1,29 +1,55 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from anishift.application.control import (
+    AcquisitionConfirmation,
+    AcquisitionState,
+    AudiobookRecipe,
     AutomationPolicy,
     CommandReceipt,
     ManualHandledMarker,
+    NarrationTimeline,
+    PendingDeletion,
+    PreflightFindingKind,
     ProcessingRequest,
+    ReadyGroup,
+    RecipePreferences,
     RequestState,
     Reservation,
     SourceFingerprint,
     SourceSelection,
+    TextResultFormat,
+    TranslateRecipe,
     WatchState,
     auto_admissible,
     mark_manual_handled,
+    preflight,
     record_command,
     record_request,
     release,
     reserve,
 )
-from anishift.application.intents import ProductKind, RequestOrigin
+from anishift.application.intents import ProductKind, RequestOrigin, TranslationAction
+from anishift.application.workflows import WorkflowTarget
+from anishift.config.workspace import ensure_workspace_dir, occupied_task_dirs
 
 _TIMESTAMP: str = "2026-09-08T12:00:00+00:00"
+
+_WINDOWS_PATH_ESCAPES: tuple[str, ...] = ("C:/outside.mkv", "C:outside.mkv") if sys.platform == "win32" else ()
+
+_PATH_ESCAPES: tuple[str, ...] = (
+    "../../outside.mkv",
+    "ready/../../outside.mkv",
+    "/outside.mkv",
+    "//server/share/outside.mkv",
+    " ",
+    *_WINDOWS_PATH_ESCAPES,
+)
 
 _FINGERPRINT: SourceFingerprint = (("episode-01.mkv", 1024, 111),)
 
@@ -255,3 +281,168 @@ def test_a_request_accepts_a_setting_whose_name_only_resembles_a_secret() -> Non
     request: ProcessingRequest = replace(_request(), settings={"llm_max_output_tokens": 32000, "keyframe_gap": 2})
 
     assert request.settings["llm_max_output_tokens"] == 32000
+
+
+def test_a_settled_configuration_has_nothing_to_report_before_a_transition() -> None:
+    state: WatchState = replace(WatchState(), policy=AutomationPolicy(auto_enabled=True))
+
+    assert preflight(state) == ()
+
+
+def test_preflight_reports_a_pause_a_directory_exception_and_an_unfinished_request() -> None:
+    state: WatchState = WatchState(
+        policy=AutomationPolicy(auto_enabled=False, directory_exceptions={"Solo Leveling": False}),
+        requests=(_request(state=RequestState.RUNNING), _request(request_id="request-2", state=RequestState.SUCCEEDED)),
+    )
+
+    findings = preflight(state, refused_names=("cover",), occupied_names=("subs",))
+
+    assert [(item.kind, item.subject) for item in findings] == [
+        (PreflightFindingKind.AUTOMATION_PAUSED, ""),
+        (PreflightFindingKind.DIRECTORY_EXCEPTION, "Solo Leveling"),
+        (PreflightFindingKind.UNFINISHED_REQUEST, "request-1"),
+        (PreflightFindingKind.RESERVED_NAME_REFUSED, "cover"),
+        (PreflightFindingKind.RESERVED_NAME_OCCUPIED, "subs"),
+    ]
+
+
+def test_preflight_composes_the_persisted_state_with_the_real_reserved_names(tmp_path: Path) -> None:
+    root: Path = tmp_path / "workspace"
+    root.mkdir()
+    (root / "cover").write_text("mine", encoding="utf-8")
+    refused: tuple[str, ...] = tuple(item.name for item in ensure_workspace_dir(root))
+    (root / "audiobook" / "01.mkv").write_bytes(b"already here")
+    state: WatchState = WatchState(
+        policy=AutomationPolicy(auto_enabled=False, directory_exceptions={"Solo Leveling": False}),
+        requests=(_request(state=RequestState.RUNNING),),
+    )
+
+    findings = preflight(state, refused_names=refused, occupied_names=occupied_task_dirs(root))
+
+    assert [(item.kind, item.subject) for item in findings] == [
+        (PreflightFindingKind.AUTOMATION_PAUSED, ""),
+        (PreflightFindingKind.DIRECTORY_EXCEPTION, "Solo Leveling"),
+        (PreflightFindingKind.UNFINISHED_REQUEST, "request-1"),
+        (PreflightFindingKind.RESERVED_NAME_REFUSED, "cover"),
+        (PreflightFindingKind.RESERVED_NAME_OCCUPIED, "audiobook"),
+    ]
+    assert (root / "cover").read_text(encoding="utf-8") == "mine"
+    assert (root / "audiobook" / "01.mkv").read_bytes() == b"already here"
+
+
+def test_preflight_leaves_the_state_exactly_as_it_was() -> None:
+    state: WatchState = WatchState(requests=(_request(state=RequestState.PAUSED),))
+
+    assert preflight(state, occupied_names=("cover",))
+    assert state == WatchState(requests=(_request(state=RequestState.PAUSED),))
+
+
+def _ready_group(**changes: object) -> ReadyGroup:
+    group: ReadyGroup = ReadyGroup(
+        set_id="set-1",
+        group_id="ready-episode-01",
+        stem="episode-01",
+        source_directory="audiobook/Solo Leveling",
+        source_stem="episode-01",
+        target=WorkflowTarget.AUDIOBOOK,
+        sources=("ready/episode-01.mkv",),
+        products=("ready/episode-01.m4a",),
+        main_result="ready/episode-01.m4a",
+    )
+    return replace(group, **changes)  # type: ignore[arg-type]
+
+
+def _deletion() -> PendingDeletion:
+    return PendingDeletion(
+        operation_id="deletion-1",
+        set_id="set-1",
+        requested_at=_TIMESTAMP,
+        files=(("ready/episode-01.mkv", 1024, 111), ("ready/episode-01.m4a", 2048, 222)),
+        recycled=("ready/episode-01.mkv",),
+    )
+
+
+def test_a_completed_set_remembers_where_it_came_from_and_which_target_made_it() -> None:
+    group: ReadyGroup = _ready_group()
+
+    assert group.target is WorkflowTarget.AUDIOBOOK
+    assert (group.source_directory, group.source_stem) == ("audiobook/Solo Leveling", "episode-01")
+    assert group.pending_source is None
+
+
+def test_a_completed_set_remembers_the_recipe_delta_it_was_admitted_with() -> None:
+    admitted: RecipePreferences = RecipePreferences(
+        translate=TranslateRecipe(TextResultFormat.SUBTITLES, TranslationAction.TRANSLATE),
+        audiobook=AudiobookRecipe(TranslationAction.DO_NOT_TRANSLATE, NarrationTimeline.SOURCE_TIMES),
+    )
+
+    group: ReadyGroup = _ready_group(recipe=admitted)
+
+    assert group.recipe == admitted
+    assert _ready_group().recipe == RecipePreferences()
+
+
+def test_a_completed_set_refuses_a_main_result_that_is_not_its_own_file() -> None:
+    with pytest.raises(ValueError, match="own files"):
+        _ready_group(main_result="ready/other.m4a")
+
+
+@pytest.mark.parametrize("blank", [{"set_id": " "}, {"group_id": ""}, {"stem": "  "}])
+def test_a_completed_set_refuses_a_missing_identity(blank: dict[str, str]) -> None:
+    with pytest.raises(ValueError, match="identity"):
+        _ready_group(**blank)
+
+
+@pytest.mark.parametrize("escape", _PATH_ESCAPES)
+def test_a_completed_set_refuses_a_file_outside_the_library(escape: str) -> None:
+    with pytest.raises(ValueError, match="relative path inside the library"):
+        _ready_group(sources=(escape,))
+    with pytest.raises(ValueError, match="relative path inside the library"):
+        _ready_group(products=(escape,))
+    with pytest.raises(ValueError, match="relative path inside the library"):
+        _ready_group(main_result=escape)
+    with pytest.raises(ValueError, match="relative path inside the library"):
+        _ready_group(pending_source=escape)
+
+
+def test_a_pending_deletion_tracks_only_the_files_it_confirmed() -> None:
+    deletion: PendingDeletion = _deletion()
+
+    assert deletion.recycled == ("ready/episode-01.mkv",)
+    with pytest.raises(ValueError, match="belong"):
+        replace(deletion, recycled=("ready/other.mkv",))
+    with pytest.raises(ValueError, match="at least one file"):
+        replace(deletion, files=(), recycled=())
+
+
+def test_a_pending_deletion_carries_the_identity_of_every_file_it_covers() -> None:
+    deletion: PendingDeletion = _deletion()
+
+    assert deletion.files == (("ready/episode-01.mkv", 1024, 111), ("ready/episode-01.m4a", 2048, 222))
+
+
+@pytest.mark.parametrize("escape", _PATH_ESCAPES)
+def test_a_pending_deletion_refuses_a_file_outside_the_library(escape: str) -> None:
+    with pytest.raises(ValueError, match="relative path inside the library"):
+        replace(_deletion(), files=((escape, 1024, 111),), recycled=())
+    with pytest.raises(ValueError, match="relative path inside the library"):
+        replace(_deletion(), recycled=(escape,))
+
+
+def test_a_transfer_only_reports_complete_files_it_actually_required() -> None:
+    confirmation: AcquisitionConfirmation = AcquisitionConfirmation(
+        operation_id="operation-1",
+        info_hash="AABBCC",
+        directory="Solo Leveling",
+        required_files=("episode-01.mkv", "episode-02.mkv"),
+        state=AcquisitionState.ACCEPTED,
+        origin=RequestOrigin.BACKGROUND,
+        subscription_id=None,
+        episode="1",
+        updated_at=_TIMESTAMP,
+        complete_files=("episode-01.mkv",),
+    )
+
+    assert confirmation.complete_files == ("episode-01.mkv",)
+    with pytest.raises(ValueError, match="required from the release"):
+        replace(confirmation, complete_files=("episode-03.mkv",))

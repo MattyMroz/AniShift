@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -11,19 +12,35 @@ from anishift.application.control import (
     WATCH_STATE_SCHEMA_VERSION,
     AcquisitionConfirmation,
     AcquisitionState,
+    AudiobookRecipe,
     AutomationPolicy,
     CommandReceipt,
     ManualHandledMarker,
+    NarrationTimeline,
+    PendingDeletion,
+    PreflightFinding,
     ProcessingRequest,
     ProductConfirmation,
     ProviderLock,
+    ReadyGroup,
+    RecipePreferences,
     RequestState,
     Reservation,
     SourceSelection,
+    TextResultFormat,
+    TranslateRecipe,
     WatchState,
+    preflight,
 )
 from anishift.application.control_payloads import decode_intent, encode_intent
-from anishift.application.intents import GroupIntent, ProductKind, RebuildRequest, RequestOrigin
+from anishift.application.intents import (
+    GroupIntent,
+    ProductKind,
+    RebuildRequest,
+    RequestOrigin,
+    TranslationAction,
+)
+from anishift.application.workflows import WorkflowTarget
 from anishift.errors import ConfigError, ErrorCode, ErrorContext
 from anishift.paths import run_journal_dir, watch_dir
 from anishift.utils.logger import get_logger
@@ -55,6 +72,23 @@ WATCH_STATE_FILE_NAME: Final[str] = "state.json"
 _BACKUP_SUFFIX: Final[str] = ".bak"
 """Ending of the copy kept from the last state that could be read back."""
 
+_SCHEMA_BACKUP_TEMPLATE: Final[str] = ".v{version}.bak"
+"""Ending of the copy kept from a document an older schema wrote, before it is rewritten."""
+
+_SCHEMA_ONE: Final[int] = 1
+"""Schema this build still reads and migrates once, filling the sections it never wrote."""
+
+_SUPPORTED_SCHEMA_VERSIONS: Final[frozenset[int]] = frozenset({_SCHEMA_ONE, WATCH_STATE_SCHEMA_VERSION})
+"""Schema versions of the automation state this build still reads."""
+
+_SCHEMA_TWO_SECTIONS: Final[tuple[str, ...]] = (
+    "recipes",
+    "ready_groups",
+    "pause_owned_transfers",
+    "pending_deletions",
+)
+"""Root sections schema 2 added, which every schema 2 document must carry and no schema 1 one may."""
+
 _TEMPORARY_SUFFIX: Final[str] = ".tmp"
 """Ending of the file a save writes before it replaces the state."""
 
@@ -72,7 +106,7 @@ _ROOT_KEYS: Final[frozenset[str]] = frozenset(
         "notified",
     }
 )
-"""Only root keys accepted from a persisted automation state."""
+"""Only root keys accepted from a persisted automation state, beside the sections schema 2 added."""
 
 _POLICY_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -128,7 +162,7 @@ _ACQUISITION_KEYS: Final[frozenset[str]] = frozenset(
         "updated_at",
     }
 )
-"""Keys a serialized acquisition confirmation must carry."""
+"""Keys a serialized acquisition confirmation must carry beside the completeness schema 2 added."""
 
 _PRODUCT_KEYS: Final[frozenset[str]] = frozenset(
     {"group_id", "artifact_kind", "path", "generation", "request_id", "origin"}
@@ -137,6 +171,37 @@ _PRODUCT_KEYS: Final[frozenset[str]] = frozenset(
 
 _PROVIDER_LOCK_KEYS: Final[frozenset[str]] = frozenset({"provider", "until", "reason"})
 """Keys a serialized provider lock must carry."""
+
+_RECIPES_KEYS: Final[frozenset[str]] = frozenset({"translate", "audiobook"})
+"""Keys a serialized set of recipe preferences must carry."""
+
+_TRANSLATE_RECIPE_KEYS: Final[frozenset[str]] = frozenset({"text_result", "translation_action"})
+"""Keys a serialized translate recipe must carry."""
+
+_AUDIOBOOK_RECIPE_KEYS: Final[frozenset[str]] = frozenset({"translation_action", "timeline"})
+"""Keys a serialized audiobook recipe must carry."""
+
+_READY_GROUP_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "set_id",
+        "group_id",
+        "stem",
+        "source_directory",
+        "source_stem",
+        "target",
+        "sources",
+        "products",
+        "main_result",
+        "pending_source",
+        "recipe",
+    }
+)
+"""Keys a serialized completed set must carry."""
+
+_PENDING_DELETION_KEYS: Final[frozenset[str]] = frozenset(
+    {"operation_id", "set_id", "requested_at", "files", "recycled"}
+)
+"""Keys a serialized pending deletion must carry."""
 
 _RECEIPT_KEYS: Final[frozenset[str]] = frozenset({"command_id", "accepted_at", "outcome"})
 """Keys a serialized command receipt must carry."""
@@ -173,14 +238,17 @@ class WatchStateStore:
         return run_journal_dir(self._path.parent) / f"{run_id}.json"
 
     def load(self) -> WatchState:
-        """Read the stored automation state, or the default one when nothing was written yet."""
+        """Read the stored automation state, migrating an older schema once, never answering empty."""
         try:
             text: str = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return WatchState()
         except (OSError, UnicodeDecodeError) as problem:
             raise _invalid_file() from problem
-        return _parse(text)
+        stored: WatchState = _parse(text)
+        if stored.schema_version == WATCH_STATE_SCHEMA_VERSION:
+            return stored
+        return self._upgrade(text, stored)
 
     def save(self, state: WatchState) -> None:
         """Persist *state*, keeping the last readable version as a backup beside it."""
@@ -193,6 +261,23 @@ class WatchStateStore:
             os.fsync(handle.fileno())
         self._back_up()
         temporary.replace(self._path)
+
+    def _upgrade(self, text: str, stored: WatchState) -> WatchState:
+        backup: Path = self._path.with_name(
+            f"{self._path.name}{_SCHEMA_BACKUP_TEMPLATE.format(version=stored.schema_version)}"
+        )
+        if not backup.exists():
+            backup.write_text(text, encoding="utf-8", newline="\n")
+        migrated: WatchState = replace(stored, schema_version=WATCH_STATE_SCHEMA_VERSION)
+        self.save(migrated)
+        findings: tuple[PreflightFinding, ...] = preflight(migrated)
+        logger.info(
+            "Automation state migrated",
+            stored_schema=stored.schema_version,
+            schema=WATCH_STATE_SCHEMA_VERSION,
+            findings=tuple(sorted({finding.kind.value for finding in findings})),
+        )
+        return migrated
 
     def _back_up(self) -> None:
         try:
@@ -236,6 +321,49 @@ def _encode_state(state: WatchState) -> dict[str, object]:
         "provider_locks": [_encode_provider_lock(item) for item in state.provider_locks],
         "command_receipts": [_encode_receipt(item) for item in state.command_receipts],
         "notified": [list(key) for key in sorted(state.notified)],
+        "recipes": _encode_recipes(state.recipes),
+        "ready_groups": [_encode_ready_group(item) for item in state.ready_groups],
+        "pause_owned_transfers": list(state.pause_owned_transfers),
+        "pending_deletions": [_encode_pending_deletion(item) for item in state.pending_deletions],
+    }
+
+
+def _encode_recipes(recipes: RecipePreferences) -> dict[str, object]:
+    return {
+        "translate": {
+            "text_result": recipes.translate.text_result.value,
+            "translation_action": recipes.translate.translation_action.value,
+        },
+        "audiobook": {
+            "translation_action": recipes.audiobook.translation_action.value,
+            "timeline": recipes.audiobook.timeline.value,
+        },
+    }
+
+
+def _encode_ready_group(group: ReadyGroup) -> dict[str, object]:
+    return {
+        "set_id": group.set_id,
+        "group_id": group.group_id,
+        "stem": group.stem,
+        "source_directory": group.source_directory,
+        "source_stem": group.source_stem,
+        "target": group.target.value,
+        "sources": list(group.sources),
+        "products": list(group.products),
+        "main_result": group.main_result,
+        "pending_source": group.pending_source,
+        "recipe": _encode_recipes(group.recipe),
+    }
+
+
+def _encode_pending_deletion(deletion: PendingDeletion) -> dict[str, object]:
+    return {
+        "operation_id": deletion.operation_id,
+        "set_id": deletion.set_id,
+        "requested_at": deletion.requested_at,
+        "files": _encode_fingerprint(deletion.files),
+        "recycled": list(deletion.recycled),
     }
 
 
@@ -307,6 +435,7 @@ def _encode_acquisition(confirmation: AcquisitionConfirmation) -> dict[str, obje
         "action_id": confirmation.action_id,
         "action_pending": confirmation.action_pending,
         "problem": confirmation.problem,
+        "complete_files": list(confirmation.complete_files),
     }
 
 
@@ -338,19 +467,34 @@ def _encode_fingerprint(fingerprint: SourceFingerprint) -> list[list[object]]:
     return [[name, size, mtime_ns] for name, size, mtime_ns in fingerprint]
 
 
+@dataclass(frozen=True, slots=True)
+class _SchemaTwoFacts:
+    """Sections schema 2 added, either read from the document or defaulted for a schema 1 one."""
+
+    recipes: RecipePreferences = field(default_factory=RecipePreferences)
+    ready_groups: tuple[ReadyGroup, ...] = ()
+    pause_owned_transfers: tuple[str, ...] = ()
+    pending_deletions: tuple[PendingDeletion, ...] = ()
+
+
 def _decode_state(raw: object) -> WatchState:
-    document: dict[str, object] = _strict_object(raw, _ROOT_KEYS, "automation state")
-    schema_version: object = document["schema_version"]
-    if type(schema_version) is not int or schema_version != WATCH_STATE_SCHEMA_VERSION:
-        msg = "Unsupported automation state schema version"
-        raise ValueError(msg)
+    stored: dict[str, object] = dict(_strict_mapping(raw, "automation state"))
+    schema_version: int = _schema_version(stored)
+    added: _SchemaTwoFacts = _schema_two_facts(stored, schema_version)
+    document: dict[str, object] = _strict_object(stored, _ROOT_KEYS, "automation state")
     return WatchState(
         schema_version=schema_version,
+        recipes=added.recipes,
+        ready_groups=added.ready_groups,
+        pause_owned_transfers=added.pause_owned_transfers,
+        pending_deletions=added.pending_deletions,
         policy=_decode_policy(document["policy"]),
         reservations=tuple(_decode_reservation(item) for item in _list(document["reservations"], "reservations")),
         markers=tuple(_decode_marker(item) for item in _list(document["markers"], "markers")),
         requests=tuple(_decode_request(item) for item in _list(document["requests"], "requests")),
-        acquisitions=tuple(_decode_acquisition(item) for item in _list(document["acquisitions"], "acquisitions")),
+        acquisitions=tuple(
+            _decode_acquisition(item, schema_version) for item in _list(document["acquisitions"], "acquisitions")
+        ),
         products=tuple(_decode_product(item) for item in _list(document["products"], "products")),
         provider_locks=tuple(
             _decode_provider_lock(item) for item in _list(document["provider_locks"], "provider_locks")
@@ -359,6 +503,78 @@ def _decode_state(raw: object) -> WatchState:
             _decode_receipt(item) for item in _list(document["command_receipts"], "command_receipts")
         ),
         notified=frozenset(_decode_notification(item) for item in _list(document["notified"], "notified")),
+    )
+
+
+def _schema_version(document: Mapping[str, object]) -> int:
+    version: object = document.get("schema_version")
+    if type(version) is not int or version not in _SUPPORTED_SCHEMA_VERSIONS:
+        msg = "Unsupported automation state schema version"
+        raise ValueError(msg)
+    return version
+
+
+def _schema_two_facts(document: dict[str, object], schema_version: int) -> _SchemaTwoFacts:
+    sections: dict[str, object] = {key: document.pop(key) for key in _SCHEMA_TWO_SECTIONS if key in document}
+    if schema_version == _SCHEMA_ONE:
+        if sections:
+            msg = "A schema 1 automation state cannot carry the sections schema 2 added"
+            raise ValueError(msg)
+        return _SchemaTwoFacts()
+    if frozenset(sections) != frozenset(_SCHEMA_TWO_SECTIONS):
+        msg = "A schema 2 automation state is missing a section it must carry"
+        raise ValueError(msg)
+    return _SchemaTwoFacts(
+        recipes=_decode_recipes(sections["recipes"]),
+        ready_groups=tuple(_decode_ready_group(item) for item in _list(sections["ready_groups"], "ready groups")),
+        pause_owned_transfers=_decode_texts(sections["pause_owned_transfers"], "transfers owned by a pause"),
+        pending_deletions=tuple(
+            _decode_pending_deletion(item) for item in _list(sections["pending_deletions"], "pending deletions")
+        ),
+    )
+
+
+def _decode_recipes(raw: object) -> RecipePreferences:
+    document: dict[str, object] = _strict_object(raw, _RECIPES_KEYS, "recipe preferences")
+    translate: dict[str, object] = _strict_object(document["translate"], _TRANSLATE_RECIPE_KEYS, "translate recipe")
+    audiobook: dict[str, object] = _strict_object(document["audiobook"], _AUDIOBOOK_RECIPE_KEYS, "audiobook recipe")
+    return RecipePreferences(
+        translate=TranslateRecipe(
+            text_result=TextResultFormat(_text(translate, "text_result")),
+            translation_action=TranslationAction(_text(translate, "translation_action")),
+        ),
+        audiobook=AudiobookRecipe(
+            translation_action=TranslationAction(_text(audiobook, "translation_action")),
+            timeline=NarrationTimeline(_text(audiobook, "timeline")),
+        ),
+    )
+
+
+def _decode_ready_group(raw: object) -> ReadyGroup:
+    document: dict[str, object] = _strict_object(raw, _READY_GROUP_KEYS, "completed set")
+    return ReadyGroup(
+        set_id=_text(document, "set_id"),
+        group_id=_text(document, "group_id"),
+        stem=_text(document, "stem"),
+        source_directory=_text(document, "source_directory"),
+        source_stem=_text(document, "source_stem"),
+        target=WorkflowTarget(_text(document, "target")),
+        sources=_decode_texts(document["sources"], "sources of a completed set"),
+        products=_decode_texts(document["products"], "products of a completed set"),
+        main_result=_optional_text(document, "main_result"),
+        pending_source=_optional_text(document, "pending_source"),
+        recipe=_decode_recipes(document["recipe"]),
+    )
+
+
+def _decode_pending_deletion(raw: object) -> PendingDeletion:
+    document: dict[str, object] = _strict_object(raw, _PENDING_DELETION_KEYS, "pending deletion")
+    return PendingDeletion(
+        operation_id=_text(document, "operation_id"),
+        set_id=_text(document, "set_id"),
+        requested_at=_text(document, "requested_at"),
+        files=_decode_fingerprint(document["files"]),
+        recycled=_decode_texts(document["recycled"], "recycled files of a pending deletion"),
     )
 
 
@@ -426,21 +642,29 @@ def _decode_request(raw: object) -> ProcessingRequest:
     )
 
 
-def _decode_acquisition(raw: object) -> AcquisitionConfirmation:
-    raw = {
-        "requested_action": None,
-        "action_id": None,
-        "action_pending": False,
-        "problem": None,
-        **_strict_mapping(raw, "acquisition confirmation"),
-    }
-    document: dict[str, object] = _strict_object(raw, _ACQUISITION_KEYS, "acquisition confirmation")
+def _decode_acquisition(raw: object, schema_version: int) -> AcquisitionConfirmation:
+    stored: dict[str, object] = dict(_strict_mapping(raw, "acquisition confirmation"))
+    stated: bool = "complete_files" in stored
+    complete: object = stored.pop("complete_files", [])
+    document: dict[str, object] = _strict_object(
+        {
+            "requested_action": None,
+            "action_id": None,
+            "action_pending": False,
+            "problem": None,
+            **stored,
+        },
+        _ACQUISITION_KEYS,
+        "acquisition confirmation",
+    )
+    state: AcquisitionState = AcquisitionState(_text(document, "state"))
+    required_files: tuple[str, ...] = _decode_texts(document["required_files"], "required files")
     return AcquisitionConfirmation(
         operation_id=_text(document, "operation_id"),
         info_hash=_text(document, "info_hash"),
         directory=_text(document, "directory"),
-        required_files=_decode_texts(document["required_files"], "required files"),
-        state=AcquisitionState(_text(document, "state")),
+        required_files=required_files,
+        state=state,
         origin=RequestOrigin(_text(document, "origin")),
         subscription_id=_optional_text(document, "subscription_id"),
         episode=_optional_text(document, "episode"),
@@ -449,7 +673,33 @@ def _decode_acquisition(raw: object) -> AcquisitionConfirmation:
         action_id=_optional_text(document, "action_id"),
         action_pending=_flag(document, "action_pending"),
         problem=_optional_text(document, "problem"),
+        complete_files=_complete_files(
+            complete,
+            stated=stated,
+            schema_version=schema_version,
+            state=state,
+            required_files=required_files,
+        ),
     )
+
+
+def _complete_files(
+    raw: object,
+    *,
+    stated: bool,
+    schema_version: int,
+    state: AcquisitionState,
+    required_files: tuple[str, ...],
+) -> tuple[str, ...]:
+    if schema_version != _SCHEMA_ONE:
+        if not stated:
+            msg = "A schema 2 acquisition confirmation must state which required files are complete"
+            raise ValueError(msg)
+        return _decode_texts(raw, "complete files")
+    if stated:
+        msg = "A schema 1 acquisition confirmation cannot state which required files are complete"
+        raise ValueError(msg)
+    return required_files if state is AcquisitionState.COMPLETE else ()
 
 
 def _decode_product(raw: object) -> ProductConfirmation:

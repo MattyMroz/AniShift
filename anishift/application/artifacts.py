@@ -7,6 +7,8 @@ from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
 
+from anishift.application.workflows import ROOT_ROUTE, WorkflowRoute
+
 
 class ArtifactKind(StrEnum):
     """Kinds of source, intermediate, and durable workflow artifacts."""
@@ -133,6 +135,7 @@ class SourceGroup:
     directory: Path
     artifacts: tuple[Artifact, ...]
     conflicts: tuple[GroupConflict, ...] = ()
+    route: WorkflowRoute = ROOT_ROUTE
 
     def __post_init__(self) -> None:
         if not self.group_id.strip() or not self.stem.strip():

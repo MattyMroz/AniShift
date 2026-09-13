@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -23,6 +26,7 @@ from anishift.application.discovery import (
     is_primary_source,
 )
 from anishift.application.selection import choose_auto_sidecar, choose_primary_video
+from anishift.application.workflows import ROOT_ROUTE, WorkflowTarget, WorkspacePlace
 
 
 def _touch(root: Path, *names: str) -> None:
@@ -30,6 +34,27 @@ def _touch(root: Path, *names: str) -> None:
         path: Path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
+
+
+def _junction(link: Path, target: Path) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Directory junctions exist only on Windows")
+    shell: str = os.environ.get("COMSPEC", "cmd.exe")
+    made: subprocess.CompletedProcess[bytes] = subprocess.run(  # noqa: S603 - fixed argv, no shell string
+        [shell, "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    if made.returncode != 0 or not link.is_junction():
+        pytest.skip("Directory junctions are unavailable on this system")
+
+
+def _symlinked_directory(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("Directory symlinks are unavailable on this system")
 
 
 def test_discovery_groups_mkv_and_mp4_and_prefers_mkv() -> None:
@@ -202,6 +227,109 @@ def test_same_stem_in_two_subfolders_creates_two_distinct_groups(tmp_path: Path)
     groups = discover_groups(tmp_path).groups
     assert {group.directory for group in groups} == {tmp_path / "Series A", tmp_path / "Series B"}
     assert len({group.group_id for group in groups}) == 2
+
+
+def test_a_group_in_the_root_carries_the_plain_video_route(tmp_path: Path) -> None:
+    _touch(tmp_path, "01.mkv", "Series A/02.mkv")
+    routes = {group.stem: group.route for group in discover_groups(tmp_path).groups}
+    assert routes["01"] is ROOT_ROUTE
+    assert routes["02"].place is WorkspacePlace.ROOT
+    assert routes["02"].target is WorkflowTarget.VIDEO
+
+
+@pytest.mark.parametrize(
+    ("place", "target"),
+    [
+        ("subs", WorkflowTarget.VIDEO),
+        ("translate", WorkflowTarget.TRANSLATE),
+        ("audiobook", WorkflowTarget.AUDIOBOOK),
+        ("cover", WorkflowTarget.COVER),
+    ],
+)
+def test_a_group_in_a_task_folder_carries_its_own_target(tmp_path: Path, place: str, target: WorkflowTarget) -> None:
+    _touch(tmp_path, f"{place}/01.mkv", f"{place}/Frieren/02.mkv")
+    groups = discover_groups(tmp_path).groups
+    assert len(groups) == 2
+    assert {group.route.target for group in groups} == {target}
+    assert all(group.route.place is WorkspacePlace(place) for group in groups)
+
+
+def test_the_subs_route_is_the_only_one_demanding_a_sidecar(tmp_path: Path) -> None:
+    _touch(tmp_path, "subs/01.mkv", "translate/01.txt")
+    routes = {group.route.place: group.route for group in discover_groups(tmp_path).groups}
+    assert routes[WorkspacePlace.SUBS].requires_sidecar
+    assert not routes[WorkspacePlace.TRANSLATE].requires_sidecar
+
+
+def test_a_junction_wearing_a_task_name_never_hands_out_its_route(tmp_path: Path) -> None:
+    root: Path = tmp_path / "ws"
+    root.mkdir()
+    outside: Path = tmp_path / "outside"
+    _touch(outside, "01.mkv")
+    _junction(root / "subs", outside)
+
+    assert discover_groups(root).groups == ()
+    assert (outside / "01.mkv").is_file()
+
+
+def test_a_junction_deeper_in_the_tree_is_never_walked_into(tmp_path: Path) -> None:
+    root: Path = tmp_path / "ws"
+    _touch(root, "audiobook/01.txt")
+    outside: Path = tmp_path / "outside"
+    _touch(outside, "02.txt")
+    _junction(root / "audiobook" / "linked", outside)
+
+    assert [group.stem for group in discover_groups(root).groups] == ["01"]
+
+
+def test_a_change_notified_inside_a_junction_is_never_indexed(tmp_path: Path) -> None:
+    root: Path = tmp_path / "ws"
+    root.mkdir()
+    outside: Path = tmp_path / "outside"
+    _touch(outside, "01.mkv")
+    _junction(root / "subs", outside)
+    index: DiscoveryIndex = DiscoveryIndex(root)
+    index.discover()
+
+    assert index.discover([root / "subs" / "01.mkv"]).groups == ()
+
+
+def test_a_symlink_wearing_a_task_name_never_hands_out_its_route(tmp_path: Path) -> None:
+    root: Path = tmp_path / "ws"
+    root.mkdir()
+    outside: Path = tmp_path / "outside"
+    _touch(outside, "01.mkv")
+    _symlinked_directory(root / "subs", outside)
+
+    assert discover_groups(root).groups == ()
+    assert (outside / "01.mkv").is_file()
+
+
+def test_a_change_notified_inside_a_symlinked_task_folder_is_never_indexed(tmp_path: Path) -> None:
+    root: Path = tmp_path / "ws"
+    root.mkdir()
+    outside: Path = tmp_path / "outside"
+    _touch(outside, "01.mkv")
+    _symlinked_directory(root / "subs", outside)
+    index: DiscoveryIndex = DiscoveryIndex(root)
+    index.discover()
+
+    assert index.discover([root / "subs" / "01.mkv"]).groups == ()
+
+
+def test_a_workspace_reached_through_a_junction_still_routes_its_task_folders(tmp_path: Path) -> None:
+    real: Path = tmp_path / "real"
+    _touch(real, "audiobook/Notatki.txt", "01.mkv")
+    entry: Path = tmp_path / "entry"
+    _junction(entry, real)
+
+    routes = {group.stem: group.route for group in discover_groups(entry).groups}
+
+    assert (routes["01"].place, routes["01"].target) == (WorkspacePlace.ROOT, WorkflowTarget.VIDEO)
+    assert (routes["Notatki"].place, routes["Notatki"].target) == (
+        WorkspacePlace.AUDIOBOOK,
+        WorkflowTarget.AUDIOBOOK,
+    )
 
 
 def test_managed_temp_tree_below_root_is_never_discovered(tmp_path: Path) -> None:

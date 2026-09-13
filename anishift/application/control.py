@@ -4,41 +4,54 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
-from anishift.application.intents import GroupIntent, ProductKind, RebuildRequest, RequestOrigin
+from anishift.application.intents import GroupIntent, ProductKind, RebuildRequest, RequestOrigin, TranslationAction
+from anishift.application.workflows import WorkflowTarget
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping, Sequence
 
 __all__ = [
     "WATCH_STATE_SCHEMA_VERSION",
     "AcquisitionConfirmation",
     "AcquisitionState",
+    "AudiobookRecipe",
     "AutomationPolicy",
     "CommandReceipt",
     "ManualHandledMarker",
+    "NarrationTimeline",
     "NotificationKey",
+    "PendingDeletion",
+    "PreflightFinding",
+    "PreflightFindingKind",
     "ProcessingRequest",
     "ProductConfirmation",
     "ProviderLock",
+    "ReadyGroup",
+    "RecipePreferences",
     "RequestState",
     "Reservation",
     "SourceFingerprint",
     "SourceSelection",
+    "TextResultFormat",
+    "TranslateRecipe",
     "WatchState",
     "auto_admissible",
     "mark_manual_handled",
+    "preflight",
     "record_command",
     "record_request",
     "release",
+    "require_relative_paths",
     "reserve",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-WATCH_STATE_SCHEMA_VERSION: Final[int] = 1
+WATCH_STATE_SCHEMA_VERSION: Final[int] = 2
 """Current schema of the persisted automation state."""
 
 type SourceFingerprint = tuple[tuple[str, int, int], ...]
@@ -81,6 +94,30 @@ _DEFAULT_RETRY_DELAYS_S: Final[tuple[int, ...]] = (60, 300)
 """Waits between attempts when the server names no delay of its own."""
 
 
+class TextResultFormat(StrEnum):
+    """Result the translate target writes for a plain text input."""
+
+    TEXT = "text"
+    SUBTITLES = "subtitles"
+
+
+class NarrationTimeline(StrEnum):
+    """How the audiobook target places narration in time."""
+
+    CONTINUOUS = "continuous"
+    SOURCE_TIMES = "source_times"
+
+
+class PreflightFindingKind(StrEnum):
+    """Pre-existing facts a controlled transition to the task folders has to settle first."""
+
+    AUTOMATION_PAUSED = "automation_paused"
+    DIRECTORY_EXCEPTION = "directory_exception"
+    UNFINISHED_REQUEST = "unfinished_request"
+    RESERVED_NAME_REFUSED = "reserved_name_refused"
+    RESERVED_NAME_OCCUPIED = "reserved_name_occupied"
+
+
 class SourceSelection(StrEnum):
     """How a request picks the sources it works on."""
 
@@ -110,6 +147,12 @@ class AcquisitionState(StrEnum):
     FAILED = "failed"
 
 
+_UNFINISHED_STATES: Final[frozenset[RequestState]] = frozenset(
+    {RequestState.ACCEPTED, RequestState.RUNNING, RequestState.PAUSED}
+)
+"""States of a request that still owns its groups and has to be settled, never abandoned."""
+
+
 @dataclass(frozen=True, slots=True)
 class AutomationPolicy:
     """Global automatic processing switch, its directory exceptions and the schedule settings."""
@@ -132,6 +175,30 @@ class AutomationPolicy:
             if exception is not None:
                 return exception
         return self.auto_enabled
+
+
+@dataclass(frozen=True, slots=True)
+class TranslateRecipe:
+    """What the translate target adds to the shared content settings, and nothing more."""
+
+    text_result: TextResultFormat = TextResultFormat.TEXT
+    translation_action: TranslationAction = TranslationAction.AUTO
+
+
+@dataclass(frozen=True, slots=True)
+class AudiobookRecipe:
+    """What the audiobook target adds to the shared content settings, and nothing more."""
+
+    translation_action: TranslationAction = TranslationAction.AUTO
+    timeline: NarrationTimeline = NarrationTimeline.CONTINUOUS
+
+
+@dataclass(frozen=True, slots=True)
+class RecipePreferences:
+    """Target deltas kept beside the video preset, never a copy of the shared settings."""
+
+    translate: TranslateRecipe = field(default_factory=TranslateRecipe)
+    audiobook: AudiobookRecipe = field(default_factory=AudiobookRecipe)
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,10 +265,14 @@ class AcquisitionConfirmation:
     action_id: str | None = None
     action_pending: bool = False
     problem: str | None = None
+    complete_files: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.requested_action not in {None, "stop", "resume", "cancel"}:
             msg = "Unknown transfer action"
+            raise ValueError(msg)
+        if not frozenset(self.complete_files) <= frozenset(self.required_files):
+            msg = "A complete file must be one of the files required from the release"
             raise ValueError(msg)
         object.__setattr__(self, "info_hash", self.info_hash.casefold())
 
@@ -216,6 +287,64 @@ class ProductConfirmation:
     generation: int
     request_id: str
     origin: RequestOrigin
+
+
+@dataclass(frozen=True, slots=True)
+class ReadyGroup:
+    """Where one completed set came from, so its target survives the move into ``ready``."""
+
+    set_id: str
+    group_id: str
+    stem: str
+    source_directory: str
+    source_stem: str
+    target: WorkflowTarget
+    sources: tuple[str, ...]
+    products: tuple[str, ...]
+    main_result: str | None = None
+    pending_source: str | None = None
+    recipe: RecipePreferences = field(default_factory=RecipePreferences)
+
+    def __post_init__(self) -> None:
+        if not self.set_id.strip() or not self.group_id.strip() or not self.stem.strip():
+            msg = "A completed set requires its logical identity and its current name"
+            raise ValueError(msg)
+        optional: tuple[str, ...] = tuple(
+            value for value in (self.main_result, self.pending_source) if value is not None
+        )
+        require_relative_paths((*self.sources, *self.products, *optional), "A file of a completed set")
+        if self.main_result is not None and self.main_result not in {*self.products, *self.sources}:
+            msg = "The main result of a completed set must be one of its own files"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class PendingDeletion:
+    """One confirmed whole-set deletion, the identity of each file it covers and what already went out."""
+
+    operation_id: str
+    set_id: str
+    requested_at: str
+    files: SourceFingerprint
+    recycled: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.files:
+            msg = "A pending deletion must name at least one file"
+            raise ValueError(msg)
+        names: tuple[str, ...] = tuple(name for name, _size, _mtime_ns in self.files)
+        require_relative_paths((*names, *self.recycled), "A file of a pending deletion")
+        if not frozenset(self.recycled) <= frozenset(names):
+            msg = "A recycled file must belong to its confirmed deletion"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class PreflightFinding:
+    """One read-only fact of the configuration found before any new role is activated."""
+
+    kind: PreflightFindingKind
+    subject: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +396,19 @@ class WatchState:
     provider_locks: tuple[ProviderLock, ...] = ()
     command_receipts: tuple[CommandReceipt, ...] = ()
     notified: frozenset[NotificationKey] = frozenset()
+    recipes: RecipePreferences = field(default_factory=RecipePreferences)
+    ready_groups: tuple[ReadyGroup, ...] = ()
+    pause_owned_transfers: tuple[str, ...] = ()
+    pending_deletions: tuple[PendingDeletion, ...] = ()
+
+
+def require_relative_paths(paths: Iterable[str], label: str) -> None:
+    """Refuse every persisted path that is not one plain location inside the library."""
+    for value in paths:
+        candidate: Path = Path(value)
+        if not value.strip() or candidate.drive or candidate.root or ".." in candidate.parts:
+            msg = f"{label} must stay a relative path inside the library"
+            raise ValueError(msg)
 
 
 def reserve(state: WatchState, reservation: Reservation) -> WatchState | None:
@@ -315,6 +457,36 @@ def record_command(state: WatchState, receipt: CommandReceipt) -> WatchState:
     return replace(state, command_receipts=(*state.command_receipts, receipt))
 
 
+def preflight(
+    state: WatchState,
+    *,
+    refused_names: Sequence[str] = (),
+    occupied_names: Sequence[str] = (),
+) -> tuple[PreflightFinding, ...]:
+    """Report every pre-existing fact a controlled transition has to settle, changing nothing.
+
+    *refused_names* are the reserved workspace names left untouched, *occupied_names* the ones
+    that already hold content; both come from the caller that may read the filesystem.
+    """
+    paused: tuple[PreflightFinding, ...] = (
+        () if state.policy.auto_enabled else (PreflightFinding(PreflightFindingKind.AUTOMATION_PAUSED),)
+    )
+    return (
+        *paused,
+        *(
+            PreflightFinding(PreflightFindingKind.DIRECTORY_EXCEPTION, directory)
+            for directory in sorted(state.policy.directory_exceptions)
+        ),
+        *(
+            PreflightFinding(PreflightFindingKind.UNFINISHED_REQUEST, request.request_id)
+            for request in state.requests
+            if request.state in _UNFINISHED_STATES
+        ),
+        *(PreflightFinding(PreflightFindingKind.RESERVED_NAME_REFUSED, name) for name in refused_names),
+        *(PreflightFinding(PreflightFindingKind.RESERVED_NAME_OCCUPIED, name) for name in occupied_names),
+    )
+
+
 def auto_admissible(  # noqa: PLR0913 - every admission condition stays an explicit call-site value
     state: WatchState,
     policy: AutomationPolicy,
@@ -347,11 +519,7 @@ def _reservation(state: WatchState, group_id: str) -> Reservation | None:
 
 
 def _has_active_request(state: WatchState, group_id: str) -> bool:
-    return any(
-        group_id in request.group_ids
-        and request.state in {RequestState.ACCEPTED, RequestState.RUNNING, RequestState.PAUSED}
-        for request in state.requests
-    )
+    return any(group_id in request.group_ids and request.state in _UNFINISHED_STATES for request in state.requests)
 
 
 def _manual_blocks(

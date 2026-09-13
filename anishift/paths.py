@@ -7,9 +7,14 @@ from pathlib import Path
 from typing import Final
 
 __all__ = [
+    "AUDIOBOOK_DIRECTORY",
+    "COVER_DIRECTORY",
     "ENV_CONFIG_DIR",
     "READY_DIRECTORY",
+    "SUBS_DIRECTORY",
+    "TASK_DIRECTORIES",
     "TEMP_DIRECTORY",
+    "TRANSLATE_DIRECTORY",
     "WATCH_DIRECTORY",
     "WORKSPACE_DIRECTORY",
     "config_dir",
@@ -24,6 +29,7 @@ __all__ = [
     "relocation_journal_dir",
     "repo_root",
     "run_journal_dir",
+    "task_dir",
     "temp_dir",
     "torrent_data_dir",
     "torrent_download_dir",
@@ -53,6 +59,26 @@ TEMP_DIRECTORY: Final[str] = "temp"
 
 WATCH_DIRECTORY: Final[str] = "watch"
 """Resident state directory inside runtime configuration."""
+
+SUBS_DIRECTORY: Final[str] = "subs"
+"""Workspace task folder pairing one video with the sidecar subtitles it must use."""
+
+TRANSLATE_DIRECTORY: Final[str] = "translate"
+"""Workspace task folder translating text or subtitles without any video."""
+
+AUDIOBOOK_DIRECTORY: Final[str] = "audiobook"
+"""Workspace task folder turning text or subtitles into standalone narration."""
+
+COVER_DIRECTORY: Final[str] = "cover"
+"""Workspace task folder exporting one still image and audio into a single video."""
+
+TASK_DIRECTORIES: Final[tuple[str, ...]] = (
+    SUBS_DIRECTORY,
+    TRANSLATE_DIRECTORY,
+    AUDIOBOOK_DIRECTORY,
+    COVER_DIRECTORY,
+)
+"""The one collection of workspace task folders, beside the data areas ``ready`` and ``temp``."""
 
 
 def repo_root() -> Path:
@@ -111,6 +137,14 @@ def relocation_journal_dir(state_dir: Path) -> Path:
 def temp_dir(workspace: Path) -> Path:
     """Return private run staging inside the selected workspace."""
     return workspace / TEMP_DIRECTORY
+
+
+def task_dir(workspace: Path, task: str) -> Path:
+    """Return one of :data:`TASK_DIRECTORIES` inside the selected workspace."""
+    if task not in TASK_DIRECTORIES:
+        msg = f"Unknown workspace task folder: {task}"
+        raise ValueError(msg)
+    return workspace / task
 
 
 def run_journal_dir(state_dir: Path) -> Path:

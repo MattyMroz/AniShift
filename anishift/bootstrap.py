@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from anishift.config.env_file import env_path
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings, load_user_settings
-from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_root
+from anishift.config.workspace import WorkspaceConflict, ensure_workspace_dir, resolve_workspace_root
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -34,6 +34,7 @@ class AppContext:
     settings: Settings
     user_settings: UserSettings
     workspace_root: Path
+    workspace_conflicts: tuple[WorkspaceConflict, ...] = ()
 
 
 def bootstrap(
@@ -47,8 +48,7 @@ def bootstrap(
     workspace_root = resolve_workspace_root(
         override=resolved.workspace_root or None,
     )
-    if create_dirs:
-        ensure_workspace_dir(workspace_root)
+    conflicts: tuple[WorkspaceConflict, ...] = ensure_workspace_dir(workspace_root) if create_dirs else ()
 
     logger.debug(
         "Application context composed",
@@ -62,6 +62,7 @@ def bootstrap(
         settings=resolved,
         user_settings=user_settings,
         workspace_root=workspace_root,
+        workspace_conflicts=conflicts,
     )
 
 
