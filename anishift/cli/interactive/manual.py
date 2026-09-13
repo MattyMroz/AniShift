@@ -60,6 +60,7 @@ _GROUP_ACTIONS: Final[tuple[tuple[str, ProductKind | None], ...]] = (
     ("Dostosuj źródła i produkty", None),
     ("Regeneruj lektora", ProductKind.NARRATION_AUDIO),
     ("Regeneruj polskie napisy", ProductKind.FULL_PL),
+    ("Dokończ poprzednią pracę", None),
     ("Anuluj", None),
 )
 """Actions applied to the selected episode scope."""
@@ -380,6 +381,9 @@ class ManualController:
         invalidate: Callable[[], None],
     ) -> None:
         self._service: AppService | ResidentSession = service
+        self._scope_actions: tuple[tuple[str, ProductKind | None], ...] = (
+            _GROUP_ACTIONS if isinstance(service, ResidentSession) else (*_GROUP_ACTIONS[:-2], _GROUP_ACTIONS[-1])
+        )
         self._workspace: InspectedWorkspace = workspace
         self._preset: AutoPreset = preset
         self._invalidate: Callable[[], None] = invalidate
@@ -488,7 +492,7 @@ class ManualController:
         return ManualResult.STAY
 
     def _handle_groups(self, key: str) -> ManualResult:
-        row_count: int = len(self._group_ids) + len(_GROUP_ACTIONS)
+        row_count: int = len(self._group_ids) + len(self._scope_actions)
         if key == "up":
             self._move(-1, row_count)
         elif key == "down":
@@ -517,7 +521,7 @@ class ManualController:
         self._feedback = None
 
     def _handle_scope_action(self, action: int) -> ManualResult:
-        if action == len(_GROUP_ACTIONS) - 1:
+        if action == len(self._scope_actions) - 1:
             return ManualResult.BACK_HOME
         if not self._selected_groups:
             self._feedback = "✗ Wybierz co najmniej jeden odcinek"
@@ -531,7 +535,7 @@ class ManualController:
         if action == 1:
             self._open(_Screen.GROUP_ACTION)
             return ManualResult.STAY
-        product: ProductKind | None = _GROUP_ACTIONS[action][1]
+        product: ProductKind | None = self._scope_actions[action][1]
         rebuild: RebuildRequest | None = None if product is None else RebuildRequest(frozenset({product}))
         try:
             self._plan = self._service.plan_auto(self._edit_ids, self._preset, rebuild=rebuild)
@@ -559,8 +563,10 @@ class ManualController:
                 service.reserve(group_ids)
                 if action is None:
                     plan = service.plan_manual(intents)
+                elif action == len(self._scope_actions) - 2:
+                    plan = service.plan_resume(group_ids)
                 elif action != 1:
-                    product: ProductKind | None = _GROUP_ACTIONS[action][1]
+                    product: ProductKind | None = self._scope_actions[action][1]
                     rebuild: RebuildRequest | None = None if product is None else RebuildRequest(frozenset({product}))
                     plan = service.plan_auto(group_ids, self._preset, rebuild=rebuild)
             except (AniShiftError, OSError, TypeError, ValueError) as error:
@@ -942,7 +948,7 @@ class ManualController:
 
     def _render_groups(self, columns: int, rows: int) -> Text:
         labels: tuple[str, ...] = tuple(self._labels[group_id] for group_id in self._group_ids)
-        entries: tuple[str, ...] = (*labels, *(label for label, _ in _GROUP_ACTIONS))
+        entries: tuple[str, ...] = (*labels, *(label for label, _ in self._scope_actions))
         shown: tuple[str, ...] = _fit_entries(entries, columns)
         start, end = _visible_window(len(entries), self._selected, rows)
         content: Text = _header("WYBIERZ ODCINKI", columns, rows, end - start)

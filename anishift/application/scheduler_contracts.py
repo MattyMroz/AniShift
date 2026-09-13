@@ -15,6 +15,7 @@ from anishift.application.planning import ExecutionPlan, PlanTask, RunSettingsSn
 from anishift.application.results import ArtifactSnapshot, TaskResult
 
 if TYPE_CHECKING:
+    from anishift.application.recovery import RunJournal
     from anishift.application.sessions import RunSession
 
 __all__ = [
@@ -66,6 +67,7 @@ class RunRequest:
     events: RunEventSink
     origin: RequestOrigin = RequestOrigin.USER
     automatic: bool = False
+    journal: RunJournal | None = None
 
     def __post_init__(self) -> None:
         if not self.run_id.strip():

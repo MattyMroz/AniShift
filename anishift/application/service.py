@@ -70,6 +70,7 @@ from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from anishift.application.acquisition import AcquisitionService
+    from anishift.application.recovery import RunJournal
     from anishift.application.subscriptions import SubscriptionService
     from anishift.services.llm import LlmConfig
 
@@ -408,7 +409,7 @@ class AppService:
                 handle.result()
             raise
 
-    def submit_plan(
+    def submit_plan(  # noqa: PLR0913
         self,
         plan: ExecutionPlan,
         sink: RunEventSink,
@@ -416,17 +417,24 @@ class AppService:
         origin: RequestOrigin,
         run_id: str | None = None,
         automatic: bool = False,
+        journal: RunJournal | None = None,
+        resume: bool = False,
     ) -> RunHandle:
         """Hand one accepted plan to the shared coordinator without waiting for it."""
         if not plan.can_execute:
             msg = "A plan with blocking problems cannot be executed"
+            raise ExecutionError(msg)
+        if resume and journal is None:
+            msg = "Resuming a run requires its verified checkpoint"
             raise ExecutionError(msg)
         identity: str = run_id if run_id is not None else f"run-{token_hex(8)}"
         cancel = EventCancellationToken()
         group_ids: tuple[str, ...] = tuple(item.group_id for item in plan.groups)
         self._claim_run(identity, cancel, group_ids)
         try:
-            return self._start_run(plan, sink, identity, cancel, origin, automatic=automatic)
+            return self._start_run(
+                plan, sink, identity, cancel, origin, automatic=automatic, journal=journal, resume=resume
+            )
         except BaseException:
             self._release_run(identity)
             raise
@@ -475,6 +483,8 @@ class AppService:
         origin: RequestOrigin,
         *,
         automatic: bool,
+        journal: RunJournal | None = None,
+        resume: bool = False,
     ) -> RunHandle:
         with self._run_lock:
             protected: tuple[str, ...] = (*self._active_runs, *self._retained_runs)
@@ -483,7 +493,7 @@ class AppService:
             group.group_id: group for group in self._selected_groups(tuple(item.group_id for item in plan.groups))
         }
         run_root: Path = run_temp_dir(self._workspace_root, run_id)
-        session = RunSession(run_root)
+        session = RunSession(run_root, resume=resume)
         session.__enter__()
         try:
             handler: TaskHandler = self._handler_factory(run_root, plan, source_groups)
@@ -501,6 +511,7 @@ class AppService:
                     events=sink,
                     origin=origin,
                     automatic=automatic,
+                    journal=journal,
                 )
             )
         except BaseException:
@@ -510,7 +521,7 @@ class AppService:
         handle = RunHandle(run_id, submitted.cancel)
         threading.Thread(
             target=self._finish_run,
-            args=(submitted, handle, session, handler),
+            args=(submitted, handle, session, handler, journal),
             daemon=True,
         ).start()
         return handle
@@ -521,6 +532,7 @@ class AppService:
         handle: RunHandle,
         session: RunSession,
         handler: TaskHandler,
+        journal: RunJournal | None = None,
     ) -> None:
         result: RunResult | None = None
         failure: BaseException | None = None
@@ -530,7 +542,9 @@ class AppService:
             failure = error
         try:
             _close_handler(handler)
-            if result is not None and result.paused:
+            if (result is not None and result.paused) or (
+                journal is not None and (result is None or not result.succeeded)
+            ):
                 session.preserve()
                 self.retain_runs((handle.run_id,))
             _close_session(session, failure)

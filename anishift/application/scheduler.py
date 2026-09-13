@@ -534,6 +534,19 @@ class GraphCoordinator:
             finish_cancelled(task, context)
         else:
             finish_failed(task, error, context)
+        if context.journal is not None and context.journal.failed:
+            self._block_uncheckpointed(context)
+
+    def _block_uncheckpointed(self, context: SchedulerRuntime) -> None:
+        active: frozenset[str] = frozenset(
+            item.task.task_id for item in self._futures.values() if item.run_id == context.run_id
+        )
+        for task_id, state in tuple(context.state.task_states.items()):
+            if task_id not in active and state in {*_ADMISSIBLE_STATES, TaskState.RUNNING}:
+                context.state.task_states[task_id] = TaskState.BLOCKED
+        context.pending_publications.clear()
+        context.held.clear()
+        self._drop_ready(context.run_id)
 
     def _release_results(self, context: SchedulerRuntime) -> None:
         for publication in tuple(context.pending_publications.values()):

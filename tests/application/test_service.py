@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import errno
+import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -349,6 +352,101 @@ def test_closed_panel_cannot_register_a_late_external_source(tmp_path: Path) -> 
         assert not worker.is_alive()
         assert errors
         assert all(artifact.path != audio for artifact in service.discover().groups[0].artifacts)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("failure_at", ["before_replace", "after_replace", "checkpoint"])
+def test_resident_resumes_partial_publication_without_translating_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_at: str
+) -> None:
+    write_media_source(tmp_path / "03.mkv")
+    write_text_source(tmp_path / "03.srt", "1\n00:00:00,000 --> 00:00:01,000\nOriginal text\n")
+    previous: str = "1\n00:00:00,000 --> 00:00:01,000\nPrevious translation\n"
+    for name in ("03.pl.srt", "03.spoken.pl.srt"):
+        (tmp_path / name).write_text(previous, encoding="utf-8")
+    translation: FakeTranslationService = FakeTranslationService()
+    service: AppService = _service(tmp_path, translation, inspector=WorkspaceInspector(FakeMediaProbe()))
+    preset: AutoPreset = AutoPreset(
+        "once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL, ProductKind.SPOKEN_PL}))
+    )
+    original_replace: Callable[[Path, Path], Path] = Path.replace
+    published: list[Path] = []
+
+    def replace_product(source: Path, destination: Path) -> Path:
+        if failure_at == "checkpoint" and published and destination.parent.name == "runs":
+            raise OSError(errno.ENOSPC, "Injected checkpoint failure")
+        if destination.parent == tmp_path and destination.name.endswith(".pl.srt"):
+            if published:
+                if failure_at == "after_replace":
+                    original_replace(source, destination)
+                raise OSError(errno.EIO, "Injected publication failure")
+            published.append(destination)
+        return original_replace(source, destination)
+
+    with _panel_owner(service, tmp_path) as (session, store):
+        group_id: str = session.discover().groups[0].group_id
+        session.reserve((group_id,))
+        preview: PlanPreview = session.plan_auto(
+            (group_id,), preset, rebuild=RebuildRequest(frozenset({ProductKind.FULL_PL}))
+        )
+        with monkeypatch.context() as failure:
+            assert preview.can_execute, preview.problems
+            failure.setattr(Path, "replace", replace_product)
+            result: RunResult = session.execute(preview, CollectingRunSink())
+        assert result.groups[0].status is GroupStatus.PARTIAL
+        assert len(result.groups[0].error_messages) == 1, result.groups[0].error_messages
+        assert len(published) == 1
+        assert len(translation.calls) == 1
+        assert store.load().requests[0].state is RequestState.PARTIAL
+        preserved: bytes = published[0].read_bytes()
+        identity: tuple[int, int] = (published[0].stat().st_ino, published[0].stat().st_mtime_ns)
+        untouched: Path = next(
+            tmp_path / name for name in ("03.pl.srt", "03.spoken.pl.srt") if tmp_path / name not in published
+        )
+        assert ("PL Original text" if failure_at == "after_replace" else "Previous translation") in untouched.read_text(
+            encoding="utf-8"
+        )
+    script: str = """
+import json
+import sys
+from pathlib import Path
+from fakes import CollectingRunSink, FakeMediaProbe, FakeTranslationService
+from test_service import _panel_owner, _service
+from anishift.application.inspection import WorkspaceInspector
+from anishift.application.planning import TaskKind
+
+root = Path(sys.argv[1])
+translation = FakeTranslationService()
+service = _service(root, translation, inspector=WorkspaceInspector(FakeMediaProbe()))
+with _panel_owner(service, root) as (session, store):
+    group_id = session.discover().groups[0].group_id
+    session.reserve((group_id,))
+    remaining = session.plan_resume((group_id,))
+    assert TaskKind.TRANSLATE_SUBTITLES not in {task.kind for task in remaining.tasks}
+    result = session.execute(remaining, CollectingRunSink())
+    print(json.dumps({
+        "succeeded": result.succeeded,
+        "products": len(result.groups[0].products),
+        "run_id": result.run_id,
+        "translations": len(translation.calls),
+        "generation": store.load().requests[0].generation,
+    }))
+"""
+    completed: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).parent)},
+    )
+    assert completed.returncode == 0, completed.stderr
+    outcome: dict[str, object] = json.loads(completed.stdout)
+    assert outcome == {"succeeded": True, "products": 2, "run_id": result.run_id, "translations": 0, "generation": 2}
+    assert published[0].read_bytes() == preserved
+    assert (published[0].stat().st_ino, published[0].stat().st_mtime_ns) == identity
+    assert "PL Original text" in untouched.read_text(encoding="utf-8")
 
 
 def test_real_service_flows_from_discovery_through_partial_execution(tmp_path: Path) -> None:

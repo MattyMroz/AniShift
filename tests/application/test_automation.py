@@ -29,6 +29,7 @@ from anishift.application.control import (
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.intents import ProductIntent, ProductKind, RebuildRequest, RequestOrigin
 from anishift.application.planning import ExecutionPlan
+from anishift.application.recovery import RunJournal
 from anishift.application.results import GroupResult, GroupStatus, RunResult
 from anishift.application.scheduler import RunHandle
 from anishift.application.scheduler_contracts import TaskHandler
@@ -218,7 +219,7 @@ class _Service:
         del group_ids, preset, rebuild, overrides
         return self._plan
 
-    def submit_plan(
+    def submit_plan(  # noqa: PLR0913
         self,
         plan: ExecutionPlan,
         sink: object,
@@ -226,8 +227,10 @@ class _Service:
         origin: RequestOrigin,
         run_id: str | None = None,
         automatic: bool = False,
+        journal: RunJournal | None = None,
+        resume: bool = False,
     ) -> RunHandle:
-        del plan, sink, origin, automatic
+        del plan, sink, origin, automatic, journal, resume
         if self.submit_failure is not None:
             raise self.submit_failure
         identity: str = run_id or "run-1"
@@ -283,15 +286,17 @@ def test_the_resident_accepts_scoped_intents_and_keeps_their_complete_settings(
     selected: list[str] = [group.group_id for group in service.discover().groups[1:]]
     submitted: list[ExecutionPlan] = []
 
-    def submit(
+    def submit(  # noqa: PLR0913
         plan: ExecutionPlan,
         sink: object,
         *,
         origin: RequestOrigin,
         run_id: str | None = None,
         automatic: bool = False,
+        journal: RunJournal | None = None,
+        resume: bool = False,
     ) -> RunHandle:
-        del sink, origin, automatic
+        del sink, origin, automatic, journal, resume
         assert run_id is not None
         submitted.append(plan)
         handle: RunHandle = RunHandle(run_id, lambda: None)

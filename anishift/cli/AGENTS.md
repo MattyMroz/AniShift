@@ -39,7 +39,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   panel dostaje `PlanPreview`, nie graf wykonania. Oddzielna sesja edycji chroni wybrane
   grupy od zaznaczenia do Start lub Esc. Wyjście z panelu odłącza go bez anulowania runu.
   Zewnętrzne źródła są ponownie rejestrowane przy podglądzie po odświeżeniu biblioteki.
-  Nie traktuj tej ścieżki jako zakończonego P04: recovery częściowej publikacji pozostaje otwarte.
+  „Dokończ poprzednią pracę” w Ręcznym wymaga tego samego zakresu grup co zapisane zlecenie;
+  `plan_resume` odczytuje zweryfikowany pozostały graf, a Start zachowuje ID zlecenia.
+  Pełne recovery po zabiciu aktywnego procesu pozostaje osobnym zakresem P08.
 - `run_interactive(service, batch=...)` zwraca kod wyjścia jak `run --preset` i po wyniku odlicza
   10 s w `_handle_idle`, dowolny klawisz zamyka; `interrupt` w partii anuluje run i kończy kodem 4.
   Test buduje aplikację ręcznie? Ustaw też `_batch` i `_closing_at`. `interactive/app.py`

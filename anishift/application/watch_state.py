@@ -164,6 +164,13 @@ class WatchStateStore:
     def __init__(self, path: Path) -> None:
         self._path: Path = path
 
+    def run_path(self, run_id: str) -> Path:
+        """Locate the private checkpoint of one safe run identifier."""
+        if not run_id or Path(run_id).name != run_id or run_id in {".", ".."}:
+            msg = "A checkpoint requires a safe run identifier"
+            raise ValueError(msg)
+        return self._path.parent / "runs" / f"{run_id}.json"
+
     def load(self) -> WatchState:
         """Read the stored automation state, or the default one when nothing was written yet."""
         try:

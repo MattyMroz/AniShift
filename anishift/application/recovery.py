@@ -1,0 +1,236 @@
+"""Durable remaining work and proof of an interrupted product publication."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import TYPE_CHECKING, Final
+
+from pydantic import TypeAdapter
+
+from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
+from anishift.application.planning import ExecutionPlan
+from anishift.application.results import ProducedArtifact, TaskResult
+from anishift.errors import AniShiftError, ExecutionError
+
+if TYPE_CHECKING:
+    from anishift.application.planning import PlanTask
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+CHECKPOINT_VERSION: Final[int] = 1
+"""Schema of the remaining graph stored beside the owner's request ledger."""
+
+
+@dataclass(frozen=True, slots=True)
+class _FileProof:
+    path: Path
+    size: int
+    modified_ns: int
+    device: int
+    inode: int
+    artifact_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Checkpoint:
+    version: int
+    plan: ExecutionPlan
+    run_root: Path
+    inputs: tuple[_FileProof, ...]
+    outputs: tuple[_FileProof, ...] = ()
+    pending: TaskResult | None = None
+    staged: _FileProof | None = None
+
+
+class RunJournal:
+    """Persist a resumable graph before publishing and after each completed task."""
+
+    def __init__(self, path: Path, checkpoint: _Checkpoint) -> None:
+        self._path: Path = path
+        self._checkpoint: _Checkpoint = checkpoint
+        self._failed: bool = False
+
+    @property
+    def plan(self) -> ExecutionPlan:
+        """Return the remaining graph with verified completed artifacts as ready inputs."""
+        return self._checkpoint.plan
+
+    @property
+    def failed(self) -> bool:
+        """Whether recording this run failed and further tasks must stop."""
+        return self._failed
+
+    def products(self, group_id: str) -> tuple[ProducedArtifact, ...]:
+        """Return published products retained from this run's completed tasks."""
+        identifiers: frozenset[str | None] = frozenset(item.artifact_id for item in self._checkpoint.outputs)
+        return tuple(
+            ProducedArtifact(artifact.artifact_id, artifact.path, {"published": True, "recovered": True})
+            for artifact in self.plan.artifacts
+            if artifact.group_id == group_id
+            and artifact.lifetime is ArtifactLifetime.DURABLE
+            and artifact.state is ArtifactState.READY
+            and artifact.path is not None
+            and artifact.artifact_id in identifiers
+        )
+
+    @classmethod
+    def create(cls, path: Path, plan: ExecutionPlan, run_root: Path) -> RunJournal:
+        """Persist a fresh accepted plan without altering any source or product."""
+        inputs: set[Path] = {
+            artifact.path
+            for artifact in plan.artifacts
+            if artifact.state is ArtifactState.READY and artifact.path is not None
+        }
+        inputs.update(artifact.preserved_path for artifact in plan.artifacts if artifact.preserved_path is not None)
+        journal: RunJournal = cls(
+            path, _Checkpoint(CHECKPOINT_VERSION, plan, run_root, tuple(_proof(item) for item in sorted(inputs)))
+        )
+        journal._save(journal._checkpoint)
+        return journal
+
+    @classmethod
+    def load(cls, path: Path) -> RunJournal:
+        """Reconcile an interrupted rename and reject changed or missing saved inputs."""
+        checkpoint: _Checkpoint = TypeAdapter(_Checkpoint).validate_json(path.read_bytes(), strict=True)
+        if checkpoint.version != CHECKPOINT_VERSION:
+            msg = "The saved run checkpoint has an unsupported version"
+            raise ExecutionError(msg)
+        journal: RunJournal = cls(path, checkpoint)
+        journal._reconcile_publication()
+        journal.validate_inputs()
+        for output in journal._checkpoint.outputs:
+            if _proof(output.path, output.artifact_id) != output:
+                msg = "A saved run output changed or is missing"
+                raise ExecutionError(msg)
+        return journal
+
+    def validate_inputs(self) -> None:
+        """Reject publication when any original input or preserved product has changed."""
+        self._require_writable()
+        if any(_proof(item.path) != item for item in self._checkpoint.inputs):
+            msg = "An input or preserved product changed after the run was accepted"
+            raise ExecutionError(msg)
+
+    def prepare(self, task: PlanTask, result: TaskResult) -> None:
+        """Record a validated staging file before the coordinator can replace its destination."""
+        self._require_writable()
+        artifacts: dict[str, Artifact] = {artifact.artifact_id: artifact for artifact in self.plan.artifacts}
+        if not any(artifacts[artifact_id].lifetime is ArtifactLifetime.DURABLE for artifact_id in task.produces):
+            return
+        if self._checkpoint.pending == result:
+            return
+        if len(result.outputs) != 1 or result.outputs[0].metadata.get("validated") is not True:
+            msg = "Publication recovery requires exactly one validated staged product"
+            raise ExecutionError(msg)
+        if result.task_id != task.task_id or tuple(output.artifact_id for output in result.outputs) != task.produces:
+            msg = "Publication outputs do not match the saved task"
+            raise ExecutionError(msg)
+        if not result.outputs[0].path.resolve().is_relative_to((self._checkpoint.run_root / task.group_id).resolve()):
+            msg = "Publication staging escaped its run group"
+            raise ExecutionError(msg)
+        self._save(replace(self._checkpoint, pending=result, staged=_proof(result.outputs[0].path)))
+
+    def committed(self, result: TaskResult) -> None:
+        """Remove completed work from the persisted graph while retaining its files."""
+        self._require_writable()
+        try:
+            self._save(_completed(self._checkpoint, result))
+        except AniShiftError, OSError, ValueError:
+            self._failed = True
+            raise
+
+    def persist(self) -> None:
+        """Persist reconciled publication proof before accepting a resumed run."""
+        self._require_writable()
+        self._save(self._checkpoint)
+
+    def _reconcile_publication(self) -> None:
+        pending: TaskResult | None = self._checkpoint.pending
+        staged: _FileProof | None = self._checkpoint.staged
+        if pending is None or staged is None or staged.path.exists():
+            return
+        output: ProducedArtifact = pending.outputs[0]
+        artifact: Artifact = next(item for item in self.plan.artifacts if item.artifact_id == output.artifact_id)
+        destination: Path | None = artifact.planned_destination
+        if destination is None or not staged.inode or _proof(destination) != replace(staged, path=destination):
+            msg = "An interrupted publication has no conclusive file identity"
+            raise ExecutionError(msg)
+        published: ProducedArtifact = replace(output, path=destination, metadata={**output.metadata, "published": True})
+        self._checkpoint = _completed(self._checkpoint, TaskResult(pending.task_id, (published,)))
+
+    def _save(self, checkpoint: _Checkpoint) -> None:
+        data: bytes = TypeAdapter(_Checkpoint).dump_json(checkpoint, fallback=dict, warnings=False)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        temporary: Path = self._path.with_suffix(".tmp")
+        try:
+            with temporary.open("wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(self._path)
+        except OSError:
+            self._failed = True
+            raise
+        finally:
+            temporary.unlink(missing_ok=True)
+        self._checkpoint = checkpoint
+
+    def _require_writable(self) -> None:
+        if self._failed:
+            msg = "The run checkpoint could not be saved; reload it before resuming"
+            raise ExecutionError(msg)
+
+
+def _proof(path: Path, artifact_id: str | None = None) -> _FileProof:
+    stat: os.stat_result = path.stat()
+    if not path.is_file() or path.is_symlink():
+        msg = "A run checkpoint requires a regular file"
+        raise ExecutionError(msg)
+    return _FileProof(path, stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino, artifact_id)
+
+
+def _completed(checkpoint: _Checkpoint, result: TaskResult) -> _Checkpoint:
+    paths: frozenset[Path] = frozenset(output.path for output in result.outputs)
+    outputs: tuple[_FileProof, ...] = tuple(item for item in checkpoint.outputs if item.path not in paths)
+    return replace(
+        checkpoint,
+        plan=_remaining(checkpoint.plan, result),
+        inputs=tuple(item for item in checkpoint.inputs if item.path not in paths),
+        outputs=(*outputs, *(_proof(output.path, output.artifact_id) for output in result.outputs)),
+        pending=None,
+        staged=None,
+    )
+
+
+def _remaining(plan: ExecutionPlan, result: TaskResult) -> ExecutionPlan:
+    produced: dict[str, ProducedArtifact] = {output.artifact_id: output for output in result.outputs}
+    artifacts: list[Artifact] = []
+    for artifact in plan.artifacts:
+        output: ProducedArtifact | None = produced.get(artifact.artifact_id)
+        artifacts.append(
+            replace(
+                artifact,
+                path=output.path,
+                state=ArtifactState.READY,
+                preserved_path=None,
+            )
+            if output is not None
+            else artifact
+        )
+    return replace(
+        plan,
+        artifacts=tuple(artifacts),
+        tasks=tuple(
+            replace(
+                task, depends_on=tuple(identifier for identifier in task.depends_on if identifier != result.task_id)
+            )
+            for task in plan.tasks
+            if task.task_id != result.task_id
+        ),
+        groups=tuple(
+            replace(group, task_ids=tuple(identifier for identifier in group.task_ids if identifier != result.task_id))
+            for group in plan.groups
+        ),
+    )

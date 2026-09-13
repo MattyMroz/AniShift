@@ -15,7 +15,7 @@ from secrets import token_hex
 from typing import TYPE_CHECKING, Final, cast
 
 from anishift.application.acquisition import series_directory_name
-from anishift.application.artifacts import ArtifactLifetime, ArtifactState, create_group_id
+from anishift.application.artifacts import ArtifactKind, ArtifactLifetime, ArtifactState, create_group_id
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.control import (
     AcquisitionConfirmation,
@@ -23,6 +23,7 @@ from anishift.application.control import (
     CommandReceipt,
     ManualHandledMarker,
     ProcessingRequest,
+    ProductConfirmation,
     RequestState,
     Reservation,
     SourceSelection,
@@ -47,6 +48,7 @@ from anishift.application.intents import (
     RequestOrigin,
     RunMode,
 )
+from anishift.application.recovery import RunJournal
 from anishift.application.results import GroupStatus
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids
@@ -149,7 +151,9 @@ _MUTATING_KINDS: Final[frozenset[str]] = frozenset(
 )
 """Commands whose outcome is recorded, so repeating an identifier repeats no effect."""
 
-_SLOW_KINDS: Final[frozenset[str]] = frozenset({"discover", "register_external", "preview", "subscriptions_check"})
+_SLOW_KINDS: Final[frozenset[str]] = frozenset(
+    {"discover", "register_external", "preview", "resume_preview", "subscriptions_check"}
+)
 """Commands performed on the pool, because they scan the library or reach the network."""
 
 _INSTANCE_CHECKED_KINDS: Final[frozenset[str]] = frozenset({"start", "reserve", "release", "cancel"})
@@ -198,6 +202,7 @@ class _Preview:
     rebuild: RebuildRequest | None
     automatic: bool = False
     file_version: int = 0
+    resume_run_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -256,7 +261,9 @@ class AutomationOwner:
         self._clock: Clock = clock
         self._broadcast: Broadcast | None = broadcast
         self._state: WatchState = store.load()
-        service.retain_runs(tuple(item.request_id for item in self._state.requests if item.state in _ACTIVE_STATES))
+        service.retain_runs(
+            tuple(item.request_id for item in self._state.requests if item.state is not RequestState.SUCCEEDED)
+        )
         if self._state.reservations:
             self._state = replace(self._state, reservations=())
             self._save(self._state)
@@ -275,6 +282,7 @@ class AutomationOwner:
         self._client_sessions: dict[str, str] = {}
         self._pending: dict[str, frozenset[ProductKind]] = {}
         self._run_results: dict[str, RunResult] = {}
+        self._run_products: dict[str, dict[str, ArtifactKind]] = {}
         self._shutting_down: bool = False
         self._active_io: int = 0
         self._transfers: TransferInspector | None = (
@@ -618,7 +626,7 @@ class AutomationOwner:
             else:
                 command.answer(ControlResponse.refused(ControlErrorCode.INTERNAL, _COMMAND_FAILED))
 
-    def _perform(self, request: ControlRequest) -> ControlResponse:  # noqa: PLR0911, PLR0912
+    def _perform(self, request: ControlRequest) -> ControlResponse:  # noqa: C901, PLR0911, PLR0912
         match request.kind:
             case "status":
                 return ControlResponse.succeeded(self._status())
@@ -636,6 +644,8 @@ class AutomationOwner:
                 return self._register_external(request)
             case "preview":
                 return self._preview(request)
+            case "resume_preview":
+                return self._resume_preview(request)
             case "run_result":
                 return self._run_result(request)
             case "start":
@@ -771,6 +781,36 @@ class AutomationOwner:
 
     # ── Preview and start ─────────────────────────────────────────────────────
 
+    def _resume_preview(self, request: ControlRequest) -> ControlResponse:
+        group_ids: tuple[str, ...] | None = _identifiers(request.payload, "group_ids")
+        if not group_ids:
+            return _invalid("A resume preview needs selected groups")
+        saved: ProcessingRequest | None = self._on_owner(
+            lambda: next(
+                (
+                    item
+                    for item in reversed(self._state.requests)
+                    if set(item.group_ids) == set(group_ids)
+                    and item.state in {RequestState.PARTIAL, RequestState.FAILED, RequestState.PAUSED}
+                    and item.request_id not in self._service.active_run_ids()
+                ),
+                None,
+            )
+        )
+        if saved is None:
+            return _invalid("No unfinished run matches the selected scope")
+        return self._preview(
+            replace(
+                request,
+                payload={
+                    **request.payload,
+                    "resume_run_id": saved.request_id,
+                    "source_selection": saved.source_selection.value,
+                    "rebuild": encode_view(saved.rebuild) if saved.rebuild is not None else None,
+                },
+            )
+        )
+
     def _register_external(self, request: ControlRequest) -> ControlResponse:
         client_id: str | None = _text(request.payload, "client_id")
         group_id: str | None = _text(request.payload, "group_id")
@@ -840,6 +880,7 @@ class AutomationOwner:
             session_id=request.session_id,
             rebuild=rebuild,
             file_version=version,
+            resume_run_id=_text(request.payload, "resume_run_id"),
         )
         with self._previews_lock:
             if request.session_id is not None and request.session_id not in self._sessions:
@@ -866,12 +907,20 @@ class AutomationOwner:
         try:
             payload: Mapping[str, object] = request.payload
             workspace: InspectedWorkspace = self._service.discover()
-            registrations: object = payload.get("external_sources", [])
-            if not isinstance(registrations, list):
-                return None
-            for entry in registrations:
-                if not isinstance(entry, dict):
+            resume_id: str | None = _text(payload, "resume_run_id")
+            if resume_id is not None:
+                if self._on_owner(lambda: resume_id in self._service.active_run_ids()):
                     return None
+                journal: RunJournal = RunJournal.load(self._store.run_path(resume_id))
+                selected: dict[str, InspectedSourceGroup] = {group.group_id: group for group in workspace.groups}
+                if set(_identifiers(payload, "group_ids") or ()) != {group.group_id for group in journal.plan.groups}:
+                    return None
+                rebuild: RebuildRequest | None = (
+                    decode_intent(RebuildRequest, payload["rebuild"]) if payload.get("rebuild") is not None else None
+                )
+                return journal.plan, tuple(selected[group.group_id] for group in journal.plan.groups), rebuild
+            registrations: tuple[dict[str, object], ...] = _external_sources(payload)
+            for entry in registrations:
                 registered: ControlResponse = self._register_external(
                     replace(request, payload={**entry, "client_id": payload.get("client_id")})
                 )
@@ -880,9 +929,7 @@ class AutomationOwner:
             if registrations:
                 workspace = self._service.discover()
             groups: tuple[InspectedSourceGroup, ...] = _requested_groups(workspace, payload)
-            rebuild: RebuildRequest | None = (
-                decode_intent(RebuildRequest, payload["rebuild"]) if payload.get("rebuild") is not None else None
-            )
+            rebuild = decode_intent(RebuildRequest, payload["rebuild"]) if payload.get("rebuild") is not None else None
             plan: ExecutionPlan = self._plan_selection(payload, groups, selection, rebuild)
         except (AniShiftError, OSError, KeyError, TypeError, ValueError) as problem:
             logger.warning("A preview could not be planned", error_class=type(problem).__name__)
@@ -959,7 +1006,7 @@ class AutomationOwner:
             with self._previews_lock:
                 self._previews.pop(preview.preview_id, None)
             return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
-        if self._blocked(tuple(group.group_id for group in preview.groups), client_id):
+        if self._blocked(tuple(group.group_id for group in preview.groups), client_id, excluding=preview.resume_run_id):
             return ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD)
         return None
 
@@ -975,10 +1022,28 @@ class AutomationOwner:
         group_ids: tuple[str, ...],
         client_id: str,
     ) -> ControlResponse:
-        run_id: str = f"run-{token_hex(_ID_BYTES)}"
+        run_id: str = preview.resume_run_id or f"run-{token_hex(_ID_BYTES)}"
+        previous: ProcessingRequest | None = next(
+            (item for item in self._state.requests if item.request_id == run_id), None
+        )
+        if preview.resume_run_id is not None and (
+            previous is None or previous.state is RequestState.SUCCEEDED or run_id in self._service.active_run_ids()
+        ):
+            return ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD)
+        journal: RunJournal = (
+            RunJournal.load(self._store.run_path(run_id))
+            if previous is not None
+            else RunJournal.create(
+                self._store.run_path(run_id), preview.plan, self._service.workspace_root / "temp" / run_id
+            )
+        )
+        if journal.plan != preview.plan:
+            return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
+        if previous is not None:
+            journal.persist()
         accepted = ProcessingRequest(
             request_id=run_id,
-            generation=1,
+            generation=previous.generation + 1 if previous is not None else 1,
             group_ids=group_ids,
             fingerprints=dict(preview.fingerprints),
             origin=preview.origin,
@@ -986,7 +1051,7 @@ class AutomationOwner:
             rebuild=preview.rebuild,
             settings=_settings_snapshot(preview.plan.settings),
             state=RequestState.ACCEPTED,
-            attempts=1,
+            attempts=previous.attempts + 1 if previous is not None else 1,
             accepted_at=self._now(),
             intents=tuple(group.intent for group in preview.plan.groups),
             automatic=preview.automatic,
@@ -1001,6 +1066,8 @@ class AutomationOwner:
         with self._previews_lock:
             self._previews.pop(preview.preview_id, None)
         self._pending[run_id] = preview.products
+        self._run_results.pop(run_id, None)
+        self._run_products[run_id] = {artifact.artifact_id: artifact.kind for artifact in preview.plan.artifacts}
         submitted: bool = False
         try:
             handle: RunHandle = self._service.submit_plan(
@@ -1009,6 +1076,8 @@ class AutomationOwner:
                 origin=preview.origin,
                 run_id=run_id,
                 automatic=preview.automatic,
+                journal=journal,
+                resume=previous is not None and (self._service.workspace_root / "temp" / run_id).exists(),
             )
             submitted = True
         finally:
@@ -1052,6 +1121,25 @@ class AutomationOwner:
             return
         finished: ProcessingRequest = replace(recorded, state=_request_state(completion.result))
         candidate: WatchState = record_request(self._state, finished)
+        kinds: dict[str, ArtifactKind] = self._run_products.pop(completion.request_id, {})
+        if completion.result is not None:
+            confirmations: tuple[ProductConfirmation, ...] = tuple(
+                ProductConfirmation(
+                    group.group_id,
+                    kinds[product.artifact_id].value,
+                    product.path.relative_to(self._service.workspace_root).as_posix(),
+                    finished.generation,
+                    finished.request_id,
+                    finished.origin,
+                )
+                for group in completion.result.groups
+                for product in group.products
+                if product.artifact_id in kinds and product.path.is_relative_to(self._service.workspace_root)
+            )
+            paths: frozenset[str] = frozenset(item.path for item in confirmations)
+            candidate = replace(
+                candidate, products=(*(item for item in candidate.products if item.path not in paths), *confirmations)
+            )
         if finished.origin is RequestOrigin.USER and finished.state is not RequestState.PAUSED and products:
             candidate = _marked(candidate, finished, products, self._now())
         self._save(candidate)
@@ -1355,14 +1443,14 @@ class AutomationOwner:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _blocked(self, group_ids: Sequence[str], client_id: str) -> bool:
+    def _blocked(self, group_ids: Sequence[str], client_id: str, *, excluding: str | None = None) -> bool:
         held: Mapping[str, str] = {item.group_id: item.client_id for item in self._state.reservations}
         if any(held.get(group_id, client_id) != client_id for group_id in group_ids):
             return True
         active: frozenset[str] = frozenset(
             group_id
             for request in self._state.requests
-            if request.state in _ACTIVE_STATES
+            if request.state in _ACTIVE_STATES and request.request_id != excluding
             for group_id in request.group_ids
         )
         return bool(active.intersection(group_ids))
@@ -1487,6 +1575,14 @@ def _subscription_view(subscription: Subscription) -> dict[str, object]:
 
 def _invalid(message: str) -> ControlResponse:
     return ControlResponse.refused(ControlErrorCode.INVALID_PAYLOAD, message)
+
+
+def _external_sources(payload: Mapping[str, object]) -> tuple[dict[str, object], ...]:
+    registrations: object = payload.get("external_sources", [])
+    if not isinstance(registrations, list) or not all(isinstance(entry, dict) for entry in registrations):
+        msg = "External registrations must be a list of objects"
+        raise TypeError(msg)
+    return tuple(cast("dict[str, object]", entry) for entry in registrations)
 
 
 def _flag(payload: Mapping[str, object], key: str) -> bool | None:

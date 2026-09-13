@@ -10,7 +10,7 @@ from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Final, Never
+from typing import TYPE_CHECKING, Final, Never
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
 from anishift.application.cancellation import EventCancellationToken
@@ -34,6 +34,9 @@ from anishift.application.scheduler_contracts import (
 from anishift.application.sessions import RunSession
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext, ExecutionError
 from anishift.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from anishift.application.recovery import RunJournal
 
 logger = get_logger(__name__)
 
@@ -182,6 +185,7 @@ class SchedulerRuntime:
     commit_if_current: Callable[[Callable[[], None]], bool]
     pending_publications: dict[str, PendingPublication] = field(default_factory=dict)
     automatic: bool = False
+    journal: RunJournal | None = None
 
 
 class QueuedProgressSink:
@@ -360,7 +364,8 @@ def create_runtime(
         task_by_id={task.task_id: task for task in plan.tasks},
         task_index={task.task_id: index for index, task in enumerate(plan.tasks)},
         extraction_groups=extraction_group_ids(plan),
-        commit_if_current=_commit_gate(request.session, run_cancel, generation),
+        commit_if_current=_commit_gate(request.session, run_cancel, generation, request.journal),
+        journal=request.journal,
     )
 
 
@@ -373,12 +378,15 @@ def _commit_gate(
     session: RunSession,
     cancel: EventCancellationToken,
     generation: int,
+    journal: RunJournal | None = None,
 ) -> Callable[[Callable[[], None]], bool]:
     def commit_if_current(action: Callable[[], None]) -> bool:
         committed: bool = False
 
         def commit_if_active() -> None:
             nonlocal committed
+            if journal is not None:
+                journal.validate_inputs()
             committed = cancel.commit_if_active(action)
 
         return session.commit_if_generation(generation, commit_if_active) and committed
@@ -417,6 +425,8 @@ def queue_task(task: PlanTask, runtime: SchedulerRuntime) -> None:
 def commit_success(task: PlanTask, result: TaskResult, runtime: SchedulerRuntime) -> None:
     """Register outputs and forward readiness to direct dependants."""
     try:
+        if runtime.journal is not None:
+            runtime.journal.prepare(task, result)
         registered: TaskResult = runtime.store.register(task, result, runtime.commit_if_current)
     except PublicationLockedError as locked:
         _defer_publication(task, result, runtime, locked)
@@ -427,6 +437,8 @@ def commit_success(task: PlanTask, result: TaskResult, runtime: SchedulerRuntime
             "Durable publication resumed after destination lock", task_kind=task.kind.value, retries=pending.retries
         )
     runtime.state.task_results[task.task_id] = registered
+    if runtime.journal is not None:
+        runtime.journal.committed(registered)
     runtime.state.task_states[task.task_id] = TaskState.SUCCEEDED
     runtime.emitter.emit(
         RunEventKind.TASK_FINISHED,
@@ -546,6 +558,12 @@ def build_group_result(group_id: str, runtime: SchedulerRuntime) -> GroupResult:
         for output in result.outputs
         if runtime.store.artifact(output.artifact_id).lifetime is ArtifactLifetime.DURABLE
     )
+    if runtime.journal is not None:
+        present: frozenset[str] = frozenset(product.artifact_id for product in products)
+        recovered: tuple[ProducedArtifact, ...] = tuple(
+            product for product in runtime.journal.products(group_id) if product.artifact_id not in present
+        )
+        products = (*recovered, *products)
     product_ids: frozenset[str] = frozenset(product.artifact_id for product in products)
     preserved_products: tuple[ProducedArtifact, ...] = tuple(
         ProducedArtifact(artifact.artifact_id, artifact.preserved_path, {"preserved": True})

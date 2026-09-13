@@ -105,6 +105,11 @@ class ResidentSession:
         )
         return decode_view(PlanPreview, answer["preview"])
 
+    def plan_resume(self, group_ids: Sequence[str]) -> PlanPreview:
+        """Preview the verified remaining work of the selected unfinished run."""
+        answer: Mapping[str, object] = self._call("resume_preview", {"group_ids": list(group_ids)})
+        return decode_view(PlanPreview, answer["preview"])
+
     def register_external_subtitle(
         self,
         group_id: str,
