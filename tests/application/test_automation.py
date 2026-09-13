@@ -16,7 +16,7 @@ from fakes import write_text_source
 
 import anishift.application.automation as automation_module
 import anishift.application.watch as watch_module
-from anishift.application.acquisition import AcquisitionService, TorrentClient
+from anishift.application.acquisition import AcquisitionService, DownloadReceipt, ReleaseCatalog, TorrentClient
 from anishift.application.automation import AutomationOwner
 from anishift.application.control import (
     AcquisitionConfirmation,
@@ -26,6 +26,7 @@ from anishift.application.control import (
     SourceSelection,
     WatchState,
 )
+from anishift.application.control_views import encode_view
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.intents import ProductIntent, ProductKind, RebuildRequest, RequestOrigin
 from anishift.application.planning import ExecutionPlan
@@ -38,10 +39,13 @@ from anishift.application.subscriptions import (
     CheckRecorder,
     Subscription,
     SubscriptionAdmission,
+    SubscriptionOrder,
     SubscriptionService,
     SubscriptionStore,
+    SubscriptionUpdater,
 )
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
+from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
@@ -144,13 +148,23 @@ class _Subscriptions:
     def list(self) -> tuple[SimpleNamespace, ...]:
         return tuple(self.entries)
 
-    def check_all(
+    def next_check_at(self, policy: AutomationPolicy) -> datetime | None:
+        del policy
+        return None
+
+    def reconcile_sources(self, confirmations: Sequence[AcquisitionConfirmation]) -> None:
+        del confirmations
+
+    def check_due(
         self,
+        policy: AutomationPolicy,
         *,
         admit: SubscriptionAdmission | None = None,
         record: CheckRecorder | None = None,
+        update: SubscriptionUpdater | None = None,
+        refresh_calendar: bool = False,
     ) -> tuple[SimpleNamespace, ...]:
-        del admit, record
+        del policy, admit, record, update, refresh_calendar
         self.checks += 1
         return (SimpleNamespace(downloaded=2, problem=""),)
 
@@ -272,6 +286,113 @@ def _owner(service: _Service | AppService, store: WatchStateStore) -> Automation
         instance_id=_INSTANCE,
         clock=lambda: _MOMENT,
     )
+
+
+@pytest.mark.integration
+def test_panel_search_download_and_follow_use_the_resident_and_durable_receipts(tmp_path: Path) -> None:
+    network: _TorrentNetwork = _TorrentNetwork()
+    acquisition: AcquisitionService = AcquisitionService(
+        source=network,
+        client=cast("TorrentClient", network),
+        workspace_root=tmp_path,
+        parse_name=parse_release_name,
+    )
+    subscriptions: SubscriptionService = SubscriptionService(
+        store=SubscriptionStore(tmp_path / "subscriptions.json"),
+        acquisition=acquisition,
+        clock=lambda: _MOMENT,
+    )
+    service: AppService = _real_service(tmp_path, acquisition=acquisition, subscriptions=subscriptions)
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    key: bytes = os.urandom(32)
+    server: ControlServer = ControlServer(control_endpoint(tmp_path), key, owner.handle, on_disconnect=owner.disconnect)
+    session: ResidentSession = ResidentSession(
+        tmp_path,
+        lambda: ControlClient(control_endpoint(tmp_path), key, timeout_s=_TIMEOUT_S),
+    )
+    network.before_add = lambda: _assert_download_receipt(store)
+    try:
+        assert session.find_titles("Neko") == ()
+        catalog: ReleaseCatalog = session.search("Neko")
+        choices = catalog.groups[0].choices
+        receipt: DownloadReceipt = session.download(choices)
+        assert receipt.count == 2
+        assert session.download(choices).count == 0
+        subscription: Subscription = session.follow(
+            SubscriptionOrder("Neko to Ryuu", "SubsPlease", "neko", Decimal(20))
+        )
+        assert subscription.added_by_command is not None
+        assert subscription.subscription_id == subscriptions.list()[0].subscription_id
+        assert all(item.origin is RequestOrigin.USER for item in store.load().acquisitions)
+        assert all(item.pending is None for item in store.load().command_receipts)
+        assert network.added == [choice.release.info_hash for choice in choices]
+    finally:
+        session.close()
+        server.close()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+
+
+def _assert_download_receipt(store: WatchStateStore) -> None:
+    state: WatchState = store.load()
+    assert len(state.acquisitions) == 2
+    assert any(item.outcome.get("count") == 2 for item in state.command_receipts)
+
+
+def test_subscription_addition_replays_after_its_confirmation_could_not_be_saved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    network: _TorrentNetwork = _TorrentNetwork()
+    acquisition: AcquisitionService = AcquisitionService(
+        source=network,
+        client=cast("TorrentClient", network),
+        workspace_root=tmp_path,
+        parse_name=parse_release_name,
+    )
+    subscriptions: SubscriptionService = SubscriptionService(
+        store=SubscriptionStore(tmp_path / "subscriptions.json"),
+        acquisition=acquisition,
+        clock=lambda: _MOMENT,
+    )
+    service: AppService = _real_service(tmp_path, acquisition=acquisition, subscriptions=subscriptions)
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    save: Callable[[WatchState], None] = store.save
+
+    def fail_confirmation(state: WatchState) -> None:
+        if state.command_receipts and all(item.pending is None for item in state.command_receipts):
+            raise OSError("Injected confirmation failure")
+        save(state)
+
+    order: SubscriptionOrder = SubscriptionOrder("Neko to Ryuu", "SubsPlease", "neko", Decimal(20))
+    command: ControlRequest = _request("subscription_add", {"order": encode_view(order)})
+    try:
+        with monkeypatch.context() as failure:
+            failure.setattr(store, "save", fail_confirmation)
+            assert not owner.handle(command).ok
+        assert subscriptions.list()[0].generation == 1
+        assert store.load().command_receipts[0].pending == "subscription_add"
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    restored: AutomationOwner = _owner(service, store)
+    thread = _serving(restored)
+    try:
+        assert restored.handle(command).ok
+        assert restored.handle(command).ok
+        assert subscriptions.list()[0].generation == 1
+        assert store.load().command_receipts[0].pending is None
+    finally:
+        restored.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
 
 
 @pytest.mark.parametrize("manual", [False, True])

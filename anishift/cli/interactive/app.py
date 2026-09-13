@@ -682,7 +682,7 @@ class _InteractiveApplication:
 
     def _start_anime(self) -> None:
         """Open the release search over the acquisition boundary of this session."""
-        controller: AnimeController = AnimeController(self._service, self._renderer.invalidate)
+        controller: AnimeController = AnimeController(self._service, self._renderer.invalidate, resident=self._resident)
         self._mascot.reset()
         with self._lock:
             self._anime = controller

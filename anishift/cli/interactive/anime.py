@@ -25,6 +25,7 @@ from anishift.application import (
     SeasonContext,
     SeriesGroup,
     Subscription,
+    SubscriptionOrder,
     SubscriptionService,
     TitleCandidate,
     TitleStatus,
@@ -32,6 +33,7 @@ from anishift.application import (
     parse_query,
 )
 from anishift.application.events import sanitize_event_message
+from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError, ErrorCode
 from anishift.utils.logger import get_logger
 
@@ -200,8 +202,16 @@ class _Row:
 class AnimeController:
     """Own one ephemeral release search while AppService owns the network boundary."""
 
-    def __init__(self, service: AppService, invalidate: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        service: AppService,
+        invalidate: Callable[[], None],
+        *,
+        resident: ResidentSession | None = None,
+    ) -> None:
         self._service: AppService = service
+        self._resident: ResidentSession | None = resident
+        self._acquisition: AcquisitionService | ResidentSession | None = resident or service.acquisition
         self._invalidate: Callable[[], None] = invalidate
         self._lock: threading.Lock = threading.Lock()
         self._generation: int = 0
@@ -232,7 +242,7 @@ class AnimeController:
         self._problem: str = ""
         self._suggestion: str = ""
         self._problem_return: _Screen = _Screen.QUERY
-        if service.acquisition is None:
+        if self._acquisition is None:
             self._screen = _Screen.PROBLEM
             self._problem = _UNAVAILABLE
 
@@ -478,7 +488,7 @@ class AnimeController:
         worker.start()
 
     def _find_titles(self, title: str, text: str, generation: int) -> None:
-        acquisition: AcquisitionService | None = self._service.acquisition
+        acquisition: AcquisitionService | ResidentSession | None = self._acquisition
         if acquisition is None:
             self._fail(generation, _UNAVAILABLE, "", _Screen.QUERY)
             return
@@ -494,7 +504,7 @@ class AnimeController:
         self._show_titles(generation, candidates)
 
     def _search(self, query: str, fallback: str, generation: int) -> None:
-        acquisition: AcquisitionService | None = self._service.acquisition
+        acquisition: AcquisitionService | ResidentSession | None = self._acquisition
         if acquisition is None:
             self._fail(generation, _UNAVAILABLE, "", _Screen.QUERY)
             return
@@ -513,7 +523,7 @@ class AnimeController:
         order: CatalogOrder,
         generation: int,
     ) -> None:
-        acquisition: AcquisitionService | None = self._service.acquisition
+        acquisition: AcquisitionService | ResidentSession | None = self._acquisition
         if acquisition is None:
             self._fail(generation, _UNAVAILABLE, "", _Screen.QUERY)
             return
@@ -527,7 +537,7 @@ class AnimeController:
         self._search_releases(candidate, _Listing(order, episodes, context, note), generation)
 
     def _search_releases(self, candidate: TitleCandidate, listing: _Listing, generation: int) -> None:
-        acquisition: AcquisitionService | None = self._service.acquisition
+        acquisition: AcquisitionService | ResidentSession | None = self._acquisition
         if acquisition is None:
             self._fail(generation, _UNAVAILABLE, "", _Screen.QUERY)
             return
@@ -542,7 +552,7 @@ class AnimeController:
         self._show_results(generation, catalog, listing)
 
     def _download(self, choices: Sequence[ReleaseChoice], directory: str | None, generation: int) -> None:
-        acquisition: AcquisitionService | None = self._service.acquisition
+        acquisition: AcquisitionService | ResidentSession | None = self._acquisition
         if acquisition is None:
             self._fail(generation, _UNAVAILABLE, "", _Screen.RESULTS)
             return
@@ -566,11 +576,26 @@ class AnimeController:
         if subscriptions is None:
             self._fail(generation, _NO_SUBSCRIPTIONS, "", _Screen.RESULTS)
             return
+        if choice.episode is None or choice.name.is_pack or choice.other_season:
+            self._fail(generation, _NOT_WATCHABLE, "", _Screen.RESULTS)
+            return
         try:
-            subscription: Subscription = subscriptions.subscribe(
-                query, choice, directory_name=directory, context=context
-            )
-            outcome: CheckOutcome = subscriptions.check(subscription)
+            if self._resident is not None:
+                subscription: Subscription = self._resident.follow(
+                    SubscriptionOrder(
+                        choice.name.series,
+                        choice.name.group or "?",
+                        query,
+                        choice.episode,
+                        directory,
+                        context,
+                        self._candidate.anilist_id if self._candidate is not None else None,
+                    )
+                )
+                outcome: CheckOutcome = CheckOutcome(subscription, 0)
+            else:
+                subscription = subscriptions.subscribe(query, choice, directory_name=directory, context=context)
+                outcome = subscriptions.check(subscription)
         except (AniShiftError, OSError, ValueError) as problem:
             logger.warning("Anime subscription failed", error_class=type(problem).__name__)
             self._report(generation, problem, _Screen.RESULTS)
@@ -580,11 +605,14 @@ class AnimeController:
             if outcome.problem
             else f"pobrano {outcome.downloaded}"
         )
+        if self._resident is not None:
+            result = "sprawdzanie działa w tle"
+        cadence: str = "według kalendarza premier" if self._resident and subscription.anilist_id else _CHECK_CADENCE
         self._show_done(
             generation,
             f"Obserwuję [{_safe(subscription.group)}] {_safe(subscription.series)} "
             f"od {_episode_number(subscription.next_episode)}"
-            f"{_HINT_SEPARATOR}{result}{_HINT_SEPARATOR}{_CHECK_CADENCE}",
+            f"{_HINT_SEPARATOR}{result}{_HINT_SEPARATOR}{cadence}",
         )
 
     def _show_titles(self, generation: int, candidates: tuple[TitleCandidate, ...]) -> None:

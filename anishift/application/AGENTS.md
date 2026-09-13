@@ -65,14 +65,23 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   (numery odcinków jako teksty dziesiętne). Wszystkie pola spoza pierwotnej dziewiątki są
   opcjonalne przy odczycie, więc starsze pliki wczytują się bez ręcznej naprawy; zapis jest
   zawsze pełny. `subscriptions.py`
-- `SCHEMA_VERSION` to `2`, a loader przyjmuje 1 i 2. Plik w wersji 1 `load()` migruje raz: zostawia
-  kopię `subscriptions.json.v1.bak` i przepisuje plik w wersji 2, więc drugi `load()` nie zmienia
+- `SCHEMA_VERSION` to `3`, a loader przyjmuje 1, 2 i 3. Starszy plik `load()` migruje raz: zostawia
+  kopię `subscriptions.json.v<wersja>.bak` i przepisuje plik w wersji 3, więc drugi `load()` nie zmienia
   już bajtów. Każdy numer z `taken_episodes` staje się `EpisodeOrder(..., ORDERED)` bez hasha —
   `taken` dowodzi przekazania wydania klientowi, nigdy kompletnego pliku. Kod sprzed schematu 2
   odrzuca plik w wersji 2 (`ConfigError`), więc cofnięcie wersji wymaga przywrócenia kopii
   `subscriptions.json.v1.bak` na miejsce `subscriptions.json` i restartu czuwania. Ponowne
   `add`/`subscribe` tej samej pary seria+grupa podnosi `generation` i zachowuje `enabled`,
   `end_state`, `anilist_id`, korektę i próbki opóźnienia. `subscriptions.py`
+- Rezydent planuje `check_due` według zapisanych terminów odcinków. Niepowiązane wpisy zachowują
+  godzinne szukanie wydań; osobne próby powiązania respektują opóźnienia i budżet retry. Znany
+  kalendarz bez daty czeka, a terminalne okno nie odradza się po restarcie. `subscriptions.py`
+- `RequestControl` opakowuje wspólny transport HTTP metadanych i qBittorrenta. Liczy rzeczywiste
+  wywołania, współdzieli aktywne odczyty i blokady dostawców; trwałe terminy blokad zapisuje owner.
+  Budżet jednej operacji obejmuje zagnieżdżone zapytania, bez retry transportu. `services/http_requests.py`
+- `subscription_add` zapisuje receipt przed zmianą drugiego pliku; `added_by_command` pozwala
+  dokończyć potwierdzenie bez ponownego podniesienia generacji. Ręczne `download` zapisuje receipt
+  i hashe przed wysłaniem. Panel w trybie rezydenta prowadzi także wyszukiwanie przez ownera.
 - `enable`/`disable`/`set_anilist_id` są idempotentne: bez zmiany wartości nie zapisują i nie
   podnoszą `generation`; ze zmianą podnoszą je o 1. `check_all` pomija wpisy wyłączone i te z
   `end_state != ACTIVE`, a `check` wyłączonego wpisu zwraca `CheckOutcome` z problemem i nie

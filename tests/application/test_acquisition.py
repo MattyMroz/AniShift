@@ -25,7 +25,7 @@ from anishift.application.acquisition import (
     series_directory_name,
 )
 from anishift.errors import ErrorCode, ErrorContext, FatalError
-from anishift.services.catalog import PrequelEntry, TitleCandidate, TitleStatus
+from anishift.services.catalog import PrequelEntry, SeasonAiring, TitleCandidate, TitleStatus
 from anishift.services.torrents import Release, ReleaseName, TorrentFile, TorrentInfo
 from anishift.services.torrents.categories import (
     CATEGORY_ENGLISH_TRANSLATED,
@@ -74,6 +74,9 @@ class _TitleCatalog:
 
     def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
         return self.prequels
+
+    def airing_schedule(self, anilist_id: int) -> SeasonAiring:
+        return SeasonAiring(anilist_id, TitleStatus.UNKNOWN, None, ())
 
 
 class _Client:

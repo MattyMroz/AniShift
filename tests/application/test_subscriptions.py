@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -20,6 +20,8 @@ from anishift.application.acquisition import (
     SeasonContext,
     SeriesGroup,
 )
+from anishift.application.control import AcquisitionConfirmation, AcquisitionState, AutomationPolicy
+from anishift.application.intents import RequestOrigin
 from anishift.application.subscriptions import (
     MAX_DELAY_SAMPLES,
     SCHEMA_VERSION,
@@ -34,7 +36,9 @@ from anishift.application.subscriptions import (
     subscription_id,
 )
 from anishift.errors import ConfigError, ErrorCode, ErrorContext, TransientError
+from anishift.services.catalog import EpisodeAiring, SeasonAiring, TitleCatalogError, TitleStatus
 from anishift.services.torrents import Release, ReleaseName
+from anishift.services.torrents.categories import SEARCH_CATEGORIES
 
 _TIMESTAMP: str = "2026-09-06T12:00:00+00:00"
 
@@ -102,6 +106,8 @@ class _Acquisition(AcquisitionService):
         catalogs: Mapping[str, ReleaseCatalog] | None = None,
         failing: Sequence[str] = (),
     ) -> None:
+        self.request_control = None
+        self._title_catalog = None
         self.catalogs: dict[str, ReleaseCatalog] = dict(catalogs or {})
         self.failing: frozenset[str] = frozenset(failing)
         self.queries: list[str] = []
@@ -110,9 +116,11 @@ class _Acquisition(AcquisitionService):
         self.queued: set[str] = set()
         self.dropped: set[str] = set()
 
-    def search(self, query: str) -> ReleaseCatalog:
+    def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> ReleaseCatalog:
+        del categories
         self.queries.append(query)
-        if query in self.failing:
+        key: str = query if query in self.catalogs or query in self.failing else query.rsplit(" ", 1)[0]
+        if key in self.failing:
             raise _SourceDownError(
                 context=ErrorContext(
                     code=ErrorCode.TORRENT_SOURCE_FAILED,
@@ -120,7 +128,7 @@ class _Acquisition(AcquisitionService):
                     suggestion="Try again later",
                 )
             )
-        return self.catalogs.get(query, _catalog())
+        return self.catalogs.get(key, _catalog())
 
     def download(self, choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
         self.downloaded.append(tuple(choices))
@@ -134,12 +142,29 @@ class _Acquisition(AcquisitionService):
         return frozenset(self.queued)
 
 
+class _CalendarAcquisition(_Acquisition):
+    def __init__(self, episodes: tuple[EpisodeAiring, ...], *, count: int | None = 10) -> None:
+        super().__init__()
+        self.schedule: SeasonAiring = SeasonAiring(1, TitleStatus.RELEASING, count, episodes)
+        self.calendar_calls: int = 0
+        self.calendar_fails: bool = False
+
+    def airing_schedule(self, anilist_id: int) -> SeasonAiring:
+        assert anilist_id == 1
+        self.calendar_calls += 1
+        if self.calendar_fails:
+            raise TitleCatalogError(
+                context=ErrorContext(code=ErrorCode.TITLE_CATALOG_FAILED, message="Calendar unavailable")
+            )
+        return self.schedule
+
+
 def _store(tmp_path: Path) -> SubscriptionStore:
     return SubscriptionStore(tmp_path / "subscriptions.json")
 
 
-def _service(tmp_path: Path, acquisition: _Acquisition) -> SubscriptionService:
-    return SubscriptionService(store=_store(tmp_path), acquisition=acquisition, clock=_clock, sleep=lambda _: None)
+def _service(tmp_path: Path, acquisition: _Acquisition, clock: Callable[[], datetime] = _clock) -> SubscriptionService:
+    return SubscriptionService(store=_store(tmp_path), acquisition=acquisition, clock=clock, sleep=lambda _: None)
 
 
 def _subscription(  # noqa: PLR0913
@@ -171,6 +196,233 @@ def _subscription(  # noqa: PLR0913
         season_episodes=season_episodes,
         taken_episodes=tuple(taken_episodes),
     )
+
+
+def test_a_future_episode_causes_no_automatic_network_work(tmp_path: Path) -> None:
+    airing: datetime = _clock() + timedelta(days=1)
+    acquisition: _CalendarAcquisition = _CalendarAcquisition((EpisodeAiring(9, airing),))
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9), anilist_id=1)
+    policy: AutomationPolicy = AutomationPolicy()
+
+    assert service.check_due(policy)[0].downloaded == 0
+    assert service.next_check_at(policy) == airing + timedelta(hours=3)
+    assert service.check_due(policy) == ()
+    assert acquisition.calendar_calls == 1
+    assert acquisition.queries == []
+
+
+def test_unknown_calendar_dates_stop_automatic_queries(tmp_path: Path) -> None:
+    acquisition: _CalendarAcquisition = _CalendarAcquisition(())
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9), anilist_id=1)
+
+    service.check_due(AutomationPolicy())
+    assert service.check_due(AutomationPolicy()) == ()
+    assert service.next_check_at(AutomationPolicy()) is None
+    assert acquisition.calendar_calls == 1
+    assert acquisition.queries == []
+
+
+@pytest.mark.parametrize("count", [10, None])
+def test_confirmed_download_refreshes_the_next_unknown_date_once(tmp_path: Path, count: int | None) -> None:
+    acquisition: _CalendarAcquisition = _CalendarAcquisition(
+        (EpisodeAiring(9, _clock() - timedelta(hours=4)),),
+        count=count,
+    )
+    acquisition.catalogs["neko"] = _catalog(_choice(Decimal(9)))
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9), anilist_id=1)
+    policy: AutomationPolicy = AutomationPolicy()
+
+    assert service.check_due(policy)[0].downloaded == 1
+    assert service.next_check_at(policy) == _clock()
+    assert service.check_due(policy)[0].downloaded == 0
+    assert service.next_check_at(policy) is None
+    assert acquisition.calendar_calls == 2
+    assert acquisition.queries == ["neko SubsPlease"]
+
+
+def test_complete_source_finishes_the_order_without_repeating_translation_or_download(tmp_path: Path) -> None:
+    acquisition: _CalendarAcquisition = _CalendarAcquisition(
+        (EpisodeAiring(9, _clock() - timedelta(hours=4)),), count=9
+    )
+    choice: ReleaseChoice = _choice(Decimal(9))
+    acquisition.catalogs["neko"] = _catalog(choice)
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    subscription: Subscription = service.add(
+        "Neko to Ryuu",
+        "SubsPlease",
+        query="neko",
+        first_episode=Decimal(9),
+        anilist_id=1,
+    )
+    service.check_due(AutomationPolicy())
+    assert service.list()[0].end_state is SubscriptionEnd.UNCERTAIN
+    confirmation: AcquisitionConfirmation = AcquisitionConfirmation(
+        "operation",
+        choice.release.info_hash,
+        "",
+        ("episode.mkv",),
+        AcquisitionState.COMPLETE,
+        RequestOrigin.BACKGROUND,
+        subscription.subscription_id,
+        "9",
+        _TIMESTAMP,
+    )
+
+    service.reconcile_sources((confirmation,))
+    first: bytes = (tmp_path / "subscriptions.json").read_bytes()
+    service.reconcile_sources((confirmation,))
+
+    assert service.list()[0].end_state is SubscriptionEnd.COMPLETE
+    assert service.list()[0].episodes[0].state is EpisodeState.COMPLETE
+    assert service.check_due(AutomationPolicy()) == ()
+    assert len(acquisition.downloaded) == 1
+    assert (tmp_path / "subscriptions.json").read_bytes() == first
+
+
+def test_unbound_subscription_keeps_hourly_checks_without_calendar(tmp_path: Path) -> None:
+    now: list[datetime] = [_clock()]
+    acquisition: _Acquisition = _Acquisition()
+    service: SubscriptionService = _service(tmp_path, acquisition, lambda: now[0])
+    service.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9))
+    policy: AutomationPolicy = AutomationPolicy()
+
+    assert len(service.check_due(policy)) == 1
+    assert service.check_due(policy) == ()
+    assert service.next_check_at(policy) == _clock() + timedelta(seconds=60)
+    now[0] += timedelta(seconds=60)
+    assert len(service.check_due(policy)) == 1
+    assert len(acquisition.queries) == 2
+    now[0] += timedelta(seconds=300)
+    assert len(service.check_due(policy)) == 1
+    assert len(acquisition.queries) == 2
+    assert service.next_check_at(policy) == _clock() + timedelta(hours=1)
+    now[0] += timedelta(hours=8)
+    assert len(service.check_due(policy)) == 1
+    assert len(acquisition.queries) == 4
+    assert service.list()[0].end_state is SubscriptionEnd.ACTIVE
+
+
+def test_a_postponed_airing_cancels_the_old_release_search(tmp_path: Path) -> None:
+    past: datetime = _clock() - timedelta(hours=4)
+    future: datetime = _clock() + timedelta(days=7)
+    acquisition: _CalendarAcquisition = _CalendarAcquisition((EpisodeAiring(9, future),), count=9)
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    original: Subscription = replace(
+        _subscription(),
+        anilist_id=1,
+        episodes=(
+            EpisodeOrder(
+                Decimal(9),
+                airing_at=past.isoformat(),
+                airing_source=AiringSource.ANILIST,
+                due_at=(past + timedelta(hours=3)).isoformat(),
+                window_until=(_clock() + timedelta(days=3)).isoformat(),
+            ),
+        ),
+    )
+    _store(tmp_path).save((original,))
+
+    service.check_due(AutomationPolicy())
+
+    assert service.next_check_at(AutomationPolicy()) == future + timedelta(hours=3)
+    assert acquisition.queries == []
+
+
+def test_an_expired_episode_does_not_block_a_later_due_episode(tmp_path: Path) -> None:
+    now: datetime = _clock()
+    acquisition: _CalendarAcquisition = _CalendarAcquisition(
+        (
+            EpisodeAiring(9, now - timedelta(days=7)),
+            EpisodeAiring(10, now - timedelta(hours=4)),
+        )
+    )
+    acquisition.catalogs["neko"] = _catalog(_choice(Decimal(9)), _choice(Decimal(10)))
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9), anilist_id=1)
+
+    outcome: CheckOutcome = service.check_due(AutomationPolicy())[0]
+
+    assert outcome.downloaded == 1
+    assert [choice.episode for batch in acquisition.downloaded for choice in batch] == [Decimal(10)]
+    assert [(episode.number, episode.state) for episode in service.list()[0].episodes] == [
+        (Decimal(9), EpisodeState.EXPIRED),
+        (Decimal(10), EpisodeState.ORDERED),
+    ]
+    assert acquisition.queries == ["neko SubsPlease"]
+
+
+def test_an_empty_due_search_waits_an_hour_and_does_not_replay_missed_hours(tmp_path: Path) -> None:
+    moments: list[datetime] = [_clock()]
+    acquisition: _CalendarAcquisition = _CalendarAcquisition(
+        (EpisodeAiring(9, _clock() - timedelta(hours=4)),), count=9
+    )
+    service: SubscriptionService = _service(tmp_path, acquisition, lambda: moments[0])
+    service.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9), anilist_id=1)
+    policy: AutomationPolicy = AutomationPolicy()
+
+    service.check_due(policy)
+    assert service.next_check_at(policy) == moments[0] + timedelta(hours=1)
+    calls: int = len(acquisition.queries)
+    assert service.check_due(policy) == ()
+    assert len(acquisition.queries) == calls
+    moments[0] += timedelta(hours=8)
+    assert len(service.check_due(policy)) == 1
+    assert len(acquisition.queries) == calls + 2
+    assert service.next_check_at(policy) == moments[0] + timedelta(hours=1)
+
+
+def test_a_finished_episode_window_stays_finished_after_reload(tmp_path: Path) -> None:
+    acquisition: _CalendarAcquisition = _CalendarAcquisition((EpisodeAiring(9, _clock() - timedelta(days=8)),), count=9)
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9), anilist_id=1)
+
+    service.check_due(AutomationPolicy())
+    resumed: SubscriptionService = _service(tmp_path, acquisition)
+
+    assert resumed.check_due(AutomationPolicy()) == ()
+    assert resumed.next_check_at(AutomationPolicy()) is None
+    assert resumed.list()[0].end_state is SubscriptionEnd.MISSING
+    assert acquisition.calendar_calls == 1
+    assert acquisition.queries == []
+
+
+def test_calendar_retry_budget_and_deadlines_survive_reload(tmp_path: Path) -> None:
+    moments: list[datetime] = [_clock()]
+    acquisition: _CalendarAcquisition = _CalendarAcquisition((), count=9)
+    acquisition.calendar_fails = True
+    service: SubscriptionService = _service(tmp_path, acquisition, lambda: moments[0])
+    service.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9), anilist_id=1)
+    policy: AutomationPolicy = AutomationPolicy()
+
+    for delay in (60, 300):
+        assert service.check_due(policy)[0].problem
+        assert service.next_check_at(policy) == moments[0] + timedelta(seconds=delay)
+        assert service.check_due(policy) == ()
+        moments[0] += timedelta(seconds=delay)
+        service = _service(tmp_path, acquisition, lambda: moments[0])
+    assert service.check_due(policy)[0].problem
+    assert service.next_check_at(policy) is None
+    assert acquisition.calendar_calls == 3
+    assert acquisition.queries == []
+    assert _store(tmp_path).load()[0].episodes[0].attempts == 3
+
+
+def test_schema_two_migration_preserves_episode_windows_and_keeps_a_backup(tmp_path: Path) -> None:
+    store: SubscriptionStore = _store(tmp_path)
+    original: Subscription = replace(_subscription(), episodes=(EpisodeOrder(Decimal(9), state=EpisodeState.EXPIRED),))
+    store.save((original,))
+    path: Path = tmp_path / "subscriptions.json"
+    payload: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 2
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    previous: str = path.read_text(encoding="utf-8")
+
+    assert store.load() == (original,)
+    assert (tmp_path / "subscriptions.json.v2.bak").read_text(encoding="utf-8") == previous
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == SCHEMA_VERSION
 
 
 def test_store_round_trip_keeps_fractional_episodes_and_taken_hashes(tmp_path: Path) -> None:
@@ -536,7 +788,7 @@ def test_check_asks_for_the_missing_episode_by_number_when_the_feed_skips_it(tmp
 
     outcome: CheckOutcome = service.check(service.list()[0])
 
-    assert acquisition.queries == ["neko", "neko 09"]
+    assert acquisition.queries == ["neko SubsPlease", "neko 09 SubsPlease"]
     assert outcome.downloaded == 2
     assert service.list()[0].next_episode == Decimal(10)
 
@@ -548,7 +800,7 @@ def test_check_asks_no_second_query_when_the_feed_already_carries_the_episode(tm
 
     service.check(service.list()[0])
 
-    assert acquisition.queries == ["neko"]
+    assert acquisition.queries == ["neko SubsPlease"]
 
 
 def test_check_survives_a_failing_catch_up_query(tmp_path: Path) -> None:
@@ -982,8 +1234,8 @@ def test_late_search_cannot_override_a_disabled_or_removed_subscription(
     release: threading.Event = threading.Event()
     outcomes: list[CheckOutcome] = []
 
-    def search(query: str) -> ReleaseCatalog:
-        del query
+    def search(query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> ReleaseCatalog:
+        del query, categories
         entered.set()
         assert release.wait(timeout=5.0)
         return _catalog(_choice(Decimal(9))) if has_release else _catalog()

@@ -426,6 +426,15 @@ def commit_success(task: PlanTask, result: TaskResult, runtime: SchedulerRuntime
     """Register outputs and forward readiness to direct dependants."""
     commit: Callable[[Callable[[], None]], bool] = runtime.commit_if_current
     journal: RunJournal | None = runtime.journal
+    if journal is not None and journal.failed:
+        runtime.state.task_states[task.task_id] = TaskState.BLOCKED
+        runtime.emitter.emit(
+            RunEventKind.TASK_FINISHED,
+            group_id=task.group_id,
+            task_id=task.task_id,
+            state=TaskState.BLOCKED,
+        )
+        return
     try:
         if journal is not None:
             journal.prepare(task, result)

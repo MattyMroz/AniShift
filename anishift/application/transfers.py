@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
@@ -13,7 +15,7 @@ from anishift.platform.directory_watch import source_is_available
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from anishift.application.acquisition import AcquisitionService
     from anishift.application.control import AcquisitionConfirmation
@@ -30,6 +32,11 @@ _COMPLETE_STATES: Final[frozenset[str]] = frozenset(
 )
 """Client states that have finished downloading and are not checking or moving data."""
 
+_DOWNLOADING_STATES: Final[frozenset[str]] = frozenset(
+    {"downloading", "stalledDL", "forcedDL", "metaDL", "forcedMetaDL"}
+)
+"""States in which the client is actively trying to obtain data."""
+
 
 @dataclass(frozen=True, slots=True)
 class _Files:
@@ -37,21 +44,56 @@ class _Files:
     signature: tuple[str, str, bool]
 
 
+@dataclass(frozen=True, slots=True)
+class _Progress:
+    value: tuple[float, int | None]
+    checked_at: float
+    idle_s: float
+    downloading: bool
+
+
 class TransferInspector:
     """Reconcile active transfers with their selected files and local readability."""
 
-    def __init__(self, acquisition: AcquisitionService, workspace_root: Path) -> None:
+    def __init__(
+        self,
+        acquisition: AcquisitionService,
+        workspace_root: Path,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._acquisition: AcquisitionService = acquisition
         self._root: Path = workspace_root.resolve()
         self._files: dict[str, _Files] = {}
+        self._clock: Callable[[], float] = clock
+        self._progress: dict[str, _Progress] = {}
+        self._progress_lock: threading.Lock = threading.Lock()
+        self._stalled: frozenset[str] = frozenset()
 
-    def inspect(self, acquisitions: Sequence[AcquisitionConfirmation]) -> tuple[AcquisitionConfirmation, ...]:
+    @property
+    def stalled(self) -> frozenset[str]:
+        """Hashes with a confirmed lack of progress during active downloading."""
+        with self._progress_lock:
+            return self._stalled
+
+    def reset_clock(self) -> None:
+        """Exclude an unobserved or suspended interval from transfer stall time."""
+        with self._progress_lock:
+            self._progress = {key: replace(value, downloading=False) for key, value in self._progress.items()}
+
+    def inspect(
+        self,
+        acquisitions: Sequence[AcquisitionConfirmation],
+        *,
+        stall_after_s: float = float("inf"),
+    ) -> tuple[AcquisitionConfirmation, ...]:
         """Read the client once and refresh file details at metadata and completion boundaries."""
         if not acquisitions:
             self._files.clear()
             return ()
         transfers: dict[str, TorrentInfo] = {item.info_hash.casefold(): item for item in self._acquisition.transfers()}
         active: set[str] = {item.info_hash for item in acquisitions}
+        self._record_progress({key: value for key, value in transfers.items() if key in active}, stall_after_s)
         self._files = {key: value for key, value in self._files.items() if key in active}
         results: list[AcquisitionConfirmation] = []
         for acquisition in acquisitions:
@@ -62,6 +104,25 @@ class TransferInspector:
                 result = acquisition
             results.append(result)
         return tuple(results)
+
+    def _record_progress(self, transfers: dict[str, TorrentInfo], stall_after_s: float) -> None:
+        now: float = self._clock()
+        progress: dict[str, _Progress] = {}
+        with self._progress_lock:
+            for key, transfer in transfers.items():
+                previous: _Progress | None = self._progress.get(key)
+                value: tuple[float, int | None] = (transfer.progress, transfer.completed)
+                downloading: bool = transfer.state in _DOWNLOADING_STATES
+                idle: float = 0.0
+                if previous is not None and previous.value == value:
+                    idle = previous.idle_s
+                    if previous.downloading and downloading:
+                        idle += max(0.0, now - previous.checked_at)
+                progress[key] = _Progress(value, now, idle, downloading)
+            self._progress = progress
+            self._stalled = frozenset(
+                key for key, item in progress.items() if item.downloading and item.idle_s >= stall_after_s
+            )
 
     def _inspect(self, acquisition: AcquisitionConfirmation, transfer: TorrentInfo | None) -> AcquisitionConfirmation:
         if transfer is None:

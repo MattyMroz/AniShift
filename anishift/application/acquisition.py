@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import Counter
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -24,7 +25,8 @@ from anishift.utils.logger import get_logger
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
-    from anishift.services.catalog import PrequelEntry, TitleCandidate
+    from anishift.services.catalog import PrequelEntry, SeasonAiring, TitleCandidate
+    from anishift.services.http_requests import RequestControl
     from anishift.services.torrents import Release, ReleaseName, TorrentFile, TorrentInfo
     from anishift.services.torrents.query import EpisodeRange
 
@@ -120,6 +122,10 @@ class TitleCatalog(Protocol):
 
     def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
         """Return every entry airing before *candidate*, direct prequel first."""
+        ...
+
+    def airing_schedule(self, anilist_id: int) -> SeasonAiring:
+        """Return the known episode dates of one season."""
         ...
 
 
@@ -338,6 +344,7 @@ class AcquisitionService:
         parse_name: Callable[[str], ReleaseName],
         category: str = DOWNLOAD_CATEGORY,
         title_catalog: TitleCatalog | None = None,
+        request_control: RequestControl | None = None,
     ) -> None:
         self._source: TorrentSource = source
         self._client: TorrentClient = client
@@ -345,10 +352,21 @@ class AcquisitionService:
         self._parse_name: Callable[[str], ReleaseName] = parse_name
         self._category: str = category
         self._title_catalog: TitleCatalog | None = title_catalog
+        self.request_control: RequestControl | None = request_control
 
-    def search(self, query: str) -> ReleaseCatalog:
+    def requests(self, reason: str) -> AbstractContextManager[None]:
+        """Share one metadata budget across the adapters used by an operation."""
+        if self.request_control is None:
+            return nullcontext()
+        return self.request_control.scope(reason, {"nyaa": MAX_REQUESTS, "anilist": MAX_REQUESTS})
+
+    def blocked_until(self, providers: tuple[str, ...]) -> float:
+        """Return the earliest allowed provider retry, or zero when unblocked."""
+        return self.request_control.blocked_until(providers) if self.request_control is not None else 0.0
+
+    def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> ReleaseCatalog:
         """Return the listed releases for *query*, grouped and filtered by quality."""
-        releases: tuple[Release, ...] = self._source.search(query)
+        releases: tuple[Release, ...] = self._source.search(query, categories=categories)
         catalog: ReleaseCatalog = catalog_releases(releases, self._parse_name)
         logger.info(
             "Releases searched",
@@ -437,6 +455,13 @@ class AcquisitionService:
     def transfers(self) -> tuple[TorrentInfo, ...]:
         """Read the current state of every transfer in the AniShift category."""
         return self._client.torrents(self._category)
+
+    def airing_schedule(self, anilist_id: int) -> SeasonAiring:
+        """Read known episode dates without another title or prequel search."""
+        if self._title_catalog is None:
+            msg = "No title catalog is configured"
+            raise ValueError(msg)
+        return self._title_catalog.airing_schedule(anilist_id)
 
     def transfer_files(self, info_hash: str) -> tuple[TorrentFile, ...]:
         """Read selection and completion for one tracked transfer."""

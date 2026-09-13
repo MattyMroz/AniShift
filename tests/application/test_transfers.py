@@ -35,6 +35,33 @@ def _confirmation() -> AcquisitionConfirmation:
     )
 
 
+@pytest.mark.parametrize("interruption", ["pausedDL", "checkingDL", "resume"])
+def test_stall_time_excludes_pauses_checks_and_sleep(tmp_path: Path, interruption: str) -> None:
+    now: list[float] = [0.0]
+    acquisition: _Acquisition = _Acquisition(tmp_path)
+    assert acquisition.info is not None
+    acquisition.info = replace(acquisition.info, progress=0.5, completed=2, state="downloading", amount_left=2)
+    inspector: TransferInspector = TransferInspector(acquisition, tmp_path, clock=lambda: now[0])
+    inspector.inspect((_confirmation(),), stall_after_s=60)
+    now[0] = 30
+    inspector.inspect((_confirmation(),), stall_after_s=60)
+    if interruption == "resume":
+        inspector.reset_clock()
+    else:
+        acquisition.info = replace(acquisition.info, state=interruption)
+        inspector.inspect((_confirmation(),), stall_after_s=60)
+    now[0] += 3600
+    acquisition.info = replace(acquisition.info, state="downloading")
+    inspector.inspect((_confirmation(),), stall_after_s=60)
+    assert not inspector.stalled
+    now[0] += 30
+    inspector.inspect((_confirmation(),), stall_after_s=60)
+    assert inspector.stalled == frozenset({"abc"})
+    acquisition.info = replace(acquisition.info, progress=0.75, completed=3)
+    inspector.inspect((_confirmation(),), stall_after_s=60)
+    assert not inspector.stalled
+
+
 @pytest.mark.parametrize("state", ["uploading", "stalledUP", "queuedUP", "pausedUP", "stoppedUP", "forcedUP"])
 def test_completed_selected_files_are_ready_without_unselected_pack_files(tmp_path: Path, state: str) -> None:
     (tmp_path / "Episode.mkv").write_bytes(b"data")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any, Final
 
 import httpx
@@ -10,7 +11,7 @@ import pytest
 from anishift.errors import ErrorCode
 from anishift.services.catalog.anilist import ANILIST_URL, AniListCatalog
 from anishift.services.catalog.errors import TitleCatalogError
-from anishift.services.catalog.types import PrequelEntry, TitleCandidate, TitleStatus
+from anishift.services.catalog.types import EpisodeAiring, PrequelEntry, SeasonAiring, TitleCandidate, TitleStatus
 
 _SOLO_LEVELING: Final[dict[str, Any]] = {
     "id": 176496,
@@ -59,6 +60,85 @@ def _catalog(handler: Callable[[httpx.Request], httpx.Response]) -> tuple[AniLis
 def _searched(request: httpx.Request) -> str:
     body: Any = json.loads(request.content)
     return str(body["variables"]["search"])
+
+
+def _schedule(nodes: list[dict[str, object]], *, page: int = 1, more: bool = False) -> dict[str, object]:
+    return {
+        "data": {
+            "Media": {
+                "id": 176496,
+                "status": "RELEASING",
+                "episodes": 13,
+                "startDate": {"year": 2026, "month": 9, "day": None},
+                "airingSchedule": {"pageInfo": {"currentPage": page, "hasNextPage": more}, "nodes": nodes},
+            }
+        }
+    }
+
+
+def test_schedule_reads_all_pages_and_keeps_unknown_dates() -> None:
+    pages: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body: dict[str, Any] = json.loads(request.content)
+        assert body["variables"]["id"] == 176496
+        page: int = body["variables"]["page"]
+        pages.append(page)
+        nodes: list[dict[str, object]] = (
+            [{"episode": 9, "airingAt": 1789290000}] if page == 1 else [{"episode": 10, "airingAt": None}]
+        )
+        return httpx.Response(200, json=_schedule(nodes, page=page, more=page == 1))
+
+    catalog, http = _catalog(handler)
+    with http:
+        schedule: SeasonAiring = catalog.airing_schedule(176496)
+    assert pages == [1, 2]
+    assert schedule.status is TitleStatus.RELEASING
+    assert schedule.episode_count == 13
+    assert schedule.start_date is None
+    assert schedule.episodes == (EpisodeAiring(9, datetime.fromtimestamp(1789290000, tz=UTC)), EpisodeAiring(10, None))
+
+
+@pytest.mark.parametrize("problem", ["wrong_page", "empty_continuation", "invalid_date", "invalid_episode"])
+def test_schedule_rejects_incomplete_or_invalid_pages(problem: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        node: dict[str, object] = {"episode": 9, "airingAt": 1789290000}
+        if problem == "invalid_date":
+            node["airingAt"] = "tomorrow"
+        elif problem == "invalid_episode":
+            node["episode"] = True
+        return httpx.Response(
+            200,
+            json=_schedule(
+                [] if problem == "empty_continuation" else [node],
+                page=2 if problem == "wrong_page" else 1,
+                more=problem == "empty_continuation",
+            ),
+        )
+
+    catalog, http = _catalog(handler)
+    with http, pytest.raises(TitleCatalogError):
+        catalog.airing_schedule(176496)
+
+
+def test_a_valid_empty_schedule_is_not_invented_from_the_episode_count() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_schedule([]))
+
+    catalog, http = _catalog(handler)
+    with http:
+        assert catalog.airing_schedule(176496).episodes == ()
+
+
+def test_graphql_errors_reject_partial_data_even_with_http_success() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload: dict[str, Any] = _page([_SOLO_LEVELING])
+        payload["errors"] = [{"message": "Temporarily unavailable"}]
+        return httpx.Response(200, json=payload)
+
+    catalog, http = _catalog(handler)
+    with http, pytest.raises(TitleCatalogError):
+        catalog.search("solo leveling")
 
 
 def test_search_reads_every_candidate_field() -> None:
@@ -168,7 +248,7 @@ def test_search_rejects_a_rate_limited_answer() -> None:
         catalog.search("solo leveling")
 
     assert error.value.context.code is ErrorCode.TITLE_CATALOG_FAILED
-    assert error.value.context.message == "AniList rejected the title search"
+    assert error.value.context.message == "AniList rejected the request"
     assert error.value.context.suggestion == "Search again in a minute or type the title exactly"
 
 

@@ -8,9 +8,11 @@ import math
 import threading
 import time
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from functools import partial
+from statistics import median
 from typing import TYPE_CHECKING, Final
 
 from anishift.application.acquisition import (
@@ -24,7 +26,13 @@ from anishift.application.acquisition import (
     read_episode,
     series_forms,
 )
+from anishift.application.control import AcquisitionState
 from anishift.errors import AniShiftError, ConfigError, ErrorCode, ErrorContext
+from anishift.services.torrents.categories import (
+    CATEGORY_ENGLISH_TRANSLATED,
+    CATEGORY_NON_ENGLISH_TRANSLATED,
+    SEARCH_CATEGORIES,
+)
 from anishift.services.torrents.names import season_hint
 from anishift.utils.logger import get_logger
 
@@ -33,6 +41,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from anishift.application.acquisition import SeriesGroup
+    from anishift.application.control import AcquisitionConfirmation, AutomationPolicy
+    from anishift.services.catalog import SeasonAiring, TitleCandidate
 
 __all__ = [
     "CHECK_INTERVAL_S",
@@ -49,6 +59,7 @@ __all__ = [
     "SubscriptionEnd",
     "SubscriptionService",
     "SubscriptionStore",
+    "SubscriptionUpdater",
     "subscription_id",
 ]
 
@@ -68,14 +79,14 @@ CONFIRM_ATTEMPTS: Final[int] = 3
 CONFIRM_DELAY_S: Final[float] = 1.0
 """Pause between two looks for a just-added release, because the client adds torrents asynchronously."""
 
-SCHEMA_VERSION: Final[int] = 2
+SCHEMA_VERSION: Final[int] = 3
 """Current schema of the persisted subscription file."""
 
-_SUPPORTED_VERSIONS: Final[frozenset[int]] = frozenset({1, SCHEMA_VERSION})
+_SUPPORTED_VERSIONS: Final[frozenset[int]] = frozenset({1, 2, SCHEMA_VERSION})
 """Schemas a load still understands, the one migrated on the way in included."""
 
-_V1_BACKUP_SUFFIX: Final[str] = ".v1.bak"
-"""Ending of the one copy a schema 1 file leaves behind before it is rewritten."""
+_BACKUP_SUFFIX_TEMPLATE: Final[str] = ".v{version}.bak"
+"""Ending of the original-schema copy retained before a subscription migration."""
 
 MAX_DELAY_SAMPLES: Final[int] = 8
 """Release delays kept per subscription, enough to estimate without storing a history."""
@@ -124,6 +135,10 @@ _OPTIONAL_ENTRY_KEYS: Final[frozenset[str]] = frozenset(
         "episodes",
         "release_delay_s",
         "delay_samples_s",
+        "search_category",
+        "added_by_command",
+        "binding_checked_at",
+        "binding_attempts",
     }
 )
 """Keys a subscription written before seasons, episode numbers and control may omit."""
@@ -141,6 +156,9 @@ _EPISODE_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 """Keys a serialized episode of the ordered range must carry."""
+
+_OPTIONAL_EPISODE_KEYS: Final[frozenset[str]] = frozenset({"checked_at", "attempts", "problem"})
+"""Check and retry history that episode records written before schema 3 may omit."""
 
 _INVALID_MESSAGE: Final[str] = "Subscriptions file is invalid"
 """Sentence shown when the stored file cannot be trusted."""
@@ -189,6 +207,9 @@ class EpisodeOrder:
     state: EpisodeState = EpisodeState.PENDING
     info_hash: str | None = None
     acquisition_id: str | None = None
+    checked_at: str | None = None
+    attempts: int = 0
+    problem: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,8 +237,15 @@ class Subscription:
     episodes: tuple[EpisodeOrder, ...] = ()
     release_delay_s: int | None = None
     delay_samples_s: tuple[int, ...] = ()
+    search_category: str | None = None
+    added_by_command: str | None = None
+    binding_checked_at: str | None = None
+    binding_attempts: int = 0
 
     def __post_init__(self) -> None:
+        if self.search_category is not None and self.search_category not in SEARCH_CATEGORIES:
+            msg = "A subscription search category must belong to the release index"
+            raise ValueError(msg)
         if len(self.delay_samples_s) > MAX_DELAY_SAMPLES:
             msg = "A subscription keeps at most MAX_DELAY_SAMPLES release delays"
             raise ValueError(msg)
@@ -232,13 +260,38 @@ class CheckOutcome:
     problem: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class SubscriptionOrder:
+    """A standing order accepted before or after the first release exists."""
+
+    series: str
+    group: str
+    query: str
+    first_episode: Decimal
+    directory_name: str | None = None
+    context: SeasonContext | None = None
+    anilist_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.series.strip() or not self.group.strip() or not self.query.strip():
+            msg = "A standing order requires a title, group and search phrase"
+            raise ValueError(msg)
+        if not self.first_episode.is_finite() or self.first_episode <= 0:
+            msg = "A standing order requires a positive episode number"
+            raise ValueError(msg)
+
+
 type SubscriptionAdmission = Callable[[Subscription, Decimal, ReleaseChoice], bool]
 """Decides whether one current release may be handed to the torrent client."""
 
 type CheckRecorder = Callable[
-    [Subscription, dict[Decimal, ReleaseChoice], dict[Decimal, ReleaseChoice]], Subscription | None
+    [Subscription, dict[Decimal, ReleaseChoice], dict[Decimal, ReleaseChoice], frozenset[Decimal] | None],
+    Subscription | None,
 ]
 """Records confirmed releases without replacing a newer standing order."""
+
+type SubscriptionUpdater = Callable[[Subscription, Subscription], bool]
+"""Persists a schedule update only while its original subscription is still current."""
 
 
 def subscription_id(series: str, group: str) -> str:
@@ -266,7 +319,7 @@ class SubscriptionStore:
         except (json.JSONDecodeError, KeyError, TypeError, ValueError, InvalidOperation) as problem:
             raise _invalid_file() from problem
         if version != SCHEMA_VERSION:
-            self._upgrade(text, subscriptions)
+            self._upgrade(text, subscriptions, version)
         return subscriptions
 
     def save(self, subscriptions: Sequence[Subscription]) -> None:
@@ -282,8 +335,8 @@ class SubscriptionStore:
         temporary.write_text(payload, encoding="utf-8")
         temporary.replace(self._path)
 
-    def _upgrade(self, text: str, subscriptions: Sequence[Subscription]) -> None:
-        backup: Path = self._path.with_name(f"{self._path.name}{_V1_BACKUP_SUFFIX}")
+    def _upgrade(self, text: str, subscriptions: Sequence[Subscription], version: int) -> None:
+        backup: Path = self._path.with_name(f"{self._path.name}{_BACKUP_SUFFIX_TEMPLATE.format(version=version)}")
         if not backup.exists():
             backup.write_text(text, encoding="utf-8")
         self.save(subscriptions)
@@ -343,12 +396,15 @@ class SubscriptionService:
         directory_name: str | None = None,
         context: SeasonContext | None = None,
         anilist_id: int | None = None,
+        command_id: str | None = None,
     ) -> Subscription:
         """Follow *series* by *group* from *first_episode* on, replacing an earlier order."""
         with self._lock:
             identifier: str = subscription_id(series, group)
             stored: tuple[Subscription, ...] = self._store.load()
             earlier: Subscription | None = _find(stored, identifier)
+            if command_id is not None and earlier is not None and earlier.added_by_command == command_id:
+                return earlier
             subscription: Subscription = Subscription(
                 subscription_id=identifier,
                 query=query,
@@ -371,6 +427,10 @@ class SubscriptionService:
                 end_state=earlier.end_state if earlier is not None else SubscriptionEnd.ACTIVE,
                 release_delay_s=earlier.release_delay_s if earlier is not None else None,
                 delay_samples_s=earlier.delay_samples_s if earlier is not None else (),
+                search_category=earlier.search_category if earlier is not None else None,
+                added_by_command=command_id,
+                binding_checked_at=earlier.binding_checked_at if earlier is not None else None,
+                binding_attempts=earlier.binding_attempts if earlier is not None else 0,
             )
             remaining: list[Subscription] = [item for item in stored if item.subscription_id != identifier]
             remaining.append(subscription)
@@ -378,6 +438,19 @@ class SubscriptionService:
             self._invalidate_check(identifier)
             logger.info("Subscription stored", replaced=earlier is not None, total=len(remaining))
             return subscription
+
+    def add_order(self, order: SubscriptionOrder, command_id: str) -> Subscription:
+        """Apply a durable addition once, including replay after a lost confirmation."""
+        return self.add(
+            order.series,
+            order.group,
+            query=order.query,
+            first_episode=order.first_episode,
+            directory_name=order.directory_name,
+            context=order.context,
+            anilist_id=order.anilist_id,
+            command_id=command_id,
+        )
 
     def enable(self, subscription_id: str) -> Subscription:
         """Let that standing order look for episodes again, keeping everything it already took."""
@@ -424,8 +497,14 @@ class SubscriptionService:
         *,
         admit: SubscriptionAdmission | None = None,
         record: CheckRecorder | None = None,
+        episodes: frozenset[Decimal] | None = None,
     ) -> CheckOutcome:
         """Download every episode *subscription* still misses and record what was taken."""
+        return self._run_check(
+            subscription, lambda: self._check(subscription, admit, record or self.record_check, episodes)
+        )
+
+    def _run_check(self, subscription: Subscription, action: Callable[[], CheckOutcome]) -> CheckOutcome:
         if not subscription.enabled:
             return CheckOutcome(subscription, 0, problem=_DISABLED_PROBLEM)
         with self._lock:
@@ -435,7 +514,8 @@ class SubscriptionService:
                 return CheckOutcome(subscription, 0, problem=_STALE_PROBLEM)
             self._checking[subscription.subscription_id] = True
         try:
-            return self._check(subscription, admit, record or self.record_check)
+            with self._acquisition.requests("subscription"):
+                return action()
         finally:
             with self._lock:
                 self._checking.pop(subscription.subscription_id)
@@ -445,15 +525,18 @@ class SubscriptionService:
         subscription: Subscription,
         admit: SubscriptionAdmission | None,
         record: CheckRecorder,
+        episodes: frozenset[Decimal] | None,
     ) -> CheckOutcome:
         try:
-            offered: dict[Decimal, ReleaseChoice] = self._offered(subscription)
+            offered: dict[Decimal, ReleaseChoice] = self._offered(subscription, episodes)
             taken_hashes: frozenset[str] = frozenset(info_hash.casefold() for info_hash in subscription.taken)
             taken_episodes: frozenset[Decimal] = frozenset(Decimal(number) for number in subscription.taken_episodes)
             selected: dict[Decimal, ReleaseChoice] = {
                 episode: choice
                 for episode, choice in offered.items()
-                if episode not in taken_episodes and choice.release.info_hash.casefold() not in taken_hashes
+                if episode not in taken_episodes
+                and choice.release.info_hash.casefold() not in taken_hashes
+                and (episodes is None or episode in episodes)
             }
             queued: frozenset[str] = self._acquisition.queued_hashes() if selected else frozenset()
             chosen: tuple[ReleaseChoice, ...] = self._download(subscription, selected, queued, admit)
@@ -464,7 +547,7 @@ class SubscriptionService:
             }
             confirmed: dict[Decimal, ReleaseChoice] = self._confirmed(admitted, queued) if admitted else {}
             sent: int = sum(1 for choice in chosen if choice in confirmed.values())
-            updated: Subscription | None = record(subscription, confirmed, offered)
+            updated: Subscription | None = record(subscription, confirmed, offered, episodes)
             if updated is None:
                 current: Subscription | None = _find(self.list(), subscription.subscription_id)
                 return CheckOutcome(current or subscription, sent, problem=_STALE_PROBLEM)
@@ -514,17 +597,183 @@ class SubscriptionService:
         with self._lock:
             return self._current(subscription)
 
+    def update(self, original: Subscription, updated: Subscription) -> bool:
+        """Persist a current schedule update without replacing another control decision."""
+        with self._lock:
+            if not self._current(original):
+                return False
+            self._replace(updated)
+            return True
+
+    def next_check_at(self, policy: AutomationPolicy) -> datetime | None:
+        """Return the next due subscription action, or no automatic work."""
+        now: datetime = self._clock()
+        with self._lock:
+            deadlines: list[datetime] = [
+                deadline
+                for subscription in self._store.load()
+                if subscription.subscription_id not in self._checking
+                and (deadline := self._deadline(subscription, policy, now)) is not None
+            ]
+        return min(deadlines) if deadlines else None
+
+    def _deadline(self, subscription: Subscription, policy: AutomationPolicy, now: datetime) -> datetime | None:
+        deadline: datetime | None = _subscription_deadline(subscription, policy, now)
+        if deadline is None:
+            return None
+        if subscription.anilist_id is None:
+            release: datetime = max(
+                _release_deadline(subscription, policy, now),
+                datetime.fromtimestamp(self._acquisition.blocked_until(("nyaa",)), UTC),
+            )
+            binding: datetime | None = _binding_deadline(subscription, policy, now)
+            if binding is None:
+                return release
+            return min(
+                release, max(binding, datetime.fromtimestamp(self._acquisition.blocked_until(("anilist",)), UTC))
+            )
+        providers: tuple[str, ...] = ("nyaa", "anilist") if subscription.anilist_id is not None else ("nyaa",)
+        until: float = self._acquisition.blocked_until(providers)
+        return max(deadline, datetime.fromtimestamp(until, UTC))
+
+    def reconcile_sources(self, confirmations: Sequence[AcquisitionConfirmation]) -> None:
+        """Project confirmed transfer states into their linked episode orders."""
+        by_subscription: dict[str, dict[Decimal, AcquisitionConfirmation]] = {}
+        for item in confirmations:
+            if item.subscription_id is not None and item.episode is not None:
+                by_subscription.setdefault(item.subscription_id, {})[Decimal(item.episode)] = item
+        with self._lock:
+            stored: tuple[Subscription, ...] = self._store.load()
+            updated: tuple[Subscription, ...] = tuple(
+                _with_sources(item, by_subscription.get(item.subscription_id, {})) for item in stored
+            )
+            if updated != stored:
+                self._store.save(updated)
+
+    def check_due(
+        self,
+        policy: AutomationPolicy,
+        *,
+        admit: SubscriptionAdmission | None = None,
+        record: CheckRecorder | None = None,
+        update: SubscriptionUpdater | None = None,
+        refresh_calendar: bool = False,
+    ) -> tuple[CheckOutcome, ...]:
+        """Check due episode windows and leave future or exhausted orders quiet."""
+        now: datetime = self._clock()
+        save: SubscriptionUpdater = update or self.update
+        outcomes: list[CheckOutcome] = []
+        for subscription in self.list():
+            deadline: datetime | None = self._deadline(subscription, policy, now)
+            if not subscription.enabled or subscription.end_state is not SubscriptionEnd.ACTIVE:
+                continue
+            if not refresh_calendar and (deadline is None or deadline > now):
+                continue
+            outcomes.append(
+                self._run_check(
+                    subscription,
+                    partial(self._check_due, subscription, policy, save, admit, record),
+                )
+            )
+        return tuple(outcomes)
+
+    def _check_due(
+        self,
+        subscription: Subscription,
+        policy: AutomationPolicy,
+        update: SubscriptionUpdater,
+        admit: SubscriptionAdmission | None,
+        record: CheckRecorder | None,
+    ) -> CheckOutcome:
+        now: datetime = self._clock()
+        if subscription.anilist_id is None:
+            return self._check_unbound(subscription, policy, update, admit, record)
+        try:
+            schedule: SeasonAiring = self._acquisition.airing_schedule(subscription.anilist_id)
+        except AniShiftError as problem:
+            failed = _failed_check(subscription, policy, now, str(problem.context.code))
+            update(subscription, failed)
+            return CheckOutcome(failed, 0, str(problem))
+        prepared: Subscription = _finish_subscription(
+            _expire_windows(_apply_schedule(subscription, schedule, policy, now), now)
+        )
+        if not update(subscription, prepared):
+            return CheckOutcome(subscription, 0, _STALE_PROBLEM)
+        numbers: frozenset[Decimal] = _due_episodes(prepared, policy, now)
+        if not numbers:
+            return CheckOutcome(prepared, 0)
+        outcome: CheckOutcome = self._check(prepared, admit, record or self.record_check, numbers)
+        if outcome.problem and self.is_current(prepared):
+            failed = _failed_check(prepared, policy, now, outcome.problem)
+            update(prepared, failed)
+            return replace(outcome, subscription=failed)
+        return outcome
+
+    def _check_unbound(
+        self,
+        subscription: Subscription,
+        policy: AutomationPolicy,
+        update: SubscriptionUpdater,
+        admit: SubscriptionAdmission | None,
+        record: CheckRecorder | None,
+    ) -> CheckOutcome:
+        now: datetime = self._clock()
+        due: datetime | None = _binding_deadline(subscription, policy, now)
+        if due is not None and due <= now and self._acquisition.blocked_until(("anilist",)) <= now.timestamp():
+            bound: Subscription = replace(
+                self._bind_calendar(subscription),
+                binding_checked_at=_timestamp(now),
+                binding_attempts=subscription.binding_attempts + 1,
+            )
+            if not update(subscription, bound):
+                return CheckOutcome(subscription, 0, _STALE_PROBLEM)
+            subscription = bound
+        if subscription.anilist_id is not None:
+            return self._check_due(subscription, policy, update, admit, record)
+        if _release_deadline(subscription, policy, now) > now:
+            return CheckOutcome(subscription, 0)
+        outcome: CheckOutcome = self._check(subscription, admit, record or self.record_check, None)
+        if outcome.problem and self.is_current(subscription):
+            failed: Subscription = replace(subscription, checked_at=_timestamp(self._clock()))
+            if update(subscription, failed):
+                return replace(outcome, subscription=failed)
+        return outcome
+
+    def _bind_calendar(self, subscription: Subscription) -> Subscription:
+        if self._acquisition.blocked_until(("anilist",)) > self._clock().timestamp():
+            return subscription
+        try:
+            forms: frozenset[str] = series_forms(subscription.series)
+            candidates: tuple[TitleCandidate, ...] = tuple(
+                candidate
+                for candidate in self._acquisition.find_titles(subscription.series)
+                if any(forms & series_forms(alias) for alias in candidate.aliases())
+            )
+            if len(candidates) != 1:
+                return subscription
+            candidate: TitleCandidate = candidates[0]
+            context: SeasonContext = self._acquisition.season_context(candidate)
+            if context.index != _context(subscription).index or context.offset != subscription.episode_offset:
+                return subscription
+            return replace(subscription, anilist_id=candidate.anilist_id)
+        except AniShiftError as problem:
+            logger.warning("Subscription calendar binding failed", error_class=type(problem).__name__)
+            return subscription
+
     def record_check(
         self,
         subscription: Subscription,
         confirmed: dict[Decimal, ReleaseChoice],
         offered: dict[Decimal, ReleaseChoice],
+        checked: frozenset[Decimal] | None = None,
     ) -> Subscription | None:
         """Record a current check or leave a changed order untouched."""
         with self._lock:
             if not self._current(subscription):
                 return None
-            updated: Subscription = self._advance(subscription, confirmed, offered)
+            updated: Subscription = self._advance(subscription, confirmed, offered, checked)
+            if updated.anilist_id is not None:
+                updated = _finish_subscription(updated)
             self._replace(updated)
             return updated
 
@@ -560,25 +809,35 @@ class SubscriptionService:
         if subscription_id in self._checking:
             self._checking[subscription_id] = False
 
-    def _offered(self, subscription: Subscription) -> dict[Decimal, ReleaseChoice]:
+    def _offered(
+        self, subscription: Subscription, episodes: frozenset[Decimal] | None = None
+    ) -> dict[Decimal, ReleaseChoice]:
         context: SeasonContext | None = _context(subscription)
-        catalog: ReleaseCatalog = self._acquisition.search(subscription.query)
+        catalog: ReleaseCatalog = self._search(subscription, subscription.query)
         with self._lock:
             if not self._current(subscription):
                 return {}
         offered: dict[Decimal, ReleaseChoice] = _new_episodes(catalog, subscription, context)
-        if subscription.next_episode in offered or not _is_whole(subscription.next_episode):
+        next_episode: Decimal = min(episodes) if episodes else subscription.next_episode
+        if next_episode in offered or not _is_whole(next_episode):
             return offered
-        _keep_best(offered, _new_episodes(self._catch_up(subscription), subscription, context))
+        _keep_best(offered, _new_episodes(self._catch_up(subscription, next_episode), subscription, context))
         return offered
 
-    def _catch_up(self, subscription: Subscription) -> ReleaseCatalog:
-        query: str = f"{subscription.query} {int(subscription.next_episode):02d}"
+    def _catch_up(self, subscription: Subscription, episode: Decimal) -> ReleaseCatalog:
+        query: str = f"{subscription.query} {int(episode):02d}"
         try:
-            return self._acquisition.search(query)
+            return self._search(subscription, query)
         except AniShiftError as problem:
             logger.warning("Subscription catch-up search failed", error_class=type(problem).__name__)
             return ReleaseCatalog((), 0)
+
+    def _search(self, subscription: Subscription, query: str) -> ReleaseCatalog:
+        categories: tuple[str, ...] = (
+            (subscription.search_category,) if subscription.search_category else SEARCH_CATEGORIES
+        )
+        phrase: str = query if subscription.group.casefold() in query.casefold() else f"{query} {subscription.group}"
+        return self._acquisition.search(phrase, categories=categories)
 
     def _confirmed(
         self, selected: dict[Decimal, ReleaseChoice], queued: frozenset[str]
@@ -603,8 +862,19 @@ class SubscriptionService:
         subscription: Subscription,
         selected: dict[Decimal, ReleaseChoice],
         offered: dict[Decimal, ReleaseChoice],
+        checked: frozenset[Decimal] | None = None,
     ) -> Subscription:
         checked_at: str = _timestamp(self._clock())
+        if subscription.search_category is None and offered:
+            choice: ReleaseChoice = next(iter(offered.values()))
+            subscription = replace(
+                subscription,
+                search_category=(
+                    CATEGORY_NON_ENGLISH_TRANSLATED
+                    if choice.release.subtitle_language == "fr"
+                    else CATEGORY_ENGLISH_TRANSLATED
+                ),
+            )
         taken_episodes: frozenset[Decimal] = frozenset(Decimal(number) for number in subscription.taken_episodes)
         taken_hashes: frozenset[str] = frozenset(info_hash.casefold() for info_hash in subscription.taken)
         known: dict[Decimal, ReleaseChoice] = {
@@ -612,8 +882,11 @@ class SubscriptionService:
             for episode, choice in offered.items()
             if episode in selected or episode in taken_episodes or choice.release.info_hash.casefold() in taken_hashes
         }
+        ordered: tuple[EpisodeOrder, ...] = _record_checked(subscription.episodes, selected, checked, checked_at)
+        if selected and subscription.anilist_id is not None:
+            ordered = _next_calendar_lookup(ordered, max(selected), subscription.season_episodes)
         if not known:
-            return replace(subscription, checked_at=checked_at)
+            return replace(subscription, checked_at=checked_at, episodes=ordered)
         taken: frozenset[str] = subscription.taken | {choice.release.info_hash for choice in selected.values()}
         episodes: tuple[str, ...] = _recorded_episodes(subscription.taken_episodes, known)
         return replace(
@@ -622,6 +895,8 @@ class SubscriptionService:
             taken=taken,
             taken_episodes=episodes,
             checked_at=checked_at,
+            episodes=ordered,
+            delay_samples_s=_release_delays(subscription, selected),
         )
 
     def _replace(self, subscription: Subscription) -> None:
@@ -629,6 +904,274 @@ class SubscriptionService:
         self._store.save(
             [subscription if item.subscription_id == subscription.subscription_id else item for item in stored]
         )
+
+
+def _next_calendar_lookup(
+    episodes: tuple[EpisodeOrder, ...],
+    last: Decimal,
+    count: int | None,
+) -> tuple[EpisodeOrder, ...]:
+    number: Decimal | None = next(
+        (item.number for item in episodes if item.number > last and item.state is EpisodeState.PENDING), None
+    )
+    if number is None and count is None:
+        return (*episodes, EpisodeOrder(Decimal(math.floor(last) + 1)))
+    return tuple(
+        replace(item, checked_at=None) if item.number == number and item.due_at is None else item for item in episodes
+    )
+
+
+def _with_sources(subscription: Subscription, confirmations: dict[Decimal, AcquisitionConfirmation]) -> Subscription:
+    if not confirmations:
+        return subscription
+    episodes: dict[Decimal, EpisodeOrder] = {item.number: item for item in subscription.episodes}
+    for number, confirmation in confirmations.items():
+        episode: EpisodeOrder = episodes.get(number, EpisodeOrder(number))
+        state: EpisodeState = (
+            EpisodeState.COMPLETE if confirmation.state is AcquisitionState.COMPLETE else EpisodeState.ORDERED
+        )
+        episodes[number] = replace(
+            episode,
+            state=state,
+            acquisition_id=confirmation.operation_id,
+            info_hash=confirmation.info_hash,
+            problem=None if state is EpisodeState.COMPLETE else episode.problem,
+        )
+    return _finish_subscription(replace(subscription, episodes=tuple(episodes[number] for number in sorted(episodes))))
+
+
+def _release_delays(subscription: Subscription, confirmed: dict[Decimal, ReleaseChoice]) -> tuple[int, ...]:
+    samples: list[int] = list(subscription.delay_samples_s)
+    for episode in subscription.episodes:
+        choice: ReleaseChoice | None = confirmed.get(episode.number)
+        if choice is None or choice.name.is_pack or choice.name.version not in {None, 1}:
+            continue
+        published: datetime | None = choice.release.published
+        airing: datetime | None = _moment(episode.airing_at)
+        end: datetime | None = _moment(episode.window_until)
+        if published is not None and airing is not None and end is not None and airing <= published <= end:
+            samples.append(int((published - airing).total_seconds()))
+    return tuple(samples[-MAX_DELAY_SAMPLES:])
+
+
+def _moment(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    moment: datetime = datetime.fromisoformat(value)
+    if moment.tzinfo is None:
+        msg = "A subscription deadline must include its UTC offset"
+        raise ValueError(msg)
+    return moment.astimezone(UTC)
+
+
+def _episode_deadline(episode: EpisodeOrder, policy: AutomationPolicy, now: datetime) -> datetime | None:
+    if episode.state not in {EpisodeState.PENDING, EpisodeState.DUE}:
+        return None
+    due: datetime | None = _moment(episode.due_at)
+    checked: datetime | None = _moment(episode.checked_at)
+    if due is None:
+        return now if checked is None else None
+    if checked is not None:
+        delay: int = policy.recheck_interval_s
+        if episode.problem and policy.retry_delays_s:
+            delay = policy.retry_delays_s[min(max(0, episode.attempts - 1), len(policy.retry_delays_s) - 1)]
+        due = max(due, checked + timedelta(seconds=delay))
+    end: datetime | None = _moment(episode.window_until)
+    return min(due, end) if end is not None else due
+
+
+def _subscription_deadline(subscription: Subscription, policy: AutomationPolicy, now: datetime) -> datetime | None:
+    if not subscription.enabled or subscription.end_state is not SubscriptionEnd.ACTIVE:
+        return None
+    if subscription.anilist_id is None:
+        release: datetime = _release_deadline(subscription, policy, now)
+        binding: datetime | None = _binding_deadline(subscription, policy, now)
+        return min(release, binding) if binding is not None else release
+    if not subscription.episodes:
+        return now
+    deadlines: list[datetime] = [
+        deadline
+        for episode in subscription.episodes
+        if (deadline := _episode_deadline(episode, policy, now)) is not None
+    ]
+    return min(deadlines) if deadlines else None
+
+
+def _release_deadline(subscription: Subscription, policy: AutomationPolicy, now: datetime) -> datetime:
+    checked: datetime | None = _moment(subscription.checked_at)
+    return checked + timedelta(seconds=policy.recheck_interval_s) if checked is not None else now
+
+
+def _binding_deadline(subscription: Subscription, policy: AutomationPolicy, now: datetime) -> datetime | None:
+    if subscription.binding_attempts >= policy.external_retry_budget:
+        return None
+    checked: datetime | None = _moment(subscription.binding_checked_at)
+    if checked is None:
+        return now
+    delay: int = (
+        policy.retry_delays_s[min(max(0, subscription.binding_attempts - 1), len(policy.retry_delays_s) - 1)]
+        if policy.retry_delays_s
+        else policy.recheck_interval_s
+    )
+    return checked + timedelta(seconds=delay)
+
+
+def _due_episodes(subscription: Subscription, policy: AutomationPolicy, now: datetime) -> frozenset[Decimal]:
+    return frozenset(
+        episode.number
+        for episode in subscription.episodes
+        if episode.airing_at is not None
+        and (deadline := _episode_deadline(episode, policy, now)) is not None
+        and deadline <= now
+    )
+
+
+def _apply_schedule(
+    subscription: Subscription, schedule: SeasonAiring, policy: AutomationPolicy, now: datetime
+) -> Subscription:
+    known: dict[Decimal, EpisodeOrder] = {episode.number: episode for episode in subscription.episodes}
+    for number in subscription.taken_episodes:
+        known.setdefault(Decimal(number), EpisodeOrder(Decimal(number), state=EpisodeState.ORDERED))
+    dates: dict[Decimal, datetime | None] = {
+        Decimal(episode.episode): episode.airing_at for episode in schedule.episodes
+    }
+    count: int | None = schedule.episode_count or subscription.season_episodes
+    numbers: set[Decimal] = set(known) | {number for number in dates if number >= subscription.next_episode}
+    if count is not None:
+        numbers.update(Decimal(number) for number in range(math.ceil(subscription.next_episode), count + 1))
+    elif subscription.next_episode not in numbers:
+        numbers.add(subscription.next_episode)
+    delay: int = (
+        subscription.release_delay_s
+        if subscription.release_delay_s is not None
+        else (
+            int(median(subscription.delay_samples_s))
+            if subscription.delay_samples_s
+            else policy.release_delay_default_s
+        )
+    )
+    episodes: tuple[EpisodeOrder, ...] = tuple(
+        _scheduled_episode(known.get(number, EpisodeOrder(number)), dates, schedule, delay, policy, now)
+        for number in sorted(numbers)
+    )
+    end: SubscriptionEnd = subscription.end_state
+    if count is not None and subscription.next_episode > count and not episodes:
+        end = SubscriptionEnd.COMPLETE
+    return replace(subscription, season_episodes=count, episodes=episodes, end_state=end)
+
+
+def _scheduled_episode(  # noqa: PLR0913
+    episode: EpisodeOrder,
+    dates: dict[Decimal, datetime | None],
+    schedule: SeasonAiring,
+    delay: int,
+    policy: AutomationPolicy,
+    now: datetime,
+) -> EpisodeOrder:
+    if episode.state not in {EpisodeState.PENDING, EpisodeState.DUE}:
+        return episode
+    airing: datetime | None = _moment(episode.airing_at)
+    if episode.airing_source is not AiringSource.USER and episode.number in dates:
+        airing = dates[episode.number]
+    if airing is not None:
+        if airing == _moment(episode.airing_at) and episode.due_at is not None:
+            return episode
+        due: datetime = airing + timedelta(seconds=delay)
+        return replace(
+            episode,
+            airing_at=_timestamp(airing),
+            airing_source=episode.airing_source if episode.airing_source is AiringSource.USER else AiringSource.ANILIST,
+            due_at=_timestamp(due),
+            window_until=_timestamp(due + timedelta(seconds=policy.search_window_s)),
+        )
+    start: datetime | None = (
+        datetime.combine(schedule.start_date, datetime.min.time(), tzinfo=UTC)
+        if schedule.start_date is not None
+        else None
+    )
+    return replace(
+        episode,
+        airing_at=None,
+        due_at=_timestamp(start) if start is not None and start > now else None,
+        window_until=None,
+        checked_at=_timestamp(now),
+        attempts=0,
+        problem=None,
+    )
+
+
+def _expire_windows(subscription: Subscription, now: datetime) -> Subscription:
+    episodes: tuple[EpisodeOrder, ...] = tuple(
+        replace(episode, state=EpisodeState.EXPIRED)
+        if episode.state in {EpisodeState.PENDING, EpisodeState.DUE}
+        and (end := _moment(episode.window_until)) is not None
+        and now >= end
+        else episode
+        for episode in subscription.episodes
+    )
+    return replace(subscription, episodes=episodes)
+
+
+def _finish_subscription(subscription: Subscription) -> Subscription:
+    if subscription.season_episodes is None or not subscription.episodes:
+        return subscription
+    states: dict[Decimal, EpisodeOrder] = {episode.number: episode for episode in subscription.episodes}
+    numbers: range = range(math.ceil(min(states)), subscription.season_episodes + 1)
+    if any(Decimal(number) not in states for number in numbers):
+        return subscription
+    if any(episode.state in {EpisodeState.PENDING, EpisodeState.DUE} for episode in states.values()):
+        return subscription
+    end: SubscriptionEnd = SubscriptionEnd.COMPLETE
+    if any(episode.state is EpisodeState.ORDERED or episode.problem for episode in states.values()):
+        end = SubscriptionEnd.UNCERTAIN
+    elif any(episode.state in {EpisodeState.MISSING, EpisodeState.EXPIRED} for episode in states.values()):
+        end = SubscriptionEnd.MISSING
+    return replace(subscription, end_state=end)
+
+
+def _failed_check(subscription: Subscription, policy: AutomationPolicy, now: datetime, problem: str) -> Subscription:
+    pending: tuple[EpisodeOrder, ...] = subscription.episodes or (EpisodeOrder(subscription.next_episode),)
+    episodes: list[EpisodeOrder] = []
+    for episode in pending:
+        deadline: datetime | None = _episode_deadline(episode, policy, now)
+        if deadline is None or deadline > now:
+            episodes.append(episode)
+            continue
+        attempts: int = episode.attempts + 1
+        episodes.append(
+            replace(
+                episode,
+                checked_at=_timestamp(now),
+                attempts=attempts,
+                problem=problem,
+                due_at=episode.due_at or _timestamp(now),
+                state=EpisodeState.MISSING if attempts >= policy.external_retry_budget else episode.state,
+            )
+        )
+    return _finish_subscription(replace(subscription, episodes=tuple(episodes)))
+
+
+def _record_checked(
+    episodes: tuple[EpisodeOrder, ...],
+    confirmed: dict[Decimal, ReleaseChoice],
+    checked: frozenset[Decimal] | None,
+    now: str,
+) -> tuple[EpisodeOrder, ...]:
+    entries: dict[Decimal, EpisodeOrder] = {episode.number: episode for episode in episodes}
+    for number in checked or ():
+        episode: EpisodeOrder = entries.get(number, EpisodeOrder(number))
+        entries[number] = replace(episode, checked_at=now, attempts=0, problem=None)
+    for number, choice in confirmed.items():
+        episode = entries.get(number, EpisodeOrder(number))
+        entries[number] = replace(
+            episode,
+            state=EpisodeState.ORDERED,
+            info_hash=choice.release.info_hash.casefold(),
+            checked_at=now,
+            attempts=0,
+            problem=None,
+        )
+    return tuple(entries[number] for number in sorted(entries))
 
 
 def _context(subscription: Subscription) -> SeasonContext:
@@ -753,6 +1296,10 @@ def _encode(subscription: Subscription) -> dict[str, object]:
         "episodes": [_encode_episode(episode) for episode in subscription.episodes],
         "release_delay_s": subscription.release_delay_s,
         "delay_samples_s": list(subscription.delay_samples_s),
+        "search_category": subscription.search_category,
+        "added_by_command": subscription.added_by_command,
+        "binding_checked_at": subscription.binding_checked_at,
+        "binding_attempts": subscription.binding_attempts,
     }
 
 
@@ -766,6 +1313,9 @@ def _encode_episode(episode: EpisodeOrder) -> dict[str, object]:
         "state": episode.state.value,
         "info_hash": episode.info_hash,
         "acquisition_id": episode.acquisition_id,
+        "checked_at": episode.checked_at,
+        "attempts": episode.attempts,
+        "problem": episode.problem,
     }
 
 
@@ -815,6 +1365,10 @@ def _decode_entry(raw: object, version: int) -> Subscription:
         episodes=_optional_episodes(document, "episodes"),
         release_delay_s=_optional_int(document, "release_delay_s"),
         delay_samples_s=_optional_whole_numbers(document, "delay_samples_s"),
+        search_category=_optional_string(document, "search_category"),
+        added_by_command=_optional_string(document, "added_by_command"),
+        binding_checked_at=_optional_string(document, "binding_checked_at"),
+        binding_attempts=_optional_count(document, "binding_attempts", 0),
     )
     return _migrate_v1(subscription) if version == 1 else subscription
 
@@ -827,7 +1381,7 @@ def _migrate_v1(subscription: Subscription) -> Subscription:
 
 
 def _decode_episode(raw: object) -> EpisodeOrder:
-    document: dict[str, object] = _strict_object(raw, _EPISODE_KEYS, "episode")
+    document: dict[str, object] = _strict_object(raw, _EPISODE_KEYS, "episode", optional=_OPTIONAL_EPISODE_KEYS)
     airing_source: str | None = _optional_string(document, "airing_source")
     return EpisodeOrder(
         number=Decimal(_required_string(document, "number")),
@@ -838,6 +1392,9 @@ def _decode_episode(raw: object) -> EpisodeOrder:
         state=EpisodeState(_required_string(document, "state")),
         info_hash=_optional_string(document, "info_hash"),
         acquisition_id=_optional_string(document, "acquisition_id"),
+        checked_at=_optional_string(document, "checked_at"),
+        attempts=_optional_count(document, "attempts", 0),
+        problem=_optional_string(document, "problem"),
     )
 
 

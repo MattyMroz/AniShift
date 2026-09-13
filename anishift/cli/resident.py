@@ -9,9 +9,18 @@ from secrets import token_hex
 from typing import TYPE_CHECKING
 
 from anishift.application import (
+    CatalogOrder,
+    DownloadReceipt,
+    EpisodeRange,
     InspectedSourceGroup,
     InspectedWorkspace,
     PlanPreview,
+    ReleaseCatalog,
+    ReleaseChoice,
+    SeasonContext,
+    Subscription,
+    SubscriptionOrder,
+    TitleCandidate,
     decode_view,
     encode_intent,
     encode_view,
@@ -52,6 +61,66 @@ class ResidentSession:
     def new_session(self) -> ResidentSession:
         """Open an independent editing identity for one manual wizard."""
         return ResidentSession(self.workspace_root, self._connect)
+
+    def find_titles(self, text: str) -> tuple[TitleCandidate, ...]:
+        """Search titles through the owner's shared network admission."""
+        items: object = self._call("acquisition", {"operation": "titles", "query": text}).get("items")
+        if not isinstance(items, list):
+            msg = "The owner returned an invalid title list"
+            raise TypeError(msg)
+        return tuple(decode_view(TitleCandidate, item) for item in items)
+
+    def search(self, query: str) -> ReleaseCatalog:
+        """Read releases through the owner's shared request limits."""
+        return decode_view(ReleaseCatalog, self._call("acquisition", {"operation": "search", "query": query}))
+
+    def season_context(self, candidate: TitleCandidate) -> SeasonContext:
+        """Resolve season numbering at the owner."""
+        return decode_view(
+            SeasonContext,
+            self._call(
+                "acquisition",
+                {"operation": "season", "candidate": encode_view(candidate)},
+            ),
+        )
+
+    def search_title(
+        self,
+        candidate: TitleCandidate,
+        *,
+        episodes: EpisodeRange | None = None,
+        order: CatalogOrder = CatalogOrder.NEWEST,
+        context: SeasonContext | None = None,
+    ) -> ReleaseCatalog:
+        """Search the selected title and episode range without a second network client."""
+        return decode_view(
+            ReleaseCatalog,
+            self._call(
+                "acquisition",
+                {
+                    "operation": "releases",
+                    "candidate": encode_view(candidate),
+                    "order": order.value,
+                    "episodes": encode_view(episodes) if episodes is not None else None,
+                    "context": encode_view(context) if context is not None else None,
+                },
+            ),
+        )
+
+    def download(self, choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
+        """Persist a download order at the owner before it contacts the torrent client."""
+        return decode_view(
+            DownloadReceipt,
+            self._call(
+                "download",
+                {"choices": [encode_view(choice) for choice in choices], "directory": directory_name},
+            ),
+        )
+
+    def follow(self, order: SubscriptionOrder) -> Subscription:
+        """Add a durable standing order and let the owner's schedule check it."""
+        answer: Mapping[str, object] = self._call("subscription_add", {"order": encode_view(order)})
+        return decode_view(Subscription, self._call("subscription_get", {"subscription_id": answer["subscription_id"]}))
 
     def reserve(self, group_ids: Sequence[str]) -> None:
         """Protect the complete selected scope before opening its editor."""

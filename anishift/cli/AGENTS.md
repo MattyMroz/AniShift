@@ -42,6 +42,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   „Dokończ poprzednią pracę” w Ręcznym wymaga tego samego zakresu grup co zapisane zlecenie;
   `plan_resume` odczytuje zweryfikowany pozostały graf, a Start zachowuje ID zlecenia.
   Pełne recovery po zabiciu aktywnego procesu pozostaje osobnym zakresem P08.
+- Ekran Anime w trybie rezydenta używa `ResidentSession` także do katalogu, wydań,
+  pobrania i dodania subskrypcji. Nie twórz w tym ekranie drugiego klienta HTTP ani
+  lokalnego zapisu subskrypcji; receipt i admission pobrań należą do ownera.
 - `run_interactive(service, batch=...)` zwraca kod wyjścia jak `run --preset` i po wyniku odlicza
   10 s w `_handle_idle`, dowolny klawisz zamyka; `interrupt` w partii anuluje run i kończy kodem 4.
   Test buduje aplikację ręcznie? Ustaw też `_batch` i `_closing_at`. `interactive/app.py`

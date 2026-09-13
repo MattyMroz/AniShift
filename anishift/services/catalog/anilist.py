@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from http import HTTPStatus
 from typing import Any, Final
@@ -11,7 +12,14 @@ import httpx
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.catalog.errors import TitleCatalogError
-from anishift.services.catalog.types import PrequelEntry, TitleCandidate, TitleStatus, is_cour_title
+from anishift.services.catalog.types import (
+    EpisodeAiring,
+    PrequelEntry,
+    SeasonAiring,
+    TitleCandidate,
+    TitleStatus,
+    is_cour_title,
+)
 from anishift.utils.logger import get_logger
 
 __all__ = [
@@ -54,6 +62,20 @@ query ($id: Int) { Media(id: $id) { id episodes format title { romaji english }
 """
 """Single-title request used while walking the prequel chain."""
 
+SCHEDULE_QUERY: Final[str] = """
+query ($id: Int!, $page: Int!) { Media(id: $id, type: ANIME) {
+  id status episodes startDate { year month day }
+  airingSchedule(page: $page, perPage: 25) {
+    pageInfo { currentPage hasNextPage }
+    nodes { episode airingAt }
+  }
+} }
+"""
+"""Known airing dates for one season, without filtering out its past episodes."""
+
+MAX_SCHEDULE_PAGES: Final[int] = 200
+"""Bound for a schedule fetch, covering up to five thousand episode entries."""
+
 _PREQUEL_RELATION: Final[str] = "PREQUEL"
 """Relation type naming the entry that airs before the current one."""
 
@@ -77,7 +99,7 @@ class _CatalogFailure(StrEnum):
 
 _CATALOG_MESSAGES: Final[dict[_CatalogFailure, str]] = {
     _CatalogFailure.UNREACHABLE: "AniList could not be reached",
-    _CatalogFailure.REJECTED: "AniList rejected the title search",
+    _CatalogFailure.REJECTED: "AniList rejected the request",
     _CatalogFailure.MALFORMED: "AniList returned an unreadable answer",
 }
 """Message shown for each catalog failure."""
@@ -121,6 +143,30 @@ class AniListCatalog:
         """Return how many episodes aired before *candidate*, following its prequel chain."""
         return sum(entry.episodes for entry in self.prequel_episodes(candidate))
 
+    def airing_schedule(self, anilist_id: int) -> SeasonAiring:
+        """Read all available episode dates for that season without inventing missing history."""
+        episodes: dict[int, EpisodeAiring] = {}
+        for page in range(1, MAX_SCHEDULE_PAGES + 1):
+            data: Mapping[str, Any] = self._post(SCHEDULE_QUERY, {"id": anilist_id, "page": page})
+            media: object = data.get("Media")
+            if not isinstance(media, Mapping) or media.get("id") != anilist_id:
+                raise _catalog_error(_CatalogFailure.MALFORMED)
+            entries: tuple[EpisodeAiring, ...]
+            more: bool
+            entries, more = _schedule_page(media.get("airingSchedule"), page)
+            if any(entry.episode in episodes and episodes[entry.episode] != entry for entry in entries):
+                raise _catalog_error(_CatalogFailure.MALFORMED)
+            episodes.update((entry.episode, entry) for entry in entries)
+            if not more:
+                return SeasonAiring(
+                    anilist_id,
+                    _status(media.get("status")),
+                    _episodes(media),
+                    tuple(episodes[number] for number in sorted(episodes)),
+                    _start_date(media.get("startDate")),
+                )
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+
     def _search_once(self, text: str, limit: int) -> tuple[TitleCandidate, ...]:
         """Send one search request and read its media list."""
         data: Mapping[str, Any] = self._post(SEARCH_QUERY, {"search": text, "limit": limit})
@@ -159,10 +205,61 @@ class AniListCatalog:
             body: object = response.json()
         except ValueError as error:
             raise _catalog_error(_CatalogFailure.MALFORMED) from error
+        if isinstance(body, Mapping) and body.get("errors"):
+            raise _catalog_error(_CatalogFailure.REJECTED)
         data: object = body.get("data") if isinstance(body, Mapping) else None
         if not isinstance(data, Mapping):
             raise _catalog_error(_CatalogFailure.MALFORMED)
         return data
+
+
+def _schedule_page(raw: object, page: int) -> tuple[tuple[EpisodeAiring, ...], bool]:
+    if not isinstance(raw, Mapping):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    info: object = raw.get("pageInfo")
+    nodes: object = raw.get("nodes")
+    if (
+        not isinstance(info, Mapping)
+        or type(info.get("currentPage")) is not int
+        or info["currentPage"] != page
+        or not isinstance(nodes, list)
+    ):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    more: object = info.get("hasNextPage")
+    if not isinstance(more, bool) or (more and not nodes):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    return tuple(_episode_airing(node) for node in nodes), more
+
+
+def _episode_airing(raw: object) -> EpisodeAiring:
+    if not isinstance(raw, Mapping):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    episode: object = raw.get("episode")
+    timestamp: object = raw.get("airingAt")
+    if type(episode) is not int or episode < 1:
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    if timestamp is None:
+        return EpisodeAiring(episode, None)
+    if type(timestamp) is not int or timestamp <= 0:
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    try:
+        return EpisodeAiring(episode, datetime.fromtimestamp(timestamp, tz=UTC))
+    except (ValueError, OverflowError, OSError) as error:
+        raise _catalog_error(_CatalogFailure.MALFORMED) from error
+
+
+def _start_date(raw: object) -> date | None:
+    if not isinstance(raw, Mapping):
+        return None
+    year: object = raw.get("year")
+    month: object = raw.get("month")
+    day: object = raw.get("day")
+    if type(year) is not int or type(month) is not int or type(day) is not int:
+        return None
+    try:
+        return date(year, month, day)
+    except ValueError as error:
+        raise _catalog_error(_CatalogFailure.MALFORMED) from error
 
 
 def _candidate(node: Mapping[str, Any]) -> TitleCandidate | None:

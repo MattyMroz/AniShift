@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -14,7 +15,12 @@ from queue import Empty, SimpleQueue
 from secrets import token_hex
 from typing import TYPE_CHECKING, Final, cast
 
-from anishift.application.acquisition import series_directory_name
+from anishift.application.acquisition import (
+    CatalogOrder,
+    ReleaseChoice,
+    SeasonContext,
+    series_directory_name,
+)
 from anishift.application.artifacts import ArtifactKind, ArtifactLifetime, ArtifactState, create_group_id
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.control import (
@@ -24,6 +30,7 @@ from anishift.application.control import (
     ManualHandledMarker,
     ProcessingRequest,
     ProductConfirmation,
+    ProviderLock,
     RequestState,
     Reservation,
     SourceSelection,
@@ -36,7 +43,7 @@ from anishift.application.control import (
     reserve,
 )
 from anishift.application.control_payloads import decode_intent
-from anishift.application.control_views import encode_view, preview_plan
+from anishift.application.control_views import decode_view, encode_view, preview_plan
 from anishift.application.discovery import ArtifactName, classify_artifact, is_derived_product
 from anishift.application.events import sanitize_event_message
 from anishift.application.inspection import InspectedWorkspace
@@ -52,11 +59,14 @@ from anishift.application.recovery import RunJournal
 from anishift.application.results import GroupStatus
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids
+from anishift.application.subscriptions import SubscriptionOrder, subscription_id
 from anishift.application.transfers import TransferInspector
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
 from anishift.errors import AniShiftError
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
+from anishift.services.catalog import TitleCandidate
+from anishift.services.torrents.query import EpisodeRange
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -64,7 +74,7 @@ if TYPE_CHECKING:
     from decimal import Decimal
 
     from anishift.application.acquisition import AcquisitionService, ReleaseChoice
-    from anishift.application.control import CommandOutcome, SettingsSnapshot, SourceFingerprint
+    from anishift.application.control import AutomationPolicy, CommandOutcome, SettingsSnapshot, SourceFingerprint
     from anishift.application.events import RunEvent
     from anishift.application.inspection import InspectedSourceGroup
     from anishift.application.intents import ProductKind
@@ -72,7 +82,11 @@ if TYPE_CHECKING:
     from anishift.application.results import RunResult
     from anishift.application.scheduler import RunHandle
     from anishift.application.service import AppService
-    from anishift.application.subscriptions import CheckOutcome, Subscription, SubscriptionService
+    from anishift.application.subscriptions import (
+        CheckOutcome,
+        Subscription,
+        SubscriptionService,
+    )
     from anishift.application.watch_state import WatchStateStore
 
 __all__ = ["AutomationOwner"]
@@ -147,12 +161,14 @@ _MUTATING_KINDS: Final[frozenset[str]] = frozenset(
         "subscription_enable",
         "subscription_disable",
         "subscription_remove",
+        "subscription_add",
+        "download",
     }
 )
 """Commands whose outcome is recorded, so repeating an identifier repeats no effect."""
 
 _SLOW_KINDS: Final[frozenset[str]] = frozenset(
-    {"discover", "register_external", "preview", "resume_preview", "subscriptions_check"}
+    {"discover", "register_external", "preview", "resume_preview", "subscriptions_check", "acquisition", "download"}
 )
 """Commands performed on the pool, because they scan the library or reach the network."""
 
@@ -290,6 +306,9 @@ class AutomationOwner:
         )
         self._transfers_at: float | None = None
         self._transfers_inspecting: bool = False
+        self._subscriptions_at: float | None = None
+        self._subscriptions_checking: bool = False
+        self._subscriptions_problem: str | None = None
         self._files_lock: threading.Lock = threading.Lock()
         self._changed_paths: set[Path] = set()
         self._reconcile: bool = False
@@ -307,6 +326,10 @@ class AutomationOwner:
 
     def files_changed(self, change: DirectoryChange) -> None:
         """Coalesce filesystem changes into one bounded owner notification."""
+        if change.reason == "resume":
+            if self._transfers is not None:
+                self._transfers.reset_clock()
+            self._queue.put(self._schedule_subscriptions)
         paths: set[Path] = {path for path in change.paths if self._watched_path(path)}
         if not paths and not change.reconcile:
             return
@@ -386,9 +409,12 @@ class AutomationOwner:
     def serve(self) -> None:
         """Run the owner loop until a shutdown drains every active request."""
         threading.current_thread().name = OWNER_THREAD_NAME
+        self._restore_provider_locks()
         self._finish_pending_commands()
+        self._reconcile_subscription_sources()
         self._service.set_background_admission(self._state.policy.auto_enabled)
         self._schedule_transfers()
+        self._schedule_subscriptions()
         try:
             self._loop()
         finally:
@@ -399,7 +425,7 @@ class AutomationOwner:
             try:
                 deadlines: tuple[float, ...] = tuple(
                     deadline
-                    for deadline in (self._settle_at, self._transfers_at, self._inspection_at)
+                    for deadline in (self._settle_at, self._transfers_at, self._inspection_at, self._subscriptions_at)
                     if deadline is not None
                 )
                 timeout: float | None = max(0.0, min(deadlines) - time.monotonic()) if deadlines else None
@@ -408,6 +434,7 @@ class AutomationOwner:
                 self._inspect_changes()
                 self._refresh_automatic()
                 self._poll_transfers()
+                self._poll_subscriptions()
                 continue
             except KeyboardInterrupt:
                 item = None
@@ -429,6 +456,7 @@ class AutomationOwner:
             else:
                 self._dispatch(item)
             self._poll_transfers()
+            self._poll_subscriptions()
             if self._drained():
                 return
 
@@ -598,6 +626,7 @@ class AutomationOwner:
 
     def _finish_io(self) -> None:
         self._active_io -= 1
+        self._schedule_subscriptions()
 
     def _bind_session(self, request: ControlRequest) -> bool:
         if request.session_id is None:
@@ -676,6 +705,10 @@ class AutomationOwner:
                 return self._reload_settings()
             case "shutdown":
                 return self._shutdown(request)
+            case "acquisition":
+                return self._acquisition_command(request)
+            case "download":
+                return self._download_command(request)
             case kind if kind.startswith("subscription"):
                 return self._subscription_command(request)
             case _:
@@ -685,6 +718,7 @@ class AutomationOwner:
 
     def _status(self) -> dict[str, object]:
         policy = self._state.policy
+        acquisition: AcquisitionService | None = self._service.acquisition
         return {
             "instance_id": self._instance_id,
             "pid": os.getpid(),
@@ -712,12 +746,24 @@ class AutomationOwner:
                 {"group_id": item.group_id, "client_id": item.client_id} for item in self._state.reservations
             ],
             "subscriptions": self._subscription_counts(),
+            "subscriptions_problem": self._subscriptions_problem,
+            "http_requests": (
+                acquisition.request_control.counts()
+                if acquisition is not None and acquisition.request_control is not None
+                else []
+            ),
+            "provider_locks": [
+                {"provider": item.provider, "until": item.until, "reason": item.reason}
+                for item in self._state.provider_locks
+                if datetime.fromisoformat(item.until) > self._clock()
+            ],
             "acquisitions": [
                 {
                     "operation_id": item.operation_id,
                     "subscription_id": item.subscription_id,
                     "episode": item.episode,
                     "state": item.state.value,
+                    "stalled": self._transfers is not None and item.info_hash in self._transfers.stalled,
                 }
                 for item in self._state.acquisitions
             ],
@@ -1213,6 +1259,7 @@ class AutomationOwner:
         self._shutting_down = True
         self._settle_at = None
         self._transfers_at = None
+        self._subscriptions_at = None
         self._service.set_background_admission(False)
         self._service.drain()
         logger.info("The resident is shutting down", active_runs=len(self._service.active_run_ids()))
@@ -1222,24 +1269,27 @@ class AutomationOwner:
         service: SubscriptionService | None = self._service.subscriptions
         if service is None:
             return ControlResponse.refused(ControlErrorCode.REFUSED, _NO_SUBSCRIPTIONS)
+        if request.kind == "subscription_add":
+            order: SubscriptionOrder = decode_view(SubscriptionOrder, request.payload.get("order"))
+            return self._accept_local_command(
+                request,
+                {
+                    "subscription_id": subscription_id(order.series, order.group),
+                    "order": json.dumps(encode_view(order)),
+                },
+            )
+        if request.kind == "subscription_get":
+            item: Subscription | None = next(
+                (item for item in service.list() if item.subscription_id == request.payload.get("subscription_id")),
+                None,
+            )
+            return (
+                ControlResponse.succeeded(encode_view(item)) if item is not None else _invalid("Unknown subscription")
+            )
         if request.kind == "subscriptions_list":
             return ControlResponse.succeeded({"subscriptions": [_subscription_view(item) for item in service.list()]})
         if request.kind == "subscriptions_check":
-            acquisition: AcquisitionService | None = self._service.acquisition
-            if acquisition is not None and self._on_owner(lambda: bool(self._state.acquisitions)):
-                present: frozenset[str] = acquisition.queued_hashes()
-                self._on_owner(lambda: self._reconcile_acquisitions(present))
-            try:
-                outcomes: tuple[CheckOutcome, ...] = service.check_all(
-                    admit=lambda subscription, episode, choice: self._on_owner(
-                        lambda: self._admit_subscription(service, subscription, episode, choice)
-                    ),
-                    record=lambda subscription, confirmed, offered: self._on_owner(
-                        lambda: self._record_subscription(service, subscription, confirmed, offered)
-                    ),
-                )
-            finally:
-                self._on_owner(lambda: self._reconcile_acquisitions(frozenset()))
+            outcomes: tuple[CheckOutcome, ...] = self._check_subscriptions(service, automatic=False)
             return ControlResponse.succeeded(
                 {
                     "checked": len(outcomes),
@@ -1249,12 +1299,225 @@ class AutomationOwner:
             )
         return self._subscription_mutation(request, service)
 
+    def _acquisition_command(self, request: ControlRequest) -> ControlResponse:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        if acquisition is None:
+            return _invalid("No acquisition service is configured")
+        payload: Mapping[str, object] = request.payload
+        with acquisition.requests("user"):
+            if payload.get("operation") == "titles":
+                return ControlResponse.succeeded(
+                    {"items": [encode_view(item) for item in acquisition.find_titles(str(payload.get("query", "")))]}
+                )
+            if payload.get("operation") == "search":
+                return ControlResponse.succeeded(encode_view(acquisition.search(str(payload.get("query", "")))))
+            candidate: TitleCandidate = decode_view(TitleCandidate, payload.get("candidate"))
+            if payload.get("operation") == "season":
+                return ControlResponse.succeeded(encode_view(acquisition.season_context(candidate)))
+            if payload.get("operation") != "releases":
+                return _invalid("Unknown acquisition operation")
+            episodes: EpisodeRange | None = (
+                decode_view(EpisodeRange, payload["episodes"]) if payload.get("episodes") is not None else None
+            )
+            context: SeasonContext | None = (
+                decode_view(SeasonContext, payload["context"]) if payload.get("context") is not None else None
+            )
+            return ControlResponse.succeeded(
+                encode_view(
+                    acquisition.search_title(
+                        candidate,
+                        episodes=episodes,
+                        context=context,
+                        order=CatalogOrder(str(payload.get("order", "newest"))),
+                    )
+                )
+            )
+
+    def _download_command(self, request: ControlRequest) -> ControlResponse:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        raw: object = request.payload.get("choices")
+        if acquisition is None or not isinstance(raw, list) or not raw:
+            return _invalid("A download requires selected releases")
+        choices: tuple[ReleaseChoice, ...] = tuple(decode_view(ReleaseChoice, item) for item in raw)
+        directory: str | None = _text(request.payload, "directory")
+        chosen: tuple[ReleaseChoice, ...]
+        response: ControlResponse
+        chosen, response = self._on_owner(lambda: self._accept_download(request, acquisition, choices, directory))
+        if not response.ok or not chosen:
+            return response
+        try:
+            with acquisition.requests("user_download"):
+                for choice in chosen:
+                    acquisition.download((choice,), directory_name=directory)
+                hashes: frozenset[str] = acquisition.queued_hashes()
+                self._on_owner(lambda: self._reconcile_acquisitions(hashes))
+        finally:
+            self._on_owner(lambda: self._reconcile_acquisitions(frozenset()))
+        return response
+
+    def _accept_download(
+        self,
+        request: ControlRequest,
+        acquisition: AcquisitionService,
+        choices: tuple[ReleaseChoice, ...],
+        directory: str | None,
+    ) -> tuple[tuple[ReleaseChoice, ...], ControlResponse]:
+        receipt: CommandReceipt | None = self._receipt(request)
+        if receipt is not None:
+            return (), ControlResponse.succeeded(dict(receipt.outcome))
+        if self._shutting_down or not self._finish_pending_commands():
+            return (), ControlResponse.refused(ControlErrorCode.REFUSED, _SHUTTING_DOWN)
+        existing: set[str] = {item.info_hash for item in self._state.acquisitions}
+        unique: dict[str, ReleaseChoice] = {choice.release.info_hash.casefold(): choice for choice in choices}
+        chosen: tuple[ReleaseChoice, ...] = tuple(choice for key, choice in unique.items() if key not in existing)
+        confirmations: list[AcquisitionConfirmation] = []
+        destination: Path = (
+            self._service.workspace_root / series_directory_name(directory)
+            if directory is not None
+            else acquisition.series_directory(choices[0])
+        )
+        for choice in chosen:
+            folder: Path = destination if directory is not None else acquisition.series_directory(choice)
+            confirmations.append(
+                AcquisitionConfirmation(
+                    token_hex(_ID_BYTES),
+                    choice.release.info_hash,
+                    folder.relative_to(self._service.workspace_root).as_posix(),
+                    (),
+                    AcquisitionState.PENDING_SEND,
+                    RequestOrigin.USER,
+                    None,
+                    str(choice.episode) if choice.episode is not None else None,
+                    self._now(),
+                )
+            )
+        outcome: CommandOutcome = {"count": len(chosen), "directory": str(destination)}
+        failure: ControlResponse | None = self._commit(
+            request,
+            replace(self._state, acquisitions=(*self._state.acquisitions, *confirmations)),
+            outcome,
+        )
+        return chosen, failure or ControlResponse.succeeded(dict(outcome))
+
+    def _check_subscriptions(self, service: SubscriptionService, *, automatic: bool) -> tuple[CheckOutcome, ...]:
+        if not automatic:
+            self._on_owner(self._retry_subscription_checks)
+        self._on_owner(self._reconcile_subscription_sources)
+        acquisition: AcquisitionService | None = self._service.acquisition
+        if acquisition is not None and self._on_owner(
+            lambda: any(
+                item.state in {AcquisitionState.PENDING_SEND, AcquisitionState.UNCERTAIN}
+                for item in self._state.acquisitions
+            )
+        ):
+            present: frozenset[str] = acquisition.queued_hashes()
+            self._on_owner(lambda: self._reconcile_acquisitions(present))
+        origin: RequestOrigin = RequestOrigin.BACKGROUND if automatic else RequestOrigin.USER
+
+        def admit(subscription: Subscription, episode: Decimal, choice: ReleaseChoice) -> bool:
+            return self._on_owner(
+                lambda: self._admit_subscription(service, subscription, episode, choice, origin=origin)
+            )
+
+        def record(
+            subscription: Subscription,
+            confirmed: dict[Decimal, ReleaseChoice],
+            offered: dict[Decimal, ReleaseChoice],
+            checked: frozenset[Decimal] | None,
+        ) -> Subscription | None:
+            return self._on_owner(
+                lambda: self._record_subscription(service, subscription, confirmed, offered, checked, origin=origin)
+            )
+
+        try:
+            policy: AutomationPolicy = self._on_owner(lambda: self._state.policy)
+            return service.check_due(
+                policy,
+                admit=admit,
+                record=record,
+                update=lambda original, updated: self._on_owner(lambda: service.update(original, updated)),
+                refresh_calendar=not automatic,
+            )
+        finally:
+            self._on_owner(lambda: self._reconcile_acquisitions(frozenset()))
+
+    def _schedule_subscriptions(self) -> None:
+        service: SubscriptionService | None = self._service.subscriptions
+        if (
+            self._shutting_down
+            or service is None
+            or self._subscriptions_checking
+            or self._subscriptions_problem is not None
+            or any(receipt.pending is not None for receipt in self._state.command_receipts)
+        ):
+            self._subscriptions_at = None
+            return
+        try:
+            deadline: datetime | None = service.next_check_at(self._state.policy)
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("Subscription schedule is unavailable", error_class=type(problem).__name__)
+            deadline = None
+        self._subscriptions_at = (
+            time.monotonic() + max(0.0, (deadline - self._clock()).total_seconds()) if deadline is not None else None
+        )
+
+    def _poll_subscriptions(self) -> None:
+        if self._subscriptions_at is None or self._subscriptions_at > time.monotonic():
+            return
+        self._subscriptions_at = None
+        self._subscriptions_checking = True
+        self._active_io += 1
+        self._pool.submit(self._check_due_subscriptions)
+
+    def _check_due_subscriptions(self) -> None:
+        failure: str | None = None
+        try:
+            if self._service.subscriptions is not None:
+                self._check_subscriptions(self._service.subscriptions, automatic=True)
+        except Exception as problem:  # noqa: BLE001
+            logger.warning("Scheduled subscription check failed", error_class=type(problem).__name__)
+            failure = type(problem).__name__
+        finally:
+            self._queue.put(lambda: self._finish_subscription_check(failure))
+
+    def _finish_subscription_check(self, failure: str | None) -> None:
+        self._subscriptions_checking = False
+        self._subscriptions_problem = failure or self._subscriptions_problem
+        self._finish_io()
+        self._publish_state()
+
+    def _retry_subscription_checks(self) -> None:
+        self._subscriptions_problem = None
+        self._reconcile_subscription_sources()
+
+    def _restore_provider_locks(self) -> None:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        if acquisition is None or acquisition.request_control is None:
+            return
+        acquisition.request_control.restore(
+            {item.provider: datetime.fromisoformat(item.until).timestamp() for item in self._state.provider_locks},
+            lambda provider, until: self._on_owner(lambda: self._save_provider_lock(provider, until)),
+        )
+
+    def _save_provider_lock(self, provider: str, until: float) -> None:
+        deadline: ProviderLock = ProviderLock(provider, datetime.fromtimestamp(until, UTC).isoformat(), "rate_limit")
+        locks: tuple[ProviderLock, ...] = tuple(
+            item for item in self._state.provider_locks if item.provider != provider
+        )
+        if not self._save(replace(self._state, provider_locks=(*locks, deadline))):
+            self._subscriptions_problem = _STATE_NOT_SAVED
+            raise OSError(_STATE_NOT_SAVED)
+        self._schedule_subscriptions()
+        self._publish_state()
+
     def _admit_subscription(
         self,
         service: SubscriptionService,
         subscription: Subscription,
         episode: Decimal,
         choice: ReleaseChoice,
+        *,
+        origin: RequestOrigin = RequestOrigin.USER,
     ) -> bool:
         if self._shutting_down or not service.is_current(subscription):
             return False
@@ -1268,7 +1531,7 @@ class AutomationOwner:
         ):
             return False
         confirmation: AcquisitionConfirmation = self._new_acquisition(
-            subscription, episode, choice, AcquisitionState.PENDING_SEND
+            subscription, episode, choice, AcquisitionState.PENDING_SEND, origin=origin
         )
         if not self._save(replace(self._state, acquisitions=(*self._state.acquisitions, confirmation))):
             raise OSError(_STATE_NOT_SAVED)
@@ -1281,6 +1544,8 @@ class AutomationOwner:
         episode: Decimal,
         choice: ReleaseChoice,
         state: AcquisitionState,
+        *,
+        origin: RequestOrigin = RequestOrigin.USER,
     ) -> AcquisitionConfirmation:
         return AcquisitionConfirmation(
             operation_id=token_hex(_ID_BYTES),
@@ -1288,23 +1553,26 @@ class AutomationOwner:
             directory=series_directory_name(subscription.directory or choice.name.series),
             required_files=(),
             state=state,
-            origin=RequestOrigin.USER,
+            origin=origin,
             subscription_id=subscription.subscription_id,
             episode=str(episode),
             updated_at=self._now(),
         )
 
-    def _record_subscription(
+    def _record_subscription(  # noqa: PLR0913
         self,
         service: SubscriptionService,
         subscription: Subscription,
         confirmed: dict[Decimal, ReleaseChoice],
         offered: dict[Decimal, ReleaseChoice],
+        checked: frozenset[Decimal] | None,
+        *,
+        origin: RequestOrigin = RequestOrigin.USER,
     ) -> Subscription | None:
         hashes: frozenset[str] = frozenset(choice.release.info_hash.casefold() for choice in confirmed.values())
         known: frozenset[str] = frozenset(item.info_hash for item in self._state.acquisitions)
         existing: tuple[AcquisitionConfirmation, ...] = tuple(
-            self._new_acquisition(subscription, episode, choice, AcquisitionState.ACCEPTED)
+            self._new_acquisition(subscription, episode, choice, AcquisitionState.ACCEPTED, origin=origin)
             for episode, choice in confirmed.items()
             if choice.release.info_hash.casefold() not in known
         )
@@ -1312,7 +1580,7 @@ class AutomationOwner:
             raise OSError(_STATE_NOT_SAVED)
         self._reconcile_acquisitions(hashes)
         self._schedule_transfers()
-        return service.record_check(subscription, confirmed, offered)
+        return service.record_check(subscription, confirmed, offered, checked)
 
     def _reconcile_acquisitions(self, present: frozenset[str]) -> None:
         acquisitions: list[AcquisitionConfirmation] = []
@@ -1351,8 +1619,15 @@ class AutomationOwner:
         results: tuple[AcquisitionConfirmation, ...] = ()
         try:
             if self._transfers is not None:
-                results = self._transfers.inspect(acquisitions)
+                acquisition: AcquisitionService | None = self._service.acquisition
+                if acquisition is not None:
+                    with acquisition.requests("transfer"):
+                        results = self._transfers.inspect(
+                            acquisitions, stall_after_s=self._state.policy.transfer_stall_s
+                        )
         except Exception as problem:  # noqa: BLE001
+            if self._transfers is not None:
+                self._transfers.reset_clock()
             logger.warning("Transfer reconciliation failed", error_class=type(problem).__name__)
         finally:
             self._queue.put(lambda: self._record_transfers(results))
@@ -1366,6 +1641,7 @@ class AutomationOwner:
             for item in self._state.acquisitions
         )
         if acquisitions != self._state.acquisitions and self._save(replace(self._state, acquisitions=acquisitions)):
+            self._reconcile_subscription_sources()
             self._publish_state()
             paths: tuple[Path, ...] = tuple(
                 self._service.workspace_root / item.directory / name
@@ -1378,6 +1654,15 @@ class AutomationOwner:
             else:
                 self._refresh_automatic()
         self._schedule_transfers(TRANSFER_CHECK_INTERVAL_S)
+
+    def _reconcile_subscription_sources(self) -> None:
+        if self._service.subscriptions is None or not self._state.acquisitions:
+            return
+        try:
+            self._service.subscriptions.reconcile_sources(self._state.acquisitions)
+        except (AniShiftError, OSError) as problem:
+            self._subscriptions_problem = type(problem).__name__
+            logger.warning("Episode confirmations could not be updated", error_class=type(problem).__name__)
 
     def _subscription_mutation(self, request: ControlRequest, service: SubscriptionService) -> ControlResponse:
         identifier: str | None = _text(request.payload, "subscription_id")
@@ -1438,6 +1723,11 @@ class AutomationOwner:
                     service.enable(identifier)
                 elif receipt.pending == "subscription_disable":
                     service.disable(identifier)
+                elif receipt.pending == "subscription_add":
+                    service.add_order(
+                        decode_view(SubscriptionOrder, json.loads(str(receipt.outcome["order"]))),
+                        receipt.command_id,
+                    )
                 else:
                     service.remove(identifier)
         except (AniShiftError, OSError) as problem:
@@ -1450,7 +1740,10 @@ class AutomationOwner:
                 for item in candidate.command_receipts
             ),
         )
-        return self._save(candidate)
+        saved: bool = self._save(candidate)
+        if saved:
+            self._schedule_subscriptions()
+        return saved
 
     def _subscription_counts(self) -> dict[str, int]:
         service: SubscriptionService | None = self._service.subscriptions

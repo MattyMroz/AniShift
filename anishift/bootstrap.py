@@ -94,10 +94,12 @@ def _acquisition_service(context: AppContext) -> AcquisitionService:
 
     from anishift.application.acquisition import AcquisitionService  # noqa: PLC0415
     from anishift.services.catalog import AniListCatalog  # noqa: PLC0415
+    from anishift.services.http_requests import RequestControl  # noqa: PLC0415
     from anishift.services.torrents import QBittorrentClient, parse_release_name, search_releases  # noqa: PLC0415
     from anishift.services.torrents.categories import SEARCH_CATEGORIES  # noqa: PLC0415
 
-    http: httpx.Client = httpx.Client(follow_redirects=True)
+    request_control: RequestControl = RequestControl(httpx.HTTPTransport(retries=0))
+    http: httpx.Client = httpx.Client(transport=request_control, follow_redirects=True)
 
     class NyaaSource:
         """Public nyaa.si index queried through the shared HTTP client."""
@@ -118,6 +120,7 @@ def _acquisition_service(context: AppContext) -> AcquisitionService:
         workspace_root=context.workspace_root,
         parse_name=parse_release_name,
         title_catalog=AniListCatalog(http),
+        request_control=request_control,
     )
 
 

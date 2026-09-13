@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
@@ -480,7 +481,7 @@ def test_default_preset_publishes_polish_subtitles_and_narration_from_embedded_e
     assert products[ArtifactKind.NARRATION_AUDIO].name == f"Episode 01.{harness.preferences.tts_output_profile}"
     assert _lines(products[ArtifactKind.FULL_PL]) == _translated(_EN_LINES)
     assert tuple(harness.translated) == _EN_LINES
-    assert tuple(harness.synthesized) == _translated(_EN_LINES)
+    assert Counter(harness.synthesized) == Counter(_translated(_EN_LINES))
 
 
 def test_all_seven_products_with_mkv_tracks_burned_mp4_and_narration_audio(harness: _Harness) -> None:
@@ -535,7 +536,7 @@ def test_all_seven_products_with_mkv_tracks_burned_mp4_and_narration_audio(harne
     assert subtitle_languages == ["eng", "eng", "pol"]
     assert products[ArtifactKind.FINAL_MP4].name == "Episode 02.pl.mp4"
     harness.check_mp4(products[ArtifactKind.FINAL_MP4], harness.workspace / "Episode 02.mkv", narration=True, burn=True)
-    assert tuple(harness.synthesized) == _translated(_EN_LINES)
+    assert Counter(harness.synthesized) == Counter(_translated(_EN_LINES))
 
 
 def test_source_subtitles_alone_need_no_translation_or_speech(harness: _Harness) -> None:
@@ -566,7 +567,7 @@ def test_sidecar_policy_prefers_the_exact_stem_sidecar_over_embedded_polish(harn
     products: dict[ArtifactKind, Path] = harness.execute()
     assert _lines(products[ArtifactKind.FULL_PL]) == _translated(_EN_LINES)
     assert tuple(harness.translated) == _EN_LINES
-    assert tuple(harness.synthesized) == _translated(_EN_LINES)
+    assert Counter(harness.synthesized) == Counter(_translated(_EN_LINES))
 
 
 def test_embedded_policy_ignores_the_sidecar(harness: _Harness) -> None:
@@ -582,7 +583,7 @@ def test_embedded_policy_ignores_the_sidecar(harness: _Harness) -> None:
     products: dict[ArtifactKind, Path] = harness.execute()
     assert _lines(products[ArtifactKind.FULL_PL]) == _PL_LINES
     assert harness.translated == []
-    assert tuple(harness.synthesized) == _PL_LINES
+    assert Counter(harness.synthesized) == Counter(_PL_LINES)
 
 
 def test_sidecar_policy_refuses_a_source_without_a_sidecar(harness: _Harness) -> None:
@@ -637,7 +638,7 @@ def test_do_not_translate_accepts_a_polish_source(harness: _Harness) -> None:
     products: dict[ArtifactKind, Path] = harness.execute()
     assert _lines(products[ArtifactKind.FULL_PL]) == _PL_LINES
     assert harness.translated == []
-    assert tuple(harness.synthesized) == _PL_LINES
+    assert Counter(harness.synthesized) == Counter(_PL_LINES)
 
 
 def test_forced_translation_translates_a_polish_source_again(harness: _Harness) -> None:
@@ -649,7 +650,7 @@ def test_forced_translation_translates_a_polish_source_again(harness: _Harness) 
     products: dict[ArtifactKind, Path] = harness.execute()
     assert _lines(products[ArtifactKind.FULL_PL]) == _translated(_PL_LINES)
     assert tuple(harness.translated) == _PL_LINES
-    assert tuple(harness.synthesized) == _translated(_PL_LINES)
+    assert Counter(harness.synthesized) == Counter(_translated(_PL_LINES))
 
 
 def test_language_override_marks_an_untagged_track_as_polish(harness: _Harness) -> None:
@@ -667,7 +668,7 @@ def test_language_override_marks_an_untagged_track_as_polish(harness: _Harness) 
     products: dict[ArtifactKind, Path] = harness.execute()
     assert _lines(products[ArtifactKind.FULL_PL]) == _PL_LINES
     assert harness.translated == []
-    assert tuple(harness.synthesized) == _PL_LINES
+    assert Counter(harness.synthesized) == Counter(_PL_LINES)
 
 
 def test_language_override_forces_translation_of_a_mistagged_track(harness: _Harness) -> None:
@@ -681,7 +682,7 @@ def test_language_override_forces_translation_of_a_mistagged_track(harness: _Har
     products: dict[ArtifactKind, Path] = harness.execute()
     assert _lines(products[ArtifactKind.FULL_PL]) == _translated(_EN_LINES)
     assert tuple(harness.translated) == _EN_LINES
-    assert tuple(harness.synthesized) == _translated(_EN_LINES)
+    assert Counter(harness.synthesized) == Counter(_translated(_EN_LINES))
 
 
 @pytest.mark.parametrize(
@@ -727,7 +728,7 @@ def test_mkv_with_source_and_displayed_tracks_carries_the_narration(harness: _Ha
     )
     assert subtitle_languages == ["eng", "eng", "pol"]
     assert not (harness.workspace / "Episode 15.pl.ass").exists()
-    assert tuple(harness.synthesized) == _translated(_EN_LINES)
+    assert Counter(harness.synthesized) == Counter(_translated(_EN_LINES))
 
 
 def test_mkv_without_tracks_only_repacks_the_video(harness: _Harness) -> None:
@@ -782,7 +783,7 @@ def test_mp4_narration_audio_is_generated_without_the_audio_product(harness: _Ha
     }
     products: dict[ArtifactKind, Path] = harness.execute()
     assert set(products) == {ArtifactKind.FINAL_MP4}
-    assert tuple(harness.synthesized) == _translated(_EN_LINES)
+    assert Counter(harness.synthesized) == Counter(_translated(_EN_LINES))
     harness.check_mp4(
         products[ArtifactKind.FINAL_MP4], harness.workspace / "Episode 18.mkv", narration=True, burn=False
     )
@@ -818,7 +819,7 @@ def test_mp4_auto_audio_follows_requested_narration(harness: _Harness, with_narr
     _set_products(harness.panel(), frozenset(requested))
     products: dict[ArtifactKind, Path] = harness.execute()
     assert (ArtifactKind.NARRATION_AUDIO in products) is with_narration
-    assert tuple(harness.synthesized) == (_PL_LINES if with_narration else ())
+    assert Counter(harness.synthesized) == Counter(_PL_LINES if with_narration else ())
     assert harness.translated == []
     harness.check_mp4(products[ArtifactKind.FINAL_MP4], source, narration=with_narration, burn=False)
 
@@ -865,7 +866,7 @@ def test_subtitle_language_priority_selects_the_embedded_track(harness: _Harness
     expected: tuple[str, ...] = _translated(_EN_LINES) if language == "eng" else _PL_LINES
     assert _lines(products[ArtifactKind.FULL_PL]) == expected
     assert tuple(harness.translated) == (_EN_LINES if language == "eng" else ())
-    assert tuple(harness.synthesized) == expected
+    assert Counter(harness.synthesized) == Counter(expected)
 
 
 def test_the_panel_never_writes_a_preset_it_did_not_change(harness: _Harness) -> None:

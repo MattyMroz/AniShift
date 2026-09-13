@@ -50,6 +50,7 @@ if TYPE_CHECKING:
         EpisodeState,
         Subscription,
         SubscriptionEnd,
+        SubscriptionOrder,
         SubscriptionService,
     )
     from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
@@ -213,6 +214,7 @@ __all__ = [
     "SourceSelection",
     "Subscription",
     "SubscriptionEnd",
+    "SubscriptionOrder",
     "SubscriptionService",
     "SubtitleOutputFormat",
     "SubtitleSourcePolicy",
@@ -256,6 +258,7 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "EpisodeOrder": ("anishift.application.subscriptions", "EpisodeOrder"),
     "EpisodeState": ("anishift.application.subscriptions", "EpisodeState"),
     "SubscriptionEnd": ("anishift.application.subscriptions", "SubscriptionEnd"),
+    "SubscriptionOrder": ("anishift.application.subscriptions", "SubscriptionOrder"),
     "WatchStateStore": ("anishift.application.watch_state", "WatchStateStore"),
     "WATCH_STATE_FILE_NAME": ("anishift.application.watch_state", "WATCH_STATE_FILE_NAME"),
     "AutomationOwner": ("anishift.application.automation", "AutomationOwner"),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Final
 
@@ -23,6 +24,25 @@ class TitleStatus(StrEnum):
     CANCELLED = "CANCELLED"
     HIATUS = "HIATUS"
     UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeAiring:
+    """A numbered episode and its known UTC airing instant."""
+
+    episode: int
+    airing_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class SeasonAiring:
+    """The known schedule and airing status of one explicitly identified season."""
+
+    anilist_id: int
+    status: TitleStatus
+    episode_count: int | None
+    episodes: tuple[EpisodeAiring, ...]
+    start_date: date | None = None
 
 
 def is_cour_title(*names: str | None) -> bool:

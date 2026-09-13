@@ -229,7 +229,14 @@ class CommandReceipt:
     pending: str | None = None
 
     def __post_init__(self) -> None:
-        if self.pending not in {None, "cancel", "subscription_enable", "subscription_disable", "subscription_remove"}:
+        if self.pending not in {
+            None,
+            "cancel",
+            "subscription_enable",
+            "subscription_disable",
+            "subscription_remove",
+            "subscription_add",
+        }:
             msg = "A pending command must identify a supported local operation"
             raise ValueError(msg)
         key: str = "run_id" if self.pending == "cancel" else "subscription_id"
