@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from queue import Empty, SimpleQueue
 from secrets import token_hex
@@ -56,14 +57,16 @@ from anishift.application.intents import (
     RunMode,
 )
 from anishift.application.planning import TaskState
+from anishift.application.ready import ReadyMove, ReadyStore
 from anishift.application.recovery import RunJournal
-from anishift.application.results import GroupStatus
+from anishift.application.results import GroupResult, GroupStatus, ProducedArtifact, RunResult
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids
 from anishift.application.subscriptions import SubscriptionOrder, subscription_id
 from anishift.application.transfers import TransferInspector
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
-from anishift.errors import AniShiftError
+from anishift.config.workspace import run_temp_dir
+from anishift.errors import AniShiftError, ExecutionError
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
 from anishift.services.catalog import TitleCandidate
@@ -80,7 +83,6 @@ if TYPE_CHECKING:
     from anishift.application.inspection import InspectedSourceGroup
     from anishift.application.intents import ProductKind
     from anishift.application.planning import ExecutionPlan, RunSettingsSnapshot
-    from anishift.application.results import RunResult
     from anishift.application.scheduler import RunHandle
     from anishift.application.service import AppService
     from anishift.application.subscriptions import (
@@ -227,6 +229,7 @@ class _Preview:
     automatic: bool = False
     file_version: int = 0
     resume_run_id: str | None = None
+    recovering: bool = False
 
 
 @dataclass(slots=True)
@@ -278,6 +281,7 @@ class AutomationOwner:
         clock: Clock = lambda: datetime.now(UTC),
         broadcast: Broadcast | None = None,
         open_panel: Callable[[], None] | None = None,
+        ready_store: ReadyStore | None = None,
     ) -> None:
         """Load the persisted state and prepare the owner thread and its pool."""
         self._service: AppService = service
@@ -289,6 +293,16 @@ class AutomationOwner:
         self._panels: set[str] = set()
         self._panel_opening_at: float = 0.0
         self._state: WatchState = store.load()
+        self._restart_requests: tuple[ProcessingRequest, ...] = self._state.requests
+        self._run_groups: dict[str, tuple[InspectedSourceGroup, ...]] = {}
+        self._ready_store: ReadyStore | None = ready_store
+        self._ready_moves: dict[str, ReadyMove] = {
+            move.group_id: move for move in (() if ready_store is None else ready_store.pending())
+        }
+        self._ready_inflight: set[str] = set()
+        self._ready_problems: dict[str, str] = {}
+        self._recovery_started: bool = False
+        self._recovering: bool = False
         service.retain_runs(
             tuple(item.request_id for item in self._state.requests if item.state is not RequestState.SUCCEEDED)
         )
@@ -452,6 +466,7 @@ class AutomationOwner:
         self._service.set_background_admission(self._state.policy.auto_enabled)
         self._schedule_transfers()
         self._schedule_subscriptions()
+        self._retry_ready()
         try:
             self._loop()
         finally:
@@ -511,6 +526,11 @@ class AutomationOwner:
                     artifact.path for group in workspace.groups for artifact in group.artifacts
                 )
                 self._changed_paths.update(workspace.pending_paths)
+            if not self._recovery_started:
+                self._recovery_started = True
+                self._recovering = True
+                self._active_io += 1
+                self._pool.submit(self._restore_runs, self._restart_requests)
             self._refresh_automatic()
             self._publish_state()
             if workspace.pending_paths:
@@ -556,6 +576,8 @@ class AutomationOwner:
 
     def _refresh_automatic(self) -> None:
         self._settle_at = None
+        if self._recovering:
+            return
         if any(receipt.pending is not None for receipt in self._state.command_receipts):
             return
         workspace: InspectedWorkspace | None = self._library
@@ -571,7 +593,8 @@ class AutomationOwner:
         eligible: tuple[InspectedSourceGroup, ...] = tuple(
             group
             for group in workspace.groups
-            if auto_admissible(
+            if group.group_id not in self._relocating_groups()
+            and auto_admissible(
                 self._state,
                 self._state.policy,
                 group.group_id,
@@ -722,6 +745,12 @@ class AutomationOwner:
                     return _invalid("A panel requires a connected session")
                 self._panels.add(request.session_id)
                 return ControlResponse.succeeded({"attached": True})
+            case "ready_retry":
+                for result in tuple(self._run_results.values()):
+                    if result.succeeded:
+                        self._prepare_ready(result)
+                self._retry_ready()
+                return ControlResponse.succeeded({"pending": len(self._ready_moves)})
             case "set_auto":
                 return self._set_auto(request)
             case "set_directory_auto":
@@ -781,6 +810,11 @@ class AutomationOwner:
             "instance_id": self._instance_id,
             "pid": os.getpid(),
             "run_progress": self._progress_views(),
+            "recovery_problems": [
+                {"run_id": request.request_id, "group_ids": list(request.group_ids), "problem": request.problem}
+                for request in self._state.requests
+                if request.problem is not None
+            ],
             "auto_enabled": policy.auto_enabled,
             "pending_commands": [
                 {"command_id": receipt.command_id, "kind": receipt.pending}
@@ -836,6 +870,16 @@ class AutomationOwner:
                 for item in (() if self._transfers is None else self._transfers.snapshot())
             ],
             "transfers_problem": self._transfers_problem,
+            "relocations": [
+                {
+                    "group_id": group_id,
+                    "name": Path(self._ready_moves[group_id].files[0].source).name
+                    if group_id in self._ready_moves and self._ready_moves[group_id].files
+                    else group_id,
+                    "problem": self._ready_problems.get(group_id),
+                }
+                for group_id in sorted(self._ready_moves.keys() | self._ready_problems.keys())
+            ],
             "library": []
             if self._library is None
             else [
@@ -1185,7 +1229,7 @@ class AutomationOwner:
             RunJournal.load(self._store.run_path(run_id))
             if previous is not None
             else RunJournal.create(
-                self._store.run_path(run_id), preview.plan, self._service.workspace_root / "temp" / run_id
+                self._store.run_path(run_id), preview.plan, run_temp_dir(self._service.workspace_root, run_id)
             )
         )
         if journal.plan != preview.plan:
@@ -1194,7 +1238,7 @@ class AutomationOwner:
             journal.persist()
         accepted = ProcessingRequest(
             request_id=run_id,
-            generation=previous.generation + 1 if previous is not None else 1,
+            generation=previous.generation + (0 if preview.recovering else 1) if previous is not None else 1,
             group_ids=group_ids,
             fingerprints=dict(preview.fingerprints),
             origin=preview.origin,
@@ -1217,6 +1261,7 @@ class AutomationOwner:
         with self._previews_lock:
             self._previews.pop(preview.preview_id, None)
         self._pending[run_id] = preview.products
+        self._run_groups[run_id] = preview.groups
         self._run_results.pop(run_id, None)
         self._run_products[run_id] = {artifact.artifact_id: artifact.kind for artifact in preview.plan.artifacts}
         with self._progress_lock:
@@ -1248,13 +1293,23 @@ class AutomationOwner:
                 run_id=run_id,
                 automatic=preview.automatic,
                 journal=journal,
-                resume=previous is not None and (self._service.workspace_root / "temp" / run_id).exists(),
+                resume=previous is not None and run_temp_dir(self._service.workspace_root, run_id).exists(),
             )
             submitted = True
         finally:
             if not submitted:
                 self._pending.pop(run_id, None)
-                self._save(record_request(self._state, replace(accepted, state=RequestState.FAILED)))
+                self._run_groups.pop(run_id, None)
+                self._save(
+                    record_request(
+                        self._state,
+                        replace(
+                            accepted,
+                            state=RequestState.FAILED,
+                            problem="The accepted plan could not start; review its inputs and settings",
+                        ),
+                    )
+                )
         self._watch_run(run_id, handle)
         self._publish_state()
         return ControlResponse.succeeded(outcome)
@@ -1312,8 +1367,11 @@ class AutomationOwner:
             )
         if finished.origin is RequestOrigin.USER and finished.state is not RequestState.PAUSED and products:
             candidate = _marked(candidate, finished, products, self._now())
-        self._save(candidate)
+        saved: bool = self._save(candidate)
         self._ledger.mark_finished(recorded.group_ids)
+        groups: tuple[InspectedSourceGroup, ...] = self._run_groups.pop(completion.request_id, ())
+        if saved and finished.state is RequestState.SUCCEEDED and completion.result is not None:
+            self._prepare_ready(completion.result, groups)
         self._publish_state()
         self._publish(
             {"event": "run_finished", "payload": {"run_id": completion.request_id}},
@@ -1328,12 +1386,37 @@ class AutomationOwner:
         if recorded is None:
             return _invalid("The resident holds no such run")
         result: RunResult | None = self._run_results.get(recorded.request_id)
+        if result is None and recorded.state is RequestState.SUCCEEDED:
+            result = self._completed_result(recorded)
+        relocating: bool = any(
+            group in recorded.group_ids
+            for group_id in self._ready_inflight
+            for group in (group_id, self._ready_moves[group_id].destination_group_id)
+        )
         return ControlResponse.succeeded(
             {
-                "state": recorded.state.value,
-                "result": encode_view(result) if result is not None else None,
+                "state": RequestState.RUNNING.value if relocating else recorded.state.value,
+                "result": encode_view(result) if result is not None and not relocating else None,
             }
         )
+
+    def _completed_result(self, request: ProcessingRequest) -> RunResult:
+        groups: tuple[GroupResult, ...] = tuple(
+            GroupResult(
+                group_id,
+                GroupStatus.SUCCEEDED,
+                products=tuple(
+                    ProducedArtifact(item.path, self._service.workspace_root / item.path, {})
+                    for item in self._state.products
+                    if item.group_id == group_id
+                    and item.request_id == request.request_id
+                    and item.generation == request.generation
+                    and (self._service.workspace_root / item.path).is_file()
+                ),
+            )
+            for group_id in request.group_ids
+        )
+        return RunResult(request.request_id, groups)
 
     # ── Settings, subscriptions and shutdown ──────────────────────────────────
 
@@ -1395,6 +1478,7 @@ class AutomationOwner:
                     "checked": len(outcomes),
                     "downloaded": sum(outcome.downloaded for outcome in outcomes),
                     "problems": sum(1 for outcome in outcomes if outcome.problem),
+                    "outcomes": [encode_view(outcome) for outcome in outcomes],
                 }
             )
         return self._subscription_mutation(request, service)
@@ -1739,7 +1823,6 @@ class AutomationOwner:
                         results = self._transfers.inspect(
                             acquisitions, stall_after_s=self._state.policy.transfer_stall_s
                         )
-                        acquisition.finish_transfers()
         except Exception as problem:  # noqa: BLE001
             failure = sanitize_event_message(str(problem))
             if self._transfers is not None:
@@ -1774,6 +1857,235 @@ class AutomationOwner:
                 self._refresh_automatic()
         self._schedule_transfers(TRANSFER_CHECK_INTERVAL_S)
         self._publish_state()
+        completed: frozenset[str] = frozenset(
+            item.info_hash for item in self._state.acquisitions if item.state is AcquisitionState.COMPLETE
+        )
+        if completed and failure is None:
+            self._active_io += 1
+            self._pool.submit(self._release_completed, completed)
+
+    def _release_completed(self, hashes: frozenset[str]) -> None:
+        problem: str | None = None
+        try:
+            acquisition: AcquisitionService | None = self._service.acquisition
+            if acquisition is not None:
+                with acquisition.requests("completed_download"):
+                    acquisition.release_completed(hashes)
+                    acquisition.finish_transfers()
+        except (AniShiftError, OSError, ValueError) as error:
+            problem = sanitize_event_message(str(error))
+        finally:
+            self._queue.put(lambda: self._released_completed(problem))
+
+    def _released_completed(self, problem: str | None) -> None:
+        self._active_io -= 1
+        if problem is not None:
+            self._transfers_problem = problem
+        self._publish_state()
+
+    def _restore_runs(self, requests: tuple[ProcessingRequest, ...]) -> None:
+        try:
+            for request in requests:
+                if request.state is RequestState.SUCCEEDED:
+                    self._on_owner(partial(self._restore_ready, request))
+                    continue
+                if request.state not in {RequestState.ACCEPTED, RequestState.RUNNING, RequestState.PAUSED}:
+                    continue
+                if not self._on_owner(partial(self._can_restore, request)):
+                    continue
+                try:
+                    journal: RunJournal = RunJournal.load(self._store.run_path(request.request_id))
+                    self._on_owner(partial(self._resume_restored, request, journal))
+                except (AniShiftError, OSError, ValueError) as error:
+                    problem: str = sanitize_event_message(str(error)) or "The interrupted run needs manual recovery"
+                    self._on_owner(partial(self._failed_recovery, request, problem))
+        finally:
+            self._queue.put(self._restored_runs)
+
+    def _resume_restored(self, request: ProcessingRequest, journal: RunJournal) -> None:
+        if self._shutting_down or self._library is None or not self._can_restore(request):
+            return
+        if journal.uncertain_remote_work:
+            self._failed_recovery(
+                request,
+                "A remote operation was interrupted without confirmation; "
+                "saved products remain and an explicit resume is required",
+            )
+            return
+        if journal.plan.tasks and request.attempts >= self._state.policy.external_retry_budget:
+            self._failed_recovery(
+                request, "Automatic recovery attempts are exhausted; select the files and explicitly resume"
+            )
+            return
+        groups: tuple[InspectedSourceGroup, ...] = tuple(
+            group for group in self._library.groups if group.group_id in request.group_ids
+        )
+        if len(groups) != len(request.group_ids) or any(
+            _group_fingerprint(group) != request.fingerprints.get(group.group_id) for group in groups
+        ):
+            self._failed_recovery(request, "The sources changed or are missing; inspect the files before resuming")
+            return
+        preview: _Preview = _Preview(
+            preview_id=f"recovery-{request.request_id}",
+            client_id=self._instance_id,
+            plan=journal.plan,
+            groups=groups,
+            fingerprints=request.fingerprints,
+            products=frozenset(
+                product for group in journal.plan.groups for product in group.intent.products.requested_products
+            ),
+            origin=request.origin,
+            source_selection=request.source_selection,
+            session_id=None,
+            rebuild=request.rebuild,
+            automatic=request.automatic,
+            resume_run_id=request.request_id,
+            recovering=True,
+        )
+        response: ControlResponse = self._admit(
+            ControlRequest(command_id=f"recovery-{request.request_id}-{request.attempts}", kind="start", payload={}),
+            preview,
+            request.group_ids,
+            self._instance_id,
+        )
+        if not response.ok:
+            self._failed_recovery(request, "The saved run could not be admitted; explicitly resume it from Manual")
+
+    def _failed_recovery(self, request: ProcessingRequest, problem: str) -> None:
+        if not self._can_restore(request):
+            return
+        current: ProcessingRequest = next(
+            (item for item in self._state.requests if item.request_id == request.request_id), request
+        )
+        self._save(record_request(self._state, replace(current, state=RequestState.FAILED, problem=problem)))
+        self._publish_state()
+
+    def _can_restore(self, request: ProcessingRequest) -> bool:
+        return request.request_id not in self._service.active_run_ids() and any(
+            item == request for item in self._state.requests
+        )
+
+    def _restored_runs(self) -> None:
+        self._active_io -= 1
+        self._recovering = False
+        self._refresh_automatic()
+        self._publish_state()
+
+    def _restore_ready(self, request: ProcessingRequest) -> None:
+        if self._library is None or not self._can_restore(request):
+            return
+        sources: tuple[InspectedSourceGroup, ...] = tuple(
+            group
+            for group in self._library.groups
+            if group.group_id in request.group_ids
+            and _group_fingerprint(group) == request.fingerprints.get(group.group_id)
+            and not self._blocked((group.group_id,), self._instance_id)
+        )
+        result: RunResult = self._completed_result(request)
+        self._run_results[request.request_id] = result
+        self._prepare_ready(result, sources)
+
+    def _prepare_ready(self, result: RunResult, sources: Sequence[InspectedSourceGroup] | None = None) -> None:
+        if self._ready_store is None:
+            return
+        if sources is None:
+            sources = () if self._library is None else self._library.groups
+        groups: dict[str, InspectedSourceGroup] = {group.group_id: group for group in sources}
+        for completed in result.groups:
+            group: InspectedSourceGroup | None = groups.get(completed.group_id)
+            if group is None or completed.status is not GroupStatus.SUCCEEDED:
+                continue
+            try:
+                move: ReadyMove | None = self._ready_store.prepare(
+                    group.source, tuple(product.path for product in completed.products)
+                )
+                if move is not None:
+                    self._ready_moves[move.group_id] = move
+            except (AniShiftError, OSError, ValueError) as error:
+                self._ready_problems[group.group_id] = (
+                    sanitize_event_message(str(error)) or "Relocation could not be prepared"
+                )
+        self._retry_ready()
+
+    def _relocating_groups(self) -> set[str]:
+        return self._ready_problems.keys() | {
+            group for move in self._ready_moves.values() for group in (move.group_id, move.destination_group_id)
+        }
+
+    def _retry_ready(self) -> None:
+        if self._shutting_down:
+            return
+        for group_id, move in self._ready_moves.items():
+            if group_id in self._ready_inflight:
+                continue
+            self._ready_inflight.add(group_id)
+            self._active_io += 1
+            self._pool.submit(self._move_ready, move, self._state.acquisitions)
+
+    def _move_ready(self, move: ReadyMove, acquisitions: tuple[AcquisitionConfirmation, ...]) -> None:
+        problem: str | None = None
+        try:
+            paths: set[str] = {item.source for item in move.files}
+            tracked: tuple[AcquisitionConfirmation, ...] = tuple(
+                item
+                for item in acquisitions
+                if any((Path(item.directory) / name).as_posix() in paths for name in item.required_files)
+                or (not item.required_files and any(Path(path).is_relative_to(Path(item.directory)) for path in paths))
+            )
+            hashes: frozenset[str] = frozenset(item.info_hash for item in tracked)
+            acquisition: AcquisitionService | None = self._service.acquisition
+            if any(item.state is not AcquisitionState.COMPLETE for item in tracked):
+                message: str = "The torrent must be confirmed complete before moving its files"
+                raise ExecutionError(message)
+            if hashes and (acquisition is None or acquisition.release_completed(hashes) != hashes):
+                message = "The torrent client still owns these files; stop its completed job before retrying"
+                raise ExecutionError(message)
+            if self._ready_store is not None:
+                self._ready_store.execute(move)
+        except (AniShiftError, OSError, ValueError) as error:
+            problem = sanitize_event_message(str(error)) or "Relocation could not finish"
+        finally:
+            self._queue.put(lambda: self._record_ready(move, problem))
+
+    def _record_ready(self, move: ReadyMove, problem: str | None) -> None:
+        self._active_io -= 1
+        self._ready_inflight.discard(move.group_id)
+        if problem is None and not self._save(move.apply(self._state)):
+            problem = "Moved files await a successful state save; retry relocation"
+        if problem is not None:
+            self._ready_problems[move.group_id] = problem
+            self._publish_ready(move)
+            return
+        self._run_results = {
+            run_id: move.apply_result(result, self._service.workspace_root)
+            for run_id, result in self._run_results.items()
+        }
+        try:
+            if self._ready_store is not None:
+                self._ready_store.acknowledge(move)
+        except OSError:
+            self._ready_problems[move.group_id] = "Files and state are saved; relocation acknowledgement needs retry"
+            self._publish_ready(move)
+            return
+        self._ready_moves.pop(move.group_id, None)
+        self._ready_problems.pop(move.group_id, None)
+        self.files_changed(
+            DirectoryChange(
+                paths=tuple(
+                    self._service.workspace_root / name
+                    for item in move.files
+                    for name in (item.source, item.destination)
+                ),
+                reason="relocation",
+            )
+        )
+        self._publish_ready(move)
+
+    def _publish_ready(self, move: ReadyMove) -> None:
+        self._publish_state()
+        for request in self._state.requests:
+            if {move.group_id, move.destination_group_id}.intersection(request.group_ids):
+                self._publish({"event": "run_finished", "payload": {"run_id": request.request_id}}, terminal=True)
 
     def _transfer_command(self, request: ControlRequest) -> ControlResponse:
         info_hash: str = str(request.payload.get("info_hash", "")).casefold()
@@ -2016,6 +2328,8 @@ class AutomationOwner:
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _blocked(self, group_ids: Sequence[str], client_id: str, *, excluding: str | None = None) -> bool:
+        if self._relocating_groups().intersection(group_ids):
+            return True
         held: Mapping[str, str] = {item.group_id: item.client_id for item in self._state.reservations}
         if any(held.get(group_id, client_id) != client_id for group_id in group_ids):
             return True

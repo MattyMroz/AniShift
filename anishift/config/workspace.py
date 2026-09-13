@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Final
 
 from anishift.errors import ErrorCode, ErrorContext, FatalError
+from anishift.paths import TEMP_DIRECTORY, default_workspace_dir, repo_root, temp_dir
 from anishift.utils.logger import get_logger
 from anishift.utils.safe_fs import safe_rmtree
 
@@ -32,13 +33,10 @@ __all__ = [
 ENV_WORKSPACE_ROOT: Final[str] = "ANISHIFT_WORKSPACE_ROOT"
 """Env var consulted before falling back to repo-root inference."""
 
-_WORKSPACE_DIR_NAME: Final[str] = "workspace"
-"""Name of the workspace directory under the repo root."""
-
 _REPO_MARKER: Final[str] = "pyproject.toml"
 """File whose presence identifies the repository root."""
 
-DEFAULT_SUBDIRS: Final[tuple[str, ...]] = ("temp",)
+DEFAULT_SUBDIRS: Final[tuple[str, ...]] = (TEMP_DIRECTORY,)
 """Subdirectories materialised by :func:`ensure_workspace_dir`."""
 
 RUN_OWNER_MARKER_NAME: Final[str] = ".anishift-owner"
@@ -76,7 +74,7 @@ def _read_env_override() -> Path | None:
 
 def _infer_repo_workspace() -> Path:
     """Return ``<repo>/workspace`` when running from a checkout, else fail-fast."""
-    candidate = Path(__file__).resolve().parents[2]
+    candidate: Path = repo_root()
     if not (candidate / _REPO_MARKER).is_file():
         raise WorkspaceRootNotResolvedError(
             context=ErrorContext(
@@ -85,7 +83,7 @@ def _infer_repo_workspace() -> Path:
                 suggestion=f"Set {ENV_WORKSPACE_ROOT} or run from a repo checkout",
             ),
         )
-    return (candidate / _WORKSPACE_DIR_NAME).resolve()
+    return default_workspace_dir().resolve()
 
 
 def resolve_workspace_root(*, override: str | Path | None = None) -> Path:
@@ -117,7 +115,7 @@ def ensure_workspace_dir(root: Path) -> None:
 def run_temp_dir(root: Path, run_id: str) -> Path:
     """Return the exact private directory for one validated run ID."""
     _validate_runtime_id(run_id, "run")
-    return root / "temp" / run_id
+    return temp_dir(root) / run_id
 
 
 def group_temp_dir(root: Path, run_id: str, group_id: str) -> Path:
@@ -131,7 +129,7 @@ def cleanup_orphaned_temp(root: Path, *, active_run_ids: Collection[str]) -> tup
     active: frozenset[str] = frozenset(active_run_ids)
     for run_id in active:
         _validate_runtime_id(run_id, "active run")
-    temp_root: Path = root / "temp"
+    temp_root: Path = temp_dir(root)
     if not temp_root.exists():
         return ()
     if not temp_root.is_dir():

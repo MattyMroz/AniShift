@@ -4,24 +4,23 @@ Terminal-based Polish voice-over pipeline for anime.
 
 AniShift turns MKV sources into Polish subtitles or a Polish lector track through
 subtitle extraction, translation, TTS, audio processing, and final media composition.
-Durable products are written beside their source; temporary run data stays in
-`workspace/temp/`.
+Completed sources and products collect in the flat `workspace/ready/` directory.
+Regeneration runs there without moving files back. Temporary run data stays in `workspace/temp/`.
 
 ## Quick start
 
 ```bash
 uv sync                                   # Python dependencies
 uv run anishift setup                     # MKVToolNix and FFmpeg into external/bin/ (Windows)
-winget install qBittorrent.qBittorrent    # once, if qBittorrent is not installed yet
-uv run anishift qbit setup                # with qBittorrent closed: enables its Web UI; start qBittorrent, run again
 uv run anishift doctor                    # everything green? then:
-uv run anishift autostart enable          # watch the library now and after every logon
 uv run anishift                           # the interactive interface
 ```
 
 API keys go into `.env` (see "Configuration"); `doctor` lists which engines have one.
-On a fresh machine every step above is needed once; afterwards `uv run anishift`
-is the only command you use.
+Opening the interface starts or connects to one background resident. A new configuration
+starts with Auto off and no subscriptions. Enable Auto and select subscription ranges explicitly
+in **Stan i automatyzacja**. Optionally run `uv run anishift autostart enable` to start the resident
+after every logon; this does not enable Auto or add subscriptions.
 
 If the shell still has another project's virtual environment active, start with
 `uv run --no-active anishift`. This selects AniShift's `.venv` and silences the
@@ -31,10 +30,11 @@ See [uv project environment documentation](https://docs.astral.sh/uv/concepts/pr
 Running `anishift` without a subcommand opens the interactive interface:
 
 - **Auto** processes every ready workspace group with the default preset.
+- **Stan i automatyzacja** shows progress, transfers, subscriptions and files while work continues.
 - **Ręczny** lets you choose sources, output, and per-run overrides before execution.
 - **Anime** searches nyaa.si for a title and hands the chosen releases to qBittorrent.
 - **Ustawienia** edits supported preferences and provides a read-only model catalogue.
-- **Wyjście** closes the interface immediately.
+- **Wyjście** closes the interface; accepted work continues in the resident.
 
 The interface uses one Prompt Toolkit renderer. Home and Auto display the packaged animated
 pixel-art slime on terminals with SIXEL support. The animation is prepared before
@@ -72,24 +72,25 @@ episodes to qBittorrent. Files of one series always land in one folder,
 group you took. If AniList does not answer, the phrase goes to nyaa.si as typed and the
 groups arrive ordered by seeders instead of by newest release; **S** switches that too.
 
-qBittorrent needs its Web UI once: Options → Web UI → enable the Web User Interface and
-tick "Bypass authentication for clients on localhost" (or set
-`ANISHIFT_QBITTORRENT_USERNAME` and `ANISHIFT_QBITTORRENT_PASSWORD` in `.env`;
-`ANISHIFT_QBITTORRENT_URL` overrides the default `http://127.0.0.1:8080`). Then run:
+AniShift prepares its own verified qBittorrent executable in `external/bin/qbittorrent/`
+for the first download. Its profile, credentials and history live in `config/qbittorrent/`,
+separate from your personal installation. It selects its own available Web UI port.
+Downloads run concurrently. Completed jobs stop seeding and release their files before
+relocation; AniShift retains their acquisition history. Uploading during a download is possible.
 
 ```bash
-uv run anishift qbit setup    # mark unfinished files with .!qB and stop seeding once a download completes
-uv run anishift qbit status   # reachable: yes (v5.2.3) / incomplete extension: on / seeding after download: off
+uv run anishift qbit setup    # optional: prepare the private binary ahead of the first download
+uv run anishift qbit status   # inspect readiness without starting the client
 ```
 
-The `.!qB` suffix matters: torrent files are created at full size before they are
-complete, and the watch ignores that suffix until the download finishes.
+The resident confirms selected torrent files through the client and disk before admitting Auto.
+An allocated full-size file or an unchanged timestamp alone is not proof of completion.
 
 ### Following a series
 
 In the Anime results press **O** on an episode to follow that series from that
 episode on, with that release group. AniShift queues the episodes already available
-and the watch process checks nyaa.si every hour for new ones. Highlight the first
+and the resident checks according to episode air dates, release delays and bounded search windows. Highlight the first
 episode to collect the whole season, the latest one to get only what comes next.
 
 ```bash
@@ -98,13 +99,18 @@ uv run anishift subs check       # check every followed series now
 uv run anishift subs remove ID   # stop following; downloaded files stay
 ```
 
-Followed series live in `config/subscriptions.json`.
+Followed series live in `config/subscriptions.json`. The State screen supports adding,
+enabling, disabling and removing subscriptions. Disabling stops new orders; accepted
+transfers have separate Stop, Resume and Cancel actions. Removing a subscription keeps media.
+Unlinked series use the configured hourly fallback; ended seasons do not poll indefinitely.
 
 ## Watching the library
 
 `workspace/` may hold one subfolder per series, for example `workspace/Frieren/`.
 Discovery reads the root and every subfolder except the managed `temp/` directory,
-and products are written beside their source in the same subfolder.
+and ignores hidden directories. Drop files directly into the workspace root. After successful
+processing, sources and related products move to `ready/` without rewriting their contents
+on the same volume. Name collisions preserve both episodes. Regenerate directly in `ready/`.
 
 ```bash
 uv run anishift autostart enable    # register the logon task and start watching now
@@ -115,13 +121,15 @@ uv run anishift watch status        # running (pid N) | stopped
 uv run anishift watch stop          # stop the watching process
 ```
 
-Watching runs without a window. When a new video file (with usable text) has stayed
-unchanged for ten seconds and is not held exclusively by another program, a terminal
-window opens with the Auto screen for that batch only, shows the outcome for ten
-seconds, and closes itself. Any key closes it earlier; closing it mid-run cancels that
-batch only, and the batch is not retried until its files change. Files that appear
-during a batch wait for the next scan. Groups that already hold every product of the
-default preset are never reprocessed.
+The resident runs without spawning batch windows. Its tray icon opens the existing panel
+or one new panel. Progress and settings remain independently accessible. With Auto enabled,
+stable available inputs enter the same scheduler used by Manual; confirmed existing products
+are reused. Changing preferences does not regenerate old episodes.
+
+After interruption, the resident verifies saved work and resumes safe unfinished operations.
+An unconfirmed remote operation or exhausted retry budget remains visible for explicit manual
+recovery. Pending moves remain visible under Files; **P** retries them. Existing products stay
+available while a replacement is being prepared. `watch batch` only reports its replacement.
 
 ## Technical commands
 
@@ -131,7 +139,7 @@ uv run anishift doctor            # inspect tools, credentials, workspace, encod
 uv run anishift setup [--force]   # download and verify tools in external/bin/
 ```
 
-Non-interactive runs and batch windows exit with `0` for full success, `1` when
+Non-interactive runs use the resident and exit with `0` for full success, `1` when
 refused before start, `3` for a failed or partial run, and `4` when cancelled.
 User-facing refusals and errors remain concise; developer diagnostics are written
 to the structured log.
@@ -158,11 +166,8 @@ configured.
 - Python 3.14+
 - MKVToolNix and FFmpeg (`external/bin/` on Windows; installed on demand or by
   `anishift setup`; non-Windows systems can use tools already on `PATH`)
-- qBittorrent, which downloads the releases the Anime screen and the followed
-  series pick (`winget install qBittorrent.qBittorrent`). `anishift qbit setup`
-  prepares its Web UI on `127.0.0.1:8080` — close qBittorrent first, because it
-  rewrites its own settings on exit — and `anishift doctor` reports whether the
-  Web UI answers.
+- On Windows, AniShift downloads and configures its private qBittorrent on demand;
+  a personal installation is not required. Managed torrent downloads require Windows.
 - API credentials required by the selected translation or TTS engines
 - Optional Windows SAPI voices must be installed separately with a valid license
   and be available to the Python process architecture. AniShift does not install

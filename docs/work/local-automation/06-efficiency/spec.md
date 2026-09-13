@@ -168,6 +168,8 @@ Doprecyzowanie właściciela 2026-09-13: zarządzana binarka znajduje się w `ex
 
 ## 8. Awarie i regeneracja
 
+**Ograniczenie bieżącego wdrożenia, 2026-09-13:** właściciel nie zatwierdził obecnej zapisanej listy tytułów ani początkowych odcinków do pobrania. Zastane subskrypcje i transfery pozostają wyłączone/wstrzymane do jawnego ustalenia zakresu. Zgoda na wykonanie planu i otwarcie panelu nie jest zgodą na wznowienie tej listy. Zachować jej dane i pliki; używać izolowanej konfiguracji do testów pobierania.
+
 **R-019. Problem ma ograniczone ponowienia i widoczny skutek.** Pokazywać etap, przyczynę, zachowane wyniki i następną akcję. Retry klienta i nadzoru nie mnożą swoich budżetów. Brak klucza, uprawnień, miejsca lub uszkodzone wejście wymaga uwagi bez bezowocnego wywoływania usług. Awaria jednego dostawcy nie blokuje niezależnych prac, a jego powrót nie zwalnia lawiny requestów.
 
 Zastój transferu wynika z braku postępu podczas aktywnego pobierania, nie pojedynczego odczytu liczby seedów. Po progu własny zarządzany transfer można wstrzymać; nie usuwać jego danych. Zmiana transferu w cudzej instancji wymaga jawnej zgody. Dostępne są wznowienie, wybór innego wydania i anulowanie konkretnego pobrania. Bez samoczynnego krążenia między wydaniami i restartowania klienta w pętli.

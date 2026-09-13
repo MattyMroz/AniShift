@@ -292,6 +292,7 @@ config/settings.json
 config/presets.json
 config/anishift.models.jsonc
 config/watch/
+config/qbittorrent/
 config/subscriptions.json
 
 # ── Re-includes ──────────────────────────────────────────────────────────────

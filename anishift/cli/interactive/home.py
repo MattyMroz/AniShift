@@ -25,6 +25,7 @@ class HomeAction(StrEnum):
     """Identify an action selected from Home."""
 
     AUTO = "auto"
+    STATE = "state"
     MANUAL = "manual"
     ANIME = "anime"
     SETTINGS = "settings"

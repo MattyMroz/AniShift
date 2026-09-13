@@ -18,13 +18,13 @@ from anishift.cli.interactive.prompts import (
 )
 
 
-def test_home_offers_exactly_five_actions_in_the_required_order() -> None:
+def test_home_without_resident_offers_five_actions_in_the_required_order() -> None:
     content: Text = _home_content(120, 40, 0, MascotState.IDLE)
     labels: list[str] = ["Auto", "Ręczny", "Anime", "Ustawienia", "Wyjście"]
     rows: list[str] = [line.strip().removeprefix("\u276f").strip() for line in content.plain.split("\n")]
 
     assert [row for row in rows if row][-6:] == [*labels, "↑↓ · Enter"]
-    assert len(HomeAction) == len(labels)
+    assert len(set(HomeAction) - {HomeAction.STATE}) == len(labels)
 
 
 def test_the_footer_keeps_the_directory_and_version_at_opposite_edges() -> None:

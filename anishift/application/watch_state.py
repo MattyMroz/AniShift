@@ -25,7 +25,7 @@ from anishift.application.control import (
 from anishift.application.control_payloads import decode_intent, encode_intent
 from anishift.application.intents import GroupIntent, ProductKind, RebuildRequest, RequestOrigin
 from anishift.errors import ConfigError, ErrorCode, ErrorContext
-from anishift.paths import config_path
+from anishift.paths import run_journal_dir, watch_dir
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -51,9 +51,6 @@ logger = get_logger(__name__)
 
 WATCH_STATE_FILE_NAME: Final[str] = "state.json"
 """Filename of the automation state, written beside the other watch state files."""
-
-_STATE_DIR_NAME: Final[str] = "watch"
-"""Directory under the panel configuration holding every watch state file."""
 
 _BACKUP_SUFFIX: Final[str] = ".bak"
 """Ending of the copy kept from the last state that could be read back."""
@@ -159,7 +156,7 @@ _INVALID_SUGGESTION: Final[str] = "Restore config/watch/state.json.bak or delete
 
 def watch_state_path() -> Path:
     """Return the absolute path of the automation state under the watch directory."""
-    return config_path().parent / _STATE_DIR_NAME / WATCH_STATE_FILE_NAME
+    return watch_dir() / WATCH_STATE_FILE_NAME
 
 
 class WatchStateStore:
@@ -173,7 +170,7 @@ class WatchStateStore:
         if not run_id or Path(run_id).name != run_id or run_id in {".", ".."}:
             msg = "A checkpoint requires a safe run identifier"
             raise ValueError(msg)
-        return self._path.parent / "runs" / f"{run_id}.json"
+        return run_journal_dir(self._path.parent) / f"{run_id}.json"
 
     def load(self) -> WatchState:
         """Read the stored automation state, or the default one when nothing was written yet."""
@@ -291,6 +288,7 @@ def _encode_request(request: ProcessingRequest) -> dict[str, object]:
         "accepted_at": request.accepted_at,
         "intents": [encode_intent(intent) for intent in request.intents],
         "automatic": request.automatic,
+        "problem": request.problem,
     }
 
 
@@ -402,6 +400,7 @@ def _decode_marker(raw: object) -> ManualHandledMarker:
 
 def _decode_request(raw: object) -> ProcessingRequest:
     document: dict[str, object] = _strict_mapping(raw, "processing request")
+    problem: str | None = _optional_text({"problem": document.pop("problem", None)}, "problem")
     automatic: bool = _flag({"automatic": document.pop("automatic", False)}, "automatic")
     intents: tuple[GroupIntent, ...] = tuple(
         decode_intent(GroupIntent, item) for item in _list(document.pop("intents", []), "group intents")
@@ -423,6 +422,7 @@ def _decode_request(raw: object) -> ProcessingRequest:
         accepted_at=_text(document, "accepted_at"),
         intents=intents,
         automatic=automatic,
+        problem=problem,
     )
 
 

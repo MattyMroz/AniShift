@@ -11,13 +11,16 @@ the code:
   `anishift.models.example.jsonc`;
 - `subscriptions.json` stores followed series and episode scheduling;
 - `watch/` stores resident control state and its local endpoint credentials;
-- `qbittorrent/` stores the opt-in resident's private client profile, process
+- `qbittorrent/` stores the resident's private client profile, process
   receipt and credentials. The executable is in `external/bin/qbittorrent/`.
 
 `ANISHIFT_CONFIG_DIR` replaces this directory entirely, so a test or a second
 account can keep its own preferences, watch state and subscriptions elsewhere.
 
-Durable products are always written beside their source, never here.
+`watch/runs/` holds processing checkpoints and `watch/relocations/` holds unfinished
+moves into `workspace/ready/`. These contain state, never media.
+Shared locations are defined in `anishift/paths.py`; resolving a path does not create it.
+Durable products are published beside their source and collect in `workspace/ready/`, never here.
 Per-machine files are gitignored; only this README and the model-catalog
 example are tracked.
 

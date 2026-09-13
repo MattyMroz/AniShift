@@ -81,7 +81,7 @@ def _issue_keys(catalog: ModelCatalog) -> set[str]:
 
 @pytest.fixture
 def catalog_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    monkeypatch.setattr(model_catalog, "config_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr(model_catalog, "config_dir", lambda: tmp_path)
     return tmp_path
 
 
@@ -516,7 +516,7 @@ def test_ensure_creates_the_configuration_directory(monkeypatch: pytest.MonkeyPa
     nested = tmp_path / "deep" / "config"
     nested.mkdir(parents=True)
     (nested / CATALOG_EXAMPLE_FILE_NAME).write_text(_source(), encoding="utf-8")
-    monkeypatch.setattr(model_catalog, "config_path", lambda: nested / "child" / "settings.json")
+    monkeypatch.setattr(model_catalog, "config_dir", lambda: nested / "child")
     monkeypatch.setattr(
         model_catalog,
         "model_catalog_example_path",

@@ -36,6 +36,7 @@ from anishift.cli.interactive.state import StateController, StateResult
 from anishift.cli.resident import ResidentSession
 from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, execute_plan, prepare_auto_run
 from anishift.errors import AniShiftError
+from anishift.paths import config_dir, log_path
 from anishift.utils.logger import get_logger
 
 __all__ = ["run_interactive"]
@@ -44,7 +45,7 @@ logger = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_LOG_LOCATION: Final[str] = "logs/anishift.log.jsonl"
+_LOG_LOCATION: Final[str] = log_path().relative_to(config_dir().parent).as_posix()
 """Relative location of the process diagnostic log."""
 
 _HOME_CHOICES: Final[tuple[tuple[str, HomeAction], ...]] = (
@@ -165,6 +166,9 @@ class _InteractiveApplication:
     ) -> None:
         self._service: AppService = service
         self._resident: ResidentSession | None = resident
+        self._home_choices: tuple[tuple[str, HomeAction], ...] = (
+            (("Stan i automatyzacja", HomeAction.STATE), *_HOME_CHOICES) if resident is not None else _HOME_CHOICES
+        )
         self._terminal_window: str | None = terminal_window
         self._execution: ResidentSession | None = None
         self._batch: tuple[str, ...] | None = batch
@@ -343,25 +347,24 @@ class _InteractiveApplication:
     def _handle_home_key(self, key: str) -> None:
         if key == "up":
             with self._lock:
-                self._selected = (self._selected - 1) % len(_HOME_CHOICES)
+                self._selected = (self._selected - 1) % len(self._home_choices)
             self._renderer.invalidate()
             return
         if key == "down":
             with self._lock:
-                self._selected = (self._selected + 1) % len(_HOME_CHOICES)
+                self._selected = (self._selected + 1) % len(self._home_choices)
             self._renderer.invalidate()
             return
         if key != "enter":
             return
         with self._lock:
-            action: HomeAction = _HOME_CHOICES[self._selected][1]
+            action: HomeAction = self._home_choices[self._selected][1]
         if action is HomeAction.EXIT:
             self._renderer.exit()
         elif action is HomeAction.AUTO:
-            if self._resident is not None:
-                self._show_state()
-            else:
-                self._start_auto()
+            self._start_auto()
+        elif action is HomeAction.STATE:
+            self._show_state()
         elif action is HomeAction.ANIME:
             self._start_anime()
         elif action is HomeAction.SETTINGS:
@@ -790,7 +793,13 @@ class _InteractiveApplication:
         animation_phase: int = getattr(self._renderer, "animation_phase", 0)
         if mode in {_ViewMode.HOME, _ViewMode.PREPARING, _ViewMode.MANUAL_PREPARING}:
             content: Text = _home_content(
-                columns, rows, selected, mascot_state, native_size=native_size, animation_phase=animation_phase
+                columns,
+                rows,
+                selected,
+                mascot_state,
+                native_size=native_size,
+                animation_phase=animation_phase,
+                choices=self._home_choices,
             )
         elif mode is _ViewMode.MANUAL and manual is not None:
             content = manual.render(columns, rows)
@@ -843,15 +852,16 @@ def _home_content(  # noqa: PLR0913
     *,
     native_size: tuple[int, int] | None = None,
     animation_phase: int = 0,
+    choices: tuple[tuple[str, HomeAction], ...] = _HOME_CHOICES,
 ) -> Text:
     if rows < _MINIMUM_BRANDED_ROWS:
-        return _small_home_content(columns, rows, selected)
+        return _small_home_content(columns, rows, selected, choices)
     geometry: HomeGeometry = resolve_home_geometry(columns, rows, native_size or TEXT_MASCOT_SIZE)
     brand: Text = brand_for_geometry(
         geometry, mascot_state, native_mascot=native_size is not None, animation_phase=animation_phase
     )
     brand_rows: int = len(brand.split("\n"))
-    menu_rows: int = len(_HOME_CHOICES) + 1
+    menu_rows: int = len(choices) + 1
     body_rows: int = max(rows - 1, 1)
     resting: Text = brand_for_geometry(geometry, mascot_state, native_mascot=native_size is not None)
     resting_top: int = next(
@@ -873,7 +883,7 @@ def _home_content(  # noqa: PLR0913
     content = Text("\n" * brand_top)
     content.append_text(brand)
     content.append("\n" * max(menu_top - brand_bottom, 1))
-    for index, (label, _action) in enumerate(_HOME_CHOICES):
+    for index, (label, _action) in enumerate(choices):
         content.append(" " * geometry.left_padding)
         if index == selected:
             content.append(f"{_HOME_POINTER} ", style="brand_accent")
@@ -886,16 +896,18 @@ def _home_content(  # noqa: PLR0913
     return content
 
 
-def _small_home_content(columns: int, rows: int, selected: int) -> Text:
+def _small_home_content(
+    columns: int, rows: int, selected: int, choices: tuple[tuple[str, HomeAction], ...] = _HOME_CHOICES
+) -> Text:
     """Keep the selected Home action reachable when branding cannot fit."""
-    visible: int = min(len(_HOME_CHOICES), max(rows - 1, 1))
+    visible: int = min(len(choices), max(rows - 1, 1))
     start: int = max(selected - visible + 1, 0)
     content = Text()
-    for index in range(start, min(start + visible, len(_HOME_CHOICES))):
-        label: str = _HOME_CHOICES[index][0]
+    for index in range(start, min(start + visible, len(choices))):
+        label: str = choices[index][0]
         pointer: str = _HOME_POINTER if index == selected else " "
         content.append(f"{pointer} {label}\n", style="brand_accent" if index == selected else "white_bold")
-    if rows > len(_HOME_CHOICES) + 1:
+    if rows > len(choices) + 1:
         content.append(_HOME_HINT[:columns], style="gray")
     return content
 

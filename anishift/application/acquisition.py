@@ -168,6 +168,10 @@ class TorrentManagement(Protocol):
         """Stop completed seeds and an idle owned process."""
         ...
 
+    def release_completed(self, hashes: frozenset[str]) -> frozenset[str]:
+        """Release only confirmed complete jobs without deleting their media."""
+        ...
+
     def transfer_action(self, info_hash: str, action: str) -> None:
         """Apply an explicit action to a managed transfer."""
         ...
@@ -505,6 +509,12 @@ class AcquisitionService:
             msg = "This torrent client is external and cannot be managed automatically"
             raise ValueError(msg)
         self._torrent_management.transfer_action(info_hash, action)
+
+    def release_completed(self, hashes: frozenset[str]) -> frozenset[str]:
+        """Return confirmed hashes whose private client no longer owns the media location."""
+        if self._torrent_management is None:
+            return frozenset()
+        return self._torrent_management.release_completed(hashes)
 
     def close(self) -> None:
         """Release private torrent process resources."""

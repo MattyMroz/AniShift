@@ -22,6 +22,13 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 
 ## Inwarianty
 
+- `AutomationOwner` zapisuje przyjęcie pracy i jest jedynym autorem stanu rezydenta.
+  `RunJournal` zapisuje pozostały graf i potwierdzenia publikacji; niepewne operacje zdalne
+  po przerwaniu procesu wymagają jawnego wznowienia, bez automatycznego powtarzania opłat.
+- `ReadyStore` przenosi ukończoną grupę do `ready/` przez wyłączne dowiązanie i usunięcie
+  starej nazwy na tym samym woluminie. Dziennik pozostaje do zapisania nowych tożsamości
+  w stanie właściciela; znany torrent musi wcześniej zwolnić pliki. Blokada relokacji
+  chroni oba ID grupy przed Auto. Nie przenoś plików bezpośrednio z renderera.
 - Discovery skanuje root workspace rekurencyjnie: pomija `temp/` bezpośrednio pod rootem,
   katalogi i pliki od kropki oraz nie wchodzi w dowiązania symboliczne. ID grupy liczy się
   z katalogu względem roota i stemu, więc `A/01.mkv` i `B/01.mkv` to dwie grupy, a plik

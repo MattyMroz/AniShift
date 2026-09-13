@@ -16,7 +16,7 @@ Ustawienia i `Settings` (pydantic-settings, prefix `ANISHIFT_`, z `.env`), prefe
 ## Pułapki
 
 - `config_path()` NIE leży w tym pakiecie, tylko w `anishift/paths.py` — import `anishift.config` wciąga rejestry audio/translation/llm/tts, więc warstwa prezentacji bierze samą ścieżkę z `paths`. `anishift.config` tylko ją re-eksportuje. `anishift/paths.py:38`
-- Repo root liczy się w DWÓCH miejscach po różnych regułach: `paths.py` bierze `parents[1]` bez markera, a inferencja workspace `parents[2]` z markerem `pyproject.toml` i twardym błędem, gdy markera nie ma. `anishift/paths.py:33`, `workspace.py:88-99`
+- Repo root i domyślne katalogi wylicza wyłącznie `anishift/paths.py`. `workspace.py` rozstrzyga override oraz sprawdza marker `pyproject.toml` przed użyciem domyślnego workspace; brak markera nadal oznacza błąd.
 - `elevenlabs_api_key` jest tylko dla silnika `elevenlabs`; silnik `elevenbytes` go NIE używa (ma własny wbudowany klucz). `settings.py:114`
 - Token Palantira ma dwa źródła (`ANISHIFT_PALANTIR_TOKEN` i nieprefiksowany `FOUNDRY_API_TOKEN`), ale precedencji NIE rozstrzyga ten pakiet — deleguje ją do `resolve_palantir_token` w adapterze LLM, a pole kompatybilnościowe czyści po walidacji. `settings.py:151-170`
 - Walidacja `UserSettings` zależy od runtime'owego `available_engine_ids()` — dozwolone id silników nie są stałą, tylko wynikiem rejestru wołanym przy każdym `load_user_settings`. `user_settings.py:851`

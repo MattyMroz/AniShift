@@ -26,7 +26,7 @@ verifies each against its hash. `anishift doctor` reports what is present.
 On Linux, `mkvtoolnix` and `ffmpeg` from the system package manager (on `PATH`)
 are used as a fallback when not bundled here.
 
-The opt-in resident prepares its own qBittorrent 5.2.3 on the first download
+The resident prepares its own qBittorrent 5.2.3 on the first download
 order. The installer verifies the official Windows distribution, then extracts
 the executable and Qt configuration without running a system installer. It uses
 verified 7-Zip 26.03 tools: `7zr.exe` extracts `7z.exe` and `7z.dll`, which extract
@@ -35,5 +35,5 @@ the qBittorrent distribution. Helpers stay in `bin/7zip/` and the client stays i
 
 The private profile is in `config/qbittorrent/`, or the corresponding directory
 under `ANISHIFT_CONFIG_DIR`. It has its own credentials, ports and torrent
-history. Media go to the workspace. `anishift doctor --resident` checks binary
+history. Media go to the workspace. `anishift doctor` checks binary
 readiness without installing or starting the client.

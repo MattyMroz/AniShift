@@ -56,7 +56,7 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 - `external/` — pobrane binarki (gitignored) + docs HTML narzędzi; szczegóły w `external/README.md`
 - `config/` — runtime katalog na `settings.json` panelu (gitignored); opis w `config/README.md`
 - `scripts/hooks/` — hook `check_commit_msg.py` (Conventional Commits); `scripts/tmp/` — jednorazowe
-- `workspace/` — user wrzuca MKV, pliki pośrednie powstają obok (patrz Dane runtime)
+- `workspace/` — user wrzuca MKV do roota; gotowe odcinki zbiera `ready/`, staging leży w `temp/` (patrz Dane runtime)
 
 ## Twarde strażniki
 
@@ -73,8 +73,8 @@ Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit
 
 ## Dane runtime
 
-- `workspace/` — biblioteka: root i podfoldery serii (`workspace/<Seria>/`), skanowane rekurencyjnie z pominięciem `temp/` i katalogów od kropki; trwałe produkty leżą obok źródła w tym samym podfolderze. Jedyny zarządzany podfolder to `temp/`. Zero `input/`, `output/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`.
-- Preferencje panelu: `config/settings.json` (obok kodu, gitignored, poza workspace). Stan czuwania: `config/watch/` (blokada instancji, PID, flaga stop); subskrypcje serii: `config/subscriptions.json`; bez sekretów i bez mediów.
+- `workspace/` — wejście w root i podfolderach serii, skanowane rekurencyjnie z pominięciem `temp/` i katalogów od kropki. Po sukcesie źródło i produkty trafiają do płaskiego `ready/`; regeneracja działa tam na miejscu. `temp/` trzyma staging. Zero wymaganego `input/`, `output/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`; wspólny układ katalogów wylicza `anishift/paths.py`.
+- Preferencje panelu: `config/settings.json` (gitignored, poza workspace). Stan rezydenta: `config/watch/` (ledger, blokada, endpoint, chroniony klucz IPC, `runs/` i `relocations/`); subskrypcje: `config/subscriptions.json`. Prywatny profil klienta: `config/qbittorrent/` (gitignored, chronione dane uwierzytelnienia). Ledger nie zawiera kluczy usług ani mediów.
 - Settings API/env: pydantic-settings, prefix `ANISHIFT_`, z `.env`, wszystkie opcjonalne. Klient torrent: `ANISHIFT_QBITTORRENT_URL` (domyślnie `http://127.0.0.1:8080`), `ANISHIFT_QBITTORRENT_USERNAME`, `ANISHIFT_QBITTORRENT_PASSWORD`.
 - Diagnostyka runtime używa wyłącznie `from anishift.utils.logger import get_logger`
   oraz modułowego `logger = get_logger(__name__)`. Sinki konfiguruje tylko granica

@@ -14,7 +14,7 @@ from urllib.parse import SplitResult, urlsplit
 import json5
 
 from anishift.errors import ConfigError, ErrorCode, ErrorContext
-from anishift.paths import config_path
+from anishift.paths import config_dir
 from anishift.services.llm.wire_protocol import ModelProtocol
 from anishift.utils.logger import get_logger
 
@@ -163,12 +163,12 @@ class ModelCatalogError(ConfigError):
 
 def model_catalog_path() -> Path:
     """Return the absolute path of the runtime catalog."""
-    return config_path().parent / CATALOG_FILE_NAME
+    return config_dir() / CATALOG_FILE_NAME
 
 
 def model_catalog_example_path() -> Path:
     """Return the absolute path of the secret-free example catalog."""
-    return config_path().parent / CATALOG_EXAMPLE_FILE_NAME
+    return config_dir() / CATALOG_EXAMPLE_FILE_NAME
 
 
 def parse_model_catalog(source: str) -> ModelCatalog:

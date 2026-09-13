@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import signal
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Final, NoReturn
 
@@ -18,17 +19,15 @@ from anishift.utils.rich_console import StatusType, console, get_status_icon
 
 if TYPE_CHECKING:
     from anishift.application import (
-        AcquisitionService,
         AppService,
         CheckOutcome,
-        ClientStatus,
         RunResult,
         Subscription,
         SubscriptionService,
     )
     from anishift.application.events import RunEvent
     from anishift.cli.control import ResidentStatus
-    from anishift.cli.run import AutoRunRefusal, PreparedAutoRun
+    from anishift.cli.run import AutoRunRefusal
     from anishift.cli.watch import WatchStatus
     from anishift.platform.autostart import AutostartStatus
     from anishift.setup.installer import ResourceResult
@@ -41,7 +40,7 @@ app = typer.Typer(
 )
 
 watch_app = typer.Typer(
-    help="Watch the library and hand every new file to one automatic window.",
+    help="Run or control the background owner of the library.",
     no_args_is_help=False,
 )
 
@@ -110,42 +109,8 @@ _AUTOSTART_ENABLED: Final[str] = "Autostart is on; the watch runs now and after 
 _AUTOSTART_DISABLED: Final[str] = "Autostart is off; the running watch was asked to stop."
 """Confirmation printed once the logon task is gone and a stop was requested."""
 
-_QBIT_REACHABLE: Final[str] = "reachable: yes (v{version})"
-"""Status line stated when the qBittorrent Web UI answers."""
-
-_QBIT_UNREACHABLE: Final[str] = "reachable: no"
-"""Status line stated when the qBittorrent Web UI does not answer."""
-
-_QBIT_EXTENSION: Final[str] = "incomplete extension: {state}"
-"""Status line naming whether the client marks files still being downloaded."""
-
-_QBIT_SEEDING: Final[str] = "seeding after download: {state}"
-"""Status line naming whether the client stops a torrent once its download completes."""
-
 _QBIT_ABSENT: Final[str] = "This session has no torrent client composed."
 """Refusal stated when the facade was built without the acquisition boundary."""
-
-_QBIT_NOT_INSTALLED: Final[str] = (
-    "qBittorrent is not installed. Install it with `winget install qBittorrent.qBittorrent`."
-)
-"""Refusal stated when no qBittorrent installation was found to configure."""
-
-_QBIT_RUNNING: Final[str] = "Close qBittorrent, then run `anishift qbit setup` again"
-"""Refusal stated while the client still runs and would undo the written keys."""
-
-_QBIT_WEB_UI_READY: Final[str] = (
-    "Web UI enabled in the qBittorrent settings. Start qBittorrent and run `anishift qbit setup` again."
-)
-"""Confirmation printed once the Web UI keys are in the client settings."""
-
-_QBIT_WEB_UI_PRESENT: Final[str] = (
-    "Web UI keys already exist in the qBittorrent settings; enable the Web UI in qBittorrent "
-    "→ Options → Web UI (localhost, port 8080, bypass authentication for localhost)"
-)
-"""Refusal stated when the settings already carry the keys, so nothing was written."""
-
-_QBIT_WEB_UI_PASSWORD: Final[str] = "Web UI password (admin): {password}"  # noqa: S105 - a template, not a secret
-"""Line carrying the freshly generated Web UI password to the user."""
 
 _WATCH_SUGGESTION: Final[str] = "Run `anishift autostart enable` so the library is watched now and after every logon"
 """Advice printed by the doctor when nothing watches the library."""
@@ -196,27 +161,25 @@ def _default(
     if ctx.invoked_subcommand is not None:
         return
     service: AppService = _composed_service()
+    from anishift.cli.control import open_control  # noqa: PLC0415
     from anishift.cli.interactive import run_interactive  # noqa: PLC0415 - keep prompts off technical commands
+    from anishift.cli.resident import ResidentSession  # noqa: PLC0415
+    from anishift.cli.watch import watch_state_dir  # noqa: PLC0415
 
-    if resident:
-        from anishift.cli.control import open_control  # noqa: PLC0415
-        from anishift.cli.resident import ResidentSession  # noqa: PLC0415
-        from anishift.cli.watch import watch_state_dir  # noqa: PLC0415
-
-        run_interactive(
-            service,
-            resident=ResidentSession(service.workspace_root, lambda: open_control(watch_state_dir())),
-            show_state=state,
-            terminal_window=terminal_window,
-        )
-    else:
-        run_interactive(service)
+    del resident
+    session: ResidentSession = ResidentSession(service.workspace_root, lambda: open_control(watch_state_dir()))
+    try:
+        run_interactive(service, resident=session, show_state=state, terminal_window=terminal_window)
+    finally:
+        session.close()
+        service.close()
 
 
 @app.command()
 def doctor(resident: bool = typer.Option(False, "--resident", hidden=True)) -> None:
     """Run diagnostics: binaries, keys, workspace, torrent client, watch and autostart."""
-    results = run_doctor(managed_torrents=True) if resident else run_doctor()
+    del resident
+    results = run_doctor(managed_torrents=True)
     results.extend(_automation_checks())
     _print_doctor_report(results)
     if any(r.status is CheckStatus.FAIL for r in results):
@@ -257,15 +220,15 @@ def _watch(ctx: typer.Context) -> None:
     """Watch the library in this terminal until `anishift watch stop`."""
     if ctx.invoked_subcommand is not None:
         return
-    from anishift.cli.watch import run_daemon, watch_state_dir, watch_status  # noqa: PLC0415 - keep the loop lazy
+    from anishift.cli.watch import run_resident, watch_state_dir, watch_status  # noqa: PLC0415
 
     state_dir: Path = watch_state_dir()
     if watch_status(state_dir).running:
         _tell(_WATCH_BUSY)
         raise typer.Exit(code=EXIT_REFUSED)
-    service: AppService = _composed_service()
+    service: AppService = _composed_service(managed_torrents=True)
     _tell(_WATCH_STARTED)
-    raise typer.Exit(code=run_daemon(service, state_dir=state_dir))
+    raise typer.Exit(code=run_resident(service, state_dir=state_dir, enable_tray=True))
 
 
 def _tell(sentence: str) -> None:
@@ -277,7 +240,7 @@ def _tell(sentence: str) -> None:
 
 @watch_app.command("stop")
 def watch_stop() -> None:
-    """Ask the running watch to finish after its current scan."""
+    """Stop resident admission and drain active work without starting a missing owner."""
     from anishift.cli.watch import request_stop, watch_state_dir  # noqa: PLC0415 - keep the watch loop lazy
 
     request_stop(watch_state_dir())
@@ -314,11 +277,10 @@ def watch_batch(
         typer.Argument(help="IDs of the source groups this window processes."),
     ],
 ) -> None:
-    """Run the named source groups in one window that closes itself."""
-    service: AppService = _composed_service()
-    from anishift.cli.interactive import run_interactive  # noqa: PLC0415 - keep prompts off technical commands
-
-    raise typer.Exit(code=run_interactive(service, batch=group_ids))
+    """Explain the replacement for obsolete automatic batch windows."""
+    del group_ids
+    typer.echo("Batch windows were replaced by the resident. Open AniShift and choose State or Manual.")
+    raise typer.Exit(code=EXIT_REFUSED)
 
 
 @autostart_app.command("enable")
@@ -326,12 +288,12 @@ def autostart_enable(resident: bool = typer.Option(False, "--resident", hidden=T
     """Register the logon task and start watching right away."""
     from anishift.platform.autostart import (  # noqa: PLC0415 - keep the scheduler lazy
         enable,
-        resident_command,
         watch_command,
     )
 
     try:
-        enable(resident_command() if resident else watch_command())
+        del resident
+        enable(watch_command())
     except AniShiftError as problem:
         _refuse_command(problem)
     typer.echo(_safe(_AUTOSTART_ENABLED))
@@ -365,56 +327,25 @@ def autostart_state() -> None:
 
 @qbit_app.command("status")
 def qbit_status() -> None:
-    """Report whether the qBittorrent Web UI answers and marks incomplete files."""
-    acquisition: AcquisitionService = _acquisition(_composed_service())
+    """Report private client readiness without starting a download or process."""
+    from anishift.setup.doctor import check_managed_torrent_client  # noqa: PLC0415
+
     try:
-        status: ClientStatus = acquisition.client_status()
-    except AniShiftError as problem:
-        _refuse_command(problem)
-    _print_client_status(status)
+        _print_doctor_report([check_managed_torrent_client()])
+    except (AniShiftError, OSError) as problem:
+        _refuse_problem(problem)
 
 
 @qbit_app.command("setup")
 def qbit_setup() -> None:
-    """Prepare the qBittorrent Web UI and make it mark incomplete files."""
-    acquisition: AcquisitionService = _acquisition(_composed_service())
+    """Prepare the verified private binary without changing the personal installation."""
+    from anishift.setup.installer import ensure_resource  # noqa: PLC0415
+
     try:
-        status: ClientStatus = acquisition.setup_client()
-    except AniShiftError as problem:
-        _refuse_command(problem)
-    if not status.reachable:
-        _prepare_web_ui()
-        return
-    _print_client_status(status)
-
-
-def _prepare_web_ui() -> None:
-    """Write the Web UI keys into the qBittorrent settings, or state what blocks that."""
-    from anishift.platform.qbittorrent_config import (  # noqa: PLC0415 - keep the settings writer lazy
-        QBittorrentConfigError,
-        WebUiSetup,
-        enable_web_ui,
-        installed_executable,
-        is_running,
-    )
-
-    if installed_executable() is None:
-        typer.echo(_QBIT_NOT_INSTALLED)
-        raise typer.Exit(code=EXIT_REFUSED)
-    try:
-        prepared: WebUiSetup | None = None if is_running() else enable_web_ui()
-    except QBittorrentConfigError as problem:
-        _refuse_command(problem)
-    if prepared is None:
-        typer.echo(_QBIT_RUNNING)
-        raise typer.Exit(code=EXIT_REFUSED)
-    if not prepared.path_written:
-        typer.echo(_QBIT_WEB_UI_PRESENT)
-        raise typer.Exit(code=EXIT_REFUSED)
-    typer.echo(_QBIT_WEB_UI_READY)
-    if prepared.password is not None:
-        # The password must reach the user verbatim, so it skips the redacting output path.
-        typer.echo(_QBIT_WEB_UI_PASSWORD.format(password=prepared.password))
+        ensure_resource("qbittorrent", show_progress=False)
+    except (AniShiftError, OSError) as problem:
+        _refuse_problem(problem)
+    qbit_status()
 
 
 @subs_app.command("list")
@@ -444,11 +375,7 @@ def subs_remove(
     subscription_id: Annotated[str, typer.Argument(help="Id shown by `anishift subs list`.")],
 ) -> None:
     """Stop following one series; downloaded files stay where they are."""
-    subscriptions: SubscriptionService = _subscriptions(_composed_service())
-    try:
-        removed: bool = subscriptions.remove(subscription_id)
-    except AniShiftError as problem:
-        _refuse_command(problem)
+    removed: bool = bool(_resident_call("subscription_remove", {"subscription_id": subscription_id}).get("removed"))
     if not removed:
         typer.echo(_SUBS_UNKNOWN)
         raise typer.Exit(code=EXIT_REFUSED)
@@ -458,11 +385,13 @@ def subs_remove(
 @subs_app.command("check")
 def subs_check() -> None:
     """Check every followed series now and queue the new episodes."""
-    subscriptions: SubscriptionService = _subscriptions(_composed_service())
-    try:
-        outcomes: tuple[CheckOutcome, ...] = subscriptions.check_all()
-    except AniShiftError as problem:
-        _refuse_command(problem)
+    from anishift.application import CheckOutcome, decode_view  # noqa: PLC0415
+
+    response: Mapping[str, object] = _resident_call("subscriptions_check")
+    raw: object = response.get("outcomes", [])
+    outcomes: tuple[CheckOutcome, ...] = (
+        tuple(decode_view(CheckOutcome, item) for item in raw) if isinstance(raw, list) else ()
+    )
     if not outcomes:
         typer.echo(_SUBS_EMPTY)
         return
@@ -483,39 +412,18 @@ def _subscriptions(service: AppService) -> SubscriptionService:
     return subscriptions
 
 
-def _acquisition(service: AppService) -> AcquisitionService:
-    """Return the composed acquisition boundary or refuse with one sentence."""
-    acquisition: AcquisitionService | None = service.acquisition
-    if acquisition is None:
-        typer.echo(_QBIT_ABSENT)
-        raise typer.Exit(code=EXIT_REFUSED)
-    return acquisition
-
-
-def _print_client_status(status: ClientStatus) -> None:
-    """Print the stable status lines and leave with code 1 when the client is unreachable."""
-    if not status.reachable:
-        typer.echo(_QBIT_UNREACHABLE)
-        typer.echo(_safe(status.problem))
-        if status.suggestion:
-            typer.echo(f"  {_safe(status.suggestion)}")
-        raise typer.Exit(code=EXIT_REFUSED)
-    typer.echo(_QBIT_REACHABLE.format(version=_safe(status.version)))
-    typer.echo(_QBIT_EXTENSION.format(state="on" if status.incomplete_extension else "off"))
-    typer.echo(_QBIT_SEEDING.format(state="off" if status.seeding_stops else "on"))
-
-
 def _automation_checks() -> list[CheckResult]:
     """Report whether the library is watched now and after every logon."""
-    from anishift.cli.watch import watch_state_dir, watch_status  # noqa: PLC0415 - keep the watch loop lazy
+    from anishift.cli.control import resident_status  # noqa: PLC0415
+    from anishift.cli.watch import watch_state_dir  # noqa: PLC0415
     from anishift.platform.autostart import AutostartStatus, status  # noqa: PLC0415 - keep the scheduler lazy
 
-    watch: WatchStatus = watch_status(watch_state_dir())
+    watch: ResidentStatus = resident_status(watch_state_dir())
     checks: list[CheckResult] = [
         CheckResult(
             "watch",
             CheckStatus.OK if watch.running else CheckStatus.WARN,
-            _watch_status_line(watch),
+            _resident_status_line(watch),
             suggestion=_WATCH_SUGGESTION,
         )
     ]
@@ -562,22 +470,59 @@ def _refuse_command(problem: AniShiftError) -> NoReturn:
 
 def _run_preset(service: AppService, preset: str) -> NoReturn:
     """Plan and execute one named preset, then leave with the code of its outcome."""
-    from anishift.cli.run import (  # noqa: PLC0415 - keep application planning off the Typer import path
-        AutoRunRefusal,
-        prepare_auto_run,
-    )
+    from anishift.application import PlanPreview  # noqa: PLC0415
+    from anishift.cli.control import open_control  # noqa: PLC0415
+    from anishift.cli.resident import ResidentSession  # noqa: PLC0415
+    from anishift.cli.run import AutoRunRefusal, auto_plan_refusal, select_auto_groups  # noqa: PLC0415
+    from anishift.cli.watch import watch_state_dir  # noqa: PLC0415
+    from anishift.platform.local_control import ControlError  # noqa: PLC0415
 
+    session: ResidentSession | None = None
+    executing: bool = False
     try:
-        prepared: PreparedAutoRun | AutoRunRefusal = prepare_auto_run(service, preset)
-    except (AniShiftError, OSError) as problem:
+        session = ResidentSession(service.workspace_root, lambda: open_control(watch_state_dir()))
+        groups: tuple[str, ...] | AutoRunRefusal = select_auto_groups(session.discover())
+        if isinstance(groups, AutoRunRefusal):
+            _refuse_preparation(groups)
+        session.reserve(groups)
+        plan: PlanPreview = session.plan_auto(groups, service.get_preset(preset))
+        refusal: AutoRunRefusal | None = auto_plan_refusal(plan)
+        if refusal is not None:
+            _refuse_preparation(refusal)
+        executing = True
+        result: RunResult = session.execute(plan, _QuietRunEvents())
+    except KeyboardInterrupt:
+        typer.echo(_RUN_CANCELLED)
+        raise typer.Exit(code=EXIT_CANCELLED) from None
+    except (AniShiftError, OSError, ControlError) as problem:
+        if executing:
+            _echo_problem(problem)
+            raise typer.Exit(code=EXIT_INCOMPLETE) from problem
         _refuse_problem(problem)
-    if isinstance(prepared, AutoRunRefusal):
-        _refuse_preparation(prepared)
-    result: RunResult = _executed_run(service, prepared)
+    finally:
+        if session is not None:
+            session.close()
+        service.close()
     _print_run_report(result, service.workspace_root)
     code: int = run_exit_code(result)
     logger.info("Non-interactive run finished", groups=len(result.groups), exit_code=code)
     raise typer.Exit(code=code)
+
+
+def _resident_call(kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
+    from anishift.cli.control import open_control  # noqa: PLC0415
+    from anishift.cli.watch import watch_state_dir  # noqa: PLC0415
+    from anishift.platform.local_control import ControlClient, ControlError  # noqa: PLC0415
+
+    client: ControlClient | None = None
+    try:
+        client = open_control(watch_state_dir())
+        return client.call(kind, payload)
+    except (AniShiftError, OSError, ControlError) as problem:
+        _refuse_problem(problem)
+    finally:
+        if client is not None:
+            client.close()
 
 
 class _QuietRunEvents:
@@ -598,23 +543,6 @@ def _composed_service(*, managed_torrents: bool = False) -> AppService:
     return service
 
 
-def _executed_run(service: AppService, prepared: PreparedAutoRun) -> RunResult:
-    """Execute the accepted plan through the one facade call every frontend uses."""
-    from anishift.cli.run import execute_auto_run  # noqa: PLC0415 - keep application execution lazy
-
-    try:
-        result: RunResult = execute_auto_run(service, prepared, _QuietRunEvents())
-    except KeyboardInterrupt:
-        logger.info("Non-interactive run interrupted")
-        typer.echo(_RUN_CANCELLED)
-        raise typer.Exit(code=EXIT_CANCELLED) from None
-    except (AniShiftError, OSError) as problem:
-        logger.warning("Non-interactive run ended in a terminal error", error_class=type(problem).__name__)
-        _echo_problem(problem)
-        raise typer.Exit(code=EXIT_INCOMPLETE) from problem
-    return result
-
-
 def _print_run_report(result: RunResult, root: Path) -> None:
     """Print one stable line per group with its products and its redacted errors."""
     from anishift.application import GroupStatus  # noqa: PLC0415 - keep the backend off the Typer import path
@@ -633,7 +561,7 @@ def _print_run_report(result: RunResult, root: Path) -> None:
     typer.echo(_RUN_SUMMARY.format(succeeded=succeeded, total=len(result.groups)))
 
 
-def _refuse_problem(problem: AniShiftError | OSError) -> NoReturn:
+def _refuse_problem(problem: Exception) -> NoReturn:
     """State why the run cannot start and leave with the refusal code."""
     logger.warning("Non-interactive run refused", error_class=type(problem).__name__)
     _echo_problem(problem)
@@ -651,7 +579,7 @@ def _refuse_preparation(refusal: AutoRunRefusal) -> NoReturn:
     raise typer.Exit(code=EXIT_REFUSED)
 
 
-def _echo_problem(problem: AniShiftError | OSError) -> None:
+def _echo_problem(problem: Exception) -> None:
     """State one redacted sentence about *problem*, plus its suggestion when it carries one."""
     typer.echo(_safe(str(problem)))
     suggestion: str = problem.context.suggestion if isinstance(problem, AniShiftError) else ""
@@ -707,9 +635,9 @@ def main() -> None:
 
 def _log_path() -> Path:
     """Resolve the application log beside the repository config directory."""
-    from anishift.config.user_settings import config_path  # noqa: PLC0415 - keep config startup lazy
+    from anishift.paths import log_path  # noqa: PLC0415
 
-    return config_path().parent.parent / "logs" / "anishift.log.jsonl"
+    return log_path()
 
 
 if __name__ == "__main__":

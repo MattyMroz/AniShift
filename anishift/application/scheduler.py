@@ -46,7 +46,7 @@ from anishift.application.scheduler_runtime import (
     thread_prefix,
 )
 from anishift.application.sessions import RunSession
-from anishift.errors import ErrorCode, ErrorContext, ExecutionError
+from anishift.errors import AniShiftError, ErrorCode, ErrorContext, ExecutionError
 
 __all__ = [
     "GraphCoordinator",
@@ -462,9 +462,10 @@ class GraphCoordinator:
         task: PlanTask = context.task_by_id[task_id]
         try:
             snapshot: ArtifactSnapshot = context.store.snapshot(task)
-        except ExecutionError as error:
+            if context.journal is not None:
+                context.journal.started(task)
+        except (AniShiftError, OSError) as error:
             finish_failed(task, error, context)
-            # The failure happened after this round's terminal check, so the loop must run again.
             self._wake()
             return
         executor: ThreadPoolExecutor = self._executor(resource_key)

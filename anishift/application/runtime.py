@@ -28,10 +28,10 @@ from anishift.config.model_catalog import ModelCatalog, ModelEntry, ProviderEntr
 from anishift.config.user_settings import (
     PALANTIR_ENROLLMENT_URL_PATTERN,
     UserSettings,
-    config_path,
     load_user_settings,
 )
 from anishift.errors import AniShiftError, ConfigError, ErrorCode, ErrorContext, TransientError
+from anishift.paths import config_dir
 from anishift.platform.binaries import Binary, require_binary
 from anishift.services.audio import (
     AudioConfig,
@@ -613,7 +613,7 @@ def _tts_config(settings: Settings, plan: ExecutionPlan) -> TtsConfig:
         engine_options=dict(snapshot.tts_engine_options),
         elevenbytes_vpn_enabled=snapshot.tts_vpn_enabled,
         elevenlabs_api_key=settings.elevenlabs_api_key,
-        metadata_cache_root=config_path().parent,
+        metadata_cache_root=config_dir(),
     )
 
 

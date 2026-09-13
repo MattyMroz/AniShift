@@ -18,7 +18,7 @@ from anishift.application.intents import (
     SubtitleSourcePolicy,
     TranslationAction,
 )
-from anishift.config.user_settings import config_path
+from anishift.paths import config_dir
 
 __all__ = [
     "AutoPresetFile",
@@ -101,7 +101,7 @@ def default_preset_file() -> AutoPresetFile:
 
 def presets_path() -> Path:
     """Return the auto-preset file beside ``config/settings.json``."""
-    return config_path().with_name(_PRESETS_FILE_NAME)
+    return config_dir() / _PRESETS_FILE_NAME
 
 
 def load_presets() -> AutoPresetFile:

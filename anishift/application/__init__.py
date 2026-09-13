@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         InspectionWarning,
         WorkspaceInspector,
     )
+    from anishift.application.ready import ReadyStore
     from anishift.application.scheduler import RunHandle
     from anishift.application.service import (
         AppService,
@@ -197,6 +198,7 @@ __all__ = [
     "ProductIntent",
     "ProductKind",
     "ProviderLock",
+    "ReadyStore",
     "RebuildRequest",
     "ReleaseCatalog",
     "ReleaseChoice",
@@ -268,6 +270,7 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "SubscriptionEnd": ("anishift.application.subscriptions", "SubscriptionEnd"),
     "SubscriptionOrder": ("anishift.application.subscriptions", "SubscriptionOrder"),
     "WatchStateStore": ("anishift.application.watch_state", "WatchStateStore"),
+    "ReadyStore": ("anishift.application.ready", "ReadyStore"),
     "WATCH_STATE_FILE_NAME": ("anishift.application.watch_state", "WATCH_STATE_FILE_NAME"),
     "AutomationOwner": ("anishift.application.automation", "AutomationOwner"),
     "RunHandle": ("anishift.application.scheduler", "RunHandle"),

@@ -36,6 +36,7 @@ from anishift.application.scheduler import RunHandle
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.service import AppService, AutoPresetDraft
 from anishift.application.subscriptions import (
+    CheckOutcome,
     CheckRecorder,
     Subscription,
     SubscriptionAdmission,
@@ -163,10 +164,13 @@ class _Subscriptions:
         record: CheckRecorder | None = None,
         update: SubscriptionUpdater | None = None,
         refresh_calendar: bool = False,
-    ) -> tuple[SimpleNamespace, ...]:
+    ) -> tuple[CheckOutcome, ...]:
         del policy, admit, record, update, refresh_calendar
         self.checks += 1
-        return (SimpleNamespace(downloaded=2, problem=""),)
+        subscription: Subscription = Subscription(
+            "s1", "Series Group", "Series", "Group", Decimal(3), 1080, frozenset(), _MOMENT.isoformat(), None
+        )
+        return (CheckOutcome(subscription, downloaded=2),)
 
     def enable(self, subscription_id: str) -> SimpleNamespace:
         del subscription_id
@@ -1040,7 +1044,15 @@ def test_a_subscription_check_runs_off_the_owner_thread(tmp_path: Path) -> None:
         owner.request_shutdown()
         thread.join(timeout=_TIMEOUT_S)
 
-    assert answer.result == {"checked": 1, "downloaded": 2, "problems": 0}
+    assert answer.ok
+    assert {key: answer.result[key] for key in ("checked", "downloaded", "problems")} == {
+        "checked": 1,
+        "downloaded": 2,
+        "problems": 0,
+    }
+    outcomes: object = answer.result["outcomes"]
+    assert isinstance(outcomes, list)
+    assert len(outcomes) == 1
     assert service.subscriptions is not None
     assert service.subscriptions.checks == 1
 

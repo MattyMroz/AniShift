@@ -18,7 +18,9 @@ from typing import TYPE_CHECKING, Final, Protocol
 from anishift.application import SCAN_INTERVAL_S, SUBSCRIPTION_CHECK_INTERVAL_S, WatchLedger
 from anishift.cli.exit_codes import EXIT_REFUSED, EXIT_SUCCESS
 from anishift.errors import AniShiftError
-from anishift.paths import config_path
+from anishift.paths import WATCH_DIRECTORY as STATE_DIR_NAME
+from anishift.paths import relocation_journal_dir, watch_dir
+from anishift.platform.child_processes import contain_children, independent_child_flags
 from anishift.platform.directory_watch import DirectoryChange, DirectoryWatch
 from anishift.platform.process_lock import ProcessLock
 from anishift.utils.logger import get_logger
@@ -53,9 +55,6 @@ __all__ = [
 logger = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-
-STATE_DIR_NAME: Final[str] = "watch"
-"""Directory beside the panel preferences that holds the daemon's state files."""
 
 LOCK_FILE_NAME: Final[str] = "daemon.lock"
 """File whose operating-system lock admits exactly one watch process."""
@@ -113,7 +112,7 @@ class WatchStatus:
 
 def watch_state_dir() -> Path:
     """Return ``<repo>/config/watch``, the directory holding every daemon state file."""
-    return config_path().parent / STATE_DIR_NAME
+    return watch_dir()
 
 
 def batch_command(group_ids: Sequence[str]) -> list[str]:
@@ -128,14 +127,22 @@ def batch_command(group_ids: Sequence[str]) -> list[str]:
 def spawn_window(command: Sequence[str]) -> subprocess.Popen[bytes]:
     """Open *command* in its own console window, leaving its streams to the user."""
     if sys.platform == "win32":
-        return subprocess.Popen(command, creationflags=subprocess.CREATE_NEW_CONSOLE)  # noqa: S603 - argv built here
+        return subprocess.Popen(command, creationflags=subprocess.CREATE_NEW_CONSOLE | independent_child_flags())  # noqa: S603
     return subprocess.Popen(command)  # noqa: S603 - argv built here
 
 
 def request_stop(state_dir: Path) -> None:
-    """Ask the running daemon to finish after its current scan."""
+    """Stop admission in the existing resident and signal any legacy daemon."""
+    from anishift.platform.local_control import ControlClient, connect  # noqa: PLC0415
+
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / STOP_FILE_NAME).touch()
+    client: ControlClient | None = connect(state_dir)
+    if client is not None:
+        try:
+            client.call("shutdown")
+        finally:
+            client.close()
 
 
 def watch_status(state_dir: Path) -> WatchStatus:
@@ -303,6 +310,7 @@ def run_resident(
     from anishift.application import (  # noqa: PLC0415 - keep the owner off the Typer import path
         WATCH_STATE_FILE_NAME,
         AutomationOwner,
+        ReadyStore,
         WatchStateStore,
     )
     from anishift.platform.local_control import (  # noqa: PLC0415 - keep the transport off the CLI import
@@ -321,13 +329,17 @@ def run_resident(
         logger.warning(_RESIDENT_REFUSED)
         return EXIT_REFUSED
     try:
+        if enable_tray:
+            contain_children()
         instance_id: str = f"instance-{token_hex(_INSTANCE_ID_BYTES)}"
+        store: WatchStateStore = WatchStateStore(state_dir / WATCH_STATE_FILE_NAME)
         owner = AutomationOwner(
             service,
-            WatchStateStore(state_dir / WATCH_STATE_FILE_NAME),
+            store,
             instance_id=instance_id,
             clock=clock,
             open_panel=_spawn_panel,
+            ready_store=ReadyStore(relocation_journal_dir(state_dir), service.workspace_root),
         )
         endpoint: str = control_endpoint(state_dir)
         clear_endpoint(endpoint)
@@ -398,7 +410,9 @@ def _spawn_panel() -> None:
         command = [terminal, "-w", window, *command, "--terminal-window", window]
     try:
         if terminal is not None:
-            subprocess.Popen(command, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # noqa: S603 - explicit panel launcher
+            subprocess.Popen(  # noqa: S603 - explicit panel launcher
+                command, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | independent_child_flags()
+            )
         else:
             spawn_window(command)
     except OSError as error:

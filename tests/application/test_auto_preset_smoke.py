@@ -380,7 +380,7 @@ def harness(
     monkeypatch.setattr(binaries_module, "external_bin_root", lambda: tool_root)
     monkeypatch.setattr(presets_module, "presets_path", lambda: config_dir / "presets.json")
     monkeypatch.setattr(user_settings_module, "config_path", lambda: config_dir / "settings.json")
-    monkeypatch.setattr(runtime_module, "config_path", lambda: config_dir / "settings.json")
+    monkeypatch.setattr(runtime_module, "config_dir", lambda: config_dir)
     harness: _Harness = _Harness(workspace, _executable(tool_root, Binary.FFMPEG), _preferences())
     monkeypatch.setattr(google_module, "MobileTranslateClient", partial(_FakeTranslateClient, harness.translated))
     engine_factory: partial[EdgeTtsEngine] = partial(_fake_edge_engine, mp3_clip, harness.synthesized)

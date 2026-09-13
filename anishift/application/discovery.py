@@ -22,6 +22,7 @@ from anishift.application.artifacts import (
     create_group_id,
 )
 from anishift.application.products import ProductName, classify_product
+from anishift.paths import TEMP_DIRECTORY
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -39,9 +40,6 @@ _PRIMARY_KINDS: Final[frozenset[ArtifactKind]] = frozenset(_PRIMARY_SOURCE_KINDS
 
 PRIMARY_SOURCE_SUFFIXES: Final[frozenset[str]] = frozenset(_PRIMARY_SOURCE_KINDS)
 """Folded suffixes of every primary source, for any caller judging one filename."""
-
-_MANAGED_TEMP_DIRECTORY: Final[str] = "temp"
-"""Name of the managed workspace subfolder that never holds user sources."""
 
 
 class DiscoveryWarningKind(StrEnum):
@@ -118,7 +116,7 @@ class DiscoveryIndex:
         if not path.is_relative_to(self._root):
             return False
         relative: Path = path.relative_to(self._root)
-        if relative.parts and relative.parts[0].casefold() == _MANAGED_TEMP_DIRECTORY:
+        if relative.parts and relative.parts[0].casefold() == TEMP_DIRECTORY:
             return False
         if any(part.startswith(".") or part == ".." for part in relative.parts):
             return False
@@ -198,7 +196,7 @@ def group_candidates(candidates: Sequence[ArtifactName], root: Path) -> tuple[So
 
 def _iter_source_paths(root: Path) -> Iterator[Path]:
     for entry in _iter_visible_entries(root):
-        if entry.name.casefold() == _MANAGED_TEMP_DIRECTORY and entry.is_dir():
+        if entry.name.casefold() == TEMP_DIRECTORY and entry.is_dir():
             continue
         yield from _iter_entry_sources(entry)
 

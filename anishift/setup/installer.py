@@ -20,6 +20,7 @@ import httpx
 from anishift.errors import ErrorCode, ErrorContext, FatalError
 from anishift.platform.binaries import (
     Binary,
+    bundled_binary_path,
     external_bin_root,
     is_windows,
     require_binary,
@@ -76,9 +77,9 @@ _EXTRACTION_TIMEOUT_S: Final[float] = 60.0
 _TOOLCHAIN_LOCK: Final[threading.RLock] = threading.RLock()
 """Serializes preparation and use of the shared extraction executables."""
 
-_EXTRACTORS: Final[dict[str, tuple[str, str]]] = {
-    "7z": ("7zr", "7zip/7zr.exe"),
-    "nsis": ("7zip", "7zip/7z.exe"),
+_EXTRACTORS: Final[dict[str, tuple[str, Binary]]] = {
+    "7z": ("7zr", Binary.SEVEN_ZIP_REDUCED),
+    "nsis": ("7zip", Binary.SEVEN_ZIP),
 }
 """Manifest resources and installed executables needed by non-ZIP archives."""
 
@@ -277,13 +278,13 @@ def _install_resource(
 
 
 def _prepare_extractor(resource: Resource, dest_root: Path, download: DownloadFn) -> Path | None:
-    dependency: tuple[str, str] | None = _EXTRACTORS.get(resource.archive)
+    dependency: tuple[str, Binary] | None = _EXTRACTORS.get(resource.archive)
     if dependency is None:
         return None
-    name, relative = dependency
+    name, binary = dependency
     helper: Resource = next(entry for entry in load_manifest() if entry.name == name)
     install_resource(helper, dest_root=dest_root, download=download)
-    return (dest_root / relative).resolve()
+    return bundled_binary_path(binary, root=dest_root).resolve()
 
 
 # ── Lazy ensure (domain entry point) ─────────────────────────────────────────

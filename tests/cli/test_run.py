@@ -6,6 +6,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Final, cast
 
 import pytest
@@ -82,6 +83,12 @@ facade = SimpleNamespace(
     execute=lambda plan, sink: result,
 )
 bootstrap.production_service = lambda: facade
+facade.close = lambda: None
+resident = importlib.import_module("anishift.cli.resident")
+resident.ResidentSession = lambda root, connect: SimpleNamespace(
+    discover=facade.discover, plan_auto=facade.plan_auto, execute=facade.execute,
+    reserve=lambda groups: None, close=lambda: None,
+)
 code = CliRunner().invoke(cli_main.app, ["run", "--preset", "default"]).exit_code
 prefixes = tuple(json.loads(sys.argv[1]))
 print(json.dumps({"code": code, "loaded": sorted(n for n in sys.modules if n.startswith(prefixes))}))
@@ -186,6 +193,9 @@ class _Facade:
             raise self._failure
         assert self._result is not None
         return self._result
+
+    def close(self) -> None:
+        pass
 
 
 def test_a_run_where_every_group_succeeds_reports_them_and_exits_zero(
@@ -558,7 +568,8 @@ def test_the_bare_invocation_lazily_launches_interactive_with_one_service(
     interactive = importlib.import_module("anishift.cli.interactive")
     launched: list[AppService] = []
     monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", facade))
-    monkeypatch.setattr(interactive, "run_interactive", launched.append)
+    monkeypatch.setattr(interactive, "run_interactive", lambda service, **kwargs: launched.append(service))
+    _patch_resident(monkeypatch, facade)
     result: Result = CliRunner().invoke(cli_main.app, [])
 
     assert result.exit_code == exit_codes.EXIT_SUCCESS
@@ -581,6 +592,7 @@ def test_the_named_run_does_not_launch_the_interactive_frontend(
     launched: list[AppService] = []
     monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", facade))
     monkeypatch.setattr(interactive, "run_interactive", launched.append)
+    _patch_resident(monkeypatch, facade)
 
     result: Result = CliRunner().invoke(cli_main.app, ["run", "--preset", "default"])
 
@@ -677,4 +689,20 @@ def test_an_empty_requested_selection_is_refused_instead_of_planning_every_group
 
 def _invoke_run(monkeypatch: pytest.MonkeyPatch, facade: _Facade, *, preset: str = "default") -> Result:
     monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", facade))
+    _patch_resident(monkeypatch, facade)
     return CliRunner().invoke(cli_main.app, ["run", "--preset", preset])
+
+
+def _patch_resident(monkeypatch: pytest.MonkeyPatch, facade: _Facade) -> None:
+    resident = importlib.import_module("anishift.cli.resident")
+    monkeypatch.setattr(
+        resident,
+        "ResidentSession",
+        lambda *args, **kwargs: SimpleNamespace(
+            discover=facade.discover,
+            plan_auto=facade.plan_auto,
+            execute=facade.execute,
+            reserve=lambda groups: None,
+            close=lambda: None,
+        ),
+    )

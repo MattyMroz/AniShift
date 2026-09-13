@@ -279,7 +279,9 @@ def test_private_clients_download_concurrently_reconnect_and_stop_independently(
             entries: tuple[TorrentInfo, ...] = ()
             while time.monotonic() < deadline:
                 entries = first.torrents("AniShift")
-                if sum(item.progress == 1.0 for item in entries) == 2:
+                if sum(item.progress == 1.0 for item in entries) == 2 and all(
+                    (tmp_path / "downloads" / name).is_file() for name in ("one.bin", "two.bin")
+                ):
                     break
                 time.sleep(0.1)
             assert sum(item.progress == 1.0 for item in entries) == 2, entries
@@ -295,9 +297,14 @@ def test_private_clients_download_concurrently_reconnect_and_stop_independently(
             deadline = time.monotonic() + _TIMEOUT_S
             while len(first.torrents("AniShift")) > 2 and time.monotonic() < deadline:
                 time.sleep(0.1)
+            completed_hashes: frozenset[str] = frozenset({hashes["one.bin"], hashes["two.bin"]})
+            assert first.release_completed(completed_hashes) == completed_hashes
+            assert (tmp_path / "downloads/one.bin").read_bytes() == data
+            assert (tmp_path / "downloads/two.bin").read_bytes() == data
             first.finish_transfers()
             assert first_child is not None
             assert first_child.poll() == 0
+            assert first.release_completed(completed_hashes) == completed_hashes
             assert second.preferences()["save_path"] == second_preferences["save_path"]
             assert second_child is not None
             assert second_child.poll() is None

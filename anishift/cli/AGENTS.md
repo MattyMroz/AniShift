@@ -8,20 +8,17 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `console.py` — jedyny właściciel rekonfiguracji stdout/stderr na UTF-8 + check dla doctora
 - `run.py` — wspólny, UI-neutralny preflight Auto (także dla wskazanego podzbioru grup) oraz wykonanie zaakceptowanego planu
 - `exit_codes.py` — kody wyjścia 0/1/3/4 i `run_exit_code()` wspólne dla `run --preset` i okna partii
-- `watch.py` — pętla czuwania bez UI: blokada instancji, skan biblioteki, uruchamianie okna partii, flaga stop, godzinne sprawdzanie subskrypcji między skanami
+- `watch.py` — granica rezydenta bez renderera: blokada, IPC, obserwator plików i ikona; stara pętla pozostaje wyłącznie dla testów porównawczych
 - `control.py` — cienki klient rezydenta: `open_control()` (start na żądanie) i `resident_status()`
 - `resident.py` — sesja panelu: biblioteka, rezerwacje, podgląd zamiaru, zewnętrzne źródła, Start i wynik przez kanał
 - `interactive/` — lazy-loaded Home, jeden renderer Prompt Toolkit, maskotka, Settings, Manual i wspólny postęp
 
 ## Pułapki
 
-- Czuwanie (`anishift watch`) NIE importuje `anishift.cli.interactive` ani Prompt Toolkit: proces
-  startuje z `pythonw.exe` bez konsoli. Okno partii to osobny proces `anishift watch batch ID...`
-  uruchamiany z `CREATE_NEW_CONSOLE`; czuwanie zna tylko jego kod wyjścia. Jedno okno naraz.
-  `watch.py`, `main.py`
-- `anishift watch` bez podkomendy NADAL uruchamia stare `run_daemon` (D-12); rezydent jest ukrytą
-  komendą `anishift watch resident` i osobną blokadą `resident.lock`, bo do P08 oba procesy mogą
-  istnieć obok siebie. `watch status` raportuje obie drogi. `main.py`, `watch.py`
+- `anishift watch` uruchamia rezydenta bez importu Prompt Toolkit; `watch resident` jest aliasem.
+  `watch batch` odmawia z komunikatem migracyjnym. Panel i `run --preset` łączą się z właścicielem
+  lub uruchamiają go na żądanie. Zamknięcie panelu nie anuluje zaakceptowanej pracy.
+  Status sprawdza też dawną blokadę, aby wykryć stary proces przed przełączeniem. `main.py`, `watch.py`
 - `run_resident()` zdobywa blokadę PRZED zapisem `instance.json` i klucza, więc przegrany wyścig
   kończy się `EXIT_REFUSED` bez śladu w katalogu stanu. Rezydent nie importuje `cli.interactive`
   ani Prompt Toolkit. `watch.py`
@@ -102,7 +99,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Run niepełny, anulowany albo z ostrzeżeniami pokazuje przewijany wynik grup:
   przyczyny błędów, zapisane i zachowane produkty oraz lokalizację logu.
   Treść przechodzi przez sanitizację i ten sam renderer. `interactive/app.py`
-- Home ma dokładnie `Auto`, `Ręczny`, `Anime`, `Ustawienia`, `Wyjście`. Settings działa w tym
+- Home rezydenta dodaje `Stan i automatyzacja` przed `Auto`, `Ręczny`, `Anime`, `Ustawienia`, `Wyjście`. Settings działa w tym
   samym rendererze, a mutacje `settings.json`, `presets.json` i `.env` przechodzą
   przez `AppService`. Manual przechowuje drafty wyłącznie lokalnie, rejestruje pliki
   zewnętrzne przez `AppService`, waliduje przez `plan_manual()` i przekazuje zaakceptowany

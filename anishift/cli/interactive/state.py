@@ -121,7 +121,7 @@ class StateController:
             self._invalidate()
             return StateResult.CONTINUE
 
-    def _action_key(self, key: str) -> StateResult:  # noqa: PLR0912 - explicit keyboard actions by view
+    def _action_key(self, key: str) -> StateResult:
         navigation: dict[str, StateResult] = {
             "u": StateResult.SETTINGS,
             "r": StateResult.AUTO,
@@ -163,18 +163,25 @@ class StateController:
                     "transfer",
                     {"info_hash": transfer["info_hash"], "action": {"p": "stop", "w": "resume", "x": "cancel"}[key]},
                 )
-        elif self._tab == _Tab.FILES and key in {"w", "f"}:
-            library: list[Mapping[str, object]] = _rows(self._snapshot.get("library"))
-            if library:
-                directory: str = str(library[min(self._selected, len(library) - 1)]["directory"])
-                directory = "" if directory == "." else directory
-                if key == "f":
-                    self._work(lambda session: _open_folder(session.workspace_root, directory))
-                    return StateResult.CONTINUE
-                enabled: bool = not self._policy(auto_enabled=True).effective_auto(directory)
-                self._command("set_directory_auto", {"directory": directory, "enabled": enabled})
+        elif self._tab == _Tab.FILES:
+            self._file_action(key)
         self._invalidate()
         return StateResult.CONTINUE
+
+    def _file_action(self, key: str) -> None:
+        if key == "p":
+            self._command("ready_retry")
+            return
+        library: list[Mapping[str, object]] = _rows(self._snapshot.get("library"))
+        if key not in {"w", "f"} or self._selected >= len(library):
+            return
+        directory: str = str(library[self._selected]["directory"])
+        directory = "" if directory == "." else directory
+        if key == "f":
+            self._work(lambda session: _open_folder(session.workspace_root, directory))
+            return
+        enabled: bool = not self._policy(auto_enabled=True).effective_auto(directory)
+        self._command("set_directory_auto", {"directory": directory, "enabled": enabled})
 
     def _binding_candidates(self, session: ResidentSession, identifier: str) -> None:
         subscription: Subscription = decode_view(
@@ -389,16 +396,23 @@ class StateController:
                 elif self._tab == _Tab.PROGRESS:
                     result.append("C anuluj zaznaczone zlecenie", style="dim")
                 elif self._tab == _Tab.FILES:
-                    result.append("W Auto katalogu · M ręczny wybór i regeneracja · F otwórz folder", style="dim")
+                    result.append(
+                        "W Auto katalogu · M wybór i regeneracja · F folder · P ponów przenoszenie", style="dim"
+                    )
             return result
 
     def _content(self, columns: int) -> list[Text]:
         if self._binding is not None:
             return [Text(_safe_text(candidate.romaji)) for candidate in self._candidates]
         if self._tab == _Tab.PROGRESS:
-            return [
+            progress: list[Text] = [
                 line for _, progress in self._runs.values() for line in progress.render(max(columns - 2, 1)).split("\n")
             ]
+            progress.extend(
+                Text(f"{_safe_text(item.get('problem'))} · M wybierz pliki i dokończ pracę", style="yellow")
+                for item in _rows(self._snapshot.get("recovery_problems"))
+            )
+            return progress
         if self._tab == _Tab.TRANSFERS:
             messages: dict[str, object] = {
                 str(item.get("info_hash")): item.get("problem") for item in _rows(self._snapshot.get("acquisitions"))
@@ -420,7 +434,7 @@ class StateController:
             return content
         if self._tab == _Tab.FILES:
             policy: AutomationPolicy = self._policy()
-            return [
+            content = [
                 Text(
                     _safe_text(str(item.get("name")))
                     + (
@@ -434,6 +448,14 @@ class StateController:
                 )
                 for item in _rows(self._snapshot.get("library"))
             ]
+            content.extend(
+                Text(
+                    f"{_safe_text(item.get('name'))} · {_safe_text(item.get('problem') or 'przenoszenie do ready')}",
+                    style="yellow",
+                )
+                for item in _rows(self._snapshot.get("relocations"))
+            )
+            return content
         return [
             Text(
                 f"{'włączona' if item.get('enabled') else 'wyłączona'} · {_safe_text(str(item.get('series')))} "

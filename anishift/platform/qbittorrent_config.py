@@ -14,6 +14,7 @@ from shutil import copyfile, which
 from typing import TYPE_CHECKING, Final
 
 from anishift.errors import ErrorCode, ErrorContext, FatalError
+from anishift.paths import torrent_data_dir, torrent_download_dir
 from anishift.platform.binaries import is_windows
 from anishift.utils.logger import get_logger
 
@@ -153,7 +154,7 @@ class _ProfileIni(configparser.ConfigParser):
 
 def write_managed_profile(root: Path, *, web_port: int, torrent_port: int, password: str) -> None:
     """Prepare only the private profile, retaining its existing settings between starts."""
-    target: Path = root / "qBittorrent" / "config" / "qBittorrent.ini"
+    target: Path = torrent_data_dir(root) / "config" / "qBittorrent.ini"
     parser: configparser.ConfigParser = _ProfileIni(interpolation=None)
     if target.exists():
         parser.read(target, encoding="utf-8")
@@ -178,7 +179,7 @@ def write_managed_profile(root: Path, *, web_port: int, torrent_port: int, passw
             "Session\\AddExtensionToIncompleteFiles": "true",
             "Session\\GlobalMaxRatio": "0",
             "Session\\GlobalMaxSeedingMinutes": "0",
-            "Session\\DefaultSavePath": (root / "qBittorrent" / "downloads").as_posix(),
+            "Session\\DefaultSavePath": torrent_download_dir(root).as_posix(),
         },
     }
     for section, entries in values.items():

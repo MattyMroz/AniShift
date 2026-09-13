@@ -52,6 +52,7 @@ from anishift.application.intents import (
     SubtitleSourcePolicy,
 )
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, TaskKind
+from anishift.application.ready import ReadyStore
 from anishift.application.results import GroupStatus, RunResult
 from anishift.application.scheduler import RunHandle
 from anishift.application.scheduler_contracts import ResourceLimits, TaskHandler, extraction_worker_count
@@ -68,6 +69,7 @@ from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.config.workspace import cleanup_orphaned_temp
 from anishift.errors import ErrorCode, ExecutionError, RunConflictError
+from anishift.paths import relocation_journal_dir
 from anishift.platform.local_control import (
     ControlClient,
     ControlError,
@@ -151,9 +153,16 @@ def _catalog() -> ModelCatalog:
 
 
 @contextmanager
-def _panel_owner(service: AppService, tmp_path: Path) -> Iterator[tuple[ResidentSession, WatchStateStore]]:
+def _panel_owner(
+    service: AppService, tmp_path: Path, *, ready: bool = False
+) -> Iterator[tuple[ResidentSession, WatchStateStore]]:
     store: WatchStateStore = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME)
-    owner: AutomationOwner = AutomationOwner(service, store, instance_id="panel-test")
+    owner: AutomationOwner = AutomationOwner(
+        service,
+        store,
+        instance_id="panel-test",
+        ready_store=ReadyStore(relocation_journal_dir(tmp_path / ".control"), tmp_path) if ready else None,
+    )
     thread: threading.Thread = threading.Thread(target=owner.serve, daemon=True)
     thread.start()
     endpoint: str = control_endpoint(tmp_path / ".control")
@@ -502,6 +511,181 @@ with _panel_owner(service, root) as (session, store):
     assert published[0].read_bytes() == preserved
     assert (published[0].stat().st_ino, published[0].stat().st_mtime_ns) == identity
     assert "PL Original text" in untouched.read_text(encoding="utf-8")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "failure_at",
+    [
+        "before_accept",
+        "after_accept",
+        "remote",
+        "before_replace",
+        "after_replace",
+        "after_cleanup",
+        "before_ready",
+        "after_link",
+    ],
+)
+def test_resident_recovers_after_process_death_without_repeating_confirmed_translation(
+    tmp_path: Path, failure_at: str
+) -> None:
+    source: Path = tmp_path / "03.txt"
+    write_text_source(source, "Original text")
+    identity: int = source.stat().st_ino
+    script: str = """
+import json
+import os
+import sys
+from pathlib import Path
+from fakes import CollectingRunSink, FakeTranslationService
+from test_service import _panel_owner, _service
+from anishift.application.automation import AutomationOwner
+from anishift.application.intents import AutoPreset, ProductIntent, ProductKind
+from anishift.application.ready import ReadyStore
+from anishift.cli.watch import run_resident
+
+root = Path(sys.argv[1])
+phase = sys.argv[2]
+translation = FakeTranslationService()
+service = _service(root, translation)
+if phase == "restart":
+    code = run_resident(service, state_dir=root / ".control")
+    print(json.dumps({"translations": len(translation.calls), "code": code}))
+    service.close()
+    sys.exit(code)
+original_commit = AutomationOwner._commit
+def commit(self, request, *args):
+    if request.kind == "start" and phase == "before_accept":
+        os._exit(73)
+    result = original_commit(self, request, *args)
+    if request.kind == "start" and phase == "after_accept":
+        os._exit(73)
+    return result
+AutomationOwner._commit = commit
+original_translation = translation.translate_file
+def translate(*args, **kwargs):
+    result = original_translation(*args, **kwargs)
+    if phase == "remote":
+        os._exit(73)
+    return result
+translation.translate_file = translate
+original_replace = Path.replace
+def replace_file(self, destination):
+    if destination == root / "03.pl.srt" and phase == "before_replace":
+        os._exit(73)
+    result = original_replace(self, destination)
+    if destination == root / "03.pl.srt" and phase == "after_replace":
+        os._exit(73)
+    return result
+Path.replace = replace_file
+if phase == "after_cleanup":
+    AutomationOwner._record_completion = lambda *args: os._exit(73)
+if phase == "before_ready":
+    ReadyStore.prepare = lambda *args: os._exit(73)
+original_link = os.link
+def link(*args, **kwargs):
+    original_link(*args, **kwargs)
+    if phase == "after_link":
+        os._exit(73)
+os.link = link
+with _panel_owner(service, root, ready=True) as (session, store):
+    groups = tuple(group.group_id for group in session.discover().groups)
+    session.reserve(groups)
+    preset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
+    session.execute(session.plan_auto(groups, preset), CollectingRunSink())
+raise AssertionError("The selected crash boundary was not reached")
+"""
+    environment: dict[str, str] = {**os.environ, "PYTHONPATH": str(Path(__file__).parent)}
+    crashed: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script, str(tmp_path), failure_at],
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+        check=False,
+    )
+    assert crashed.returncode == 73, crashed.stderr
+    client: ControlClient | None = None
+    with subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", script, str(tmp_path), "restart"],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    ) as process:
+        try:
+            deadline: float = time.monotonic() + 15.0
+            while client is None and time.monotonic() < deadline and process.poll() is None:
+                client = connect(tmp_path / ".control")
+                time.sleep(0.01)
+            assert client is not None
+            while time.monotonic() < deadline:
+                status: Mapping[str, object] = client.call("status")
+                if failure_at in {"before_accept", "remote"}:
+                    if status["library_groups"] and not status["requests"]:
+                        break
+                elif (tmp_path / "ready/03.pl.srt").is_file() and not status["relocations"]:
+                    break
+                time.sleep(0.01)
+            if failure_at in {"before_accept", "remote"}:
+                assert source.stat().st_ino == identity
+                assert not (tmp_path / "ready/03.pl.srt").exists()
+                assert bool(status["recovery_problems"]) == (failure_at == "remote")
+            else:
+                assert (tmp_path / "ready/03.txt").stat().st_ino == identity
+                assert "PL Original text" in (tmp_path / "ready/03.pl.srt").read_text(encoding="utf-8")
+                assert not source.exists()
+                assert not status["requests"]
+                assert not status["relocations"]
+            client.call("shutdown")
+            stdout: str
+            stderr: str
+            stdout, stderr = process.communicate(timeout=10)
+            assert process.returncode == 0, stderr
+            assert json.loads(stdout) == {"translations": int(failure_at == "after_accept"), "code": 0}
+        finally:
+            if client is not None:
+                client.close()
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+
+@pytest.mark.integration
+def test_resident_moves_sources_and_products_then_regenerates_in_ready(tmp_path: Path) -> None:
+    source: Path = tmp_path / "03.txt"
+    write_text_source(source, "Original text")
+    identity: int = source.stat().st_ino
+    translation: FakeTranslationService = FakeTranslationService()
+    service: AppService = _service(tmp_path, translation)
+    preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
+    with _panel_owner(service, tmp_path, ready=True) as (session, store):
+        groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
+        session.reserve(groups)
+        result: RunResult = session.execute(session.plan_auto(groups, preset), CollectingRunSink())
+        assert result.succeeded
+        assert all(product.path.parent == tmp_path / "ready" for group in result.groups for product in group.products)
+        deadline: float = time.monotonic() + 5.0
+        while not (tmp_path / "ready/03.txt").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        moved: Path = tmp_path / "ready/03.txt"
+        assert moved.stat().st_ino == identity
+        assert (tmp_path / "ready/03.pl.srt").is_file()
+        assert not source.exists()
+        groups = tuple(group.group_id for group in session.discover().groups)
+        session.reserve(groups)
+        rebuilt: RunResult = session.execute(
+            session.plan_auto(groups, preset, rebuild=RebuildRequest(frozenset({ProductKind.FULL_PL}))),
+            CollectingRunSink(),
+        )
+        assert rebuilt.succeeded
+        assert len(translation.calls) == 2
+        assert moved.stat().st_ino == identity
+        assert len(session.discover().groups) == 1
+        assert all(product.path.startswith("ready/") for product in store.load().products)
 
 
 def test_real_service_flows_from_discovery_through_partial_execution(tmp_path: Path) -> None:
@@ -1113,12 +1297,12 @@ def test_the_resident_processes_a_new_file_once_and_returns_to_idle(
         deadline: float = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             status: Mapping[str, object] = client.call("status")
-            if (workspace / "Episode.pl.srt").is_file() and not status["requests"]:
+            if (workspace / "ready/Episode.pl.srt").is_file() and not status["requests"] and not status["relocations"]:
                 break
             time.sleep(0.01)
-        assert (workspace / "Episode.pl.srt").is_file()
+        assert (workspace / "ready/Episode.pl.srt").is_file()
         assert len(translation.calls) == 1
-        (workspace / "Episode.pl.srt").touch()
+        (workspace / "ready/Episode.pl.srt").touch()
         time.sleep(0.1)
         settled: int = len(scans)
         time.sleep(0.1)

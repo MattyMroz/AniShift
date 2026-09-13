@@ -20,7 +20,9 @@ import httpx
 from pydantic import TypeAdapter, ValidationError
 
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext
-from anishift.platform.binaries import Binary, external_bin_root, is_windows
+from anishift.paths import torrent_download_dir
+from anishift.platform.binaries import Binary, bundled_binary_path, external_bin_root, is_windows
+from anishift.platform.child_processes import independent_child_flags
 from anishift.platform.local_control import ensure_authkey
 from anishift.platform.process_lock import ProcessLock
 from anishift.platform.qbittorrent_config import write_managed_profile
@@ -72,6 +74,7 @@ class _ProcessState:
     active: bool = False
     taken_over: bool = False
     start_failed: bool = False
+    released: frozenset[str] = frozenset()
 
 
 _STATE: Final[TypeAdapter[_ProcessState]] = TypeAdapter(_ProcessState)
@@ -99,7 +102,15 @@ class ManagedQBittorrent:
         """Persist ownership of the ordered hashes before sending any download."""
         with self._lock:
             state: _ProcessState = self._load()
-            self._save(replace(state, hashes=state.hashes | hashes, active=True, start_failed=False))
+            self._save(
+                replace(
+                    state,
+                    hashes=state.hashes | hashes,
+                    active=True,
+                    start_failed=False,
+                    released=state.released - hashes,
+                )
+            )
             self._ensure()
             yield
 
@@ -160,7 +171,14 @@ class ManagedQBittorrent:
                 message: str = "The transfer or action is not managed by AniShift"
                 raise _unavailable(message)
             if action == "resume":
-                self._save(replace(state, start_failed=False, active=True))
+                self._save(
+                    replace(
+                        state,
+                        start_failed=False,
+                        active=True,
+                        taken_over=state.taken_over and _visible_process_window(state.pid),
+                    )
+                )
             client: QBittorrentClient = self._ensure()
             self._assert_ownership(client)
             if action == "resume":
@@ -199,6 +217,33 @@ class ManagedQBittorrent:
             self._save(replace(state, active=False, pid=0, created=0))
             self._client = None
             logger.info("Idle private torrent client stopped")
+
+    def release_completed(self, hashes: frozenset[str]) -> frozenset[str]:
+        """Forget confirmed complete private jobs while preserving their media for relocation."""
+        with self._lock:
+            state: _ProcessState = self._load()
+            released: frozenset[str] = state.released & hashes
+            if not hashes - released or not self._matches_process(state) or state.taken_over:
+                return released
+            client: QBittorrentClient = self._required_client()
+            self._assert_ownership(client)
+            entries: dict[str, TorrentInfo] = {item.info_hash.casefold(): item for item in client.all_torrents()}
+            for info_hash in hashes - released:
+                if info_hash not in state.hashes:
+                    continue
+                entry: TorrentInfo | None = entries.get(info_hash)
+                if entry is not None and (
+                    entry.progress != 1.0
+                    or entry.amount_left != 0
+                    or entry.state not in {"uploading", "stalledUP", "queuedUP", "pausedUP", "stoppedUP", "forcedUP"}
+                ):
+                    continue
+                self._assert_ownership(client)
+                if entry is not None:
+                    client.remove(info_hash)
+                released |= {info_hash}
+            self._save(replace(self._load(), released=state.released | released))
+            return released
 
     def close(self) -> None:
         """Release management while leaving active downloads available for recovery."""
@@ -281,7 +326,7 @@ class ManagedQBittorrent:
 
     def _start(self) -> QBittorrentClient | None:
         state: _ProcessState = self._load()
-        executable: Path = self._bin_root / "qbittorrent" / f"{Binary.QBITTORRENT.value}.exe"
+        executable: Path = bundled_binary_path(Binary.QBITTORRENT, root=self._bin_root)
         with socket.socket() as web_socket, socket.socket() as torrent_socket:
             web_socket.bind(("127.0.0.1", 0))
             torrent_socket.bind(("0.0.0.0", 0))  # noqa: S104 - reserve the torrent peer port, separate from loopback Web UI
@@ -299,7 +344,7 @@ class ManagedQBittorrent:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | independent_child_flags(),
         )
         self._child = child
         identity: tuple[int, str] | None = _process_identity(child.pid)
@@ -353,7 +398,7 @@ class ManagedQBittorrent:
             identity is not None
             and identity[0] == state.created
             and Path(identity[1]).resolve() == Path(state.executable).resolve()
-            and Path(state.executable).resolve() == self._bin_root / "qbittorrent" / "qbittorrent.exe"
+            and Path(state.executable).resolve() == bundled_binary_path(Binary.QBITTORRENT, root=self._bin_root)
         )
 
     def _assert_ownership(self, client: QBittorrentClient, *, starting: bool = False) -> None:
@@ -363,7 +408,7 @@ class ManagedQBittorrent:
             raise _unavailable(message)
         preferences: dict[str, object] = client.preferences()
         save_path: object = preferences.get("save_path")
-        if not isinstance(save_path, str) or Path(save_path).resolve() != self._root / "qBittorrent" / "downloads":
+        if not isinstance(save_path, str) or Path(save_path).resolve() != torrent_download_dir(self._root):
             message = "The torrent endpoint does not match the private profile"
             raise _unavailable(message)
         if not starting and _visible_process_window(state.pid):

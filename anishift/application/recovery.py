@@ -42,6 +42,7 @@ class _Checkpoint:
     outputs: tuple[_FileProof, ...] = ()
     pending: TaskResult | None = None
     staged: _FileProof | None = None
+    inflight: frozenset[str] = frozenset()
 
 
 class RunJournal:
@@ -61,6 +62,17 @@ class RunJournal:
     def failed(self) -> bool:
         """Whether recording this run failed and further tasks must stop."""
         return self._failed
+
+    @property
+    def uncertain_remote_work(self) -> bool:
+        """Whether a remote operation started without a durable completion proof."""
+        return bool(self._checkpoint.inflight)
+
+    def started(self, task: PlanTask) -> None:
+        """Record potentially charged work before dispatching its external operation."""
+        self._require_writable()
+        if task.is_network or task.is_paid:
+            self._save(replace(self._checkpoint, inflight=self._checkpoint.inflight | {task.task_id}))
 
     def products(self, group_id: str) -> tuple[ProducedArtifact, ...]:
         """Return published products retained from this run's completed tasks."""
@@ -100,7 +112,14 @@ class RunJournal:
         journal: RunJournal = cls(path, checkpoint)
         journal._reconcile_publication()
         journal.validate_inputs()
+        required_outputs: set[str] = {
+            artifact.artifact_id
+            for artifact in journal.plan.artifacts
+            if journal.plan.tasks or artifact.lifetime is ArtifactLifetime.DURABLE
+        }
         for output in journal._checkpoint.outputs:
+            if output.artifact_id not in required_outputs:
+                continue
             if _proof(output.path, output.artifact_id) != output:
                 msg = "A saved run output changed or is missing"
                 raise ExecutionError(msg)
@@ -209,6 +228,7 @@ def _completed(checkpoint: _Checkpoint, result: TaskResult) -> _Checkpoint:
         outputs=(*outputs, *(_proof(output.path, output.artifact_id) for output in result.outputs)),
         pending=None,
         staged=None,
+        inflight=checkpoint.inflight - {result.task_id},
     )
 
 

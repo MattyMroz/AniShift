@@ -16,15 +16,14 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from anishift import bootstrap
-from anishift.application import AppService, ClientStatus
+from anishift.application import AppService, CheckOutcome, Subscription, encode_view
+from anishift.cli import control as cli_control
 from anishift.cli import interactive as interactive_package
 from anishift.cli import watch as cli_watch
 from anishift.config.workspace import ENV_WORKSPACE_ROOT, WorkspaceRootNotResolvedError
 from anishift.errors import ConfigError, ErrorCode, ErrorContext
 from anishift.platform import autostart, qbittorrent_config
 from anishift.platform.autostart import AutostartStatus, AutostartUnsupportedError
-from anishift.platform.qbittorrent_config import QBittorrentConfigError, WebUiSetup
-from anishift.services.torrents.errors import TorrentClientError
 
 cli_main = importlib.import_module("anishift.cli.main")
 
@@ -163,9 +162,10 @@ def test_the_technical_subcommands_load_no_interactive_toolkit(tmp_path: Path) -
 
 
 def test_doctor_reports_the_watch_and_the_logon_task(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(cli_main, "run_doctor", list)
+    monkeypatch.setattr(cli_main, "run_doctor", lambda **kwargs: [])
     monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
     monkeypatch.setattr(cli_watch, "watch_status", lambda _dir: cli_watch.WatchStatus(running=True, pid=7))
+    monkeypatch.setattr(cli_control, "resident_status", lambda _dir: cli_control.ResidentStatus(running=True, pid=7))
     monkeypatch.setattr(autostart, "status", lambda: autostart.AutostartStatus.MISSING)
 
     result: Result = CliRunner().invoke(cli_main.app, ["doctor"])
@@ -188,7 +188,7 @@ def test_doctor_skips_the_logon_task_where_the_scheduler_refuses(
             )
         )
 
-    monkeypatch.setattr(cli_main, "run_doctor", list)
+    monkeypatch.setattr(cli_main, "run_doctor", lambda **kwargs: [])
     monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
     monkeypatch.setattr(autostart, "status", refuse)
 
@@ -233,13 +233,14 @@ def test_watch_runs_the_daemon_on_the_composed_service(monkeypatch: pytest.Monke
     service: AppService = cast("AppService", object())
     seen: list[tuple[object, Path]] = []
 
-    def daemon(passed: AppService, *, state_dir: Path) -> int:
+    def daemon(passed: AppService, *, state_dir: Path, enable_tray: bool) -> int:
+        assert enable_tray
         seen.append((passed, state_dir))
         return 3
 
-    monkeypatch.setattr(bootstrap, "production_service", lambda: service)
+    monkeypatch.setattr(bootstrap, "production_service", lambda **kwargs: service)
     monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
-    monkeypatch.setattr(cli_watch, "run_daemon", daemon)
+    monkeypatch.setattr(cli_watch, "run_resident", daemon)
 
     result: Result = CliRunner().invoke(cli_main.app, ["watch"])
 
@@ -250,15 +251,16 @@ def test_watch_runs_the_daemon_on_the_composed_service(monkeypatch: pytest.Monke
 def test_watch_refuses_a_second_process_with_one_sentence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     started: list[Path] = []
 
-    def daemon(service: AppService, *, state_dir: Path) -> int:
+    def daemon(service: AppService, *, state_dir: Path, enable_tray: bool) -> int:
+        assert enable_tray
         del service
         started.append(state_dir)
         return 0
 
-    monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", object()))
+    monkeypatch.setattr(bootstrap, "production_service", lambda **kwargs: cast("AppService", object()))
     monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
     monkeypatch.setattr(cli_watch, "watch_status", lambda _dir: cli_watch.WatchStatus(running=True, pid=7))
-    monkeypatch.setattr(cli_watch, "run_daemon", daemon)
+    monkeypatch.setattr(cli_watch, "run_resident", daemon)
 
     result: Result = CliRunner().invoke(cli_main.app, ["watch"])
 
@@ -268,10 +270,10 @@ def test_watch_refuses_a_second_process_with_one_sentence(monkeypatch: pytest.Mo
 
 
 def test_watch_says_it_is_watching_before_the_loop_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", object()))
+    monkeypatch.setattr(bootstrap, "production_service", lambda **kwargs: cast("AppService", object()))
     monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
     monkeypatch.setattr(cli_watch, "watch_status", lambda _dir: cli_watch.WatchStatus(running=False, pid=None))
-    monkeypatch.setattr(cli_watch, "run_daemon", lambda service, *, state_dir: 0)
+    monkeypatch.setattr(cli_watch, "run_resident", lambda service, *, state_dir, enable_tray: 0)
 
     result: Result = CliRunner().invoke(cli_main.app, ["watch"])
 
@@ -279,7 +281,7 @@ def test_watch_says_it_is_watching_before_the_loop_blocks(monkeypatch: pytest.Mo
     assert result.output.strip() == "Watching the library; Ctrl+C or `anishift watch stop` ends it"
 
 
-def test_watch_batch_hands_the_named_groups_to_one_window(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_watch_batch_explains_migration_without_opening_another_window(monkeypatch: pytest.MonkeyPatch) -> None:
     service: AppService = cast("AppService", object())
     batches: list[list[str]] = []
 
@@ -288,13 +290,14 @@ def test_watch_batch_hands_the_named_groups_to_one_window(monkeypatch: pytest.Mo
         batches.append(list(batch or []))
         return 4
 
-    monkeypatch.setattr(bootstrap, "production_service", lambda: service)
+    monkeypatch.setattr(bootstrap, "production_service", lambda **kwargs: service)
     monkeypatch.setattr(interactive_package, "run_interactive", interactive)
 
     result: Result = CliRunner().invoke(cli_main.app, ["watch", "batch", "a", "b"])
 
-    assert result.exit_code == 4
-    assert batches == [["a", "b"]]
+    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert batches == []
+    assert "Batch windows were replaced" in result.output
 
 
 def test_autostart_enable_registers_the_watch_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -353,201 +356,66 @@ def test_autostart_status_prints_the_scheduler_state(monkeypatch: pytest.MonkeyP
     assert result.output.strip() == "enabled"
 
 
-def _service_with_client(status: object, *, setup: object | None = None) -> AppService:
-    acquisition: SimpleNamespace = SimpleNamespace(
-        client_status=lambda: status,
-        setup_client=lambda: setup if setup is not None else status,
+def test_qbit_status_checks_private_readiness_without_composing_a_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    doctor = importlib.import_module("anishift.setup.doctor")
+    monkeypatch.setattr(bootstrap, "production_service", Mock(side_effect=AssertionError("no client startup")))
+    monkeypatch.setattr(
+        doctor,
+        "check_managed_torrent_client",
+        lambda: doctor.CheckResult("torrent_client", doctor.CheckStatus.OK, "Private binary ready"),
     )
-    return cast("AppService", SimpleNamespace(acquisition=acquisition))
-
-
-def test_qbit_status_prints_the_version_and_the_incomplete_extension(monkeypatch: pytest.MonkeyPatch) -> None:
-    service: AppService = _service_with_client(
-        ClientStatus(reachable=True, version="5.2.3", incomplete_extension=True, seeding_stops=True)
-    )
-    monkeypatch.setattr(bootstrap, "production_service", lambda: service)
-
     result: Result = CliRunner().invoke(cli_main.app, ["qbit", "status"])
-
     assert result.exit_code == 0
-    assert result.output.splitlines() == [
-        "reachable: yes (v5.2.3)",
-        "incomplete extension: on",
-        "seeding after download: off",
-    ]
+    assert "Private binary ready" in result.output
 
 
-def test_qbit_status_refuses_with_the_hint_when_the_client_is_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
-    status: ClientStatus = ClientStatus(
-        reachable=False, problem="Web UI is not reachable", suggestion="Enable the Web UI"
-    )
-    monkeypatch.setattr(bootstrap, "production_service", lambda: _service_with_client(status))
-
-    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "status"])
-
-    assert result.exit_code == cli_main.EXIT_REFUSED
-    assert result.output.splitlines() == ["reachable: no", "Web UI is not reachable", "  Enable the Web UI"]
-    assert "Traceback" not in result.output
-
-
-def test_qbit_setup_reports_the_state_after_switching_the_extension_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    before: ClientStatus = ClientStatus(reachable=True, version="5.2.3", incomplete_extension=False)
-    after: ClientStatus = ClientStatus(reachable=True, version="5.2.3", incomplete_extension=True, seeding_stops=True)
-    monkeypatch.setattr(bootstrap, "production_service", lambda: _service_with_client(before, setup=after))
-
-    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
-
-    assert result.exit_code == 0
-    assert result.output.splitlines()[-2:] == ["incomplete extension: on", "seeding after download: off"]
-
-
-def _unreachable_service() -> AppService:
-    return _service_with_client(ClientStatus(reachable=False, problem="Web UI is not reachable"))
-
-
-def _prepared_client(monkeypatch: pytest.MonkeyPatch, *, installed: bool, running: bool) -> None:
-    monkeypatch.setattr(bootstrap, "production_service", _unreachable_service)
+def test_qbit_setup_prepares_only_the_private_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+    installer = importlib.import_module("anishift.setup.installer")
+    calls: list[str] = []
+    monkeypatch.setattr(installer, "ensure_resource", lambda name, **kwargs: calls.append(name))
     monkeypatch.setattr(
-        qbittorrent_config,
-        "installed_executable",
-        lambda: Path("C:/Program Files/qBittorrent/qbittorrent.exe") if installed else None,
+        qbittorrent_config, "enable_web_ui", Mock(side_effect=AssertionError("personal profile changed"))
     )
-    monkeypatch.setattr(qbittorrent_config, "is_running", lambda: running)
-
-
-def test_qbit_setup_points_at_the_installer_when_qbittorrent_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    _prepared_client(monkeypatch, installed=False, running=False)
-
     result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
-
-    assert result.exit_code == cli_main.EXIT_REFUSED
-    assert "winget install qBittorrent.qBittorrent" in result.output
-
-
-def test_qbit_setup_asks_for_a_closed_client_before_writing(monkeypatch: pytest.MonkeyPatch) -> None:
-    _prepared_client(monkeypatch, installed=True, running=True)
-
-    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
-
-    assert result.exit_code == cli_main.EXIT_REFUSED
-    assert result.output.strip() == "Close qBittorrent, then run `anishift qbit setup` again"
-
-
-def test_qbit_setup_enables_the_web_ui_and_prints_the_generated_password(monkeypatch: pytest.MonkeyPatch) -> None:
-    _prepared_client(monkeypatch, installed=True, running=False)
-    monkeypatch.setattr(
-        qbittorrent_config,
-        "enable_web_ui",
-        lambda: WebUiSetup(path_written=True, password="s3cret-token"),  # noqa: S106
-    )
-
-    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
-
     assert result.exit_code == 0
-    assert "Start qBittorrent and run `anishift qbit setup` again." in result.output
-    assert "Web UI password (admin): s3cret-token" in result.output
-
-
-def test_qbit_setup_prints_no_password_when_the_settings_already_hold_one(monkeypatch: pytest.MonkeyPatch) -> None:
-    _prepared_client(monkeypatch, installed=True, running=False)
-    monkeypatch.setattr(
-        qbittorrent_config,
-        "enable_web_ui",
-        lambda: WebUiSetup(path_written=True, password=None),
-    )
-
-    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
-
-    assert result.exit_code == 0
+    assert calls == ["qbittorrent"]
     assert "password" not in result.output
 
 
-def test_qbit_setup_states_one_sentence_when_the_settings_cannot_be_written(monkeypatch: pytest.MonkeyPatch) -> None:
-    def refuse() -> WebUiSetup:
-        raise QBittorrentConfigError(
-            context=ErrorContext(
-                code=ErrorCode.TORRENT_CLIENT_UNAVAILABLE,
-                message="qBittorrent has no settings file yet",
-                suggestion="Start qBittorrent once",
-            ),
-        )
-
-    _prepared_client(monkeypatch, installed=True, running=False)
-    monkeypatch.setattr(qbittorrent_config, "enable_web_ui", refuse)
-
-    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
-
-    assert result.exit_code == cli_main.EXIT_REFUSED
-    assert "qBittorrent has no settings file yet" in result.output
-    assert "Traceback" not in result.output
-
-
-def test_qbit_setup_asks_for_the_web_ui_when_the_keys_already_exist(monkeypatch: pytest.MonkeyPatch) -> None:
-    _prepared_client(monkeypatch, installed=True, running=False)
-    monkeypatch.setattr(qbittorrent_config, "enable_web_ui", lambda: WebUiSetup(path_written=False, password=None))
-
-    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
-
-    assert result.exit_code == cli_main.EXIT_REFUSED
-    assert "Web UI keys already exist in the qBittorrent settings" in result.output
-    assert "Options → Web UI" in result.output
-    assert "run `anishift qbit setup` again" not in result.output
-
-
-@pytest.mark.parametrize("command", [["qbit", "status"], ["qbit", "setup"]])
-def test_qbit_states_a_rejecting_client_without_a_traceback(
-    monkeypatch: pytest.MonkeyPatch,
-    command: list[str],
-) -> None:
-    def refuse() -> NoReturn:
-        raise TorrentClientError(
-            context=ErrorContext(
-                code=ErrorCode.TORRENT_CLIENT_REFUSED,
-                message="qBittorrent rejected the request",
-                suggestion="Check the Web UI credentials",
-            ),
-        )
-
-    acquisition: SimpleNamespace = SimpleNamespace(client_status=refuse, setup_client=refuse)
-    monkeypatch.setattr(
-        bootstrap, "production_service", lambda: cast("AppService", SimpleNamespace(acquisition=acquisition))
+def test_qbit_setup_reports_an_install_failure_without_a_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
+    installer = importlib.import_module("anishift.setup.installer")
+    failure = installer.InstallerError(
+        context=ErrorContext(code=ErrorCode.IO_ERROR, message="Archive integrity check failed")
     )
-
-    result: Result = CliRunner().invoke(cli_main.app, command)
-
+    monkeypatch.setattr(installer, "ensure_resource", Mock(side_effect=failure))
+    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "setup"])
     assert result.exit_code == cli_main.EXIT_REFUSED
-    assert "qBittorrent rejected the request" in result.output
-    assert "Check the Web UI credentials" in result.output
+    assert "Archive integrity check failed" in result.output
     assert "Traceback" not in result.output
-
-
-def test_qbit_refuses_a_session_without_a_torrent_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bootstrap, "production_service", lambda: cast("AppService", SimpleNamespace(acquisition=None)))
-
-    result: Result = CliRunner().invoke(cli_main.app, ["qbit", "status"])
-
-    assert result.exit_code == cli_main.EXIT_REFUSED
-    assert "no torrent client" in result.output
 
 
 def _service_with_subscriptions(subscriptions: object) -> AppService:
     return cast("AppService", SimpleNamespace(subscriptions=subscriptions))
 
 
-def _followed(series: str, group: str, episode: int, checked: str | None) -> SimpleNamespace:
-    return SimpleNamespace(
+def _followed(series: str, group: str, episode: int, checked: str | None) -> Subscription:
+    return Subscription(
         subscription_id="ab12cd34ef56",
         series=series,
         group=group,
         next_episode=Decimal(episode),
         checked_at=checked,
+        query=series,
+        min_resolution=1080,
+        taken=frozenset(),
+        added_at="2026-09-13T00:00:00+00:00",
     )
 
 
 def test_subs_list_prints_one_row_per_followed_series(monkeypatch: pytest.MonkeyPatch) -> None:
-    followed: tuple[SimpleNamespace, ...] = (_followed("Neko to Ryuu", "SubsPlease", 12, None),)
+    followed: tuple[Subscription, ...] = (_followed("Neko to Ryuu", "SubsPlease", 12, None),)
     service: AppService = _service_with_subscriptions(SimpleNamespace(list=lambda: followed))
-    monkeypatch.setattr(bootstrap, "production_service", lambda: service)
+    monkeypatch.setattr(bootstrap, "production_service", lambda **kwargs: service)
 
     result: Result = CliRunner().invoke(cli_main.app, ["subs", "list"])
 
@@ -574,6 +442,10 @@ def test_subs_remove_reports_an_unknown_id(monkeypatch: pytest.MonkeyPatch) -> N
         return False
 
     monkeypatch.setattr(
+        cli_main, "_resident_call", lambda kind, payload: {"removed": remove(payload["subscription_id"])}
+    )
+
+    monkeypatch.setattr(
         bootstrap, "production_service", lambda: _service_with_subscriptions(SimpleNamespace(remove=remove))
     )
 
@@ -585,12 +457,13 @@ def test_subs_remove_reports_an_unknown_id(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_subs_check_prints_downloads_and_problems_per_series(monkeypatch: pytest.MonkeyPatch) -> None:
-    outcomes: tuple[SimpleNamespace, ...] = (
-        SimpleNamespace(subscription=_followed("Neko to Ryuu", "SubsPlease", 12, "x"), downloaded=2, problem=""),
-        SimpleNamespace(subscription=_followed("Oshi no Ko", "DKB", 3, "x"), downloaded=0, problem="Nyaa timed out"),
+    outcomes: tuple[CheckOutcome, ...] = (
+        CheckOutcome(subscription=_followed("Neko to Ryuu", "SubsPlease", 12, "x"), downloaded=2, problem=""),
+        CheckOutcome(subscription=_followed("Oshi no Ko", "DKB", 3, "x"), downloaded=0, problem="Nyaa timed out"),
     )
     service: AppService = _service_with_subscriptions(SimpleNamespace(check_all=lambda: outcomes))
-    monkeypatch.setattr(bootstrap, "production_service", lambda: service)
+    monkeypatch.setattr(cli_main, "_resident_call", lambda kind: {"outcomes": [encode_view(item) for item in outcomes]})
+    monkeypatch.setattr(bootstrap, "production_service", lambda **kwargs: service)
 
     result: Result = CliRunner().invoke(cli_main.app, ["subs", "check"])
 
@@ -616,6 +489,7 @@ def test_subs_states_a_broken_store_without_a_traceback(
         )
 
     store: SimpleNamespace = SimpleNamespace(list=refuse, check_all=refuse, remove=refuse)
+    monkeypatch.setattr(cli_control, "open_control", refuse)
     monkeypatch.setattr(bootstrap, "production_service", lambda: _service_with_subscriptions(store))
 
     result: Result = CliRunner().invoke(cli_main.app, command)

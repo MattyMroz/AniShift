@@ -236,12 +236,13 @@ class ResidentSession:
         """Start that exact preview and relay events until the owner records its outcome."""
         events: ControlClient = self._connect()
         self._events = events
+        run_id: str | None = None
         try:
             events.subscribe()
             answer: Mapping[str, object] = self._call(
                 "start", {"preview_id": preview.preview_id}, instance_id=preview.instance_id
             )
-            run_id: str = str(answer["run_id"])
+            run_id = str(answer["run_id"])
             self._reserved = ()
             result: RunResult | None = self._result(run_id, preview)
             if result is not None:
@@ -257,6 +258,10 @@ class ResidentSession:
                     result = self._result(run_id, preview)
                     if result is not None:
                         return result
+        except KeyboardInterrupt:
+            if run_id is not None:
+                self.cancel(run_id)
+            raise
         finally:
             events.close()
             self._events = None

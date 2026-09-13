@@ -240,10 +240,11 @@ def check_managed_torrent_client() -> CheckResult:
     """Report private binary readiness without starting a client or touching its profile."""
     if not is_windows():
         return CheckResult("torrent_client", CheckStatus.SKIP, "Managed qBittorrent requires Windows")
-    files: tuple[str, ...] = ("qbittorrent/qbittorrent.exe", "qbittorrent/qt.conf")
-    installed: bool = all(
-        (external_bin_root() / name).is_file() and (external_bin_root() / name).stat().st_size > 0 for name in files
-    )
+    from anishift.setup.installer import is_installed  # noqa: PLC0415
+    from anishift.setup.manifest import Resource, load_manifest  # noqa: PLC0415
+
+    resource: Resource = next(item for item in load_manifest() if item.name == "qbittorrent")
+    installed: bool = is_installed(resource, external_bin_root())
     message: str = (
         "Private qBittorrent prepared in external/bin/qbittorrent; starts for downloads only"
         if installed

@@ -172,6 +172,7 @@ class ProcessingRequest:
     accepted_at: str
     intents: tuple[GroupIntent, ...] = ()
     automatic: bool = False
+    problem: str | None = None
 
     def __post_init__(self) -> None:
         for key in self.settings:
@@ -328,6 +329,8 @@ def auto_admissible(  # noqa: PLR0913 - every admission condition stays an expli
     if _reservation(state, group_id) is not None:
         return False
     if _has_active_request(state, group_id):
+        return False
+    if any(request.problem and request.fingerprints.get(group_id) == fingerprint for request in state.requests):
         return False
     if _manual_blocks(state, group_id, fingerprint, requested_products):
         return False

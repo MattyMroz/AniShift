@@ -4,6 +4,12 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 
 ## Pułapki
 
+- `child_processes.py` przypisuje proces rezydenta Windows do Job Object: narzędzia
+  potomne kończą się także po nagłym zabiciu właściciela. Prywatny qBittorrent i panel
+  są uruchamiane z jawnym breakaway. Nie zamykaj uchwytu joba ręcznie w żywym rezydencie.
+- `ManagedQBittorrent` dowodzi własności przez PID, czas utworzenia, własną binarkę
+  i katalog profilu potwierdzony w API. GUI przejęte przez użytkownika blokuje automatyczne
+  zamknięcie. Zwolnienie ukończonego torrenta zachowuje media (`deleteFiles=false`).
 - `DirectoryWatch` zakłada pierwszy odczyt `ReadDirectoryChangesW` przed uruchomieniem wątku.
   Oczekiwanie jest blokujące, a stop używa osobnego zdarzenia; przed zamknięciem uchwytów
   anuluje i rozlicza overlapped I/O. Pusty bufor oznacza overflow i pełne uzgodnienie, nie brak
@@ -65,7 +71,7 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 - `FFMPEG`/`FFPROBE` dzielą podkatalog `"ffmpeg"`, `MKVEXTRACT`/`MKVMERGE` dzielą `"mkvtoolnix"` — jeden podfolder trzyma po dwie binarki. `binaries.py`
 - Niepusty plik w `external/bin/` ma pierwszeństwo; fallback `shutil.which` działa
   także na Windows. Plik 0 B nie jest gotową binarką w żadnym źródle. `binaries.py`
-- `external_bin_root` liczy repo-root jako `parents[2]` — twardo zakłada głębokość `anishift/platform/binaries.py`; przeniesienie modułu zepsuje ścieżkę. `binaries.py`
+- `external_bin_root` pochodzi z `anishift/paths.py`. `bundled_binary_path` dokłada katalog narzędzia z `TOOL_DIR` i nazwę właściwą dla systemu; instalator i zarządca procesu korzystają z tego samego układu. `binaries.py`
 
 ## Konwencje
 

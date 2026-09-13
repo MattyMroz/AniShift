@@ -21,6 +21,7 @@ def _application(
     application._lock = threading.Lock()
     application._mode = mode
     application._selected = 0
+    application._home_choices = interactive_app._HOME_CHOICES
     application._message = Text()
     application._message_view = interactive_app._QueueView(following=False)
     application._progress = None

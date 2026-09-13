@@ -17,7 +17,7 @@ Pakiet aplikacji. Composition root i hierarchia błędów tutaj; reszta w moduł
 
 - `bootstrap.py` — composition root
 - `errors.py` — hierarchia błędów
-- `paths.py` — `config_path()`; poza `config/`, bo import `anishift.config` wciąga rejestry silników
+- `paths.py` — jedno źródło układu wspólnych katalogów aplikacji: repo, workspace, konfiguracja, stan, binarki i logi. Funkcje tylko wyliczają ścieżki; nie tworzą katalogów. Prywatne pliki i struktury robocze domen pozostają przy swoich modułach. Plik leży poza `config/`, bo import `anishift.config` wciąga rejestry silników.
 
 ## Fakty
 

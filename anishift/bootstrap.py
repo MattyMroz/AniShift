@@ -93,7 +93,7 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
     import httpx  # noqa: PLC0415
 
     from anishift.application.acquisition import AcquisitionService, TorrentClient  # noqa: PLC0415
-    from anishift.paths import config_path  # noqa: PLC0415
+    from anishift.paths import torrent_profile_dir  # noqa: PLC0415
     from anishift.platform.qbittorrent_process import ManagedQBittorrent  # noqa: PLC0415
     from anishift.services.catalog import AniListCatalog  # noqa: PLC0415
     from anishift.services.http_requests import RequestControl  # noqa: PLC0415
@@ -117,9 +117,7 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
         http=http,
     )
     managed: ManagedQBittorrent | None = (
-        ManagedQBittorrent(config_path().parent / "qbittorrent", http=http, previous=external)
-        if managed_torrents
-        else None
+        ManagedQBittorrent(torrent_profile_dir(), http=http, previous=external) if managed_torrents else None
     )
     client: TorrentClient = managed if managed is not None else external
     return AcquisitionService(
@@ -140,9 +138,9 @@ def _subscription_service(acquisition: AcquisitionService) -> SubscriptionServic
         SubscriptionService,
         SubscriptionStore,
     )
-    from anishift.paths import config_path  # noqa: PLC0415
+    from anishift.paths import config_dir  # noqa: PLC0415
 
-    store: SubscriptionStore = SubscriptionStore(config_path().parent / SUBSCRIPTIONS_FILE_NAME)
+    store: SubscriptionStore = SubscriptionStore(config_dir() / SUBSCRIPTIONS_FILE_NAME)
     return SubscriptionService(store=store, acquisition=acquisition)
 
 

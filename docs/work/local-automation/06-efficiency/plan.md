@@ -365,6 +365,10 @@ Zakończ blokuje nowe admission, zachowuje stan, czeka na bezpieczne granice ope
 
 ### P08. Recovery, pomiary i zamknięcie zmiany
 
+**Status 2026-09-13:** właściciel polecił wykonanie P08 i przeniósł ocenę spójności Stanu z głównym interfejsem na odbiór końcowy. To pozwala kontynuować P08 bez oznaczania niewykonanych prób ręcznych P07 jako PASS.
+
+**Wstrzymanie pobierania na żądanie właściciela:** po otwarciu panelu rezydent uruchomił 13 rzeczywistych transferów ze starej listy 25 włączonych subskrypcji. Lista i początkowe odcinki nie były obecnie zatwierdzone przez właściciela. Wyłączono wszystkie 25 subskrypcji oraz Auto, wstrzymano 13 transferów (`stoppedDL`/`stoppedUP`), potwierdzono brak aktywnych runów i zakończono rezydenta. Pliki i historia zostały zachowane. Nie włączać tych wpisów ani nie wznawiać transferów przy wdrożeniu P08. Zakres pobierania wymaga późniejszego jawnego ustalenia z właścicielem; testy wykonania korzystają z osobnej konfiguracji i syntetycznych danych.
+
 **Wynik:** wszystkie AC mają wskazany dowód, nowy runtime zastąpił stary, a dokumenty nie mylą planu z dostarczonym kodem.
 
 **Zależności:** P01–P07 i pozytywne G1–G3 dla wymaganej platformy.
@@ -560,6 +564,30 @@ Poniższe wpisy zachowują wcześniejsze, cząstkowe dowody. Ich dawne listy bra
 - Do wykonania pozostają terminy emisji, kontrola HTTP i obsługa zastoju transferu. Trzeba też domknąć atomowość poleceń zmieniających subskrypcję względem receipt w osobnym pliku stanu. Domyślny stary watcher nadal nie korzysta z dziennika rezydenta; jego przełączenie należy do P08. P06 pozostaje w toku.
 - Odczyt biblioteki po zgłoszeniu właściciela: 29 brakujących MKV w 12 folderach przy zachowanych produktach. Po doprecyzowaniu, że historia oglądania jest niepewna, zachowane zostały wszystkie foldery i produkty. Nie wykonano sprzątania, przenoszenia ani ponownego pobierania; ewentualne odzyskanie źródła ma wykorzystywać istniejące napisy i audio.
 
+### P08 — implementacja i odbiór techniczny 2026-09-13
+
+- Domyślny panel oraz techniczne zlecenia używają rezydenta. `watch` uruchamia nowego właściciela, a `watch batch` daje komunikat migracyjny. Usunięto nieużywane wejście konfigurujące osobistą instalację qBittorrenta. `Stan i automatyzacja` jest pozycją głównego menu i korzysta z istniejącego renderera. Ustawienia pozostają dostępne niezależnie od postępu.
+- `ReadyStore` przenosi źródło i produkty bez przepisywania zawartości, obsługuje kolizje całej grupy i zachowuje dziennik do potwierdzenia zapisu stanu. Wynik zwracany panelowi wskazuje nową lokalizację. Regeneracja wykonuje się bezpośrednio w `ready`. Prywatny klient zwalnia ukończone zlecenie z zachowaniem mediów; potwierdzenie zwolnienia przetrwa jego zamknięcie.
+- Wspólne katalogi mają jedno źródło w `anishift/paths.py`; zaktualizowano konsumentów, instrukcje i izolację testów. `config/qbittorrent/` jest gitignorowane. Nazwy `workspace/ready` i `config/watch/relocations` rozdzielają media od dzienników przenosin.
+- Recovery zachowuje identyfikator, generację, ustawienia i próby. Niepewna operacja zdalna wymaga jawnego wznowienia. Usunięte po sukcesie pliki tymczasowe nie unieważniają ukończonego grafu. Windows Job Object kończy narzędzia potomne po śmierci właściciela; panel i prywatny klient używają jawnego breakaway. Rzeczywisty test Windows sprawdza oba przypadki.
+- **Nagła śmierć procesu — 8 scenariuszy PASS:** przed trwałym przyjęciem, po przyjęciu przed odpowiedzią, po wyniku zdalnym bez jego potwierdzenia, przed replace, po replace, po sprzątnięciu runa, przed utworzeniem dziennika ready oraz po link przed unlink. Świeży proces odzyskuje potwierdzone wyniki bez ponownego tłumaczenia; niepewne wywołanie pozostaje do decyzji; inode źródła pozostaje ten sam. Granicą sieci jest kontrolowana atrapa, nie płatny dostawca. Dowód: `tests/application/test_service.py::test_resident_recovers_after_process_death_without_repeating_confirmed_translation`.
+- **Końcowe bramki:** Ruff check/format PASS; mypy Windows i Linux PASS (519 plików); pełny pytest **3907 passed, 11 skipped, 32,52 s**. Pominięto 9 testów zewnętrznej sieci i 2 wymagające dostępnych dowiązań katalogowych. Test qBittorrenta używa rzeczywistej prywatnej binarki i wyłącznie syntetycznych torrentów loopback; potwierdza zwolnienie plików bez ich usunięcia i brak restartu klienta przy ponownym odczycie potwierdzenia.
+- Przed końcem sprawdzono konfigurację właściciela tylko do odczytu: Auto OFF, 25 subskrypcji, 0 włączonych; stary watcher i rezydent STOPPED. Istniejące zadanie autostartu wskazuje `pythonw.exe -m anishift.cli.main watch`, więc nie wymaga ponownej rejestracji. Nie uruchomiono go, nie wznowiono 13 wstrzymanych transferów i nie zmieniono mediów właściciela.
+
+**Pomiar lokalnej obserwacji, Windows 2026-09-13.** Osobne świeże procesy, ten sam preset FULL_PL, 27 syntetycznych TXT z gotowymi SRT, po rozgrzaniu 11 sekund idle, następnie jedna nowa grupa i trzy grupy jednocześnie; komplet na końcu: 31 grup. Porównano zachowaną starą pętlę `run_daemon` i produkcyjne `run_resident` z aktualnego drzewa. Czas startu poniżej liczy od uruchomienia pętli do pierwszej inspekcji, bez importów Pythona. Żaden scenariusz nie zlecał tłumaczenia, HTTP ani narzędzi multimedialnych.
+
+| Pomiar | Stara pętla | Rezydent |
+| --- | --- | --- |
+| Pierwsza inspekcja | 0,0224 s | 0,0565 s |
+| Skany podczas 11 s idle | 2 | 0 |
+| CPU procesu podczas idle | 0,0156 s | 0,0000 s w rozdzielczości pomiaru |
+| Working set po idle | 95,41 MiB | 96,34 MiB |
+| Zauważenie jednej nowej grupy | 3,8124 s | 0,0099 s |
+| Zauważenie trzech nowych grup | 5,0097 s | 0,0349 s |
+| Pełne skany w całym scenariuszu | 5 | 1 |
+
+**Granice odbioru:** ten pomiar potwierdza brak okresowych skanów i szybszą detekcję, ale nie jest pełnym porównaniem historycznego commitu na bibliotece mediów, zimnego startu, rzeczywistych premier ani czasu obróbki. Próbę rzeczywistego uśpienia i wznowienia wykonano wcześniej w P05; nie powtarzano jej bez właściciela. Odbiór ergonomii głównego menu, ikony po restarcie Explorer i zachowania GUI przejętego przez właściciela pozostaje ręczny. P08 ma dostarczony kod i powyższe dowody, ale cały plan pozostaje IN_PROGRESS do zamknięcia brakujących prób; nie oznaczać ich PASS na podstawie samego pytest.
+
 ## 15. Korekty po przeglądzie wykonawcy (2026-09-08)
 
 Przegląd planu względem spec.md i kodu `a7d319f` (przeczytane w całości: `scheduler*.py`, `service.py`, `sessions.py`, `intents.py`, wejścia `planner.py`, `cli/watch.py`, `application/watch.py`, `cli/run.py`, `interactive/app.py`, `subscriptions.py`, `acquisition.py`, `qbittorrent.py`, wszystkie scoped AGENTS). Plan jest zgodny ze specyfikacją; poniższe decyzje domykają luki, w których wykonawca musiałby zgadywać. Obowiązują razem z sekcjami 1–13; przy sprzeczności wygrywa ta sekcja.
@@ -572,9 +600,9 @@ Przegląd planu względem spec.md i kodu `a7d319f` (przeczytane w całości: `sc
 
 **D-04. Ikona i powiadomienia.** „Otwórz" uruchamia panel w nowym oknie konsoli (`wt.exe`, gdy jest w PATH, inaczej domyślna konsola) z argumentem otwierającym Stan; gdy panel jest już podłączony, rezydent wysyła mu polecenie pokazania Stanu zamiast otwierać drugie okno. Powiadomienia Windows to balon ikony (`Shell_NotifyIcon`, `NIF_INFO`), bez procesu PowerShell.
 
-**D-05. Home.** Pozycja „Auto" prowadzi do Stanu z przełącznikiem Auto oraz akcjami „Uruchom teraz" (wszystkie gotowe grupy, jak dzisiejsze Auto) i „Auto dla zaznaczonych". Ręczny, Anime, Ustawienia i Wyjście bez zmian pozycji. Wyjście z panelu nie kończy rezydenta.
+**D-05. Home.** Zgodnie z doprecyzowaniem właściciela Stan jest elementem głównego interfejsu: „Stan i automatyzacja” poprzedza dotychczasowe akcje. „Auto” zachowuje jednorazowy start z domyślnego presetu; przełącznik automatyzacji znajduje się w Stanie. Wyjście z panelu nie kończy rezydenta.
 
-**D-06. Techniczne komendy.** `anishift watch` = rezydent (to samo zadanie autostartu). `run --preset` i `subs check` przy działającym rezydencie delegują do niego i czekają na wynik przez kanał, drukując dotychczasowy raport; bez rezydenta `run --preset` wykonuje plan w procesie przez adapter `run(plan)` pod tą samą blokadą procesu, więc nigdy nie ma dwóch właścicieli. `watch stop` = „Zakończ AniShift". `watch batch` znika w P08 z komunikatem migracyjnym.
+**D-06. Techniczne komendy.** `anishift watch` = rezydent (to samo zadanie autostartu). `run --preset` i zapisujące komendy `subs` delegują do właściciela i czekają na wynik przez kanał, drukując dotychczasowy raport. Korekta implementacyjna P08: bez rezydenta uruchamiają go tą samą drogą co panel, zamiast utrzymywać drugi wariant wykonania lokalnego. Zachowano kody wyjścia i jawny zakres polecenia; samo uruchomienie procesu nie włącza automatów. `watch stop` = „Zakończ AniShift". `watch batch` odmawia z komunikatem migracyjnym.
 
 **D-07. Wspólne limity.** Koordynator dostaje dostawcę limitów czytającego bieżące preferencje; `plan.settings` nie wyznacza limitów zasobów. Executor ma `max_workers` równe maksimum dopuszczanemu przez katalog ustawień, a faktyczne dopuszczanie liczy aktywne taski per zasób względem aktualnego limitu. Reguła SAPI = 1 i liczenie ekstrakcji z rdzeni pozostają.
 
