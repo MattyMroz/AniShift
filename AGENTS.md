@@ -26,6 +26,11 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 - Przed większą lub planowaną zmianą potwierdź zakres z userem. Nie ruszaj od razu.
 - Nie commituj na `main`. Feature branch → PR → merge.
 - KISS/YAGNI — użyj skilla `simple` przy pisaniu i przeglądzie kodu.
+- Delegacja WYŁĄCZNIE do dwóch subagentów: `opus5` pisze kod, `sol` sprawdza (read-only).
+  Żaden inny subagent, w żadnym celu, nawet do researchu czy prostego wyszukania — zakaz
+  bezwarunkowy. Pętla: `opus5` koduje → świeży `sol` skrupulatnie ocenia → poprawki →
+  `sol` weryfikuje. Briefy muszą być samowystarczalne, bo subagent nie zna rozmowy.
+  Obowiązkowe skille przy pracy: `simple`, `coding`, `workflow`.
 
 ## Python
 
