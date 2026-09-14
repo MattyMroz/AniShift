@@ -55,6 +55,7 @@ def test_managed_profile_imports_only_connection_preferences_once(
     assert "Session\\QueueingSystemEnabled=false" in content
     assert "WebUI\\Port=18081" in content
     assert "WebUI\\LocalHostAuth=true" in content
+    assert "[GUI]\nNotifications\\Enabled=false" in content
     assert "Personal" not in content
     assert "personal" not in content
     assert source.read_text(encoding="utf-8") == original

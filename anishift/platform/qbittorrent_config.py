@@ -173,6 +173,7 @@ def write_managed_profile(root: Path, *, web_port: int, torrent_port: int, passw
             "General\\StartMinimized": "true",
             "General\\MinimizeToTray": "true",
         },
+        "GUI": {"Notifications\\Enabled": "false"},
         "BitTorrent": {
             "Session\\Port": str(torrent_port),
             "Session\\QueueingSystemEnabled": "false",
