@@ -69,7 +69,7 @@ from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.config.workspace import cleanup_orphaned_temp
 from anishift.errors import ErrorCode, ExecutionError, RunConflictError
-from anishift.paths import relocation_journal_dir
+from anishift.paths import TRANSLATE_DIRECTORY, relocation_journal_dir
 from anishift.platform.local_control import (
     ControlClient,
     ControlError,
@@ -1263,7 +1263,7 @@ def test_the_resident_processes_a_new_file_once_and_returns_to_idle(
     monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
     monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
     workspace: Path = tmp_path / "workspace"
-    workspace.mkdir()
+    (workspace / TRANSLATE_DIRECTORY).mkdir(parents=True)
     state_dir: Path = tmp_path / "watch"
     translation: FakeTranslationService = FakeTranslationService()
     preset: AutoPresetDraft = AutoPresetDraft("watch", "Watch", ProductIntent(frozenset({ProductKind.FULL_PL})))
@@ -1293,16 +1293,16 @@ def test_the_resident_processes_a_new_file_once_and_returns_to_idle(
     store: WatchStateStore = WatchStateStore(state_dir / WATCH_STATE_FILE_NAME)
     try:
         client.call("set_auto", {"enabled": True})
-        write_text_source(workspace / "Episode.txt", "One episode")
+        write_text_source(workspace / TRANSLATE_DIRECTORY / "Episode.txt", "One episode")
         deadline: float = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             status: Mapping[str, object] = client.call("status")
-            if (workspace / "ready/Episode.pl.srt").is_file() and not status["requests"] and not status["relocations"]:
+            if (workspace / "ready/Episode.pl.txt").is_file() and not status["requests"] and not status["relocations"]:
                 break
             time.sleep(0.01)
-        assert (workspace / "ready/Episode.pl.srt").is_file()
+        assert (workspace / "ready/Episode.pl.txt").is_file()
         assert len(translation.calls) == 1
-        (workspace / "ready/Episode.pl.srt").touch()
+        (workspace / "ready/Episode.pl.txt").touch()
         time.sleep(0.1)
         settled: int = len(scans)
         time.sleep(0.1)

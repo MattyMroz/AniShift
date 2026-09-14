@@ -56,6 +56,7 @@ from anishift.application.intents import (
     RequestOrigin,
     RunMode,
 )
+from anishift.application.planner import auto_group_products
 from anishift.application.planning import TaskState
 from anishift.application.ready import ReadyMove, ReadyStore
 from anishift.application.recovery import RunJournal
@@ -65,6 +66,7 @@ from anishift.application.selection import ready_group_ids
 from anishift.application.subscriptions import SubscriptionOrder, subscription_id
 from anishift.application.transfers import TransferInspector
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
+from anishift.application.workflows import resolve_route
 from anishift.config.workspace import run_temp_dir
 from anishift.errors import AniShiftError, ExecutionError
 from anishift.platform.directory_watch import DirectoryChange
@@ -383,12 +385,10 @@ class AutomationOwner:
             if reconcile:
                 self._reconciled_version = self._file_version
             for path in paths:
-                candidate: ArtifactName | None = classify_artifact(path)
+                relative: Path = path.parent.relative_to(self._service.workspace_root)
+                candidate: ArtifactName | None = classify_artifact(path, resolve_route(relative))
                 if candidate is not None:
-                    identity: str = create_group_id(
-                        path.parent.relative_to(self._service.workspace_root), candidate.stem
-                    )
-                    self._group_versions[identity] = self._file_version
+                    self._group_versions[create_group_id(relative, candidate.stem)] = self._file_version
                     continue
                 affected: set[str] = {
                     group.group_id
@@ -602,21 +602,29 @@ class AutomationOwner:
                 if group.source.directory == self._service.workspace_root
                 else group.source.directory.relative_to(self._service.workspace_root).as_posix(),
                 _group_fingerprint(group),
-                preset.products.requested_products,
+                self._automatic_products(group, preset),
             )
         )
-        ready: tuple[str, ...] = self._ledger.candidates(InspectedWorkspace(eligible, ()), preset, time.monotonic())
+        ready: tuple[str, ...] = self._ledger.candidates(
+            InspectedWorkspace(eligible, ()),
+            preset,
+            time.monotonic(),
+            recipes=self._state.recipes,
+        )
         self._settle_at = self._ledger.next_check_at
         for group in eligible:
             if group.group_id not in ready:
                 continue
             self._start_automatic(group, preset)
 
+    def _automatic_products(self, group: InspectedSourceGroup, preset: AutoPreset) -> frozenset[ProductKind]:
+        return auto_group_products(group, preset.products, self._state.recipes).requested_products
+
     def _start_automatic(self, group: InspectedSourceGroup, preset: AutoPreset) -> None:
         origin: RequestOrigin | None = self._file_origin(group)
         if origin is None:
             return
-        plan: ExecutionPlan = self._service.plan_auto((group.group_id,), preset)
+        plan: ExecutionPlan = self._service.plan_auto((group.group_id,), preset, recipes=self._state.recipes)
         if not plan.can_execute or not plan.tasks:
             return
         preview: _Preview = _Preview(
@@ -625,7 +633,7 @@ class AutomationOwner:
             plan=plan,
             groups=(group,),
             fingerprints={group.group_id: _group_fingerprint(group)},
-            products=preset.products.requested_products,
+            products=self._automatic_products(group, preset),
             origin=origin,
             source_selection=SourceSelection.AUTO,
             session_id=None,
@@ -1168,6 +1176,7 @@ class AutomationOwner:
             preset,
             rebuild=rebuild,
             overrides=overrides,
+            recipes=self._state.recipes,
         )
 
     def _start(self, request: ControlRequest) -> ControlResponse:

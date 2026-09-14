@@ -89,6 +89,25 @@ def _write_srt(path: Path) -> None:
     )
 
 
+def _write_ass(path: Path) -> None:
+    path.write_text(
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name\n"
+        "Style: Default\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,Dzień dobry\n",
+        encoding="utf-8",
+    )
+
+
+def _write_text_file(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
 def _inspect_video(root: Path, *, duration_us: int = 10_000_000) -> InspectedSourceGroup:
     video = root / "1.mkv"
     video.write_bytes(b"video")
@@ -184,6 +203,64 @@ def test_external_subtitle_outside_workspace_uses_declared_language(tmp_path: Pa
     assert artifact.language == "fra"
     assert artifact.state is ArtifactState.READY
     assert len(group.artifacts) + 1 == len(registered.artifacts)
+
+
+def test_external_styled_subtitles_register_under_the_format_they_are_read_as(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    group = _inspect_video(workspace_root)
+    external = tmp_path / "napisy.ssa"
+    _write_ass(external)
+    registered = WorkspaceInspector(_FakeProbe({})).register_external_subtitle(
+        group,
+        external,
+        declared_language=None,
+        cancel=NeverCancelledToken(),
+    )
+    artifact = registered.artifacts[-1]
+    assert artifact.subtitle_format == "ass"
+    assert artifact.state is ArtifactState.READY
+
+
+def test_external_subtitles_in_an_unknown_format_are_refused(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    group = _inspect_video(workspace_root)
+    external = tmp_path / "napisy.sub"
+    external.write_text("nic", encoding="utf-8")
+    with pytest.raises(ExecutionError, match="ASS, SSA, or SRT"):
+        WorkspaceInspector(_FakeProbe({})).register_external_subtitle(
+            group,
+            external,
+            declared_language=None,
+            cancel=NeverCancelledToken(),
+        )
+
+
+def test_standalone_audio_is_validated_without_any_video_to_compare_with(tmp_path: Path) -> None:
+    _write_text_file(tmp_path / "cover" / "Book.png", "image")
+    _write_text_file(tmp_path / "cover" / "Book.mp3", "audio")
+    workspace = WorkspaceInspector(_FakeProbe({}), runner=_FakeRunner(7_000_000)).inspect(
+        discover_groups(tmp_path),
+        cancel=NeverCancelledToken(),
+    )
+    states = {artifact.kind: artifact.state for artifact in workspace.groups[0].artifacts}
+    assert states[ArtifactKind.SOURCE_AUDIO] is ArtifactState.READY
+    assert states[ArtifactKind.SOURCE_IMAGE] is ArtifactState.READY
+    assert workspace.warnings == ()
+
+
+def test_an_empty_cover_image_is_reported_as_invalid(tmp_path: Path) -> None:
+    (tmp_path / "cover").mkdir()
+    (tmp_path / "cover" / "Book.png").write_bytes(b"")
+    _write_text_file(tmp_path / "cover" / "Book.txt", "Zażółć gęślą jaźń")
+    workspace = WorkspaceInspector(_FakeProbe({}), runner=_FakeRunner(0)).inspect(
+        discover_groups(tmp_path),
+        cancel=NeverCancelledToken(),
+    )
+    image = next(artifact for artifact in workspace.groups[0].artifacts if artifact.kind is ArtifactKind.SOURCE_IMAGE)
+    assert image.state is ArtifactState.INVALID
+    assert tuple(warning.code for warning in workspace.warnings) == ("image_invalid",)
 
 
 def test_external_audio_within_tolerance_is_fully_decoded(tmp_path: Path) -> None:

@@ -35,6 +35,9 @@ _EXPECTED_SUFFIXES: Final[dict[ArtifactKind, frozenset[str]]] = {
     ArtifactKind.NARRATION_AUDIO: frozenset(
         entry.suffix for entry in PRODUCT_SUFFIXES if entry.kind is ArtifactKind.NARRATION_AUDIO
     ),
+    ArtifactKind.TRANSLATED_TEXT: frozenset(
+        Path(entry.suffix).suffix for entry in PRODUCT_SUFFIXES if entry.kind is ArtifactKind.TRANSLATED_TEXT
+    ),
 }
 """Allowed file suffixes for durable products published by the workflow."""
 
@@ -175,6 +178,14 @@ def _validate_product(
             _raise_publication_error("Published audio failed content validation", cause=error)
         except BinaryNotFoundError as error:
             _raise_publication_error("Published audio failed content validation", cause=error)
+        return
+    if expected_kind is ArtifactKind.TRANSLATED_TEXT:
+        try:
+            body: str = path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError) as error:
+            _raise_publication_error("Published text failed content validation", cause=error)
+        if not body.strip():
+            _raise_publication_error("Published text carries no readable content")
         return
     try:
         load_subtitles(path)

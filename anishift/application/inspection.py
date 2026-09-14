@@ -21,7 +21,7 @@ from anishift.application.artifacts import (
     create_artifact_id,
 )
 from anishift.application.cancellation import CancellationToken
-from anishift.application.discovery import DiscoveryResult
+from anishift.application.discovery import SOURCE_SUBTITLE_FORMATS, DiscoveryResult
 from anishift.application.intents import ExternalAudioRole
 from anishift.application.selection import choose_primary_video
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, MediaProbeError
@@ -216,11 +216,11 @@ class WorkspaceInspector:
         declared_language: str | None,
         cancel: CancellationToken,
     ) -> InspectedSourceGroup:
-        """Validate and register one manual ASS or SRT source outside discovery."""
+        """Validate and register one manual ASS, SSA, or SRT source outside discovery."""
         cancel.raise_if_cancelled()
-        subtitle_format: str = path.suffix.casefold().removeprefix(".")
-        if subtitle_format not in {"ass", "srt"}:
-            msg = "External subtitles must use ASS or SRT format"
+        subtitle_format: str | None = SOURCE_SUBTITLE_FORMATS.get(path.suffix.casefold())
+        if subtitle_format is None:
+            msg = "External subtitles must use ASS, SSA, or SRT format"
             raise ExecutionError(msg)
         language: str | None = _declared_language(declared_language)
         self._require_valid_subtitles(path, cancel=cancel)
@@ -372,11 +372,26 @@ class WorkspaceInspector:
             ArtifactKind.DISPLAYED_PL,
         }:
             return self._inspect_subtitles(artifact, cancel=cancel)
-        if artifact.kind is ArtifactKind.STANDALONE_TEXT:
+        if artifact.kind in {ArtifactKind.STANDALONE_TEXT, ArtifactKind.TRANSLATED_TEXT}:
             return self._inspect_text(artifact, cancel=cancel)
-        if artifact.kind is ArtifactKind.NARRATION_AUDIO:
+        if artifact.kind in {ArtifactKind.NARRATION_AUDIO, ArtifactKind.SOURCE_AUDIO}:
             return self._inspect_audio(artifact, catalogs=catalogs, cancel=cancel)
+        if artifact.kind is ArtifactKind.SOURCE_IMAGE:
+            return self._inspect_image(artifact, cancel=cancel)
         return artifact, None
+
+    def _inspect_image(
+        self,
+        artifact: Artifact,
+        *,
+        cancel: CancellationToken,
+    ) -> tuple[Artifact, InspectionWarning | None]:
+        cancel.raise_if_cancelled()
+        path: Path | None = artifact.path
+        if path is None or not path.is_file() or path.stat().st_size == 0:
+            invalid, _, warning = self._invalid(artifact, "image_invalid", "Image source is missing or empty")
+            return invalid, warning
+        return replace(artifact, state=ArtifactState.READY), None
 
     def _inspect_subtitles(
         self,
@@ -431,7 +446,6 @@ class WorkspaceInspector:
             return invalid, warning
         try:
             duration_us: int = self._decode_audio_duration(artifact.path, cancel=cancel)
-            video_duration_us: int = _catalog_video_duration(catalogs)
         except ExecutionError as error:
             if error.context.code is ErrorCode.CANCELLED:
                 raise
@@ -441,7 +455,8 @@ class WorkspaceInspector:
                 "Audio failed full decode or duration validation",
             )
             return invalid, warning
-        if abs(duration_us - video_duration_us) > self._audio_tolerance_us:
+        video_duration_us: int | None = _catalog_video_duration(catalogs)
+        if video_duration_us is not None and abs(duration_us - video_duration_us) > self._audio_tolerance_us:
             invalid, _, warning = self._invalid(
                 artifact,
                 "audio_duration_mismatch",
@@ -560,11 +575,10 @@ def _primary_video_duration(group: InspectedSourceGroup) -> int:
     return catalog.duration_us
 
 
-def _catalog_video_duration(catalogs: Mapping[str, MediaCatalog]) -> int:
+def _catalog_video_duration(catalogs: Mapping[str, MediaCatalog]) -> int | None:
     durations: tuple[int, ...] = tuple(catalog.duration_us for catalog in catalogs.values() if catalog.duration_us > 0)
     if not durations:
-        msg = "Audio validation requires known video duration"
-        raise _inspection_error(msg)
+        return None
     return durations[0]
 
 

@@ -156,7 +156,14 @@ def _prepare_workspace_binaries(discovery: DiscoveryResult, cancel: Cancellation
     binaries: list[Binary] = []
     if ArtifactKind.VIDEO_MKV in kinds:
         binaries.extend((Binary.MKVMERGE, Binary.MKVEXTRACT))
-    if kinds.intersection({ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4, ArtifactKind.NARRATION_AUDIO}):
+    if kinds.intersection(
+        {
+            ArtifactKind.VIDEO_MKV,
+            ArtifactKind.VIDEO_MP4,
+            ArtifactKind.NARRATION_AUDIO,
+            ArtifactKind.SOURCE_AUDIO,
+        }
+    ):
         binaries.extend((Binary.FFMPEG, Binary.FFPROBE))
     for binary in binaries:
         cancel.raise_if_cancelled()

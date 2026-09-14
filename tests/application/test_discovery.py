@@ -396,6 +396,124 @@ def test_changed_paths_update_the_index_without_walking_unchanged_directories(
     assert index.discover((source,)) == initial
 
 
+@pytest.mark.parametrize("suffix", [".ass", ".ssa"])
+def test_styled_subtitles_are_read_as_one_family_whatever_their_suffix(tmp_path: Path, suffix: str) -> None:
+    _touch(tmp_path, "01.mkv", f"01{suffix}")
+    group = discover_groups(tmp_path).groups[0]
+    sidecar = next(artifact for artifact in group.artifacts if artifact.kind is ArtifactKind.SOURCE_SUBTITLES)
+    assert sidecar.subtitle_format == "ass"
+
+
+def test_a_sidecar_is_never_a_main_source_of_plain_video_work() -> None:
+    assert is_primary_source(Path("episode.ssa")) is False
+    assert classify_artifact(Path("episode.ssa")) is not None
+
+
+@pytest.mark.parametrize("name", ["01.srt", "01.ass", "01.ssa"])
+def test_a_standalone_sidecar_forms_a_group_only_where_a_target_asked_for_it(tmp_path: Path, name: str) -> None:
+    _touch(tmp_path, name, f"subs/{name}", f"translate/{name}", f"audiobook/{name}", f"cover/{name}")
+    directories = {group.directory for group in discover_groups(tmp_path).groups}
+    assert directories == {
+        tmp_path / "subs",
+        tmp_path / "translate",
+        tmp_path / "audiobook",
+        tmp_path / "cover",
+    }
+
+
+@pytest.mark.parametrize(
+    ("place", "primary"),
+    [
+        ("translate", True),
+        ("audiobook", True),
+        ("cover", True),
+        ("subs", False),
+    ],
+)
+def test_only_a_text_target_treats_a_sidecar_as_its_main_source(tmp_path: Path, place: str, *, primary: bool) -> None:
+    _touch(tmp_path, f"{place}/01.srt")
+    route = discover_groups(tmp_path).groups[0].route
+    candidate = classify_artifact(tmp_path / place / "01.srt", route)
+    assert candidate is not None
+    assert candidate.is_primary is primary
+
+
+@pytest.mark.parametrize("name", ["Okładka.png", "Okładka.jpg", "Okładka.jpeg"])
+def test_a_still_image_is_a_source_only_inside_cover(tmp_path: Path, name: str) -> None:
+    _touch(tmp_path, name, f"cover/{name}")
+    groups = discover_groups(tmp_path).groups
+    assert [group.directory for group in groups] == [tmp_path / "cover"]
+    assert groups[0].artifacts[0].kind is ArtifactKind.SOURCE_IMAGE
+
+
+def test_audio_inside_cover_is_content_to_read_rather_than_a_finished_product(tmp_path: Path) -> None:
+    _touch(tmp_path, "cover/Book.mp3", "cover/Book.png")
+    kinds = {artifact.kind for artifact in discover_groups(tmp_path).groups[0].artifacts}
+    assert kinds == {ArtifactKind.SOURCE_AUDIO, ArtifactKind.SOURCE_IMAGE}
+
+
+def test_audio_outside_cover_stays_a_finished_narration_product(tmp_path: Path) -> None:
+    _touch(tmp_path, "01.mkv", "01.mp3", "audiobook/Book.txt", "audiobook/Book.flac")
+    kinds = {
+        group.directory: {artifact.kind for artifact in group.artifacts} for group in discover_groups(tmp_path).groups
+    }
+    assert ArtifactKind.NARRATION_AUDIO in kinds[tmp_path]
+    assert ArtifactKind.NARRATION_AUDIO in kinds[tmp_path / "audiobook"]
+
+
+def test_a_translated_text_product_attaches_without_becoming_a_source(tmp_path: Path) -> None:
+    _touch(tmp_path, "translate/Book.txt", "translate/Book.pl.txt")
+    group = discover_groups(tmp_path).groups[0]
+    kinds = {artifact.kind for artifact in group.artifacts}
+    assert kinds == {ArtifactKind.STANDALONE_TEXT, ArtifactKind.TRANSLATED_TEXT}
+    assert is_derived_product(Path("Book.pl.txt")) is True
+    assert is_primary_source(Path("Book.pl.txt")) is False
+
+
+def test_a_translated_text_alone_only_warns(tmp_path: Path) -> None:
+    _touch(tmp_path, "translate/Book.pl.txt")
+    result = discover_groups(tmp_path)
+    assert result.groups == ()
+    assert tuple(warning.kind for warning in result.warnings) == (DiscoveryWarningKind.ORPHAN_ARTIFACT,)
+
+
+def test_classification_without_a_route_keeps_the_plain_video_reading(tmp_path: Path) -> None:
+    _touch(tmp_path, "cover/Book.mp3", "cover/Book.png")
+    unrouted = classify_artifact(tmp_path / "cover" / "Book.mp3")
+    assert unrouted is not None
+    assert unrouted.kind is ArtifactKind.NARRATION_AUDIO
+    assert classify_artifact(tmp_path / "cover" / "Book.png") is None
+
+
+def test_a_published_group_in_ready_is_still_recognised_as_before(tmp_path: Path) -> None:
+    _touch(tmp_path, "ready/01.mkv", "ready/01.ass", "ready/01.pl.mkv")
+    group = discover_groups(tmp_path).groups[0]
+    assert group.route.place is WorkspacePlace.READY
+    assert {artifact.kind for artifact in group.artifacts} == {
+        ArtifactKind.VIDEO_MKV,
+        ArtifactKind.SOURCE_SUBTITLES,
+        ArtifactKind.FINAL_MKV,
+    }
+
+
+def test_two_sidecar_formats_in_a_text_target_report_an_ambiguous_main_source(tmp_path: Path) -> None:
+    _touch(tmp_path, "translate/Book.srt", "translate/Book.ass")
+    group = discover_groups(tmp_path).groups[0]
+    assert tuple(conflict.kind for conflict in group.conflicts) == (GroupConflictKind.AMBIGUOUS_PRIMARY,)
+
+
+def test_two_sidecar_formats_in_subs_are_left_to_the_readiness_check(tmp_path: Path) -> None:
+    _touch(tmp_path, "subs/01.mkv", "subs/01.srt", "subs/01.ass")
+    assert discover_groups(tmp_path).groups[0].conflicts == ()
+
+
+def test_polish_names_survive_classification_and_grouping(tmp_path: Path) -> None:
+    _touch(tmp_path, "audiobook/Zażółć gęślą jaźń.txt", "audiobook/Zażółć gęślą jaźń.pl.txt")
+    group = discover_groups(tmp_path).groups[0]
+    assert group.stem == "Zażółć gęślą jaźń"
+    assert len(group.artifacts) == 2
+
+
 def test_a_directory_rename_replaces_its_indexed_groups_and_preserves_exclusions(tmp_path: Path) -> None:
     _touch(tmp_path, "Series/01.mkv", "Series/.hidden/02.mkv", "temp/work/03.mkv", ".hidden/04.mkv")
     index: DiscoveryIndex = DiscoveryIndex(tmp_path)

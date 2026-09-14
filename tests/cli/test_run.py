@@ -64,6 +64,7 @@ result = results.RunResult(
     run_id="run-probe",
     groups=(results.GroupResult(group_id="anime-01", status=results.GroupStatus.SUCCEEDED),),
 )
+workflows = importlib.import_module("anishift.application.workflows")
 group = SimpleNamespace(
     group_id="anime-01",
     conflicts=(),
@@ -71,9 +72,17 @@ group = SimpleNamespace(
         SimpleNamespace(
             kind=application.ArtifactKind.SOURCE_SUBTITLES,
             state=application.ArtifactState.READY,
+            subtitle_format="srt",
+            path=Path("workspace/translate/anime-01.srt"),
         ),
     ),
     media_catalogs={},
+    source=SimpleNamespace(
+        route=workflows.WorkflowRoute(
+            workflows.WorkspacePlace.TRANSLATE,
+            workflows.WorkflowTarget.TRANSLATE,
+        ),
+    ),
 )
 facade = SimpleNamespace(
     workspace_root=Path("workspace"),

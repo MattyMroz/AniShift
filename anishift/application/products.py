@@ -49,6 +49,7 @@ PRODUCT_SUFFIXES: Final[tuple[ProductSuffix, ...]] = (
     ProductSuffix(".displayed.pl.srt", ArtifactKind.DISPLAYED_PL, subtitle_format="srt"),
     ProductSuffix(".pl.ass", ArtifactKind.FULL_PL, subtitle_format="ass"),
     ProductSuffix(".pl.srt", ArtifactKind.FULL_PL, subtitle_format="srt"),
+    ProductSuffix(".pl.txt", ArtifactKind.TRANSLATED_TEXT),
     ProductSuffix(".pl.mkv", ArtifactKind.FINAL_MKV),
     ProductSuffix(".pl.mp4", ArtifactKind.FINAL_MP4),
     ProductSuffix(".m4a", ArtifactKind.NARRATION_AUDIO, audio_profile="aac"),

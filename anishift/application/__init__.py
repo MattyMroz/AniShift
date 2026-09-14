@@ -99,6 +99,8 @@ from anishift.application.events import (
     WorkerNotificationKind,
 )
 from anishift.application.intents import (
+    TRANSLATE_PRODUCTS,
+    VIDEO_PRODUCTS,
     AutoPreset,
     BurnSubtitleProduct,
     ExternalAudioRole,
@@ -133,13 +135,21 @@ from anishift.application.results import (
     RunResult,
     TaskResult,
 )
-from anishift.application.selection import group_is_ready, ready_group_ids
+from anishift.application.selection import (
+    GroupReadiness,
+    ReadinessReason,
+    group_is_ready,
+    ready_group_ids,
+    resolve_readiness,
+)
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger
 
 __all__ = [
     "PRIMARY_SOURCE_SUFFIXES",
     "SCAN_INTERVAL_S",
     "SUBSCRIPTION_CHECK_INTERVAL_S",
+    "TRANSLATE_PRODUCTS",
+    "VIDEO_PRODUCTS",
     "WATCH_STATE_FILE_NAME",
     "AcquisitionConfirmation",
     "AcquisitionService",
@@ -178,6 +188,7 @@ __all__ = [
     "GroupConflictKind",
     "GroupIntent",
     "GroupPlan",
+    "GroupReadiness",
     "GroupResult",
     "GroupStatus",
     "InspectedSourceGroup",
@@ -198,6 +209,7 @@ __all__ = [
     "ProductIntent",
     "ProductKind",
     "ProviderLock",
+    "ReadinessReason",
     "ReadyStore",
     "RebuildRequest",
     "ReleaseCatalog",
@@ -252,6 +264,7 @@ __all__ = [
     "preview_plan",
     "read_episode",
     "ready_group_ids",
+    "resolve_readiness",
 ]
 
 _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {

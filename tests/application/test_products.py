@@ -16,7 +16,9 @@ from anishift.application.products import (
     product_suffix,
 )
 
-_PRODUCT_LITERAL: Final[re.Pattern[str]] = re.compile(r'\.(spoken|displayed)\.pl|"\.pl"|\.pl\.(ass|srt|mkv|mp4)|\.m4a')
+_PRODUCT_LITERAL: Final[re.Pattern[str]] = re.compile(
+    r'\.(spoken|displayed)\.pl|"\.pl"|\.pl\.(ass|srt|txt|mkv|mp4)|\.m4a'
+)
 
 _PRODUCTS_MODULE: Final[str] = "anishift/application/products.py"
 

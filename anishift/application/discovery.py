@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
@@ -22,7 +22,7 @@ from anishift.application.artifacts import (
     create_group_id,
 )
 from anishift.application.products import ProductName, classify_product
-from anishift.application.workflows import WorkflowRoute, route_within
+from anishift.application.workflows import ROOT_ROUTE, WorkflowRoute, WorkflowTarget, WorkspacePlace, route_within
 from anishift.paths import TEMP_DIRECTORY
 
 # ── Constants ──────────────────────────────────────────────────────────────
@@ -34,13 +34,49 @@ _PRIMARY_SOURCE_KINDS: Final[Mapping[str, ArtifactKind]] = MappingProxyType(
         ".txt": ArtifactKind.STANDALONE_TEXT,
     }
 )
-"""The one statement of which filename suffix names a primary source, and of which kind."""
-
-_PRIMARY_KINDS: Final[frozenset[ArtifactKind]] = frozenset(_PRIMARY_SOURCE_KINDS.values())
-"""Artifact kinds a primary source can carry, read off the suffixes that name them."""
+"""The one statement of which filename suffix names a container or standalone text source, and of which kind."""
 
 PRIMARY_SOURCE_SUFFIXES: Final[frozenset[str]] = frozenset(_PRIMARY_SOURCE_KINDS)
-"""Folded suffixes of every primary source, for any caller judging one filename."""
+"""Folded suffixes of every primary source of plain video work, for any caller judging one filename."""
+
+SOURCE_SUBTITLE_FORMATS: Final[Mapping[str, str]] = MappingProxyType({".ass": "ass", ".ssa": "ass", ".srt": "srt"})
+"""Subtitle suffixes discovery accepts and the working format each one is read and written as."""
+
+_SOURCE_IMAGE_SUFFIXES: Final[frozenset[str]] = frozenset({".png", ".jpg", ".jpeg"})
+"""Still-image suffixes a cover accepts as the single frame of its export."""
+
+_VIDEO_PRIMARY_KINDS: Final[frozenset[ArtifactKind]] = frozenset(_PRIMARY_SOURCE_KINDS.values())
+"""Main sources of plain video work; TXT stays visible for the manual flow without starting work by itself."""
+
+_PRIMARY_KINDS_BY_TARGET: Final[Mapping[WorkflowTarget, frozenset[ArtifactKind]]] = MappingProxyType(
+    {
+        WorkflowTarget.VIDEO: _VIDEO_PRIMARY_KINDS,
+        WorkflowTarget.TRANSLATE: frozenset({ArtifactKind.STANDALONE_TEXT, ArtifactKind.SOURCE_SUBTITLES}),
+        WorkflowTarget.AUDIOBOOK: frozenset({ArtifactKind.STANDALONE_TEXT, ArtifactKind.SOURCE_SUBTITLES}),
+        WorkflowTarget.COVER: frozenset(
+            {ArtifactKind.STANDALONE_TEXT, ArtifactKind.SOURCE_SUBTITLES, ArtifactKind.SOURCE_AUDIO}
+        ),
+    }
+)
+"""Artifact kinds carrying the main content source of one execution target."""
+
+_DERIVED_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
+    {
+        ArtifactKind.FULL_PL,
+        ArtifactKind.SPOKEN_PL,
+        ArtifactKind.DISPLAYED_PL,
+        ArtifactKind.TRANSLATED_TEXT,
+        ArtifactKind.NARRATION_AUDIO,
+        ArtifactKind.FINAL_MKV,
+        ArtifactKind.FINAL_MP4,
+    }
+)
+"""Artifact kinds a durable AniShift product carries, whatever place it was found in."""
+
+_TASK_PLACES: Final[frozenset[WorkspacePlace]] = frozenset(
+    {WorkspacePlace.SUBS, WorkspacePlace.TRANSLATE, WorkspacePlace.AUDIOBOOK, WorkspacePlace.COVER}
+)
+"""Places whose whole set is awaited, so every source there stays visible before the main one arrives."""
 
 
 class DiscoveryWarningKind(StrEnum):
@@ -89,11 +125,12 @@ class DiscoveryIndex:
 
     def discover(self, changed_paths: Sequence[Path] | None = None) -> DiscoveryResult:
         """Reconcile the library or inspect only paths named by filesystem notifications."""
+        resolver: _RouteResolver = _RouteResolver(self._root)
         if changed_paths is None or self._candidates is None:
             candidates: dict[Path, ArtifactName] = {
                 path: candidate
                 for path in _iter_source_paths(self._root)
-                if (candidate := classify_artifact(path)) is not None
+                if (candidate := classify_artifact(path, resolver.route_of(path.parent))) is not None
             }
         else:
             candidates = dict(self._candidates)
@@ -105,13 +142,13 @@ class DiscoveryIndex:
                     _iter_source_paths(self._root) if path == self._root else _iter_entry_sources(path)
                 )
                 for source in sources:
-                    if (candidate := classify_artifact(source)) is not None:
+                    if (candidate := classify_artifact(source, resolver.route_of(source.parent))) is not None:
                         candidates[source] = candidate
         self._candidates = candidates
         ordered: tuple[ArtifactName, ...] = tuple(
             candidates[path] for path in sorted(candidates, key=lambda path: _relative_sort_key(path, self._root))
         )
-        return _discovered(ordered, self._root)
+        return _discovered(ordered, self._root, resolver)
 
     def _visible(self, path: Path) -> bool:
         if not path.is_relative_to(self._root):
@@ -126,24 +163,44 @@ class DiscoveryIndex:
         )
 
 
+class _RouteResolver:
+    """Resolve the work route of a directory once per scan, since resolving a path touches the filesystem."""
+
+    def __init__(self, root: Path) -> None:
+        self._root: Path = root.resolve()
+        self._routes: dict[Path, WorkflowRoute] = {}
+
+    def route_of(self, directory: Path) -> WorkflowRoute:
+        """Return the route *directory* belongs to."""
+        cached: WorkflowRoute | None = self._routes.get(directory)
+        if cached is not None:
+            return cached
+        route: WorkflowRoute = route_within(self._root, directory.resolve())
+        self._routes[directory] = route
+        return route
+
+
 def discover_groups(root: Path) -> DiscoveryResult:
     """Read *root* with its subfolders once and deterministically group supported artifact names."""
     paths: tuple[Path, ...] = tuple(sorted(_iter_source_paths(root), key=lambda path: _relative_sort_key(path, root)))
+    resolver: _RouteResolver = _RouteResolver(root)
     candidates: tuple[ArtifactName, ...] = tuple(
-        candidate for path in paths if (candidate := classify_artifact(path)) is not None
+        candidate
+        for path in paths
+        if (candidate := classify_artifact(path, resolver.route_of(path.parent))) is not None
     )
-    return _discovered(candidates, root)
+    return _discovered(candidates, root, resolver)
 
 
-def _discovered(candidates: Sequence[ArtifactName], root: Path) -> DiscoveryResult:
-    groups: tuple[SourceGroup, ...] = group_candidates(candidates, root)
+def _discovered(candidates: Sequence[ArtifactName], root: Path, resolver: _RouteResolver) -> DiscoveryResult:
+    groups: tuple[SourceGroup, ...] = _grouped(candidates, root, resolver)
     grouped_keys: set[tuple[str, str]] = {
         (group.directory.as_posix().casefold(), group.stem.casefold()) for group in groups
     }
     warnings: tuple[DiscoveryWarning, ...] = tuple(
         DiscoveryWarning(
             kind=DiscoveryWarningKind.ORPHAN_ARTIFACT,
-            message="Artifact has no primary MKV, MP4, or TXT source",
+            message="Artifact has no main source its place accepts",
             path=candidate.path,
         )
         for candidate in candidates
@@ -153,7 +210,7 @@ def _discovered(candidates: Sequence[ArtifactName], root: Path) -> DiscoveryResu
 
 
 def is_primary_source(path: Path) -> bool:
-    """Return whether *path* names an MKV, MP4, or standalone TXT source."""
+    """Return whether *path* names a main source of plain video work: MKV, MP4, or standalone TXT."""
     candidate: ArtifactName | None = classify_artifact(path)
     return candidate is not None and candidate.is_primary
 
@@ -164,41 +221,38 @@ def is_derived_product(path: Path) -> bool:
     return candidate is not None and candidate.is_derived
 
 
-def classify_artifact(path: Path) -> ArtifactName | None:
-    """Classify one supported filename without touching its contents."""
+def classify_artifact(path: Path, route: WorkflowRoute = ROOT_ROUTE) -> ArtifactName | None:
+    """Classify one supported filename for the work *route* of its place, without touching its contents."""
     product: ProductName | None = classify_product(path.name)
     if product is not None:
-        return _artifact_name(
-            path,
-            product.stem,
-            product.kind,
-            subtitle_format=product.subtitle_format,
-            audio_codec=product.audio_codec,
-        )
+        return _named_product(path, product, route)
     lowered: str = path.name.casefold()
-    source_subtitle: ArtifactName | None = _classify_source_subtitle(path, lowered)
+    source_subtitle: ArtifactName | None = _classify_source_subtitle(path, lowered, route)
     if source_subtitle is not None:
         return source_subtitle
-    return _classify_primary_source(path, lowered)
+    source_image: ArtifactName | None = _classify_source_image(path, lowered, route)
+    if source_image is not None:
+        return source_image
+    return _classify_primary_source(path, lowered, route)
 
 
 def group_candidates(candidates: Sequence[ArtifactName], root: Path) -> tuple[SourceGroup, ...]:
     """Group classified names by directory and normalized stem, keying IDs on paths relative to *root*."""
+    return _grouped(candidates, root, _RouteResolver(root))
+
+
+def _grouped(candidates: Sequence[ArtifactName], root: Path, resolver: _RouteResolver) -> tuple[SourceGroup, ...]:
     buckets: dict[tuple[str, str], list[ArtifactName]] = {}
     for candidate in candidates:
         buckets.setdefault(_candidate_group_key(candidate), []).append(candidate)
 
-    resolved_root: Path = root.resolve()
-    routes: dict[Path, WorkflowRoute] = {}
     groups: list[SourceGroup] = []
     for key in sorted(buckets):
         bucket: tuple[ArtifactName, ...] = tuple(sorted(buckets[key], key=_candidate_sort_key))
-        if not any(candidate.is_primary for candidate in bucket):
+        route: WorkflowRoute = resolver.route_of(bucket[0].path.parent)
+        if not any(_anchors_group(candidate, route) for candidate in bucket):
             continue
-        directory: Path = bucket[0].path.parent
-        if directory not in routes:
-            routes[directory] = route_within(resolved_root, directory.resolve())
-        groups.append(_build_source_group(bucket, root, routes[directory]))
+        groups.append(_build_source_group(bucket, root, route))
     return tuple(groups)
 
 
@@ -233,31 +287,70 @@ def _relative_sort_key(path: Path, root: Path) -> tuple[str, str]:
     return relative.casefold(), relative
 
 
-def _classify_source_subtitle(path: Path, lowered: str) -> ArtifactName | None:
-    if not (lowered.endswith(".ass") or lowered.endswith(".srt")):
-        return None
-    return _artifact_name(
+def _named_product(path: Path, product: ProductName, route: WorkflowRoute) -> ArtifactName | None:
+    named: ArtifactName | None = _artifact_name(
         path,
-        path.stem,
-        ArtifactKind.SOURCE_SUBTITLES,
-        subtitle_format=path.suffix[1:].casefold(),
+        product.stem,
+        _source_role(product.kind, route),
+        route,
+        subtitle_format=product.subtitle_format,
     )
+    if named is None or product.audio_codec is None:
+        return named
+    return replace(named, audio_codec=product.audio_codec)
 
 
-def _classify_primary_source(path: Path, lowered: str) -> ArtifactName | None:
+def _classify_source_subtitle(path: Path, lowered: str, route: WorkflowRoute) -> ArtifactName | None:
+    for suffix, subtitle_format in SOURCE_SUBTITLE_FORMATS.items():
+        if lowered.endswith(suffix):
+            return _artifact_name(
+                path, path.stem, ArtifactKind.SOURCE_SUBTITLES, route, subtitle_format=subtitle_format
+            )
+    return None
+
+
+def _classify_source_image(path: Path, lowered: str, route: WorkflowRoute) -> ArtifactName | None:
+    if route.target is not WorkflowTarget.COVER:
+        return None
+    if not any(lowered.endswith(suffix) for suffix in _SOURCE_IMAGE_SUFFIXES):
+        return None
+    return _artifact_name(path, path.stem, ArtifactKind.SOURCE_IMAGE, route)
+
+
+def _classify_primary_source(path: Path, lowered: str, route: WorkflowRoute) -> ArtifactName | None:
     for suffix, kind in _PRIMARY_SOURCE_KINDS.items():
         if lowered.endswith(suffix):
-            return _artifact_name(path, path.stem, kind)
+            return _artifact_name(path, path.stem, kind, route)
     return None
+
+
+def _source_role(kind: ArtifactKind, route: WorkflowRoute) -> ArtifactKind:
+    if kind is ArtifactKind.NARRATION_AUDIO and route.target is WorkflowTarget.COVER:
+        return ArtifactKind.SOURCE_AUDIO
+    return kind
+
+
+def _primary_kinds(route: WorkflowRoute) -> frozenset[ArtifactKind]:
+    if route.target is None:
+        return _VIDEO_PRIMARY_KINDS
+    return _PRIMARY_KINDS_BY_TARGET.get(route.target, _VIDEO_PRIMARY_KINDS)
+
+
+def _anchors_group(candidate: ArtifactName, route: WorkflowRoute) -> bool:
+    if candidate.kind in _primary_kinds(route):
+        return True
+    if candidate.is_derived:
+        return False
+    return route.place in _TASK_PLACES
 
 
 def _artifact_name(
     path: Path,
     stem: str,
     kind: ArtifactKind,
+    route: WorkflowRoute,
     *,
     subtitle_format: str | None = None,
-    audio_codec: str | None = None,
 ) -> ArtifactName | None:
     normalized_stem: str = stem.strip()
     if not normalized_stem:
@@ -266,18 +359,9 @@ def _artifact_name(
         path=path,
         stem=normalized_stem,
         kind=kind,
-        is_primary=kind in _PRIMARY_KINDS,
-        is_derived=kind
-        in {
-            ArtifactKind.FULL_PL,
-            ArtifactKind.SPOKEN_PL,
-            ArtifactKind.DISPLAYED_PL,
-            ArtifactKind.NARRATION_AUDIO,
-            ArtifactKind.FINAL_MKV,
-            ArtifactKind.FINAL_MP4,
-        },
+        is_primary=kind in _primary_kinds(route),
+        is_derived=kind in _DERIVED_KINDS,
         subtitle_format=subtitle_format,
-        audio_codec=audio_codec,
     )
 
 
@@ -293,7 +377,7 @@ def _build_source_group(candidates: tuple[ArtifactName, ...], root: Path, route:
         stem=first.stem,
         directory=first.path.parent,
         artifacts=tuple(artifacts_by_id.values()),
-        conflicts=_find_conflicts(candidates),
+        conflicts=_find_conflicts(candidates, route),
         route=route,
     )
 
@@ -313,9 +397,10 @@ def _to_artifact(candidate: ArtifactName, group_id: str) -> Artifact:
     )
 
 
-def _find_conflicts(candidates: tuple[ArtifactName, ...]) -> tuple[GroupConflict, ...]:
+def _find_conflicts(candidates: tuple[ArtifactName, ...], route: WorkflowRoute) -> tuple[GroupConflict, ...]:
     conflicts: list[GroupConflict] = []
-    primary: tuple[ArtifactName, ...] = tuple(candidate for candidate in candidates if candidate.is_primary)
+    main_kinds: frozenset[ArtifactKind] = _primary_kinds(route)
+    primary: tuple[ArtifactName, ...] = tuple(candidate for candidate in candidates if candidate.kind in main_kinds)
     has_text: bool = any(candidate.kind is ArtifactKind.STANDALONE_TEXT for candidate in primary)
     has_video: bool = any(candidate.kind in {ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4} for candidate in primary)
     if has_text and has_video:
@@ -352,10 +437,12 @@ def _candidate_sort_key(candidate: ArtifactName) -> tuple[int, int, str, str]:
         ArtifactKind.VIDEO_MP4: 1,
         ArtifactKind.STANDALONE_TEXT: 2,
         ArtifactKind.SOURCE_SUBTITLES: 3,
+        ArtifactKind.SOURCE_AUDIO: 4,
+        ArtifactKind.SOURCE_IMAGE: 5,
     }
     format_order: int = 0 if candidate.subtitle_format == "ass" else 1
     return (
-        kind_order.get(candidate.kind, 4),
+        kind_order.get(candidate.kind, 6),
         format_order,
         candidate.path.name.casefold(),
         candidate.path.name,

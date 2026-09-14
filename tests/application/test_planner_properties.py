@@ -14,6 +14,7 @@ from anishift.application.artifacts import (
 )
 from anishift.application.inspection import InspectedSourceGroup
 from anishift.application.intents import (
+    VIDEO_PRODUCTS,
     AutoPreset,
     BurnSubtitleProduct,
     MkvTrackProduct,
@@ -88,7 +89,7 @@ def _group(artifacts: tuple[Artifact, ...]) -> InspectedSourceGroup:
 
 
 def _products(random: Random) -> ProductIntent:
-    all_products = tuple(ProductKind)
+    all_products = tuple(sorted(VIDEO_PRODUCTS))
     requested = frozenset(product for product in all_products if random.choice((False, True)))
     if not requested:
         requested = frozenset({random.choice(all_products)})

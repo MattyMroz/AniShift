@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Final, Protocol
 
 from natsort import os_sorted
 
@@ -17,7 +18,9 @@ from anishift.application.artifacts import (
     ArtifactState,
     create_artifact_id,
 )
+from anishift.application.control import RecipePreferences, TextResultFormat, TranslateRecipe
 from anishift.application.intents import (
+    TRANSLATE_PRODUCTS,
     AutoPreset,
     BurnSubtitleProduct,
     ExternalAudioRole,
@@ -43,10 +46,21 @@ from anishift.application.planning import (
 )
 from anishift.application.products import product_path
 from anishift.application.selection import choose_auto_sidecar, choose_primary_video
+from anishift.application.workflows import WorkflowTarget
 from anishift.errors import PlanningError
 
 if TYPE_CHECKING:
     from anishift.application.inspection import InspectedSourceGroup
+
+# ── Constants ──────────────────────────────────────────────────────────────
+
+_TRANSLATE_SOURCE_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
+    {ArtifactKind.STANDALONE_TEXT, ArtifactKind.SOURCE_SUBTITLES},
+)
+"""Documents a translate place reads, whether a plain text or an authored subtitle file."""
+
+_NON_DIALOGUE_SUBTITLE_NAME: Final[re.Pattern[str]] = re.compile(r"sign|song|forced", re.I)
+"""Track names announcing signs, songs, or forced captions instead of full dialogue."""
 
 
 class _TrackKindView(Protocol):
@@ -68,7 +82,13 @@ class _MediaTrackView(Protocol):
     def language(self) -> str | None: ...
 
     @property
+    def name(self) -> str | None: ...
+
+    @property
     def is_default(self) -> bool: ...
+
+    @property
+    def is_forced(self) -> bool: ...
 
     @property
     def subtitle_format(self) -> str | None: ...
@@ -83,15 +103,16 @@ class _EmbeddedTrack:
     subtitle_format: str | None = None
 
 
-def plan_auto(
+def plan_auto(  # noqa: PLR0913 - every automatic planning input stays an explicit call-site choice
     groups: Sequence[InspectedSourceGroup],
     preset: AutoPreset,
     settings: RunSettingsSnapshot,
     *,
     rebuild: RebuildRequest | None = None,
     overrides: Mapping[str, object] | None = None,
+    recipes: RecipePreferences | None = None,
 ) -> ExecutionPlan:
-    """Build one fresh automatic plan for every selected inspected group."""
+    """Build one fresh automatic plan for every selected inspected group, each for the target of its own place."""
     ordered_groups: tuple[InspectedSourceGroup, ...] = _ordered_unique_groups(groups)
     products: ProductIntent = (
         preset.products
@@ -99,19 +120,57 @@ def plan_auto(
         else replace(preset.products, requested_products=preset.products.requested_products | rebuild.products)
     )
     intents: dict[str, GroupIntent] = {
-        group.group_id: GroupIntent(
-            group_id=group.group_id,
-            mode=RunMode.AUTO,
-            products=products,
-            subtitle_source_policy=preset.subtitle_source_policy,
-            translation_action=preset.translation_action,
-            source_subtitle_language=preset.source_subtitle_language,
-            subtitle_output_format=preset.subtitle_output_format,
-        )
-        for group in ordered_groups
+        group.group_id: _auto_intent(group, preset, products, recipes) for group in ordered_groups
     }
     snapshot: RunSettingsSnapshot = settings if overrides is None else settings.with_overrides(overrides)
     return _plan(ordered_groups, intents, snapshot, rebuild=rebuild)
+
+
+def auto_group_products(
+    group: InspectedSourceGroup,
+    products: ProductIntent,
+    recipes: RecipePreferences | None = None,
+) -> ProductIntent:
+    """Return the products one group is automatically asked for, by the target of its own place."""
+    if group.source.route.target is not WorkflowTarget.TRANSLATE:
+        return products
+    translate: TranslateRecipe = (recipes if recipes is not None else RecipePreferences()).translate
+    holds_text: bool = any(
+        artifact.kind is ArtifactKind.STANDALONE_TEXT and artifact.state is ArtifactState.READY
+        for artifact in group.artifacts
+    )
+    writes_text: bool = holds_text and translate.text_result is TextResultFormat.TEXT
+    product: ProductKind = ProductKind.TRANSLATED_TEXT if writes_text else ProductKind.FULL_PL
+    return ProductIntent(requested_products=frozenset({product}))
+
+
+def _auto_intent(
+    group: InspectedSourceGroup,
+    preset: AutoPreset,
+    products: ProductIntent,
+    recipes: RecipePreferences | None,
+) -> GroupIntent:
+    if group.source.route.target is WorkflowTarget.TRANSLATE:
+        translate: TranslateRecipe = (recipes if recipes is not None else RecipePreferences()).translate
+        return GroupIntent(
+            group_id=group.group_id,
+            mode=RunMode.AUTO,
+            products=auto_group_products(group, products, recipes),
+            translation_action=translate.translation_action,
+            source_subtitle_language=preset.source_subtitle_language,
+            subtitle_output_format=preset.subtitle_output_format,
+        )
+    return GroupIntent(
+        group_id=group.group_id,
+        mode=RunMode.AUTO,
+        products=products,
+        subtitle_source_policy=(
+            SubtitleSourcePolicy.SIDECAR if group.source.route.requires_sidecar else preset.subtitle_source_policy
+        ),
+        translation_action=preset.translation_action,
+        source_subtitle_language=preset.source_subtitle_language,
+        subtitle_output_format=preset.subtitle_output_format,
+    )
 
 
 def plan_manual(
@@ -248,11 +307,9 @@ class _GroupPlanner:
                 "source_conflict",
                 "Source group contains an unresolved discovery conflict",
             )
+        self._require_mandatory_sidecar()
         self._validate_manual_selections()
-        if any(artifact.kind is ArtifactKind.STANDALONE_TEXT for artifact in self.group.artifacts):
-            self._build_text_plan()
-        else:
-            self._build_media_plan()
+        self._build_target_plan()
         blocking: bool = any(problem.is_blocking for problem in self.problems)
         group_tasks: tuple[PlanTask, ...] = () if blocking else stable_topological_order(self.tasks)
         artifact_values: tuple[Artifact, ...] = tuple(
@@ -267,8 +324,36 @@ class _GroupPlanner:
         )
         return group_plan, artifact_values, group_tasks
 
+    def _require_mandatory_sidecar(self) -> None:
+        if not self.group.source.route.requires_sidecar:
+            return
+        if any(
+            artifact.kind is ArtifactKind.SOURCE_SUBTITLES and artifact.state is ArtifactState.READY
+            for artifact in self.group.artifacts
+        ):
+            return
+        self._problem(
+            "sidecar_required",
+            "This place pairs every film with its own subtitle file, whichever source the run reads",
+        )
+
+    def _build_target_plan(self) -> None:
+        if self.group.source.route.target is WorkflowTarget.TRANSLATE:
+            self._build_translate_plan()
+            return
+        if ProductKind.TRANSLATED_TEXT in self.intent.products.requested_products:
+            self._problem(
+                "translated_text_unsupported",
+                "Only a translate place writes a plain translated text document",
+            )
+            return
+        if any(artifact.kind is ArtifactKind.STANDALONE_TEXT for artifact in self.group.artifacts):
+            self._build_text_plan()
+            return
+        self._build_media_plan()
+
     def _validate_manual_selections(self) -> None:
-        if self.intent.mode is not RunMode.MANUAL:
+        if self.intent.mode is not RunMode.MANUAL or self.group.source.route.target is WorkflowTarget.TRANSLATE:
             return
         if self.intent.preferred_video_artifact_id is not None:
             self._select_video()
@@ -338,7 +423,155 @@ class _GroupPlanner:
             is_network=self.settings.translation_is_network,
             is_paid=self.settings.translation_is_paid,
         )
+        self._draft_timings(translated)
         self._publish_subtitle(translated, ArtifactKind.FULL_PL)
+
+    def _build_translate_plan(self) -> None:
+        requested: frozenset[ProductKind] = self.intent.products.requested_products
+        if not requested <= TRANSLATE_PRODUCTS:
+            self._problem(
+                "translate_products_unsupported",
+                "A translate place writes only a Polish text or subtitle document",
+            )
+            return
+        source: Artifact | None = self._translate_source()
+        if source is None:
+            return
+        if self.intent.translation_action is TranslationAction.DO_NOT_TRANSLATE:
+            self._problem(
+                "translate_translation_required",
+                "A translate place cannot write a Polish document without translating",
+                artifacts=(source,),
+            )
+            return
+        if source.kind is not ArtifactKind.STANDALONE_TEXT:
+            self._translate_subtitle_document(source, requested)
+            return
+        if ProductKind.TRANSLATED_TEXT in requested:
+            self._translate_text_document(source)
+        if ProductKind.FULL_PL in requested:
+            self._translate_text_to_draft_subtitles(source)
+
+    def _translate_source(self) -> Artifact | None:
+        selected_id: str | None = self.intent.selected_subtitle_artifact_id
+        if selected_id is not None:
+            selected: Artifact | None = self.artifacts.get(selected_id)
+            if selected is None or selected.kind not in _TRANSLATE_SOURCE_KINDS:
+                self._problem("subtitle_selection_invalid", "Selected translation source is unavailable or invalid")
+                return None
+            if selected.state is not ArtifactState.READY:
+                self._problem(
+                    "subtitle_selection_invalid",
+                    "Selected translation source is unavailable or invalid",
+                    artifacts=(selected,),
+                )
+                return None
+            return selected
+        candidates: tuple[Artifact, ...] = tuple(
+            artifact
+            for artifact in self.artifacts.values()
+            if artifact.kind in _TRANSLATE_SOURCE_KINDS
+            and artifact.state is ArtifactState.READY
+            and artifact.lifetime is ArtifactLifetime.SOURCE
+        )
+        if not candidates:
+            self._problem("translate_source_missing", "A validated text or subtitle source is required")
+            return None
+        if len(candidates) > 1:
+            self._problem(
+                "translate_source_ambiguous",
+                "Choose which text or subtitle document this translation reads",
+                artifacts=tuple(sorted(candidates, key=lambda artifact: artifact.artifact_id)),
+            )
+            return None
+        return candidates[0]
+
+    def _translate_subtitle_document(self, source: Artifact, requested: frozenset[ProductKind]) -> None:
+        if ProductKind.TRANSLATED_TEXT in requested:
+            self._problem(
+                "translated_text_unsupported",
+                "A subtitle source keeps its own format instead of becoming a plain text document",
+                artifacts=(source,),
+            )
+            return
+        self._full_pl = self._ready_product(ArtifactKind.FULL_PL)
+        self._subtitle_input = source
+        full: Artifact | None = self._ensure_full_pl()
+        if full is not None:
+            self._publish_subtitle(full, ArtifactKind.FULL_PL)
+
+    def _translate_text_document(self, source: Artifact) -> None:
+        if self._ready_product(ArtifactKind.TRANSLATED_TEXT) is not None:
+            return
+        translated: Artifact = self._intermediate(ArtifactKind.TRANSLATED_TEXT, "txt-text", language="pol")
+        self._add_task(
+            TaskKind.TRANSLATE_SUBTITLES,
+            requires=(source,),
+            produces=(translated,),
+            variant="txt-text",
+            resource_key=_translation_resource_key(self.settings),
+            parameters=(("source_kind", "txt"), ("output_format", "txt")),
+            is_network=self.settings.translation_is_network,
+            is_paid=self.settings.translation_is_paid,
+        )
+        self._publish_text(translated)
+
+    def _translate_text_to_draft_subtitles(self, source: Artifact) -> None:
+        if self._ready_product(ArtifactKind.FULL_PL) is not None:
+            return
+        translated: Artifact = self._intermediate(
+            ArtifactKind.FULL_PL,
+            "txt-translation",
+            subtitle_format="srt",
+            language="pol",
+        )
+        self._add_task(
+            TaskKind.TRANSLATE_SUBTITLES,
+            requires=(source,),
+            produces=(translated,),
+            variant="txt",
+            resource_key=_translation_resource_key(self.settings),
+            parameters=(("source_kind", "txt"), ("output_format", "srt")),
+            is_network=self.settings.translation_is_network,
+            is_paid=self.settings.translation_is_paid,
+        )
+        self._draft_timings(translated)
+        self._publish_subtitle(translated, ArtifactKind.FULL_PL)
+
+    def _draft_timings(self, artifact: Artifact) -> None:
+        self._problem(
+            "draft_subtitle_timings",
+            "Subtitles built from plain text are a narration script with estimated timings",
+            artifacts=(artifact,),
+            is_blocking=False,
+        )
+
+    def _publish_text(self, source: Artifact) -> Artifact | None:
+        destination: Path = product_path(
+            self.group.source.directory,
+            self.group.source.stem,
+            ArtifactKind.TRANSLATED_TEXT,
+        )
+        collision: Artifact | None = next(
+            (
+                artifact
+                for artifact in self.group.artifacts
+                if artifact.lifetime is ArtifactLifetime.SOURCE
+                and artifact.path is not None
+                and _same_path(artifact.path, destination)
+            ),
+            None,
+        )
+        if collision is not None:
+            self._problem(
+                "text_source_path_collision",
+                "A translated document cannot replace the source text it was read from",
+                artifacts=(collision,),
+            )
+            return None
+        target: Artifact = self._durable_target(ArtifactKind.TRANSLATED_TEXT, destination, language="pol")
+        self._add_publish(source, target)
+        return target
 
     def _build_media_plan(self) -> None:
         products: ProductIntent = self.intent.products
@@ -536,14 +769,23 @@ class _GroupPlanner:
                 self._problem(f"{kind}_track_invalid", f"Selected embedded {kind} track is unavailable")
                 return None
         else:
+            demote: bool = kind == "subtitles"
             priorities: tuple[str, ...] = (
-                self.settings.subtitle_language_priority
-                if kind == "subtitles"
-                else self.settings.audio_language_priority
+                self.settings.subtitle_language_priority if demote else self.settings.audio_language_priority
             )
-            selected = min(candidates, key=lambda track: _track_rank(track, priorities), default=None)
+            selected = min(
+                candidates,
+                key=lambda track: _track_rank(track, priorities, demote_non_dialogue=demote),
+                default=None,
+            )
             if selected is None:
                 return None
+            if demote and all(_is_non_dialogue(track) for track in candidates):
+                self._problem(
+                    "subtitle_dialogue_missing",
+                    "Only signs, songs, or forced subtitle tracks are embedded, so the narration follows them",
+                    is_blocking=False,
+                )
         return _EmbeddedTrack(
             video=video,
             track_id=selected.track_id,
@@ -1275,7 +1517,18 @@ class _GroupPlanner:
         return _same_path(artifact.path, expected)
 
 
-def _track_rank(track: _MediaTrackView, priorities: tuple[str, ...]) -> tuple[int, int, int, int]:
+def _is_non_dialogue(track: _MediaTrackView) -> bool:
+    if track.is_forced:
+        return True
+    return track.name is not None and _NON_DIALOGUE_SUBTITLE_NAME.search(track.name) is not None
+
+
+def _track_rank(
+    track: _MediaTrackView,
+    priorities: tuple[str, ...],
+    *,
+    demote_non_dialogue: bool,
+) -> tuple[int, int, int, int, int]:
     normalized_priorities: tuple[str, ...] = tuple(language.casefold() for language in priorities)
     language: str | None = track.language.casefold() if track.language is not None else None
     try:
@@ -1284,7 +1537,8 @@ def _track_rank(track: _MediaTrackView, priorities: tuple[str, ...]) -> tuple[in
     except ValueError:
         priority = len(normalized_priorities)
         preferred = 1
-    return preferred, priority, 0 if track.is_default else 1, track.track_id
+    non_dialogue: int = 1 if demote_non_dialogue and _is_non_dialogue(track) else 0
+    return non_dialogue, preferred, priority, 0 if track.is_default else 1, track.track_id
 
 
 def _mp4_uses_narration(products: ProductIntent) -> bool:

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Final
 
 from anishift.application.artifacts import ArtifactKind, ArtifactLifetime, ArtifactState
 from anishift.application.intents import ProductKind
+from anishift.application.planner import auto_group_products
 from anishift.application.selection import group_is_ready
 from anishift.platform.directory_watch import source_is_available
 from anishift.utils.logger import get_logger
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
+    from anishift.application.control import RecipePreferences
     from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace
     from anishift.application.intents import AutoPreset
 
@@ -37,6 +39,7 @@ _PRODUCT_ARTIFACTS: Final[Mapping[ProductKind, ArtifactKind]] = {
     ProductKind.FULL_PL: ArtifactKind.FULL_PL,
     ProductKind.SPOKEN_PL: ArtifactKind.SPOKEN_PL,
     ProductKind.DISPLAYED_PL: ArtifactKind.DISPLAYED_PL,
+    ProductKind.TRANSLATED_TEXT: ArtifactKind.TRANSLATED_TEXT,
     ProductKind.NARRATION_AUDIO: ArtifactKind.NARRATION_AUDIO,
     ProductKind.MKV: ArtifactKind.FINAL_MKV,
     ProductKind.MP4: ArtifactKind.FINAL_MP4,
@@ -80,14 +83,19 @@ def is_stable(snapshot: SourceSnapshot, now: float) -> bool:
     return source_is_available(snapshot.path)
 
 
-def needs_work(group: InspectedSourceGroup, preset: AutoPreset) -> bool:
-    """Whether *group* may be run and still misses at least one product of *preset*."""
+def needs_work(
+    group: InspectedSourceGroup,
+    preset: AutoPreset,
+    recipes: RecipePreferences | None = None,
+) -> bool:
+    """Whether *group* may be run and still misses a product its own place asks for."""
     if not group_is_ready(group):
         return False
+    requested: frozenset[ProductKind] = auto_group_products(group, preset.products, recipes).requested_products
     ready_kinds: frozenset[ArtifactKind] = frozenset(
         artifact.kind for artifact in group.artifacts if artifact.state is ArtifactState.READY
     )
-    return any(_PRODUCT_ARTIFACTS[product] not in ready_kinds for product in preset.products.requested_products)
+    return any(_PRODUCT_ARTIFACTS[product] not in ready_kinds for product in requested)
 
 
 def source_fingerprint(snapshots: Sequence[SourceSnapshot]) -> tuple[tuple[str, int, int], ...]:
@@ -104,13 +112,19 @@ class WatchLedger:
         self._finished: dict[str, tuple[tuple[str, int, int], ...]] = {}
         self.next_check_at: float | None = None
 
-    def candidates(self, workspace: InspectedWorkspace, preset: AutoPreset, now: float) -> tuple[str, ...]:
+    def candidates(
+        self,
+        workspace: InspectedWorkspace,
+        preset: AutoPreset,
+        now: float,
+        recipes: RecipePreferences | None = None,
+    ) -> tuple[str, ...]:
         """Refresh every group snapshot and return the groups a batch window may take now."""
         ready: list[str] = []
         self.next_check_at = None
         for group in workspace.groups:
             snapshots: tuple[SourceSnapshot, ...] = self._refresh(group, now)
-            if self._is_candidate(group, snapshots, preset, now):
+            if self._is_candidate(group, snapshots, preset, now, recipes):
                 ready.append(group.group_id)
         return tuple(ready)
 
@@ -142,8 +156,9 @@ class WatchLedger:
         snapshots: Sequence[SourceSnapshot],
         preset: AutoPreset,
         now: float,
+        recipes: RecipePreferences | None,
     ) -> bool:
-        if group.group_id in self._started or not needs_work(group, preset):
+        if group.group_id in self._started or not needs_work(group, preset, recipes):
             return False
         if not snapshots:
             return False

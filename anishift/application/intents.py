@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -33,6 +33,7 @@ class ProductKind(StrEnum):
     FULL_PL = "full_pl"
     SPOKEN_PL = "spoken_pl"
     DISPLAYED_PL = "displayed_pl"
+    TRANSLATED_TEXT = "translated_text"
     NARRATION_AUDIO = "narration_audio"
     MKV = "mkv"
     MP4 = "mp4"
@@ -96,6 +97,17 @@ class TranslationAction(StrEnum):
     AUTO = "auto"
     TRANSLATE = "translate"
     DO_NOT_TRANSLATE = "do_not_translate"
+
+
+# ── Constants ──────────────────────────────────────────────────────────────
+
+TRANSLATE_PRODUCTS: Final[frozenset[ProductKind]] = frozenset(
+    {ProductKind.FULL_PL, ProductKind.TRANSLATED_TEXT},
+)
+"""Documents a translate place can be asked for, none of which needs a picture or a voice."""
+
+VIDEO_PRODUCTS: Final[frozenset[ProductKind]] = frozenset(ProductKind) - {ProductKind.TRANSLATED_TEXT}
+"""Products the video preset offers, excluding the plain text document only a translate place writes."""
 
 
 @dataclass(frozen=True, slots=True)

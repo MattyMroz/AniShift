@@ -70,6 +70,7 @@ from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from anishift.application.acquisition import AcquisitionService
+    from anishift.application.control import RecipePreferences
     from anishift.application.recovery import RunJournal
     from anishift.application.subscriptions import SubscriptionService
     from anishift.services.llm import LlmConfig
@@ -368,8 +369,9 @@ class AppService:
         *,
         rebuild: RebuildRequest | None = None,
         overrides: Mapping[str, object] | None = None,
+        recipes: RecipePreferences | None = None,
     ) -> ExecutionPlan:
-        """Plan selected groups from a stored or one-shot automatic preset."""
+        """Plan selected groups from a stored or one-shot automatic preset and the persisted target recipes."""
         resolved: AutoPreset = preset.to_preset() if isinstance(preset, AutoPresetDraft) else preset
         settings: RunSettingsSnapshot = self._settings_snapshot()
         if overrides:
@@ -379,6 +381,7 @@ class AppService:
             resolved,
             settings,
             rebuild=rebuild,
+            recipes=recipes,
         )
 
     def plan_manual(

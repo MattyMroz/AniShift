@@ -7,7 +7,7 @@ import pytest
 from rich.cells import cell_len
 
 from anishift.application import AppService, AutoPreset, AutoPresetDraft, EnvironmentSettingStatus
-from anishift.application.intents import ProductIntent, ProductKind
+from anishift.application.intents import VIDEO_PRODUCTS, ProductIntent, ProductKind
 from anishift.cli.interactive.settings import _PRODUCTS, SettingsController, SettingsResult, _Feedback
 from anishift.config.field_access import assign_setting_value, read_setting_value
 from anishift.config.field_catalog import (
@@ -681,7 +681,7 @@ def test_a_confirmed_reset_says_nothing(panel: SettingsController, service: Fake
 
 
 def test_output_edit_preserves_every_previously_requested_product(service: FakeSettingsService) -> None:
-    service.products = frozenset(ProductKind) - {ProductKind.NARRATION_AUDIO}
+    service.products = VIDEO_PRODUCTS - {ProductKind.NARRATION_AUDIO}
     panel = SettingsController(cast("AppService", service), lambda: None)
     _activate(panel, "category:output")
     panel._selected = next(
@@ -690,11 +690,11 @@ def test_output_edit_preserves_every_previously_requested_product(service: FakeS
 
     panel.handle_key("space")
 
-    assert service.products == frozenset(ProductKind)
+    assert service.products == VIDEO_PRODUCTS
 
 
-def test_every_output_product_is_selectable() -> None:
-    assert {product for product, _label in _PRODUCTS} == set(ProductKind)
+def test_every_video_product_is_selectable_and_no_translate_only_product_is() -> None:
+    assert {product for product, _label in _PRODUCTS} == VIDEO_PRODUCTS
 
 
 def test_failed_save_keeps_the_edit_and_blocks_navigation(

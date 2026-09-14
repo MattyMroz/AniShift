@@ -15,6 +15,7 @@ from anishift.application.artifacts import (
 )
 from anishift.application.inspection import InspectedSourceGroup
 from anishift.application.intents import (
+    VIDEO_PRODUCTS,
     AutoPreset,
     BurnSubtitleProduct,
     ExternalAudioRole,
@@ -126,13 +127,14 @@ def _artifact(  # noqa: PLR0913 - artifact fixtures expose only contract fields 
     )
 
 
-def _catalog(video: Artifact) -> MediaCatalog:
+def _catalog(video: Artifact, tracks: tuple[MediaTrack, ...] | None = None) -> MediaCatalog:
     container = ContainerKind.MKV if video.kind is ArtifactKind.VIDEO_MKV else ContainerKind.MP4
     return MediaCatalog(
         path=video.path or Path("missing"),
         container=container,
         duration_us=video.duration_us or 10_000_000,
-        tracks=(
+        tracks=tracks
+        or (
             MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False),
             MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", "Japanese", True, False),
             MediaTrack(2, MediaTrackKind.SUBTITLES, "ass", "eng", "English", False, False, "ass"),
@@ -145,6 +147,7 @@ def _group(
     *artifacts: Artifact,
     group_id: str = "episode-1",
     stem: str = "1",
+    tracks: tuple[MediaTrack, ...] | None = None,
 ) -> InspectedSourceGroup:
     source = SourceGroup(
         group_id=group_id,
@@ -153,7 +156,7 @@ def _group(
         artifacts=artifacts,
     )
     catalogs = {
-        artifact.artifact_id: _catalog(artifact)
+        artifact.artifact_id: _catalog(artifact, tracks)
         for artifact in artifacts
         if artifact.kind in {ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4} and artifact.state is ArtifactState.READY
     }
@@ -206,7 +209,7 @@ def _complete_products() -> tuple[InspectedSourceGroup, AutoPreset]:
         )
     )
     products: ProductIntent = ProductIntent(
-        frozenset(ProductKind),
+        VIDEO_PRODUCTS,
         burn_subtitle_product=BurnSubtitleProduct.DISPLAYED_PL,
         mkv_tracks=frozenset({MkvTrackProduct.FULL_PL_SUBTITLES, MkvTrackProduct.NARRATION_AUDIO}),
         mp4_audio_source=Mp4AudioSource.NARRATION,
@@ -401,6 +404,148 @@ def test_auto_embedded_subtitles_translate_and_burn_to_mp4() -> None:
     extraction = _task(plan, TaskKind.EXTRACT_SUBTITLES)
     assert dict(extraction.parameters)["track_id"] == 2
     assert video.artifact_id in extraction.requires
+
+
+def test_polish_signs_track_loses_to_english_dialogue() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    group: InspectedSourceGroup = _group(
+        video,
+        tracks=(
+            MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False),
+            MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", "Japanese", True, False),
+            MediaTrack(2, MediaTrackKind.SUBTITLES, "ass", "pol", "Signs & Songs", True, False, "ass"),
+            MediaTrack(3, MediaTrackKind.SUBTITLES, "ass", "eng", "English", False, False, "ass"),
+        ),
+    )
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.FULL_PL}))
+    settings: RunSettingsSnapshot = replace(_settings(), subtitle_language_priority=("pol", "eng"))
+
+    plan: ExecutionPlan = plan_auto((group,), _preset(products), settings)
+
+    assert plan.can_execute is True
+    assert dict(_task(plan, TaskKind.EXTRACT_SUBTITLES).parameters)["track_id"] == 3
+    assert plan.problems == ()
+
+
+def test_forced_polish_track_loses_to_polish_dialogue() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    group: InspectedSourceGroup = _group(
+        video,
+        tracks=(
+            MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False),
+            MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", "Japanese", True, False),
+            MediaTrack(2, MediaTrackKind.SUBTITLES, "ass", "pol", "Polish", True, True, "ass"),
+            MediaTrack(3, MediaTrackKind.SUBTITLES, "ass", "pol", "Polish", False, False, "ass"),
+        ),
+    )
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.FULL_PL}))
+    settings: RunSettingsSnapshot = replace(_settings(), subtitle_language_priority=("pol", "eng"))
+
+    plan: ExecutionPlan = plan_auto((group,), _preset(products), settings)
+
+    assert plan.can_execute is True
+    assert dict(_task(plan, TaskKind.EXTRACT_SUBTITLES).parameters)["track_id"] == 3
+    assert plan.problems == ()
+
+
+def test_default_priority_prefers_polish_dialogue_over_english_dialogue() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    group: InspectedSourceGroup = _group(
+        video,
+        tracks=(
+            MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False),
+            MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", "Japanese", True, False),
+            MediaTrack(2, MediaTrackKind.SUBTITLES, "ass", "eng", "English", True, False, "ass"),
+            MediaTrack(3, MediaTrackKind.SUBTITLES, "ass", "pol", "Polish", False, False, "ass"),
+        ),
+    )
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.FULL_PL}))
+    settings: RunSettingsSnapshot = replace(_settings(), subtitle_language_priority=("pol", "eng"))
+
+    plan: ExecutionPlan = plan_auto((group,), _preset(products), settings)
+
+    assert dict(_task(plan, TaskKind.EXTRACT_SUBTITLES).parameters)["track_id"] == 3
+    assert TaskKind.TRANSLATE_SUBTITLES not in _task_kinds(plan)
+
+
+def test_configured_language_order_outranks_the_default_polish_preference() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    group: InspectedSourceGroup = _group(
+        video,
+        tracks=(
+            MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False),
+            MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", "Japanese", True, False),
+            MediaTrack(2, MediaTrackKind.SUBTITLES, "ass", "pol", "Polish", True, False, "ass"),
+            MediaTrack(3, MediaTrackKind.SUBTITLES, "ass", "eng", "English", False, False, "ass"),
+        ),
+    )
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.FULL_PL}))
+    settings: RunSettingsSnapshot = replace(_settings(), subtitle_language_priority=("eng", "pol"))
+
+    plan: ExecutionPlan = plan_auto((group,), _preset(products), settings)
+
+    assert dict(_task(plan, TaskKind.EXTRACT_SUBTITLES).parameters)["track_id"] == 3
+    assert TaskKind.TRANSLATE_SUBTITLES in _task_kinds(plan)
+
+
+def test_only_non_dialogue_subtitles_stay_usable_with_a_warning() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    group: InspectedSourceGroup = _group(
+        video,
+        tracks=(
+            MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False),
+            MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", "Japanese", True, False),
+            MediaTrack(2, MediaTrackKind.SUBTITLES, "ass", "pol", "Signs", False, False, "ass"),
+            MediaTrack(3, MediaTrackKind.SUBTITLES, "ass", "eng", "English", True, True, "ass"),
+        ),
+    )
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.FULL_PL}))
+    settings: RunSettingsSnapshot = replace(_settings(), subtitle_language_priority=("pol", "eng"))
+
+    plan: ExecutionPlan = plan_auto((group,), _preset(products), settings)
+
+    assert plan.can_execute is True
+    assert dict(_task(plan, TaskKind.EXTRACT_SUBTITLES).parameters)["track_id"] == 2
+    assert [(problem.code, problem.is_blocking) for problem in plan.problems] == [("subtitle_dialogue_missing", False)]
+
+
+def test_manual_selected_signs_track_is_honoured_without_demotion() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    group: InspectedSourceGroup = _group(
+        video,
+        tracks=(
+            MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False),
+            MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", "Japanese", True, False),
+            MediaTrack(2, MediaTrackKind.SUBTITLES, "ass", "pol", "Signs & Songs", False, True, "ass"),
+            MediaTrack(3, MediaTrackKind.SUBTITLES, "ass", "eng", "English", True, False, "ass"),
+        ),
+    )
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.FULL_PL}))
+    intent: GroupIntent = _manual(group, products, selected_subtitle_track_id=2)
+
+    plan: ExecutionPlan = plan_manual((group,), {group.group_id: intent}, _settings())
+
+    assert plan.can_execute is True
+    assert dict(_task(plan, TaskKind.EXTRACT_SUBTITLES).parameters)["track_id"] == 2
+    assert plan.problems == ()
+
+
+def test_audio_selection_ignores_the_signs_pattern_and_forced_flag() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    group: InspectedSourceGroup = _group(
+        video,
+        tracks=(
+            MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False),
+            MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", "Forced songs", False, True),
+            MediaTrack(2, MediaTrackKind.AUDIO, "aac", "zho", "Chinese", True, False),
+            MediaTrack(3, MediaTrackKind.SUBTITLES, "ass", "eng", "English", True, False, "ass"),
+        ),
+    )
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO}))
+
+    plan: ExecutionPlan = plan_auto((group,), _preset(products), _settings())
+
+    assert dict(_task(plan, TaskKind.EXTRACT_TRACKS).parameters)["audio_track_id"] == 1
 
 
 def test_auto_narration_uses_one_legacy_bulk_extraction_task_per_mkv() -> None:

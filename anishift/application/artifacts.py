@@ -20,6 +20,7 @@ class ArtifactKind(StrEnum):
     SPOKEN_PL = "spoken_pl"
     DISPLAYED_PL = "displayed_pl"
     SOURCE_AUDIO = "source_audio"
+    SOURCE_IMAGE = "source_image"
     NARRATION_AUDIO = "narration_audio"
     NORMALIZED_SUBTITLES = "normalized_subtitles"
     TTS_CLIP = "tts_clip"
@@ -27,6 +28,7 @@ class ArtifactKind(StrEnum):
     FINAL_MKV = "final_mkv"
     FINAL_MP4 = "final_mp4"
     STANDALONE_TEXT = "standalone_text"
+    TRANSLATED_TEXT = "translated_text"
 
 
 class ArtifactState(StrEnum):

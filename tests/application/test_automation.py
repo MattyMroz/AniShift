@@ -24,8 +24,13 @@ from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
     AutomationPolicy,
+    ManualHandledMarker,
+    RecipePreferences,
     RequestState,
+    SourceFingerprint,
     SourceSelection,
+    TextResultFormat,
+    TranslateRecipe,
     WatchState,
 )
 from anishift.application.control_views import encode_view
@@ -54,6 +59,7 @@ from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError
+from anishift.paths import COVER_DIRECTORY, TRANSLATE_DIRECTORY
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import (
     ControlClient,
@@ -203,6 +209,7 @@ class _Service:
         self._discovered: object = discovered
         self._plan: ExecutionPlan = plan
         self.background_admission: list[bool] = []
+        self.recipes: list[RecipePreferences | None] = []
         self.submitted: list[str] = []
         self.cancelled: list[str] = []
         self.reloads: int = 0
@@ -236,8 +243,10 @@ class _Service:
         *,
         rebuild: RebuildRequest | None = None,
         overrides: Mapping[str, object] | None = None,
+        recipes: RecipePreferences | None = None,
     ) -> ExecutionPlan:
         del group_ids, preset, rebuild, overrides
+        self.recipes.append(recipes)
         return self._plan
 
     def submit_plan(  # noqa: PLR0913
@@ -588,8 +597,14 @@ def _request(
     )
 
 
+def _library_dir(root: Path) -> Path:
+    directory: Path = root / TRANSLATE_DIRECTORY
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
 def _library(tmp_path: Path) -> tuple[_Service, WatchStateStore, str]:
-    write_text_source(tmp_path / "Episode.txt", "Text")
+    write_text_source(_library_dir(tmp_path) / "Episode.txt", "Text")
     real: AppService = _real_service(tmp_path)
     workspace = real.discover()
     group_id: str = workspace.groups[0].group_id
@@ -818,7 +833,7 @@ def test_a_start_after_the_sources_changed_asks_for_a_new_preview(tmp_path: Path
     thread: threading.Thread = _serving(owner)
     try:
         preview: ControlResponse = owner.handle(_request("preview", {"client_id": _CLIENT}, command_id="preview-1"))
-        write_text_source(tmp_path / "Episode.txt", "Changed text that is clearly longer")
+        write_text_source(_library_dir(tmp_path) / "Episode.txt", "Changed text that is clearly longer")
         answer: ControlResponse = owner.handle(
             _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]})
         )
@@ -875,7 +890,7 @@ def test_a_finished_explicit_request_records_what_the_user_settled_for(tmp_path:
 
     markers = store.load().markers
     assert [item.group_id for item in markers] == [group_id]
-    assert markers[0].products == frozenset({ProductKind.FULL_PL})
+    assert markers[0].products == frozenset({ProductKind.TRANSLATED_TEXT})
 
 
 def test_a_failed_state_save_refuses_the_command_and_changes_nothing(
@@ -1208,10 +1223,10 @@ def test_accepted_transfer_waits_for_file_completion_then_enters_auto_once(
     monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
     monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
     service, store, group_id = _library(tmp_path)
-    source: Path = tmp_path / "Episode.txt"
+    source: Path = _library_dir(tmp_path) / "Episode.txt"
     size: int = source.stat().st_size
     network: _TorrentNetwork = _TorrentNetwork()
-    network.tracked["9"] = TorrentInfo(source.name, "9", 0.5, "downloading", str(tmp_path), 1, size - 1)
+    network.tracked["9"] = TorrentInfo(source.name, "9", 0.5, "downloading", str(source.parent), 1, size - 1)
     network.entries = (TorrentFile(0, source.name, size, 0.5, 1, False),)
     service.acquisition = AcquisitionService(
         source=network, client=cast("TorrentClient", network), workspace_root=tmp_path, parse_name=parse_release_name
@@ -1468,7 +1483,7 @@ def test_file_events_wait_for_writers_and_manual_reservations_before_admitting_o
 
     owner.attach_broadcast(broadcast)
     thread: threading.Thread = _serving(owner)
-    source: Path = tmp_path / "Episode.txt"
+    source: Path = _library_dir(tmp_path) / "Episode.txt"
     try:
         if held:
             assert owner.handle(_request("reserve", {"client_id": _CLIENT, "group_ids": [group_id]})).ok
@@ -1537,6 +1552,151 @@ def test_auto_off_keeps_the_library_current_and_auto_on_admits_without_another_f
     assert len(service.submitted) == 1
 
 
+def test_automatic_work_plans_with_the_persisted_recipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
+    monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
+    service, store, group_id = _library(tmp_path)
+    recipes: RecipePreferences = RecipePreferences(translate=TranslateRecipe(text_result=TextResultFormat.SUBTITLES))
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), recipes=recipes))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        assert service.submitted_event.wait(_TIMEOUT_S)
+        assert service.recipes == [recipes]
+    finally:
+        for run_id in tuple(service.active):
+            service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize(
+    ("settled", "admitted"),
+    [(frozenset({ProductKind.TRANSLATED_TEXT}), True), (frozenset({ProductKind.SPOKEN_PL}), False)],
+)
+def test_a_marker_is_weighed_against_the_products_the_group_would_get(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settled: frozenset[ProductKind],
+    admitted: bool,
+) -> None:
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
+    monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
+    service, store, group_id = _library(tmp_path)
+    marker: ManualHandledMarker = ManualHandledMarker(
+        group_id=group_id,
+        fingerprint=_fingerprint(tmp_path),
+        products=settled,
+        request_id="settled-1",
+        recorded_at=_MOMENT.isoformat(),
+    )
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), markers=(marker,)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        assert service.submitted_event.wait(_TIMEOUT_S if admitted else 0.3) is admitted
+    finally:
+        for run_id in tuple(service.active):
+            service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize(
+    ("text_result", "planned"),
+    [(TextResultFormat.TEXT, "translated_text"), (TextResultFormat.SUBTITLES, "full_pl")],
+)
+def test_a_preview_of_a_translate_group_follows_the_persisted_recipe(
+    tmp_path: Path,
+    text_result: TextResultFormat,
+    planned: str,
+) -> None:
+    write_text_source(_library_dir(tmp_path) / "Episode.txt", "Text")
+    service: AppService = _real_service(tmp_path)
+    store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME)
+    store.save(WatchState(recipes=RecipePreferences(translate=TranslateRecipe(text_result=text_result))))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        response: ControlResponse = owner.handle(_request("preview", {"client_id": _CLIENT}))
+        assert response.ok, response.message
+        groups = cast("list[Mapping[str, object]]", response.result["groups"])
+        assert [entry["planned_products"] for entry in groups] == [[planned]]
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+
+
+def test_a_product_published_beside_its_source_stays_background_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
+    monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
+    service, store, group_id = _library(tmp_path)
+    published: Path = _library_dir(tmp_path) / "Episode.pl.txt"
+    write_text_source(published, "Text")
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(paths=(published,)))
+        assert service.submitted_event.wait(_TIMEOUT_S)
+        assert store.load().requests[0].origin is RequestOrigin.BACKGROUND
+    finally:
+        for run_id in tuple(service.active):
+            service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+def test_an_image_arriving_in_cover_invalidates_the_preview_of_its_own_group(tmp_path: Path) -> None:
+    directory: Path = tmp_path / COVER_DIRECTORY
+    directory.mkdir(parents=True)
+    write_text_source(directory / "Episode.txt", "Text")
+    (directory / "Episode.png").write_bytes(b"image")
+    real: AppService = _real_service(tmp_path)
+    workspace = real.discover()
+    assert [group.source.stem for group in workspace.groups] == ["Episode"]
+    plan: ExecutionPlan = real.plan_auto((workspace.groups[0].group_id,), _PRESET)
+    service = _Service(tmp_path, discovered=workspace, plan=plan, subscriptions=_Subscriptions())
+    store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        preview: ControlResponse = owner.handle(_request("preview", {"client_id": _CLIENT}))
+        assert preview.ok, preview.message
+        joined: Path = directory / "Episode.jpg"
+        joined.write_bytes(b"image")
+        owner.files_changed(DirectoryChange(paths=(joined,)))
+        started: ControlResponse = owner.handle(
+            _request(
+                "start",
+                {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]},
+                command_id="start",
+            )
+        )
+        assert not started.ok
+        assert started.code is ControlErrorCode.STALE_PREVIEW
+        assert not service.submitted
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+def _fingerprint(tmp_path: Path) -> SourceFingerprint:
+    group: InspectedSourceGroup = _real_service(tmp_path).discover().groups[0]
+    return watch_module.source_fingerprint(watch_module.snapshot_sources(group, {}, 0.0))
+
+
 @pytest.mark.parametrize("name", ["Episode.srt", "Episode.pl.srt"])
 def test_new_sidecars_and_changed_products_invalidate_the_affected_preview(tmp_path: Path, name: str) -> None:
     service, store, _ = _library(tmp_path)
@@ -1545,7 +1705,7 @@ def test_new_sidecars_and_changed_products_invalidate_the_affected_preview(tmp_p
     try:
         preview: ControlResponse = owner.handle(_request("preview", {"client_id": _CLIENT}))
         assert preview.ok
-        source: Path = tmp_path / name
+        source: Path = _library_dir(tmp_path) / name
         source.write_text("1\n00:00:00,000 --> 00:00:01,000\nText\n", encoding="utf-8")
         owner.files_changed(DirectoryChange(paths=(source,)))
         started: ControlResponse = owner.handle(

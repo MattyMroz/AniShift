@@ -16,7 +16,7 @@ from anishift.application.artifacts import (
     SourceGroup,
 )
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace
-from anishift.application.intents import AutoPreset, ProductIntent, ProductKind
+from anishift.application.intents import VIDEO_PRODUCTS, AutoPreset, ProductIntent, ProductKind
 from anishift.application.watch import (
     PARTIAL_SUFFIXES,
     QUIET_S,
@@ -27,6 +27,10 @@ from anishift.application.watch import (
     snapshot_sources,
     source_fingerprint,
 )
+from anishift.application.workflows import ROOT_ROUTE, WorkflowRoute, WorkflowTarget, WorkspacePlace
+from anishift.services.media.types import ContainerKind, MediaCatalog, MediaTrack, MediaTrackKind
+
+_TRANSLATE_ROUTE: WorkflowRoute = WorkflowRoute(WorkspacePlace.TRANSLATE, WorkflowTarget.TRANSLATE)
 
 _SOURCE_KINDS: frozenset[ArtifactKind] = frozenset(
     {
@@ -46,6 +50,7 @@ _PRODUCT_ARTIFACT_KINDS: dict[ProductKind, ArtifactKind] = {
     ProductKind.NARRATION_AUDIO: ArtifactKind.NARRATION_AUDIO,
     ProductKind.MKV: ArtifactKind.FINAL_MKV,
     ProductKind.MP4: ArtifactKind.FINAL_MP4,
+    ProductKind.TRANSLATED_TEXT: ArtifactKind.TRANSLATED_TEXT,
 }
 
 
@@ -62,20 +67,55 @@ def _artifact(group_id: str, kind: ArtifactKind, path: Path) -> Artifact:
     )
 
 
-def _group(group_id: str, stem: str, *artifacts: Artifact) -> InspectedSourceGroup:
+def _group(
+    group_id: str,
+    stem: str,
+    *artifacts: Artifact,
+    route: WorkflowRoute = _TRANSLATE_ROUTE,
+    media_catalogs: dict[str, MediaCatalog] | None = None,
+) -> InspectedSourceGroup:
     source: SourceGroup = SourceGroup(
         group_id=group_id,
         stem=stem,
         directory=Path(),
         artifacts=artifacts,
+        route=route,
     )
-    return InspectedSourceGroup(source=source, artifacts=artifacts, media_catalogs={}, conflicts=())
+    return InspectedSourceGroup(
+        source=source,
+        artifacts=artifacts,
+        media_catalogs=media_catalogs if media_catalogs is not None else {},
+        conflicts=(),
+    )
 
 
 def _text_group(tmp_path: Path, group_id: str, stem: str) -> InspectedSourceGroup:
     path: Path = tmp_path / f"{stem}.txt"
     path.write_text("one", encoding="utf-8")
     return _group(group_id, stem, _artifact(group_id, ArtifactKind.STANDALONE_TEXT, path))
+
+
+def _video_group(tmp_path: Path, group_id: str, stem: str, *products: Artifact) -> InspectedSourceGroup:
+    path: Path = tmp_path / f"{stem}.mkv"
+    path.write_bytes(b"data")
+    video: Artifact = _artifact(group_id, ArtifactKind.VIDEO_MKV, path)
+    catalog: MediaCatalog = MediaCatalog(
+        path=path,
+        container=ContainerKind.MKV,
+        duration_us=10_000_000,
+        tracks=(
+            MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False),
+            MediaTrack(1, MediaTrackKind.SUBTITLES, "S_TEXT/UTF8", "eng", None, True, False, subtitle_format="srt"),
+        ),
+    )
+    return _group(
+        group_id,
+        stem,
+        video,
+        *products,
+        route=ROOT_ROUTE,
+        media_catalogs={video.artifact_id: catalog},
+    )
 
 
 def _workspace(*groups: InspectedSourceGroup) -> InspectedWorkspace:
@@ -158,47 +198,57 @@ def test_the_fingerprint_orders_source_files_by_name(tmp_path: Path) -> None:
     assert source_fingerprint(snapshots) == (("a.mkv", 1, 10), ("b.txt", 2, 20))
 
 
-@pytest.mark.parametrize("product", sorted(ProductKind))
-def test_every_requested_product_needs_work_until_its_artifact_is_ready(
+@pytest.mark.parametrize("product", sorted(VIDEO_PRODUCTS))
+def test_every_requested_video_product_needs_work_until_its_artifact_is_ready(
     tmp_path: Path,
     product: ProductKind,
 ) -> None:
-    text: Path = tmp_path / "episode.txt"
-    text.write_text("one", encoding="utf-8")
-    source: Artifact = _artifact("group-a", ArtifactKind.STANDALONE_TEXT, text)
     preset: AutoPreset = _preset(product)
-    assert needs_work(_group("group-a", "episode", source), preset) is True
+    assert needs_work(_video_group(tmp_path, "group-a", "episode"), preset) is True
     produced: Path = tmp_path / f"episode.{product.value}"
     produced.write_bytes(b"done")
-    complete: InspectedSourceGroup = _group(
+    complete: InspectedSourceGroup = _video_group(
+        tmp_path,
         "group-a",
         "episode",
-        source,
         _artifact("group-a", _PRODUCT_ARTIFACT_KINDS[product], produced),
     )
     assert needs_work(complete, preset) is False
 
 
+def test_a_translate_group_needs_work_for_its_own_product_not_the_video_preset(tmp_path: Path) -> None:
+    preset: AutoPreset = _preset(ProductKind.MKV)
+    assert needs_work(_text_group(tmp_path, "group-a", "episode"), preset) is True
+    produced: Path = tmp_path / "episode.pl.txt"
+    produced.write_bytes(b"done")
+    group: InspectedSourceGroup = _group(
+        "group-a",
+        "episode",
+        _artifact("group-a", ArtifactKind.STANDALONE_TEXT, tmp_path / "episode.txt"),
+        _artifact("group-a", ArtifactKind.TRANSLATED_TEXT, produced),
+    )
+    assert needs_work(group, preset) is False
+
+
 def test_a_group_holding_every_requested_product_needs_no_work(tmp_path: Path) -> None:
-    text: Path = tmp_path / "episode.txt"
-    text.write_text("one", encoding="utf-8")
-    artifacts: list[Artifact] = [_artifact("group-a", ArtifactKind.STANDALONE_TEXT, text)]
+    products: list[Artifact] = []
     for product in (ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO, ProductKind.MKV):
         produced: Path = tmp_path / f"episode.{product.value}"
         produced.write_bytes(b"done")
-        artifacts.append(_artifact("group-a", _PRODUCT_ARTIFACT_KINDS[product], produced))
-    group: InspectedSourceGroup = _group("group-a", "episode", *artifacts)
+        products.append(_artifact("group-a", _PRODUCT_ARTIFACT_KINDS[product], produced))
+    group: InspectedSourceGroup = _video_group(tmp_path, "group-a", "episode", *products)
     preset: AutoPreset = _preset(ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO, ProductKind.MKV)
     assert needs_work(group, preset) is False
 
 
-def test_a_group_without_any_text_source_never_needs_work(tmp_path: Path) -> None:
+def test_a_group_without_any_subtitle_source_never_needs_work(tmp_path: Path) -> None:
     video: Path = tmp_path / "episode.mkv"
     video.write_bytes(b"data")
     group: InspectedSourceGroup = _group(
         "group-a",
         "episode",
         _artifact("group-a", ArtifactKind.VIDEO_MKV, video),
+        route=ROOT_ROUTE,
     )
     assert needs_work(group, _preset(ProductKind.MKV)) is False
 
@@ -207,19 +257,42 @@ def test_candidates_take_only_the_quiet_group_that_still_misses_a_product(tmp_pa
     pending: InspectedSourceGroup = _text_group(tmp_path, "group-pending", "pending")
     done_text: Path = tmp_path / "done.txt"
     done_text.write_text("one", encoding="utf-8")
-    done_product: Path = tmp_path / "done.pl.mkv"
+    done_product: Path = tmp_path / "done.pl.txt"
     done_product.write_bytes(b"done")
     done: InspectedSourceGroup = _group(
         "group-done",
         "done",
         _artifact("group-done", ArtifactKind.STANDALONE_TEXT, done_text),
-        _artifact("group-done", ArtifactKind.FINAL_MKV, done_product),
+        _artifact("group-done", ArtifactKind.TRANSLATED_TEXT, done_product),
     )
     ledger: WatchLedger = WatchLedger()
     workspace: InspectedWorkspace = _workspace(pending, done)
-    preset: AutoPreset = _preset(ProductKind.MKV)
+    preset: AutoPreset = _preset(ProductKind.TRANSLATED_TEXT)
     assert ledger.candidates(workspace, preset, 100.0) == ()
     assert ledger.candidates(workspace, preset, 100.0 + QUIET_S) == ("group-pending",)
+
+
+def test_a_sidecar_still_being_copied_keeps_its_group_waiting_until_it_settles(tmp_path: Path) -> None:
+    sidecar: Path = tmp_path / "episode.srt"
+    sidecar.write_bytes(b"1\n00:00:00,000 --> 00:00:01,000\nfirst\n")
+    group: InspectedSourceGroup = _video_group(
+        tmp_path,
+        "group-a",
+        "episode",
+        _artifact("group-a", ArtifactKind.SOURCE_SUBTITLES, sidecar),
+    )
+    workspace: InspectedWorkspace = _workspace(group)
+    preset: AutoPreset = _preset(ProductKind.FULL_PL)
+    ledger: WatchLedger = WatchLedger()
+
+    assert ledger.candidates(workspace, preset, 100.0) == ()
+    with sidecar.open("ab") as growing:
+        growing.write(b"\n2\n00:00:01,000 --> 00:00:02,000\nsecond\n")
+    assert ledger.candidates(workspace, preset, 100.0 + QUIET_S) == ()
+    with sidecar.open("ab") as growing:
+        growing.write(b"\n3\n00:00:02,000 --> 00:00:03,000\nthird\n")
+    assert ledger.candidates(workspace, preset, 100.0 + 2 * QUIET_S) == ()
+    assert ledger.candidates(workspace, preset, 100.0 + 3 * QUIET_S) == ("group-a",)
 
 
 def test_a_started_group_leaves_the_candidate_list_until_its_window_exits(tmp_path: Path) -> None:

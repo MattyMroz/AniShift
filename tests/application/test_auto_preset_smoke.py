@@ -20,6 +20,7 @@ import anishift.platform.binaries as binaries_module
 from anishift.application import AppService, ArtifactKind, AutoPreset, ExecutionPlan, RunEvent, RunResult, TaskKind
 from anishift.application.cancellation import NeverCancelledToken
 from anishift.application.intents import (
+    VIDEO_PRODUCTS,
     BurnSubtitleProduct,
     MkvTrackProduct,
     Mp4AudioSource,
@@ -487,14 +488,14 @@ def test_default_preset_publishes_polish_subtitles_and_narration_from_embedded_e
 def test_all_seven_products_with_mkv_tracks_burned_mp4_and_narration_audio(harness: _Harness) -> None:
     harness.add_mkv("Episode 02", (("ass", _EN_SIGNED_ASS, "eng"),))
     panel: SettingsController = harness.panel()
-    _set_products(panel, frozenset(ProductKind))
+    _set_products(panel, VIDEO_PRODUCTS)
     _set_tracks(panel, frozenset({"source_subtitles", "full_pl_subtitles", "narration_audio"}))
     _choose(panel, "mp4_audio_source", "narration")
     _choose(panel, "burn_subtitle_product", "full_pl")
     panel.close()
 
     stored: AutoPreset = harness.stored_preset()
-    assert stored.products.requested_products == frozenset(ProductKind)
+    assert stored.products.requested_products == VIDEO_PRODUCTS
     assert stored.products.mkv_tracks == frozenset(
         {MkvTrackProduct.SOURCE_SUBTITLES, MkvTrackProduct.FULL_PL_SUBTITLES, MkvTrackProduct.NARRATION_AUDIO}
     )
