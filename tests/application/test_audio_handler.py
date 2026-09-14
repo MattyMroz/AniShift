@@ -103,6 +103,7 @@ def test_audio_handler_mixes_manifest_and_source_audio(tmp_path: Path) -> None:
         json.dumps(
             {
                 "scope_id": "group-1",
+                "timeline": "source_times",
                 "clips": [
                     {
                         "request_id": "r1",
@@ -131,7 +132,7 @@ def test_audio_handler_mixes_manifest_and_source_audio(tmp_path: Path) -> None:
         ("narration",),
         (),
         "audio:default",
-        (("output_profile", "eac3"),),
+        (("mix_source", "video"), ("output_profile", "eac3")),
     )
 
     progress: _Progress = _Progress()
@@ -233,6 +234,7 @@ def test_real_audio_handler_reports_measured_progress_before_success(tmp_path: P
         "audio:default",
         (("output_profile", "eac3"),),
     )
+
     progress: _Progress = _Progress()
     transcoder: AudioTranscodeService = AudioTranscodeService(AudioConfig(), ffmpeg=FFMPEG, ffprobe=FFPROBE)
 
@@ -249,3 +251,128 @@ def test_real_audio_handler_reports_measured_progress_before_success(tmp_path: P
     assert any(event.progress_percent == 99 for event in progress.notifications[:-1])
     assert all(event.progress_percent != 100 for event in progress.notifications[:-1])
     assert progress.notifications[-1].progress_percent == 100
+
+
+class _RecordingMixer(_Mixer):
+    def __init__(self) -> None:
+        self.requests: list[AudioRenderRequest] = []
+
+    def render(
+        self,
+        request: AudioRenderRequest,
+        *,
+        callbacks: AudioProgressObserver | None = None,
+        on_percent: Callable[[int], None] | None = None,
+        cancel: threading.Event | None = None,
+    ) -> AudioRenderResult:
+        self.requests.append(request)
+        return super().render(request, callbacks=callbacks, on_percent=on_percent, cancel=cancel)
+
+
+def _manifest_file(tmp_path: Path, timeline: str = "source_times") -> Path:
+    clip_path: Path = tmp_path / "clip.mp3"
+    clip_path.write_bytes(b"clip")
+    manifest_path: Path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "scope_id": "group-1",
+                "timeline": timeline,
+                "clips": [
+                    {
+                        "request_id": "r1",
+                        "start_ms": 0,
+                        "end_ms": 1,
+                        "source_order": 0,
+                        "path": str(clip_path),
+                        "format": "mp3",
+                        "sample_rate": 24000,
+                        "channels": 1,
+                        "duration_ms": 500,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
+def _mix_task(mix_source: str, requires: tuple[str, ...]) -> PlanTask:
+    return PlanTask(
+        "mix",
+        "group-1",
+        TaskKind.MIX_NARRATION,
+        requires,
+        ("narration",),
+        (),
+        "audio:default",
+        (("mix_source", mix_source), ("output_profile", "eac3")),
+    )
+
+
+def test_a_standalone_recording_is_mixed_from_the_manifest_with_no_audio_to_mix_under_it(tmp_path: Path) -> None:
+    manifest: Artifact = _ready("manifest", ArtifactKind.TTS_MANIFEST, _manifest_file(tmp_path))
+    mixer = _RecordingMixer()
+
+    result: TaskResult = AudioTaskHandler(mixer, _Transcoder(), run_root=tmp_path / "run").execute(
+        _mix_task("standalone", ("manifest",)),
+        ArtifactSnapshot({"manifest": manifest}, {"narration": _output("narration")}),
+        NeverCancelledToken(),
+        _Progress(),
+    )
+
+    assert result.outputs[0].path.read_bytes() == b"mixed"
+    assert mixer.requests[0].source_audio_path is None
+
+
+def test_a_recording_for_a_film_still_refuses_to_run_without_the_film_audio(tmp_path: Path) -> None:
+    manifest: Artifact = _ready("manifest", ArtifactKind.TTS_MANIFEST, _manifest_file(tmp_path))
+    mixer = _RecordingMixer()
+
+    with pytest.raises(ExecutionError):
+        AudioTaskHandler(mixer, _Transcoder(), run_root=tmp_path / "run").execute(
+            _mix_task("video", ("manifest",)),
+            ArtifactSnapshot({"manifest": manifest}, {"narration": _output("narration")}),
+            NeverCancelledToken(),
+            _Progress(),
+        )
+
+    assert mixer.requests == []
+
+
+def test_a_standalone_recording_refuses_an_extra_audio_input_it_was_not_planned_with(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "source.ac3"
+    source_path.write_bytes(b"source")
+    manifest: Artifact = _ready("manifest", ArtifactKind.TTS_MANIFEST, _manifest_file(tmp_path))
+    source: Artifact = _ready("source", ArtifactKind.SOURCE_AUDIO, source_path)
+    mixer = _RecordingMixer()
+
+    with pytest.raises(ExecutionError):
+        AudioTaskHandler(mixer, _Transcoder(), run_root=tmp_path / "run").execute(
+            _mix_task("standalone", ("source", "manifest")),
+            ArtifactSnapshot({"source": source, "manifest": manifest}, {"narration": _output("narration")}),
+            NeverCancelledToken(),
+            _Progress(),
+        )
+
+    assert mixer.requests == []
+
+
+@pytest.mark.parametrize(("timeline", "pauses"), [("continuous", True), ("source_times", False)])
+def test_the_mixer_pauses_between_paragraphs_only_for_the_reading_the_manifest_records(
+    tmp_path: Path,
+    timeline: str,
+    pauses: bool,
+) -> None:
+    manifest: Artifact = _ready("manifest", ArtifactKind.TTS_MANIFEST, _manifest_file(tmp_path, timeline))
+    mixer = _RecordingMixer()
+
+    AudioTaskHandler(mixer, _Transcoder(), run_root=tmp_path / "run").execute(
+        _mix_task("standalone", ("manifest",)),
+        ArtifactSnapshot({"manifest": manifest}, {"narration": _output("narration")}),
+        NeverCancelledToken(),
+        _Progress(),
+    )
+
+    assert mixer.requests[0].paragraph_pauses is pauses

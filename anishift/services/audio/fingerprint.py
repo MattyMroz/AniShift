@@ -37,9 +37,10 @@ def narration_fingerprint(
     scope_id: str,
     clips: tuple[TimedClip, ...],
     post_process_tempo: float,
+    paragraph_pauses: bool,
     config: AudioConfig,
 ) -> str:
-    """Hash ordered clip content, timing, tempo, and target PCM settings."""
+    """Hash ordered clip content, timing, paragraph pauses, tempo, and target PCM settings."""
     ordered: tuple[TimedClip, ...] = tuple(
         sorted(clips, key=lambda clip: (clip.start_ms, clip.source_order)),
     )
@@ -47,6 +48,7 @@ def narration_fingerprint(
         "algorithm_version": _NARRATION_ALGORITHM_VERSION,
         "scope_id": scope_id,
         "timeline_policy": config.timeline_policy.value,
+        "paragraph_pauses": paragraph_pauses,
         "post_process_tempo": _canonical_float(post_process_tempo),
         "target": {
             "sample_rate": config.narrator_sample_rate,

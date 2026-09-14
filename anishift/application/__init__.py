@@ -107,6 +107,7 @@ from anishift.application.intents import (
     GroupIntent,
     MkvTrackProduct,
     Mp4AudioSource,
+    NarrationTimeline,
     ProductIntent,
     ProductKind,
     RebuildRequest,
@@ -139,10 +140,13 @@ from anishift.application.selection import (
     GroupReadiness,
     ReadinessReason,
     group_is_ready,
+    legal_narration_timelines,
+    legal_products,
     ready_group_ids,
     resolve_readiness,
 )
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger
+from anishift.application.workflows import WorkflowTarget
 
 __all__ = [
     "PRIMARY_SOURCE_SUFFIXES",
@@ -199,6 +203,7 @@ __all__ = [
     "ModelAvailability",
     "ModelProbeResult",
     "Mp4AudioSource",
+    "NarrationTimeline",
     "PlanPreview",
     "PlanProblem",
     "PlanTask",
@@ -252,11 +257,14 @@ __all__ = [
     "WatchStateStore",
     "WorkerNotification",
     "WorkerNotificationKind",
+    "WorkflowTarget",
     "WorkspaceInspector",
     "decode_view",
     "encode_intent",
     "encode_view",
     "group_is_ready",
+    "legal_narration_timelines",
+    "legal_products",
     "order_groups",
     "parse_query",
     "plan_auto",

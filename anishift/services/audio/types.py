@@ -176,6 +176,7 @@ class AudioRenderRequest:
     temporary_root: Path
     destination: Path
     post_process_tempo: float = 1.0
+    paragraph_pauses: bool = False
 
 
 @dataclass(frozen=True, slots=True)

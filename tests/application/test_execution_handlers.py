@@ -611,7 +611,12 @@ def test_execution_handlers_rejects_family_not_available_in_increment_10a(tmp_pa
         SubtitleTaskHandler(run_root=tmp_path / "run"),
         TranslationTaskHandler(_TranslationService(), run_root=tmp_path / "run"),
     )
-    task = _task(TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",))
+    task = _task(
+        TaskKind.SYNTHESIZE_SPEECH,
+        ("spoken",),
+        ("manifest",),
+        (("narration_timeline", "source_times"), ("script_kind", "spoken_pl")),
+    )
 
     with pytest.raises(ExecutionError, match="unavailable"):
         handlers.execute(task, ArtifactSnapshot({}), NeverCancelledToken(), _ProgressSink())

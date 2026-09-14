@@ -8,7 +8,9 @@ import pytest
 
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
 from anishift.application.runtime import _audio_config, _LlmCompleter, _raise_translation_error, _tts_config
+from anishift.application.service import _run_settings_snapshot
 from anishift.config.settings import Settings
+from anishift.config.user_settings import CustomVoiceSetting, UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
 from anishift.services.llm import (
@@ -244,3 +246,34 @@ def test_the_translation_failure_keeps_the_structured_provider_context() -> None
 
     assert raised.value.context is context
     assert isinstance(raised.value.__cause__, LlmAuthError)
+
+
+@pytest.mark.parametrize(
+    ("engine", "expected"),
+    [
+        ("edge", ("pl-PL-MarekNeural", "pl-PL-ZofiaNeural")),
+        ("elevenbytes", ("alFofuDn3cOwyoz1i44T",)),
+        ("elevenlabs", ()),
+        ("sapi", ()),
+    ],
+)
+def test_the_run_snapshot_records_the_voices_the_chosen_engine_really_offers(
+    engine: str,
+    expected: tuple[str, ...],
+) -> None:
+    preferences = UserSettings(tts_engine=engine)
+
+    snapshot: RunSettingsSnapshot = _run_settings_snapshot(preferences)
+
+    assert snapshot.tts_allowed_voice_ids == expected
+
+
+def test_a_custom_elevenbytes_voice_is_one_of_the_voices_its_engine_offers() -> None:
+    preferences = UserSettings(
+        tts_engine="elevenbytes",
+        elevenbytes_custom_voices=[CustomVoiceSetting(alias="lektor", label="Lektor", voice_id="own-voice-id")],
+    )
+
+    snapshot: RunSettingsSnapshot = _run_settings_snapshot(preferences)
+
+    assert snapshot.tts_allowed_voice_ids == ("alFofuDn3cOwyoz1i44T", "own-voice-id")

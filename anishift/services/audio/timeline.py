@@ -24,9 +24,16 @@ __all__ = ["plan_timeline", "write_raw_timeline"]
 _COPY_BUFFER_BYTES: Final[int] = 1024 * 1024
 """Streaming copy buffer for PCM timeline assembly."""
 
+_PARAGRAPH_GAP_MS: Final[int] = 300
+"""Fixed silence separating consecutive paragraphs, so a read-through has its own breath."""
 
-def plan_timeline(clips: tuple[NormalizedClip, ...]) -> TimelinePlan | None:
-    """Place clips stably without truncation and recover drift at natural gaps."""
+
+def plan_timeline(
+    clips: tuple[NormalizedClip, ...],
+    *,
+    paragraph_pauses: bool = False,
+) -> TimelinePlan | None:
+    """Place clips stably without truncation, recovering drift at natural gaps and pausing between paragraphs."""
     if not clips:
         return None
     first: NormalizedClip = clips[0]
@@ -41,11 +48,13 @@ def plan_timeline(clips: tuple[NormalizedClip, ...]) -> TimelinePlan | None:
         ),
     )
     overlap_groups: tuple[int | None, ...] = _overlap_groups(ordered)
+    gap_frames: int = _ms_to_frames(_PARAGRAPH_GAP_MS, first.sample_rate) if paragraph_pauses else 0
     placements: list[TimelinePlacement] = []
     previous_end_frame: int = 0
     for index, clip in enumerate(ordered):
         planned_start_frame: int = _ms_to_frames(clip.timed_clip.start_ms, first.sample_rate)
-        actual_start_frame: int = max(planned_start_frame, previous_end_frame)
+        earliest_start_frame: int = previous_end_frame + gap_frames if index else previous_end_frame
+        actual_start_frame: int = max(planned_start_frame, earliest_start_frame)
         actual_end_frame: int = actual_start_frame + clip.frame_count
         reason: PlacementReason = (
             PlacementReason.ON_TIME if actual_start_frame == planned_start_frame else PlacementReason.SERIALIZED_OVERLAP

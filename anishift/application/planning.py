@@ -171,6 +171,7 @@ class RunSettingsSnapshot:
     tts_model_id: str = "default"
     tts_voice_id: str = "default"
     tts_voice_label: str = "default"
+    tts_allowed_voice_ids: tuple[str, ...] = ()
     tts_native_rate: str | float | None = None
     tts_native_volume: str | float | None = None
     tts_native_pitch: str | float | None = None
@@ -263,6 +264,10 @@ def _validate_runtime_settings(settings: RunSettingsSnapshot) -> None:
     if any(not value.strip() for value in runtime_ids):
         msg = "Run setting runtime IDs cannot be empty"
         raise ValueError(msg)
+    if any(not value.strip() for value in settings.tts_allowed_voice_ids):
+        msg = "Offered TTS voice IDs cannot be empty"
+        raise ValueError(msg)
+    _require_unique(settings.tts_allowed_voice_ids, "offered TTS voice IDs")
     option_names: tuple[str, ...] = tuple(name for name, _ in settings.tts_engine_options)
     _require_unique(option_names, "TTS engine option names")
     if settings.llm_temperature is not None and not 0 <= settings.llm_temperature <= _MAX_LLM_TEMPERATURE:
@@ -507,8 +512,15 @@ def _validate_task_parameter_names(kind: TaskKind, names: frozenset[str]) -> Non
             frozenset({"output_format"}),
             frozenset({"output_format", "source_kind"}),
         ),
+        TaskKind.SYNTHESIZE_SPEECH: (
+            frozenset({"narration_timeline", "script_kind"}),
+            frozenset({"narration_timeline", "script_kind"}),
+        ),
         TaskKind.TRANSCODE_AUDIO: (frozenset({"output_profile"}), frozenset({"output_profile"})),
-        TaskKind.MIX_NARRATION: (frozenset({"output_profile"}), frozenset({"output_profile"})),
+        TaskKind.MIX_NARRATION: (
+            frozenset({"mix_source", "output_profile"}),
+            frozenset({"mix_source", "output_profile"}),
+        ),
         TaskKind.COMPOSE_MKV: (frozenset({"mkv_tracks"}), frozenset({"mkv_tracks"})),
         TaskKind.COMPOSE_MP4: (
             frozenset({"audio_source", "burn_subtitles"}),

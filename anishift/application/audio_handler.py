@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final, Never, Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
+from anishift.application.intents import NarrationTimeline
 from anishift.application.planning import PlanTask, TaskKind
 from anishift.application.products import product_suffix
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
@@ -24,8 +26,8 @@ __all__ = ["AudioTaskHandler"]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-_MIX_INPUT_COUNT: Final[int] = 2
-"""Required source-audio and manifest inputs for narration mixing."""
+_MIX_INPUT_COUNTS: Final[Mapping[str, int]] = MappingProxyType({"video": 2, "standalone": 1})
+"""Inputs each mix really reads: a video mix adds the original audio a standalone recording never has."""
 
 _IN_PROGRESS_PERCENT: Final[int] = 99
 """Highest measured percentage before the output passes handler validation."""
@@ -137,13 +139,18 @@ class AudioTaskHandler:
         cancel: threading.Event,
         progress: TaskProgressSink,
     ) -> TaskResult:
-        if len(task.requires) != _MIX_INPUT_COUNT or len(task.produces) != 1:
-            _raise_execution("Narration mixing requires source audio, manifest, and one output")
+        mix_source: str = _mix_source(task)
+        if len(task.requires) != _MIX_INPUT_COUNTS[mix_source] or len(task.produces) != 1:
+            _raise_execution("Narration mixing requires the inputs of its own mix source and one output")
         inputs: tuple[Artifact, ...] = tuple(artifacts.require_ready(item) for item in task.requires)
-        source: Artifact = _one(inputs, ArtifactKind.SOURCE_AUDIO)
         manifest_artifact: Artifact = _one(inputs, ArtifactKind.TTS_MANIFEST)
+        source_audio_path: Path | None = None
+        if mix_source == "video":
+            source_audio_path = _one(inputs, ArtifactKind.SOURCE_AUDIO).path
+            if source_audio_path is None:
+                _raise_execution("Narration mixing received an invalid artifact contract")
         output: Artifact = artifacts.require_output(task.produces[0])
-        if source.path is None or manifest_artifact.path is None or output.kind is not ArtifactKind.NARRATION_AUDIO:
+        if manifest_artifact.path is None or output.kind is not ArtifactKind.NARRATION_AUDIO:
             _raise_execution("Narration mixing received an invalid artifact contract")
         profile: str = _profile(task, output)
         manifest = load_narration_manifest(manifest_artifact.path)
@@ -173,10 +180,11 @@ class AudioTaskHandler:
             AudioRenderRequest(
                 manifest.scope_id,
                 synthetic_source,
-                source.path,
+                source_audio_path,
                 clips,
                 self._run_root / task.group_id / "audio",
                 destination,
+                paragraph_pauses=manifest.timeline is NarrationTimeline.CONTINUOUS,
             ),
             callbacks=observer,
             on_percent=observer.on_percent,
@@ -227,6 +235,13 @@ def _one(artifacts: tuple[Artifact, ...], kind: ArtifactKind) -> Artifact:
     if len(matching) != 1:
         _raise_execution(f"Audio task requires exactly one {kind.value} artifact")
     return matching[0]
+
+
+def _mix_source(task: PlanTask) -> str:
+    value: str | int | bool | None = dict(task.parameters).get("mix_source")
+    if not isinstance(value, str) or value not in _MIX_INPUT_COUNTS:
+        _raise_execution("Narration mixing requires a planned mix source")
+    return value
 
 
 def _profile(task: PlanTask, output: Artifact) -> str:

@@ -254,7 +254,16 @@ def test_the_voice_boundary_counts_a_synthesis_the_same_handlers_dispatch(tmp_pa
         ArtifactState.MISSING,
         ArtifactLifetime.INTERMEDIATE,
     )
-    task: PlanTask = PlanTask("tts", "group-1", TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",), (), "tts:edge")
+    task: PlanTask = PlanTask(
+        "tts",
+        "group-1",
+        TaskKind.SYNTHESIZE_SPEECH,
+        ("spoken",),
+        ("manifest",),
+        (),
+        "tts:edge",
+        (("narration_timeline", "source_times"), ("script_kind", "spoken_pl")),
+    )
     voice: _CountingTts = _CountingTts(tmp_path / "clips")
     handlers: ExecutionHandlers = _handlers(
         tmp_path / "temp" / "run-voice", _PrefixTranslation(), voice, {}, {"group-1": 0}

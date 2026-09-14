@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
+from anishift.application.workflows import WorkflowTarget
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -99,12 +101,22 @@ class TranslationAction(StrEnum):
     DO_NOT_TRANSLATE = "do_not_translate"
 
 
+class NarrationTimeline(StrEnum):
+    """How the audiobook target places narration in time."""
+
+    CONTINUOUS = "continuous"
+    SOURCE_TIMES = "source_times"
+
+
 # ── Constants ──────────────────────────────────────────────────────────────
 
 TRANSLATE_PRODUCTS: Final[frozenset[ProductKind]] = frozenset(
     {ProductKind.FULL_PL, ProductKind.TRANSLATED_TEXT},
 )
 """Documents a translate place can be asked for, none of which needs a picture or a voice."""
+
+AUDIOBOOK_PRODUCTS: Final[frozenset[ProductKind]] = frozenset({ProductKind.NARRATION_AUDIO})
+"""The single product an audiobook place writes: the recording of one document."""
 
 VIDEO_PRODUCTS: Final[frozenset[ProductKind]] = frozenset(ProductKind) - {ProductKind.TRANSLATED_TEXT}
 """Products the video preset offers, excluding the plain text document only a translate place writes."""
@@ -166,6 +178,8 @@ class GroupIntent:
     source_subtitle_language: str | None = None
     external_audio_role: ExternalAudioRole | None = None
     subtitle_output_format: SubtitleOutputFormat = SubtitleOutputFormat.PRESERVE
+    narration_timeline: NarrationTimeline = NarrationTimeline.CONTINUOUS
+    target: WorkflowTarget | None = None
 
     def __post_init__(self) -> None:
         if not self.group_id.strip():
@@ -235,15 +249,16 @@ def apply_preset(preset: AutoPreset, groups: Sequence[SourceGroup]) -> tuple[Gro
         raise ValueError(msg)
     return tuple(
         GroupIntent(
-            group_id=group_id,
+            group_id=group.group_id,
             mode=RunMode.AUTO,
             products=preset.products,
             subtitle_source_policy=preset.subtitle_source_policy,
             translation_action=preset.translation_action,
             source_subtitle_language=preset.source_subtitle_language,
             subtitle_output_format=preset.subtitle_output_format,
+            target=group.route.target,
         )
-        for group_id in group_ids
+        for group in groups
     )
 
 

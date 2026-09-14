@@ -88,3 +88,42 @@ def _clip(  # noqa: PLR0913
         storage=PcmStorage.RAW,
         from_fast_path=False,
     )
+
+
+def test_a_reading_of_paragraphs_pauses_between_each_pair_and_never_at_its_ends(tmp_path: Path) -> None:
+    first = _clip(tmp_path, "first", start_ms=0, source_order=0, frames=400)
+    second = _clip(tmp_path, "second", start_ms=0, source_order=1, frames=1500)
+    third = _clip(tmp_path, "third", start_ms=0, source_order=2, frames=250)
+
+    plan = plan_timeline((first, second, third), paragraph_pauses=True)
+
+    assert plan is not None
+    assert [item.start_frame for item in plan.placements] == [0, 700, 2500]
+    assert [item.end_frame for item in plan.placements] == [400, 2200, 2750]
+    gaps = [
+        later.start_frame - earlier.end_frame
+        for earlier, later in zip(plan.placements, plan.placements[1:], strict=False)
+    ]
+    assert gaps == [300, 300]
+    assert plan.total_frames == 400 + 1500 + 250 + len(gaps) * 300
+
+
+def test_a_single_paragraph_is_read_with_no_pause_at_all(tmp_path: Path) -> None:
+    only = _clip(tmp_path, "only", start_ms=0, source_order=0, frames=400)
+
+    plan = plan_timeline((only,), paragraph_pauses=True)
+
+    assert plan is not None
+    assert plan.placements[0].start_frame == 0
+    assert plan.total_frames == 400
+
+
+def test_a_reading_that_keeps_its_own_times_is_never_given_a_pause_it_did_not_ask_for(tmp_path: Path) -> None:
+    first = _clip(tmp_path, "first", start_ms=100, source_order=0, frames=100)
+    overlapping = _clip(tmp_path, "overlapping", start_ms=150, source_order=1, frames=50)
+
+    plan = plan_timeline((first, overlapping))
+
+    assert plan is not None
+    assert [item.start_frame for item in plan.placements] == [100, 200]
+    assert plan.total_frames == 250

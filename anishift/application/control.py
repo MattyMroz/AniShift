@@ -8,7 +8,14 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
-from anishift.application.intents import GroupIntent, ProductKind, RebuildRequest, RequestOrigin, TranslationAction
+from anishift.application.intents import (
+    GroupIntent,
+    NarrationTimeline,
+    ProductKind,
+    RebuildRequest,
+    RequestOrigin,
+    TranslationAction,
+)
 from anishift.application.workflows import WorkflowTarget
 
 if TYPE_CHECKING:
@@ -99,13 +106,6 @@ class TextResultFormat(StrEnum):
 
     TEXT = "text"
     SUBTITLES = "subtitles"
-
-
-class NarrationTimeline(StrEnum):
-    """How the audiobook target places narration in time."""
-
-    CONTINUOUS = "continuous"
-    SOURCE_TIMES = "source_times"
 
 
 class PreflightFindingKind(StrEnum):

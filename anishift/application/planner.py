@@ -18,8 +18,14 @@ from anishift.application.artifacts import (
     ArtifactState,
     create_artifact_id,
 )
-from anishift.application.control import RecipePreferences, TextResultFormat, TranslateRecipe
+from anishift.application.control import (
+    AudiobookRecipe,
+    RecipePreferences,
+    TextResultFormat,
+    TranslateRecipe,
+)
 from anishift.application.intents import (
+    AUDIOBOOK_PRODUCTS,
     TRANSLATE_PRODUCTS,
     AutoPreset,
     BurnSubtitleProduct,
@@ -27,6 +33,7 @@ from anishift.application.intents import (
     GroupIntent,
     MkvTrackProduct,
     Mp4AudioSource,
+    NarrationTimeline,
     ProductIntent,
     ProductKind,
     RebuildRequest,
@@ -54,10 +61,20 @@ if TYPE_CHECKING:
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-_TRANSLATE_SOURCE_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
+_DOCUMENT_SOURCE_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
     {ArtifactKind.STANDALONE_TEXT, ArtifactKind.SOURCE_SUBTITLES},
 )
-"""Documents a translate place reads, whether a plain text or an authored subtitle file."""
+"""Documents a text place reads, whether a plain text or an authored subtitle file."""
+
+_UNTIMED_DOCUMENT_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
+    {ArtifactKind.STANDALONE_TEXT, ArtifactKind.TRANSLATED_TEXT},
+)
+"""Documents carrying words without a single timestamp, so nothing can be read by their own times."""
+
+_DOCUMENT_TARGETS: Final[frozenset[WorkflowTarget]] = frozenset(
+    {WorkflowTarget.TRANSLATE, WorkflowTarget.AUDIOBOOK},
+)
+"""Targets reading one document and needing neither a picture nor an existing audio track."""
 
 _NON_DIALOGUE_SUBTITLE_NAME: Final[re.Pattern[str]] = re.compile(r"sign|song|forced", re.I)
 """Track names announcing signs, songs, or forced captions instead of full dialogue."""
@@ -132,6 +149,8 @@ def auto_group_products(
     recipes: RecipePreferences | None = None,
 ) -> ProductIntent:
     """Return the products one group is automatically asked for, by the target of its own place."""
+    if group.source.route.target is WorkflowTarget.AUDIOBOOK:
+        return ProductIntent(requested_products=AUDIOBOOK_PRODUCTS)
     if group.source.route.target is not WorkflowTarget.TRANSLATE:
         return products
     translate: TranslateRecipe = (recipes if recipes is not None else RecipePreferences()).translate
@@ -150,15 +169,28 @@ def _auto_intent(
     products: ProductIntent,
     recipes: RecipePreferences | None,
 ) -> GroupIntent:
+    preferences: RecipePreferences = recipes if recipes is not None else RecipePreferences()
     if group.source.route.target is WorkflowTarget.TRANSLATE:
-        translate: TranslateRecipe = (recipes if recipes is not None else RecipePreferences()).translate
         return GroupIntent(
             group_id=group.group_id,
             mode=RunMode.AUTO,
             products=auto_group_products(group, products, recipes),
-            translation_action=translate.translation_action,
+            translation_action=preferences.translate.translation_action,
             source_subtitle_language=preset.source_subtitle_language,
             subtitle_output_format=preset.subtitle_output_format,
+            target=WorkflowTarget.TRANSLATE,
+        )
+    if group.source.route.target is WorkflowTarget.AUDIOBOOK:
+        audiobook: AudiobookRecipe = preferences.audiobook
+        return GroupIntent(
+            group_id=group.group_id,
+            mode=RunMode.AUTO,
+            products=auto_group_products(group, products, recipes),
+            translation_action=audiobook.translation_action,
+            source_subtitle_language=preset.source_subtitle_language,
+            subtitle_output_format=preset.subtitle_output_format,
+            narration_timeline=audiobook.timeline,
+            target=WorkflowTarget.AUDIOBOOK,
         )
     return GroupIntent(
         group_id=group.group_id,
@@ -170,6 +202,7 @@ def _auto_intent(
         translation_action=preset.translation_action,
         source_subtitle_language=preset.source_subtitle_language,
         subtitle_output_format=preset.subtitle_output_format,
+        target=group.source.route.target,
     )
 
 
@@ -307,6 +340,7 @@ class _GroupPlanner:
                 "source_conflict",
                 "Source group contains an unresolved discovery conflict",
             )
+        self._require_accepted_target()
         self._require_mandatory_sidecar()
         self._validate_manual_selections()
         self._build_target_plan()
@@ -323,6 +357,14 @@ class _GroupPlanner:
             problems=tuple(self.problems),
         )
         return group_plan, artifact_values, group_tasks
+
+    def _require_accepted_target(self) -> None:
+        if self.intent.target is None or self.intent.target is self.group.source.route.target:
+            return
+        self._problem(
+            "intent_target_changed",
+            "This work was accepted for another place than the one its files sit in now",
+        )
 
     def _require_mandatory_sidecar(self) -> None:
         if not self.group.source.route.requires_sidecar:
@@ -341,6 +383,9 @@ class _GroupPlanner:
         if self.group.source.route.target is WorkflowTarget.TRANSLATE:
             self._build_translate_plan()
             return
+        if self.group.source.route.target is WorkflowTarget.AUDIOBOOK:
+            self._build_audiobook_plan()
+            return
         if ProductKind.TRANSLATED_TEXT in self.intent.products.requested_products:
             self._problem(
                 "translated_text_unsupported",
@@ -353,7 +398,7 @@ class _GroupPlanner:
         self._build_media_plan()
 
     def _validate_manual_selections(self) -> None:
-        if self.intent.mode is not RunMode.MANUAL or self.group.source.route.target is WorkflowTarget.TRANSLATE:
+        if self.intent.mode is not RunMode.MANUAL or self.group.source.route.target in _DOCUMENT_TARGETS:
             return
         if self.intent.preferred_video_artifact_id is not None:
             self._select_video()
@@ -434,7 +479,10 @@ class _GroupPlanner:
                 "A translate place writes only a Polish text or subtitle document",
             )
             return
-        source: Artifact | None = self._translate_source()
+        source: Artifact | None = self._document_source(
+            "translate_source_missing",
+            "translate_source_ambiguous",
+        )
         if source is None:
             return
         if self.intent.translation_action is TranslationAction.DO_NOT_TRANSLATE:
@@ -452,11 +500,103 @@ class _GroupPlanner:
         if ProductKind.FULL_PL in requested:
             self._translate_text_to_draft_subtitles(source)
 
-    def _translate_source(self) -> Artifact | None:
+    def _build_audiobook_plan(self) -> None:
+        requested: frozenset[ProductKind] = self.intent.products.requested_products
+        if not requested <= AUDIOBOOK_PRODUCTS:
+            self._problem(
+                "audiobook_products_unsupported",
+                "An audiobook place writes only the recording of one document",
+            )
+            return
+        source: Artifact | None = self._document_source(
+            "audiobook_source_missing",
+            "audiobook_source_ambiguous",
+        )
+        if source is None:
+            return
+        self._narration = self._ready_product(ArtifactKind.NARRATION_AUDIO)
+        if self._narration is None:
+            timeline: NarrationTimeline = self.intent.narration_timeline
+            if timeline is NarrationTimeline.SOURCE_TIMES and source.kind in _UNTIMED_DOCUMENT_KINDS:
+                self._problem(
+                    "narration_times_unavailable",
+                    "A plain text document carries no times a recording could keep",
+                    artifacts=(source,),
+                )
+                return
+            script: Artifact | None = self._narration_script(source)
+            if script is None:
+                return
+            self._read_document_aloud(script)
+        if ProductKind.NARRATION_AUDIO in requested and self._narration is not None:
+            self._publish_audio(self._narration)
+
+    def _narration_script(self, source: Artifact) -> Artifact | None:
+        """Return the document the voice really reads, translating first only when that was asked for."""
+        if self.intent.translation_action is TranslationAction.DO_NOT_TRANSLATE:
+            return source
+        if source.kind is not ArtifactKind.STANDALONE_TEXT:
+            self._subtitle_input = source
+            return self._ensure_full_pl()
+        script: Artifact = self._intermediate(
+            ArtifactKind.FULL_PL,
+            "narration-script",
+            subtitle_format="srt",
+            language="pol",
+        )
+        self._add_task(
+            TaskKind.TRANSLATE_SUBTITLES,
+            requires=(source,),
+            produces=(script,),
+            variant="narration-script",
+            resource_key=_translation_resource_key(self.settings),
+            parameters=(("source_kind", "txt"), ("output_format", "srt")),
+            is_network=self.settings.translation_is_network,
+            is_paid=self.settings.translation_is_paid,
+        )
+        self._draft_timings(script)
+        return script
+
+    def _read_document_aloud(self, script: Artifact) -> None:
+        """Record one document on the timeline its own place asked for."""
+        timeline: NarrationTimeline = self.intent.narration_timeline
+        manifest: Artifact = self._synthesize_speech(script, timeline)
+        profile: str = self.settings.audio_output_profile.casefold()
+        narration: Artifact = self._intermediate(
+            ArtifactKind.NARRATION_AUDIO,
+            f"narration-mix-{timeline.value}",
+            audio_codec=profile,
+        )
+        self._add_task(
+            TaskKind.MIX_NARRATION,
+            requires=(manifest,),
+            produces=(narration,),
+            variant=f"narration-{timeline.value}",
+            resource_key=f"audio:{self.settings.audio_profile_id}",
+            parameters=(("mix_source", "standalone"), ("output_profile", profile)),
+        )
+        self._narration = narration
+
+    def _synthesize_speech(self, script: Artifact, timeline: NarrationTimeline) -> Artifact:
+        manifest: Artifact = self._intermediate(ArtifactKind.TTS_MANIFEST, f"tts-manifest-{timeline.value}")
+        self._add_task(
+            TaskKind.SYNTHESIZE_SPEECH,
+            requires=(script,),
+            produces=(manifest,),
+            variant=f"narration-{timeline.value}",
+            resource_key=f"tts:{self.settings.tts_profile_id}",
+            parameters=(("narration_timeline", timeline.value), ("script_kind", script.kind.value)),
+            is_network=self.settings.tts_is_network,
+            is_paid=self.settings.tts_is_paid,
+        )
+        return manifest
+
+    def _document_source(self, missing_code: str, ambiguous_code: str) -> Artifact | None:
+        """Pick the one validated text or subtitle document the place of this group reads."""
         selected_id: str | None = self.intent.selected_subtitle_artifact_id
         if selected_id is not None:
             selected: Artifact | None = self.artifacts.get(selected_id)
-            if selected is None or selected.kind not in _TRANSLATE_SOURCE_KINDS:
+            if selected is None or selected.kind not in _DOCUMENT_SOURCE_KINDS:
                 self._problem("subtitle_selection_invalid", "Selected translation source is unavailable or invalid")
                 return None
             if selected.state is not ArtifactState.READY:
@@ -470,17 +610,17 @@ class _GroupPlanner:
         candidates: tuple[Artifact, ...] = tuple(
             artifact
             for artifact in self.artifacts.values()
-            if artifact.kind in _TRANSLATE_SOURCE_KINDS
+            if artifact.kind in _DOCUMENT_SOURCE_KINDS
             and artifact.state is ArtifactState.READY
             and artifact.lifetime is ArtifactLifetime.SOURCE
         )
         if not candidates:
-            self._problem("translate_source_missing", "A validated text or subtitle source is required")
+            self._problem(missing_code, "A validated text or subtitle source is required")
             return None
         if len(candidates) > 1:
             self._problem(
-                "translate_source_ambiguous",
-                "Choose which text or subtitle document this translation reads",
+                ambiguous_code,
+                "Choose which text or subtitle document this run reads",
                 artifacts=tuple(sorted(candidates, key=lambda artifact: artifact.artifact_id)),
             )
             return None
@@ -1063,28 +1203,21 @@ class _GroupPlanner:
         source_audio: Artifact | None = self._select_source_audio()
         if spoken is None or source_audio is None:
             return None
-        manifest: Artifact = self._intermediate(ArtifactKind.TTS_MANIFEST, "tts-manifest")
-        self._add_task(
-            TaskKind.SYNTHESIZE_SPEECH,
-            requires=(spoken,),
-            produces=(manifest,),
-            variant="narration",
-            resource_key=f"tts:{self.settings.tts_profile_id}",
-            is_network=self.settings.tts_is_network,
-            is_paid=self.settings.tts_is_paid,
-        )
+        timeline: NarrationTimeline = NarrationTimeline.SOURCE_TIMES
+        manifest: Artifact = self._synthesize_speech(spoken, timeline)
+        profile: str = self.settings.audio_output_profile.casefold()
         narration: Artifact = self._intermediate(
             ArtifactKind.NARRATION_AUDIO,
-            "narration-mix",
-            audio_codec=self.settings.audio_output_profile.casefold(),
+            f"narration-mix-{timeline.value}",
+            audio_codec=profile,
         )
         self._add_task(
             TaskKind.MIX_NARRATION,
             requires=(source_audio, manifest),
             produces=(narration,),
-            variant="narration",
+            variant=f"narration-{timeline.value}",
             resource_key=f"audio:{self.settings.audio_profile_id}",
-            parameters=(("output_profile", self.settings.audio_output_profile.casefold()),),
+            parameters=(("mix_source", "video"), ("output_profile", profile)),
         )
         self._narration = narration
         return narration

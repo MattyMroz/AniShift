@@ -9,6 +9,13 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactState, GroupConflictKind
+from anishift.application.intents import (
+    AUDIOBOOK_PRODUCTS,
+    TRANSLATE_PRODUCTS,
+    VIDEO_PRODUCTS,
+    NarrationTimeline,
+    ProductKind,
+)
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget
 
 if TYPE_CHECKING:
@@ -43,6 +50,12 @@ _AWAITED_KINDS: Final[Mapping[WorkflowTarget, frozenset[ArtifactKind]]] = Mappin
     }
 )
 """Every kind one target reads, so a file still arriving is named as such instead of as a missing one."""
+
+_CONTAINER_PRODUCTS: Final[frozenset[ProductKind]] = frozenset({ProductKind.MKV, ProductKind.MP4})
+"""Products that are a film, which nothing can write without a picture to put inside them."""
+
+_TEXT_ONLY_PRODUCTS: Final[frozenset[ProductKind]] = frozenset({ProductKind.FULL_PL})
+"""The single document a plain text file can become, because it carries neither styles nor a picture."""
 
 
 def choose_primary_video(candidates: Sequence[Artifact]) -> Artifact | None:
@@ -130,6 +143,29 @@ def resolve_readiness(group: InspectedSourceGroup) -> GroupReadiness:
     if target is WorkflowTarget.COVER:
         return _cover_readiness(group)
     return _text_readiness(group, target)
+
+
+def legal_products(group: InspectedSourceGroup) -> frozenset[ProductKind]:
+    """Return the products one group can really be asked for, judged by its place and the sources it holds."""
+    target: WorkflowTarget | None = group.source.route.target
+    if target is WorkflowTarget.AUDIOBOOK:
+        return AUDIOBOOK_PRODUCTS
+    if target is WorkflowTarget.TRANSLATE:
+        return TRANSLATE_PRODUCTS
+    if _ready_of_kinds(group, frozenset({ArtifactKind.STANDALONE_TEXT})):
+        return _TEXT_ONLY_PRODUCTS
+    if not _ready_of_kinds(group, _VIDEO_KINDS):
+        return VIDEO_PRODUCTS - _CONTAINER_PRODUCTS
+    return VIDEO_PRODUCTS
+
+
+def legal_narration_timelines(group: InspectedSourceGroup) -> frozenset[NarrationTimeline]:
+    """Return the readings one group can really be asked for, because only a timed script can keep its own times."""
+    if group.source.route.target is not WorkflowTarget.AUDIOBOOK:
+        return frozenset()
+    if _ready_of_kinds(group, frozenset({ArtifactKind.STANDALONE_TEXT})):
+        return frozenset({NarrationTimeline.CONTINUOUS})
+    return frozenset(NarrationTimeline)
 
 
 def group_is_ready(group: InspectedSourceGroup) -> bool:

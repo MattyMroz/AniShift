@@ -64,6 +64,8 @@ from anishift.services.llm.engines import (
 from anishift.services.llm.palantir_token import PALANTIR_TOKEN_COMPAT_ENV_VAR
 from anishift.services.translation.engines import available_engine_ids as available_translation_engine_ids
 from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
+from anishift.services.tts.engines.edge.constants import MAREK_VOICE_ID, ZOFIA_VOICE_ID
+from anishift.services.tts.engines.elevenbytes.constants import DALLIN_VOICE_ID
 from anishift.setup.doctor import CheckResult, run_doctor
 from anishift.setup.installer import ResourceResult, run_setup
 from anishift.utils.logger import get_logger
@@ -1003,6 +1005,16 @@ def _is_placeholder_model_id(model_id: str) -> bool:
     return normalized.startswith("replace-with-") or normalized.startswith("<select-")
 
 
+def _tts_allowed_voice_ids(preferences: UserSettings) -> tuple[str, ...]:
+    """Return the voices the chosen engine really offers, empty where only the provider knows them."""
+    if preferences.tts_engine == "edge":
+        return (MAREK_VOICE_ID, ZOFIA_VOICE_ID)
+    if preferences.tts_engine == "elevenbytes":
+        custom: tuple[str, ...] = tuple(voice.voice_id for voice in preferences.elevenbytes_custom_voices)
+        return (DALLIN_VOICE_ID, *dict.fromkeys(item for item in custom if item != DALLIN_VOICE_ID))
+    return ()
+
+
 def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
     profile = preferences.active_tts_profile
     request_concurrency: int = profile.concurrency or 1
@@ -1038,6 +1050,7 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         tts_model_id=preferences.tts_provider_model_id,
         tts_voice_id=preferences.resolved_tts_voice_id,
         tts_voice_label=preferences.tts_voice_label,
+        tts_allowed_voice_ids=_tts_allowed_voice_ids(preferences),
         tts_native_rate=profile.native_rate,
         tts_native_volume=profile.native_volume,
         tts_native_pitch=profile.native_pitch,

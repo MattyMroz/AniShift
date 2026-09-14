@@ -27,6 +27,7 @@ from anishift.application import (
     InspectedSourceGroup,
     InspectedWorkspace,
     Mp4AudioSource,
+    NarrationTimeline,
     PlanPreview,
     ProductIntent,
     ProductKind,
@@ -36,6 +37,9 @@ from anishift.application import (
     SubtitleSourcePolicy,
     TaskKind,
     TranslationAction,
+    WorkflowTarget,
+    legal_narration_timelines,
+    legal_products,
     preview_plan,
 )
 from anishift.application.events import sanitize_event_message
@@ -82,13 +86,19 @@ _GROUP_ACTIONS: Final[tuple[tuple[str, ProductKind | None], ...]] = (
 _INPUT_HINT: Final[str] = "Enter zatwierdź · Esc wróć"
 """Keyboard hint used by external path input."""
 
-_PRODUCTS: Final[tuple[tuple[ProductKind, str], ...]] = (
+_PRODUCT_LABELS: Final[tuple[tuple[ProductKind, str], ...]] = (
     (ProductKind.FULL_PL, "Polskie napisy"),
     (ProductKind.NARRATION_AUDIO, "Polski lektor"),
     (ProductKind.MKV, "MKV"),
     (ProductKind.MP4, "MP4"),
 )
-"""Public products selectable for one source group."""
+"""Every public product the panel can name, in the order a screen offers the ones a group allows."""
+
+_TIMELINE_LABELS: Final[tuple[tuple[NarrationTimeline, str], ...]] = (
+    (NarrationTimeline.CONTINUOUS, "Jedno po drugim, z krótką pauzą"),
+    (NarrationTimeline.SOURCE_TIMES, "W czasach z dokumentu"),
+)
+"""Every reading an audiobook can be recorded on, in the order a screen offers the ones a group allows."""
 
 _PREVIEW_STAGES: Final[tuple[tuple[TaskKind, str], ...]] = (
     (TaskKind.TRANSLATE_SUBTITLES, "tłumaczenie"),
@@ -133,12 +143,23 @@ class _Screen(StrEnum):
     GROUP_ACTION = "group_action"
     CUSTOM = "custom"
     PRODUCTS = "products"
+    TIMELINE = "timeline"
     SUBTITLES = "subtitles"
     AUDIO = "audio"
     VIDEO = "video"
     PREVIEW = "preview"
     INPUT = "input"
     BUSY = "busy"
+
+
+class _CustomRow(StrEnum):
+    PRODUCTS = "Wynik"
+    SUBTITLES = "Napisy źródłowe"
+    AUDIO = "Audio źródłowe"
+    VIDEO = "Wideo źródłowe"
+    TIMELINE = "Czytanie"
+    DONE = "Gotowe"
+    BACK = "Wróć"
 
 
 class _InputKind(StrEnum):
@@ -170,6 +191,8 @@ class ManualDraft:
     source_subtitle_language: str | None = None
     external_audio_role: ExternalAudioRole | None = None
     subtitle_output_format: SubtitleOutputFormat = SubtitleOutputFormat.PRESERVE
+    narration_timeline: NarrationTimeline = NarrationTimeline.CONTINUOUS
+    target: WorkflowTarget | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,16 +215,27 @@ class _SourceChoice:
     audio_role: ExternalAudioRole | None = None
 
 
-def default_draft(group_id: str, preset: AutoPreset) -> ManualDraft:
-    """Project the active automatic preset into an independent manual draft."""
-    return ManualDraft(
-        group_id=group_id,
+def default_draft(group: InspectedSourceGroup, preset: AutoPreset) -> ManualDraft:
+    """Project the active automatic preset onto one group, keeping only the products its place allows."""
+    draft = ManualDraft(
+        group_id=group.group_id,
         products=preset.products,
         subtitle_source_policy=preset.subtitle_source_policy,
         translation_action=preset.translation_action,
         source_subtitle_language=preset.source_subtitle_language,
         subtitle_output_format=preset.subtitle_output_format,
+        target=group.source.route.target,
     )
+    allowed: frozenset[ProductKind] = legal_products(group)
+    requested: frozenset[ProductKind] = preset.products.requested_products & allowed
+    if requested == preset.products.requested_products:
+        return draft
+    return _with_products(draft, requested or _first_product(allowed))
+
+
+def _first_product(allowed: frozenset[ProductKind]) -> frozenset[ProductKind]:
+    """Return the one product a place offers first, because a draft can never request nothing at all."""
+    return frozenset({next(product for product, _label in _PRODUCT_LABELS if product in allowed)})
 
 
 def materialize_intent(draft: ManualDraft) -> GroupIntent:
@@ -220,6 +254,8 @@ def materialize_intent(draft: ManualDraft) -> GroupIntent:
         source_subtitle_language=draft.source_subtitle_language,
         external_audio_role=draft.external_audio_role,
         subtitle_output_format=draft.subtitle_output_format,
+        narration_timeline=draft.narration_timeline,
+        target=draft.target,
     )
 
 
@@ -406,13 +442,14 @@ class ManualController:
         self._labels: dict[str, str] = _group_labels(workspace.groups, service.workspace_root)
         self._selected_groups: set[str] = set()
         self._drafts: dict[str, ManualDraft] = {
-            group_id: default_draft(group_id, preset) for group_id in self._group_ids
+            group_id: default_draft(group, preset) for group_id, group in self._groups.items()
         }
         self._screen: _Screen = _Screen.GROUPS
         self._selected: int = 0
         self._edit_ids: tuple[str, ...] = ()
         self._edit_index: int = 0
         self._product_selection: set[ProductKind] = set()
+        self._product_rows: tuple[tuple[ProductKind, str], ...] = ()
         self._source_choices: tuple[_SourceChoice, ...] = ()
         self._plan: ExecutionPlan | PlanPreview | None = None
         self._automatic_preview: bool = False
@@ -443,6 +480,9 @@ class ManualController:
             elif self._screen is _Screen.PRODUCTS:
                 self._handle_products(key)
                 result = ManualResult.STAY
+            elif self._screen is _Screen.TIMELINE:
+                self._handle_timeline(key)
+                result = ManualResult.STAY
             elif self._screen in {_Screen.SUBTITLES, _Screen.AUDIO, _Screen.VIDEO}:
                 self._handle_source(key)
                 result = ManualResult.STAY
@@ -462,6 +502,7 @@ class ManualController:
                 _Screen.GROUP_ACTION: self._render_group_action,
                 _Screen.CUSTOM: self._render_custom,
                 _Screen.PRODUCTS: self._render_products,
+                _Screen.TIMELINE: self._render_timeline,
                 _Screen.SUBTITLES: self._render_sources,
                 _Screen.AUDIO: self._render_sources,
                 _Screen.VIDEO: self._render_sources,
@@ -601,7 +642,7 @@ class ManualController:
             return ManualResult.STAY
         group_id: str = self._current_group_id()
         if self._selected == 0:
-            self._drafts[group_id] = default_draft(group_id, self._preset)
+            self._drafts[group_id] = default_draft(self._current_group(), self._preset)
             self._advance_group()
         elif self._selected == 1:
             self._open(_Screen.CUSTOM)
@@ -609,44 +650,76 @@ class ManualController:
             return self._previous_group()
         return ManualResult.STAY
 
+    def _custom_rows(self) -> tuple[_CustomRow, ...]:
+        rows: list[_CustomRow] = [_CustomRow.PRODUCTS, _CustomRow.SUBTITLES, _CustomRow.AUDIO]
+        if self._has_video_choice():
+            rows.append(_CustomRow.VIDEO)
+        if len(self._timeline_rows()) > 1:
+            rows.append(_CustomRow.TIMELINE)
+        rows.extend((_CustomRow.DONE, _CustomRow.BACK))
+        return tuple(rows)
+
+    def _timeline_rows(self) -> tuple[tuple[NarrationTimeline, str], ...]:
+        allowed: frozenset[NarrationTimeline] = legal_narration_timelines(self._current_group())
+        return tuple(item for item in _TIMELINE_LABELS if item[0] in allowed)
+
     def _handle_custom(self, key: str) -> ManualResult:
-        item_count: int = 6 if self._has_video_choice() else 5
-        subtitle_index: int = 1
-        audio_index: int = 2
-        video_index: int = 3
-        if not self._navigate(key, item_count):
+        rows: tuple[_CustomRow, ...] = self._custom_rows()
+        if not self._navigate(key, len(rows)):
             return ManualResult.STAY
-        if self._selected == 0:
+        chosen: _CustomRow = rows[self._selected]
+        if chosen is _CustomRow.PRODUCTS:
             draft: ManualDraft = self._drafts[self._current_group_id()]
-            self._product_selection = set(draft.products.requested_products)
+            allowed: frozenset[ProductKind] = legal_products(self._current_group())
+            self._product_rows = tuple(item for item in _PRODUCT_LABELS if item[0] in allowed)
+            self._product_selection = set(draft.products.requested_products) & allowed
             self._open(_Screen.PRODUCTS)
-        elif self._selected == subtitle_index:
+        elif chosen is _CustomRow.SUBTITLES:
             self._source_choices = _subtitle_choices(self._current_group())
             self._open(_Screen.SUBTITLES)
             self._selected = self._source_selection_index()
-        elif self._selected == audio_index:
+        elif chosen is _CustomRow.AUDIO:
             self._source_choices = _audio_choices(self._current_group())
             self._open(_Screen.AUDIO)
             self._selected = self._source_selection_index()
-        elif self._has_video_choice() and self._selected == video_index:
+        elif chosen is _CustomRow.VIDEO:
             self._source_choices = _video_choices(self._current_group())
             self._open(_Screen.VIDEO)
             self._selected = self._source_selection_index()
-        elif self._selected == item_count - 2:
+        elif chosen is _CustomRow.TIMELINE:
+            self._open(_Screen.TIMELINE)
+            self._selected = self._timeline_selection_index()
+        elif chosen is _CustomRow.DONE:
             self._advance_group()
         else:
             self._open(_Screen.GROUP_ACTION)
         return ManualResult.STAY
 
+    def _timeline_selection_index(self) -> int:
+        current: NarrationTimeline = self._drafts[self._current_group_id()].narration_timeline
+        rows: tuple[tuple[NarrationTimeline, str], ...] = self._timeline_rows()
+        return next((index for index, (timeline, _label) in enumerate(rows) if timeline is current), 0)
+
+    def _handle_timeline(self, key: str) -> None:
+        rows: tuple[tuple[NarrationTimeline, str], ...] = self._timeline_rows()
+        if not self._navigate(key, len(rows) + 1):
+            return
+        if self._selected == len(rows):
+            self._open(_Screen.CUSTOM)
+            return
+        group_id: str = self._current_group_id()
+        self._drafts[group_id] = replace(self._drafts[group_id], narration_timeline=rows[self._selected][0])
+        self._open(_Screen.CUSTOM)
+
     def _handle_products(self, key: str) -> None:
-        save_index: int = len(_PRODUCTS)
+        save_index: int = len(self._product_rows)
         back_index: int = save_index + 1
         if key == "up":
             self._move(-1, back_index + 1)
         elif key == "down":
             self._move(1, back_index + 1)
-        elif key in {"space", "enter"} and self._selected < len(_PRODUCTS):
-            product: ProductKind = _PRODUCTS[self._selected][0]
+        elif key in {"space", "enter"} and self._selected < len(self._product_rows):
+            product: ProductKind = self._product_rows[self._selected][0]
             if product in self._product_selection:
                 self._product_selection.remove(product)
             else:
@@ -893,6 +966,7 @@ class ManualController:
         if self._screen in {
             _Screen.CUSTOM,
             _Screen.PRODUCTS,
+            _Screen.TIMELINE,
             _Screen.SUBTITLES,
             _Screen.AUDIO,
             _Screen.VIDEO,
@@ -981,20 +1055,32 @@ class ManualController:
         return self._render_menu(title, entries, columns, rows)
 
     def _render_custom(self, columns: int, rows: int) -> Text:
-        entries: list[str] = ["Wynik", "Napisy źródłowe", "Audio źródłowe"]
-        if self._has_video_choice():
-            entries.append("Wideo źródłowe")
-        entries.extend(("Gotowe", "Wróć"))
-        return self._render_menu(self._labels[self._current_group_id()], tuple(entries), columns, rows)
+        entries: tuple[str, ...] = tuple(row.value for row in self._custom_rows())
+        return self._render_menu(self._labels[self._current_group_id()], entries, columns, rows)
+
+    def _render_timeline(self, columns: int, rows: int) -> Text:
+        offered: tuple[tuple[NarrationTimeline, str], ...] = self._timeline_rows()
+        current: int = self._timeline_selection_index()
+        entries: tuple[str, ...] = (*(label for _timeline, label in offered), "Wróć")
+        shown: tuple[str, ...] = _fit_entries(entries, columns)
+        content: Text = _header("CZYTANIE ODCINKA", columns, rows, len(entries))
+        left: int = _left_padding(columns, shown)
+        for index, _label in enumerate(entries):
+            marker: str = f"{'●' if index == current else '○'} " if index < len(offered) else "  "
+            _append_row(content, left, shown[index], index == self._selected, marker)
+        return self._finish(content, columns, rows, _MENU_HINT)
 
     def _render_products(self, columns: int, rows: int) -> Text:
-        entries: tuple[str, ...] = (*(label for _product, label in _PRODUCTS), "Zapisz", "Wróć")
+        rows_offered: tuple[tuple[ProductKind, str], ...] = self._product_rows
+        entries: tuple[str, ...] = (*(label for _product, label in rows_offered), "Zapisz", "Wróć")
         shown: tuple[str, ...] = _fit_entries(entries, columns)
         content: Text = _header("WYNIK ODCINKA", columns, rows, len(entries))
         left: int = _left_padding(columns, shown)
         for index, _label in enumerate(entries):
             marker: str = (
-                f"{'●' if _PRODUCTS[index][0] in self._product_selection else '○'} " if index < len(_PRODUCTS) else "  "
+                f"{'●' if rows_offered[index][0] in self._product_selection else '○'} "
+                if index < len(rows_offered)
+                else "  "
             )
             _append_row(content, left, shown[index], index == self._selected, marker)
         return self._finish(content, columns, rows, _MULTI_HINT)
@@ -1053,14 +1139,14 @@ class ManualController:
             product for group in plan.groups for product in group.intent.products.requested_products
         )
         lines: list[str] = [f"{len(plan.groups)} odcinków"]
-        lines.extend(f"{label}: {counts[product]}" for product, label in _PRODUCTS if counts[product])
+        lines.extend(f"{label}: {counts[product]}" for product, label in _PRODUCT_LABELS if counts[product])
         view: PlanPreview = plan if isinstance(plan, PlanPreview) else preview_plan(plan, "", "")
         for label, attribute in (("Zachowane", "preserved_products"), ("Do wykonania", "planned_products")):
             products: Counter[str] = Counter(
                 product.value for group in view.groups for product in getattr(group, attribute)
             )
             shown: list[str] = [
-                f"{name.lower()} ({products[kind.value]})" for kind, name in _PRODUCTS if products[kind.value]
+                f"{name.lower()} ({products[kind.value]})" for kind, name in _PRODUCT_LABELS if products[kind.value]
             ]
             if shown:
                 lines.append(f"{label}: {', '.join(shown)}")

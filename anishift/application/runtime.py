@@ -217,7 +217,13 @@ class ProductionHandlerFactory:
             assembler=clips,
         )
         ranks: dict[str, int] = {group.group_id: rank for rank, group in enumerate(plan.groups)}
-        return TtsTaskHandler(_RunTtsService(service, clip_cancel), run_root=run_root, group_ranks=ranks)
+        return TtsTaskHandler(
+            _RunTtsService(service, clip_cancel),
+            run_root=run_root,
+            group_ranks=ranks,
+            voice_id=plan.settings.tts_voice_id,
+            allowed_voice_ids=frozenset(plan.settings.tts_allowed_voice_ids),
+        )
 
     @staticmethod
     def _audio_handler(

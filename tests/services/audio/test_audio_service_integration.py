@@ -232,6 +232,37 @@ def test_small_real_rf64_clip_normalizes_and_renders_rf64_narrator_and_sidecar(t
     )
 
 
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+def test_a_recovered_render_still_reports_the_times_its_audio_really_has(tmp_path: Path) -> None:
+    clip_path: Path = tmp_path / "clip.wav"
+    write_wav(clip_path, frames=9_600)
+    request = AudioRenderRequest(
+        scope_id="placement-resume",
+        source_path=tmp_path / "Episode.mkv",
+        source_audio_path=None,
+        clips=(_timed_clip(clip_path),),
+        temporary_root=tmp_path / "tmp" / "placement-resume" / "audio",
+        destination=tmp_path / "Episode.eac3",
+    )
+    runner = _RecordingRunner()
+    service = AudioService(
+        AudioConfig(codec_profile=AudioCodecProfile.EAC3),
+        runner=runner,
+        ffmpeg=FFMPEG,
+        ffprobe=FFPROBE,
+    )
+
+    first: AudioRenderResult = service.render(request)
+    request.destination.unlink()
+    second: AudioRenderResult = service.render(request)
+
+    assert first.status is AudioRenderStatus.COMPLETED
+    assert second.status is AudioRenderStatus.COMPLETED
+    assert runner.operations.count("wrap_narrator") == 1
+    assert first.placements
+    assert second.placements == first.placements
+
+
 @pytest.mark.skipif(
     FFMPEG is None or FFPROBE is None,
     reason="bundled FFmpeg is unavailable",
