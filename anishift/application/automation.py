@@ -14,6 +14,7 @@ from functools import partial
 from pathlib import Path
 from queue import Empty, SimpleQueue
 from secrets import token_hex
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, cast
 
 from anishift.application.acquisition import (
@@ -32,6 +33,7 @@ from anishift.application.control import (
     ProcessingRequest,
     ProductConfirmation,
     ProviderLock,
+    RefusalReason,
     RequestState,
     Reservation,
     SourceSelection,
@@ -46,7 +48,7 @@ from anishift.application.control import (
 from anishift.application.control_payloads import decode_intent
 from anishift.application.control_views import RunProgressSnapshot, decode_view, encode_view, preview_plan
 from anishift.application.discovery import ArtifactName, classify_artifact, is_derived_product
-from anishift.application.events import RunEventKind, sanitize_event_message
+from anishift.application.events import RunEventKind, failure_code, sanitize_event_message
 from anishift.application.inspection import InspectedWorkspace
 from anishift.application.intents import (
     AutoPreset,
@@ -112,6 +114,12 @@ IO_WORKERS: Final[int] = 2
 TRANSFER_CHECK_INTERVAL_S: Final[float] = 10.0
 """Delay between shared client reads while accepted transfers need completion proof."""
 
+TRANSFER_BACKOFF_CEILING_S: Final[float] = 300.0
+"""Longest delay between shared client reads while reconciliation keeps failing."""
+
+_TRANSFER_BACKOFF_FACTOR: Final[float] = 2.0
+"""Multiplier applied to the poll delay after one more failed reconciliation."""
+
 _MAX_CHANGED_PATHS: Final[int] = 4096
 """Pending changed paths retained before falling back to one full reconciliation."""
 
@@ -139,8 +147,43 @@ _STALE_PREVIEW: Final[str] = "The sources changed since the preview; ask for a n
 _UNKNOWN_PREVIEW: Final[str] = "The resident holds no such preview"
 """Reason returned for a preview identifier this instance never issued."""
 
-_GROUP_HELD: Final[str] = "Another client holds one of the requested groups"
-"""Reason returned when a reservation or an active request blocks the command."""
+_REFUSALS: Final[Mapping[RefusalReason, tuple[ControlErrorCode, str]]] = MappingProxyType(
+    {
+        RefusalReason.GROUP_RESERVED: (
+            ControlErrorCode.CONFLICT,
+            "Another client holds one of the requested groups",
+        ),
+        RefusalReason.GROUP_PROCESSING: (
+            ControlErrorCode.ALREADY_PROCESSING,
+            "The requested group is already being processed",
+        ),
+        RefusalReason.GROUP_RELOCATING: (
+            ControlErrorCode.CONFLICT,
+            "The finished group is being moved to the ready folder",
+        ),
+        RefusalReason.SESSION_CLOSED: (
+            ControlErrorCode.REFUSED,
+            "The session that sent this command was already closed",
+        ),
+        RefusalReason.CLIENT_BOUND: (
+            ControlErrorCode.CONFLICT,
+            "This client identity already belongs to another session",
+        ),
+        RefusalReason.NOT_RESERVED: (
+            ControlErrorCode.REFUSED,
+            "Only a client holding the group may register a file for it",
+        ),
+        RefusalReason.FOREIGN_PREVIEW: (
+            ControlErrorCode.CONFLICT,
+            "This preview belongs to another client",
+        ),
+        RefusalReason.NOT_RESUMABLE: (
+            ControlErrorCode.REFUSED,
+            "The run cannot be resumed; it is unknown, finished or still active",
+        ),
+    }
+)
+"""Protocol code and English message of every cause this owner refuses a command for."""
 
 _STATE_NOT_SAVED: Final[str] = "The automation state could not be saved, so nothing changed"
 """Reason returned when the command was abandoned instead of applied unrecorded."""
@@ -338,6 +381,8 @@ class AutomationOwner:
         self._transfers_at: float | None = None
         self._transfers_inspecting: bool = False
         self._transfers_problem: str | None = None
+        self._transfers_failure: tuple[str, str] | None = None
+        self._transfers_delay: float = TRANSFER_CHECK_INTERVAL_S
         self._subscriptions_at: float | None = None
         self._subscriptions_checking: bool = False
         self._subscriptions_problem: str | None = None
@@ -667,8 +712,9 @@ class AutomationOwner:
         if request.kind not in {"status", "shutdown"} and not self._finish_pending_commands():
             command.answer(ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED))
             return
-        if not self._bind_session(request):
-            command.answer(ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD))
+        unbound: ControlResponse | None = self._bind_session(request)
+        if unbound is not None:
+            command.answer(unbound)
             return
         receipt: CommandReceipt | None = self._receipt(request)
         if receipt is not None:
@@ -696,20 +742,20 @@ class AutomationOwner:
         self._active_io -= 1
         self._schedule_subscriptions()
 
-    def _bind_session(self, request: ControlRequest) -> bool:
+    def _bind_session(self, request: ControlRequest) -> ControlResponse | None:
         if request.session_id is None:
-            return True
+            return None
         client_id: str | None = _text(request.payload, "client_id")
         with self._previews_lock:
             if request.session_id in self._closed_sessions:
-                return False
+                return _refuse(RefusalReason.SESSION_CLOSED)
             self._sessions.add(request.session_id)
             if client_id is None:
-                return True
+                return None
             if self._client_sessions.get(client_id) not in {None, request.session_id}:
-                return False
+                return _refuse(RefusalReason.CLIENT_BOUND)
             self._client_sessions[client_id] = request.session_id
-        return True
+        return None
 
     def _release_session(self, session_id: str) -> None:
         self._panels.discard(session_id)
@@ -956,7 +1002,7 @@ class AutomationOwner:
                 ),
             )
             if held is None:
-                return ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD)
+                return _reservation_refusal(candidate, group_id, client_id)
             candidate = held
         outcome: dict[str, str | int | bool | None] = {"reserved": len(group_ids)}
         refusal: ControlResponse | None = self._commit(request, candidate, outcome)
@@ -1023,7 +1069,7 @@ class AutomationOwner:
         if not self._on_owner(
             lambda: any(item.group_id == group_id and item.client_id == client_id for item in self._state.reservations)
         ):
-            return ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD)
+            return _refuse(RefusalReason.NOT_RESERVED)
         token: EventCancellationToken = EventCancellationToken()
         identity: str = request.session_id or client_id
         with self._previews_lock:
@@ -1199,7 +1245,7 @@ class AutomationOwner:
         if preview is None:
             return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _UNKNOWN_PREVIEW)
         if preview.client_id != client_id:
-            return ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD)
+            return _refuse(RefusalReason.FOREIGN_PREVIEW)
         with self._previews_lock:
             changed: bool = self._preview_changed(preview)
         if not preview.plan.can_execute:
@@ -1210,9 +1256,9 @@ class AutomationOwner:
             with self._previews_lock:
                 self._previews.pop(preview.preview_id, None)
             return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
-        if self._blocked(tuple(group.group_id for group in preview.groups), client_id, excluding=preview.resume_run_id):
-            return ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD)
-        return None
+        return self._conflict(
+            tuple(group.group_id for group in preview.groups), client_id, excluding=preview.resume_run_id
+        )
 
     def _preview_changed(self, preview: _Preview) -> bool:
         return self._reconciled_version > preview.file_version or any(
@@ -1233,7 +1279,7 @@ class AutomationOwner:
         if preview.resume_run_id is not None and (
             previous is None or previous.state is RequestState.SUCCEEDED or run_id in self._service.active_run_ids()
         ):
-            return ControlResponse.refused(ControlErrorCode.CONFLICT, _GROUP_HELD)
+            return _refuse(RefusalReason.NOT_RESUMABLE)
         journal: RunJournal = (
             RunJournal.load(self._store.run_path(run_id))
             if previous is not None
@@ -1822,6 +1868,7 @@ class AutomationOwner:
     def _inspect_transfers(self, acquisitions: tuple[AcquisitionConfirmation, ...]) -> None:
         results: tuple[AcquisitionConfirmation, ...] = ()
         failure: str | None = None
+        nature: tuple[str, str] | None = None
         try:
             if self._transfers is not None:
                 acquisition: AcquisitionService | None = self._service.acquisition
@@ -1834,13 +1881,19 @@ class AutomationOwner:
                         )
         except Exception as problem:  # noqa: BLE001
             failure = sanitize_event_message(str(problem))
+            nature = (type(problem).__name__, failure_code(problem))
             if self._transfers is not None:
                 self._transfers.reset_clock()
-            logger.warning("Transfer reconciliation failed", error_class=type(problem).__name__)
         finally:
-            self._queue.put(lambda: self._record_transfers(results, failure))
+            self._queue.put(lambda: self._record_transfers(results, failure, nature))
 
-    def _record_transfers(self, results: tuple[AcquisitionConfirmation, ...], failure: str | None = None) -> None:
+    def _record_transfers(
+        self,
+        results: tuple[AcquisitionConfirmation, ...],
+        failure: str | None = None,
+        nature: tuple[str, str] | None = None,
+    ) -> None:
+        self._note_transfers(failure, nature)
         self._transfers_problem = failure
         self._active_io -= 1
         self._transfers_inspecting = False
@@ -1864,7 +1917,7 @@ class AutomationOwner:
                 self.files_changed(DirectoryChange(paths=paths, reason="transfer_complete"))
             else:
                 self._refresh_automatic()
-        self._schedule_transfers(TRANSFER_CHECK_INTERVAL_S)
+        self._schedule_transfers(self._transfers_delay)
         self._publish_state()
         completed: frozenset[str] = frozenset(
             item.info_hash for item in self._state.acquisitions if item.state is AcquisitionState.COMPLETE
@@ -1872,6 +1925,24 @@ class AutomationOwner:
         if completed and failure is None:
             self._active_io += 1
             self._pool.submit(self._release_completed, completed)
+
+    def _note_transfers(self, failure: str | None, nature: tuple[str, str] | None) -> None:
+        previous: tuple[str, str] | None = self._transfers_failure
+        self._transfers_failure = nature
+        if nature is None:
+            self._transfers_delay = TRANSFER_CHECK_INTERVAL_S
+            if previous is not None:
+                logger.info("Transfer reconciliation recovered")
+            return
+        self._transfers_delay = min(self._transfers_delay * _TRANSFER_BACKOFF_FACTOR, TRANSFER_BACKOFF_CEILING_S)
+        if previous == nature:
+            return
+        logger.warning(
+            "Transfer reconciliation failed",
+            error_class=nature[0],
+            error_code=nature[1],
+            reason=failure,
+        )
 
     def _release_completed(self, hashes: frozenset[str]) -> None:
         problem: str | None = None
@@ -2343,18 +2414,25 @@ class AutomationOwner:
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _blocked(self, group_ids: Sequence[str], client_id: str, *, excluding: str | None = None) -> bool:
+        return self._conflict(group_ids, client_id, excluding=excluding) is not None
+
+    def _conflict(
+        self, group_ids: Sequence[str], client_id: str, *, excluding: str | None = None
+    ) -> ControlResponse | None:
         if self._relocating_groups().intersection(group_ids):
-            return True
+            return _refuse(RefusalReason.GROUP_RELOCATING)
         held: Mapping[str, str] = {item.group_id: item.client_id for item in self._state.reservations}
         if any(held.get(group_id, client_id) != client_id for group_id in group_ids):
-            return True
+            return _refuse(RefusalReason.GROUP_RESERVED)
         active: frozenset[str] = frozenset(
             group_id
             for request in self._state.requests
             if request.state in _ACTIVE_STATES and request.request_id != excluding
             for group_id in request.group_ids
         )
-        return bool(active.intersection(group_ids))
+        if active.intersection(group_ids):
+            return _refuse(RefusalReason.GROUP_PROCESSING)
+        return None
 
     def _previewed_fingerprint(self, group_id: str) -> SourceFingerprint:
         with self._previews_lock:
@@ -2478,6 +2556,17 @@ def _subscription_view(subscription: Subscription) -> dict[str, object]:
 
 def _invalid(message: str) -> ControlResponse:
     return ControlResponse.refused(ControlErrorCode.INVALID_PAYLOAD, message)
+
+
+def _refuse(reason: RefusalReason) -> ControlResponse:
+    code, message = _REFUSALS[reason]
+    return ControlResponse.refused(code, message, reason.value)
+
+
+def _reservation_refusal(state: WatchState, group_id: str, client_id: str) -> ControlResponse:
+    if any(item.group_id == group_id and item.client_id != client_id for item in state.reservations):
+        return _refuse(RefusalReason.GROUP_RESERVED)
+    return _refuse(RefusalReason.GROUP_PROCESSING)
 
 
 def _external_sources(payload: Mapping[str, object]) -> tuple[dict[str, object], ...]:

@@ -3,17 +3,20 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
+import anishift.application.automation as automation_module
 from anishift.application import (
     ArtifactKind,
     GroupIntent,
     ProductIntent,
     ProductKind,
+    RefusalReason,
     RunEvent,
     RunEventKind,
     RunMode,
@@ -22,10 +25,12 @@ from anishift.application import (
 )
 from anishift.application.control_views import PlanPreview, PreviewGroup, PreviewTask, RunProgressSnapshot, encode_view
 from anishift.cli.interactive import state as state_module
-from anishift.cli.interactive.state import StateController, StateResult
+from anishift.cli.interactive.state import StateController, StateResult, refusal_text
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import (
     ControlClient,
+    ControlError,
+    ControlErrorCode,
     ControlRequest,
     ControlResponse,
     ControlServer,
@@ -237,6 +242,88 @@ def test_library_opens_the_selected_video_or_selects_it_in_its_folder(
     monkeypatch.setattr(state_module, "_open_path", open_path)
     state_module._open_episode(session, "episode", ".", show_folder=show_folder)
     assert opened == [(video, show_folder)]
+
+
+def test_every_refusal_cause_reaches_the_panel_as_its_own_translated_sentence() -> None:
+    assert set(state_module._REFUSAL_TEXTS) == {reason.value for reason in RefusalReason}
+    texts: list[str] = []
+    for reason in RefusalReason:
+        english: str = automation_module._REFUSALS[reason][1]
+        stated: str = refusal_text(
+            ControlError(english, code=ControlErrorCode.CONFLICT, reason=reason.value, answered=True)
+        )
+        assert stated == state_module._REFUSAL_TEXTS[reason.value]
+        assert stated != english
+        assert stated
+        assert not stated.endswith(".")
+        texts.append(stated)
+
+    assert len(set(texts)) == len(RefusalReason)
+
+
+def test_an_unmapped_or_absent_reason_still_states_something_honest() -> None:
+    unmapped: str = refusal_text(
+        ControlError("The resident invented a new cause", code=ControlErrorCode.CONFLICT, reason="from_the_future")
+    )
+    silent: str = refusal_text(ControlError("", code=ControlErrorCode.REFUSED, reason="from_the_future"))
+    foreign: str = refusal_text(OSError("the pipe is gone"))
+
+    assert unmapped == "The resident invented a new cause"
+    assert silent == state_module._UNKNOWN_REFUSAL
+    assert foreign == "the pipe is gone"
+
+
+def test_the_panel_never_picks_refusal_text_by_matching_the_message() -> None:
+    stated: str = refusal_text(
+        ControlError(
+            "Another client holds one of the requested groups",
+            code=ControlErrorCode.CONFLICT,
+            answered=True,
+        )
+    )
+
+    assert stated == "Another client holds one of the requested groups"
+    assert stated != state_module._REFUSAL_TEXTS[RefusalReason.GROUP_RESERVED.value]
+
+
+def _await(condition: Callable[[], bool], refreshed: threading.Event) -> None:
+    deadline: float = time.monotonic() + 5
+    while not condition() and time.monotonic() < deadline:
+        refreshed.wait(0.05)
+        refreshed.clear()
+    assert condition()
+
+
+@pytest.mark.integration
+def test_a_panel_notice_disappears_once_the_resident_state_moves_on(tmp_path: Path) -> None:
+    def handle(request: ControlRequest) -> ControlResponse:
+        if request.kind == "status":
+            return ControlResponse.succeeded({"auto_enabled": True, "acquisitions": [], "library": []})
+        if request.kind == "subscriptions_list":
+            return ControlResponse.succeeded({"subscriptions": []})
+        return ControlResponse.succeeded({})
+
+    key: bytes = os.urandom(32)
+    endpoint: str = control_endpoint(tmp_path)
+    server: ControlServer = ControlServer(endpoint, key, handle)
+    session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+    refreshed: threading.Event = threading.Event()
+    controller: StateController = StateController(session, refreshed.set)
+    try:
+        _await(lambda: controller._connected, refreshed)
+        _await(lambda: "Łączenie" not in controller.render(80, 24).plain, refreshed)
+        controller.set_notice("Grupa jest już przetwarzana")
+        assert "Grupa jest już przetwarzana" in controller.render(80, 24).plain
+        server.broadcast(
+            {"event": "state_changed", "payload": {"auto_enabled": False, "acquisitions": [], "library": []}},
+            terminal=False,
+        )
+        _await(lambda: "Grupa jest już przetwarzana" not in controller.render(80, 24).plain, refreshed)
+    finally:
+        controller.close()
+        session.close()
+        server.close()
+        controller._thread.join(5)
 
 
 def _assert_list_fills_available_rows(controller: StateController) -> None:

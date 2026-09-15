@@ -33,11 +33,12 @@ from anishift.cli.interactive.prompts import (
     status_line,
 )
 from anishift.cli.interactive.settings import SettingsController, SettingsResult
-from anishift.cli.interactive.state import StateController, StateResult
+from anishift.cli.interactive.state import StateController, StateResult, refusal_text
 from anishift.cli.resident import ResidentSession
 from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, execute_plan, prepare_auto_run
 from anishift.errors import AniShiftError
 from anishift.paths import config_dir, log_path
+from anishift.platform.local_control import ControlError, ControlErrorCode
 from anishift.utils.logger import get_logger
 
 __all__ = ["run_interactive"]
@@ -613,9 +614,34 @@ class _InteractiveApplication:
             with self._lock:
                 if generation != self._generation:
                     return
-            logger.warning("Interactive automatic run failed", error_class=type(problem).__name__)
+            code: str = _control_code(problem)
+            if code == ControlErrorCode.ALREADY_PROCESSING.value:
+                logger.info("Interactive Auto joined the work already in progress", control_code=code)
+                self._follow_processing(generation)
+                return
+            logger.warning(
+                "Interactive automatic run failed",
+                error_class=type(problem).__name__,
+                control_code=code,
+                reason=_safe(str(problem)),
+            )
             self._finish_batch(EXIT_REFUSED)
             self._report_processing(generation, _problem_text(problem))
+
+    def _follow_processing(self, generation: int) -> None:
+        """Show the run that already owns the requested groups, with nothing to explain."""
+        if self._resident is None or self._state is None:
+            self._finish_with_message(generation, Text())
+            return
+        self._mascot.reset()
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._worker = None
+            self._preflight_cancel = None
+            self._mode = _ViewMode.STATE
+        self._state.set_notice("")
+        self._state.show_processing()
 
     def _report_processing(self, generation: int, message: Text) -> None:
         if self._resident is None or self._state is None:
@@ -1059,8 +1085,12 @@ def _refusal_text(refusal: AutoRunRefusal) -> Text:
     return message
 
 
+def _control_code(problem: AniShiftError | OSError) -> str:
+    return problem.code.value if isinstance(problem, ControlError) else ""
+
+
 def _problem_text(problem: AniShiftError | OSError) -> Text:
-    message = Text(f"Błąd · {_safe(str(problem))}", style="error")
+    message = Text(f"Błąd · {refusal_text(problem)}", style="error")
     suggestion: str = problem.context.suggestion if isinstance(problem, AniShiftError) else ""
     if suggestion:
         message.append(f"\n  {_safe(suggestion)}", style="gray")

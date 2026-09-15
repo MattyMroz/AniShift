@@ -114,6 +114,16 @@ class ManagedQBittorrent:
             self._ensure()
             yield
 
+    def resume_unconfirmed(self, hashes: frozenset[str]) -> None:
+        """Restore the private process for owned transfers that were ordered but never confirmed."""
+        with self._lock:
+            state: _ProcessState = self._load()
+            if self._matches_process(state) or not state.hashes & hashes:
+                return
+            if not state.active:
+                self._save(replace(state, active=True))
+            self._ensure()
+
     def version(self) -> str:
         """Read an existing client without installing one for a status check."""
         with self._lock:

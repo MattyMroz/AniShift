@@ -164,6 +164,10 @@ class TorrentManagement(Protocol):
         """Record ownership before downloads are submitted."""
         ...
 
+    def resume_unconfirmed(self, hashes: frozenset[str]) -> None:
+        """Make the owned client available again for ordered transfers still awaiting confirmation."""
+        ...
+
     def finish_transfers(self) -> None:
         """Stop completed seeds and an idle owned process."""
         ...
@@ -486,6 +490,11 @@ class AcquisitionService:
     def transfers(self) -> tuple[TorrentInfo, ...]:
         """Read the current state of every transfer in the AniShift category."""
         return self._client.torrents(self._category)
+
+    def resume_unconfirmed(self, hashes: frozenset[str]) -> None:
+        """Ask an owned client to run again for ordered transfers this reconciliation must confirm."""
+        if self._torrent_management is not None:
+            self._torrent_management.resume_unconfirmed(hashes)
 
     def airing_schedule(self, anilist_id: int) -> SeasonAiring:
         """Read known episode dates without another title or prequel search."""

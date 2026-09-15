@@ -184,7 +184,11 @@ def test_a_frame_that_is_not_a_request_is_refused_as_an_invalid_payload(tmp_path
         server.close()
 
     assert refusal["ok"] is False
-    assert refusal["error"] == {"code": ControlErrorCode.INVALID_PAYLOAD.value, "message": _UNREADABLE_FRAME}
+    assert refusal["error"] == {
+        "code": ControlErrorCode.INVALID_PAYLOAD.value,
+        "message": _UNREADABLE_FRAME,
+        "reason": "",
+    }
 
 
 def test_a_frame_of_another_protocol_version_is_refused(tmp_path: Path) -> None:
@@ -198,7 +202,11 @@ def test_a_frame_of_another_protocol_version_is_refused(tmp_path: Path) -> None:
         client.close()
         server.close()
 
-    assert refusal["error"] == {"code": ControlErrorCode.INVALID_PAYLOAD.value, "message": _UNREADABLE_FRAME}
+    assert refusal["error"] == {
+        "code": ControlErrorCode.INVALID_PAYLOAD.value,
+        "message": _UNREADABLE_FRAME,
+        "reason": "",
+    }
 
 
 def test_an_unknown_command_is_refused_without_closing_the_connection(tmp_path: Path) -> None:
@@ -214,7 +222,17 @@ def test_an_unknown_command_is_refused_without_closing_the_connection(tmp_path: 
         server.close()
 
     assert refusal.value.code is ControlErrorCode.UNKNOWN_COMMAND
+    assert refusal.value.context.suggestion == ""
     assert answer == {"kind": "echo", "echo": "value"}
+
+
+def test_only_an_unanswered_command_suggests_checking_the_resident() -> None:
+    unanswered: ControlError = ControlError("the endpoint is gone", code=ControlErrorCode.REFUSED)
+    answered: ControlError = ControlError("the group is busy", code=ControlErrorCode.CONFLICT, answered=True)
+
+    assert unanswered.context.suggestion == local_control._RESIDENT_CHECK
+    assert unanswered.context.suggestion
+    assert answered.context.suggestion == ""
 
 
 def test_a_flooded_subscriber_receives_merged_events_instead_of_every_frame(tmp_path: Path) -> None:

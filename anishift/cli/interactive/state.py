@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 from decimal import Decimal, InvalidOperation
 from enum import IntEnum, StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final
 
 from rich.text import Text
@@ -18,6 +19,7 @@ from anishift.application import (
     ArtifactKind,
     InspectedSourceGroup,
     InspectedWorkspace,
+    RefusalReason,
     RunProgressSnapshot,
     Subscription,
     SubscriptionOrder,
@@ -40,7 +42,7 @@ from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
 from anishift.platform.local_control import ControlError
 
-__all__ = ["StateController", "StateResult"]
+__all__ = ["StateController", "StateResult", "refusal_text"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -92,6 +94,29 @@ _CLIENT_PROBLEMS: Final[dict[str, str]] = {
 }
 """Polish explanations of private client states surfaced by the transport boundary."""
 
+_REFUSAL_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        RefusalReason.GROUP_RESERVED.value: "Inny panel zajął ten odcinek",
+        RefusalReason.GROUP_PROCESSING.value: "Ten odcinek jest już przetwarzany",
+        RefusalReason.GROUP_RELOCATING.value: "Gotowy odcinek jest przenoszony do biblioteki",
+        RefusalReason.SESSION_CLOSED.value: "Połączenie z procesem w tle wygasło",
+        RefusalReason.CLIENT_BOUND.value: "Ten panel jest już połączony w innej sesji",
+        RefusalReason.NOT_RESERVED.value: "Najpierw zajmij odcinek, potem dodaj do niego plik",
+        RefusalReason.FOREIGN_PREVIEW.value: "Ten wybór należy do innego panelu",
+        RefusalReason.NOT_RESUMABLE.value: "Tej pracy nie da się wznowić",
+    }
+)
+"""Polish sentence the panel shows for every refusal cause the resident names."""
+
+_UNKNOWN_REFUSAL: Final[str] = "Proces w tle odrzucił polecenie"
+"""Polish sentence for a refusal this version cannot name any more precisely."""
+
+
+def refusal_text(problem: BaseException) -> str:
+    """Return the Polish sentence for a refusal, degrading to its sanitized message."""
+    reason: str = problem.reason if isinstance(problem, ControlError) else ""
+    return _REFUSAL_TEXTS.get(reason) or _safe_text(str(problem)) or _UNKNOWN_REFUSAL
+
 
 class _Tab(IntEnum):
     PROGRESS = 0
@@ -129,6 +154,8 @@ class StateController:
         self._connected: bool = False
         self._busy: bool = False
         self._notice: str = "Łączenie z procesem w tle…"
+        self._state_version: int = 0
+        self._notice_version: int = -1
         self._form: list[str] | None = None
         self._input: TextInput = TextInput()
         self._binding: Subscription | None = None
@@ -159,8 +186,12 @@ class StateController:
     def set_notice(self, message: str) -> None:
         """Show preparation or submission feedback without changing the selected view."""
         with self._lock:
-            self._notice = _safe_text(message).rstrip(".")
+            self._notify(message)
         self._invalidate()
+
+    def _notify(self, message: str) -> None:
+        self._notice = _safe_text(message).rstrip(".")
+        self._notice_version = self._state_version
 
     def handle_key(self, key: str) -> StateResult:
         """Navigate the shared list or submit one explicit action."""
@@ -176,7 +207,7 @@ class StateController:
             if key in {"tab", "backtab", "left", "right"}:
                 self._tab = (self._tab + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS)
                 self._selected = 0
-                self._notice = ""
+                self._notify("")
             elif key in {"up", "down", "home", "end"}:
                 count: int = max(len(self._entries(120)), 1)
                 if key in {"home", "end"}:
@@ -262,7 +293,7 @@ class StateController:
             self._candidates = candidates
             self._selected = 0
             if not candidates:
-                self._notice = "Katalog nie zwrócił pasującego sezonu"
+                self._notify("Katalog nie zwrócił pasującego sezonu")
 
     def _binding_key(self, key: str) -> None:
         if key in {"escape", "interrupt"}:
@@ -317,7 +348,7 @@ class StateController:
                 directory_name=values[0],
             )
         except ValueError, InvalidOperation:
-            self._notice = "Podaj poprawny dodatni numer pierwszego odcinka"
+            self._notify("Podaj poprawny dodatni numer pierwszego odcinka")
             return
         self._form = None
         self._work(lambda session: session.follow(order))
@@ -327,10 +358,10 @@ class StateController:
 
     def _work(self, action: Callable[[ResidentSession], object]) -> None:
         if self._busy:
-            self._notice = "Poprzednia czynność jeszcze trwa; możesz przejść do ustawień"
+            self._notify("Poprzednia czynność jeszcze trwa; możesz przejść do ustawień")
             return
         self._busy = True
-        self._notice = "Wykonywanie polecenia…"
+        self._notify("Wykonywanie polecenia…")
         threading.Thread(target=self._perform, args=(action,), name="anishift-state-action", daemon=True).start()
 
     def _perform(self, action: Callable[[ResidentSession], object]) -> None:
@@ -339,10 +370,10 @@ class StateController:
             session = self._parent.new_session()
             action(session)
             with self._lock:
-                self._notice = "Polecenie przyjęte"
+                self._notify("Polecenie przyjęte")
         except (AniShiftError, ControlError, OSError, ValueError) as error:
             with self._lock:
-                self._notice = _safe_text(str(error))
+                self._notify(refusal_text(error))
         finally:
             if session is not None:
                 session.close()
@@ -364,7 +395,7 @@ class StateController:
                     self._receive(session, frame)
             except (AniShiftError, ControlError, OSError, ValueError, TypeError) as error:
                 with self._lock:
-                    self._notice = _safe_text(str(error))
+                    self._notify(refusal_text(error))
             finally:
                 if self._session is not None:
                     self._session.close()
@@ -388,10 +419,12 @@ class StateController:
             )
             self._restore_progress(session, payload)
             with self._lock:
+                if payload != self._snapshot:
+                    self._state_version += 1
                 self._snapshot = payload
                 self._subscriptions = subscriptions
                 self._connected = True
-                if self._notice.startswith("Łączenie"):
+                if self._notice_version < self._state_version:
                     self._notice = ""
                 if payload.get("shutting_down"):
                     self._stop.set()

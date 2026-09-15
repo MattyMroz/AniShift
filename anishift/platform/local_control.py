@@ -139,6 +139,9 @@ _COMMAND_ID_BYTES: Final[int] = 8
 _NO_RESULT: Final[Mapping[str, object]] = MappingProxyType({})
 """Result of a command that answers with nothing but its acceptance."""
 
+_RESIDENT_CHECK: Final[str] = "Check whether the resident runs and retry the command"
+"""Repair hint that fits only a command which never reached a running resident."""
+
 
 class ControlErrorCode(StrEnum):
     """Reason one control command was refused, carried by every failed response."""
@@ -148,6 +151,7 @@ class ControlErrorCode(StrEnum):
     INVALID_PAYLOAD = "invalid_payload"
     STALE_PREVIEW = "stale_preview"
     CONFLICT = "conflict"
+    ALREADY_PROCESSING = "already_processing"
     REFUSED = "refused"
     INTERNAL = "internal"
 
@@ -155,16 +159,24 @@ class ControlErrorCode(StrEnum):
 class ControlError(AniShiftError):
     """Raised when the local control channel cannot deliver or complete a command."""
 
-    def __init__(self, message: str, *, code: ControlErrorCode = ControlErrorCode.INTERNAL) -> None:
-        """Carry the protocol reason beside the generic AniShift error context."""
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: ControlErrorCode = ControlErrorCode.INTERNAL,
+        reason: str = "",
+        answered: bool = False,
+    ) -> None:
+        """Carry the protocol reason, suggesting a resident check only for an undelivered command."""
         super().__init__(
             context=ErrorContext(
                 code=ErrorCode.IO_ERROR,
                 message=message,
-                suggestion="Check whether the resident runs and retry the command",
+                suggestion="" if answered else _RESIDENT_CHECK,
             )
         )
         self.code: ControlErrorCode = code
+        self.reason: str = reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +198,7 @@ class ControlResponse:
     result: Mapping[str, object] = _NO_RESULT
     code: ControlErrorCode | None = None
     message: str = ""
+    reason: str = ""
 
     @classmethod
     def succeeded(cls, result: Mapping[str, object] | None = None) -> ControlResponse:
@@ -193,9 +206,9 @@ class ControlResponse:
         return cls(ok=True, result=result if result is not None else _NO_RESULT)
 
     @classmethod
-    def refused(cls, code: ControlErrorCode, message: str) -> ControlResponse:
+    def refused(cls, code: ControlErrorCode, message: str, reason: str = "") -> ControlResponse:
         """Return a refused response naming why the command was not performed."""
-        return cls(ok=False, result=_NO_RESULT, code=code, message=message)
+        return cls(ok=False, result=_NO_RESULT, code=code, message=message, reason=reason)
 
 
 @dataclass(frozen=True, slots=True)
@@ -784,19 +797,19 @@ def _response_frame(command_id: str, response: ControlResponse) -> dict[str, obj
     if response.ok:
         return _result_frame(command_id, response.result)
     code: ControlErrorCode = response.code if response.code is not None else ControlErrorCode.INTERNAL
-    return _error_frame(command_id, code, response.message)
+    return _error_frame(command_id, code, response.message, response.reason)
 
 
 def _result_frame(command_id: str, result: Mapping[str, object]) -> dict[str, object]:
     return {"v": PROTOCOL_VERSION, "command_id": command_id, "ok": True, "result": dict(result)}
 
 
-def _error_frame(command_id: str, code: ControlErrorCode, message: str) -> dict[str, object]:
+def _error_frame(command_id: str, code: ControlErrorCode, message: str, reason: str = "") -> dict[str, object]:
     return {
         "v": PROTOCOL_VERSION,
         "command_id": command_id,
         "ok": False,
-        "error": {"code": code.value, "message": message},
+        "error": {"code": code.value, "message": message, "reason": reason},
     }
 
 
@@ -805,14 +818,20 @@ def _accepted_result(frame: Mapping[str, object], command_id: str) -> Mapping[st
         error: object = frame.get("error")
         code: str = error.get("code", "") if isinstance(error, dict) else ""
         message: str = error.get("message", "") if isinstance(error, dict) else ""
-        raise ControlError(message or "The resident refused the command", code=_error_code(code))
+        reason: object = error.get("reason", "") if isinstance(error, dict) else ""
+        raise ControlError(
+            message or "The resident refused the command",
+            code=_error_code(code),
+            reason=reason if isinstance(reason, str) else "",
+            answered=True,
+        )
     if frame.get("command_id") != command_id:
         msg = "The resident answered a different command"
-        raise ControlError(msg, code=ControlErrorCode.INVALID_PAYLOAD)
+        raise ControlError(msg, code=ControlErrorCode.INVALID_PAYLOAD, answered=True)
     result: object = frame.get("result")
     if not isinstance(result, dict):
         msg = "The resident answered without a result document"
-        raise ControlError(msg, code=ControlErrorCode.INVALID_PAYLOAD)
+        raise ControlError(msg, code=ControlErrorCode.INVALID_PAYLOAD, answered=True)
     return result
 
 

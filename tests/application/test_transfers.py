@@ -4,12 +4,15 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from loguru import logger as loguru_logger
 
 from anishift.application.acquisition import AcquisitionService
 from anishift.application.control import AcquisitionConfirmation, AcquisitionState
 from anishift.application.intents import RequestOrigin
 from anishift.application.transfers import TransferInspector
+from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.torrents import TorrentFile, TorrentInfo
+from anishift.services.torrents.errors import TorrentClientError
 
 
 class _Acquisition(AcquisitionService):
@@ -18,6 +21,11 @@ class _Acquisition(AcquisitionService):
         self.entries: tuple[TorrentFile, ...] = (TorrentFile(0, "Episode.mkv", 4, 1.0, 1, True),)
         self.info_calls: int = 0
         self.file_calls: int = 0
+        self.resumed: list[frozenset[str]] = []
+        self.raises: Exception | None = None
+
+    def resume_unconfirmed(self, hashes: frozenset[str]) -> None:
+        self.resumed.append(hashes)
 
     def transfers(self) -> tuple[TorrentInfo, ...]:
         self.info_calls += 1
@@ -26,6 +34,8 @@ class _Acquisition(AcquisitionService):
     def transfer_files(self, info_hash: str) -> tuple[TorrentFile, ...]:
         assert info_hash == "abc"
         self.file_calls += 1
+        if self.raises is not None:
+            raise self.raises
         return self.entries
 
 
@@ -179,3 +189,58 @@ def test_an_empty_transfer_set_makes_no_client_request(tmp_path: Path) -> None:
     assert TransferInspector(acquisition, tmp_path).inspect(()) == ()
     assert acquisition.info_calls == 0
     assert acquisition.file_calls == 0
+    assert acquisition.resumed == []
+
+
+def test_unconfirmed_transfers_ask_for_their_client_before_it_is_read(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition(tmp_path)
+
+    TransferInspector(acquisition, tmp_path).inspect((_confirmation(),))
+
+    assert acquisition.resumed == [frozenset({"abc"})]
+    assert acquisition.info_calls == 1
+
+
+def test_a_failed_confirmation_alone_still_names_no_client_to_start(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition(tmp_path)
+    failed: AcquisitionConfirmation = replace(_confirmation(), state=AcquisitionState.FAILED)
+
+    results: tuple[AcquisitionConfirmation, ...] = TransferInspector(acquisition, tmp_path).inspect((failed,))
+
+    assert results == (failed,)
+    assert acquisition.resumed == [frozenset({"abc"})]
+    assert acquisition.file_calls == 0
+
+
+def test_repeated_inspection_failures_log_one_line_until_the_cause_changes(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition(tmp_path)
+    acquisition.raises = _unavailable()
+    inspector: TransferInspector = TransferInspector(acquisition, tmp_path)
+    captured: list[str] = []
+    handler_id: int = loguru_logger.add(captured.append, format="{message} {extra}", level="DEBUG")
+    try:
+        for _ in range(4):
+            inspector.inspect((_confirmation(),))
+        acquisition.raises = OSError("the file vanished")
+        inspector.inspect((_confirmation(),))
+        acquisition.raises = None
+        inspector.inspect((_confirmation(),))
+        inspector.inspect((_confirmation(),))
+    finally:
+        loguru_logger.remove(handler_id)
+
+    failures: list[str] = [line for line in captured if "Transfer inspection failed" in line]
+    recoveries: list[str] = [line for line in captured if "Transfer inspection recovered" in line]
+    assert len(failures) == 2
+    assert len(recoveries) == 1
+    assert f"TorrentClientError:{ErrorCode.TORRENT_CLIENT_UNAVAILABLE.value}" in failures[0]
+    assert "The Web UI is closed" in failures[0]
+    assert "OSError" in failures[1]
+    assert "the file vanished" in failures[1]
+    assert all(str(tmp_path) not in line for line in failures)
+
+
+def _unavailable() -> TorrentClientError:
+    return TorrentClientError(
+        context=ErrorContext(code=ErrorCode.TORRENT_CLIENT_UNAVAILABLE, message="The Web UI is closed")
+    )

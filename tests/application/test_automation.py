@@ -13,19 +13,31 @@ from typing import Final, cast
 
 import pytest
 from fakes import write_text_source
+from loguru import logger as loguru_logger
 
 import anishift.application.automation as automation_module
 import anishift.application.watch as watch_module
 from anishift.application import TaskState
-from anishift.application.acquisition import AcquisitionService, DownloadReceipt, ReleaseCatalog, TorrentClient
+from anishift.application.acquisition import (
+    AcquisitionService,
+    DownloadReceipt,
+    ReleaseCatalog,
+    TorrentClient,
+    TorrentManagement,
+)
 from anishift.application.artifacts import ArtifactState
-from anishift.application.automation import AutomationOwner
+from anishift.application.automation import (
+    TRANSFER_BACKOFF_CEILING_S,
+    TRANSFER_CHECK_INTERVAL_S,
+    AutomationOwner,
+)
 from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
     AutomationPolicy,
     ManualHandledMarker,
     RecipePreferences,
+    RefusalReason,
     RequestState,
     SourceFingerprint,
     SourceSelection,
@@ -110,6 +122,20 @@ class _TorrentNetwork:
         self.lose_response: bool = False
         self.entries: tuple[TorrentFile, ...] = ()
         self.info_calls: int = 0
+        self.unreachable: bool = False
+        self.unstartable: bool = False
+        self.resume_calls: int = 0
+
+    def resume_unconfirmed(self, hashes: frozenset[str]) -> None:
+        del hashes
+        self.resume_calls += 1
+        if self.unstartable:
+            raise TorrentClientError(
+                context=ErrorContext(
+                    code=ErrorCode.TORRENT_CLIENT_UNAVAILABLE,
+                    message="The private torrent client could not start; resolve the problem and explicitly resume",
+                )
+            )
 
     def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> tuple[Release, ...]:
         del query, categories
@@ -134,6 +160,10 @@ class _TorrentNetwork:
     def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
         del category
         self.info_calls += 1
+        if self.unreachable:
+            raise TorrentClientError(
+                context=ErrorContext(code=ErrorCode.TORRENT_CLIENT_UNAVAILABLE, message="The Web UI is closed")
+            )
         return tuple(self.tracked.values())
 
     def files(self, info_hash: str) -> tuple[TorrentFile, ...]:
@@ -271,9 +301,9 @@ class _Service:
         self.submitted_event.set()
         return handle
 
-    def finish(self, run_id: str, status: GroupStatus, group_id: str) -> None:
+    def finish(self, run_id: str, status: GroupStatus, group_id: str, errors: tuple[str, ...] = ()) -> None:
         self.active.remove(run_id)
-        self.handles[run_id].resolve(RunResult(run_id, (GroupResult(group_id, status),)))
+        self.handles[run_id].resolve(RunResult(run_id, (GroupResult(group_id, status, error_messages=errors),)))
 
     def cancel(self, run_id: str) -> bool:
         self.cancelled.append(run_id)
@@ -588,12 +618,14 @@ def _request(
     *,
     command_id: str = "command-1",
     instance_id: str | None = _INSTANCE,
+    session_id: str | None = None,
 ) -> ControlRequest:
     return ControlRequest(
         command_id=command_id,
         kind=kind,
         payload=payload if payload is not None else {},
         instance_id=instance_id,
+        session_id=session_id,
     )
 
 
@@ -806,6 +838,279 @@ def test_a_group_reserved_by_another_client_refuses_the_second_reservation(tmp_p
 
     assert held.ok
     assert contested.code is ControlErrorCode.CONFLICT
+    assert contested.reason == RefusalReason.GROUP_RESERVED.value
+
+
+def test_every_refusal_cause_has_its_own_reason_and_message() -> None:
+    assert set(automation_module._REFUSALS) == set(RefusalReason)
+    messages: list[str] = [message for _code, message in automation_module._REFUSALS.values()]
+
+    assert len(set(messages)) == len(RefusalReason)
+    for reason in RefusalReason:
+        answer: ControlResponse = automation_module._refuse(reason)
+        assert answer.reason == reason.value
+        assert answer.code is automation_module._REFUSALS[reason][0]
+        assert answer.message == automation_module._REFUSALS[reason][1]
+        assert not answer.ok
+
+
+def test_a_group_owned_by_an_active_request_is_refused_as_processing_not_as_held(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        run_id: str = _started(owner)
+        contested: ControlResponse = owner.handle(
+            _request("reserve", {"client_id": "panel-2", "group_ids": [group_id]}, command_id="reserve-1")
+        )
+        service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+    finally:
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+
+    assert contested.code is ControlErrorCode.ALREADY_PROCESSING
+    assert contested.reason == RefusalReason.GROUP_PROCESSING.value
+    assert store.load().reservations == ()
+
+
+def test_starting_a_group_being_relocated_names_the_relocation(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        preview: ControlResponse = owner.handle(_request("preview", {"client_id": _CLIENT}, command_id="preview-1"))
+        assert preview.ok, preview.message
+        owner._ready_problems[group_id] = "the move is still pending"
+        answer: ControlResponse = owner.handle(
+            _request(
+                "start",
+                {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]},
+                command_id="start-1",
+            )
+        )
+    finally:
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+
+    assert answer.code is ControlErrorCode.CONFLICT
+    assert answer.reason == RefusalReason.GROUP_RELOCATING.value
+    assert service.submitted == []
+
+
+def test_starting_the_preview_of_another_client_names_the_preview_owner(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        preview: ControlResponse = owner.handle(_request("preview", {"client_id": _CLIENT}, command_id="preview-1"))
+        assert preview.ok, preview.message
+        answer: ControlResponse = owner.handle(
+            _request(
+                "start",
+                {"client_id": "panel-2", "preview_id": preview.result["preview_id"]},
+                command_id="start-1",
+            )
+        )
+    finally:
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+
+    assert answer.code is ControlErrorCode.CONFLICT
+    assert answer.reason == RefusalReason.FOREIGN_PREVIEW.value
+    assert service.submitted == []
+
+
+def test_registering_a_file_for_an_unreserved_group_names_the_missing_reservation(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    outside: Path = tmp_path / "outside.srt"
+    outside.write_text("1\n00:00:00,000 --> 00:00:01,000\nText\n", encoding="utf-8")
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        answer: ControlResponse = owner.handle(
+            _request(
+                "register_external",
+                {"client_id": _CLIENT, "group_id": group_id, "path": str(outside), "kind": "subtitle"},
+            )
+        )
+    finally:
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+
+    assert answer.code is ControlErrorCode.REFUSED
+    assert answer.reason == RefusalReason.NOT_RESERVED.value
+
+
+def test_a_closed_session_and_a_taken_client_identity_name_their_own_cause(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("status", {"client_id": _CLIENT}, session_id="session-1")).ok
+        taken: ControlResponse = owner.handle(
+            _request("status", {"client_id": _CLIENT}, command_id="second", session_id="session-2")
+        )
+        owner.disconnect("session-1")
+        closed: ControlResponse = owner.handle(
+            _request("status", {"client_id": _CLIENT}, command_id="third", session_id="session-1")
+        )
+    finally:
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+
+    assert taken.code is ControlErrorCode.CONFLICT
+    assert taken.reason == RefusalReason.CLIENT_BOUND.value
+    assert closed.code is ControlErrorCode.REFUSED
+    assert closed.reason == RefusalReason.SESSION_CLOSED.value
+
+
+def test_resuming_a_run_that_became_active_again_says_it_cannot_be_resumed(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    settled: frozenset[threading.Thread] = frozenset(threading.enumerate())
+    watcher: threading.Thread | None = None
+    run_id: str = ""
+    try:
+        run_id = _started(owner)
+        watcher = _only_new_thread(settled)
+        service.active.remove(run_id)
+        owner._queue.put(automation_module._Completion(request_id=run_id, result=_stopped_run(run_id, group_id)))
+        preview: ControlResponse = owner.handle(
+            _request("resume_preview", {"client_id": _CLIENT, "group_ids": [group_id]}, command_id="resume-1")
+        )
+        assert preview.ok, preview.message
+        service.active.append(run_id)
+        answer: ControlResponse = owner.handle(
+            _request(
+                "start",
+                {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]},
+                command_id="start-2",
+            )
+        )
+        service.active.remove(run_id)
+    finally:
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+        _end_watcher(service, run_id, group_id, watcher)
+
+    assert answer.code is ControlErrorCode.REFUSED
+    assert answer.reason == RefusalReason.NOT_RESUMABLE.value
+    assert watcher is not None
+    assert not watcher.is_alive()
+
+
+def _stopped_run(run_id: str, group_id: str) -> RunResult:
+    return RunResult(run_id, (GroupResult(group_id, GroupStatus.FAILED, error_messages=("stopped",)),))
+
+
+def _only_new_thread(settled: frozenset[threading.Thread]) -> threading.Thread:
+    fresh: list[threading.Thread] = [
+        item for item in threading.enumerate() if item not in settled and not item.name.startswith("anishift-")
+    ]
+    assert len(fresh) == 1, [item.name for item in fresh]
+    return fresh[0]
+
+
+def _end_watcher(service: _Service, run_id: str, group_id: str, watcher: threading.Thread | None) -> None:
+    if watcher is None:
+        return
+    service.handles[run_id].resolve(_stopped_run(run_id, group_id))
+    watcher.join()
+
+
+def _drain_owner_queue(owner: AutomationOwner) -> None:
+    action: object = owner._queue.get(timeout=_TIMEOUT_S)
+    assert callable(action)
+    action()
+
+
+def test_repeated_transfer_failures_log_one_line_and_grow_the_poll_delay(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _TorrentNetwork()
+    network.unreachable = True
+    service.acquisition = AcquisitionService(
+        source=network,
+        client=cast("TorrentClient", network),
+        workspace_root=tmp_path,
+        parse_name=parse_release_name,
+    )
+    item: AcquisitionConfirmation = AcquisitionConfirmation(
+        "download", "a", "", (), AcquisitionState.ACCEPTED, RequestOrigin.USER, None, "1", _MOMENT.isoformat()
+    )
+    store.save(WatchState(acquisitions=(item,)))
+    owner: AutomationOwner = _owner(service, store)
+    captured: list[str] = []
+    handler_id: int = loguru_logger.add(captured.append, format="{message} {extra}", level="DEBUG")
+    delays: list[float] = []
+    try:
+        for _ in range(3):
+            owner._inspect_transfers((item,))
+            _drain_owner_queue(owner)
+            delays.append(owner._transfers_delay)
+        network.unreachable = False
+        owner._inspect_transfers((item,))
+        _drain_owner_queue(owner)
+        delays.append(owner._transfers_delay)
+    finally:
+        loguru_logger.remove(handler_id)
+
+    failures: list[str] = [line for line in captured if "Transfer reconciliation failed" in line]
+    recoveries: list[str] = [line for line in captured if "Transfer reconciliation recovered" in line]
+    assert len(failures) == 1
+    assert len(recoveries) == 1
+    assert "TorrentClientError" in failures[0]
+    assert ErrorCode.TORRENT_CLIENT_UNAVAILABLE.value in failures[0]
+    assert "The Web UI is closed" in failures[0]
+    assert str(tmp_path) not in failures[0]
+    assert delays == [20.0, 40.0, 80.0, TRANSFER_CHECK_INTERVAL_S]
+    assert network.info_calls == 4
+
+
+def test_a_client_that_cannot_be_started_logs_once_and_slows_down_instead_of_flooding(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _TorrentNetwork()
+    network.unstartable = True
+    service.acquisition = AcquisitionService(
+        source=network,
+        client=cast("TorrentClient", network),
+        torrent_management=cast("TorrentManagement", network),
+        workspace_root=tmp_path,
+        parse_name=parse_release_name,
+    )
+    item: AcquisitionConfirmation = AcquisitionConfirmation(
+        "download", "a", "", (), AcquisitionState.ACCEPTED, RequestOrigin.USER, None, "1", _MOMENT.isoformat()
+    )
+    store.save(WatchState(acquisitions=(item,)))
+    owner: AutomationOwner = _owner(service, store)
+    captured: list[str] = []
+    handler_id: int = loguru_logger.add(captured.append, format="{message} {extra}", level="DEBUG")
+    delays: list[float] = []
+    try:
+        for _ in range(5):
+            owner._inspect_transfers((item,))
+            _drain_owner_queue(owner)
+            delays.append(owner._transfers_delay)
+    finally:
+        loguru_logger.remove(handler_id)
+
+    failures: list[str] = [line for line in captured if "Transfer reconciliation failed" in line]
+    assert len(failures) == 1
+    assert "could not start" in failures[0]
+    assert network.resume_calls == 5
+    assert network.info_calls == 0
+    assert delays == [20.0, 40.0, 80.0, 160.0, TRANSFER_BACKOFF_CEILING_S]
+
+
+def test_the_transfer_poll_delay_never_grows_past_its_ceiling(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    nature: tuple[str, str] = ("TorrentClientError", ErrorCode.TORRENT_CLIENT_UNAVAILABLE.value)
+
+    for _ in range(20):
+        owner._note_transfers("the client is unreachable", nature)
+
+    assert owner._transfers_delay == TRANSFER_BACKOFF_CEILING_S
 
 
 def test_a_command_naming_another_instance_is_refused_as_stale(tmp_path: Path) -> None:

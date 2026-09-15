@@ -174,6 +174,106 @@ def test_closed_manual_window_is_not_reported_as_a_start_failure_or_restarted(
             manager.close()
 
 
+def test_unconfirmed_owned_transfers_restore_the_client_and_nothing_else_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root: Path = tmp_path / "profile"
+    executable: Path = tmp_path / "bin/qbittorrent/qbittorrent.exe"
+    _receipt(root, executable)
+    path: Path = root / "process.json"
+    receipt: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**receipt, "active": False}), encoding="utf-8")
+    children: list[_LiveChild] = []
+
+    class _LiveChild:
+        pid: int = 999
+
+        def poll(self) -> int | None:
+            return None
+
+        def terminate(self) -> None:
+            raise AssertionError(self.pid)
+
+        def wait(self, timeout: float) -> int:
+            del timeout
+            raise AssertionError(self.pid)
+
+    def launch(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        del args, kwargs
+        child: _LiveChild = _LiveChild()
+        children.append(child)
+        return cast("subprocess.Popen[bytes]", child)
+
+    monkeypatch.setattr(processes, "is_windows", lambda: True)
+    monkeypatch.setattr(processes, "_protect_profile", lambda root: None)
+    monkeypatch.setattr(processes, "ensure_authkey", lambda root: b"test-only-key")
+    monkeypatch.setattr(processes, "ensure_resource", lambda *args, **kwargs: None)
+    monkeypatch.setattr(processes, "write_managed_profile", lambda *args, **kwargs: None)
+    monkeypatch.setattr(processes, "_visible_process_window", lambda pid: False)
+    monkeypatch.setattr(
+        processes, "_process_identity", lambda pid: (456, str(executable)) if pid == _LiveChild.pid else None
+    )
+    monkeypatch.setattr(subprocess, "Popen", launch)
+
+    dead_port: int = cast("int", receipt["port"])
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.port == dead_port:
+            raise httpx.ConnectError("the recorded endpoint is gone", request=request)
+        if request.url.path.endswith("preferences"):
+            return httpx.Response(200, json={"save_path": str(root / "qBittorrent/downloads")})
+        return httpx.Response(200, text="v5.2.3")
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        manager: ManagedQBittorrent = ManagedQBittorrent(root, http=http, bin_root=tmp_path / "bin")
+        try:
+            manager.resume_unconfirmed(frozenset())
+            manager.resume_unconfirmed(frozenset({"b" * 40}))
+            assert children == []
+            assert json.loads(path.read_text(encoding="utf-8"))["active"] is False
+            manager.resume_unconfirmed(frozenset({"a" * 40}))
+            assert len(children) == 1
+            stored: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+            assert stored["active"] is True
+            assert stored["pid"] == _LiveChild.pid
+            manager.resume_unconfirmed(frozenset({"a" * 40}))
+            assert len(children) == 1
+        finally:
+            manager.close()
+
+
+def test_a_taken_over_client_is_never_restarted_for_unconfirmed_transfers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root: Path = tmp_path / "profile"
+    _receipt(root, tmp_path / "bin/qbittorrent/qbittorrent.exe")
+    path: Path = root / "process.json"
+    receipt: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**receipt, "active": False, "taken_over": True}), encoding="utf-8")
+    monkeypatch.setattr(processes, "_process_identity", lambda pid: None)
+    monkeypatch.setattr(processes, "_protect_profile", lambda root: None)
+
+    def refuse(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        del args, kwargs
+        raise AssertionError(str(root))
+
+    monkeypatch.setattr(subprocess, "Popen", refuse)
+    requests: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        return httpx.Response(503)
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        manager: ManagedQBittorrent = ManagedQBittorrent(root, http=http, bin_root=tmp_path / "bin")
+        try:
+            with pytest.raises(TorrentClientError, match="window was closed"):
+                manager.resume_unconfirmed(frozenset({"a" * 40}))
+            assert requests == []
+        finally:
+            manager.close()
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows process ownership")
 def test_private_clients_download_concurrently_reconnect_and_stop_independently(  # noqa: C901,PLR0915 - isolated lifecycle

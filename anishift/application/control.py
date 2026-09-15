@@ -118,6 +118,19 @@ class PreflightFindingKind(StrEnum):
     RESERVED_NAME_OCCUPIED = "reserved_name_occupied"
 
 
+class RefusalReason(StrEnum):
+    """Stable identifier of why the resident refused one command, carried beside its message."""
+
+    GROUP_RESERVED = "group_reserved"
+    GROUP_PROCESSING = "group_processing"
+    GROUP_RELOCATING = "group_relocating"
+    SESSION_CLOSED = "session_closed"
+    CLIENT_BOUND = "client_bound"
+    NOT_RESERVED = "not_reserved"
+    FOREIGN_PREVIEW = "foreign_preview"
+    NOT_RESUMABLE = "not_resumable"
+
+
 class SourceSelection(StrEnum):
     """How a request picks the sources it works on."""
 

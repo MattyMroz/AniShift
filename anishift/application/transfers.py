@@ -10,6 +10,7 @@ from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Final
 
 from anishift.application.control import AcquisitionState
+from anishift.application.events import failure_code, sanitize_event_message
 from anishift.errors import AniShiftError
 from anishift.platform.directory_watch import source_is_available
 from anishift.utils.logger import get_logger
@@ -70,6 +71,7 @@ class TransferInspector:
         self._progress_lock: threading.Lock = threading.Lock()
         self._stalled: frozenset[str] = frozenset()
         self._snapshot: tuple[TorrentInfo, ...] = ()
+        self._failures: frozenset[tuple[str, str]] = frozenset()
 
     def snapshot(self) -> tuple[TorrentInfo, ...]:
         """Read the last transfer observations without contacting the client."""
@@ -96,12 +98,16 @@ class TransferInspector:
         """Read the client once and refresh file details at metadata and completion boundaries."""
         if not acquisitions:
             self._files.clear()
+            self._note_failures(frozenset(), None)
             return ()
+        self._acquisition.resume_unconfirmed(frozenset(item.info_hash for item in acquisitions))
         transfers: dict[str, TorrentInfo] = {item.info_hash.casefold(): item for item in self._acquisition.transfers()}
         active: set[str] = {item.info_hash for item in acquisitions}
         self._record_progress({key: value for key, value in transfers.items() if key in active}, stall_after_s)
         self._files = {key: value for key, value in self._files.items() if key in active}
         results: list[AcquisitionConfirmation] = []
+        natures: set[tuple[str, str]] = set()
+        reason: str | None = None
         for acquisition in acquisitions:
             if acquisition.state is AcquisitionState.FAILED or acquisition.problem is not None:
                 results.append(acquisition)
@@ -109,10 +115,26 @@ class TransferInspector:
             try:
                 result: AcquisitionConfirmation = self._inspect(acquisition, transfers.get(acquisition.info_hash))
             except (AniShiftError, OSError) as problem:
-                logger.warning("Transfer inspection failed", error_class=type(problem).__name__)
+                natures.add((type(problem).__name__, failure_code(problem)))
+                reason = reason or sanitize_event_message(str(problem))
                 result = acquisition
             results.append(result)
+        self._note_failures(frozenset(natures), reason)
         return tuple(results)
+
+    def _note_failures(self, natures: frozenset[tuple[str, str]], reason: str | None) -> None:
+        previous: frozenset[tuple[str, str]] = self._failures
+        self._failures = natures
+        if natures == previous:
+            return
+        if not natures:
+            logger.info("Transfer inspection recovered")
+            return
+        logger.warning(
+            "Transfer inspection failed",
+            causes=", ".join(sorted(f"{name}:{code}" if code else name for name, code in natures)),
+            reason=reason,
+        )
 
     def _record_progress(self, transfers: dict[str, TorrentInfo], stall_after_s: float) -> None:
         now: float = self._clock()

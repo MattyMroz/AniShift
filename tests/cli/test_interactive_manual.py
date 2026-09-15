@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from anishift.application import (
@@ -12,14 +12,18 @@ from anishift.application import (
     PlanTask,
     ProductIntent,
     ProductKind,
+    RefusalReason,
     TaskKind,
 )
 from anishift.application.inspection import WorkspaceInspector
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
+from anishift.cli.interactive.state import refusal_text
+from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
+from anishift.platform.local_control import ControlError, ControlErrorCode
 from anishift.services.media import DefaultMediaProbe
 
 
@@ -44,6 +48,35 @@ def _controller(tmp_path: Path) -> ManualController:
     )
     preset: AutoPreset = AutoPreset("manual", "Manual", ProductIntent(frozenset({ProductKind.FULL_PL})))
     return ManualController(service, service.discover(), preset, lambda: None)
+
+
+class _RefusingSession(ResidentSession):
+    def __init__(self, problem: ControlError) -> None:
+        self._problem: ControlError = problem
+
+    def reserve(self, group_ids: Sequence[str]) -> None:
+        del group_ids
+        raise self._problem
+
+
+def test_a_refusal_reaching_manual_is_stated_in_polish_like_every_other_screen(tmp_path: Path) -> None:
+    controller: ManualController = _controller(tmp_path)
+    english: str = "Another client holds one of the requested groups"
+    controller._service = _RefusingSession(
+        ControlError(
+            english,
+            code=ControlErrorCode.CONFLICT,
+            reason=RefusalReason.GROUP_RESERVED.value,
+            answered=True,
+        )
+    )
+
+    assert controller.handle_key("space") is ManualResult.STAY
+    frame: str = controller.render(120, 40).plain
+
+    assert refusal_text(ControlError(english, reason=RefusalReason.GROUP_RESERVED.value)) in frame
+    assert english not in frame
+    assert "Check whether the resident runs" not in frame
 
 
 def test_manual_previews_and_starts_only_episodes_three_and_eight(tmp_path: Path) -> None:

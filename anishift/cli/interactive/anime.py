@@ -34,6 +34,7 @@ from anishift.application import (
 )
 from anishift.application.events import sanitize_event_message
 from anishift.cli.interactive.menu import with_footer
+from anishift.cli.interactive.state import refusal_text
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError, ErrorCode
@@ -1000,10 +1001,10 @@ def _stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:
         stated: tuple[str, str] | None = _PROBLEM_TEXTS.get(problem.context.code)
         if stated is not None:
             return stated
-        return _safe(str(problem)), _safe(problem.context.suggestion)
+        return refusal_text(problem), _safe(problem.context.suggestion)
     if isinstance(problem, ValueError):
         return _NOT_WATCHABLE, ""
-    return _safe(str(problem)), ""
+    return refusal_text(problem), ""
 
 
 def _safe(value: str) -> str:

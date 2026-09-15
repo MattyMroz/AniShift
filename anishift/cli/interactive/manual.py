@@ -59,6 +59,7 @@ from anishift.cli.interactive.menu import (
     visible_window as _visible_window,
 )
 from anishift.cli.interactive.menu import with_footer
+from anishift.cli.interactive.state import refusal_text
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
@@ -570,7 +571,7 @@ class ManualController:
             try:
                 self._service.reserve(tuple(group for group in self._group_ids if group in selected))
             except (AniShiftError, OSError) as problem:
-                self._feedback = f"✗ Nie można zarezerwować odcinków · {_safe(str(problem))}"
+                self._feedback = f"✗ Nie można zarezerwować odcinków · {refusal_text(problem)}"
                 return
         self._selected_groups = selected
         self._feedback = None
@@ -596,7 +597,7 @@ class ManualController:
             self._plan = self._service.plan_auto(self._edit_ids, self._preset, rebuild=rebuild)
         except (AniShiftError, OSError, TypeError, ValueError) as problem:
             self._plan = None
-            self._feedback = f"✗ Nie można zbudować planu · {_safe(str(problem))}"
+            self._feedback = f"✗ Nie można zbudować planu · {refusal_text(problem)}"
         self._open(_Screen.PREVIEW, clear_feedback=False)
         return ManualResult.STAY
 
@@ -625,7 +626,7 @@ class ManualController:
                     rebuild: RebuildRequest | None = None if product is None else RebuildRequest(frozenset({product}))
                     plan = service.plan_auto(group_ids, self._preset, rebuild=rebuild)
             except (AniShiftError, OSError, TypeError, ValueError) as error:
-                problem = f"✗ Nie można przygotować odcinków · {_safe(str(error))}"
+                problem = f"✗ Nie można przygotować odcinków · {refusal_text(error)}"
             with self._lock:
                 if generation != self._generation:
                     return
@@ -901,7 +902,7 @@ class ManualController:
             self._cancel = None
             self._screen = _Screen.CUSTOM
             if problem is not None or updated is None or artifact is None:
-                reason: str = _safe(str(problem)) if problem is not None else "Nieznany błąd"
+                reason: str = refusal_text(problem) if problem is not None else "Nieznany błąd"
                 self._feedback = f"✗ Nie udało się dodać pliku · {reason}"
             else:
                 self._replace_group(updated)
@@ -955,7 +956,7 @@ class ManualController:
             self._plan = self._service.plan_manual(intents)
         except (AniShiftError, OSError, TypeError, ValueError) as problem:
             self._plan = None
-            self._feedback = f"✗ Nie można zbudować planu · {_safe(str(problem))}"
+            self._feedback = f"✗ Nie można zbudować planu · {refusal_text(problem)}"
         self._open(_Screen.PREVIEW, clear_feedback=False)
 
     def _back(self) -> ManualResult:

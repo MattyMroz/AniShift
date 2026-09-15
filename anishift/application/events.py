@@ -9,6 +9,7 @@ from enum import StrEnum
 from typing import Final, Protocol
 
 from anishift.application.planning import TaskState
+from anishift.errors import AniShiftError
 from anishift.utils.logger import get_logger
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "RunEventSink",
     "WorkerNotification",
     "WorkerNotificationKind",
+    "failure_code",
     "sanitize_event_message",
 ]
 
@@ -177,6 +179,11 @@ def sanitize_event_message(message: str | None) -> str | None:
     sanitized = re.sub(r"\b[A-Za-z]:[\\/][^\s]+", "<path>", sanitized)
     sanitized = re.sub(r"(?<![\w:/\\])/(?:[^/\s]+/)*[^/\s]+", "<path>", sanitized)
     return sanitized[:500]
+
+
+def failure_code(problem: BaseException) -> str:
+    """Return the stable AniShift error code of *problem*, empty for a plain system error."""
+    return problem.context.code.value if isinstance(problem, AniShiftError) else ""
 
 
 def _validate_optional_id(value: str | None) -> None:
