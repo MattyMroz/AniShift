@@ -551,8 +551,9 @@ def test_strict_natural_keeps_later_durable_staging_private(tmp_path: Path) -> N
     run_root: Path = tmp_path / "temp" / "run-1"
     destination: Path = tmp_path / "fast-durable.pl.ass"
     sink: _CollectingSink = _CollectingSink()
+    hold: threading.Barrier = threading.Barrier(2)
     with RunSession(run_root) as session:
-        handler = _FakeHandler(run_root, delays={"slow": 0.08, "fast-durable": 0.01})
+        handler = _FakeHandler(run_root, delays={"fast-durable": 0.01}, barriers={"slow": hold})
         scheduler = GraphScheduler(handler, limits=_limits(plan.settings), run_id="run-1", session=session)
         captured: list[RunResult] = []
         thread = threading.Thread(
@@ -561,7 +562,8 @@ def test_strict_natural_keeps_later_durable_staging_private(tmp_path: Path) -> N
         thread.start()
         assert handler.wait_finished("fast-durable", 1.0)
         assert destination.exists() is False
-        assert handler.wait_finished("slow", 0.005) is False
+        assert "slow" not in handler.finished
+        hold.wait(timeout=5)
         thread.join(timeout=2.0)
         assert thread.is_alive() is False
 
