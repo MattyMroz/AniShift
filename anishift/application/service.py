@@ -38,6 +38,7 @@ from anishift.application.results import RunResult
 from anishift.application.scheduler import GraphCoordinator, ResourceLimits, RunHandle
 from anishift.application.scheduler_contracts import RunRequest, TaskHandler
 from anishift.application.sessions import RunSession
+from anishift.application.workflows import WorkflowTarget
 from anishift.config.env_file import env_path, update_env_value
 from anishift.config.field_access import assign_setting_value, setting_is_active, setting_is_persisted
 from anishift.config.field_catalog import SettingCatalogContext, SettingSpec, SettingValue, setting_catalog
@@ -364,7 +365,7 @@ class AppService:
         self._preset_saver(updated)
         return preset
 
-    def plan_auto(
+    def plan_auto(  # noqa: PLR0913 - the recovered target of a finished set stays an explicit planning input
         self,
         group_ids: Sequence[str],
         preset: AutoPreset | AutoPresetDraft,
@@ -372,6 +373,8 @@ class AppService:
         rebuild: RebuildRequest | None = None,
         overrides: Mapping[str, object] | None = None,
         recipes: RecipePreferences | None = None,
+        targets: Mapping[str, WorkflowTarget] | None = None,
+        published: frozenset[Path] | None = None,
     ) -> ExecutionPlan:
         """Plan selected groups from a stored or one-shot automatic preset and the persisted target recipes."""
         resolved: AutoPreset = preset.to_preset() if isinstance(preset, AutoPresetDraft) else preset
@@ -384,6 +387,8 @@ class AppService:
             settings,
             rebuild=rebuild,
             recipes=recipes,
+            targets=targets,
+            published=published,
         )
 
     def plan_manual(
@@ -391,6 +396,7 @@ class AppService:
         intents: Sequence[GroupIntent],
         *,
         overrides: Mapping[str, object] | None = None,
+        published: frozenset[Path] | None = None,
     ) -> ExecutionPlan:
         """Plan one independent explicit intent for every selected group."""
         intent_by_group: dict[str, GroupIntent] = {intent.group_id: intent for intent in intents}
@@ -401,7 +407,7 @@ class AppService:
         settings: RunSettingsSnapshot = self._settings_snapshot()
         if overrides:
             settings = decode_overrides(settings, overrides)
-        return build_manual_plan(groups, intent_by_group, settings)
+        return build_manual_plan(groups, intent_by_group, settings, published=published)
 
     def execute(self, plan: ExecutionPlan, sink: RunEventSink) -> RunResult:
         """Execute one accepted immutable plan and wait for its complete result."""

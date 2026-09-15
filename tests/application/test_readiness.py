@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from fakes import write_image_source
 
 from anishift.application.artifacts import GroupConflict, GroupConflictKind
 from anishift.application.cancellation import CancellationToken, NeverCancelledToken
@@ -196,26 +197,26 @@ def test_a_cover_runs_only_once_the_image_joined_its_content(tmp_path: Path, con
     else:
         _write_bytes(cover / content, b"audio")
     assert _only(tmp_path) == GroupReadiness(ready=False, reason=ReadinessReason.IMAGE_MISSING)
-    _write_bytes(cover / "Book.png", b"image")
+    write_image_source(cover / "Book.png")
     assert _only(tmp_path) == GroupReadiness(ready=True)
 
 
 def test_a_lone_cover_image_waits_for_the_content_it_should_show(tmp_path: Path) -> None:
-    _write_bytes(tmp_path / "cover" / "Book.jpg", b"image")
+    write_image_source(tmp_path / "cover" / "Book.jpg")
     assert _only(tmp_path) == GroupReadiness(ready=False, reason=ReadinessReason.CONTENT_SOURCE_MISSING)
 
 
 def test_two_competing_cover_images_are_never_picked_at_random(tmp_path: Path) -> None:
     _write_text(tmp_path / "cover" / "Book.txt")
-    _write_bytes(tmp_path / "cover" / "Book.png", b"image")
-    _write_bytes(tmp_path / "cover" / "Book.jpeg", b"image")
+    write_image_source(tmp_path / "cover" / "Book.png")
+    write_image_source(tmp_path / "cover" / "Book.jpeg")
     assert _only(tmp_path) == GroupReadiness(ready=False, reason=ReadinessReason.AMBIGUOUS_IMAGE)
 
 
 def test_a_cover_text_beside_independent_audio_is_never_picked_at_random(tmp_path: Path) -> None:
     _write_text(tmp_path / "cover" / "Book.txt")
     _write_bytes(tmp_path / "cover" / "Book.mp3", b"audio")
-    _write_bytes(tmp_path / "cover" / "Book.png", b"image")
+    write_image_source(tmp_path / "cover" / "Book.png")
     assert _only(tmp_path) == GroupReadiness(ready=False, reason=ReadinessReason.AMBIGUOUS_CONTENT_SOURCE)
 
 
@@ -264,7 +265,7 @@ def test_polish_names_are_recognised_exactly_as_written(tmp_path: Path) -> None:
 def test_an_inspected_group_is_either_ready_or_names_one_reason(tmp_path: Path) -> None:
     _write_bytes(tmp_path / "subs" / "Film.mkv", b"video")
     _write_text(tmp_path / "audiobook" / "Book.txt")
-    _write_bytes(tmp_path / "cover" / "Okładka.png", b"image")
+    write_image_source(tmp_path / "cover" / "Okładka.png")
     for readiness in _readiness(tmp_path).values():
         assert readiness.ready is (readiness.reason is None)
 

@@ -17,13 +17,14 @@ from anishift.services.composition.commands import (
     burn_command,
     container_burn_command,
     container_merge_command,
+    cover_command,
     merge_command,
     parse_ffmpeg_progress,
     parse_mkvmerge_progress,
     subtitle_filter_argument,
 )
 from anishift.services.composition.config import CompositionConfig
-from anishift.services.composition.errors import CompositionConfigError
+from anishift.services.composition.errors import CompositionConfigError, CompositionValidationError
 from anishift.services.composition.fonts import font_embedding_warnings
 from anishift.services.composition.paths import filter_safe_copy, temporary_sibling
 from anishift.services.composition.probe import (
@@ -31,6 +32,7 @@ from anishift.services.composition.probe import (
     source_duration_us,
     source_tracks,
     validate_burned,
+    validate_cover,
     validate_merged,
 )
 from anishift.services.composition.types import (
@@ -40,6 +42,8 @@ from anishift.services.composition.types import (
     ContainerCompositionRequest,
     ContainerCompositionResult,
     ContainerTarget,
+    CoverCompositionRequest,
+    CoverCompositionResult,
     OutputVariant,
 )
 from anishift.services.media import MediaCatalog
@@ -174,6 +178,77 @@ class CompositionService:
         if request.target is ContainerTarget.MKV:
             return self._compose_container_mkv(request, timer=timer, callbacks=callbacks, cancel=cancel)
         return self._compose_container_mp4(request, timer=timer, callbacks=callbacks, cancel=cancel)
+
+    def compose_cover(
+        self,
+        request: CoverCompositionRequest,
+        *,
+        callbacks: CompositionProgressSink | None = None,
+        cancel: threading.Event | None = None,
+    ) -> CoverCompositionResult:
+        """Show one still picture for the whole recording and validate the MP4 before it replaces anything."""
+        timer: Timer = Timer("composition_cover", auto_start=True)
+        ffprobe: Path = self.ffprobe
+        audio_us: int = source_duration_us(
+            request.audio,
+            ffprobe=ffprobe,
+            cancel=cancel,
+            runner=self._probe_runner,
+        )
+        if audio_us <= 0:
+            context: ErrorContext = ErrorContext(
+                code=ErrorCode.COMPOSITION_FAILED,
+                message="Cover audio carries no readable duration",
+                suggestion="Supply a complete audio file and run the cover again.",
+                details={"operation": "composition_cover"},
+            )
+            raise CompositionValidationError(context=context)
+        logger.info("Cover composition started", audio_duration_us=audio_us)
+        temporary: Path = temporary_sibling(request.destination)
+        output_size: int
+        try:
+            audio_codec: str = audio_codec_name(
+                request.audio,
+                ffprobe=ffprobe,
+                cancel=cancel,
+                runner=self._probe_runner,
+            )
+            self._runner.run(
+                cover_command(
+                    request,
+                    ffmpeg=self._ffmpeg_path,
+                    config=self._config,
+                    audio_codec=audio_codec,
+                    audio_duration_us=audio_us,
+                    destination=temporary,
+                ),
+                operation="render_cover",
+                timeout_s=self._config.render_timeout_s,
+                progress=lambda line: parse_ffmpeg_progress(line, total_us=audio_us),
+                on_percent=lambda percent: _notify(callbacks, "", "burning", percent),
+                cancel=cancel,
+            )
+            validate_cover(
+                temporary,
+                expected_audio_duration_us=audio_us,
+                ffprobe=ffprobe,
+                cancel=cancel,
+                runner=self._probe_runner,
+            )
+            output_size = temporary.stat().st_size
+            temporary.replace(request.destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        timer.stop()
+        logger.info("Cover composition completed", duration_ms=round(timer.duration_ms))
+        return CoverCompositionResult(
+            still_image=request.still_image,
+            audio=request.audio,
+            output_path=request.destination,
+            output_size_bytes=output_size,
+            audio_duration_us=audio_us,
+            duration_ms=timer.duration_ms,
+        )
 
     def _compose_container_mkv(
         self,

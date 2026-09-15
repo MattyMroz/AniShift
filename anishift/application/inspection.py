@@ -11,6 +11,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
+from PIL import Image, ImageOps
+
 from anishift.application.artifacts import (
     Artifact,
     ArtifactKind,
@@ -49,6 +51,9 @@ NARRATION_DURATION_TOLERANCE_US: Final[int] = 10_000_000
 
 _MAX_INSPECTION_WORKERS: Final[int] = 8
 """Upper bound on groups probed at once, because probing waits on subprocesses."""
+
+_SUPPORTED_IMAGE_FORMATS: Final[frozenset[str]] = frozenset({"JPEG", "PNG"})
+"""Pillow format names a cover still may really be written in, judged by content rather than by extension."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,6 +396,13 @@ class WorkspaceInspector:
         if path is None or not path.is_file() or path.stat().st_size == 0:
             invalid, _, warning = self._invalid(artifact, "image_invalid", "Image source is missing or empty")
             return invalid, warning
+        if _oriented_image_size(path) is None:
+            invalid, _, warning = self._invalid(
+                artifact,
+                "image_undecodable",
+                "Image failed full decode or carries no usable dimensions",
+            )
+            return invalid, warning
         return replace(artifact, state=ArtifactState.READY), None
 
     def _inspect_subtitles(
@@ -573,6 +585,22 @@ def _primary_video_duration(group: InspectedSourceGroup) -> int:
         msg = "External audio requires known video duration"
         raise _inspection_error(msg)
     return catalog.duration_us
+
+
+def _oriented_image_size(path: Path) -> tuple[int, int] | None:
+    """Return the fully decoded size a supported still image really displays at, or ``None`` when unusable."""
+    try:
+        with Image.open(path) as source:
+            if source.format not in _SUPPORTED_IMAGE_FORMATS:
+                return None
+            oriented: Image.Image = ImageOps.exif_transpose(source) or source
+            oriented.load()
+            width, height = oriented.size
+    except OSError, ValueError, Image.DecompressionBombError:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
 
 
 def _catalog_video_duration(catalogs: Mapping[str, MediaCatalog]) -> int | None:

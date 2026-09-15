@@ -253,6 +253,7 @@ class ProcessingRequest:
     intents: tuple[GroupIntent, ...] = ()
     automatic: bool = False
     problem: str | None = None
+    recipe: RecipePreferences = field(default_factory=RecipePreferences)
 
     def __post_init__(self) -> None:
         for key in self.settings:
@@ -300,6 +301,8 @@ class ProductConfirmation:
     generation: int
     request_id: str
     origin: RequestOrigin
+    size: int = -1
+    modified_ns: int = -1
 
 
 @dataclass(frozen=True, slots=True)

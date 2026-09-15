@@ -33,6 +33,8 @@ from anishift.application.control import (
     ProcessingRequest,
     ProductConfirmation,
     ProviderLock,
+    ReadyGroup,
+    RecipePreferences,
     RefusalReason,
     RequestState,
     Reservation,
@@ -60,6 +62,7 @@ from anishift.application.intents import (
 )
 from anishift.application.planner import auto_group_products
 from anishift.application.planning import TaskState
+from anishift.application.products import main_product
 from anishift.application.ready import ReadyMove, ReadyStore
 from anishift.application.recovery import RunJournal
 from anishift.application.results import GroupResult, GroupStatus, ProducedArtifact, RunResult
@@ -68,7 +71,7 @@ from anishift.application.selection import ready_group_ids
 from anishift.application.subscriptions import SubscriptionOrder, subscription_id
 from anishift.application.transfers import TransferInspector
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
-from anishift.application.workflows import resolve_route
+from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
 from anishift.config.workspace import run_temp_dir
 from anishift.errors import AniShiftError, ExecutionError
 from anishift.platform.directory_watch import DirectoryChange
@@ -327,12 +330,14 @@ class AutomationOwner:
         broadcast: Broadcast | None = None,
         open_panel: Callable[[], None] | None = None,
         ready_store: ReadyStore | None = None,
+        scan_interval_s: float = SCAN_INTERVAL_S,
     ) -> None:
         """Load the persisted state and prepare the owner thread and its pool."""
         self._service: AppService = service
         self._store: WatchStateStore = store
         self._instance_id: str = instance_id
         self._clock: Clock = clock
+        self._scan_interval_s: float = scan_interval_s
         self._broadcast: Broadcast | None = broadcast
         self._open_panel: Callable[[], None] | None = open_panel
         self._panels: set[str] = set()
@@ -579,7 +584,7 @@ class AutomationOwner:
             self._refresh_automatic()
             self._publish_state()
             if workspace.pending_paths:
-                self._inspection_at = time.monotonic() + SCAN_INTERVAL_S
+                self._inspection_at = time.monotonic() + self._scan_interval_s
         self._inspect_changes()
 
     def _on_owner[T](self, action: Callable[[], T]) -> T:
@@ -800,9 +805,9 @@ class AutomationOwner:
                 self._panels.add(request.session_id)
                 return ControlResponse.succeeded({"attached": True})
             case "ready_retry":
-                for result in tuple(self._run_results.values()):
+                for request_id, result in tuple(self._run_results.items()):
                     if result.succeeded:
-                        self._prepare_ready(result)
+                        self._prepare_ready(result, None, self._accepted_recipe(request_id))
                 self._retry_ready()
                 return ControlResponse.succeeded({"pending": len(self._ready_moves)})
             case "set_auto":
@@ -814,7 +819,7 @@ class AutomationOwner:
             case "release":
                 return self._release(request)
             case "discover":
-                return ControlResponse.succeeded(encode_view(self._service.discover()))
+                return ControlResponse.succeeded(encode_view(self._recorded_library(self._service.discover())))
             case "register_external":
                 return self._register_external(request)
             case "preview":
@@ -1207,7 +1212,11 @@ class AutomationOwner:
             ):
                 msg = "Manual intents must match the selected groups"
                 raise ValueError(msg)
-            return self._service.plan_manual(intents, overrides=overrides)
+            return self._service.plan_manual(
+                self._recovered_intents(intents),
+                overrides=overrides,
+                published=self._published_products(),
+            )
         if "intents" in payload:
             msg = "Automatic selection cannot carry manual intents"
             raise ValueError(msg)
@@ -1223,6 +1232,49 @@ class AutomationOwner:
             rebuild=rebuild,
             overrides=overrides,
             recipes=self._state.recipes,
+            targets=self._recorded_targets(),
+            published=self._published_products(),
+        )
+
+    def _accepted_recipe(self, request_id: str) -> RecipePreferences | None:
+        """Return the recipe one accepted order was planned with, never the preferences of a later moment."""
+        return next(
+            (item.recipe for item in self._state.requests if item.request_id == request_id),
+            None,
+        )
+
+    def _published_products(self) -> frozenset[Path]:
+        """Return the files this program is proven to have published and which still hold the bytes it wrote."""
+        root: Path = self._service.workspace_root
+        proven: set[Path] = set()
+        for item in self._state.products:
+            path: Path = root / item.path
+            if item.size >= 0 and (item.size, item.modified_ns) == _file_identity(path):
+                proven.add(path)
+        return frozenset(proven)
+
+    def _recorded_targets(self) -> dict[str, WorkflowTarget]:
+        """Return the target every finished set was accepted for, because ``ready`` names no target of its own."""
+        return {item.group_id: item.target for item in self._state.ready_groups}
+
+    def _recorded_library(self, workspace: InspectedWorkspace) -> InspectedWorkspace:
+        """Return the library where every finished set names the target it was accepted for, not its new folder."""
+        recorded: dict[str, WorkflowTarget] = self._recorded_targets()
+        if not recorded:
+            return workspace
+        return replace(
+            workspace,
+            groups=tuple(_group_with_target(group, recorded.get(group.group_id)) for group in workspace.groups),
+        )
+
+    def _recovered_intents(self, intents: tuple[GroupIntent, ...]) -> tuple[GroupIntent, ...]:
+        """Restore the target of a finished set from its record, because ``ready`` names no target of its own."""
+        recorded: dict[str, WorkflowTarget] = self._recorded_targets()
+        return tuple(
+            intent
+            if intent.target is not None or intent.group_id not in recorded
+            else replace(intent, target=recorded[intent.group_id])
+            for intent in intents
         )
 
     def _start(self, request: ControlRequest) -> ControlResponse:
@@ -1305,6 +1357,7 @@ class AutomationOwner:
             accepted_at=self._now(),
             intents=tuple(group.intent for group in preview.plan.groups),
             automatic=preview.automatic,
+            recipe=self._state.recipes,
         )
         candidate: WatchState = record_request(self._state, accepted)
         for group_id in group_ids:
@@ -1411,6 +1464,7 @@ class AutomationOwner:
                     finished.generation,
                     finished.request_id,
                     finished.origin,
+                    *_file_identity(product.path),
                 )
                 for group in completion.result.groups
                 for product in group.products
@@ -1426,7 +1480,7 @@ class AutomationOwner:
         self._ledger.mark_finished(recorded.group_ids)
         groups: tuple[InspectedSourceGroup, ...] = self._run_groups.pop(completion.request_id, ())
         if saved and finished.state is RequestState.SUCCEEDED and completion.result is not None:
-            self._prepare_ready(completion.result, groups)
+            self._prepare_ready(completion.result, groups, finished.recipe)
         self._publish_state()
         self._publish(
             {"event": "run_finished", "payload": {"run_id": completion.request_id}},
@@ -2063,9 +2117,14 @@ class AutomationOwner:
         )
         result: RunResult = self._completed_result(request)
         self._run_results[request.request_id] = result
-        self._prepare_ready(result, sources)
+        self._prepare_ready(result, sources, request.recipe)
 
-    def _prepare_ready(self, result: RunResult, sources: Sequence[InspectedSourceGroup] | None = None) -> None:
+    def _prepare_ready(
+        self,
+        result: RunResult,
+        sources: Sequence[InspectedSourceGroup] | None = None,
+        recipe: RecipePreferences | None = None,
+    ) -> None:
         if self._ready_store is None:
             return
         if sources is None:
@@ -2076,9 +2135,8 @@ class AutomationOwner:
             if group is None or completed.status is not GroupStatus.SUCCEEDED:
                 continue
             try:
-                move: ReadyMove | None = self._ready_store.prepare(
-                    group.source, tuple(product.path for product in completed.products)
-                )
+                products: tuple[Path, ...] = tuple(product.path for product in completed.products)
+                move: ReadyMove | None = self._ready_store.prepare(group.source, products, recipe)
                 if move is not None:
                     self._ready_moves[move.group_id] = move
             except (AniShiftError, OSError, ValueError) as error:
@@ -2086,6 +2144,36 @@ class AutomationOwner:
                     sanitize_event_message(str(error)) or "Relocation could not be prepared"
                 )
         self._retry_ready()
+
+    def _relocated_state(self, move: ReadyMove) -> WatchState:
+        """Return the state where one set is renamed and remembered as finished, written in one durable save."""
+        moved: WatchState = move.apply(self._state)
+        group: ReadyGroup | None = self._ready_group(move)
+        if group is None:
+            return moved
+        kept: tuple[ReadyGroup, ...] = tuple(item for item in moved.ready_groups if item.set_id != group.set_id)
+        return replace(moved, ready_groups=(*kept, group))
+
+    def _ready_group(self, move: ReadyMove) -> ReadyGroup | None:
+        """Build the durable record of one relocated set, so its target survives without reading its new folder."""
+        if move.target is None or not move.destination_stem:
+            return None
+        produced: frozenset[str] = frozenset(move.product_sources)
+        sources: tuple[str, ...] = tuple(item.destination for item in move.files if item.source not in produced)
+        products: tuple[str, ...] = tuple(item.destination for item in move.files if item.source in produced)
+        headline: str | None = main_product([Path(name).name for name in products])
+        return ReadyGroup(
+            set_id=move.group_id,
+            group_id=move.destination_group_id,
+            stem=move.destination_stem,
+            source_directory=move.source_directory,
+            source_stem=move.source_stem,
+            target=move.target,
+            sources=sources,
+            products=products,
+            main_result=next((name for name in products if Path(name).name == headline), None),
+            recipe=move.recipe,
+        )
 
     def _relocating_groups(self) -> set[str]:
         return self._ready_problems.keys() | {
@@ -2130,7 +2218,7 @@ class AutomationOwner:
     def _record_ready(self, move: ReadyMove, problem: str | None) -> None:
         self._active_io -= 1
         self._ready_inflight.discard(move.group_id)
-        if problem is None and not self._save(move.apply(self._state)):
+        if problem is None and not self._save(self._relocated_state(move)):
             problem = "Moved files await a successful state save; retry relocation"
         if problem is not None:
             self._ready_problems[move.group_id] = problem
@@ -2525,6 +2613,23 @@ def _product_projection(plan: ExecutionPlan) -> list[dict[str, object]]:
 
 def _settings_snapshot(settings: RunSettingsSnapshot) -> SettingsSnapshot:
     return cast("SettingsSnapshot", {field.name: getattr(settings, field.name) for field in fields(settings)})
+
+
+def _file_identity(path: Path) -> tuple[int, int]:
+    """Return the size and modification time proving which bytes were published, or a pair no file can match."""
+    try:
+        status: os.stat_result = path.stat()
+    except OSError:
+        return -1, -1
+    return status.st_size, status.st_mtime_ns
+
+
+def _group_with_target(group: InspectedSourceGroup, target: WorkflowTarget | None) -> InspectedSourceGroup:
+    """Return one group whose route names its recorded target, leaving a place that names its own untouched."""
+    if target is None or group.source.route.target is not None:
+        return group
+    route: WorkflowRoute = replace(group.source.route, target=target)
+    return replace(group, source=replace(group.source, route=route))
 
 
 def _group_fingerprint(group: InspectedSourceGroup) -> SourceFingerprint:

@@ -29,7 +29,7 @@ import anishift.application.service as service_module
 import anishift.application.watch as watch_module
 from anishift.application.automation import AutomationOwner
 from anishift.application.cancellation import CancellationToken, EventCancellationToken
-from anishift.application.control import ProcessingRequest, RequestState
+from anishift.application.control import ProcessingRequest, ReadyGroup, RequestState
 from anishift.application.control_views import PlanPreview
 from anishift.application.discovery import DiscoveryResult
 from anishift.application.handlers import (
@@ -59,6 +59,7 @@ from anishift.application.scheduler_contracts import ResourceLimits, TaskHandler
 from anishift.application.scheduler_runtime import extraction_group_ids
 from anishift.application.service import AppService, AutoPresetDraft
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
+from anishift.application.workflows import WorkflowTarget
 from anishift.bootstrap import AppContext, bootstrap, create_app_service
 from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
 from anishift.cli.resident import ResidentSession
@@ -686,6 +687,43 @@ def test_resident_moves_sources_and_products_then_regenerates_in_ready(tmp_path:
         assert moved.stat().st_ino == identity
         assert len(session.discover().groups) == 1
         assert all(product.path.startswith("ready/") for product in store.load().products)
+        recorded: tuple[ReadyGroup, ...] = store.load().ready_groups
+        assert len(recorded) == 1
+        assert recorded[0].stem == "03"
+        assert recorded[0].target is WorkflowTarget.VIDEO
+        assert recorded[0].source_directory == "."
+        assert recorded[0].source_stem == "03"
+        assert recorded[0].sources == ("ready/03.txt",)
+        assert recorded[0].products == ("ready/03.pl.srt",)
+        assert recorded[0].main_result == "ready/03.pl.srt"
+
+
+@pytest.mark.integration
+def test_two_sets_named_alike_from_different_places_share_one_ready_without_mixing(tmp_path: Path) -> None:
+    for folder in ("A", "B"):
+        directory: Path = tmp_path / "translate" / folder
+        directory.mkdir(parents=True)
+        write_text_source(directory / "Book.txt", f"Text of {folder}")
+    service: AppService = _service(tmp_path, FakeTranslationService())
+    preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
+    with _panel_owner(service, tmp_path, ready=True) as (session, store):
+        groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
+        assert len(groups) == 2
+        session.reserve(groups)
+        assert session.execute(session.plan_auto(groups, preset), CollectingRunSink()).succeeded
+        deadline: float = time.monotonic() + 5.0
+        while len(list((tmp_path / "ready").glob("*"))) < 4 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        names: list[str] = sorted(path.name for path in (tmp_path / "ready").iterdir())
+
+    recorded: tuple[ReadyGroup, ...] = store.load().ready_groups
+    assert names == ["Book [2].pl.txt", "Book [2].txt", "Book.pl.txt", "Book.txt"]
+    assert len(recorded) == 2
+    assert {item.source_directory for item in recorded} == {"translate/A", "translate/B"}
+    assert {item.stem for item in recorded} == {"Book", "Book [2]"}
+    assert all(item.source_stem == "Book" for item in recorded)
+    for item in recorded:
+        assert {Path(name).name.split(".")[0] for name in (*item.sources, *item.products)} == {item.stem}
 
 
 def test_real_service_flows_from_discovery_through_partial_execution(tmp_path: Path) -> None:
@@ -1284,7 +1322,7 @@ def test_the_resident_processes_a_new_file_once_and_returns_to_idle(
     monkeypatch.setattr(service, "discover", discover)
     ready: threading.Event = threading.Event()
     thread: threading.Thread = threading.Thread(
-        target=lambda: run_resident(service, state_dir=state_dir, on_ready=ready.set)
+        target=lambda: run_resident(service, state_dir=state_dir, on_ready=ready.set, scan_interval_s=0.01)
     )
     thread.start()
     assert ready.wait(timeout=5.0)

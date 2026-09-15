@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import queue
 import re
 import subprocess
@@ -19,7 +20,11 @@ from anishift.services.composition.errors import (
     CompositionProcessError,
 )
 from anishift.services.composition.paths import escape_filter_path
-from anishift.services.composition.types import CompositionPlan, ContainerCompositionRequest
+from anishift.services.composition.types import (
+    CompositionPlan,
+    ContainerCompositionRequest,
+    CoverCompositionRequest,
+)
 from anishift.utils.logger import get_logger
 from anishift.utils.timer import Timer
 
@@ -31,6 +36,8 @@ __all__ = [
     "burn_command",
     "container_burn_command",
     "container_merge_command",
+    "cover_command",
+    "cover_frame_count",
     "merge_command",
     "mp4_audio_is_copyable",
     "parse_ffmpeg_progress",
@@ -72,6 +79,24 @@ _POLISH_LANGUAGE: Final[str] = "pol"
 
 NARRATION_TRACK_NAME: Final[str] = "Lektor PL"
 """Track name carried by the narration audio in every merged container."""
+
+_MICROSECONDS_PER_SECOND: Final[int] = 1_000_000
+"""Scale between the microseconds used internally and the seconds FFmpeg counts frames in."""
+
+_COVER_FRAME_RATE: Final[int] = 25
+"""Constant frames per second every cover is exported at, an export parameter never read from the picture."""
+
+_COVER_FRAME_WIDTH: Final[int] = 1920
+"""Width of the frame every cover is exported into."""
+
+_COVER_FRAME_HEIGHT: Final[int] = 1080
+"""Height of the frame every cover is exported into."""
+
+_COVER_FRAME_FILTER: Final[str] = (
+    f"scale={_COVER_FRAME_WIDTH}:{_COVER_FRAME_HEIGHT}:force_original_aspect_ratio=decrease,"
+    f"pad={_COVER_FRAME_WIDTH}:{_COVER_FRAME_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
+)
+"""Fits any still into the export frame keeping its proportions, filling the rest with black and never cropping."""
 
 logger = get_logger(__name__)
 
@@ -231,6 +256,68 @@ def container_burn_command(  # noqa: PLR0913 - explicit process inputs avoid hid
         arguments.extend(("-c:a", "copy") if mp4_audio_is_copyable(audio_codec) else ("-c:a", "aac"))
     arguments.extend(("-movflags", "+faststart", "-progress", "pipe:1", str(destination.resolve())))
     return tuple(arguments)
+
+
+def cover_frame_count(audio_duration_us: int) -> int:
+    """Return the frames a cover needs to still show its picture when the recording ends."""
+    if audio_duration_us <= 0:
+        msg = "A cover needs a positive audio duration to size its picture in time"
+        raise ValueError(msg)
+    return math.ceil(audio_duration_us * _COVER_FRAME_RATE / _MICROSECONDS_PER_SECOND)
+
+
+def cover_command(  # noqa: PLR0913 - the frame count is measured from audio, not guessed from the picture
+    request: CoverCompositionRequest,
+    *,
+    ffmpeg: Path,
+    config: CompositionConfig,
+    audio_codec: str,
+    audio_duration_us: int,
+    destination: Path,
+) -> tuple[str, ...]:
+    """Build one still-picture MP4 command that keeps the whole recording and never reads a filename as a pattern."""
+    return (
+        str(ffmpeg.resolve()) if ffmpeg.is_file() else str(ffmpeg),
+        "-y",
+        "-hide_banner",
+        "-nostats",
+        "-loop",
+        "1",
+        "-framerate",
+        str(_COVER_FRAME_RATE),
+        "-f",
+        "image2",
+        "-pattern_type",
+        "none",
+        "-i",
+        str(request.still_image.resolve()),
+        "-i",
+        str(request.audio.resolve()),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-vf",
+        _COVER_FRAME_FILTER,
+        "-c:v",
+        config.video_encoder,
+        "-tune",
+        "stillimage",
+        "-crf",
+        str(config.crf),
+        "-preset",
+        config.encoder_preset,
+        "-pix_fmt",
+        "yuv420p",
+        *(("-c:a", "copy") if mp4_audio_is_copyable(audio_codec) else ("-c:a", "aac")),
+        "-frames:v",
+        str(cover_frame_count(audio_duration_us)),
+        "-movflags",
+        "+faststart",
+        "-progress",
+        "pipe:1",
+        str(destination.resolve()),
+    )
 
 
 def subtitle_filter_argument(

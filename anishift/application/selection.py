@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Final
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactState, GroupConflictKind
 from anishift.application.intents import (
     AUDIOBOOK_PRODUCTS,
+    COVER_PRODUCTS,
     TRANSLATE_PRODUCTS,
     VIDEO_PRODUCTS,
     NarrationTimeline,
@@ -145,11 +146,16 @@ def resolve_readiness(group: InspectedSourceGroup) -> GroupReadiness:
     return _text_readiness(group, target)
 
 
-def legal_products(group: InspectedSourceGroup) -> frozenset[ProductKind]:
-    """Return the products one group can really be asked for, judged by its place and the sources it holds."""
-    target: WorkflowTarget | None = group.source.route.target
+def legal_products(
+    group: InspectedSourceGroup,
+    recorded_target: WorkflowTarget | None = None,
+) -> frozenset[ProductKind]:
+    """Return the products one group can really be asked for, judged by its target and the sources it holds."""
+    target: WorkflowTarget | None = group.source.route.target or recorded_target
     if target is WorkflowTarget.AUDIOBOOK:
         return AUDIOBOOK_PRODUCTS
+    if target is WorkflowTarget.COVER:
+        return COVER_PRODUCTS
     if target is WorkflowTarget.TRANSLATE:
         return TRANSLATE_PRODUCTS
     if _ready_of_kinds(group, frozenset({ArtifactKind.STANDALONE_TEXT})):
@@ -159,9 +165,12 @@ def legal_products(group: InspectedSourceGroup) -> frozenset[ProductKind]:
     return VIDEO_PRODUCTS
 
 
-def legal_narration_timelines(group: InspectedSourceGroup) -> frozenset[NarrationTimeline]:
+def legal_narration_timelines(
+    group: InspectedSourceGroup,
+    recorded_target: WorkflowTarget | None = None,
+) -> frozenset[NarrationTimeline]:
     """Return the readings one group can really be asked for, because only a timed script can keep its own times."""
-    if group.source.route.target is not WorkflowTarget.AUDIOBOOK:
+    if (group.source.route.target or recorded_target) is not WorkflowTarget.AUDIOBOOK:
         return frozenset()
     if _ready_of_kinds(group, frozenset({ArtifactKind.STANDALONE_TEXT})):
         return frozenset({NarrationTimeline.CONTINUOUS})

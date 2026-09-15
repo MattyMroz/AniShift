@@ -142,6 +142,20 @@ def test_legacy_requests_without_group_intents_still_load(tmp_path: Path) -> Non
     assert store.load() == _state()
 
 
+def test_legacy_products_without_the_identity_of_their_bytes_still_load(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    store.save(_state())
+    document = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+    document["products"][0].pop("size")
+    document["products"][0].pop("modified_ns")
+    _write(tmp_path, document)
+
+    loaded: WatchState = store.load()
+
+    assert loaded == _state()
+    assert loaded.products[0].size == -1
+
+
 def test_store_lowercases_the_info_hash_of_an_acquisition(tmp_path: Path) -> None:
     store: WatchStateStore = _store(tmp_path)
 

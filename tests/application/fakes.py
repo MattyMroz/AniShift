@@ -3,6 +3,8 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+from PIL import Image
+
 from anishift.application.cancellation import CancellationToken
 from anishift.application.events import RunEvent
 from anishift.application.planning import PlanTask, TaskKind
@@ -110,6 +112,12 @@ class FakeMediaProbe:
                 MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", None, True, False),
             ),
         )
+
+
+def write_image_source(path: Path, *, width: int = 320, height: int = 240) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode: str = "RGBA" if path.suffix.casefold() == ".png" else "RGB"
+    Image.new(mode, (width, height), (12, 34, 56, 255)[: len(mode)]).save(path)
 
 
 def write_text_source(path: Path, text: str) -> None:

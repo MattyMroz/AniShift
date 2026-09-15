@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -10,11 +11,13 @@ from anishift.application.artifacts import ArtifactKind
 
 __all__ = [
     "AUDIO_PRODUCT_PROFILES",
+    "MAIN_PRODUCT_PRIORITY",
     "PRODUCT_SUFFIXES",
     "SUBTITLE_FORMATS",
     "ProductName",
     "ProductSuffix",
     "classify_product",
+    "main_product",
     "product_path",
     "product_suffix",
 ]
@@ -52,6 +55,7 @@ PRODUCT_SUFFIXES: Final[tuple[ProductSuffix, ...]] = (
     ProductSuffix(".pl.txt", ArtifactKind.TRANSLATED_TEXT),
     ProductSuffix(".pl.mkv", ArtifactKind.FINAL_MKV),
     ProductSuffix(".pl.mp4", ArtifactKind.FINAL_MP4),
+    ProductSuffix(".cover.mp4", ArtifactKind.COVER_MP4),
     ProductSuffix(".m4a", ArtifactKind.NARRATION_AUDIO, audio_profile="aac"),
     ProductSuffix(".eac3", ArtifactKind.NARRATION_AUDIO, audio_profile="eac3"),
     ProductSuffix(".mp3", ArtifactKind.NARRATION_AUDIO, audio_profile="mp3"),
@@ -70,6 +74,29 @@ AUDIO_PRODUCT_PROFILES: Final[frozenset[str]] = frozenset(
     entry.audio_profile for entry in PRODUCT_SUFFIXES if entry.audio_profile is not None
 )
 """Narration audio profiles a product can be encoded with."""
+
+MAIN_PRODUCT_PRIORITY: Final[tuple[ArtifactKind, ...]] = (
+    ArtifactKind.FINAL_MKV,
+    ArtifactKind.FINAL_MP4,
+    ArtifactKind.COVER_MP4,
+    ArtifactKind.NARRATION_AUDIO,
+    ArtifactKind.TRANSLATED_TEXT,
+    ArtifactKind.FULL_PL,
+    ArtifactKind.SPOKEN_PL,
+    ArtifactKind.DISPLAYED_PL,
+)
+"""Order in which a finished set names its headline result, playable containers before the documents beside them."""
+
+
+def main_product(file_names: Sequence[str]) -> str | None:
+    """Return the one finished file a completed set should open, or ``None`` when it produced no known product."""
+    ranked: list[tuple[int, str]] = []
+    for name in file_names:
+        product: ProductName | None = classify_product(name)
+        if product is None or product.kind not in MAIN_PRODUCT_PRIORITY:
+            continue
+        ranked.append((MAIN_PRODUCT_PRIORITY.index(product.kind), name))
+    return min(ranked, default=(0, None))[1] if ranked else None
 
 
 def product_suffix(kind: ArtifactKind, *, subtitle_format: str | None = None, audio_profile: str | None = None) -> str:

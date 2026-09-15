@@ -43,6 +43,7 @@ _PRODUCT_ARTIFACTS: Final[Mapping[ProductKind, ArtifactKind]] = {
     ProductKind.NARRATION_AUDIO: ArtifactKind.NARRATION_AUDIO,
     ProductKind.MKV: ArtifactKind.FINAL_MKV,
     ProductKind.MP4: ArtifactKind.FINAL_MP4,
+    ProductKind.COVER_MP4: ArtifactKind.COVER_MP4,
 }
 """Artifact kind whose presence proves that one requested product already exists."""
 

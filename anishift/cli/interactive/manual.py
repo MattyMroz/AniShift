@@ -92,6 +92,7 @@ _PRODUCT_LABELS: Final[tuple[tuple[ProductKind, str], ...]] = (
     (ProductKind.NARRATION_AUDIO, "Polski lektor"),
     (ProductKind.MKV, "MKV"),
     (ProductKind.MP4, "MP4"),
+    (ProductKind.COVER_MP4, "Okładka MP4"),
 )
 """Every public product the panel can name, in the order a screen offers the ones a group allows."""
 

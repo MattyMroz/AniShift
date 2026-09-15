@@ -16,8 +16,20 @@ from anishift.application import (
     TaskKind,
 )
 from anishift.application.inspection import WorkspaceInspector
+from anishift.application.intents import (
+    AUDIOBOOK_PRODUCTS,
+    COVER_PRODUCTS,
+    TRANSLATE_PRODUCTS,
+    VIDEO_PRODUCTS,
+)
 from anishift.application.scheduler_contracts import TaskHandler
-from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
+from anishift.cli.interactive.manual import (
+    _PRODUCT_LABELS,
+    ManualController,
+    ManualResult,
+    ManualRun,
+    _first_product,
+)
 from anishift.cli.interactive.state import refusal_text
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
@@ -208,3 +220,17 @@ def test_a_text_is_never_offered_times_its_translation_would_only_invent(tmp_pat
 
     assert "Czytanie" not in screen
     assert "W czasach z dokumentu" not in screen
+
+
+def test_every_place_can_name_the_first_product_it_offers() -> None:
+    offered: tuple[frozenset[ProductKind], ...] = (
+        TRANSLATE_PRODUCTS,
+        AUDIOBOOK_PRODUCTS,
+        COVER_PRODUCTS,
+        VIDEO_PRODUCTS,
+    )
+    named: frozenset[ProductKind] = frozenset(product for product, _label in _PRODUCT_LABELS)
+
+    for allowed in offered:
+        assert _first_product(allowed) <= allowed
+        assert _first_product(allowed) <= named

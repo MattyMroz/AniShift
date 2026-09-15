@@ -5,16 +5,17 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final
 
 from pydantic import TypeAdapter
 
 from anishift.application.artifacts import SourceGroup, create_group_id
-from anishift.application.control import RequestState, WatchState
+from anishift.application.control import RecipePreferences, RequestState, WatchState
 from anishift.application.discovery import ArtifactName, classify_artifact
 from anishift.application.results import RunResult
+from anishift.application.workflows import WorkflowRoute, WorkflowTarget
 from anishift.errors import ExecutionError
 from anishift.paths import READY_DIRECTORY, ready_dir
 from anishift.utils.logger import get_logger
@@ -52,6 +53,12 @@ class ReadyMove:
     group_id: str
     destination_group_id: str
     files: tuple[ReadyFile, ...]
+    destination_stem: str = ""
+    source_directory: str = ""
+    source_stem: str = ""
+    target: WorkflowTarget | None = None
+    product_sources: tuple[str, ...] = ()
+    recipe: RecipePreferences = field(default_factory=RecipePreferences)
 
     def apply_result(self, result: RunResult, workspace: Path) -> RunResult:
         """Point a completed result at the relocated products and group identity."""
@@ -156,8 +163,13 @@ class ReadyStore:
             for path in sorted(self._directory.glob("*.json"))
         )
 
-    def prepare(self, group: SourceGroup, products: Sequence[Path]) -> ReadyMove | None:
-        """Record a collision-free destination before moving the first source or product."""
+    def prepare(
+        self,
+        group: SourceGroup,
+        products: Sequence[Path],
+        recipe: RecipePreferences | None = None,
+    ) -> ReadyMove | None:
+        """Record a collision-free destination and the accepted recipe before moving the first source or product."""
         pending: Path = self._path(group.group_id)
         if pending.exists():
             return TypeAdapter(ReadyMove).validate_json(pending.read_bytes(), strict=True)
@@ -185,13 +197,15 @@ class ReadyStore:
             message = "Relocation can only move regular files belonging to this source directory"
             raise ExecutionError(message)
         ready.mkdir(exist_ok=True)
+        reserved: frozenset[Path] = self._reserved(group.group_id)
         destination_stem: str = group.stem
-        destinations: tuple[Path, ...] = self._destinations(files, destination_stem)
+        destinations: tuple[Path, ...] = self._destinations(files, destination_stem, group.route)
         ordinal: int = 2
-        while any(path.exists() for path in destinations):
+        while any(path.exists() or path in reserved for path in destinations):
             destination_stem = f"{group.stem} [{ordinal}]"
-            destinations = self._destinations(files, destination_stem)
+            destinations = self._destinations(files, destination_stem, group.route)
             ordinal += 1
+        produced: frozenset[Path] = frozenset(products)
         move: ReadyMove = ReadyMove(
             group.group_id,
             create_group_id(Path(READY_DIRECTORY), destination_stem),
@@ -199,6 +213,12 @@ class ReadyStore:
                 _record(source, destination, self._workspace)
                 for source, destination in zip(files, destinations, strict=True)
             ),
+            destination_stem,
+            source_directory=_relative_posix(group.directory, self._workspace),
+            source_stem=group.stem,
+            target=group.route.target,
+            product_sources=tuple(path.relative_to(self._workspace).as_posix() for path in files if path in produced),
+            recipe=recipe if recipe is not None else RecipePreferences(),
         )
         self._save(move)
         return move
@@ -213,10 +233,19 @@ class ReadyStore:
         """Remove the journal only after the owner's updated state is durable."""
         self._path(move.group_id).unlink(missing_ok=True)
 
-    def _destinations(self, files: tuple[Path, ...], stem: str) -> tuple[Path, ...]:
+    def _reserved(self, group_id: str) -> frozenset[Path]:
+        """Return destinations another unfinished move already claimed, because neither has renamed a file yet."""
+        return frozenset(
+            self._workspace / item.destination
+            for move in self.pending()
+            if move.group_id != group_id
+            for item in move.files
+        )
+
+    def _destinations(self, files: tuple[Path, ...], stem: str, route: WorkflowRoute) -> tuple[Path, ...]:
         destinations: list[Path] = []
         for path in files:
-            candidate: ArtifactName | None = classify_artifact(path)
+            candidate: ArtifactName | None = classify_artifact(path, route)
             if candidate is None:
                 message: str = "A completed group contains an unrecognized file"
                 raise ExecutionError(message)
@@ -277,6 +306,12 @@ class ReadyStore:
             message: str = "Relocation requires a safe group identifier"
             raise ExecutionError(message)
         return self._directory / f"{group_id}.json"
+
+
+def _relative_posix(directory: Path, root: Path) -> str:
+    """Return one workspace directory as the relative text a durable record may carry."""
+    relative: Path = directory.resolve().relative_to(root)
+    return relative.as_posix() if relative.parts else "."
 
 
 def _record(source: Path, destination: Path, root: Path) -> ReadyFile:

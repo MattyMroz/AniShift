@@ -14,6 +14,8 @@ __all__ = [
     "ContainerCompositionRequest",
     "ContainerCompositionResult",
     "ContainerTarget",
+    "CoverCompositionRequest",
+    "CoverCompositionResult",
     "OutputVariant",
     "QualityPreset",
     "SubtitleRole",
@@ -104,6 +106,36 @@ class ContainerCompositionResult:
     output_path: Path
     output_size_bytes: int
     source_size_bytes: int
+    duration_ms: float
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CoverCompositionRequest:
+    """One still picture and the finished recording it is shown for, with the MP4 they become."""
+
+    still_image: Path
+    audio: Path
+    destination: Path
+
+    def __post_init__(self) -> None:
+        if self.destination in {self.still_image, self.audio}:
+            msg = "Cover destination must differ from both of its inputs"
+            raise ValueError(msg)
+        if self.destination.suffix.casefold() != ".mp4":
+            msg = "Cover destination must end with .mp4"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class CoverCompositionResult:
+    """Outcome of showing one picture for the whole length of one recording."""
+
+    still_image: Path
+    audio: Path
+    output_path: Path
+    output_size_bytes: int
+    audio_duration_us: int
     duration_ms: float
     warnings: tuple[str, ...] = ()
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -12,12 +13,12 @@ from types import SimpleNamespace
 from typing import Final, cast
 
 import pytest
-from fakes import write_text_source
+from fakes import write_image_source, write_text_source
 from loguru import logger as loguru_logger
 
 import anishift.application.automation as automation_module
 import anishift.application.watch as watch_module
-from anishift.application import TaskState
+from anishift.application import SCAN_INTERVAL_S, TaskState
 from anishift.application.acquisition import (
     AcquisitionService,
     DownloadReceipt,
@@ -25,7 +26,7 @@ from anishift.application.acquisition import (
     TorrentClient,
     TorrentManagement,
 )
-from anishift.application.artifacts import ArtifactState
+from anishift.application.artifacts import ArtifactKind, ArtifactState
 from anishift.application.automation import (
     TRANSFER_BACKOFF_CEILING_S,
     TRANSFER_CHECK_INTERVAL_S,
@@ -34,8 +35,12 @@ from anishift.application.automation import (
 from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
+    AudiobookRecipe,
     AutomationPolicy,
     ManualHandledMarker,
+    NarrationTimeline,
+    ProductConfirmation,
+    ReadyGroup,
     RecipePreferences,
     RefusalReason,
     RequestState,
@@ -46,10 +51,12 @@ from anishift.application.control import (
     WatchState,
 )
 from anishift.application.control_views import encode_view
+from anishift.application.discovery import discover_groups
 from anishift.application.events import RunEvent, RunEventKind
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.intents import ProductIntent, ProductKind, RebuildRequest, RequestOrigin
 from anishift.application.planning import ExecutionPlan
+from anishift.application.ready import ReadyMove, ReadyStore
 from anishift.application.recovery import RunJournal
 from anishift.application.results import GroupResult, GroupStatus, RunResult
 from anishift.application.scheduler import RunHandle
@@ -66,12 +73,13 @@ from anishift.application.subscriptions import (
     SubscriptionUpdater,
 )
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
+from anishift.application.workflows import WorkflowTarget
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError
-from anishift.paths import COVER_DIRECTORY, TRANSLATE_DIRECTORY
+from anishift.paths import COVER_DIRECTORY, READY_DIRECTORY, TRANSLATE_DIRECTORY
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import (
     ControlClient,
@@ -240,6 +248,8 @@ class _Service:
         self._plan: ExecutionPlan = plan
         self.background_admission: list[bool] = []
         self.recipes: list[RecipePreferences | None] = []
+        self.targets: list[dict[str, WorkflowTarget]] = []
+        self.published: list[frozenset[Path]] = []
         self.submitted: list[str] = []
         self.cancelled: list[str] = []
         self.reloads: int = 0
@@ -266,7 +276,7 @@ class _Service:
         del preset_id
         return _PRESET.to_preset()
 
-    def plan_auto(
+    def plan_auto(  # noqa: PLR0913
         self,
         group_ids: Sequence[str],
         preset: object,
@@ -274,9 +284,13 @@ class _Service:
         rebuild: RebuildRequest | None = None,
         overrides: Mapping[str, object] | None = None,
         recipes: RecipePreferences | None = None,
+        targets: Mapping[str, WorkflowTarget] | None = None,
+        published: frozenset[Path] | None = None,
     ) -> ExecutionPlan:
         del group_ids, preset, rebuild, overrides
         self.recipes.append(recipes)
+        self.targets.append(dict(targets or {}))
+        self.published.append(frozenset(published or frozenset()))
         return self._plan
 
     def submit_plan(  # noqa: PLR0913
@@ -325,12 +339,18 @@ class _Service:
         self.reloads += 1
 
 
-def _owner(service: _Service | AppService, store: WatchStateStore) -> AutomationOwner:
+def _owner(
+    service: _Service | AppService,
+    store: WatchStateStore,
+    *,
+    scan_interval_s: float = SCAN_INTERVAL_S,
+) -> AutomationOwner:
     return AutomationOwner(
         cast("AppService", service),
         store,
         instance_id=_INSTANCE,
         clock=lambda: _MOMENT,
+        scan_interval_s=scan_interval_s,
     )
 
 
@@ -604,6 +624,207 @@ def test_invalid_preview_inputs_never_fall_back_to_processing_the_library(
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
         service.close()
+
+
+def test_a_relocation_left_by_a_killed_resident_still_records_the_target_of_its_set(tmp_path: Path) -> None:
+    audiobook: Path = tmp_path / "audiobook"
+    audiobook.mkdir()
+    write_text_source(audiobook / "Book.txt", "Zażółć gęślą jaźń.")
+    product: Path = audiobook / "Book.m4a"
+    product.write_bytes(b"recording")
+    accepted: RecipePreferences = RecipePreferences(audiobook=AudiobookRecipe(timeline=NarrationTimeline.SOURCE_TIMES))
+    journal: ReadyStore = ReadyStore(tmp_path / "control" / "relocations", tmp_path)
+    prepared: ReadyMove | None = journal.prepare(discover_groups(tmp_path).groups[0], (product,), accepted)
+    assert prepared is not None
+    service: AppService = _real_service(tmp_path)
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    store.save(WatchState(recipes=RecipePreferences(translate=TranslateRecipe(text_result=TextResultFormat.TEXT))))
+    owner: AutomationOwner = AutomationOwner(
+        service,
+        store,
+        instance_id=_INSTANCE,
+        clock=lambda: _MOMENT,
+        ready_store=ReadyStore(tmp_path / "control" / "relocations", tmp_path),
+    )
+    thread: threading.Thread = _serving(owner)
+    try:
+        deadline: float = time.monotonic() + _TIMEOUT_S
+        while not (tmp_path / "ready" / "Book.m4a").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    recorded: tuple[ReadyGroup, ...] = store.load().ready_groups
+    assert len(recorded) == 1
+    assert recorded[0].target is WorkflowTarget.AUDIOBOOK
+    assert recorded[0].source_directory == "audiobook"
+    assert recorded[0].source_stem == "Book"
+    assert recorded[0].stem == "Book"
+    assert recorded[0].sources == ("ready/Book.txt",)
+    assert recorded[0].products == ("ready/Book.m4a",)
+    assert recorded[0].main_result == "ready/Book.m4a"
+    assert recorded[0].recipe == accepted
+    assert recorded[0].recipe.audiobook.timeline is NarrationTimeline.SOURCE_TIMES
+    assert store.load().recipes.translate.text_result is TextResultFormat.TEXT
+
+
+@pytest.mark.parametrize("remembered", [True, False])
+def test_a_cover_regenerated_in_ready_takes_its_target_from_the_recorded_set(tmp_path: Path, remembered: bool) -> None:
+    ready: Path = tmp_path / READY_DIRECTORY
+    ready.mkdir(parents=True)
+    write_text_source(ready / "Book.txt", "Zażółć gęślą jaźń.")
+    write_image_source(ready / "Book.png")
+    service: AppService = _real_service(tmp_path)
+    group_id: str = service.discover().groups[0].group_id
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    if remembered:
+        store.save(
+            WatchState(
+                ready_groups=(
+                    ReadyGroup(
+                        set_id="group-before-the-move",
+                        group_id=group_id,
+                        stem="Book",
+                        source_directory="cover",
+                        source_stem="Book",
+                        target=WorkflowTarget.COVER,
+                        sources=("ready/Book.txt", "ready/Book.png"),
+                        products=(),
+                    ),
+                )
+            )
+        )
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        response: ControlResponse = owner.handle(
+            _request(
+                "preview",
+                {
+                    "client_id": _CLIENT,
+                    "group_ids": [group_id],
+                    "source_selection": "manual",
+                    "intents": [
+                        {
+                            "group_id": group_id,
+                            "mode": "manual",
+                            "products": {"requested_products": ["cover_mp4"]},
+                        }
+                    ],
+                },
+            )
+        )
+        assert response.ok
+        assert response.result["can_execute"] is remembered
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+
+
+def test_a_published_product_stops_being_this_programs_own_once_its_bytes_are_replaced(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    recording: Path = _library_dir(tmp_path) / "Episode.eac3"
+    recording.write_bytes(b"the voice this program published")
+    stamp: os.stat_result = recording.stat()
+    store.save(
+        WatchState(
+            products=(
+                ProductConfirmation(
+                    group_id,
+                    ArtifactKind.NARRATION_AUDIO.value,
+                    recording.relative_to(tmp_path).as_posix(),
+                    1,
+                    "run-1",
+                    RequestOrigin.BACKGROUND,
+                    stamp.st_size,
+                    stamp.st_mtime_ns,
+                ),
+            )
+        )
+    )
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    preview: ControlRequest = _request(
+        "preview",
+        {"client_id": _CLIENT, "group_ids": [group_id], "source_selection": "auto"},
+    )
+    try:
+        assert owner.handle(preview).ok
+        recording.write_bytes(b"the voice a person put here now!")
+        os.utime(recording, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000_000))
+        assert recording.stat().st_size == stamp.st_size
+        assert owner.handle(preview).ok
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+    assert service.published == [frozenset({recording}), frozenset()]
+
+
+@pytest.mark.parametrize("remembered", [True, False])
+def test_regenerating_a_finished_cover_plans_its_film_from_the_recorded_target(
+    tmp_path: Path,
+    remembered: bool,
+) -> None:
+    ready: Path = tmp_path / READY_DIRECTORY
+    ready.mkdir(parents=True)
+    write_text_source(ready / "Book.txt", "Zażółć gęślą jaźń.")
+    write_image_source(ready / "Book.png")
+    service: AppService = _real_service(tmp_path)
+    group_id: str = service.discover().groups[0].group_id
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    if remembered:
+        store.save(
+            WatchState(
+                ready_groups=(
+                    ReadyGroup(
+                        set_id="group-before-the-move",
+                        group_id=group_id,
+                        stem="Book",
+                        source_directory="cover",
+                        source_stem="Book",
+                        target=WorkflowTarget.COVER,
+                        sources=("ready/Book.txt", "ready/Book.png"),
+                        products=(),
+                    ),
+                )
+            )
+        )
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        response: ControlResponse = owner.handle(
+            _request(
+                "preview",
+                {"client_id": _CLIENT, "group_ids": [group_id], "source_selection": "auto"},
+            )
+        )
+        assert response.ok
+        groups: object = response.result["groups"]
+        assert isinstance(groups, list)
+        projection: dict[str, object] = groups[0]
+        problems: object = projection["problems"]
+        planned: object = projection["planned_products"]
+        assert isinstance(problems, list)
+        assert isinstance(planned, list)
+        codes: list[str] = [str(problem["code"]) for problem in problems]
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    if remembered:
+        assert response.result["can_execute"] is True
+        assert "cover_mp4" in planned
+        assert "txt_products_unsupported" not in codes
+    else:
+        assert response.result["can_execute"] is False
+        assert "cover_mp4" not in planned
+        assert "txt_products_unsupported" in codes
 
 
 def _serving(owner: AutomationOwner) -> threading.Thread:
@@ -1540,7 +1761,7 @@ def test_accepted_transfer_waits_for_file_completion_then_enters_auto_once(
         "transfer", "9", "", (), AcquisitionState.ACCEPTED, RequestOrigin.USER, None, "9", _MOMENT.isoformat()
     )
     store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(confirmation,)))
-    owner: AutomationOwner = _owner(service, store)
+    owner: AutomationOwner = _owner(service, store, scan_interval_s=0.01)
     thread: threading.Thread = _serving(owner)
     try:
         owner.files_changed(DirectoryChange(reconcile=True))
@@ -1777,7 +1998,7 @@ def test_file_events_wait_for_writers_and_manual_reservations_before_admitting_o
     monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
     service, store, group_id = _library(tmp_path)
     store.save(WatchState(policy=AutomationPolicy(auto_enabled=True)))
-    owner: AutomationOwner = _owner(service, store)
+    owner: AutomationOwner = _owner(service, store, scan_interval_s=0.01)
     observed: threading.Event = threading.Event()
 
     def broadcast(frame: Mapping[str, object], terminal: bool) -> None:
@@ -1827,7 +2048,7 @@ def test_auto_off_keeps_the_library_current_and_auto_on_admits_without_another_f
     monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
     monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
     service, store, group_id = _library(tmp_path)
-    owner: AutomationOwner = _owner(service, store)
+    owner: AutomationOwner = _owner(service, store, scan_interval_s=0.01)
     observed: threading.Event = threading.Event()
 
     def broadcast(frame: Mapping[str, object], terminal: bool) -> None:
@@ -1863,7 +2084,7 @@ def test_automatic_work_plans_with_the_persisted_recipe(tmp_path: Path, monkeypa
     service, store, group_id = _library(tmp_path)
     recipes: RecipePreferences = RecipePreferences(translate=TranslateRecipe(text_result=TextResultFormat.SUBTITLES))
     store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), recipes=recipes))
-    owner: AutomationOwner = _owner(service, store)
+    owner: AutomationOwner = _owner(service, store, scan_interval_s=0.01)
     thread: threading.Thread = _serving(owner)
     try:
         owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
@@ -1898,7 +2119,7 @@ def test_a_marker_is_weighed_against_the_products_the_group_would_get(
         recorded_at=_MOMENT.isoformat(),
     )
     store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), markers=(marker,)))
-    owner: AutomationOwner = _owner(service, store)
+    owner: AutomationOwner = _owner(service, store, scan_interval_s=0.01)
     thread: threading.Thread = _serving(owner)
     try:
         owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
@@ -1948,7 +2169,7 @@ def test_a_product_published_beside_its_source_stays_background_work(
     published: Path = _library_dir(tmp_path) / "Episode.pl.txt"
     write_text_source(published, "Text")
     store.save(WatchState(policy=AutomationPolicy(auto_enabled=True)))
-    owner: AutomationOwner = _owner(service, store)
+    owner: AutomationOwner = _owner(service, store, scan_interval_s=0.01)
     thread: threading.Thread = _serving(owner)
     try:
         owner.files_changed(DirectoryChange(paths=(published,)))
@@ -1966,7 +2187,7 @@ def test_an_image_arriving_in_cover_invalidates_the_preview_of_its_own_group(tmp
     directory: Path = tmp_path / COVER_DIRECTORY
     directory.mkdir(parents=True)
     write_text_source(directory / "Episode.txt", "Text")
-    (directory / "Episode.png").write_bytes(b"image")
+    write_image_source(directory / "Episode.png")
     real: AppService = _real_service(tmp_path)
     workspace = real.discover()
     assert [group.source.stem for group in workspace.groups] == ["Episode"]
@@ -1979,7 +2200,7 @@ def test_an_image_arriving_in_cover_invalidates_the_preview_of_its_own_group(tmp
         preview: ControlResponse = owner.handle(_request("preview", {"client_id": _CLIENT}))
         assert preview.ok, preview.message
         joined: Path = directory / "Episode.jpg"
-        joined.write_bytes(b"image")
+        write_image_source(joined)
         owner.files_changed(DirectoryChange(paths=(joined,)))
         started: ControlResponse = owner.handle(
             _request(

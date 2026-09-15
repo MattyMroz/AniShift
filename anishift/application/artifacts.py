@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
+from typing import Final
 
 from anishift.application.workflows import ROOT_ROUTE, WorkflowRoute
 
@@ -27,8 +28,17 @@ class ArtifactKind(StrEnum):
     TTS_MANIFEST = "tts_manifest"
     FINAL_MKV = "final_mkv"
     FINAL_MP4 = "final_mp4"
+    COVER_MP4 = "cover_mp4"
     STANDALONE_TEXT = "standalone_text"
     TRANSLATED_TEXT = "translated_text"
+
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+COVER_AUDIO_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
+    {ArtifactKind.SOURCE_AUDIO, ArtifactKind.NARRATION_AUDIO},
+)
+"""Kinds a cover film may play, because the same recording is classified differently in each place it sits."""
 
 
 class ArtifactState(StrEnum):
@@ -94,7 +104,7 @@ class Artifact:
         if not self.artifact_id.strip() or not self.group_id.strip():
             msg = "Artifact and group IDs cannot be empty"
             raise ValueError(msg)
-        if self.kind in {ArtifactKind.FINAL_MKV, ArtifactKind.FINAL_MP4} and (
+        if self.kind in {ArtifactKind.FINAL_MKV, ArtifactKind.FINAL_MP4, ArtifactKind.COVER_MP4} and (
             self.lifetime is not ArtifactLifetime.DURABLE
         ):
             msg = "Final containers must be durable products, never sources"

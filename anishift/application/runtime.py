@@ -246,7 +246,7 @@ class ProductionHandlerFactory:
         plan: ExecutionPlan,
         kinds: frozenset[TaskKind],
     ) -> CompositionTaskHandler | None:
-        if not kinds.intersection({TaskKind.COMPOSE_MKV, TaskKind.COMPOSE_MP4}):
+        if not kinds.intersection({TaskKind.COMPOSE_MKV, TaskKind.COMPOSE_MP4, TaskKind.COMPOSE_COVER}):
             return None
         service = CompositionService(
             CompositionConfig(quality_preset=QualityPreset(plan.settings.composition_profile_id)),

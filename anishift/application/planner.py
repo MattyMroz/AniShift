@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Final, Protocol
 from natsort import os_sorted
 
 from anishift.application.artifacts import (
+    COVER_AUDIO_KINDS,
     Artifact,
     ArtifactKind,
     ArtifactLifetime,
@@ -26,6 +27,7 @@ from anishift.application.control import (
 )
 from anishift.application.intents import (
     AUDIOBOOK_PRODUCTS,
+    COVER_PRODUCTS,
     TRANSLATE_PRODUCTS,
     AutoPreset,
     BurnSubtitleProduct,
@@ -72,9 +74,24 @@ _UNTIMED_DOCUMENT_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
 """Documents carrying words without a single timestamp, so nothing can be read by their own times."""
 
 _DOCUMENT_TARGETS: Final[frozenset[WorkflowTarget]] = frozenset(
-    {WorkflowTarget.TRANSLATE, WorkflowTarget.AUDIOBOOK},
+    {WorkflowTarget.TRANSLATE, WorkflowTarget.AUDIOBOOK, WorkflowTarget.COVER},
 )
-"""Targets reading one document and needing neither a picture nor an existing audio track."""
+"""Targets reading one document or recording, so none of them validates a film selection it never makes."""
+
+_COVER_CONTENT_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
+    {
+        ArtifactKind.STANDALONE_TEXT,
+        ArtifactKind.SOURCE_SUBTITLES,
+        ArtifactKind.SOURCE_AUDIO,
+        ArtifactKind.NARRATION_AUDIO,
+    },
+)
+"""Sources a cover can play: a document it reads aloud, or a finished recording it uses exactly as it stands."""
+
+_COVER_DOCUMENT_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
+    {ArtifactKind.STANDALONE_TEXT, ArtifactKind.SOURCE_SUBTITLES},
+)
+"""Documents a cover reads aloud, whose voice this program records itself."""
 
 _NON_DIALOGUE_SUBTITLE_NAME: Final[re.Pattern[str]] = re.compile(r"sign|song|forced", re.I)
 """Track names announcing signs, songs, or forced captions instead of full dialogue."""
@@ -128,6 +145,8 @@ def plan_auto(  # noqa: PLR0913 - every automatic planning input stays an explic
     rebuild: RebuildRequest | None = None,
     overrides: Mapping[str, object] | None = None,
     recipes: RecipePreferences | None = None,
+    targets: Mapping[str, WorkflowTarget] | None = None,
+    published: frozenset[Path] | None = None,
 ) -> ExecutionPlan:
     """Build one fresh automatic plan for every selected inspected group, each for the target of its own place."""
     ordered_groups: tuple[InspectedSourceGroup, ...] = _ordered_unique_groups(groups)
@@ -137,21 +156,37 @@ def plan_auto(  # noqa: PLR0913 - every automatic planning input stays an explic
         else replace(preset.products, requested_products=preset.products.requested_products | rebuild.products)
     )
     intents: dict[str, GroupIntent] = {
-        group.group_id: _auto_intent(group, preset, products, recipes) for group in ordered_groups
+        group.group_id: _auto_intent(group, preset, products, recipes, recorded_target(group, targets))
+        for group in ordered_groups
     }
     snapshot: RunSettingsSnapshot = settings if overrides is None else settings.with_overrides(overrides)
-    return _plan(ordered_groups, intents, snapshot, rebuild=rebuild)
+    return _plan(ordered_groups, intents, snapshot, rebuild=rebuild, published=published)
+
+
+def recorded_target(
+    group: InspectedSourceGroup,
+    targets: Mapping[str, WorkflowTarget] | None = None,
+) -> WorkflowTarget | None:
+    """Return the target one group is really planned for, recovered from its record when its place names none."""
+    route_target: WorkflowTarget | None = group.source.route.target
+    if route_target is not None or targets is None:
+        return route_target
+    return targets.get(group.group_id)
 
 
 def auto_group_products(
     group: InspectedSourceGroup,
     products: ProductIntent,
     recipes: RecipePreferences | None = None,
+    target: WorkflowTarget | None = None,
 ) -> ProductIntent:
-    """Return the products one group is automatically asked for, by the target of its own place."""
-    if group.source.route.target is WorkflowTarget.AUDIOBOOK:
+    """Return the products one group is automatically asked for, by the target of its own place or its record."""
+    resolved: WorkflowTarget | None = target if target is not None else group.source.route.target
+    if resolved is WorkflowTarget.AUDIOBOOK:
         return ProductIntent(requested_products=AUDIOBOOK_PRODUCTS)
-    if group.source.route.target is not WorkflowTarget.TRANSLATE:
+    if resolved is WorkflowTarget.COVER:
+        return ProductIntent(requested_products=COVER_PRODUCTS)
+    if resolved is not WorkflowTarget.TRANSLATE:
         return products
     translate: TranslateRecipe = (recipes if recipes is not None else RecipePreferences()).translate
     holds_text: bool = any(
@@ -168,29 +203,30 @@ def _auto_intent(
     preset: AutoPreset,
     products: ProductIntent,
     recipes: RecipePreferences | None,
+    target: WorkflowTarget | None,
 ) -> GroupIntent:
     preferences: RecipePreferences = recipes if recipes is not None else RecipePreferences()
-    if group.source.route.target is WorkflowTarget.TRANSLATE:
+    if target is WorkflowTarget.TRANSLATE:
         return GroupIntent(
             group_id=group.group_id,
             mode=RunMode.AUTO,
-            products=auto_group_products(group, products, recipes),
+            products=auto_group_products(group, products, recipes, target),
             translation_action=preferences.translate.translation_action,
             source_subtitle_language=preset.source_subtitle_language,
             subtitle_output_format=preset.subtitle_output_format,
             target=WorkflowTarget.TRANSLATE,
         )
-    if group.source.route.target is WorkflowTarget.AUDIOBOOK:
+    if target in {WorkflowTarget.AUDIOBOOK, WorkflowTarget.COVER}:
         audiobook: AudiobookRecipe = preferences.audiobook
         return GroupIntent(
             group_id=group.group_id,
             mode=RunMode.AUTO,
-            products=auto_group_products(group, products, recipes),
+            products=auto_group_products(group, products, recipes, target),
             translation_action=audiobook.translation_action,
             source_subtitle_language=preset.source_subtitle_language,
             subtitle_output_format=preset.subtitle_output_format,
             narration_timeline=audiobook.timeline,
-            target=WorkflowTarget.AUDIOBOOK,
+            target=target,
         )
     return GroupIntent(
         group_id=group.group_id,
@@ -202,7 +238,7 @@ def _auto_intent(
         translation_action=preset.translation_action,
         source_subtitle_language=preset.source_subtitle_language,
         subtitle_output_format=preset.subtitle_output_format,
-        target=group.source.route.target,
+        target=target,
     )
 
 
@@ -210,6 +246,8 @@ def plan_manual(
     groups: Sequence[InspectedSourceGroup],
     intents: Mapping[str, GroupIntent],
     settings: RunSettingsSnapshot,
+    *,
+    published: frozenset[Path] | None = None,
 ) -> ExecutionPlan:
     """Build independent manual plans using the exact intent of every group."""
     ordered_groups: tuple[InspectedSourceGroup, ...] = _ordered_unique_groups(groups)
@@ -220,7 +258,7 @@ def plan_manual(
     if any(intent.mode is not RunMode.MANUAL for intent in intents.values()):
         msg = "Manual planning accepts only manual group intents"
         raise PlanningError(msg)
-    return _plan(ordered_groups, intents, settings)
+    return _plan(ordered_groups, intents, settings, published=published)
 
 
 def _ordered_unique_groups(groups: Sequence[InspectedSourceGroup]) -> tuple[InspectedSourceGroup, ...]:
@@ -246,6 +284,7 @@ def _plan(
     settings: RunSettingsSnapshot,
     *,
     rebuild: RebuildRequest | None = None,
+    published: frozenset[Path] | None = None,
 ) -> ExecutionPlan:
     group_plans: list[GroupPlan] = []
     artifacts: list[Artifact] = []
@@ -253,7 +292,7 @@ def _plan(
     problems: list[PlanProblem] = []
     for group in groups:
         intent: GroupIntent = intents[group.group_id]
-        builder: _GroupPlanner = _GroupPlanner(group, intent, settings, rebuild=rebuild)
+        builder: _GroupPlanner = _GroupPlanner(group, intent, settings, rebuild=rebuild, published=published)
         group_plan, group_artifacts, group_tasks = builder.build()
         group_plans.append(group_plan)
         artifacts.extend(group_artifacts)
@@ -312,10 +351,12 @@ class _GroupPlanner:
         settings: RunSettingsSnapshot,
         *,
         rebuild: RebuildRequest | None = None,
+        published: frozenset[Path] | None = None,
     ) -> None:
         self.group: InspectedSourceGroup = group
         self.intent: GroupIntent = intent
         self.settings: RunSettingsSnapshot = settings
+        self._published: frozenset[Path] = frozenset() if published is None else published
         self._rebuild: frozenset[ProductKind] = frozenset() if rebuild is None else rebuild.products
         self._invalidated: frozenset[ArtifactKind] = _invalidated_products(intent, self._rebuild)
         self.artifacts: dict[str, Artifact] = {artifact.artifact_id: artifact for artifact in group.artifacts}
@@ -358,8 +399,15 @@ class _GroupPlanner:
         )
         return group_plan, artifact_values, group_tasks
 
+    @property
+    def _target(self) -> WorkflowTarget | None:
+        """Return the target this group is really planned for, recovered from its intent when its place names none."""
+        route_target: WorkflowTarget | None = self.group.source.route.target
+        return route_target if route_target is not None else self.intent.target
+
     def _require_accepted_target(self) -> None:
-        if self.intent.target is None or self.intent.target is self.group.source.route.target:
+        route_target: WorkflowTarget | None = self.group.source.route.target
+        if route_target is None or self.intent.target is None or self.intent.target is route_target:
             return
         self._problem(
             "intent_target_changed",
@@ -380,11 +428,15 @@ class _GroupPlanner:
         )
 
     def _build_target_plan(self) -> None:
-        if self.group.source.route.target is WorkflowTarget.TRANSLATE:
+        target: WorkflowTarget | None = self._target
+        if target is WorkflowTarget.TRANSLATE:
             self._build_translate_plan()
             return
-        if self.group.source.route.target is WorkflowTarget.AUDIOBOOK:
+        if target is WorkflowTarget.AUDIOBOOK:
             self._build_audiobook_plan()
+            return
+        if target is WorkflowTarget.COVER:
+            self._build_cover_plan()
             return
         if ProductKind.TRANSLATED_TEXT in self.intent.products.requested_products:
             self._problem(
@@ -398,7 +450,7 @@ class _GroupPlanner:
         self._build_media_plan()
 
     def _validate_manual_selections(self) -> None:
-        if self.intent.mode is not RunMode.MANUAL or self.group.source.route.target in _DOCUMENT_TARGETS:
+        if self.intent.mode is not RunMode.MANUAL or self._target in _DOCUMENT_TARGETS:
             return
         if self.intent.preferred_video_artifact_id is not None:
             self._select_video()
@@ -530,6 +582,172 @@ class _GroupPlanner:
             self._read_document_aloud(script)
         if ProductKind.NARRATION_AUDIO in requested and self._narration is not None:
             self._publish_audio(self._narration)
+
+    def _build_cover_plan(self) -> None:
+        requested: frozenset[ProductKind] = self.intent.products.requested_products
+        if not requested <= COVER_PRODUCTS:
+            self._problem(
+                "cover_products_unsupported",
+                "A cover place writes only one film showing its own still picture",
+            )
+            return
+        image: Artifact | None = self._cover_image()
+        content: Artifact | None = self._cover_content()
+        if image is None or content is None:
+            return
+        if content.kind in COVER_AUDIO_KINDS:
+            self._compose_cover(image, content)
+            return
+        recorded: Artifact | None = self._reusable_recording()
+        if recorded is not None:
+            self._compose_cover(image, recorded)
+            return
+        if not self._record_cover_narration(content) or self._narration is None:
+            return
+        self._compose_cover(image, self._publish_audio(self._narration))
+
+    def _cover_image(self) -> Artifact | None:
+        """Return the one validated still a cover shows, because a picture is required before any work starts."""
+        chosen: Artifact | None = self._chosen_cover_image()
+        if chosen is not None:
+            return chosen
+        images: tuple[Artifact, ...] = tuple(
+            artifact
+            for artifact in self.artifacts.values()
+            if artifact.kind is ArtifactKind.SOURCE_IMAGE and artifact.state is ArtifactState.READY
+        )
+        if not images:
+            self._problem("cover_image_missing", "A cover needs one validated PNG or JPEG before it can be built")
+            return None
+        if len(images) > 1:
+            self._problem(
+                "cover_image_ambiguous",
+                "Choose which picture this cover shows",
+                artifacts=tuple(sorted(images, key=lambda artifact: artifact.artifact_id)),
+            )
+            return None
+        return images[0]
+
+    def _cover_content(self) -> Artifact | None:
+        """Return the one source a cover plays: a delivered one, or failing that the recording it published itself."""
+        chosen: Artifact | None = self._chosen_cover_content()
+        if chosen is not None:
+            return chosen
+        delivered: tuple[Artifact, ...] = self._delivered_cover_sources()
+        if not delivered:
+            own: Artifact | None = self._own_recording()
+            if own is None:
+                self._problem("cover_source_missing", "A cover needs one validated text, subtitle, or audio source")
+            return own
+        if len(delivered) > 1:
+            self._problem(
+                "cover_source_ambiguous",
+                "Choose which source this cover uses",
+                artifacts=delivered,
+            )
+            return None
+        return delivered[0]
+
+    def _delivered_cover_sources(self) -> tuple[Artifact, ...]:
+        """Return every content source a person put in this set, never a file proven to be this program's product."""
+        return tuple(
+            sorted(
+                (
+                    artifact
+                    for artifact in self.artifacts.values()
+                    if artifact.kind in _COVER_CONTENT_KINDS
+                    and artifact.state is ArtifactState.READY
+                    and (artifact.lifetime is ArtifactLifetime.SOURCE or artifact.kind in COVER_AUDIO_KINDS)
+                    and not self._is_published(artifact)
+                ),
+                key=lambda artifact: artifact.artifact_id,
+            )
+        )
+
+    def _reusable_recording(self) -> Artifact | None:
+        """Return the recording an automatic run plays instead of paying for the same voice twice."""
+        return self._own_recording() if self.intent.mode is RunMode.AUTO else None
+
+    def _own_recording(self) -> Artifact | None:
+        """Return the narration this program is proven to have published here, whichever mode asked for the film."""
+        if ArtifactKind.NARRATION_AUDIO in self._invalidated:
+            return None
+        return next(
+            (
+                artifact
+                for artifact in self.artifacts.values()
+                if artifact.kind in COVER_AUDIO_KINDS
+                and artifact.state is ArtifactState.READY
+                and self._is_published(artifact)
+            ),
+            None,
+        )
+
+    def _is_published(self, artifact: Artifact) -> bool:
+        """Report whether a durable record proves this program wrote the bytes this file currently holds."""
+        return artifact.path is not None and any(_same_path(artifact.path, item) for item in self._published)
+
+    def _narration_product_path(self) -> Path:
+        """Return the one pathname the narration product of this set occupies under the active audio profile."""
+        return product_path(
+            self.group.source.directory,
+            self.group.source.stem,
+            ArtifactKind.NARRATION_AUDIO,
+            audio_profile=self.settings.audio_output_profile.casefold(),
+        )
+
+    def _chosen_cover_image(self) -> Artifact | None:
+        selected_id: str | None = self.intent.selected_image_artifact_id
+        if selected_id is None:
+            return None
+        selected: Artifact | None = self.artifacts.get(selected_id)
+        if (
+            selected is None
+            or selected.kind is not ArtifactKind.SOURCE_IMAGE
+            or selected.state is not ArtifactState.READY
+        ):
+            self._problem("cover_selection_invalid", "Selected cover picture is unavailable or invalid")
+            return None
+        return selected
+
+    def _chosen_cover_content(self) -> Artifact | None:
+        selected_id: str | None = self.intent.selected_audio_artifact_id or self.intent.selected_subtitle_artifact_id
+        if selected_id is None:
+            return None
+        selected: Artifact | None = self.artifacts.get(selected_id)
+        if selected is None or selected.kind not in _COVER_CONTENT_KINDS or selected.state is not ArtifactState.READY:
+            self._problem("cover_selection_invalid", "Selected cover source is unavailable or invalid")
+            return None
+        return selected
+
+    def _record_cover_narration(self, document: Artifact) -> bool:
+        """Prepare the voice of a cover exactly as an audiobook does, keeping the recording out of the workspace."""
+        timeline: NarrationTimeline = self.intent.narration_timeline
+        if timeline is NarrationTimeline.SOURCE_TIMES and document.kind in _UNTIMED_DOCUMENT_KINDS:
+            self._problem(
+                "narration_times_unavailable",
+                "A plain text document carries no times a recording could keep",
+                artifacts=(document,),
+            )
+            return False
+        script: Artifact | None = self._narration_script(document)
+        if script is None:
+            return False
+        self._read_document_aloud(script)
+        return True
+
+    def _compose_cover(self, image: Artifact, audio: Artifact) -> None:
+        target: Artifact = self._durable_target(
+            ArtifactKind.COVER_MP4,
+            product_path(self.group.source.directory, self.group.source.stem, ArtifactKind.COVER_MP4),
+        )
+        self._add_task(
+            TaskKind.COMPOSE_COVER,
+            requires=(image, audio),
+            produces=(target,),
+            variant="cover",
+            resource_key=f"composition:{self.settings.composition_profile_id}",
+        )
 
     def _narration_script(self, source: Artifact) -> Artifact | None:
         """Return the document the voice really reads, translating first only when that was asked for."""
@@ -1339,12 +1557,7 @@ class _GroupPlanner:
                 resource_key=f"audio:{self.settings.audio_profile_id}",
                 parameters=(("output_profile", profile),),
             )
-        destination: Path = product_path(
-            self.group.source.directory,
-            self.group.source.stem,
-            ArtifactKind.NARRATION_AUDIO,
-            audio_profile=profile,
-        )
+        destination: Path = self._narration_product_path()
         if (
             publish_source.state is ArtifactState.READY
             and publish_source.path is not None

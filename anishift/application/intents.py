@@ -39,6 +39,7 @@ class ProductKind(StrEnum):
     NARRATION_AUDIO = "narration_audio"
     MKV = "mkv"
     MP4 = "mp4"
+    COVER_MP4 = "cover_mp4"
 
 
 class SubtitleSourcePolicy(StrEnum):
@@ -118,8 +119,14 @@ TRANSLATE_PRODUCTS: Final[frozenset[ProductKind]] = frozenset(
 AUDIOBOOK_PRODUCTS: Final[frozenset[ProductKind]] = frozenset({ProductKind.NARRATION_AUDIO})
 """The single product an audiobook place writes: the recording of one document."""
 
-VIDEO_PRODUCTS: Final[frozenset[ProductKind]] = frozenset(ProductKind) - {ProductKind.TRANSLATED_TEXT}
-"""Products the video preset offers, excluding the plain text document only a translate place writes."""
+COVER_PRODUCTS: Final[frozenset[ProductKind]] = frozenset({ProductKind.COVER_MP4})
+"""The single product a cover place writes: one film showing a still picture for the whole recording."""
+
+VIDEO_PRODUCTS: Final[frozenset[ProductKind]] = frozenset(ProductKind) - {
+    ProductKind.TRANSLATED_TEXT,
+    ProductKind.COVER_MP4,
+}
+"""Products the video preset offers, excluding the documents and stills only a text or cover place writes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +180,7 @@ class GroupIntent:
     preferred_video_artifact_id: str | None = None
     selected_subtitle_artifact_id: str | None = None
     selected_audio_artifact_id: str | None = None
+    selected_image_artifact_id: str | None = None
     selected_audio_track_id: int | None = None
     selected_subtitle_track_id: int | None = None
     source_subtitle_language: str | None = None
@@ -188,6 +196,7 @@ class GroupIntent:
         _validate_optional_id(self.preferred_video_artifact_id)
         _validate_optional_id(self.selected_subtitle_artifact_id)
         _validate_optional_id(self.selected_audio_artifact_id)
+        _validate_optional_id(self.selected_image_artifact_id)
         _validate_optional_track_id(self.selected_audio_track_id)
         _validate_optional_track_id(self.selected_subtitle_track_id)
         if self.selected_subtitle_artifact_id and self.selected_subtitle_track_id is not None:
@@ -210,6 +219,7 @@ class GroupIntent:
                 self.preferred_video_artifact_id,
                 self.selected_subtitle_artifact_id,
                 self.selected_audio_artifact_id,
+                self.selected_image_artifact_id,
                 self.selected_audio_track_id,
                 self.selected_subtitle_track_id,
                 self.external_audio_role,

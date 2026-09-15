@@ -37,6 +37,7 @@ class TaskKind(StrEnum):
     MIX_NARRATION = "mix_narration"
     COMPOSE_MKV = "compose_mkv"
     COMPOSE_MP4 = "compose_mp4"
+    COMPOSE_COVER = "compose_cover"
     PUBLISH_ARTIFACT = "publish_artifact"
 
 

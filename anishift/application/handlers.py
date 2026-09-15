@@ -63,7 +63,7 @@ class ExecutionHandlers:
                 handler = self.tts
             case TaskKind.TRANSCODE_AUDIO | TaskKind.MIX_NARRATION:
                 handler = self.audio
-            case TaskKind.COMPOSE_MKV | TaskKind.COMPOSE_MP4:
+            case TaskKind.COMPOSE_MKV | TaskKind.COMPOSE_MP4 | TaskKind.COMPOSE_COVER:
                 handler = self.composition
             case TaskKind.PUBLISH_ARTIFACT:
                 handler = self.publish

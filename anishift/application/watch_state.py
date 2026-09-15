@@ -417,6 +417,7 @@ def _encode_request(request: ProcessingRequest) -> dict[str, object]:
         "intents": [encode_intent(intent) for intent in request.intents],
         "automatic": request.automatic,
         "problem": request.problem,
+        "recipe": _encode_recipes(request.recipe),
     }
 
 
@@ -447,6 +448,8 @@ def _encode_product(confirmation: ProductConfirmation) -> dict[str, object]:
         "generation": confirmation.generation,
         "request_id": confirmation.request_id,
         "origin": confirmation.origin.value,
+        "size": confirmation.size,
+        "modified_ns": confirmation.modified_ns,
     }
 
 
@@ -621,6 +624,8 @@ def _decode_request(raw: object) -> ProcessingRequest:
     intents: tuple[GroupIntent, ...] = tuple(
         decode_intent(GroupIntent, item) for item in _list(document.pop("intents", []), "group intents")
     )
+    stored_recipe: object = document.pop("recipe", None)
+    recipe: RecipePreferences = RecipePreferences() if stored_recipe is None else _decode_recipes(stored_recipe)
     document = _strict_object(document, _REQUEST_KEYS, "processing request")
     fingerprints: dict[str, object] = _strict_mapping(document["fingerprints"], "request fingerprints")
     rebuild: object = document["rebuild"]
@@ -639,6 +644,7 @@ def _decode_request(raw: object) -> ProcessingRequest:
         intents=intents,
         automatic=automatic,
         problem=problem,
+        recipe=recipe,
     )
 
 
@@ -703,7 +709,10 @@ def _complete_files(
 
 
 def _decode_product(raw: object) -> ProductConfirmation:
-    document: dict[str, object] = _strict_object(raw, _PRODUCT_KEYS, "product confirmation")
+    stored: dict[str, object] = dict(_strict_mapping(raw, "product confirmation"))
+    size: int = _as_whole(stored.pop("size", -1), "product size")
+    modified_ns: int = _as_whole(stored.pop("modified_ns", -1), "product modification time")
+    document: dict[str, object] = _strict_object(stored, _PRODUCT_KEYS, "product confirmation")
     return ProductConfirmation(
         group_id=_text(document, "group_id"),
         artifact_kind=_text(document, "artifact_kind"),
@@ -711,6 +720,8 @@ def _decode_product(raw: object) -> ProductConfirmation:
         generation=_whole(document, "generation"),
         request_id=_text(document, "request_id"),
         origin=RequestOrigin(_text(document, "origin")),
+        size=size,
+        modified_ns=modified_ns,
     )
 
 

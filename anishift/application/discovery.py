@@ -69,6 +69,7 @@ _DERIVED_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
         ArtifactKind.NARRATION_AUDIO,
         ArtifactKind.FINAL_MKV,
         ArtifactKind.FINAL_MP4,
+        ArtifactKind.COVER_MP4,
     }
 )
 """Artifact kinds a durable AniShift product carries, whatever place it was found in."""
@@ -310,7 +311,7 @@ def _classify_source_subtitle(path: Path, lowered: str, route: WorkflowRoute) ->
 
 
 def _classify_source_image(path: Path, lowered: str, route: WorkflowRoute) -> ArtifactName | None:
-    if route.target is not WorkflowTarget.COVER:
+    if route.target is not WorkflowTarget.COVER and route.place is not WorkspacePlace.READY:
         return None
     if not any(lowered.endswith(suffix) for suffix in _SOURCE_IMAGE_SUFFIXES):
         return None
@@ -338,6 +339,8 @@ def _primary_kinds(route: WorkflowRoute) -> frozenset[ArtifactKind]:
 
 def _anchors_group(candidate: ArtifactName, route: WorkflowRoute) -> bool:
     if candidate.kind in _primary_kinds(route):
+        return True
+    if route.place is WorkspacePlace.READY:
         return True
     if candidate.is_derived:
         return False

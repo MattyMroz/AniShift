@@ -298,13 +298,14 @@ def spawn_resident() -> subprocess.Popen[bytes]:
     )
 
 
-def run_resident(
+def run_resident(  # noqa: PLR0913 - every resident timing seam stays an explicit call-site value
     service: AppService,
     *,
     state_dir: Path,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     on_ready: Callable[[], None] | None = None,
     enable_tray: bool = False,
+    scan_interval_s: float = SCAN_INTERVAL_S,
 ) -> int:
     """Own the automation of *state_dir* until a shutdown command ends the process."""
     from anishift.application import (  # noqa: PLC0415 - keep the owner off the Typer import path
@@ -340,6 +341,7 @@ def run_resident(
             clock=clock,
             open_panel=_spawn_panel,
             ready_store=ReadyStore(relocation_journal_dir(state_dir), service.workspace_root),
+            scan_interval_s=scan_interval_s,
         )
         endpoint: str = control_endpoint(state_dir)
         clear_endpoint(endpoint)

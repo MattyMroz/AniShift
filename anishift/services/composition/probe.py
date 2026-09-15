@@ -32,6 +32,7 @@ __all__ = [
     "source_duration_us",
     "source_tracks",
     "validate_burned",
+    "validate_cover",
     "validate_merged",
 ]
 
@@ -39,6 +40,9 @@ __all__ = [
 
 _DURATION_TOLERANCE_MS: Final[int] = 2_000
 """Accepted difference between expected and rendered product duration."""
+
+_COVER_TIMESTAMP_TOLERANCE_MS: Final[int] = 40
+"""Timestamp slack allowed for a cover, one frame of the slowest export frame rate this application uses."""
 
 _PROBE_TIMEOUT_S: Final[float] = 120.0
 """Timeout for one ffprobe invocation."""
@@ -167,6 +171,54 @@ def validate_merged(
             "Merged container is missing appended tracks",
             details={"expected": len(expected_track_names), "missing": len(missing)},
         )
+
+
+def validate_cover(
+    path: Path,
+    *,
+    expected_audio_duration_us: int,
+    ffprobe: Path,
+    cancel: threading.Event | None = None,
+    runner: ProcessRunner | None = None,
+) -> None:
+    """Confirm a cover carries both streams and shows its picture for the whole recording."""
+    _require_non_empty(path)
+    payload: dict[str, Any] = _probe_json(
+        path,
+        ffprobe=ffprobe,
+        arguments=("-show_entries", "stream=codec_type,duration"),
+        cancel=cancel,
+        runner=runner,
+    )
+    video_us: int = _stream_duration_us(payload, "video")
+    audio_us: int = _stream_duration_us(payload, "audio")
+    if video_us <= 0 or audio_us <= 0:
+        _raise_validation(
+            "Cover is missing a video or audio stream of non-zero length",
+            details={"has_video": video_us > 0, "has_audio": audio_us > 0},
+        )
+    tolerance_us: int = _COVER_TIMESTAMP_TOLERANCE_MS * _MICROSECONDS_PER_MILLISECOND
+    if audio_us + tolerance_us < expected_audio_duration_us:
+        _raise_validation(
+            "Cover lost the tail of its recording",
+            details={"missing_ms": (expected_audio_duration_us - audio_us) // _MICROSECONDS_PER_MILLISECOND},
+        )
+    if video_us + tolerance_us < audio_us:
+        _raise_validation(
+            "Cover stops showing its picture before the recording ends",
+            details={"short_by_ms": (audio_us - video_us) // _MICROSECONDS_PER_MILLISECOND},
+        )
+
+
+def _stream_duration_us(payload: dict[str, Any], codec_type: str) -> int:
+    """Return the duration of the first stream of *codec_type*, or zero when the cover carries none."""
+    streams: object = payload.get("streams")
+    if not isinstance(streams, list):
+        return 0
+    for stream in streams:
+        if isinstance(stream, dict) and stream.get("codec_type") == codec_type:
+            return _duration_us(stream.get("duration"))
+    return 0
 
 
 def validate_burned(  # noqa: PLR0913 - separate stream and product duration contracts
