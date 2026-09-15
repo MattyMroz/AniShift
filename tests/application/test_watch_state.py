@@ -422,7 +422,7 @@ def test_the_store_round_trips_the_facts_added_by_schema_two(tmp_path: Path) -> 
                 sources=("ready/episode-01.mkv",),
                 products=("ready/episode-01.m4a",),
                 main_result="ready/episode-01.m4a",
-                pending_source=None,
+                pending_sources=("audiobook/Solo Leveling/episode-01.mkv",),
                 recipe=RecipePreferences(audiobook=AudiobookRecipe(timeline=NarrationTimeline.SOURCE_TIMES)),
             ),
         ),

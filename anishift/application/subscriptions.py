@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from functools import partial
+from secrets import token_hex
 from statistics import median
 from typing import TYPE_CHECKING, Final
 
@@ -53,6 +54,7 @@ __all__ = [
     "CheckOutcome",
     "CheckRecorder",
     "EpisodeOrder",
+    "EpisodeRepeat",
     "EpisodeState",
     "Subscription",
     "SubscriptionAdmission",
@@ -60,6 +62,9 @@ __all__ = [
     "SubscriptionService",
     "SubscriptionStore",
     "SubscriptionUpdater",
+    "in_range",
+    "repeat_of",
+    "selectable_episodes",
     "subscription_id",
 ]
 
@@ -79,11 +84,14 @@ CONFIRM_ATTEMPTS: Final[int] = 3
 CONFIRM_DELAY_S: Final[float] = 1.0
 """Pause between two looks for a just-added release, because the client adds torrents asynchronously."""
 
-SCHEMA_VERSION: Final[int] = 3
+SCHEMA_VERSION: Final[int] = 4
 """Current schema of the persisted subscription file."""
 
-_SUPPORTED_VERSIONS: Final[frozenset[int]] = frozenset({1, 2, SCHEMA_VERSION})
-"""Schemas a load still understands, the one migrated on the way in included."""
+_SUPPORTED_VERSIONS: Final[frozenset[int]] = frozenset({1, 2, 3, SCHEMA_VERSION})
+"""Schemas a load still understands, the ones migrated on the way in included."""
+
+_REPEAT_ID_BYTES: Final[int] = 8
+"""Random bytes making the identity of one explicit repeat unique."""
 
 _BACKUP_SUFFIX_TEMPLATE: Final[str] = ".v{version}.bak"
 """Ending of the original-schema copy retained before a subscription migration."""
@@ -139,6 +147,8 @@ _OPTIONAL_ENTRY_KEYS: Final[frozenset[str]] = frozenset(
         "added_by_command",
         "binding_checked_at",
         "binding_attempts",
+        "future_from",
+        "repeats",
     }
 )
 """Keys a subscription written before seasons, episode numbers and control may omit."""
@@ -157,8 +167,16 @@ _EPISODE_KEYS: Final[frozenset[str]] = frozenset(
 )
 """Keys a serialized episode of the ordered range must carry."""
 
-_OPTIONAL_EPISODE_KEYS: Final[frozenset[str]] = frozenset({"checked_at", "attempts", "problem"})
-"""Check and retry history that episode records written before schema 3 may omit."""
+_OPTIONAL_EPISODE_KEYS: Final[frozenset[str]] = frozenset(
+    {"checked_at", "attempts", "problem", "selected", "repeat_id"}
+)
+"""Check history and range membership that episode records written before schema 4 may omit."""
+
+_REPEAT_KEYS: Final[frozenset[str]] = frozenset({"number", "repeat_id", "requested_at"})
+"""Keys a serialized explicit repeat must carry."""
+
+_OPTIONAL_REPEAT_KEYS: Final[frozenset[str]] = frozenset({"previous_acquisition_id", "previous_info_hash"})
+"""Links to the replaced operation, absent when the repeat had nothing to replace."""
 
 _INVALID_MESSAGE: Final[str] = "Subscriptions file is invalid"
 """Sentence shown when the stored file cannot be trusted."""
@@ -196,6 +214,17 @@ class EpisodeState(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class EpisodeRepeat:
+    """One explicit re-order of an episode, keeping the identity of the operation it repeats."""
+
+    number: Decimal
+    repeat_id: str
+    requested_at: str
+    previous_acquisition_id: str | None = None
+    previous_info_hash: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class EpisodeOrder:
     """One episode of the ordered range, its deadlines and the release it was handed."""
 
@@ -210,6 +239,8 @@ class EpisodeOrder:
     checked_at: str | None = None
     attempts: int = 0
     problem: str | None = None
+    selected: bool = True
+    repeat_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +272,8 @@ class Subscription:
     added_by_command: str | None = None
     binding_checked_at: str | None = None
     binding_attempts: int = 0
+    future_from: Decimal | None = None
+    repeats: tuple[EpisodeRepeat, ...] = ()
 
     def __post_init__(self) -> None:
         if self.search_category is not None and self.search_category not in SEARCH_CATEGORIES:
@@ -292,6 +325,31 @@ type CheckRecorder = Callable[
 
 type SubscriptionUpdater = Callable[[Subscription, Subscription], bool]
 """Persists a schedule update only while its original subscription is still current."""
+
+
+def in_range(subscription: Subscription, number: Decimal) -> bool:
+    """Whether that episode number belongs to the ordered range, by explicit choice or by the future tail."""
+    entry: EpisodeOrder | None = next((item for item in subscription.episodes if item.number == number), None)
+    if entry is not None:
+        return entry.selected
+    return subscription.future_from is not None and number >= subscription.future_from
+
+
+def repeat_of(subscription: Subscription, number: Decimal) -> str | None:
+    """Return the repeat identity that episode is currently being ordered under, or nothing."""
+    entry: EpisodeOrder | None = next((item for item in subscription.episodes if item.number == number), None)
+    if entry is None or entry.state not in {EpisodeState.PENDING, EpisodeState.DUE}:
+        return None
+    return entry.repeat_id
+
+
+def selectable_episodes(subscription: Subscription) -> tuple[Decimal, ...]:
+    """Return the ordinary known numbers a new order may take, leaving every finished one alone."""
+    return tuple(
+        item.number
+        for item in sorted(subscription.episodes, key=lambda entry: entry.number)
+        if _is_whole(item.number) and item.state is not EpisodeState.COMPLETE
+    )
 
 
 def subscription_id(series: str, group: str) -> str:
@@ -431,6 +489,8 @@ class SubscriptionService:
                 added_by_command=command_id,
                 binding_checked_at=earlier.binding_checked_at if earlier is not None else None,
                 binding_attempts=earlier.binding_attempts if earlier is not None else 0,
+                future_from=first_episode,
+                repeats=earlier.repeats if earlier is not None else (),
             )
             remaining: list[Subscription] = [item for item in stored if item.subscription_id != identifier]
             remaining.append(subscription)
@@ -459,6 +519,84 @@ class SubscriptionService:
     def disable(self, subscription_id: str) -> Subscription:
         """Stop the automatic checks of that standing order, keeping its range and history."""
         return self._switch(subscription_id, enabled=False)
+
+    def set_range(
+        self,
+        subscription_id: str,
+        *,
+        selected: Sequence[Decimal],
+        future_from: Decimal | None,
+    ) -> Subscription:
+        """Store the whole ordered range at once, touching neither taken releases nor finished episodes."""
+        with self._lock:
+            current: Subscription = self._required(subscription_id)
+            wanted: frozenset[Decimal] = frozenset(selected)
+            known: dict[Decimal, EpisodeOrder] = {item.number: item for item in current.episodes}
+            for number in sorted(wanted - frozenset(known)):
+                known[number] = EpisodeOrder(number)
+            episodes: tuple[EpisodeOrder, ...] = tuple(
+                replace(known[number], selected=number in wanted) for number in sorted(known)
+            )
+            updated: Subscription = _finish_subscription(
+                replace(current, episodes=episodes, future_from=future_from, end_state=SubscriptionEnd.ACTIVE)
+            )
+            if updated == current:
+                return current
+            updated = replace(updated, generation=current.generation + 1)
+            self._replace(updated)
+            self._invalidate_check(subscription_id)
+            logger.info(
+                "Subscription range stored",
+                selected=len(wanted),
+                open_ended=future_from is not None,
+                generation=updated.generation,
+            )
+            return updated
+
+    def repeat(self, subscription_id: str, numbers: Sequence[Decimal]) -> Subscription:
+        """Order the named episodes again, recording which earlier operation each repeat replaces."""
+        with self._lock:
+            current: Subscription = self._required(subscription_id)
+            moment: str = _timestamp(self._clock())
+            wanted: frozenset[Decimal] = frozenset(numbers)
+            known: dict[Decimal, EpisodeOrder] = {item.number: item for item in current.episodes}
+            repeats: list[EpisodeRepeat] = list(current.repeats)
+            for number in sorted(wanted):
+                episode: EpisodeOrder = known.get(number, EpisodeOrder(number))
+                identity: str = f"repeat-{token_hex(_REPEAT_ID_BYTES)}"
+                repeats.append(
+                    EpisodeRepeat(
+                        number=number,
+                        repeat_id=identity,
+                        requested_at=moment,
+                        previous_acquisition_id=episode.acquisition_id,
+                        previous_info_hash=episode.info_hash,
+                    )
+                )
+                known[number] = replace(
+                    episode,
+                    selected=True,
+                    repeat_id=identity,
+                    state=EpisodeState.DUE,
+                    info_hash=None,
+                    acquisition_id=None,
+                    checked_at=None,
+                    attempts=0,
+                    problem=None,
+                )
+            if not wanted:
+                return current
+            updated: Subscription = replace(
+                current,
+                episodes=tuple(known[number] for number in sorted(known)),
+                repeats=tuple(repeats),
+                end_state=SubscriptionEnd.ACTIVE,
+                generation=current.generation + 1,
+            )
+            self._replace(updated)
+            self._invalidate_check(subscription_id)
+            logger.info("Subscription repeats ordered", episodes=len(wanted), generation=updated.generation)
+            return updated
 
     def set_anilist_id(self, subscription_id: str, anilist_id: int | None) -> Subscription:
         """Bind that standing order to the catalog entry proving which season it follows."""
@@ -531,11 +669,14 @@ class SubscriptionService:
             offered: dict[Decimal, ReleaseChoice] = self._offered(subscription, episodes)
             taken_hashes: frozenset[str] = frozenset(info_hash.casefold() for info_hash in subscription.taken)
             taken_episodes: frozenset[Decimal] = frozenset(Decimal(number) for number in subscription.taken_episodes)
+            repeating: frozenset[Decimal] = _repeating(subscription)
             selected: dict[Decimal, ReleaseChoice] = {
                 episode: choice
                 for episode, choice in offered.items()
-                if episode not in taken_episodes
-                and choice.release.info_hash.casefold() not in taken_hashes
+                if (
+                    episode in repeating
+                    or (episode not in taken_episodes and choice.release.info_hash.casefold() not in taken_hashes)
+                )
                 and (episodes is None or episode in episodes)
             }
             queued: frozenset[str] = self._acquisition.queued_hashes() if selected else frozenset()
@@ -575,7 +716,7 @@ class SubscriptionService:
                 break
             if admit is not None and not admit(subscription, episode, choice):
                 continue
-            self._acquisition.download((choice,), directory_name=subscription.directory)
+            self._acquisition.download((choice,))
             chosen.append(choice)
         return tuple(chosen)
 
@@ -638,14 +779,14 @@ class SubscriptionService:
 
     def reconcile_sources(self, confirmations: Sequence[AcquisitionConfirmation]) -> None:
         """Project confirmed transfer states into their linked episode orders."""
-        by_subscription: dict[str, dict[Decimal, AcquisitionConfirmation]] = {}
+        by_subscription: dict[str, list[AcquisitionConfirmation]] = {}
         for item in confirmations:
             if item.subscription_id is not None and item.episode is not None:
-                by_subscription.setdefault(item.subscription_id, {})[Decimal(item.episode)] = item
+                by_subscription.setdefault(item.subscription_id, []).append(item)
         with self._lock:
             stored: tuple[Subscription, ...] = self._store.load()
             updated: tuple[Subscription, ...] = tuple(
-                _with_sources(item, by_subscription.get(item.subscription_id, {})) for item in stored
+                _with_sources(item, by_subscription.get(item.subscription_id, [])) for item in stored
             )
             if updated != stored:
                 self._store.save(updated)
@@ -912,7 +1053,12 @@ def _next_calendar_lookup(
     count: int | None,
 ) -> tuple[EpisodeOrder, ...]:
     number: Decimal | None = next(
-        (item.number for item in episodes if item.number > last and item.state is EpisodeState.PENDING), None
+        (
+            item.number
+            for item in episodes
+            if item.number > last and item.selected and item.state is EpisodeState.PENDING
+        ),
+        None,
     )
     if number is None and count is None:
         return (*episodes, EpisodeOrder(Decimal(math.floor(last) + 1)))
@@ -921,12 +1067,18 @@ def _next_calendar_lookup(
     )
 
 
-def _with_sources(subscription: Subscription, confirmations: dict[Decimal, AcquisitionConfirmation]) -> Subscription:
+def _with_sources(subscription: Subscription, confirmations: Sequence[AcquisitionConfirmation]) -> Subscription:
     if not confirmations:
         return subscription
     episodes: dict[Decimal, EpisodeOrder] = {item.number: item for item in subscription.episodes}
-    for number, confirmation in confirmations.items():
+    grouped: dict[Decimal, list[AcquisitionConfirmation]] = {}
+    for item in confirmations:
+        grouped.setdefault(Decimal(str(item.episode)), []).append(item)
+    for number, candidates in grouped.items():
         episode: EpisodeOrder = episodes.get(number, EpisodeOrder(number))
+        confirmation: AcquisitionConfirmation | None = _matching_source(episode, candidates)
+        if confirmation is None:
+            continue
         state: EpisodeState = (
             EpisodeState.COMPLETE if confirmation.state is AcquisitionState.COMPLETE else EpisodeState.ORDERED
         )
@@ -938,6 +1090,23 @@ def _with_sources(subscription: Subscription, confirmations: dict[Decimal, Acqui
             problem=None if state is EpisodeState.COMPLETE else episode.problem,
         )
     return _finish_subscription(replace(subscription, episodes=tuple(episodes[number] for number in sorted(episodes))))
+
+
+def _matching_source(
+    episode: EpisodeOrder, candidates: Sequence[AcquisitionConfirmation]
+) -> AcquisitionConfirmation | None:
+    if episode.repeat_id is not None:
+        return next((item for item in candidates if item.repeat_id == episode.repeat_id), None)
+    plain: tuple[AcquisitionConfirmation, ...] = tuple(item for item in candidates if item.repeat_id is None)
+    return plain[-1] if plain else None
+
+
+def _repeating(subscription: Subscription) -> frozenset[Decimal]:
+    return frozenset(
+        item.number
+        for item in subscription.episodes
+        if item.repeat_id is not None and item.state in {EpisodeState.PENDING, EpisodeState.DUE}
+    )
 
 
 def _release_delays(subscription: Subscription, confirmed: dict[Decimal, ReleaseChoice]) -> tuple[int, ...]:
@@ -965,7 +1134,7 @@ def _moment(value: str | None) -> datetime | None:
 
 
 def _episode_deadline(episode: EpisodeOrder, policy: AutomationPolicy, now: datetime) -> datetime | None:
-    if episode.state not in {EpisodeState.PENDING, EpisodeState.DUE}:
+    if not episode.selected or episode.state not in {EpisodeState.PENDING, EpisodeState.DUE}:
         return None
     due: datetime | None = _moment(episode.due_at)
     checked: datetime | None = _moment(episode.checked_at)
@@ -1036,11 +1205,12 @@ def _apply_schedule(
         Decimal(episode.episode): episode.airing_at for episode in schedule.episodes
     }
     count: int | None = schedule.episode_count or subscription.season_episodes
-    numbers: set[Decimal] = set(known) | {number for number in dates if number >= subscription.next_episode}
-    if count is not None:
-        numbers.update(Decimal(number) for number in range(math.ceil(subscription.next_episode), count + 1))
-    elif subscription.next_episode not in numbers:
-        numbers.add(subscription.next_episode)
+    tail: Decimal | None = subscription.future_from
+    numbers: set[Decimal] = set(known) | {number for number in dates if in_range(subscription, number)}
+    if count is not None and tail is not None:
+        numbers.update(Decimal(number) for number in range(math.ceil(tail), count + 1))
+    elif tail is not None and tail not in numbers:
+        numbers.add(tail)
     delay: int = (
         subscription.release_delay_s
         if subscription.release_delay_s is not None
@@ -1055,7 +1225,7 @@ def _apply_schedule(
         for number in sorted(numbers)
     )
     end: SubscriptionEnd = subscription.end_state
-    if count is not None and subscription.next_episode > count and not episodes:
+    if count is not None and tail is not None and tail > count and not episodes:
         end = SubscriptionEnd.COMPLETE
     return replace(subscription, season_episodes=count, episodes=episodes, end_state=end)
 
@@ -1115,9 +1285,17 @@ def _expire_windows(subscription: Subscription, now: datetime) -> Subscription:
 def _finish_subscription(subscription: Subscription) -> Subscription:
     if subscription.season_episodes is None or not subscription.episodes:
         return subscription
-    states: dict[Decimal, EpisodeOrder] = {episode.number: episode for episode in subscription.episodes}
-    numbers: range = range(math.ceil(min(states)), subscription.season_episodes + 1)
-    if any(Decimal(number) not in states for number in numbers):
+    states: dict[Decimal, EpisodeOrder] = {
+        episode.number: episode for episode in subscription.episodes if episode.selected
+    }
+    if not states:
+        return subscription
+    required: set[Decimal] = set(states)
+    if subscription.future_from is not None:
+        required.update(
+            Decimal(number) for number in range(math.ceil(subscription.future_from), subscription.season_episodes + 1)
+        )
+    if any(number not in states for number in required):
         return subscription
     if any(episode.state in {EpisodeState.PENDING, EpisodeState.DUE} for episode in states.values()):
         return subscription
@@ -1127,6 +1305,14 @@ def _finish_subscription(subscription: Subscription) -> Subscription:
     elif any(episode.state in {EpisodeState.MISSING, EpisodeState.EXPIRED} for episode in states.values()):
         end = SubscriptionEnd.MISSING
     return replace(subscription, end_state=end)
+
+
+def _missing_after_retries(episode: EpisodeOrder, attempts: int, policy: AutomationPolicy) -> EpisodeState:
+    if attempts < policy.external_retry_budget:
+        return episode.state
+    if episode.state not in {EpisodeState.PENDING, EpisodeState.DUE}:
+        return episode.state
+    return EpisodeState.MISSING
 
 
 def _failed_check(subscription: Subscription, policy: AutomationPolicy, now: datetime, problem: str) -> Subscription:
@@ -1145,7 +1331,7 @@ def _failed_check(subscription: Subscription, policy: AutomationPolicy, now: dat
                 attempts=attempts,
                 problem=problem,
                 due_at=episode.due_at or _timestamp(now),
-                state=EpisodeState.MISSING if attempts >= policy.external_retry_budget else episode.state,
+                state=_missing_after_retries(episode, attempts, policy),
             )
         )
     return _finish_subscription(replace(subscription, episodes=tuple(episodes)))
@@ -1201,7 +1387,7 @@ def _new_episodes(
             episode: Decimal | None = reading.episode
             if episode is None or reading.other_season or choice.name.is_pack:
                 continue
-            if episode < subscription.next_episode:
+            if not in_range(subscription, episode):
                 continue
             if subscription.season_episodes is not None and episode > subscription.season_episodes:
                 continue
@@ -1300,6 +1486,8 @@ def _encode(subscription: Subscription) -> dict[str, object]:
         "added_by_command": subscription.added_by_command,
         "binding_checked_at": subscription.binding_checked_at,
         "binding_attempts": subscription.binding_attempts,
+        "future_from": None if subscription.future_from is None else str(subscription.future_from),
+        "repeats": [_encode_repeat(item) for item in subscription.repeats],
     }
 
 
@@ -1316,6 +1504,18 @@ def _encode_episode(episode: EpisodeOrder) -> dict[str, object]:
         "checked_at": episode.checked_at,
         "attempts": episode.attempts,
         "problem": episode.problem,
+        "selected": episode.selected,
+        "repeat_id": episode.repeat_id,
+    }
+
+
+def _encode_repeat(repeat: EpisodeRepeat) -> dict[str, object]:
+    return {
+        "number": str(repeat.number),
+        "repeat_id": repeat.repeat_id,
+        "requested_at": repeat.requested_at,
+        "previous_acquisition_id": repeat.previous_acquisition_id,
+        "previous_info_hash": repeat.previous_info_hash,
     }
 
 
@@ -1369,8 +1569,12 @@ def _decode_entry(raw: object, version: int) -> Subscription:
         added_by_command=_optional_string(document, "added_by_command"),
         binding_checked_at=_optional_string(document, "binding_checked_at"),
         binding_attempts=_optional_count(document, "binding_attempts", 0),
+        future_from=_optional_decimal(document, "future_from"),
+        repeats=_optional_repeats(document, "repeats"),
     )
-    return _migrate_v1(subscription) if version == 1 else subscription
+    if version == 1:
+        subscription = _migrate_v1(subscription)
+    return _migrate_v4(subscription) if version < SCHEMA_VERSION else subscription
 
 
 def _migrate_v1(subscription: Subscription) -> Subscription:
@@ -1378,6 +1582,10 @@ def _migrate_v1(subscription: Subscription) -> Subscription:
         EpisodeOrder(number=Decimal(number), state=EpisodeState.ORDERED) for number in subscription.taken_episodes
     )
     return replace(subscription, episodes=episodes)
+
+
+def _migrate_v4(subscription: Subscription) -> Subscription:
+    return replace(subscription, future_from=subscription.next_episode)
 
 
 def _decode_episode(raw: object) -> EpisodeOrder:
@@ -1395,6 +1603,19 @@ def _decode_episode(raw: object) -> EpisodeOrder:
         checked_at=_optional_string(document, "checked_at"),
         attempts=_optional_count(document, "attempts", 0),
         problem=_optional_string(document, "problem"),
+        selected=_optional_flag(document, "selected", default=True),
+        repeat_id=_optional_string(document, "repeat_id"),
+    )
+
+
+def _decode_repeat(raw: object) -> EpisodeRepeat:
+    document: dict[str, object] = _strict_object(raw, _REPEAT_KEYS, "repeat", optional=_OPTIONAL_REPEAT_KEYS)
+    return EpisodeRepeat(
+        number=Decimal(_required_string(document, "number")),
+        repeat_id=_required_string(document, "repeat_id"),
+        requested_at=_required_string(document, "requested_at"),
+        previous_acquisition_id=_optional_string(document, "previous_acquisition_id"),
+        previous_info_hash=_optional_string(document, "previous_info_hash"),
     )
 
 
@@ -1462,6 +1683,21 @@ def _optional_episodes(document: dict[str, object], key: str) -> tuple[EpisodeOr
         msg = f"Subscription field {key!r} must be a list of episodes or null"
         raise TypeError(msg)
     return tuple(_decode_episode(item) for item in value)
+
+
+def _optional_repeats(document: dict[str, object], key: str) -> tuple[EpisodeRepeat, ...]:
+    value: object = document.get(key)
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        msg = f"Subscription field {key!r} must be a list of repeats or null"
+        raise TypeError(msg)
+    return tuple(_decode_repeat(item) for item in value)
+
+
+def _optional_decimal(document: dict[str, object], key: str) -> Decimal | None:
+    text: str | None = _optional_string(document, key)
+    return None if text is None else Decimal(text)
 
 
 def _optional_whole_numbers(document: dict[str, object], key: str) -> tuple[int, ...]:

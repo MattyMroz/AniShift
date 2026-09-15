@@ -175,3 +175,28 @@ def test_a_second_cover_of_the_same_name_reserves_one_core_for_its_whole_set(tmp
         "Book [2].txt",
         "Book.png",
     ]
+
+
+def test_a_file_a_transfer_still_holds_keeps_its_place_until_a_later_stage_moves_it(tmp_path: Path) -> None:
+    group: SourceGroup = _group(tmp_path)
+    store: ReadyStore = ReadyStore(tmp_path / ".state/relocations", tmp_path)
+    move: ReadyMove | None = store.prepare(group, ())
+    assert move is not None
+
+    staged: ReadyMove = store.defer(move, ("Episode.mkv", "Nothing.mkv"))
+    store.execute(staged)
+
+    assert staged.deferred == ("Episode.mkv",)
+    assert tuple(item.source for item in staged.moved) == ("Episode.pl.srt",)
+    assert (tmp_path / "Episode.mkv").read_bytes() == b"video bytes"
+    assert (tmp_path / "ready" / "Episode.pl.srt").exists()
+    assert store.pending() == (staged,)
+
+    released: ReadyMove = store.defer(staged, ())
+    store.execute(released)
+
+    assert released.deferred == ()
+    assert not (tmp_path / "Episode.mkv").exists()
+    assert (tmp_path / "ready" / "Episode.mkv").read_bytes() == b"video bytes"
+    store.acknowledge(released)
+    assert store.pending() == ()

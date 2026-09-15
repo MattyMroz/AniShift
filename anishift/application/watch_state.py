@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
     from anishift.application.control import (
         CommandOutcome,
+        FileReservation,
         NotificationKey,
         SettingsSnapshot,
         SettingValue,
@@ -192,11 +193,10 @@ _READY_GROUP_KEYS: Final[frozenset[str]] = frozenset(
         "sources",
         "products",
         "main_result",
-        "pending_source",
         "recipe",
     }
 )
-"""Keys a serialized completed set must carry."""
+"""Keys a serialized completed set must carry beside its pending sources."""
 
 _PENDING_DELETION_KEYS: Final[frozenset[str]] = frozenset(
     {"operation_id", "set_id", "requested_at", "files", "recycled"}
@@ -211,6 +211,9 @@ _FINGERPRINT_FIELDS: Final[int] = 3
 
 _NOTIFICATION_FIELDS: Final[int] = 3
 """Group or episode, generation and kind of one notification."""
+
+_RESERVATION_FIELDS: Final[int] = 3
+"""Client file index, reserved flat path and declared size of one ordered file."""
 
 _INVALID_MESSAGE: Final[str] = "Automation state file is invalid"
 """Sentence shown when the stored automation state cannot be trusted."""
@@ -352,7 +355,7 @@ def _encode_ready_group(group: ReadyGroup) -> dict[str, object]:
         "sources": list(group.sources),
         "products": list(group.products),
         "main_result": group.main_result,
-        "pending_source": group.pending_source,
+        "pending_sources": list(group.pending_sources),
         "recipe": _encode_recipes(group.recipe),
     }
 
@@ -437,6 +440,9 @@ def _encode_acquisition(confirmation: AcquisitionConfirmation) -> dict[str, obje
         "action_pending": confirmation.action_pending,
         "problem": confirmation.problem,
         "complete_files": list(confirmation.complete_files),
+        "file_layout": [[index, path, size] for index, path, size in confirmation.file_layout],
+        "content_started": confirmation.content_started,
+        "repeat_id": confirmation.repeat_id,
     }
 
 
@@ -554,7 +560,10 @@ def _decode_recipes(raw: object) -> RecipePreferences:
 
 
 def _decode_ready_group(raw: object) -> ReadyGroup:
-    document: dict[str, object] = _strict_object(raw, _READY_GROUP_KEYS, "completed set")
+    stored: dict[str, object] = dict(_strict_mapping(raw, "completed set"))
+    single: object = stored.pop("pending_source", None)
+    pending: object = stored.pop("pending_sources", None)
+    document: dict[str, object] = _strict_object(stored, _READY_GROUP_KEYS, "completed set")
     return ReadyGroup(
         set_id=_text(document, "set_id"),
         group_id=_text(document, "group_id"),
@@ -565,9 +574,15 @@ def _decode_ready_group(raw: object) -> ReadyGroup:
         sources=_decode_texts(document["sources"], "sources of a completed set"),
         products=_decode_texts(document["products"], "products of a completed set"),
         main_result=_optional_text(document, "main_result"),
-        pending_source=_optional_text(document, "pending_source"),
+        pending_sources=_pending_sources(single, pending),
         recipe=_decode_recipes(document["recipe"]),
     )
+
+
+def _pending_sources(single: object, pending: object) -> tuple[str, ...]:
+    if pending is not None:
+        return _decode_texts(pending, "pending sources of a completed set")
+    return () if single is None else (_as_text(single, "pending source of a completed set"),)
 
 
 def _decode_pending_deletion(raw: object) -> PendingDeletion:
@@ -652,6 +667,9 @@ def _decode_acquisition(raw: object, schema_version: int) -> AcquisitionConfirma
     stored: dict[str, object] = dict(_strict_mapping(raw, "acquisition confirmation"))
     stated: bool = "complete_files" in stored
     complete: object = stored.pop("complete_files", [])
+    layout: object = stored.pop("file_layout", [])
+    started: bool = _flag({"content_started": stored.pop("content_started", False)}, "content_started")
+    repeat: str | None = _optional_text({"repeat_id": stored.pop("repeat_id", None)}, "repeat_id")
     document: dict[str, object] = _strict_object(
         {
             "requested_action": None,
@@ -686,7 +704,28 @@ def _decode_acquisition(raw: object, schema_version: int) -> AcquisitionConfirma
             state=state,
             required_files=required_files,
         ),
+        file_layout=_decode_layout(layout),
+        content_started=started,
+        repeat_id=repeat,
     )
+
+
+def _decode_layout(raw: object) -> tuple[FileReservation, ...]:
+    entries: list[FileReservation] = []
+    for item in _list(raw, "reserved files"):
+        fields: list[object] = _list(item, "reserved file")
+        if len(fields) != _RESERVATION_FIELDS:
+            msg = "A reserved file carries a client index, a flat path and a size"
+            raise TypeError(msg)
+        index, path, size = fields
+        entries.append(
+            (
+                _as_whole(index, "reserved file index"),
+                _as_text(path, "reserved file path"),
+                _as_whole(size, "reserved file size"),
+            )
+        )
+    return tuple(entries)
 
 
 def _complete_files(

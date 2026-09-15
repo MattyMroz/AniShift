@@ -33,6 +33,8 @@ from anishift.application.subscriptions import (
     SubscriptionEnd,
     SubscriptionService,
     SubscriptionStore,
+    in_range,
+    selectable_episodes,
     subscription_id,
 )
 from anishift.errors import ConfigError, ErrorCode, ErrorContext, TransientError
@@ -112,7 +114,6 @@ class _Acquisition(AcquisitionService):
         self.failing: frozenset[str] = frozenset(failing)
         self.queries: list[str] = []
         self.downloaded: list[tuple[ReleaseChoice, ...]] = []
-        self.directories: list[str | None] = []
         self.queued: set[str] = set()
         self.dropped: set[str] = set()
 
@@ -130,9 +131,8 @@ class _Acquisition(AcquisitionService):
             )
         return self.catalogs.get(key, _catalog())
 
-    def download(self, choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
+    def download(self, choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
         self.downloaded.append(tuple(choices))
-        self.directories.append(directory_name)
         self.queued.update(
             choice.release.info_hash.casefold() for choice in choices if choice.release.info_hash not in self.dropped
         )
@@ -195,6 +195,7 @@ def _subscription(  # noqa: PLR0913
         episode_offset=episode_offset,
         season_episodes=season_episodes,
         taken_episodes=tuple(taken_episodes),
+        future_from=Decimal(next_episode),
     )
 
 
@@ -934,19 +935,8 @@ def test_check_reads_absolute_numbering_and_skips_another_season(tmp_path: Path)
     outcome: CheckOutcome = service.check(stored)
 
     assert [choice.release.info_hash for choice in acquisition.downloaded[0]] == ["SubsPlease-Neko to Ryuu-13-v1"]
-    assert acquisition.directories == ["Solo Leveling Season 2"]
     assert outcome.downloaded == 1
     assert service.list()[0].next_episode == Decimal(2)
-
-
-def test_check_of_a_first_season_still_sends_no_library_folder(tmp_path: Path) -> None:
-    acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)))})
-    service: SubscriptionService = _service(tmp_path, acquisition)
-    service.subscribe("neko", _choice(Decimal(9)))
-
-    service.check(service.list()[0])
-
-    assert acquisition.directories == [None]
 
 
 def test_store_loads_an_entry_written_before_seasons_were_numbered(tmp_path: Path) -> None:
@@ -1280,10 +1270,10 @@ def test_stopping_a_subscription_during_an_add_prevents_the_next_add(
     release: threading.Event = threading.Event()
     outcomes: list[CheckOutcome] = []
 
-    def download(choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
+    def download(choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
         entered.set()
         assert release.wait(timeout=5.0)
-        return _Acquisition.download(acquisition, choices, directory_name=directory_name)
+        return _Acquisition.download(acquisition, choices)
 
     monkeypatch.setattr(acquisition, "download", download)
     worker: threading.Thread = threading.Thread(target=lambda: outcomes.append(service.check(subscription)))
@@ -1307,3 +1297,273 @@ def test_stopping_a_subscription_during_an_add_prevents_the_next_add(
     assert duplicate.problem == "Subscription is already being checked"
     assert len(outcomes) == 1
     assert outcomes[0].downloaded == 1
+
+
+def _followed(tmp_path: Path, acquisition: _Acquisition, first: Decimal = Decimal(1)) -> SubscriptionService:
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    service.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=first)
+    return service
+
+
+def _sent(acquisition: _Acquisition) -> list[str]:
+    return sorted(str(choice.episode) for call in acquisition.downloaded for choice in call)
+
+
+def _episodes(service: SubscriptionService) -> dict[Decimal, EpisodeOrder]:
+    return {item.number: item for item in service.list()[0].episodes}
+
+
+def test_a_stored_range_of_two_numbers_downloads_nothing_else(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(*(_choice(Decimal(number)) for number in (3, 4, 8, 9)))})
+    service: SubscriptionService = _followed(tmp_path, acquisition)
+
+    service.set_range(service.list()[0].subscription_id, selected=(Decimal(3), Decimal(8)), future_from=None)
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert outcome.downloaded == 2
+    assert _sent(acquisition) == ["3", "8"]
+
+
+def test_a_range_that_starts_in_the_middle_of_the_season_leaves_earlier_episodes_alone(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(*(_choice(Decimal(number)) for number in (5, 6, 7, 8)))})
+    service: SubscriptionService = _followed(tmp_path, acquisition)
+
+    service.set_range(service.list()[0].subscription_id, selected=(), future_from=Decimal(7))
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert outcome.downloaded == 2
+    assert _sent(acquisition) == ["7", "8"]
+
+
+def test_every_known_and_future_episode_stays_ordered_when_the_range_is_open(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(*(_choice(Decimal(number)) for number in (1, 2, 3)))})
+    service: SubscriptionService = _followed(tmp_path, acquisition)
+    identifier: str = service.list()[0].subscription_id
+
+    stored: Subscription = service.set_range(
+        identifier, selected=(Decimal(1), Decimal(2), Decimal(3)), future_from=Decimal(1)
+    )
+
+    assert in_range(stored, Decimal(2))
+    assert in_range(stored, Decimal(40))
+    assert service.check(service.list()[0]).downloaded == 3
+
+
+def test_a_range_that_begins_past_the_season_count_finishes_the_subscription(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition()
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    stored: Subscription = replace(
+        _subscription(next_episode="1", season_episodes=2),
+        episodes=(
+            EpisodeOrder(Decimal(1), state=EpisodeState.COMPLETE),
+            EpisodeOrder(Decimal(2), state=EpisodeState.COMPLETE),
+        ),
+    )
+    _store(tmp_path).save((stored,))
+
+    service.set_range(stored.subscription_id, selected=(Decimal(1), Decimal(2)), future_from=Decimal(3))
+    service.reconcile_sources(())
+
+    assert service.list()[0].end_state is SubscriptionEnd.COMPLETE
+
+
+def test_a_half_episode_keeps_its_own_number_inside_an_open_range(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition(
+        {"neko": _catalog(_choice(Decimal(7)), _choice(Decimal("7.5"), fraction=True))}
+    )
+    service: SubscriptionService = _followed(tmp_path, acquisition, Decimal(7))
+
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert outcome.downloaded == 2
+    assert service.list()[0].taken_episodes == ("7", "7.5")
+    assert service.list()[0].next_episode == Decimal(8)
+
+
+def test_a_half_episode_outside_the_range_is_never_ordered(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition(
+        {"neko": _catalog(_choice(Decimal(7)), _choice(Decimal("7.5"), fraction=True))}
+    )
+    service: SubscriptionService = _followed(tmp_path, acquisition, Decimal(7))
+
+    service.set_range(service.list()[0].subscription_id, selected=(Decimal(7),), future_from=None)
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert outcome.downloaded == 1
+    assert _sent(acquisition) == ["7"]
+
+
+def test_deselecting_early_episodes_keeps_their_completion_and_orders_nothing(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(*(_choice(Decimal(number)) for number in (1, 7)))})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    stored: Subscription = replace(
+        _subscription(next_episode="1"),
+        episodes=tuple(EpisodeOrder(Decimal(number), state=EpisodeState.COMPLETE) for number in range(1, 7)),
+        taken_episodes=tuple(str(number) for number in range(1, 7)),
+    )
+    _store(tmp_path).save((stored,))
+
+    service.set_range(stored.subscription_id, selected=(), future_from=Decimal(7))
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert outcome.downloaded == 1
+    assert _sent(acquisition) == ["7"]
+    assert all(item.state is EpisodeState.COMPLETE for item in _episodes(service).values() if item.number < 7)
+    assert service.list()[0].taken_episodes == tuple(str(number) for number in range(1, 8))
+
+
+def test_storing_the_same_range_twice_changes_neither_bytes_nor_generation(tmp_path: Path) -> None:
+    service: SubscriptionService = _followed(tmp_path, _Acquisition())
+    identifier: str = service.list()[0].subscription_id
+    first: Subscription = service.set_range(identifier, selected=(Decimal(3),), future_from=None)
+    written: bytes = (tmp_path / "subscriptions.json").read_bytes()
+
+    second: Subscription = service.set_range(identifier, selected=(Decimal(3),), future_from=None)
+
+    assert second == first
+    assert (tmp_path / "subscriptions.json").read_bytes() == written
+
+
+def test_a_stored_range_makes_an_older_check_of_the_same_order_stale(tmp_path: Path) -> None:
+    service: SubscriptionService = _followed(tmp_path, _Acquisition())
+    earlier: Subscription = service.list()[0]
+
+    service.set_range(earlier.subscription_id, selected=(Decimal(3),), future_from=None)
+
+    assert not service.is_current(earlier)
+    assert service.is_current(service.list()[0])
+
+
+def test_an_explicit_repeat_orders_a_finished_number_again_without_erasing_its_history(tmp_path: Path) -> None:
+    choice: ReleaseChoice = _choice(Decimal(9))
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(choice)})
+    service: SubscriptionService = _service(tmp_path, acquisition)
+    stored: Subscription = replace(
+        _subscription(next_episode="9", taken=(choice.release.info_hash,), taken_episodes=("9",)),
+        episodes=(
+            EpisodeOrder(
+                Decimal(9),
+                state=EpisodeState.COMPLETE,
+                info_hash=choice.release.info_hash,
+                acquisition_id="operation-1",
+            ),
+        ),
+    )
+    _store(tmp_path).save((stored,))
+
+    repeated: Subscription = service.repeat(stored.subscription_id, (Decimal(9),))
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert repeated.repeats[0].previous_acquisition_id == "operation-1"
+    assert repeated.repeats[0].previous_info_hash == choice.release.info_hash
+    assert repeated.episodes[0].repeat_id == repeated.repeats[0].repeat_id
+    assert outcome.downloaded == 1
+    assert _sent(acquisition) == ["9"]
+
+
+def test_a_repeat_takes_the_new_confirmation_and_leaves_the_older_one_alone(tmp_path: Path) -> None:
+    service: SubscriptionService = _followed(tmp_path, _Acquisition(), Decimal(9))
+    identifier: str = service.list()[0].subscription_id
+    first: AcquisitionConfirmation = AcquisitionConfirmation(
+        "operation-1", "hash-1", "", ("09.mkv",), AcquisitionState.COMPLETE, RequestOrigin.USER, identifier, "9", "old"
+    )
+    service.reconcile_sources((first,))
+    repeated: Subscription = service.repeat(identifier, (Decimal(9),))
+    identity: str = repeated.repeats[0].repeat_id
+    second: AcquisitionConfirmation = replace(
+        first, operation_id="operation-2", info_hash="hash-2", state=AcquisitionState.ACCEPTED, repeat_id=identity
+    )
+
+    service.reconcile_sources((first, second))
+
+    episode: EpisodeOrder = _episodes(service)[Decimal(9)]
+    assert (episode.acquisition_id, episode.info_hash) == ("operation-2", "hash-2")
+    assert episode.state is EpisodeState.ORDERED
+    assert episode.repeat_id == identity
+
+
+def test_a_repeat_keeps_the_same_release_admissible_once_more(tmp_path: Path) -> None:
+    choice: ReleaseChoice = _choice(Decimal(9))
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(choice)})
+    service: SubscriptionService = _followed(tmp_path, acquisition, Decimal(9))
+    identifier: str = service.list()[0].subscription_id
+    assert service.check(service.list()[0]).downloaded == 1
+    assert service.check(service.list()[0]).downloaded == 0
+    acquisition.queued.clear()
+
+    service.repeat(identifier, (Decimal(9),))
+
+    assert service.check(service.list()[0]).downloaded == 1
+    assert len(acquisition.downloaded) == 2
+
+
+def test_selectable_episodes_offers_ordinary_unfinished_numbers_only(tmp_path: Path) -> None:
+    service: SubscriptionService = _service(tmp_path, _Acquisition())
+    stored: Subscription = replace(
+        _subscription(next_episode="1"),
+        episodes=(
+            EpisodeOrder(Decimal(1), state=EpisodeState.COMPLETE),
+            EpisodeOrder(Decimal(2), state=EpisodeState.PENDING),
+            EpisodeOrder(Decimal("2.5"), state=EpisodeState.PENDING),
+            EpisodeOrder(Decimal(3), state=EpisodeState.MISSING),
+        ),
+    )
+    _store(tmp_path).save((stored,))
+
+    assert selectable_episodes(service.list()[0]) == (Decimal(2), Decimal(3))
+
+
+def test_a_schema_three_entry_gains_an_open_range_from_its_cursor(tmp_path: Path) -> None:
+    document: dict[str, object] = {
+        "schema_version": 3,
+        "subscriptions": [
+            {
+                "subscription_id": subscription_id("Neko to Ryuu", "SubsPlease"),
+                "query": "neko",
+                "series": "Neko to Ryuu",
+                "group": "SubsPlease",
+                "next_episode": "9",
+                "min_resolution": 1080,
+                "taken": ["SubsPlease-Neko to Ryuu-8-v1"],
+                "added_at": _TIMESTAMP,
+                "checked_at": None,
+                "taken_episodes": ["8"],
+                "episodes": [
+                    {
+                        "number": "8",
+                        "airing_at": None,
+                        "airing_source": None,
+                        "due_at": None,
+                        "window_until": None,
+                        "state": "complete",
+                        "info_hash": "SubsPlease-Neko to Ryuu-8-v1",
+                        "acquisition_id": "operation-1",
+                    }
+                ],
+            }
+        ],
+    }
+    (tmp_path / "subscriptions.json").write_text(json.dumps(document), encoding="utf-8")
+    store: SubscriptionStore = _store(tmp_path)
+
+    stored: Subscription = store.load()[0]
+
+    assert stored.future_from == Decimal(9)
+    assert stored.repeats == ()
+    assert stored.episodes[0].selected is True
+    assert stored.episodes[0].state is EpisodeState.COMPLETE
+    assert json.loads((tmp_path / "subscriptions.json").read_text(encoding="utf-8"))["schema_version"] == SCHEMA_VERSION
+    assert (tmp_path / "subscriptions.json.v3.bak").is_file()
+    assert store.load() == (stored,)
+
+
+def test_the_stored_range_and_repeats_survive_a_reload(tmp_path: Path) -> None:
+    service: SubscriptionService = _followed(tmp_path, _Acquisition(), Decimal(9))
+    identifier: str = service.list()[0].subscription_id
+    service.set_range(identifier, selected=(Decimal(3), Decimal(9)), future_from=Decimal(12))
+
+    stored: Subscription = service.repeat(identifier, (Decimal(3),))
+
+    assert _store(tmp_path).load() == (stored,)
+    assert stored.future_from == Decimal(12)
+    assert len(stored.repeats) == 1

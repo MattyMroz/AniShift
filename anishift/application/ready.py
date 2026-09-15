@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final
@@ -12,7 +12,7 @@ from typing import Final
 from pydantic import TypeAdapter
 
 from anishift.application.artifacts import SourceGroup, create_group_id
-from anishift.application.control import RecipePreferences, RequestState, WatchState
+from anishift.application.control import AcquisitionConfirmation, RecipePreferences, RequestState, WatchState
 from anishift.application.discovery import ArtifactName, classify_artifact
 from anishift.application.results import RunResult
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget
@@ -59,10 +59,16 @@ class ReadyMove:
     target: WorkflowTarget | None = None
     product_sources: tuple[str, ...] = ()
     recipe: RecipePreferences = field(default_factory=RecipePreferences)
+    deferred: tuple[str, ...] = ()
+
+    @property
+    def moved(self) -> tuple[ReadyFile, ...]:
+        """Return the files this stage may rename, leaving the ones a transfer still holds where they are."""
+        return tuple(item for item in self.files if item.source not in frozenset(self.deferred))
 
     def apply_result(self, result: RunResult, workspace: Path) -> RunResult:
         """Point a completed result at the relocated products and group identity."""
-        paths: dict[Path, Path] = {workspace / item.source: workspace / item.destination for item in self.files}
+        paths: dict[Path, Path] = {workspace / item.source: workspace / item.destination for item in self.moved}
         return replace(
             result,
             groups=tuple(
@@ -81,8 +87,8 @@ class ReadyMove:
         )
 
     def apply(self, state: WatchState) -> WatchState:
-        """Update confirmations and successful requests after every rename is proven."""
-        paths: dict[str, str] = {item.source: item.destination for item in self.files}
+        """Update confirmations and successful requests after every proven rename of this stage."""
+        paths: dict[str, str] = {item.source: item.destination for item in self.moved}
         names: dict[str, str] = {Path(old).name: Path(new).name for old, new in paths.items()}
         return replace(
             state,
@@ -129,24 +135,30 @@ class ReadyMove:
                 else request
                 for request in state.requests
             ),
-            acquisitions=tuple(
-                replace(
-                    item,
-                    directory="",
-                    required_files=tuple(
-                        paths.get((Path(item.directory) / name).as_posix(), (Path(item.directory) / name).as_posix())
-                        for name in item.required_files
-                    ),
-                )
-                if any((Path(item.directory) / name).as_posix() in paths for name in item.required_files)
-                else item
-                for item in state.acquisitions
-            ),
+            acquisitions=tuple(_relocated_confirmation(item, paths) for item in state.acquisitions),
             notified=frozenset(
                 (self.destination_group_id if group == self.group_id else group, generation, result)
                 for group, generation, result in state.notified
             ),
         )
+
+
+def _relocated_confirmation(item: AcquisitionConfirmation, paths: Mapping[str, str]) -> AcquisitionConfirmation:
+    """Return one confirmation whose every remembered file name follows the renames this stage proved."""
+    assigned: frozenset[str] = frozenset(item.required_files) | frozenset(
+        path for _index, path, _size in item.file_layout
+    )
+    current: dict[str, str] = {name: (Path(item.directory) / name).as_posix() for name in assigned}
+    if not any(name in paths for name in current.values()):
+        return item
+    moved: dict[str, str] = {name: paths.get(value, value) for name, value in current.items()}
+    return replace(
+        item,
+        directory="",
+        required_files=tuple(moved[name] for name in item.required_files),
+        complete_files=tuple(moved[name] for name in item.complete_files),
+        file_layout=tuple((index, moved[path], size) for index, path, size in item.file_layout),
+    )
 
 
 class ReadyStore:
@@ -224,10 +236,19 @@ class ReadyStore:
         return move
 
     def execute(self, move: ReadyMove) -> None:
-        """Finish exclusive same-volume moves, recovering even between link and unlink."""
-        for item in move.files:
+        """Finish exclusive same-volume moves of this stage, recovering even between link and unlink."""
+        for item in move.moved:
             self._relocate(item)
-        logger.info("Completed group moved to ready", files=len(move.files))
+        logger.info("Completed group moved to ready", files=len(move.moved), deferred=len(move.deferred))
+
+    def defer(self, move: ReadyMove, sources: Sequence[str]) -> ReadyMove:
+        """Record which sources a transfer still holds, keeping every destination this move already chose."""
+        deferred: tuple[str, ...] = tuple(sorted(frozenset(sources) & {item.source for item in move.files}))
+        if deferred == move.deferred:
+            return move
+        updated: ReadyMove = replace(move, deferred=deferred)
+        self._save(updated)
+        return updated
 
     def acknowledge(self, move: ReadyMove) -> None:
         """Remove the journal only after the owner's updated state is durable."""

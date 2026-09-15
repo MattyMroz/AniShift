@@ -1253,13 +1253,13 @@ def test_o_refuses_a_release_that_belongs_to_another_season() -> None:
     assert "To wydanie wygląda na inny sezon" in _frame(controller)
 
 
-def test_enter_downloads_into_the_folder_of_the_chosen_title() -> None:
-    sent: list[str | None] = []
+def test_enter_downloads_the_chosen_release_into_the_flat_library() -> None:
+    sent: list[int] = []
     candidate: TitleCandidate = _title("Ore dake Level Up na Ken", english="Solo Leveling")
 
-    def download(choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
-        sent.append(directory_name)
-        return DownloadReceipt(len(choices), Path("workspace") / "Solo Leveling")
+    def download(choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
+        sent.append(len(choices))
+        return DownloadReceipt(len(choices), Path("workspace"))
 
     controller: AnimeController = _controller(
         _service(
@@ -1274,8 +1274,8 @@ def test_enter_downloads_into_the_folder_of_the_chosen_title() -> None:
     controller.handle_key("enter")
     _settle(controller)
 
-    assert sent == ["Solo Leveling"]
-    assert "Wysłano 1 do qBittorrenta → Solo Leveling" in _frame(controller)
+    assert sent == [1]
+    assert "Wysłano 1 do qBittorrenta → workspace" in _frame(controller)
 
 
 def test_a_finished_title_offers_the_whole_group_first() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from decimal import Decimal
 from pathlib import Path
 from secrets import token_hex
 from typing import TYPE_CHECKING
@@ -107,20 +108,46 @@ class ResidentSession:
             ),
         )
 
-    def download(self, choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
+    def download(self, choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
         """Persist a download order at the owner before it contacts the torrent client."""
         return decode_view(
             DownloadReceipt,
-            self._call(
-                "download",
-                {"choices": [encode_view(choice) for choice in choices], "directory": directory_name},
-            ),
+            self._call("download", {"choices": [encode_view(choice) for choice in choices]}),
         )
+
+    def set_range(
+        self,
+        subscription_id: str,
+        *,
+        selected: Sequence[Decimal],
+        future_from: Decimal | None,
+    ) -> Subscription:
+        """Store the whole ordered range of a standing order in one durable command."""
+        self._call(
+            "subscription_range",
+            {
+                "subscription_id": subscription_id,
+                "selected": [str(number) for number in selected],
+                "future_from": None if future_from is None else str(future_from),
+            },
+        )
+        return self._subscription(subscription_id)
+
+    def repeat(self, subscription_id: str, numbers: Sequence[Decimal]) -> Subscription:
+        """Order finished episodes again without erasing what the earlier operation proved."""
+        self._call(
+            "subscription_repeat",
+            {"subscription_id": subscription_id, "episodes": [str(number) for number in numbers]},
+        )
+        return self._subscription(subscription_id)
+
+    def _subscription(self, subscription_id: str) -> Subscription:
+        return decode_view(Subscription, self._call("subscription_get", {"subscription_id": subscription_id}))
 
     def follow(self, order: SubscriptionOrder) -> Subscription:
         """Add a durable standing order and let the owner's schedule check it."""
         answer: Mapping[str, object] = self._call("subscription_add", {"order": encode_view(order)})
-        return decode_view(Subscription, self._call("subscription_get", {"subscription_id": answer["subscription_id"]}))
+        return self._subscription(str(answer["subscription_id"]))
 
     def command(self, kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
         """Send a validated user action through the owner's command boundary."""

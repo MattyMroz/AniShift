@@ -6,10 +6,11 @@ import json
 import os
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from functools import partial
 from pathlib import Path
 from queue import Empty, SimpleQueue
@@ -21,7 +22,6 @@ from anishift.application.acquisition import (
     CatalogOrder,
     ReleaseChoice,
     SeasonContext,
-    series_directory_name,
 )
 from anishift.application.artifacts import ArtifactKind, ArtifactLifetime, ArtifactState, create_group_id
 from anishift.application.cancellation import EventCancellationToken
@@ -68,12 +68,12 @@ from anishift.application.recovery import RunJournal
 from anishift.application.results import GroupResult, GroupStatus, ProducedArtifact, RunResult
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids
-from anishift.application.subscriptions import SubscriptionOrder, subscription_id
-from anishift.application.transfers import TransferInspector
+from anishift.application.subscriptions import SubscriptionOrder, repeat_of, subscription_id
+from anishift.application.transfers import TransferInspector, flat_layout, reserved_stem
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
 from anishift.config.workspace import run_temp_dir
-from anishift.errors import AniShiftError, ExecutionError
+from anishift.errors import AniShiftError
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
 from anishift.services.catalog import TitleCandidate
@@ -82,10 +82,15 @@ from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-    from decimal import Decimal
 
     from anishift.application.acquisition import AcquisitionService, ReleaseChoice
-    from anishift.application.control import AutomationPolicy, CommandOutcome, SettingsSnapshot, SourceFingerprint
+    from anishift.application.control import (
+        AutomationPolicy,
+        CommandOutcome,
+        FileReservation,
+        SettingsSnapshot,
+        SourceFingerprint,
+    )
     from anishift.application.events import RunEvent
     from anishift.application.inspection import InspectedSourceGroup
     from anishift.application.intents import ProductKind
@@ -98,6 +103,7 @@ if TYPE_CHECKING:
         SubscriptionService,
     )
     from anishift.application.watch_state import WatchStateStore
+    from anishift.services.torrents import TorrentFile
 
 __all__ = ["AutomationOwner"]
 
@@ -190,6 +196,12 @@ _REFUSALS: Final[Mapping[RefusalReason, tuple[ControlErrorCode, str]]] = Mapping
 
 _STATE_NOT_SAVED: Final[str] = "The automation state could not be saved, so nothing changed"
 """Reason returned when the command was abandoned instead of applied unrecorded."""
+
+_UNREADABLE_DESTINATION: Final[str] = "The download destination could not be read, so no name was reserved"
+"""Problem recorded against one release when its destination cannot be listed before a reservation."""
+
+_OCCUPIED_DESTINATION: Final[str] = "Something took a name reserved for this download; clear that name and retry"
+"""Problem recorded against one release when a reserved name stopped being free before its content started."""
 
 _NO_ANSWER: Final[str] = "The resident did not finish the command in time"
 """Reason returned when the owner thread was still busy when the budget ran out."""
@@ -448,6 +460,15 @@ class AutomationOwner:
                 }
                 self._group_versions.update(dict.fromkeys(affected, self._file_version))
 
+    def _acquisition_groups(self, acquisition: AcquisitionConfirmation) -> list[str]:
+        groups: set[str] = set()
+        for name in sorted(_assigned_files(acquisition)):
+            relative: Path = (Path(acquisition.directory) / name).parent
+            candidate: ArtifactName | None = classify_artifact(Path(name), resolve_route(relative))
+            if candidate is not None:
+                groups.add(create_group_id(relative, candidate.stem))
+        return sorted(groups)
+
     def _watched_path(self, path: Path) -> bool:
         if not path.is_relative_to(self._service.workspace_root):
             return False
@@ -701,14 +722,12 @@ class AutomationOwner:
         paths: set[Path | None] = {artifact.path for artifact in group.artifacts}
         for acquisition in reversed(self._state.acquisitions):
             directory: Path = self._service.workspace_root / acquisition.directory
-            matches: bool = (
-                any(directory / name in paths for name in acquisition.required_files)
-                if acquisition.required_files
-                else any(path is not None and path.is_relative_to(directory) for path in paths)
+            owned: frozenset[str] = frozenset(
+                name for name in _assigned_files(acquisition) if directory / name in paths
             )
-            if not matches:
+            if not owned:
                 continue
-            return acquisition.origin if acquisition.state is AcquisitionState.COMPLETE else None
+            return acquisition.origin if owned <= frozenset(acquisition.complete_files) else None
         with self._files_lock:
             return RequestOrigin.USER if self._fresh_sources.intersection(paths) else RequestOrigin.BACKGROUND
 
@@ -921,6 +940,7 @@ class AutomationOwner:
                     "episode": item.episode,
                     "state": item.state.value,
                     "stalled": self._transfers is not None and item.info_hash in self._transfers.stalled,
+                    "group_ids": self._acquisition_groups(item),
                 }
                 for item in self._state.acquisitions
             ],
@@ -1561,36 +1581,81 @@ class AutomationOwner:
         service: SubscriptionService | None = self._service.subscriptions
         if service is None:
             return ControlResponse.refused(ControlErrorCode.REFUSED, _NO_SUBSCRIPTIONS)
-        if request.kind == "subscription_add":
-            order: SubscriptionOrder = decode_view(SubscriptionOrder, request.payload.get("order"))
-            return self._accept_local_command(
-                request,
-                {
-                    "subscription_id": subscription_id(order.series, order.group),
-                    "order": json.dumps(encode_view(order)),
-                },
-            )
-        if request.kind == "subscription_get":
-            item: Subscription | None = next(
-                (item for item in service.list() if item.subscription_id == request.payload.get("subscription_id")),
-                None,
-            )
-            return (
-                ControlResponse.succeeded(encode_view(item)) if item is not None else _invalid("Unknown subscription")
-            )
-        if request.kind == "subscriptions_list":
-            return ControlResponse.succeeded({"subscriptions": [_subscription_view(item) for item in service.list()]})
-        if request.kind == "subscriptions_check":
-            outcomes: tuple[CheckOutcome, ...] = self._check_subscriptions(service, automatic=False)
-            return ControlResponse.succeeded(
-                {
-                    "checked": len(outcomes),
-                    "downloaded": sum(outcome.downloaded for outcome in outcomes),
-                    "problems": sum(1 for outcome in outcomes if outcome.problem),
-                    "outcomes": [encode_view(outcome) for outcome in outcomes],
-                }
-            )
-        return self._subscription_mutation(request, service)
+        handlers: Mapping[str, Callable[[ControlRequest, SubscriptionService], ControlResponse]] = {
+            "subscription_add": self._subscription_add_command,
+            "subscription_get": self._subscription_get_command,
+            "subscriptions_list": self._subscriptions_list_command,
+            "subscriptions_check": self._subscriptions_check_command,
+            "subscription_range": self._subscription_range_command,
+            "subscription_repeat": self._subscription_repeat_command,
+        }
+        return handlers.get(request.kind, self._subscription_mutation)(request, service)
+
+    def _subscription_add_command(self, request: ControlRequest, _service: SubscriptionService) -> ControlResponse:
+        order: SubscriptionOrder = decode_view(SubscriptionOrder, request.payload.get("order"))
+        return self._accept_local_command(
+            request,
+            {
+                "subscription_id": subscription_id(order.series, order.group),
+                "order": json.dumps(encode_view(order)),
+            },
+        )
+
+    @staticmethod
+    def _subscription_get_command(request: ControlRequest, service: SubscriptionService) -> ControlResponse:
+        item: Subscription | None = next(
+            (item for item in service.list() if item.subscription_id == request.payload.get("subscription_id")),
+            None,
+        )
+        return ControlResponse.succeeded(encode_view(item)) if item is not None else _invalid("Unknown subscription")
+
+    @staticmethod
+    def _subscriptions_list_command(_request: ControlRequest, service: SubscriptionService) -> ControlResponse:
+        return ControlResponse.succeeded({"subscriptions": [_subscription_view(item) for item in service.list()]})
+
+    def _subscriptions_check_command(self, _request: ControlRequest, service: SubscriptionService) -> ControlResponse:
+        outcomes: tuple[CheckOutcome, ...] = self._check_subscriptions(service, automatic=False)
+        return ControlResponse.succeeded(
+            {
+                "checked": len(outcomes),
+                "downloaded": sum(outcome.downloaded for outcome in outcomes),
+                "problems": sum(1 for outcome in outcomes if outcome.problem),
+                "outcomes": [encode_view(outcome) for outcome in outcomes],
+            }
+        )
+
+    def _subscription_range_command(self, request: ControlRequest, service: SubscriptionService) -> ControlResponse:
+        identifier: str | None = self._followed_subscription(request, service)
+        selected: tuple[Decimal, ...] | None = _episode_numbers(request.payload, "selected")
+        named: str | None = _text(request.payload, "future_from")
+        tail: Decimal | None = _episode_number(request.payload, "future_from")
+        if identifier is None or selected is None or (named is not None and tail is None):
+            return _invalid("A stored range needs a known subscription and the episode numbers it selects")
+        return self._accept_local_command(
+            request,
+            {
+                "subscription_id": identifier,
+                "selected": json.dumps([str(number) for number in selected]),
+                "future_from": None if tail is None else str(tail),
+            },
+        )
+
+    def _subscription_repeat_command(self, request: ControlRequest, service: SubscriptionService) -> ControlResponse:
+        identifier: str | None = self._followed_subscription(request, service)
+        episodes: tuple[Decimal, ...] | None = _episode_numbers(request.payload, "episodes")
+        if identifier is None or not episodes:
+            return _invalid("A repeat needs a known subscription and the episode numbers it orders again")
+        return self._accept_local_command(
+            request,
+            {"subscription_id": identifier, "episodes": json.dumps([str(number) for number in episodes])},
+        )
+
+    @staticmethod
+    def _followed_subscription(request: ControlRequest, service: SubscriptionService) -> str | None:
+        identifier: str | None = _text(request.payload, "subscription_id")
+        if identifier is None:
+            return None
+        return identifier if any(item.subscription_id == identifier for item in service.list()) else None
 
     def _acquisition_command(self, request: ControlRequest) -> ControlResponse:
         acquisition: AcquisitionService | None = self._service.acquisition
@@ -1632,16 +1697,15 @@ class AutomationOwner:
         if acquisition is None or not isinstance(raw, list) or not raw:
             return _invalid("A download requires selected releases")
         choices: tuple[ReleaseChoice, ...] = tuple(decode_view(ReleaseChoice, item) for item in raw)
-        directory: str | None = _text(request.payload, "directory")
         chosen: tuple[ReleaseChoice, ...]
         response: ControlResponse
-        chosen, response = self._on_owner(lambda: self._accept_download(request, acquisition, choices, directory))
+        chosen, response = self._on_owner(lambda: self._accept_download(request, choices))
         if not response.ok or not chosen:
             return response
         try:
             with acquisition.requests("user_download"):
                 for choice in chosen:
-                    acquisition.download((choice,), directory_name=directory)
+                    acquisition.download((choice,))
                 hashes: frozenset[str] = acquisition.queued_hashes()
                 self._on_owner(lambda: self._reconcile_acquisitions(hashes))
         finally:
@@ -1651,9 +1715,7 @@ class AutomationOwner:
     def _accept_download(
         self,
         request: ControlRequest,
-        acquisition: AcquisitionService,
         choices: tuple[ReleaseChoice, ...],
-        directory: str | None,
     ) -> tuple[tuple[ReleaseChoice, ...], ControlResponse]:
         receipt: CommandReceipt | None = self._receipt(request)
         if receipt is not None:
@@ -1665,28 +1727,21 @@ class AutomationOwner:
         }
         unique: dict[str, ReleaseChoice] = {choice.release.info_hash.casefold(): choice for choice in choices}
         chosen: tuple[ReleaseChoice, ...] = tuple(choice for key, choice in unique.items() if key not in existing)
-        confirmations: list[AcquisitionConfirmation] = []
-        destination: Path = (
-            self._service.workspace_root / series_directory_name(directory)
-            if directory is not None
-            else acquisition.series_directory(choices[0])
-        )
-        for choice in chosen:
-            folder: Path = destination if directory is not None else acquisition.series_directory(choice)
-            confirmations.append(
-                AcquisitionConfirmation(
-                    token_hex(_ID_BYTES),
-                    choice.release.info_hash,
-                    folder.relative_to(self._service.workspace_root).as_posix(),
-                    (),
-                    AcquisitionState.PENDING_SEND,
-                    RequestOrigin.USER,
-                    None,
-                    str(choice.episode) if choice.episode is not None else None,
-                    self._now(),
-                )
+        confirmations: list[AcquisitionConfirmation] = [
+            AcquisitionConfirmation(
+                token_hex(_ID_BYTES),
+                choice.release.info_hash,
+                "",
+                (),
+                AcquisitionState.PENDING_SEND,
+                RequestOrigin.USER,
+                None,
+                str(choice.episode) if choice.episode is not None else None,
+                self._now(),
             )
-        outcome: CommandOutcome = {"count": len(chosen), "directory": str(destination)}
+            for choice in chosen
+        ]
+        outcome: CommandOutcome = {"count": len(chosen), "directory": str(self._service.workspace_root)}
         replaced_hashes: set[str] = {item.info_hash for item in confirmations}
         failure: ControlResponse | None = self._commit(
             request,
@@ -1826,9 +1881,14 @@ class AutomationOwner:
         if any(receipt.pending is not None for receipt in self._state.command_receipts):
             return False
         info_hash: str = choice.release.info_hash.casefold()
+        identity: str | None = repeat_of(subscription, episode)
         if any(
-            item.info_hash == info_hash
-            or (item.subscription_id == subscription.subscription_id and item.episode == str(episode))
+            (item.info_hash == info_hash and item.repeat_id == identity)
+            or (
+                item.subscription_id == subscription.subscription_id
+                and item.episode == str(episode)
+                and item.repeat_id == identity
+            )
             for item in self._state.acquisitions
         ):
             return False
@@ -1852,13 +1912,14 @@ class AutomationOwner:
         return AcquisitionConfirmation(
             operation_id=token_hex(_ID_BYTES),
             info_hash=choice.release.info_hash,
-            directory=series_directory_name(subscription.directory or choice.name.series),
+            directory="",
             required_files=(),
             state=state,
             origin=origin,
             subscription_id=subscription.subscription_id,
             episode=str(episode),
             updated_at=self._now(),
+            repeat_id=repeat_of(subscription, episode),
         )
 
     def _record_subscription(  # noqa: PLR0913
@@ -1872,11 +1933,13 @@ class AutomationOwner:
         origin: RequestOrigin = RequestOrigin.USER,
     ) -> Subscription | None:
         hashes: frozenset[str] = frozenset(choice.release.info_hash.casefold() for choice in confirmed.values())
-        known: frozenset[str] = frozenset(item.info_hash for item in self._state.acquisitions)
+        known: frozenset[tuple[str, str | None]] = frozenset(
+            (item.info_hash, item.repeat_id) for item in self._state.acquisitions
+        )
         existing: tuple[AcquisitionConfirmation, ...] = tuple(
             self._new_acquisition(subscription, episode, choice, AcquisitionState.ACCEPTED, origin=origin)
             for episode, choice in confirmed.items()
-            if choice.release.info_hash.casefold() not in known
+            if (choice.release.info_hash.casefold(), repeat_of(subscription, episode)) not in known
         )
         if existing and not self._save(replace(self._state, acquisitions=(*self._state.acquisitions, *existing))):
             raise OSError(_STATE_NOT_SAVED)
@@ -1917,9 +1980,27 @@ class AutomationOwner:
         self._transfers_at = None
         self._transfers_inspecting = True
         self._active_io += 1
-        self._pool.submit(self._inspect_transfers, acquisitions)
+        self._pool.submit(self._inspect_transfers, acquisitions, self._reserved_names())
 
-    def _inspect_transfers(self, acquisitions: tuple[AcquisitionConfirmation, ...]) -> None:
+    def _reserved_names(self) -> frozenset[str] | None:
+        try:
+            names: set[str] = set(_present_stems(self._service.workspace_root))
+        except OSError:
+            logger.warning("The download destination could not be read before reserving names")
+            return None
+        for item in self._state.acquisitions:
+            names.update(_reserved_stems(item))
+        for group in self._state.ready_groups:
+            names.update(reserved_stem(name) for name in (*group.sources, *group.products))
+        for deletion in self._state.pending_deletions:
+            names.update(reserved_stem(name) for name, _size, _stamp in deletion.files)
+        return frozenset(names)
+
+    def _inspect_transfers(
+        self,
+        acquisitions: tuple[AcquisitionConfirmation, ...],
+        reserved: frozenset[str] | None,
+    ) -> None:
         results: tuple[AcquisitionConfirmation, ...] = ()
         failure: str | None = None
         nature: tuple[str, str] | None = None
@@ -1933,6 +2014,7 @@ class AutomationOwner:
                         results = self._transfers.inspect(
                             acquisitions, stall_after_s=self._state.policy.transfer_stall_s
                         )
+                        results = self._settle_layouts(acquisition, results, reserved)
         except Exception as problem:  # noqa: BLE001
             failure = sanitize_event_message(str(problem))
             nature = (type(problem).__name__, failure_code(problem))
@@ -1940,6 +2022,79 @@ class AutomationOwner:
                 self._transfers.reset_clock()
         finally:
             self._queue.put(lambda: self._record_transfers(results, failure, nature))
+
+    def _settle_layouts(
+        self,
+        service: AcquisitionService,
+        results: tuple[AcquisitionConfirmation, ...],
+        reserved: frozenset[str] | None,
+    ) -> tuple[AcquisitionConfirmation, ...]:
+        if reserved is None:
+            return tuple(self._settle_layout(service, item, None) for item in results)
+        taken: set[str] = set(reserved)
+        settled: list[AcquisitionConfirmation] = []
+        for item in results:
+            outcome: AcquisitionConfirmation = self._settle_layout(service, item, frozenset(taken))
+            taken.update(_reserved_stems(outcome))
+            settled.append(outcome)
+        return tuple(settled)
+
+    def _settle_layout(
+        self,
+        service: AcquisitionService,
+        item: AcquisitionConfirmation,
+        reserved: frozenset[str] | None,
+    ) -> AcquisitionConfirmation:
+        if (
+            self._transfers is None
+            or item.state is not AcquisitionState.ACCEPTED
+            or item.problem is not None
+            or item.content_started
+        ):
+            return item
+        if reserved is None:
+            return replace(item, problem=_UNREADABLE_DESTINATION)
+        if item.file_layout and _occupied(self._service.workspace_root, item.file_layout):
+            return replace(item, problem=_OCCUPIED_DESTINATION)
+        if item.file_layout:
+            return self._start_content(service, item)
+        declared: tuple[TorrentFile, ...] = self._transfers.declared(item.info_hash)
+        layout: tuple[FileReservation, ...] = flat_layout(declared, reserved)
+        if not layout:
+            return item
+        return self._reserve_names(service, item, declared, layout)
+
+    def _reserve_names(
+        self,
+        service: AcquisitionService,
+        item: AcquisitionConfirmation,
+        declared: Sequence[TorrentFile],
+        layout: tuple[FileReservation, ...],
+    ) -> AcquisitionConfirmation:
+        renamed: int = 0
+        try:
+            for index, path, _size in layout:
+                current: str = next(entry.name for entry in declared if entry.index == index)
+                if current.replace("\\", "/") != path:
+                    service.rename_transfer_file(item.info_hash, current, path)
+                    renamed += 1
+        except (AniShiftError, OSError, ValueError) as problem:
+            return replace(item, problem=sanitize_event_message(str(problem)))
+        if renamed and self._transfers is not None:
+            self._transfers.forget(item.info_hash)
+        logger.info("Transfer destination names reserved", files=len(layout), renamed=renamed)
+        return replace(item, file_layout=layout, problem=None)
+
+    def _start_content(self, service: AcquisitionService, item: AcquisitionConfirmation) -> AcquisitionConfirmation:
+        """Let a reserved transfer write content unless the user asked for the opposite."""
+        if item.content_started or item.requested_action == "stop":
+            return item
+        try:
+            service.start_transfer(item.info_hash)
+        except (AniShiftError, OSError, ValueError) as problem:
+            return replace(item, problem=sanitize_event_message(str(problem)))
+        logger.info("Transfer content started after its names were reserved")
+        return replace(item, content_started=True, problem=None)
 
     def _record_transfers(
         self,
@@ -1973,6 +2128,7 @@ class AutomationOwner:
                 self._refresh_automatic()
         self._schedule_transfers(self._transfers_delay)
         self._publish_state()
+        self._retry_ready()
         completed: frozenset[str] = frozenset(
             item.info_hash for item in self._state.acquisitions if item.state is AcquisitionState.COMPLETE
         )
@@ -2159,8 +2315,8 @@ class AutomationOwner:
         if move.target is None or not move.destination_stem:
             return None
         produced: frozenset[str] = frozenset(move.product_sources)
-        sources: tuple[str, ...] = tuple(item.destination for item in move.files if item.source not in produced)
-        products: tuple[str, ...] = tuple(item.destination for item in move.files if item.source in produced)
+        sources: tuple[str, ...] = tuple(item.destination for item in move.moved if item.source not in produced)
+        products: tuple[str, ...] = tuple(item.destination for item in move.moved if item.source in produced)
         headline: str | None = main_product([Path(name).name for name in products])
         return ReadyGroup(
             set_id=move.group_id,
@@ -2173,6 +2329,7 @@ class AutomationOwner:
             products=products,
             main_result=next((name for name in products if Path(name).name == headline), None),
             recipe=move.recipe,
+            pending_sources=move.deferred,
         )
 
     def _relocating_groups(self) -> set[str]:
@@ -2192,28 +2349,24 @@ class AutomationOwner:
 
     def _move_ready(self, move: ReadyMove, acquisitions: tuple[AcquisitionConfirmation, ...]) -> None:
         problem: str | None = None
+        staged: ReadyMove = move
         try:
-            paths: set[str] = {item.source for item in move.files}
-            tracked: tuple[AcquisitionConfirmation, ...] = tuple(
-                item
-                for item in acquisitions
-                if any((Path(item.directory) / name).as_posix() in paths for name in item.required_files)
-                or (not item.required_files and any(Path(path).is_relative_to(Path(item.directory)) for path in paths))
+            owners: dict[str, AcquisitionConfirmation] = _file_owners(move, acquisitions)
+            complete: frozenset[str] = frozenset(
+                item.info_hash for item in owners.values() if item.state is AcquisitionState.COMPLETE
             )
-            hashes: frozenset[str] = frozenset(item.info_hash for item in tracked)
             acquisition: AcquisitionService | None = self._service.acquisition
-            if any(item.state is not AcquisitionState.COMPLETE for item in tracked):
-                message: str = "The torrent must be confirmed complete before moving its files"
-                raise ExecutionError(message)
-            if hashes and (acquisition is None or acquisition.release_completed(hashes) != hashes):
-                message = "The torrent client still owns these files; stop its completed job before retrying"
-                raise ExecutionError(message)
+            released: frozenset[str] = (
+                acquisition.release_completed(complete) if complete and acquisition is not None else frozenset()
+            )
+            held: tuple[str, ...] = tuple(source for source, owner in owners.items() if owner.info_hash not in released)
             if self._ready_store is not None:
-                self._ready_store.execute(move)
+                staged = self._ready_store.defer(move, held)
+                self._ready_store.execute(staged)
         except (AniShiftError, OSError, ValueError) as error:
             problem = sanitize_event_message(str(error)) or "Relocation could not finish"
         finally:
-            self._queue.put(lambda: self._record_ready(move, problem))
+            self._queue.put(lambda: self._record_ready(staged, problem))
 
     def _record_ready(self, move: ReadyMove, problem: str | None) -> None:
         self._active_io -= 1
@@ -2228,6 +2381,11 @@ class AutomationOwner:
             run_id: move.apply_result(result, self._service.workspace_root)
             for run_id, result in self._run_results.items()
         }
+        if move.deferred:
+            self._ready_moves[move.group_id] = move
+            self._ready_problems.pop(move.group_id, None)
+            self._publish_ready(move)
+            return
         try:
             if self._ready_store is not None:
                 self._ready_store.acknowledge(move)
@@ -2282,6 +2440,8 @@ class AutomationOwner:
         self, service: AcquisitionService, item: AcquisitionConfirmation
     ) -> AcquisitionConfirmation:
         if not item.action_pending:
+            return item
+        if item.requested_action == "resume" and not item.file_layout:
             return item
         try:
             service.control_transfer(item.info_hash, str(item.requested_action))
@@ -2367,6 +2527,15 @@ class AutomationOwner:
                         decode_view(SubscriptionOrder, json.loads(str(receipt.outcome["order"]))),
                         receipt.command_id,
                     )
+                elif receipt.pending == "subscription_range":
+                    stored: object = receipt.outcome["future_from"]
+                    service.set_range(
+                        identifier,
+                        selected=_stored_numbers(receipt.outcome["selected"]),
+                        future_from=None if stored is None else Decimal(str(stored)),
+                    )
+                elif receipt.pending == "subscription_repeat":
+                    service.repeat(identifier, _stored_numbers(receipt.outcome["episodes"]))
                 else:
                     service.remove(identifier)
         except (AniShiftError, OSError) as problem:
@@ -2615,6 +2784,50 @@ def _settings_snapshot(settings: RunSettingsSnapshot) -> SettingsSnapshot:
     return cast("SettingsSnapshot", {field.name: getattr(settings, field.name) for field in fields(settings)})
 
 
+def _file_owners(
+    move: ReadyMove, acquisitions: Sequence[AcquisitionConfirmation]
+) -> dict[str, AcquisitionConfirmation]:
+    """Return which transfer owns each relocated source, so only its own files wait for its release."""
+    owners: dict[str, AcquisitionConfirmation] = {}
+    for item in move.files:
+        for acquisition in acquisitions:
+            directory: Path = Path(acquisition.directory)
+            if any((directory / name).as_posix() == item.source for name in _assigned_files(acquisition)):
+                owners[item.source] = acquisition
+                break
+    return owners
+
+
+def _assigned_files(acquisition: AcquisitionConfirmation) -> frozenset[str]:
+    """Return every workspace name one transfer owns, whether reserved up front or observed later."""
+    return frozenset(acquisition.required_files) | frozenset(path for _index, path, _size in acquisition.file_layout)
+
+
+def _reserved_stems(acquisition: AcquisitionConfirmation) -> frozenset[str]:
+    """Return the cores one transfer already reserved, because a name it has not chosen yet holds nothing."""
+    return frozenset(reserved_stem(path) for _index, path, _size in acquisition.file_layout)
+
+
+def _present_stems(root: Path) -> frozenset[str]:
+    """Return the cores of every entry but a subfolder in the flat destination, so no transfer writes over one."""
+    return frozenset(reserved_stem(entry.name) for entry in root.iterdir() if not entry.is_dir())
+
+
+def _occupied(root: Path, layout: Sequence[FileReservation]) -> bool:
+    """Return whether any name a layout reserved already holds something, counting a name it cannot read as held."""
+    return any(_taken_name(root / path) for _index, path, _size in layout)
+
+
+def _taken_name(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def _file_identity(path: Path) -> tuple[int, int]:
     """Return the size and modification time proving which bytes were published, or a pair no file can match."""
     try:
@@ -2699,6 +2912,32 @@ def _identifiers(payload: Mapping[str, object], key: str) -> tuple[str, ...] | N
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         return None
     return tuple(str(item) for item in value)
+
+
+def _episode_numbers(payload: Mapping[str, object], key: str) -> tuple[Decimal, ...] | None:
+    """Return the episode numbers named under *key*, or nothing when any of them is not one."""
+    named: tuple[str, ...] | None = _identifiers(payload, key)
+    if named is None:
+        return None
+    try:
+        numbers: tuple[Decimal, ...] = tuple(Decimal(item) for item in named)
+    except InvalidOperation:
+        return None
+    return numbers if all(number.is_finite() and number > 0 for number in numbers) else None
+
+
+def _stored_numbers(raw: object) -> tuple[Decimal, ...]:
+    """Return the episode numbers a receipt recorded, which validation already accepted."""
+    return tuple(Decimal(str(item)) for item in json.loads(str(raw)))
+
+
+def _episode_number(payload: Mapping[str, object], key: str) -> Decimal | None:
+    """Return the single episode number named under *key*, or nothing when it is absent or invalid."""
+    text: str | None = _text(payload, key)
+    if text is None:
+        return None
+    numbers: tuple[Decimal, ...] | None = _episode_numbers({key: [text]}, key)
+    return None if numbers is None else numbers[0]
 
 
 def _origin(payload: Mapping[str, object]) -> RequestOrigin | None:

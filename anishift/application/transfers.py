@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from anishift.application.control import AcquisitionConfirmation
     from anishift.services.torrents import TorrentFile, TorrentInfo
 
-__all__ = ["TransferInspector"]
+__all__ = ["TransferInspector", "flat_layout", "reserved_stem"]
 
 logger = get_logger(__name__)
 
@@ -38,11 +38,28 @@ _DOWNLOADING_STATES: Final[frozenset[str]] = frozenset(
 )
 """States in which the client is actively trying to obtain data."""
 
+_SETTLING_STATES: Final[frozenset[str]] = frozenset(
+    {
+        "checkingDL",
+        "checkingUP",
+        "checkingResumeData",
+        "queuedForChecking",
+        "allocating",
+        "moving",
+        "error",
+        "missingFiles",
+    }
+)
+"""States in which the client is verifying, relocating or failing, so no file may be accepted."""
+
+_FIRST_ORDINAL: Final[int] = 2
+"""Suffix given to the first colliding set, because the free core carries no number."""
+
 
 @dataclass(frozen=True, slots=True)
 class _Files:
     entries: tuple[TorrentFile, ...]
-    signature: tuple[str, str, bool]
+    signature: tuple[str, str, bool, float, int | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +112,7 @@ class TransferInspector:
         *,
         stall_after_s: float = float("inf"),
     ) -> tuple[AcquisitionConfirmation, ...]:
-        """Read the client once and refresh file details at metadata and completion boundaries."""
+        """Read the client once and refresh the details of the selected files whenever the transfer moved bytes."""
         if not acquisitions:
             self._files.clear()
             self._note_failures(frozenset(), None)
@@ -156,38 +173,127 @@ class TransferInspector:
                 key for key, item in progress.items() if item.downloading and item.idle_s >= stall_after_s
             )
 
+    def declared(self, info_hash: str) -> tuple[TorrentFile, ...]:
+        """Return the file identities the last inspection read, contacting no client of its own."""
+        cached: _Files | None = self._files.get(info_hash.casefold())
+        return () if cached is None else cached.entries
+
+    def forget(self, info_hash: str) -> None:
+        """Drop cached file identities whose names the owner has just changed."""
+        self._files.pop(info_hash.casefold(), None)
+
     def _inspect(self, acquisition: AcquisitionConfirmation, transfer: TorrentInfo | None) -> AcquisitionConfirmation:
         if transfer is None:
             return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
         directory: Path = Path(transfer.save_path).resolve()
         if not directory.is_relative_to(self._root):
             return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
-        ready: bool = transfer.progress == 1.0 and transfer.amount_left == 0 and transfer.state in _COMPLETE_STATES
-        files: tuple[TorrentFile, ...] = self._inspect_files(transfer, ready=ready)
+        finished: bool = transfer.progress == 1.0 and transfer.amount_left == 0 and transfer.state in _COMPLETE_STATES
+        files: tuple[TorrentFile, ...] = self._inspect_files(transfer, ready=finished)
         selected: tuple[TorrentFile, ...] = tuple(item for item in files if item.priority > 0)
         names: tuple[str, ...] = tuple(item.name.replace("\\", "/") for item in selected)
-        if any(not _safe_path(directory, name) for name in names):
+        if any(not _safe_path(directory, name) for name in names) or _reservation_broken(acquisition, selected, names):
             return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
-        complete: bool = ready and bool(selected) and all(_ready_file(directory, item) for item in selected)
-        if ready:
+        complete: tuple[str, ...] = _complete_files(
+            directory, selected, names, settling=transfer.state in _SETTLING_STATES
+        )
+        if finished:
             self._files.pop(acquisition.info_hash, None)
         relative: Path = directory.relative_to(self._root)
+        whole: bool = finished and bool(selected) and len(complete) == len(names)
         candidate: AcquisitionConfirmation = replace(
             acquisition,
             directory=relative.as_posix() if relative.parts else "",
             required_files=names,
-            state=AcquisitionState.COMPLETE if complete else AcquisitionState.ACCEPTED,
+            complete_files=complete,
+            state=AcquisitionState.COMPLETE if whole else AcquisitionState.ACCEPTED,
         )
         return _updated(acquisition, candidate)
 
     def _inspect_files(self, transfer: TorrentInfo, *, ready: bool) -> tuple[TorrentFile, ...]:
         info_hash: str = transfer.info_hash.casefold()
-        signature: tuple[str, str, bool] = (transfer.name, transfer.save_path, ready)
+        signature: tuple[str, str, bool, float, int | None] = (
+            transfer.name,
+            transfer.save_path,
+            ready,
+            transfer.progress,
+            transfer.completed,
+        )
         cached: _Files | None = self._files.get(info_hash)
         if cached is None or not cached.entries or cached.signature != signature:
             cached = _Files(self._acquisition.transfer_files(info_hash), signature)
             self._files[info_hash] = cached
         return cached.entries
+
+
+def reserved_stem(name: str) -> str:
+    """Return the comparable core of one flat name, so a video and its sidecars share one reservation."""
+    return Path(name.replace("\\", "/")).stem.casefold()
+
+
+def flat_layout(files: Sequence[TorrentFile], reserved: frozenset[str]) -> tuple[tuple[int, str, int], ...]:
+    """Reserve one free flat name per selected file, sharing a core between a video and its sidecars."""
+    selected: tuple[TorrentFile, ...] = tuple(item for item in files if item.priority > 0)
+    if not selected:
+        return ()
+    taken: set[str] = {value.casefold() for value in reserved}
+    cores: dict[str, str] = {}
+    used: dict[str, set[str]] = {}
+    layout: list[tuple[int, str, int]] = []
+    for item in sorted(selected, key=lambda entry: entry.index):
+        stem, suffix = _split(item.name)
+        core: str | None = cores.get(stem.casefold())
+        if core is None or suffix.casefold() in used[core]:
+            core = _free_core(stem, taken)
+            taken.add(core.casefold())
+            cores[stem.casefold()] = core
+            used[core] = set()
+        used[core].add(suffix.casefold())
+        layout.append((item.index, f"{core}{suffix}", item.size))
+    return tuple(layout)
+
+
+def _split(name: str) -> tuple[str, str]:
+    path: Path = Path(name.replace("\\", "/"))
+    return path.stem, path.suffix
+
+
+def _free_core(stem: str, taken: set[str]) -> str:
+    if stem.casefold() not in taken:
+        return stem
+    ordinal: int = _FIRST_ORDINAL
+    while f"{stem} [{ordinal}]".casefold() in taken:
+        ordinal += 1
+    return f"{stem} [{ordinal}]"
+
+
+def _reservation_broken(
+    acquisition: AcquisitionConfirmation,
+    selected: Sequence[TorrentFile],
+    names: Sequence[str],
+) -> bool:
+    if not acquisition.file_layout:
+        return False
+    observed: tuple[tuple[int, str, int], ...] = tuple(
+        sorted((item.index, name, item.size) for item, name in zip(selected, names, strict=True))
+    )
+    return observed != tuple(sorted(acquisition.file_layout))
+
+
+def _complete_files(
+    directory: Path,
+    selected: Sequence[TorrentFile],
+    names: Sequence[str],
+    *,
+    settling: bool,
+) -> tuple[str, ...]:
+    if settling:
+        return ()
+    sets: dict[str, bool] = {}
+    for item, name in zip(selected, names, strict=True):
+        core: str = reserved_stem(name)
+        sets[core] = sets.get(core, True) and _ready_file(directory, item)
+    return tuple(name for name in names if sets[reserved_stem(name)])
 
 
 def _safe_path(directory: Path, name: str) -> bool:

@@ -367,7 +367,7 @@ def test_a_completed_set_remembers_where_it_came_from_and_which_target_made_it()
 
     assert group.target is WorkflowTarget.AUDIOBOOK
     assert (group.source_directory, group.source_stem) == ("audiobook/Solo Leveling", "episode-01")
-    assert group.pending_source is None
+    assert group.pending_sources == ()
 
 
 def test_a_completed_set_remembers_the_recipe_delta_it_was_admitted_with() -> None:
@@ -402,7 +402,7 @@ def test_a_completed_set_refuses_a_file_outside_the_library(escape: str) -> None
     with pytest.raises(ValueError, match="relative path inside the library"):
         _ready_group(main_result=escape)
     with pytest.raises(ValueError, match="relative path inside the library"):
-        _ready_group(pending_source=escape)
+        _ready_group(pending_sources=(escape,))
 
 
 def test_a_pending_deletion_tracks_only_the_files_it_confirmed() -> None:

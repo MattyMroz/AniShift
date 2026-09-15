@@ -144,8 +144,16 @@ class TorrentClient(Protocol):
         """Change the given client preferences."""
         ...
 
-    def add_torrent(self, torrent_url: str, *, save_path: Path, category: str) -> None:
-        """Queue one torrent so its files land in *save_path*."""
+    def add_torrent(self, torrent_url: str, *, save_path: Path, category: str, stopped: bool = False) -> None:
+        """Queue one torrent so its files land in *save_path*, optionally without writing content yet."""
+        ...
+
+    def rename_file(self, info_hash: str, old_path: str, new_path: str) -> None:
+        """Move one file of a torrent to *new_path* relative to its save path."""
+        ...
+
+    def resume(self, info_hash: str) -> None:
+        """Let one queued torrent write its content."""
         ...
 
     def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
@@ -461,14 +469,11 @@ class AcquisitionService:
         )
         return catalog
 
-    def download(self, choices: Sequence[ReleaseChoice], *, directory_name: str | None = None) -> DownloadReceipt:
-        """Queue every chosen release, into *directory_name* when given, else per series."""
+    def download(self, choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
+        """Queue every chosen release into the flat workspace root, stopped until its names are reserved."""
         if not choices:
             msg = "At least one release must be chosen"
             raise ValueError(msg)
-        chosen_directory: str | None = None if directory_name is None else series_directory_name(directory_name)
-        fixed: Path | None = None if chosen_directory is None else self._workspace_root / chosen_directory
-        directory: Path = fixed if fixed is not None else self.series_directory(choices[0])
         hashes: frozenset[str] = frozenset(choice.release.info_hash.casefold() for choice in choices)
         scope: AbstractContextManager[None] = (
             self._torrent_management.download_scope(hashes) if self._torrent_management is not None else nullcontext()
@@ -477,11 +482,20 @@ class AcquisitionService:
             for choice in choices:
                 self._client.add_torrent(
                     choice.release.torrent_url,
-                    save_path=directory if fixed is not None else self.series_directory(choice),
+                    save_path=self._workspace_root,
                     category=self._category,
+                    stopped=True,
                 )
-        logger.info("Releases queued in the torrent client", count=len(choices), fixed_directory=fixed is not None)
-        return DownloadReceipt(len(choices), directory)
+        logger.info("Releases queued in the torrent client", count=len(choices))
+        return DownloadReceipt(len(choices), self._workspace_root)
+
+    def rename_transfer_file(self, info_hash: str, old_path: str, new_path: str) -> None:
+        """Reserve one destination name inside a stopped transfer before any content is written."""
+        self._client.rename_file(info_hash, old_path, new_path)
+
+    def start_transfer(self, info_hash: str) -> None:
+        """Let a transfer write content once every one of its names is reserved."""
+        self._client.resume(info_hash)
 
     def queued_hashes(self) -> frozenset[str]:
         """Lowercase info hashes of every torrent the client already tracks under the AniShift category."""

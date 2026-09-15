@@ -465,7 +465,7 @@ class AnimeController:
                 return
             chosen = (highlighted,)
         generation: int = self._start_work(_SENDING)
-        self._spawn(self._download, (chosen, self._folder, generation))
+        self._spawn(self._download, (chosen, generation))
 
     def _start_subscription(self) -> None:
         choice: ReleaseChoice | None = self._rows[self._selected].choice
@@ -561,13 +561,13 @@ class AnimeController:
             return
         self._show_results(generation, catalog, listing)
 
-    def _download(self, choices: Sequence[ReleaseChoice], directory: str | None, generation: int) -> None:
+    def _download(self, choices: Sequence[ReleaseChoice], generation: int) -> None:
         acquisition: AcquisitionService | ResidentSession | None = self._acquisition
         if acquisition is None:
             self._fail(generation, _UNAVAILABLE, "", _Screen.RESULTS)
             return
         try:
-            receipt: DownloadReceipt = acquisition.download(choices, directory_name=directory)
+            receipt: DownloadReceipt = acquisition.download(choices)
         except (AniShiftError, OSError) as problem:
             logger.warning("Anime download failed", error_class=type(problem).__name__)
             self._report(generation, problem, _Screen.RESULTS)

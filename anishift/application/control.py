@@ -28,6 +28,7 @@ __all__ = [
     "AudiobookRecipe",
     "AutomationPolicy",
     "CommandReceipt",
+    "FileReservation",
     "ManualHandledMarker",
     "NarrationTimeline",
     "NotificationKey",
@@ -75,6 +76,9 @@ type SettingsSnapshot = Mapping[str, SettingValue]
 
 type CommandOutcome = Mapping[str, str | int | bool | None]
 """Result an accepted command produced, replayed instead of running that command twice."""
+
+type FileReservation = tuple[int, str, int]
+"""Client file index, the flat path reserved for it and the size its release declares."""
 
 _NO_EXCEPTIONS: Final[Mapping[str, bool]] = MappingProxyType({})
 """Directory table of a policy carrying nothing but the global switch."""
@@ -280,6 +284,9 @@ class AcquisitionConfirmation:
     action_pending: bool = False
     problem: str | None = None
     complete_files: tuple[str, ...] = ()
+    file_layout: tuple[FileReservation, ...] = ()
+    content_started: bool = False
+    repeat_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.requested_action not in {None, "stop", "resume", "cancel"}:
@@ -288,6 +295,14 @@ class AcquisitionConfirmation:
         if not frozenset(self.complete_files) <= frozenset(self.required_files):
             msg = "A complete file must be one of the files required from the release"
             raise ValueError(msg)
+        indexes: tuple[int, ...] = tuple(index for index, _path, _size in self.file_layout)
+        if any(index < 0 for index in indexes) or len(set(indexes)) != len(indexes):
+            msg = "A reserved file must carry one unique client file index"
+            raise ValueError(msg)
+        if any(size < 0 for _index, _path, size in self.file_layout):
+            msg = "A reserved file must carry the size its release declares"
+            raise ValueError(msg)
+        require_relative_paths((path for _index, path, _size in self.file_layout), "A reserved file of a release")
         object.__setattr__(self, "info_hash", self.info_hash.casefold())
 
 
@@ -318,17 +333,17 @@ class ReadyGroup:
     sources: tuple[str, ...]
     products: tuple[str, ...]
     main_result: str | None = None
-    pending_source: str | None = None
+    pending_sources: tuple[str, ...] = ()
     recipe: RecipePreferences = field(default_factory=RecipePreferences)
 
     def __post_init__(self) -> None:
         if not self.set_id.strip() or not self.group_id.strip() or not self.stem.strip():
             msg = "A completed set requires its logical identity and its current name"
             raise ValueError(msg)
-        optional: tuple[str, ...] = tuple(
-            value for value in (self.main_result, self.pending_source) if value is not None
+        optional: tuple[str, ...] = tuple(value for value in (self.main_result,) if value is not None)
+        require_relative_paths(
+            (*self.sources, *self.products, *self.pending_sources, *optional), "A file of a completed set"
         )
-        require_relative_paths((*self.sources, *self.products, *optional), "A file of a completed set")
         if self.main_result is not None and self.main_result not in {*self.products, *self.sources}:
             msg = "The main result of a completed set must be one of its own files"
             raise ValueError(msg)
@@ -389,6 +404,8 @@ class CommandReceipt:
             "subscription_disable",
             "subscription_remove",
             "subscription_add",
+            "subscription_range",
+            "subscription_repeat",
         }:
             msg = "A pending command must identify a supported local operation"
             raise ValueError(msg)

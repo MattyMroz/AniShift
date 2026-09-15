@@ -31,7 +31,7 @@ def test_the_client_reports_its_version_and_takes_the_incomplete_extension_prefe
     assert composed.client.settings[INCOMPLETE_EXTENSION_PREFERENCE] is True
 
 
-def test_following_the_first_season_downloads_every_listed_episode_into_the_library_folder(
+def test_following_the_first_season_downloads_every_listed_episode_into_the_flat_library(
     composed: Composed,
 ) -> None:
     subscription = composed.subscriptions.subscribe(
@@ -44,7 +44,7 @@ def test_following_the_first_season_downloads_every_listed_episode_into_the_libr
     assert outcome.downloaded == LISTED_FIRST_SEASON_EPISODES
     assert outcome.subscription.taken == {torrent.info_hash for torrent in composed.client.added}
     assert {torrent.category for torrent in composed.client.added} == {DOWNLOAD_CATEGORY}
-    assert all(torrent.save_path.endswith(LIBRARY_DIRECTORY) for torrent in composed.client.added)
+    assert {torrent.save_path for torrent in composed.client.added} == {str(composed.workspace_root)}
     assert all(torrent.title.startswith("[SubsPlease] Solo Leveling - ") for torrent in composed.client.added)
 
 
@@ -97,7 +97,7 @@ def test_a_refused_torrent_reports_the_client_refusal_code(composed: Composed) -
     composed.client.refuse = True
 
     with pytest.raises(TorrentClientError) as refusal:
-        composed.acquisition.download((choice,), directory_name=LIBRARY_DIRECTORY)
+        composed.acquisition.download((choice,))
 
     assert refusal.value.context.code is ErrorCode.TORRENT_CLIENT_REFUSED
 

@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from enum import StrEnum
 from http import HTTPStatus
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final
 
 import httpx
@@ -48,6 +49,9 @@ _REFUSAL_SUGGESTION: Final[str] = "Check the qBittorrent Web UI version and perm
 
 _TORRENT_FILES: Final[TypeAdapter[tuple[TorrentFile, ...]]] = TypeAdapter(tuple[TorrentFile, ...])
 """Validates the file list before selection and completion affect local processing."""
+
+_STOPPED_ON_ADD: Final[Mapping[str, str]] = MappingProxyType({"stopped": "true", "paused": "true"})
+"""Both spellings of the add flag, because Web API 2.11 renamed ``paused`` to ``stopped``."""
 
 
 class _Refusal(StrEnum):
@@ -105,14 +109,12 @@ class QBittorrentClient:
         """Apply the given preference values."""
         self._request("POST", "/app/setPreferences", data={"json": json.dumps(dict(values))})
 
-    def add_torrent(self, torrent_url: str, *, save_path: Path, category: str) -> None:
-        """Hand one torrent URL to the client, saving it under *save_path*."""
-        response: httpx.Response = self._request(
-            "POST",
-            "/torrents/add",
-            data={"urls": torrent_url, "savepath": str(save_path), "category": category},
-            accept_errors=True,
-        )
+    def add_torrent(self, torrent_url: str, *, save_path: Path, category: str, stopped: bool = False) -> None:
+        """Hand one torrent URL to the client, saving it under *save_path* and writing nothing while *stopped*."""
+        data: dict[str, str] = {"urls": torrent_url, "savepath": str(save_path), "category": category}
+        if stopped:
+            data.update(_STOPPED_ON_ADD)
+        response: httpx.Response = self._request("POST", "/torrents/add", data=data, accept_errors=True)
         if not _torrent_accepted(response):
             raise TorrentClientError(
                 context=ErrorContext(
@@ -153,6 +155,14 @@ class QBittorrentClient:
     def shutdown(self) -> None:
         """Request shutdown of the complete client instance."""
         self._request("POST", "/app/shutdown")
+
+    def rename_file(self, info_hash: str, old_path: str, new_path: str) -> None:
+        """Move one file of a torrent to *new_path*, relative to the save directory of that torrent."""
+        self._request(
+            "POST",
+            "/torrents/renameFile",
+            data={"hash": info_hash, "oldPath": old_path, "newPath": new_path},
+        )
 
     def files(self, info_hash: str) -> tuple[TorrentFile, ...]:
         """Return selection and completion of every file in one torrent."""

@@ -141,12 +141,19 @@ class ManagedQBittorrent:
             self._assert_ownership(client)
             client.set_preferences(values)
 
-    def add_torrent(self, torrent_url: str, *, save_path: Path, category: str) -> None:
+    def add_torrent(self, torrent_url: str, *, save_path: Path, category: str, stopped: bool = False) -> None:
         """Submit an already recorded order to the private client."""
         with self._lock:
             client: QBittorrentClient = self._ensure()
             self._assert_ownership(client)
-            client.add_torrent(torrent_url, save_path=save_path, category=category)
+            client.add_torrent(torrent_url, save_path=save_path, category=category, stopped=stopped)
+
+    def rename_file(self, info_hash: str, old_path: str, new_path: str) -> None:
+        """Reserve one destination name in a private transfer that owns the file."""
+        with self._lock:
+            client: QBittorrentClient = self._required_client()
+            self._assert_ownership(client)
+            client.rename_file(info_hash, old_path, new_path)
 
     def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
         """Read managed transfers, restoring a previously active private process if needed."""
@@ -172,6 +179,10 @@ class ManagedQBittorrent:
             return self._previous.torrents(category)
         except TorrentClientError:
             return ()
+
+    def resume(self, info_hash: str) -> None:
+        """Let a private transfer whose names are reserved write its content."""
+        self.transfer_action(info_hash, "resume")
 
     def transfer_action(self, info_hash: str, action: str) -> None:
         """Stop or resume a known private transfer without deleting data."""

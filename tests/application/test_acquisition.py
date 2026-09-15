@@ -84,6 +84,9 @@ class _Client:
         self.reachable: bool = reachable
         self.preference_values: dict[str, object] = {"incomplete_files_ext": extension}
         self.added: list[tuple[str, Path, str]] = []
+        self.stopped: list[bool] = []
+        self.renamed: list[tuple[str, str, str]] = []
+        self.started: list[str] = []
         self.tracked: list[TorrentInfo] = []
 
     def version(self) -> str:
@@ -98,9 +101,18 @@ class _Client:
         self._require()
         self.preference_values.update(values)
 
-    def add_torrent(self, torrent_url: str, *, save_path: Path, category: str) -> None:
+    def add_torrent(self, torrent_url: str, *, save_path: Path, category: str, stopped: bool = False) -> None:
         self._require()
         self.added.append((torrent_url, save_path, category))
+        self.stopped.append(stopped)
+
+    def rename_file(self, info_hash: str, old_path: str, new_path: str) -> None:
+        self._require()
+        self.renamed.append((info_hash, old_path, new_path))
+
+    def resume(self, info_hash: str) -> None:
+        self._require()
+        self.started.append(info_hash)
 
     def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
         self._require()
@@ -285,7 +297,7 @@ def test_search_returns_the_catalog_of_the_source_answer(tmp_path: Path) -> None
     assert catalog.groups[0].choices[0].release.title == "sp-11"
 
 
-def test_download_queues_every_choice_into_the_series_directory(tmp_path: Path) -> None:
+def test_download_queues_every_choice_stopped_in_the_flat_workspace(tmp_path: Path) -> None:
     client: _Client = _Client()
     service: AcquisitionService = _service(client, tmp_path)
     choices: tuple[ReleaseChoice, ...] = (
@@ -295,8 +307,9 @@ def test_download_queues_every_choice_into_the_series_directory(tmp_path: Path) 
 
     receipt: DownloadReceipt = service.download(choices)
 
-    assert receipt == DownloadReceipt(2, tmp_path / "Neko to Ryuu")
-    assert [entry[1:] for entry in client.added] == [(tmp_path / "Neko to Ryuu", "AniShift")] * 2
+    assert receipt == DownloadReceipt(2, tmp_path)
+    assert [entry[1:] for entry in client.added] == [(tmp_path, "AniShift")] * 2
+    assert client.stopped == [True, True]
     assert client.added[0][0].startswith("https://nyaa.si/download/")
 
 
@@ -694,7 +707,7 @@ def test_search_title_keeps_only_the_asked_episodes(tmp_path: Path) -> None:
     assert [choice.release.title for group in catalog.groups for choice in group.choices] == ["sp-5"]
 
 
-def test_download_can_send_every_choice_into_one_named_directory(tmp_path: Path) -> None:
+def test_download_sends_choices_of_two_series_into_the_same_flat_workspace(tmp_path: Path) -> None:
     client: _Client = _Client()
     service: AcquisitionService = _service(client, tmp_path)
     choices: tuple[ReleaseChoice, ...] = (
@@ -702,7 +715,15 @@ def test_download_can_send_every_choice_into_one_named_directory(tmp_path: Path)
         ReleaseChoice(_release("other-9"), _NAMES["other-9"]),
     )
 
-    receipt: DownloadReceipt = service.download(choices, directory_name="Solo Leveling: Season 2")
+    receipt: DownloadReceipt = service.download(choices)
 
-    assert receipt == DownloadReceipt(2, tmp_path / "Solo Leveling Season 2")
-    assert [entry[1] for entry in client.added] == [tmp_path / "Solo Leveling Season 2"] * 2
+    assert receipt == DownloadReceipt(2, tmp_path)
+    assert [entry[1] for entry in client.added] == [tmp_path] * 2
+
+
+def test_reserving_a_name_renames_that_file_through_the_client(tmp_path: Path) -> None:
+    client: _Client = _Client()
+
+    _service(client, tmp_path).rename_transfer_file("abc", "pack/01.mkv", "01.mkv")
+
+    assert client.renamed == [("abc", "pack/01.mkv", "01.mkv")]
