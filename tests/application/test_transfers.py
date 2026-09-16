@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from loguru import logger as loguru_logger
 
+import anishift.application.transfers as transfers_module
 from anishift.application.acquisition import AcquisitionService
 from anishift.application.control import AcquisitionConfirmation, AcquisitionState
 from anishift.application.intents import RequestOrigin
 from anishift.application.transfers import TransferInspector, flat_layout
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.platform.directory_watch import source_is_available
 from anishift.services.torrents import TorrentFile, TorrentInfo
 from anishift.services.torrents.errors import TorrentClientError
 
@@ -18,7 +21,7 @@ from anishift.services.torrents.errors import TorrentClientError
 class _Acquisition(AcquisitionService):
     def __init__(self, root: Path) -> None:
         self.info: TorrentInfo | None = TorrentInfo("Episode", "abc", 1.0, "stoppedUP", str(root), 0, 4)
-        self.entries: tuple[TorrentFile, ...] = (TorrentFile(0, "Episode.mkv", 4, 1.0, 1, True),)
+        self.entries: tuple[TorrentFile, ...] = (TorrentFile(0, "Episode.mkv", 4, 1.0, 1),)
         self.info_calls: int = 0
         self.file_calls: int = 0
         self.resumed: list[frozenset[str]] = []
@@ -78,7 +81,7 @@ def test_completed_selected_files_are_ready_without_unselected_pack_files(tmp_pa
     acquisition: _Acquisition = _Acquisition(tmp_path)
     assert acquisition.info is not None
     acquisition.info = replace(acquisition.info, state=state)
-    acquisition.entries += (TorrentFile(1, "Skipped.mkv", 100, 0.0, 0, False),)
+    acquisition.entries += (TorrentFile(1, "Skipped.mkv", 100, 0.0, 0),)
 
     result: AcquisitionConfirmation = TransferInspector(acquisition, tmp_path).inspect((_confirmation(),))[0]
 
@@ -117,15 +120,13 @@ def test_unknown_or_remaining_bytes_prevent_completion(tmp_path: Path, remaining
     assert result.state is AcquisitionState.ACCEPTED
 
 
-@pytest.mark.parametrize("problem", ["preallocated", "incomplete_file", "short_file", "missing_file", "unselected"])
+@pytest.mark.parametrize("problem", ["preallocated", "short_file", "missing_file", "unselected"])
 def test_client_and_local_file_must_both_prove_completion(tmp_path: Path, problem: str) -> None:
     acquisition: _Acquisition = _Acquisition(tmp_path)
     if problem != "missing_file":
         (tmp_path / "Episode.mkv").write_bytes(b"bad" if problem == "short_file" else b"data")
     if problem == "preallocated":
-        acquisition.entries = (replace(acquisition.entries[0], progress=0.4, is_seed=False),)
-    elif problem == "incomplete_file":
-        acquisition.entries = (replace(acquisition.entries[0], is_seed=False),)
+        acquisition.entries = (replace(acquisition.entries[0], progress=0.4),)
     elif problem == "unselected":
         acquisition.entries = (replace(acquisition.entries[0], priority=0),)
 
@@ -249,23 +250,23 @@ def _unavailable() -> TorrentClientError:
 
 
 def test_a_single_episode_keeps_its_own_name_in_the_flat_library() -> None:
-    files: tuple[TorrentFile, ...] = (TorrentFile(0, "Neko to Ryuu - 09.mkv", 4, 0.0, 1, False),)
+    files: tuple[TorrentFile, ...] = (TorrentFile(0, "Neko to Ryuu - 09.mkv", 4, 0.0, 1),)
 
     assert flat_layout(files, frozenset()) == ((0, "Neko to Ryuu - 09.mkv", 4),)
 
 
 def test_a_pack_with_a_parent_directory_and_nested_paths_becomes_flat_names() -> None:
     files: tuple[TorrentFile, ...] = (
-        TorrentFile(0, "Neko Pack/Season 1/09.mkv", 4, 0.0, 1, False),
-        TorrentFile(1, "Neko Pack\\Season 1\\10.mkv", 5, 0.0, 1, False),
-        TorrentFile(2, "Neko Pack/extras/notes.txt", 6, 0.0, 0, False),
+        TorrentFile(0, "Neko Pack/Season 1/09.mkv", 4, 0.0, 1),
+        TorrentFile(1, "Neko Pack\\Season 1\\10.mkv", 5, 0.0, 1),
+        TorrentFile(2, "Neko Pack/extras/notes.txt", 6, 0.0, 0),
     )
 
     assert flat_layout(files, frozenset()) == ((0, "09.mkv", 4), (1, "10.mkv", 5))
 
 
 def test_two_titles_with_identical_file_names_get_separate_reservations() -> None:
-    files: tuple[TorrentFile, ...] = (TorrentFile(0, "pack/09.mkv", 4, 0.0, 1, False),)
+    files: tuple[TorrentFile, ...] = (TorrentFile(0, "pack/09.mkv", 4, 0.0, 1),)
 
     assert flat_layout(files, frozenset({"09"})) == ((0, "09 [2].mkv", 4),)
     assert flat_layout(files, frozenset({"09", "09 [2]"})) == ((0, "09 [3].mkv", 4),)
@@ -273,9 +274,9 @@ def test_two_titles_with_identical_file_names_get_separate_reservations() -> Non
 
 def test_a_video_and_its_sidecar_share_one_reserved_core() -> None:
     files: tuple[TorrentFile, ...] = (
-        TorrentFile(0, "pack/09.mkv", 4, 0.0, 1, False),
-        TorrentFile(1, "pack/subs/09.ass", 2, 0.0, 1, False),
-        TorrentFile(2, "pack/other/09.mkv", 7, 0.0, 1, False),
+        TorrentFile(0, "pack/09.mkv", 4, 0.0, 1),
+        TorrentFile(1, "pack/subs/09.ass", 2, 0.0, 1),
+        TorrentFile(2, "pack/other/09.mkv", 7, 0.0, 1),
     )
 
     assert flat_layout(files, frozenset({"09"})) == (
@@ -291,8 +292,8 @@ def test_a_finished_file_of_an_unfinished_pack_is_complete_on_its_own(tmp_path: 
     assert acquisition.info is not None
     acquisition.info = replace(acquisition.info, progress=0.5, amount_left=100, state="downloading")
     acquisition.entries = (
-        TorrentFile(0, "09.mkv", 4, 1.0, 1, True),
-        TorrentFile(1, "10.mkv", 100, 0.2, 1, False),
+        TorrentFile(0, "09.mkv", 4, 1.0, 1),
+        TorrentFile(1, "10.mkv", 100, 0.2, 1),
     )
 
     result: AcquisitionConfirmation = TransferInspector(acquisition, tmp_path).inspect((_confirmation(),))[0]
@@ -308,8 +309,8 @@ def test_a_sidecar_still_downloading_holds_back_the_video_of_the_same_episode(tm
     assert acquisition.info is not None
     acquisition.info = replace(acquisition.info, progress=0.5, amount_left=100, state="downloading")
     acquisition.entries = (
-        TorrentFile(0, "09.mkv", 4, 1.0, 1, True),
-        TorrentFile(1, "09.ass", 100, 0.2, 1, False),
+        TorrentFile(0, "09.mkv", 4, 1.0, 1),
+        TorrentFile(1, "09.ass", 100, 0.2, 1),
     )
 
     result: AcquisitionConfirmation = TransferInspector(acquisition, tmp_path).inspect((_confirmation(),))[0]
@@ -322,7 +323,7 @@ def test_client_work_on_a_transfer_withdraws_readiness_it_had_not_proven(tmp_pat
     (tmp_path / "09.mkv").write_bytes(b"data")
     acquisition: _Acquisition = _Acquisition(tmp_path)
     assert acquisition.info is not None
-    acquisition.entries = (TorrentFile(0, "09.mkv", 4, 1.0, 1, True),)
+    acquisition.entries = (TorrentFile(0, "09.mkv", 4, 1.0, 1),)
     inspector: TransferInspector = TransferInspector(acquisition, tmp_path)
     assert inspector.inspect((_confirmation(),))[0].complete_files == ("09.mkv",)
     acquisition.info = replace(acquisition.info, progress=0.5, amount_left=1, state=interruption)
@@ -336,7 +337,7 @@ def test_client_work_on_a_transfer_withdraws_readiness_it_had_not_proven(tmp_pat
 def test_names_that_no_longer_match_the_reservation_make_the_transfer_uncertain(tmp_path: Path) -> None:
     (tmp_path / "09.mkv").write_bytes(b"data")
     acquisition: _Acquisition = _Acquisition(tmp_path)
-    acquisition.entries = (TorrentFile(0, "10.mkv", 4, 1.0, 1, True),)
+    acquisition.entries = (TorrentFile(0, "10.mkv", 4, 1.0, 1),)
     reserved: AcquisitionConfirmation = replace(_confirmation(), file_layout=((0, "09.mkv", 4),))
 
     result: AcquisitionConfirmation = TransferInspector(acquisition, tmp_path).inspect((reserved,))[0]
@@ -347,7 +348,7 @@ def test_names_that_no_longer_match_the_reservation_make_the_transfer_uncertain(
 def test_a_reserved_transfer_stays_accepted_while_its_names_still_match(tmp_path: Path) -> None:
     (tmp_path / "09.mkv").write_bytes(b"data")
     acquisition: _Acquisition = _Acquisition(tmp_path)
-    acquisition.entries = (TorrentFile(0, "09.mkv", 4, 1.0, 1, True),)
+    acquisition.entries = (TorrentFile(0, "09.mkv", 4, 1.0, 1),)
     reserved: AcquisitionConfirmation = replace(_confirmation(), file_layout=((0, "09.mkv", 4),))
 
     result: AcquisitionConfirmation = TransferInspector(acquisition, tmp_path).inspect((reserved,))[0]
@@ -367,3 +368,112 @@ def test_declared_details_are_forgotten_once_the_owner_renames_them(tmp_path: Pa
     inspector.forget("abc")
 
     assert inspector.declared("abc") == ()
+
+
+def test_a_complete_file_of_an_unfinished_torrent_is_admitted_without_its_unfinished_sibling(tmp_path: Path) -> None:
+    (tmp_path / "Neko no Ken - 06.mkv").write_bytes(b"data")
+    (tmp_path / "Neko no Ken - 06.ass").write_bytes(b"ab")
+    (tmp_path / "Neko no Ken - 07.mkv").write_bytes(b"data")
+    acquisition: _Acquisition = _Acquisition(tmp_path)
+    acquisition.info = TorrentInfo("Neko no Ken", "abc", 0.667, "stalledDL", str(tmp_path), 4, 6)
+    acquisition.entries = (
+        TorrentFile(0, "Neko no Ken - 06.mkv", 4, 1.0, 1),
+        TorrentFile(1, "Neko no Ken - 06.ass", 2, 1.0, 1),
+        TorrentFile(2, "Neko no Ken - 07.mkv", 4, 0.5, 1),
+    )
+
+    result: AcquisitionConfirmation = TransferInspector(acquisition, tmp_path).inspect((_confirmation(),))[0]
+
+    assert result.state is AcquisitionState.ACCEPTED
+    assert result.complete_files == ("Neko no Ken - 06.mkv", "Neko no Ken - 06.ass")
+    assert result.required_files == ("Neko no Ken - 06.mkv", "Neko no Ken - 06.ass", "Neko no Ken - 07.mkv")
+
+
+class _Refusing(AcquisitionService):
+    def __init__(self, root: Path) -> None:
+        self.root: Path = root
+        self.failing: str = "abc"
+
+    def resume_unconfirmed(self, hashes: frozenset[str]) -> None:
+        del hashes
+
+    def transfers(self) -> tuple[TorrentInfo, ...]:
+        return (
+            TorrentInfo("Pack", "abc", 0.5, "downloading", str(self.root), 2, 2),
+            TorrentInfo("Other", "def", 0.5, "downloading", str(self.root), 2, 2),
+        )
+
+    def transfer_files(self, info_hash: str) -> tuple[TorrentFile, ...]:
+        if info_hash == self.failing:
+            raise TorrentClientError(
+                context=ErrorContext(
+                    code=ErrorCode.TORRENT_CLIENT_REFUSED,
+                    message="qBittorrent returned unreadable file metadata",
+                )
+            )
+        return (TorrentFile(0, "Other.mkv", 4, 0.0, 1),)
+
+
+def test_a_transfer_that_keeps_failing_inspection_stops_with_a_problem_of_its_own(tmp_path: Path) -> None:
+    acquisition: _Refusing = _Refusing(tmp_path)
+    inspector: TransferInspector = TransferInspector(acquisition, tmp_path)
+    other: AcquisitionConfirmation = replace(_confirmation(), operation_id="op-2", info_hash="def")
+    refused: list[str | None] = []
+    for _ in range(3):
+        results: tuple[AcquisitionConfirmation, ...] = inspector.inspect((_confirmation(), other))
+        refused.append(results[0].problem)
+        assert results[1].problem is None
+        assert results[1].required_files == ("Other.mkv",)
+
+    assert refused[0] is None
+    assert refused[1] is None
+    assert refused[2] is not None
+    acquisition.failing = ""
+    assert inspector.inspect((_confirmation(),))[0].problem is None
+    acquisition.failing = "abc"
+    assert inspector.inspect((_confirmation(),))[0].problem is None
+
+
+def test_a_re_ordered_hash_starts_its_refusal_count_again(tmp_path: Path) -> None:
+    acquisition: _Refusing = _Refusing(tmp_path)
+    inspector: TransferInspector = TransferInspector(acquisition, tmp_path)
+    other: AcquisitionConfirmation = replace(_confirmation(), operation_id="op-2", info_hash="def")
+    for _ in range(2):
+        assert inspector.inspect((_confirmation(),))[0].problem is None
+
+    assert inspector.inspect((other,))[0].problem is None
+    assert inspector.inspect((_confirmation(),))[0].problem is None
+    assert inspector.inspect((_confirmation(),))[0].problem is None
+    assert inspector.inspect((_confirmation(),))[0].problem is not None
+
+
+def test_a_file_that_vanishes_between_the_checks_is_not_complete_and_leaves_the_rest_inspected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "09.mkv").write_bytes(b"data")
+    (tmp_path / "09.ass").write_bytes(b"ab")
+    (tmp_path / "10.mkv").write_bytes(b"data")
+    acquisition: _Acquisition = _Acquisition(tmp_path)
+    acquisition.info = TorrentInfo("Pack", "abc", 0.9, "stalledDL", str(tmp_path), 4, 6)
+    acquisition.entries = (
+        TorrentFile(0, "09.mkv", 4, 1.0, 1),
+        TorrentFile(1, "09.ass", 2, 1.0, 1),
+        TorrentFile(2, "10.mkv", 4, 1.0, 1),
+    )
+    available: Callable[[Path], bool] = source_is_available
+
+    def vanish(path: Path) -> bool:
+        outcome: bool = available(path)
+        if path.name == "09.mkv":
+            path.unlink()
+        return outcome
+
+    monkeypatch.setattr(transfers_module, "source_is_available", vanish)
+
+    result: AcquisitionConfirmation = TransferInspector(acquisition, tmp_path).inspect((_confirmation(),))[0]
+
+    assert result.state is AcquisitionState.ACCEPTED
+    assert result.required_files == ("09.mkv", "09.ass", "10.mkv")
+    assert result.complete_files == ("10.mkv",)
+    assert result.problem is None

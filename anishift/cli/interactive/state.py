@@ -74,6 +74,12 @@ _TRANSFER_LABELS: Final[dict[str, str]] = {
 }
 """User-facing download states returned by qBittorrent."""
 
+_ATTENTION_LABEL: Final[str] = "wymaga uwagi"
+"""Label of a release that recorded a problem, whether or not the client still reports its transfer."""
+
+_UNCONFIRMED_LABEL: Final[str] = "brak potwierdzenia klienta"
+"""Label of an ordered release the torrent client does not report at all."""
+
 _ADD_FIELDS: Final[tuple[str, ...]] = ("Tytuł serii", "Grupa wydająca", "Pierwszy odcinek")
 """Fields needed to follow a series even before its first torrent exists."""
 
@@ -551,7 +557,7 @@ class StateController:
             progress_text: str = (
                 f"{float(str(value)) * 100:.1f}%" if measured and isinstance(value, (int, float)) else "—"
             )
-            state: str = _TRANSFER_LABELS.get(str(item.get("state")), "") if measured else ""
+            state: str = _transfer_label(item, measured=measured)
             entries.append(
                 (
                     f"{_safe_text(item.get('name', ''))} · {progress_text}" + (f" · {state}" if state else ""),
@@ -561,21 +567,36 @@ class StateController:
         return entries
 
     def _transfer_rows(self) -> list[Mapping[str, object]]:
-        rows: list[Mapping[str, object]] = _rows(self._snapshot.get("transfers"))
-        known: set[str] = {str(item["info_hash"]) for item in rows}
+        acquisitions: list[Mapping[str, object]] = _rows(self._snapshot.get("acquisitions"))
+        attention: set[str] = {str(item.get("info_hash")) for item in acquisitions if item.get("problem")}
+        reported: list[Mapping[str, object]] = _rows(self._snapshot.get("transfers"))
+        known: set[str] = {str(item["info_hash"]) for item in reported}
+        rows: list[Mapping[str, object]] = [
+            {**item, "problem": str(item["info_hash"]) in attention} for item in reported
+        ]
         rows.extend(
             {
                 "info_hash": item["info_hash"],
                 "name": f"{item.get('directory', '')} · odc. {item.get('episode', '?')}",
-                "state": "wymaga uwagi" if item.get("problem") else "brak potwierdzenia klienta",
+                "state": None,
+                "problem": bool(item.get("problem")),
                 "progress": None,
             }
-            for item in _rows(self._snapshot.get("acquisitions"))
+            for item in acquisitions
             if str(item.get("info_hash")) not in known
             and item.get("state") != "complete"
             and (item.get("state") != "failed" or item.get("problem"))
         )
         return rows
+
+
+def _transfer_label(row: Mapping[str, object], *, measured: bool) -> str:
+    """Return the Polish label of one download row, naming a recorded problem before any client state."""
+    if row.get("problem"):
+        return _ATTENTION_LABEL
+    if row.get("state") is None:
+        return _UNCONFIRMED_LABEL
+    return _TRANSFER_LABELS.get(str(row.get("state")), "") if measured else ""
 
 
 def _rows(value: object) -> list[Mapping[str, object]]:

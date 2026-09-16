@@ -62,7 +62,6 @@ class TorrentFile:
     size: int
     progress: float
     priority: int
-    is_seed: bool
 
     def __post_init__(self) -> None:
         if not self.name or self.index < 0 or self.size < 0 or not 0.0 <= self.progress <= 1.0 or self.priority < 0:

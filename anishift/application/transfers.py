@@ -55,6 +55,9 @@ _SETTLING_STATES: Final[frozenset[str]] = frozenset(
 _FIRST_ORDINAL: Final[int] = 2
 """Suffix given to the first colliding set, because the free core carries no number."""
 
+_FAILURES_BEFORE_PROBLEM: Final[int] = 3
+"""Consecutive failed inspections of one transfer before its release stops with a visible problem."""
+
 
 @dataclass(frozen=True, slots=True)
 class _Files:
@@ -89,6 +92,7 @@ class TransferInspector:
         self._stalled: frozenset[str] = frozenset()
         self._snapshot: tuple[TorrentInfo, ...] = ()
         self._failures: frozenset[tuple[str, str]] = frozenset()
+        self._refused: dict[str, int] = {}
 
     def snapshot(self) -> tuple[TorrentInfo, ...]:
         """Read the last transfer observations without contacting the client."""
@@ -115,6 +119,7 @@ class TransferInspector:
         """Read the client once and refresh the details of the selected files whenever the transfer moved bytes."""
         if not acquisitions:
             self._files.clear()
+            self._refused.clear()
             self._note_failures(frozenset(), None)
             return ()
         self._acquisition.resume_unconfirmed(frozenset(item.info_hash for item in acquisitions))
@@ -122,6 +127,7 @@ class TransferInspector:
         active: set[str] = {item.info_hash for item in acquisitions}
         self._record_progress({key: value for key, value in transfers.items() if key in active}, stall_after_s)
         self._files = {key: value for key, value in self._files.items() if key in active}
+        self._refused = {key: value for key, value in self._refused.items() if key in active}
         results: list[AcquisitionConfirmation] = []
         natures: set[tuple[str, str]] = set()
         reason: str | None = None
@@ -134,10 +140,30 @@ class TransferInspector:
             except (AniShiftError, OSError) as problem:
                 natures.add((type(problem).__name__, failure_code(problem)))
                 reason = reason or sanitize_event_message(str(problem))
-                result = acquisition
+                result = self._refused_inspection(acquisition, problem)
+            else:
+                self._refused.pop(acquisition.info_hash.casefold(), None)
             results.append(result)
         self._note_failures(frozenset(natures), reason)
         return tuple(results)
+
+    def _refused_inspection(
+        self,
+        acquisition: AcquisitionConfirmation,
+        problem: AniShiftError | OSError,
+    ) -> AcquisitionConfirmation:
+        key: str = acquisition.info_hash.casefold()
+        attempts: int = self._refused.get(key, 0) + 1
+        self._refused[key] = attempts
+        if attempts < _FAILURES_BEFORE_PROBLEM:
+            return acquisition
+        logger.warning(
+            "A transfer keeps failing inspection",
+            attempts=attempts,
+            error_class=type(problem).__name__,
+            code=failure_code(problem),
+        )
+        return replace(acquisition, problem=sanitize_event_message(str(problem)))
 
     def _note_failures(self, natures: frozenset[tuple[str, str]], reason: str | None) -> None:
         previous: frozenset[tuple[str, str]] = self._failures
@@ -307,8 +333,14 @@ def _safe_path(directory: Path, name: str) -> bool:
 
 
 def _ready_file(directory: Path, file: TorrentFile) -> bool:
+    """Return whether the client verified every piece of this file and the local bytes match its declared size."""
     path: Path = directory / file.name.replace("\\", "/")
-    return file.progress == 1.0 and file.is_seed and source_is_available(path) and path.stat().st_size == file.size
+    if file.progress != 1.0 or not source_is_available(path):
+        return False
+    try:
+        return path.stat().st_size == file.size
+    except OSError:
+        return False
 
 
 def _updated(before: AcquisitionConfirmation, after: AcquisitionConfirmation) -> AcquisitionConfirmation:

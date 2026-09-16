@@ -11,7 +11,9 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Final, cast
+from urllib.parse import parse_qs
 
+import httpx
 import pytest
 from fakes import write_image_source, write_text_source
 from loguru import logger as loguru_logger
@@ -96,6 +98,7 @@ from anishift.platform.local_control import (
 from anishift.services.media import DefaultMediaProbe
 from anishift.services.torrents import Release, TorrentClientError, TorrentFile, TorrentInfo, parse_release_name
 from anishift.services.torrents.categories import SEARCH_CATEGORIES
+from anishift.services.torrents.qbittorrent import QBittorrentClient
 
 _TIMEOUT_S: Final[float] = 5.0
 
@@ -140,6 +143,7 @@ class _TorrentNetwork:
         self.started: list[str] = []
         self.actions: list[tuple[str, str]] = []
         self.released: list[frozenset[str]] = []
+        self.unreadable_files: bool = False
 
     def transfer_action(self, info_hash: str, action: str) -> None:
         self.actions.append((info_hash, action))
@@ -203,6 +207,12 @@ class _TorrentNetwork:
 
     def files(self, info_hash: str) -> tuple[TorrentFile, ...]:
         del info_hash
+        if self.unreadable_files:
+            raise TorrentClientError(
+                context=ErrorContext(
+                    code=ErrorCode.TORRENT_CLIENT_REFUSED, message="qBittorrent returned unreadable file metadata"
+                )
+            )
         return self.entries
 
 
@@ -1790,7 +1800,7 @@ def test_accepted_transfer_waits_for_file_completion_then_enters_auto_once(
     size: int = source.stat().st_size
     network: _TorrentNetwork = _TorrentNetwork()
     network.tracked["9"] = TorrentInfo(source.name, "9", 0.5, "downloading", str(source.parent), 1, size - 1)
-    network.entries = (TorrentFile(0, source.name, size, 0.5, 1, False),)
+    network.entries = (TorrentFile(0, source.name, size, 0.5, 1),)
     service.acquisition = AcquisitionService(
         source=network, client=cast("TorrentClient", network), workspace_root=tmp_path, parse_name=parse_release_name
     )
@@ -1806,7 +1816,7 @@ def test_accepted_transfer_waits_for_file_completion_then_enters_auto_once(
         assert not service.submitted_event.wait(0.1)
         partial: WatchState = owner.state
         assert partial.acquisitions[0].state is AcquisitionState.ACCEPTED
-        network.entries = (replace(network.entries[0], progress=1.0, is_seed=True),)
+        network.entries = (replace(network.entries[0], progress=1.0),)
         network.tracked["9"] = replace(network.tracked["9"], progress=1.0, amount_left=0, state="stoppedUP")
         assert service.submitted_event.wait(_TIMEOUT_S)
         completed: WatchState = owner.state
@@ -2412,8 +2422,8 @@ def test_further_progress_reads_admit_the_newly_complete_file_and_never_restart_
     network: _TorrentNetwork = _TorrentNetwork()
     network.tracked["9"] = TorrentInfo("Pack", "9", 0.5, "downloading", str(_library_dir(tmp_path)), size, size)
     network.entries = (
-        TorrentFile(0, "Episode.txt", size, 0.5, 1, False),
-        TorrentFile(1, "Film.txt", size, 1.0, 1, True),
+        TorrentFile(0, "Episode.txt", size, 0.5, 1),
+        TorrentFile(1, "Film.txt", size, 1.0, 1),
     )
     service.acquisition = AcquisitionService(
         source=network, client=cast("TorrentClient", network), workspace_root=tmp_path, parse_name=parse_release_name
@@ -2432,8 +2442,8 @@ def test_further_progress_reads_admit_the_newly_complete_file_and_never_restart_
         assert service.submitted_event.wait(_TIMEOUT_S)
         assert _settled_starts(service, 1) == 1
         network.entries = (
-            TorrentFile(0, "Episode.txt", size, 1.0, 1, True),
-            TorrentFile(1, "Film.txt", size, 1.0, 1, True),
+            TorrentFile(0, "Episode.txt", size, 1.0, 1),
+            TorrentFile(1, "Film.txt", size, 1.0, 1),
         )
         network.tracked["9"] = replace(
             network.tracked["9"], progress=1.0, state="stoppedUP", amount_left=0, completed=2 * size
@@ -2456,8 +2466,8 @@ def test_a_stopped_transfer_reserves_flat_names_before_its_content_is_started(tm
     network: _TorrentNetwork = _TorrentNetwork()
     network.tracked["9"] = TorrentInfo("Neko Pack", "9", 0.0, "stoppedDL", str(tmp_path), 8, 0)
     network.entries = (
-        TorrentFile(0, "Neko Pack/Season 1/09.mkv", 4, 0.0, 1, False),
-        TorrentFile(1, "Neko Pack/Season 1/09.ass", 4, 0.0, 1, False),
+        TorrentFile(0, "Neko Pack/Season 1/09.mkv", 4, 0.0, 1),
+        TorrentFile(1, "Neko Pack/Season 1/09.ass", 4, 0.0, 1),
     )
     service.acquisition = AcquisitionService(
         source=network, client=cast("TorrentClient", network), workspace_root=tmp_path, parse_name=parse_release_name
@@ -2687,7 +2697,7 @@ def test_a_transfer_that_released_its_file_lets_the_deferred_source_reach_ready(
     size: int = (audiobook / "Book.txt").stat().st_size
     network: _TorrentNetwork = _TorrentNetwork()
     network.tracked["9"] = TorrentInfo("Book", "9", 0.5, "downloading", str(audiobook), size, 0)
-    network.entries = (TorrentFile(0, "Book.txt", size, 0.5, 1, False),)
+    network.entries = (TorrentFile(0, "Book.txt", size, 0.5, 1),)
     service: AppService = _real_service(
         tmp_path,
         acquisition=AcquisitionService(
@@ -2705,7 +2715,7 @@ def test_a_transfer_that_released_its_file_lets_the_deferred_source_reach_ready(
     try:
         assert _await((tmp_path / "ready" / "Book.m4a").exists)
         assert (audiobook / "Book.txt").exists()
-        network.entries = (TorrentFile(0, "Book.txt", size, 1.0, 1, True),)
+        network.entries = (TorrentFile(0, "Book.txt", size, 1.0, 1),)
         network.tracked["9"] = replace(
             network.tracked["9"], progress=1.0, state="stoppedUP", amount_left=0, completed=size
         )
@@ -2772,7 +2782,7 @@ def test_two_transfers_of_one_file_name_reserve_separate_names_beside_ready_and_
     network: _TorrentNetwork = _TorrentNetwork()
     network.tracked["9"] = TorrentInfo("First", "9", 0.0, "stoppedDL", str(tmp_path), 4, 0)
     network.tracked["10"] = TorrentInfo("Second", "10", 0.0, "stoppedDL", str(tmp_path), 4, 0)
-    network.entries = (TorrentFile(0, "Pack/09.mkv", 4, 0.0, 1, False),)
+    network.entries = (TorrentFile(0, "Pack/09.mkv", 4, 0.0, 1),)
     service.acquisition = AcquisitionService(
         source=network, client=cast("TorrentClient", network), workspace_root=tmp_path, parse_name=parse_release_name
     )
@@ -2827,8 +2837,8 @@ def test_a_file_already_lying_in_the_workspace_keeps_an_incoming_set_off_its_nam
     network: _TorrentNetwork = _TorrentNetwork()
     network.tracked["9"] = TorrentInfo("Pack", "9", 0.0, "stoppedDL", str(tmp_path), 8, 0)
     network.entries = (
-        TorrentFile(0, "Pack/09.mkv", 4, 0.0, 1, False),
-        TorrentFile(1, "Pack/09.ass", 4, 0.0, 1, False),
+        TorrentFile(0, "Pack/09.mkv", 4, 0.0, 1),
+        TorrentFile(1, "Pack/09.ass", 4, 0.0, 1),
     )
     service.acquisition = AcquisitionService(
         source=network, client=cast("TorrentClient", network), workspace_root=tmp_path, parse_name=parse_release_name
@@ -2856,7 +2866,7 @@ def test_a_subfolder_of_the_workspace_never_pushes_an_incoming_set_off_its_relea
     (tmp_path / "09" / "Episode.txt").write_text("Text", encoding="utf-8")
     network: _TorrentNetwork = _TorrentNetwork()
     network.tracked["9"] = TorrentInfo("Pack", "9", 0.0, "stoppedDL", str(tmp_path), 4, 0)
-    network.entries = (TorrentFile(0, "Pack/09.mkv", 4, 0.0, 1, False),)
+    network.entries = (TorrentFile(0, "Pack/09.mkv", 4, 0.0, 1),)
     service.acquisition = AcquisitionService(
         source=network, client=cast("TorrentClient", network), workspace_root=tmp_path, parse_name=parse_release_name
     )
@@ -2913,7 +2923,7 @@ def test_a_destination_that_cannot_be_read_holds_that_release_without_starting_i
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, store, _ = _library(tmp_path)
-    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1, False),))
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1),))
     network.tracked["10"] = TorrentInfo("Other", "10", 0.5, "downloading", str(tmp_path), 2, 2)
     fresh: AcquisitionConfirmation = _accepted_transfer("9")
     writing: AcquisitionConfirmation = _accepted_transfer("10", layout=((0, "09.mkv", 4),), started=True)
@@ -2946,7 +2956,7 @@ def test_a_hidden_file_already_lying_in_the_workspace_keeps_an_incoming_set_off_
     service, store, _ = _library(tmp_path)
     hidden: Path = tmp_path / ".09.mkv"
     hidden.write_bytes(b"the hidden episode a person put here")
-    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "Pack/.09.mkv", 4, 0.0, 1, False),))
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "Pack/.09.mkv", 4, 0.0, 1),))
     item: AcquisitionConfirmation = _accepted_transfer("9")
     store.save(WatchState(acquisitions=(item,)))
     owner: AutomationOwner = _owner(service, store)
@@ -2963,7 +2973,7 @@ def test_anything_taking_a_reserved_name_before_the_start_holds_that_release_wit
     tmp_path: Path,
 ) -> None:
     service, store, _ = _library(tmp_path)
-    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1, False),))
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1),))
     store.save(WatchState(acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),)),)))
     taken: Path = tmp_path / "09.mkv"
     taken.write_bytes(b"the episode a person put here")
@@ -2988,7 +2998,7 @@ def _held_release(
 ) -> tuple[AutomationOwner, _TorrentNetwork, WatchStateStore, Path]:
     monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
     service, store, _ = _library(tmp_path)
-    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1, False),))
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1),))
     store.save(WatchState(acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),)),)))
     taken: Path = tmp_path / "09.mkv"
     taken.write_bytes(b"the episode a person put here")
@@ -3050,7 +3060,7 @@ def test_a_transfer_whose_own_reserved_names_are_in_place_never_reserves_them_ag
     service, store, _ = _library(tmp_path)
     ours: Path = tmp_path / "09.mkv"
     ours.write_bytes(b"data")
-    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1, False),))
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1),))
     network.tracked["9"] = TorrentInfo("Pack", "9", 0.5, "downloading", str(tmp_path), 2, 2)
     store.save(
         WatchState(acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True),)),
@@ -3079,7 +3089,7 @@ def _dangling_link(link: Path) -> None:
 def test_a_dangling_link_wearing_an_incoming_name_keeps_that_set_off_it(tmp_path: Path) -> None:
     service, store, _ = _library(tmp_path)
     _dangling_link(tmp_path / "09.mkv")
-    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "Pack/09.mkv", 4, 0.0, 1, False),))
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "Pack/09.mkv", 4, 0.0, 1),))
     item: AcquisitionConfirmation = _accepted_transfer("9")
     store.save(WatchState(acquisitions=(item,)))
     owner: AutomationOwner = _owner(service, store)
@@ -3114,7 +3124,7 @@ def test_an_entry_that_no_longer_reads_as_a_file_still_keeps_an_incoming_set_off
 ) -> None:
     service, store, _ = _library(tmp_path)
     (tmp_path / "09.mkv").write_bytes(b"link")
-    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "Pack/09.mkv", 4, 0.0, 1, False),))
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "Pack/09.mkv", 4, 0.0, 1),))
     item: AcquisitionConfirmation = _accepted_transfer("9")
     store.save(WatchState(acquisitions=(item,)))
     owner: AutomationOwner = _owner(service, store)
@@ -3133,7 +3143,7 @@ def test_a_name_that_still_has_a_directory_entry_holds_a_release_that_reserved_i
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, store, _ = _library(tmp_path)
-    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1, False),))
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1),))
     store.save(WatchState(acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),)),)))
     (tmp_path / "09.mkv").write_bytes(b"link")
     owner: AutomationOwner = _owner(service, store)
@@ -3147,3 +3157,150 @@ def test_a_name_that_still_has_a_directory_entry_holds_a_release_that_reserved_i
     assert network.renamed == []
     assert held.problem is not None
     assert held.content_started is False
+
+
+def _real_client_handler(root: Path, seen: list[tuple[str, str]]) -> Callable[[httpx.Request], httpx.Response]:
+    names: dict[int, str] = {0: "Neko no Ken - 06/06.mkv", 1: "Neko no Ken - 06/06.ass"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path: str = request.url.path.removeprefix("/api/v2")
+        body: str = request.content.decode("utf-8")
+        seen.append((path, body))
+        if path == "/torrents/renameFile":
+            form: dict[str, list[str]] = parse_qs(body)
+            moved: int = next(key for key, name in names.items() if name == form["oldPath"][0])
+            names[moved] = form["newPath"][0]
+        if path == "/torrents/info":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "hash": "9",
+                        "name": "Neko no Ken - 06",
+                        "progress": 0.0,
+                        "state": "stoppedDL",
+                        "save_path": str(root),
+                        "amount_left": 6,
+                        "completed": 0,
+                    }
+                ],
+            )
+        if path == "/torrents/files":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "index": 0,
+                        "name": names[0],
+                        "size": 4,
+                        "progress": 0.0,
+                        "priority": 1,
+                        "is_seed": False,
+                        "availability": 0.0,
+                        "piece_range": [0, 3],
+                    },
+                    {
+                        "index": 1,
+                        "name": names[1],
+                        "size": 2,
+                        "progress": 0.0,
+                        "priority": 1,
+                        "availability": 0.0,
+                        "piece_range": [4, 4],
+                    },
+                ],
+            )
+        return httpx.Response(200, text="Ok.")
+
+    return handler
+
+
+def test_a_multi_file_release_of_the_real_client_reserves_every_name_and_starts(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    seen: list[tuple[str, str]] = []
+    http: httpx.Client = httpx.Client(transport=httpx.MockTransport(_real_client_handler(tmp_path, seen)))
+    client: QBittorrentClient = QBittorrentClient("http://127.0.0.1:8080", http=http)
+    service.acquisition = AcquisitionService(
+        source=_TorrentNetwork(),
+        client=client,
+        workspace_root=tmp_path,
+        parse_name=parse_release_name,
+    )
+    item: AcquisitionConfirmation = _accepted_transfer("9")
+    store.save(WatchState(acquisitions=(item,)))
+    owner: AutomationOwner = _owner(service, store)
+
+    with http:
+        owner._inspect_transfers((item,), owner._reserved_names())
+        _drain_owner_queue(owner)
+        reserved: AcquisitionConfirmation = store.load().acquisitions[0]
+        owner._inspect_transfers((reserved,), owner._reserved_names())
+        _drain_owner_queue(owner)
+
+    started: AcquisitionConfirmation = store.load().acquisitions[0]
+    assert reserved.problem is None
+    assert reserved.file_layout == ((0, "06.mkv", 4), (1, "06.ass", 2))
+    assert started.content_started is True
+    assert ("/torrents/renameFile", "hash=9&oldPath=Neko+no+Ken+-+06%2F06.mkv&newPath=06.mkv") in seen
+    assert ("/torrents/renameFile", "hash=9&oldPath=Neko+no+Ken+-+06%2F06.ass&newPath=06.ass") in seen
+    assert ("/torrents/start", "hashes=9") in seen
+
+
+def _reported_problem(owner: AutomationOwner) -> tuple[bool, bool]:
+    status: Mapping[str, object] = owner._status()
+    transfers: list[Mapping[str, object]] = cast("list[Mapping[str, object]]", status["transfers"])
+    acquisitions: list[Mapping[str, object]] = cast("list[Mapping[str, object]]", status["acquisitions"])
+    return (
+        any(item["info_hash"] == "9" for item in transfers),
+        any(item["info_hash"] == "9" and item["problem"] for item in acquisitions),
+    )
+
+
+def test_a_release_the_client_still_reports_publishes_its_unreadable_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, store, _ = _library(tmp_path)
+    _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1),))
+    item: AcquisitionConfirmation = _accepted_transfer("9")
+    store.save(WatchState(acquisitions=(item,)))
+    owner: AutomationOwner = _owner(service, store)
+    listing: Callable[[Path], Iterator[Path]] = Path.iterdir
+
+    def refuse(self: Path) -> Iterator[Path]:
+        if self == tmp_path:
+            raise PermissionError(13, "denied")
+        return listing(self)
+
+    monkeypatch.setattr(Path, "iterdir", refuse)
+    owner._inspect_transfers((item,), owner._reserved_names())
+    _drain_owner_queue(owner)
+
+    assert _reported_problem(owner) == (True, True)
+
+
+def test_a_release_the_client_still_reports_publishes_its_occupied_name(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1),))
+    store.save(WatchState(acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),)),)))
+    (tmp_path / "09.mkv").write_bytes(b"the episode a person put here")
+    owner: AutomationOwner = _owner(service, store)
+
+    owner._inspect_transfers((store.load().acquisitions[0],), owner._reserved_names())
+    _drain_owner_queue(owner)
+
+    assert _reported_problem(owner) == (True, True)
+
+
+def test_a_release_the_client_still_reports_publishes_its_failing_inspection(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1),))
+    network.unreadable_files = True
+    store.save(WatchState(acquisitions=(_accepted_transfer("9"),)))
+    owner: AutomationOwner = _owner(service, store)
+
+    for _ in range(3):
+        owner._inspect_transfers((store.load().acquisitions[0],), owner._reserved_names())
+        _drain_owner_queue(owner)
+
+    assert _reported_problem(owner) == (True, True)

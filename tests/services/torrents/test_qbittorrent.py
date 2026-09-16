@@ -266,27 +266,39 @@ def test_torrent_files_preserve_selection_and_completion() -> None:
         return httpx.Response(
             200,
             json=[
-                {"index": 0, "name": "Folder/Episode.mkv", "size": 4, "progress": 1.0, "priority": 1, "is_seed": True}
+                {
+                    "index": 0,
+                    "name": "Folder/Episode.mkv",
+                    "size": 4,
+                    "progress": 1.0,
+                    "priority": 1,
+                    "is_seed": True,
+                    "availability": 1.0,
+                    "piece_range": [0, 3],
+                },
+                {
+                    "index": 1,
+                    "name": "Folder/Episode.ass",
+                    "size": 2,
+                    "progress": 1.0,
+                    "priority": 1,
+                    "availability": 1.0,
+                    "piece_range": [4, 4],
+                },
             ],
         )
 
     client, http = _client(handler)
     with http:
-        assert client.files("abc") == (TorrentFile(0, "Folder/Episode.mkv", 4, 1.0, 1, True),)
+        assert client.files("abc") == (
+            TorrentFile(0, "Folder/Episode.mkv", 4, 1.0, 1),
+            TorrentFile(1, "Folder/Episode.ass", 2, 1.0, 1),
+        )
 
 
-@pytest.mark.parametrize(
-    ("key", "value"), [("size", -1), ("size", True), ("progress", "1"), ("progress", 1.1), ("is_seed", "true")]
-)
+@pytest.mark.parametrize(("key", "value"), [("size", -1), ("size", True), ("progress", "1"), ("progress", 1.1)])
 def test_invalid_file_metadata_cannot_prove_completion(key: str, value: object) -> None:
-    entry: dict[str, object] = {
-        "index": 0,
-        "name": "Episode.mkv",
-        "size": 4,
-        "progress": 1.0,
-        "priority": 1,
-        "is_seed": True,
-    }
+    entry: dict[str, object] = {"index": 0, "name": "Episode.mkv", "size": 4, "progress": 1.0, "priority": 1}
     entry[key] = value
 
     def handler(request: httpx.Request) -> httpx.Response:

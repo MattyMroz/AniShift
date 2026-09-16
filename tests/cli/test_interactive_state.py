@@ -338,3 +338,74 @@ def _assert_list_fills_available_rows(controller: StateController) -> None:
     assert controller._selected == 21
     controller.handle_key("home")
     assert controller._selected == 0
+
+
+def _rendered_transfers(tmp_path: Path, snapshot: dict[str, object]) -> str:
+    def handle(request: ControlRequest) -> ControlResponse:
+        return ControlResponse.succeeded(snapshot if request.kind == "status" else {})
+
+    key: bytes = os.urandom(32)
+    endpoint: str = control_endpoint(tmp_path)
+    server: ControlServer = ControlServer(endpoint, key, handle)
+    session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+    refreshed: threading.Event = threading.Event()
+    controller: StateController = StateController(session, refreshed.set)
+    try:
+        deadline: float = time.monotonic() + 5.0
+        while not controller._connected and time.monotonic() < deadline:
+            refreshed.wait(0.05)
+            refreshed.clear()
+        assert controller._connected
+        controller.handle_key("tab")
+        return controller.render(80, 24).plain
+    finally:
+        controller.close()
+        session.close()
+        server.close()
+        controller._thread.join(5)
+
+
+@pytest.mark.parametrize("problem", ["The download destination could not be read", "Something took a name", "Refused"])
+def test_a_problem_of_a_release_the_client_still_reports_is_named_in_the_download_view(
+    tmp_path: Path,
+    problem: str,
+) -> None:
+    frame: str = _rendered_transfers(
+        tmp_path,
+        {
+            "auto_enabled": False,
+            "acquisitions": [
+                {
+                    "info_hash": "episode",
+                    "directory": "Episode",
+                    "episode": "22",
+                    "state": "accepted",
+                    "problem": problem,
+                }
+            ],
+            "transfers": [{"info_hash": "episode", "name": "Episode.mkv", "progress": 0.0, "state": "stoppedDL"}],
+            "transfers_problem": None,
+        },
+    )
+
+    assert "Episode.mkv" in frame
+    assert "wymaga uwagi" in frame
+    assert "wstrzymane" not in frame
+    assert problem not in frame
+
+
+def test_an_ordered_release_the_client_never_reported_still_says_so(tmp_path: Path) -> None:
+    frame: str = _rendered_transfers(
+        tmp_path,
+        {
+            "auto_enabled": False,
+            "acquisitions": [
+                {"info_hash": "episode", "directory": "Episode", "episode": "22", "state": "accepted"},
+            ],
+            "transfers": [],
+            "transfers_problem": None,
+        },
+    )
+
+    assert "brak potwierdzenia klienta" in frame
+    assert "wymaga uwagi" not in frame
