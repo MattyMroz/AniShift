@@ -175,7 +175,7 @@ def _frame(application: interactive_app._InteractiveApplication, columns: int = 
 def test_the_session_runs_one_full_screen_renderer_and_leaves_from_the_exit_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    made: list[_Renderer] = _install_renderer(monkeypatch, ("down", "down", "down", "down", "enter"))
+    made: list[_Renderer] = _install_renderer(monkeypatch, ("down", "down", "down", "enter"))
 
     interactive_app.run_interactive(cast("AppService", _service()))
 
@@ -192,7 +192,7 @@ def test_the_only_renderer_owns_the_alternate_screen_for_the_whole_session() -> 
     assert renderer._application.erase_when_done is True
 
 
-def test_the_auto_row_starts_the_preflight_of_the_default_preset(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_technical_batch_starts_the_preflight_of_the_default_preset(monkeypatch: pytest.MonkeyPatch) -> None:
     presets: list[str] = []
 
     def refuse(service: AppService, preset_id: str, *, cancel: object = None) -> AutoRunRefusal:
@@ -204,7 +204,7 @@ def test_the_auto_row_starts_the_preflight_of_the_default_preset(monkeypatch: py
     application, _renderer = _application(monkeypatch, _service(default_preset_id=lambda: "evening"))
     application._selected = 0
 
-    application._handle_key("enter")
+    application._start_auto()
     _settle(application)
 
     assert presets == ["evening"]
@@ -248,7 +248,7 @@ def test_the_manual_row_opens_the_manual_screen_over_the_discovered_workspace(
 
 def test_the_settings_row_opens_the_panel_inside_the_same_renderer(monkeypatch: pytest.MonkeyPatch) -> None:
     application, renderer = _application(monkeypatch, _service())
-    application._selected = 3
+    application._selected = 2
 
     application._handle_key("enter")
     panel: str = _frame(application)
@@ -262,7 +262,7 @@ def test_the_settings_row_opens_the_panel_inside_the_same_renderer(monkeypatch: 
 
 def test_the_exit_row_finishes_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
     application, renderer = _application(monkeypatch, _service())
-    application._selected = 4
+    application._selected = 3
 
     application._handle_key("enter")
 
@@ -294,7 +294,7 @@ def test_an_auto_refusal_stays_a_sentence_with_a_hint_and_returns_home(monkeypat
     application._handle_key("any")
 
     assert _mode(application) is interactive_app._ViewMode.HOME
-    assert "Auto" in _frame(application)
+    assert "Panel" in _frame(application)
 
 
 def test_a_finished_auto_run_keeps_the_queue_and_footer_until_a_key_returns_home(
@@ -412,4 +412,4 @@ def test_interrupting_a_running_auto_cancels_it_and_leaves_no_error_on_screen(
     assert application._progress is None
     assert "Odcinek 01" not in home
     assert "Błąd" not in home
-    assert "Auto" in home
+    assert "Panel" in home

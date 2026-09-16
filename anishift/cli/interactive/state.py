@@ -7,13 +7,15 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable, Mapping
-from decimal import Decimal, InvalidOperation
+from datetime import datetime
+from decimal import Decimal
 from enum import IntEnum, StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
 from natsort import os_sorted
+from rich.console import Console
 from rich.text import Text
 
 from anishift.application import (
@@ -23,22 +25,20 @@ from anishift.application import (
     RefusalReason,
     RunProgressSnapshot,
     Subscription,
-    SubscriptionOrder,
-    TitleCandidate,
     decode_view,
 )
 from anishift.application.events import RunEvent, sanitize_event_message
+from anishift.cli.interactive.anime import AnimeController, AnimeResult
 from anishift.cli.interactive.menu import (
     append_wrapped_row,
     fit_entries,
-    header,
     left_padding,
     visible_window,
     with_footer,
     wrap_entries,
 )
 from anishift.cli.interactive.progress import RichRunProgress
-from anishift.cli.interactive.text_input import TextInput
+from anishift.cli.interactive.subscriptions import SubscriptionDraft
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
 from anishift.platform.local_control import ControlError
@@ -47,9 +47,11 @@ __all__ = ["StateController", "StateResult", "refusal_text"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_TABS: Final[tuple[str, ...]] = ("Przetwarzanie", "Pobrania", "Subskrypcje", "Biblioteka")
+_TABS: Final[tuple[str, ...]] = ("Anime", "Subskrypcje", "Przetwarzanie", "Biblioteka")
 """Views of the same resident snapshot, switched without network requests."""
 
+_MINIMUM_HEADER_ROWS: Final[int] = 12
+"""Minimum height retaining the heading as well as tabs and actions."""
 
 _TRANSFER_LABELS: Final[dict[str, str]] = {
     "downloading": "pobieranie",
@@ -80,9 +82,6 @@ _ATTENTION_LABEL: Final[str] = "wymaga uwagi"
 
 _UNCONFIRMED_LABEL: Final[str] = "brak potwierdzenia klienta"
 """Label of an ordered release the torrent client does not report at all."""
-
-_ADD_FIELDS: Final[tuple[str, ...]] = ("Tytuł serii", "Grupa wydająca", "Pierwszy odcinek")
-"""Fields needed to follow a series even before its first torrent exists."""
 
 _RECONNECT_S: Final[float] = 2.0
 """Delay before reconnecting a lost panel event stream."""
@@ -170,9 +169,9 @@ def refusal_text(problem: BaseException) -> str:
 
 
 class _Tab(IntEnum):
-    PROGRESS = 0
-    TRANSFERS = 1
-    SUBSCRIPTIONS = 2
+    ANIME = 0
+    SUBSCRIPTIONS = 1
+    PROGRESS = 2
     FILES = 3
 
 
@@ -182,9 +181,7 @@ class StateResult(StrEnum):
     CONTINUE = "continue"
     HOME = "home"
     SETTINGS = "settings"
-    AUTO = "auto"
     MANUAL = "manual"
-    ANIME = "anime"
 
 
 class StateController:
@@ -201,16 +198,19 @@ class StateController:
         self._snapshot: Mapping[str, object] = {}
         self._subscriptions: list[Mapping[str, object]] = []
         self._runs: dict[str, tuple[str, RichRunProgress]] = {}
-        self._tab: int = 0
+        self._tab: int = _Tab.PROGRESS
         self._selected: int = 0
+        self._positions: dict[int, int] = {}
+        self._offsets: dict[int, int] = {}
+        self._follow_cursor: dict[int, bool] = {}
+        self._anime: AnimeController | None = None
+        self._anime_return: int = _Tab.ANIME
+        self._draft: SubscriptionDraft | None = None
         self._connected: bool = False
         self._busy: bool = False
         self._notice: str = "Łączenie z procesem w tle…"
         self._state_version: int = 0
         self._notice_version: int = -1
-        self._form: list[str] | None = None
-        self._input: TextInput = TextInput()
-        self._binding: Subscription | None = None
         self._details: LibrarySet | None = None
         self._operation_details: PendingDeletion | None = None
         self._operation_name: str = ""
@@ -219,13 +219,14 @@ class StateController:
         self._deletion_session: ResidentSession | None = None
         self._delete_confirmed: bool = False
         self._view_generation: int = 0
-        self._candidates: tuple[TitleCandidate, ...] = ()
         self._thread: threading.Thread = threading.Thread(target=self._watch, name="anishift-state", daemon=True)
         self._thread.start()
 
     def close(self) -> None:
         """Detach this panel without stopping resident work."""
         self._stop.set()
+        if self._anime is not None:
+            self._anime.cancel()
         with self._lock:
             self._view_generation += 1
             self._cancel_deletion()
@@ -250,8 +251,7 @@ class StateController:
             self._cancel_deletion()
             self._details = None
             self._operation_details = None
-            self._tab = _Tab.PROGRESS
-            self._selected = 0
+            self._switch_tab(_Tab.PROGRESS)
         self._invalidate()
 
     def set_notice(self, message: str) -> None:
@@ -267,37 +267,45 @@ class StateController:
     def handle_key(self, key: str) -> StateResult:
         """Navigate the shared list or submit one explicit action."""
         with self._lock:
+            if self._tab == _Tab.ANIME and self._anime is not None:
+                return self._anime_key(key)
+            if self._draft is not None:
+                self._draft_key(key)
+                return StateResult.CONTINUE
             if self._modal_key(key):
                 return StateResult.CONTINUE
-            if key in {"escape", "interrupt", "backspace"}:
-                self._view_generation += 1
-                return StateResult.HOME
-            if key in {"tab", "backtab", "left", "right"}:
-                self._view_generation += 1
-                self._details = None
-                self._tab = (self._tab + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS)
-                self._selected = 0
-                self._notify("")
-                if self._tab == _Tab.FILES:
-                    self._work(lambda session: session.library())
-            elif key in {"up", "down", "home", "end"}:
-                count: int = max(len(self._entries(120)), 1)
-                if key in {"home", "end"}:
-                    self._selected = 0 if key == "home" else count - 1
-                else:
-                    self._selected = (self._selected + (-1 if key == "up" else 1)) % count
-            elif key in {"space", "enter"} and self._tab == _Tab.SUBSCRIPTIONS:
-                return self._action_key("w")
-            elif self._selected_deletion() is not None and key.casefold() in {"enter", "delete", "text:p", "text:d"}:
-                self._deletion_action(key.removeprefix("text:").casefold())
-            elif key == "enter" and self._tab == _Tab.FILES:
-                self._file_action("open")
-            elif key == "delete" and self._tab == _Tab.FILES:
-                self._file_action("delete")
-            elif key.startswith("text:"):
-                return self._action_key(key.removeprefix("text:").casefold())
-            self._invalidate()
-            return StateResult.CONTINUE
+            return self._list_key(key)
+
+    def _list_key(self, key: str) -> StateResult:
+        if key in {"escape", "interrupt", "backspace"}:
+            self._view_generation += 1
+            return StateResult.HOME
+        if key in {"tab", "backtab", "left", "right"}:
+            self._view_generation += 1
+            self._details = None
+            self._switch_tab((self._tab + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS))
+            self._notify("")
+            if self._tab == _Tab.FILES:
+                self._work(lambda session: session.library())
+        elif key in {"up", "down", "home", "end"}:
+            self._follow_cursor[self._tab] = True
+            count: int = max(len(self._entries(120)), 1)
+            if key in {"home", "end"}:
+                self._selected = 0 if key == "home" else count - 1
+            else:
+                self._selected = (self._selected + (-1 if key == "up" else 1)) % count
+        elif key in {"space", "enter"} and self._tab == _Tab.SUBSCRIPTIONS:
+            return self._subscription_key(key)
+        elif self._selected_deletion() is not None and key.casefold() in {"enter", "delete", "text:p", "text:d"}:
+            self._deletion_action(key.removeprefix("text:").casefold())
+        elif key == "enter" and self._tab == _Tab.FILES:
+            self._file_action("open")
+        elif key == "delete" and self._tab == _Tab.FILES:
+            self._file_action("delete")
+        elif key.startswith("text:"):
+            return self._action_key(key.removeprefix("text:").casefold())
+        self._invalidate()
+        return StateResult.CONTINUE
 
     def _modal_key(self, key: str) -> bool:
         if self._deletion is not None:
@@ -311,6 +319,7 @@ class StateController:
             elif key.casefold() in {"text:p", "delete"}:
                 self._deletion_action(key.removeprefix("text:").casefold())
             elif key in {"up", "down", "home", "end"}:
+                self._follow_cursor[self._viewport()] = True
                 count: int = max(len(self._entries(120)), 1)
                 self._selected = (self._selected + (-1 if key == "up" else 1)) % count
                 if key in {"home", "end"}:
@@ -320,13 +329,13 @@ class StateController:
         if self._details is not None:
             self._details_key(key)
             return True
-        if self._form is not None:
-            self._edit_form(key)
-            return True
-        if self._binding is not None:
-            self._binding_key(key)
-            return True
         return False
+
+    def _subscription_key(self, key: str) -> StateResult:
+        if key == "space":
+            return self._action_key("w")
+        self._open_subscription()
+        return StateResult.CONTINUE
 
     def _details_key(self, key: str) -> None:
         if key in {"escape", "interrupt", "backspace"}:
@@ -338,18 +347,145 @@ class StateController:
             generation: int = self._view_generation
             self._work(lambda session: self._show_deletion(session, set_id, generation))
         elif key in {"up", "down", "home", "end"}:
+            self._follow_cursor[self._viewport()] = True
             count: int = max(len(self._entries(120)), 1)
             self._selected = (self._selected + (-1 if key == "up" else 1)) % count
             if key in {"home", "end"}:
                 self._selected = 0 if key == "home" else count - 1
         self._invalidate()
 
+    def attach_anime(self, controller: AnimeController) -> None:
+        """Reuse the session's one search controller inside the Anime tab."""
+        self._anime = controller
+
+    def _switch_tab(self, tab: int) -> None:
+        self._view_generation += 1
+        if self._tab == _Tab.ANIME and self._anime is not None:
+            self._anime.cancel()
+        self._positions[self._tab] = self._selected
+        self._tab = tab
+        self._selected = self._positions.get(tab, 0)
+
+    def _viewport(self) -> int:
+        if self._draft is not None:
+            return len(_TABS)
+        if self._details is not None or self._operation_details is not None:
+            return len(_TABS) + 1
+        return self._tab
+
+    def scroll(self, direction: int) -> None:
+        """Move the visible list without changing its selected identity."""
+        with self._lock:
+            viewport: int = self._viewport()
+            if self._tab == _Tab.ANIME or self._deletion is not None:
+                return
+            self._offsets[viewport] = max(self._offsets.get(viewport, 0) + direction * 3, 0)
+            self._follow_cursor[viewport] = False
+        self._invalidate()
+
+    def poll(self) -> None:
+        """Show an admitted download only while its initiating view remains active."""
+        with self._lock:
+            if self._anime is not None and self._anime.take_downloaded() and self._tab == _Tab.ANIME:
+                self.show_processing()
+
+    def _anime_key(self, key: str) -> StateResult:
+        anime: AnimeController | None = self._anime
+        if anime is None:
+            return StateResult.CONTINUE
+        if key in {"tab", "backtab"} or (key in {"left", "right"} and not anime.editing):
+            self._switch_tab((self._tab + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS))
+            self._invalidate()
+            return StateResult.CONTINUE
+        result: AnimeResult = anime.handle_key(key)
+        if result is AnimeResult.SUBSCRIBE:
+            self._draft = anime.take_draft()
+            self._follow_cursor[len(_TABS)] = True
+            self._switch_tab(_Tab.SUBSCRIPTIONS)
+        elif result is AnimeResult.HOME:
+            if self._anime_return == _Tab.SUBSCRIPTIONS:
+                self._switch_tab(_Tab.SUBSCRIPTIONS)
+                self._anime_return = _Tab.ANIME
+            else:
+                return StateResult.HOME
+        self._invalidate()
+        return StateResult.CONTINUE
+
+    def _open_subscription(self) -> None:
+        if not self._subscriptions:
+            return
+        identifier: str = str(self._subscriptions[min(self._selected, len(self._subscriptions) - 1)]["subscription_id"])
+        generation: int = self._view_generation
+
+        def load(session: ResidentSession) -> None:
+            payload: Mapping[str, object] = session.command("subscription_get", {"subscription_id": identifier})
+            subscription: Subscription = decode_view(Subscription, payload)
+            work_states: object = payload.get("work_states")
+            with self._lock:
+                if generation == self._view_generation and not self._stop.is_set():
+                    self._draft = SubscriptionDraft.from_subscription(
+                        subscription, work_states if isinstance(work_states, Mapping) else None
+                    )
+                    self._follow_cursor[len(_TABS)] = True
+
+        self._work(load)
+
+    def _draft_key(self, key: str) -> None:
+        draft: SubscriptionDraft | None = self._draft
+        if draft is None:
+            return
+        if key in {"escape", "interrupt"}:
+            self._draft = None
+            self._view_generation += 1
+        elif key == "enter" or key.casefold() == "text:p":
+            repeating: tuple[Decimal, ...] = tuple(sorted(draft.selected & draft.completed))
+            if repeating and key == "enter":
+                self._notify("Ukończone numery wymagają jawnego P Ponów")
+            elif key == "enter" or repeating:
+                self._apply_draft(draft, repeat=key != "enter")
+        else:
+            self._follow_cursor[self._viewport()] = True
+            draft.handle_key(key)
+        self._invalidate()
+
+    def _apply_draft(self, draft: SubscriptionDraft, *, repeat: bool) -> None:
+        generation: int = self._view_generation
+        selected: tuple[Decimal, ...] = tuple(sorted(draft.selected))
+        repeated: tuple[Decimal, ...] = tuple(sorted(draft.selected & draft.completed))
+        future_from: Decimal | None = draft.future_from
+
+        def apply(session: ResidentSession) -> None:
+            if draft.order is not None:
+                session.follow(draft.order, selected=selected, future_from=future_from)
+            elif draft.subscription is not None and repeat:
+                subscription: Subscription = session.repeat(draft.subscription.subscription_id, repeated)
+                with self._lock:
+                    if generation != self._view_generation or self._draft is not draft or self._stop.is_set():
+                        return
+                    draft.subscription = subscription
+                    draft.completed = draft.completed.difference(repeated)
+                    draft.states.update(
+                        {item.number: item.state.value for item in subscription.episodes if item.number in repeated}
+                    )
+                return
+            elif draft.subscription is not None:
+                session.set_range(draft.subscription.subscription_id, selected=selected, future_from=future_from)
+            with self._lock:
+                if generation == self._view_generation and self._draft is draft:
+                    self._draft = None
+
+        success: str = (
+            f"Przyjęto ponowienie: {', '.join(f'{number.normalize():f}' for number in repeated)}"
+            " · Enter stosuje pozostały zakres"
+            if repeat
+            else "Polecenie przyjęte"
+        )
+        self._work(apply, success=success)
+
     def _action_key(self, key: str) -> StateResult:
         navigation: dict[str, StateResult] = {
             "u": StateResult.SETTINGS,
-            "r": StateResult.AUTO,
             "m": StateResult.MANUAL,
-            "a": StateResult.ANIME,
         }
         if key in navigation:
             self._view_generation += 1
@@ -359,8 +495,8 @@ class StateController:
         elif key == "f" and self._tab == _Tab.SUBSCRIPTIONS:
             self._command("subscriptions_check")
         elif key == "d" and self._tab == _Tab.SUBSCRIPTIONS:
-            self._form = []
-            self._input.reset()
+            self._anime_return = _Tab.SUBSCRIPTIONS
+            self._switch_tab(_Tab.ANIME)
         elif self._tab == _Tab.SUBSCRIPTIONS and self._subscriptions and key in {"w", "x"}:
             item: Mapping[str, object] = self._subscriptions[min(self._selected, len(self._subscriptions) - 1)]
             kind: str = (
@@ -369,29 +505,36 @@ class StateController:
                 else ("subscription_disable" if item.get("enabled") else "subscription_enable")
             )
             self._command(kind, {"subscription_id": item["subscription_id"]})
-        elif self._tab == _Tab.SUBSCRIPTIONS and self._subscriptions and key == "b":
-            item = self._subscriptions[min(self._selected, len(self._subscriptions) - 1)]
-            identifier: str = str(item["subscription_id"])
-            self._work(lambda session: self._binding_candidates(session, identifier))
-        elif self._tab == _Tab.PROGRESS and key == "c":
-            offset: int = self._selected
-            for run_id, (_, progress) in self._runs.items():
-                if offset < progress.pending_row_count:
-                    self._command("cancel", {"run_id": run_id})
-                    break
-                offset -= progress.pending_row_count
-        elif self._tab == _Tab.TRANSFERS and key in {"p", "w", "x"}:
-            transfers: list[Mapping[str, object]] = self._transfer_rows()
-            if transfers:
-                transfer: Mapping[str, object] = transfers[min(self._selected, len(transfers) - 1)]
-                self._command(
-                    "transfer",
-                    {"info_hash": transfer["info_hash"], "action": {"p": "stop", "w": "resume", "x": "cancel"}[key]},
-                )
+        elif self._tab == _Tab.PROGRESS:
+            self._processing_action(key)
         elif self._tab == _Tab.FILES:
             self._file_action(key)
         self._invalidate()
         return StateResult.CONTINUE
+
+    def _processing_action(self, key: str) -> None:
+        materials: list[Mapping[str, object]] = _rows(self._snapshot.get("materials"))
+        if self._selected >= len(materials):
+            if key == "p" and _relocation_problems(self._snapshot):
+                self._command("ready_retry")
+            return
+        item: Mapping[str, object] = materials[self._selected]
+        if item.get("stage") == "download" and key in {"p", "w", "x"}:
+            self._command(
+                "transfer", {"info_hash": item["info_hash"], "action": {"p": "stop", "w": "resume", "x": "cancel"}[key]}
+            )
+        elif item.get("run_id") and key == "c" and item.get("active"):
+            self._command("cancel", {"run_id": item["run_id"]})
+        elif item.get("run_id") and key == "p" and item.get("state") in {"failed", "partial", "paused", "cancelled"}:
+            group_ids: object = item.get("group_ids")
+            if isinstance(group_ids, list):
+                self._work(lambda session: self._resume_run(session, tuple(str(group_id) for group_id in group_ids)))
+
+    @staticmethod
+    def _resume_run(session: ResidentSession, group_ids: tuple[str, ...]) -> None:
+        session.reserve(group_ids)
+        preview = session.plan_resume(group_ids)
+        session.start(preview)
 
     def _file_action(self, key: str) -> None:
         if key == "p":
@@ -412,7 +555,8 @@ class StateController:
             self._work(lambda session: self._show_deletion(session, set_id, generation))
             return
         if key == "d":
-            self._work(lambda session: self._show_details(session, set_id))
+            generation = self._view_generation
+            self._work(lambda session: self._show_details(session, set_id, generation))
             return
         self._work(lambda session: _open_episode(session, set_id, show_folder=key == "f"))
 
@@ -429,7 +573,7 @@ class StateController:
             return (
                 rows[self._selected] if self._selected < len(rows) and "operation_id" in rows[self._selected] else None
             )
-        position: int = self._selected - len(self._progress_entries(120))
+        position: int = self._selected - len(self._processing_entries(120))
         return operations[position] if self._tab == _Tab.PROGRESS and 0 <= position < len(operations) else None
 
     def _deletion_action(self, key: str) -> None:
@@ -455,6 +599,7 @@ class StateController:
                 return
             self._detail_selection = self._selected
             self._selected = 0
+            self._follow_cursor[len(_TABS) + 1] = True
             self._operation_name = str(operation["name"])
             self._operation_details = details
 
@@ -503,103 +648,36 @@ class StateController:
 
         self._work(submit)
 
-    def _show_details(self, session: ResidentSession, set_id: str) -> None:
+    def _show_details(self, session: ResidentSession, set_id: str, generation: int) -> None:
         details: LibrarySet = session.library_details(set_id)
         with self._lock:
-            if self._tab != _Tab.FILES:
+            if self._tab != _Tab.FILES or generation != self._view_generation or self._stop.is_set():
                 return
             self._detail_selection = self._selected
             self._selected = 0
+            self._follow_cursor[len(_TABS) + 1] = True
             self._details = details
-
-    def _binding_candidates(self, session: ResidentSession, identifier: str) -> None:
-        subscription: Subscription = decode_view(
-            Subscription, session.command("subscription_get", {"subscription_id": identifier})
-        )
-        candidates: tuple[TitleCandidate, ...] = session.find_titles(subscription.series)
-        with self._lock:
-            self._binding = subscription if candidates else None
-            self._candidates = candidates
-            self._selected = 0
-            if not candidates:
-                self._notify("Katalog nie zwrócił pasującego sezonu")
-
-    def _binding_key(self, key: str) -> None:
-        if key in {"escape", "interrupt"}:
-            self._binding = None
-        elif key in {"up", "down"}:
-            self._selected = (self._selected + (-1 if key == "up" else 1)) % max(len(self._candidates), 1)
-        elif key == "enter" and self._binding is not None and self._candidates:
-            subscription: Subscription = self._binding
-            candidate: TitleCandidate = self._candidates[self._selected]
-            self._binding = None
-
-            def bind(session: ResidentSession) -> object:
-                return session.follow(
-                    SubscriptionOrder(
-                        series=subscription.series,
-                        group=subscription.group,
-                        query=subscription.query,
-                        first_episode=subscription.next_episode,
-                        directory_name=subscription.directory,
-                        context=session.season_context(candidate),
-                        anilist_id=candidate.anilist_id,
-                    )
-                )
-
-            self._work(bind)
-        self._invalidate()
-
-    def _edit_form(self, key: str) -> None:
-        if self._input.handle(key):
-            self._invalidate()
-            return
-        if key in {"escape", "interrupt"}:
-            self._form = None
-        elif key == "enter" and self._form is not None:
-            self._accept_field()
-        self._invalidate()
-
-    def _accept_field(self) -> None:
-        if self._form is None or not self._input.text.strip():
-            return
-        values: list[str] = [*self._form, self._input.text.strip()]
-        if len(values) < len(_ADD_FIELDS):
-            self._form = values
-            self._input.reset("1" if len(values) == len(_ADD_FIELDS) - 1 else "")
-            return
-        try:
-            order: SubscriptionOrder = SubscriptionOrder(
-                series=values[0],
-                group=values[1],
-                query=f"{values[0]} {values[1]}",
-                first_episode=Decimal(values[2]),
-                directory_name=values[0],
-            )
-        except ValueError, InvalidOperation:
-            self._notify("Podaj poprawny dodatni numer pierwszego odcinka")
-            return
-        self._form = None
-        self._work(lambda session: session.follow(order))
 
     def _command(self, kind: str, payload: Mapping[str, object] | None = None) -> None:
         self._work(lambda session: session.command(kind, payload))
 
-    def _work(self, action: Callable[[ResidentSession], object]) -> None:
+    def _work(self, action: Callable[[ResidentSession], object], *, success: str = "Polecenie przyjęte") -> None:
         if self._busy:
             self._notify("Poprzednia czynność jeszcze trwa; możesz przejść do ustawień")
             return
         self._busy = True
         self._notify("Wykonywanie polecenia…")
-        threading.Thread(target=self._perform, args=(action,), name="anishift-state-action", daemon=True).start()
+        threading.Thread(
+            target=self._perform, args=(action, success), name="anishift-state-action", daemon=True
+        ).start()
 
-    def _perform(self, action: Callable[[ResidentSession], object]) -> None:
+    def _perform(self, action: Callable[[ResidentSession], object], success: str = "Polecenie przyjęte") -> None:
         session: ResidentSession | None = None
         try:
             session = self._parent.new_session()
             action(session)
             with self._lock:
-                self._notify("Polecenie przyjęte")
+                self._notify(success)
         except (AniShiftError, ControlError, OSError, ValueError) as error:
             with self._lock:
                 self._notify(refusal_text(error))
@@ -647,7 +725,6 @@ class StateController:
                 session.command("subscriptions_list").get("subscriptions")
             )
             with self._lock:
-                selected_operation: Mapping[str, object] | None = self._selected_deletion()
                 previous_operation_details: PendingDeletion | None = self._operation_details
             self._restore_progress(session, payload)
             operation_details: PendingDeletion | None = (
@@ -664,8 +741,9 @@ class StateController:
             with self._lock:
                 if payload != self._snapshot:
                     self._state_version += 1
+                self._preserve_tab_selection(_Tab.SUBSCRIPTIONS, self._subscriptions, subscriptions, "subscription_id")
+                self._preserve_processing_selection(payload)
                 self._preserve_library_selection(payload)
-                self._preserve_deletion_selection(payload, selected_operation)
                 self._snapshot = payload
                 if self._operation_details is previous_operation_details:
                     self._operation_details = operation_details
@@ -674,6 +752,7 @@ class StateController:
                     if previous_details is not None and details is None:
                         self._selected = self._detail_selection
                 self._subscriptions = subscriptions
+                self._refresh_draft_work()
                 self._connected = True
                 if self._notice_version < self._state_version:
                     self._notice = ""
@@ -691,6 +770,36 @@ class StateController:
                 progress[1].emit(event)
         self._invalidate()
 
+    def _refresh_draft_work(self) -> None:
+        draft: SubscriptionDraft | None = self._draft
+        if draft is None or draft.subscription is None:
+            return
+        item: Mapping[str, object] = next(
+            (item for item in self._subscriptions if item["subscription_id"] == draft.subscription.subscription_id), {}
+        )
+        states: object = item.get("work_states")
+        if isinstance(states, Mapping):
+            draft.refresh_work_states(states)
+
+    def _preserve_tab_selection(
+        self,
+        tab: int,
+        old: list[Mapping[str, object]],
+        new: list[Mapping[str, object]],
+        key: str,
+    ) -> None:
+        position: int = self._selected if self._tab == tab else self._positions.get(tab, 0)
+        if position >= len(old):
+            return
+        identifier: object = old[position].get(key)
+        position = next(
+            (index for index, item in enumerate(new) if item.get(key) == identifier),
+            min(position, max(len(new) - 1, 0)),
+        )
+        self._positions[tab] = position
+        if self._tab == tab:
+            self._selected = position
+
     @staticmethod
     def _refresh_details(session: ResidentSession, previous: LibrarySet | None) -> LibrarySet | None:
         if previous is None:
@@ -702,37 +811,38 @@ class StateController:
                 raise
             return None
 
-    def _preserve_deletion_selection(
-        self, payload: Mapping[str, object], selected: Mapping[str, object] | None
-    ) -> None:
-        if self._tab != _Tab.PROGRESS or selected is None:
+    def _preserve_processing_selection(self, payload: Mapping[str, object]) -> None:
+        old: list[str] = _processing_row_ids(self._snapshot)
+        new: list[str] = _processing_row_ids(payload)
+        position: int = self._selected if self._operation_details is None else self._detail_selection
+        if self._tab != _Tab.PROGRESS:
+            position = self._positions.get(_Tab.PROGRESS, 0)
+        identifier: str | None = old[position] if position < len(old) else None
+        position = new.index(identifier) if identifier in new else min(position, max(len(new) - 1, 0))
+        self._positions[_Tab.PROGRESS] = position
+        if self._tab != _Tab.PROGRESS:
             return
-        position: int = next(
-            (
-                index
-                for index, item in enumerate(_deletion_rows(payload))
-                if item["operation_id"] == selected["operation_id"]
-            ),
-            0,
-        ) + len(self._progress_entries(120))
         if self._operation_details is None:
             self._selected = position
         else:
             self._detail_selection = position
 
     def _preserve_library_selection(self, payload: Mapping[str, object]) -> None:
-        if self._tab != _Tab.FILES:
-            return
         old: list[Mapping[str, object]] = _library_rows(self._snapshot)
         new: list[Mapping[str, object]] = _library_rows(payload)
         position: int = (
             self._selected if self._details is None and self._operation_details is None else self._detail_selection
         )
+        if self._tab != _Tab.FILES:
+            position = self._positions.get(_Tab.FILES, 0)
         selected_id: object = _library_row_id(old[position]) if position < len(old) else None
         position = next(
             (index for index, item in enumerate(new) if _library_row_id(item) == selected_id),
             min(position, max(len(new) - 1, 0)),
         )
+        self._positions[_Tab.FILES] = position
+        if self._tab != _Tab.FILES:
+            return
         if self._details is None and self._operation_details is None:
             self._selected = position
         else:
@@ -759,26 +869,59 @@ class StateController:
     def render(self, columns: int, rows: int) -> Text:
         """Render tabs and the same centered selectable list used by Manual."""
         with self._lock:
-            entries: list[tuple[str | Text, bool | None]] = self._entries(max(columns - 8, 1))
-            selected: int = 0 if self._deletion is not None else min(self._selected, max(len(entries) - 1, 0))
-            if self._deletion is None:
+            if self._deletion is not None and rows < _MINIMUM_HEADER_ROWS:
+                return self._compact_deletion(columns, rows)
+            content: Text = Text()
+            if rows >= _MINIMUM_HEADER_ROWS:
+                content.append(" " * max((columns - 5) // 2, 0) + "PANEL\n\n", style="white_bold")
+            tabs: Text = self._tabs(columns)
+            content.append(" " * max((columns - tabs.cell_len) // 2, 0))
+            content.append_text(tabs)
+            content.append("\n")
+            heading_rows: int = content.plain.count("\n")
+            if self._tab == _Tab.ANIME and self._anime is not None:
+                status: str = self._global_status()
+                status_rows: int = len(Text(status).wrap(Console(width=max(columns - 2, 1)), max(columns - 2, 1)))
+                content.append_text(self._anime.render(columns, max(rows - heading_rows - status_rows, 1)))
+                return with_footer(content, (status,), columns, rows)
+            entries: list[tuple[str | Text, bool | None]] = (
+                [(label, checked) for label, checked in self._draft.entries()]
+                if self._draft is not None
+                else self._entries(max(columns - 8, 1))
+            )
+            selected: int = (
+                self._draft.cursor if self._draft is not None else min(self._selected, max(len(entries) - 1, 0))
+            )
+            if self._deletion is not None:
+                selected = 0
+            if self._deletion is None and self._draft is None:
                 self._selected = selected
             labels: tuple[str, ...] = fit_entries(
                 tuple(label.plain if isinstance(label, Text) else label for label, _ in entries), columns
             )
-            footer: list[str | Text] = self._footer()
-            list_rows: int = rows - max(len(footer) - 2, 0) - int(self._form is not None)
+            console: Console = Console(width=max(columns - 2, 1))
+            footer: list[Text] = [
+                line
+                for hint in self._view_footer()
+                if hint
+                for line in (hint if isinstance(hint, Text) else Text(hint, style="gray")).wrap(
+                    console, max(columns - 2, 1)
+                )
+            ]
+            footer = footer[: max(rows - heading_rows - 2, 1)]
             wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(tuple(label for label, _ in entries), columns)
-            start, end = visible_window(len(labels), selected, list_rows, heights=tuple(map(len, wrapped)))
+            remaining: int = max(rows - 1 - len(footer) - heading_rows, 1)
+            start, end = visible_window(len(labels), selected, remaining + 7, heights=tuple(map(len, wrapped)))
+            viewport: int = self._viewport()
+            if self._follow_cursor.get(viewport, True) or self._deletion is not None:
+                self._offsets[viewport] = start
+            else:
+                start = min(self._offsets.get(viewport, 0), max(len(entries) - 1, 0))
+                end = len(entries)
             left: int = left_padding(columns, labels)
-            content: Text = header("PANEL", columns, rows, max(rows - 5, 1))
-            tabs: Text = self._tabs()
-            tabs.truncate(max(columns - 2, 1), overflow="ellipsis")
-            content.append(" " * max((columns - tabs.cell_len) // 2, 0))
-            content.append_text(tabs)
-            content.append("\n\n")
-            remaining: int = max(list_rows - 7, 1)
             for index in range(start, end):
+                if remaining <= 0:
+                    break
                 checked: bool | None = entries[index][1]
                 marker: str = "" if checked is None else ("● " if checked else "○ ")
                 lines: tuple[str | Text, ...] = wrapped[index][:remaining]
@@ -787,27 +930,43 @@ class StateController:
             if not entries:
                 empty: str = "Brak zadań" if self._tab == _Tab.PROGRESS else "Brak pozycji"
                 content.append(" " * max((columns - len(empty)) // 2, 0) + empty + "\n", style="gray")
-            if self._form is not None:
-                prompt: str = f"{_ADD_FIELDS[len(self._form)]}: "
-                content.append(" " * left + prompt, style="white_bold")
-                content.append_text(self._input.render(max(columns - left - len(prompt) - 1, 1)))
-                content.append("\n")
             return with_footer(content, footer, columns, rows)
 
-    def _tabs(self) -> Text:
+    def _compact_deletion(self, columns: int, rows: int) -> Text:
+        preview: DeletionPreview | None = self._deletion
+        if preview is None:
+            return Text()
+        title: Text = Text(f"Kosz · {len(preview.files)} plików · {_safe_text(preview.name)}", style="white_bold")
+        title.truncate(max(columns - 2, 1), overflow="ellipsis")
+        selected: str = "[Przenieś do Kosza]" if self._delete_confirmed else "[Anuluj]"
+        return with_footer(title, (selected, "←→ wybierz · Enter · Esc anuluj"), columns, rows)
+
+    def _tabs(self, columns: int = 120) -> Text:
         tabs: Text = Text()
         for index, name in enumerate(_TABS):
             if index:
                 tabs.append(" · ", style="gray")
             tabs.append(name, style="brand_accent" if self._tab == index else "gray")
+        if tabs.cell_len > max(columns - 2, 1):
+            return Text(f"← {_TABS[self._tab]} ({self._tab + 1}/4) →", style="brand_accent")
         return tabs
+
+    def _view_footer(self) -> list[str | Text]:
+        if self._draft is not None:
+            return [
+                "Space wybór · Enter zastosuj · Esc odrzuć · A zwykłe · P Ponów",
+                self._draft.name,
+                self._notice,
+                self._global_status(),
+            ]
+        return self._footer()
 
     def _footer(self) -> list[str | Text]:
         result: list[str | Text] = []
         if self._deletion is not None:
             return [
-                f"{len(self._deletion.files)} plików · {self._deletion.total_size:,} B · cały zestaw",
                 "Anuluj   [Przenieś do Kosza]" if self._delete_confirmed else "[Anuluj]   Przenieś do Kosza",
+                f"{len(self._deletion.files)} plików · {self._deletion.total_size:,} B · cały zestaw",
                 "←→ wybierz · Enter zatwierdź · Esc anuluj",
             ]
         operation: Mapping[str, object] | None = self._selected_deletion()
@@ -824,28 +983,54 @@ class StateController:
         if not self._connected:
             result.append("Brak połączenia")
         if self._operation_details is not None or self._details is not None:
-            return [*result, "↑↓ pliki · Esc wróć" + (" do biblioteki" if self._details is not None else "")]
+            return [
+                *result,
+                "↑↓ pliki · Esc wróć" + (" do biblioteki" if self._details is not None else ""),
+                self._global_status(),
+            ]
         if operation is not None:
-            return [*result, "←→ widok · ↑↓ wybierz · Esc wróć"]
-        if self._form is not None:
-            return [*result, "Enter zatwierdź · Esc anuluj"]
-        if self._binding is not None:
-            return [*result, "↑↓ · Enter wybierz · Esc wróć"]
+            return [*result, "←→ widok · ↑↓ wybierz · Esc wróć", self._global_status()]
         relocations: list[Mapping[str, object]] = _relocation_problems(self._snapshot)
         if self._tab == _Tab.FILES and relocations:
             names: str = ", ".join(_safe_text(item["name"]) for item in relocations)
             result.append(f"P ponów przenoszenie do biblioteki · {names}")
         hints: tuple[str | Text, ...] = (
-            Text("R uruchom · M ręczny · ", style="gray")
-            + Text(f"O {'●' if self._snapshot.get('auto_enabled') else '○'} Auto", style="brand_accent")
-            + Text(" · C anuluj zlecenie", style="gray"),
-            "P wstrzymaj · W wznów · X anuluj",
-            "Space wybierz · D dodaj · X usuń · B sezon · F sprawdź",
+            "Tab widok",
+            "Space aktywność · Enter odcinki · D dodaj · X usuń · F sprawdź",
+            "M ręczny · O zatrzymaj/wznów · U ustawienia",
             "Enter otwórz · F folder · D szczegóły · Delete Kosz",
         )
         result.append("←→ widok · ↑↓ wybierz · Esc wróć")
         result.append(hints[self._tab])
+        result.append(self._processing_hint() if self._tab == _Tab.PROGRESS else "")
+        result.append(self._global_status())
         return result
+
+    def _processing_hint(self) -> str:
+        materials: list[Mapping[str, object]] = _rows(self._snapshot.get("materials"))
+        if self._selected >= len(materials):
+            return "P ponów wszystkie przenoszenia do biblioteki" if _relocation_problems(self._snapshot) else ""
+        item: Mapping[str, object] = materials[self._selected]
+        if item.get("stage") == "download":
+            return "P wstrzymaj cały torrent · W wznów · X anuluj cały torrent"
+        if item.get("run_id"):
+            scope: object = item.get("group_ids", [])
+            count: int = len(scope) if isinstance(scope, list) else 1
+            return f"{'C anuluj' if item.get('active') else 'P ponów'} całe zlecenie · {count} materiałów"
+        return "M ręczny wybór źródła"
+
+    def _global_status(self) -> str:
+        counts: object = self._snapshot.get("material_counts", {})
+        values: Mapping[str, object] = counts if isinstance(counts, Mapping) else {}
+        status: str = "Praca" if self._snapshot.get("auto_enabled") else "Wstrzymano"
+        if self._snapshot.get("pausing"):
+            status = "Zatrzymywanie"
+        if self._snapshot.get("pause_incomplete"):
+            status = "Pauza niepełna"
+        return (
+            f"↓ {values.get('downloading', 0)} · Przetwarzanie {values.get('processing', 0)}"
+            f" · Czeka {values.get('waiting', 0)} · {status}"
+        )
 
     def _entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
         entries: list[tuple[str | Text, bool | None]] = []
@@ -857,18 +1042,16 @@ class StateController:
             entries = _library_detail_entries(self._details)
         if self._deletion is not None or self._details is not None or self._operation_details is not None:
             return entries
-        if self._binding is not None:
-            return [(_safe_text(item.romaji), None) for item in self._candidates]
         if self._tab == _Tab.PROGRESS:
             return [
-                *self._progress_entries(columns),
+                *self._processing_entries(columns),
                 *((_deletion_label(item), None) for item in _deletion_rows(self._snapshot)),
             ]
         if self._tab == _Tab.SUBSCRIPTIONS:
             return [
                 (
                     f"{_safe_text(item.get('series', ''))} [{_safe_text(item.get('group', ''))}]"
-                    f" · {item.get('next_episode', '')}",
+                    f" · {_subscription_term(item)}",
                     bool(item.get("enabled")),
                 )
                 for item in self._subscriptions
@@ -881,19 +1064,6 @@ class StateController:
                 )
                 for item in _library_rows(self._snapshot)
             ]
-        measured: bool = self._connected and not self._snapshot.get("transfers_problem")
-        for item in self._transfer_rows():
-            value: object = item.get("progress")
-            progress_text: str = (
-                f"{float(str(value)) * 100:.1f}%" if measured and isinstance(value, (int, float)) else "—"
-            )
-            state: str = _transfer_label(item, measured=measured)
-            entries.append(
-                (
-                    f"{_safe_text(item.get('name', ''))} · {progress_text}" + (f" · {state}" if state else ""),
-                    None,
-                )
-            )
         return entries
 
     def _operation_entries(self, operation: PendingDeletion) -> list[tuple[str | Text, bool | None]]:
@@ -912,36 +1082,34 @@ class StateController:
             entries.append((f"{_safe_text(path)} · {_DELETION_STATUSES[status]}{explanation}", None))
         return entries
 
-    def _progress_entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
-        return [
-            (line, None)
-            for _, progress in self._runs.values()
-            for line in progress.render(columns, include_completed=False).split("\n")
-            if line.plain.strip()
-        ]
+    def _processing_entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
+        entries: list[tuple[str | Text, bool | None]] = []
+        measured: bool = self._connected and not self._snapshot.get("transfers_problem")
+        for item in _rows(self._snapshot.get("materials")):
+            progress: tuple[str, RichRunProgress] | None = self._runs.get(str(item.get("run_id", "")))
+            if progress is not None:
+                line: Text = progress[1].render_group(str(item.get("group_id", "")), columns)
+                if line.plain:
+                    entries.append((line, None))
+                    continue
+            stage: str = str(item.get("stage"))
+            label: str = _safe_text(item.get("name", ""))
+            if stage == "download":
+                fraction: object = item.get("progress")
+                percentage: str = f" · {float(str(fraction)) * 100:.1f}%" if fraction is not None and measured else ""
+                label += f" · Pobieranie{percentage} · {_transfer_label(item, measured=measured)}"
+            elif stage == "waiting":
+                label += f" · {_waiting_label(str(item.get('reason')))}"
+            else:
+                label += f" · {_processing_label(str(item.get('state')))}"
+            entries.append((label, None))
+        return [*entries, *self._relocation_entries()]
 
-    def _transfer_rows(self) -> list[Mapping[str, object]]:
-        acquisitions: list[Mapping[str, object]] = _rows(self._snapshot.get("acquisitions"))
-        attention: set[str] = {str(item.get("info_hash")) for item in acquisitions if item.get("problem")}
-        reported: list[Mapping[str, object]] = _rows(self._snapshot.get("transfers"))
-        known: set[str] = {str(item["info_hash"]) for item in reported}
-        rows: list[Mapping[str, object]] = [
-            {**item, "problem": str(item["info_hash"]) in attention} for item in reported
+    def _relocation_entries(self) -> list[tuple[str | Text, bool | None]]:
+        return [
+            (f"{_safe_text(item['name'])} · błąd przenoszenia do biblioteki", None)
+            for item in _relocation_problems(self._snapshot)
         ]
-        rows.extend(
-            {
-                "info_hash": item["info_hash"],
-                "name": f"{item.get('directory', '')} · odc. {item.get('episode', '?')}",
-                "state": None,
-                "problem": bool(item.get("problem")),
-                "progress": None,
-            }
-            for item in acquisitions
-            if str(item.get("info_hash")) not in known
-            and item.get("state") != "complete"
-            and (item.get("state") != "failed" or item.get("problem"))
-        )
-        return rows
 
 
 def _transfer_label(row: Mapping[str, object], *, measured: bool) -> str:
@@ -951,6 +1119,49 @@ def _transfer_label(row: Mapping[str, object], *, measured: bool) -> str:
     if row.get("state") is None:
         return _UNCONFIRMED_LABEL
     return _TRANSFER_LABELS.get(str(row.get("state")), "") if measured else ""
+
+
+def _waiting_label(reason: str) -> str:
+    return {
+        "preparing": "pobrano · przygotowanie",
+        "video_missing": "czeka na film",
+        "sidecar_missing": "czeka na napisy",
+        "subtitle_source_missing": "potrzebne napisy",
+        "image_missing": "czeka na obraz",
+        "content_source_missing": "czeka na treść",
+        "source_incomplete": "czeka na komplet plików",
+        "ambiguous_sidecar": "wybierz napisy",
+        "ambiguous_image": "wybierz obraz",
+        "ambiguous_content_source": "wybierz źródło",
+        "source_path_collision": "konflikt ścieżek",
+        "unsupported_source": "źródło wymaga Ręcznego",
+    }.get(reason, "czeka na komplet")
+
+
+def _subscription_term(item: Mapping[str, object]) -> str:
+    airing: object = item.get("airing_at")
+    if isinstance(airing, str):
+        return datetime.fromisoformat(airing).astimezone().strftime("%d.%m.%Y %H:%M")
+    return "Brak terminu"
+
+
+def _processing_row_ids(snapshot: Mapping[str, object]) -> list[str]:
+    return [
+        *(f"material:{item['material_id']}" for item in _rows(snapshot.get("materials"))),
+        *(f"relocation:{item['group_id']}" for item in _relocation_problems(snapshot)),
+        *(f"deletion:{item['operation_id']}" for item in _deletion_rows(snapshot)),
+    ]
+
+
+def _processing_label(state: str) -> str:
+    return {
+        "accepted": "Przygotowanie",
+        "running": "Przetwarzanie",
+        "paused": "Wstrzymano",
+        "failed": "Błąd · wymaga ponowienia",
+        "partial": "Niepełne · wymaga ponowienia",
+        "cancelled": "Anulowano",
+    }.get(state, "Przygotowanie")
 
 
 def _rows(value: object) -> list[Mapping[str, object]]:

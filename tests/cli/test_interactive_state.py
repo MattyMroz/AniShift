@@ -5,15 +5,18 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone, tzinfo
+from decimal import Decimal
 from pathlib import Path
 from time import monotonic
 from types import SimpleNamespace
-from typing import Final, cast
+from typing import Final, Self, cast
 
 import pytest
 
 import anishift.application.automation as automation_module
 from anishift.application import (
+    AcquisitionService,
     AppService,
     DeletionPreview,
     GroupIntent,
@@ -24,6 +27,7 @@ from anishift.application import (
     RunEvent,
     RunEventKind,
     RunMode,
+    Subscription,
     TaskKind,
     TaskState,
 )
@@ -37,12 +41,14 @@ from anishift.application.control_views import (
     RunProgressSnapshot,
     encode_view,
 )
+from anishift.application.subscriptions import EpisodeOrder, EpisodeState, SubscriptionService, SubscriptionStore
 from anishift.cli.exit_codes import EXIT_SUCCESS
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
 from anishift.cli.interactive.mascot import MascotController
 from anishift.cli.interactive.settings import SettingsController
 from anishift.cli.interactive.state import StateController, StateResult, refusal_text
+from anishift.cli.interactive.subscriptions import SubscriptionDraft
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import (
     ControlClient,
@@ -90,6 +96,7 @@ def test_reopened_state_restores_progress_and_keeps_settings_available_without_r
                     "auto_enabled": True,
                     "run_progress": [{"run_id": "run", "preview_id": "preview"}],
                     "requests": [{"request_id": "run", "state": "running"}],
+                    "materials": [{"material_id": "episode", "group_id": "episode", "run_id": "run"}],
                 }
             )
         if request.kind == "run_progress":
@@ -143,8 +150,16 @@ def test_download_view_distinguishes_saved_orders_from_measured_progress(
     calls: list[ControlRequest] = []
     snapshot: dict[str, object] = {
         "auto_enabled": False,
-        "acquisitions": [{"info_hash": "episode", "directory": "Episode", "episode": "22", "state": "accepted"}],
-        "transfers": [{"info_hash": "episode", "name": "Episode.mkv", "progress": 0.37, "state": "downloading"}],
+        "materials": [
+            {
+                "material_id": "episode",
+                "stage": "download",
+                "info_hash": "episode",
+                "name": "Episode.mkv",
+                "progress": 0.37,
+                "state": "downloading",
+            }
+        ],
         "transfers_problem": None
         if connected_client
         else ("The private torrent window was closed; downloads remain stopped until explicitly resumed"),
@@ -197,24 +212,21 @@ def test_download_view_distinguishes_saved_orders_from_measured_progress(
             refreshed.wait(0.05)
             refreshed.clear()
         assert controller._connected
-        controller.handle_key("tab")
         frame: str = controller.render(80, 24).plain
-        assert "Episode.mkv" in frame
-        assert "0.0%" not in frame
-        assert ("37.0%" in frame) is connected_client
-        assert ("—" in frame) is not connected_client
+        _assert_download_measurement(frame, connected_client)
         assert len(frame.splitlines()) <= 24
         assert all(len(line) <= 80 for line in frame.splitlines())
-        controller.handle_key("tab")
+        controller.handle_key("left")
         frame = controller.render(80, 24).plain
-        assert "[SubsPlease] · 22" in frame
+        assert "[SubsPlease] · Brak terminu" in frame
         assert "● Example" in frame
         assert "X usuń" in frame
-        assert "Space wybierz" in frame
+        assert "Space aktywność" in frame
         assert "pobieraj nowe" not in frame
         _assert_wrapping_navigation(controller)
         _assert_list_fills_available_rows(controller)
         _assert_title_wraps(controller)
+        controller.handle_key("tab")
         controller.handle_key("tab")
         frame = controller.render(80, 24).plain
         assert "Biblioteka" in frame
@@ -382,14 +394,15 @@ def test_whole_set_deletion_uses_one_confirmation_default_cancel_and_retains_its
             return
         assert len(sessions) == 1
         assert not sessions[0].closed
-        for width, height in ((120, 40), (80, 24), (40, 10)):
+        for width, height in ((120, 40), (80, 24), (40, 10), (40, 6), (40, 4)):
             frame: str = controller.render(width, height).plain
             assert "[Anuluj]" in frame
             assert "1 plików" in frame
             assert len(frame.splitlines()) <= height
         if action == "confirm":
             controller.handle_key("right")
-            assert "[Przenieś do Kosza]" in controller.render(80, 24).plain
+            for width, height in ((120, 40), (80, 24), (40, 6), (40, 4)):
+                assert "[Przenieś do Kosza]" in controller.render(width, height).plain
         controller.handle_key("enter")
         _await_state_action(controller)
         assert submitted == ([preview] if action == "confirm" else [])
@@ -748,18 +761,395 @@ def test_a_panel_notice_disappears_once_the_resident_state_moves_on(tmp_path: Pa
         controller._thread.join(5)
 
 
+def test_library_return_keeps_identity_and_detached_scroll_after_an_inactive_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    session: ResidentSession = cast(
+        "ResidentSession", SimpleNamespace(command=lambda kind: {"subscriptions": []}, library=lambda: ())
+    )
+    controller: StateController = StateController(session, lambda: None)
+    controller._tab = state_module._Tab.FILES
+    library: list[dict[str, object]] = [{"set_id": f"set-{index}", "name": f"Episode {index}"} for index in range(40)]
+    controller._snapshot = {"library": library}
+    controller._connected = True
+    controller.set_notice("")
+    try:
+        controller.handle_key("end")
+        controller.render(80, 24)
+        controller.scroll(-3)
+        before: str = controller.render(80, 24).plain
+        offset: int = controller._offsets[state_module._Tab.FILES]
+        controller.handle_key("left")
+        controller.handle_key("end")
+        controller._receive(session, {"event": "state_changed", "payload": {"library": library}})
+        controller._switch_tab(state_module._Tab.FILES)
+        assert controller._selected == 39
+        assert controller.render(80, 24).plain == before
+        assert controller._offsets[state_module._Tab.FILES] == offset
+        controller.handle_key("left")
+        controller._receive(session, {"event": "state_changed", "payload": {"library": library[1:]}})
+        controller._switch_tab(state_module._Tab.FILES)
+        assert controller._selected == 38
+        assert state_module._library_rows(controller._snapshot)[controller._selected]["set_id"] == "set-39"
+        controller.handle_key("up")
+        assert "\u276f Episode 38" in controller.render(80, 24).plain
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+@pytest.mark.parametrize("action", ["escape", "enter", "text:p"])
+def test_subscription_card_keeps_completed_facts_and_requires_explicit_repeat(
+    monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    subscription: Subscription = Subscription(
+        "series",
+        "query",
+        "Series",
+        "Group",
+        Decimal(8),
+        1080,
+        frozenset({"old-hash"}),
+        "2026-09-16",
+        None,
+        episodes=(
+            EpisodeOrder(Decimal(3), state=EpisodeState.COMPLETE, info_hash="old-hash", acquisition_id="old"),
+            EpisodeOrder(Decimal("7.5")),
+            EpisodeOrder(Decimal(8)),
+        ),
+        future_from=Decimal(9),
+    )
+    repeated: list[tuple[str, tuple[Decimal, ...]]] = []
+
+    def repeat(identifier: str, numbers: tuple[Decimal, ...]) -> Subscription:
+        repeated.append((identifier, numbers))
+        return replace(subscription, episodes=(replace(subscription.episodes[0], state=EpisodeState.DUE),))
+
+    session: ResidentSession = cast(
+        "ResidentSession",
+        SimpleNamespace(
+            command=lambda kind, payload: {**encode_view(subscription), "work_states": {"3": "completed"}},
+            repeat=repeat,
+            close=lambda: None,
+        ),
+    )
+    controller: StateController = StateController(
+        cast("ResidentSession", SimpleNamespace(new_session=lambda: session)), lambda: None
+    )
+    controller._tab = state_module._Tab.SUBSCRIPTIONS
+    controller._subscriptions = [{"subscription_id": "series", "series": "Series", "group": "Group"}]
+    try:
+        controller.handle_key("enter")
+        _await_state_action(controller)
+        assert "○ 3 · ukończono produkty" in controller.render(80, 24).plain
+        controller.handle_key("text:a")
+        assert "○ 3 · ukończono produkty" in controller.render(80, 24).plain
+        controller.handle_key("space")
+        controller.handle_key(action)
+        _await_state_action(controller)
+        assert repeated == ([("series", (Decimal(3),))] if action == "text:p" else [])
+        assert subscription.episodes[0].acquisition_id == "old"
+        assert subscription.episodes[0].state is EpisodeState.COMPLETE
+        if action == "enter":
+            assert "wymagają jawnego P Ponów" in controller.render(80, 24).plain
+        elif action == "escape":
+            assert controller._draft is None
+        else:
+            assert controller._draft is not None
+            assert not controller._draft.completed
+            assert "Przyjęto ponowienie: 3" in controller.render(120, 24).plain
+            assert "Enter stosuje pozostały zakres" in controller.render(120, 24).plain
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+@pytest.mark.parametrize("finish", ["enter", "escape"])
+def test_repeat_preserves_mixed_draft_until_separate_range_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, finish: str
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    store: SubscriptionStore = SubscriptionStore(tmp_path / "subscriptions.json")
+    original: Subscription = Subscription(
+        "series",
+        "query",
+        "Series",
+        "Group",
+        Decimal(1),
+        1080,
+        frozenset(),
+        "2026-09-16",
+        None,
+        episodes=(
+            EpisodeOrder(Decimal(1)),
+            EpisodeOrder(Decimal(2), selected=False),
+            EpisodeOrder(Decimal(3), state=EpisodeState.COMPLETE, acquisition_id="old"),
+        ),
+        future_from=Decimal(4),
+    )
+    store.save((original,))
+    service: SubscriptionService = SubscriptionService(store=store, acquisition=cast("AcquisitionService", object()))
+    commands: list[str] = []
+    refused: bool = True
+
+    def handle(request: ControlRequest) -> ControlResponse:
+        commands.append(request.kind)
+        current: Subscription = service.list()[0]
+        if request.kind == "subscription_get":
+            return ControlResponse.succeeded({**encode_view(current), "work_states": {"3": "completed"}})
+        if request.kind == "subscription_repeat":
+            assert request.payload["episodes"] == ["3"]
+            if refused:
+                return ControlResponse.refused(ControlErrorCode.REFUSED, "Refused", RefusalReason.PAUSED.value)
+            return ControlResponse.succeeded(encode_view(service.repeat("series", (Decimal(3),))))
+        if request.kind == "subscription_range":
+            assert request.payload["selected"] == ["2", "3"]
+            assert request.payload["future_from"] is None
+            return ControlResponse.succeeded(
+                encode_view(service.set_range("series", selected=(Decimal(2), Decimal(3)), future_from=None))
+            )
+        if request.kind == "subscriptions_list":
+            return ControlResponse.succeeded(
+                {"subscriptions": [{"subscription_id": "series", "work_states": {"3": "due"}}]}
+            )
+        return ControlResponse.succeeded({})
+
+    key: bytes = os.urandom(32)
+    endpoint: str = control_endpoint(tmp_path)
+    server: ControlServer = ControlServer(endpoint, key, handle)
+    session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+    controller: StateController = StateController(session, lambda: None)
+    controller._tab = state_module._Tab.SUBSCRIPTIONS
+    controller._subscriptions = [{"subscription_id": "series"}]
+    try:
+        controller.handle_key("enter")
+        _await_state_action(controller)
+        for action in ("space", "down", "space", "down", "space", "end", "space", "enter"):
+            controller.handle_key(action)
+        draft: SubscriptionDraft | None = controller._draft
+        assert draft is not None
+        assert draft.selected == {Decimal(2), Decimal(3)}
+        assert draft.future_from is None
+        assert "subscription_range" not in commands
+        controller.handle_key("text:p")
+        _await_state_action(controller)
+        assert controller._draft is draft
+        assert draft.completed == {Decimal(3)}
+        assert draft.selected == {Decimal(2), Decimal(3)}
+        assert draft.future_from is None
+        assert store.load() == (original,)
+        refused = False
+        _finish_mixed_draft_repeat(controller, session, store, commands, finish)
+    finally:
+        controller.close()
+        controller._thread.join(5)
+        session.close()
+        server.close()
+
+
+@pytest.mark.parametrize("leave", ["escape", "close"])
+def test_late_repeat_result_does_not_change_a_cancelled_subscription_draft(
+    monkeypatch: pytest.MonkeyPatch, leave: str
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    subscription: Subscription = Subscription(
+        "series",
+        "query",
+        "Series",
+        "Group",
+        Decimal(1),
+        1080,
+        frozenset(),
+        "2026-09-16",
+        None,
+        episodes=(EpisodeOrder(Decimal(1), state=EpisodeState.COMPLETE),),
+    )
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    def repeat(identifier: str, numbers: tuple[Decimal, ...]) -> Subscription:
+        assert identifier == "series"
+        assert numbers == (Decimal(1),)
+        entered.set()
+        assert release.wait(5)
+        return replace(subscription, generation=subscription.generation + 1)
+
+    session: ResidentSession = cast("ResidentSession", SimpleNamespace(repeat=repeat, close=lambda: None))
+    controller: StateController = StateController(
+        cast("ResidentSession", SimpleNamespace(new_session=lambda: session)), lambda: None
+    )
+    draft: SubscriptionDraft = SubscriptionDraft.from_subscription(subscription, {"1": "completed"})
+    controller._draft = draft
+    try:
+        controller.handle_key("space")
+        controller.handle_key("text:p")
+        assert entered.wait(5)
+        if leave == "close":
+            controller.close()
+        else:
+            controller.handle_key("escape")
+        release.set()
+        _await_state_action(controller)
+        assert draft.subscription == subscription
+        assert draft.completed == {Decimal(1)}
+        assert draft.states[Decimal(1)] == "completed"
+    finally:
+        release.set()
+        _await_state_action(controller)
+        controller.close()
+        controller._thread.join(5)
+
+
+def _finish_mixed_draft_repeat(
+    controller: StateController, session: ResidentSession, store: SubscriptionStore, commands: list[str], finish: str
+) -> None:
+    draft: SubscriptionDraft | None = controller._draft
+    assert draft is not None
+    controller.handle_key("text:p")
+    _await_state_action(controller)
+    accepted: Subscription = store.load()[0]
+    assert len(accepted.repeats) == 1
+    assert accepted.episodes[0].selected
+    assert not accepted.episodes[1].selected
+    assert accepted.future_from == Decimal(4)
+    assert controller._draft is draft
+    assert draft.subscription == accepted
+    assert not draft.completed
+    assert draft.states[Decimal(3)] == "due"
+    assert "Enter stosuje pozostały zakres" in controller.render(120, 24).plain
+    controller.handle_key("text:p")
+    controller._receive(session, {"event": "state_changed", "payload": {"auto_enabled": True}})
+    controller.poll()
+    assert draft.selected == {Decimal(2), Decimal(3)}
+    assert draft.future_from is None
+    assert commands.count("subscription_repeat") == 2
+    controller.handle_key(finish)
+    _await_state_action(controller)
+    assert controller._draft is None
+    saved: Subscription = store.load()[0]
+    assert len(saved.repeats) == 1
+    assert saved.repeats[0].previous_acquisition_id == "old"
+    if finish == "enter":
+        assert {item.number for item in saved.episodes if item.selected} == {Decimal(2), Decimal(3)}
+        assert saved.future_from is None
+        assert commands.count("subscription_range") == 1
+    else:
+        assert saved == accepted
+        assert "subscription_range" not in commands
+
+
+def test_subscription_term_converts_utc_to_a_non_utc_local_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    class LocalDateTime(datetime):
+        def astimezone(self, tz: tzinfo | None = None) -> Self:
+            return super().astimezone(tz or timezone(timedelta(hours=2)))
+
+    monkeypatch.setattr(state_module, "datetime", LocalDateTime)
+    assert state_module._subscription_term({"airing_at": "2026-10-03T23:30:00+00:00"}) == "04.10.2026 01:30"
+
+
 def _assert_list_fills_available_rows(controller: StateController) -> None:
     controller._subscriptions.extend(
         {"series": f"Series {index}", "enabled": False, "group": "Group", "next_episode": 1} for index in range(20)
     )
     frame: str = controller.render(80, 24).plain
     assert sum("● " in line or "○ " in line for line in frame.splitlines()) == 17
-    assert "Space wybierz" in frame
+    assert "Space aktywność" in frame
     assert len(frame.splitlines()) <= 24
     controller.handle_key("end")
     assert controller._selected == 21
     controller.handle_key("home")
     assert controller._selected == 0
+
+
+@pytest.mark.parametrize("inactive", [False, True])
+@pytest.mark.parametrize("selected", ["material", "deletion"])
+def test_processing_preserves_selected_identity_when_material_counts_change(
+    monkeypatch: pytest.MonkeyPatch, inactive: bool, selected: str
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda kind: {"subscriptions": []}))
+    controller: StateController = StateController(session, lambda: None)
+    materials: list[dict[str, object]] = [
+        {"material_id": f"material-{index}", "name": f"Episode {index}", "stage": "waiting"} for index in range(3)
+    ]
+    deletions: list[dict[str, object]] = [
+        {"operation_id": "delete", "set_id": "set", "name": "Deleted", "total": 2, "recycled": 1}
+    ]
+    controller._snapshot = {"materials": materials, "deletions": deletions}
+    controller._connected = True
+    controller._selected = 1 if selected == "material" else 3
+    try:
+        if inactive:
+            controller.handle_key("left")
+        controller._receive(
+            session, {"event": "state_changed", "payload": {"materials": materials[1:], "deletions": deletions}}
+        )
+        if inactive:
+            controller.handle_key("right")
+        assert controller._selected == (0 if selected == "material" else 2)
+        assert (controller._selected_deletion() is not None) is (selected == "deletion")
+        controller._receive(
+            session, {"event": "state_changed", "payload": {"materials": materials, "deletions": deletions}}
+        )
+        assert controller._selected == (1 if selected == "material" else 3)
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+@pytest.mark.parametrize(("columns", "rows"), [(120, 40), (80, 24), (80, 8)])
+@pytest.mark.parametrize("tab", [1, 2, 3])
+def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_sizes(
+    monkeypatch: pytest.MonkeyPatch, columns: int, rows: int, tab: int
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller._tab = tab
+    controller._connected = True
+    controller._notice = ""
+    controller._snapshot = {
+        "auto_enabled": True,
+        "material_counts": {"downloading": 2, "processing": 3, "waiting": 4},
+        "materials": [
+            {
+                "material_id": "material",
+                "name": "Full original name.mkv",
+                "stage": "processing",
+                "run_id": "run",
+                "group_ids": ["a", "b"],
+                "active": True,
+            }
+        ],
+    }
+    controller._subscriptions = [
+        {"series": "Title", "group": "Group", "enabled": True, "airing_at": "2026-10-03T18:30:00+00:00"}
+    ]
+    try:
+        frame: str = interactive_app._fit_frame(
+            controller.render(columns, rows), "test", "workspace", columns, rows
+        ).plain
+        assert "↓ 2 · Przetwarzanie 3 · Czeka 4 · Praca" in frame
+        assert "←→ widok" in frame
+        assert ("Enter odcinki", "C anuluj całe zlecenie · 2 materiałów", "Delete Kosz")[tab - 1] in frame
+        assert len(frame.splitlines()) <= rows
+        assert all(len(line) <= columns for line in frame.splitlines())
+        if tab == 1:
+            expected: str = datetime.fromisoformat("2026-10-03T18:30:00+00:00").astimezone().strftime("%d.%m.%Y %H:%M")
+            assert expected in frame
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+def _assert_download_measurement(frame: str, connected_client: bool) -> None:
+    assert "Episode.mkv" in frame
+    assert "0.0%" not in frame
+    assert ("37.0%" in frame) is connected_client
+    assert ("pobieranie" in frame) is connected_client
+    assert "downloading" not in frame
+    assert "The private torrent" not in frame
 
 
 def _rendered_transfers(tmp_path: Path, snapshot: dict[str, object]) -> str:
@@ -778,7 +1168,6 @@ def _rendered_transfers(tmp_path: Path, snapshot: dict[str, object]) -> str:
             refreshed.wait(0.05)
             refreshed.clear()
         assert controller._connected
-        controller.handle_key("tab")
         return controller.render(80, 24).plain
     finally:
         controller.close()
@@ -796,16 +1185,17 @@ def test_a_problem_of_a_release_the_client_still_reports_is_named_in_the_downloa
         tmp_path,
         {
             "auto_enabled": False,
-            "acquisitions": [
+            "materials": [
                 {
+                    "material_id": "episode",
+                    "stage": "download",
                     "info_hash": "episode",
-                    "directory": "Episode",
-                    "episode": "22",
-                    "state": "accepted",
+                    "name": "Episode.mkv",
+                    "progress": 0.0,
+                    "state": "stoppedDL",
                     "problem": problem,
                 }
             ],
-            "transfers": [{"info_hash": "episode", "name": "Episode.mkv", "progress": 0.0, "state": "stoppedDL"}],
             "transfers_problem": None,
         },
     )
@@ -821,16 +1211,23 @@ def test_an_ordered_release_the_client_never_reported_still_says_so(tmp_path: Pa
         tmp_path,
         {
             "auto_enabled": False,
-            "acquisitions": [
-                {"info_hash": "episode", "directory": "Episode", "episode": "22", "state": "accepted"},
+            "materials": [
+                {
+                    "material_id": "episode",
+                    "stage": "download",
+                    "info_hash": "episode",
+                    "name": "Episode 22",
+                    "state": None,
+                    "progress": None,
+                },
             ],
-            "transfers": [],
             "transfers_problem": None,
         },
     )
 
     assert "brak potwierdzenia klienta" in frame
     assert "wymaga uwagi" not in frame
+    assert "%" not in frame
 
 
 class _PanelRenderer:

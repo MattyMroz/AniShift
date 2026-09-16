@@ -5,6 +5,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from time import monotonic
 from types import SimpleNamespace
 from typing import cast
 
@@ -21,12 +22,15 @@ from anishift.application import (
     ReleaseChoice,
     SeasonContext,
     SeriesGroup,
+    SubscriptionOrder,
     TitleCandidate,
     TitleCatalogError,
     TitleStatus,
 )
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive.anime import AnimeController, AnimeResult, _Screen
+from anishift.cli.interactive.state import StateController
+from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext
 from anishift.services.torrents.types import Release, ReleaseName
 
@@ -184,8 +188,216 @@ def _settle(controller: AnimeController) -> None:
     assert not worker.is_alive()
 
 
+def _settle_panel(panel: StateController) -> None:
+    deadline: float = monotonic() + 5
+    while panel._busy and monotonic() < deadline:
+        threading.Event().wait(0.005)
+    assert not panel._busy
+
+
+def _search_panel_from_subscriptions(panel: StateController, anime: AnimeController) -> None:
+    assert panel._tab == 2
+    panel.handle_key("left")
+    assert panel._tab == 1
+    panel.handle_key("text:d")
+    assert panel._tab == 0
+    assert "Tab widok" in panel.render(80, 24).plain
+    panel.handle_key("escape")
+    assert panel._tab == 1
+    panel.handle_key("text:d")
+    panel.handle_key("text:oshi")
+    panel.handle_key("enter")
+    _settle(anime)
+    panel.handle_key("enter")
+    _settle(anime)
+
+
+@pytest.mark.parametrize("size", [(120, 40), (80, 24), (40, 6)])
+def test_panel_query_renders_tab_hint_and_keeps_arrows_inside_text(
+    monkeypatch: pytest.MonkeyPatch, size: tuple[int, int]
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    anime: AnimeController = _controller(_service(search=lambda query: _catalog((_choice("1"),))))
+    panel: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    panel.attach_anime(anime)
+    try:
+        panel.handle_key("left")
+        panel.handle_key("left")
+        panel.handle_key("text:abc")
+        panel.handle_key("left")
+        panel.handle_key("text:x")
+        assert anime._query == "abxc"
+        assert panel._tab == 0
+        frame: str = panel.render(*size).plain
+        assert "Tab widok" in frame
+        assert "Przetwarzanie 0" in frame
+        assert len(frame.splitlines()) <= size[1]
+        panel.handle_key("tab")
+        assert panel._tab == 1
+    finally:
+        panel.close()
+        panel._thread.join(5)
+
+
+def _select_panel_episode_range(panel: StateController) -> None:
+    for key in ("home", "down", "down", "space", "end", "up", "space"):
+        panel.handle_key(key)
+    assert panel._draft is not None
+    assert panel._draft.selected == {Decimal(3), Decimal("7.5"), Decimal(8)}
+
+
+@pytest.mark.parametrize("size", [(120, 40), (80, 24), (40, 6)])
+def test_panel_search_draft_confirm_and_one_off_download_keep_the_same_controller(
+    monkeypatch: pytest.MonkeyPatch, size: tuple[int, int]
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    calls: list[tuple[SubscriptionOrder, tuple[Decimal, ...], Decimal | None]] = []
+    downloaded: list[tuple[ReleaseChoice, ...]] = []
+
+    def follow(order: SubscriptionOrder, *, selected: Sequence[Decimal], future_from: Decimal | None) -> None:
+        calls.append((order, tuple(selected), future_from))
+
+    def download(choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
+        downloaded.append(tuple(choices))
+        return DownloadReceipt(len(choices), Path("workspace"))
+
+    session: ResidentSession = cast(
+        "ResidentSession",
+        SimpleNamespace(
+            follow=follow,
+            close=lambda: None,
+            library=lambda: (),
+        ),
+    )
+    parent: ResidentSession = cast("ResidentSession", SimpleNamespace(new_session=lambda: session))
+    service: AppService = _service(
+        download=download,
+        extra={
+            "find_titles": lambda text: (_title(episodes=8),),
+            "season_context": lambda candidate: _season(episodes=8),
+            "search_title": lambda candidate, **options: _catalog((_choice("8"), _choice("7.5"), _choice("3"))),
+        },
+    )
+    anime: AnimeController = AnimeController(service, lambda: None)
+    panel: StateController = StateController(parent, lambda: None)
+    panel.attach_anime(anime)
+    panel._connected = True
+    try:
+        _search_panel_from_subscriptions(panel, anime)
+        panel.handle_key("text:o")
+        assert panel._tab == 1
+        assert calls == []
+        assert downloaded == []
+        assert panel._draft is not None
+        _select_panel_episode_range(panel)
+        frame: Text = panel.render(*size)
+        assert len(frame.split("\n")) <= size[1]
+        assert calls == []
+        panel.handle_key("enter")
+        _settle_panel(panel)
+        assert len(calls) == 1
+        assert calls[0][0].series == "Oshi no Ko"
+        assert calls[0][1:] == ((Decimal(3), Decimal("7.5"), Decimal(8)), None)
+        panel.handle_key("left")
+        assert panel._anime is anime
+        assert anime._query == "oshi"
+        panel.handle_key("enter")
+        _settle(anime)
+        panel.poll()
+        assert panel._tab == 2
+        assert len(downloaded) == 1
+        assert len(calls) == 1
+        panel.handle_key("right")
+        assert panel._tab == 3
+        panel.render(*size)
+        panel.handle_key("right")
+        assert panel._tab == 0
+        assert "Anime" in panel.render(*size).plain
+    finally:
+        panel.close()
+        panel._thread.join(5)
+
+
 def _screen(controller: AnimeController) -> _Screen:
     return controller._screen
+
+
+@pytest.mark.parametrize("inflight", [False, True])
+def test_download_completion_after_leaving_anime_never_steals_the_tab(
+    monkeypatch: pytest.MonkeyPatch, inflight: bool
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    def download(choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
+        entered.set()
+        assert release.wait(5)
+        return DownloadReceipt(len(choices), Path("workspace"))
+
+    anime: AnimeController = _controller(_service(search=lambda query: _catalog((_choice("8"),)), download=download))
+    panel: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    panel.attach_anime(anime)
+    worker: threading.Thread | None = None
+    try:
+        panel.handle_key("left")
+        panel.handle_key("left")
+        panel.handle_key("text:oshi")
+        panel.handle_key("enter")
+        _settle(anime)
+        panel.handle_key("enter")
+        assert entered.wait(5)
+        worker = anime._worker
+        if not inflight:
+            release.set()
+            _settle(anime)
+        panel.handle_key("tab")
+        release.set()
+        assert worker is not None
+        worker.join(5)
+        assert not worker.is_alive()
+        panel.poll()
+        assert panel._tab == 1
+        panel.handle_key("left")
+        panel.poll()
+        assert panel._tab == 0
+        assert anime._query == "oshi"
+        assert anime._screen is (_Screen.QUERY if inflight else _Screen.RESULTS)
+    finally:
+        release.set()
+        if worker is not None:
+            worker.join(5)
+        panel.close()
+        panel._thread.join(5)
+
+
+def test_upcoming_title_group_input_is_local_and_routes_command_letters_as_text() -> None:
+    controller: AnimeController = _controller(
+        _service(
+            extra={
+                "find_titles": lambda query: (_title(episodes=None, status=TitleStatus.NOT_YET_RELEASED),),
+                "season_context": lambda candidate: _season(episodes=None),
+                "search_title": lambda candidate, **options: _catalog(()),
+            }
+        )
+    )
+    _type(controller, "oshi")
+    controller.handle_key("enter")
+    _settle(controller)
+    controller.handle_key("enter")
+    _settle(controller)
+    controller.handle_key("text:o")
+    controller.handle_key("text:SomeGroup")
+    controller.handle_key("left")
+    controller.handle_key("text:x")
+    assert controller.editing
+    assert controller.take_draft() is None
+    assert controller.handle_key("enter") is AnimeResult.SUBSCRIBE
+    draft = controller.take_draft()
+    assert draft is not None
+    assert draft.order is not None
+    assert draft.order.group == "SomeGrouxp"
+    assert [label for label, _selected in draft.entries()].count("Kolejne odcinki") == 1
 
 
 def _mode(application: interactive_app._InteractiveApplication) -> interactive_app._ViewMode:
@@ -447,7 +659,7 @@ def test_a_failed_search_states_a_known_error_code_in_polish() -> None:
     assert _screen(controller) is _Screen.QUERY
 
 
-def test_a_refused_subscription_says_the_release_cannot_be_watched() -> None:
+def test_a_draft_does_not_call_the_subscription_admission_boundary() -> None:
     def subscribe(query: str, choice: ReleaseChoice, **options: object) -> SimpleNamespace:
         del query, choice, options
         raise ValueError("release carries no episode number")
@@ -465,8 +677,8 @@ def test_a_refused_subscription_says_the_release_cannot_be_watched() -> None:
     _settle(controller)
     reported: str = _frame(controller)
 
-    assert _screen(controller) is _Screen.PROBLEM
-    assert "To wydanie nie nadaje się do obserwowania" in reported
+    assert _screen(controller) is _Screen.RESULTS
+    assert controller.take_draft() is not None
     assert "carries no episode number" not in reported
 
 
@@ -694,7 +906,7 @@ def test_a_session_without_the_acquisition_boundary_reports_it_and_escape_return
     assert controller.handle_key("escape") is AnimeResult.HOME
 
 
-def test_o_on_a_numbered_episode_subscribes_to_it_and_reports_the_download_count() -> None:
+def test_o_on_a_numbered_episode_returns_a_draft_without_subscribing_or_checking() -> None:
     subscribed: list[tuple[str, ReleaseChoice]] = []
     checked: list[object] = []
     wanted: ReleaseChoice = _choice("9")
@@ -727,13 +939,15 @@ def test_o_on_a_numbered_episode_subscribes_to_it_and_reports_the_download_count
     controller.handle_key("down")
     controller.handle_key("text:o")
     _settle(controller)
-    watched: str = _frame(controller)
-
-    assert subscribed == [("oshi no ko", wanted)]
-    assert checked == [created]
-    assert _screen(controller) is _Screen.DONE
-    assert "Obserwuję [SubsPlease] Oshi no Ko od odc. 9 · pobrano 3 · sprawdzam co godzinę" in watched
-    assert controller.handle_key("any") is AnimeResult.HOME
+    draft = controller.take_draft()
+    assert draft is not None
+    assert draft.order is not None
+    assert draft.order.query == "oshi no ko"
+    assert draft.order.first_episode == Decimal(9)
+    assert subscribed == []
+    assert checked == []
+    assert _screen(controller) is _Screen.RESULTS
+    assert controller.take_draft() is None
 
 
 def test_o_on_a_batch_reports_that_only_a_numbered_episode_can_be_watched() -> None:
@@ -763,14 +977,14 @@ def test_o_on_a_batch_reports_that_only_a_numbered_episode_can_be_watched() -> N
     assert calls == []
     assert controller._worker is None
     assert _screen(controller) is _Screen.RESULTS
-    assert "Obserwuj działa tylko na numerowanym odcinku" in noticed
+    assert "Subskrybuj działa tylko na numerowanym odcinku" in noticed
 
     controller.handle_key("up")
 
-    assert "Obserwuj działa tylko na numerowanym odcinku" not in _frame(controller)
+    assert "Subskrybuj działa tylko na numerowanym odcinku" not in _frame(controller)
 
 
-def test_o_without_the_subscriptions_boundary_reports_it_and_enter_returns_to_the_results() -> None:
+def test_a_subscription_draft_needs_no_local_persistence_boundary() -> None:
     controller: AnimeController = _controller(_service(search=lambda query: _catalog((_choice("11"),))))
     _type(controller, "oshi")
     controller.handle_key("enter")
@@ -778,15 +992,11 @@ def test_o_without_the_subscriptions_boundary_reports_it_and_enter_returns_to_th
     controller.handle_key("text:O")
     _settle(controller)
 
-    assert _screen(controller) is _Screen.PROBLEM
-    assert "Subskrypcje są niedostępne w tej sesji" in _frame(controller)
-
-    controller.handle_key("enter")
-
+    assert controller.take_draft() is not None
     assert _screen(controller) is _Screen.RESULTS
 
 
-def test_a_failed_first_check_replaces_the_download_count_with_the_problem() -> None:
+def test_drafting_never_checks_or_reports_a_download_count() -> None:
     def subscribe(query: str, choice: ReleaseChoice, **options: object) -> SimpleNamespace:
         return _subscription()
 
@@ -806,15 +1016,13 @@ def test_a_failed_first_check_replaces_the_download_count_with_the_problem() -> 
     _settle(controller)
     watched: str = _frame(controller)
 
-    assert _screen(controller) is _Screen.DONE
-    assert (
-        "Obserwuję [SubsPlease] Oshi no Ko od odc. 9 · sprawdzenie nie powiodło się: "
-        "Nyaa nie odpowiedziało · sprawdzam co godzinę"
-    ) in watched
+    assert _screen(controller) is _Screen.RESULTS
+    assert controller.take_draft() is not None
+    assert "Nyaa nie odpowiedziało" not in watched
     assert "pobrano" not in watched
 
 
-def test_a_failed_subscribe_shows_its_suggestion_and_enter_returns_to_the_results() -> None:
+def test_a_draft_is_available_even_when_the_local_subscription_store_would_fail() -> None:
     def subscribe(query: str, choice: ReleaseChoice, **options: object) -> SimpleNamespace:
         raise AniShiftError(
             context=ErrorContext(
@@ -840,17 +1048,16 @@ def test_a_failed_subscribe_shows_its_suggestion_and_enter_returns_to_the_result
     _settle(controller)
     reported: str = _frame(controller)
 
-    assert _screen(controller) is _Screen.PROBLEM
-    assert "Nie mogę zapisać obserwacji" in reported
-    assert "Sprawdź katalog config" in reported
+    assert _screen(controller) is _Screen.RESULTS
+    assert controller.take_draft() is not None
+    assert "Nie mogę zapisać obserwacji" not in reported
+    assert "Sprawdź katalog config" not in reported
     assert "Traceback" not in reported
-
-    controller.handle_key("enter")
 
     assert _screen(controller) is _Screen.RESULTS
 
 
-def test_escape_during_the_subscription_discards_a_late_result() -> None:
+def test_cancel_discards_the_unconsumed_subscription_draft() -> None:
     release: threading.Event = threading.Event()
 
     def subscribe(query: str, choice: ReleaseChoice, **options: object) -> SimpleNamespace:
@@ -870,17 +1077,11 @@ def test_escape_during_the_subscription_discards_a_late_result() -> None:
     controller.handle_key("enter")
     _settle(controller)
     controller.handle_key("text:o")
-    worker: threading.Thread | None = controller._worker
-
-    assert _screen(controller) is _Screen.BUSY
-    assert "Zapisuję obserwację…" in _frame(controller)
-
-    controller.handle_key("escape")
+    assert controller._worker is None
+    controller.cancel()
     release.set()
-    assert worker is not None
-    worker.join(timeout=5)
-
-    assert _screen(controller) is _Screen.QUERY
+    assert controller.take_draft() is None
+    assert _screen(controller) is _Screen.RESULTS
     assert "Obserwuję" not in _frame(controller)
 
 
@@ -890,7 +1091,7 @@ def test_the_results_footer_offers_the_watch_key() -> None:
     controller.handle_key("enter")
     _settle(controller)
 
-    assert "O obserwuj" in _frame(controller)
+    assert "O subskrybuj" in _frame(controller)
 
 
 @pytest.mark.parametrize("size", [(120, 30), (80, 24), (60, 10), (40, 6)])
@@ -1225,7 +1426,13 @@ def test_o_follows_the_highlighted_group_of_the_chosen_title() -> None:
     controller.handle_key("text:o")
     _settle(controller)
 
-    assert recorded == [("Solo Leveling SubsPlease", "Solo Leveling", context)]
+    draft = controller.take_draft()
+    assert draft is not None
+    assert draft.order is not None
+    assert draft.order.query == "Solo Leveling SubsPlease"
+    assert draft.order.context == context
+    assert draft.order.anilist_id == candidate.anilist_id
+    assert recorded == []
 
 
 def test_o_refuses_a_release_that_belongs_to_another_season() -> None:
@@ -1294,21 +1501,24 @@ def test_a_finished_title_offers_the_whole_group_first() -> None:
     assert listed.index("A cała grupa") < listed.index("Space/Z zaznacz")
 
 
-def test_the_anime_row_opens_the_screen_and_a_home_result_returns_to_the_menu(
+def test_the_panel_search_controller_returns_to_home_and_retains_the_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     application: interactive_app._InteractiveApplication = _application(
         monkeypatch, _service(search=lambda query: _catalog(()))
     )
-    application._selected = 2
-
-    application._handle_key("enter")
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    application._resident = cast("ResidentSession", SimpleNamespace())
+    application._show_state()
+    application._handle_key("left")
+    application._handle_key("left")
+    application._handle_key("text:oshi")
     opened: str = application._render_frame(120, 30).plain
 
-    assert _mode(application) is interactive_app._ViewMode.ANIME
-    assert application._anime is not None
+    assert _mode(application) is interactive_app._ViewMode.STATE
+    assert application._state is not None
     assert "ANIME" in opened
-    assert "Enter szukaj · Esc wróć" in opened
+    assert "Enter szukaj · Tab widok · Esc wróć" in opened
 
     application._handle_key("escape")
     home: str = application._render_frame(120, 30).plain
@@ -1316,11 +1526,14 @@ def test_the_anime_row_opens_the_screen_and_a_home_result_returns_to_the_menu(
     hint: int = rows.index("↑↓ · Enter")
 
     assert _mode(application) is interactive_app._ViewMode.HOME
-    assert application._anime is None
-    assert rows[hint - 5 : hint] == ["Auto", "Ręczny", "Anime", "Ustawienia", "Wyjście"]
+    assert application._state._anime is not None
+    assert application._state._anime._query == "oshi"
+    assert rows[hint - 4 : hint] == ["Panel", "Ręczny", "Ustawienia", "Wyjście"]
+    application._state.close()
+    application._state._thread.join(5)
 
 
-def test_an_interrupt_inside_the_anime_screen_cancels_it_and_returns_home(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_interrupt_inside_panel_search_rejects_late_results(monkeypatch: pytest.MonkeyPatch) -> None:
     release: threading.Event = threading.Event()
 
     def search(query: str) -> ReleaseCatalog:
@@ -1329,9 +1542,14 @@ def test_an_interrupt_inside_the_anime_screen_cancels_it_and_returns_home(monkey
         return _catalog((_choice("11"),))
 
     application: interactive_app._InteractiveApplication = _application(monkeypatch, _service(search=search))
-    application._selected = 2
-    application._handle_key("enter")
-    controller: AnimeController | None = application._anime
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    panel: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller: AnimeController = _controller(application._service)
+    panel.attach_anime(controller)
+    application._state = panel
+    application._show_state()
+    application._handle_key("left")
+    application._handle_key("left")
 
     assert controller is not None
     _type(controller, "oshi")
@@ -1339,10 +1557,13 @@ def test_an_interrupt_inside_the_anime_screen_cancels_it_and_returns_home(monkey
     worker: threading.Thread | None = controller._worker
 
     application._handle_key("interrupt")
+    assert _mode(application) is interactive_app._ViewMode.STATE
+    application._handle_key("interrupt")
     release.set()
     assert worker is not None
     worker.join(timeout=5)
 
     assert _mode(application) is interactive_app._ViewMode.HOME
-    assert application._anime is None
     assert controller._rows == ()
+    panel.close()
+    panel._thread.join(5)

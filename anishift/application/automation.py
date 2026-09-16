@@ -77,13 +77,13 @@ from anishift.application.intents import (
 )
 from anishift.application.library import file_identity, project_library
 from anishift.application.planner import auto_group_products
-from anishift.application.planning import TaskState
+from anishift.application.planning import ExecutionPlan, TaskState
 from anishift.application.products import AUDIO_PRODUCT_PROFILES, main_product, product_suffix
 from anishift.application.ready import ReadyMove, ReadyStore
-from anishift.application.recovery import RunJournal
+from anishift.application.recovery import CHECKPOINT_VERSION, RunJournal
 from anishift.application.results import GroupResult, GroupStatus, ProducedArtifact, RunResult
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
-from anishift.application.selection import ready_group_ids
+from anishift.application.selection import ready_group_ids, resolve_readiness
 from anishift.application.subscriptions import SubscriptionOrder, repeat_of, subscription_id
 from anishift.application.transfers import TransferInspector, flat_layout, reserved_stem
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
@@ -453,6 +453,7 @@ class AutomationOwner:
         self._client_sessions: dict[str, str] = {}
         self._pending: dict[str, frozenset[ProductKind]] = {}
         self._run_results: dict[str, RunResult] = {}
+        self._completed_groups: dict[tuple[str, int, int, RequestState], frozenset[str]] = {}
         self._progress_lock: threading.Lock = threading.Lock()
         self._run_views: dict[str, RunProgressSnapshot] = {}
         self._run_events: dict[str, dict[tuple[str, str | None, str | None], RunEvent]] = {}
@@ -982,8 +983,7 @@ class AutomationOwner:
                 return ControlResponse.succeeded({"attached": True})
             case "ready_retry":
                 for request_id, result in tuple(self._run_results.items()):
-                    if result.succeeded:
-                        self._prepare_ready(result, None, self._accepted_recipe(request_id))
+                    self._prepare_ready(result, None, self._accepted_recipe(request_id))
                 self._retry_ready()
                 return ControlResponse.succeeded({"pending": len(self._ready_moves)})
             case "set_auto":
@@ -1062,10 +1062,26 @@ class AutomationOwner:
         acquisition: AcquisitionService | None = self._service.acquisition
         pausing: bool = self._pausing()
         incomplete: bool = not pausing and self._pause_incomplete()
+        materials: list[dict[str, object]] = self._processing_materials()
         return {
             "instance_id": self._instance_id,
             "pid": os.getpid(),
             "run_progress": self._progress_views(),
+            "materials": materials,
+            "material_counts": {
+                "downloading": sum(
+                    item.get("stage") == "download" and item.get("active") is True for item in materials
+                ),
+                "processing": sum(
+                    item.get("stage") == "processing" and item.get("state") == RequestState.RUNNING.value
+                    for item in materials
+                ),
+                "waiting": sum(
+                    item.get("stage") == "waiting"
+                    or (item.get("stage") == "processing" and item.get("state") in {"accepted", "paused"})
+                    for item in materials
+                ),
+            },
             "recovery_problems": [
                 {"run_id": request.request_id, "group_ids": list(request.group_ids), "problem": request.problem}
                 for request in self._state.requests
@@ -1184,6 +1200,208 @@ class AutomationOwner:
             ],
             "shutting_down": self._shutting_down,
             "updated_at": self._now(),
+        }
+
+    def _processing_materials(self) -> list[dict[str, object]]:
+        materials: dict[str, dict[str, object]] = {}
+        for acquisition in self._state.acquisitions:
+            materials.update(self._download_materials(acquisition))
+        requests: dict[str, ProcessingRequest] = {
+            group_id: request for request in self._state.requests for group_id in request.group_ids
+        }
+        materials = {
+            group_id: row
+            for group_id, row in materials.items()
+            if group_id in requests or not row.get("downloaded") or row.get("source_present")
+        }
+        completed: dict[str, frozenset[str]] = {}
+        for group_id, request in requests.items():
+            if request.request_id not in completed:
+                completed[request.request_id] = self._succeeded_groups(request)
+            row: dict[str, object] = materials.get(group_id, {"material_id": group_id, "group_id": group_id})
+            if group_id in completed[request.request_id]:
+                materials.pop(group_id, None)
+                continue
+            row.update(
+                name=row.get("name") or self._processing_name(request, group_id),
+                stage="processing",
+                state=request.state.value,
+                run_id=request.request_id,
+                group_ids=list(request.group_ids),
+                active=request.state in _ACTIVE_STATES,
+                problem=request.problem,
+            )
+            materials[group_id] = row
+        for group in () if self._library is None else self._library.groups:
+            if group.group_id in requests or group.group_id in materials or group.source.route.target is None:
+                continue
+            readiness = resolve_readiness(group)
+            if readiness.ready:
+                continue
+            materials[group.group_id] = {
+                "material_id": group.group_id,
+                "group_id": group.group_id,
+                "name": next(
+                    (artifact.path.name for artifact in group.artifacts if artifact.path is not None), group.source.stem
+                ),
+                "stage": "waiting",
+                "reason": None if readiness.reason is None else readiness.reason.value,
+                "active": False,
+            }
+        return list(materials.values())
+
+    def _group_succeeded(self, request: ProcessingRequest, group_id: str) -> bool:
+        return group_id in self._succeeded_groups(request)
+
+    def _succeeded_groups(self, request: ProcessingRequest) -> frozenset[str]:
+        if request.state is RequestState.SUCCEEDED:
+            return frozenset(request.group_ids)
+        if request.state is RequestState.PAUSED:
+            return self._journal_completed_groups(request) or frozenset()
+        if request.state in _ACTIVE_STATES:
+            with self._progress_lock:
+                finished: frozenset[str] = frozenset(
+                    event.group_id
+                    for event in self._run_events.get(request.request_id, {}).values()
+                    if event.kind is RunEventKind.GROUP_FINISHED
+                    and event.group_id is not None
+                    and event.state is TaskState.SUCCEEDED
+                )
+            return finished & (self._journal_completed_groups(request) or frozenset()) if finished else frozenset()
+        key: tuple[str, int, int, RequestState] = (
+            request.request_id,
+            request.generation,
+            request.attempts,
+            request.state,
+        )
+        if key not in self._completed_groups:
+            completed: frozenset[str] | None = self._journal_completed_groups(request)
+            if completed is None:
+                return frozenset()
+            self._completed_groups[key] = completed
+        return self._completed_groups[key]
+
+    def _journal_completed_groups(self, request: ProcessingRequest) -> frozenset[str] | None:
+        try:
+            document: object = json.loads(self._store.run_path(request.request_id).read_bytes())
+            if not isinstance(document, dict) or document.get("version") != CHECKPOINT_VERSION:
+                return None
+            plan: ExecutionPlan = decode_view(ExecutionPlan, document.get("plan"))
+        except AniShiftError, OSError, ValueError, TypeError:
+            return None
+        return frozenset(
+            group.group_id
+            for group in plan.groups
+            if group.intent in request.intents
+            and not group.task_ids
+            and not any(problem.is_blocking for problem in group.problems)
+        )
+
+    def _processing_name(self, request: ProcessingRequest, group_id: str) -> str:
+        with self._progress_lock:
+            view: RunProgressSnapshot | None = self._run_views.get(request.request_id)
+            if view is not None and group_id in view.labels:
+                return view.labels[group_id]
+        names: tuple[str, ...] = tuple(item[0] for item in request.fingerprints.get(group_id, ()))
+        intent: GroupIntent | None = next((item for item in request.intents if item.group_id == group_id), None)
+        route: WorkflowRoute = WorkflowRoute(resolve_route(Path()).place, None if intent is None else intent.target)
+        primary: str | None = next(
+            (
+                name
+                for name in names
+                if (candidate := classify_artifact(Path(name), route)) is not None and candidate.is_primary
+            ),
+            None,
+        )
+        return Path(primary or names[0]).name if names else group_id
+
+    def _download_materials(self, acquisition: AcquisitionConfirmation) -> dict[str, dict[str, object]]:
+        transfer = next(
+            (
+                item
+                for item in (() if self._transfers is None else self._transfers.snapshot())
+                if item.info_hash == acquisition.info_hash
+            ),
+            None,
+        )
+        files = () if self._transfers is None else self._transfers.declared(acquisition.info_hash)
+        measured: dict[str, float] = {
+            item.name.replace("\\", "/"): item.progress for item in files if item.priority > 0
+        }
+        active: bool = transfer is not None and transfer.state in {
+            "downloading",
+            "forcedDL",
+            "stalledDL",
+            "metaDL",
+            "forcedMetaDL",
+        }
+        common: dict[str, object] = {
+            "info_hash": acquisition.info_hash,
+            "acquisition_id": acquisition.operation_id,
+            "content_started": acquisition.content_started,
+            "stage": "download",
+            "state": None if transfer is None else transfer.state,
+            "active": active,
+            "problem": acquisition.problem,
+        }
+        rows: dict[str, dict[str, object]] = {}
+        for index, name, _size in acquisition.file_layout:
+            relative: Path = (Path(acquisition.directory) / name).parent
+            candidate: ArtifactName | None = classify_artifact(Path(name), resolve_route(relative))
+            if candidate is None:
+                continue
+            group_id: str = create_group_id(relative, candidate.stem)
+            ready: ReadyGroup | None = next(
+                (
+                    item
+                    for item in self._state.ready_groups
+                    if (Path(acquisition.directory) / name).as_posix() in (*item.sources, *item.pending_sources)
+                ),
+                None,
+            )
+            if ready is not None:
+                group_id = ready.group_id
+            fraction: float | None = measured.get(name)
+            if name in acquisition.complete_files:
+                fraction = 1.0
+            previous: dict[str, object] | None = rows.get(group_id)
+            if previous is not None:
+                previous["progress"] = (
+                    min(float(str(previous["progress"])), fraction)
+                    if previous["progress"] is not None and fraction is not None
+                    else None
+                )
+                if candidate.is_primary:
+                    previous.update(material_id=f"{acquisition.info_hash}:{index}", name=Path(name).name)
+                previous["downloaded"] = bool(previous["downloaded"]) and name in acquisition.complete_files
+                previous["source_present"] = (
+                    bool(previous["source_present"])
+                    or (self._service.workspace_root / acquisition.directory / name).is_file()
+                )
+                continue
+            rows[group_id] = {
+                **common,
+                "material_id": f"{acquisition.info_hash}:{index}",
+                "group_id": group_id,
+                "name": Path(name).name,
+                "progress": fraction,
+                "downloaded": name in acquisition.complete_files,
+                "source_present": (self._service.workspace_root / acquisition.directory / name).is_file(),
+            }
+        for row in rows.values():
+            if row["downloaded"]:
+                row.update(stage="waiting", reason="preparing", active=False)
+        if rows or acquisition.file_layout:
+            return rows
+        if acquisition.state is AcquisitionState.COMPLETE:
+            return {}
+        return {
+            acquisition.operation_id: {
+                **common,
+                "material_id": acquisition.operation_id,
+                "name": transfer.name if transfer is not None else acquisition.info_hash,
+                "progress": None if transfer is None else transfer.progress,
+            }
         }
 
     def _library_details(self, request: ControlRequest) -> ControlResponse:
@@ -2174,7 +2392,7 @@ class AutomationOwner:
             )
         self._ledger.mark_finished(recorded.group_ids)
         groups: tuple[InspectedSourceGroup, ...] = self._run_groups.pop(completion.request_id, ())
-        if saved and finished.state is RequestState.SUCCEEDED and completion.result is not None:
+        if saved and completion.result is not None:
             self._prepare_ready(completion.result, groups, finished.recipe, tuple(artifacts.values()))
         self._publish_state()
         self._publish(
@@ -2227,7 +2445,7 @@ class AutomationOwner:
         if recorded is None:
             return _invalid("The resident holds no such run")
         result: RunResult | None = self._run_results.get(recorded.request_id)
-        if result is None and recorded.state is RequestState.SUCCEEDED:
+        if result is None and recorded.state not in {*_ACTIVE_STATES, RequestState.PAUSED}:
             result = self._completed_result(recorded)
         relocating: bool = any(
             group in recorded.group_ids
@@ -2257,7 +2475,22 @@ class AutomationOwner:
             )
             for group_id in request.group_ids
         )
-        return RunResult(request.request_id, groups)
+        completed: frozenset[str] = self._succeeded_groups(request)
+        return RunResult(
+            request.request_id,
+            tuple(
+                group
+                if group.group_id in completed
+                else replace(
+                    group,
+                    status=GroupStatus.CANCELLED
+                    if request.state is RequestState.CANCELLED
+                    else (GroupStatus.PARTIAL if group.products else GroupStatus.FAILED),
+                    error_messages=(request.problem or "The previous attempt did not complete this group",),
+                )
+                for group in groups
+            ),
+        )
 
     # ── Settings, subscriptions and shutdown ──────────────────────────────────
 
@@ -2293,6 +2526,8 @@ class AutomationOwner:
     def _subscription_command(self, request: ControlRequest) -> ControlResponse:
         service: SubscriptionService | None = self._service.subscriptions
         if service is None:
+            if request.kind == "subscriptions_list":
+                return ControlResponse.succeeded({"subscriptions": []})
             return ControlResponse.refused(ControlErrorCode.REFUSED, _NO_SUBSCRIPTIONS)
         handlers: Mapping[str, Callable[[ControlRequest, SubscriptionService], ControlResponse]] = {
             "subscription_add": self._subscription_add_command,
@@ -2306,25 +2541,70 @@ class AutomationOwner:
 
     def _subscription_add_command(self, request: ControlRequest, _service: SubscriptionService) -> ControlResponse:
         order: SubscriptionOrder = decode_view(SubscriptionOrder, request.payload.get("order"))
-        return self._accept_local_command(
-            request,
-            {
-                "subscription_id": subscription_id(order.series, order.group),
-                "order": json.dumps(encode_view(order)),
-            },
-        )
+        outcome: dict[str, str | int | bool | None] = {
+            "subscription_id": subscription_id(order.series, order.group),
+            "order": json.dumps(encode_view(order)),
+        }
+        if "selected" in request.payload:
+            selected: tuple[Decimal, ...] | None = _episode_numbers(request.payload, "selected")
+            tail: Decimal | None = _episode_number(request.payload, "future_from")
+            if selected is None or (request.payload.get("future_from") is not None and tail is None):
+                return _invalid("A subscription needs valid selected episode numbers and a future boundary")
+            outcome.update(
+                selected=json.dumps([str(number) for number in selected]),
+                future_from=None if tail is None else str(tail),
+            )
+        return self._accept_local_command(request, outcome)
 
-    @staticmethod
-    def _subscription_get_command(request: ControlRequest, service: SubscriptionService) -> ControlResponse:
+    def _subscription_get_command(self, request: ControlRequest, service: SubscriptionService) -> ControlResponse:
         item: Subscription | None = next(
             (item for item in service.list() if item.subscription_id == request.payload.get("subscription_id")),
             None,
         )
-        return ControlResponse.succeeded(encode_view(item)) if item is not None else _invalid("Unknown subscription")
+        if item is None:
+            return _invalid("Unknown subscription")
+        return ControlResponse.succeeded({**encode_view(item), "work_states": self._subscription_work_states(item)})
 
-    @staticmethod
-    def _subscriptions_list_command(_request: ControlRequest, service: SubscriptionService) -> ControlResponse:
-        return ControlResponse.succeeded({"subscriptions": [_subscription_view(item) for item in service.list()]})
+    def _subscriptions_list_command(self, _request: ControlRequest, service: SubscriptionService) -> ControlResponse:
+        return ControlResponse.succeeded(
+            {
+                "subscriptions": [
+                    {**_subscription_view(item), "work_states": self._subscription_work_states(item)}
+                    for item in service.list()
+                ]
+            }
+        )
+
+    def _subscription_work_states(self, subscription: Subscription) -> dict[str, str]:
+        states: dict[str, str] = {}
+        acquisitions: dict[str, AcquisitionConfirmation] = {
+            item.operation_id: item for item in self._state.acquisitions
+        }
+        requests: dict[str, ProcessingRequest] = {
+            group_id: request for request in self._state.requests for group_id in request.group_ids
+        }
+        for episode in subscription.episodes:
+            acquisition: AcquisitionConfirmation | None = acquisitions.get(episode.acquisition_id or "")
+            if acquisition is None or acquisition.repeat_id != episode.repeat_id:
+                continue
+            materials: dict[str, dict[str, object]] = self._download_materials(acquisition)
+            linked: dict[str, ProcessingRequest] = {key: requests[key] for key in materials if key in requests}
+            state: str = "downloaded" if episode.state.value == "complete" else "ordered"
+            if (
+                materials
+                and len(linked) == len(materials)
+                and all(self._group_succeeded(request, key) for key, request in linked.items())
+            ):
+                state = "completed"
+            elif any(
+                request.state in {RequestState.FAILED, RequestState.PARTIAL, RequestState.CANCELLED}
+                for request in linked.values()
+            ):
+                state = "processing_failed"
+            elif linked:
+                state = "processing"
+            states[str(episode.number)] = state
+        return states
 
     def _subscriptions_check_command(self, _request: ControlRequest, service: SubscriptionService) -> ControlResponse:
         if not self._state.policy.auto_enabled:
@@ -2919,7 +3199,12 @@ class AutomationOwner:
     def _restore_runs(self, requests: tuple[ProcessingRequest, ...]) -> None:
         try:
             for request in requests:
-                if request.state is RequestState.SUCCEEDED:
+                if request.state in {
+                    RequestState.SUCCEEDED,
+                    RequestState.FAILED,
+                    RequestState.CANCELLED,
+                    RequestState.PARTIAL,
+                }:
                     self._on_owner(partial(self._restore_ready, request))
                     continue
                 if request.state not in {RequestState.ACCEPTED, RequestState.RUNNING, RequestState.PAUSED}:
@@ -3075,7 +3360,15 @@ class AutomationOwner:
 
     def _relocated_state(self, move: ReadyMove) -> WatchState:
         """Return the state where one set is renamed and remembered as finished, written in one durable save."""
-        moved: WatchState = move.apply(self._state)
+        completed: set[str] = set()
+        for request in self._state.requests:
+            if not {move.group_id, move.destination_group_id}.intersection(request.group_ids):
+                continue
+            path: Path = self._store.run_path(request.request_id)
+            if path.is_file() and RunJournal.relocate(path, move, self._service.workspace_root):
+                completed.add(request.request_id)
+        moved: WatchState = move.apply(self._state, frozenset(completed))
+        self._completed_groups.clear()
         group: ReadyGroup | None = self._ready_group(move)
         if group is None:
             return moved
@@ -3143,15 +3436,18 @@ class AutomationOwner:
     def _record_ready(self, move: ReadyMove, problem: str | None) -> None:
         self._active_io -= 1
         self._ready_inflight.discard(move.group_id)
-        if problem is None and not self._save(self._relocated_state(move)):
-            problem = "Moved files await a successful state save; retry relocation"
+        if problem is None:
+            try:
+                if not self._save(self._relocated_state(move)):
+                    problem = "Moved files await a successful state save; retry relocation"
+            except (AniShiftError, OSError, ValueError) as error:
+                problem = sanitize_event_message(str(error)) or "Relocated checkpoint needs retry"
         if problem is not None:
             self._ready_problems[move.group_id] = problem
             self._publish_ready(move)
             return
         self._run_results = {
-            run_id: move.apply_result(result, self._service.workspace_root)
-            for run_id, result in self._run_results.items()
+            run_id: self._relocated_result(move, result) for run_id, result in self._run_results.items()
         }
         if move.deferred:
             self._ready_moves[move.group_id] = move
@@ -3178,6 +3474,33 @@ class AutomationOwner:
             )
         )
         self._publish_ready(move)
+
+    def _relocated_result(self, move: ReadyMove, result: RunResult) -> RunResult:
+        if not any(group.group_id in {move.group_id, move.destination_group_id} for group in result.groups):
+            return result
+        updated: RunResult = move.apply_result(result, self._service.workspace_root)
+        request: ProcessingRequest | None = next(
+            (item for item in self._state.requests if item.request_id == result.run_id), None
+        )
+        if request is None or move.destination_group_id not in self._succeeded_groups(request):
+            return updated
+        recovered: GroupResult = next(
+            group for group in self._completed_result(request).groups if group.group_id == move.destination_group_id
+        )
+        return replace(
+            updated,
+            groups=tuple(
+                replace(
+                    group,
+                    status=GroupStatus.SUCCEEDED,
+                    error_messages=(),
+                    products=group.products or recovered.products,
+                )
+                if group.group_id == move.destination_group_id
+                else group
+                for group in updated.groups
+            ),
+        )
 
     def _publish_ready(self, move: ReadyMove) -> None:
         self._publish_state()
@@ -3406,6 +3729,13 @@ class AutomationOwner:
                         decode_view(SubscriptionOrder, json.loads(str(receipt.outcome["order"]))),
                         receipt.command_id,
                     )
+                    if "selected" in receipt.outcome:
+                        tail: object = receipt.outcome["future_from"]
+                        service.set_range(
+                            identifier,
+                            selected=_stored_numbers(receipt.outcome["selected"]),
+                            future_from=None if tail is None else Decimal(str(tail)),
+                        )
                 elif receipt.pending == "subscription_range":
                     stored: object = receipt.outcome["future_from"]
                     service.set_range(
@@ -3818,6 +4148,18 @@ def _requested_groups(workspace: InspectedWorkspace, payload: Mapping[str, objec
 
 
 def _subscription_view(subscription: Subscription) -> dict[str, object]:
+    try:
+        airing_at: str | None = min(
+            (
+                episode.airing_at
+                for episode in subscription.episodes
+                if episode.selected and episode.airing_at is not None and episode.state.value in {"pending", "due"}
+            ),
+            key=datetime.fromisoformat,
+            default=None,
+        )
+    except ValueError, TypeError:
+        airing_at = None
     return {
         "subscription_id": subscription.subscription_id,
         "series": subscription.series,
@@ -3827,6 +4169,7 @@ def _subscription_view(subscription: Subscription) -> dict[str, object]:
         "end_state": subscription.end_state.value,
         "anilist_id": subscription.anilist_id,
         "episodes": [encode_view(episode) for episode in subscription.episodes],
+        "airing_at": airing_at,
     }
 
 

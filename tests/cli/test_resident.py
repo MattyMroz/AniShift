@@ -221,10 +221,22 @@ def test_two_racing_residents_leave_exactly_one_owner(tmp_path: Path) -> None:
     try:
         owner_client: ControlClient | None = _awaited_client(state_dir)
         assert owner_client is not None
-        owner_client.call("shutdown")
-        owner_client.close()
+        try:
+            owner_client.call("status")
+            ready_indices: list[int] = [index for index in range(2) if (tmp_path / f"ready-{index}").is_file()]
+            assert len(ready_indices) == 1
+            loser_index: int = 1 - ready_indices[0]
+            stdout: str
+            stderr: str
+            stdout, stderr = children[loser_index].communicate(timeout=30)
+            assert children[loser_index].returncode == 0, (stdout, stderr)
+            assert int((tmp_path / f"code-{loser_index}").read_text(encoding="utf-8")) == EXIT_REFUSED
+            owner_client.call("shutdown")
+        finally:
+            owner_client.close()
         for child in children:
-            child.wait(timeout=30)
+            stdout, stderr = child.communicate(timeout=30)
+            assert child.returncode == 0, (stdout, stderr)
     finally:
         for child in children:
             if child.poll() is None:

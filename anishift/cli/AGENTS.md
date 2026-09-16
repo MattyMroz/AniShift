@@ -99,24 +99,23 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Run niepełny, anulowany albo z ostrzeżeniami pokazuje przewijany wynik grup:
   przyczyny błędów, zapisane i zachowane produkty oraz lokalizację logu.
   Treść przechodzi przez sanitizację i ten sam renderer. `interactive/app.py`
-- Home rezydenta ma kolejność `Panel`, `Auto`, `Ręczny`, `Anime`, `Ustawienia`, `Wyjście`. Settings działa w tym
+- Home rezydenta ma kolejność `Panel`, `Ręczny`, `Ustawienia`, `Wyjście`. Settings działa w tym
   samym rendererze, a mutacje `settings.json`, `presets.json` i `.env` przechodzą
   przez `AppService`. Manual przechowuje drafty wyłącznie lokalnie, rejestruje pliki
   zewnętrzne przez `AppService`, waliduje przez `plan_manual()` i przekazuje zaakceptowany
   plan do tej samej ścieżki wykonania oraz postępu co Auto.
   `interactive/app.py`, `interactive/settings.py`, `interactive/manual.py`, `run.py`
 - `AnimeController` jest jedynym właścicielem stanu ekranu Anime (QUERY → BUSY → TITLES → BUSY →
-  RESULTS → DONE/PROBLEM); `app.py` tylko go tworzy, przekazuje klawisze i renderuje. Sieć
+  RESULTS → DONE/PROBLEM); `StateController` osadza go w zakładce Anime i przekazuje klawisze. Sieć
   (`AppService.acquisition.find_titles`/`season_context`/`search_title`/`search`/`download`) idzie do
   wątku `anishift-anime`, a licznik generacji odrzuca wynik spóźniony po `Esc`; `render()` nigdy nie
   blokuje i nie robi I/O.
-  Piąty wiersz Home zmienia indeksy pozycji — `_HOME_MENU_ROWS` i `_HOME_CHROME_ROWS`
-  liczą wiersze menu, a testy budujące aplikację ręcznie muszą ustawić `_anime`.
-  `interactive/anime.py`, `interactive/app.py`, `interactive/prompts.py`
-- `O` w wynikach Anime obserwuje PODŚWIETLONY odcinek, nie zaznaczone wiersze: paczka, brak numeru
+  `_HOME_MENU_ROWS` i `_HOME_CHROME_ROWS` liczą rzeczywiste wiersze menu.
+  `interactive/anime.py`, `interactive/state.py`, `interactive/prompts.py`
+- `O` w wynikach Anime przygotowuje draft subskrypcji PODŚWIETLONEGO odcinka, nie zaznaczonych wierszy: paczka, brak numeru
   albo `other_season` daje wyłącznie jednolinijkową notkę zamiast stopki, kasowaną następnym
-  klawiszem, a `subscribe` + `check` idą do tego samego wątku i licznika generacji co szukanie.
-  Po wyborze tytułu `O` zapisuje hasło „seria grupa" PODŚWIETLONEJ grupy. `interactive/anime.py`
+  klawiszem. Panel otwiera wybór numerów; dopiero Enter przyjmuje zakres przez ownera.
+  Po wyborze tytułu `O` używa PODŚWIETLONEJ grupy. `interactive/anime.py`, `interactive/state.py`
 - Pusta lista wyników nie jest ślepym zaułkiem: przy `filtered > 0` nazywa filtr, a `F` i `Esc`
   działają jak na pełnej liście. `Esc` z wyników wraca do TITLES, gdy kandydaci są w pamięci —
   dlatego nowe hasło czyści `_candidates`. Teksty błędów tłumaczy `_PROBLEM_TEXTS`
@@ -125,8 +124,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   podświetloną grupę (bez paczek i `other_season`), `Z` otwiera prompt zakresu w stopce, `S`
   przestawia grupy LOKALNIE przez `order_groups` fasady — bez sieci, bez drugiej reguły porządku,
   a znaczniki wracają po `info_hash`, nie po numerze wiersza —
-  a `F` powtarza `search_title` bez filtra. Pobranie i subskrypcja z tego ekranu idą do jednego
-  folderu `candidate.folder_title()`. `interactive/anime.py`
+  a `F` powtarza `search_title` bez filtra. Nowe pobrania i subskrypcje używają płaskiego
+  roota workspace, bez katalogu `candidate.folder_title()`. `interactive/anime.py`
 - Gdy AniList nie odpowiada albo nie zna tytułu, ekran pomija TITLES i pokazuje wyniki surowego
   hasła z notką w stopce; ta notka jest osobnym polem, bo `_notice` znika po następnym klawiszu.
   Ta ścieżka wraca posortowana po seedach, więc `_show_results` przyjmuje `_Listing` z faktyczną
@@ -225,7 +224,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   MUSI być osiągalne z panelu albo mieć wpis z powodem w `_FIELDS_COVERED_ELSEWHERE`.
   `interactive/settings.py`
 - Home ma skaczącego slime'a z `assets/mascot/idle/01.gif`, responsywny
-  wordmark, pięć akcji, hint i stopkę z cwd/version. GIF ma być
+  wordmark, cztery akcje, hint i stopkę z cwd/version. GIF ma być
   animowany: `TerminalRenderer.after_render` wysyła kolejne klatki SIXEL. Pierwsza
   klatka interaktywna ma już gotową maskotkę; nie dodawaj startup placeholdera.
   Konstruktor renderera nie koduje obrazu. `run()` sprawdza obsługę SIXEL i metryki,

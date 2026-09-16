@@ -477,6 +477,7 @@ class ControlClient:
         self._timeout_s: float = timeout_s
         self._connection: ChannelConnection = _connected(endpoint, timeout_s)
         self._subscribed: bool = False
+        self._close_lock: threading.Lock = threading.Lock()
         try:
             _prove_key(self._connection, authkey, timeout_s, listening=False)
         except (EOFError, OSError) as problem:
@@ -530,11 +531,9 @@ class ControlClient:
                 yield frame
 
     def close(self) -> None:
-        """Close the connection; a second call changes nothing."""
-        try:
-            self._connection.close()
-        except OSError:
-            logger.debug("The control connection was already closed")
+        """Close the connection once, including concurrent calls."""
+        with self._close_lock:
+            _close_quietly(self._connection)
 
     def _send(self, frame: Mapping[str, object]) -> None:
         try:
@@ -566,6 +565,7 @@ class _ServedConnection:
         self.session_id: str = os.urandom(16).hex()
         self._connection: ChannelConnection = connection
         self._send_lock: threading.Lock = threading.Lock()
+        self._close_lock: threading.Lock = threading.Lock()
         self._outbox: _EventOutbox = _EventOutbox(MAX_OUTBOX_EVENTS)
         self._pending: threading.Event = threading.Event()
         self._closed: threading.Event = threading.Event()
@@ -652,7 +652,8 @@ class _ServedConnection:
         self._pending.set()
         with suppress(Full):
             self._answers.put_nowait(None)
-        _close_quietly(self._connection)
+        with self._close_lock:
+            _close_quietly(self._connection)
 
     def _publish_loop(self) -> None:
         while not self._closed.is_set():
@@ -716,6 +717,7 @@ def _prove_key(connection: ChannelConnection, authkey: bytes, timeout_s: float, 
             ipc.deliver_challenge(connection, authkey)
     finally:
         guard.cancel()
+        guard.join()
 
 
 def _connected(endpoint: str, timeout_s: float) -> ChannelConnection:

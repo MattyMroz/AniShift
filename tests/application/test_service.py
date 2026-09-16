@@ -9,7 +9,7 @@ import threading
 import time
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,13 +24,17 @@ from fakes import (
     write_media_source,
     write_text_source,
 )
+from prompt_toolkit.application.current import create_app_session
+from prompt_toolkit.input import DummyInput
+from prompt_toolkit.output import DummyOutput
 
 import anishift.application.service as service_module
 import anishift.application.watch as watch_module
+from anishift.application.acquisition import AcquisitionService
 from anishift.application.automation import AutomationOwner
 from anishift.application.cancellation import CancellationToken, EventCancellationToken
-from anishift.application.control import ProcessingRequest, ReadyGroup, RequestState
-from anishift.application.control_views import DeletionPreview, LibrarySet, PlanPreview
+from anishift.application.control import AcquisitionConfirmation, ProcessingRequest, ReadyGroup, RequestState
+from anishift.application.control_views import DeletionPreview, LibrarySet, PlanPreview, decode_view
 from anishift.application.discovery import DiscoveryResult
 from anishift.application.handlers import (
     ExecutionHandlers,
@@ -38,6 +42,7 @@ from anishift.application.handlers import (
     PublishTaskHandler,
     SubtitleTaskHandler,
     TranslationTaskHandler,
+    TtsTaskHandler,
 )
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
 from anishift.application.intents import (
@@ -53,16 +58,20 @@ from anishift.application.intents import (
     SubtitleSourcePolicy,
 )
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, TaskKind
-from anishift.application.ready import ReadyStore
+from anishift.application.ready import ReadyMove, ReadyStore
 from anishift.application.results import GroupStatus, RunResult
 from anishift.application.scheduler import RunHandle
 from anishift.application.scheduler_contracts import ResourceLimits, TaskHandler, extraction_worker_count
 from anishift.application.scheduler_runtime import extraction_group_ids
 from anishift.application.service import AppService, AutoPresetDraft
+from anishift.application.subscriptions import SubscriptionService
+from anishift.application.tts_handler import TtsExecutor
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.application.workflows import WorkflowTarget
 from anishift.bootstrap import AppContext, bootstrap, create_app_service
+from anishift.cli.interactive.app import _InteractiveApplication, _ViewMode
 from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
+from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.cli.watch import run_resident
 from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
@@ -72,6 +81,7 @@ from anishift.config.user_settings import UserSettings
 from anishift.config.workspace import cleanup_orphaned_temp
 from anishift.errors import ErrorCode, ExecutionError, RunConflictError
 from anishift.paths import TRANSLATE_DIRECTORY, relocation_journal_dir
+from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import (
     ControlClient,
     ControlError,
@@ -80,6 +90,7 @@ from anishift.platform.local_control import (
     connect,
     control_endpoint,
 )
+from anishift.platform.recycle import RecycleResult
 from anishift.services.extraction import ExtractionRequest, ExtractionResult
 from anishift.services.media import DefaultMediaProbe
 from anishift.services.media._process import ProcessResult
@@ -111,6 +122,9 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
     user_settings: UserSettings | None = None,
     catalog_loader: Callable[[], ModelCatalog] | None = None,
     prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = None,
+    acquisition: AcquisitionService | None = None,
+    subscriptions: SubscriptionService | None = None,
+    tts: TtsExecutor | None = None,
 ) -> AppService:
     stored: list[AutoPresetFile] = preset_store if preset_store is not None else [default_preset_file()]
 
@@ -125,6 +139,11 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
             ExtractionTaskHandler(_UnusedExtraction(), run_root=run_root, timeout_s=30.0),
             SubtitleTaskHandler(run_root=run_root),
             TranslationTaskHandler(translation, run_root=run_root),
+            tts=TtsTaskHandler(
+                tts, run_root=run_root, group_ranks={group_id: index for index, group_id in enumerate(source_groups)}
+            )
+            if tts is not None
+            else None,
             publish=PublishTaskHandler(run_root=run_root, source_groups=discovered_groups),
         )
         return FailingGroupHandler(delegate, group_id=fail_group_id)
@@ -140,6 +159,8 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
         settings_saver=lambda value: None,
         catalog_loader=catalog_loader or _catalog,
         prepare_workspace=prepare_workspace,
+        acquisition=acquisition,
+        subscriptions=subscriptions,
     )
 
 
@@ -156,7 +177,12 @@ def _catalog() -> ModelCatalog:
 
 @contextmanager
 def _panel_owner(
-    service: AppService, tmp_path: Path, *, ready: bool = False
+    service: AppService,
+    tmp_path: Path,
+    *,
+    ready: bool = False,
+    watch: bool = False,
+    recycler: Callable[[Path, tuple[int, int, int, int]], RecycleResult] | None = None,
 ) -> Iterator[tuple[ResidentSession, WatchStateStore]]:
     store: WatchStateStore = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME)
     owner: AutomationOwner = AutomationOwner(
@@ -164,9 +190,12 @@ def _panel_owner(
         store,
         instance_id="panel-test",
         ready_store=ReadyStore(relocation_journal_dir(tmp_path / ".control"), tmp_path) if ready else None,
+        recycler=recycler,
     )
     thread: threading.Thread = threading.Thread(target=owner.serve, daemon=True)
     thread.start()
+    if watch:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="initial"))
     endpoint: str = control_endpoint(tmp_path / ".control")
     key: bytes = os.urandom(32)
     server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
@@ -256,6 +285,9 @@ def test_global_resume_finishes_the_same_real_graph_without_repeating_its_transl
                 assert _wait_for_resident(session, lambda state: state["paused"] is True)
                 assert store.load().requests[0].state is RequestState.PAUSED
                 assert store.load().markers == ()
+                paused_status: Mapping[str, object] = session.command("status")
+                assert paused_status["material_counts"] == {"downloading": 0, "processing": 0, "waiting": 1}
+                assert cast("list[dict[str, object]]", paused_status["materials"])[0]["state"] == "paused"
                 session.command("set_auto", {"enabled": True})
             assert _wait_for_resident(
                 session,
@@ -277,6 +309,407 @@ def _wait_for_resident(session: ResidentSession, condition: Callable[[Mapping[st
             return True
         time.sleep(0.01)
     return False
+
+
+def _mixed_material_service(tmp_path: Path) -> tuple[AppService, dict[str, str]]:
+    for number in (1, 2):
+        write_media_source(tmp_path / f"{number:02d}.mkv")
+    groups: dict[str, str]
+    with closing(_service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()))) as probe:
+        groups = {group.source.stem: group.group_id for group in probe.discover().groups}
+    return (
+        _service(
+            tmp_path,
+            FakeTranslationService(),
+            inspector=WorkspaceInspector(FakeMediaProbe()),
+            fail_group_id=groups["02"],
+        ),
+        groups,
+    )
+
+
+def _execute_mixed_materials(session: ResidentSession, groups: dict[str, str]) -> str:
+    session.discover()
+    session.reserve(tuple(groups.values()))
+    preview: PlanPreview = session.plan_manual(
+        tuple(
+            GroupIntent(identifier, RunMode.MANUAL, ProductIntent(frozenset({ProductKind.SPOKEN_PL})))
+            for identifier in groups.values()
+        )
+    )
+    result: RunResult = session.execute(preview, CollectingRunSink())
+    assert {item.group_id: item.status for item in result.groups} == {
+        groups["01"]: GroupStatus.SUCCEEDED,
+        groups["02"]: GroupStatus.FAILED,
+    }
+    return result.run_id
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("collision", [False, True])
+def test_mixed_manual_run_relocates_success_and_retries_failure_without_rewriting_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, collision: bool
+) -> None:
+    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
+    service, groups = _mixed_material_service(tmp_path)
+    if collision:
+        (tmp_path / "ready").mkdir()
+        (tmp_path / "ready" / "01.mkv").write_bytes(b"Unrelated video")
+    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, store):
+        session.discover()
+        session.reserve(tuple(groups.values()))
+        preview: PlanPreview = session.plan_manual(
+            tuple(
+                GroupIntent(identifier, RunMode.MANUAL, ProductIntent(frozenset({ProductKind.SPOKEN_PL})))
+                for identifier in groups.values()
+            )
+        )
+        result: RunResult = session.execute(preview, CollectingRunSink())
+        assert not result.succeeded
+        entries: tuple[LibrarySet, ...] = session.library()
+        assert len(entries) == 1
+        entry: LibrarySet = entries[0]
+        product: Path = session.library_result(entry.set_id)
+        assert product.parent == tmp_path / "ready"
+        assert (tmp_path / "ready" / ("01 [2].mkv" if collision else "01.mkv")).is_file()
+        assert not (tmp_path / "01.mkv").exists()
+        assert (tmp_path / "02.mkv").is_file()
+        assert len(store.load().ready_groups) == 1
+        assert len(store.load().requests) == 1
+        stamp: os.stat_result = product.stat()
+        content: bytes = product.read_bytes()
+    translation: FakeTranslationService = FakeTranslationService()
+    restarted: AppService = _service(tmp_path, translation, inspector=WorkspaceInspector(FakeMediaProbe()))
+    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, store):
+        session.discover()
+        assert session.library_result(entry.set_id) == product
+        materials: list[dict[str, object]] = cast("list[dict[str, object]]", session.command("status")["materials"])
+        assert [(item["group_id"], item["state"]) for item in materials] == [(groups["02"], "failed")]
+        request: ProcessingRequest = store.load().requests[0]
+        assert len(request.group_ids) == 2
+        session.reserve(request.group_ids)
+        sink: CollectingRunSink = CollectingRunSink()
+        resumed: RunResult = session.execute(session.plan_resume(request.group_ids), sink)
+        assert resumed.succeeded
+        assert translation.calls == []
+        assert {event.group_id for event in sink.events if event.task_id is not None} == {groups["02"]}
+        assert len(store.load().requests) == 1
+        assert store.load().requests[0].request_id == result.run_id
+        assert len(session.library()) == 2
+        after: os.stat_result = product.stat()
+        assert (after.st_ino, after.st_size, after.st_mtime_ns) == (stamp.st_ino, stamp.st_size, stamp.st_mtime_ns)
+        assert product.read_bytes() == content
+        if collision:
+            assert (tmp_path / "ready" / "01.mkv").read_bytes() == b"Unrelated video"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("deleted", [False, True])
+def test_mixed_material_completion_survives_restart_and_deleted_products(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, deleted: bool
+) -> None:
+    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
+    service, groups = _mixed_material_service(tmp_path)
+    with closing(service), _panel_owner(service, tmp_path) as (session, _store):
+        _execute_mixed_materials(session, groups)
+    if deleted:
+        (tmp_path / "01.spoken.pl.srt").unlink()
+    restarted: AppService = _service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()))
+    with closing(restarted), _panel_owner(restarted, tmp_path) as (session, store):
+        session.discover()
+        materials: list[dict[str, object]] = cast("list[dict[str, object]]", session.command("status")["materials"])
+        assert [item["group_id"] for item in materials] == [groups["02"]]
+        assert materials[0]["name"] == "02.mkv"
+        assert materials[0]["state"] == "failed"
+        assert len(store.load().requests) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("restore_first", [False, True])
+@pytest.mark.parametrize("failure_at", ["before_prepare", "before_checkpoint", "before_state"])
+def test_mixed_manual_ready_recovery_keeps_the_success_and_the_remaining_graph(  # noqa: PLR0915
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_at: str, restore_first: bool
+) -> None:
+    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
+    service, groups = _mixed_material_service(tmp_path)
+    replace_path: Callable[[Path, str | Path], Path] = Path.replace
+    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME)
+    entered: threading.Event = threading.Event()
+
+    def interrupted_replace(path: Path, target: str | Path) -> Path:
+        checkpoint: bool = Path(target).parent == store.run_path("test").parent
+        state: bool = Path(target) == tmp_path / ".control" / WATCH_STATE_FILE_NAME
+        blocked: bool = checkpoint if failure_at == "before_checkpoint" else state
+        if blocked and (tmp_path / "ready" / "01.mkv").is_file():
+            entered.set()
+            raise OSError(errno.EIO, "Interrupted relocation save")
+        return replace_path(path, target)
+
+    def interrupted_prepare(*args: object, **kwargs: object) -> None:
+        entered.set()
+        raise OSError(errno.EIO, "Interrupted before relocation preparation")
+
+    with monkeypatch.context() as failure:
+        if failure_at == "before_prepare":
+            failure.setattr(ReadyStore, "prepare", interrupted_prepare)
+        else:
+            failure.setattr(Path, "replace", interrupted_replace)
+        with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, _store):
+            _execute_mixed_materials(session, groups)
+            assert entered.wait(5)
+            assert store.load().requests[0].state is RequestState.FAILED
+            assert store.load().ready_groups == ()
+    restored: threading.Event = threading.Event()
+    restored_statuses: dict[str, GroupStatus] = {}
+    restore_ready: Callable[[AutomationOwner, ProcessingRequest], None] = AutomationOwner._restore_ready
+    move_ready: Callable[[AutomationOwner, ReadyMove, tuple[AcquisitionConfirmation, ...]], None] = (
+        AutomationOwner._move_ready
+    )
+
+    def observed_restore(owner: AutomationOwner, request: ProcessingRequest) -> None:
+        restore_ready(owner, request)
+        result: RunResult | None = owner._run_results.get(request.request_id)
+        if result is not None:
+            restored_statuses.update({group.group_id: group.status for group in result.groups})
+        restored.set()
+
+    def move_after_restore(
+        owner: AutomationOwner, move: ReadyMove, acquisitions: tuple[AcquisitionConfirmation, ...]
+    ) -> None:
+        restored.wait(5.0)
+        move_ready(owner, move, acquisitions)
+
+    if restore_first:
+        monkeypatch.setattr(AutomationOwner, "_restore_ready", observed_restore)
+        monkeypatch.setattr(AutomationOwner, "_move_ready", move_after_restore)
+    restarted: AppService = _service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()))
+    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True, watch=True) as (session, _store):
+        session.discover()
+        assert _wait_for_resident(
+            session, lambda status: len(store.load().ready_groups) == 1 and not status["relocations"]
+        ), session.command("status")["relocations"]
+        assert restored.is_set() or not restore_first
+        if restore_first and failure_at == "before_state":
+            assert restored_statuses == {groups["01"]: GroupStatus.FAILED, groups["02"]: GroupStatus.FAILED}
+        entry: LibrarySet = session.library()[0]
+        assert session.library_result(entry.set_id) == tmp_path / "ready" / "01.spoken.pl.srt"
+        materials: list[dict[str, object]] = cast("list[dict[str, object]]", session.command("status")["materials"])
+        assert [(item["group_id"], item["state"]) for item in materials] == [(groups["02"], "failed")]
+        request: ProcessingRequest = store.load().requests[0]
+        answer: Mapping[str, object] = session.command("run_result", {"run_id": request.request_id})
+        recovered: RunResult = decode_view(RunResult, answer["result"])
+        assert answer["state"] == "failed"
+        assert {group.group_id: group.status for group in recovered.groups} == {
+            entry.group_id: GroupStatus.SUCCEEDED,
+            groups["02"]: GroupStatus.FAILED,
+        }
+        assert next(group for group in recovered.groups if group.group_id == entry.group_id).products[0].path == (
+            tmp_path / "ready" / "01.spoken.pl.srt"
+        )
+        session.reserve(request.group_ids)
+        sink: CollectingRunSink = CollectingRunSink()
+        assert session.execute(session.plan_resume(request.group_ids), sink).succeeded
+        assert {event.group_id for event in sink.events if event.task_id is not None} == {groups["02"]}
+        assert len(store.load().requests) == 1
+        assert len(session.library()) == 2
+
+
+@pytest.mark.integration
+def test_mixed_material_completion_survives_finished_progress_pruning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
+    service, groups = _mixed_material_service(tmp_path)
+    with closing(service), _panel_owner(service, tmp_path) as (session, _store):
+        mixed_run: str = _execute_mixed_materials(session, groups)
+        for number in range(3, 16):
+            write_text_source(tmp_path / f"{number:02d}.txt", "A source")
+            group_id: str = next(
+                group.group_id for group in session.discover().groups if group.source.stem == f"{number:02d}"
+            )
+            session.reserve((group_id,))
+            preview: PlanPreview = session.plan_manual(
+                (GroupIntent(group_id, RunMode.MANUAL, ProductIntent(frozenset({ProductKind.FULL_PL}))),)
+            )
+            assert session.execute(preview, CollectingRunSink()).succeeded
+        status: Mapping[str, object] = session.command("status")
+        assert mixed_run not in {item["run_id"] for item in cast("list[dict[str, object]]", status["run_progress"])}
+        assert [item["group_id"] for item in cast("list[dict[str, object]]", status["materials"])] == [groups["02"]]
+
+
+@pytest.mark.integration
+def test_failed_regeneration_stays_in_processing_beside_the_old_confirmed_library_product(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
+    write_media_source(tmp_path / "01.mkv")
+    preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.SPOKEN_PL})))
+    service: AppService = _service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()))
+    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, _store):
+        groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
+        session.reserve(groups)
+        assert session.execute(session.plan_auto(groups, preset), CollectingRunSink()).succeeded
+        entry: LibrarySet = session.library()[0]
+        product: Path = session.library_result(entry.set_id)
+        content: bytes = product.read_bytes()
+    failing: AppService = _service(
+        tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()), fail_group_id=entry.group_id
+    )
+    with closing(failing), _panel_owner(failing, tmp_path, ready=True) as (session, store):
+        session.discover()
+        session.reserve((entry.group_id,))
+        result: RunResult = session.execute(
+            session.plan_auto((entry.group_id,), preset, rebuild=RebuildRequest(frozenset({ProductKind.SPOKEN_PL}))),
+            CollectingRunSink(),
+        )
+        assert not result.succeeded
+        assert all(item.request_id != result.run_id for item in store.load().products)
+    restarted: AppService = _service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()))
+    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, _store):
+        session.discover()
+        materials: list[dict[str, object]] = cast("list[dict[str, object]]", session.command("status")["materials"])
+        assert len(materials) == 1
+        assert materials[0]["run_id"] == result.run_id
+        assert materials[0]["state"] == "failed"
+        assert session.library_result(entry.set_id) == product
+        assert product.read_bytes() == content
+
+
+@pytest.mark.integration
+def test_processing_retry_discloses_multigroup_scope_respects_pause_and_releases_reservations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
+    service, groups = _mixed_material_service(tmp_path)
+    with closing(service), _panel_owner(service, tmp_path) as (session, store):
+        run_id: str = _execute_mixed_materials(session, groups)
+        completed_stamp: os.stat_result = (tmp_path / "01.spoken.pl.srt").stat()
+        controller: StateController = StateController(session, lambda: None)
+        try:
+            assert _wait_for_resident(session, lambda _status: controller._connected)
+            assert "P ponów całe zlecenie · 2 materiałów" in controller.render(120, 40).plain
+            session.command("set_auto", {"enabled": False})
+            controller.handle_key("text:p")
+            assert _wait_for_resident(session, lambda _status: not controller._busy)
+            assert "AniShift jest wstrzymany" in controller.render(120, 40).plain
+            assert _wait_for_resident(session, lambda status: status["reservations"] == [])
+            assert store.load().requests[0].attempts == 1
+            session.command("set_auto", {"enabled": True})
+            controller.handle_key("text:p")
+            assert _wait_for_resident(session, lambda _status: not controller._busy)
+            assert _wait_for_resident(
+                session, lambda _status: session.command("run_result", {"run_id": run_id})["state"] == "failed"
+            )
+            assert store.load().requests[0].attempts == 2
+            assert store.load().requests[0].request_id == run_id
+            assert len(store.load().requests) == 1
+            assert store.load().reservations == ()
+            after: os.stat_result = (tmp_path / "01.spoken.pl.srt").stat()
+            assert (after.st_ino, after.st_size, after.st_mtime_ns) == (
+                completed_stamp.st_ino,
+                completed_stamp.st_size,
+                completed_stamp.st_mtime_ns,
+            )
+        finally:
+            controller.close()
+            controller._thread.join(5.0)
+
+
+@pytest.mark.integration
+def test_processing_cancel_targets_the_disclosed_whole_manual_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
+    for number in (1, 2):
+        write_media_source(tmp_path / f"{number:02d}.mkv")
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    service: AppService = _service(
+        tmp_path,
+        FakeTranslationService(entered=entered, release=release),
+        inspector=WorkspaceInspector(FakeMediaProbe()),
+    )
+    try:
+        with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, store):
+            groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
+            session.reserve(groups)
+            preview: PlanPreview = session.plan_manual(
+                tuple(
+                    GroupIntent(group_id, RunMode.MANUAL, ProductIntent(frozenset({ProductKind.FULL_PL})))
+                    for group_id in groups
+                )
+            )
+            run_id: str = session.start(preview)
+            assert entered.wait(1.0)
+            controller: StateController = StateController(session, lambda: None)
+            try:
+                assert _wait_for_resident(session, lambda _status: controller._connected)
+                assert "C anuluj całe zlecenie · 2 materiałów" in controller.render(120, 40).plain
+                controller.handle_key("text:c")
+                assert _wait_for_resident(session, lambda _status: not controller._busy)
+                release.set()
+                assert _wait_for_resident(
+                    session, lambda _status: session.command("run_result", {"run_id": run_id})["state"] == "cancelled"
+                )
+                assert store.load().requests[0].group_ids == groups
+                assert store.load().requests[0].request_id == run_id
+                assert store.load().ready_groups == ()
+                assert session.library() == ()
+            finally:
+                release.set()
+                controller.close()
+                controller._thread.join(5.0)
+    finally:
+        release.set()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("key", ["text:u", "text:m"])
+def test_panel_settings_and_manual_return_restore_material_identity_and_detached_scroll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
+    monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
+    cover: Path = tmp_path / "cover"
+    cover.mkdir()
+    for number in range(35):
+        write_text_source(cover / f"Book {number:02d}.txt", "A source")
+    service: AppService = _service(tmp_path, FakeTranslationService())
+    with (
+        closing(service),
+        _panel_owner(service, tmp_path, watch=True) as (session, _store),
+        create_app_session(input=DummyInput(), output=DummyOutput()),
+    ):
+        session.discover()
+        application: _InteractiveApplication = _InteractiveApplication(service, resident=session)
+        application._show_state()
+        panel: StateController | None = application._state
+        assert panel is not None
+        try:
+            assert _wait_for_resident(
+                session,
+                lambda _status: (
+                    panel._connected and len(cast("list[object]", panel._snapshot.get("materials", []))) == 35
+                ),
+            )
+            application._handle_key("end")
+            application._render_frame(80, 24)
+            application._handle_scroll(-2)
+            before: str = application._render_frame(80, 24).plain
+            offset: int = panel._offsets[2]
+            application._handle_key(key)
+            expected: _ViewMode = _ViewMode.SETTINGS if key == "text:u" else _ViewMode.MANUAL
+            assert _wait_for_resident(session, lambda _status: application._mode is expected)
+            application._handle_key("escape")
+            assert application._mode is _ViewMode.STATE
+            assert application._state is panel
+            assert panel._tab == 2
+            assert panel._selected == 34
+            assert panel._offsets[2] == offset
+            assert application._render_frame(80, 24).plain == before
+        finally:
+            application._finish_session()
+            panel._thread.join(5.0)
 
 
 @pytest.mark.integration

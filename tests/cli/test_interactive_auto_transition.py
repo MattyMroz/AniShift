@@ -24,7 +24,7 @@ def test_auto_preflight_has_no_visible_intermediate_screen(monkeypatch: pytest.M
 
     frame = application._render_frame(120, 40)
 
-    assert "Auto" in frame.plain
+    assert "Panel" in frame.plain
     assert "Przygotowanie" not in frame.plain
     assert "Skanowanie" not in frame.plain
 

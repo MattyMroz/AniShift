@@ -328,6 +328,58 @@ def test_a_subscription_is_acknowledged_before_any_queued_event() -> None:
     assert _payload(second) == {"task_id": "task-1"}
 
 
+@pytest.mark.parametrize("owner", ["client", "server"])
+def test_concurrent_close_releases_the_connection_handle_once(
+    owner: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader, writer = ipc.Pipe(duplex=False)
+    monkeypatch.setattr(local_control, "_connected", lambda endpoint, timeout_s: writer)
+    monkeypatch.setattr(local_control, "_prove_key", lambda *args, **kwargs: None)
+    client: ControlClient = ControlClient(control_endpoint(tmp_path), b"0" * _KEY_BYTES)
+    served: local_control._ServedConnection = local_control._ServedConnection(writer)
+    close: Callable[[], None] = client.close if owner == "client" else served.close
+    native_close: Callable[[], None] = writer._close  # type: ignore[attr-defined]
+    released: threading.Event = threading.Event()
+    finish: threading.Event = threading.Event()
+    second_started: threading.Event = threading.Event()
+    releases: list[int] = []
+
+    def delayed_close() -> None:
+        releases.append(1)
+        if len(releases) != 1:
+            return
+        native_close()
+        released.set()
+        assert finish.wait(_TIMEOUT_S)
+
+    def close_again() -> None:
+        second_started.set()
+        close()
+
+    monkeypatch.setattr(writer, "_close", delayed_close)
+    first: threading.Thread = threading.Thread(target=close)
+    second: threading.Thread = threading.Thread(target=close_again)
+    first.start()
+    try:
+        assert released.wait(_TIMEOUT_S)
+        second.start()
+        assert second_started.wait(_TIMEOUT_S)
+        second.join(_HANDSHAKE_S)
+        assert releases == [1]
+    finally:
+        finish.set()
+        first.join(_TIMEOUT_S)
+        if second.ident is not None:
+            second.join(_TIMEOUT_S)
+        reader.close()
+        writer.close()
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert writer.closed
+    assert releases == [1]
+
+
 def test_an_event_published_while_subscribe_returns_is_delivered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -351,6 +403,49 @@ def test_an_event_published_while_subscribe_returns_is_delivered(
     finally:
         client.close()
         server.close()
+
+
+def test_a_handshake_waits_for_its_timeout_to_finish_closing(monkeypatch: pytest.MonkeyPatch) -> None:
+    reader, writer = ipc.Pipe(duplex=False)
+    native_close: Callable[[], None] = writer._close  # type: ignore[attr-defined]
+    released: threading.Event = threading.Event()
+    finish: threading.Event = threading.Event()
+    completed: threading.Event = threading.Event()
+    guards: list[threading.Thread] = []
+
+    def delayed_close() -> None:
+        guards.append(threading.current_thread())
+        native_close()
+        released.set()
+        assert finish.wait(_TIMEOUT_S)
+
+    def disconnected(connection: ChannelConnection, key: bytes) -> None:
+        assert released.wait(_TIMEOUT_S)
+        raise EOFError
+
+    def handshake() -> None:
+        with pytest.raises(EOFError):
+            local_control._prove_key(writer, b"0" * _KEY_BYTES, 0, listening=False)
+        completed.set()
+
+    monkeypatch.setattr(writer, "_close", delayed_close)
+    monkeypatch.setattr(ipc, "answer_challenge", disconnected)
+    thread: threading.Thread = threading.Thread(target=handshake)
+    thread.start()
+    try:
+        assert released.wait(_TIMEOUT_S)
+        assert not completed.wait(_HANDSHAKE_S)
+    finally:
+        finish.set()
+        thread.join(_TIMEOUT_S)
+        for guard in guards:
+            guard.join(_TIMEOUT_S)
+        reader.close()
+        writer.close()
+
+    assert not thread.is_alive()
+    assert completed.is_set()
+    assert writer.closed
 
 
 def test_a_client_that_leaves_before_the_key_exchange_keeps_the_server_serving(tmp_path: Path) -> None:

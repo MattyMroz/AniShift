@@ -86,8 +86,8 @@ class ReadyMove:
             ),
         )
 
-    def apply(self, state: WatchState) -> WatchState:
-        """Update confirmations and successful requests after every proven rename of this stage."""
+    def apply(self, state: WatchState, completed_requests: frozenset[str] = frozenset()) -> WatchState:
+        """Update confirmations and requests with proven completed groups after each rename stage."""
         paths: dict[str, str] = {item.source: item.destination for item in self.moved}
         names: dict[str, str] = {Path(old).name: Path(new).name for old, new in paths.items()}
         return replace(
@@ -131,7 +131,8 @@ class ReadyMove:
                         for intent in request.intents
                     ),
                 )
-                if self.group_id in request.group_ids and request.state is RequestState.SUCCEEDED
+                if self.group_id in request.group_ids
+                and (request.state is RequestState.SUCCEEDED or request.request_id in completed_requests)
                 else request
                 for request in state.requests
             ),

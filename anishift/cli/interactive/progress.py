@@ -253,12 +253,6 @@ class RichRunProgress:
                     return index
             return max(len(self._files) - 1, 0)
 
-    @property
-    def pending_row_count(self) -> int:
-        """Count rows that have not completed successfully."""
-        with self._lock:
-            return sum(not (state.terminal and state.completed == _COMPLETE) for state in self._files.values())
-
     def render(
         self, columns: int, *, offset: int = 0, limit: int | None = None, include_completed: bool = True
     ) -> Text:
@@ -279,6 +273,14 @@ class RichRunProgress:
                 if include_completed or not (state.terminal and state.completed == _COMPLETE)
             )
         return _render_rows(rows, columns)
+
+    def render_group(self, group_id: str, columns: int) -> Text:
+        """Render one durable group identity through the existing stage bars."""
+        with self._lock:
+            identifiers: tuple[str, ...] = tuple(self._files)
+        if group_id not in identifiers:
+            return Text()
+        return self.render(columns, offset=identifiers.index(group_id), limit=1)
 
     def _apply(self, event: RunEvent) -> bool:
         changed: bool = False

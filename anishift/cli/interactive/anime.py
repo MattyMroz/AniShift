@@ -16,7 +16,6 @@ from anishift.application import (
     AcquisitionService,
     AppService,
     CatalogOrder,
-    CheckOutcome,
     DownloadReceipt,
     EpisodeRange,
     ReleaseCatalog,
@@ -24,9 +23,7 @@ from anishift.application import (
     SearchQuery,
     SeasonContext,
     SeriesGroup,
-    Subscription,
     SubscriptionOrder,
-    SubscriptionService,
     TitleCandidate,
     TitleStatus,
     order_groups,
@@ -34,7 +31,7 @@ from anishift.application import (
 )
 from anishift.application.events import sanitize_event_message
 from anishift.cli.interactive.menu import with_footer
-from anishift.cli.interactive.state import refusal_text
+from anishift.cli.interactive.subscriptions import SubscriptionDraft
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError, ErrorCode
@@ -61,7 +58,7 @@ _WORKER_NAME: Final[str] = "anishift-anime"
 _MIN_RESOLUTION_LABEL: Final[str] = "1080p"
 """Lowest release quality the catalog lists, named for the user."""
 
-_QUERY_HINT: Final[str] = "Enter szukaj · Esc wróć"
+_QUERY_HINT: Final[str] = "Enter szukaj · Tab widok · Esc wróć"
 """Keyboard hint of the title input."""
 
 _TITLES_HINT: Final[str] = "Enter wybierz · Esc wróć"
@@ -85,16 +82,10 @@ _SEARCHING_RELEASES: Final[str] = "Szukam wydań…"
 _SENDING: Final[str] = "Wysyłam…"
 """Sentence shown while the torrent client takes the chosen releases."""
 
-_SUBSCRIBING: Final[str] = "Zapisuję obserwację…"
-"""Sentence shown while the subscription is stored and checked for the first time."""
-
 _UNAVAILABLE: Final[str] = "Pobieranie jest niedostępne w tej sesji"
 """Sentence shown when the session was built without an acquisition boundary."""
 
-_NO_SUBSCRIPTIONS: Final[str] = "Subskrypcje są niedostępne w tej sesji"
-"""Sentence shown when the session was built without a subscription boundary."""
-
-_EPISODE_ONLY: Final[str] = "Obserwuj działa tylko na numerowanym odcinku"
+_EPISODE_ONLY: Final[str] = "Subskrybuj działa tylko na numerowanym odcinku"
 """Notice shown when the highlighted release carries no episode number to watch from."""
 
 _OTHER_SEASON: Final[str] = "To wydanie wygląda na inny sezon"
@@ -112,9 +103,6 @@ _RANGE_PROMPT: Final[str] = "zakres (np. 4-10)"
 _RANGE_INVALID: Final[str] = "zakres: podaj np. 4-10"
 """Notice shown when the typed span cannot be read."""
 
-_CHECK_CADENCE: Final[str] = "sprawdzam co godzinę"
-"""Tail of the confirmation naming how often the watch looks for new episodes."""
-
 _EMPTY_CATALOG: Final[str] = f"Brak wydań w {_MIN_RESOLUTION_LABEL}+ dla tego tytułu"
 """Sentence shown when the query matched nothing of the required quality."""
 
@@ -123,9 +111,6 @@ _EMPTY_FILTERED: Final[str] = "Brak odc. {episodes} w " + _MIN_RESOLUTION_LABEL 
 
 _NO_SEASON_NUMBERING: Final[str] = "numeracja sezonu niedostępna"
 """Footer note shown when the season chain failed and episodes are numbered as named."""
-
-_NOT_WATCHABLE: Final[str] = "To wydanie nie nadaje się do obserwowania"
-"""Sentence shown when the subscription boundary refuses the chosen release."""
 
 _PROBLEM_TEXTS: Final[dict[ErrorCode, tuple[str, str]]] = {
     ErrorCode.TORRENT_SOURCE_FAILED: ("Nyaa nie odpowiada", "Sprawdź połączenie i spróbuj ponownie"),
@@ -168,6 +153,7 @@ class AnimeResult(StrEnum):
 
     CONTINUE = "continue"
     HOME = "home"
+    SUBSCRIBE = "subscribe"
 
 
 class _Screen(StrEnum):
@@ -223,7 +209,6 @@ class AnimeController:
         self._highlighted: int = 0
         self._candidate: TitleCandidate | None = None
         self._context: SeasonContext | None = None
-        self._folder: str | None = None
         self._episodes: EpisodeRange | None = None
         self._order: CatalogOrder = CatalogOrder.NEWEST
         self._groups: tuple[SeriesGroup, ...] = ()
@@ -235,6 +220,7 @@ class AnimeController:
         self._excluded: int = 0
         self._filtered: int = 0
         self._range_input: TextInput | None = None
+        self._group_input: TextInput | None = None
         self._fallback: str = ""
         self._busy: str = _SEARCHING_TITLE
         self._done: str = ""
@@ -242,6 +228,8 @@ class AnimeController:
         self._problem: str = ""
         self._suggestion: str = ""
         self._problem_return: _Screen = _Screen.QUERY
+        self._draft: SubscriptionDraft | None = None
+        self._downloaded: bool = False
         if self._acquisition is None:
             self._screen = _Screen.PROBLEM
             self._problem = _UNAVAILABLE
@@ -261,7 +249,30 @@ class AnimeController:
                 result = AnimeResult.HOME
             else:
                 result = self._handle_problem(key)
+            if self._draft is not None:
+                return AnimeResult.SUBSCRIBE
         return result
+
+    @property
+    def editing(self) -> bool:
+        """Whether arrows and command letters belong to a text field."""
+        return self._screen is _Screen.QUERY or self._range_input is not None or self._group_input is not None
+
+    def take_draft(self) -> SubscriptionDraft | None:
+        """Consume a prepared subscription without storing or checking it."""
+        with self._lock:
+            draft: SubscriptionDraft | None = self._draft
+            self._draft = None
+            return draft
+
+    def take_downloaded(self) -> bool:
+        """Consume successful admission once, independently of rendering."""
+        with self._lock:
+            downloaded: bool = self._downloaded
+            self._downloaded = False
+            if downloaded and self._screen is _Screen.DONE:
+                self._screen = _Screen.RESULTS
+            return downloaded
 
     def render(self, columns: int, rows: int) -> Text:
         """Render the cached state of the current screen for one terminal geometry."""
@@ -281,6 +292,13 @@ class AnimeController:
         """Discard the result of network work still in flight."""
         with self._lock:
             self._generation += 1
+            self._draft = None
+            self._downloaded = False
+            if self._screen is _Screen.DONE:
+                self._screen = _Screen.RESULTS
+            if self._screen is _Screen.BUSY:
+                self._screen = _Screen.QUERY
+                self._worker = None
 
     def _handle_query(self, key: str) -> AnimeResult:
         if self._query_input.handle(key):
@@ -328,6 +346,9 @@ class AnimeController:
         return AnimeResult.CONTINUE
 
     def _handle_results(self, key: str) -> AnimeResult:
+        if self._group_input is not None:
+            self._handle_group_input(key)
+            return AnimeResult.CONTINUE
         if self._range is not None:
             return self._handle_range(key)
         self._notice = ""
@@ -340,11 +361,34 @@ class AnimeController:
         return AnimeResult.CONTINUE
 
     def _handle_empty(self, key: str) -> AnimeResult:
-        if key in {"text:f", "text:F"} and self._episodes is not None:
+        if key.casefold() == "text:o" and self._candidate is not None:
+            self._group_input = TextInput()
+        elif key in {"text:f", "text:F"} and self._episodes is not None:
             self._start_unfiltered_search()
         elif key == "enter":
             self._leave_results()
         return AnimeResult.CONTINUE
+
+    def _handle_group_input(self, key: str) -> None:
+        editor: TextInput | None = self._group_input
+        if editor is None or editor.handle(key):
+            return
+        if key in {"escape", "interrupt"}:
+            self._group_input = None
+            return
+        if key != "enter" or not editor.text.strip() or self._candidate is None:
+            return
+        group: str = editor.text.strip()
+        order: SubscriptionOrder = SubscriptionOrder(
+            self._candidate.romaji,
+            group,
+            f"{self._candidate.romaji} {group}",
+            Decimal(1),
+            context=self._context,
+            anilist_id=self._candidate.anilist_id,
+        )
+        self._draft = SubscriptionDraft.from_order(order, ())
+        self._group_input = None
 
     def _leave_results(self) -> None:
         self._screen = _Screen.TITLES if self._candidates else _Screen.QUERY
@@ -434,7 +478,6 @@ class AnimeController:
         self._candidates = ()
         self._candidate = None
         self._context = None
-        self._folder = None
         query: SearchQuery = parse_query(text)
         self._episodes = query.episodes
         generation: int = self._start_work(_SEARCHING_TITLE)
@@ -443,7 +486,6 @@ class AnimeController:
     def _start_title_search(self) -> None:
         candidate: TitleCandidate = self._candidates[self._highlighted]
         self._candidate = candidate
-        self._folder = candidate.folder_title()
         generation: int = self._start_work(_SEARCHING_RELEASES)
         self._spawn(self._search_title, (candidate, self._episodes, self._order, generation))
 
@@ -477,8 +519,19 @@ class AnimeController:
         if choice.other_season:
             self._notice = _OTHER_SEASON
             return
-        generation: int = self._start_work(_SUBSCRIBING)
-        self._spawn(self._subscribe, (choice, self._subscription_query(), self._folder, self._context, generation))
+        group: SeriesGroup = self._groups[self._rows[self._selected].group]
+        order: SubscriptionOrder = SubscriptionOrder(
+            group.series,
+            group.group,
+            self._subscription_query(),
+            choice.episode,
+            context=self._context,
+            anilist_id=self._candidate.anilist_id if self._candidate is not None else None,
+        )
+        numbers: tuple[Decimal, ...] = tuple(
+            item.episode for item in group.choices if item.episode is not None and not item.other_season
+        )
+        self._draft = SubscriptionDraft.from_order(order, numbers)
 
     def _subscription_query(self) -> str:
         if self._candidate is None:
@@ -573,57 +626,9 @@ class AnimeController:
             self._report(generation, problem, _Screen.RESULTS)
             return
         self._show_done(generation, f"Wysłano {receipt.count} do qBittorrenta → {_safe(receipt.directory.name)}")
-
-    def _subscribe(
-        self,
-        choice: ReleaseChoice,
-        query: str,
-        directory: str | None,
-        context: SeasonContext | None,
-        generation: int,
-    ) -> None:
-        subscriptions: SubscriptionService | None = self._service.subscriptions
-        if subscriptions is None:
-            self._fail(generation, _NO_SUBSCRIPTIONS, "", _Screen.RESULTS)
-            return
-        if choice.episode is None or choice.name.is_pack or choice.other_season:
-            self._fail(generation, _NOT_WATCHABLE, "", _Screen.RESULTS)
-            return
-        try:
-            if self._resident is not None:
-                subscription: Subscription = self._resident.follow(
-                    SubscriptionOrder(
-                        choice.name.series,
-                        choice.name.group or "?",
-                        query,
-                        choice.episode,
-                        directory,
-                        context,
-                        self._candidate.anilist_id if self._candidate is not None else None,
-                    )
-                )
-                outcome: CheckOutcome = CheckOutcome(subscription, 0)
-            else:
-                subscription = subscriptions.subscribe(query, choice, directory_name=directory, context=context)
-                outcome = subscriptions.check(subscription)
-        except (AniShiftError, OSError, ValueError) as problem:
-            logger.warning("Anime subscription failed", error_class=type(problem).__name__)
-            self._report(generation, problem, _Screen.RESULTS)
-            return
-        result: str = (
-            f"sprawdzenie nie powiodło się: {_safe(outcome.problem)}"
-            if outcome.problem
-            else f"pobrano {outcome.downloaded}"
-        )
-        if self._resident is not None:
-            result = "sprawdzanie działa w tle"
-        cadence: str = "według kalendarza premier" if self._resident and subscription.anilist_id else _CHECK_CADENCE
-        self._show_done(
-            generation,
-            f"Obserwuję [{_safe(subscription.group)}] {_safe(subscription.series)} "
-            f"od {_episode_number(subscription.next_episode)}"
-            f"{_HINT_SEPARATOR}{result}{_HINT_SEPARATOR}{cadence}",
-        )
+        with self._lock:
+            if generation == self._generation:
+                self._downloaded = True
 
     def _show_titles(self, generation: int, candidates: tuple[TitleCandidate, ...]) -> None:
         with self._lock:
@@ -682,7 +687,7 @@ class AnimeController:
         self._invalidate()
 
     def _render_query(self, columns: int, rows: int) -> Text:
-        content: Text = _header(_TITLE, columns, rows, 2)
+        content: Text = _header(_TITLE, columns, rows, 2) if rows >= _HEADER_ROWS else Text()
         left: int = max((columns - min(max(len(self._query) + 3, 32), columns)) // 2, 0)
         width: int = max(columns - left - 3, 1)
         content.append(f"{' ' * left}> ", style="white_bold")
@@ -732,8 +737,13 @@ class AnimeController:
         return with_footer(content, ("Enter zatwierdź · Esc anuluj",), columns, rows)
 
     def _render_empty(self, columns: int, rows: int, subtitle: str) -> Text:
+        if self._group_input is not None:
+            content: Text = _header(_TITLE, columns, rows, 2, subtitle)
+            content.append("Grupa wydająca: ", style="white_bold")
+            content.append_text(self._group_input.render(max(columns - 17, 1)))
+            return _finish(content, "Enter wybierz zakres · Esc anuluj", columns, rows)
         sentence: str = self._empty_sentence()
-        content: Text = _header(_TITLE, columns, rows, 2, subtitle)
+        content = _header(_TITLE, columns, rows, 2, subtitle)
         left: int = max((columns - len(sentence)) // 2, 0)
         content.append(f"{' ' * left}{sentence}\n", style="warning")
         return _finish(content, _HINT_SEPARATOR.join(self._empty_hints()), columns, rows)
@@ -745,6 +755,8 @@ class AnimeController:
 
     def _empty_hints(self) -> tuple[str, ...]:
         hints: list[str] = [self._fallback] if self._fallback else []
+        if self._candidate is not None:
+            hints.append("O subskrybuj")
         if self._filtered and self._episodes is not None:
             hints.extend((f"poza filtrem: {self._filtered}", "F pokaż wszystkie", "Esc wróć"))
             return tuple(hints)
@@ -804,7 +816,7 @@ class AnimeController:
         if self._filtered:
             hints.append(f"poza filtrem: {self._filtered}")
         hints.extend(self._marking_hints())
-        hints.extend(("Enter pobierz", "O obserwuj", self._order_hint()))
+        hints.extend(("Enter pobierz", "O subskrybuj", self._order_hint()))
         if self._episodes is not None:
             hints.append("F pokaż wszystkie")
         hints.append("Esc wróć")
@@ -997,13 +1009,13 @@ def _truncate_right(value: str, width: int) -> str:
 
 def _stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:
     """Return the Polish sentence and hint of *problem*, falling back to its own text."""
+    from anishift.cli.interactive.state import refusal_text  # noqa: PLC0415
+
     if isinstance(problem, AniShiftError):
         stated: tuple[str, str] | None = _PROBLEM_TEXTS.get(problem.context.code)
         if stated is not None:
             return stated
         return refusal_text(problem), _safe(problem.context.suggestion)
-    if isinstance(problem, ValueError):
-        return _NOT_WATCHABLE, ""
     return refusal_text(problem), ""
 
 

@@ -191,9 +191,21 @@ class ResidentSession:
     def _subscription(self, subscription_id: str) -> Subscription:
         return decode_view(Subscription, self._call("subscription_get", {"subscription_id": subscription_id}))
 
-    def follow(self, order: SubscriptionOrder) -> Subscription:
+    def follow(
+        self,
+        order: SubscriptionOrder,
+        *,
+        selected: Sequence[Decimal] | None = None,
+        future_from: Decimal | None = None,
+    ) -> Subscription:
         """Add a durable standing order and let the owner's schedule check it."""
-        answer: Mapping[str, object] = self._call("subscription_add", {"order": encode_view(order)})
+        payload: dict[str, object] = {"order": encode_view(order)}
+        if selected is not None:
+            payload.update(
+                selected=[str(number) for number in selected],
+                future_from=None if future_from is None else str(future_from),
+            )
+        answer: Mapping[str, object] = self._call("subscription_add", payload)
         return self._subscription(str(answer["subscription_id"]))
 
     def command(self, kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:

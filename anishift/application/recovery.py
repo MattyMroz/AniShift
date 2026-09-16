@@ -16,6 +16,7 @@ from anishift.errors import AniShiftError, ExecutionError
 
 if TYPE_CHECKING:
     from anishift.application.planning import PlanTask
+    from anishift.application.ready import ReadyMove
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -139,6 +140,65 @@ class RunJournal:
             msg = "An input or preserved product changed after the run was accepted"
             raise ExecutionError(msg)
 
+    @classmethod
+    def relocate(cls, path: Path, move: ReadyMove, workspace: Path) -> bool:
+        """Rebind a completed group's checkpoint only after every renamed proof retains its file identity."""
+        checkpoint: _Checkpoint = TypeAdapter(_Checkpoint).validate_json(path.read_bytes(), strict=True)
+        if checkpoint.version != CHECKPOINT_VERSION:
+            msg: str = "The saved run checkpoint has an unsupported version"
+            raise ExecutionError(msg)
+        group_ids: frozenset[str] = frozenset({move.group_id, move.destination_group_id})
+        completed: bool = any(
+            group.group_id in group_ids
+            and not group.task_ids
+            and not any(problem.is_blocking for problem in group.problems)
+            for group in checkpoint.plan.groups
+        )
+        if not completed:
+            return False
+        paths: dict[Path | None, Path | None] = {
+            workspace / item.source: workspace / item.destination for item in move.moved
+        }
+        inputs: tuple[_FileProof, ...] = tuple(_relocated_proof(item, paths) for item in checkpoint.inputs)
+        outputs: tuple[_FileProof, ...] = tuple(_relocated_proof(item, paths) for item in checkpoint.outputs)
+        plan: ExecutionPlan = replace(
+            checkpoint.plan,
+            groups=tuple(
+                replace(
+                    group,
+                    group_id=move.destination_group_id,
+                    intent=replace(group.intent, group_id=move.destination_group_id),
+                    problems=tuple(
+                        replace(problem, group_id=move.destination_group_id)
+                        if problem.group_id == move.group_id
+                        else problem
+                        for problem in group.problems
+                    ),
+                )
+                if group.group_id == move.group_id
+                else group
+                for group in checkpoint.plan.groups
+            ),
+            artifacts=tuple(
+                replace(
+                    artifact,
+                    group_id=move.destination_group_id if artifact.group_id == move.group_id else artifact.group_id,
+                    path=paths.get(artifact.path, artifact.path),
+                    planned_destination=paths.get(artifact.planned_destination, artifact.planned_destination),
+                    preserved_path=paths.get(artifact.preserved_path, artifact.preserved_path),
+                )
+                for artifact in checkpoint.plan.artifacts
+            ),
+            problems=tuple(
+                replace(problem, group_id=move.destination_group_id) if problem.group_id == move.group_id else problem
+                for problem in checkpoint.plan.problems
+            ),
+        )
+        updated: _Checkpoint = replace(checkpoint, plan=plan, inputs=inputs, outputs=outputs)
+        if updated != checkpoint:
+            cls(path, checkpoint)._save(updated)
+        return True
+
     def prepare(self, task: PlanTask, result: TaskResult) -> None:
         """Record a validated staging file before the coordinator can replace its destination."""
         self._require_writable()
@@ -216,6 +276,17 @@ def _proof(path: Path, artifact_id: str | None = None) -> _FileProof:
         msg = "A run checkpoint requires a regular file"
         raise ExecutionError(msg)
     return _FileProof(path, stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino, artifact_id)
+
+
+def _relocated_proof(proof: _FileProof, paths: dict[Path | None, Path | None]) -> _FileProof:
+    destination: Path | None = paths.get(proof.path)
+    if destination is None:
+        return proof
+    updated: _FileProof = replace(proof, path=destination)
+    if _proof(destination, proof.artifact_id) != updated:
+        msg: str = "A relocated checkpoint file changed; its original proof was preserved"
+        raise ExecutionError(msg)
+    return updated
 
 
 def _completed(checkpoint: _Checkpoint, result: TaskResult) -> _Checkpoint:

@@ -20,10 +20,10 @@ from anishift.cli.interactive.prompts import (
 
 def test_home_selects_panel_before_processing_actions() -> None:
     content: Text = _home_content(120, 40, 0, MascotState.IDLE)
-    labels: list[str] = ["Panel", "Auto", "Ręczny", "Anime", "Ustawienia", "Wyjście"]
+    labels: list[str] = ["Panel", "Ręczny", "Ustawienia", "Wyjście"]
     rows: list[str] = [line.strip().removeprefix("\u276f").strip() for line in content.plain.split("\n")]
 
-    assert [row for row in rows if row][-7:] == [*labels, "↑↓ · Enter"]
+    assert [row for row in rows if row][-5:] == [*labels, "↑↓ · Enter"]
     assert len(HomeAction) == len(labels)
     assert "\u276f Panel" in content.plain
 
@@ -54,7 +54,7 @@ def test_home_geometry_preserves_a_fixed_brand_and_falls_back_to_a_compact_layou
 
     assert (wide.mascot_columns, wide.mascot_rows, wide.brand_rows) == (18, 10, 10)
     assert (wide.show_mascot, wide.show_full_wordmark) == (True, True)
-    assert (medium.show_mascot, medium.show_full_wordmark, medium.brand_rows) == (False, False, 1)
+    assert (medium.show_mascot, medium.show_full_wordmark, medium.brand_rows) == (False, True, 6)
     assert (narrow.show_mascot, narrow.show_full_wordmark, narrow.brand_rows) == (False, False, 1)
 
 
@@ -140,13 +140,13 @@ def test_the_text_slime_bounces_without_changing_its_reservation() -> None:
 
 
 @pytest.mark.parametrize("rows", [3, 4, 6, 8, 10, 12, 24])
-@pytest.mark.parametrize("selected", [0, 1, 2, 3, 4, 5])
+@pytest.mark.parametrize("selected", [0, 1, 2, 3])
 def test_small_home_always_keeps_the_selected_action_visible(rows: int, selected: int) -> None:
     content = _home_content(80, rows, selected, MascotState.IDLE)
     frame = _fit_frame(content, "1.0.0", "workspace", 80, rows)
 
     assert "\u276f" in frame.plain
-    assert ("Panel", "Auto", "Ręczny", "Anime", "Ustawienia", "Wyjście")[selected] in frame.plain
+    assert ("Panel", "Ręczny", "Ustawienia", "Wyjście")[selected] in frame.plain
     assert frame.plain.split("\n")[-1].endswith("v1.0.0")
 
 

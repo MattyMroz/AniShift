@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -17,8 +17,17 @@ from urllib.parse import parse_qs
 
 import httpx
 import pytest
-from fakes import write_image_source, write_text_source
+from fakes import (
+    CollectingRunSink,
+    FakeMediaProbe,
+    FakeTranslationService,
+    write_image_source,
+    write_media_source,
+    write_text_source,
+)
 from loguru import logger as loguru_logger
+from test_service import _panel_owner
+from test_service import _service as _processing_service
 
 import anishift.application.automation as automation_module
 import anishift.application.library as library_module
@@ -31,7 +40,14 @@ from anishift.application.acquisition import (
     TorrentClient,
     TorrentManagement,
 )
-from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState, create_group_id
+from anishift.application.artifacts import (
+    Artifact,
+    ArtifactKind,
+    ArtifactLifetime,
+    ArtifactState,
+    SourceGroup,
+    create_group_id,
+)
 from anishift.application.automation import (
     TRANSFER_BACKOFF_CEILING_S,
     TRANSFER_CHECK_INTERVAL_S,
@@ -59,7 +75,7 @@ from anishift.application.control import (
     TranslateRecipe,
     WatchState,
 )
-from anishift.application.control_views import DeletionPreview, LibrarySet, decode_view, encode_view
+from anishift.application.control_views import DeletionPreview, LibrarySet, PlanPreview, decode_view, encode_view
 from anishift.application.discovery import discover_groups
 from anishift.application.events import RunEvent, RunEventKind
 from anishift.application.inspection import (
@@ -80,6 +96,8 @@ from anishift.application.service import AppService, AutoPresetDraft
 from anishift.application.subscriptions import (
     CheckOutcome,
     CheckRecorder,
+    EpisodeOrder,
+    EpisodeState,
     Subscription,
     SubscriptionAdmission,
     SubscriptionOrder,
@@ -87,14 +105,16 @@ from anishift.application.subscriptions import (
     SubscriptionStore,
     SubscriptionUpdater,
 )
+from anishift.application.tts_handler import TtsProgressObserver
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.application.workflows import WorkflowTarget
+from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError
-from anishift.paths import COVER_DIRECTORY, READY_DIRECTORY, TRANSLATE_DIRECTORY
+from anishift.paths import COVER_DIRECTORY, READY_DIRECTORY, TRANSLATE_DIRECTORY, relocation_journal_dir
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import (
     ControlClient,
@@ -111,6 +131,7 @@ from anishift.services.media import DefaultMediaProbe
 from anishift.services.torrents import Release, TorrentClientError, TorrentFile, TorrentInfo, parse_release_name
 from anishift.services.torrents.categories import SEARCH_CATEGORIES
 from anishift.services.torrents.qbittorrent import QBittorrentClient
+from anishift.services.tts import SpeechBatch, SpeechBatchResult
 
 _TIMEOUT_S: Final[float] = 5.0
 
@@ -557,9 +578,11 @@ def test_transfer_action_survives_restart_and_receipt_replay_does_not_repeat_it(
     assert not thread.is_alive()
 
 
+@pytest.mark.parametrize("ranged", [False, True])
 def test_subscription_addition_replays_after_its_confirmation_could_not_be_saved(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    ranged: bool,
 ) -> None:
     network: _TorrentNetwork = _TorrentNetwork()
     acquisition: AcquisitionService = AcquisitionService(
@@ -585,12 +608,15 @@ def test_subscription_addition_replays_after_its_confirmation_could_not_be_saved
         save(state)
 
     order: SubscriptionOrder = SubscriptionOrder("Neko to Ryuu", "SubsPlease", "neko", Decimal(20))
-    command: ControlRequest = _request("subscription_add", {"order": encode_view(order)})
+    payload: dict[str, object] = {"order": encode_view(order)}
+    if ranged:
+        payload.update(selected=["3", "7.5", "8"], future_from=None)
+    command: ControlRequest = _request("subscription_add", payload)
     try:
         with monkeypatch.context() as failure:
             failure.setattr(store, "save", fail_confirmation)
             assert not owner.handle(command).ok
-        assert subscriptions.list()[0].generation == 1
+        assert subscriptions.list()[0].generation == (2 if ranged else 1)
         assert store.load().command_receipts[0].pending == "subscription_add"
     finally:
         owner.request_shutdown()
@@ -600,7 +626,15 @@ def test_subscription_addition_replays_after_its_confirmation_could_not_be_saved
     try:
         assert restored.handle(command).ok
         assert restored.handle(command).ok
-        assert subscriptions.list()[0].generation == 1
+        assert subscriptions.list()[0].generation == (2 if ranged else 1)
+        if ranged:
+            assert {item.number for item in subscriptions.list()[0].episodes if item.selected} == {
+                Decimal(3),
+                Decimal("7.5"),
+                Decimal(8),
+            }
+            assert subscriptions.list()[0].future_from is None
+        assert network.added == []
         assert store.load().command_receipts[0].pending is None
     finally:
         restored.request_shutdown()
@@ -3480,6 +3514,454 @@ def test_the_status_names_the_library_group_each_transfer_owns(tmp_path: Path) -
     acquisitions: object = answer.result["acquisitions"]
     assert isinstance(acquisitions, list)
     assert acquisitions[0]["group_ids"] == [group_id]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("bundle", [False, True])
+def test_material_identity_survives_bundle_metadata_preparation_processing_and_ready(  # noqa: PLR0915
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bundle: bool
+) -> None:
+    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", "isolated-test-token")
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.05)
+    network: _TorrentNetwork = _TorrentNetwork()
+    network.tracked["9"] = TorrentInfo("Original bundle name", "9", 0.0, "metaDL", str(tmp_path))
+    acquisition: AcquisitionService = AcquisitionService(
+        source=network,
+        client=cast("TorrentClient", network),
+        torrent_management=cast("TorrentManagement", network),
+        workspace_root=tmp_path,
+        parse_name=parse_release_name,
+    )
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    service: AppService = _processing_service(
+        tmp_path,
+        FakeTranslationService(entered=entered, release=release),
+        inspector=WorkspaceInspector(FakeMediaProbe()),
+        acquisition=acquisition,
+    )
+    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(replace(_owned((), (), RequestOrigin.USER, 0, directory=""), content_started=False),),
+        )
+    )
+    try:
+        with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, store):
+            assert _await(lambda: _material_rows(session)[0].get("name") == "Original bundle name")
+            assert len(_material_rows(session)) == 1
+            subtitle_size: int = len("1\n00:00:00,000 --> 00:00:01,000\nHello\n".replace("\n", os.linesep).encode())
+            network.entries = (
+                TorrentFile(0, "09.srt", subtitle_size, 0.2, 1),
+                TorrentFile(7, "09.mkv", 10, 0.4, 1),
+                *(
+                    (TorrentFile(2, "10.srt", subtitle_size, 0.1, 1), TorrentFile(8, "10.mkv", 10, 0.1, 1))
+                    if bundle
+                    else ()
+                ),
+            )
+            network.tracked["9"] = replace(network.tracked["9"], state="downloading", progress=0.2)
+            assert _await(lambda: any(item["material_id"] == "9:7" for item in _material_rows(session)))
+            rows: list[dict[str, object]] = _material_rows(session)
+            assert {item["material_id"] for item in rows} == ({"9:7", "9:8"} if bundle else {"9:7"})
+            assert {item["name"] for item in rows} == ({"09.mkv", "10.mkv"} if bundle else {"09.mkv"})
+            assert session.command("status")["material_counts"] == {
+                "downloading": 1 + int(bundle),
+                "processing": 0,
+                "waiting": 0,
+            }
+            assert _await(lambda: all(item["content_started"] for item in _material_rows(session)))
+            write_media_source(tmp_path / "09.mkv")
+            first: str = next(group.group_id for group in session.discover().groups if group.source.stem == "09")
+            session.reserve((first,))
+            network.entries = tuple(
+                replace(item, progress=1.0) if item.name.startswith("09") else item for item in network.entries
+            )
+            network.tracked["9"] = replace(
+                network.tracked["9"],
+                progress=0.6 if bundle else 1.0,
+                state="downloading" if bundle else "stoppedUP",
+                amount_left=10 if bundle else 0,
+            )
+            assert _await(lambda: any(item.get("stage") == "waiting" for item in _material_rows(session))), (
+                network.entries,
+                _material_rows(session),
+            )
+            prepared: dict[str, object] = next(item for item in _material_rows(session) if item["material_id"] == "9:7")
+            assert prepared["name"] == "09.mkv"
+            assert prepared["downloaded"] is True
+            preview: PlanPreview = session.plan_manual(
+                (GroupIntent(first, RunMode.MANUAL, ProductIntent(frozenset({ProductKind.SPOKEN_PL}))),)
+            )
+            run_id: str = session.start(preview)
+            assert entered.wait(1.0)
+            running: dict[str, object] = next(item for item in _material_rows(session) if item["material_id"] == "9:7")
+            assert running["stage"] == "processing"
+            assert running["run_id"] == run_id
+            assert running["acquisition_id"] == "operation-9"
+            assert len(_material_rows(session)) == 1 + int(bundle)
+            release.set()
+            assert _await(lambda: session.command("run_result", {"run_id": run_id})["state"] == "succeeded")
+            assert _await(lambda: bool(session.library()))
+            assert [item["material_id"] for item in _material_rows(session)] == (["9:8"] if bundle else [])
+            assert (tmp_path / "09.mkv").is_file() is bundle
+            assert bool(store.load().ready_groups[0].pending_sources) is bundle
+            assert network.added == []
+    finally:
+        release.set()
+    for product in store.load().products:
+        (tmp_path / product.path).unlink()
+    restarted: AppService = _processing_service(
+        tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe())
+    )
+    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, store):
+        session.discover()
+        assert [item["material_id"] for item in _material_rows(session)] == (["9:8"] if bundle else [])
+        assert len(store.load().requests) == 1
+        assert network.added == []
+
+
+def _material_rows(session: ResidentSession) -> list[dict[str, object]]:
+    return cast("list[dict[str, object]]", session.command("status")["materials"])
+
+
+def _projection_request(tmp_path: Path, state: RequestState) -> tuple[AutomationOwner, Path, tuple[str, ...]]:
+    for number in range(1, 13):
+        write_text_source(_library_dir(tmp_path) / f"{number:02d}.txt", "Text")
+    with closing(_real_service(tmp_path)) as real:
+        workspace: InspectedWorkspace = real.discover()
+        identifiers: tuple[str, ...] = tuple(group.group_id for group in workspace.groups)
+        plan: ExecutionPlan = real.plan_auto(identifiers, _PRESET)
+    remaining: ExecutionPlan = replace(
+        plan,
+        groups=tuple(
+            replace(group, artifact_ids=(), task_ids=()) if group.group_id != identifiers[-1] else group
+            for group in plan.groups
+        ),
+        artifacts=tuple(artifact for artifact in plan.artifacts if artifact.group_id == identifiers[-1]),
+        tasks=tuple(task for task in plan.tasks if task.group_id == identifiers[-1]),
+    )
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    request: ProcessingRequest = ProcessingRequest(
+        "projection",
+        1,
+        identifiers,
+        {},
+        RequestOrigin.USER,
+        SourceSelection.AUTO,
+        None,
+        {},
+        state,
+        1,
+        _MOMENT.isoformat(),
+        intents=tuple(group.intent for group in plan.groups),
+    )
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False), requests=(request,)))
+    path: Path = store.run_path(request.request_id)
+    RunJournal.create(path, remaining, tmp_path / "temp" / "projection")
+    owner: AutomationOwner = _owner(_Service(tmp_path, discovered=workspace, plan=plan), store)
+    owner._run_events[request.request_id] = {
+        (RunEventKind.GROUP_FINISHED.value, identifier, None): RunEvent(
+            request.request_id, index, RunEventKind.GROUP_FINISHED, group_id=identifier, state=TaskState.SUCCEEDED
+        )
+        for index, identifier in enumerate((*identifiers[:10], identifiers[-1]), start=1)
+    }
+    return owner, path, identifiers
+
+
+@pytest.mark.parametrize("state", [RequestState.PAUSED, RequestState.RUNNING])
+def test_processing_projection_reads_a_twelve_group_checkpoint_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: RequestState
+) -> None:
+    owner, path, identifiers = _projection_request(tmp_path, state)
+    read_bytes: Callable[[Path], bytes] = Path.read_bytes
+    reads: list[Path] = []
+    content: bytes = path.read_bytes()
+
+    def counted_read(candidate: Path) -> bytes:
+        if candidate == path:
+            reads.append(candidate)
+        return read_bytes(candidate)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read)
+    try:
+        first: list[dict[str, object]] = cast("list[dict[str, object]]", owner._status()["materials"])
+        assert [row["group_id"] for row in first] == list(
+            identifiers[-1:] if state is RequestState.PAUSED else identifiers[-2:]
+        )
+        assert all(row["state"] == state.value and row["run_id"] == "projection" for row in first)
+        assert reads == [path]
+        assert owner._status()["materials"] == first
+        assert reads == [path, path]
+        assert read_bytes(path) == content
+    finally:
+        owner._pool.shutdown(wait=True)
+
+
+def test_processing_projection_retries_an_unavailable_terminal_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, path, identifiers = _projection_request(tmp_path, RequestState.FAILED)
+    read_bytes: Callable[[Path], bytes] = Path.read_bytes
+    reads: list[Path] = []
+
+    def interrupted_read(candidate: Path) -> bytes:
+        if candidate == path:
+            reads.append(candidate)
+            if len(reads) == 1:
+                raise OSError("Injected unavailable checkpoint")
+        return read_bytes(candidate)
+
+    monkeypatch.setattr(Path, "read_bytes", interrupted_read)
+    try:
+        unavailable: list[dict[str, object]] = cast("list[dict[str, object]]", owner._status()["materials"])
+        assert [row["group_id"] for row in unavailable] == list(identifiers)
+        assert all(row["state"] == "failed" for row in unavailable)
+        assert reads == [path]
+        retried: list[dict[str, object]] = cast("list[dict[str, object]]", owner._status()["materials"])
+        assert [row["group_id"] for row in retried] == [identifiers[-1]]
+        assert retried[0]["state"] == "failed"
+        assert reads == [path, path]
+        assert owner._status()["materials"] == retried
+        assert reads == [path, path]
+    finally:
+        owner._pool.shutdown(wait=True)
+
+
+def test_subscription_list_keeps_valid_rows_when_one_saved_airing_is_malformed(tmp_path: Path) -> None:
+    service, store, network, subscription = _subscription_library(tmp_path)
+    subscriptions: SubscriptionStore = SubscriptionStore(tmp_path / "subscriptions.json")
+    subscriptions.save(
+        (
+            replace(subscription, episodes=(EpisodeOrder(Decimal(9), airing_at="not-a-date"),)),
+            replace(
+                subscription,
+                subscription_id="valid",
+                series="Valid series",
+                episodes=(EpisodeOrder(Decimal(9), airing_at="2030-01-01T21:00:00+00:00"),),
+            ),
+        )
+    )
+    before: bytes = (tmp_path / "subscriptions.json").read_bytes()
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        response: ControlResponse = owner.handle(_request("subscriptions_list"))
+        assert response.ok
+        rows: list[dict[str, object]] = cast("list[dict[str, object]]", response.result["subscriptions"])
+        assert {row["subscription_id"]: row["airing_at"] for row in rows} == {
+            subscription.subscription_id: None,
+            "valid": "2030-01-01T21:00:00+00:00",
+        }
+        assert cast("list[dict[str, object]]", rows[0]["episodes"])[0]["airing_at"] == "not-a-date"
+        assert (tmp_path / "subscriptions.json").read_bytes() == before
+        assert network.added == []
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+def test_subscription_list_projects_the_nearest_selected_unfinished_airing(tmp_path: Path) -> None:
+    service, store, network, subscription = _subscription_library(tmp_path)
+    SubscriptionStore(tmp_path / "subscriptions.json").save(
+        (
+            replace(
+                subscription,
+                episodes=(
+                    EpisodeOrder(Decimal(1), airing_at="2030-01-01T18:00:00+00:00", selected=False),
+                    EpisodeOrder(Decimal(2), airing_at="2030-01-01T19:00:00+00:00", state=EpisodeState.COMPLETE),
+                    EpisodeOrder(Decimal(3), airing_at="2030-01-01T21:00:00+00:00"),
+                    EpisodeOrder(Decimal(4), airing_at="2030-01-01T22:00:00+02:00"),
+                ),
+            ),
+        )
+    )
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        response: ControlResponse = owner.handle(_request("subscriptions_list"))
+        assert response.ok
+        assert (
+            cast("list[dict[str, object]]", response.result["subscriptions"])[0]["airing_at"]
+            == "2030-01-01T22:00:00+02:00"
+        )
+        assert network.added == []
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+@pytest.mark.integration
+def test_processing_routes_retry_to_selected_deletion_or_relocation_beside_materials(  # noqa: PLR0915
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", "isolated-test-token")
+    service, _old_store, state = _completed_library(tmp_path)
+    service.close()
+    service = _processing_service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()))
+    cover: Path = tmp_path / "cover"
+    cover.mkdir()
+    write_text_source(cover / "Pending.txt", "A source")
+    audiobook: Path = tmp_path / "audiobook"
+    audiobook.mkdir()
+    write_text_source(audiobook / "Book.txt", "A source")
+    product: Path = audiobook / "Book.m4a"
+    product.write_bytes(b"synthetic audio")
+    ready: ReadyStore = ReadyStore(relocation_journal_dir(tmp_path / ".control"), tmp_path)
+    source: SourceGroup = next(group for group in discover_groups(tmp_path).groups if group.stem == "Book")
+    assert ready.prepare(source, (product,)) is not None
+    WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME).save(state)
+    fail: bool = True
+    original_link: Callable[[Path, Path], None] = os.link
+    links: list[str] = []
+    recycled: list[str] = []
+
+    def link(source: Path, destination: Path) -> None:
+        links.append(source.name)
+        if fail:
+            raise PermissionError("Synthetic filesystem refusal")
+        original_link(source, destination)
+
+    def recycle(path: Path, identity: tuple[int, int, int, int]) -> RecycleResult:
+        del identity
+        recycled.append(path.name)
+        return RecycleResult("refused", "recycle_refused")
+
+    monkeypatch.setattr(os, "link", link)
+    with (
+        closing(service),
+        _panel_owner(service, tmp_path, ready=True, watch=True, recycler=recycle) as (session, _store),
+    ):
+        preview: DeletionPreview = session.preview_deletion("set-01")
+        session.delete_set(preview)
+        assert _await(lambda: len(recycled) == 1)
+        controller: StateController = StateController(session, lambda: None)
+        try:
+            assert _await(lambda: controller._connected and len(controller._entries(120)) == 3)
+            controller.handle_key("end")
+            assert "P ponów pozostałe pliki" in controller.render(120, 40).plain
+            attempts: int = len(links)
+            controller.handle_key("text:p")
+            assert _await(lambda: not controller._busy and len(recycled) == 2)
+            assert len(links) == attempts
+            controller.handle_key("home")
+            controller.handle_key("down")
+            assert "P ponów wszystkie przenoszenia" in controller.render(120, 40).plain
+            fail = False
+            controller.handle_key("text:p")
+            assert _await((tmp_path / "ready/Book.m4a").is_file)
+            assert recycled == ["01.pl.txt", "01.pl.txt"]
+            assert len(_material_rows(session)) == 1
+        finally:
+            controller.close()
+            controller._thread.join(_TIMEOUT_S)
+
+
+class _FailedTts:
+    def __init__(self) -> None:
+        self.calls: int = 0
+
+    def synthesize(self, batch: SpeechBatch, *, callbacks: TtsProgressObserver) -> SpeechBatchResult:
+        del batch, callbacks
+        self.calls += 1
+        raise ExecutionError("Synthetic provider failure")
+
+    def cancel(self) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("tts_failed", [False, True])
+def test_subscription_card_uses_product_completion_and_keeps_download_memory_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tts_failed: bool
+) -> None:
+    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", "isolated-test-token")
+    network: _TorrentNetwork = _TorrentNetwork()
+    acquisition: AcquisitionService = AcquisitionService(
+        source=network,
+        client=cast("TorrentClient", network),
+        workspace_root=tmp_path,
+        parse_name=parse_release_name,
+    )
+    subscriptions: SubscriptionService = SubscriptionService(
+        store=SubscriptionStore(tmp_path / ".subscriptions.json"),
+        acquisition=acquisition,
+        clock=lambda: _MOMENT,
+    )
+    subscription: Subscription = subscriptions.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9))
+    subscriptions.set_range(subscription.subscription_id, selected=(Decimal(9),), future_from=None)
+    write_media_source(tmp_path / "09.mkv")
+    files: tuple[str, ...] = ("09.srt", "09.mkv")
+    owned: AcquisitionConfirmation = replace(
+        _owned(files, files, RequestOrigin.USER, 0, directory=""),
+        state=AcquisitionState.COMPLETE,
+        subscription_id=subscription.subscription_id,
+        file_layout=tuple((index, name, (tmp_path / name).stat().st_size) for index, name in enumerate(files)),
+    )
+    subscriptions.reconcile_sources((owned,))
+    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME)
+    store.save(WatchState(acquisitions=(owned,)))
+    tts: _FailedTts = _FailedTts()
+    service: AppService = _processing_service(
+        tmp_path,
+        FakeTranslationService(),
+        inspector=WorkspaceInspector(FakeMediaProbe()),
+        acquisition=acquisition,
+        subscriptions=subscriptions,
+        tts=tts,
+    )
+    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, store):
+        group_id: str = session.discover().groups[0].group_id
+        session.reserve((group_id,))
+        session.command("set_auto", {"enabled": True})
+        products: frozenset[ProductKind] = frozenset(
+            {ProductKind.SPOKEN_PL, ProductKind.NARRATION_AUDIO} if tts_failed else {ProductKind.SPOKEN_PL}
+        )
+        preview: PlanPreview = session.plan_manual((GroupIntent(group_id, RunMode.MANUAL, ProductIntent(products)),))
+        result: RunResult = session.execute(preview, CollectingRunSink())
+        assert result.succeeded is not tts_failed
+        assert tts.calls == int(tts_failed)
+        session.command("set_auto", {"enabled": False})
+    if not tts_failed:
+        for product in store.load().products:
+            (tmp_path / product.path).unlink()
+    restarted: AppService = _processing_service(
+        tmp_path,
+        FakeTranslationService(),
+        inspector=WorkspaceInspector(FakeMediaProbe()),
+        acquisition=acquisition,
+        subscriptions=subscriptions,
+        tts=tts,
+    )
+    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, store):
+        controller: StateController = StateController(session, lambda: None)
+        try:
+            assert _await(lambda: controller._connected)
+            controller.handle_key("left")
+            controller.handle_key("enter")
+            assert _await(lambda: not controller._busy)
+            frame: str = controller.render(120, 40).plain
+            assert ("● 9 · pobrano · błąd przetwarzania" if tts_failed else "○ 9 · ukończono produkty") in frame
+            controller.handle_key("text:a")
+            controller.handle_key("enter")
+            assert _await(lambda: not controller._busy)
+            current: Subscription = subscriptions.list()[0]
+            assert current.episodes[0].acquisition_id == owned.operation_id
+            assert current.episodes[0].state.value == "complete"
+            assert current.repeats == ()
+            assert network.added == []
+            assert len(store.load().requests) == 1
+            assert len(_material_rows(session)) == int(tts_failed)
+        finally:
+            controller.close()
+            controller._thread.join(_TIMEOUT_S)
 
 
 def _relocating_owner(tmp_path: Path, service: AppService, store: WatchStateStore) -> AutomationOwner:
