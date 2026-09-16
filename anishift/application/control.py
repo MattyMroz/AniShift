@@ -28,6 +28,7 @@ __all__ = [
     "AudiobookRecipe",
     "AutomationPolicy",
     "CommandReceipt",
+    "FileObjectIdentities",
     "FileReservation",
     "ManualHandledMarker",
     "NarrationTimeline",
@@ -64,6 +65,9 @@ WATCH_STATE_SCHEMA_VERSION: Final[int] = 2
 
 type SourceFingerprint = tuple[tuple[str, int, int], ...]
 """Identity of one group input, exactly what ``watch.source_fingerprint`` returns."""
+
+type FileObjectIdentities = tuple[tuple[str, int, int], ...]
+"""Relative path, device and inode for every object in one confirmed deletion scope."""
 
 type NotificationKey = tuple[str, str, str]
 """Group or episode, generation and kind, deduplicating one announcement."""
@@ -352,6 +356,31 @@ class ReadyGroup:
             raise ValueError(msg)
 
 
+class DeletionStatus(StrEnum):
+    """Evidence recorded before or after a single native file operation."""
+
+    INFLIGHT = "inflight"
+    RECYCLED = "recycled"
+    REFUSED = "refused"
+    UNCERTAIN = "uncertain"
+
+
+@dataclass(frozen=True, slots=True)
+class DeletionOutcome:
+    """One file's durable native result, including an opaque exact-item recycle receipt."""
+
+    path: str
+    status: DeletionStatus
+    reason: str
+    receipt: str | None = None
+
+    def __post_init__(self) -> None:
+        require_relative_paths((self.path,), "A deletion result")
+        if self.status is DeletionStatus.RECYCLED and not self.receipt:
+            msg = "A recycled result requires native item evidence"
+            raise ValueError(msg)
+
+
 @dataclass(frozen=True, slots=True)
 class PendingDeletion:
     """One confirmed whole-set deletion, the identity of each file it covers and what already went out."""
@@ -361,6 +390,9 @@ class PendingDeletion:
     requested_at: str
     files: SourceFingerprint
     recycled: tuple[str, ...] = ()
+    identities: FileObjectIdentities = ()
+    outcomes: tuple[DeletionOutcome, ...] = ()
+    instance_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.files:
@@ -370,6 +402,25 @@ class PendingDeletion:
         require_relative_paths((*names, *self.recycled), "A file of a pending deletion")
         if not frozenset(self.recycled) <= frozenset(names):
             msg = "A recycled file must belong to its confirmed deletion"
+            raise ValueError(msg)
+        identity_names: tuple[str, ...] = tuple(name for name, _device, _inode in self.identities)
+        outcome_names: tuple[str, ...] = tuple(item.path for item in self.outcomes)
+        if len(names) != len(set(names)) or len(outcome_names) != len(set(outcome_names)):
+            msg = "A deletion cannot contain duplicate files or outcomes"
+            raise ValueError(msg)
+        if self.identities and (set(identity_names) != set(names) or len(identity_names) != len(names)):
+            msg = "Strong deletion identities must cover exactly the confirmed files"
+            raise ValueError(msg)
+        if not set(outcome_names) <= set(names):
+            msg = "A deletion outcome must belong to its confirmed scope"
+            raise ValueError(msg)
+        if self.identities and set(self.recycled) != {
+            item.path for item in self.outcomes if item.status is DeletionStatus.RECYCLED
+        }:
+            msg = "Recycled files must have matching native results"
+            raise ValueError(msg)
+        if self.outcomes and not self.identities:
+            msg = "Native deletion outcomes require strong file identities"
             raise ValueError(msg)
 
 

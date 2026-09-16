@@ -52,6 +52,9 @@ _NOTIFY_FILTER: Final[int] = 0x0000001F
 _DIRECTORY_NAMES: Final[int] = 0x00000002
 """Observe root replacement through directory names in its immediate parent."""
 
+_FILE_ACTION_MODIFIED: Final[int] = 3
+"""Windows metadata or content modification, distinct from a namespace create, delete or rename."""
+
 _INFINITE: Final[int] = 0xFFFFFFFF
 """Wait for an event without periodic wakeups."""
 
@@ -78,6 +81,7 @@ class DirectoryChange:
     paths: tuple[Path, ...] = ()
     reconcile: bool = False
     reason: str = "change"
+    modified_paths: tuple[Path, ...] = ()
 
 
 def source_is_available(path: Path) -> bool:
@@ -366,14 +370,14 @@ class _WindowsChanges:
 def _decode_changes(root: Path, payload: bytes) -> DirectoryChange:  # noqa: PLR0911
     if not payload:
         return DirectoryChange(reconcile=True, reason="overflow")
-    paths: dict[Path, None] = {}
+    paths: dict[Path, bool] = {}
     offset: int = 0
     while True:
         if offset + 12 > len(payload):
             return DirectoryChange(reconcile=True, reason="invalid_notification")
         following: int
         length: int
-        following, _, length = struct.unpack_from("<III", payload, offset)
+        following, action, length = struct.unpack_from("<III", payload, offset)
         end: int = offset + 12 + length
         if end > len(payload) or length % 2:
             return DirectoryChange(reconcile=True, reason="invalid_notification")
@@ -383,9 +387,12 @@ def _decode_changes(root: Path, payload: bytes) -> DirectoryChange:  # noqa: PLR
             return DirectoryChange(reconcile=True, reason="invalid_notification")
         if relative.is_absolute() or ".." in relative.parts:
             return DirectoryChange(reconcile=True, reason="invalid_notification")
-        paths[root / relative] = None
+        path: Path = root / relative
+        paths[path] = paths.get(path, True) and action == _FILE_ACTION_MODIFIED
         if not following:
-            return DirectoryChange(paths=tuple(paths))
+            return DirectoryChange(
+                paths=tuple(paths), modified_paths=tuple(path for path, modified in paths.items() if modified)
+            )
         if following < 12 + length or following % 4:
             return DirectoryChange(reconcile=True, reason="invalid_notification")
         offset += following

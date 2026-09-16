@@ -56,6 +56,7 @@ from anishift.errors import (
     PlanningError,
     RunConflictError,
 )
+from anishift.paths import ready_dir
 from anishift.services.llm.engines import (
     available_engine_ids as available_llm_engine_ids,
 )
@@ -73,6 +74,7 @@ from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from anishift.application.acquisition import AcquisitionService
+    from anishift.application.artifacts import SourceGroup
     from anishift.application.control import RecipePreferences
     from anishift.application.recovery import RunJournal
     from anishift.application.subscriptions import SubscriptionService
@@ -293,6 +295,13 @@ class AppService:
             return inspected
         finally:
             self._discover_lock.release()
+
+    def library_inventory(self, changed_paths: Sequence[Path] | None = None) -> tuple[SourceGroup, ...]:
+        """Reconcile ready filenames through the shared index without probing or admitting work."""
+        with self._discover_lock:
+            return self._discovery.discover(
+                changed_paths if changed_paths is not None else (ready_dir(self._workspace_root),)
+            ).groups
 
     def register_external_subtitle(
         self,

@@ -30,7 +30,10 @@ from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
     CommandReceipt,
+    DeletionOutcome,
+    DeletionStatus,
     ManualHandledMarker,
+    PendingDeletion,
     PreflightFinding,
     ProcessingRequest,
     ProductConfirmation,
@@ -51,7 +54,15 @@ from anishift.application.control import (
     reserve,
 )
 from anishift.application.control_payloads import decode_intent
-from anishift.application.control_views import RunProgressSnapshot, decode_view, encode_view, preview_plan
+from anishift.application.control_views import (
+    DeletionPreview,
+    LibraryFileIdentity,
+    LibrarySet,
+    RunProgressSnapshot,
+    decode_view,
+    encode_view,
+    preview_plan,
+)
 from anishift.application.discovery import ArtifactName, classify_artifact, is_derived_product
 from anishift.application.events import RunEventKind, failure_code, sanitize_event_message
 from anishift.application.inspection import InspectedWorkspace
@@ -62,10 +73,12 @@ from anishift.application.intents import (
     RebuildRequest,
     RequestOrigin,
     RunMode,
+    SubtitleOutputFormat,
 )
+from anishift.application.library import file_identity, project_library
 from anishift.application.planner import auto_group_products
 from anishift.application.planning import TaskState
-from anishift.application.products import main_product
+from anishift.application.products import AUDIO_PRODUCT_PROFILES, main_product, product_suffix
 from anishift.application.ready import ReadyMove, ReadyStore
 from anishift.application.recovery import RunJournal
 from anishift.application.results import GroupResult, GroupStatus, ProducedArtifact, RunResult
@@ -77,8 +90,10 @@ from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_so
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
 from anishift.config.workspace import run_temp_dir
 from anishift.errors import AniShiftError
-from anishift.platform.directory_watch import DirectoryChange
+from anishift.paths import READY_DIRECTORY
+from anishift.platform.directory_watch import DirectoryChange, source_is_available
 from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
+from anishift.platform.recycle import RecycleResult
 from anishift.services.catalog import TitleCandidate
 from anishift.services.torrents.query import EpisodeRange
 from anishift.utils.logger import get_logger
@@ -87,6 +102,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from anishift.application.acquisition import AcquisitionService, ReleaseChoice
+    from anishift.application.artifacts import Artifact, SourceGroup
     from anishift.application.control import (
         AutomationPolicy,
         CommandOutcome,
@@ -240,6 +256,8 @@ _NOT_PLANNABLE: Final[str] = "The sources cannot be planned into an executable r
 
 _MUTATING_KINDS: Final[frozenset[str]] = frozenset(
     {
+        "deletion_start",
+        "deletion_retry",
         "set_auto",
         "set_directory_auto",
         "reserve",
@@ -258,7 +276,21 @@ _MUTATING_KINDS: Final[frozenset[str]] = frozenset(
 """Commands whose outcome is recorded, so repeating an identifier repeats no effect."""
 
 _SLOW_KINDS: Final[frozenset[str]] = frozenset(
-    {"discover", "register_external", "preview", "resume_preview", "subscriptions_check", "acquisition", "download"}
+    {
+        "discover",
+        "register_external",
+        "preview",
+        "resume_preview",
+        "subscriptions_check",
+        "acquisition",
+        "download",
+        "library_refresh",
+        "library_open",
+        "deletion_preview",
+        "deletion_validate",
+        "deletion_start",
+        "deletion_retry",
+    }
 )
 """Commands performed on the pool, because they scan the library or reach the network."""
 
@@ -372,6 +404,7 @@ class AutomationOwner:
         open_panel: Callable[[], None] | None = None,
         ready_store: ReadyStore | None = None,
         scan_interval_s: float = SCAN_INTERVAL_S,
+        recycler: Callable[[Path, tuple[int, int, int, int]], RecycleResult] | None = None,
     ) -> None:
         """Load the persisted state and prepare the owner thread and its pool."""
         self._service: AppService = service
@@ -387,6 +420,11 @@ class AutomationOwner:
         self._restart_requests: tuple[ProcessingRequest, ...] = self._state.requests
         self._run_groups: dict[str, tuple[InspectedSourceGroup, ...]] = {}
         self._ready_store: ReadyStore | None = ready_store
+        self._recycler: Callable[[Path, tuple[int, int, int, int]], RecycleResult] | None = recycler
+        self._deleting: dict[str, str] = {}
+        self._deletion_retries: dict[str, int] = {}
+        self._deletion_scopes: dict[str, frozenset[Path]] = {}
+        self._deletion_dirty: dict[str, set[Path]] = {}
         self._ready_moves: dict[str, ReadyMove] = {
             move.group_id: move for move in (() if ready_store is None else ready_store.pending())
         }
@@ -418,7 +456,7 @@ class AutomationOwner:
         self._progress_lock: threading.Lock = threading.Lock()
         self._run_views: dict[str, RunProgressSnapshot] = {}
         self._run_events: dict[str, dict[tuple[str, str | None, str | None], RunEvent]] = {}
-        self._run_products: dict[str, dict[str, ArtifactKind]] = {}
+        self._run_products: dict[str, dict[str, Artifact]] = {}
         self._shutting_down: bool = False
         self._serving: bool = False
         self._active_io: int = 0
@@ -441,6 +479,8 @@ class AutomationOwner:
         self._inspecting: bool = False
         self._inspection_at: float | None = None
         self._library: InspectedWorkspace | None = None
+        self._ready_library: tuple[LibrarySet, ...] = ()
+        self._deletion_previews: dict[str, tuple[DeletionPreview, str | None, int]] = {}
         self._ledger: WatchLedger = WatchLedger()
         self._settle_at: float | None = None
         self._watch_mode: str = "inactive"
@@ -456,6 +496,9 @@ class AutomationOwner:
                 self._transfers.reset_clock()
             self._queue.put(self._schedule_subscriptions)
         paths: set[Path] = {path for path in change.paths if self._watched_path(path)}
+        paths.difference_update(
+            set(change.modified_paths) & {self._service.workspace_root, self._service.workspace_root / READY_DIRECTORY}
+        )
         if not paths and not change.reconcile:
             return
         self._invalidate_changed_inputs(paths, reconcile=change.reconcile)
@@ -475,7 +518,13 @@ class AutomationOwner:
     def _invalidate_changed_inputs(self, paths: set[Path], *, reconcile: bool) -> None:
         with self._previews_lock:
             self._file_version += 1
-            if reconcile:
+            for operation_id, scope in self._deletion_scopes.items():
+                self._deletion_dirty[operation_id].update(
+                    scope if reconcile else (item for item in scope if any(item.is_relative_to(path) for path in paths))
+                )
+            if reconcile or paths.intersection(
+                {self._service.workspace_root, self._service.workspace_root / READY_DIRECTORY}
+            ):
                 self._reconciled_version = self._file_version
             for path in paths:
                 relative: Path = path.parent.relative_to(self._service.workspace_root)
@@ -662,6 +711,9 @@ class AutomationOwner:
         self._inspecting = False
         if workspace is not None:
             self._library = workspace
+            self._ready_library = project_library(
+                self._state, self._service.workspace_root, tuple(group.source for group in workspace.groups)
+            )
             with self._files_lock:
                 self._fresh_sources.intersection_update(
                     artifact.path for group in workspace.groups for artifact in group.artifacts
@@ -710,6 +762,17 @@ class AutomationOwner:
         self._pool.submit(self._inspect_library, paths)
 
     def _inspect_library(self, paths: tuple[Path, ...] | None) -> None:
+        if (
+            paths
+            and all(
+                path.relative_to(self._service.workspace_root).parts[0].casefold() == READY_DIRECTORY
+                for path in paths
+                if path != self._service.workspace_root
+            )
+            and self._service.workspace_root not in paths
+        ):
+            self._inspect_ready_changes(paths)
+            return
         workspace: InspectedWorkspace | None = None
         try:
             workspace = self._service.discover(changed_paths=paths)
@@ -717,6 +780,22 @@ class AutomationOwner:
             logger.warning("Library reconciliation failed", error_class=type(problem).__name__)
         finally:
             self._queue.put(_Inspected(workspace))
+
+    def _inspect_ready_changes(self, paths: tuple[Path, ...]) -> None:
+        groups: tuple[SourceGroup, ...] | None = None
+        try:
+            groups = self._service.library_inventory(paths)
+        except (AniShiftError, OSError) as problem:
+            logger.warning("Ready inventory reconciliation failed", error_class=type(problem).__name__)
+        finally:
+            self._queue.put(lambda: self._record_ready_inventory(groups))
+
+    def _record_ready_inventory(self, groups: tuple[SourceGroup, ...] | None) -> None:
+        self._inspecting = False
+        if groups is not None:
+            self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+            self._publish_state()
+        self._inspect_changes()
 
     def _refresh_automatic(self) -> None:
         self._settle_at = None
@@ -858,6 +937,9 @@ class AutomationOwner:
 
     def _release_session(self, session_id: str) -> None:
         self._panels.discard(session_id)
+        self._deletion_previews = {
+            key: value for key, value in self._deletion_previews.items() if value[1] != session_id
+        }
         with self._previews_lock:
             self._sessions.discard(session_id)
             self._closed_sessions.add(session_id)
@@ -914,6 +996,25 @@ class AutomationOwner:
                 return self._release(request)
             case "discover":
                 return ControlResponse.succeeded(encode_view(self._recorded_library(self._service.discover())))
+            case (
+                "library_refresh"
+                | "library_open"
+                | "deletion_preview"
+                | "deletion_validate"
+                | "deletion_start"
+                | "deletion_retry"
+            ):
+                groups: tuple[SourceGroup, ...] = self._service.library_inventory()
+                return self._on_owner(lambda: self._library_command(request, groups))
+            case "library_details":
+                return self._library_details(request)
+            case "deletion_get":
+                operation: PendingDeletion | None = self._deletion_by_id(_text(request.payload, "operation_id"))
+                return (
+                    self._library_refusal("library_scope_changed")
+                    if operation is None
+                    else ControlResponse.succeeded(encode_view(operation))
+                )
             case "register_external":
                 return self._register_external(request)
             case "preview":
@@ -1039,20 +1140,373 @@ class AutomationOwner:
                 }
                 for group_id in sorted(self._ready_moves.keys() | self._ready_problems.keys())
             ],
-            "library": []
-            if self._library is None
-            else [
+            "library": [
                 {
                     "group_id": group.group_id,
-                    "name": group.source.stem,
-                    "directory": group.source.directory.relative_to(self._service.workspace_root).as_posix(),
-                    "products": [{"kind": item.kind.value, "state": item.state.value} for item in group.artifacts],
+                    "set_id": group.set_id,
+                    "name": group.name,
+                    "main_result": group.main_result,
+                    "target": None if group.target is None else group.target.value,
                 }
-                for group in self._library.groups
+                for group in self._ready_library
+                if group.available
+            ],
+            "library_problems": [
+                encode_view(group)
+                for group in self._ready_library
+                if not group.available and any(item.identity is not None for item in group.files)
+            ],
+            "deletions": [
+                {
+                    "operation_id": item.operation_id,
+                    "set_id": item.set_id,
+                    "name": next(
+                        (group.stem for group in self._state.ready_groups if group.set_id == item.set_id), item.set_id
+                    ),
+                    "remaining": len(item.files) - len(item.recycled),
+                    "can_confirm": any(
+                        file.identity is not None
+                        for group in self._ready_library
+                        if group.set_id == item.set_id
+                        for file in group.files
+                    ),
+                    "active": item.operation_id in self._deleting,
+                    "recycled": len(item.recycled),
+                    "total": len(item.files),
+                    "uncertain": any(
+                        result.status is DeletionStatus.UNCERTAIN
+                        or (result.status is DeletionStatus.INFLIGHT and item.operation_id not in self._deleting)
+                        for result in item.outcomes
+                    ),
+                    "retryable": self._deletion_retry_current(item),
+                }
+                for item in self._state.pending_deletions
             ],
             "shutting_down": self._shutting_down,
             "updated_at": self._now(),
         }
+
+    def _library_details(self, request: ControlRequest) -> ControlResponse:
+        identifier: str | None = _text(request.payload, "set_id")
+        group: LibrarySet | None = next((item for item in self._ready_library if item.set_id == identifier), None)
+        if group is None:
+            return self._library_refusal("library_set_missing")
+        return ControlResponse.succeeded(encode_view(group))
+
+    def _library_command(self, request: ControlRequest, groups: tuple[SourceGroup, ...]) -> ControlResponse:
+        self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+        self._publish_state()
+        if request.kind == "library_refresh":
+            return ControlResponse.succeeded({"sets": [encode_view(item) for item in self._ready_library]})
+        if request.kind == "deletion_retry":
+            return self._retry_deletion(request)
+        identifier: str | None = _text(request.payload, "set_id")
+        group: LibrarySet | None = next((item for item in self._ready_library if item.set_id == identifier), None)
+        if group is None:
+            return self._library_refusal("library_set_missing")
+        if request.kind == "library_open":
+            if not group.available:
+                return self._library_refusal(group.problem or "library_result_missing")
+            return ControlResponse.succeeded({"path": group.main_result})
+        return self._deletion_preview(request, group)
+
+    def _deletion_preview(self, request: ControlRequest, group: LibrarySet) -> ControlResponse:
+        refusal: ControlResponse | None = self._deletion_conflict(group)
+        if refusal is not None:
+            return refusal
+        files: tuple[LibraryFileIdentity, ...] = tuple(
+            item.identity for item in group.files if item.identity is not None
+        )
+        if not files or any(not source_is_available(self._service.workspace_root / item.path) for item in files):
+            return self._library_refusal("library_source_busy" if files else "library_set_missing")
+        if request.kind in {"deletion_validate", "deletion_start"}:
+            validated: ControlResponse = self._validate_deletion(request, group, files)
+            if not validated.ok or request.kind == "deletion_validate":
+                return validated
+            return self._start_deletion(request, group, files)
+        if request.session_id in self._closed_sessions:
+            return _refuse(RefusalReason.SESSION_CLOSED)
+        preview: DeletionPreview = DeletionPreview(
+            f"delete-{token_hex(_ID_BYTES)}", self._instance_id, group.set_id, group.name, files
+        )
+        self._deletion_previews = {
+            key: value for key, value in self._deletion_previews.items() if value[1] != request.session_id
+        }
+        with self._previews_lock:
+            self._deletion_previews[preview.preview_id] = (preview, request.session_id, self._file_version)
+        return ControlResponse.succeeded(encode_view(preview))
+
+    def _deletion_conflict(self, group: LibrarySet) -> ControlResponse | None:
+        if self._shutting_down:
+            return _refuse(RefusalReason.SHUTTING_DOWN)
+        record: ReadyGroup | None = next(
+            (item for item in self._state.ready_groups if item.set_id == group.set_id), None
+        )
+        if record is None:
+            return self._library_refusal("library_ownership_unknown")
+        if record.pending_sources or self._torrent_owns_set(group):
+            return self._library_refusal("library_source_held")
+        refusal: ControlResponse | None = self._conflict((group.group_id, record.set_id), "")
+        if refusal is not None:
+            return refusal
+        if any(
+            item.identity is None
+            and (
+                (self._service.workspace_root / item.path).exists()
+                or (self._service.workspace_root / item.path).is_symlink()
+            )
+            for item in group.files
+        ):
+            return self._library_refusal("library_scope_changed")
+        return None
+
+    def _torrent_owns_set(self, group: LibrarySet) -> bool:
+        paths: set[str] = {item.path for item in group.files}
+        return any(
+            paths.intersection((Path(item.directory) / name).as_posix() for name in _assigned_files(item))
+            for item in self._state.acquisitions
+        )
+
+    def _start_deletion(
+        self, request: ControlRequest, group: LibrarySet, files: tuple[LibraryFileIdentity, ...]
+    ) -> ControlResponse:
+        if self._recycler is None:
+            return self._library_refusal("recycle_unsupported")
+        operation: PendingDeletion = PendingDeletion(
+            f"recycle-{token_hex(_ID_BYTES)}",
+            group.set_id,
+            self._now(),
+            tuple((item.path, item.size, item.modified_ns) for item in files),
+            identities=tuple((item.path, item.device, item.inode) for item in files),
+            instance_id=self._instance_id,
+        )
+        outcome: CommandOutcome = {"operation_id": operation.operation_id}
+        refusal: ControlResponse | None = self._commit(
+            request, replace(self._state, pending_deletions=(*self._state.pending_deletions, operation)), outcome
+        )
+        if refusal is not None:
+            return refusal
+        self._deletion_previews.pop(str(request.payload.get("preview_id", "")), None)
+        with self._previews_lock:
+            for previous in self._state.pending_deletions:
+                if previous.set_id == group.set_id and previous.operation_id != operation.operation_id:
+                    self._deletion_retries.pop(previous.operation_id, None)
+                    self._deletion_scopes.pop(previous.operation_id, None)
+                    self._deletion_dirty.pop(previous.operation_id, None)
+        self._launch_deletion(operation)
+        return ControlResponse.succeeded(outcome)
+
+    def _deletion_by_id(self, operation_id: str | None) -> PendingDeletion | None:
+        return next((item for item in self._state.pending_deletions if item.operation_id == operation_id), None)
+
+    def _retry_deletion(self, request: ControlRequest) -> ControlResponse:
+        operation: PendingDeletion | None = self._deletion_by_id(_text(request.payload, "operation_id"))
+        if operation is None or not self._deletion_retry_current(operation):
+            return self._library_refusal("library_scope_changed")
+        group: LibrarySet | None = next((item for item in self._ready_library if item.set_id == operation.set_id), None)
+        if group is None or operation.instance_id != self._instance_id:
+            return self._library_refusal("library_scope_changed")
+        refusal: ControlResponse | None = self._deletion_conflict(group)
+        if refusal is not None:
+            return refusal
+        if not self._deletion_scope_matches(operation, group):
+            return self._library_refusal("library_scope_changed")
+        outcome: CommandOutcome = {"operation_id": operation.operation_id}
+        refusal = self._commit(request, self._state, outcome)
+        if refusal is not None:
+            return refusal
+        self._launch_deletion(operation)
+        return ControlResponse.succeeded(outcome)
+
+    def _deletion_retry_current(self, operation: PendingDeletion) -> bool:
+        group: LibrarySet | None = next((item for item in self._ready_library if item.set_id == operation.set_id), None)
+        if group is None or operation.instance_id != self._instance_id:
+            return False
+        with self._previews_lock:
+            version: int | None = self._deletion_retries.get(operation.operation_id)
+            if version is None or max(self._reconciled_version, self._group_versions.get(group.group_id, 0)) > version:
+                return False
+        return self._deletion_scope_matches(operation, group, verify_files=False)
+
+    def _launch_deletion(self, operation: PendingDeletion) -> None:
+        self._deletion_retries.pop(operation.operation_id, None)
+        self._deleting[operation.operation_id] = operation.set_id
+        with self._previews_lock:
+            self._deletion_scopes.setdefault(
+                operation.operation_id,
+                frozenset(self._service.workspace_root / name for name, _size, _stamp in operation.files),
+            )
+            self._deletion_dirty.setdefault(operation.operation_id, set())
+        self._active_io += 1
+        self._pool.submit(self._recycle_set, operation.operation_id)
+        logger.info("Confirmed set recycling admitted", files=len(operation.files))
+        self._publish_state()
+
+    def _recycle_set(self, operation_id: str) -> None:
+        try:
+            while self._recycler is not None:
+                groups: tuple[SourceGroup, ...] = self._service.library_inventory()
+                item: LibraryFileIdentity | None = self._on_owner(
+                    partial(self._begin_deletion_file, operation_id, groups)
+                )
+                if item is None:
+                    break
+                result: RecycleResult = self._recycler(
+                    self._service.workspace_root / item.path, (item.size, item.modified_ns, item.device, item.inode)
+                )
+                saved: bool = self._on_owner(partial(self._finish_deletion_file, operation_id, item.path, result))
+                if not saved or result.outcome != "recycled":
+                    break
+        except AniShiftError, OSError, ValueError:
+            logger.warning("Set recycling interrupted; durable in-flight evidence retained")
+        finally:
+            self._queue.put(lambda: self._settle_deletion(operation_id))
+
+    def _deletion_scope_matches(
+        self, operation: PendingDeletion, group: LibrarySet, *, verify_files: bool = True
+    ) -> bool:
+        if not operation.identities or any(
+            item.status in {DeletionStatus.INFLIGHT, DeletionStatus.UNCERTAIN} for item in operation.outcomes
+        ):
+            return False
+        identities: dict[str, tuple[int, int]] = {name: (device, inode) for name, device, inode in operation.identities}
+        expected: dict[str, LibraryFileIdentity] = {
+            name: LibraryFileIdentity(name, size, stamp, *identities[name])
+            for name, size, stamp in operation.files
+            if name not in operation.recycled
+        }
+        with self._previews_lock:
+            dirty: set[Path] = self._deletion_dirty.get(operation.operation_id, set())
+            if any(self._service.workspace_root / name in dirty for name in expected):
+                return False
+        current: dict[str, LibraryFileIdentity] = {
+            item.path: item.identity for item in group.files if item.identity is not None
+        }
+        return current == expected and (
+            not verify_files
+            or all(file_identity(self._service.workspace_root, name) == identity for name, identity in expected.items())
+        )
+
+    def _begin_deletion_file(self, operation_id: str, groups: tuple[SourceGroup, ...]) -> LibraryFileIdentity | None:
+        operation: PendingDeletion | None = self._deletion_by_id(operation_id)
+        self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+        group: LibrarySet | None = next(
+            (item for item in self._ready_library if operation is not None and item.set_id == operation.set_id), None
+        )
+        if (
+            operation is None
+            or group is None
+            or self._shutting_down
+            or not self._deletion_scope_matches(operation, group)
+        ):
+            return None
+        record: ReadyGroup | None = next(
+            (item for item in self._state.ready_groups if item.set_id == group.set_id), None
+        )
+        if record is None or record.pending_sources or self._torrent_owns_set(group):
+            return None
+        files: tuple[LibraryFileIdentity, ...] = tuple(
+            item.identity for item in group.files if item.identity is not None
+        )
+        if not files or any(not source_is_available(self._service.workspace_root / item.path) for item in files):
+            return None
+        item: LibraryFileIdentity = files[0]
+        started: DeletionOutcome = DeletionOutcome(item.path, DeletionStatus.INFLIGHT, "recycle_inflight")
+        if not self._save_deletion_outcome(operation, started):
+            return None
+        return item
+
+    def _save_deletion_outcome(self, operation: PendingDeletion, outcome: DeletionOutcome) -> bool:
+        updated: PendingDeletion = replace(
+            operation,
+            outcomes=(*(item for item in operation.outcomes if item.path != outcome.path), outcome),
+            recycled=(*operation.recycled, outcome.path)
+            if outcome.status is DeletionStatus.RECYCLED
+            else operation.recycled,
+        )
+        return self._save(
+            replace(
+                self._state,
+                pending_deletions=tuple(
+                    updated if item.operation_id == operation.operation_id else item
+                    for item in self._state.pending_deletions
+                ),
+            )
+        )
+
+    def _finish_deletion_file(self, operation_id: str, path: str, result: RecycleResult) -> bool:
+        operation: PendingDeletion | None = self._deletion_by_id(operation_id)
+        if operation is None:
+            return False
+        with self._previews_lock:
+            if result.outcome == "refused" and self._service.workspace_root / path in self._deletion_dirty.get(
+                operation_id, set()
+            ):
+                result = RecycleResult("uncertain", "library_scope_changed", result.receipt)
+        saved: bool = self._save_deletion_outcome(
+            operation, DeletionOutcome(path, DeletionStatus(result.outcome), result.reason, result.receipt)
+        )
+        logger.info("Native recycle file result recorded", outcome=result.outcome, saved=saved)
+        self._publish_state()
+        return saved
+
+    def _settle_deletion(self, operation_id: str) -> None:
+        self._deleting.pop(operation_id, None)
+        self._active_io -= 1
+        operation: PendingDeletion | None = self._deletion_by_id(operation_id)
+        paths: tuple[Path, ...] = tuple(
+            self._service.workspace_root / item.path
+            for item in (() if operation is None else operation.outcomes)
+            if item.status is not DeletionStatus.REFUSED
+        )
+        if paths:
+            self.files_changed(DirectoryChange(paths=paths, reason="recycle_completed"))
+        if (
+            operation is not None
+            and len(operation.recycled) != len(operation.files)
+            and not any(
+                item.status in {DeletionStatus.INFLIGHT, DeletionStatus.UNCERTAIN} for item in operation.outcomes
+            )
+        ):
+            with self._previews_lock:
+                self._deletion_retries[operation_id] = self._file_version
+        if operation_id in self._deletion_retries:
+            with self._previews_lock:
+                if operation is not None and any(
+                    self._service.workspace_root / name in self._deletion_dirty.get(operation_id, set())
+                    for name, _size, _stamp in operation.files
+                    if name not in operation.recycled
+                ):
+                    self._deletion_retries.pop(operation_id, None)
+        if operation_id not in self._deletion_retries:
+            with self._previews_lock:
+                self._deletion_scopes.pop(operation_id, None)
+                self._deletion_dirty.pop(operation_id, None)
+        self._publish_state()
+
+    def _validate_deletion(
+        self, request: ControlRequest, group: LibrarySet, files: tuple[LibraryFileIdentity, ...]
+    ) -> ControlResponse:
+        stored: tuple[DeletionPreview, str | None, int] | None = self._deletion_previews.get(
+            str(request.payload.get("preview_id", ""))
+        )
+        if stored is None or stored[1] != request.session_id or request.instance_id != self._instance_id:
+            return self._library_refusal("library_scope_changed")
+        preview: DeletionPreview = stored[0]
+        with self._previews_lock:
+            changed: bool = max(self._reconciled_version, self._group_versions.get(group.group_id, 0)) > stored[2]
+        if (
+            changed
+            or preview.set_id != group.set_id
+            or preview.files != files
+            or any(file_identity(self._service.workspace_root, item.path) != item for item in files)
+        ):
+            return self._library_refusal("library_scope_changed")
+        return ControlResponse.succeeded(encode_view(preview))
+
+    @staticmethod
+    def _library_refusal(reason: str) -> ControlResponse:
+        return ControlResponse.refused(ControlErrorCode.REFUSED, "The library operation is unavailable", reason=reason)
 
     def _pausing(self) -> bool:
         return not self._state.policy.auto_enabled and self._settling()
@@ -1226,6 +1680,8 @@ class AutomationOwner:
         group_ids: tuple[str, ...] | None = _identifiers(request.payload, "group_ids")
         if client_id is None or group_ids is None:
             return _invalid("A reservation needs a `client_id` and `group_ids`")
+        if self._deleting_groups().intersection(group_ids):
+            return self._library_refusal("library_deleting")
         moment: str = self._now()
         candidate: WatchState = self._state
         for group_id in group_ids:
@@ -1605,7 +2061,7 @@ class AutomationOwner:
         self._pending[run_id] = preview.products
         self._run_groups[run_id] = preview.groups
         self._run_results.pop(run_id, None)
-        self._run_products[run_id] = {artifact.artifact_id: artifact.kind for artifact in preview.plan.artifacts}
+        self._run_products[run_id] = {artifact.artifact_id: artifact for artifact in preview.plan.artifacts}
         with self._progress_lock:
             self._run_views[run_id] = RunProgressSnapshot(
                 run_id,
@@ -1688,12 +2144,12 @@ class AutomationOwner:
             return
         finished: ProcessingRequest = replace(recorded, state=_request_state(completion.result))
         candidate: WatchState = record_request(self._state, finished)
-        kinds: dict[str, ArtifactKind] = self._run_products.pop(completion.request_id, {})
+        artifacts: dict[str, Artifact] = self._run_products.pop(completion.request_id, {})
         if completion.result is not None:
             confirmations: tuple[ProductConfirmation, ...] = tuple(
                 ProductConfirmation(
                     group.group_id,
-                    kinds[product.artifact_id].value,
+                    artifacts[product.artifact_id].kind.value,
                     product.path.relative_to(self._service.workspace_root).as_posix(),
                     finished.generation,
                     finished.request_id,
@@ -1702,19 +2158,24 @@ class AutomationOwner:
                 )
                 for group in completion.result.groups
                 for product in group.products
-                if product.artifact_id in kinds and product.path.is_relative_to(self._service.workspace_root)
+                if product.artifact_id in artifacts and product.path.is_relative_to(self._service.workspace_root)
             )
             paths: frozenset[str] = frozenset(item.path for item in confirmations)
             candidate = replace(
                 candidate, products=(*(item for item in candidate.products if item.path not in paths), *confirmations)
             )
+            candidate = self._updated_ready_results(candidate, completion.result, finished, tuple(artifacts.values()))
         if finished.origin is RequestOrigin.USER and finished.state is not RequestState.PAUSED and products:
             candidate = _marked(candidate, finished, products, self._now())
         saved: bool = self._save(candidate)
+        if saved and self._library is not None:
+            self._ready_library = project_library(
+                candidate, self._service.workspace_root, tuple(group.source for group in self._library.groups)
+            )
         self._ledger.mark_finished(recorded.group_ids)
         groups: tuple[InspectedSourceGroup, ...] = self._run_groups.pop(completion.request_id, ())
         if saved and finished.state is RequestState.SUCCEEDED and completion.result is not None:
-            self._prepare_ready(completion.result, groups, finished.recipe)
+            self._prepare_ready(completion.result, groups, finished.recipe, tuple(artifacts.values()))
         self._publish_state()
         self._publish(
             {"event": "run_finished", "payload": {"run_id": completion.request_id}},
@@ -1722,6 +2183,41 @@ class AutomationOwner:
         )
         if finished.state is RequestState.PAUSED:
             self._restore_paused()
+
+    def _updated_ready_results(
+        self, state: WatchState, result: RunResult, request: ProcessingRequest, artifacts: tuple[Artifact, ...]
+    ) -> WatchState:
+        completed: frozenset[str] = frozenset(
+            group.group_id for group in result.groups if group.status is GroupStatus.SUCCEEDED
+        )
+        records: list[ReadyGroup] = []
+        for record in state.ready_groups:
+            intent: GroupIntent | None = next(
+                (item for item in request.intents if item.group_id == record.group_id), None
+            )
+            if record.group_id not in completed or intent is None:
+                records.append(record)
+                continue
+            requested: frozenset[Path] = _requested_product_paths(
+                artifacts, intent, request.settings.get("audio_output_profile")
+            )
+            selected: tuple[str, ...] = tuple(
+                item.path
+                for item in state.products
+                if item.group_id == record.group_id
+                and self._service.workspace_root / item.path in requested
+                and (item.size, item.modified_ns) == _file_identity(self._service.workspace_root / item.path)
+            )
+            headline: str | None = main_product([Path(name).name for name in selected])
+            records.append(
+                replace(
+                    record,
+                    products=tuple(sorted(set(record.products) | set(selected))),
+                    main_result=next((name for name in selected if Path(name).name == headline), None),
+                    target=intent.target or record.target,
+                )
+            )
+        return replace(state, ready_groups=tuple(records))
 
     def _run_result(self, request: ControlRequest) -> ControlResponse:
         run_id: str | None = _text(request.payload, "run_id")
@@ -2530,6 +3026,7 @@ class AutomationOwner:
         result: RunResult,
         sources: Sequence[InspectedSourceGroup] | None = None,
         recipe: RecipePreferences | None = None,
+        artifacts: tuple[Artifact, ...] = (),
     ) -> None:
         if self._ready_store is None:
             return
@@ -2541,7 +3038,32 @@ class AutomationOwner:
             if group is None or completed.status is not GroupStatus.SUCCEEDED:
                 continue
             try:
-                products: tuple[Path, ...] = tuple(product.path for product in completed.products)
+                request: ProcessingRequest | None = next(
+                    (item for item in self._state.requests if item.request_id == result.run_id), None
+                )
+                if not artifacts and request is not None and self._store.run_path(request.request_id).is_file():
+                    artifacts = RunJournal.load(self._store.run_path(request.request_id)).plan.artifacts
+                intent: GroupIntent | None = next(
+                    (
+                        item
+                        for item in (() if request is None else request.intents)
+                        if item.group_id == completed.group_id
+                    ),
+                    None,
+                )
+                requested: frozenset[Path] = (
+                    _requested_product_paths(artifacts, intent, request.settings.get("audio_output_profile"))
+                    if intent is not None and request is not None
+                    else frozenset()
+                )
+                reused: tuple[Path, ...] = tuple(
+                    self._service.workspace_root / item.path
+                    for item in self._state.products
+                    if item.group_id == completed.group_id
+                    and self._service.workspace_root / item.path in requested
+                    and (item.size, item.modified_ns) == _file_identity(self._service.workspace_root / item.path)
+                )
+                products: tuple[Path, ...] = tuple({*(product.path for product in completed.products), *reused})
                 move: ReadyMove | None = self._ready_store.prepare(group.source, products, recipe)
                 if move is not None:
                     self._ready_moves[move.group_id] = move
@@ -3033,6 +3555,8 @@ class AutomationOwner:
     def _conflict(
         self, group_ids: Sequence[str], client_id: str, *, excluding: str | None = None
     ) -> ControlResponse | None:
+        if self._deleting_groups().intersection(group_ids):
+            return self._library_refusal("library_deleting")
         if self._relocating_groups().intersection(group_ids):
             return _refuse(RefusalReason.GROUP_RELOCATING)
         held: Mapping[str, str] = {item.group_id: item.client_id for item in self._state.reservations}
@@ -3047,6 +3571,14 @@ class AutomationOwner:
         if active.intersection(group_ids):
             return _refuse(RefusalReason.GROUP_PROCESSING)
         return None
+
+    def _deleting_groups(self) -> set[str]:
+        return {
+            identifier
+            for item in self._state.ready_groups
+            if item.set_id in self._deleting.values()
+            for identifier in (item.set_id, item.group_id)
+        }
 
     def _previewed_fingerprint(self, group_id: str) -> SourceFingerprint:
         with self._previews_lock:
@@ -3177,6 +3709,33 @@ def _product_projection(plan: ExecutionPlan) -> list[dict[str, object]]:
         }
         for group in plan.groups
     ]
+
+
+def _requested_product_paths(
+    artifacts: tuple[Artifact, ...], intent: GroupIntent, audio_profile: object
+) -> frozenset[Path]:
+    audio_suffix: str | None = (
+        product_suffix(ArtifactKind.NARRATION_AUDIO, audio_profile=audio_profile)
+        if isinstance(audio_profile, str) and audio_profile in AUDIO_PRODUCT_PROFILES
+        else None
+    )
+    return frozenset(
+        artifact.planned_destination
+        for artifact in artifacts
+        if artifact.group_id == intent.group_id
+        and artifact.lifetime is ArtifactLifetime.DURABLE
+        and artifact.kind.value.removeprefix("final_") in intent.products.requested_products
+        and artifact.planned_destination is not None
+        and (
+            artifact.kind is not ArtifactKind.NARRATION_AUDIO
+            or artifact.planned_destination.suffix.casefold() == audio_suffix
+        )
+        and (
+            artifact.subtitle_format is None
+            or intent.subtitle_output_format is SubtitleOutputFormat.PRESERVE
+            or artifact.subtitle_format == intent.subtitle_output_format.value
+        )
+    )
 
 
 def _settings_snapshot(settings: RunSettingsSnapshot) -> SettingsSnapshot:

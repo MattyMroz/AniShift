@@ -30,7 +30,7 @@ import anishift.application.watch as watch_module
 from anishift.application.automation import AutomationOwner
 from anishift.application.cancellation import CancellationToken, EventCancellationToken
 from anishift.application.control import ProcessingRequest, ReadyGroup, RequestState
-from anishift.application.control_views import PlanPreview
+from anishift.application.control_views import DeletionPreview, LibrarySet, PlanPreview
 from anishift.application.discovery import DiscoveryResult
 from anishift.application.handlers import (
     ExecutionHandlers,
@@ -49,6 +49,7 @@ from anishift.application.intents import (
     RebuildRequest,
     RequestOrigin,
     RunMode,
+    SubtitleOutputFormat,
     SubtitleSourcePolicy,
 )
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, TaskKind
@@ -797,6 +798,51 @@ def test_resident_moves_sources_and_products_then_regenerates_in_ready(tmp_path:
         assert recorded[0].sources == ("ready/03.txt",)
         assert recorded[0].products == ("ready/03.pl.srt",)
         assert recorded[0].main_result == "ready/03.pl.srt"
+        library: tuple[LibrarySet, ...] = session.library()
+        assert len(library) == 1
+        assert library[0].available
+        assert session.library_result(library[0].set_id) == tmp_path / "ready/03.pl.srt"
+        assert {item.path for item in session.library_details(library[0].set_id).files} == {
+            "ready/03.txt",
+            "ready/03.pl.srt",
+        }
+        preview: DeletionPreview = session.preview_deletion(library[0].set_id)
+        assert session.validate_deletion(preview) == preview
+
+
+@pytest.mark.integration
+def test_library_primary_follows_requested_format_including_reuse_after_regeneration(tmp_path: Path) -> None:
+    source_directory: Path = tmp_path / "translate"
+    source_directory.mkdir()
+    (source_directory / "03.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nOriginal text\n", encoding="utf-8")
+    translation: FakeTranslationService = FakeTranslationService()
+    service: AppService = _service(tmp_path, translation)
+    with _panel_owner(service, tmp_path, ready=True) as (session, store):
+        for format_ in (SubtitleOutputFormat.ASS, SubtitleOutputFormat.SRT, SubtitleOutputFormat.ASS):
+            groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
+            session.reserve(groups)
+            preview: PlanPreview = session.plan_manual(
+                (
+                    GroupIntent(
+                        groups[0],
+                        RunMode.MANUAL,
+                        ProductIntent(frozenset({ProductKind.FULL_PL})),
+                        subtitle_output_format=format_,
+                        target=WorkflowTarget.TRANSLATE,
+                    ),
+                )
+            )
+            assert preview.can_execute
+            assert session.execute(preview, CollectingRunSink()).succeeded
+            library: tuple[LibrarySet, ...] = session.library()
+            assert len(library) == 1
+            expected: str = f"ready/03.pl.{format_.value}"
+            assert library[0].available
+            assert library[0].main_result == expected
+            assert session.library_result(library[0].set_id) == tmp_path / expected
+            assert store.load().ready_groups[0].main_result == expected
+        assert (tmp_path / "ready/03.pl.ass").is_file()
+        assert (tmp_path / "ready/03.pl.srt").is_file()
 
 
 @pytest.mark.integration

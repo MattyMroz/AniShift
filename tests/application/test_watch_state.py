@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -13,6 +14,8 @@ from anishift.application.control import (
     AudiobookRecipe,
     AutomationPolicy,
     CommandReceipt,
+    DeletionOutcome,
+    DeletionStatus,
     ManualHandledMarker,
     NarrationTimeline,
     PendingDeletion,
@@ -39,6 +42,59 @@ _TIMESTAMP: str = "2026-09-08T12:00:00+00:00"
 _FINGERPRINT: SourceFingerprint = (("episode-01.mkv", 1024, 111),)
 
 _SCHEMA_TWO_SECTIONS: tuple[str, ...] = ("recipes", "ready_groups", "pause_owned_transfers", "pending_deletions")
+
+
+def test_deletion_evidence_round_trips_and_legacy_scope_never_gains_invented_identity(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    deletion: PendingDeletion = PendingDeletion(
+        "delete-01",
+        "set-01",
+        _TIMESTAMP,
+        (("ready/01.txt", 10, 20),),
+        identities=(("ready/01.txt", 30, 40),),
+        outcomes=(DeletionOutcome("ready/01.txt", DeletionStatus.INFLIGHT, "recycle_inflight"),),
+        instance_id="original-owner",
+    )
+    state: WatchState = replace(_state(), pending_deletions=(deletion,))
+    store.save(state)
+    assert store.load() == state
+    path: Path = tmp_path / WATCH_STATE_FILE_NAME
+    document: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    records: list[dict[str, object]] = cast("list[dict[str, object]]", document["pending_deletions"])
+    for field in ("identities", "outcomes", "instance_id"):
+        records[0].pop(field)
+    path.write_text(json.dumps(document), encoding="utf-8")
+    legacy: PendingDeletion = store.load().pending_deletions[0]
+    assert legacy.files == deletion.files
+    assert legacy.identities == ()
+    assert legacy.outcomes == ()
+    assert legacy.instance_id is None
+
+
+@pytest.mark.parametrize("change", ["foreign_identity", "duplicate_identity", "foreign_outcome", "missing_receipt"])
+def test_deletion_loader_rejects_unsafe_native_evidence(tmp_path: Path, change: str) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    deletion: PendingDeletion = PendingDeletion("delete-01", "set-01", _TIMESTAMP, (("ready/01.txt", 10, 20),))
+    store.save(replace(_state(), pending_deletions=(deletion,)))
+    path: Path = tmp_path / WATCH_STATE_FILE_NAME
+    document: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    entry: dict[str, object] = cast("list[dict[str, object]]", document["pending_deletions"])[0]
+    if change == "foreign_identity":
+        entry["identities"] = [["ready/010.txt", 1, 2]]
+    elif change == "duplicate_identity":
+        entry["identities"] = [["ready/01.txt", 1, 2], ["ready/01.txt", 1, 2]]
+    else:
+        entry["outcomes"] = [
+            {
+                "path": "ready/010.txt" if change == "foreign_outcome" else "ready/01.txt",
+                "status": "inflight" if change == "foreign_outcome" else "recycled",
+                "reason": "test",
+                "receipt": None,
+            }
+        ]
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ConfigError):
+        store.load()
 
 
 def _store(tmp_path: Path) -> WatchStateStore:

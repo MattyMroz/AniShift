@@ -11,10 +11,12 @@ from typing import TYPE_CHECKING
 
 from anishift.application import (
     CatalogOrder,
+    DeletionPreview,
     DownloadReceipt,
     EpisodeRange,
     InspectedSourceGroup,
     InspectedWorkspace,
+    LibrarySet,
     PlanPreview,
     ReleaseCatalog,
     ReleaseChoice,
@@ -62,6 +64,51 @@ class ResidentSession:
     def new_session(self) -> ResidentSession:
         """Open an independent editing identity for one manual wizard."""
         return ResidentSession(self.workspace_root, self._connect)
+
+    def library(self) -> tuple[LibrarySet, ...]:
+        """Lightly reconcile the owner's completed sets without decoding media or starting Auto."""
+        items: object = self._call("library_refresh").get("sets")
+        if not isinstance(items, list):
+            msg = "The owner returned an invalid library"
+            raise TypeError(msg)
+        return tuple(decode_view(LibrarySet, item) for item in items)
+
+    def library_details(self, set_id: str) -> LibrarySet:
+        """Read the current owned-file inventory for one stable set identity."""
+        return decode_view(LibrarySet, self._call("library_details", {"set_id": set_id}))
+
+    def library_result(self, set_id: str) -> Path:
+        """Resolve exactly the confirmed primary result at the owner."""
+        answer: Mapping[str, object] = self._call("library_open", {"set_id": set_id})
+        relative: Path = Path(str(answer["path"]))
+        if relative.is_absolute() or ".." in relative.parts:
+            msg = "The owner returned an invalid library path"
+            raise ValueError(msg)
+        return self.workspace_root / relative
+
+    def preview_deletion(self, set_id: str) -> DeletionPreview:
+        """Prepare an exact whole-set scope without performing any file operation."""
+        return decode_view(DeletionPreview, self._call("deletion_preview", {"set_id": set_id}))
+
+    def validate_deletion(self, preview: DeletionPreview) -> DeletionPreview:
+        """Revalidate that exact scope and its owner-side exclusions without deleting files."""
+        return decode_view(
+            DeletionPreview,
+            self._call(
+                "deletion_validate",
+                {"set_id": preview.set_id, "preview_id": preview.preview_id},
+                instance_id=preview.instance_id,
+            ),
+        )
+
+    def delete_set(self, preview: DeletionPreview) -> str:
+        """Accept one previously confirmed exact scope; completion arrives through owner state broadcasts."""
+        answer: Mapping[str, object] = self._call(
+            "deletion_start",
+            {"set_id": preview.set_id, "preview_id": preview.preview_id},
+            instance_id=preview.instance_id,
+        )
+        return str(answer["operation_id"])
 
     def find_titles(self, text: str) -> tuple[TitleCandidate, ...]:
         """Search titles through the owner's shared network admission."""

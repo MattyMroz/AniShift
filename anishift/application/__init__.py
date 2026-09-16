@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     from anishift.application.automation import AutomationOwner
     from anishift.application.control_payloads import encode_intent
     from anishift.application.control_views import (
+        DeletionPreview,
+        LibrarySet,
         PlanPreview,
         RunProgressSnapshot,
         decode_view,
@@ -82,6 +84,7 @@ from anishift.application.control import (
     AutomationPolicy,
     CommandReceipt,
     ManualHandledMarker,
+    PendingDeletion,
     ProcessingRequest,
     ProductConfirmation,
     ProviderLock,
@@ -177,6 +180,7 @@ __all__ = [
     "CheckResult",
     "ClientStatus",
     "CommandReceipt",
+    "DeletionPreview",
     "DiscoveryResult",
     "DiscoveryWarning",
     "DownloadReceipt",
@@ -199,12 +203,14 @@ __all__ = [
     "InspectedSourceGroup",
     "InspectedWorkspace",
     "InspectionWarning",
+    "LibrarySet",
     "ManualHandledMarker",
     "MkvTrackProduct",
     "ModelAvailability",
     "ModelProbeResult",
     "Mp4AudioSource",
     "NarrationTimeline",
+    "PendingDeletion",
     "PlanPreview",
     "PlanProblem",
     "PlanTask",
@@ -278,6 +284,8 @@ __all__ = [
 ]
 
 _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "DeletionPreview": ("anishift.application.control_views", "DeletionPreview"),
+    "LibrarySet": ("anishift.application.control_views", "LibrarySet"),
     "PlanPreview": ("anishift.application.control_views", "PlanPreview"),
     "RunProgressSnapshot": ("anishift.application.control_views", "RunProgressSnapshot"),
     "decode_view": ("anishift.application.control_views", "decode_view"),

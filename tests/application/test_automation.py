@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -20,6 +21,7 @@ from fakes import write_image_source, write_text_source
 from loguru import logger as loguru_logger
 
 import anishift.application.automation as automation_module
+import anishift.application.library as library_module
 import anishift.application.watch as watch_module
 from anishift.application import SCAN_INTERVAL_S, TaskState
 from anishift.application.acquisition import (
@@ -29,7 +31,7 @@ from anishift.application.acquisition import (
     TorrentClient,
     TorrentManagement,
 )
-from anishift.application.artifacts import ArtifactKind, ArtifactState
+from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState, create_group_id
 from anishift.application.automation import (
     TRANSFER_BACKOFF_CEILING_S,
     TRANSFER_CHECK_INTERVAL_S,
@@ -40,6 +42,7 @@ from anishift.application.control import (
     AcquisitionState,
     AudiobookRecipe,
     AutomationPolicy,
+    DeletionStatus,
     FileReservation,
     ManualHandledMarker,
     NarrationTimeline,
@@ -56,7 +59,7 @@ from anishift.application.control import (
     TranslateRecipe,
     WatchState,
 )
-from anishift.application.control_views import encode_view
+from anishift.application.control_views import DeletionPreview, LibrarySet, decode_view, encode_view
 from anishift.application.discovery import discover_groups
 from anishift.application.events import RunEvent, RunEventKind
 from anishift.application.inspection import (
@@ -65,8 +68,9 @@ from anishift.application.inspection import (
     InspectionWarning,
     WorkspaceInspector,
 )
-from anishift.application.intents import ProductIntent, ProductKind, RebuildRequest, RequestOrigin
+from anishift.application.intents import GroupIntent, ProductIntent, ProductKind, RebuildRequest, RequestOrigin, RunMode
 from anishift.application.planning import ExecutionPlan
+from anishift.application.products import classify_product
 from anishift.application.ready import ReadyMove, ReadyStore
 from anishift.application.recovery import RunJournal
 from anishift.application.results import GroupResult, GroupStatus, RunResult
@@ -101,6 +105,7 @@ from anishift.platform.local_control import (
     ControlServer,
     control_endpoint,
 )
+from anishift.platform.recycle import RecycleResult
 from anishift.services.http_requests import RequestControl
 from anishift.services.media import DefaultMediaProbe
 from anishift.services.torrents import Release, TorrentClientError, TorrentFile, TorrentInfo, parse_release_name
@@ -436,6 +441,7 @@ def _owner(
     store: WatchStateStore,
     *,
     scan_interval_s: float = SCAN_INTERVAL_S,
+    recycler: Callable[[Path, tuple[int, int, int, int]], RecycleResult] | None = None,
 ) -> AutomationOwner:
     return AutomationOwner(
         cast("AppService", service),
@@ -443,6 +449,7 @@ def _owner(
         instance_id=_INSTANCE,
         clock=lambda: _MOMENT,
         scan_interval_s=scan_interval_s,
+        recycler=recycler,
     )
 
 
@@ -984,6 +991,781 @@ def _real_service(
         acquisition=acquisition,
         subscriptions=subscriptions,
     )
+
+
+def _completed_library(root: Path, stems: tuple[str, ...] = ("01",)) -> tuple[AppService, WatchStateStore, WatchState]:
+    directory: Path = root / "ready"
+    directory.mkdir(parents=True)
+    records: list[ReadyGroup] = []
+    confirmations: list[ProductConfirmation] = []
+    for stem in stems:
+        source: Path = directory / f"{stem}.txt"
+        product: Path = directory / f"{stem}.pl.txt"
+        source.write_text("source", encoding="utf-8")
+        product.write_text("translated", encoding="utf-8")
+        group_id: str = create_group_id(Path("ready"), stem)
+        stamp: os.stat_result = product.stat()
+        confirmations.append(
+            ProductConfirmation(
+                group_id,
+                ArtifactKind.TRANSLATED_TEXT.value,
+                f"ready/{product.name}",
+                1,
+                "completed",
+                RequestOrigin.USER,
+                stamp.st_size,
+                stamp.st_mtime_ns,
+            )
+        )
+        records.append(
+            ReadyGroup(
+                f"set-{stem}",
+                group_id,
+                stem,
+                "translate",
+                stem,
+                WorkflowTarget.TRANSLATE,
+                (f"ready/{source.name}",),
+                (f"ready/{product.name}",),
+                f"ready/{product.name}",
+            )
+        )
+    state: WatchState = WatchState(
+        policy=AutomationPolicy(auto_enabled=False), ready_groups=tuple(records), products=tuple(confirmations)
+    )
+    store: WatchStateStore = WatchStateStore(root / "state.json")
+    store.save(state)
+    return _real_service(root), store, state
+
+
+@pytest.mark.parametrize(("profile", "extension"), [("aac", "m4a"), ("mp3", "mp3"), ("flac", "flac")])
+def test_requested_results_do_not_select_another_audio_export_profile(profile: str, extension: str) -> None:
+    artifacts: tuple[Artifact, ...] = tuple(
+        Artifact(
+            suffix,
+            "episode",
+            ArtifactKind.NARRATION_AUDIO,
+            Path(f"ready/01.{suffix}"),
+            ArtifactState.READY,
+            ArtifactLifetime.DURABLE,
+            planned_destination=Path(f"ready/01.{suffix}"),
+        )
+        for suffix in ("m4a", "flac", "mp3")
+    )
+    intent: GroupIntent = GroupIntent(
+        "episode",
+        RunMode.AUTO,
+        ProductIntent(frozenset({ProductKind.NARRATION_AUDIO})),
+        target=WorkflowTarget.AUDIOBOOK,
+    )
+    assert automation_module._requested_product_paths(artifacts, intent, profile) == frozenset(
+        {Path(f"ready/01.{extension}")}
+    )
+
+
+def _read_ready_sets(owner: AutomationOwner) -> tuple[LibrarySet, ...]:
+    response: ControlResponse = owner.handle(_request("library_refresh"))
+    assert response.ok, response.message
+    items: object = response.result["sets"]
+    assert isinstance(items, list)
+    return tuple(decode_view(LibrarySet, item) for item in items)
+
+
+@pytest.mark.integration
+def test_completed_library_is_naturally_ordered_and_refreshes_without_probe_or_auto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, store, state = _completed_library(tmp_path, ("10", "2", "01"))
+    (tmp_path / "ready" / "failed.mkv").write_bytes(b"not a completed result")
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+
+    def no_probe(*args: object, **kwargs: object) -> InspectedWorkspace:
+        raise AssertionError((args, kwargs))
+
+    monkeypatch.setattr(service, "discover", no_probe)
+    try:
+        assert [item.name for item in _read_ready_sets(owner)] == ["01", "2", "10"]
+        primary: Path = tmp_path / "ready" / "01.pl.txt"
+        parked: Path = tmp_path / "parked"
+        primary.rename(parked)
+        owner.files_changed(DirectoryChange(paths=(primary,)))
+        _await_library_count(owner, 2)
+        response: ControlResponse = owner.handle(_request("library_open", {"set_id": "set-01"}))
+        assert not response.ok
+        assert response.reason == "library_result_missing"
+        details: ControlResponse = owner.handle(_request("library_details", {"set_id": "set-01"}))
+        assert decode_view(LibrarySet, details.result).files[0].identity is None
+        parked.rename(primary)
+        owner.files_changed(DirectoryChange(paths=(primary,)))
+        _await_library_count(owner, 3)
+        assert owner.state == state
+        assert service.active_run_ids() == ()
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("change", ["missing", "bytes", "mtime"])
+def test_library_distinguishes_missing_main_from_existing_unconfirmed_result(tmp_path: Path, change: str) -> None:
+    service, store, _state = _completed_library(tmp_path)
+    primary: Path = tmp_path / "ready/01.pl.txt"
+    if change == "missing":
+        primary.unlink()
+    elif change == "bytes":
+        primary.write_bytes(b"changed output")
+    else:
+        stamp: os.stat_result = primary.stat()
+        os.utime(primary, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000_000))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        group: LibrarySet = _read_ready_sets(owner)[0]
+        reason: str = "library_result_missing" if change == "missing" else "library_result_changed"
+        assert not group.available
+        assert group.problem == reason
+        assert owner.handle(_request("library_open", {"set_id": group.set_id})).reason == reason
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+def _await_library_count(owner: AutomationOwner, expected: int) -> None:
+    deadline: float = time.monotonic() + _TIMEOUT_S
+    while time.monotonic() < deadline:
+        rows: object = owner.handle(_request("status")).result["library"]
+        if isinstance(rows, list) and len(rows) == expected:
+            return
+        time.sleep(0.01)
+    pytest.fail("The ready inventory did not refresh")
+
+
+@pytest.mark.parametrize(
+    ("target", "products", "primary"),
+    [
+        (WorkflowTarget.VIDEO, ("01.pl.mkv", "01.pl.mp4"), "01.pl.mkv"),
+        (WorkflowTarget.VIDEO, ("01.mp3", "01.pl.srt"), "01.mp3"),
+        (WorkflowTarget.AUDIOBOOK, ("01.mp3",), "01.mp3"),
+        (WorkflowTarget.TRANSLATE, ("01.pl.srt",), "01.pl.srt"),
+        (WorkflowTarget.COVER, ("01.cover.mp4", "01.mp3"), "01.cover.mp4"),
+    ],
+)
+def test_library_opens_exact_recorded_primary_and_keeps_old_result_after_failed_regeneration(
+    tmp_path: Path,
+    target: WorkflowTarget,
+    products: tuple[str, ...],
+    primary: str,
+) -> None:
+    service, store, state = _completed_library(tmp_path)
+    record: ReadyGroup = state.ready_groups[0]
+    confirmations: list[ProductConfirmation] = []
+    for name in products:
+        path: Path = tmp_path / "ready" / name
+        path.write_bytes(b"confirmed output")
+        product = classify_product(name)
+        assert product is not None
+        stamp: os.stat_result = path.stat()
+        confirmations.append(
+            ProductConfirmation(
+                record.group_id,
+                product.kind.value,
+                f"ready/{name}",
+                1,
+                "completed",
+                RequestOrigin.USER,
+                stamp.st_size,
+                stamp.st_mtime_ns,
+            )
+        )
+    failed: ProcessingRequest = ProcessingRequest(
+        "regeneration",
+        2,
+        (record.group_id,),
+        {},
+        RequestOrigin.USER,
+        SourceSelection.MANUAL,
+        None,
+        {},
+        RequestState.FAILED,
+        1,
+        _MOMENT.isoformat(),
+    )
+    store.save(
+        replace(
+            state,
+            products=tuple(confirmations),
+            requests=(failed,),
+            ready_groups=(
+                replace(
+                    record,
+                    target=target,
+                    products=tuple(f"ready/{name}" for name in products),
+                    main_result=f"ready/{primary}",
+                ),
+            ),
+        )
+    )
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        sets: tuple[LibrarySet, ...] = _read_ready_sets(owner)
+        assert sets[0].available
+        assert sets[0].target is target
+        opened: ControlResponse = owner.handle(_request("library_open", {"set_id": record.set_id}))
+        assert opened.ok
+        assert opened.result["path"] == f"ready/{primary}"
+        (tmp_path / "ready" / primary).unlink()
+        missing: ControlResponse = owner.handle(_request("library_open", {"set_id": record.set_id}))
+        assert not missing.ok
+        assert missing.reason == "library_result_missing"
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+def test_deletion_preview_matches_exact_stem_and_rejects_same_stamp_replacement(tmp_path: Path) -> None:
+    service, store, state = _completed_library(tmp_path, ("01", "010"))
+    (tmp_path / "ready" / "01.spoken.pl.srt").write_bytes(b"subtitle")
+    (tmp_path / "ready" / "01.displayed.pl.ass").write_bytes(b"subtitle")
+    (tmp_path / "ready" / "01 unrelated.txt").write_bytes(b"unrelated")
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        response: ControlResponse = owner.handle(_request("deletion_preview", {"set_id": "set-01"}, session_id="panel"))
+        assert response.ok, response.message
+        preview: DeletionPreview = decode_view(DeletionPreview, response.result)
+        assert {item.path for item in preview.files} == {
+            "ready/01.txt",
+            "ready/01.pl.txt",
+            "ready/01.spoken.pl.srt",
+            "ready/01.displayed.pl.ass",
+        }
+        payload: dict[str, object] = {"set_id": preview.set_id, "preview_id": preview.preview_id}
+        assert owner.handle(_request("deletion_validate", payload, session_id="panel")).ok
+        source: Path = tmp_path / "ready" / "01.txt"
+        stamp: os.stat_result = source.stat()
+        replacement: Path = tmp_path / "replacement.txt"
+        replacement.write_bytes(source.read_bytes())
+        os.utime(replacement, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        replacement.replace(source)
+        stale: ControlResponse = owner.handle(_request("deletion_validate", payload, session_id="panel"))
+        assert not stale.ok
+        assert stale.reason == "library_scope_changed"
+        assert source.read_bytes() == b"source"
+        assert owner.state == state
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+@pytest.mark.parametrize("blocker", ["pending_source", "torrent", "complete_torrent", "run", "writer", "directory"])
+def test_deletion_preview_refuses_owned_source_blockers_before_any_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocker: str
+) -> None:
+    service, store, state = _completed_library(tmp_path)
+    record: ReadyGroup = state.ready_groups[0]
+    expected: str = "library_source_held"
+    if blocker == "pending_source":
+        state = replace(state, ready_groups=(replace(record, pending_sources=("01.mkv",)),))
+    elif blocker in {"torrent", "complete_torrent"}:
+        state = replace(
+            state,
+            acquisitions=(
+                AcquisitionConfirmation(
+                    "download",
+                    "a",
+                    "ready",
+                    ("01.txt",),
+                    AcquisitionState.COMPLETE if blocker == "complete_torrent" else AcquisitionState.ACCEPTED,
+                    RequestOrigin.USER,
+                    None,
+                    "1",
+                    _MOMENT.isoformat(),
+                ),
+            ),
+        )
+    elif blocker == "run":
+        state = replace(
+            state,
+            requests=(
+                ProcessingRequest(
+                    "run",
+                    2,
+                    (record.group_id,),
+                    {},
+                    RequestOrigin.USER,
+                    SourceSelection.MANUAL,
+                    None,
+                    {},
+                    RequestState.RUNNING,
+                    1,
+                    _MOMENT.isoformat(),
+                ),
+            ),
+        )
+        expected = RefusalReason.GROUP_PROCESSING.value
+    elif blocker == "writer":
+        monkeypatch.setattr(automation_module, "source_is_available", lambda path: False)
+        expected = "library_source_busy"
+    elif blocker == "directory":
+        (tmp_path / "ready" / "01.txt").unlink()
+        (tmp_path / "ready" / "01.txt").mkdir()
+        expected = "library_scope_changed"
+    store.save(state)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        response: ControlResponse = owner.handle(_request("deletion_preview", {"set_id": record.set_id}))
+        assert not response.ok
+        assert response.reason == expected
+        assert (tmp_path / "ready" / "01.pl.txt").read_bytes() == b"translated"
+        assert owner.state.products == state.products
+        assert owner.state.acquisitions == state.acquisitions
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+def test_deletion_preview_does_not_own_external_manual_reference(tmp_path: Path) -> None:
+    root: Path = tmp_path / "workspace"
+    service, store, _state = _completed_library(root)
+    external: Path = tmp_path / "01.srt"
+    external.write_text("1\n00:00:00,000 --> 00:00:01,000\nExternal\n", encoding="utf-8")
+    workspace: InspectedWorkspace = service.discover()
+    service.register_external_subtitle(workspace.groups[0].group_id, external, "en")
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        response: ControlResponse = owner.handle(_request("deletion_preview", {"set_id": "set-01"}))
+        assert response.ok
+        preview: DeletionPreview = decode_view(DeletionPreview, response.result)
+        assert {item.path for item in preview.files} == {"ready/01.txt", "ready/01.pl.txt"}
+        assert external.read_text(encoding="utf-8").endswith("External\n")
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+@pytest.mark.parametrize("directory_event", [False, True])
+def test_deletion_validation_rejects_restoration_foreign_session_and_restart(
+    tmp_path: Path, directory_event: bool
+) -> None:
+    service, store, _state = _completed_library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    payload: dict[str, object] = {}
+    try:
+        response: ControlResponse = owner.handle(_request("deletion_preview", {"set_id": "set-01"}, session_id="panel"))
+        assert response.ok
+        preview: DeletionPreview = decode_view(DeletionPreview, response.result)
+        payload = {"set_id": preview.set_id, "preview_id": preview.preview_id}
+        assert not owner.handle(_request("deletion_validate", payload, session_id="other")).ok
+        primary: Path = tmp_path / "ready" / "01.pl.txt"
+        parked: Path = tmp_path / "parked"
+        primary.rename(parked)
+        parked.rename(primary)
+        owner.files_changed(DirectoryChange(paths=(primary.parent if directory_event else primary,)))
+        assert not owner.handle(_request("deletion_validate", payload, session_id="panel")).ok
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    restarted: AutomationOwner = _owner(service, store)
+    thread = _serving(restarted)
+    try:
+        assert not restarted.handle(_request("deletion_validate", payload, session_id="panel")).ok
+        assert (tmp_path / "ready" / "01.pl.txt").read_bytes() == b"translated"
+    finally:
+        restarted.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+@pytest.mark.parametrize("target_exists", [True, False])
+def test_deletion_preview_rejects_symlink_source_without_reading_external_target(
+    tmp_path: Path, target_exists: bool
+) -> None:
+    root: Path = tmp_path / "workspace"
+    service, store, _state = _completed_library(root)
+    external: Path = tmp_path / "external.txt"
+    if target_exists:
+        external.write_bytes(b"external")
+    source: Path = root / "ready" / "01.txt"
+    source.unlink()
+    try:
+        source.symlink_to(external)
+    except OSError:
+        service.close()
+        pytest.skip("Creating symlinks is unavailable")
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        response: ControlResponse = owner.handle(_request("deletion_preview", {"set_id": "set-01"}))
+        assert not response.ok
+        assert response.reason == "library_scope_changed"
+        assert source.is_symlink()
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+@pytest.mark.parametrize("evidence", ["complete", "failed", "unidentified"])
+def test_legacy_library_needs_success_and_identified_product_but_never_invents_a_target(
+    tmp_path: Path, evidence: str
+) -> None:
+    service, store, state = _completed_library(tmp_path)
+    group_id: str = state.ready_groups[0].group_id
+    request: ProcessingRequest = ProcessingRequest(
+        "completed",
+        1,
+        (group_id,),
+        {},
+        RequestOrigin.USER,
+        SourceSelection.MANUAL,
+        None,
+        {},
+        RequestState.FAILED if evidence == "failed" else RequestState.SUCCEEDED,
+        1,
+        _MOMENT.isoformat(),
+    )
+    state = replace(state, ready_groups=(), requests=(request,))
+    if evidence == "unidentified":
+        state = replace(state, products=tuple(replace(item, size=-1, modified_ns=-1) for item in state.products))
+    store.save(state)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        sets: tuple[LibrarySet, ...] = _read_ready_sets(owner)
+        assert len(sets) == int(evidence == "complete")
+        if sets:
+            assert sets[0].target is None
+            assert sets[0].main_result == "ready/01.pl.txt"
+            assert sets[0].problem == "library_ownership_unknown"
+            response: ControlResponse = owner.handle(_request("deletion_preview", {"set_id": group_id}))
+            assert not response.ok
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+def test_library_status_and_details_do_not_read_disk_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service, store, _state = _completed_library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+
+    def unexpected_read(*args: object, **kwargs: object) -> None:
+        raise AssertionError((args, kwargs))
+
+    try:
+        details: LibrarySet = _read_ready_sets(owner)[0]
+        assert {item.format for item in details.files} == {"TXT"}
+        assert sum(item.identity.size for item in details.files if item.identity is not None) == 16
+        monkeypatch.setattr(library_module, "file_identity", unexpected_read)
+        for _ in range(5):
+            assert owner.handle(_request("status")).ok
+            assert owner.handle(_request("library_details", {"set_id": "set-01"})).ok
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+def _await_deletion(owner: AutomationOwner, operation_id: str) -> PendingDeletion:
+    deadline: float = time.monotonic() + _TIMEOUT_S
+    while time.monotonic() < deadline:
+        response: ControlResponse = owner.handle(_request("status"))
+        rows: list[dict[str, object]] = cast("list[dict[str, object]]", response.result["deletions"])
+        if any(item["operation_id"] == operation_id and not item["active"] for item in rows):
+            result: ControlResponse = owner.handle(_request("deletion_get", {"operation_id": operation_id}))
+            return decode_view(PendingDeletion, result.result)
+        time.sleep(0.01)
+    pytest.fail("The deletion did not settle")
+
+
+@pytest.mark.parametrize("failure", ["refused", "uncertain", "save", "restored"])
+def test_confirmed_deletion_persists_per_file_evidence_and_never_retries_restored_or_uncertain_files(  # noqa: PLR0915
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    service, store, state = _completed_library(tmp_path, ("01", "010"))
+    state = replace(
+        state,
+        acquisitions=(
+            AcquisitionConfirmation(
+                "download",
+                "abc",
+                "translate",
+                ("01.txt",),
+                AcquisitionState.COMPLETE,
+                RequestOrigin.USER,
+                None,
+                "1",
+                _MOMENT.isoformat(),
+                complete_files=("01.txt",),
+            ),
+        ),
+    )
+    store.save(state)
+    trash: Path = tmp_path / ".synthetic-trash"
+    trash.mkdir()
+    calls: list[str] = []
+    fail: bool = True
+    original_save: Callable[[WatchState], None] = store.save
+
+    def save(candidate: WatchState) -> None:
+        if failure == "save" and candidate.pending_deletions and len(candidate.pending_deletions[-1].recycled) == 2:
+            raise OSError
+        original_save(candidate)
+
+    def recycle(path: Path, identity: tuple[int, int, int, int]) -> RecycleResult:
+        operation: PendingDeletion = store.load().pending_deletions[-1]
+        assert operation.outcomes[-1].status is DeletionStatus.INFLIGHT
+        assert operation.outcomes[-1].path == path.relative_to(tmp_path).as_posix()
+        assert operation.identities
+        assert identity == (path.stat().st_size, path.stat().st_mtime_ns, path.stat().st_dev, path.stat().st_ino)
+        calls.append(path.name)
+        if len(calls) == 2 and fail and failure != "save":
+            return RecycleResult("uncertain" if failure == "uncertain" else "refused", "synthetic_failure")
+        path.rename(trash / path.name)
+        return RecycleResult("recycled", "recycle_completed", f"synthetic:{path.name}")
+
+    monkeypatch.setattr(store, "save", save)
+    owner: AutomationOwner = _owner(service, store, recycler=recycle)
+    thread: threading.Thread = _serving(owner)
+    try:
+        preview: DeletionPreview = decode_view(
+            DeletionPreview, owner.handle(_request("deletion_preview", {"set_id": "set-01"}, session_id="panel")).result
+        )
+        command: ControlRequest = _request(
+            "deletion_start",
+            {"set_id": preview.set_id, "preview_id": preview.preview_id},
+            session_id="panel",
+            command_id="delete-once",
+        )
+        accepted: ControlResponse = owner.handle(command)
+        assert accepted.ok, accepted.message
+        operation_id: str = str(accepted.result["operation_id"])
+        result: PendingDeletion = _await_deletion(owner, operation_id)
+        assert result.recycled == ("ready/01.pl.txt",)
+        assert owner.handle(command).result == accepted.result
+        assert calls == ["01.pl.txt", "01.txt"]
+        assert (tmp_path / "ready/010.txt").read_bytes() == b"source"
+        assert owner.state.products == state.products
+        assert owner.state.acquisitions == state.acquisitions
+        _read_ready_sets(owner)
+        snapshot: ControlResponse = owner.handle(_request("status"))
+        deletion: dict[str, object] = cast("list[dict[str, object]]", snapshot.result["deletions"])[0]
+        assert deletion["name"] == "01"
+        assert deletion["remaining"] == 1
+        assert deletion["can_confirm"] is (failure != "save")
+        if failure == "restored":
+            (trash / "01.pl.txt").rename(tmp_path / "ready/01.pl.txt")
+            owner.files_changed(DirectoryChange(paths=(tmp_path / "ready/01.pl.txt",)))
+            snapshot = owner.handle(_request("status"))
+            assert not cast("list[dict[str, object]]", snapshot.result["deletions"])[0]["retryable"]
+        fail = False
+        retried: ControlResponse = owner.handle(_request("deletion_retry", {"operation_id": operation_id}))
+        assert retried.ok is (failure == "refused")
+        if retried.ok:
+            assert len(_await_deletion(owner, operation_id).recycled) == 2
+            assert calls == ["01.pl.txt", "01.txt", "01.txt"]
+        else:
+            assert len(calls) == 2
+        assert owner.state.products == state.products
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    restarted: AutomationOwner = _owner(service, store, recycler=recycle)
+    thread = _serving(restarted)
+    count: int = len(calls)
+    try:
+        assert not restarted.handle(
+            _request(
+                "deletion_retry",
+                {"operation_id": operation_id},
+                command_id="new-retry-after-restart",
+            )
+        ).ok
+        assert len(calls) == count
+        assert restarted.state.products == state.products
+        assert restarted.state.acquisitions == state.acquisitions
+    finally:
+        restarted.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+@pytest.mark.parametrize("change", ["replace", "new_member", "save_failure"])
+def test_deletion_start_rechecks_scope_and_persistence_before_first_native_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    service, store, state = _completed_library(tmp_path)
+    calls: list[Path] = []
+
+    def recycle(path: Path, identity: tuple[int, int, int, int]) -> RecycleResult:
+        calls.append(path)
+        return RecycleResult("refused", "unexpected")
+
+    owner: AutomationOwner = _owner(service, store, recycler=recycle)
+    thread: threading.Thread = _serving(owner)
+    try:
+        preview: DeletionPreview = decode_view(
+            DeletionPreview, owner.handle(_request("deletion_preview", {"set_id": "set-01"})).result
+        )
+        if change == "replace":
+            replacement: Path = tmp_path / "replacement.txt"
+            replacement.write_bytes(b"source")
+            replacement.replace(tmp_path / "ready/01.txt")
+        elif change == "new_member":
+            (tmp_path / "ready/01.pl.srt").write_bytes(b"new member")
+        else:
+            monkeypatch.setattr(store, "save", lambda _state: (_ for _ in ()).throw(OSError()))
+        result: ControlResponse = owner.handle(
+            _request(
+                "deletion_start",
+                {"set_id": preview.set_id, "preview_id": preview.preview_id},
+            )
+        )
+        assert not result.ok
+        assert calls == []
+        assert owner.state.products == state.products
+        assert owner.state.pending_deletions == ()
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+@pytest.mark.integration
+def test_owner_death_after_file_effect_keeps_inflight_uncertainty_in_a_fresh_process(tmp_path: Path) -> None:
+    script: str = """
+import os
+import sys
+from pathlib import Path
+from test_automation import _completed_library, _owner, _request, _serving
+from anishift.application.control_views import DeletionPreview, decode_view
+root = Path(sys.argv[1])
+service, store, state = _completed_library(root)
+def crash_after_effect(path, identity):
+    path.rename(root / '.parked')
+    os._exit(77)
+owner = _owner(service, store, recycler=crash_after_effect)
+thread = _serving(owner)
+preview = decode_view(DeletionPreview, owner.handle(_request('deletion_preview', {'set_id': 'set-01'})).result)
+assert owner.handle(_request('deletion_start', {'set_id': preview.set_id, 'preview_id': preview.preview_id})).ok
+thread.join(10)
+raise AssertionError('The crash boundary was not reached')
+"""
+    environment: dict[str, str] = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join((str(Path(__file__).parent), str(Path(__file__).parents[1]))),
+    }
+    crashed: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script, str(tmp_path)],
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+        check=False,
+    )
+    assert crashed.returncode == 77, crashed.stderr
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    operation: PendingDeletion = store.load().pending_deletions[0]
+    assert operation.outcomes[0].status is DeletionStatus.INFLIGHT
+    assert operation.recycled == ()
+    service: AppService = _real_service(tmp_path)
+    calls: list[Path] = []
+
+    def recycle(path: Path, identity: tuple[int, int, int, int]) -> RecycleResult:
+        calls.append(path)
+        return RecycleResult("refused", "unexpected")
+
+    owner: AutomationOwner = _owner(service, store, recycler=recycle)
+    thread: threading.Thread = _serving(owner)
+    try:
+        (tmp_path / ".parked").rename(tmp_path / operation.outcomes[0].path)
+        owner.files_changed(DirectoryChange(paths=(tmp_path / operation.outcomes[0].path,)))
+        response: ControlResponse = owner.handle(
+            _request(
+                "deletion_retry",
+                {"operation_id": operation.operation_id},
+                command_id="fresh-retry",
+            )
+        )
+        assert not response.ok
+        assert calls == []
+        assert owner.state.pending_deletions[0] == operation
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+def test_active_deletion_excludes_processing_and_expires_scope_after_a_survivor_is_restored(tmp_path: Path) -> None:
+    service, store, state = _completed_library(tmp_path)
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    trash: Path = tmp_path / ".trash"
+    trash.mkdir()
+    calls: list[str] = []
+
+    def recycle(path: Path, identity: tuple[int, int, int, int]) -> RecycleResult:
+        calls.append(path.name)
+        entered.set()
+        assert release.wait(_TIMEOUT_S)
+        path.rename(trash / path.name)
+        return RecycleResult("recycled", "recycle_completed", f"synthetic:{path.name}")
+
+    owner: AutomationOwner = _owner(service, store, recycler=recycle)
+    thread: threading.Thread = _serving(owner)
+    try:
+        preview: DeletionPreview = decode_view(
+            DeletionPreview, owner.handle(_request("deletion_preview", {"set_id": "set-01"})).result
+        )
+        accepted: ControlResponse = owner.handle(
+            _request(
+                "deletion_start",
+                {"set_id": preview.set_id, "preview_id": preview.preview_id},
+                command_id="delete-first",
+            )
+        )
+        assert accepted.ok
+        assert entered.wait(_TIMEOUT_S)
+        reserved: ControlResponse = owner.handle(
+            _request(
+                "reserve",
+                {
+                    "group_ids": [state.ready_groups[0].group_id],
+                    "client_id": "editor",
+                },
+                session_id="editor",
+            )
+        )
+        assert not reserved.ok
+        assert reserved.reason == "library_deleting"
+        source: Path = tmp_path / "ready/01.txt"
+        source.rename(tmp_path / ".parked")
+        (tmp_path / ".parked").rename(source)
+        owner.files_changed(DirectoryChange(paths=(source,)))
+        release.set()
+        operation_id: str = str(accepted.result["operation_id"])
+        assert _await_deletion(owner, operation_id).recycled == ("ready/01.pl.txt",)
+        assert calls == ["01.pl.txt"]
+        assert not owner.handle(_request("deletion_retry", {"operation_id": operation_id})).ok
+        assert source.read_bytes() == b"source"
+    finally:
+        release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
 
 
 def _subscription_library(tmp_path: Path) -> tuple[AppService, WatchStateStore, _TorrentNetwork, Subscription]:
@@ -3086,14 +3868,27 @@ def test_a_resume_starts_a_held_release_once_the_name_that_held_it_up_is_cleared
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     owner, network, store, taken = _held_release(tmp_path, monkeypatch)
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    def hold_first_read() -> None:
+        if entered.is_set():
+            return
+        entered.set()
+        assert release.wait(_TIMEOUT_S)
+
+    network.before_info = hold_first_read
     thread: threading.Thread = _serving(owner)
     try:
-        assert _await(lambda: network.info_calls > 0)
+        assert entered.wait(_TIMEOUT_S)
         assert network.started == []
         taken.unlink()
         assert _commanded(owner, "resume")
+        release.set()
+        assert _await(lambda: network.actions == [("9", "resume")])
         assert _await(lambda: network.started == ["9"])
     finally:
+        release.set()
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
 
@@ -3112,9 +3907,10 @@ def test_a_stop_leaves_a_held_release_stopped_even_once_its_name_is_cleared(
     thread: threading.Thread = _serving(owner)
     try:
         assert _await(lambda: network.info_calls > 0)
-        taken.unlink()
         assert _commanded(owner, "stop")
+        assert store.load().acquisitions[0].requested_action == "stop"
         assert _await(lambda: network.actions == [("9", "stop")])
+        taken.unlink()
         polled: int = network.info_calls
         assert _await(lambda: network.info_calls > polled + 1)
         assert network.started == []

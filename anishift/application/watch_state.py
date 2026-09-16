@@ -15,6 +15,8 @@ from anishift.application.control import (
     AudiobookRecipe,
     AutomationPolicy,
     CommandReceipt,
+    DeletionOutcome,
+    DeletionStatus,
     ManualHandledMarker,
     NarrationTimeline,
     PendingDeletion,
@@ -50,6 +52,7 @@ if TYPE_CHECKING:
 
     from anishift.application.control import (
         CommandOutcome,
+        FileObjectIdentities,
         FileReservation,
         NotificationKey,
         SettingsSnapshot,
@@ -372,6 +375,12 @@ def _encode_pending_deletion(deletion: PendingDeletion) -> dict[str, object]:
         "requested_at": deletion.requested_at,
         "files": _encode_fingerprint(deletion.files),
         "recycled": list(deletion.recycled),
+        "identities": [list(identity) for identity in deletion.identities],
+        "outcomes": [
+            {"path": item.path, "status": item.status.value, "reason": item.reason, "receipt": item.receipt}
+            for item in deletion.outcomes
+        ],
+        "instance_id": deletion.instance_id,
     }
 
 
@@ -592,13 +601,42 @@ def _pending_sources(single: object, pending: object) -> tuple[str, ...]:
 
 
 def _decode_pending_deletion(raw: object) -> PendingDeletion:
-    document: dict[str, object] = _strict_object(raw, _PENDING_DELETION_KEYS, "pending deletion")
+    document: dict[str, object] = dict(_strict_mapping(raw, "pending deletion"))
+    identities: FileObjectIdentities = _decode_object_identities(document.pop("identities", []))
+    outcomes: tuple[DeletionOutcome, ...] = tuple(
+        _decode_deletion_outcome(item) for item in _list(document.pop("outcomes", []), "deletion outcomes")
+    )
+    instance_id: str | None = _optional_text({"instance_id": document.pop("instance_id", None)}, "instance_id")
+    _strict_object(document, _PENDING_DELETION_KEYS, "pending deletion")
     return PendingDeletion(
         operation_id=_text(document, "operation_id"),
         set_id=_text(document, "set_id"),
         requested_at=_text(document, "requested_at"),
         files=_decode_fingerprint(document["files"]),
         recycled=_decode_texts(document["recycled"], "recycled files of a pending deletion"),
+        identities=identities,
+        outcomes=outcomes,
+        instance_id=instance_id,
+    )
+
+
+def _decode_object_identities(raw: object) -> FileObjectIdentities:
+    entries: list[tuple[str, int, int]] = []
+    for item in _list(raw, "file object identities"):
+        name, device, inode = _list(item, "file object identity")
+        entries.append((_as_text(name, "file path"), _as_whole(device, "file device"), _as_whole(inode, "file inode")))
+    return tuple(entries)
+
+
+def _decode_deletion_outcome(raw: object) -> DeletionOutcome:
+    document: dict[str, object] = _strict_object(
+        raw, frozenset({"path", "status", "reason", "receipt"}), "deletion outcome"
+    )
+    return DeletionOutcome(
+        _text(document, "path"),
+        DeletionStatus(_text(document, "status")),
+        _text(document, "reason"),
+        _optional_text(document, "receipt"),
     )
 
 

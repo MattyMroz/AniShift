@@ -13,12 +13,13 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
+from natsort import os_sorted
 from rich.text import Text
 
 from anishift.application import (
-    ArtifactKind,
-    InspectedSourceGroup,
-    InspectedWorkspace,
+    DeletionPreview,
+    LibrarySet,
+    PendingDeletion,
     RefusalReason,
     RunProgressSnapshot,
     Subscription,
@@ -119,11 +120,53 @@ _REFUSAL_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
 _UNKNOWN_REFUSAL: Final[str] = "Proces w tle odrzucił polecenie"
 """Polish sentence for a refusal this version cannot name any more precisely."""
 
+_LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "library_set_missing": "Tego zestawu nie ma już w bibliotece",
+        "library_result_missing": "Brakuje potwierdzonego głównego wyniku",
+        "library_result_changed": "Główny wynik istnieje, ale jest zmieniony lub niepotwierdzony",
+        "library_ownership_unknown": "Pochodzenie zestawu wymaga rozstrzygnięcia przed usunięciem",
+        "library_source_held": "Źródło czeka na zwolnienie przez torrent",
+        "library_scope_changed": "Zestaw zmienił się · przygotuj nowe potwierdzenie",
+        "library_source_busy": "Plik jest nadal zapisywany lub niedostępny",
+        "library_deleting": "Trwa przenoszenie tego zestawu do Kosza",
+        "recycle_unsupported": "Kosz jest niedostępny dla tego środowiska",
+        "recycle_unavailable": "Nie udało się potwierdzić dostępności operacji Kosza",
+        "recycle_refused": "System odmówił przeniesienia pliku do Kosza",
+        "recycle_timeout": "Upłynął limit operacji · jej wynik pozostaje niepewny",
+        "recycle_cleanup_timeout": "Upłynął limit zamykania operacji · jej wynik pozostaje niepewny",
+        "recycle_interrupted": "Operacja została przerwana · jej wynik pozostaje niepewny",
+        "recycle_invalid_evidence": "Brak poprawnego potwierdzenia operacji Kosza",
+        "recycle_incomplete": "System nie potwierdził pełnego wyniku operacji",
+    }
+)
+"""Polish explanations keyed by the owner's library reason codes."""
+
+_FILE_ROLES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "source": "źródło",
+        "product": "wynik",
+        "pending_source": "źródło · czeka na zwolnienie",
+    }
+)
+"""Roles shown beside files without implying ownership of an external manual reference."""
+
+_DELETION_STATUSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "inflight": "w toku",
+        "recycled": "w Koszu",
+        "refused": "odmowa",
+        "uncertain": "wynik niepewny",
+        "pending": "nie podjęto",
+    }
+)
+"""File outcome labels keyed by durable deletion status, never native error prose."""
+
 
 def refusal_text(problem: BaseException) -> str:
     """Return the Polish sentence for a refusal, degrading to its sanitized message."""
     reason: str = problem.reason if isinstance(problem, ControlError) else ""
-    return _REFUSAL_TEXTS.get(reason) or _safe_text(str(problem)) or _UNKNOWN_REFUSAL
+    return _REFUSAL_TEXTS.get(reason) or _LIBRARY_PROBLEMS.get(reason) or _safe_text(str(problem)) or _UNKNOWN_REFUSAL
 
 
 class _Tab(IntEnum):
@@ -168,6 +211,14 @@ class StateController:
         self._form: list[str] | None = None
         self._input: TextInput = TextInput()
         self._binding: Subscription | None = None
+        self._details: LibrarySet | None = None
+        self._operation_details: PendingDeletion | None = None
+        self._operation_name: str = ""
+        self._detail_selection: int = 0
+        self._deletion: DeletionPreview | None = None
+        self._deletion_session: ResidentSession | None = None
+        self._delete_confirmed: bool = False
+        self._view_generation: int = 0
         self._candidates: tuple[TitleCandidate, ...] = ()
         self._thread: threading.Thread = threading.Thread(target=self._watch, name="anishift-state", daemon=True)
         self._thread.start()
@@ -175,6 +226,9 @@ class StateController:
     def close(self) -> None:
         """Detach this panel without stopping resident work."""
         self._stop.set()
+        with self._lock:
+            self._view_generation += 1
+            self._cancel_deletion()
         session: ResidentSession | None = self._session
         if session is not None:
             session.close()
@@ -192,6 +246,10 @@ class StateController:
     def show_processing(self) -> None:
         """Select current processing after the user starts a run."""
         with self._lock:
+            self._view_generation += 1
+            self._cancel_deletion()
+            self._details = None
+            self._operation_details = None
             self._tab = _Tab.PROGRESS
             self._selected = 0
         self._invalidate()
@@ -209,18 +267,19 @@ class StateController:
     def handle_key(self, key: str) -> StateResult:
         """Navigate the shared list or submit one explicit action."""
         with self._lock:
-            if self._form is not None:
-                self._edit_form(key)
-                return StateResult.CONTINUE
-            if self._binding is not None:
-                self._binding_key(key)
+            if self._modal_key(key):
                 return StateResult.CONTINUE
             if key in {"escape", "interrupt", "backspace"}:
+                self._view_generation += 1
                 return StateResult.HOME
             if key in {"tab", "backtab", "left", "right"}:
+                self._view_generation += 1
+                self._details = None
                 self._tab = (self._tab + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS)
                 self._selected = 0
                 self._notify("")
+                if self._tab == _Tab.FILES:
+                    self._work(lambda session: session.library())
             elif key in {"up", "down", "home", "end"}:
                 count: int = max(len(self._entries(120)), 1)
                 if key in {"home", "end"}:
@@ -229,12 +288,61 @@ class StateController:
                     self._selected = (self._selected + (-1 if key == "up" else 1)) % count
             elif key in {"space", "enter"} and self._tab == _Tab.SUBSCRIPTIONS:
                 return self._action_key("w")
+            elif self._selected_deletion() is not None and key.casefold() in {"enter", "delete", "text:p", "text:d"}:
+                self._deletion_action(key.removeprefix("text:").casefold())
             elif key == "enter" and self._tab == _Tab.FILES:
                 self._file_action("open")
+            elif key == "delete" and self._tab == _Tab.FILES:
+                self._file_action("delete")
             elif key.startswith("text:"):
                 return self._action_key(key.removeprefix("text:").casefold())
             self._invalidate()
             return StateResult.CONTINUE
+
+    def _modal_key(self, key: str) -> bool:
+        if self._deletion is not None:
+            self._deletion_key(key)
+            return True
+        if self._operation_details is not None:
+            if key in {"escape", "interrupt", "backspace"}:
+                self._view_generation += 1
+                self._operation_details = None
+                self._selected = self._detail_selection
+            elif key.casefold() in {"text:p", "delete"}:
+                self._deletion_action(key.removeprefix("text:").casefold())
+            elif key in {"up", "down", "home", "end"}:
+                count: int = max(len(self._entries(120)), 1)
+                self._selected = (self._selected + (-1 if key == "up" else 1)) % count
+                if key in {"home", "end"}:
+                    self._selected = 0 if key == "home" else count - 1
+            self._invalidate()
+            return True
+        if self._details is not None:
+            self._details_key(key)
+            return True
+        if self._form is not None:
+            self._edit_form(key)
+            return True
+        if self._binding is not None:
+            self._binding_key(key)
+            return True
+        return False
+
+    def _details_key(self, key: str) -> None:
+        if key in {"escape", "interrupt", "backspace"}:
+            self._view_generation += 1
+            self._details = None
+            self._selected = self._detail_selection
+        elif key == "delete" and self._details is not None:
+            set_id: str = self._details.set_id
+            generation: int = self._view_generation
+            self._work(lambda session: self._show_deletion(session, set_id, generation))
+        elif key in {"up", "down", "home", "end"}:
+            count: int = max(len(self._entries(120)), 1)
+            self._selected = (self._selected + (-1 if key == "up" else 1)) % count
+            if key in {"home", "end"}:
+                self._selected = 0 if key == "home" else count - 1
+        self._invalidate()
 
     def _action_key(self, key: str) -> StateResult:
         navigation: dict[str, StateResult] = {
@@ -244,6 +352,7 @@ class StateController:
             "a": StateResult.ANIME,
         }
         if key in navigation:
+            self._view_generation += 1
             return navigation[key]
         if key == "o":
             self._command("set_auto", {"enabled": not self._snapshot.get("auto_enabled", False)})
@@ -286,15 +395,122 @@ class StateController:
 
     def _file_action(self, key: str) -> None:
         if key == "p":
-            self._command("ready_retry")
+            if self._selected_deletion() is not None:
+                self._deletion_action(key)
+            elif _relocation_problems(self._snapshot):
+                self._command("ready_retry")
             return
-        library: list[Mapping[str, object]] = _rows(self._snapshot.get("library"))
-        if key not in {"open", "f"} or self._selected >= len(library):
+        library: list[Mapping[str, object]] = _library_rows(self._snapshot)
+        if key not in {"open", "f", "d", "delete"} or self._selected >= len(library):
             return
-        directory: str = str(library[self._selected]["directory"])
-        directory = "" if directory == "." else directory
-        group_id: str = str(library[self._selected]["group_id"])
-        self._work(lambda session: _open_episode(session, group_id, directory, show_folder=key == "f"))
+        if "operation_id" in library[self._selected]:
+            self._deletion_action(key)
+            return
+        set_id: str = str(library[self._selected]["set_id"])
+        if key == "delete":
+            generation: int = self._view_generation
+            self._work(lambda session: self._show_deletion(session, set_id, generation))
+            return
+        if key == "d":
+            self._work(lambda session: self._show_details(session, set_id))
+            return
+        self._work(lambda session: _open_episode(session, set_id, show_folder=key == "f"))
+
+    def _selected_deletion(self) -> Mapping[str, object] | None:
+        operations: list[Mapping[str, object]] = _deletion_rows(self._snapshot)
+        if self._operation_details is not None:
+            return next(
+                (item for item in operations if item["operation_id"] == self._operation_details.operation_id), None
+            )
+        if self._details is not None:
+            return None
+        if self._tab == _Tab.FILES:
+            rows: list[Mapping[str, object]] = _library_rows(self._snapshot)
+            return (
+                rows[self._selected] if self._selected < len(rows) and "operation_id" in rows[self._selected] else None
+            )
+        position: int = self._selected - len(self._progress_entries(120))
+        return operations[position] if self._tab == _Tab.PROGRESS and 0 <= position < len(operations) else None
+
+    def _deletion_action(self, key: str) -> None:
+        operation: Mapping[str, object] | None = self._selected_deletion()
+        if operation is None:
+            return
+        generation: int = self._view_generation
+        if key in {"enter", "d"}:
+            self._work(lambda session: self._show_operation_details(session, operation, generation))
+        elif key == "p" and operation.get("retryable") and not operation.get("active"):
+            self._command("deletion_retry", {"operation_id": operation["operation_id"]})
+        elif key == "delete" and operation.get("can_confirm") and not operation.get("active"):
+            self._work(lambda session: self._show_deletion(session, str(operation["set_id"]), generation))
+
+    def _show_operation_details(
+        self, session: ResidentSession, operation: Mapping[str, object], generation: int
+    ) -> None:
+        details: PendingDeletion = decode_view(
+            PendingDeletion, session.command("deletion_get", {"operation_id": operation["operation_id"]})
+        )
+        with self._lock:
+            if self._stop.is_set() or generation != self._view_generation:
+                return
+            self._detail_selection = self._selected
+            self._selected = 0
+            self._operation_name = str(operation["name"])
+            self._operation_details = details
+
+    def _show_deletion(self, session: ResidentSession, set_id: str, generation: int) -> None:
+        preview: DeletionPreview = session.preview_deletion(set_id)
+        with self._lock:
+            if self._stop.is_set() or generation != self._view_generation:
+                return
+            self._deletion = preview
+            self._deletion_session = session
+            self._delete_confirmed = False
+
+    def _cancel_deletion(self) -> None:
+        session: ResidentSession | None = self._deletion_session
+        self._deletion_session = None
+        self._deletion = None
+        self._delete_confirmed = False
+        if session is not None:
+            session.close()
+
+    def _deletion_key(self, key: str) -> None:
+        if key in {"escape", "interrupt", "backspace"}:
+            self._cancel_deletion()
+        elif key in {"left", "right", "tab", "backtab", "up", "down"}:
+            self._delete_confirmed = not self._delete_confirmed
+        elif key == "enter" and not self._busy:
+            if not self._delete_confirmed:
+                self._cancel_deletion()
+            else:
+                self._confirm_deletion()
+        self._invalidate()
+
+    def _confirm_deletion(self) -> None:
+        preview: DeletionPreview | None = self._deletion
+        session: ResidentSession | None = self._deletion_session
+        if preview is None or session is None:
+            return
+        self._deletion = None
+        self._deletion_session = None
+
+        def submit(_unused: ResidentSession) -> None:
+            try:
+                session.delete_set(preview)
+            finally:
+                session.close()
+
+        self._work(submit)
+
+    def _show_details(self, session: ResidentSession, set_id: str) -> None:
+        details: LibrarySet = session.library_details(set_id)
+        with self._lock:
+            if self._tab != _Tab.FILES:
+                return
+            self._detail_selection = self._selected
+            self._selected = 0
+            self._details = details
 
     def _binding_candidates(self, session: ResidentSession, identifier: str) -> None:
         subscription: Subscription = decode_view(
@@ -388,7 +604,7 @@ class StateController:
             with self._lock:
                 self._notify(refusal_text(error))
         finally:
-            if session is not None:
+            if session is not None and session is not self._deletion_session:
                 session.close()
             with self._lock:
                 self._busy = False
@@ -430,11 +646,33 @@ class StateController:
             subscriptions: list[Mapping[str, object]] = _rows(
                 session.command("subscriptions_list").get("subscriptions")
             )
+            with self._lock:
+                selected_operation: Mapping[str, object] | None = self._selected_deletion()
+                previous_operation_details: PendingDeletion | None = self._operation_details
             self._restore_progress(session, payload)
+            operation_details: PendingDeletion | None = (
+                decode_view(
+                    PendingDeletion,
+                    session.command("deletion_get", {"operation_id": previous_operation_details.operation_id}),
+                )
+                if previous_operation_details is not None
+                else None
+            )
+            with self._lock:
+                previous_details: LibrarySet | None = self._details
+            details: LibrarySet | None = self._refresh_details(session, previous_details)
             with self._lock:
                 if payload != self._snapshot:
                     self._state_version += 1
+                self._preserve_library_selection(payload)
+                self._preserve_deletion_selection(payload, selected_operation)
                 self._snapshot = payload
+                if self._operation_details is previous_operation_details:
+                    self._operation_details = operation_details
+                if self._details is previous_details:
+                    self._details = details
+                    if previous_details is not None and details is None:
+                        self._selected = self._detail_selection
                 self._subscriptions = subscriptions
                 self._connected = True
                 if self._notice_version < self._state_version:
@@ -452,6 +690,53 @@ class StateController:
             if progress is not None:
                 progress[1].emit(event)
         self._invalidate()
+
+    @staticmethod
+    def _refresh_details(session: ResidentSession, previous: LibrarySet | None) -> LibrarySet | None:
+        if previous is None:
+            return None
+        try:
+            return session.library_details(previous.set_id)
+        except ControlError as error:
+            if error.reason != "library_set_missing":
+                raise
+            return None
+
+    def _preserve_deletion_selection(
+        self, payload: Mapping[str, object], selected: Mapping[str, object] | None
+    ) -> None:
+        if self._tab != _Tab.PROGRESS or selected is None:
+            return
+        position: int = next(
+            (
+                index
+                for index, item in enumerate(_deletion_rows(payload))
+                if item["operation_id"] == selected["operation_id"]
+            ),
+            0,
+        ) + len(self._progress_entries(120))
+        if self._operation_details is None:
+            self._selected = position
+        else:
+            self._detail_selection = position
+
+    def _preserve_library_selection(self, payload: Mapping[str, object]) -> None:
+        if self._tab != _Tab.FILES:
+            return
+        old: list[Mapping[str, object]] = _library_rows(self._snapshot)
+        new: list[Mapping[str, object]] = _library_rows(payload)
+        position: int = (
+            self._selected if self._details is None and self._operation_details is None else self._detail_selection
+        )
+        selected_id: object = _library_row_id(old[position]) if position < len(old) else None
+        position = next(
+            (index for index, item in enumerate(new) if _library_row_id(item) == selected_id),
+            min(position, max(len(new) - 1, 0)),
+        )
+        if self._details is None and self._operation_details is None:
+            self._selected = position
+        else:
+            self._detail_selection = position
 
     def _restore_progress(self, session: ResidentSession, payload: Mapping[str, object]) -> None:
         entries: list[Mapping[str, object]] = _rows(payload.get("run_progress"))
@@ -475,14 +760,16 @@ class StateController:
         """Render tabs and the same centered selectable list used by Manual."""
         with self._lock:
             entries: list[tuple[str | Text, bool | None]] = self._entries(max(columns - 8, 1))
-            self._selected = min(self._selected, max(len(entries) - 1, 0))
+            selected: int = 0 if self._deletion is not None else min(self._selected, max(len(entries) - 1, 0))
+            if self._deletion is None:
+                self._selected = selected
             labels: tuple[str, ...] = fit_entries(
                 tuple(label.plain if isinstance(label, Text) else label for label, _ in entries), columns
             )
             footer: list[str | Text] = self._footer()
             list_rows: int = rows - max(len(footer) - 2, 0) - int(self._form is not None)
             wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(tuple(label for label, _ in entries), columns)
-            start, end = visible_window(len(labels), self._selected, list_rows, heights=tuple(map(len, wrapped)))
+            start, end = visible_window(len(labels), selected, list_rows, heights=tuple(map(len, wrapped)))
             left: int = left_padding(columns, labels)
             content: Text = header("PANEL", columns, rows, max(rows - 5, 1))
             tabs: Text = self._tabs()
@@ -495,7 +782,7 @@ class StateController:
                 checked: bool | None = entries[index][1]
                 marker: str = "" if checked is None else ("● " if checked else "○ ")
                 lines: tuple[str | Text, ...] = wrapped[index][:remaining]
-                append_wrapped_row(content, left, lines, index == self._selected, marker)
+                append_wrapped_row(content, left, lines, index == selected, marker)
                 remaining -= len(lines)
             if not entries:
                 empty: str = "Brak zadań" if self._tab == _Tab.PROGRESS else "Brak pozycji"
@@ -517,35 +804,65 @@ class StateController:
 
     def _footer(self) -> list[str | Text]:
         result: list[str | Text] = []
+        if self._deletion is not None:
+            return [
+                f"{len(self._deletion.files)} plików · {self._deletion.total_size:,} B · cały zestaw",
+                "Anuluj   [Przenieś do Kosza]" if self._delete_confirmed else "[Anuluj]   Przenieś do Kosza",
+                "←→ wybierz · Enter zatwierdź · Esc anuluj",
+            ]
+        operation: Mapping[str, object] | None = self._selected_deletion()
+        if operation is not None:
+            result.append(_deletion_label(operation))
+            actions: str = "D szczegóły"
+            if operation.get("retryable") and not operation.get("active"):
+                actions += " · P ponów pozostałe pliki"
+            elif operation.get("can_confirm") and not operation.get("active"):
+                actions += " · Delete nowe potwierdzenie"
+            result.append(actions)
         if self._notice:
             result.append(self._notice.rstrip("."))
         if not self._connected:
             result.append("Brak połączenia")
+        if self._operation_details is not None or self._details is not None:
+            return [*result, "↑↓ pliki · Esc wróć" + (" do biblioteki" if self._details is not None else "")]
+        if operation is not None:
+            return [*result, "←→ widok · ↑↓ wybierz · Esc wróć"]
         if self._form is not None:
             return [*result, "Enter zatwierdź · Esc anuluj"]
         if self._binding is not None:
             return [*result, "↑↓ · Enter wybierz · Esc wróć"]
+        relocations: list[Mapping[str, object]] = _relocation_problems(self._snapshot)
+        if self._tab == _Tab.FILES and relocations:
+            names: str = ", ".join(_safe_text(item["name"]) for item in relocations)
+            result.append(f"P ponów przenoszenie do biblioteki · {names}")
         hints: tuple[str | Text, ...] = (
             Text("R uruchom · M ręczny · ", style="gray")
             + Text(f"O {'●' if self._snapshot.get('auto_enabled') else '○'} Auto", style="brand_accent")
             + Text(" · C anuluj zlecenie", style="gray"),
             "P wstrzymaj · W wznów · X anuluj",
             "Space wybierz · D dodaj · X usuń · B sezon · F sprawdź",
-            "Enter odtwórz · F folder · M ręczny · P ponów",
+            "Enter otwórz · F folder · D szczegóły · Delete Kosz",
         )
         result.append("←→ widok · ↑↓ wybierz · Esc wróć")
         result.append(hints[self._tab])
         return result
 
     def _entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
+        entries: list[tuple[str | Text, bool | None]] = []
+        if self._deletion is not None:
+            entries = [("PRZENIEŚ CAŁY ZESTAW DO KOSZA?", None), (_safe_text(self._deletion.name), None)]
+        elif self._operation_details is not None:
+            entries = self._operation_entries(self._operation_details)
+        elif self._details is not None:
+            entries = _library_detail_entries(self._details)
+        if self._deletion is not None or self._details is not None or self._operation_details is not None:
+            return entries
         if self._binding is not None:
             return [(_safe_text(item.romaji), None) for item in self._candidates]
         if self._tab == _Tab.PROGRESS:
             return [
-                (line, None)
-                for _, progress in self._runs.values()
-                for line in progress.render(columns, include_completed=False).split("\n")
-                if line.plain.strip()
+                *self._progress_entries(columns),
+                *((_deletion_label(item), None) for item in _deletion_rows(self._snapshot)),
             ]
         if self._tab == _Tab.SUBSCRIPTIONS:
             return [
@@ -557,9 +874,14 @@ class StateController:
                 for item in self._subscriptions
             ]
         if self._tab == _Tab.FILES:
-            return [(_safe_text(item.get("name", "")), None) for item in _rows(self._snapshot.get("library"))]
+            return [
+                (
+                    _deletion_label(item) if "operation_id" in item else _library_label(item),
+                    None,
+                )
+                for item in _library_rows(self._snapshot)
+            ]
         measured: bool = self._connected and not self._snapshot.get("transfers_problem")
-        entries: list[tuple[str | Text, bool | None]] = []
         for item in self._transfer_rows():
             value: object = item.get("progress")
             progress_text: str = (
@@ -573,6 +895,30 @@ class StateController:
                 )
             )
         return entries
+
+    def _operation_entries(self, operation: PendingDeletion) -> list[tuple[str | Text, bool | None]]:
+        selected: Mapping[str, object] = self._selected_deletion() or {}
+        statuses: dict[str, str] = {
+            item.path: (
+                "uncertain" if item.status.value == "inflight" and not selected.get("active") else item.status.value
+            )
+            for item in operation.outcomes
+        }
+        entries: list[tuple[str | Text, bool | None]] = [(_safe_text(self._operation_name), None)]
+        reasons: dict[str, str] = {item.path: _LIBRARY_PROBLEMS.get(item.reason, "") for item in operation.outcomes}
+        for path, _size, _stamp in operation.files:
+            status: str = statuses.get(path, "recycled" if path in operation.recycled else "pending")
+            explanation: str = f" · {reasons[path]}" if reasons.get(path) else ""
+            entries.append((f"{_safe_text(path)} · {_DELETION_STATUSES[status]}{explanation}", None))
+        return entries
+
+    def _progress_entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
+        return [
+            (line, None)
+            for _, progress in self._runs.values()
+            for line in progress.render(columns, include_completed=False).split("\n")
+            if line.plain.strip()
+        ]
 
     def _transfer_rows(self) -> list[Mapping[str, object]]:
         acquisitions: list[Mapping[str, object]] = _rows(self._snapshot.get("acquisitions"))
@@ -616,36 +962,70 @@ def _safe_text(value: object) -> str:
     return _CLIENT_PROBLEMS.get(message, message)
 
 
-def _open_folder(root: Path, directory: str) -> None:
-    folder: Path = (root / directory).resolve()
-    if not folder.is_relative_to(root.resolve()) or not folder.is_dir():
-        message: str = "Folder is no longer available in the workspace"
-        raise ValueError(message)
-    _open_path(folder)
+def _relocation_problems(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:
+    return [item for item in _rows(snapshot.get("relocations")) if item.get("problem")]
 
 
-def _open_episode(session: ResidentSession, group_id: str, directory: str, *, show_folder: bool = False) -> None:
-    workspace: InspectedWorkspace = session.discover()
-    group: InspectedSourceGroup | None = next((item for item in workspace.groups if item.group_id == group_id), None)
-    if group is None:
-        _open_folder(session.workspace_root, directory)
-        return
-    kinds: tuple[ArtifactKind, ...] = (
-        ArtifactKind.FINAL_MKV,
-        ArtifactKind.FINAL_MP4,
-        ArtifactKind.VIDEO_MKV,
-        ArtifactKind.VIDEO_MP4,
+def _library_rows(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:
+    return os_sorted(
+        [*_rows(snapshot.get("library")), *_rows(snapshot.get("library_problems")), *_deletion_rows(snapshot)],
+        key=lambda item: (str(item.get("name", "")), _library_row_id(item)),
     )
-    paths: dict[ArtifactKind, Path] = {
-        item.kind: item.path.resolve()
-        for item in group.artifacts
-        if item.path is not None and item.kind in kinds and item.path.is_file()
-    }
-    selected: Path | None = next((paths[kind] for kind in kinds if kind in paths), None)
-    if selected is None or not selected.is_relative_to(session.workspace_root.resolve()):
-        _open_folder(session.workspace_root, directory)
-        return
-    _open_path(selected, show_folder=show_folder)
+
+
+def _library_row_id(item: Mapping[str, object]) -> str:
+    return str(item.get("operation_id", item.get("set_id", "")))
+
+
+def _library_label(item: Mapping[str, object]) -> str:
+    label: str = _safe_text(item.get("name", ""))
+    if item.get("available") is False:
+        label += " · " + _LIBRARY_PROBLEMS.get(str(item.get("problem")), _LIBRARY_PROBLEMS["library_result_missing"])
+    return label
+
+
+def _deletion_rows(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:
+    return [
+        item
+        for item in _rows(snapshot.get("deletions"))
+        if item.get("active") or item.get("recycled") != item.get("total")
+    ]
+
+
+def _deletion_label(item: Mapping[str, object]) -> str:
+    status: str = "trwa" if item.get("active") else "niepełne"
+    if item.get("uncertain"):
+        status = "wynik niepewny"
+    return (
+        f"Kosz: {_safe_text(item.get('name', item.get('set_id', '')))} · {status} · "
+        f"nierozliczone: {item.get('remaining')}/{item.get('total')}"
+    )
+
+
+def _library_detail_entries(details: LibrarySet) -> list[tuple[str | Text, bool | None]]:
+    entries: list[tuple[str | Text, bool | None]] = [(_safe_text(details.name), None)]
+    if details.target is None:
+        entries.append(("Cel nierozstrzygnięty · regeneracja wymaga wyboru", None))
+    if details.problem is not None and details.problem in _LIBRARY_PROBLEMS:
+        entries.append((_LIBRARY_PROBLEMS[details.problem], None))
+    elif not details.available:
+        entries.append((_LIBRARY_PROBLEMS["library_result_missing"], None))
+    if details.provisional_timing:
+        entries.append(("Czasy robocze · skrypt lektora bez synchronizacji z nagraniem", None))
+    entries.extend(
+        (
+            f"{_safe_text(item.path)} · {item.format} · {_FILE_ROLES[item.role]} · "
+            + ("brak" if item.identity is None else f"{item.identity.size:,} B")
+            + (" · główny" if item.path == details.main_result else ""),
+            None,
+        )
+        for item in details.files
+    )
+    return entries
+
+
+def _open_episode(session: ResidentSession, set_id: str, *, show_folder: bool = False) -> None:
+    _open_path(session.library_result(set_id), show_folder=show_folder)
 
 
 def _open_path(path: Path, *, show_folder: bool = False) -> None:

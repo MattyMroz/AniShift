@@ -12,6 +12,7 @@ from anishift.application.artifacts import ArtifactKind, ArtifactLifetime, Artif
 from anishift.application.events import RunEvent
 from anishift.application.intents import GroupIntent
 from anishift.application.planning import PlanProblem, TaskKind
+from anishift.application.workflows import WorkflowTarget
 from anishift.services.torrents import Release, ReleaseName
 
 if TYPE_CHECKING:
@@ -61,6 +62,58 @@ class RunProgressSnapshot:
     preview: PlanPreview
     labels: dict[str, str]
     events: tuple[RunEvent, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LibraryFileIdentity:
+    """Identify one regular workspace file independently of its name and modification stamp."""
+
+    path: str
+    size: int
+    modified_ns: int
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True, slots=True)
+class LibraryFile:
+    """Describe a member of a completed set using the owner's current file inventory."""
+
+    path: str
+    role: str
+    format: str
+    identity: LibraryFileIdentity | None
+
+
+@dataclass(frozen=True, slots=True)
+class LibrarySet:
+    """Present a completed set and its selected result without substituting another file."""
+
+    set_id: str
+    group_id: str
+    name: str
+    target: WorkflowTarget | None
+    main_result: str | None
+    files: tuple[LibraryFile, ...]
+    available: bool
+    problem: str | None = None
+    provisional_timing: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DeletionPreview:
+    """Bind one confirmation to an exact set of original files in one resident instance."""
+
+    preview_id: str
+    instance_id: str
+    set_id: str
+    name: str
+    files: tuple[LibraryFileIdentity, ...]
+
+    @property
+    def total_size(self) -> int:
+        """Return the size of the exact files covered by this confirmation."""
+        return sum(item.size for item in self.files)
 
 
 def preview_plan(plan: ExecutionPlan, preview_id: str, instance_id: str) -> PlanPreview:

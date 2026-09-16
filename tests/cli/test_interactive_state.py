@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from time import monotonic
 from types import SimpleNamespace
@@ -14,8 +15,9 @@ import pytest
 import anishift.application.automation as automation_module
 from anishift.application import (
     AppService,
-    ArtifactKind,
+    DeletionPreview,
     GroupIntent,
+    LibrarySet,
     ProductIntent,
     ProductKind,
     RefusalReason,
@@ -25,7 +27,16 @@ from anishift.application import (
     TaskKind,
     TaskState,
 )
-from anishift.application.control_views import PlanPreview, PreviewGroup, PreviewTask, RunProgressSnapshot, encode_view
+from anishift.application.control import DeletionOutcome, DeletionStatus, PendingDeletion
+from anishift.application.control_views import (
+    LibraryFile,
+    LibraryFileIdentity,
+    PlanPreview,
+    PreviewGroup,
+    PreviewTask,
+    RunProgressSnapshot,
+    encode_view,
+)
 from anishift.cli.exit_codes import EXIT_SUCCESS
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
@@ -85,6 +96,8 @@ def test_reopened_state_restores_progress_and_keeps_settings_available_without_r
             return ControlResponse.succeeded(encode_view(view))
         if request.kind == "subscriptions_list":
             return ControlResponse.succeeded({"subscriptions": []})
+        if request.kind == "library_refresh":
+            return ControlResponse.succeeded({"sets": []})
         return ControlResponse.succeeded({})
 
     key: bytes = os.urandom(32)
@@ -109,8 +122,10 @@ def test_reopened_state_restores_progress_and_keeps_settings_available_without_r
         count: int = len(calls)
         for _ in range(20):
             controller.render(120, 35)
-            controller.handle_key("tab")
         assert len(calls) == count
+        for _ in range(20):
+            controller.handle_key("tab")
+        assert set(calls[count:]) <= {"library_refresh"}
         assert controller.handle_key("text:u") is StateResult.SETTINGS
         assert controller.handle_key("escape") is StateResult.HOME
     finally:
@@ -234,23 +249,421 @@ def _assert_title_wraps(controller: StateController) -> None:
 
 
 @pytest.mark.parametrize("show_folder", [False, True])
-def test_library_opens_the_selected_video_or_selects_it_in_its_folder(
+def test_library_opens_only_the_owner_selected_result_or_selects_it_in_its_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, show_folder: bool
 ) -> None:
-    video: Path = tmp_path / "Episode.mkv"
-    video.write_bytes(b"video")
-    group = SimpleNamespace(group_id="episode", artifacts=(SimpleNamespace(kind=ArtifactKind.VIDEO_MKV, path=video),))
-    session = cast(
-        "ResidentSession", SimpleNamespace(workspace_root=tmp_path, discover=lambda: SimpleNamespace(groups=(group,)))
-    )
+    video: Path = tmp_path / "Episode.pl.mkv"
+    session = cast("ResidentSession", SimpleNamespace(library_result=lambda set_id: video))
     opened: list[tuple[Path, bool]] = []
 
     def open_path(path: Path, *, show_folder: bool = False) -> None:
         opened.append((path, show_folder))
 
     monkeypatch.setattr(state_module, "_open_path", open_path)
-    state_module._open_episode(session, "episode", ".", show_folder=show_folder)
+    state_module._open_episode(session, "episode", show_folder=show_folder)
     assert opened == [(video, show_folder)]
+
+
+@pytest.mark.parametrize("change", ["refresh", "dismiss", "missing"])
+def test_library_details_refresh_preserves_selection_without_reopening_or_disconnect(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    session: ResidentSession = cast("ResidentSession", SimpleNamespace())
+    controller: StateController = StateController(session, lambda: None)
+    details: LibrarySet = LibrarySet(
+        "set-10",
+        "group-10",
+        "Episode 10",
+        None,
+        "ready/10.pl.txt",
+        (LibraryFile("ready/10.pl.txt", "product", "TXT", LibraryFileIdentity("ready/10.pl.txt", 123, 1, 1, 1)),),
+        True,
+    )
+    refreshed: LibrarySet = replace(details, files=(replace(details.files[0], identity=None),), available=False)
+
+    def read_details(set_id: str) -> LibrarySet:
+        assert set_id == "set-10"
+        if change == "dismiss":
+            controller.handle_key("escape")
+        if change == "missing":
+            raise ControlError("Set is missing", reason="library_set_missing", answered=True)
+        return refreshed
+
+    def command(kind: str) -> Mapping[str, object]:
+        assert kind == "subscriptions_list"
+        return {"subscriptions": []}
+
+    client: ResidentSession = cast("ResidentSession", SimpleNamespace(command=command, library_details=read_details))
+    controller._tab = state_module._Tab.FILES
+    controller._snapshot = {
+        "library": [{"set_id": "set-2", "name": "Episode 2"}, {"set_id": "set-10", "name": "Episode 10"}]
+    }
+    controller._detail_selection = 1
+    controller._details = details
+    payload: dict[str, object] = {"library": [{"set_id": "set-10", "name": "Episode 10"}]}
+    try:
+        controller._receive(client, {"event": "state_changed", "payload": payload})
+        assert controller._connected
+        assert controller._snapshot == payload
+        frame: str = controller.render(120, 35).plain
+        if change == "refresh":
+            assert "brak" in frame
+            assert "TXT" in frame
+            assert "główny" in frame
+            assert controller.handle_key("escape") is StateResult.CONTINUE
+        else:
+            assert controller._details is None
+            assert "Esc wróć do biblioteki" not in frame
+        assert controller._selected == 0
+        assert "\u276f Episode 10" in controller.render(120, 35).plain
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+@pytest.mark.parametrize("action", ["cancel", "confirm", "leave"])
+def test_whole_set_deletion_uses_one_confirmation_default_cancel_and_retains_its_session(
+    monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    prepared: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    submitted: list[DeletionPreview] = []
+    sessions: list[Session] = []
+    preview: DeletionPreview = DeletionPreview(
+        "preview-01",
+        "instance",
+        "set-01",
+        "Episode 01",
+        (LibraryFileIdentity("ready/01.txt", 123, 1, 2, 3),),
+    )
+
+    class Session:
+        closed: bool = False
+
+        def new_session(self) -> ResidentSession:
+            session: Session = Session()
+            sessions.append(session)
+            return cast("ResidentSession", session)
+
+        def preview_deletion(self, set_id: str) -> DeletionPreview:
+            assert set_id == preview.set_id
+            prepared.set()
+            assert release.wait(5)
+            return preview
+
+        def delete_set(self, value: DeletionPreview) -> str:
+            assert not self.closed
+            submitted.append(value)
+            return "operation-01"
+
+        def close(self) -> None:
+            self.closed = True
+
+    controller: StateController = StateController(cast("ResidentSession", Session()), lambda: None)
+    controller._tab = state_module._Tab.FILES
+    controller._snapshot = {
+        "library": [{"set_id": f"other-{index}", "name": f"Earlier {index}"} for index in range(3)]
+        + [{"set_id": "set-01", "name": "Episode 01"}]
+    }
+    controller._selected = 3
+    controller._connected = True
+    try:
+        controller.handle_key("delete")
+        assert prepared.wait(5)
+        if action == "leave":
+            assert controller.handle_key("escape") is StateResult.HOME
+        release.set()
+        _await_state_action(controller)
+        if action == "leave":
+            assert controller._deletion is None
+            assert submitted == []
+            return
+        assert len(sessions) == 1
+        assert not sessions[0].closed
+        for width, height in ((120, 40), (80, 24), (40, 10)):
+            frame: str = controller.render(width, height).plain
+            assert "[Anuluj]" in frame
+            assert "1 plików" in frame
+            assert len(frame.splitlines()) <= height
+        if action == "confirm":
+            controller.handle_key("right")
+            assert "[Przenieś do Kosza]" in controller.render(80, 24).plain
+        controller.handle_key("enter")
+        _await_state_action(controller)
+        assert submitted == ([preview] if action == "confirm" else [])
+        assert controller._deletion is None
+        assert controller._selected == 3
+    finally:
+        release.set()
+        _await_state_action(controller)
+        controller.close()
+        controller._thread.join(5)
+        assert all(session.closed for session in sessions)
+
+
+@pytest.mark.parametrize("tab", [state_module._Tab.PROGRESS, state_module._Tab.FILES])
+def test_unresolved_deletion_stays_visible_and_retry_targets_that_selected_operation(
+    monkeypatch: pytest.MonkeyPatch, tab: int
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    calls: list[tuple[str, Mapping[str, object]]] = []
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    monkeypatch.setattr(controller, "_command", lambda kind, payload: calls.append((kind, payload)))
+    operations: list[dict[str, object]] = [
+        {
+            "operation_id": f"delete-{name}",
+            "set_id": f"set-{name}",
+            "name": name,
+            "active": False,
+            "recycled": 1 if name == "B" else 2,
+            "total": 2,
+            "remaining": 1 if name == "B" else 0,
+            "uncertain": False,
+            "retryable": name == "B",
+            "can_confirm": False,
+        }
+        for name in ("A", "B", "C")
+    ]
+    controller._tab = tab
+    controller._connected = True
+    controller._notice = ""
+    controller._snapshot = {"deletions": operations, "library": [], "library_problems": []}
+    try:
+        frame: str = controller.render(120, 40).plain
+        assert "Kosz: B" in frame
+        assert "nierozliczone: 1/2" in frame
+        assert "P ponów" in frame
+        assert calls == []
+        controller.handle_key("text:p")
+        assert calls == [("deletion_retry", {"operation_id": "delete-B"})]
+        operations[1].update(recycled=2, remaining=0, retryable=False)
+        frame = controller.render(120, 40).plain
+        assert "Kosz:" not in frame
+        assert "P ponów" not in frame
+        controller.handle_key("text:p")
+        assert len(calls) == 1
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+@pytest.mark.parametrize("context", ["empty", "library", "deletion", "uncertain", "healthy"])
+def test_files_retries_reported_relocations_without_overriding_selected_deletion(
+    monkeypatch: pytest.MonkeyPatch, context: str
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    calls: list[tuple[str, Mapping[str, object] | None]] = []
+
+    class Session:
+        def new_session(self) -> ResidentSession:
+            return cast("ResidentSession", self)
+
+        def command(self, kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
+            calls.append((kind, payload))
+            return {"pending": 1}
+
+        def close(self) -> None:
+            pass
+
+    controller: StateController = StateController(cast("ResidentSession", Session()), lambda: None)
+    controller._tab = state_module._Tab.FILES
+    controller._connected = True
+    controller._notice = ""
+    controller._snapshot = {
+        "relocations": [
+            {
+                "group_id": "group-episode",
+                "name": "Episode.mkv",
+                "problem": None if context == "healthy" else "Relocation could not finish",
+            }
+        ],
+        "library": [
+            {
+                "group_id": "group-ready",
+                "set_id": "set-ready",
+                "name": "Ready",
+                "main_result": "ready/Ready.pl.mkv",
+                "target": "video",
+            }
+        ]
+        if context == "library"
+        else [],
+        "library_problems": [],
+        "deletions": [
+            {
+                "operation_id": "delete-B",
+                "set_id": "set-B",
+                "name": "B",
+                "active": False,
+                "recycled": 1,
+                "total": 2,
+                "remaining": 1,
+                "uncertain": context == "uncertain",
+                "retryable": context == "deletion",
+                "can_confirm": False,
+            }
+        ]
+        if context in {"deletion", "uncertain"}
+        else [],
+    }
+    try:
+        for key in ("home", "down", "end", "up"):
+            controller.handle_key(key)
+        frame: str = controller.render(120, 40).plain
+        controller.render(80, 24)
+        assert calls == []
+        relocation_hint: str = "P ponów przenoszenie do biblioteki"
+        if context in {"empty", "library"}:
+            assert relocation_hint in frame
+            assert "Episode.mkv" in frame
+        else:
+            assert relocation_hint not in frame
+        assert ("P ponów pozostałe pliki" in frame) is (context == "deletion")
+        controller.handle_key("text:P")
+        _await_state_action(controller)
+        if context in {"empty", "library"}:
+            assert calls == [("ready_retry", None)]
+        elif context == "deletion":
+            assert calls == [("deletion_retry", {"operation_id": "delete-B"})]
+        else:
+            assert calls == []
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+def test_merged_library_is_naturally_ordered_and_preserves_missing_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller._tab = state_module._Tab.FILES
+    controller._snapshot = {
+        "library": [{"set_id": "2", "name": "Episode 2"}, {"set_id": "10", "name": "Episode 10"}],
+        "library_problems": [{"set_id": "3", "name": "Episode 3", "available": False}],
+    }
+    try:
+        assert [row["set_id"] for row in state_module._library_rows(controller._snapshot)] == ["2", "3", "10"]
+        controller._selected = 1
+        payload: dict[str, object] = {
+            "library": [{"set_id": "10", "name": "Episode 10"}],
+            "library_problems": [{"set_id": "3", "name": "Episode 3", "available": False}],
+        }
+        controller._preserve_library_selection(payload)
+        controller._snapshot = payload
+        assert controller._selected == 0
+        assert "Episode 3" in controller.render(80, 24).plain
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+@pytest.mark.parametrize("problem", ["library_ownership_unknown", "library_result_changed", "library_result_missing"])
+def test_library_details_explain_machine_coded_provenance_and_result_problem(
+    monkeypatch: pytest.MonkeyPatch, problem: str
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller._details = LibrarySet(
+        "set", "group", "Episode", None, "ready/01.txt", (), problem == "library_ownership_unknown", problem
+    )
+    try:
+        frame: str = controller.render(120, 40).plain
+        assert state_module._LIBRARY_PROBLEMS[problem] in frame
+        if problem == "library_result_changed":
+            assert state_module._LIBRARY_PROBLEMS["library_result_missing"] not in frame
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+@pytest.mark.parametrize("can_confirm", [False, True])
+def test_uncertain_deletion_details_name_exact_paths_and_require_fresh_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    can_confirm: bool,
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    operation: PendingDeletion = PendingDeletion(
+        "delete-B",
+        "set-B",
+        "2026-09-16T12:00:00+00:00",
+        (("ready/B.pl.txt", 1, 1), ("ready/B.txt", 2, 2), ("ready/B.srt", 3, 3)),
+        recycled=("ready/B.pl.txt",),
+        identities=(("ready/B.pl.txt", 1, 1), ("ready/B.txt", 1, 2), ("ready/B.srt", 1, 3)),
+        outcomes=(
+            DeletionOutcome("ready/B.pl.txt", DeletionStatus.RECYCLED, "recycle_completed", "receipt"),
+            DeletionOutcome("ready/B.txt", DeletionStatus.UNCERTAIN, "recycle_cleanup_timeout"),
+        ),
+    )
+    calls: list[tuple[str, Mapping[str, object]]] = []
+    preview: DeletionPreview = DeletionPreview("new-preview", "instance", "set-B", "B", ())
+
+    class Session:
+        def new_session(self) -> ResidentSession:
+            return cast("ResidentSession", self)
+
+        def command(self, kind: str, payload: Mapping[str, object]) -> Mapping[str, object]:
+            calls.append((kind, payload))
+            assert kind == "deletion_get"
+            return encode_view(operation)
+
+        def preview_deletion(self, set_id: str) -> DeletionPreview:
+            calls.append(("deletion_preview", {"set_id": set_id}))
+            return preview
+
+        def close(self) -> None:
+            pass
+
+    controller: StateController = StateController(cast("ResidentSession", Session()), lambda: None)
+    controller._connected = True
+    controller._notice = ""
+    controller._snapshot = {
+        "deletions": [
+            {
+                "operation_id": "delete-B",
+                "set_id": "set-B",
+                "name": "B",
+                "total": 3,
+                "recycled": 1,
+                "remaining": 2,
+                "uncertain": True,
+                "retryable": False,
+                "can_confirm": can_confirm,
+            }
+        ]
+    }
+    try:
+        assert "wynik niepewny" in controller.render(120, 40).plain
+        controller.handle_key("enter")
+        _await_state_action(controller)
+        frame: str = controller.render(120, 40).plain
+        assert "ready/B.pl.txt · w Koszu" in frame
+        assert "ready/B.txt · wynik niepewny" in frame
+        assert "ready/B.srt · nie podjęto" in frame
+        assert "P ponów" not in frame
+        assert ("Delete nowe potwierdzenie" in frame) is can_confirm
+        controller.handle_key("text:p")
+        controller.handle_key("down")
+        controller.render(80, 24)
+        assert calls == [("deletion_get", {"operation_id": "delete-B"})]
+        controller.handle_key("delete")
+        _await_state_action(controller)
+        assert controller._deletion == (preview if can_confirm else None)
+        if can_confirm:
+            assert "[Anuluj]" in controller.render(80, 24).plain
+        assert all(kind != "deletion_retry" for kind, _payload in calls)
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+def _await_state_action(controller: StateController) -> None:
+    deadline: float = time.monotonic() + 5
+    while controller._busy and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not controller._busy
 
 
 def test_every_refusal_cause_reaches_the_panel_as_its_own_translated_sentence() -> None:

@@ -12,9 +12,9 @@ import anishift.platform.directory_watch as watch_module
 from anishift.platform.directory_watch import DirectoryChange, DirectoryWatch, source_is_available
 
 
-def _packet(name: str, following: int = 0) -> bytes:
+def _packet(name: str, following: int = 0, *, action: int = 1) -> bytes:
     encoded: bytes = name.encode("utf-16-le")
-    return struct.pack("<III", following, 1, len(encoded)) + encoded
+    return struct.pack("<III", following, action, len(encoded)) + encoded
 
 
 @pytest.mark.integration
@@ -70,6 +70,20 @@ def test_notifications_keep_unicode_paths_and_deduplicate_changes(tmp_path: Path
 
     assert watch_module._decode_changes(tmp_path, combined).paths == (tmp_path / "odcinek.mkv",)
     assert watch_module._decode_changes(tmp_path, _packet("żółć.mkv")).paths == (tmp_path / "żółć.mkv",)
+
+
+@pytest.mark.parametrize("action", [1, 2, 3, 4, 5])
+def test_notifications_distinguish_directory_metadata_from_namespace_changes(tmp_path: Path, action: int) -> None:
+    change: DirectoryChange = watch_module._decode_changes(tmp_path, _packet("ready", action=action))
+    assert change.paths == (tmp_path / "ready",)
+    assert change.modified_paths == ((tmp_path / "ready",) if action == 3 else ())
+
+
+def test_coalesced_metadata_does_not_hide_a_directory_rename(tmp_path: Path) -> None:
+    packet: bytes = _packet("ready", action=4)
+    length: int = (len(packet) + 3) & ~3
+    combined: bytes = _packet("ready", length, action=4).ljust(length, b"\x00") + _packet("ready", action=3)
+    assert watch_module._decode_changes(tmp_path, combined).modified_paths == ()
 
 
 def test_unsupported_notifications_report_the_polling_fallback(
