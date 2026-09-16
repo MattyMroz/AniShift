@@ -235,6 +235,22 @@ class GraphCoordinator:
             self._signal += 1
             self._condition.notify_all()
 
+    def pause(self) -> None:
+        """Hold admission of remaining tasks while active ones finish, keeping the coordinator usable."""
+        with self._condition:
+            self._draining = True
+            self._signal += 1
+            self._condition.notify_all()
+
+    def resume(self) -> None:
+        """Admit tasks again after a pause, staying held when the coordinator is already closing."""
+        with self._condition:
+            if self._closing:
+                return
+            self._draining = False
+            self._signal += 1
+            self._condition.notify_all()
+
     def close(self, *, wait: bool = True) -> None:
         """Cancel unfinished contexts, close executors, and stop the loop."""
         with self._condition:
@@ -370,28 +386,26 @@ class GraphCoordinator:
 
     def _advance_contexts(self) -> None:
         for context in tuple(self._contexts.values()):
+            draining: bool = False
             if context.cancel.is_cancelled():
                 self._cancel_unfinished(context)
             else:
                 self._release_results(context)
-                if self._draining:
-                    self._pause_pending(context)
+                draining = self._pause_context(context)
             if all_tasks_terminal(context.state):
-                self._finish_context(context)
+                self._finish_context(context, draining=draining)
             elif _is_stalled(context):
                 message: str = "Execution graph stopped before reaching terminal task states"
                 self._fail_context(context, ExecutionError(message))
 
-    def _finish_context(self, context: SchedulerRuntime) -> None:
+    def _finish_context(self, context: SchedulerRuntime, *, draining: bool) -> None:
         self._release_results(context)
         self._report_terminal_groups(context)
         groups: tuple[GroupResult, ...] = tuple(
             build_group_result(group.group_id, context) for group in context.plan.groups
         )
         paused: bool = (
-            self._draining
-            and not context.cancel.is_cancelled()
-            and TaskState.CANCELLED in context.state.task_states.values()
+            draining and not context.cancel.is_cancelled() and TaskState.CANCELLED in context.state.task_states.values()
         )
         result: RunResult = RunResult(run_id=context.run_id, groups=groups, paused=paused)
         context.emitter.emit(RunEventKind.RUN_FINISHED, state=run_result_state(result))
@@ -623,10 +637,19 @@ class GraphCoordinator:
                 continue
             finish_cancelled(context.task_by_id[task_id], context, message="Cancelled before admission")
 
+    def _pause_context(self, context: SchedulerRuntime) -> bool:
+        with self._condition:
+            if not self._draining:
+                return False
+            self._pause_pending(context)
+            return True
+
     def _pause_pending(self, context: SchedulerRuntime) -> None:
         active: frozenset[str] = frozenset(
             item.task.task_id for item in self._futures.values() if item.run_id == context.run_id
         )
+        if active:
+            return
         self._drop_ready(context.run_id)
         for task_id, state in tuple(context.state.task_states.items()):
             if state in _ADMISSIBLE_STATES and task_id not in active:

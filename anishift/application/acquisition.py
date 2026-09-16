@@ -176,8 +176,16 @@ class TorrentManagement(Protocol):
         """Make the owned client available again for ordered transfers still awaiting confirmation."""
         ...
 
+    def prepare(self) -> None:
+        """Reconnect or restart the owned client for unfinished work when the application starts."""
+        ...
+
     def finish_transfers(self) -> None:
         """Stop completed seeds and an idle owned process."""
+        ...
+
+    def close_owned(self) -> None:
+        """Shut the owned client down on an explicit end."""
         ...
 
     def release_completed(self, hashes: frozenset[str]) -> frozenset[str]:
@@ -521,10 +529,20 @@ class AcquisitionService:
         """Read selection and completion for one tracked transfer."""
         return self._client.files(info_hash)
 
+    def prepare_client(self) -> None:
+        """Let an owned client take up its unfinished transfers again when the resident starts."""
+        if self._torrent_management is not None:
+            self._torrent_management.prepare()
+
     def finish_transfers(self) -> None:
         """Release completed seeds only through the private process owner."""
         if self._torrent_management is not None:
             self._torrent_management.finish_transfers()
+
+    def close_client(self) -> None:
+        """Close an owned client on an explicit end, leaving an external one running."""
+        if self._torrent_management is not None:
+            self._torrent_management.close_owned()
 
     def control_transfer(self, info_hash: str, action: str) -> None:
         """Apply an explicit operation to a private transfer without deleting media."""

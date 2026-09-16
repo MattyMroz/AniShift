@@ -132,6 +132,24 @@ def test_store_round_trips_every_recorded_fact(tmp_path: Path) -> None:
     assert store.load() == state
 
 
+@pytest.mark.parametrize("schema", [1, 2])
+def test_legacy_transfer_actions_do_not_invent_a_durable_send_record(tmp_path: Path, schema: int) -> None:
+    state: WatchState = _state()
+    store: WatchStateStore = _store(tmp_path)
+    store.save(state)
+    document: dict[str, object] = (
+        _schema_one_document(tmp_path, state)
+        if schema == 1
+        else json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+    )
+    for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
+        acquisition.pop("action_sent")
+    _write(tmp_path, document)
+
+    assert store.load() == state
+    assert store.load().acquisitions[0].action_sent is False
+
+
 def test_legacy_requests_without_group_intents_still_load(tmp_path: Path) -> None:
     store: WatchStateStore = _store(tmp_path)
     store.save(_state())
@@ -164,12 +182,19 @@ def test_store_lowercases_the_info_hash_of_an_acquisition(tmp_path: Path) -> Non
     assert store.load().acquisitions[0].info_hash == "aabbcc"
 
 
-def test_store_answers_with_automatic_work_switched_off_when_nothing_was_written(tmp_path: Path) -> None:
+def test_a_never_written_store_answers_with_automation_working_and_nothing_else_recorded(tmp_path: Path) -> None:
     state: WatchState = _store(tmp_path).load()
 
-    assert state == WatchState()
-    assert state.policy.auto_enabled is False
+    assert state == WatchState(policy=AutomationPolicy(auto_enabled=True))
+    assert state.policy.auto_enabled is True
     assert state.policy.directory_exceptions == {}
+
+
+def test_a_stored_pause_stays_a_pause_instead_of_becoming_the_working_default(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
+
+    assert store.load().policy.auto_enabled is False
 
 
 def test_store_rejects_a_corrupt_document(tmp_path: Path) -> None:

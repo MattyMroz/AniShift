@@ -133,6 +133,8 @@ class RefusalReason(StrEnum):
     NOT_RESERVED = "not_reserved"
     FOREIGN_PREVIEW = "foreign_preview"
     NOT_RESUMABLE = "not_resumable"
+    PAUSED = "paused"
+    SHUTTING_DOWN = "shutting_down"
 
 
 class SourceSelection(StrEnum):
@@ -282,6 +284,7 @@ class AcquisitionConfirmation:
     requested_action: str | None = None
     action_id: str | None = None
     action_pending: bool = False
+    action_sent: bool = False
     problem: str | None = None
     complete_files: tuple[str, ...] = ()
     file_layout: tuple[FileReservation, ...] = ()

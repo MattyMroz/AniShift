@@ -5,13 +5,15 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from time import monotonic
 from types import SimpleNamespace
-from typing import cast
+from typing import Final, cast
 
 import pytest
 
 import anishift.application.automation as automation_module
 from anishift.application import (
+    AppService,
     ArtifactKind,
     GroupIntent,
     ProductIntent,
@@ -24,7 +26,11 @@ from anishift.application import (
     TaskState,
 )
 from anishift.application.control_views import PlanPreview, PreviewGroup, PreviewTask, RunProgressSnapshot, encode_view
+from anishift.cli.exit_codes import EXIT_SUCCESS
+from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
+from anishift.cli.interactive.mascot import MascotController
+from anishift.cli.interactive.settings import SettingsController
 from anishift.cli.interactive.state import StateController, StateResult, refusal_text
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import (
@@ -36,6 +42,9 @@ from anishift.platform.local_control import (
     ControlServer,
     control_endpoint,
 )
+
+_SETTINGS_FAILURE: Final[str] = "The settings view could not be closed"
+_SESSION_CLOSED: Final[str] = "The resident session is already closed"
 
 
 @pytest.mark.integration
@@ -409,3 +418,193 @@ def test_an_ordered_release_the_client_never_reported_still_says_so(tmp_path: Pa
 
     assert "brak potwierdzenia klienta" in frame
     assert "wymaga uwagi" not in frame
+
+
+class _PanelRenderer:
+    def __init__(
+        self,
+        frame_provider: Callable[[int, int], object],
+        key_handler: Callable[[str], None],
+        idle_handler: Callable[[], None] | None = None,
+        scroll_handler: Callable[[int], None] | None = None,
+    ) -> None:
+        del frame_provider, key_handler, scroll_handler
+        self.idle_handler: Callable[[], None] | None = idle_handler
+        self.native_mascot_size: tuple[int, int] | None = None
+        self.exits: int = 0
+        self.finished: threading.Event = threading.Event()
+
+    def run(self) -> None:
+        while not self.finished.wait(timeout=0.01):
+            if self.idle_handler is not None:
+                self.idle_handler()
+
+    def invalidate(self) -> None:
+        return None
+
+    def exit(self) -> None:
+        self.exits += 1
+        self.finished.set()
+
+
+@pytest.mark.integration
+def test_a_real_panel_closes_itself_when_the_resident_announces_its_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attached: threading.Event = threading.Event()
+    snapshot: dict[str, object] = {"auto_enabled": True, "shutting_down": False}
+
+    def handle(request: ControlRequest) -> ControlResponse:
+        if request.kind == "panel_attach":
+            attached.set()
+        if request.kind == "status":
+            return ControlResponse.succeeded(snapshot)
+        if request.kind == "subscriptions_list":
+            return ControlResponse.succeeded({"subscriptions": []})
+        if request.kind == "discover":
+            return ControlResponse.succeeded({"groups": [], "warnings": []})
+        return ControlResponse.succeeded({})
+
+    renderers: list[_PanelRenderer] = []
+    monkeypatch.setattr(interactive_app, "TerminalRenderer", _recording_renderer(renderers))
+    key: bytes = os.urandom(32)
+    endpoint: str = control_endpoint(tmp_path)
+    server: ControlServer = ControlServer(endpoint, key, handle)
+    session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+    application: interactive_app._InteractiveApplication = interactive_app._InteractiveApplication(
+        cast("AppService", SimpleNamespace(discover=lambda: None, default_preset_id=lambda: "default")),
+        resident=session,
+        show_state=True,
+    )
+    codes: list[int] = []
+    panel: threading.Thread = threading.Thread(target=lambda: codes.append(application.run()), daemon=True)
+    panel.start()
+    closed: bool = False
+    exits: int = 0
+    try:
+        assert attached.wait(5.0)
+        assert renderers[0].exits == 0
+        deadline: float = monotonic() + 10.0
+        while panel.is_alive() and monotonic() < deadline:
+            server.broadcast({"event": "state_changed", "payload": {**snapshot, "shutting_down": True}}, False)
+            panel.join(0.2)
+        closed = not panel.is_alive()
+        exits = renderers[0].exits
+    finally:
+        renderers[0].exit()
+        panel.join(5.0)
+        session.close()
+        server.close()
+
+    assert closed
+    assert exits == 1
+    assert codes == [EXIT_SUCCESS]
+
+
+def _recording_renderer(renderers: list[_PanelRenderer]) -> Callable[..., _PanelRenderer]:
+    def build(
+        frame_provider: Callable[[int, int], object],
+        key_handler: Callable[[str], None],
+        idle_handler: Callable[[], None] | None = None,
+        scroll_handler: Callable[[int], None] | None = None,
+    ) -> _PanelRenderer:
+        renderer: _PanelRenderer = _PanelRenderer(frame_provider, key_handler, idle_handler, scroll_handler)
+        renderers.append(renderer)
+        return renderer
+
+    return build
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        (RefusalReason.PAUSED, "AniShift jest wstrzymany · wybierz Wznów, aby podjąć pracę"),
+        (RefusalReason.SHUTTING_DOWN, "AniShift się kończy · nie przyjmuje już nowej pracy"),
+    ],
+)
+def test_the_panel_names_a_pause_and_an_end_in_polish_chosen_by_the_refusal_code(
+    tmp_path: Path, reason: RefusalReason, expected: str
+) -> None:
+    english: str = "AniShift is paused; choose Resume before starting new work"
+
+    def handle(request: ControlRequest) -> ControlResponse:
+        del request
+        return ControlResponse.refused(ControlErrorCode.REFUSED, english, reason.value)
+
+    key: bytes = os.urandom(32)
+    endpoint: str = control_endpoint(tmp_path)
+    server: ControlServer = ControlServer(endpoint, key, handle)
+    session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+    try:
+        with pytest.raises(ControlError) as refusal:
+            session.command("start")
+    finally:
+        session.close()
+        server.close()
+
+    assert refusal.value.reason == reason.value
+    assert refusal_text(refusal.value) == expected
+    assert english not in refusal_text(refusal.value)
+
+
+class _Settings:
+    def __init__(self, calls: list[str], *, failing: bool) -> None:
+        self.calls: list[str] = calls
+        self.failing: bool = failing
+
+    def close(self) -> None:
+        self.calls.append("settings.close")
+        if self.failing:
+            raise OSError(_SETTINGS_FAILURE)
+
+
+class _Session:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls: list[str] = calls
+        self.closed: bool = False
+
+    def command(self, kind: str, payload: dict[str, object] | None = None) -> dict[str, object]:
+        del payload
+        self.calls.append(kind)
+        if self.closed:
+            raise OSError(_SESSION_CLOSED)
+        return {}
+
+    def close(self) -> None:
+        self.calls.append("resident.close")
+        self.closed = True
+
+
+class _Mascot:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls: list[str] = calls
+
+    def close(self) -> None:
+        self.calls.append("mascot.close")
+
+
+@pytest.mark.parametrize(
+    ("failing", "expected"),
+    [
+        (False, ["settings.close", "reload_settings", "resident.close", "mascot.close"]),
+        (True, ["settings.close", "resident.close", "mascot.close"]),
+    ],
+)
+def test_an_end_with_settings_open_persists_them_first_and_finishes_every_other_step(
+    monkeypatch: pytest.MonkeyPatch, failing: bool, expected: list[str]
+) -> None:
+    renderers: list[_PanelRenderer] = []
+    monkeypatch.setattr(interactive_app, "TerminalRenderer", _recording_renderer(renderers))
+    calls: list[str] = []
+    session = _Session(calls)
+    application: interactive_app._InteractiveApplication = interactive_app._InteractiveApplication(
+        cast("AppService", SimpleNamespace(discover=lambda: None, default_preset_id=lambda: "default")),
+        resident=cast("ResidentSession", session),
+        show_state=True,
+    )
+    application._settings = cast("SettingsController", _Settings(calls, failing=failing))
+    application._mascot = cast("MascotController", _Mascot(calls))
+
+    application._finish_session()
+
+    assert calls == expected

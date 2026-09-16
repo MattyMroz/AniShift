@@ -124,6 +124,16 @@ class ManagedQBittorrent:
                 self._save(replace(state, active=True))
             self._ensure()
 
+    def prepare(self) -> None:
+        """Reconnect or start the private client whenever AniShift runs, without ordering any transfer."""
+        with self._lock:
+            state: _ProcessState = self._load()
+            if state.taken_over:
+                return
+            if not self._matches_process(state):
+                self._save(replace(state, active=True, start_failed=False))
+            self._ensure()
+
     def version(self) -> str:
         """Read an existing client without installing one for a status check."""
         with self._lock:
@@ -192,14 +202,7 @@ class ManagedQBittorrent:
                 message: str = "The transfer or action is not managed by AniShift"
                 raise _unavailable(message)
             if action == "resume":
-                self._save(
-                    replace(
-                        state,
-                        start_failed=False,
-                        active=True,
-                        taken_over=state.taken_over and _visible_process_window(state.pid),
-                    )
-                )
+                self._save(replace(state, start_failed=False, active=True))
             client: QBittorrentClient = self._ensure()
             self._assert_ownership(client)
             if action == "resume":
@@ -231,6 +234,9 @@ class ManagedQBittorrent:
                 ):
                     client.stop(item.info_hash)
             if any(item.progress < 1.0 or item.amount_left != 0 for item in entries):
+                return
+            if _visible_process_window(state.pid):
+                logger.info("Kept the private torrent client running while its own window is open")
                 return
             self._assert_ownership(client)
             client.shutdown()
@@ -265,6 +271,23 @@ class ManagedQBittorrent:
                 released |= {info_hash}
             self._save(replace(self._load(), released=state.released | released))
             return released
+
+    def close_owned(self) -> None:
+        """Shut the proven private client down on an explicit end, never touching a foreign one."""
+        with self._lock:
+            state: _ProcessState = self._load()
+            if state.taken_over or not self._matches_process(state):
+                self._process_lock.release()
+                self._client = None
+                return
+            client: QBittorrentClient = self._required_client()
+            self._assert_ownership(client)
+            client.shutdown()
+            self._wait_for_exit(state)
+            self._save(replace(self._load(), pid=0, created=0))
+            self._process_lock.release()
+            self._client = None
+            logger.info("Private torrent client closed on request")
 
     def close(self) -> None:
         """Release management while leaving active downloads available for recovery."""
@@ -395,7 +418,7 @@ class ManagedQBittorrent:
         deadline: float = time.monotonic() + _START_TIMEOUT_S
         while child.poll() is None and time.monotonic() < deadline:
             try:
-                self._assert_ownership(client, starting=True)
+                self._assert_ownership(client)
                 client.set_preferences(_MANAGED_PREFERENCES)
             except TorrentClientError:
                 time.sleep(_POLL_S)
@@ -432,16 +455,12 @@ class ManagedQBittorrent:
             and Path(state.executable).resolve() == bundled_binary_path(Binary.QBITTORRENT, root=self._bin_root)
         )
 
-    def _assert_ownership(self, client: QBittorrentClient, *, starting: bool = False) -> None:
+    def _assert_ownership(self, client: QBittorrentClient) -> None:
         state: _ProcessState = self._load()
         if not self._matches_process(state) or state.taken_over:
             message: str = "Private torrent process ownership could not be confirmed"
             raise _unavailable(message)
         self._assert_profile(client)
-        if not starting and _visible_process_window(state.pid):
-            self._save(replace(state, taken_over=True))
-            message = "The private torrent client was opened manually; automatic control stopped"
-            raise _unavailable(message)
 
     def _assert_profile(self, client: QBittorrentClient) -> None:
         if not self._matches_process(self._load()):

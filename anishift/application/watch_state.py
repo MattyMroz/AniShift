@@ -227,6 +227,11 @@ def watch_state_path() -> Path:
     return watch_dir() / WATCH_STATE_FILE_NAME
 
 
+def _fresh_state() -> WatchState:
+    """Answer a never-stored configuration, where automation works without anybody switching it on."""
+    return WatchState(policy=AutomationPolicy(auto_enabled=True))
+
+
 class WatchStateStore:
     """Reads and writes the automation state without ever answering with an empty one."""
 
@@ -245,7 +250,7 @@ class WatchStateStore:
         try:
             text: str = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return WatchState()
+            return _fresh_state()
         except (OSError, UnicodeDecodeError) as problem:
             raise _invalid_file() from problem
         stored: WatchState = _parse(text)
@@ -438,6 +443,7 @@ def _encode_acquisition(confirmation: AcquisitionConfirmation) -> dict[str, obje
         "requested_action": confirmation.requested_action,
         "action_id": confirmation.action_id,
         "action_pending": confirmation.action_pending,
+        "action_sent": confirmation.action_sent,
         "problem": confirmation.problem,
         "complete_files": list(confirmation.complete_files),
         "file_layout": [[index, path, size] for index, path, size in confirmation.file_layout],
@@ -669,6 +675,7 @@ def _decode_acquisition(raw: object, schema_version: int) -> AcquisitionConfirma
     complete: object = stored.pop("complete_files", [])
     layout: object = stored.pop("file_layout", [])
     started: bool = _flag({"content_started": stored.pop("content_started", False)}, "content_started")
+    sent: bool = _flag({"action_sent": stored.pop("action_sent", False)}, "action_sent")
     repeat: str | None = _optional_text({"repeat_id": stored.pop("repeat_id", None)}, "repeat_id")
     document: dict[str, object] = _strict_object(
         {
@@ -707,6 +714,7 @@ def _decode_acquisition(raw: object, schema_version: int) -> AcquisitionConfirma
         file_layout=_decode_layout(layout),
         content_started=started,
         repeat_id=repeat,
+        action_sent=sent,
     )
 
 

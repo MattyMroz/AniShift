@@ -330,20 +330,20 @@ def test_autostart_enable_states_a_refusal_without_a_traceback(monkeypatch: pyte
     assert isinstance(result.exception, SystemExit)
 
 
-def test_autostart_disable_removes_the_task_and_stops_the_watch(
+def test_autostart_disable_switches_the_task_off_and_stops_the_watch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    removed: list[bool] = []
+    switched: list[bool] = []
     requested: list[Path] = []
-    monkeypatch.setattr(autostart, "disable", lambda: removed.append(True))
+    monkeypatch.setattr(autostart, "disable", lambda: switched.append(True))
     monkeypatch.setattr(cli_watch, "watch_state_dir", lambda: tmp_path)
     monkeypatch.setattr(cli_watch, "request_stop", requested.append)
 
     result: Result = CliRunner().invoke(cli_main.app, ["autostart", "disable"])
 
     assert result.exit_code == 0
-    assert removed == [True]
+    assert switched == [True]
     assert requested == [tmp_path]
 
 

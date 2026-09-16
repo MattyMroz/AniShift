@@ -28,6 +28,7 @@ __all__ = [
     "Runner",
     "disable",
     "enable",
+    "register",
     "resident_command",
     "status",
     "watch_command",
@@ -75,7 +76,7 @@ _TASK_XML: Final[str] = """<?xml version="1.0" encoding="UTF-16"?>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Enabled>true</Enabled>
+    <Enabled>{enabled}</Enabled>
   </Settings>
   <Actions Context="Author">
     <Exec>
@@ -150,30 +151,40 @@ def resident_command() -> list[str]:
     return [*watch_command(), "resident"]
 
 
-def enable(command: Sequence[str], *, run: Runner = _default_run) -> None:
-    """Register the logon task running *command* for this user, then start watching right away."""
+def register(command: Sequence[str], *, run: Runner = _default_run) -> None:
+    """Register the logon task running *command* for this user without starting the watch now."""
+    _register(command, enabled=True, run=run)
+
+
+def _register(command: Sequence[str], *, enabled: bool, run: Runner) -> None:
     _require_windows()
-    definition: Path = _write_definition(command)
+    definition: Path = _write_definition(command, enabled=enabled)
     try:
         _schtasks(run, ["/Create", "/F", "/XML", str(definition), "/TN", TASK_NAME], "register")
     finally:
         definition.unlink(missing_ok=True)
+    logger.info("Logon task registered", enabled=enabled, started=False)
+
+
+def enable(command: Sequence[str], *, run: Runner = _default_run) -> None:
+    """Register the logon task running *command* for this user, then start watching right away."""
+    register(command, run=run)
     _schtasks(run, ["/Run", "/TN", TASK_NAME], "start")
     logger.info("Logon task registered and started")
 
 
 def disable(*, run: Runner = _default_run) -> None:
-    """Remove the logon task, treating an already absent task as success."""
+    """Switch the logon task off, keeping the choice visible to every later start."""
     _require_windows()
-    completed: subprocess.CompletedProcess[str] = run([_SCHTASKS, "/Delete", "/F", "/TN", TASK_NAME])
+    completed: subprocess.CompletedProcess[str] = run([_SCHTASKS, "/Change", "/TN", TASK_NAME, "/DISABLE"])
     if completed.returncode == 0:
-        logger.info("Logon task removed", existed=True)
+        logger.info("Logon task switched off", existed=True)
         return
-    # The refusal text is localized, so a follow-up query decides whether the task exists at all.
     if _query(run).returncode != 0:
-        logger.info("Logon task removed", existed=False)
+        _register(watch_command(), enabled=False, run=run)
+        logger.info("Logon task switched off", existed=False)
         return
-    raise _failure(completed, "remove")
+    raise _failure(completed, "disable")
 
 
 def status(*, run: Runner = _default_run) -> AutostartStatus:
@@ -211,11 +222,12 @@ def _schtasks(run: Runner, arguments: Sequence[str], action: str) -> None:
     raise _failure(completed, action)
 
 
-def _write_definition(command: Sequence[str]) -> Path:
+def _write_definition(command: Sequence[str], *, enabled: bool) -> Path:
     """Write the task definition for *command* to a temporary UTF-16 file the scheduler imports."""
     user: str = f"{os.environ.get('USERDOMAIN', '.')}\\{getpass.getuser()}"
     text: str = _TASK_XML.format(
         namespace=_TASK_NAMESPACE,
+        enabled="true" if enabled else "false",
         user=escape(user),
         command=escape(command[0]),
         arguments=escape(_arguments(command[1:])),

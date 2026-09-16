@@ -217,12 +217,20 @@ class _InteractiveApplication:
         try:
             self._renderer.run()
         finally:
-            if self._state is not None:
-                self._state.close()
-            self._cancel_active_work()
-            self._close_settings()
-            self._mascot.close()
+            self._finish_session()
         return self._exit_code
+
+    def _finish_session(self) -> None:
+        """Run every teardown step, settings before the session they need, and never let one failure skip the rest."""
+        for step in (self._close_state, self._close_settings, self._cancel_active_work, self._mascot.close):
+            try:
+                step()
+            except (AniShiftError, ControlError, OSError, ValueError) as problem:
+                logger.warning("A panel teardown step failed", step=step.__name__, error_class=type(problem).__name__)
+
+    def _close_state(self) -> None:
+        if self._state is not None:
+            self._state.close()
 
     def _cancel_active_work(self) -> None:
         """Signal every active operation before the terminal owner closes."""
@@ -321,6 +329,9 @@ class _InteractiveApplication:
         self._renderer.exit()
 
     def _handle_idle(self) -> None:
+        if self._state is not None and self._state.finished():
+            self._renderer.exit()
+            return
         if self._state is not None and self._state.take_open_request():
             from anishift.platform.tray import raise_panel  # noqa: PLC0415
 

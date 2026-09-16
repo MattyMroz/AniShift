@@ -16,7 +16,7 @@ from shutil import which
 from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application import SCAN_INTERVAL_S, SUBSCRIPTION_CHECK_INTERVAL_S, WatchLedger
-from anishift.cli.exit_codes import EXIT_REFUSED, EXIT_SUCCESS
+from anishift.cli.exit_codes import EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS
 from anishift.errors import AniShiftError
 from anishift.paths import WATCH_DIRECTORY as STATE_DIR_NAME
 from anishift.paths import relocation_journal_dir, watch_dir
@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from anishift.application import AppService, AutoPreset, CheckOutcome, InspectedWorkspace
+    from anishift.platform.local_control import ControlServer
+    from anishift.platform.tray import TrayIcon
 
 __all__ = [
     "ERROR_BACKOFF_S",
@@ -82,6 +84,18 @@ _REFUSED_MESSAGE: Final[str] = "Another watch process already holds the lock"
 
 _RESIDENT_REFUSED: Final[str] = "Another resident already holds the lock"
 """Reason logged when a second resident leaves without recording itself."""
+
+_CLOSE_ATTEMPTS: Final[int] = 3
+"""Bounded attempts to close the private torrent client before an end admits it stayed open."""
+
+_CLOSE_RETRY_S: Final[float] = 0.5
+"""Pause between two attempts to close the private torrent client."""
+
+_CLIENT_LEFT_OPEN: Final[tuple[str, str]] = (
+    "AniShift",
+    "Nie udało się zamknąć prywatnego qBittorrenta · zamknij go ręcznie",
+)
+"""Notification title and sentence shown when an explicit end could not close the private client."""
 
 
 class Child(Protocol):
@@ -320,7 +334,6 @@ def run_resident(  # noqa: PLR0913 - every resident timing seam stays an explici
         clear_endpoint,
         control_endpoint,
         ensure_authkey,
-        remove_instance,
         write_instance,
     )
     from anishift.platform.tray import TrayIcon  # noqa: PLC0415 - desktop resources belong to the resident
@@ -329,9 +342,11 @@ def run_resident(  # noqa: PLR0913 - every resident timing seam stays an explici
     if not lock.acquire():
         logger.warning(_RESIDENT_REFUSED)
         return EXIT_REFUSED
+    closed: bool = True
     try:
         if enable_tray:
             contain_children()
+            _ensure_autostart()
         instance_id: str = f"instance-{token_hex(_INSTANCE_ID_BYTES)}"
         store: WatchStateStore = WatchStateStore(state_dir / WATCH_STATE_FILE_NAME)
         owner = AutomationOwner(
@@ -356,8 +371,10 @@ def run_resident(  # noqa: PLR0913 - every resident timing seam stays an explici
             if frame.get("event") == "state_changed":
                 tray.update(
                     auto_enabled=bool(payload.get("auto_enabled")),
-                    busy=bool(payload.get("requests")),
+                    busy=_busy(payload),
                     problem=bool(payload.get("transfers_problem") or payload.get("subscriptions_problem")),
+                    pausing=bool(payload.get("pausing")),
+                    incomplete=bool(payload.get("pause_incomplete")),
                 )
             elif frame.get("event") == "notification":
                 tray.notify(str(payload.get("title", "AniShift")), str(payload.get("message", "")))
@@ -387,18 +404,109 @@ def run_resident(  # noqa: PLR0913 - every resident timing seam stays an explici
                 on_ready()
             owner.serve()
         finally:
-            if tray is not None:
-                tray.close()
-            if file_watch is not None:
-                file_watch.close()
-            server.close()
-            if service.acquisition is not None:
-                service.acquisition.close()
-            remove_instance(state_dir)
+            closed = _release_resources(service, server, state_dir, tray=tray, file_watch=file_watch)
     finally:
         lock.release()
     logger.info("Resident stopped")
-    return EXIT_SUCCESS
+    return EXIT_SUCCESS if closed else EXIT_INCOMPLETE
+
+
+def _release_resources(
+    service: AppService,
+    server: ControlServer,
+    state_dir: Path,
+    *,
+    tray: TrayIcon | None,
+    file_watch: DirectoryWatch | None,
+) -> bool:
+    """Close every resource a resident owns, in the order an end requires, letting no failure skip a later step."""
+    from anishift.platform.local_control import remove_instance  # noqa: PLC0415 - keep the transport lazy
+
+    closed: bool = _close_client(service)
+    complete: bool = closed
+    steps: tuple[tuple[str, Callable[[], None]], ...] = (
+        ("tray", lambda: _close_tray(tray, closed=closed)),
+        ("file_watch", lambda: _close_watch(file_watch)),
+        ("control_server", server.close),
+        ("acquisition", lambda: _close_acquisition(service)),
+        ("instance_file", lambda: remove_instance(state_dir)),
+    )
+    for name, step in steps:
+        complete = _released(name, step) and complete
+    return complete
+
+
+def _released(name: str, step: Callable[[], None]) -> bool:
+    try:
+        step()
+    except (AniShiftError, OSError, ValueError) as problem:
+        logger.warning("A resident teardown step failed", step=name, error_class=type(problem).__name__)
+        return False
+    return True
+
+
+def _close_tray(tray: TrayIcon | None, *, closed: bool) -> None:
+    if tray is None:
+        return
+    tray.close(notification=None if closed else _CLIENT_LEFT_OPEN)
+
+
+def _close_watch(file_watch: DirectoryWatch | None) -> None:
+    if file_watch is not None:
+        file_watch.close()
+
+
+def _close_acquisition(service: AppService) -> None:
+    if service.acquisition is not None:
+        service.acquisition.close()
+
+
+def _busy(payload: Mapping[str, object]) -> bool:
+    """Answer whether any published request is work in flight rather than one a pause put away."""
+    from anishift.application import RequestState  # noqa: PLC0415 - keep the domain enum off the Typer import path
+
+    rows: object = payload.get("requests")
+    if not isinstance(rows, list):
+        return False
+    return any(isinstance(row, Mapping) and row.get("state") != RequestState.PAUSED.value for row in rows)
+
+
+def _close_client(service: AppService) -> bool:
+    """Close the private torrent client on an explicit end, retrying a bounded number of times before giving up."""
+    if service.acquisition is None:
+        return True
+    for attempt in range(_CLOSE_ATTEMPTS):
+        try:
+            service.acquisition.close_client()
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning(
+                "The private torrent client did not close",
+                attempt=attempt + 1,
+                attempts=_CLOSE_ATTEMPTS,
+                error_class=type(problem).__name__,
+            )
+            time.sleep(_CLOSE_RETRY_S)
+        else:
+            return True
+    logger.error("The private torrent client stayed open after an explicit end")
+    return False
+
+
+def _ensure_autostart() -> None:
+    """Register the logon task once when it is missing, without starting a second resident now."""
+    from anishift.platform.autostart import (  # noqa: PLC0415 - keep the scheduler off the CLI import path
+        AutostartStatus,
+        register,
+        status,
+        watch_command,
+    )
+
+    try:
+        if status() is not AutostartStatus.MISSING:
+            return
+        register(watch_command())
+    except (AniShiftError, OSError) as problem:
+        logger.warning("The logon task could not be registered", error_class=type(problem).__name__)
 
 
 def _spawn_panel() -> None:

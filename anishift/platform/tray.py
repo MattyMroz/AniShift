@@ -13,6 +13,7 @@ from enum import IntEnum
 from importlib.resources import as_file, files
 from secrets import token_hex
 from shutil import which
+from time import sleep
 from typing import Final
 
 from anishift.utils.logger import get_logger
@@ -25,6 +26,9 @@ logger = get_logger(__name__)
 
 _START_TIMEOUT_S: Final[float] = 5.0
 """Maximum wait for the hidden tray window to be created or closed."""
+
+_EXIT_NOTIFICATION_S: Final[float] = 5.0
+"""Reading opportunity after the shell accepts a final error notification, before its icon is removed."""
 
 _ICON_PARTS: Final[tuple[str, ...]] = ("cli", "interactive", "assets", "mascot", "app.ico")
 """Packaged mascot icon loaded without importing the interactive frontend."""
@@ -106,7 +110,10 @@ class TrayIcon:
         self._auto: bool = False
         self._busy: bool = False
         self._problem: bool = False
+        self._pausing: bool = False
+        self._incomplete: bool = False
         self._notification: tuple[str, str] | None = None
+        self._notification_submitted: threading.Event = threading.Event()
         self._post: Callable[[int, int, int, int], object] | None = None
         self._thread: threading.Thread | None = None
         if sys.platform == "win32":
@@ -119,11 +126,20 @@ class TrayIcon:
         """Whether the Windows tray message window was created."""
         return self._window != 0
 
-    def update(self, *, auto_enabled: bool, busy: bool, problem: bool = False) -> None:
+    def update(
+        self,
+        *,
+        auto_enabled: bool,
+        busy: bool,
+        problem: bool = False,
+        pausing: bool = False,
+        incomplete: bool = False,
+    ) -> None:
         """Replace the tooltip state without touching the application or network."""
         with self._lock:
             self._auto, self._busy = auto_enabled, busy
-            self._problem = problem
+            self._problem, self._pausing = problem, pausing
+            self._incomplete = incomplete
         self._send(_Message.UPDATE)
 
     def notify(self, title: str, message: str) -> None:
@@ -132,8 +148,13 @@ class TrayIcon:
             self._notification = (title, message)
         self._send(_Message.UPDATE)
 
-    def close(self) -> None:
-        """Remove the icon and join its message thread."""
+    def close(self, *, notification: tuple[str, str] | None = None) -> None:
+        """Offer a final error time on screen before removing the icon and joining its message thread."""
+        if notification is not None and self.available:
+            self._notification_submitted.clear()
+            self.notify(*notification)
+            if self._notification_submitted.wait(_START_TIMEOUT_S):
+                sleep(_EXIT_NOTIFICATION_S)
         self._send(_Message.CLOSE)
         if self._thread is not None:
             self._thread.join(_START_TIMEOUT_S)
@@ -141,6 +162,10 @@ class TrayIcon:
     def _send(self, message: _Message) -> None:
         if self._post is not None and self._window:
             self._post(self._window, message, 0, 0)
+
+    def _record_notification(self, notification: tuple[str, str] | None, *, submitted: bool) -> None:
+        if notification is not None and submitted:
+            self._notification_submitted.set()
 
     def _run(self) -> None:
         try:
@@ -232,17 +257,20 @@ class TrayIcon:
                 enabled: bool = self._auto
                 busy: bool = self._busy
                 problem: bool = self._problem
+                pausing: bool = self._pausing
+                incomplete: bool = self._incomplete
                 notification: tuple[str, str] | None = self._notification
                 self._notification = None
             data.uFlags = 1 | 2 | 4 | 128
             activity: str = "wymaga uwagi" if problem else ("praca trwa" if busy else "czuwanie")
-            data.szTip = f"AniShift · Auto {'włączone' if enabled else 'wyłączone'} · {activity}"
+            data.szTip = f"AniShift · {_mode(enabled=enabled, pausing=pausing, incomplete=incomplete)} · {activity}"
             data.szInfo, data.szInfoTitle = "", ""
             if notification is not None:
                 data.uFlags |= 16
                 data.szInfoTitle, data.szInfo = notification[0][:63], notification[1][:255]
                 data.dwInfoFlags = 4 | 32 | 128
-            shell.Shell_NotifyIconW(operation, ctypes.byref(data))
+            submitted: bool = bool(shell.Shell_NotifyIconW(operation, ctypes.byref(data)))
+            self._record_notification(notification, submitted=submitted)
             if operation == 0:
                 data.uTimeoutOrVersion = 4
                 shell.Shell_NotifyIconW(4, ctypes.byref(data))
@@ -316,18 +344,41 @@ class TrayIcon:
         user.DestroyMenu.argtypes = [wintypes.HMENU]
         menu = user.CreatePopupMenu()
         try:
-            user.AppendMenuW(menu, 0, 1, "Otwórz AniShift")
-            user.AppendMenuW(menu, 0, 2, "Wyłącz Auto" if self._auto else "Włącz Auto")
-            user.AppendMenuW(menu, 0, 3, "Zakończ AniShift")
+            enabled, items = self._menu_options()
+            for identifier, label in items:
+                user.AppendMenuW(menu, 0, identifier, label)
             point = wintypes.POINT()
             user.GetCursorPos(ctypes.byref(point))
             user.SetForegroundWindow(window)
             selected: int = user.TrackPopupMenu(menu, 0x0100 | 0x0002, point.x, point.y, 0, window, None)
-            action: str | None = {1: "open", 2: "toggle_auto", 3: "shutdown"}.get(selected)
+            action: str | None = self._menu_action(selected, enabled=enabled)
             if action is not None:
                 self._action(action)
         finally:
             user.DestroyMenu(menu)
+
+    def _menu_options(self) -> tuple[bool, tuple[tuple[int, str], ...]]:
+        """Read the flow state once and label every menu item from that single observation."""
+        with self._lock:
+            enabled: bool = self._auto
+        return enabled, (
+            (1, "Otwórz AniShift"),
+            (2, "Zatrzymaj AniShift" if enabled else "Wznów AniShift"),
+            (3, "Zakończ AniShift"),
+        )
+
+    def _menu_action(self, selected: int, *, enabled: bool) -> str | None:
+        """Name the action of one selection from the observation its label was built from."""
+        return {1: "open", 2: "pause" if enabled else "resume", 3: "shutdown"}.get(selected)
+
+
+def _mode(*, enabled: bool, pausing: bool, incomplete: bool) -> str:
+    """Name the four real flow states, including the settling one and a pause that left a transfer working."""
+    if enabled:
+        return "Praca"
+    if pausing:
+        return "Zatrzymywanie"
+    return "Pauza niepełna" if incomplete else "Wstrzymano"
 
 
 def _load_mascot_icon(user: ctypes.CDLL, resources: ExitStack, width: int, height: int) -> int:

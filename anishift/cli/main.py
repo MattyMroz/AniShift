@@ -301,7 +301,7 @@ def autostart_enable(resident: bool = typer.Option(False, "--resident", hidden=T
 
 @autostart_app.command("disable")
 def autostart_disable() -> None:
-    """Remove the logon task and ask a running watch to stop."""
+    """Switch the logon task off and ask a running watch to stop."""
     from anishift.cli.watch import request_stop, watch_state_dir  # noqa: PLC0415 - keep the watch loop lazy
     from anishift.platform.autostart import disable  # noqa: PLC0415 - keep the scheduler lazy
 

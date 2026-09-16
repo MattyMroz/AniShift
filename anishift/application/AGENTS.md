@@ -151,8 +151,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   bo nierozwiązany handle wiesza `execute` na zawsze. `service.py`
 - `WatchStateStore` zapisuje atomowo: `state.json.tmp` + `fsync`, kopia czytelnego `state.json`
   do `state.json.bak`, dopiero potem `replace`. Uszkodzony JSON, nieznany klucz i nieobsługiwana
-  wersja schematu dają `ConfigError`, nigdy pustego stanu; brak pliku to stan domyślny z wyłączonym
-  Auto. `WATCH_STATE_SCHEMA_VERSION` to `2`, a loader przyjmuje 1 i 2: starszy plik `load()` migruje
+  wersja schematu dają `ConfigError`, nigdy pustego stanu; brak pliku to stan domyślny z pracującą
+  automatyzacją, a zapisana pauza pozostaje pauzą. `WATCH_STATE_SCHEMA_VERSION` to `2`, a loader przyjmuje 1 i 2: starszy plik `load()` migruje
   raz, zostawia kopię `state.json.v1.bak` i przepisuje plik, więc drugi `load()` nie zmienia bajtów.
   Walidacja jest wersjonowana — dokument wersji 2 musi zawierać wszystkie sekcje schematu 2
   (`recipes`, `ready_groups`, `pause_owned_transfers`, `pending_deletions`, `complete_files`), a
@@ -210,9 +210,14 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   domyślnego profilu tłumaczenia), pula ekstrakcji z liczby grup ekstrakcyjnych
   WSZYSTKICH aktywnych kontekstów. `scheduler.py`, `scheduler_contracts.py`
 - `RequestOrigin` określa priorytet, a `RunRequest.automatic` dodatkowo podporządkowuje
-  pilny plik przełącznikowi Auto. Wyłączone Auto zatrzymuje kolejne taski takiego pliku,
-  ale jawny Manual nadal działa. Dotychczasowe `BACKGROUND` zawsze podlega temu przełącznikowi.
+  pilny plik wyjątkowi Auto dla katalogu pliku. Wyłączony katalog zatrzymuje kolejne taski
+  automatycznego zlecenia, ale jawne zlecenie tego pliku nadal działa. Dotychczasowe
+  `BACKGROUND` zawsze podlega temu wyjątkowi.
   `scheduler_runtime.py`, `scheduler.py`
+- Globalna pauza (`AutomationPolicy.auto_enabled == False`) jest szersza od wyjątków katalogów:
+  `GraphCoordinator.pause()` wstrzymuje dopuszczanie wszystkich zleceń, więc pod pauzą nie
+  przechodzi też jawny start ani jawne pobranie. `resume()` zwalnia dopuszczanie, chyba że
+  koordynator już się zamyka. `scheduler.py`, `service.py`, `automation.py`
 - Wątek `anishift-coordinator` istnieje tylko wtedy, gdy koordynator ma zlecenia:
   `submit` go startuje, pusta runda zamyka executory i kończy wątek, `close()` anuluje
   resztę i dołącza go. Bezczynny koordynator nie budzi się (licznik `wakeups`).

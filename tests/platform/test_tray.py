@@ -7,6 +7,7 @@ from ctypes import wintypes
 
 import pytest
 
+from anishift.platform import tray as tray_module
 from anishift.platform.tray import TrayIcon
 
 
@@ -48,4 +49,74 @@ def test_tray_recreates_its_icon_without_starting_work_and_removes_its_window() 
         assert calls == ["open", "open", "open", "open"]
     finally:
         tray.close()
+    assert not tray.available
+
+
+@pytest.mark.parametrize(
+    ("enabled", "pausing", "incomplete", "expected"),
+    [
+        (True, False, False, "Praca"),
+        (True, True, False, "Praca"),
+        (False, True, False, "Zatrzymywanie"),
+        (False, True, True, "Zatrzymywanie"),
+        (False, False, False, "Wstrzymano"),
+        (False, False, True, "Pauza niepełna"),
+    ],
+)
+def test_the_tray_names_settling_and_an_unfinished_pause_before_it_names_a_full_one(
+    enabled: bool, pausing: bool, incomplete: bool, expected: str
+) -> None:
+    assert tray_module._mode(enabled=enabled, pausing=pausing, incomplete=incomplete) == expected
+
+
+def test_a_menu_click_acts_on_the_state_its_label_was_built_from() -> None:
+    actions: list[str] = []
+    tray: TrayIcon = TrayIcon(actions.append)
+    try:
+        tray.update(auto_enabled=True, busy=False)
+        enabled, items = tray._menu_options()
+        tray.update(auto_enabled=False, busy=False)
+        chosen: str | None = tray._menu_action(2, enabled=enabled)
+        reopened: str | None = tray._menu_action(2, enabled=tray._menu_options()[0])
+    finally:
+        tray.close()
+
+    assert enabled
+    assert items == ((1, "Otwórz AniShift"), (2, "Zatrzymaj AniShift"), (3, "Zakończ AniShift"))
+    assert chosen == "pause"
+    assert reopened == "resume"
+    assert actions == []
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows notification area")
+def test_an_exit_notification_reaches_the_shell_before_its_icon_is_kept_for_reading_and_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shown: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    waits: list[float] = []
+
+    def hold(seconds: float) -> None:
+        waits.append(seconds)
+        shown.set()
+        assert release.wait(5.0)
+
+    monkeypatch.setattr(tray_module, "sleep", hold)
+    tray: TrayIcon = TrayIcon(lambda _action: None)
+    closing: threading.Thread = threading.Thread(
+        target=lambda: tray.close(notification=("AniShift test", "Isolated shutdown notification test")), daemon=True
+    )
+    try:
+        assert tray.available
+        closing.start()
+        assert shown.wait(5.0)
+        assert tray.available
+        assert closing.is_alive()
+        assert waits == [5.0]
+    finally:
+        release.set()
+        closing.join(5.0)
+        tray.close()
+    assert not closing.is_alive()
     assert not tray.available

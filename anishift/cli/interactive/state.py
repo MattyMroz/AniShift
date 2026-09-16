@@ -110,6 +110,8 @@ _REFUSAL_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
         RefusalReason.NOT_RESERVED.value: "Najpierw zajmij odcinek, potem dodaj do niego plik",
         RefusalReason.FOREIGN_PREVIEW.value: "Ten wybór należy do innego panelu",
         RefusalReason.NOT_RESUMABLE.value: "Tej pracy nie da się wznowić",
+        RefusalReason.PAUSED.value: "AniShift jest wstrzymany · wybierz Wznów, aby podjąć pracę",
+        RefusalReason.SHUTTING_DOWN.value: "AniShift się kończy · nie przyjmuje już nowej pracy",
     }
 )
 """Polish sentence the panel shows for every refusal cause the resident names."""
@@ -151,6 +153,7 @@ class StateController:
         self._invalidate: Callable[[], None] = invalidate
         self._lock: threading.RLock = threading.RLock()
         self._stop: threading.Event = threading.Event()
+        self._finished: bool = False
         self._open_requested: threading.Event = threading.Event()
         self._snapshot: Mapping[str, object] = {}
         self._subscriptions: list[Mapping[str, object]] = []
@@ -175,6 +178,10 @@ class StateController:
         session: ResidentSession | None = self._session
         if session is not None:
             session.close()
+
+    def finished(self) -> bool:
+        """Answer whether the resident announced its end, so this view has to close with it."""
+        return self._finished
 
     def take_open_request(self) -> bool:
         """Consume a tray request on the panel's event loop."""
@@ -433,6 +440,7 @@ class StateController:
                 if self._notice_version < self._state_version:
                     self._notice = ""
                 if payload.get("shutting_down"):
+                    self._finished = True
                     self._stop.set()
         elif frame.get("event") == "run_event":
             event: RunEvent = decode_view(RunEvent, payload)

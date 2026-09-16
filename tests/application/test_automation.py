@@ -5,8 +5,9 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,7 +59,12 @@ from anishift.application.control import (
 from anishift.application.control_views import encode_view
 from anishift.application.discovery import discover_groups
 from anishift.application.events import RunEvent, RunEventKind
-from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
+from anishift.application.inspection import (
+    InspectedSourceGroup,
+    InspectedWorkspace,
+    InspectionWarning,
+    WorkspaceInspector,
+)
 from anishift.application.intents import ProductIntent, ProductKind, RebuildRequest, RequestOrigin
 from anishift.application.planning import ExecutionPlan
 from anishift.application.ready import ReadyMove, ReadyStore
@@ -95,6 +101,7 @@ from anishift.platform.local_control import (
     ControlServer,
     control_endpoint,
 )
+from anishift.services.http_requests import RequestControl
 from anishift.services.media import DefaultMediaProbe
 from anishift.services.torrents import Release, TorrentClientError, TorrentFile, TorrentInfo, parse_release_name
 from anishift.services.torrents.categories import SEARCH_CATEGORIES
@@ -107,6 +114,10 @@ _INSTANCE: Final[str] = "instance-1"
 _CLIENT: Final[str] = "panel-1"
 
 _MOMENT: Final[datetime] = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+
+_STORE_FROZEN: Final[str] = "The state file stopped accepting writes"
+
+_STOP_REFUSED: Final[str] = "The client refused to stop this transfer"
 
 _PRESET: Final[AutoPresetDraft] = AutoPresetDraft(
     "preview",
@@ -133,8 +144,11 @@ class _TorrentNetwork:
         self.tracked: dict[str, TorrentInfo] = {}
         self.before_search: Callable[[], None] | None = None
         self.before_add: Callable[[], None] | None = None
+        self.before_info: Callable[[], None] | None = None
+        self.before_action: Callable[[], None] | None = None
         self.lose_response: bool = False
         self.entries: tuple[TorrentFile, ...] = ()
+        self.per_hash: dict[str, tuple[TorrentFile, ...]] = {}
         self.info_calls: int = 0
         self.unreachable: bool = False
         self.unstartable: bool = False
@@ -144,9 +158,31 @@ class _TorrentNetwork:
         self.actions: list[tuple[str, str]] = []
         self.released: list[frozenset[str]] = []
         self.unreadable_files: bool = False
+        self.prepared: int = 0
+        self.closed_owned: int = 0
+        self.unpreparable: bool = False
+
+    def download_scope(self, hashes: frozenset[str]) -> nullcontext[None]:
+        del hashes
+        return nullcontext()
 
     def transfer_action(self, info_hash: str, action: str) -> None:
         self.actions.append((info_hash, action))
+        if self.before_action is not None:
+            self.before_action()
+
+    def prepare(self) -> None:
+        self.prepared += 1
+        if self.unpreparable:
+            raise TorrentClientError(
+                context=ErrorContext(
+                    code=ErrorCode.TORRENT_CLIENT_UNAVAILABLE,
+                    message="The private torrent client could not start; resolve the problem and explicitly resume",
+                )
+            )
+
+    def close_owned(self) -> None:
+        self.closed_owned += 1
 
     def release_completed(self, hashes: frozenset[str]) -> frozenset[str]:
         self.released.append(hashes)
@@ -199,6 +235,8 @@ class _TorrentNetwork:
     def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
         del category
         self.info_calls += 1
+        if self.before_info is not None:
+            self.before_info()
         if self.unreachable:
             raise TorrentClientError(
                 context=ErrorContext(code=ErrorCode.TORRENT_CLIENT_UNAVAILABLE, message="The Web UI is closed")
@@ -206,14 +244,13 @@ class _TorrentNetwork:
         return tuple(self.tracked.values())
 
     def files(self, info_hash: str) -> tuple[TorrentFile, ...]:
-        del info_hash
         if self.unreadable_files:
             raise TorrentClientError(
                 context=ErrorContext(
                     code=ErrorCode.TORRENT_CLIENT_REFUSED, message="qBittorrent returned unreadable file metadata"
                 )
             )
-        return self.entries
+        return self.per_hash.get(info_hash, self.entries)
 
 
 class _Subscriptions:
@@ -231,6 +268,7 @@ class _Subscriptions:
         self.checks: int = 0
         self.stored_ranges: list[tuple[tuple[Decimal, ...], Decimal | None]] = []
         self.ordered_again: list[tuple[Decimal, ...]] = []
+        self.due_at: datetime | None = None
 
     def list(self) -> tuple[SimpleNamespace, ...]:
         return tuple(self.entries)
@@ -245,7 +283,7 @@ class _Subscriptions:
 
     def next_check_at(self, policy: AutomationPolicy) -> datetime | None:
         del policy
-        return None
+        return self.due_at
 
     def reconcile_sources(self, confirmations: Sequence[AcquisitionConfirmation]) -> None:
         del confirmations
@@ -307,6 +345,7 @@ class _Service:
         self.discover_calls: int = 0
         self.submitted_event: threading.Event = threading.Event()
         self.discover_release: threading.Event | None = None
+        self.paused: list[bool] = []
 
     def discover(self, *, changed_paths: Sequence[Path] | None = None) -> object:
         del changed_paths
@@ -378,6 +417,12 @@ class _Service:
 
     def drain(self) -> None:
         pass
+
+    def pause_runs(self) -> None:
+        self.paused.append(True)
+
+    def resume_runs(self) -> None:
+        self.paused.append(False)
 
     def retain_runs(self, run_ids: Sequence[str]) -> None:
         del run_ids
@@ -1074,6 +1119,7 @@ def test_subscription_changes_survive_the_gap_between_intent_and_confirmation(
 
 def test_a_repeated_command_identifier_replays_its_outcome_without_a_second_effect(tmp_path: Path) -> None:
     service, store, _ = _library(tmp_path)
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
     try:
@@ -1471,6 +1517,7 @@ def test_a_failed_state_save_refuses_the_command_and_changes_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, store, _ = _library(tmp_path)
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
     owner: AutomationOwner = _owner(service, store)
 
     def refuse(state: object) -> None:
@@ -1657,8 +1704,8 @@ def test_a_subscription_check_runs_off_the_owner_thread(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("phase", ["search", "add"])
-@pytest.mark.parametrize("action", ["disable", "remove", "shutdown"])
-def test_subscription_control_blocks_late_adds_and_keeps_admitted_transfers(
+@pytest.mark.parametrize("action", ["disable", "remove", "shutdown", "pause"])
+def test_subscription_control_blocks_late_adds_and_keeps_admitted_transfers(  # noqa: PLR0915
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     phase: str,
@@ -1697,8 +1744,11 @@ def test_subscription_control_blocks_late_adds_and_keeps_admitted_transfers(
     checking.start()
     try:
         assert entered.wait(_TIMEOUT_S)
-        kind: str = "shutdown" if action == "shutdown" else f"subscription_{action}"
-        changed: ControlResponse = owner.handle(_request(kind, {"subscription_id": subscription.subscription_id}))
+        kind: str = {"shutdown": "shutdown", "pause": "set_auto"}.get(action, f"subscription_{action}")
+        payload: dict[str, object] = (
+            {"enabled": False} if action == "pause" else {"subscription_id": subscription.subscription_id}
+        )
+        changed: ControlResponse = owner.handle(_request(kind, payload))
         assert changed.ok
         if action == "shutdown":
             assert thread.is_alive()
@@ -1719,6 +1769,10 @@ def test_subscription_control_blocks_late_adds_and_keeps_admitted_transfers(
     assert len(acquisitions) == (1 if phase == "add" else 0)
     if acquisitions:
         assert acquisitions[0].state is AcquisitionState.ACCEPTED
+    if action == "pause":
+        assert store.load().policy.auto_enabled is False
+        assert all(item.state == "stoppedDL" for item in network.tracked.values())
+        assert network.started == []
 
 
 @pytest.mark.parametrize("remove", [False, True])
@@ -2095,6 +2149,7 @@ def test_auto_off_keeps_the_library_current_and_auto_on_admits_without_another_f
     monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
     monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
     service, store, group_id = _library(tmp_path)
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
     owner: AutomationOwner = _owner(service, store, scan_interval_s=0.01)
     observed: threading.Event = threading.Event()
 
@@ -2475,7 +2530,7 @@ def test_a_stopped_transfer_reserves_flat_names_before_its_content_is_started(tm
     item: AcquisitionConfirmation = AcquisitionConfirmation(
         "operation-9", "9", "", (), AcquisitionState.ACCEPTED, RequestOrigin.USER, None, "9", _MOMENT.isoformat()
     )
-    store.save(WatchState(acquisitions=(item,)))
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(item,)))
     owner: AutomationOwner = _owner(service, store)
 
     owner._inspect_transfers((item,), frozenset())
@@ -2525,13 +2580,14 @@ def test_a_transfer_whose_names_are_not_reserved_yet_defers_the_resume_a_client_
         requested_action="resume",
         action_pending=True,
     )
+    store.save(WatchState(acquisitions=(waiting,)))
     owner: AutomationOwner = _owner(service, store)
 
-    assert owner._apply_transfer_action(acquisition, waiting) == waiting
+    assert owner._apply_transfer_action(acquisition, waiting, {}) == waiting
     assert network.actions == []
 
     settled: AcquisitionConfirmation = owner._apply_transfer_action(
-        acquisition, replace(waiting, file_layout=((0, "09.mkv", 4),))
+        acquisition, replace(waiting, file_layout=((0, "09.mkv", 4),)), {}
     )
 
     assert network.actions == [("9", "resume")]
@@ -2709,7 +2765,12 @@ def test_a_transfer_that_released_its_file_lets_the_deferred_source_reach_ready(
         ),
     )
     store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
-    store.save(WatchState(acquisitions=(_owned(("Book.txt",), (), RequestOrigin.USER, size, directory="audiobook"),)))
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(_owned(("Book.txt",), (), RequestOrigin.USER, size, directory="audiobook"),),
+        )
+    )
     owner: AutomationOwner = _relocating_owner(tmp_path, service, store)
     thread: threading.Thread = _serving(owner)
     try:
@@ -2802,6 +2863,7 @@ def test_two_transfers_of_one_file_name_reserve_separate_names_beside_ready_and_
     )
     store.save(
         WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
             acquisitions=(first, second),
             ready_groups=(
                 ReadyGroup(
@@ -2846,7 +2908,7 @@ def test_a_file_already_lying_in_the_workspace_keeps_an_incoming_set_off_its_nam
     item: AcquisitionConfirmation = AcquisitionConfirmation(
         "operation-9", "9", "", (), AcquisitionState.ACCEPTED, RequestOrigin.USER, None, "9", _MOMENT.isoformat()
     )
-    store.save(WatchState(acquisitions=(item,)))
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(item,)))
     owner: AutomationOwner = _owner(service, store)
 
     owner._inspect_transfers((item,), owner._reserved_names())
@@ -2873,7 +2935,7 @@ def test_a_subfolder_of_the_workspace_never_pushes_an_incoming_set_off_its_relea
     item: AcquisitionConfirmation = AcquisitionConfirmation(
         "operation-9", "9", "", (), AcquisitionState.ACCEPTED, RequestOrigin.USER, None, "9", _MOMENT.isoformat()
     )
-    store.save(WatchState(acquisitions=(item,)))
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(item,)))
     owner: AutomationOwner = _owner(service, store)
 
     owner._inspect_transfers((item,), owner._reserved_names())
@@ -2927,7 +2989,7 @@ def test_a_destination_that_cannot_be_read_holds_that_release_without_starting_i
     network.tracked["10"] = TorrentInfo("Other", "10", 0.5, "downloading", str(tmp_path), 2, 2)
     fresh: AcquisitionConfirmation = _accepted_transfer("9")
     writing: AcquisitionConfirmation = _accepted_transfer("10", layout=((0, "09.mkv", 4),), started=True)
-    store.save(WatchState(acquisitions=(fresh, writing)))
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(fresh, writing)))
     owner: AutomationOwner = _owner(service, store)
     listing: Callable[[Path], Iterator[Path]] = Path.iterdir
 
@@ -2958,7 +3020,7 @@ def test_a_hidden_file_already_lying_in_the_workspace_keeps_an_incoming_set_off_
     hidden.write_bytes(b"the hidden episode a person put here")
     network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "Pack/.09.mkv", 4, 0.0, 1),))
     item: AcquisitionConfirmation = _accepted_transfer("9")
-    store.save(WatchState(acquisitions=(item,)))
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(item,)))
     owner: AutomationOwner = _owner(service, store)
 
     owner._inspect_transfers((item,), owner._reserved_names())
@@ -2974,7 +3036,12 @@ def test_anything_taking_a_reserved_name_before_the_start_holds_that_release_wit
 ) -> None:
     service, store, _ = _library(tmp_path)
     network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1),))
-    store.save(WatchState(acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),)),)))
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),)),),
+        )
+    )
     taken: Path = tmp_path / "09.mkv"
     taken.write_bytes(b"the episode a person put here")
     owner: AutomationOwner = _owner(service, store)
@@ -2999,7 +3066,12 @@ def _held_release(
     monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
     service, store, _ = _library(tmp_path)
     network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1),))
-    store.save(WatchState(acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),)),)))
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),)),),
+        )
+    )
     taken: Path = tmp_path / "09.mkv"
     taken.write_bytes(b"the episode a person put here")
     return _owner(service, store), network, store, taken
@@ -3126,7 +3198,7 @@ def test_an_entry_that_no_longer_reads_as_a_file_still_keeps_an_incoming_set_off
     (tmp_path / "09.mkv").write_bytes(b"link")
     network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "Pack/09.mkv", 4, 0.0, 1),))
     item: AcquisitionConfirmation = _accepted_transfer("9")
-    store.save(WatchState(acquisitions=(item,)))
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(item,)))
     owner: AutomationOwner = _owner(service, store)
     _unreadable_entry(monkeypatch, tmp_path / "09.mkv")
 
@@ -3144,7 +3216,12 @@ def test_a_name_that_still_has_a_directory_entry_holds_a_release_that_reserved_i
 ) -> None:
     service, store, _ = _library(tmp_path)
     network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1),))
-    store.save(WatchState(acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),)),)))
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),)),),
+        )
+    )
     (tmp_path / "09.mkv").write_bytes(b"link")
     owner: AutomationOwner = _owner(service, store)
     _unreadable_entry(monkeypatch, tmp_path / "09.mkv")
@@ -3227,7 +3304,7 @@ def test_a_multi_file_release_of_the_real_client_reserves_every_name_and_starts(
         parse_name=parse_release_name,
     )
     item: AcquisitionConfirmation = _accepted_transfer("9")
-    store.save(WatchState(acquisitions=(item,)))
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(item,)))
     owner: AutomationOwner = _owner(service, store)
 
     with http:
@@ -3263,7 +3340,7 @@ def test_a_release_the_client_still_reports_publishes_its_unreadable_destination
     service, store, _ = _library(tmp_path)
     _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1),))
     item: AcquisitionConfirmation = _accepted_transfer("9")
-    store.save(WatchState(acquisitions=(item,)))
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(item,)))
     owner: AutomationOwner = _owner(service, store)
     listing: Callable[[Path], Iterator[Path]] = Path.iterdir
 
@@ -3282,7 +3359,12 @@ def test_a_release_the_client_still_reports_publishes_its_unreadable_destination
 def test_a_release_the_client_still_reports_publishes_its_occupied_name(tmp_path: Path) -> None:
     service, store, _ = _library(tmp_path)
     _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1),))
-    store.save(WatchState(acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),)),)))
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),)),),
+        )
+    )
     (tmp_path / "09.mkv").write_bytes(b"the episode a person put here")
     owner: AutomationOwner = _owner(service, store)
 
@@ -3304,3 +3386,1433 @@ def test_a_release_the_client_still_reports_publishes_its_failing_inspection(tmp
         _drain_owner_queue(owner)
 
     assert _reported_problem(owner) == (True, True)
+
+
+def _pausable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    subscription_id: str | None = None,
+) -> tuple[AutomationOwner, _TorrentNetwork, WatchStateStore, _Service]:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1),))
+    network.tracked["9"] = TorrentInfo("Pack", "9", 0.5, "downloading", str(tmp_path), 4, 2)
+    network.tracked["10"] = TorrentInfo("Other", "10", 0.5, "stoppedDL", str(tmp_path), 4, 2)
+    network.per_hash["10"] = (TorrentFile(0, "10.mkv", 4, 0.5, 1),)
+    mine: AcquisitionConfirmation = _accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(
+                replace(mine, subscription_id=subscription_id),
+                replace(
+                    _accepted_transfer("10", layout=((0, "10.mkv", 4),), started=True),
+                    requested_action="stop",
+                ),
+            ),
+        )
+    )
+    return _owner(service, store), network, store, service
+
+
+def _switched(owner: AutomationOwner, *, enabled: bool, command_id: str) -> bool:
+    return owner.handle(_request("set_auto", {"enabled": enabled}, command_id=command_id)).ok
+
+
+def test_one_pause_stops_the_schedule_the_polling_and_records_only_the_transfers_it_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, network, store, service = _pausable(tmp_path, monkeypatch)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: network.info_calls > 1)
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert _await(lambda: ("9", "stop") in network.actions)
+        time.sleep(0.2)
+        settled: int = network.info_calls
+        time.sleep(0.3)
+        assert network.info_calls == settled
+        assert owner._subscriptions_at is None
+        assert owner._transfers_at is None
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    state: WatchState = store.load()
+    assert state.pause_owned_transfers == ("9",)
+    assert service.paused == [True]
+    assert ("10", "stop") not in network.actions
+
+
+def test_a_resume_restarts_only_the_transfers_that_pause_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, network, store, service = _pausable(tmp_path, monkeypatch)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: network.info_calls > 1)
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert _await(lambda: ("9", "stop") in network.actions)
+        assert _switched(owner, enabled=True, command_id="resume-1")
+        assert _await(lambda: ("9", "resume") in network.actions)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    state: WatchState = store.load()
+    hand_stopped: AcquisitionConfirmation = next(item for item in state.acquisitions if item.info_hash == "10")
+    assert state.pause_owned_transfers == ()
+    assert ("10", "resume") not in network.actions
+    assert hand_stopped.requested_action == "stop"
+    assert service.paused == [True, False]
+
+
+def test_a_resume_leaves_the_transfer_of_a_disabled_subscription_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, network, store, service = _pausable(tmp_path, monkeypatch, subscription_id="a")
+    assert service.subscriptions is not None
+    service.subscriptions.entries[0].enabled = False
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: network.info_calls > 1)
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert _await(lambda: ("9", "stop") in network.actions)
+        assert _switched(owner, enabled=True, command_id="resume-1")
+        time.sleep(0.2)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert ("9", "resume") not in network.actions
+    assert store.load().pause_owned_transfers == ()
+
+
+def test_repeating_pause_and_resume_never_touches_the_separately_stopped_transfer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, network, store, _ = _pausable(tmp_path, monkeypatch)
+
+    def counted(action: str, times: int) -> Callable[[], bool]:
+        return lambda: network.actions.count(("9", action)) == times
+
+    thread: threading.Thread = _serving(owner)
+    try:
+        for cycle in range(2):
+            assert _switched(owner, enabled=False, command_id=f"pause-{cycle}")
+            assert _await(counted("stop", cycle + 1))
+            assert _switched(owner, enabled=True, command_id=f"resume-{cycle}")
+            assert _await(counted("resume", cycle + 1))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    state: WatchState = store.load()
+    hand_stopped: AcquisitionConfirmation = next(item for item in state.acquisitions if item.info_hash == "10")
+    assert [item for item in network.actions if item[0] == "10"] == []
+    assert hand_stopped.requested_action == "stop"
+
+
+def test_a_paused_resident_refuses_an_explicit_start_and_an_explicit_download(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        preview: ControlResponse = owner.handle(
+            _request("preview", {"client_id": _CLIENT, "preset_id": "preview"}, command_id="preview-1")
+        )
+        assert preview.ok
+        started: ControlResponse = owner.handle(
+            _request(
+                "start",
+                {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]},
+                command_id="start-1",
+            )
+        )
+        _chosen, download = owner._accept_download(_request("download", {}, command_id="download-1"), ())
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert started.code is ControlErrorCode.REFUSED
+    assert started.reason == RefusalReason.PAUSED.value
+    assert download.code is ControlErrorCode.REFUSED
+    assert download.reason == RefusalReason.PAUSED.value
+    assert service.submitted == []
+    assert store.load().requests == ()
+
+
+def test_a_late_subscription_result_is_refused_by_a_pause_that_landed_during_the_search(tmp_path: Path) -> None:
+    service, store, network, subscription = _subscription_library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+
+    def pause_during_search() -> None:
+        _switched(owner, enabled=False, command_id="pause-1")
+
+    network.before_search = pause_during_search
+    try:
+        assert _switched(owner, enabled=True, command_id="resume-0")
+        answer: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check-1"))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    state: WatchState = store.load()
+    assert answer.ok
+    assert state.policy.auto_enabled is False
+    assert network.added == []
+    assert state.acquisitions == ()
+    assert subscription.enabled is True
+
+
+def test_a_stored_pause_is_still_a_pause_after_a_restart(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        answer: ControlResponse = owner.handle(_request("status", command_id="status-1"))
+        admissions: list[bool] = list(service.background_admission)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert answer.result["paused"] is True
+    assert answer.result["auto_enabled"] is False
+    assert service.paused == [True]
+    assert admissions == [False]
+
+
+@pytest.mark.parametrize("working", [True, False])
+def test_every_start_prepares_the_private_client_without_polling_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, working: bool
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, ())
+    network.tracked.clear()
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=working)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        time.sleep(0.2)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert network.prepared == 1
+    assert network.info_calls == 0
+
+
+def _transfers_problem(owner: AutomationOwner) -> object:
+    return owner.handle(_request("status", command_id="status-transfers")).result["transfers_problem"]
+
+
+def test_a_client_that_cannot_be_prepared_is_reported_without_stopping_the_resident(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, ())
+    network.tracked.clear()
+    network.unpreparable = True
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: network.prepared == 1)
+        assert _await(lambda: _transfers_problem(owner) is not None)
+        answer: ControlResponse = owner.handle(_request("status", command_id="status-1"))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert not thread.is_alive()
+    assert answer.ok
+    assert answer.result["transfers_problem"] is not None
+
+
+def test_an_empty_subscription_orders_nothing_while_the_resident_works(tmp_path: Path) -> None:
+    service, store, network, _ = _subscription_library(tmp_path)
+    network.releases = ()
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _switched(owner, enabled=True, command_id="resume-0")
+        assert owner.handle(_request("subscriptions_check", command_id="check-1")).ok
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert network.added == []
+    assert store.load().acquisitions == ()
+
+
+def _qbittorrent_replies(root: Path) -> Callable[[httpx.Request], httpx.Response]:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/torrents/info"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "name": "Pack",
+                        "hash": "9",
+                        "progress": 0.5,
+                        "state": "downloading",
+                        "save_path": str(root),
+                        "size": 4,
+                        "completed": 2,
+                        "amount_left": 2,
+                    }
+                ],
+            )
+        if request.url.path.endswith("/torrents/files"):
+            return httpx.Response(200, json=[{"index": 0, "name": "09.mkv", "size": 4, "progress": 0.5, "priority": 1}])
+        return httpx.Response(200, text="Ok.")
+
+    return respond
+
+
+def _measured_acquisition(
+    tmp_path: Path, service: _Service, http: httpx.Client, control: RequestControl
+) -> _TorrentNetwork:
+    management: _TorrentNetwork = _TorrentNetwork()
+    service.acquisition = AcquisitionService(
+        source=management,
+        client=QBittorrentClient("http://127.0.0.1:65000", http=http),
+        workspace_root=tmp_path,
+        parse_name=parse_release_name,
+        request_control=control,
+        torrent_management=cast("TorrentManagement", management),
+    )
+    return management
+
+
+def _idle_counts(
+    control: RequestControl, service: _Service, subscriptions: _Subscriptions, management: _TorrentNetwork
+) -> tuple[int, int, int, int]:
+    requests: int = sum(int(cast("int", item["count"])) for item in control.counts())
+    return (requests, service.discover_calls, subscriptions.checks, management.resume_calls)
+
+
+def test_a_full_pause_stops_every_real_request_and_probe_that_a_live_panel_cannot_revive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    subscriptions: _Subscriptions | None = service.subscriptions
+    assert subscriptions is not None
+    subscriptions.due_at = _MOMENT + timedelta(hours=1)
+    control: RequestControl = RequestControl(httpx.MockTransport(_qbittorrent_replies(tmp_path)))
+    http: httpx.Client = httpx.Client(transport=control)
+    management: _TorrentNetwork = _measured_acquisition(tmp_path, service, http, control)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True),),
+        )
+    )
+    owner: AutomationOwner = _owner(service, store)
+    key: bytes = os.urandom(32)
+    server: ControlServer = ControlServer(control_endpoint(tmp_path), key, owner.handle, on_disconnect=owner.disconnect)
+    owner.attach_broadcast(server.broadcast)
+    thread: threading.Thread = _serving(owner)
+    panel: ControlClient = ControlClient(control_endpoint(tmp_path), key, timeout_s=_TIMEOUT_S)
+    stream: ControlClient = ControlClient(control_endpoint(tmp_path), key, timeout_s=_TIMEOUT_S)
+    frames: list[Mapping[str, object]] = []
+    stream.subscribe()
+    reader: threading.Thread = threading.Thread(target=lambda: frames.extend(stream.events()), daemon=True)
+    reader.start()
+    try:
+        assert _await(lambda: _idle_counts(control, service, subscriptions, management)[0] > 1)
+        assert panel.call("set_auto", {"enabled": False})["auto_enabled"] is False
+        assert _await(lambda: ("9", "stop") in management.actions)
+        time.sleep(0.2)
+        watched: tuple[int, int, int, int] = _idle_counts(control, service, subscriptions, management)
+        time.sleep(0.4)
+        assert _idle_counts(control, service, subscriptions, management) == watched
+        for index in range(3):
+            assert panel.call("status", command_id=f"status-{index}")["paused"] is True
+        assert _idle_counts(control, service, subscriptions, management) == watched
+        assert frames != []
+        panel.close()
+        stream.close()
+        assert _await(lambda: not reader.is_alive())
+        time.sleep(0.4)
+        assert _idle_counts(control, service, subscriptions, management) == watched
+    finally:
+        panel.close()
+        stream.close()
+        server.close()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        http.close()
+
+    assert watched[0] > 1
+    assert watched[3] > 0
+    assert store.load().pause_owned_transfers == ("9",)
+
+
+def test_a_settled_working_resident_polls_nothing_while_its_schedule_stays_armed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    subscriptions: _Subscriptions | None = service.subscriptions
+    assert subscriptions is not None
+    subscriptions.due_at = _MOMENT + timedelta(hours=1)
+    control: RequestControl = RequestControl(httpx.MockTransport(_qbittorrent_replies(tmp_path)))
+    http: httpx.Client = httpx.Client(transport=control)
+    management: _TorrentNetwork = _measured_acquisition(tmp_path, service, http, control)
+    finished: AcquisitionConfirmation = replace(
+        _accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True), state=AcquisitionState.COMPLETE
+    )
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(finished,)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        time.sleep(0.3)
+        measured: tuple[int, int, int, int] = _idle_counts(control, service, subscriptions, management)
+        time.sleep(0.4)
+        assert _idle_counts(control, service, subscriptions, management) == measured
+        armed: float | None = owner._subscriptions_at
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        http.close()
+
+    assert measured == (0, 0, 0, 0)
+    assert armed is not None
+
+
+def test_pausing_is_reported_until_the_started_work_reaches_its_boundary(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        run_id: str = _started(owner)
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        during: ControlResponse = owner.handle(_request("status", command_id="status-1"))
+        service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+        settled: bool = _await(lambda: bool(owner.handle(_request("status", command_id="status-2")).result["paused"]))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert during.result["pausing"] is True
+    assert during.result["paused"] is False
+    assert during.result["auto_enabled"] is False
+    assert settled
+
+
+def test_repeated_pause_and_resume_never_spends_the_recovery_budget_of_a_paused_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
+    monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
+    service, store, group_id = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store, scan_interval_s=0.01)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        run_id: str = _started(owner)
+        service.active.remove(run_id)
+        service.handles[run_id].resolve(RunResult(run_id, (GroupResult(group_id, GroupStatus.CANCELLED),), paused=True))
+        assert _await(lambda: _request_states(owner) == [RequestState.PAUSED.value])
+        for cycle in range(4):
+            assert _switched(owner, enabled=False, command_id=f"pause-{cycle}")
+            assert _switched(owner, enabled=True, command_id=f"resume-{cycle}")
+            time.sleep(0.05)
+    finally:
+        for active in tuple(service.active):
+            service.finish(active, GroupStatus.SUCCEEDED, group_id)
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    recorded: ProcessingRequest = store.load().requests[0]
+    assert recorded.state is not RequestState.FAILED
+    assert recorded.problem is None
+    assert recorded.attempts == 1
+
+
+def test_a_transfer_a_person_stopped_in_the_client_is_neither_recorded_nor_restarted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1),))
+    network.tracked["9"] = TorrentInfo("Pack", "9", 0.5, "downloading", str(tmp_path), 4, 2)
+    network.tracked["10"] = TorrentInfo("Other", "10", 0.5, "stoppedDL", str(tmp_path), 4, 2)
+    network.per_hash["10"] = (TorrentFile(0, "10.mkv", 4, 0.5, 1),)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(
+                _accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True),
+                _accepted_transfer("10", layout=((0, "10.mkv", 4),), started=True),
+            ),
+        )
+    )
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: network.info_calls > 1)
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert _await(lambda: ("9", "stop") in network.actions)
+        assert _switched(owner, enabled=True, command_id="resume-1")
+        assert _await(lambda: ("9", "resume") in network.actions)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert store.load().pause_owned_transfers == ()
+    assert [item for item in network.actions if item[0] == "10"] == []
+
+
+def test_an_explicit_stop_during_the_pause_takes_that_transfer_out_of_the_resumed_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, network, store, _ = _pausable(tmp_path, monkeypatch)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: network.info_calls > 1)
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert _await(lambda: ("9", "stop") in network.actions)
+        assert owner.handle(_request("transfer", {"info_hash": "9", "action": "stop"}, command_id="stop-9")).ok
+        assert store.load().pause_owned_transfers == ()
+        assert _switched(owner, enabled=True, command_id="resume-1")
+        time.sleep(0.2)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert ("9", "resume") not in network.actions
+    assert store.load().pause_owned_transfers == ()
+
+
+def test_a_pause_landing_during_the_client_read_reserves_no_name_and_starts_no_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "Pack/09.mkv", 4, 0.0, 1),))
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(_accepted_transfer("9"),)))
+    owner: AutomationOwner = _owner(service, store)
+    switched: threading.Event = threading.Event()
+
+    def pause_during_read() -> None:
+        if switched.is_set():
+            return
+        switched.set()
+        assert _switched(owner, enabled=False, command_id="pause-1")
+
+    network.before_info = pause_during_read
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(switched.is_set)
+        time.sleep(0.3)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    stored: AcquisitionConfirmation = store.load().acquisitions[0]
+    assert network.renamed == []
+    assert network.started == []
+    assert stored.file_layout == ()
+    assert stored.content_started is False
+
+
+def test_a_confirmed_pause_already_carries_its_recorded_stop_in_the_stored_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, network, store, _ = _pausable(tmp_path, monkeypatch)
+    thread: threading.Thread = _serving(owner)
+    saves: list[int] = []
+    original: Callable[[WatchState], None] = store.save
+
+    def once(state: WatchState) -> None:
+        saves.append(1)
+        if len(saves) > 1:
+            raise OSError("no disk")
+        original(state)
+
+    try:
+        assert _await(lambda: network.info_calls > 1)
+        monkeypatch.setattr(store, "save", once)
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        recorded: WatchState = store.load()
+    finally:
+        monkeypatch.setattr(store, "save", original)
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    stopped: AcquisitionConfirmation = next(item for item in recorded.acquisitions if item.info_hash == "9")
+    assert recorded.policy.auto_enabled is False
+    assert recorded.pause_owned_transfers == ("9",)
+    assert stopped.requested_action == "stop"
+    assert stopped.action_pending is True
+
+
+def test_a_full_pause_refuses_a_client_resume_and_a_manual_subscription_check(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1),))
+    subscriptions: _Subscriptions = cast("_Subscriptions", service.subscriptions)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=False),
+            acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True),),
+        )
+    )
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        resumed: ControlResponse = owner.handle(
+            _request("transfer", {"info_hash": "9", "action": "resume"}, command_id="resume-1")
+        )
+        checked: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check-1"))
+        browsed: ControlResponse = owner.handle(
+            _request("acquisition", {"operation": "search", "query": "Neko"}, command_id="browse-1")
+        )
+        stopped: ControlResponse = owner.handle(
+            _request("transfer", {"info_hash": "9", "action": "stop"}, command_id="stop-1")
+        )
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert resumed.code is ControlErrorCode.REFUSED
+    assert resumed.reason == RefusalReason.PAUSED.value
+    assert checked.code is ControlErrorCode.REFUSED
+    assert checked.reason == RefusalReason.PAUSED.value
+    assert browsed.ok
+    assert stopped.ok
+    assert subscriptions.checks == 0
+    assert network.added == []
+    assert [item for item in network.actions if item[1] == "resume"] == []
+    assert store.load().acquisitions[0].requested_action == "stop"
+
+
+def _stale_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, seen: str, current: str
+) -> tuple[AutomationOwner, _TorrentNetwork, WatchStateStore, threading.Thread, threading.Event]:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1),))
+    network.tracked["9"] = TorrentInfo("Pack", "9", 0.5, seen, str(tmp_path), 4, 2)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True),),
+        )
+    )
+    owner: AutomationOwner = _owner(service, store)
+    held: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    holds: list[int] = []
+
+    def hold() -> None:
+        if holds:
+            return
+        holds.append(1)
+        held.set()
+        release.wait(_TIMEOUT_S)
+
+    thread: threading.Thread = _serving(owner)
+    assert _await(lambda: network.info_calls > 0)
+    network.before_info = hold
+    assert held.wait(_TIMEOUT_S)
+    network.tracked["9"] = replace(network.tracked["9"], state=current)
+    return owner, network, store, thread, release
+
+
+def test_a_pause_stops_a_transfer_the_client_reports_working_after_an_older_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, network, store, thread, release = _stale_snapshot(
+        tmp_path, monkeypatch, seen="stoppedDL", current="downloading"
+    )
+    try:
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        release.set()
+        assert _await(lambda: ("9", "stop") in network.actions)
+    finally:
+        release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert store.load().pause_owned_transfers == ("9",)
+
+
+def test_a_pause_withdraws_its_stop_for_a_transfer_the_client_reports_already_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, network, store, thread, release = _stale_snapshot(
+        tmp_path, monkeypatch, seen="downloading", current="stoppedDL"
+    )
+    try:
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        release.set()
+        assert _await(lambda: _acquisition_fields(owner, "action") == [None])
+        assert _switched(owner, enabled=True, command_id="resume-1")
+        assert _await(lambda: network.info_calls > 5)
+    finally:
+        release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert network.actions == []
+    assert network.started == []
+    assert store.load().acquisitions[0].requested_action is None
+
+
+def _request_states(owner: AutomationOwner) -> list[object]:
+    rows: object = owner.handle(_request("status", command_id="status-requests")).result["requests"]
+    return [row["state"] for row in cast("list[Mapping[str, object]]", rows)]
+
+
+def _pause_flags(owner: AutomationOwner) -> tuple[object, object, object]:
+    result: Mapping[str, object] = owner.handle(_request("status", command_id="status-pause")).result
+    return result["paused"], result["pausing"], result["pause_incomplete"]
+
+
+def _acquisition_fields(owner: AutomationOwner, field: str) -> list[object]:
+    rows: object = owner.handle(_request("status", command_id=f"status-{field}")).result["acquisitions"]
+    return [row[field] for row in cast("list[Mapping[str, object]]", rows)]
+
+
+def test_a_pause_keeps_settling_while_an_owned_search_is_still_in_flight(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, ())
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True)))
+    owner: AutomationOwner = _owner(service, store)
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    def hold() -> None:
+        entered.set()
+        release.wait(_TIMEOUT_S)
+
+    network.before_search = hold
+    thread: threading.Thread = _serving(owner)
+    answers: list[ControlResponse] = []
+    searching: threading.Thread = threading.Thread(
+        target=lambda: answers.append(
+            owner.handle(_request("acquisition", {"operation": "search", "query": "Neko"}, command_id="browse-1"))
+        ),
+        daemon=True,
+    )
+    searching.start()
+    try:
+        assert entered.wait(_TIMEOUT_S)
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        during: ControlResponse = owner.handle(_request("status", command_id="status-1"))
+        release.set()
+        searching.join(_TIMEOUT_S)
+        settled: bool = _await(lambda: bool(owner.handle(_request("status", command_id="status-2")).result["paused"]))
+    finally:
+        release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert during.result["pausing"] is True
+    assert during.result["paused"] is False
+    assert settled
+    assert answers[0].ok
+
+
+def test_a_replayed_shutdown_command_still_ends_the_resident(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    first: AutomationOwner = _owner(service, store)
+    opening: threading.Thread = _serving(first)
+    accepted: ControlResponse = first.handle(_request("shutdown", command_id="end-1"))
+    opening.join(_TIMEOUT_S)
+    second: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(second)
+    replayed: ControlResponse = second.handle(_request("shutdown", command_id="end-1"))
+    thread.join(_TIMEOUT_S)
+
+    assert accepted.ok
+    assert replayed.ok
+    assert not opening.is_alive()
+    assert not thread.is_alive()
+    assert [receipt.command_id for receipt in store.load().command_receipts] == ["end-1"]
+
+
+def test_a_shutdown_refuses_a_global_resume_and_keeps_the_stored_pause(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, ())
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        run_id: str = _started(owner)
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        stopping: ControlResponse = owner.handle(_request("shutdown", command_id="end-1"))
+        assert _await(lambda: network.prepared > 0)
+        prepared: int = network.prepared
+        resumed: ControlResponse = owner.handle(_request("set_auto", {"enabled": True}, command_id="resume-1"))
+        service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+        thread.join(_TIMEOUT_S)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert stopping.ok
+    assert network.prepared == prepared
+    assert resumed.code is ControlErrorCode.REFUSED
+    assert resumed.reason == RefusalReason.SHUTTING_DOWN.value
+    assert not thread.is_alive()
+    assert store.load().policy.auto_enabled is False
+    assert service.background_admission[-1] is False
+
+
+def test_a_shutdown_refuses_a_transfer_action_it_would_leave_for_the_next_start(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1),))
+    finished: AcquisitionConfirmation = replace(
+        _accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True), state=AcquisitionState.COMPLETE
+    )
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(finished,)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        run_id: str = _started(owner)
+        stopping: ControlResponse = owner.handle(_request("shutdown", command_id="end-1"))
+        resumed: ControlResponse = owner.handle(
+            _request("transfer", {"info_hash": "9", "action": "resume"}, command_id="resume-1")
+        )
+        service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+        thread.join(_TIMEOUT_S)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert stopping.ok
+    assert resumed.code is ControlErrorCode.REFUSED
+    assert resumed.reason == RefusalReason.SHUTTING_DOWN.value
+    assert not thread.is_alive()
+    assert store.load().acquisitions[0].requested_action is None
+    assert network.actions == []
+    assert network.started == []
+
+
+class _GatedReadyStore(ReadyStore):
+    def __init__(self, directory: Path, workspace: Path) -> None:
+        super().__init__(directory, workspace)
+        self.entered: threading.Event = threading.Event()
+        self.release: threading.Event = threading.Event()
+
+    def execute(self, move: ReadyMove) -> None:
+        self.entered.set()
+        self.release.wait(_TIMEOUT_S)
+        super().execute(move)
+
+
+def test_a_pause_waits_for_a_relocation_in_flight_and_settles_with_a_parked_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    audiobook: Path = _prepared_audiobook(tmp_path)
+    size: int = (audiobook / "Book.txt").stat().st_size
+    network: _TorrentNetwork = _TorrentNetwork()
+    network.tracked["9"] = TorrentInfo("Book", "9", 0.5, "downloading", str(audiobook), size, 0)
+    network.entries = (TorrentFile(0, "Book.txt", size, 0.5, 1),)
+    service: AppService = _real_service(
+        tmp_path,
+        acquisition=AcquisitionService(
+            source=network,
+            client=cast("TorrentClient", network),
+            torrent_management=cast("TorrentManagement", network),
+            workspace_root=tmp_path,
+            parse_name=parse_release_name,
+        ),
+    )
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(_owned(("Book.txt",), (), RequestOrigin.USER, size, directory="audiobook"),),
+        )
+    )
+    journal: _GatedReadyStore = _GatedReadyStore(tmp_path / "control" / "relocations", tmp_path)
+    owner: AutomationOwner = AutomationOwner(
+        service, store, instance_id=_INSTANCE, clock=lambda: _MOMENT, ready_store=journal
+    )
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert journal.entered.wait(_TIMEOUT_S)
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert _await(lambda: _acquisition_fields(owner, "action_pending") == [False])
+        during: ControlResponse = owner.handle(_request("status", command_id="status-1"))
+        journal.release.set()
+        settled: bool = _await(lambda: bool(owner.handle(_request("status", command_id="status-2")).result["paused"]))
+        parked: int = len(owner._ready_moves)
+    finally:
+        journal.release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+    assert during.result["pausing"] is True
+    assert during.result["paused"] is False
+    assert settled
+    assert parked == 1
+    assert store.load().ready_groups[0].pending_sources == ("audiobook/Book.txt",)
+    assert (audiobook / "Book.txt").exists()
+
+
+def test_a_stored_pause_still_starts_the_private_client_without_polling_or_starting_a_transfer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    control: RequestControl = RequestControl(httpx.MockTransport(_qbittorrent_replies(tmp_path)))
+    http: httpx.Client = httpx.Client(transport=control)
+    management: _TorrentNetwork = _measured_acquisition(tmp_path, service, http, control)
+    management.tracked["9"] = TorrentInfo("Pack", "9", 0.5, "stoppedDL", str(tmp_path), 4, 2)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=False),
+            acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True),),
+        )
+    )
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: management.prepared == 1)
+        time.sleep(0.4)
+        answer: ControlResponse = owner.handle(_request("status", command_id="status-1"))
+        requests: int = sum(int(cast("int", item["count"])) for item in control.counts())
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        http.close()
+
+    assert answer.result["paused"] is True
+    assert management.prepared == 1
+    assert requests == 0
+    assert management.resume_calls == 0
+    assert management.started == []
+    assert management.actions == []
+    assert store.load().acquisitions[0].requested_action is None
+
+
+def _raced_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[list[tuple[str, str]], WatchState]:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1),))
+    network.tracked["9"] = TorrentInfo("Pack", "9", 0.5, "downloading", str(tmp_path), 4, 2)
+    network.tracked["10"] = TorrentInfo("Other", "10", 0.5, "stoppedDL", str(tmp_path), 4, 2)
+    network.per_hash["10"] = (TorrentFile(0, "10.mkv", 4, 0.5, 1),)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(
+                _accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True),
+                _accepted_transfer("10", layout=((0, "10.mkv", 4),), started=True),
+            ),
+        )
+    )
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    def hold_one_batch() -> None:
+        if entered.is_set():
+            return
+        entered.set()
+        release.wait(_TIMEOUT_S)
+
+    try:
+        assert _await(lambda: network.info_calls > 1)
+        network.before_info = hold_one_batch
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert entered.wait(_TIMEOUT_S)
+        assert _switched(owner, enabled=True, command_id="resume-1")
+        release.set()
+        assert _await(lambda: not any(_acquisition_fields(owner, "action_pending")))
+        assert _await(lambda: ("9", "resume") in network.actions)
+    finally:
+        release.set()
+        network.before_info = None
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    return list(network.actions), store.load()
+
+
+def test_a_hand_stop_in_the_client_is_never_resumed_by_a_pause_whose_stops_are_still_in_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actions, state = _raced_resume(tmp_path, monkeypatch)
+
+    assert [item for item in actions if item[0] == "10"] == []
+    assert state.pause_owned_transfers == ()
+
+
+def test_a_transfer_this_pause_stopped_is_still_taken_up_when_the_resume_overtook_its_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actions, state = _raced_resume(tmp_path, monkeypatch)
+    mine: list[str] = [action for info_hash, action in actions if info_hash == "9"]
+
+    assert mine[:2] == ["stop", "resume"]
+    assert state.pause_owned_transfers == ()
+
+
+def test_a_cancel_a_newer_resume_replaced_is_never_sent_while_that_resume_still_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1),))
+    network.tracked["9"] = TorrentInfo("Pack", "9", 0.5, "downloading", str(tmp_path), 4, 2)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True),),
+        )
+    )
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    read_states = automation_module._fresh_transfer_states
+
+    def hold_the_batch_that_carries_the_cancel(
+        acquisition: AcquisitionService, acquisitions: tuple[AcquisitionConfirmation, ...]
+    ) -> Mapping[str, str]:
+        if not entered.is_set() and any(item.action_id == "cancel-1" for item in acquisitions):
+            entered.set()
+            release.wait(_TIMEOUT_S)
+        return read_states(acquisition, acquisitions)
+
+    monkeypatch.setattr(automation_module, "_fresh_transfer_states", hold_the_batch_that_carries_the_cancel)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: network.info_calls > 1)
+        assert owner.handle(_request("transfer", {"info_hash": "9", "action": "cancel"}, command_id="cancel-1")).ok
+        assert entered.wait(_TIMEOUT_S)
+        assert owner.handle(_request("transfer", {"info_hash": "9", "action": "resume"}, command_id="resume-1")).ok
+        release.set()
+        assert _await(lambda: not any(_acquisition_fields(owner, "action_pending")))
+        time.sleep(0.2)
+    finally:
+        release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    settled: WatchState = store.load()
+
+    assert ("9", "cancel") not in network.actions
+    assert ("9", "resume") in network.actions
+    assert [item.state for item in settled.acquisitions] == [AcquisitionState.ACCEPTED]
+    assert [item.problem for item in settled.acquisitions] == [None]
+
+
+class _FreezingStore(WatchStateStore):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.frozen: bool = False
+
+    def save(self, state: WatchState) -> None:
+        if self.frozen:
+            raise OSError(_STORE_FROZEN)
+        super().save(state)
+
+
+def test_a_stop_that_reached_the_client_before_a_crash_is_taken_up_by_the_restarted_resident(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, _, _ = _library(tmp_path)
+    store: _FreezingStore = _FreezingStore(tmp_path / WATCH_STATE_FILE_NAME)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1),))
+    network.tracked["9"] = TorrentInfo("Pack", "9", 0.5, "downloading", str(tmp_path), 4, 2)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True),),
+        )
+    )
+    crashed: threading.Event = threading.Event()
+
+    def stop_the_transfer_and_lose_the_write_back() -> None:
+        network.tracked["9"] = replace(network.tracked["9"], state="stoppedDL")
+        store.frozen = True
+        crashed.set()
+
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: network.info_calls > 1)
+        network.before_action = stop_the_transfer_and_lose_the_write_back
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert crashed.wait(_TIMEOUT_S)
+    finally:
+        network.before_action = None
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    restarted_store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME)
+    lost: WatchState = restarted_store.load()
+    restarted: AutomationOwner = _owner(service, restarted_store)
+    resumed: threading.Thread = _serving(restarted)
+    try:
+        assert _await(lambda: not any(_acquisition_fields(restarted, "action_pending")))
+        assert _switched(restarted, enabled=True, command_id="resume-1")
+        assert _await(lambda: ("9", "resume") in network.actions)
+    finally:
+        restarted.request_shutdown()
+        resumed.join(_TIMEOUT_S)
+
+    assert lost.pause_owned_transfers == ("9",)
+    assert [(item.requested_action, item.action_pending) for item in lost.acquisitions] == [("stop", True)]
+    assert restarted_store.load().pause_owned_transfers == ()
+
+
+def test_a_stop_the_client_refuses_is_retried_and_then_reported_instead_of_a_finished_pause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1),))
+    network.tracked["9"] = TorrentInfo("Pack", "9", 0.5, "downloading", str(tmp_path), 4, 2)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True),),
+        )
+    )
+    held: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    retried: list[list[object]] = []
+    published: list[tuple[object, object, object]] = []
+
+    def refuse_every_stop() -> None:
+        if network.actions.count(("9", "stop")) == 2:
+            held.set()
+            release.wait(_TIMEOUT_S)
+        raise TorrentClientError(_STOP_REFUSED)
+
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: network.info_calls > 1)
+        network.before_action = refuse_every_stop
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert held.wait(_TIMEOUT_S)
+        retried.append(_acquisition_fields(owner, "action_pending"))
+        release.set()
+        assert _await(lambda: not any(_acquisition_fields(owner, "action_pending")))
+        time.sleep(0.2)
+        published.append(_pause_flags(owner))
+        assert network.tracked["9"].state == "downloading"
+    finally:
+        release.set()
+        network.before_action = None
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    settled: WatchState = store.load()
+
+    assert published == [(False, False, True)]
+    assert retried == [[True]]
+    assert network.actions.count(("9", "stop")) == automation_module._ACTION_ATTEMPTS
+    assert network.tracked["9"].state == "downloading"
+    assert [item.problem is not None for item in settled.acquisitions] == [True]
+    assert settled.pause_owned_transfers == ("9",)
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_an_exhausted_stop_stays_visible_and_does_not_resume_until_an_explicit_transfer_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, manual: bool
+) -> None:
+    monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
+    owner, network, store, service = _pausable(tmp_path, monkeypatch)
+
+    def refuse() -> None:
+        raise TorrentClientError(_STOP_REFUSED)
+
+    network.before_action = refuse
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert _await(lambda: _pause_flags(owner) == (False, False, True))
+        if manual:
+            assert owner.handle(_request("transfer", {"info_hash": "9", "action": "stop"}, command_id="stop-1")).ok
+            assert _await(lambda: not any(_acquisition_fields(owner, "action_pending")))
+            assert _pause_flags(owner) == (False, False, True)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+    attempts: int = len(network.actions)
+    restarted: AutomationOwner = _owner(service, store)
+    thread = _serving(restarted)
+    try:
+        assert _await(lambda: _pause_flags(restarted) == (False, False, True))
+        assert len(network.actions) == attempts
+        network.before_action = None
+        assert _switched(restarted, enabled=True, command_id="resume-1")
+        assert _await(lambda: network.prepared == 3)
+        assert _acquisition_fields(restarted, "action") == ["stop", "stop"]
+        assert _acquisition_fields(restarted, "problem")[0] is not None
+        assert ("9", "resume") not in network.actions
+        assert restarted.handle(_request("transfer", {"info_hash": "9", "action": "resume"}, command_id="retry-1")).ok
+        assert _await(lambda: ("9", "resume") in network.actions)
+        assert _await(lambda: _acquisition_fields(restarted, "problem")[0] is None)
+    finally:
+        restarted.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+def test_an_unreachable_client_exhausts_pause_reads_and_keeps_the_failure_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setattr(automation_module, "TRANSFER_BACKOFF_CEILING_S", 0.01)
+    owner, network, store, service = _pausable(tmp_path, monkeypatch)
+    network.unreachable = True
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert _await(lambda: _pause_flags(owner) == (False, False, True))
+        reads: int = network.info_calls
+        time.sleep(0.1)
+        assert network.info_calls == reads
+        assert network.actions == []
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+    restarted: AutomationOwner = _owner(service, store)
+    thread = _serving(restarted)
+    try:
+        assert _await(lambda: _pause_flags(restarted) == (False, False, True))
+        assert network.info_calls == reads
+        network.unreachable = False
+        assert restarted.handle(_request("transfer", {"info_hash": "9", "action": "stop"}, command_id="retry-1")).ok
+        assert _await(lambda: _pause_flags(restarted) == (True, False, False))
+        assert network.actions == [("9", "stop")]
+    finally:
+        restarted.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+def test_a_full_pause_parks_inspection_retries_and_resume_reconciles_pending_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
+    service, store, _ = _library(tmp_path)
+    group: InspectedSourceGroup = cast("InspectedWorkspace", service._discovered).groups[0]
+    service._discovered = InspectedWorkspace(
+        (group,), (InspectionWarning("source_busy", "Still copying", group.group_id, group.artifacts[0].artifact_id),)
+    )
+    service.discover_release = threading.Event()
+    owner: AutomationOwner = _owner(service, store, scan_interval_s=0.01)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        assert service.discover_entered.wait(_TIMEOUT_S)
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        service.discover_release.set()
+        assert _await(lambda: _pause_flags(owner) == (True, False, False))
+        inspected: int = service.discover_calls
+        time.sleep(0.1)
+        assert service.discover_calls == inspected
+        service._discovered = InspectedWorkspace((), ())
+        assert _switched(owner, enabled=True, command_id="resume-1")
+        assert _await(lambda: service.discover_calls > inspected)
+    finally:
+        service.discover_release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("action", ["stop", "cancel"])
+def test_a_transfer_command_during_a_slow_read_prevents_starting_the_superseded_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.0, 1),))
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),)),),
+        )
+    )
+    owner: AutomationOwner = _owner(service, store)
+    switched: threading.Event = threading.Event()
+
+    def change_during_read() -> None:
+        if switched.is_set():
+            return
+        assert owner.handle(_request("transfer", {"info_hash": "9", "action": action}, command_id="change-1")).ok
+        switched.set()
+
+    network.before_info = change_during_read
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert switched.wait(_TIMEOUT_S)
+        assert _await(lambda: ("9", action) in network.actions)
+        assert _await(lambda: not any(_acquisition_fields(owner, "action_pending")))
+        assert network.started == []
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+def test_resuming_never_counts_the_pause_as_stall_time_when_the_last_client_read_still_showed_downloading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
+    owner, network, _, service = _pausable(tmp_path, monkeypatch)
+    service._discovered = InspectedWorkspace((), ())
+    now: list[float] = [0.0]
+    assert owner._transfers is not None
+    monkeypatch.setattr(owner._transfers, "_clock", lambda: now[0])
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        assert _await(lambda: service.discover_calls == 1)
+        assert _await(lambda: network.info_calls > 1)
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert _await(lambda: _pause_flags(owner) == (True, False, False))
+        reads: int = network.info_calls
+        now[0] = 3600.0
+        assert _switched(owner, enabled=True, command_id="resume-1")
+        assert _await(lambda: network.info_calls >= reads + 2)
+        assert _acquisition_fields(owner, "stalled") == [False, False]
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("state", [AcquisitionState.ACCEPTED, AcquisitionState.UNCERTAIN, AcquisitionState.FAILED])
+def test_global_pause_settles_a_public_resume_waiting_for_metadata_after_the_transfer_changes_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: AcquisitionState
+) -> None:
+    monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, ())
+    network.tracked.clear()
+    assert service.acquisition is not None
+    catalog: ReleaseCatalog = service.acquisition.search("Neko")
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+
+    def apply_action() -> None:
+        info_hash, action = network.actions[-1]
+        if action == "cancel":
+            network.tracked.pop(info_hash, None)
+
+    network.before_action = apply_action
+    try:
+        downloaded: ControlResponse = owner.handle(
+            _request("download", {"choices": [encode_view(catalog.groups[0].choices[0])]}, command_id="download-1")
+        )
+        assert downloaded.ok
+        assert _acquisition_fields(owner, "state") == [AcquisitionState.ACCEPTED.value]
+        info_hash: str = network.added[0]
+        if state is AcquisitionState.FAILED:
+            assert owner.handle(_request("transfer", {"info_hash": info_hash, "action": "cancel"})).ok
+        elif state is AcquisitionState.UNCERTAIN:
+            network.tracked.clear()
+        assert _await(lambda: _acquisition_fields(owner, "state") == [state.value])
+        assert owner.handle(
+            _request("transfer", {"info_hash": info_hash, "action": "resume"}, command_id="resume-transfer")
+        ).ok
+        pending: AcquisitionConfirmation = store.load().acquisitions[0]
+        assert pending.state is state
+        assert pending.action_pending
+        assert pending.file_layout == ()
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert _await(lambda: _pause_flags(owner) == (True, False, False))
+        assert not any(_acquisition_fields(owner, "action_pending"))
+        reads: int = network.info_calls
+        time.sleep(0.1)
+        assert network.info_calls == reads
+        assert network.started == []
+        assert (info_hash, "resume") not in network.actions
+        settled: AcquisitionConfirmation = store.load().acquisitions[0]
+        assert _switched(owner, enabled=True, command_id="resume-global")
+        reordered: ControlResponse = owner.handle(
+            _request("download", {"choices": [encode_view(catalog.groups[0].choices[0])]}, command_id="download-2")
+        )
+        assert reordered.ok
+        assert reordered.result["count"] == (1 if state is AcquisitionState.FAILED else 0)
+        assert settled.state is state
+        assert len(network.added) == (2 if state is AcquisitionState.FAILED else 1)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("refusing", [False, True])
+def test_a_pause_of_an_uncertain_resume_waits_for_stop_and_reports_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refusing: bool
+) -> None:
+    monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    service, store, _ = _library(tmp_path)
+    network: _TorrentNetwork = _stopped_transfer(tmp_path, service, ())
+    network.tracked.clear()
+    assert service.acquisition is not None
+    catalog: ReleaseCatalog = service.acquisition.search("Neko")
+    owner: AutomationOwner = _owner(service, store)
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    thread: threading.Thread = _serving(owner)
+
+    def stop_returning_transfer() -> None:
+        network.tracked[info_hash] = replace(transfer, state="downloading")
+        entered.set()
+        assert release.wait(_TIMEOUT_S)
+        if refusing:
+            raise TorrentClientError(_STOP_REFUSED)
+        network.tracked[info_hash] = replace(transfer, state="stoppedDL")
+
+    try:
+        assert owner.handle(
+            _request("download", {"choices": [encode_view(catalog.groups[0].choices[0])]}, command_id="download-1")
+        ).ok
+        info_hash: str = network.added[0]
+        transfer: TorrentInfo = network.tracked.pop(info_hash)
+        assert _await(lambda: _acquisition_fields(owner, "state") == [AcquisitionState.UNCERTAIN.value])
+        network.before_action = stop_returning_transfer
+        assert owner.handle(
+            _request("transfer", {"info_hash": info_hash, "action": "resume"}, command_id="resume-transfer")
+        ).ok
+        assert _switched(owner, enabled=False, command_id="pause-1")
+        assert entered.wait(_TIMEOUT_S)
+        assert _pause_flags(owner) == (False, True, False)
+        assert network.tracked[info_hash].state == "downloading"
+        release.set()
+        assert _await(lambda: _pause_flags(owner) == (not refusing, False, refusing))
+        assert network.tracked[info_hash].state == ("downloading" if refusing else "stoppedDL")
+        assert network.actions == [(info_hash, "stop")] * (automation_module._ACTION_ATTEMPTS if refusing else 1)
+        assert network.started == []
+        reads: int = network.info_calls
+        time.sleep(0.1)
+        assert network.info_calls == reads
+    finally:
+        release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()

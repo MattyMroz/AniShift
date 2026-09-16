@@ -26,11 +26,15 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 - Przed większą lub planowaną zmianą potwierdź zakres z userem. Nie ruszaj od razu.
 - Nie commituj na `main`. Feature branch → PR → merge.
 - KISS/YAGNI — użyj skilla `simple` przy pisaniu i przeglądzie kodu.
-- Delegacja WYŁĄCZNIE do dwóch subagentów: `opus5` pisze kod, `sol` sprawdza (read-only).
-  Żaden inny subagent, w żadnym celu, nawet do researchu czy prostego wyszukania — zakaz
-  bezwarunkowy. Pętla: `opus5` koduje → świeży `sol` skrupulatnie ocenia → poprawki →
-  `sol` weryfikuje. Briefy muszą być samowystarczalne, bo subagent nie zna rozmowy.
-  Obowiązkowe skille przy pracy: `simple`, `coding`, `workflow`.
+- Główny agent `astra` koordynuje pracę i deleguje kodowanie do subagenta `astra`.
+  Niezależny przegląd wykonuje `opus5` (read-only); `sol` jest opcjonalnym dodatkowym
+  reviewerem (read-only). Delegacja wyłącznie do `astra`, `opus5` i `sol`.
+  Pętla: `astra` koduje i testuje → świeży `opus5` sprawdza → `astra` poprawia →
+  `opus5` weryfikuje. Orkiestrator odpowiada za integrację i sprawdzenie dowodów.
+  Obowiązkowe skille: `simple`, `coding`, `subagent`, `workflow`. Briefy według
+  `.agents/skills/subagent/assets/SUBAGENT-BRIEF.template.md`: samowystarczalny
+  kontrakt, zakres zapisu, zakazy, baseline i wymagane dowody. Przy nieudanej
+  delegacji sprawdź najpierw brief, kontekst i podział pracy przed ponowieniem.
 
 ## Python
 

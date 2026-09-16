@@ -1277,3 +1277,60 @@ def test_draining_finishes_active_work_and_pauses_the_remaining_graph(tmp_path: 
     finally:
         hold.abort()
         coordinator.close()
+
+
+@pytest.mark.parametrize("origin", [RequestOrigin.USER, RequestOrigin.BACKGROUND])
+def test_pausing_holds_the_remaining_graph_and_a_resume_admits_the_next_run(
+    tmp_path: Path, origin: RequestOrigin
+) -> None:
+    paused_plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
+    resumed_plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-2", "later"),))
+    hold: threading.Barrier = threading.Barrier(2)
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    try:
+        with ExitStack() as stack:
+            handle, handler, _ = _submit(
+                coordinator,
+                stack,
+                tmp_path,
+                "run-paused",
+                paused_plan,
+                lambda run_root: _FakeHandler(run_root, barriers={"active": hold}),
+                origin=origin,
+            )
+            assert _wait_until(lambda: "active" in handler.started)
+            coordinator.pause()
+            hold.wait(timeout=5)
+            held: RunResult = handle.result(timeout=5)
+
+            coordinator.resume()
+            later, later_handler, _ = _submit(
+                coordinator,
+                stack,
+                tmp_path,
+                "run-resumed",
+                resumed_plan,
+                _FakeHandler,
+                origin=origin,
+            )
+            admitted: RunResult = later.result(timeout=5)
+
+            assert held.paused
+            assert handler.calls == ["active"]
+            assert not admitted.paused
+            assert later_handler.calls == ["later"]
+            assert coordinator.active_run_ids() == ()
+    finally:
+        hold.abort()
+        coordinator.close()
+
+
+def test_a_pause_after_closing_stays_closed_to_new_work(tmp_path: Path) -> None:
+    plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "only"),))
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    coordinator.close()
+
+    coordinator.resume()
+
+    with ExitStack() as stack, pytest.raises(ExecutionError):
+        _submit(coordinator, stack, tmp_path, "run-closed", plan, _FakeHandler)

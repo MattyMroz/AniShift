@@ -11,6 +11,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from enum import Enum, auto
 from functools import partial
 from pathlib import Path
 from queue import Empty, SimpleQueue
@@ -30,6 +31,7 @@ from anishift.application.control import (
     AcquisitionState,
     CommandReceipt,
     ManualHandledMarker,
+    PreflightFinding,
     ProcessingRequest,
     ProductConfirmation,
     ProviderLock,
@@ -42,6 +44,7 @@ from anishift.application.control import (
     WatchState,
     auto_admissible,
     mark_manual_handled,
+    preflight,
     record_command,
     record_request,
     release,
@@ -190,6 +193,14 @@ _REFUSALS: Final[Mapping[RefusalReason, tuple[ControlErrorCode, str]]] = Mapping
             ControlErrorCode.REFUSED,
             "The run cannot be resumed; it is unknown, finished or still active",
         ),
+        RefusalReason.PAUSED: (
+            ControlErrorCode.REFUSED,
+            "AniShift is paused; choose Resume before starting new work",
+        ),
+        RefusalReason.SHUTTING_DOWN: (
+            ControlErrorCode.REFUSED,
+            "The resident is shutting down and admits no new work",
+        ),
     }
 )
 """Protocol code and English message of every cause this owner refuses a command for."""
@@ -209,8 +220,17 @@ _NO_ANSWER: Final[str] = "The resident did not finish the command in time"
 _COMMAND_FAILED: Final[str] = "The resident could not complete the command"
 """Reason returned when performing one command raised instead of answering."""
 
-_SHUTTING_DOWN: Final[str] = "The resident is shutting down and admits no new work"
-"""Reason returned for work requested after a shutdown was accepted."""
+
+_PAUSE_ACTION: Final[str] = "pause"
+"""Action id prefix proving a recorded stop came from the global pause and not from the user."""
+
+_ACTION_ATTEMPTS: Final[int] = 3
+"""Attempts one refused transfer action gets before the pause reports it instead of a done stop."""
+
+_STOPPED_TRANSFER_STATES: Final[frozenset[str]] = frozenset(
+    {"stoppedDL", "pausedDL", "stoppedUP", "pausedUP", "error", "missingFiles"}
+)
+"""Client states proving a transfer is not working, whoever or whatever stopped it."""
 
 _NO_SUBSCRIPTIONS: Final[str] = "This resident was composed without a torrent client"
 """Reason returned for a subscription command with no subscription service behind it."""
@@ -272,6 +292,14 @@ type Broadcast = Callable[[Mapping[str, object], bool], None]
 """Hands one event and its terminality to every subscriber of the control channel."""
 
 
+class _ActionRecord(Enum):
+    """Outcome of the write that must precede handing one transfer action to the client."""
+
+    SENT = auto()
+    SUPERSEDED = auto()
+    UNSAVED = auto()
+
+
 @dataclass(frozen=True, slots=True)
 class _Preview:
     """One planned answer a client may turn into a request while its sources hold."""
@@ -290,6 +318,7 @@ class _Preview:
     file_version: int = 0
     resume_run_id: str | None = None
     recovering: bool = False
+    retry: bool = True
 
 
 @dataclass(slots=True)
@@ -391,12 +420,14 @@ class AutomationOwner:
         self._run_events: dict[str, dict[tuple[str, str | None, str | None], RunEvent]] = {}
         self._run_products: dict[str, dict[str, ArtifactKind]] = {}
         self._shutting_down: bool = False
+        self._serving: bool = False
         self._active_io: int = 0
         self._transfers: TransferInspector | None = (
             TransferInspector(service.acquisition, service.workspace_root) if service.acquisition is not None else None
         )
         self._transfers_at: float | None = None
         self._transfers_inspecting: bool = False
+        self._action_attempts: dict[str, tuple[str, int]] = {}
         self._transfers_problem: str | None = None
         self._transfers_failure: tuple[str, str] | None = None
         self._transfers_delay: float = TRANSFER_CHECK_INTERVAL_S
@@ -519,29 +550,68 @@ class AutomationOwner:
                 self._panel_opening_at = time.monotonic()
                 self._open_panel()
             return
-        kind: str = "set_auto" if action == "toggle_auto" else "shutdown"
+        paused: bool = action in {"pause", "resume"}
         self._perform(
             ControlRequest(
                 command_id=f"tray-{token_hex(_ID_BYTES)}",
-                kind=kind,
-                payload={"enabled": not self._state.policy.auto_enabled} if kind == "set_auto" else {},
+                kind="set_auto" if paused else "shutdown",
+                payload={"enabled": action == "resume"} if paused else {},
             )
         )
 
     def serve(self) -> None:
         """Run the owner loop until a shutdown drains every active request."""
         threading.current_thread().name = OWNER_THREAD_NAME
+        self._serving = True
         self._restore_provider_locks()
         self._finish_pending_commands()
         self._reconcile_subscription_sources()
+        self._report_preflight()
         self._service.set_background_admission(self._state.policy.auto_enabled)
+        if not self._state.policy.auto_enabled:
+            self._service.pause_runs()
+        self._prepare_transfers()
         self._schedule_transfers()
         self._schedule_subscriptions()
         self._retry_ready()
         try:
             self._loop()
         finally:
+            self._serving = False
             self._pool.shutdown(wait=True)
+
+    def _report_preflight(self) -> None:
+        findings: tuple[PreflightFinding, ...] = preflight(self._state)
+        if not findings:
+            return
+        logger.info(
+            "Automation preflight",
+            findings=tuple(sorted({finding.kind.value for finding in findings})),
+        )
+
+    def _prepare_transfers(self) -> None:
+        if self._service.acquisition is None:
+            return
+        self._active_io += 1
+        self._pool.submit(self._prepare_client)
+
+    def _prepare_client(self) -> None:
+        problem: str | None = None
+        try:
+            acquisition: AcquisitionService | None = self._service.acquisition
+            if acquisition is not None:
+                acquisition.prepare_client()
+        except (AniShiftError, OSError, ValueError) as error:
+            problem = sanitize_event_message(str(error))
+            logger.warning("The private torrent client was not prepared", error_class=type(error).__name__)
+        finally:
+            self._queue.put(lambda: self._prepared_client(problem))
+
+    def _prepared_client(self, problem: str | None) -> None:
+        self._active_io -= 1
+        if problem is not None:
+            self._transfers_problem = problem
+        self._publish_state()
 
     def _loop(self) -> None:
         while True:
@@ -602,9 +672,10 @@ class AutomationOwner:
                 self._recovering = True
                 self._active_io += 1
                 self._pool.submit(self._restore_runs, self._restart_requests)
+            self._restore_paused()
             self._refresh_automatic()
             self._publish_state()
-            if workspace.pending_paths:
+            if workspace.pending_paths and self._state.policy.auto_enabled:
                 self._inspection_at = time.monotonic() + self._scan_interval_s
         self._inspect_changes()
 
@@ -622,6 +693,8 @@ class AutomationOwner:
 
     def _inspect_changes(self) -> None:
         if self._inspecting or self._shutting_down:
+            return
+        if not self._state.policy.auto_enabled and not self._files_queued:
             return
         if self._inspection_at is not None and time.monotonic() < self._inspection_at:
             return
@@ -742,6 +815,8 @@ class AutomationOwner:
             return
         receipt: CommandReceipt | None = self._receipt(request)
         if receipt is not None:
+            if request.kind == "shutdown":
+                self._begin_shutdown()
             command.answer(ControlResponse.succeeded(dict(receipt.outcome)))
             return
         if request.kind in _INSTANCE_CHECKED_KINDS and request.instance_id not in {None, self._instance_id}:
@@ -749,7 +824,7 @@ class AutomationOwner:
             return
         if request.kind in _SLOW_KINDS:
             if self._shutting_down:
-                command.answer(ControlResponse.refused(ControlErrorCode.REFUSED, _SHUTTING_DOWN))
+                command.answer(_refuse(RefusalReason.SHUTTING_DOWN))
                 return
             self._active_io += 1
             self._pool.submit(self._answer_slow, command)
@@ -884,6 +959,8 @@ class AutomationOwner:
     def _status(self) -> dict[str, object]:
         policy = self._state.policy
         acquisition: AcquisitionService | None = self._service.acquisition
+        pausing: bool = self._pausing()
+        incomplete: bool = not pausing and self._pause_incomplete()
         return {
             "instance_id": self._instance_id,
             "pid": os.getpid(),
@@ -894,6 +971,9 @@ class AutomationOwner:
                 if request.problem is not None
             ],
             "auto_enabled": policy.auto_enabled,
+            "paused": not policy.auto_enabled and not pausing and not incomplete,
+            "pausing": pausing,
+            "pause_incomplete": incomplete,
             "pending_commands": [
                 {"command_id": receipt.command_id, "kind": receipt.pending}
                 for receipt in self._state.command_receipts
@@ -974,19 +1054,151 @@ class AutomationOwner:
             "updated_at": self._now(),
         }
 
+    def _pausing(self) -> bool:
+        return not self._state.policy.auto_enabled and self._settling()
+
+    def _pause_incomplete(self) -> bool:
+        """Answer whether this pause reached its boundary leaving a transfer it could not stop."""
+        return not self._state.policy.auto_enabled and any(_unstopped_pause(item) for item in self._state.acquisitions)
+
+    def _settling(self) -> bool:
+        """Answer whether any started work, accounting or owned I/O has still not reached its boundary."""
+        return bool(
+            self._pending
+            or self._service.active_run_ids()
+            or self._inspecting
+            or self._active_io
+            or self._ready_inflight
+            or any(item.action_pending for item in self._state.acquisitions)
+        )
+
     def _set_auto(self, request: ControlRequest) -> ControlResponse:
         enabled: bool | None = _flag(request.payload, "enabled")
         if enabled is None:
             return _invalid("A switch command needs an `enabled` flag")
+        if enabled and self._shutting_down:
+            return _refuse(RefusalReason.SHUTTING_DOWN)
+        changed: bool = enabled != self._state.policy.auto_enabled
         policy = replace(self._state.policy, auto_enabled=enabled)
+        candidate: WatchState = replace(self._state, policy=policy)
+        if changed:
+            candidate = self._resumed_transfers(candidate) if enabled else self._stopped_transfers(candidate)
         outcome: dict[str, str | int | bool | None] = {"auto_enabled": enabled}
-        refusal: ControlResponse | None = self._commit(request, replace(self._state, policy=policy), outcome)
+        refusal: ControlResponse | None = self._commit(request, candidate, outcome)
         if refusal is not None:
             return refusal
         self._service.set_background_admission(enabled)
+        if changed and not enabled:
+            self._pause_work()
+        elif changed:
+            self._resume_work()
         self._refresh_automatic()
         self._publish_state()
         return ControlResponse.succeeded(outcome)
+
+    def _pause_work(self) -> None:
+        """Hold the whole flow: no new admission, no schedule and every own working transfer stopped."""
+        self._service.pause_runs()
+        self._subscriptions_at = None
+        self._settle_at = None
+        self._inspection_at = None
+        self._schedule_transfers()
+        logger.info("Automation paused", transfers=len(self._state.pause_owned_transfers))
+
+    def _resume_work(self) -> None:
+        """Take up exactly the work this pause stopped, without reviving separately disabled entries."""
+        self._service.resume_runs()
+        if self._transfers is not None:
+            self._transfers.reset_clock()
+        self._prepare_transfers()
+        self._schedule_subscriptions()
+        self._schedule_transfers()
+        if self._library is None:
+            self.files_changed(DirectoryChange(reconcile=True, reason="resume"))
+        elif self._library.pending_paths:
+            self._inspect_changes()
+        else:
+            self._restore_paused()
+        logger.info("Automation resumed")
+
+    def _stopped_transfers(self, state: WatchState) -> WatchState:
+        """Record the stop of every own transfer the client last showed working, in one durable state."""
+        paused: tuple[str, ...] = self._working_transfers(state)
+        if not paused:
+            return state
+        stopped: frozenset[str] = frozenset(paused)
+        acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
+            replace(
+                item,
+                requested_action="stop",
+                action_id=f"{_PAUSE_ACTION}-{token_hex(_ID_BYTES)}",
+                action_pending=True,
+                action_sent=False,
+            )
+            if item.info_hash in stopped
+            else item
+            for item in state.acquisitions
+        )
+        return replace(state, acquisitions=acquisitions, pause_owned_transfers=paused)
+
+    def _resumed_transfers(self, state: WatchState) -> WatchState:
+        """Take up only the transfers this pause stopped that still carry an active order."""
+        paused: frozenset[str] = frozenset(state.pause_owned_transfers)
+        if not paused:
+            return state
+        enabled: frozenset[str] | None = self._enabled_subscriptions()
+        acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
+            replace(
+                item,
+                requested_action="resume",
+                action_id=f"resume-{token_hex(_ID_BYTES)}",
+                action_pending=True,
+                action_sent=False,
+            )
+            if _resumable(item, paused, enabled)
+            else item
+            for item in state.acquisitions
+        )
+        return replace(state, acquisitions=acquisitions, pause_owned_transfers=_unfinished_pause_stops(state))
+
+    def _finish_pause_restore(self) -> None:
+        """Take up a transfer whose pause stop only reached the client after the resume had been recorded."""
+        if not self._state.pause_owned_transfers or not self._state.policy.auto_enabled:
+            return
+        candidate: WatchState = self._resumed_transfers(self._state)
+        if candidate != self._state:
+            self._save(candidate)
+
+    def _working_transfers(self, state: WatchState) -> tuple[str, ...]:
+        return tuple(
+            item.info_hash
+            for item in state.acquisitions
+            if (item.state is AcquisitionState.ACCEPTED or (item.action_pending and item.requested_action == "resume"))
+            and item.requested_action not in {"stop", "cancel"}
+        )
+
+    def _enabled_subscriptions(self) -> frozenset[str] | None:
+        service: SubscriptionService | None = self._service.subscriptions
+        if service is None:
+            return None
+        try:
+            return frozenset(item.subscription_id for item in service.list() if item.enabled)
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("Subscriptions could not be read while resuming", error_class=type(problem).__name__)
+            return frozenset()
+
+    def _restore_paused(self) -> None:
+        if not self._working() or self._library is None:
+            return
+        active: frozenset[str] = frozenset(self._service.active_run_ids())
+        paused: tuple[ProcessingRequest, ...] = tuple(
+            item for item in self._state.requests if item.state is RequestState.PAUSED and item.request_id not in active
+        )
+        if not paused or self._recovering:
+            return
+        self._recovering = True
+        self._active_io += 1
+        self._pool.submit(self._restore_runs, paused)
 
     def _set_directory_auto(self, request: ControlRequest) -> ControlResponse:
         directory: str | None = _text(request.payload, "directory", allow_empty=True)
@@ -1299,7 +1511,9 @@ class AutomationOwner:
 
     def _start(self, request: ControlRequest) -> ControlResponse:
         if self._shutting_down:
-            return ControlResponse.refused(ControlErrorCode.REFUSED, _SHUTTING_DOWN)
+            return _refuse(RefusalReason.SHUTTING_DOWN)
+        if not self._state.policy.auto_enabled:
+            return _refuse(RefusalReason.PAUSED)
         client_id: str | None = _text(request.payload, "client_id")
         preview_id: str | None = _text(request.payload, "preview_id")
         if client_id is None or preview_id is None:
@@ -1373,7 +1587,7 @@ class AutomationOwner:
             rebuild=preview.rebuild,
             settings=_settings_snapshot(preview.plan.settings),
             state=RequestState.ACCEPTED,
-            attempts=previous.attempts + 1 if previous is not None else 1,
+            attempts=previous.attempts + (1 if preview.retry else 0) if previous is not None else 1,
             accepted_at=self._now(),
             intents=tuple(group.intent for group in preview.plan.groups),
             automatic=preview.automatic,
@@ -1506,6 +1720,8 @@ class AutomationOwner:
             {"event": "run_finished", "payload": {"run_id": completion.request_id}},
             terminal=True,
         )
+        if finished.state is RequestState.PAUSED:
+            self._restore_paused()
 
     def _run_result(self, request: ControlRequest) -> ControlResponse:
         run_id: str | None = _text(request.payload, "run_id")
@@ -1572,6 +1788,7 @@ class AutomationOwner:
         self._settle_at = None
         self._transfers_at = None
         self._subscriptions_at = None
+        self._inspection_at = None
         self._service.set_background_admission(False)
         self._service.drain()
         logger.info("The resident is shutting down", active_runs=len(self._service.active_run_ids()))
@@ -1614,6 +1831,8 @@ class AutomationOwner:
         return ControlResponse.succeeded({"subscriptions": [_subscription_view(item) for item in service.list()]})
 
     def _subscriptions_check_command(self, _request: ControlRequest, service: SubscriptionService) -> ControlResponse:
+        if not self._state.policy.auto_enabled:
+            return _refuse(RefusalReason.PAUSED)
         outcomes: tuple[CheckOutcome, ...] = self._check_subscriptions(service, automatic=False)
         return ControlResponse.succeeded(
             {
@@ -1721,7 +1940,9 @@ class AutomationOwner:
         if receipt is not None:
             return (), ControlResponse.succeeded(dict(receipt.outcome))
         if self._shutting_down or not self._finish_pending_commands():
-            return (), ControlResponse.refused(ControlErrorCode.REFUSED, _SHUTTING_DOWN)
+            return (), _refuse(RefusalReason.SHUTTING_DOWN)
+        if not self._state.policy.auto_enabled:
+            return (), _refuse(RefusalReason.PAUSED)
         existing: set[str] = {
             item.info_hash for item in self._state.acquisitions if item.state is not AcquisitionState.FAILED
         }
@@ -1802,6 +2023,7 @@ class AutomationOwner:
         service: SubscriptionService | None = self._service.subscriptions
         if (
             self._shutting_down
+            or not self._state.policy.auto_enabled
             or service is None
             or self._subscriptions_checking
             or self._subscriptions_problem is not None
@@ -1876,7 +2098,7 @@ class AutomationOwner:
         *,
         origin: RequestOrigin = RequestOrigin.USER,
     ) -> bool:
-        if self._shutting_down or not service.is_current(subscription):
+        if self._shutting_down or not self._state.policy.auto_enabled or not service.is_current(subscription):
             return False
         if any(receipt.pending is not None for receipt in self._state.command_receipts):
             return False
@@ -1966,8 +2188,10 @@ class AutomationOwner:
     def _schedule_transfers(self, delay: float = 0.0) -> None:
         if self._shutting_down or self._transfers is None or self._transfers_inspecting:
             return
+        working: bool = self._state.policy.auto_enabled
         active: bool = any(
-            item.state is AcquisitionState.ACCEPTED or item.action_pending for item in self._state.acquisitions
+            (item.state is AcquisitionState.ACCEPTED and working) or item.action_pending
+            for item in self._state.acquisitions
         )
         self._transfers_at = time.monotonic() + delay if active else None
 
@@ -1996,6 +2220,21 @@ class AutomationOwner:
             names.update(reserved_stem(name) for name, _size, _stamp in deletion.files)
         return frozenset(names)
 
+    def _may_settle(self, item: AcquisitionConfirmation) -> bool:
+        """Ask the owner, after the slow client read, whether this effect may still be admitted."""
+        if not self._serving:
+            return self._may_start_content(item)
+        return self._on_owner(lambda: self._may_start_content(item))
+
+    def _may_start_content(self, item: AcquisitionConfirmation) -> bool:
+        return self._working() and any(
+            row.operation_id == item.operation_id and row.action_id == item.action_id
+            for row in self._state.acquisitions
+        )
+
+    def _working(self) -> bool:
+        return self._state.policy.auto_enabled and not self._shutting_down
+
     def _inspect_transfers(
         self,
         acquisitions: tuple[AcquisitionConfirmation, ...],
@@ -2009,7 +2248,7 @@ class AutomationOwner:
                 acquisition: AcquisitionService | None = self._service.acquisition
                 if acquisition is not None:
                     with acquisition.requests("transfer"):
-                        acquisitions = tuple(self._apply_transfer_action(acquisition, item) for item in acquisitions)
+                        acquisitions = self._apply_transfer_actions(acquisition, acquisitions)
                         results = acquisitions
                         results = self._transfers.inspect(
                             acquisitions, stall_after_s=self._state.policy.transfer_stall_s
@@ -2050,6 +2289,7 @@ class AutomationOwner:
             or item.state is not AcquisitionState.ACCEPTED
             or item.problem is not None
             or item.content_started
+            or not self._may_settle(item)
         ):
             return item
         if reserved is None:
@@ -2126,6 +2366,13 @@ class AutomationOwner:
                 self.files_changed(DirectoryChange(paths=paths, reason="transfer_complete"))
             else:
                 self._refresh_automatic()
+        self._finish_pause_restore()
+        pending: dict[str, str | None] = {
+            item.info_hash: item.action_id for item in self._state.acquisitions if item.action_pending
+        }
+        self._action_attempts = {
+            key: value for key, value in self._action_attempts.items() if pending.get(key) == value[0]
+        }
         self._schedule_transfers(self._transfers_delay)
         self._publish_state()
         self._retry_ready()
@@ -2202,7 +2449,8 @@ class AutomationOwner:
                 "saved products remain and an explicit resume is required",
             )
             return
-        if journal.plan.tasks and request.attempts >= self._state.policy.external_retry_budget:
+        paused: bool = request.state is RequestState.PAUSED
+        if journal.plan.tasks and not paused and request.attempts >= self._state.policy.external_retry_budget:
             self._failed_recovery(
                 request, "Automatic recovery attempts are exhausted; select the files and explicitly resume"
             )
@@ -2231,6 +2479,7 @@ class AutomationOwner:
             automatic=request.automatic,
             resume_run_id=request.request_id,
             recovering=True,
+            retry=not paused,
         )
         response: ControlResponse = self._admit(
             ControlRequest(command_id=f"recovery-{request.request_id}-{request.attempts}", kind="start", payload={}),
@@ -2258,6 +2507,7 @@ class AutomationOwner:
     def _restored_runs(self) -> None:
         self._active_io -= 1
         self._recovering = False
+        self._restore_paused()
         self._refresh_automatic()
         self._publish_state()
 
@@ -2420,15 +2670,33 @@ class AutomationOwner:
             item.info_hash == info_hash for item in self._state.acquisitions
         ):
             return _invalid("A transfer command needs a known hash and stop, resume or cancel")
+        if self._shutting_down:
+            return _refuse(RefusalReason.SHUTTING_DOWN)
+        if action == "resume" and not self._state.policy.auto_enabled:
+            return _refuse(RefusalReason.PAUSED)
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
-            replace(item, requested_action=action, action_id=request.command_id, action_pending=True, problem=None)
+            replace(
+                item,
+                requested_action=action,
+                action_id=request.command_id,
+                action_pending=True,
+                action_sent=False,
+                problem=None,
+            )
             if item.info_hash == info_hash
             else item
             for item in self._state.acquisitions
         )
+        remaining: tuple[str, ...] = (
+            tuple(item for item in self._state.pause_owned_transfers if item != info_hash)
+            if action in {"stop", "cancel"}
+            else self._state.pause_owned_transfers
+        )
         outcome: dict[str, str | bool] = {"info_hash": info_hash, "action": action, "accepted": True}
         refusal: ControlResponse | None = self._commit(
-            request, replace(self._state, acquisitions=acquisitions), outcome
+            request,
+            replace(self._state, acquisitions=acquisitions, pause_owned_transfers=remaining),
+            outcome,
         )
         if refusal is not None:
             return refusal
@@ -2436,23 +2704,112 @@ class AutomationOwner:
         self._publish_state()
         return ControlResponse.succeeded(outcome)
 
+    def _apply_transfer_actions(
+        self, service: AcquisitionService, acquisitions: tuple[AcquisitionConfirmation, ...]
+    ) -> tuple[AcquisitionConfirmation, ...]:
+        try:
+            reported: Mapping[str, str] = _fresh_transfer_states(service, acquisitions)
+        except (AniShiftError, OSError, ValueError) as problem:
+            return tuple(
+                self._refused_action(item, problem) if item.action_pending and _pause_stop(item) else item
+                for item in acquisitions
+            )
+        return tuple(self._apply_transfer_action(service, item, reported) for item in acquisitions)
+
     def _apply_transfer_action(
-        self, service: AcquisitionService, item: AcquisitionConfirmation
+        self, service: AcquisitionService, item: AcquisitionConfirmation, reported: Mapping[str, str]
     ) -> AcquisitionConfirmation:
         if not item.action_pending:
             return item
         if item.requested_action == "resume" and not item.file_layout:
             return item
+        if _pause_stop(item) and reported.get(item.info_hash) in _STOPPED_TRANSFER_STATES:
+            return self._settled_stop(item)
+        return self._perform_action(service, item)
+
+    def _perform_action(self, service: AcquisitionService, item: AcquisitionConfirmation) -> AcquisitionConfirmation:
+        """Hand one still-current action to the client, only after the write that proves it was recorded."""
+        record: _ActionRecord = self._record_sent(item)
+        if record is _ActionRecord.SUPERSEDED:
+            return item
+        if record is _ActionRecord.UNSAVED:
+            return replace(item, action_pending=False, problem=_STATE_NOT_SAVED)
+        sent: AcquisitionConfirmation = replace(item, action_sent=True)
         try:
-            service.control_transfer(item.info_hash, str(item.requested_action))
+            service.control_transfer(sent.info_hash, str(sent.requested_action))
         except (AniShiftError, OSError, ValueError) as problem:
-            return replace(item, action_pending=False, problem=sanitize_event_message(str(problem)))
+            return self._refused_action(sent, problem)
+        self._action_attempts.pop(sent.info_hash, None)
+        state: AcquisitionState = sent.state
+        if sent.requested_action == "cancel":
+            state = AcquisitionState.FAILED
+        elif sent.requested_action == "resume":
+            state = AcquisitionState.ACCEPTED
         return replace(
-            item,
+            sent,
             action_pending=False,
             problem=None,
-            state=AcquisitionState.FAILED if item.requested_action == "cancel" else AcquisitionState.ACCEPTED,
+            state=state,
         )
+
+    def _settled_stop(self, item: AcquisitionConfirmation) -> AcquisitionConfirmation:
+        """Settle a stop the client already shows done, keeping the pause ownership of one we sent ourselves."""
+        self._action_attempts.pop(item.info_hash, None)
+        if item.action_sent:
+            return replace(item, action_pending=False, problem=None)
+        return replace(item, requested_action=None, action_pending=False)
+
+    def _refused_action(
+        self, item: AcquisitionConfirmation, problem: AniShiftError | OSError | ValueError
+    ) -> AcquisitionConfirmation:
+        """Hold a refused action in flight for a bounded number of attempts, then report it instead of a done pause."""
+        recorded: tuple[str, int] = self._action_attempts.get(item.info_hash, ("", 0))
+        attempts: int = recorded[1] + 1 if recorded[0] == item.action_id else 1
+        self._action_attempts[item.info_hash] = (str(item.action_id), attempts)
+        reason: str | None = sanitize_event_message(str(problem))
+        if attempts < _ACTION_ATTEMPTS:
+            logger.warning(
+                "A transfer action was refused",
+                action=str(item.requested_action),
+                attempt=attempts,
+                attempts=_ACTION_ATTEMPTS,
+                error_class=type(problem).__name__,
+            )
+            return replace(item, problem=reason)
+        logger.error(
+            "A transfer action stayed unperformed",
+            action=str(item.requested_action),
+            attempts=attempts,
+            error_class=type(problem).__name__,
+        )
+        return replace(item, action_pending=False, problem=reason)
+
+    def _record_sent(self, item: AcquisitionConfirmation) -> _ActionRecord:
+        """Persist on the owner thread that this action is being handed to the client, so a crash cannot lose it."""
+        if not self._serving:
+            return self._mark_sent(item)
+        return self._on_owner(lambda: self._mark_sent(item))
+
+    def _mark_sent(self, item: AcquisitionConfirmation) -> _ActionRecord:
+        current: AcquisitionConfirmation | None = next(
+            (
+                row
+                for row in self._state.acquisitions
+                if row.operation_id == item.operation_id and row.action_id == item.action_id
+            ),
+            None,
+        )
+        if current is None:
+            logger.info("A superseded transfer action was dropped", action=str(item.requested_action))
+            return _ActionRecord.SUPERSEDED
+        if current.action_sent:
+            return _ActionRecord.SENT
+        acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
+            replace(row, action_sent=True) if row is current else row for row in self._state.acquisitions
+        )
+        if self._save(replace(self._state, acquisitions=acquisitions)):
+            return _ActionRecord.SENT
+        return _ActionRecord.UNSAVED
 
     def _reconcile_subscription_sources(self) -> None:
         if self._service.subscriptions is None or not self._state.acquisitions:
@@ -2741,6 +3098,48 @@ def _marked(
             ),
         )
     return marked
+
+
+def _resumable(item: AcquisitionConfirmation, paused: frozenset[str], enabled: frozenset[str] | None) -> bool:
+    """Answer whether a globally paused transfer still has an active order to take up again."""
+    return (
+        item.info_hash in paused
+        and item.state is AcquisitionState.ACCEPTED
+        and _pause_stop(item)
+        and item.action_sent
+        and not item.action_pending
+        and item.problem is None
+        and (item.subscription_id is None or enabled is None or item.subscription_id in enabled)
+    )
+
+
+def _unfinished_pause_stops(state: WatchState) -> tuple[str, ...]:
+    """Keep ownership until a pending or failed pause stop has been reconciled."""
+    unfinished: frozenset[str] = frozenset(
+        item.info_hash
+        for item in state.acquisitions
+        if _pause_stop(item) and (item.action_pending or item.problem is not None)
+    )
+    return tuple(item for item in state.pause_owned_transfers if item in unfinished)
+
+
+def _pause_stop(item: AcquisitionConfirmation) -> bool:
+    """Answer whether this recorded stop carries the action id the global pause gives its own stops."""
+    return item.requested_action == "stop" and (item.action_id or "").startswith(f"{_PAUSE_ACTION}-")
+
+
+def _unstopped_pause(item: AcquisitionConfirmation) -> bool:
+    """Keep a failed stop visible even when an explicit transfer command replaced the global pause action."""
+    return item.requested_action in {"stop", "cancel"} and not item.action_pending and item.problem is not None
+
+
+def _fresh_transfer_states(
+    service: AcquisitionService, acquisitions: tuple[AcquisitionConfirmation, ...]
+) -> Mapping[str, str]:
+    """Read the client now, only for a pause that has stops to apply, so no decision rests on an old snapshot."""
+    if not any(item.action_pending and _pause_stop(item) for item in acquisitions):
+        return {}
+    return {item.info_hash.casefold(): item.state for item in service.transfers()}
 
 
 def _request_state(result: RunResult | None) -> RequestState:

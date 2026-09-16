@@ -224,6 +224,107 @@ def test_panel_executes_only_selected_episodes_through_the_resident(tmp_path: Pa
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("early", [False, True])
+def test_global_resume_finishes_the_same_real_graph_without_repeating_its_translation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, early: bool
+) -> None:
+    monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
+    write_media_source(tmp_path / "03.mkv")
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    translation: FakeTranslationService = FakeTranslationService(entered=entered, release=release)
+    service: AppService = _service(tmp_path, translation, inspector=WorkspaceInspector(FakeMediaProbe()))
+    preset: AutoPreset = AutoPreset(
+        "once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL, ProductKind.SPOKEN_PL}))
+    )
+    try:
+        with _panel_owner(service, tmp_path) as (session, store):
+            group_ids: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
+            session.reserve(group_ids)
+            preview: PlanPreview = session.plan_auto(group_ids, preset)
+            run_id: str = session.start(preview)
+            assert entered.wait(1.0)
+            session.command("set_auto", {"enabled": False})
+            assert session.command("status")["pausing"] is True
+            if early:
+                time.sleep(0.1)
+                session.command("set_auto", {"enabled": True})
+            release.set()
+            if not early:
+                assert _wait_for_resident(session, lambda state: state["paused"] is True)
+                assert store.load().requests[0].state is RequestState.PAUSED
+                assert store.load().markers == ()
+                session.command("set_auto", {"enabled": True})
+            assert _wait_for_resident(
+                session,
+                lambda _state: session.command("run_result", {"run_id": run_id})["state"] == "succeeded",
+            )
+            assert len(translation.calls) == 1
+            assert len(store.load().requests) == 1
+            assert store.load().requests[0].attempts == 1
+            assert len(store.load().products) == 2
+    finally:
+        release.set()
+        service.close()
+
+
+def _wait_for_resident(session: ResidentSession, condition: Callable[[Mapping[str, object]], bool]) -> bool:
+    deadline: float = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if condition(session.command("status")):
+            return True
+        time.sleep(0.01)
+    return False
+
+
+@pytest.mark.integration
+def test_restarting_a_paused_owner_preserves_the_graph_and_only_resume_finishes_its_products(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
+    write_media_source(tmp_path / "03.mkv")
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    translation: FakeTranslationService = FakeTranslationService(entered=entered, release=release)
+    service: AppService = _service(tmp_path, translation, inspector=WorkspaceInspector(FakeMediaProbe()))
+    preset: AutoPreset = AutoPreset(
+        "once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL, ProductKind.SPOKEN_PL}))
+    )
+    try:
+        with _panel_owner(service, tmp_path) as (session, store):
+            group_ids: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
+            session.reserve(group_ids)
+            run_id: str = session.start(session.plan_auto(group_ids, preset))
+            assert entered.wait(1.0)
+            session.command("set_auto", {"enabled": False})
+            release.set()
+            assert _wait_for_resident(session, lambda state: state["paused"] is True)
+            assert store.load().requests[0].state is RequestState.PAUSED
+    finally:
+        release.set()
+        service.close()
+    restarted: AppService = _service(tmp_path, translation, inspector=WorkspaceInspector(FakeMediaProbe()))
+    try:
+        with _panel_owner(restarted, tmp_path) as (session, store):
+            assert session.command("status")["paused"] is True
+            assert restarted.active_run_ids() == ()
+            assert store.load().products == ()
+            session.command("set_auto", {"enabled": True})
+            assert _wait_for_resident(
+                session,
+                lambda _state: session.command("run_result", {"run_id": run_id})["state"] == "succeeded",
+            )
+            assert len(translation.calls) == 1
+            assert len(store.load().requests) == 1
+            assert store.load().requests[0].attempts == 1
+            assert len(store.load().products) == 2
+    finally:
+        restarted.close()
+
+
+@pytest.mark.integration
 def test_panel_escape_releases_the_scope_for_another_session(tmp_path: Path) -> None:
     write_text_source(tmp_path / "03.txt", "Original")
     service: AppService = _service(tmp_path, FakeTranslationService())

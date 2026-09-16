@@ -480,6 +480,14 @@ class AppService:
         """Finish active tasks and retain unfinished runs for recovery."""
         self._graph_coordinator().drain()
 
+    def pause_runs(self) -> None:
+        """Finish active tasks and hold the remaining graphs so a resume can restore them."""
+        self._graph_coordinator().pause()
+
+    def resume_runs(self) -> None:
+        """Admit graph tasks again after a pause."""
+        self._graph_coordinator().resume()
+
     def retain_runs(self, run_ids: Sequence[str]) -> None:
         """Protect durable unfinished requests from orphaned-temp cleanup."""
         with self._run_lock:
