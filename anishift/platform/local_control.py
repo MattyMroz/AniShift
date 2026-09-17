@@ -898,6 +898,7 @@ def _restrict_to_current_user(path: Path) -> None:
             capture_output=True,
             timeout=_ICACLS_TIMEOUT_S,
             check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except OSError, subprocess.SubprocessError:
         logger.warning("Could not restrict the control key to the current account")

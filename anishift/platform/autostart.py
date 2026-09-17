@@ -129,6 +129,7 @@ def _default_run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         encoding="oem",
         errors="replace",
         check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
 
 

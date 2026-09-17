@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
 from typing import Final
+from unittest.mock import Mock
 from xml.etree import ElementTree
 
 import pytest
@@ -188,6 +189,23 @@ def test_status_reads_the_enabled_flag_of_the_exported_definition(
 
     assert autostart.status(run=runner) is expected
     assert runner.calls == [["schtasks", "/Query", "/TN", TASK_NAME, "/XML"]]
+
+
+@pytest.mark.usefixtures("on_windows")
+def test_status_uses_a_windowless_scheduler_with_oem_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    run: Mock = Mock(return_value=_completed(0, stdout=_definition("false")))
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert autostart.status() is AutostartStatus.DISABLED
+    run.assert_called_once_with(
+        ["schtasks", "/Query", "/TN", TASK_NAME, "/XML"],
+        capture_output=True,
+        text=True,
+        encoding="oem",
+        errors="replace",
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
 
 
 @pytest.mark.usefixtures("on_windows")

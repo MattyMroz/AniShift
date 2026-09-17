@@ -167,6 +167,7 @@ def identify(path: Path) -> MediaInfo:
             errors="replace",
             timeout=_IDENTIFY_TIMEOUT_S,
             check=False,
+            creationflags=_NO_WINDOW,
         )
     except subprocess.TimeoutExpired as exc:
         msg = f"{path}: mkvmerge identify timed out"

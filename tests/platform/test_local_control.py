@@ -10,6 +10,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Final
+from unittest.mock import Mock
 
 import pytest
 from loguru import logger as loguru_logger
@@ -606,14 +607,32 @@ def test_the_endpoint_of_a_state_directory_stays_local_on_windows(
     assert control_endpoint(tmp_path).startswith("\\\\.\\pipe\\anishift-")
 
 
-def test_the_key_is_created_once_and_read_back_unchanged(tmp_path: Path) -> None:
+@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_the_key_is_created_once_and_read_back_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, windows: bool, returncode: int
+) -> None:
     state_dir: Path = _state_dir(tmp_path)
+    run: Mock = Mock(return_value=subprocess.CompletedProcess([], returncode, stdout=b"", stderr=b""))
+    monkeypatch.setattr(local_control, "is_windows", lambda: windows)
+    monkeypatch.setenv("USERNAME", "test-account")
+    monkeypatch.setattr(subprocess, "run", run)
 
     created: bytes = ensure_authkey(state_dir)
     reused: bytes = ensure_authkey(state_dir)
 
     assert created == reused
     assert len(created) == _KEY_BYTES
+    if windows:
+        run.assert_called_once_with(
+            ["icacls", str(state_dir / KEY_FILE_NAME), "/inheritance:r", "/grant:r", "test-account:F"],
+            capture_output=True,
+            timeout=10.0,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    else:
+        run.assert_not_called()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="the key file is restricted through Windows ACLs")
