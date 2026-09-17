@@ -26,8 +26,11 @@ from anishift.application import (
 )
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive.prompts import TerminalRenderer
+from anishift.cli.interactive.state import StateController
+from anishift.cli.resident import ResidentSession
 from anishift.cli.run import AutoRunRefusal, PreparedAutoRun
 from anishift.errors import ExecutionError
+from anishift.platform import tray as tray_module
 
 
 class _Renderer:
@@ -166,6 +169,50 @@ def _settle(application: interactive_app._InteractiveApplication) -> None:
 
 def _mode(application: interactive_app._InteractiveApplication) -> interactive_app._ViewMode:
     return application._mode
+
+
+@pytest.mark.parametrize("attached", [False, True])
+@pytest.mark.parametrize("editing", [False, True])
+def test_notification_refusal_is_visible_from_home_and_icon_activation_returns_home(
+    monkeypatch: pytest.MonkeyPatch,
+    attached: bool,
+    editing: bool,
+) -> None:
+    application, renderer = _application(monkeypatch, _service())
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    raised: list[str | None] = []
+    monkeypatch.setattr(tray_module, "raise_panel", raised.append)
+    session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda kind: {"subscriptions": []}))
+    controller: StateController = StateController(session, renderer.invalidate)
+    application._state = controller
+    notice: str = "Windows nie wskazał powiadomienia. Otwórz wynik w Bibliotece"
+    try:
+        controller._receive(session, {"event": "state_changed", "payload": {"notification_problem": notice}})
+        if attached:
+            controller._receive(session, {"event": "panel_open", "payload": {"notification_problem": notice}})
+        if editing:
+            application._mode = interactive_app._ViewMode.SETTINGS
+        application._handle_idle()
+        if editing:
+            assert _mode(application) is interactive_app._ViewMode.SETTINGS
+            application._show_home()
+            application._handle_idle()
+        assert _mode(application) is interactive_app._ViewMode.MESSAGE
+        assert notice in renderer.frame_provider(120, 40).plain
+        application._handle_key("enter")
+        application._handle_idle()
+        assert _mode(application) is interactive_app._ViewMode.HOME
+        controller._receive(session, {"event": "panel_open", "payload": {"notification_problem": notice}})
+        application._handle_idle()
+        assert notice in renderer.frame_provider(120, 40).plain
+        controller._receive(session, {"event": "panel_open", "payload": {}})
+        application._handle_idle()
+        assert _mode(application) is interactive_app._ViewMode.HOME
+        assert notice not in renderer.frame_provider(120, 40).plain
+        assert len(raised) == 2 + int(attached)
+    finally:
+        controller.close()
+        application._mascot.close()
 
 
 def _frame(application: interactive_app._InteractiveApplication, columns: int = 120, rows: int = 40) -> str:

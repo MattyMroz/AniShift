@@ -131,8 +131,13 @@ def _focus(panel: SettingsController, key: str) -> None:
 
 
 def _open(panel: SettingsController, setting_id: str) -> None:
-    _activate(panel, "category:auto")
+    _video(panel)
     _activate(panel, f"setting:{setting_id}")
+
+
+def _video(panel: SettingsController) -> None:
+    _activate(panel, "category:auto")
+    _activate(panel, "recipe:video")
 
 
 def _walk_to(panel: SettingsController, value: str) -> None:
@@ -176,9 +181,9 @@ def test_auto_sits_right_after_output_in_the_root_menu(panel: SettingsController
 def test_the_auto_screen_lists_policies_and_hides_container_rows_without_their_products(
     panel: SettingsController,
 ) -> None:
-    _activate(panel, "category:auto")
+    _video(panel)
 
-    assert _keys(panel) == (*_POLICY_ROWS, "reset-scope:auto", "back")
+    assert _keys(panel) == ("setting:requested_products", *_POLICY_ROWS, "reset-scope:recipe:video", "back")
     assert "AUTO" in panel.render(80, 24).plain
 
 
@@ -187,9 +192,15 @@ def test_container_rows_appear_once_their_products_are_requested(
     service: FakeAutoService,
 ) -> None:
     _with_products(service, ProductKind.FULL_PL, ProductKind.MKV, ProductKind.MP4)
-    _activate(panel, "category:auto")
+    _video(panel)
 
-    assert _keys(panel) == (*_POLICY_ROWS, *_CONTAINER_ROWS, "reset-scope:auto", "back")
+    assert _keys(panel) == (
+        "setting:requested_products",
+        *_POLICY_ROWS,
+        *_CONTAINER_ROWS,
+        "reset-scope:recipe:video",
+        "back",
+    )
 
 
 def test_only_the_container_that_is_requested_shows_its_rows(
@@ -197,7 +208,7 @@ def test_only_the_container_that_is_requested_shows_its_rows(
     service: FakeAutoService,
 ) -> None:
     _with_products(service, ProductKind.FULL_PL, ProductKind.MKV)
-    _activate(panel, "category:auto")
+    _video(panel)
 
     assert "setting:mkv_tracks" in _keys(panel)
     assert "setting:mp4_audio_source" not in _keys(panel)
@@ -263,7 +274,7 @@ def test_arrows_step_a_policy_row_and_save_once_the_keys_stop(
     panel: SettingsController,
     service: FakeAutoService,
 ) -> None:
-    _activate(panel, "category:auto")
+    _video(panel)
     _focus(panel, "setting:subtitle_source_policy")
 
     panel.handle_key("right")
@@ -279,7 +290,7 @@ def test_stepping_back_to_the_stored_policy_saves_nothing(
     panel: SettingsController,
     service: FakeAutoService,
 ) -> None:
-    _activate(panel, "category:auto")
+    _video(panel)
     _focus(panel, "setting:subtitle_source_policy")
     panel.handle_key("right")
     panel.handle_key("left")
@@ -294,12 +305,13 @@ def test_left_on_a_track_list_row_goes_back_instead_of_stepping(
     service: FakeAutoService,
 ) -> None:
     _with_products(service, ProductKind.MKV)
-    _activate(panel, "category:auto")
+    _video(panel)
     _focus(panel, "setting:mkv_tracks")
 
     panel.handle_key("left")
 
-    assert panel._category is None
+    assert panel._recipe is None
+    assert panel._category is not None
     assert service.preset_saves == []
 
 
@@ -351,13 +363,13 @@ def test_track_rows_show_their_polish_labels(panel: SettingsController, service:
             mkv_tracks=frozenset({MkvTrackProduct.FULL_PL_SUBTITLES, MkvTrackProduct.NARRATION_AUDIO}),
         ),
     )
-    _activate(panel, "category:auto")
+    _video(panel)
 
     assert _shown(panel, "mkv_tracks") == "Polskie napisy, Polski lektor"
 
 
 def test_the_translation_row_names_its_effect_on_polish_products(panel: SettingsController) -> None:
-    _activate(panel, "category:auto")
+    _video(panel)
 
     assert "tłumaczy, gdy źródło nie jest polskie" in _shown(panel, "translation_action")
 
@@ -450,21 +462,21 @@ def test_the_auto_reset_asks_first_and_restores_the_whole_preset_under_its_own_i
         source_subtitle_language="pol",
         subtitle_output_format=SubtitleOutputFormat.ASS,
     )
-    _activate(panel, "category:auto")
-    _activate(panel, "reset-scope:auto")
+    _video(panel)
+    _activate(panel, "reset-scope:recipe:video")
     assert panel._editor is not None
-    assert panel._editor.title == "PRZYWRÓCIĆ DOMYŚLNE · AUTO?"
+    assert panel._editor.title == "PRZYWRÓCIĆ DOMYŚLNE · WIDEO?"
     panel.handle_key("enter")
     assert service.preset_saves == []
 
-    _activate(panel, "reset-scope:auto")
+    _activate(panel, "reset-scope:recipe:video")
     panel.handle_key("down")
     panel.handle_key("enter")
 
     assert service.preset == replace(default_preset_file().presets[0], preset_id="mine", name="Mine")
     assert panel._editor is None
     assert panel._feedback is None
-    assert _keys(panel) == (*_POLICY_ROWS, "reset-scope:auto", "back")
+    assert _keys(panel) == ("setting:requested_products", *_POLICY_ROWS, "reset-scope:recipe:video", "back")
 
 
 def test_the_output_reset_restores_the_auto_policies_too(panel: SettingsController, service: FakeAutoService) -> None:
@@ -528,7 +540,7 @@ def test_a_fresh_controller_shows_what_was_saved(panel: SettingsController, serv
     panel.handle_key("enter")
 
     fresh: SettingsController = SettingsController(cast("AppService", service), lambda: None)
-    _activate(fresh, "category:auto")
+    _video(fresh)
 
     assert _shown(fresh, "subtitle_source_policy") == "Osadzone w MKV"
     assert _shown(fresh, "source_subtitle_language") == "eng"
@@ -541,7 +553,7 @@ def test_every_auto_row_fits_a_narrow_short_terminal_with_a_fixed_back_row(
     rows: int,
 ) -> None:
     _with_products(service, ProductKind.FULL_PL, ProductKind.MKV, ProductKind.MP4)
-    _activate(panel, "category:auto")
+    _video(panel)
     for index in range(len(panel._items)):
         panel._selected = index
         frame: str = panel.render(40, rows).plain
@@ -556,6 +568,7 @@ def test_a_burn_choice_needs_mp4_and_is_dropped_with_it(panel: SettingsControlle
     _with_products(service, ProductKind.FULL_PL, ProductKind.MP4)
     _choose(panel, "burn_subtitle_product", "displayed_pl")
     assert service.preset.products.burn_subtitle_product is BurnSubtitleProduct.DISPLAYED_PL
+    panel.handle_key("escape")
     panel.handle_key("escape")
 
     _activate(panel, "category:output")

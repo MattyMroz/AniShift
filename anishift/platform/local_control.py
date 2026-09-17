@@ -166,6 +166,7 @@ class ControlError(AniShiftError):
         code: ControlErrorCode = ControlErrorCode.INTERNAL,
         reason: str = "",
         answered: bool = False,
+        details: Mapping[str, object] | None = None,
     ) -> None:
         """Carry the protocol reason, suggesting a resident check only for an undelivered command."""
         super().__init__(
@@ -173,6 +174,7 @@ class ControlError(AniShiftError):
                 code=ErrorCode.IO_ERROR,
                 message=message,
                 suggestion="" if answered else _RESIDENT_CHECK,
+                details=dict(details or {}),
             )
         )
         self.code: ControlErrorCode = code
@@ -199,6 +201,7 @@ class ControlResponse:
     code: ControlErrorCode | None = None
     message: str = ""
     reason: str = ""
+    details: Mapping[str, object] = _NO_RESULT
 
     @classmethod
     def succeeded(cls, result: Mapping[str, object] | None = None) -> ControlResponse:
@@ -206,9 +209,13 @@ class ControlResponse:
         return cls(ok=True, result=result if result is not None else _NO_RESULT)
 
     @classmethod
-    def refused(cls, code: ControlErrorCode, message: str, reason: str = "") -> ControlResponse:
+    def refused(
+        cls, code: ControlErrorCode, message: str, reason: str = "", *, details: Mapping[str, object] | None = None
+    ) -> ControlResponse:
         """Return a refused response naming why the command was not performed."""
-        return cls(ok=False, result=_NO_RESULT, code=code, message=message, reason=reason)
+        return cls(
+            ok=False, result=_NO_RESULT, code=code, message=message, reason=reason, details=details or _NO_RESULT
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -799,7 +806,10 @@ def _response_frame(command_id: str, response: ControlResponse) -> dict[str, obj
     if response.ok:
         return _result_frame(command_id, response.result)
     code: ControlErrorCode = response.code if response.code is not None else ControlErrorCode.INTERNAL
-    return _error_frame(command_id, code, response.message, response.reason)
+    frame: dict[str, object] = _error_frame(command_id, code, response.message, response.reason)
+    if response.details:
+        frame["details"] = dict(response.details)
+    return frame
 
 
 def _result_frame(command_id: str, result: Mapping[str, object]) -> dict[str, object]:
@@ -821,11 +831,13 @@ def _accepted_result(frame: Mapping[str, object], command_id: str) -> Mapping[st
         code: str = error.get("code", "") if isinstance(error, dict) else ""
         message: str = error.get("message", "") if isinstance(error, dict) else ""
         reason: object = error.get("reason", "") if isinstance(error, dict) else ""
+        details: object = frame.get("details")
         raise ControlError(
             message or "The resident refused the command",
             code=_error_code(code),
             reason=reason if isinstance(reason, str) else "",
             answered=True,
+            details=details if isinstance(details, dict) else None,
         )
     if frame.get("command_id") != command_id:
         msg = "The resident answered a different command"

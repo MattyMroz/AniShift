@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         DeletionPreview,
         LibrarySet,
         PlanPreview,
+        RetryProposal,
         RunProgressSnapshot,
         decode_view,
         encode_view,
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
         DiscoveryResult,
         DiscoveryWarning,
     )
+    from anishift.application.history import HistoryEvent, HistoryKind
     from anishift.application.inspection import (
         InspectedSourceGroup,
         InspectedWorkspace,
@@ -88,6 +90,7 @@ from anishift.application.control import (
     ProcessingRequest,
     ProductConfirmation,
     ProviderLock,
+    RecipePreferences,
     RefusalReason,
     RequestState,
     Reservation,
@@ -200,6 +203,8 @@ __all__ = [
     "GroupReadiness",
     "GroupResult",
     "GroupStatus",
+    "HistoryEvent",
+    "HistoryKind",
     "InspectedSourceGroup",
     "InspectedWorkspace",
     "InspectionWarning",
@@ -224,6 +229,7 @@ __all__ = [
     "ReadinessReason",
     "ReadyStore",
     "RebuildRequest",
+    "RecipePreferences",
     "RefusalReason",
     "ReleaseCatalog",
     "ReleaseChoice",
@@ -231,6 +237,7 @@ __all__ = [
     "RequestState",
     "Reservation",
     "ResourceResult",
+    "RetryProposal",
     "RunEvent",
     "RunEventEmitter",
     "RunEventKind",
@@ -284,6 +291,9 @@ __all__ = [
 ]
 
 _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
+    "HistoryEvent": ("anishift.application.history", "HistoryEvent"),
+    "HistoryKind": ("anishift.application.history", "HistoryKind"),
+    "RetryProposal": ("anishift.application.control_views", "RetryProposal"),
     "DeletionPreview": ("anishift.application.control_views", "DeletionPreview"),
     "LibrarySet": ("anishift.application.control_views", "LibrarySet"),
     "PlanPreview": ("anishift.application.control_views", "PlanPreview"),

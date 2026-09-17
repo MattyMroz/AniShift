@@ -1,10 +1,11 @@
-"""Mapping between catalog specs and the preferences or preset fields they describe."""
+"""Mapping catalog specs to shared preferences, video presets and owner-held target recipes."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 from typing import TYPE_CHECKING, Final
 
+from anishift.application.control import NarrationTimeline, RecipePreferences, TextResultFormat
 from anishift.application.intents import (
     AutoPreset,
     BurnSubtitleProduct,
@@ -27,7 +28,9 @@ __all__ = [
     "preset_setting_is_active",
     "preset_with_value",
     "read_preset_value",
+    "read_recipe_value",
     "read_setting_value",
+    "recipe_with_value",
     "setting_is_active",
     "setting_is_persisted",
 ]
@@ -121,6 +124,35 @@ def setting_is_persisted(spec: SettingSpec) -> bool:
 def read_preset_value(preset: AutoPreset, spec: SettingSpec) -> SettingValue:
     """Return the catalog value *preset* holds for *spec*."""
     return _catalog_value(_preset_value(preset, spec.setting_id))
+
+
+def read_recipe_value(recipes: RecipePreferences, spec: SettingSpec) -> SettingValue:
+    """Read one target delta without consulting global content preferences."""
+    values: dict[str, str] = {
+        "translate.text_result": recipes.translate.text_result.value,
+        "translate.translation_action": recipes.translate.translation_action.value,
+        "audiobook.translation_action": recipes.audiobook.translation_action.value,
+        "audiobook.timeline": recipes.audiobook.timeline.value,
+    }
+    return values[spec.setting_id]
+
+
+def recipe_with_value(recipes: RecipePreferences, spec: SettingSpec, value: SettingValue) -> RecipePreferences:
+    """Replace one validated delta while preserving every other recipe field."""
+    spec.validate_value(value)
+    text: str = _text(spec, value)
+    match spec.setting_id:
+        case "translate.text_result":
+            return replace(recipes, translate=replace(recipes.translate, text_result=TextResultFormat(text)))
+        case "translate.translation_action":
+            return replace(recipes, translate=replace(recipes.translate, translation_action=TranslationAction(text)))
+        case "audiobook.translation_action":
+            return replace(recipes, audiobook=replace(recipes.audiobook, translation_action=TranslationAction(text)))
+        case "audiobook.timeline":
+            return replace(recipes, audiobook=replace(recipes.audiobook, timeline=NarrationTimeline(text)))
+        case _:
+            msg: str = "Unknown recipe setting"
+            raise ValueError(msg)
 
 
 def preset_setting_is_active(spec: SettingSpec, preset: AutoPreset) -> bool:

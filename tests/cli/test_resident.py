@@ -407,6 +407,7 @@ class _Tray:
         self.busy_states: list[bool] = []
         self.incomplete_states: list[bool] = []
         self.notifications: list[tuple[str, str]] = []
+        self.notification_ids: list[str | None] = []
         self.closed: int = 0
 
     @property
@@ -427,8 +428,9 @@ class _Tray:
         self.states.append((auto_enabled, pausing))
         self.incomplete_states.append(incomplete)
 
-    def notify(self, title: str, message: str) -> None:
+    def notify(self, title: str, message: str, notification_id: str | None = None) -> None:
         self.notifications.append((title, message))
+        self.notification_ids.append(notification_id)
 
     def close(self, *, notification: tuple[str, str] | None = None) -> None:
         if notification is not None:
@@ -586,12 +588,20 @@ def test_the_tray_reports_no_work_for_a_request_that_only_waits_for_the_pause_to
         broadcast: Callable[[Mapping[str, object], bool], None] = owners[0].broadcasts[0]
         broadcast(_state_frame("paused"), False)
         broadcast(_state_frame("running"), False)
+        broadcast(
+            {"event": "notification", "payload": {"title": "Ready", "message": "One", "notification_id": "first"}}, True
+        )
+        broadcast(
+            {"event": "notification", "payload": {"title": "Ready", "message": "Two", "notification_id": "second"}},
+            True,
+        )
     finally:
         owners[0].request_shutdown()
         thread.join(timeout=_TIMEOUT_S)
 
     assert codes == [EXIT_SUCCESS]
     assert trays[0].busy_states == [False, True]
+    assert trays[0].notification_ids == ["first", "second"]
 
 
 @pytest.mark.parametrize(

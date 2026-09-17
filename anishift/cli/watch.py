@@ -337,7 +337,7 @@ def run_resident(  # noqa: PLR0913 - every resident timing seam stays an explici
         ensure_authkey,
         write_instance,
     )
-    from anishift.platform.tray import TrayIcon  # noqa: PLC0415 - desktop resources belong to the resident
+    from anishift.platform.tray import TrayIcon, open_path  # noqa: PLC0415 - desktop resources belong to the resident
 
     lock: ProcessLock = ProcessLock(state_dir / RESIDENT_LOCK_FILE_NAME)
     if not lock.acquire():
@@ -356,6 +356,7 @@ def run_resident(  # noqa: PLR0913 - every resident timing seam stays an explici
             instance_id=instance_id,
             clock=clock,
             open_panel=_spawn_panel,
+            open_result=lambda path: open_path(path, show_folder=True),
             ready_store=ReadyStore(relocation_journal_dir(state_dir), service.workspace_root),
             scan_interval_s=scan_interval_s,
             recycler=recycle_file,
@@ -379,7 +380,12 @@ def run_resident(  # noqa: PLR0913 - every resident timing seam stays an explici
                     incomplete=bool(payload.get("pause_incomplete")),
                 )
             elif frame.get("event") == "notification":
-                tray.notify(str(payload.get("title", "AniShift")), str(payload.get("message", "")))
+                identifier: object = payload.get("notification_id")
+                tray.notify(
+                    str(payload.get("title", "AniShift")),
+                    str(payload.get("message", "")),
+                    identifier if isinstance(identifier, str) else None,
+                )
 
         owner.attach_broadcast(broadcast)
         file_watch: DirectoryWatch | None = None

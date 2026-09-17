@@ -107,6 +107,10 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
         "tts_profile.voice_mix_offset_db",
         "tts_provider_model_id",
         "tts_voice_id",
+        "translate.text_result",
+        "translate.translation_action",
+        "audiobook.translation_action",
+        "audiobook.timeline",
     }
 
     assert set(catalog) == expected_ids

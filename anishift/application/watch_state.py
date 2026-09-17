@@ -248,6 +248,10 @@ class WatchStateStore:
             raise ValueError(msg)
         return run_journal_dir(self._path.parent) / f"{run_id}.json"
 
+    def history_path(self) -> Path:
+        """Locate the nonauthoritative operational journal beside this owner's state."""
+        return self._path.parent / "history.jsonl"
+
     def load(self) -> WatchState:
         """Read the stored automation state, migrating an older schema once, never answering empty."""
         try:
@@ -458,6 +462,9 @@ def _encode_acquisition(confirmation: AcquisitionConfirmation) -> dict[str, obje
         "file_layout": [[index, path, size] for index, path, size in confirmation.file_layout],
         "content_started": confirmation.content_started,
         "repeat_id": confirmation.repeat_id,
+        "nyaa_release_id": confirmation.nyaa_release_id,
+        "release_title": confirmation.release_title,
+        "previous_operation_id": confirmation.previous_operation_id,
     }
 
 
@@ -715,6 +722,14 @@ def _decode_acquisition(raw: object, schema_version: int) -> AcquisitionConfirma
     started: bool = _flag({"content_started": stored.pop("content_started", False)}, "content_started")
     sent: bool = _flag({"action_sent": stored.pop("action_sent", False)}, "action_sent")
     repeat: str | None = _optional_text({"repeat_id": stored.pop("repeat_id", None)}, "repeat_id")
+    release_id: object = stored.pop("nyaa_release_id", None)
+    if release_id is not None and (type(release_id) is not int or release_id <= 0):
+        msg = "Invalid retained Nyaa release identifier"
+        raise ValueError(msg)
+    title: str | None = _optional_text({"release_title": stored.pop("release_title", None)}, "release_title")
+    previous: str | None = _optional_text(
+        {"previous_operation_id": stored.pop("previous_operation_id", None)}, "previous_operation_id"
+    )
     document: dict[str, object] = _strict_object(
         {
             "requested_action": None,
@@ -752,6 +767,9 @@ def _decode_acquisition(raw: object, schema_version: int) -> AcquisitionConfirma
         file_layout=_decode_layout(layout),
         content_started=started,
         repeat_id=repeat,
+        nyaa_release_id=release_id,
+        release_title=title,
+        previous_operation_id=previous,
         action_sent=sent,
     )
 

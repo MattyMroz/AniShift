@@ -20,15 +20,18 @@ from anishift.application import (
     ModelAvailability,
     ModelProbeResult,
     ProductKind,
+    RecipePreferences,
     TranslationModelOption,
 )
 from anishift.cli.interactive.menu import with_footer
 from anishift.cli.interactive.settings_editors import format_voice_input, parse_setting_input, parse_voice_input
 from anishift.cli.interactive.text_input import TextInput, is_edit_key
+from anishift.cli.resident import ResidentSession
 from anishift.config.field_access import (
     preset_setting_is_active,
     preset_with_value,
     read_preset_value,
+    read_recipe_value,
     read_setting_value,
     setting_is_active,
 )
@@ -82,6 +85,9 @@ _ADD_VOICE_LABEL: Final[str] = "Dodaj głos"
 _STATUS_ROWS: Final[int] = 1
 """Rows every screen spends on its status line, spent whether it says anything or not."""
 
+_RECIPE_DESCRIPTION_MIN_ROWS: Final[int] = 12
+"""Minimum height keeping recipe help alongside the selected row, back action and key hints."""
+
 _ZERO_MEANS_DEFAULT: Final[frozenset[str]] = frozenset({"translation_batch_size"})
 """Fields where zero is not a quantity but a request for the engine default."""
 
@@ -109,8 +115,8 @@ _ROOT_SCOPE: Final[str] = "all"
 _ROOT_SCOPE_TITLE: Final[str] = "WSZYSTKO"
 """Heading naming the root reset scope in its confirmation."""
 
-_ROOT_RESET_PARTIAL: Final[str] = "✗ Przywrócono preferencje, ale nie preset Auto · Enter ponawia"
-"""Status shown when the root reset restored settings.json but presets.json failed."""
+_ROOT_RESET_PARTIAL: Final[str] = "✗ Preferencje przywrócone; recepty: błąd · Enter ponawia"
+"""Status shown when the root reset restored preferences but a recipe write failed."""
 
 _WHEEL_ROWS: Final[int] = 3
 """Rows one wheel notch moves the view."""
@@ -218,6 +224,7 @@ _TTS_FIELDS: Final[tuple[_SettingField, ...]] = (
 """Persisted narration fields exposed by the product."""
 
 _AUTO_FIELDS: Final[tuple[_SettingField, ...]] = (
+    ("requested_products", "Produkty wideo", "WYNIK"),
     ("subtitle_source_policy", "Źródło napisów", "ŹRÓDŁO NAPISÓW"),
     ("source_subtitle_language", "Język źródła", "ŹRÓDŁO NAPISÓW"),
     ("translation_action", "Tłumaczenie", "TŁUMACZENIE I FORMAT"),
@@ -228,6 +235,29 @@ _AUTO_FIELDS: Final[tuple[_SettingField, ...]] = (
 )
 """Policies of the default automatic preset, beside the products it requests."""
 
+_RECIPE_FIELDS: Final[dict[str, tuple[_SettingField, ...]]] = {
+    "video": _AUTO_FIELDS,
+    "translate": (
+        ("translate.text_result", "Wynik TXT", "TEKST I NAPISY"),
+        ("translate.translation_action", "Tłumaczenie", "TEKST I NAPISY"),
+    ),
+    "audiobook": (
+        ("audiobook.translation_action", "Tłumaczenie", "SAMODZIELNE AUDIO"),
+        ("audiobook.timeline", "Czytanie SRT", "SAMODZIELNE AUDIO"),
+    ),
+}
+"""Editable deltas of the three base recipes."""
+
+_RECIPE_LABELS: Final[dict[str, str]] = {"video": "Wideo", "translate": "Tłumaczenie", "audiobook": "Audiobook"}
+"""Names of the three base recipe screens."""
+
+_RECIPE_DESCRIPTIONS: Final[dict[str, str]] = {
+    "video": "subs: wideo + obowiązkowe napisy obok",
+    "translate": "TXT/SRT/ASS/SSA → bez głosu",
+    "audiobook": "cover: audiobook + obraz → MP4",
+}
+"""Short role descriptions explaining inherited folder behavior."""
+
 
 _FIELDS_COVERED_ELSEWHERE: Final[dict[str, str]] = {
     "llm_provider": "chosen atomically together with the model",
@@ -235,7 +265,6 @@ _FIELDS_COVERED_ELSEWHERE: Final[dict[str, str]] = {
     "openai_compatible_base_url": "edited inside the connections category",
     "palantir_enrollment_base_url": "edited inside the connections category",
     "primary_model_alias": "deliberately hidden from the product surface",
-    "requested_products": "toggled on the output screen",
 }
 """Editable fields intentionally absent from the section layout, with the reason."""
 
@@ -255,6 +284,7 @@ _PRODUCTS: Final[tuple[tuple[ProductKind, str], ...]] = (
 """Public output products and their labels."""
 
 _CHOICE_LABELS: Final[dict[tuple[str, str], str]] = {
+    **{("requested_products", product.value): label for product, label in _PRODUCTS},
     ("processing_order_policy", "ready_first"): "Najpierw gotowe",
     ("processing_order_policy", "strict_natural"): "Ścisła kolejność plików",
     ("composition_quality_preset", "high"): "Wysoka",
@@ -343,6 +373,7 @@ class _EditorKind(StrEnum):
 class _EditorAction(StrEnum):
     UPDATE_SETTING = "update_setting"
     UPDATE_PRESET = "update_preset"
+    UPDATE_RECIPE = "update_recipe"
     UPDATE_VOICE = "update_voice"
     SELECT_MODEL = "select_model"
     SELECT_MODEL_PROVIDER = "select_model_provider"
@@ -354,7 +385,7 @@ class _EditorAction(StrEnum):
 
 
 class _PartialResetError(OSError):
-    """The root reset wrote settings.json, but the preset file could not be written."""
+    """The root reset restored preferences but did not finish restoring recipes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,10 +477,16 @@ _CONNECTIONS: Final[tuple[_Connection, ...]] = (
 
 
 class SettingsController:
-    """Own local settings navigation while all persistence stays in AppService."""
+    """Own local navigation while preferences and recipes are persisted by their existing owners."""
 
-    def __init__(self, service: AppService, invalidate: Callable[[], None]) -> None:
+    def __init__(
+        self, service: AppService, invalidate: Callable[[], None], *, resident: ResidentSession | None = None
+    ) -> None:
         self._service: AppService = service
+        self._resident: ResidentSession | None = resident
+        self._recipe: str | None = None
+        self._recipes: RecipePreferences = RecipePreferences()
+        self._owner_reload_pending: bool = False
         self._invalidate: Callable[[], None] = invalidate
         self._category: _Category | None = None
         self._connection: _Connection | None = None
@@ -485,7 +522,9 @@ class SettingsController:
             if key == "interrupt":
                 self._discard_armed = True
                 self._feedback = _Feedback(
-                    "Nie zapisano zmiany. Ctrl+C ponownie: porzuć i wróć; inny klawisz: zostań",
+                    "Zapisano. Ctrl+C ponownie: wróć bez przeładowania"
+                    if self._pending is None and self._owner_reload_pending
+                    else "Nie zapisano zmiany. Ctrl+C ponownie: porzuć i wróć; inny klawisz: zostań",
                     "warning",
                 )
             return SettingsResult.STAY
@@ -552,14 +591,15 @@ class SettingsController:
     def _commit_pending(self) -> bool:
         pending: _PendingEdit | None = self._pending
         if pending is None:
-            return True
-        if self._already_stored(pending):
+            return not self._owner_reload_pending or self._reload_owner_settings()
+        if self._already_stored(pending) and not self._owner_reload_pending:
             # Landing back on the stored value is not an edit, so it must neither
             # write a transaction nor claim that anything was saved.
             self._pending = None
             return True
         try:
-            self._persist_pending(pending)
+            if not self._already_stored(pending):
+                self._persist_pending(pending)
         except AniShiftError, OSError:
             self._feedback = _Feedback("✗ Nie udało się zapisać ustawienia", "error")
         except TypeError, ValueError:
@@ -567,7 +607,7 @@ class SettingsController:
         else:
             self._pending = None
             self._refresh_menu()
-            return True
+            return self._reload_owner_settings()
         # A failed edit remains recoverable, but only a deliberate key press retries it.
         pending.deadline = math.inf
         self._refresh_menu()
@@ -577,7 +617,11 @@ class SettingsController:
         if pending.action is _EditorAction.UPDATE_ENVIRONMENT:
             current: object = getattr(self._service.current_settings(), pending.setting_id)
             return current == pending.value
-        if pending.action not in {_EditorAction.UPDATE_SETTING, _EditorAction.UPDATE_PRESET}:
+        if pending.action not in {
+            _EditorAction.UPDATE_SETTING,
+            _EditorAction.UPDATE_PRESET,
+            _EditorAction.UPDATE_RECIPE,
+        }:
             return False
         try:
             snapshot: _CatalogSnapshot = self._catalog_snapshot()
@@ -590,6 +634,9 @@ class SettingsController:
         self._persist(pending.action, pending.setting_id, pending.value)
 
     def _persist(self, action: _EditorAction, setting_id: str, value: SettingValue) -> None:
+        if action is _EditorAction.UPDATE_RECIPE:
+            self._recipes = self._recipe_session().update_recipe(setting_id, str(value))
+            return
         if action is _EditorAction.UPDATE_ENVIRONMENT:
             self._service.update_environment_setting(setting_id, str(value))
             return
@@ -665,6 +712,8 @@ class SettingsController:
         return self._stored_value(snapshot, spec)
 
     def _stored_value(self, snapshot: _CatalogSnapshot, spec: SettingSpec) -> SettingValue:
+        if spec.scope is SettingScope.RECIPE:
+            return read_recipe_value(self._recipes, spec)
         if spec.scope is SettingScope.AUTO_PRESET:
             return read_preset_value(self._current_preset(), spec)
         return read_setting_value(snapshot.settings, spec)
@@ -796,6 +845,8 @@ class SettingsController:
             return
         if key == "space" and editor.kind is _EditorKind.MULTI_SELECT:
             value: str = editor.options[editor.selected].value
+            if editor.setting_id == "requested_products" and editor.selected_values == {value}:
+                return
             if value in editor.selected_values:
                 editor.selected_values.remove(value)
             else:
@@ -849,6 +900,7 @@ class SettingsController:
 
     def _prefixed_actions(self) -> tuple[tuple[str, Callable[[str], None]], ...]:
         return (
+            ("recipe:", self._enter_recipe),
             ("category:", lambda value: self._enter_category(_Category(value))),
             (_RESET_SCOPE_PREFIX, self._open_scoped_reset),
             ("voice:", self._open_voice_editor),
@@ -870,6 +922,7 @@ class SettingsController:
 
     def _enter_category(self, category: _Category) -> None:
         self._category = category
+        self._recipe = None
         self._connection = None
         self._voices_open = False
         self._selected = 0
@@ -882,10 +935,36 @@ class SettingsController:
             return
         self._refresh_menu()
 
+    def _recipe_session(self) -> ResidentSession:
+        if self._resident is None:
+            msg: str = "Recipe settings require the resident owner"
+            raise ValueError(msg)
+        return self._resident
+
+    def _enter_recipe(self, recipe: str) -> None:
+        try:
+            if recipe != "video":
+                self._recipes = self._recipe_session().recipes()
+        except AniShiftError, OSError, ValueError:
+            self._feedback = _Feedback("✗ Nie można wczytać recepty właściciela", "error")
+            return
+        self._recipe = recipe
+        self._selected = 0
+        self._offset = 0
+        self._refresh_menu()
+
     def _go_back(self) -> SettingsResult:
         self._feedback = None
         if self._editor is not None:
             self._editor = None
+            return SettingsResult.STAY
+        if self._recipe is not None:
+            recipe: str = self._recipe
+            self._recipe = None
+            self._selected = 0
+            self._offset = 0
+            self._refresh_menu()
+            self._select_menu_key(f"recipe:{recipe}")
             return SettingsResult.STAY
         if self._connection is not None:
             key: str = f"connection:{self._connection.key}"
@@ -948,7 +1027,15 @@ class SettingsController:
         elif self._category is _Category.TTS:
             items = self._setting_items(_TTS_FIELDS)
         elif self._category is _Category.AUTO:
-            items = self._setting_items(_AUTO_FIELDS)
+            items = (
+                self._setting_items(_RECIPE_FIELDS[self._recipe])
+                if self._recipe is not None
+                else (
+                    *(_MenuItem(f"recipe:{key}", label) for key, label in _RECIPE_LABELS.items()),
+                    self._scoped_reset_item(),
+                    _MenuItem(_BACK_KEY, _BACK_LABEL),
+                )
+            )
         elif self._category is _Category.CONNECTIONS:
             items = self._connection_items()
         else:
@@ -980,6 +1067,8 @@ class SettingsController:
         return tuple(items)
 
     def _scoped_reset_item(self) -> _MenuItem:
+        if self._recipe is not None:
+            return _MenuItem(f"{_RESET_SCOPE_PREFIX}recipe:{self._recipe}", _RESET_LABEL)
         category: _Category = self._category if self._category is not None else _Category.GENERAL
         return _MenuItem(f"{_RESET_SCOPE_PREFIX}{category.value}", _RESET_LABEL)
 
@@ -1112,6 +1201,8 @@ class SettingsController:
                 msg = f"Collection setting {setting_id!r} returned a scalar value"
                 raise TypeError(msg)
             options = tuple(_Option(str(value), _choice_label(setting_id, str(value))) for value in spec.allowed_values)
+            if setting_id == "requested_products":
+                options = tuple(_Option(product.value, label) for product, label in _PRODUCTS)
             selected_values: set[str] = {str(value) for value in current}
             selected: int = next(
                 (index for index, option in enumerate(options) if option.value in selected_values),
@@ -1238,19 +1329,30 @@ class SettingsController:
         )
 
     def _reset_scope(self, scope: str) -> None:
+        if scope.startswith("recipe:"):
+            recipe: str = scope.removeprefix("recipe:")
+            if recipe == "video":
+                self._restore_default_preset()
+            else:
+                self._recipes = self._recipe_session().reset_recipe(recipe)
+            return
+        if scope == _Category.AUTO.value:
+            self._recipes = self._recipe_session().reset_recipe("all")
+            self._restore_default_preset()
+            return
         if scope == _ROOT_SCOPE:
             self._service.reset_settings()
             try:
                 self._restore_default_preset()
+                if self._resident is not None:
+                    self._recipes = self._resident.reset_recipe("all")
             except (AniShiftError, OSError) as error:
-                # Preferences and the preset are two files, so the first write can land
-                # while the second fails; the status has to say which half is done.
                 raise _PartialResetError(_ROOT_RESET_PARTIAL) from error
             return
         if scope == _VOICES_SCOPE:
             self._service.update_setting(_VOICES_SETTING_ID, ())
             return
-        if scope in {_Category.OUTPUT.value, _Category.AUTO.value}:
+        if scope == _Category.OUTPUT.value:
             # Products and Auto policies are one preset in one file, so either screen
             # restores the whole preset in a single write instead of walking fields.
             self._restore_default_preset()
@@ -1340,6 +1442,7 @@ class SettingsController:
         self._editor = None
         self._feedback = None
         self._refresh_menu()
+        self._reload_owner_settings()
 
     def _editor_raw_value(self, editor: _Editor) -> str:
         if editor.kind is _EditorKind.MULTI_SELECT:
@@ -1350,6 +1453,7 @@ class SettingsController:
         if editor.action in {
             _EditorAction.UPDATE_SETTING,
             _EditorAction.UPDATE_PRESET,
+            _EditorAction.UPDATE_RECIPE,
             _EditorAction.UPDATE_ENVIRONMENT,
         }:
             self._save_setting_editor(editor, raw_value)
@@ -1430,6 +1534,19 @@ class SettingsController:
         self._service.save_preset(_preset_draft(preset))
         self._preset = preset
 
+    def _reload_owner_settings(self) -> bool:
+        if self._resident is None:
+            return True
+        self._owner_reload_pending = True
+        try:
+            self._resident.command("reload_settings")
+        except AniShiftError, OSError:
+            self._feedback = _Feedback("Zapisano · nie przeładowano · Enter ponawia", "warning")
+            return False
+        self._owner_reload_pending = False
+        self._feedback = None
+        return True
+
     def _current_preset(self) -> AutoPreset:
         if self._preset is None:
             self._preset = self._default_preset()
@@ -1479,6 +1596,8 @@ class SettingsController:
 
     def _render_menu(self, columns: int, rows: int) -> Text:
         title: str = _VOICES_TITLE if self._voices_open else _menu_title(self._category, self._connection)
+        if self._recipe is not None:
+            title = f"AUTO · {_RECIPE_LABELS[self._recipe].upper()}"
         back: _MenuItem | None = self._items[-1] if self._items and self._items[-1].key == _BACK_KEY else None
         scrollable: tuple[_MenuItem, ...] = self._items[:-1] if back is not None else self._items
         row_budget: int = max(rows - 6 - _STATUS_ROWS - int(back is not None), 1)
@@ -1538,7 +1657,10 @@ class SettingsController:
             )
             content.append("\n")
         self._append_feedback(content, left, columns)
-        return self._finish(content, _MENU_HINT, columns, rows)
+        hint: str = _MENU_HINT
+        if self._recipe is not None and rows >= _RECIPE_DESCRIPTION_MIN_ROWS:
+            hint = _RECIPE_DESCRIPTIONS[self._recipe] + "\n" + hint
+        return self._finish(content, hint, columns, rows)
 
     def _render_output(self, columns: int, rows: int) -> Text:
         reset_index: int = len(_PRODUCTS)
@@ -1663,6 +1785,8 @@ class SettingsController:
         if self._discard_armed and len(feedback) > available:
             compact: str = "Ctrl+C: porzuć · inny klawisz: zostań"
             feedback = compact if available >= len(compact) else "Ctrl+C: porzuć zmianę"
+            if self._pending is None and self._owner_reload_pending:
+                feedback = "Zapisano · Ctrl+C: wróć"
         content.append(" " * left)
         content.append(_truncate_right(feedback, available), style=self._feedback.style)
         content.append("\n")
@@ -1699,6 +1823,8 @@ def _value_action(spec: SettingSpec) -> _EditorAction:
     """Return the persistence path a value of *spec* travels: preferences or the preset."""
     if spec.scope is SettingScope.AUTO_PRESET:
         return _EditorAction.UPDATE_PRESET
+    if spec.scope is SettingScope.RECIPE:
+        return _EditorAction.UPDATE_RECIPE
     return _EditorAction.UPDATE_SETTING
 
 
@@ -1729,12 +1855,23 @@ def _selected_model_option(options: tuple[_Option, ...], provider_id: str, model
 def _field_title(setting_id: str) -> str:
     labels: dict[str, str] = {
         field_id: label
-        for field_id, label, _section in (*_GENERAL_FIELDS, *_TRANSLATION_FIELDS, *_TTS_FIELDS, *_AUTO_FIELDS)
+        for field_id, label, _section in (
+            *_GENERAL_FIELDS,
+            *_TRANSLATION_FIELDS,
+            *_TTS_FIELDS,
+            *(item for recipe in _RECIPE_FIELDS.values() for item in recipe),
+        )
     }
     return labels.get(setting_id, setting_id).upper()
 
 
 def _choice_label(setting_id: str, value: str) -> str:
+    if setting_id.endswith(".translation_action"):
+        return {"auto": "Automatycznie", "translate": "Zawsze tłumacz", "do_not_translate": "Nie tłumacz"}[value]
+    if setting_id == "translate.text_result":
+        return {"text": "TXT · zachowaj akapity", "subtitles": "SRT · czasy robocze, bez synchronizacji"}[value]
+    if setting_id == "audiobook.timeline":
+        return {"continuous": "Ciągłe · przerwy 0,3 s", "source_times": "Zachowaj czasy SRT"}[value]
     if setting_id in {"translation_engine", "tts_engine"}:
         return _ENGINE_LABELS.get(value, value)
     if (setting_id, value) in _CHOICE_LABELS:
@@ -1834,6 +1971,8 @@ def _menu_title(category: _Category | None, connection: _Connection | None) -> s
 
 
 def _scope_title(scope: str) -> str:
+    if scope.startswith("recipe:"):
+        return _RECIPE_LABELS[scope.removeprefix("recipe:")].upper()
     if scope == _ROOT_SCOPE:
         return _ROOT_SCOPE_TITLE
     if scope == _VOICES_SCOPE:

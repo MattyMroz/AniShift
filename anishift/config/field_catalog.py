@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Final
 
 from anishift.application.artifacts import ArtifactKind
+from anishift.application.control import NarrationTimeline, TextResultFormat
 from anishift.application.intents import (
     BurnSubtitleProduct,
     ExternalAudioRole,
@@ -75,6 +76,7 @@ __all__ = [
     "SettingSpec",
     "SettingValue",
     "SettingValueType",
+    "recipe_setting_specs",
     "setting_catalog",
 ]
 
@@ -103,6 +105,7 @@ class SettingScope(StrEnum):
     GLOBAL = "global"
     ENGINE_PROFILE = "engine_profile"
     AUTO_PRESET = "auto_preset"
+    RECIPE = "recipe"
     MANUAL_RUN = "manual_run"
     SECRET = "secret"  # noqa: S105
     INTERNAL = "internal"
@@ -353,6 +356,7 @@ def setting_catalog(context: SettingCatalogContext | None = None) -> tuple[Setti
     defaults = UserSettings()
     catalog: tuple[SettingSpec, ...] = (
         *_workflow_specs(resolved_context),
+        *recipe_setting_specs(),
         *_global_specs(defaults),
         *_translation_specs(defaults, resolved_context),
         *_model_specs(defaults),
@@ -377,6 +381,48 @@ def setting_catalog(context: SettingCatalogContext | None = None) -> tuple[Setti
         msg = f"Settings catalog references unknown dependencies: {rendered}"
         raise ValueError(msg)
     return catalog
+
+
+def recipe_setting_specs() -> tuple[SettingSpec, ...]:
+    """Describe only the persisted target deltas owned by automation."""
+    return (
+        SettingSpec(
+            "translate.text_result",
+            "Text output",
+            "Choose translated TXT or an SRT script with provisional times.",
+            SettingValueType.STRING,
+            TextResultFormat.TEXT.value,
+            SettingScope.RECIPE,
+            allowed_values=tuple(item.value for item in TextResultFormat),
+        ),
+        SettingSpec(
+            "translate.translation_action",
+            "Translation",
+            "Choose language handling for standalone translation.",
+            SettingValueType.STRING,
+            TranslationAction.AUTO.value,
+            SettingScope.RECIPE,
+            allowed_values=tuple(item.value for item in TranslationAction),
+        ),
+        SettingSpec(
+            "audiobook.translation_action",
+            "Translation",
+            "Translate or read the supplied text unchanged.",
+            SettingValueType.STRING,
+            TranslationAction.AUTO.value,
+            SettingScope.RECIPE,
+            allowed_values=tuple(item.value for item in TranslationAction),
+        ),
+        SettingSpec(
+            "audiobook.timeline",
+            "SRT timing",
+            "Read continuously or preserve source SRT times.",
+            SettingValueType.STRING,
+            NarrationTimeline.CONTINUOUS.value,
+            SettingScope.RECIPE,
+            allowed_values=tuple(item.value for item in NarrationTimeline),
+        ),
+    )
 
 
 def _value_matches_type(value: SettingValue, value_type: SettingValueType) -> bool:

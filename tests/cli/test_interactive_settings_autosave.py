@@ -9,6 +9,7 @@ from rich.cells import cell_len
 from anishift.application import AppService, AutoPreset, AutoPresetDraft, EnvironmentSettingStatus
 from anishift.application.intents import VIDEO_PRODUCTS, ProductIntent, ProductKind
 from anishift.cli.interactive.settings import _PRODUCTS, SettingsController, SettingsResult, _Feedback
+from anishift.cli.resident import ResidentSession
 from anishift.config.field_access import assign_setting_value, read_setting_value
 from anishift.config.field_catalog import (
     SettingCatalogContext,
@@ -19,6 +20,7 @@ from anishift.config.field_catalog import (
 from anishift.config.presets import DEFAULT_PRESET_ID
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
+from anishift.errors import AniShiftError
 
 _DELAY = 0.5
 
@@ -87,6 +89,18 @@ class FakeSettingsService:
     def save_preset(self, draft: AutoPresetDraft) -> None:
         self.preset_saves += 1
         self.products = frozenset(draft.products.requested_products)
+
+
+class FakeReloadSession:
+    def __init__(self, error: AniShiftError | OSError | None = None) -> None:
+        self.error: AniShiftError | OSError | None = error
+        self.calls: int = 0
+
+    def command(self, command: str) -> None:
+        assert command == "reload_settings"
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
 
 
 @pytest.fixture
@@ -744,6 +758,157 @@ def test_retrying_a_failed_save_commits_before_leaving(
     assert panel._category is None
     assert service.settings.subtitle_max_chars_per_line == 43
     assert len(service.saves) == 1
+
+
+@pytest.mark.parametrize("typed", [False, True])
+@pytest.mark.parametrize("error_type", [OSError, AniShiftError])
+def test_saved_delayed_edit_retries_only_owner_reload_on_user_input(
+    service: FakeSettingsService, typed: bool, error_type: type[OSError] | type[AniShiftError]
+) -> None:
+    resident: FakeReloadSession = FakeReloadSession(error_type("synthetic reload failure"))
+    panel: SettingsController = SettingsController(
+        cast("AppService", service), lambda: None, resident=cast("ResidentSession", resident)
+    )
+    if typed:
+        _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+        panel.handle_key("text:43")
+    else:
+        _activate(panel, "category:subtitles")
+        panel.handle_key("right")
+    assert panel._pending is not None
+    panel._pending.deadline = 0.0
+
+    panel.flush_pending()
+
+    assert service.settings.subtitle_max_chars_per_line == 43
+    assert service.saves == [("subtitle_max_chars_per_line", 43)]
+    assert panel._pending is None
+    assert panel._owner_reload_pending
+    assert panel._feedback is not None
+    assert "Zapisano" in panel._feedback.text
+    assert "nie przeładowano" in panel._feedback.text
+    for _ in range(3):
+        frame: str = panel.render(80, 24).plain
+        panel.flush_pending()
+        assert "Zapisano" in frame
+        assert "Enter ponawia" in frame
+        assert "Nie udało się zapisać" not in frame
+    assert resident.calls == 1
+
+    panel.handle_key("escape")
+
+    assert resident.calls == 2
+    assert panel._owner_reload_pending
+    assert service.saves == [("subtitle_max_chars_per_line", 43)]
+    resident.error = None
+
+    panel.handle_key("escape")
+
+    assert resident.calls == 3
+    assert not panel._owner_reload_pending
+    assert panel._feedback is None
+    assert service.saves == [("subtitle_max_chars_per_line", 43)]
+
+
+@pytest.mark.parametrize("secret", [False, True])
+def test_saved_explicit_editor_retries_reload_without_repeating_its_write(
+    service: FakeSettingsService, secret: bool
+) -> None:
+    resident: FakeReloadSession = FakeReloadSession(OSError("synthetic reload failure"))
+    panel: SettingsController = SettingsController(
+        cast("AppService", service), lambda: None, resident=cast("ResidentSession", resident)
+    )
+    before: SettingValue = _stored(service, "processing_order_policy")
+    if secret:
+        _activate(panel, "category:connections")
+        _activate(panel, "connection:gemini")
+        _activate(panel, "connection-secret")
+        panel.handle_key("paste:synthetic-secret")
+    else:
+        _open_field(panel, "general", "processing_order_policy")
+        panel.handle_key("down")
+
+    panel.handle_key("enter")
+
+    assert panel._editor is None
+    assert panel._owner_reload_pending
+    assert panel._feedback is not None
+    assert "Zapisano" in panel._feedback.text
+    assert "nie przeładowano" in panel._feedback.text
+    for _ in range(3):
+        panel.render(80, 24)
+        panel.flush_pending()
+    assert resident.calls == 1
+
+    panel.handle_key("enter")
+
+    assert resident.calls == 2
+    assert panel._owner_reload_pending
+    resident.error = None
+
+    panel.handle_key("enter")
+
+    assert resident.calls == 3
+    assert not panel._owner_reload_pending
+    assert panel._feedback is None
+    if secret:
+        assert service.secrets == [("gemini_api_key", "synthetic-secret")]
+        assert service.saves == []
+    else:
+        assert _stored(service, "processing_order_policy") != before
+        assert len(service.saves) == 1
+        assert service.secrets == []
+
+
+@pytest.mark.parametrize("typed", [False, True])
+def test_failed_persistence_never_requests_owner_reload(
+    service: FakeSettingsService, monkeypatch: pytest.MonkeyPatch, typed: bool
+) -> None:
+    resident: FakeReloadSession = FakeReloadSession()
+    panel: SettingsController = SettingsController(
+        cast("AppService", service), lambda: None, resident=cast("ResidentSession", resident)
+    )
+
+    def fail_save(setting_id: str, value: SettingValue) -> UserSettings:
+        del setting_id, value
+        raise OSError("synthetic write failure")
+
+    monkeypatch.setattr(service, "update_setting", fail_save)
+    if typed:
+        _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+        panel.handle_key("text:43")
+    else:
+        _open_field(panel, "general", "processing_order_policy")
+        panel.handle_key("down")
+
+    panel.handle_key("enter")
+
+    assert resident.calls == 0
+    assert not panel._owner_reload_pending
+    assert panel._feedback is not None
+    assert "Nie udało się zapisać" in panel._feedback.text
+    assert service.saves == []
+
+
+def test_interrupt_after_reload_failure_does_not_claim_the_saved_edit_was_discarded(
+    service: FakeSettingsService,
+) -> None:
+    resident: FakeReloadSession = FakeReloadSession(OSError("synthetic reload failure"))
+    panel: SettingsController = SettingsController(
+        cast("AppService", service), lambda: None, resident=cast("ResidentSession", resident)
+    )
+    _activate(panel, "category:subtitles")
+    panel.handle_key("right")
+
+    assert panel.handle_key("interrupt") is SettingsResult.STAY
+
+    assert "Zapisano" in panel.render(40, 12).plain
+    assert "Ctrl+C" in panel.render(40, 12).plain
+    assert panel.handle_key("interrupt") is SettingsResult.BACK_HOME
+    assert service.settings.subtitle_max_chars_per_line == 43
+    assert service.saves == [("subtitle_max_chars_per_line", 43)]
+    assert panel._owner_reload_pending
+    assert resident.calls == 1
 
 
 def test_enter_commits_a_typed_value_exactly_once(panel: SettingsController, service: FakeSettingsService) -> None:

@@ -34,7 +34,7 @@ from anishift.application.acquisition import AcquisitionService
 from anishift.application.automation import AutomationOwner
 from anishift.application.cancellation import CancellationToken, EventCancellationToken
 from anishift.application.control import AcquisitionConfirmation, ProcessingRequest, ReadyGroup, RequestState
-from anishift.application.control_views import DeletionPreview, LibrarySet, PlanPreview, decode_view
+from anishift.application.control_views import DeletionPreview, LibrarySet, PlanPreview, RetryProposal, decode_view
 from anishift.application.discovery import DiscoveryResult
 from anishift.application.handlers import (
     ExecutionHandlers,
@@ -44,6 +44,7 @@ from anishift.application.handlers import (
     TranslationTaskHandler,
     TtsTaskHandler,
 )
+from anishift.application.history import HistoryKind
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
 from anishift.application.intents import (
     AutoPreset,
@@ -71,7 +72,7 @@ from anishift.application.workflows import WorkflowTarget
 from anishift.bootstrap import AppContext, bootstrap, create_app_service
 from anishift.cli.interactive.app import _InteractiveApplication, _ViewMode
 from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
-from anishift.cli.interactive.state import StateController
+from anishift.cli.interactive.state import StateController, StateResult
 from anishift.cli.resident import ResidentSession
 from anishift.cli.watch import run_resident
 from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
@@ -564,6 +565,10 @@ def test_failed_regeneration_stays_in_processing_beside_the_old_confirmed_librar
         )
         assert not result.succeeded
         assert all(item.request_id != result.run_id for item in store.load().products)
+        history = session.history()
+        assert len(history) == 1
+        assert history[0].material_id == entry.set_id
+        assert history[0].kind is HistoryKind.ERROR
     restarted: AppService = _service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()))
     with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, _store):
         session.discover()
@@ -573,6 +578,8 @@ def test_failed_regeneration_stays_in_processing_beside_the_old_confirmed_librar
         assert materials[0]["state"] == "failed"
         assert session.library_result(entry.set_id) == product
         assert product.read_bytes() == content
+        assert session.history() == history
+        assert session.retry_proposal(entry.set_id).action == "resume"
 
 
 @pytest.mark.integration
@@ -597,6 +604,23 @@ def test_processing_retry_discloses_multigroup_scope_respects_pause_and_releases
             session.command("set_auto", {"enabled": True})
             controller.handle_key("text:p")
             assert _wait_for_resident(session, lambda _status: not controller._busy)
+            assert store.load().requests[0].attempts == 1
+            assert "Dokończ całe zapisane zlecenie · 2 materiałów" in controller.render(120, 40).plain
+            assert controller.handle_key("enter") is StateResult.MANUAL
+            proposal: RetryProposal | None = controller.take_manual_retry()
+            assert proposal is not None
+            assert set(proposal.group_ids) == set(groups.values())
+            rendered: threading.Event = threading.Event()
+            manual: ManualController = ManualController(
+                session, session.discover(), service.get_preset(service.default_preset_id()), rendered.set
+            )
+            manual.prepare_retry(proposal)
+            assert rendered.wait(5.0)
+            assert manual.handle_key("enter") is ManualResult.START_RUN
+            prepared: ManualRun | None = manual.take_ready_run()
+            assert prepared is not None
+            assert isinstance(prepared.plan, PlanPreview)
+            session.execute(prepared.plan, CollectingRunSink())
             assert _wait_for_resident(
                 session, lambda _status: session.command("run_result", {"run_id": run_id})["state"] == "failed"
             )

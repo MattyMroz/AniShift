@@ -13,8 +13,13 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 - Odczyt transferów prywatnego GUI pozostaje dostępny po ręcznym przejęciu; mutacje nadal
   wymagają własności. Zamknięcie przejętego klienta nie jest awarią startu i nie uruchamia go ponownie.
 - `tray.py` ładuje oryginalną maskotkę z pakietowego `app.ico` bez importowania frontendu.
-  Protokół ikony v4 wymaga odczytu zdarzenia z dolnego słowa `lParam`; kliknięcie powiadomienia
-  (`NIN_BALLOONUSERCLICK`) otwiera panel tak jak kliknięcie ikony.
+  The v4 callback carries the event in the low word of `lParam` and the icon ID in the high word,
+  never a notification ID. Balloons are serialized; only a shown balloon in an uninterrupted
+  click-consumed lifecycle may select its owner-validated result. Timeout, hide or lost lifecycle
+  revokes targeting for the icon lifetime. Icon activation still opens Home. `open_path` is the
+  shared desktop boundary for Library and notification results; callers validate the file first.
+  Delivery failures retire only the active balloon; later offers remain eligible even while
+  targeting is revoked. Failed submissions are never retried; retiring a balloon cancels its timer.
 - `DirectoryWatch` zakłada pierwszy odczyt `ReadDirectoryChangesW` przed uruchomieniem wątku.
   Oczekiwanie jest blokujące, a stop używa osobnego zdarzenia; przed zamknięciem uchwytów
   anuluje i rozlicza overlapped I/O. Pusty bufor oznacza overflow i pełne uzgodnienie, nie brak

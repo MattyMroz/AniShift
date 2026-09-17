@@ -9,8 +9,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Kontrolowane I/O należy do `discovery.py`, `inspection.py`, `publisher.py`,
   `sessions.py`, `watch_state.py`, `acquisition.py` (katalog wydań, katalog tytułów i wysyłka do klienta torrent
   przez wstrzyknięte protokoły `TorrentSource`/`TitleCatalog`/`TorrentClient`; typy z
-  `services.torrents` i `services.catalog` tylko pod `TYPE_CHECKING`, jedyny import runtime to
-  czyste `season_hint`/`strip_season` z `services.torrents.names`), handlerów oraz fasady
+  `services.torrents` i `services.catalog` tylko pod `TYPE_CHECKING`, poza czystymi
+  `season_hint`/`strip_season`, adapterem zachowanej referencji Nyaa i rekonstrukcją `Release`
+  dla jawnego ponowienia), handlerów oraz fasady
   `service.py`; koordynator publikuje zwalidowany staging przez `scheduler_runtime.py`.
   Decyzje produktowe pozostają w plannerze.
 - Nazwy trwałych produktów pochodzą wyłącznie z `products.py`; żaden inny moduł nie zapisuje
@@ -25,6 +26,22 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `AutomationOwner` zapisuje przyjęcie pracy i jest jedynym autorem stanu rezydenta.
   `RunJournal` zapisuje pozostały graf i potwierdzenia publikacji; niepewne operacje zdalne
   po przerwaniu procesu wymagają jawnego wznowienia, bez automatycznego powtarzania opłat.
+- Result notifications follow saved completion and ready provenance, never `GROUP_FINISHED`
+  alone. A ready main result may notify while its torrent source is still held. `notified`
+  is the durable at-most-once offer guard; ephemeral IDs bind an attempt, set and exact file
+  revision. Callbacks revalidate current confirmations and file identity, never History or
+  a latest-result fallback. `automation.py`
+  Legacy ready inventory refresh runs on the existing I/O pool; notification clicks reuse
+  the owner's Library projection plus current confirmations and file identity, without waiting
+  for the service discovery lock on the owner thread.
+- `history.py` is an owner-written, non-authoritative JSONL beside `WatchState`; its 30-day
+  retention and failures never alter admission, deduplication or recovery. Only torn tails
+  are repaired; corrupt middle records preserve bytes and produce a History read refusal.
+  Recovered terminal observations label admission-time provenance, not a fabricated finish time.
+- Retry classification belongs to `AutomationOwner`: resume keeps the entire recorded scope,
+  local rebuild enters Manual, and reacquire persists its correlated intent before sending.
+  `AcquisitionConfirmation` retains only a verified numeric Nyaa ID and original release title;
+  older or unsupported references remain absent. URL restoration belongs to `services/torrents/nyaa.py`.
 - `ReadyStore` przenosi ukończoną grupę do `ready/` przez wyłączne dowiązanie i usunięcie
   starej nazwy na tym samym woluminie. Dziennik pozostaje do zapisania nowych tożsamości
   w stanie właściciela; znany torrent musi wcześniej zwolnić pliki. Blokada relokacji
@@ -72,17 +89,26 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   (numery odcinków jako teksty dziesiętne). Wszystkie pola spoza pierwotnej dziewiątki są
   opcjonalne przy odczycie, więc starsze pliki wczytują się bez ręcznej naprawy; zapis jest
   zawsze pełny. `subscriptions.py`
-- `SCHEMA_VERSION` to `3`, a loader przyjmuje 1, 2 i 3. Starszy plik `load()` migruje raz: zostawia
-  kopię `subscriptions.json.v<wersja>.bak` i przepisuje plik w wersji 3, więc drugi `load()` nie zmienia
+- `SCHEMA_VERSION` to `4`, a loader przyjmuje 1, 2, 3 i 4. Starszy plik `load()` migruje raz: zostawia
+  kopię `subscriptions.json.v<wersja>.bak` i przepisuje plik w wersji 4, więc drugi `load()` nie zmienia
   już bajtów. Każdy numer z `taken_episodes` staje się `EpisodeOrder(..., ORDERED)` bez hasha —
   `taken` dowodzi przekazania wydania klientowi, nigdy kompletnego pliku. Kod sprzed schematu 2
   odrzuca plik w wersji 2 (`ConfigError`), więc cofnięcie wersji wymaga przywrócenia kopii
-  `subscriptions.json.v1.bak` na miejsce `subscriptions.json` i restartu czuwania. Ponowne
-  `add`/`subscribe` tej samej pary seria+grupa podnosi `generation` i zachowuje `enabled`,
-  `end_state`, `anilist_id`, korektę i próbki opóźnienia. `subscriptions.py`
+  `subscriptions.json.v1.bak` na miejsce `subscriptions.json` i restartu czuwania. `resolve_subscription_id`
+  współdzielony przez ownera i `add` zachowuje ID rozpoznanego sezonu; nowe sezony AniList dostają
+  deterministyczne ID uwzględniające sezon. Niepowiązany wpis nie może nadpisać znanego sezonu.
+  Przyjęte receipt i późniejsze powiązanie zachowują pierwotne ID oraz historię. `subscriptions.py`
 - Rezydent planuje `check_due` według zapisanych terminów odcinków. Niepowiązane wpisy zachowują
-  godzinne szukanie wydań; osobne próby powiązania respektują opóźnienia i budżet retry. Znany
-  kalendarz bez daty czeka, a terminalne okno nie odradza się po restarcie. `subscriptions.py`
+  godzinne szukanie wydań; osobne próby powiązania respektują opóźnienia i budżet retry. Kalendarz
+  ma osobny trwały budżet i błąd; jego awaria nie blokuje wydań o potwierdzonym terminie.
+  HIATUS i najbliższa znana data odległa o ponad dobę oznaczają dobowe odświeżanie; daty bliskie
+  i nieznane używają `recheck_interval_s`. Jawne sprawdzenie pozwala na jedną próbę po wyczerpaniu
+  budżetu, respektując blokadę dostawcy. `subscriptions.py`
+- `requested_at` zapisuje jawny wybór, a `awaiting_airing` zachowuje oczekiwanie na konkretną emisję:
+  początek sezonu ani jego liczba odcinków nie uruchamiają wszystkich okien. Jawnie wybrany numer
+  bez daty może mieć ograniczone okno szukania, jeśli brak znanej przeszkody przyszłej emisji.
+  HIATUS zachowuje przyszły zamiar; FINISHED/CANCELLED nie otwierają okien nieemitowanych numerów.
+  Terminalne okno nie odradza się po restarcie ani powtórzeniu receipt. `subscriptions.py`
 - `RequestControl` opakowuje wspólny transport HTTP metadanych i qBittorrenta. Liczy rzeczywiste
   wywołania, współdzieli aktywne odczyty i blokady dostawców; trwałe terminy blokad zapisuje owner.
   Budżet jednej operacji obejmuje zagnieżdżone zapytania, bez retry transportu. `services/http_requests.py`
@@ -111,6 +137,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   wczytaniu stanu i po rozłączeniu panelu. Rozłączenie unieważnia także podglądy, również
   kończące się po zwolnieniu rezerwacji.
   `automation.py`
+- Startup discards previous-session reservations in memory even when persisting that cleanup
+  fails; the failed write must not revive dead clients' ownership. `automation.py`
 - Zdarzenia plików są scalane w jednym oczekującym powiadomieniu; ponad 4096 ścieżek zastępuje
   pełne uzgodnienie. Inspekcja działa w puli I/O, a właściciel decyduje o Auto po stabilizacji.
   Zmiana źródeł lub produktów unieważnia podgląd właściwej grupy; nowy podgląd klienta zastępuje
@@ -141,6 +169,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   nazwy pól zawierające segment sekretu są odrzucane. Stare zlecenia bez `intents` nadal
   się wczytują, ale nie pozwalają odtworzyć wyborów, których dawny zapis nie zachował.
   `automation.py`, `control.py`, `control_payloads.py`, `watch_state.py`
+- `recipe_update` changes only a validated target delta and commits its receipt with
+  `WatchState.recipes`. Video remains an `AutoPreset`; subs inherits video and cover
+  inherits audiobook. Preview captures recipe preferences alongside its plan; admission
+  and recovery must not relabel an older plan with current recipe preferences. `automation.py`
 - Aktualność podglądu sprawdza się przez ponowny `source_fingerprint` grup podglądu (kilka
   `stat`), nie przez pełny `discover()` na wątku właściciela. `automation.py`
 - `AppService.reload_preferences()` wczytuje ponownie `settings.json` i `.env` pod `_run_lock`;

@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum, auto
@@ -20,6 +20,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, cast
 
 from anishift.application.acquisition import (
+    AcquisitionService,
     CatalogOrder,
     ReleaseChoice,
     SeasonContext,
@@ -58,6 +59,7 @@ from anishift.application.control_views import (
     DeletionPreview,
     LibraryFileIdentity,
     LibrarySet,
+    RetryProposal,
     RunProgressSnapshot,
     decode_view,
     encode_view,
@@ -65,6 +67,7 @@ from anishift.application.control_views import (
 )
 from anishift.application.discovery import ArtifactName, classify_artifact, is_derived_product
 from anishift.application.events import RunEventKind, failure_code, sanitize_event_message
+from anishift.application.history import HistoryEvent, HistoryJournal, HistoryKind
 from anishift.application.inspection import InspectedWorkspace
 from anishift.application.intents import (
     AutoPreset,
@@ -84,7 +87,7 @@ from anishift.application.recovery import CHECKPOINT_VERSION, RunJournal
 from anishift.application.results import GroupResult, GroupStatus, ProducedArtifact, RunResult
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids, resolve_readiness
-from anishift.application.subscriptions import SubscriptionOrder, repeat_of, subscription_id
+from anishift.application.subscriptions import SubscriptionOrder, repeat_of, resolve_subscription_id
 from anishift.application.transfers import TransferInspector, flat_layout, reserved_stem
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
@@ -162,6 +165,15 @@ COMMAND_TIMEOUT_S: Final[float] = 300.0
 
 _ID_BYTES: Final[int] = 8
 """Random bytes making one generated run, preview or command identifier unique."""
+
+_NOTIFICATION_LIMIT: Final[int] = 128
+"""Maximum exact result references retained by this owner, never restored from history."""
+
+_UNIDENTIFIED_NOTIFICATION: Final[str] = "Windows nie wskazał powiadomienia. Otwórz wynik w Bibliotece"
+"""Visible refusal when the native callback cannot identify its original notification."""
+
+_UNAVAILABLE_NOTIFICATION: Final[str] = "Wynik powiadomienia jest niedostępny lub zmieniony. Sprawdź Bibliotekę"
+"""Visible refusal for an expired reference or a changed result revision."""
 
 _UNKNOWN_COMMAND: Final[str] = "The resident does not know this command"
 """Reason returned for a command kind outside the documented set."""
@@ -259,6 +271,7 @@ _MUTATING_KINDS: Final[frozenset[str]] = frozenset(
         "deletion_start",
         "deletion_retry",
         "set_auto",
+        "recipe_update",
         "set_directory_auto",
         "reserve",
         "release",
@@ -270,6 +283,7 @@ _MUTATING_KINDS: Final[frozenset[str]] = frozenset(
         "subscription_remove",
         "subscription_add",
         "download",
+        "reacquire",
         "transfer",
     }
 )
@@ -284,6 +298,9 @@ _SLOW_KINDS: Final[frozenset[str]] = frozenset(
         "subscriptions_check",
         "acquisition",
         "download",
+        "reacquire",
+        "retry_prepare",
+        "subscription_retry_prepare",
         "library_refresh",
         "library_open",
         "deletion_preview",
@@ -351,6 +368,7 @@ class _Preview:
     resume_run_id: str | None = None
     recovering: bool = False
     retry: bool = True
+    recipe: RecipePreferences = field(default_factory=RecipePreferences)
 
 
 @dataclass(slots=True)
@@ -390,6 +408,14 @@ class _Inspected:
     workspace: InspectedWorkspace | None
 
 
+@dataclass(frozen=True, slots=True)
+class _NotificationTarget:
+    set_id: str
+    product: ProductConfirmation
+    identity: LibraryFileIdentity
+    attempt: tuple[str, int]
+
+
 class AutomationOwner:
     """Owns the watch state, admits requests and answers every control command."""
 
@@ -402,6 +428,7 @@ class AutomationOwner:
         clock: Clock = lambda: datetime.now(UTC),
         broadcast: Broadcast | None = None,
         open_panel: Callable[[], None] | None = None,
+        open_result: Callable[[Path], None] | None = None,
         ready_store: ReadyStore | None = None,
         scan_interval_s: float = SCAN_INTERVAL_S,
         recycler: Callable[[Path, tuple[int, int, int, int]], RecycleResult] | None = None,
@@ -414,6 +441,9 @@ class AutomationOwner:
         self._scan_interval_s: float = scan_interval_s
         self._broadcast: Broadcast | None = broadcast
         self._open_panel: Callable[[], None] | None = open_panel
+        self._open_result: Callable[[Path], None] | None = open_result
+        self._notification_targets: dict[str, _NotificationTarget | None] = {}
+        self._notification_problem: str | None = None
         self._panels: set[str] = set()
         self._panel_opening_at: float = 0.0
         self._state: WatchState = store.load()
@@ -435,9 +465,6 @@ class AutomationOwner:
         service.retain_runs(
             tuple(item.request_id for item in self._state.requests if item.state is not RequestState.SUCCEEDED)
         )
-        if self._state.reservations:
-            self._state = replace(self._state, reservations=())
-            self._save(self._state)
         self._queue: SimpleQueue[
             _Command | _Completion | _Disconnected | _FilesChanged | _Inspected | Callable[[], None] | None
         ] = SimpleQueue()
@@ -489,6 +516,10 @@ class AutomationOwner:
         self._file_version: int = 0
         self._group_versions: dict[str, int] = {}
         self._reconciled_version: int = 0
+        self._history: HistoryJournal = HistoryJournal(store.history_path())
+        if self._state.reservations:
+            self._state = replace(self._state, reservations=())
+            self._save(self._state)
 
     def files_changed(self, change: DirectoryChange) -> None:
         """Coalesce filesystem changes into one bounded owner notification."""
@@ -593,12 +624,16 @@ class AutomationOwner:
         self._queue.put(lambda: self._tray_action(action))
 
     def _tray_action(self, action: str) -> None:
+        if action.startswith("notification:"):
+            self._open_notification(action.removeprefix("notification:"))
+            return
         if action == "open":
-            if self._panels:
-                self._publish({"event": "panel_open", "payload": {}}, terminal=False)
-            elif self._open_panel is not None and time.monotonic() - self._panel_opening_at > _PANEL_START_GRACE_S:
-                self._panel_opening_at = time.monotonic()
-                self._open_panel()
+            if self._notification_problem is not None:
+                self._notification_problem = None
+                self._publish_state()
+            self._show_panel()
+            return
+        if action not in {"pause", "resume", "shutdown"}:
             return
         paused: bool = action in {"pause", "resume"}
         self._perform(
@@ -609,10 +644,20 @@ class AutomationOwner:
             )
         )
 
+    def _show_panel(self, notice: str | None = None) -> None:
+        if self._panels:
+            payload: dict[str, object] = {} if notice is None else {"notification_problem": notice}
+            self._publish({"event": "panel_open", "payload": payload}, terminal=False)
+        elif self._open_panel is not None and time.monotonic() - self._panel_opening_at > _PANEL_START_GRACE_S:
+            self._panel_opening_at = time.monotonic()
+            self._open_panel()
+
     def serve(self) -> None:
         """Run the owner loop until a shutdown drains every active request."""
         threading.current_thread().name = OWNER_THREAD_NAME
         self._serving = True
+        self._history.events(self._clock())
+        self._record_history(WatchState(), recovering=True)
         self._restore_provider_locks()
         self._finish_pending_commands()
         self._reconcile_subscription_sources()
@@ -651,11 +696,28 @@ class AutomationOwner:
             acquisition: AcquisitionService | None = self._service.acquisition
             if acquisition is not None:
                 acquisition.prepare_client()
+                self._recover_acquisition_confirmations(acquisition)
         except (AniShiftError, OSError, ValueError) as error:
             problem = sanitize_event_message(str(error))
             logger.warning("The private torrent client was not prepared", error_class=type(error).__name__)
         finally:
             self._queue.put(lambda: self._prepared_client(problem))
+
+    def _recover_acquisition_confirmations(self, acquisition: AcquisitionService) -> None:
+        needed: bool = self._on_owner(
+            lambda: (
+                self._working()
+                and any(
+                    item.state in {AcquisitionState.PENDING_SEND, AcquisitionState.UNCERTAIN}
+                    for item in self._state.acquisitions
+                )
+            )
+        )
+        if not needed:
+            return
+        with acquisition.requests("recovery"):
+            present: frozenset[str] = acquisition.queued_hashes()
+        self._on_owner(lambda: self._reconcile_acquisitions(present))
 
     def _prepared_client(self, problem: str | None) -> None:
         self._active_io -= 1
@@ -863,6 +925,7 @@ class AutomationOwner:
             session_id=None,
             rebuild=None,
             automatic=True,
+            recipe=self._state.recipes,
         )
         command: ControlRequest = ControlRequest(command_id=f"auto-{token_hex(_ID_BYTES)}", kind="start", payload={})
         response: ControlResponse = self._admit(command, preview, (group.group_id,), self._instance_id)
@@ -974,6 +1037,21 @@ class AutomationOwner:
 
     def _perform(self, request: ControlRequest) -> ControlResponse:  # noqa: C901, PLR0911, PLR0912
         match request.kind:
+            case "history":
+                query: object = request.payload.get("query", "")
+                if not isinstance(query, str):
+                    return _invalid("History search requires text")
+                items: tuple[HistoryEvent, ...] = self._history.materials(self._clock(), query)
+                if self._history.problem is not None:
+                    return ControlResponse.refused(
+                        ControlErrorCode.REFUSED, "Operational history is unavailable", self._history.problem
+                    )
+                return ControlResponse.succeeded({"items": [encode_view(item) for item in items]})
+            case "retry_prepare" | "subscription_retry_prepare":
+                inventory: tuple[SourceGroup, ...] = self._service.library_inventory()
+                return self._on_owner(lambda: self._history_action(request, inventory))
+            case "reacquire":
+                return self._reacquire_command(request)
             case "status":
                 return ControlResponse.succeeded(self._status())
             case "panel_attach":
@@ -1042,6 +1120,10 @@ class AutomationOwner:
                 return self._cancel(request)
             case "reload_settings":
                 return self._reload_settings()
+            case "recipes_get":
+                return ControlResponse.succeeded(encode_view(self._state.recipes))
+            case "recipe_update":
+                return self._update_recipe(request)
             case "shutdown":
                 return self._shutdown(request)
             case "acquisition":
@@ -1065,6 +1147,7 @@ class AutomationOwner:
         materials: list[dict[str, object]] = self._processing_materials()
         return {
             "instance_id": self._instance_id,
+            "notification_problem": self._notification_problem,
             "pid": os.getpid(),
             "run_progress": self._progress_views(),
             "materials": materials,
@@ -1672,6 +1755,8 @@ class AutomationOwner:
         self._deleting.pop(operation_id, None)
         self._active_io -= 1
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
+        if operation is not None:
+            self._record_deletion_history(operation)
         paths: tuple[Path, ...] = tuple(
             self._service.workspace_root / item.path
             for item in (() if operation is None else operation.outcomes)
@@ -1902,9 +1987,18 @@ class AutomationOwner:
             return self._library_refusal("library_deleting")
         moment: str = self._now()
         candidate: WatchState = self._state
+        resumable: frozenset[str] = frozenset(
+            item.request_id
+            for item in candidate.requests
+            if item.state is RequestState.PAUSED
+            and set(item.group_ids) == set(group_ids)
+            and item.request_id not in self._service.active_run_ids()
+        )
         for group_id in group_ids:
             held: WatchState | None = reserve(
-                candidate,
+                replace(
+                    candidate, requests=tuple(item for item in candidate.requests if item.request_id not in resumable)
+                ),
                 Reservation(
                     group_id=group_id,
                     fingerprint=self._previewed_fingerprint(group_id),
@@ -1914,7 +2008,7 @@ class AutomationOwner:
             )
             if held is None:
                 return _reservation_refusal(candidate, group_id, client_id)
-            candidate = held
+            candidate = replace(held, requests=candidate.requests)
         outcome: dict[str, str | int | bool | None] = {"reserved": len(group_ids)}
         refusal: ControlResponse | None = self._commit(request, candidate, outcome)
         return refusal if refusal is not None else ControlResponse.succeeded(outcome)
@@ -2019,9 +2113,11 @@ class AutomationOwner:
         selection: SourceSelection | None = _selection(request.payload)
         if client_id is None or origin is None or selection is None:
             return _invalid("A preview needs a `client_id`, a known `origin` and `source_selection`")
+        recipes: RecipePreferences = self._state.recipes
         planned: tuple[ExecutionPlan, tuple[InspectedSourceGroup, ...], RebuildRequest | None] | None = self._plan(
             request,
             selection,
+            recipes,
         )
         if planned is None:
             return ControlResponse.refused(ControlErrorCode.INVALID_PAYLOAD, _NOT_PLANNABLE)
@@ -2041,6 +2137,7 @@ class AutomationOwner:
             rebuild=rebuild,
             file_version=version,
             resume_run_id=_text(request.payload, "resume_run_id"),
+            recipe=recipes,
         )
         with self._previews_lock:
             if request.session_id is not None and request.session_id not in self._sessions:
@@ -2063,6 +2160,7 @@ class AutomationOwner:
         self,
         request: ControlRequest,
         selection: SourceSelection,
+        recipes: RecipePreferences,
     ) -> tuple[ExecutionPlan, tuple[InspectedSourceGroup, ...], RebuildRequest | None] | None:
         try:
             payload: Mapping[str, object] = request.payload
@@ -2090,7 +2188,7 @@ class AutomationOwner:
                 workspace = self._service.discover()
             groups: tuple[InspectedSourceGroup, ...] = _requested_groups(workspace, payload)
             rebuild = decode_intent(RebuildRequest, payload["rebuild"]) if payload.get("rebuild") is not None else None
-            plan: ExecutionPlan = self._plan_selection(payload, groups, selection, rebuild)
+            plan: ExecutionPlan = self._plan_selection(payload, groups, selection, rebuild, recipes)
         except (AniShiftError, OSError, KeyError, TypeError, ValueError) as problem:
             logger.warning("A preview could not be planned", error_class=type(problem).__name__)
             return None
@@ -2102,6 +2200,7 @@ class AutomationOwner:
         groups: tuple[InspectedSourceGroup, ...],
         selection: SourceSelection,
         rebuild: RebuildRequest | None,
+        recipes: RecipePreferences,
     ) -> ExecutionPlan:
         overrides: object = payload.get("overrides", {})
         if not isinstance(overrides, Mapping):
@@ -2137,7 +2236,7 @@ class AutomationOwner:
             preset,
             rebuild=rebuild,
             overrides=overrides,
-            recipes=self._state.recipes,
+            recipes=recipes,
             targets=self._recorded_targets(),
             published=self._published_products(),
         )
@@ -2265,7 +2364,7 @@ class AutomationOwner:
             accepted_at=self._now(),
             intents=tuple(group.intent for group in preview.plan.groups),
             automatic=preview.automatic,
-            recipe=self._state.recipes,
+            recipe=previous.recipe if previous is not None else preview.recipe,
         )
         candidate: WatchState = record_request(self._state, accepted)
         for group_id in group_ids:
@@ -2394,6 +2493,7 @@ class AutomationOwner:
         groups: tuple[InspectedSourceGroup, ...] = self._run_groups.pop(completion.request_id, ())
         if saved and completion.result is not None:
             self._prepare_ready(completion.result, groups, finished.recipe, tuple(artifacts.values()))
+            self._notify_ready_results(finished.group_ids, finished.request_id)
         self._publish_state()
         self._publish(
             {"event": "run_finished", "payload": {"run_id": completion.request_id}},
@@ -2494,6 +2594,35 @@ class AutomationOwner:
 
     # ── Settings, subscriptions and shutdown ──────────────────────────────────
 
+    def _update_recipe(self, request: ControlRequest) -> ControlResponse:
+        from anishift.config.field_access import recipe_with_value  # noqa: PLC0415
+        from anishift.config.field_catalog import SettingSpec, recipe_setting_specs  # noqa: PLC0415
+
+        setting_id: str | None = _text(request.payload, "setting_id")
+        scope: str | None = _text(request.payload, "reset")
+        specs: tuple[SettingSpec, ...] = recipe_setting_specs()
+        recipes: RecipePreferences = self._state.recipes
+        keys: set[str] = set(request.payload) - {"client_id"}
+        if scope in {"translate", "audiobook", "all"} and keys == {"reset"}:
+            for spec in specs:
+                if scope == "all" or spec.setting_id.startswith(scope + "."):
+                    recipes = recipe_with_value(recipes, spec, spec.default)
+        elif setting_id is not None and keys == {"setting_id", "value"}:
+            selected: SettingSpec | None = next((spec for spec in specs if spec.setting_id == setting_id), None)
+            value: str | None = _text(request.payload, "value")
+            if selected is None or value is None:
+                return _invalid("Unknown recipe setting or value")
+            recipes = recipe_with_value(recipes, selected, value)
+        else:
+            return _invalid("Choose one recipe setting or reset scope")
+        outcome: dict[str, str | int | bool | None] = {"updated": recipes != self._state.recipes}
+        refusal: ControlResponse | None = self._commit(request, replace(self._state, recipes=recipes), outcome)
+        if refusal is not None:
+            return refusal
+        logger.info("Recipe preferences updated", setting_id=setting_id, reset_scope=scope)
+        self._publish_state()
+        return ControlResponse.succeeded(outcome)
+
     def _reload_settings(self) -> ControlResponse:
         try:
             self._service.reload_preferences()
@@ -2539,10 +2668,17 @@ class AutomationOwner:
         }
         return handlers.get(request.kind, self._subscription_mutation)(request, service)
 
-    def _subscription_add_command(self, request: ControlRequest, _service: SubscriptionService) -> ControlResponse:
+    def _subscription_add_command(self, request: ControlRequest, service: SubscriptionService) -> ControlResponse:
         order: SubscriptionOrder = decode_view(SubscriptionOrder, request.payload.get("order"))
+        identifier: str | None = resolve_subscription_id(order, service.list())
+        if identifier is None:
+            return ControlResponse.refused(
+                ControlErrorCode.REFUSED,
+                "The order does not identify an unambiguous season; select its catalog entry",
+                "subscription_season_ambiguous",
+            )
         outcome: dict[str, str | int | bool | None] = {
-            "subscription_id": subscription_id(order.series, order.group),
+            "subscription_id": identifier,
             "order": json.dumps(encode_view(order)),
         }
         if "selected" in request.payload:
@@ -2569,7 +2705,7 @@ class AutomationOwner:
         return ControlResponse.succeeded(
             {
                 "subscriptions": [
-                    {**_subscription_view(item), "work_states": self._subscription_work_states(item)}
+                    {**_subscription_view(item, self._clock()), "work_states": self._subscription_work_states(item)}
                     for item in service.list()
                 ]
             }
@@ -2636,14 +2772,50 @@ class AutomationOwner:
         )
 
     def _subscription_repeat_command(self, request: ControlRequest, service: SubscriptionService) -> ControlResponse:
+        if not self._working():
+            return _refuse(RefusalReason.PAUSED)
         identifier: str | None = self._followed_subscription(request, service)
         episodes: tuple[Decimal, ...] | None = _episode_numbers(request.payload, "episodes")
         if identifier is None or not episodes:
             return _invalid("A repeat needs a known subscription and the episode numbers it orders again")
+        wanted: frozenset[Decimal] = frozenset(episodes)
+        available: list[Decimal] = sorted(
+            {
+                Decimal(item.episode)
+                for item in self._state.acquisitions
+                if item.subscription_id == identifier
+                and item.episode is not None
+                and Decimal(item.episode) in wanted
+                and self._subscription_source_present(item)
+            }
+        )
+        if available:
+            return ControlResponse.refused(
+                ControlErrorCode.REFUSED,
+                "A local source is available for the named episodes; use Manual to process it",
+                "subscription_source_available",
+                details={"episodes": [str(number) for number in available]},
+            )
         return self._accept_local_command(
             request,
             {"subscription_id": identifier, "episodes": json.dumps([str(number) for number in episodes])},
         )
+
+    def _subscription_source_present(self, acquisition: AcquisitionConfirmation) -> bool:
+        targets: dict[str, WorkflowTarget] = self._recorded_targets()
+        names: tuple[str, ...] = (
+            acquisition.required_files if acquisition.state is AcquisitionState.COMPLETE else acquisition.complete_files
+        )
+        for name in names:
+            relative: Path = Path(acquisition.directory) / name
+            route: WorkflowRoute = resolve_route(relative.parent)
+            artifact: ArtifactName | None = classify_artifact(relative, route)
+            if artifact is not None:
+                target: WorkflowTarget | None = targets.get(create_group_id(relative.parent, artifact.stem))
+                artifact = classify_artifact(relative, replace(route, target=target or route.target))
+            if artifact is not None and artifact.is_primary and (self._service.workspace_root / relative).is_file():
+                return True
+        return False
 
     @staticmethod
     def _followed_subscription(request: ControlRequest, service: SubscriptionService) -> str | None:
@@ -2735,6 +2907,8 @@ class AutomationOwner:
                 None,
                 str(choice.episode) if choice.episode is not None else None,
                 self._now(),
+                nyaa_release_id=AcquisitionService.retained_reference(choice)[0],
+                release_title=AcquisitionService.retained_reference(choice)[1],
             )
             for choice in chosen
         ]
@@ -2918,6 +3092,8 @@ class AutomationOwner:
             episode=str(episode),
             updated_at=self._now(),
             repeat_id=repeat_of(subscription, episode),
+            nyaa_release_id=AcquisitionService.retained_reference(choice)[0],
+            release_title=AcquisitionService.retained_reference(choice)[1],
         )
 
     def _record_subscription(  # noqa: PLR0913
@@ -3261,6 +3437,7 @@ class AutomationOwner:
             resume_run_id=request.request_id,
             recovering=True,
             retry=not paused,
+            recipe=request.recipe,
         )
         response: ControlResponse = self._admit(
             ControlRequest(command_id=f"recovery-{request.request_id}-{request.attempts}", kind="start", payload={}),
@@ -3305,6 +3482,7 @@ class AutomationOwner:
         result: RunResult = self._completed_result(request)
         self._run_results[request.request_id] = result
         self._prepare_ready(result, sources, request.recipe)
+        self._notify_ready_results(request.group_ids, request.request_id)
 
     def _prepare_ready(
         self,
@@ -3449,6 +3627,7 @@ class AutomationOwner:
         self._run_results = {
             run_id: self._relocated_result(move, result) for run_id, result in self._run_results.items()
         }
+        self._notify_ready_results((move.destination_group_id,))
         if move.deferred:
             self._ready_moves[move.group_id] = move
             self._ready_problems.pop(move.group_id, None)
@@ -3728,6 +3907,7 @@ class AutomationOwner:
                     service.add_order(
                         decode_view(SubscriptionOrder, json.loads(str(receipt.outcome["order"]))),
                         receipt.command_id,
+                        accepted_id=identifier,
                     )
                     if "selected" in receipt.outcome:
                         tail: object = receipt.outcome["future_from"]
@@ -3744,7 +3924,12 @@ class AutomationOwner:
                         future_from=None if stored is None else Decimal(str(stored)),
                     )
                 elif receipt.pending == "subscription_repeat":
-                    service.repeat(identifier, _stored_numbers(receipt.outcome["episodes"]))
+                    service.repeat(
+                        identifier,
+                        _stored_numbers(receipt.outcome["episodes"]),
+                        command_id=receipt.command_id,
+                        requested_at=receipt.accepted_at,
+                    )
                 else:
                     service.remove(identifier)
         except (AniShiftError, OSError) as problem:
@@ -3796,8 +3981,352 @@ class AutomationOwner:
         except (AniShiftError, OSError) as problem:
             logger.warning("The automation state could not be saved", error_class=type(problem).__name__)
             return False
+        previous: WatchState = self._state
         self._state = candidate
+        self._record_history(previous)
         return True
+
+    def _history_material(self, group_id: str) -> str:
+        return next((item.set_id for item in self._state.ready_groups if item.group_id == group_id), group_id)
+
+    def _record_history(self, previous: WatchState, *, recovering: bool = False) -> None:
+        try:
+            self._append_history(previous, recovering=recovering)
+        except AniShiftError, OSError, ValueError, TypeError:
+            logger.warning("Operational history observation failed")
+
+    def _append_history(self, previous: WatchState, *, recovering: bool) -> None:
+        old_requests: dict[str, ProcessingRequest] = {item.request_id: item for item in previous.requests}
+        for request in self._state.requests:
+            old: ProcessingRequest | None = old_requests.get(request.request_id)
+            if old != request:
+                self._record_request_history(request, old, recovering=recovering)
+        old_acquisitions: dict[str, AcquisitionConfirmation] = {
+            item.operation_id: item for item in previous.acquisitions
+        }
+        for acquisition in self._state.acquisitions:
+            before: AcquisitionConfirmation | None = old_acquisitions.get(acquisition.operation_id)
+            if before is None or before.state is not acquisition.state:
+                self._record_acquisition_history(acquisition, before)
+        for operation in self._state.pending_deletions:
+            if not recovering or not operation.outcomes:
+                continue
+            self._record_deletion_history(operation, recovering=True)
+
+    def _record_request_history(
+        self, request: ProcessingRequest, old: ProcessingRequest | None, *, recovering: bool
+    ) -> None:
+        admitted: bool = old is None or (old.generation, old.attempts) != (request.generation, request.attempts)
+        finished: bool = request.state not in {RequestState.ACCEPTED, RequestState.RUNNING}
+        if not admitted and (not finished or (old is not None and old.state is request.state)):
+            return
+        succeeded: frozenset[str] = self._succeeded_groups(request) if finished else frozenset()
+        for group_id in request.group_ids:
+            material_id: str = self._history_material(group_id)
+            name: str = self._processing_name(request, group_id)
+            if admitted:
+                kind: HistoryKind = HistoryKind.REGENERATION if request.rebuild is not None else HistoryKind.ORDER
+                self._history.append(
+                    HistoryEvent.create(
+                        material_id,
+                        request.request_id,
+                        request.accepted_at,
+                        kind,
+                        name,
+                        generation=request.generation,
+                        attempt=request.attempts,
+                    ),
+                    self._clock(),
+                )
+            if not finished:
+                continue
+            kind = (
+                HistoryKind.SUCCESS
+                if group_id in succeeded
+                else (
+                    HistoryKind.INTERRUPTED
+                    if request.state in {RequestState.CANCELLED, RequestState.PAUSED}
+                    else HistoryKind.ERROR
+                )
+            )
+            self._history.append(
+                HistoryEvent.create(
+                    material_id,
+                    request.request_id,
+                    request.accepted_at if recovering else self._now(),
+                    kind,
+                    name,
+                    generation=request.generation,
+                    attempt=request.attempts,
+                    outcome=request.state.value,
+                    recovered_from_admission=recovering,
+                ),
+                self._clock(),
+            )
+
+    def _record_acquisition_history(
+        self, item: AcquisitionConfirmation, previous: AcquisitionConfirmation | None
+    ) -> None:
+        name: str = item.release_title or next((Path(path).name for path in item.required_files), item.info_hash)
+        if previous is None:
+            self._history.append(
+                HistoryEvent.create(
+                    item.operation_id,
+                    item.operation_id,
+                    item.updated_at,
+                    HistoryKind.ORDER,
+                    name,
+                ),
+                self._clock(),
+            )
+        if item.state is AcquisitionState.COMPLETE:
+            self._history.append(
+                HistoryEvent.create(
+                    item.operation_id,
+                    item.operation_id,
+                    item.updated_at,
+                    HistoryKind.DOWNLOAD,
+                    name,
+                ),
+                self._clock(),
+            )
+
+    def _record_deletion_history(self, operation: PendingDeletion, *, recovering: bool = False) -> None:
+        group: ReadyGroup | None = next(
+            (item for item in self._state.ready_groups if item.set_id == operation.set_id), None
+        )
+        complete: bool = len(operation.recycled) == len(operation.files)
+        attempt: int = sum(
+            receipt.outcome.get("operation_id") == operation.operation_id for receipt in self._state.command_receipts
+        )
+        self._history.append(
+            HistoryEvent.create(
+                operation.set_id,
+                operation.operation_id,
+                operation.requested_at if recovering else self._now(),
+                HistoryKind.DELETE,
+                group.stem if group is not None else Path(operation.files[0][0]).name,
+                attempt=max(attempt, 1),
+                outcome="complete" if complete else "incomplete",
+                recovered_from_admission=recovering,
+            ),
+            self._clock(),
+        )
+
+    def _history_action(self, request: ControlRequest, inventory: tuple[SourceGroup, ...]) -> ControlResponse:
+        if request.kind == "subscription_retry_prepare":
+            return self._subscription_retry_proposal(request, inventory)
+        identifier: str | None = _text(request.payload, "material_id")
+        if identifier is None:
+            return _invalid("Select one material")
+        return self._retry_proposal(identifier, inventory)
+
+    def _retry_proposal(self, identifier: str, inventory: tuple[SourceGroup, ...]) -> ControlResponse:
+        if not self._working():
+            return _refuse(RefusalReason.PAUSED)
+        group_id: str = next(
+            (item.group_id for item in self._state.ready_groups if item.set_id == identifier), identifier
+        )
+        current: ProcessingRequest | None = next(
+            (item for item in reversed(self._state.requests) if group_id in item.group_ids), None
+        )
+        group: SourceGroup | None = next((item for item in inventory if item.group_id == group_id), None)
+        if current is not None and current.request_id in self._service.active_run_ids():
+            return _refuse(RefusalReason.GROUP_PROCESSING)
+        conflict: ControlResponse | None = self._conflict(
+            (identifier, group_id),
+            "",
+            excluding=None if current is None else current.request_id,
+        )
+        if conflict is not None:
+            return conflict
+        if current is not None and current.state in {RequestState.FAILED, RequestState.PARTIAL, RequestState.PAUSED}:
+            try:
+                RunJournal.load(self._store.run_path(current.request_id))
+            except AniShiftError, OSError, ValueError:
+                pass
+            else:
+                return ControlResponse.succeeded(
+                    encode_view(
+                        RetryProposal(
+                            identifier,
+                            "resume",
+                            current.group_ids,
+                            current.intents,
+                            current.request_id,
+                        )
+                    )
+                )
+        if group is not None and self._local_primary(group):
+            intents: tuple[GroupIntent, ...] = (
+                ()
+                if current is None
+                else tuple(replace(item, mode=RunMode.MANUAL) for item in current.intents if item.group_id == group_id)
+            )
+            return ControlResponse.succeeded(encode_view(RetryProposal(identifier, "manual", (group_id,), intents)))
+        return self._missing_source_retry(identifier, group_id)
+
+    def _missing_source_retry(self, identifier: str, group_id: str) -> ControlResponse:
+        acquisition: AcquisitionConfirmation | None = next(
+            (
+                item
+                for item in reversed(self._state.acquisitions)
+                if item.operation_id == identifier or group_id in self._acquisition_groups(item)
+            ),
+            None,
+        )
+        if acquisition is None:
+            return self._retry_refusal("retry_source_missing")
+        if acquisition.nyaa_release_id is None:
+            return self._retry_refusal("retry_reference_missing")
+        return ControlResponse.succeeded(
+            encode_view(
+                RetryProposal(
+                    identifier,
+                    "reacquire",
+                    operation_id=acquisition.operation_id,
+                )
+            )
+        )
+
+    def _local_primary(self, group: SourceGroup) -> bool:
+        target: WorkflowTarget | None = self._recorded_targets().get(group.group_id, group.route.target)
+        route: WorkflowRoute = replace(group.route, target=target)
+        return any(
+            artifact.path is not None
+            and artifact.lifetime is ArtifactLifetime.SOURCE
+            and (candidate := classify_artifact(artifact.path, route)) is not None
+            and candidate.is_primary
+            and artifact.path.is_file()
+            for artifact in group.artifacts
+        )
+
+    @staticmethod
+    def _retry_refusal(reason: str) -> ControlResponse:
+        return ControlResponse.refused(ControlErrorCode.REFUSED, reason, reason)
+
+    def _subscription_retry_proposal(
+        self, request: ControlRequest, inventory: tuple[SourceGroup, ...]
+    ) -> ControlResponse:
+        if not self._working():
+            return _refuse(RefusalReason.PAUSED)
+        identifier: str | None = _text(request.payload, "subscription_id")
+        episodes: tuple[Decimal, ...] | None = _episode_numbers(request.payload, "episodes")
+        if identifier is None or not episodes:
+            return _invalid("Select explicit episode numbers")
+        selected: tuple[AcquisitionConfirmation, ...] = tuple(
+            item
+            for item in self._state.acquisitions
+            if item.subscription_id == identifier and item.episode is not None and Decimal(item.episode) in episodes
+        )
+        groups: set[str] = {group_id for item in selected for group_id in self._acquisition_groups(item)}
+        local: set[str] = {
+            group.group_id for group in inventory if group.group_id in groups and self._local_primary(group)
+        }
+        if local:
+            if len(episodes) != 1 or len(local) != 1:
+                return self._retry_refusal("retry_choose_one")
+            return self._retry_proposal(next(iter(local)), inventory)
+        return ControlResponse.succeeded(
+            encode_view(
+                RetryProposal(
+                    identifier,
+                    "subscription",
+                    subscription_id=identifier,
+                    episodes=episodes,
+                )
+            )
+        )
+
+    def _reacquire_command(self, request: ControlRequest) -> ControlResponse:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        if acquisition is None:
+            return self._retry_refusal("retry_reference_missing")
+        inventory: tuple[SourceGroup, ...] = self._service.library_inventory()
+        accepted: tuple[AcquisitionConfirmation | None, ControlResponse] = self._on_owner(
+            lambda: self._accept_reacquire(request, inventory)
+        )
+        item, response = accepted
+        if item is None:
+            return response
+        try:
+            with acquisition.requests("user_download"):
+                acquisition.reacquire(
+                    cast("int", item.nyaa_release_id), cast("str", item.release_title), item.info_hash, item.episode
+                )
+                hashes: frozenset[str] = acquisition.queued_hashes()
+                self._on_owner(lambda: self._reconcile_acquisitions(hashes))
+        finally:
+            self._on_owner(lambda: self._reconcile_acquisitions(frozenset()))
+        return response
+
+    def _accept_reacquire(
+        self, request: ControlRequest, inventory: tuple[SourceGroup, ...]
+    ) -> tuple[AcquisitionConfirmation | None, ControlResponse]:
+        receipt: CommandReceipt | None = self._receipt(request)
+        if receipt is not None:
+            return None, ControlResponse.succeeded(dict(receipt.outcome))
+        identifier: str | None = _text(request.payload, "operation_id")
+        previous: AcquisitionConfirmation | None = next(
+            (item for item in self._state.acquisitions if item.operation_id == identifier), None
+        )
+        if previous is None:
+            return None, self._retry_refusal("retry_reference_missing")
+        refusal: ControlResponse | None = self._reacquire_refusal(previous, inventory)
+        if refusal is not None:
+            return None, refusal
+        item: AcquisitionConfirmation = replace(
+            previous,
+            operation_id=f"repeat-{request.command_id}",
+            directory="",
+            required_files=(),
+            complete_files=(),
+            file_layout=(),
+            content_started=False,
+            state=AcquisitionState.PENDING_SEND,
+            origin=RequestOrigin.USER,
+            requested_action=None,
+            action_id=None,
+            action_pending=False,
+            action_sent=False,
+            problem=None,
+            updated_at=self._now(),
+            repeat_id=request.command_id,
+            previous_operation_id=previous.operation_id,
+        )
+        outcome: CommandOutcome = {"operation_id": item.operation_id}
+        refusal = self._commit(
+            request,
+            replace(
+                self._state,
+                acquisitions=(*self._state.acquisitions, item),
+            ),
+            outcome,
+        )
+        return (None, refusal) if refusal is not None else (item, ControlResponse.succeeded(dict(outcome)))
+
+    def _reacquire_refusal(
+        self, previous: AcquisitionConfirmation, inventory: tuple[SourceGroup, ...]
+    ) -> ControlResponse | None:
+        if not self._working():
+            return _refuse(RefusalReason.PAUSED)
+        if previous.nyaa_release_id is None:
+            return self._retry_refusal("retry_reference_missing")
+        groups: set[str] = set(self._acquisition_groups(previous))
+        if self._subscription_source_present(previous) or any(
+            group.group_id in groups and self._local_primary(group) for group in inventory
+        ):
+            return self._retry_refusal("retry_source_available")
+        conflict: ControlResponse | None = self._conflict(tuple(groups), "")
+        if conflict is not None:
+            return conflict
+        if any(
+            item.info_hash == previous.info_hash
+            and item.state not in {AcquisitionState.COMPLETE, AcquisitionState.FAILED}
+            for item in self._state.acquisitions
+        ):
+            return self._retry_refusal("retry_acquisition_pending")
+        return None
 
     def _receipt(self, request: ControlRequest) -> CommandReceipt | None:
         if request.kind not in _MUTATING_KINDS:
@@ -3843,6 +4372,8 @@ class AutomationOwner:
             ]
 
     def _notify_group(self, event: RunEvent) -> None:
+        if event.state is TaskState.SUCCEEDED:
+            return
         request: ProcessingRequest | None = next(
             (item for item in self._state.requests if item.request_id == event.run_id),
             None,
@@ -3851,26 +4382,195 @@ class AutomationOwner:
             return
         with self._progress_lock:
             view: RunProgressSnapshot | None = self._run_views.get(event.run_id)
-        if event.state is TaskState.SUCCEEDED and (
-            view is None or not any(task.group_id == event.group_id for task in view.preview.tasks)
-        ):
-            return
         key: tuple[str, str, str] = (event.group_id, f"{request.request_id}:{request.generation}", str(event.state))
         if key in self._state.notified or not self._save(replace(self._state, notified=self._state.notified | {key})):
             return
         with self._progress_lock:
             label: str = view.labels.get(event.group_id, event.group_id) if view is not None else event.group_id
-        message: str = "Gotowy odcinek" if event.state is TaskState.SUCCEEDED else "Odcinek wymaga uwagi"
+        self._publish_notification("Materiał wymaga uwagi", sanitize_event_message(label) or "Materiał", None)
+
+    def _notify_ready_results(self, group_ids: Sequence[str], request_id: str | None = None) -> None:
+        recorded: set[str] = {item.group_id for item in self._state.ready_groups}
+        paths: tuple[Path, ...] = tuple(
+            self._service.workspace_root / item.path
+            for item in self._state.products
+            if item.group_id in group_ids
+            and item.group_id not in recorded
+            and Path(item.path).parts[0].casefold() == READY_DIRECTORY
+        )
+        if paths:
+            self._active_io += 1
+            self._pool.submit(self._refresh_notification_inventory, tuple(group_ids), request_id, paths)
+            return
+        self._offer_ready_results(group_ids, request_id)
+
+    def _refresh_notification_inventory(
+        self, group_ids: tuple[str, ...], request_id: str | None, paths: tuple[Path, ...]
+    ) -> None:
+        groups: tuple[SourceGroup, ...] | None = None
+        try:
+            groups = self._service.library_inventory(paths)
+        except AniShiftError, OSError:
+            logger.warning("The notification result inventory is unavailable")
+        finally:
+            self._queue.put(lambda: self._record_notification_inventory(groups, group_ids, request_id))
+
+    def _record_notification_inventory(
+        self, groups: tuple[SourceGroup, ...] | None, group_ids: tuple[str, ...], request_id: str | None
+    ) -> None:
+        self._active_io -= 1
+        if groups is None:
+            return
+        self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+        self._offer_ready_results(group_ids, request_id)
+
+    def _offer_ready_results(self, group_ids: Sequence[str], request_id: str | None) -> None:
+        for record in self._notification_sets(group_ids):
+            if record.main_result is None or not record.available:
+                continue
+            product: ProductConfirmation | None = next(
+                (
+                    item
+                    for item in self._state.products
+                    if item.group_id == record.group_id and item.path == record.main_result
+                ),
+                None,
+            )
+            request: ProcessingRequest | None = self._notification_request(record, request_id)
+            if product is not None and request is not None:
+                self._notify_ready_result(record, product, request)
+
+    def _notification_sets(self, group_ids: Sequence[str]) -> tuple[LibrarySet, ...]:
+        state: WatchState = replace(
+            self._state, ready_groups=tuple(item for item in self._state.ready_groups if item.group_id in group_ids)
+        )
+        recorded: set[str] = {item.group_id for item in state.ready_groups}
+        legacy: tuple[LibrarySet, ...] = tuple(
+            item for item in self._ready_library if item.group_id in group_ids and item.group_id not in recorded
+        )
+        return (*project_library(state, self._service.workspace_root, ()), *legacy)
+
+    def _notification_request(self, record: LibrarySet, request_id: str | None) -> ProcessingRequest | None:
+        products: set[str] = {item.path for item in record.files if item.role == "product"}
+        attempts: set[tuple[str, int]] = {
+            (item.request_id, item.generation)
+            for item in self._state.products
+            if item.group_id == record.group_id and item.path in products
+        }
+        return max(
+            (
+                item
+                for item in self._state.requests
+                if (request_id is None or item.request_id == request_id)
+                and (item.request_id, item.generation) in attempts
+                and {record.group_id, record.set_id}.intersection(item.group_ids)
+            ),
+            key=lambda item: (item.accepted_at, item.generation),
+            default=None,
+        )
+
+    def _notify_ready_result(
+        self, record: LibrarySet, product: ProductConfirmation, request: ProcessingRequest
+    ) -> None:
+        if request.state in _ACTIVE_STATES:
+            return
+        key: tuple[str, str, str] = (
+            record.group_id,
+            f"{request.request_id}:{request.generation}",
+            str(TaskState.SUCCEEDED),
+        )
+        if key in self._state.notified or not self._notification_succeeded(request, record):
+            return
+        identity: LibraryFileIdentity | None = next(
+            (item.identity for item in record.files if item.path == record.main_result), None
+        )
+        if (
+            identity is None
+            or (identity.size, identity.modified_ns) != (product.size, product.modified_ns)
+            or file_identity(self._service.workspace_root, product.path) != identity
+        ):
+            return
+        if not self._save(replace(self._state, notified=self._state.notified | {key})):
+            return
+        self._publish_notification(
+            "Gotowy materiał",
+            sanitize_event_message(record.name) or "Materiał",
+            _NotificationTarget(record.set_id, product, identity, (request.request_id, request.generation)),
+        )
+
+    def _notification_succeeded(self, request: ProcessingRequest, record: LibrarySet) -> bool:
+        identifiers: set[str] = {record.set_id, record.group_id}
+        result: RunResult | None = self._run_results.get(request.request_id)
+        succeeded: bool = (
+            any(group.group_id in identifiers and group.status is GroupStatus.SUCCEEDED for group in result.groups)
+            if result is not None
+            else bool(identifiers.intersection(self._succeeded_groups(request)))
+        )
+        if not succeeded:
+            return False
+        with self._progress_lock:
+            view: RunProgressSnapshot | None = self._run_views.get(request.request_id)
+        if view is not None:
+            return any(task.group_id in identifiers for task in view.preview.tasks)
+        try:
+            journal: RunJournal = RunJournal.load(self._store.run_path(request.request_id))
+        except AniShiftError, OSError, ValueError:
+            return False
+        return any(journal.products(identifier) for identifier in identifiers)
+
+    def _publish_notification(self, title: str, message: str, target: _NotificationTarget | None) -> None:
+        identifier: str = token_hex(_ID_BYTES)
+        self._notification_targets[identifier] = target
+        if len(self._notification_targets) > _NOTIFICATION_LIMIT:
+            self._notification_targets.pop(next(iter(self._notification_targets)))
         self._publish(
             {
                 "event": "notification",
                 "payload": {
-                    "title": message,
-                    "message": sanitize_event_message(label),
+                    "title": title,
+                    "message": message,
+                    "notification_id": identifier,
                 },
             },
             terminal=True,
         )
+
+    def _open_notification(self, identifier: str) -> None:
+        known: bool = identifier in self._notification_targets
+        target: _NotificationTarget | None = self._notification_targets.pop(identifier, None)
+        if known and target is None:
+            self._tray_action("open")
+            return
+        if target is not None and self._notification_current(target) and self._open_result is not None:
+            try:
+                self._open_result(self._service.workspace_root / target.product.path)
+            except OSError, ValueError:
+                logger.warning("The notification result could not be opened")
+            else:
+                self._notification_problem = None
+                self._publish_state()
+                return
+        self._notification_problem = _UNIDENTIFIED_NOTIFICATION if not identifier else _UNAVAILABLE_NOTIFICATION
+        self._publish_state()
+        self._show_panel(self._notification_problem)
+
+    def _notification_current(self, target: _NotificationTarget) -> bool:
+        record: LibrarySet | None = next(
+            (item for item in self._notification_sets((target.product.group_id,)) if item.set_id == target.set_id), None
+        )
+        if record is None or not record.available or record.main_result != target.product.path:
+            return False
+        if target.product not in self._state.products or record.group_id in self._deleting_groups():
+            return False
+        request: ProcessingRequest | None = self._notification_request(record, None)
+        if request is None or (request.request_id, request.generation) != target.attempt:
+            return False
+        if any(
+            item.state in _ACTIVE_STATES and {record.set_id, record.group_id}.intersection(item.group_ids)
+            for item in self._state.requests
+        ):
+            return False
+        return file_identity(self._service.workspace_root, target.product.path) == target.identity
 
     def _publish(self, frame: Mapping[str, object], *, terminal: bool) -> None:
         broadcast: Broadcast | None = self._broadcast
@@ -4147,19 +4847,20 @@ def _requested_groups(workspace: InspectedWorkspace, payload: Mapping[str, objec
     return tuple(by_id[group_id] for group_id in selected)
 
 
-def _subscription_view(subscription: Subscription) -> dict[str, object]:
-    try:
-        airing_at: str | None = min(
-            (
-                episode.airing_at
-                for episode in subscription.episodes
-                if episode.selected and episode.airing_at is not None and episode.state.value in {"pending", "due"}
-            ),
-            key=datetime.fromisoformat,
-            default=None,
-        )
-    except ValueError, TypeError:
-        airing_at = None
+def _subscription_view(subscription: Subscription, now: datetime | None = None) -> dict[str, object]:
+    current: datetime = now if now is not None else datetime.now(UTC)
+    dates: list[tuple[datetime, Decimal]] = []
+    for episode in subscription.episodes:
+        if not episode.selected or episode.airing_at is None or episode.state.value not in {"pending", "due"}:
+            continue
+        try:
+            moment: datetime = datetime.fromisoformat(episode.airing_at)
+        except ValueError:
+            continue
+        if moment.tzinfo is not None:
+            dates.append((moment, episode.number))
+    future: list[tuple[datetime, Decimal]] = [item for item in dates if item[0] > current]
+    nearest: tuple[datetime, Decimal] | None = min(future) if future else max(dates, default=None)
     return {
         "subscription_id": subscription.subscription_id,
         "series": subscription.series,
@@ -4168,8 +4869,10 @@ def _subscription_view(subscription: Subscription) -> dict[str, object]:
         "enabled": subscription.enabled,
         "end_state": subscription.end_state.value,
         "anilist_id": subscription.anilist_id,
+        "calendar_problem": subscription.calendar_problem,
         "episodes": [encode_view(episode) for episode in subscription.episodes],
-        "airing_at": airing_at,
+        "airing_at": None if nearest is None else nearest[0].isoformat(),
+        "airing_episode": None if nearest is None else str(nearest[1]),
     }
 
 

@@ -14,12 +14,15 @@ from anishift.application import (
     DeletionPreview,
     DownloadReceipt,
     EpisodeRange,
+    HistoryEvent,
     InspectedSourceGroup,
     InspectedWorkspace,
     LibrarySet,
     PlanPreview,
+    RecipePreferences,
     ReleaseCatalog,
     ReleaseChoice,
+    RetryProposal,
     SeasonContext,
     Subscription,
     SubscriptionOrder,
@@ -65,6 +68,20 @@ class ResidentSession:
         """Open an independent editing identity for one manual wizard."""
         return ResidentSession(self.workspace_root, self._connect)
 
+    def recipes(self) -> RecipePreferences:
+        """Read the shared target deltas from their resident owner."""
+        return decode_view(RecipePreferences, self._call("recipes_get"))
+
+    def update_recipe(self, setting_id: str, value: str) -> RecipePreferences:
+        """Persist one target delta without replacing another panel's choices."""
+        self._call("recipe_update", {"setting_id": setting_id, "value": value})
+        return self.recipes()
+
+    def reset_recipe(self, scope: str) -> RecipePreferences:
+        """Restore only the confirmed target scope at its owner."""
+        self._call("recipe_update", {"reset": scope})
+        return self.recipes()
+
     def library(self) -> tuple[LibrarySet, ...]:
         """Lightly reconcile the owner's completed sets without decoding media or starting Auto."""
         items: object = self._call("library_refresh").get("sets")
@@ -72,6 +89,35 @@ class ResidentSession:
             msg = "The owner returned an invalid library"
             raise TypeError(msg)
         return tuple(decode_view(LibrarySet, item) for item in items)
+
+    def history(self, query: str = "") -> tuple[HistoryEvent, ...]:
+        """Read completed logical materials from the owner's retained operational journal."""
+        items: object = self._call("history", {"query": query}).get("items")
+        if not isinstance(items, list):
+            msg = "The owner returned invalid history"
+            raise TypeError(msg)
+        return tuple(decode_view(HistoryEvent, item) for item in items)
+
+    def retry_proposal(self, material_id: str) -> RetryProposal:
+        """Classify explicit retry using current owner state without starting work."""
+        return decode_view(RetryProposal, self._call("retry_prepare", {"material_id": material_id}))
+
+    def subscription_retry_proposal(self, subscription_id: str, episodes: Sequence[Decimal]) -> RetryProposal:
+        """Resolve the complete explicit range before choosing a local or remote route."""
+        return decode_view(
+            RetryProposal,
+            self._call(
+                "subscription_retry_prepare",
+                {
+                    "subscription_id": subscription_id,
+                    "episodes": [str(number) for number in episodes],
+                },
+            ),
+        )
+
+    def reacquire(self, operation_id: str) -> str:
+        """Explicitly repeat one retained internet order after owner revalidation."""
+        return str(self._call("reacquire", {"operation_id": operation_id})["operation_id"])
 
     def library_details(self, set_id: str) -> LibrarySet:
         """Read the current owned-file inventory for one stable set identity."""

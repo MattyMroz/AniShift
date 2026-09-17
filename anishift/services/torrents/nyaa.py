@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -42,6 +43,9 @@ logger = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
+_PUBLIC_TORRENT_LINK: Final[re.Pattern[str]] = re.compile(r"https://nyaa\.si/download/([1-9][0-9]*)\.torrent")
+"""Canonical public source links safe to retain as numeric references without credentials."""
+
 NYAA_RSS_URL: Final[str] = "https://nyaa.si/"
 """Feed endpoint; the RSS view is selected by the ``page`` query parameter."""
 
@@ -68,6 +72,20 @@ DEFAULT_SEARCH_TIMEOUT_S: Final[float] = 20.0
 
 _XML_CONTENT_TYPES: Final[str] = "xml"
 """Marker required in the response content type to accept a body as a feed."""
+
+
+def retained_release_id(url: str) -> int | None:
+    """Recognize only a trusted canonical public Nyaa torrent link."""
+    match: re.Match[str] | None = _PUBLIC_TORRENT_LINK.fullmatch(url)
+    return int(match.group(1)) if match is not None else None
+
+
+def retained_torrent_url(release_id: int) -> str:
+    """Restore the canonical locator of a previously verified public Nyaa reference."""
+    if type(release_id) is not int or release_id <= 0:
+        msg = "A Nyaa reference requires a positive release identifier"
+        raise ValueError(msg)
+    return f"https://nyaa.si/download/{release_id}.torrent"
 
 
 class _SourceFailure(StrEnum):

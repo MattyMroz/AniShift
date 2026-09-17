@@ -22,6 +22,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `run_resident()` zdobywa blokadę PRZED zapisem `instance.json` i klucza, więc przegrany wyścig
   kończy się `EXIT_REFUSED` bez śladu w katalogu stanu. Rezydent nie importuje `cli.interactive`
   ani Prompt Toolkit. `watch.py`
+- Tray result IDs reach the owner unchanged; only owner-validated paths reach Explorer.
+  Notification refusal travels through status and `panel_open` to the existing message view,
+  including a newly attached Home. Settings defers that message until editing ends; ordinary
+  icon activation still requests Home. `watch.py`, `interactive/state.py`, `interactive/app.py`
 - Rezydent uruchamia `DirectoryWatch` przed pierwszym uzgodnieniem biblioteki i zamyka go przed
   zwolnieniem blokady. Zdarzenia i kontrola trafiają do tego samego właściciela; tylko inspekcja
   działa w puli I/O. Stare `run_daemon` pozostaje domyślne do przełączenia w P08. `watch.py`
@@ -42,6 +46,14 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Ekran Anime w trybie rezydenta używa `ResidentSession` także do katalogu, wydań,
   pobrania i dodania subskrypcji. Nie twórz w tym ekranie drugiego klienta HTTP ani
   lokalnego zapisu subskrypcji; receipt i admission pobrań należą do ownera.
+- `StateController` opens History with H inside Processing; S or `/` uses the shared
+  `TextInput` and suppresses application hotkeys while typing. Default rows are the latest
+  50 terminal materials; explicit search includes retained order/download/regeneration boundaries.
+  Enter uses `ResidentSession.library_result` validation, never a source fallback. History
+  failures remain visible across renders. `interactive/state.py`, `resident.py`
+- P prepares the owner's retry proposal; confirmation transfers local work to Manual with
+  owner revalidation, or admits an explicit remote repeat. Pause permits History reads and
+  validated result opening, but blocks new work. `interactive/state.py`, `interactive/app.py`
 - `run_interactive(service, batch=...)` zwraca kod wyjścia jak `run --preset` i po wyniku odlicza
   10 s w `_handle_idle`, dowolny klawisz zamyka; `interrupt` w partii anuluje run i kończy kodem 4.
   Test buduje aplikację ręcznie? Ustaw też `_batch` i `_closing_at`. `interactive/app.py`
@@ -200,10 +212,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   (`_SCOPE_FIELDS`). Wiersz ma JEDNĄ ścieżkę na wszystkich ekranach, root włącznie:
   `_open_scoped_reset` → `_EditorAction.RESET_SCOPE` → `_reset_scope`, a pytanie ma
   zawsze kształt `PRZYWRÓCIĆ DOMYŚLNE · <ZAKRES>?` (root = scope `all`, tytuł
-  `WSZYSTKO`). Root przywraca wszystko DOSŁOWNIE: obok `reset_settings()` woła
-  `_restore_default_preset()`, bo produkty i polityki Auto siedzą w presecie, nie
-  w preferencjach. Auto i Wynik przywracają cały preset pod zachowaną tożsamością;
-  częściowy błąd resetu root pokazuje, który zapis zawiódł. Reset preferencji idzie polami w kolejności
+  `WSZYSTKO`). Root resets shared preferences, the video preset and owner-held recipes.
+  Auto resets all three base recipes; its child screens reset only their own recipe.
+  Output resets the video preset under its existing identity. Recipe fields use
+  `ResidentSession.recipes/update_recipe/reset_recipe`, never a second settings file.
+  Ordinary saved preference edits reload the owner before new orders use them.
+  Reset preferencji idzie polami w kolejności
   ekranu i pomija te, które po drodze przestały być aktywne, bo zmiana silnika
   przebudowuje resztę. JEDEN wyjątek od kolejności ekranu: zakres `translation`
   zaczyna się od `_TRANSLATION_MODEL_FIELDS`, bo `llm_provider` i

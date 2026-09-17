@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import TYPE_CHECKING, cast
 
 from pydantic import TypeAdapter
@@ -98,6 +99,19 @@ class LibrarySet:
     available: bool
     problem: str | None = None
     provisional_timing: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RetryProposal:
+    """Describe the current retry route without granting execution authority to UI paths."""
+
+    material_id: str
+    action: str
+    group_ids: tuple[str, ...] = ()
+    intents: tuple[GroupIntent, ...] = ()
+    operation_id: str | None = None
+    subscription_id: str | None = None
+    episodes: tuple[Decimal, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

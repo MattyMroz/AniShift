@@ -3,22 +3,26 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import subprocess
 import sys
 import threading
+from collections import deque
 from collections.abc import Callable
 from contextlib import ExitStack
 from ctypes import wintypes
+from dataclasses import dataclass
 from enum import IntEnum
 from importlib.resources import as_file, files
+from pathlib import Path
 from secrets import token_hex
 from shutil import which
-from time import sleep
+from time import monotonic, sleep
 from typing import Final
 
 from anishift.utils.logger import get_logger
 
-__all__ = ["TrayIcon", "raise_panel"]
+__all__ = ["TrayIcon", "open_path", "raise_panel"]
 
 logger = get_logger(__name__)
 
@@ -36,6 +40,12 @@ _ICON_PARTS: Final[tuple[str, ...]] = ("cli", "interactive", "assets", "mascot",
 _APP_ID: Final[str] = "AniShift.Desktop"
 """Stable Windows identity shared by resident windows and their notifications."""
 
+_MAX_BALLOONS: Final[int] = 32
+"""Maximum pending notifications retained by the desktop adapter."""
+
+_BALLOON_EXPIRY_S: Final[float] = 300.0
+"""Delivery budget; expiry revokes identity and never proves which notification was clicked."""
+
 
 class _Message(IntEnum):
     DESTROY = 0x0002
@@ -45,9 +55,39 @@ class _Message(IntEnum):
     CONTEXT_MENU = 0x007B
     SELECT = 0x0400
     KEY_SELECT = 0x0401
+    BALLOON_SHOW = 0x0402
+    BALLOON_HIDE = 0x0403
+    BALLOON_TIMEOUT = 0x0404
     BALLOON_CLICK = 0x0405
+    TIMER = 0x0113
     TRAY = 0x8001
     UPDATE = 0x8002
+
+
+def open_path(path: Path, *, show_folder: bool = False) -> None:
+    """Open an already validated desktop result or select it in its containing folder."""
+    if sys.platform == "win32":
+        if show_folder:
+            system_root: str | None = os.environ.get("SYSTEMROOT")
+            if not system_root:
+                message: str = "The Windows system directory is unavailable"
+                raise OSError(message)
+            explorer: Path = Path(system_root) / "explorer.exe"
+            subprocess.Popen([str(explorer), "/select,", str(path)])  # noqa: S603 - validated workspace file
+        else:
+            os.startfile(path)  # noqa: S606 - validated workspace file
+    else:
+        target: Path = path.parent if show_folder else path
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(target)])  # noqa: S603
+
+
+@dataclass(frozen=True, slots=True)
+class _Balloon:
+    title: str
+    message: str
+    notification_id: str | None
+    queued_at: float
+    final: bool = False
 
 
 def raise_panel(window_name: str | None) -> None:
@@ -112,7 +152,14 @@ class TrayIcon:
         self._problem: bool = False
         self._pausing: bool = False
         self._incomplete: bool = False
-        self._notification: tuple[str, str] | None = None
+        self._notifications: deque[_Balloon] = deque(maxlen=_MAX_BALLOONS)
+        self._active: _Balloon | None = None
+        self._shown: bool = False
+        self._ambiguous: bool = False
+        self._closing: bool = False
+        self._timer_id: int = 0
+        self._arm_timer: Callable[[int], object] | None = None
+        self._cancel_timer: Callable[[int], object] | None = None
         self._notification_submitted: threading.Event = threading.Event()
         self._post: Callable[[int, int, int, int], object] | None = None
         self._thread: threading.Thread | None = None
@@ -142,17 +189,24 @@ class TrayIcon:
             self._incomplete = incomplete
         self._send(_Message.UPDATE)
 
-    def notify(self, title: str, message: str) -> None:
+    def notify(self, title: str, message: str, notification_id: str | None = None) -> None:
         """Offer one result notification without making delivery a success condition."""
         with self._lock:
-            self._notification = (title, message)
+            if not self.available or self._closing:
+                return
+            self._notifications.append(_Balloon(title, message, notification_id, monotonic()))
         self._send(_Message.UPDATE)
 
     def close(self, *, notification: tuple[str, str] | None = None) -> None:
         """Offer a final error time on screen before removing the icon and joining its message thread."""
+        with self._lock:
+            self._closing = True
+            self._notifications.clear()
+            if notification is not None and self.available:
+                self._notification_submitted.clear()
+                self._notifications.append(_Balloon(*notification, None, monotonic(), final=True))
         if notification is not None and self.available:
-            self._notification_submitted.clear()
-            self.notify(*notification)
+            self._send(_Message.UPDATE)
             if self._notification_submitted.wait(_START_TIMEOUT_S):
                 sleep(_EXIT_NOTIFICATION_S)
         self._send(_Message.CLOSE)
@@ -163,9 +217,107 @@ class TrayIcon:
         if self._post is not None and self._window:
             self._post(self._window, message, 0, 0)
 
-    def _record_notification(self, notification: tuple[str, str] | None, *, submitted: bool) -> None:
-        if notification is not None and submitted:
+    def _retire_balloon(self, *, ambiguous: bool) -> None:
+        self._ambiguous |= ambiguous
+        self._active = None
+        self._shown = False
+        if self._cancel_timer is not None:
+            self._cancel_timer(self._timer_id)
+
+    def _balloon_event(self, event: int, icon_id: int) -> None:
+        if icon_id != 1:
+            if event == _Message.BALLOON_CLICK:
+                self._action("notification:")
+            return
+        if event == _Message.BALLOON_SHOW:
+            if self._active is None or self._shown:
+                self._ambiguous = True
+            else:
+                self._shown = True
+            return
+        if event == _Message.BALLOON_CLICK:
+            target: str = ""
+            if self._active is not None and self._shown and not self._ambiguous and not self._closing:
+                target = self._active.notification_id or ""
+            self._action(f"notification:{target}")
+            self._retire_balloon(ambiguous=not bool(target))
+        elif event in {_Message.BALLOON_HIDE, _Message.BALLOON_TIMEOUT}:
+            self._retire_balloon(ambiguous=True)
+        self._send(_Message.UPDATE)
+
+    def _tray_event(self, window: int, detail: int) -> None:
+        event: int = detail & 0xFFFF
+        if event in {_Message.LEFT_UP, _Message.SELECT, _Message.KEY_SELECT}:
+            self._action("open")
+        elif event in {_Message.BALLOON_SHOW, _Message.BALLOON_HIDE, _Message.BALLOON_TIMEOUT, _Message.BALLOON_CLICK}:
+            self._balloon_event(event, (detail >> 16) & 0xFFFF)
+        elif event in {_Message.RIGHT_UP, _Message.CONTEXT_MENU}:
+            self._menu(window)
+
+    def _expire_balloon(self, timer_id: int) -> None:
+        if self._active is None or timer_id != self._timer_id:
+            return
+        self._retire_balloon(ambiguous=True)
+        self._send(_Message.UPDATE)
+
+    def _submit_balloon(self, submit: Callable[[_Balloon], bool]) -> None:
+        with self._lock:
+            if self._closing and self._notifications:
+                self._retire_balloon(ambiguous=True)
+            if self._active is not None:
+                return
+            while self._notifications and monotonic() - self._notifications[0].queued_at >= _BALLOON_EXPIRY_S:
+                self._notifications.popleft()
+            if not self._notifications:
+                return
+            balloon: _Balloon = self._notifications.popleft()
+            self._active = balloon
+        if not submit(balloon):
+            self._retire_balloon(ambiguous=True)
+            self._send(_Message.UPDATE)
+            return
+        if balloon.final:
             self._notification_submitted.set()
+        if self._active is not balloon:
+            return
+        self._timer_id += 1
+        if self._arm_timer is None or not self._arm_timer(self._timer_id):
+            self._expire_balloon(self._timer_id)
+
+    def _reset_balloon(self) -> None:
+        self._retire_balloon(ambiguous=True)
+        with self._lock:
+            self._notifications.clear()
+
+    def _update_icon(self, data: _NotifyIcon, operation: int, notify: Callable[[int, _NotifyIcon], bool]) -> None:
+        with self._lock:
+            enabled: bool = self._auto
+            busy: bool = self._busy
+            problem: bool = self._problem
+            pausing: bool = self._pausing
+            incomplete: bool = self._incomplete
+        data.uFlags = 1 | 2 | 4 | 128
+        activity: str = "wymaga uwagi" if problem else ("praca trwa" if busy else "czuwanie")
+        data.szTip = f"AniShift · {_mode(enabled=enabled, pausing=pausing, incomplete=incomplete)} · {activity}"
+        if not notify(operation, data):
+            self._retire_balloon(ambiguous=True)
+            return
+        if operation == 0:
+            data.uTimeoutOrVersion = 4
+            if not notify(4, data):
+                self._ambiguous = True
+
+        def submit(balloon: _Balloon) -> bool:
+            if balloon.final:
+                data.uFlags = 16
+                data.szInfo = ""
+                notify(1, data)
+            data.uFlags = 16 if balloon.final else 16 | 64
+            data.szInfoTitle, data.szInfo = balloon.title[:63], balloon.message[:255]
+            data.dwInfoFlags = 4 | 32 | 128
+            return notify(1, data)
+
+        self._submit_balloon(submit)
 
     def _run(self) -> None:
         try:
@@ -174,6 +326,7 @@ class TrayIcon:
         except (OSError, ValueError) as error:
             logger.warning("Windows tray unavailable", error_class=type(error).__name__)
         finally:
+            self._reset_balloon()
             self._window = 0
             self._ready.set()
 
@@ -238,6 +391,9 @@ class TrayIcon:
         user.DispatchMessageW.restype = ctypes.c_ssize_t
         user.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
         user.RegisterWindowMessageW.argtypes = [wintypes.LPCWSTR]
+        user.SetTimer.argtypes = [wintypes.HWND, ctypes.c_size_t, wintypes.UINT, wintypes.LPVOID]
+        user.SetTimer.restype = ctypes.c_size_t
+        user.KillTimer.argtypes = [wintypes.HWND, ctypes.c_size_t]
         shell.Shell_NotifyIconW.argtypes = [wintypes.DWORD, ctypes.POINTER(_NotifyIcon)]
         shell.SetCurrentProcessExplicitAppUserModelID.argtypes = [wintypes.LPCWSTR]
         shell.SetCurrentProcessExplicitAppUserModelID.restype = ctypes.c_long
@@ -253,44 +409,22 @@ class TrayIcon:
         data.hBalloonIcon = _load_mascot_icon(user, resources, user.GetSystemMetrics(11), user.GetSystemMetrics(12))
 
         def update(operation: int) -> None:
-            with self._lock:
-                enabled: bool = self._auto
-                busy: bool = self._busy
-                problem: bool = self._problem
-                pausing: bool = self._pausing
-                incomplete: bool = self._incomplete
-                notification: tuple[str, str] | None = self._notification
-                self._notification = None
-            data.uFlags = 1 | 2 | 4 | 128
-            activity: str = "wymaga uwagi" if problem else ("praca trwa" if busy else "czuwanie")
-            data.szTip = f"AniShift · {_mode(enabled=enabled, pausing=pausing, incomplete=incomplete)} · {activity}"
-            data.szInfo, data.szInfoTitle = "", ""
-            if notification is not None:
-                data.uFlags |= 16
-                data.szInfoTitle, data.szInfo = notification[0][:63], notification[1][:255]
-                data.dwInfoFlags = 4 | 32 | 128
-            submitted: bool = bool(shell.Shell_NotifyIconW(operation, ctypes.byref(data)))
-            self._record_notification(notification, submitted=submitted)
-            if operation == 0:
-                data.uTimeoutOrVersion = 4
-                shell.Shell_NotifyIconW(4, ctypes.byref(data))
+            self._update_icon(
+                data, operation, lambda mode, value: bool(shell.Shell_NotifyIconW(mode, ctypes.byref(value)))
+            )
 
         def procedure(window: int, message: int, parameter: int, detail: int) -> int:
-            event: int = detail & 0xFFFF
             if message == taskbar_created:
+                self._reset_balloon()
                 update(0)
             elif message == _Message.UPDATE:
                 update(1)
-            elif message == _Message.TRAY and event in {
-                _Message.LEFT_UP,
-                _Message.SELECT,
-                _Message.KEY_SELECT,
-                _Message.BALLOON_CLICK,
-            }:
-                self._action("open")
-            elif message == _Message.TRAY and event in {_Message.RIGHT_UP, _Message.CONTEXT_MENU}:
-                self._menu(window)
+            elif message == _Message.TRAY:
+                self._tray_event(window, detail)
+            elif message == _Message.TIMER:
+                self._expire_balloon(parameter)
             elif message == _Message.CLOSE:
+                self._reset_balloon()
                 shell.Shell_NotifyIconW(2, ctypes.byref(data))
                 user.DestroyWindow(window)
             elif message == _Message.DESTROY:
@@ -312,6 +446,8 @@ class TrayIcon:
             user.UnregisterClassW(name, instance)
             raise ctypes.WinError(ctypes.get_last_error())
         self._window, data.hWnd = window, window
+        self._arm_timer = lambda identifier: user.SetTimer(window, identifier, int(_BALLOON_EXPIRY_S * 1000), None)
+        self._cancel_timer = lambda identifier: user.KillTimer(window, identifier)
         user.SendMessageW(window, 0x0080, 0, data.hIcon)
         user.SendMessageW(window, 0x0080, 1, data.hBalloonIcon)
         try:

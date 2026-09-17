@@ -6,7 +6,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Final
@@ -32,6 +32,7 @@ from anishift.application import (
     ProductIntent,
     ProductKind,
     RebuildRequest,
+    RetryProposal,
     RunMode,
     SubtitleOutputFormat,
     SubtitleSourcePolicy,
@@ -532,6 +533,30 @@ class ManualController:
             ready: ManualRun | None = self._ready_run
             self._ready_run = None
         return ready
+
+    def prepare_retry(self, proposal: RetryProposal) -> None:
+        """Open the exact owner-classified scope with its retained choices and an explicit preview."""
+        if proposal.action not in {"resume", "manual"}:
+            msg = "Źródło zmieniło się; wróć i ponownie wybierz Ponów"
+            raise ValueError(msg)
+        if not set(proposal.group_ids) <= self._groups.keys():
+            msg = "Źródło lub część zapisanego zlecenia już nie istnieje"
+            raise ValueError(msg)
+        self._select_scope(set(proposal.group_ids))
+        if self._selected_groups != set(proposal.group_ids):
+            return
+        for intent in proposal.intents:
+            if intent.group_id in self._drafts:
+                self._drafts[intent.group_id] = ManualDraft(
+                    **{item.name: getattr(intent, item.name) for item in fields(ManualDraft)}
+                )
+        self._edit_ids = proposal.group_ids
+        self._edit_index = 0
+        if proposal.action == "resume":
+            self._start_remote_preview(len(self._scope_actions) - 2)
+        else:
+            self._open(_Screen.GROUP_ACTION)
+            self._selected = 1
 
     def _handle_busy_key(self, key: str) -> ManualResult:
         if key not in {"escape", "interrupt"}:

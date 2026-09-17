@@ -212,8 +212,6 @@ def _auto_intent(
             mode=RunMode.AUTO,
             products=auto_group_products(group, products, recipes, target),
             translation_action=preferences.translate.translation_action,
-            source_subtitle_language=preset.source_subtitle_language,
-            subtitle_output_format=preset.subtitle_output_format,
             target=WorkflowTarget.TRANSLATE,
         )
     if target in {WorkflowTarget.AUDIOBOOK, WorkflowTarget.COVER}:
@@ -223,8 +221,6 @@ def _auto_intent(
             mode=RunMode.AUTO,
             products=auto_group_products(group, products, recipes, target),
             translation_action=audiobook.translation_action,
-            source_subtitle_language=preset.source_subtitle_language,
-            subtitle_output_format=preset.subtitle_output_format,
             narration_timeline=audiobook.timeline,
             target=target,
         )

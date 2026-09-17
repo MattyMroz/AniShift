@@ -12,7 +12,15 @@ from typing import Final
 from rich.text import Text
 
 from anishift import __version__
-from anishift.application import AppService, AutoPreset, InspectedWorkspace, PlanPreview, RunResult, ready_group_ids
+from anishift.application import (
+    AppService,
+    AutoPreset,
+    InspectedWorkspace,
+    PlanPreview,
+    RetryProposal,
+    RunResult,
+    ready_group_ids,
+)
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import sanitize_event_message
 from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS, run_exit_code
@@ -328,6 +336,10 @@ class _InteractiveApplication:
             raise_panel(self._terminal_window)
             if self._mode is not _ViewMode.SETTINGS:
                 self._show_home()
+        if self._state is not None and self._mode in {_ViewMode.HOME, _ViewMode.STATE, _ViewMode.MESSAGE}:
+            notice: str | None = self._state.take_notification_notice()
+            if notice is not None:
+                self._finish_with_message(self._generation, Text(notice, style="warning"))
         with self._lock:
             controller: SettingsController | None = self._settings if self._mode is _ViewMode.SETTINGS else None
             closing_at: float | None = self._closing_at
@@ -501,9 +513,14 @@ class _InteractiveApplication:
             self._manual = None
             self._message = Text()
             self._preflight_cancel = EventCancellationToken()
+            retry: RetryProposal | None = (
+                self._state.take_manual_retry()
+                if self._return_mode is _ViewMode.STATE and self._state is not None
+                else None
+            )
             self._worker = threading.Thread(
                 target=self._prepare_manual,
-                args=(generation,),
+                args=(generation, retry),
                 name="anishift-manual-discovery",
                 daemon=True,
             )
@@ -512,7 +529,7 @@ class _InteractiveApplication:
         self._mascot.show(MascotState.DISCOVER)
         worker.start()
 
-    def _prepare_manual(self, generation: int) -> None:
+    def _prepare_manual(self, generation: int, retry: RetryProposal | None = None) -> None:
         backend: AppService | ResidentSession = self._service
         attached: bool = False
         try:
@@ -536,6 +553,9 @@ class _InteractiveApplication:
                 preset,
                 self._renderer.invalidate,
             )
+            if retry is not None and isinstance(backend, ResidentSession):
+                current: RetryProposal = backend.retry_proposal(retry.material_id)
+                controller.prepare_retry(current)
             with self._lock:
                 if generation != self._generation:
                     return
@@ -546,12 +566,12 @@ class _InteractiveApplication:
                 self._worker = None
             self._mascot.reset()
             self._renderer.invalidate()
-        except (AniShiftError, OSError) as problem:
+        except (AniShiftError, OSError, ValueError) as problem:
             with self._lock:
                 if generation != self._generation:
                     return
             logger.warning("Interactive manual discovery failed", error_class=type(problem).__name__)
-            self._finish_with_message(generation, _problem_text(problem))
+            self._finish_with_message(generation, Text(refusal_text(problem), style="warning"))
         finally:
             if isinstance(backend, ResidentSession) and not attached:
                 backend.close()
@@ -769,7 +789,9 @@ class _InteractiveApplication:
         self._renderer.invalidate()
 
     def _show_settings(self) -> None:
-        controller: SettingsController = SettingsController(self._service, self._renderer.invalidate)
+        controller: SettingsController = SettingsController(
+            self._service, self._renderer.invalidate, resident=self._resident
+        )
         self._mascot.reset()
         with self._lock:
             self._return_mode = _ViewMode.STATE if self._mode is _ViewMode.STATE else _ViewMode.HOME

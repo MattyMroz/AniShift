@@ -294,8 +294,19 @@ class AcquisitionConfirmation:
     file_layout: tuple[FileReservation, ...] = ()
     content_started: bool = False
     repeat_id: str | None = None
+    nyaa_release_id: int | None = None
+    release_title: str | None = None
+    previous_operation_id: str | None = None
 
     def __post_init__(self) -> None:
+        if (self.nyaa_release_id is None) != (self.release_title is None):
+            msg = "A retained release requires both its verified Nyaa identifier and original title"
+            raise ValueError(msg)
+        if self.nyaa_release_id is not None and (
+            type(self.nyaa_release_id) is not int or self.nyaa_release_id <= 0 or not self.release_title
+        ):
+            msg = "A retained Nyaa release requires a positive identifier and original title"
+            raise ValueError(msg)
         if self.requested_action not in {None, "stop", "resume", "cancel"}:
             msg = "Unknown transfer action"
             raise ValueError(msg)

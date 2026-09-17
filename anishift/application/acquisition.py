@@ -497,6 +497,25 @@ class AcquisitionService:
         logger.info("Releases queued in the torrent client", count=len(choices))
         return DownloadReceipt(len(choices), self._workspace_root)
 
+    @staticmethod
+    def retained_reference(choice: ReleaseChoice) -> tuple[int | None, str | None]:
+        """Keep a source-qualified reference when the chosen public link supports one."""
+        from anishift.services.torrents.nyaa import retained_release_id  # noqa: PLC0415
+
+        identifier: int | None = retained_release_id(choice.release.torrent_url)
+        return (identifier, choice.release.title) if identifier is not None and choice.release.title else (None, None)
+
+    def reacquire(self, release_id: int, title: str, info_hash: str, episode: str | None) -> DownloadReceipt:
+        """Submit an explicitly repeated release stopped, preserving its admitted season numbering."""
+        from anishift.services.torrents.nyaa import retained_torrent_url  # noqa: PLC0415
+        from anishift.services.torrents.types import Release  # noqa: PLC0415
+
+        release: Release = Release(title, retained_torrent_url(release_id), info_hash, 0, "", None)
+        choice: ReleaseChoice = ReleaseChoice(
+            release, self._parse_name(title), EpisodeReading(None if episode is None else Decimal(episode))
+        )
+        return self.download((choice,))
+
     def rename_transfer_file(self, info_hash: str, old_path: str, new_path: str) -> None:
         """Reserve one destination name inside a stopped transfer before any content is written."""
         self._client.rename_file(info_hash, old_path, new_path)

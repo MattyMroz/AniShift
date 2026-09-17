@@ -5,12 +5,12 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from time import monotonic
 from types import SimpleNamespace
-from typing import Final, Self, cast
+from typing import Final, cast
 
 import pytest
 
@@ -38,6 +38,7 @@ from anishift.application.control_views import (
     PlanPreview,
     PreviewGroup,
     PreviewTask,
+    RetryProposal,
     RunProgressSnapshot,
     encode_view,
 )
@@ -721,6 +722,25 @@ def test_the_panel_never_picks_refusal_text_by_matching_the_message() -> None:
     assert stated != state_module._REFUSAL_TEXTS[RefusalReason.GROUP_RESERVED.value]
 
 
+def test_subscription_refusals_translate_machine_reasons_and_name_only_affected_numbers() -> None:
+    ambiguous: str = refusal_text(ControlError("unrelated message", reason="subscription_season_ambiguous"))
+    available: str = refusal_text(
+        ControlError(
+            "another unrelated message", reason="subscription_source_available", details={"episodes": ["7.5", "9"]}
+        )
+    )
+
+    assert ambiguous == "Nie można jednoznacznie rozpoznać sezonu · wybierz go z katalogu AniList"
+    assert available == "Źródło jest dostępne · użyj Ręcznego, aby je przetworzyć · odcinki: 7.5, 9"
+    assert "Przetwarzaniu" not in available
+
+
+def test_a_calendar_failure_is_visible_with_its_existing_manual_recovery_key() -> None:
+    assert state_module._subscription_term({"calendar_problem": "title_catalog_failed"}) == (
+        "Brak terminu · Kalendarz niedostępny · F: sprawdź ponownie"
+    )
+
+
 def _await(condition: Callable[[], bool], refreshed: threading.Event) -> None:
     deadline: float = time.monotonic() + 5
     while not condition() and time.monotonic() < deadline:
@@ -759,6 +779,21 @@ def test_a_panel_notice_disappears_once_the_resident_state_moves_on(tmp_path: Pa
         session.close()
         server.close()
         controller._thread.join(5)
+
+
+def test_notification_refusal_is_visible_across_unrelated_panel_refreshes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda kind: {"subscriptions": []}))
+    controller: StateController = StateController(session, lambda: None)
+    notice: str = "Windows nie wskazał powiadomienia. Otwórz wynik w Bibliotece"
+    try:
+        controller._receive(session, {"event": "state_changed", "payload": {"notification_problem": notice}})
+        controller._receive(
+            session, {"event": "state_changed", "payload": {"notification_problem": notice, "auto_enabled": False}}
+        )
+        assert notice in controller.render(120, 40).plain
+    finally:
+        controller.close()
 
 
 def test_library_return_keeps_identity_and_detached_scroll_after_an_inactive_refresh(
@@ -832,6 +867,9 @@ def test_subscription_card_keeps_completed_facts_and_requires_explicit_repeat(
         SimpleNamespace(
             command=lambda kind, payload: {**encode_view(subscription), "work_states": {"3": "completed"}},
             repeat=repeat,
+            subscription_retry_proposal=lambda identifier, numbers: RetryProposal(
+                identifier, "subscription", subscription_id=identifier, episodes=numbers
+            ),
             close=lambda: None,
         ),
     )
@@ -849,6 +887,10 @@ def test_subscription_card_keeps_completed_facts_and_requires_explicit_repeat(
         controller.handle_key("space")
         controller.handle_key(action)
         _await_state_action(controller)
+        if action == "text:p":
+            assert repeated == []
+            controller.handle_key("enter")
+            _await_state_action(controller)
         assert repeated == ([("series", (Decimal(3),))] if action == "text:p" else [])
         assert subscription.episodes[0].acquisition_id == "old"
         assert subscription.episodes[0].state is EpisodeState.COMPLETE
@@ -899,10 +941,14 @@ def test_repeat_preserves_mixed_draft_until_separate_range_confirmation(
         current: Subscription = service.list()[0]
         if request.kind == "subscription_get":
             return ControlResponse.succeeded({**encode_view(current), "work_states": {"3": "completed"}})
+        if request.kind in {"subscription_retry_prepare", "subscription_repeat"} and refused:
+            return ControlResponse.refused(ControlErrorCode.REFUSED, "Refused", RefusalReason.PAUSED.value)
+        if request.kind == "subscription_retry_prepare":
+            return ControlResponse.succeeded(
+                encode_view(RetryProposal("series", "subscription", subscription_id="series", episodes=(Decimal(3),)))
+            )
         if request.kind == "subscription_repeat":
             assert request.payload["episodes"] == ["3"]
-            if refused:
-                return ControlResponse.refused(ControlErrorCode.REFUSED, "Refused", RefusalReason.PAUSED.value)
             return ControlResponse.succeeded(encode_view(service.repeat("series", (Decimal(3),))))
         if request.kind == "subscription_range":
             assert request.payload["selected"] == ["2", "3"]
@@ -910,11 +956,12 @@ def test_repeat_preserves_mixed_draft_until_separate_range_confirmation(
             return ControlResponse.succeeded(
                 encode_view(service.set_range("series", selected=(Decimal(2), Decimal(3)), future_from=None))
             )
-        if request.kind == "subscriptions_list":
-            return ControlResponse.succeeded(
-                {"subscriptions": [{"subscription_id": "series", "work_states": {"3": "due"}}]}
-            )
-        return ControlResponse.succeeded({})
+        result: dict[str, object] = (
+            {"subscriptions": [{"subscription_id": "series", "work_states": {"3": "due"}}]}
+            if request.kind == "subscriptions_list"
+            else {}
+        )
+        return ControlResponse.succeeded(result)
 
     key: bytes = os.urandom(32)
     endpoint: str = control_endpoint(tmp_path)
@@ -976,7 +1023,16 @@ def test_late_repeat_result_does_not_change_a_cancelled_subscription_draft(
         assert release.wait(5)
         return replace(subscription, generation=subscription.generation + 1)
 
-    session: ResidentSession = cast("ResidentSession", SimpleNamespace(repeat=repeat, close=lambda: None))
+    session: ResidentSession = cast(
+        "ResidentSession",
+        SimpleNamespace(
+            repeat=repeat,
+            close=lambda: None,
+            subscription_retry_proposal=lambda identifier, numbers: RetryProposal(
+                identifier, "subscription", subscription_id=identifier, episodes=numbers
+            ),
+        ),
+    )
     controller: StateController = StateController(
         cast("ResidentSession", SimpleNamespace(new_session=lambda: session)), lambda: None
     )
@@ -985,6 +1041,8 @@ def test_late_repeat_result_does_not_change_a_cancelled_subscription_draft(
     try:
         controller.handle_key("space")
         controller.handle_key("text:p")
+        _await_state_action(controller)
+        controller.handle_key("enter")
         assert entered.wait(5)
         if leave == "close":
             controller.close()
@@ -1009,6 +1067,9 @@ def _finish_mixed_draft_repeat(
     assert draft is not None
     controller.handle_key("text:p")
     _await_state_action(controller)
+    assert store.load()[0].repeats == ()
+    controller.handle_key("enter")
+    _await_state_action(controller)
     accepted: Subscription = store.load()[0]
     assert len(accepted.repeats) == 1
     assert accepted.episodes[0].selected
@@ -1019,12 +1080,11 @@ def _finish_mixed_draft_repeat(
     assert not draft.completed
     assert draft.states[Decimal(3)] == "due"
     assert "Enter stosuje pozostały zakres" in controller.render(120, 24).plain
-    controller.handle_key("text:p")
     controller._receive(session, {"event": "state_changed", "payload": {"auto_enabled": True}})
     controller.poll()
     assert draft.selected == {Decimal(2), Decimal(3)}
     assert draft.future_from is None
-    assert commands.count("subscription_repeat") == 2
+    assert commands.count("subscription_repeat") == 1
     controller.handle_key(finish)
     _await_state_action(controller)
     assert controller._draft is None
@@ -1040,13 +1100,154 @@ def _finish_mixed_draft_repeat(
         assert "subscription_range" not in commands
 
 
-def test_subscription_term_converts_utc_to_a_non_utc_local_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
-    class LocalDateTime(datetime):
-        def astimezone(self, tz: tzinfo | None = None) -> Self:
-            return super().astimezone(tz or timezone(timedelta(hours=2)))
+def test_history_does_not_address_hidden_processing_rows_or_drop_a_search_during_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    commands: list[str] = []
+    queries: list[str] = []
 
-    monkeypatch.setattr(state_module, "datetime", LocalDateTime)
-    assert state_module._subscription_term({"airing_at": "2026-10-03T23:30:00+00:00"}) == "04.10.2026 01:30"
+    def history(query: str) -> tuple[()]:
+        queries.append(query)
+        return ()
+
+    session: ResidentSession = cast(
+        "ResidentSession",
+        SimpleNamespace(
+            command=lambda kind, _payload: commands.append(kind),
+            history=history,
+            close=lambda: None,
+        ),
+    )
+    controller: StateController = StateController(
+        cast("ResidentSession", SimpleNamespace(new_session=lambda: session)),
+        lambda: None,
+    )
+    controller._history_open = True
+    controller._snapshot = {"materials": [{"group_id": "running", "run_id": "active-run", "active": True}]}
+    try:
+        controller.handle_key("text:c")
+        _await_state_action(controller)
+        assert commands == []
+        controller.handle_key("text:s")
+        controller.handle_key("paste:Book")
+        controller._busy = True
+        controller.handle_key("enter")
+        assert controller._history_input is not None
+        assert controller._history_input.text == "Book"
+        assert queries == []
+        controller._busy = False
+        controller.handle_key("enter")
+        _await_state_action(controller)
+        assert queries == ["Book"]
+        assert controller._history_query == "Book"
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+def test_subscription_countdown_compares_instants_across_timezones() -> None:
+    now: datetime = datetime.fromisoformat("2026-10-01T21:11:51+02:00")
+    assert state_module._subscription_term({"airing_at": "2026-10-03T23:30:00+00:00"}, now) == (
+        "Emisja za 02d 04:18:09"
+    )
+
+
+@pytest.mark.parametrize("offset", [-10, 0, 1, 188289])
+def test_subscription_clock_never_treats_airing_as_output_readiness(offset: int) -> None:
+    now: datetime = datetime(2026, 9, 17, tzinfo=UTC)
+    item: dict[str, object] = {"airing_at": (now + timedelta(seconds=offset)).isoformat(), "airing_episode": "7.5"}
+    term: str = state_module._subscription_term(item, now)
+    assert term.startswith("Odc. 7.5 · ")
+    assert ("Czeka na wydanie" in term) is (offset <= 0)
+    assert "gotow" not in term.casefold()
+    assert "-" not in term
+    if offset == 188289:
+        assert "02d 04:18:09" in term
+    item["calendar_problem"] = "title_catalog_failed"
+    assert state_module._subscription_term(item, now) == term + " · Kalendarz niedostępny"
+
+
+@pytest.mark.parametrize(("columns", "rows"), [(120, 40), (80, 24), (40, 10)])
+def test_visible_subscription_list_and_card_tick_from_snapshot_and_accept_rescheduled_dates_without_io(
+    monkeypatch: pytest.MonkeyPatch, columns: int, rows: int
+) -> None:
+    moments: list[datetime] = [datetime(2026, 9, 17, tzinfo=UTC)]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> Clock:
+            del tz
+            return cls.fromisoformat(moments[0].isoformat())
+
+    monkeypatch.setattr(state_module, "datetime", Clock)
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    subscription: Subscription = Subscription(
+        "series",
+        "query",
+        "Series",
+        "Group",
+        Decimal(8),
+        1080,
+        frozenset(),
+        "2026-09-17",
+        None,
+        episodes=(EpisodeOrder(Decimal(8), airing_at=(moments[0] + timedelta(seconds=188289)).isoformat()),),
+    )
+    item: dict[str, object] = automation_module._subscription_view(subscription, moments[0])
+    controller._subscriptions = [item]
+    controller._tab = 1
+    controller._connected = True
+    try:
+        assert "02d 04:18:09" in controller.render(columns, rows).plain
+        moments[0] += timedelta(seconds=1)
+        controller.poll()
+        assert "02d 04:18:08" in controller.render(columns, rows).plain
+        controller._draft = SubscriptionDraft.from_subscription(subscription)
+        frame: str = controller.render(columns, rows).plain
+        assert "02d 04:18:08" in frame
+        assert "Enter zastosuj" in frame
+        assert len(frame.splitlines()) <= rows
+        item["airing_at"] = (moments[0] + timedelta(seconds=10)).isoformat()
+        assert "00d 00:00:10" in controller.render(columns, rows).plain
+        moments[0] += timedelta(seconds=10)
+        assert "Czeka na wydanie" in controller.render(columns, rows).plain
+        item["airing_at"] = None
+        assert "Brak terminu" in controller.render(columns, rows).plain
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+def test_subscription_projection_prefers_the_nearest_future_selected_unfulfilled_episode() -> None:
+    now: datetime = datetime(2026, 9, 17, tzinfo=UTC)
+    subscription: Subscription = Subscription(
+        "series",
+        "query",
+        "Series",
+        "Group",
+        Decimal(2),
+        1080,
+        frozenset(),
+        "2026-09-17",
+        None,
+        episodes=(
+            EpisodeOrder(Decimal(2), state=EpisodeState.DUE, airing_at=(now - timedelta(days=30)).isoformat()),
+            EpisodeOrder(Decimal(3), state=EpisodeState.DUE, airing_at=(now - timedelta(days=20)).isoformat()),
+            EpisodeOrder(Decimal(4), selected=False, airing_at=(now + timedelta(days=1)).isoformat()),
+            EpisodeOrder(Decimal(5), state=EpisodeState.COMPLETE, airing_at=(now + timedelta(days=2)).isoformat()),
+            EpisodeOrder(Decimal("7.5"), airing_at=(now + timedelta(days=3)).isoformat()),
+            EpisodeOrder(Decimal(8), airing_at=(now + timedelta(days=10)).isoformat()),
+        ),
+    )
+    projection: dict[str, object] = automation_module._subscription_view(subscription, now)
+    assert projection["airing_episode"] == "7.5"
+    assert projection["airing_at"] == (now + timedelta(days=3)).isoformat()
+    past: dict[str, object] = automation_module._subscription_view(
+        replace(subscription, episodes=subscription.episodes[:2]), now
+    )
+    assert past["airing_episode"] == "3"
 
 
 def _assert_list_fills_available_rows(controller: StateController) -> None:
@@ -1136,7 +1337,7 @@ def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_
         assert len(frame.splitlines()) <= rows
         assert all(len(line) <= columns for line in frame.splitlines())
         if tab == 1:
-            expected: str = datetime.fromisoformat("2026-10-03T18:30:00+00:00").astimezone().strftime("%d.%m.%Y %H:%M")
+            expected: str = state_module._subscription_term(controller._subscriptions[0])
             assert expected in frame
     finally:
         controller.close()

@@ -410,20 +410,24 @@ def _walk_to(panel: SettingsController, value: str) -> None:
 
 def _choose(panel: SettingsController, setting_id: str, value: str) -> None:
     _activate(panel, "category:auto")
+    _activate(panel, "recipe:video")
     _activate(panel, f"setting:{setting_id}")
     _walk_to(panel, value)
     panel.handle_key("enter")
     assert panel._feedback is None, panel._feedback
     panel.handle_key("escape")
+    panel.handle_key("escape")
 
 
 def _type_language(panel: SettingsController, text: str) -> None:
     _activate(panel, "category:auto")
+    _activate(panel, "recipe:video")
     _activate(panel, "setting:source_subtitle_language")
     for character in text:
         panel.handle_key(f"text:{character}")
     panel.handle_key("enter")
     assert panel._feedback is None, panel._feedback
+    panel.handle_key("escape")
     panel.handle_key("escape")
 
 
@@ -440,6 +444,7 @@ def _set_products(panel: SettingsController, kinds: frozenset[ProductKind]) -> N
 
 def _set_tracks(panel: SettingsController, tracks: frozenset[str]) -> None:
     _activate(panel, "category:auto")
+    _activate(panel, "recipe:video")
     _activate(panel, "setting:mkv_tracks")
     editor: _Editor | None = panel._editor
     assert editor is not None
@@ -450,6 +455,7 @@ def _set_tracks(panel: SettingsController, tracks: frozenset[str]) -> None:
     panel.handle_key("escape")
     panel.close()
     assert panel._feedback is None, panel._feedback
+    panel.handle_key("escape")
     panel.handle_key("escape")
 
 
@@ -873,8 +879,10 @@ def test_subtitle_language_priority_selects_the_embedded_track(harness: _Harness
 def test_the_panel_never_writes_a_preset_it_did_not_change(harness: _Harness) -> None:
     panel: SettingsController = harness.panel()
     _activate(panel, "category:auto")
+    _activate(panel, "recipe:video")
     for _ in range(6):
         panel.handle_key("down")
+    panel.handle_key("escape")
     panel.handle_key("escape")
     _set_products(panel, frozenset({ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO}))
     panel.close()
