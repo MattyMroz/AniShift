@@ -36,13 +36,12 @@ from anishift.application.control import (
     AutomationPolicy,
     ProcessingRequest,
     ProductConfirmation,
-    ReadyGroup,
     RequestState,
     Reservation,
     SourceSelection,
     WatchState,
 )
-from anishift.application.control_views import RetryProposal, encode_view
+from anishift.application.control_views import LibrarySet, RetryProposal, encode_view
 from anishift.application.discovery import discover_groups
 from anishift.application.history import HistoryEvent, HistoryJournal, HistoryKind
 from anishift.application.intents import AutoPreset, ProductIntent, ProductKind, RequestOrigin
@@ -902,10 +901,11 @@ def test_history_opens_ready_product_while_held_source_keeps_local_retry_scope_l
     monkeypatch.setattr(state_module, "_open_path", lambda path, **_kwargs: opened.append(path))
     service: AppService = _real_service(tmp_path)
     with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, store):
-        assert _await(lambda: bool(store.load().ready_groups))
-        record: ReadyGroup = store.load().ready_groups[0]
-        assert record.pending_sources == ("audiobook/Book.txt",)
-        assert record.products == ("ready/Book.m4a",)
+        assert _await(lambda: any(item.set_id == move.group_id and item.available for item in session.library()))
+        record: LibrarySet = session.library_details(move.group_id)
+        assert tuple(item.path for item in record.files if item.role == "pending_source") == ("audiobook/Book.txt",)
+        assert tuple(item.path for item in record.files if item.role == "product") == ("ready/Book.m4a",)
+        assert record.main_result == "ready/Book.m4a"
         controller: StateController = StateController(session, lambda: None)
         try:
             assert _wait_for_resident(session, lambda _status: controller._connected)
@@ -919,7 +919,8 @@ def test_history_opens_ready_product_while_held_source_keeps_local_retry_scope_l
                     session.retry_proposal(identifier)
                 assert refused.value.reason == "group_relocating"
             assert source.read_text(encoding="utf-8") == "Held source"
-            assert store.load().requests == ()
+            assert session.command("status")["requests"] == []
         finally:
             controller.close()
             controller._thread.join(5)
+    assert store.load().requests == ()
