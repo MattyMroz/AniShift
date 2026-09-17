@@ -219,9 +219,7 @@ class ProgressBarBuilder:
         return f"[{color}]{filled_str}[/{color}][{empty_color}]{empty_str}[/{empty_color}]"
 
     @staticmethod
-    def custom(  # noqa: PLR0913 — public API, one param per bar attribute; signature is frozen
-        width: int, progress: float, color: str, empty_color: str, filled_char: str, empty_char: str
-    ) -> str:
+    def custom(width: int, progress: float, color: str, empty_color: str, filled_char: str, empty_char: str) -> str:
         """Create custom character progress bar.
 
         Args:
@@ -416,7 +414,7 @@ class ProgressBarManager:
     }
     """Default 4-step color transition from red to green."""
 
-    def __init__(  # noqa: PLR0913 — public API, one param per display toggle; signature is frozen
+    def __init__(
         self,
         description: str = "Processing...",
         total: int | None = None,
@@ -626,7 +624,7 @@ class ProgressBarManager:
             self.progress.advance(self.task, amount)
             self.last_successful_progress += amount
             self.update_style(self.last_successful_progress)
-        except Exception:  # noqa: BLE001 — best-effort UI update; a render glitch must never crash the app
+        except Exception:
             _logger.debug("Progress advance failed")
             self.progress.update(self.task, completed=self.last_successful_progress)
 
@@ -641,7 +639,7 @@ class ProgressBarManager:
 
             if self.bar_style != "rich":
                 self._update_custom_bar(current)
-        except Exception:  # noqa: BLE001 — best-effort UI update; a render glitch must never crash the app
+        except Exception:
             _logger.debug("Style update failed")
             self.progress.update(self.task, completed=self.last_successful_progress)
 

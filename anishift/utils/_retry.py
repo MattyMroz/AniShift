@@ -4,9 +4,9 @@
 - ``build_retry()`` — per-call ``AsyncRetrying`` for network engines with an
   attempt budget and a deterministic backoff shape (no jitter).
 
-Usage:
+Usage within this utilities package:
 
-    from anishift.utils._retry import NETWORK_RETRY, build_retry
+    from ._retry import NETWORK_RETRY, build_retry
 
     @NETWORK_RETRY
     async def call_api() -> str: ...
@@ -71,8 +71,10 @@ def _is_retryable_network_error(exc: BaseException) -> bool:
     """Return True when *exc* is a retryable network / HTTP error."""
     if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
         return True
-    # Optional download libraries signal terminal offline mode separately.
     mro_names: set[str] = {cls.__name__ for cls in type(exc).__mro__}
+    if "TransientError" in mro_names:
+        return True
+    # Optional download libraries signal terminal offline mode separately.
     if "DownloadError" in mro_names and "OfflineError" not in mro_names:
         return True
     if _HTTPX_RETRYABLE and isinstance(exc, _HTTPX_RETRYABLE):

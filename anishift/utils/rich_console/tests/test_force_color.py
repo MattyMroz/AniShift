@@ -4,7 +4,7 @@ import importlib
 
 
 def _reload() -> object:
-    module = importlib.import_module("anishift.utils.rich_console.console")
+    module = importlib.import_module("..console", package=__package__)
     return importlib.reload(module)
 
 

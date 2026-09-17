@@ -53,7 +53,7 @@ def _query_cuda_via_torch() -> tuple[str, int] | None:
             return None
         vram_mb = torch.cuda.get_device_properties(0).total_memory // _BYTES_PER_MB
         return torch.cuda.get_device_name(0), int(vram_mb)
-    except Exception:  # noqa: BLE001 - foreign torch probe may raise anything; fall back to next probe
+    except Exception:
         return None
 
 
@@ -88,13 +88,13 @@ def _ort_reports_cuda() -> bool:
     ort = sys.modules.get("onnxruntime")
     if ort is None:
         try:
-            import onnxruntime  # type: ignore[import-not-found]  # noqa: PLC0415 - optional heavy dependency, keep off package import path
+            import onnxruntime
         except ImportError:
             return False
         ort = onnxruntime
     try:
         return "CUDAExecutionProvider" in ort.get_available_providers()
-    except Exception:  # noqa: BLE001 - foreign onnxruntime probe may raise anything; treat as no CUDA
+    except Exception:
         return False
 
 

@@ -219,7 +219,7 @@ def test_serialized_exceptions_preserve_redacted_causes(tmp_path: Path) -> None:
     def fail_operation() -> None:
         try:
             message: str = "token=private-cause-sentinel"
-            raise ValueError(message)  # noqa: TRY301
+            raise ValueError(message)
         except ValueError as cause:
             message = "operation-failure-sentinel"
             raise RuntimeError(message) from cause

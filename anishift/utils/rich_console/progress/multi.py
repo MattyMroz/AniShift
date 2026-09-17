@@ -220,7 +220,7 @@ class MultiProgressManager:
         ...     mp.advance(archive, 8_000_000)
     """
 
-    def __init__(  # noqa: PLR0913 — public API, one param per display default; signature is frozen
+    def __init__(
         self,
         *,
         align: Literal["aligned", "independent"] = "aligned",
@@ -296,7 +296,7 @@ class MultiProgressManager:
         """Stop the live display, leaving every task at its last state."""
         self._progress.stop()
 
-    def add_task(  # noqa: PLR0913 — public API, one param per per-task override; signature is frozen
+    def add_task(
         self,
         description: str,
         *,

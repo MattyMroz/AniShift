@@ -3,8 +3,7 @@
 Single redaction rule: case-insensitive substring match against a
 fixed set of known-sensitive key fragments. Used by:
 
-* :class:`anishift.events.emitters.DbEventEmitter` before persisting
-  ``payload_json`` rows.
+* Event emitters before persisting payload rows.
 * Logger scrubber and any caller that wants to render a dict safely.
 
 The functions are pure — the input is never mutated; a freshly built

@@ -45,4 +45,5 @@ Przenośny (współdzielony z mm_avh): logger oparty na loguru z mostem stdlib, 
 
 ## Uwaga
 
-- Docstringi importują jako `from logger import ...` (goły `logger`) — realny prefiks to `anishift.utils.logger`.
+- Standalone examples use `logger`; when nested, import `<pkg>.logger` with the utilities package prefix defined by the host.
+- URL route prefixes default to empty. The host process may register its routes with `set_url_route_prefixes`; filesystem paths and secrets remain scrubbed.

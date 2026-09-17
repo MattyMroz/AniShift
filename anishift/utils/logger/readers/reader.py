@@ -209,7 +209,7 @@ class LogReader:
             ImportError: If pandas is not installed.
         """
         try:
-            import pandas as pd  # type: ignore[import-untyped]  # noqa: PLC0415 — optional dependency
+            import pandas as pd  # type: ignore[import-untyped]
 
             return pd.DataFrame(self._current)
         except ImportError as e:
