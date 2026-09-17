@@ -253,7 +253,7 @@ def test_catalog_hides_low_and_unknown_quality_and_counts_them() -> None:
     assert [choice.release.title for group in catalog.groups for choice in group.choices] == ["sp-10"]
 
 
-def test_catalog_groups_by_series_and_group_with_newest_episode_first() -> None:
+def test_catalog_groups_by_series_and_group_with_ascending_episodes_and_latest_version_first() -> None:
     catalog: ReleaseCatalog = catalog_releases(
         (_release("sp-10", seeders=5), _release("dkb-11", seeders=50), _release("sp-11v2"), _release("sp-11")),
         _parse,
@@ -263,13 +263,40 @@ def test_catalog_groups_by_series_and_group_with_newest_episode_first() -> None:
         ("Neko to Ryuu", "DKB"),
         ("Neko to Ryuu", "SubsPlease"),
     ]
-    assert [choice.release.title for choice in catalog.groups[1].choices] == ["sp-11v2", "sp-11", "sp-10"]
+    assert [choice.release.title for choice in catalog.groups[1].choices] == ["sp-10", "sp-11v2", "sp-11"]
 
 
 def test_catalog_lists_a_batch_after_numbered_episodes() -> None:
     catalog: ReleaseCatalog = catalog_releases((_release("batch"), _release("sp-10")), _parse)
 
     assert [choice.release.title for choice in catalog.groups[0].choices] == ["sp-10", "batch"]
+
+
+def test_catalog_orders_fractional_episodes_stably_without_changing_season_or_pack_classification() -> None:
+    names: dict[str, ReleaseName] = {
+        "eight": replace(_BASE_NAME, episode=Decimal(8), season=2),
+        "half-v2-a": replace(_BASE_NAME, episode=Decimal("7.5"), version=2, season=2),
+        "seven": replace(_BASE_NAME, episode=Decimal(7), season=2),
+        "half": replace(_BASE_NAME, episode=Decimal("7.5"), season=2),
+        "half-v2-b": replace(_BASE_NAME, episode=Decimal("7.5"), version=2, season=2),
+        "foreign": replace(_BASE_NAME, episode=Decimal(1), season=1),
+        "pack": replace(_BASE_NAME, batch=True, season=2),
+    }
+    catalog: ReleaseCatalog = catalog_releases(
+        tuple(_release(title) for title in names), names.__getitem__, context=SeasonContext(2, 12, 12)
+    )
+    choices: tuple[ReleaseChoice, ...] = catalog.groups[0].choices
+    assert [choice.release.title for choice in choices] == [
+        "seven",
+        "half-v2-a",
+        "half-v2-b",
+        "half",
+        "eight",
+        "pack",
+        "foreign",
+    ]
+    assert [choice.release.title for choice in choices if choice.other_season] == ["foreign"]
+    assert [choice.release.title for choice in choices if choice.name.is_pack] == ["pack"]
 
 
 @pytest.mark.parametrize(
@@ -451,7 +478,7 @@ def test_catalog_groups_one_series_written_with_and_without_punctuation() -> Non
 
     assert len(catalog.groups) == 1
     assert catalog.groups[0].series == "Mushoku Tensei: Jobless Reincarnation"
-    assert [choice.release.title for choice in catalog.groups[0].choices] == ["mt-colon", "mt-plain"]
+    assert [choice.release.title for choice in catalog.groups[0].choices] == ["mt-plain", "mt-colon"]
 
 
 def test_catalog_excludes_a_dubbed_release_and_one_without_a_stated_language() -> None:
@@ -710,7 +737,7 @@ def test_search_title_asks_the_index_per_matching_group_and_merges_by_hash(tmp_p
 
     assert source.queries == ["Neko to Ryuu", "The Cat and the Dragon", "Neko to Ryuu SubsPlease"]
     assert [group.group for group in catalog.groups] == ["SubsPlease", "DKB"]
-    assert [choice.release.title for choice in catalog.groups[0].choices] == ["sp-11v2", "sp-11", "sp-10"]
+    assert [choice.release.title for choice in catalog.groups[0].choices] == ["sp-10", "sp-11v2", "sp-11"]
 
 
 def test_search_title_asks_at_most_five_groups_for_their_own_listing(tmp_path: Path) -> None:

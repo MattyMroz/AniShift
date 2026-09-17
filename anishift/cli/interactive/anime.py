@@ -672,7 +672,11 @@ class AnimeController:
         group: SeriesGroup = self._groups[row.group]
         choice: ReleaseChoice | None = row.choice
         if self._opened_group is None:
-            choice = next((item for item in group.choices if _is_markable(item, None)), group.choices[0])
+            choice = max(
+                (item for item in group.choices if _is_markable(item, None)),
+                key=lambda item: item.episode if item.episode is not None else Decimal(0),
+                default=group.choices[0],
+            )
         if choice is None:
             return
         if choice.name.is_pack or choice.episode is None:

@@ -34,6 +34,7 @@ from anishift.application import (
     TitleStatus,
     encode_view,
 )
+from anishift.application.acquisition import catalog_releases
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive.anime import AnimeController, AnimeResult, _Screen
 from anishift.cli.interactive.state import StateController, StateResult
@@ -1453,6 +1454,42 @@ def test_o_on_a_numbered_episode_returns_a_draft_without_subscribing_or_checking
     assert controller.take_draft() is None
 
 
+@pytest.mark.parametrize("episode", [None, 9, 10])
+def test_subscription_start_uses_latest_eligible_catalog_episode_or_the_highlighted_number(episode: int | None) -> None:
+    choices: tuple[ReleaseChoice, ...] = (
+        _choice("11"),
+        _choice("9"),
+        _choice("10"),
+        _choice("99"),
+        _choice(None, batch=True),
+    )
+    names: dict[str, ReleaseName] = {
+        choice.release.info_hash: replace(choice.name, season=1 if choice.episode == Decimal(99) else 2)
+        for choice in choices
+    }
+    catalog: ReleaseCatalog = catalog_releases(
+        tuple(replace(choice.release, title=choice.release.info_hash, subtitle_language="en") for choice in choices),
+        names.__getitem__,
+        context=SeasonContext(2, 0, None),
+    )
+    controller: AnimeController = _controller(_service(search=lambda query: catalog))
+    _type(controller, "oshi no ko")
+    controller.handle_key("enter")
+    _settle(controller)
+    if episode is not None:
+        controller.handle_key("enter")
+        for _ in range(episode - 9):
+            controller.handle_key("down")
+    controller.handle_key("text:o")
+    draft = controller.take_draft()
+    assert draft is not None
+    assert draft.order is not None
+    assert draft.order.first_episode == Decimal(11 if episode is None else episode)
+    assert draft.numbers == (Decimal(9), Decimal(10), Decimal(11))
+    assert draft.selected == {Decimal(number) for number in range(11 if episode is None else episode, 12)}
+    assert draft.future_from == Decimal(12)
+
+
 def test_o_on_a_batch_reports_that_only_a_numbered_episode_can_be_watched() -> None:
     calls: list[str] = []
 
@@ -1883,6 +1920,33 @@ def test_s_reorders_the_groups_without_a_new_search_and_keeps_the_marks() -> Non
     assert controller._rows[next(iter(controller._marked))].choice is fresh.choices[0]
     controller.handle_key("enter")
     assert "Pobierz (1)" in _frame(controller)
+
+
+def test_catalog_episode_order_reaches_picker_and_bulk_without_losing_variant_on_group_reorder() -> None:
+    choices: tuple[ReleaseChoice, ...] = (_choice("8"), _choice("7.5"), _choice("7"), _choice("1", series="Other"))
+    names: dict[str, ReleaseName] = {choice.release.info_hash: choice.name for choice in choices}
+    catalog: ReleaseCatalog = catalog_releases(
+        tuple(replace(choice.release, title=choice.release.info_hash, subtitle_language="en") for choice in choices),
+        names.__getitem__,
+    )
+    controller: AnimeController = _controller(_service(search=lambda query: catalog))
+    _chosen(controller)
+    frame: str = _frame(controller)
+    assert frame.index("odc. 7 ") < frame.index("odc. 7.5") < frame.index("odc. 8")
+    controller.handle_key("down")
+    controller.handle_key("space")
+    highlighted: ReleaseChoice | None = controller._rows[controller._selected].choice
+    assert highlighted is not None
+    assert highlighted.episode == Decimal("7.5")
+    controller.handle_key("text:s")
+    assert controller._rows[controller._selected].choice == highlighted
+    assert controller._rows[next(iter(controller._marked))].choice == highlighted
+    controller.handle_key("text:a")
+    assert [
+        choice.episode
+        for index in controller._choices
+        if index in controller._marked and (choice := controller._rows[index].choice) is not None
+    ] == [Decimal(7), Decimal("7.5"), Decimal(8)]
 
 
 def test_f_searches_the_title_again_without_the_episode_filter() -> None:

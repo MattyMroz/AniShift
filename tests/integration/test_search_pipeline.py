@@ -75,8 +75,16 @@ def test_mushoku_tensei_third_season_lists_the_erai_raws_release_of_the_newest_e
 
     erai = found.groups_of("Erai-raws")[0]
     assert "III" in erai.series
-    assert erai.choices[0].episode == Decimal(10)
-    assert not erai.choices[0].other_season
+    assert erai.choices[0].episode == Decimal(1)
+    assert [choice.episode for choice in erai.choices] == sorted(
+        choice.episode for choice in erai.choices if choice.episode is not None
+    )
+    assert all(not choice.other_season for choice in erai.choices)
+    episode_ten: tuple[ReleaseChoice, ...] = tuple(choice for choice in erai.choices if choice.episode == Decimal(10))
+    assert [choice.release.info_hash for choice in episode_ten] == [
+        "4680975c2fc638fff041c28613cbab82a52c78e5",
+        "d874dddf6946c666f23d19ea92b49511f2d3994f",
+    ]
 
 
 def test_mushoku_tensei_third_season_reports_the_french_group_as_french(composed: Composed) -> None:

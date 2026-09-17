@@ -774,7 +774,7 @@ def _choice_order(choice: ReleaseChoice) -> tuple[int, int, Decimal, int]:
     episode: Decimal | None = choice.episode
     if episode is None:
         return (int(choice.other_season), 1, Decimal(0), 0)
-    return (int(choice.other_season), 0, -episode, -(choice.name.version or 0))
+    return (int(choice.other_season), 0, episode, -(choice.name.version or 0))
 
 
 def _group_order(group: SeriesGroup, order: CatalogOrder, *, ranked: bool) -> tuple[int, int, int, float, str, str]:
