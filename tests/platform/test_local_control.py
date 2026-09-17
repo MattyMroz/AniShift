@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Final
 
 import pytest
+from loguru import logger as loguru_logger
 
 from anishift.platform import local_control
 from anishift.platform.local_control import (
@@ -233,6 +234,33 @@ def test_only_an_unanswered_command_suggests_checking_the_resident() -> None:
     assert unanswered.context.suggestion == local_control._RESIDENT_CHECK
     assert unanswered.context.suggestion
     assert answered.context.suggestion == ""
+    assert not unanswered.answered
+    assert answered.answered
+
+
+def test_a_command_can_execute_after_its_client_times_out_without_an_answer(tmp_path: Path) -> None:
+    release: threading.Event = threading.Event()
+    executed: threading.Event = threading.Event()
+
+    def delayed(request: ControlRequest) -> ControlResponse:
+        assert release.wait(_TIMEOUT_S)
+        executed.set()
+        return _echo(request)
+
+    server, endpoint, key = _serving(_state_dir(tmp_path), delayed)
+    client: ControlClient = ControlClient(endpoint, key, timeout_s=0.1)
+    try:
+        with pytest.raises(ControlError) as timeout:
+            client.call("echo")
+        assert timeout.value.code is ControlErrorCode.INTERNAL
+        assert not timeout.value.answered
+        assert not executed.is_set()
+        release.set()
+        assert executed.wait(_TIMEOUT_S)
+    finally:
+        release.set()
+        client.close()
+        server.close()
 
 
 def test_a_flooded_subscriber_receives_merged_events_instead_of_every_frame(tmp_path: Path) -> None:
@@ -649,21 +677,34 @@ def test_a_handler_fault_is_answered_without_dropping_the_channel(tmp_path: Path
 
     def broken(request: ControlRequest) -> ControlResponse:
         if request.kind == "boom":
-            raise RuntimeError("handler")
+            raise RuntimeError("private-handler-payload")
         return _echo(request)
 
     server, endpoint, key = _serving(state_dir, broken)
     client = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    captured: list[str] = []
+    handler_id: int = loguru_logger.add(
+        captured.append,
+        format="{message} {extra}",
+        level="WARNING",
+        filter=lambda record: record["extra"].get("command_id") == "handler-fault",
+    )
     try:
         with pytest.raises(ControlError) as refusal:
-            client.call("boom")
+            client.call("boom", command_id="handler-fault")
         answer: Mapping[str, object] = client.call("echo", {"echo": "value"})
     finally:
+        loguru_logger.remove(handler_id)
         client.close()
         server.close()
 
     assert refusal.value.code is ControlErrorCode.INTERNAL
+    assert refusal.value.answered
     assert answer == {"kind": "echo", "echo": "value"}
+    assert "RuntimeError" in "".join(captured)
+    assert "handler-fault" in "".join(captured)
+    assert "internal" in "".join(captured)
+    assert "private-handler-payload" not in "".join(captured)
 
 
 def test_a_slow_handler_never_blocks_another_connection(tmp_path: Path) -> None:

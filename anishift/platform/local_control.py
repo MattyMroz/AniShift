@@ -139,8 +139,8 @@ _COMMAND_ID_BYTES: Final[int] = 8
 _NO_RESULT: Final[Mapping[str, object]] = MappingProxyType({})
 """Result of a command that answers with nothing but its acceptance."""
 
-_RESIDENT_CHECK: Final[str] = "Check whether the resident runs and retry the command"
-"""Repair hint that fits only a command which never reached a running resident."""
+_RESIDENT_CHECK: Final[str] = "Check the resident, History and log before retrying; the command may have executed"
+"""Recovery hint when the channel cannot confirm the command outcome."""
 
 
 class ControlErrorCode(StrEnum):
@@ -168,7 +168,7 @@ class ControlError(AniShiftError):
         answered: bool = False,
         details: Mapping[str, object] | None = None,
     ) -> None:
-        """Carry the protocol reason, suggesting a resident check only for an undelivered command."""
+        """Carry the protocol reason and whether the channel received an answer."""
         super().__init__(
             context=ErrorContext(
                 code=ErrorCode.IO_ERROR,
@@ -179,6 +179,7 @@ class ControlError(AniShiftError):
         )
         self.code: ControlErrorCode = code
         self.reason: str = reason
+        self.answered: bool = answered
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,8 +456,14 @@ class ControlServer:
     def _respond(self, request: ControlRequest) -> Mapping[str, object]:
         try:
             response: ControlResponse = self._handler(request)
-        except Exception:  # noqa: BLE001 - one boundary keeping a faulty command off the channel
-            logger.warning("A control command failed", command_kind=request.kind)
+        except Exception as problem:  # noqa: BLE001 - one boundary keeping a faulty command off the channel
+            logger.warning(
+                "A control handler failed",
+                command_kind=request.kind,
+                command_id=request.command_id,
+                error_class=type(problem).__name__,
+                reason=ControlErrorCode.INTERNAL.value,
+            )
             return _error_frame(request.command_id, ControlErrorCode.INTERNAL, _HANDLER_FAILED)
         return _response_frame(request.command_id, response)
 
