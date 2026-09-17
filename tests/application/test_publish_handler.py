@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -92,6 +93,28 @@ def test_publish_handler_validates_private_staging_without_replacing_product(tmp
     assert result.outputs[0].path == tmp_path / "run" / "group-1" / "full-durable.srt"
     assert result.outputs[0].metadata["validated"] is True
     assert progress.notifications[-1].progress_percent == 100
+
+
+def test_absent_publish_emits_completion_without_staging_a_file(tmp_path: Path) -> None:
+    task, snapshot, source_group, destination = _contract(tmp_path)
+    source: Artifact = replace(
+        snapshot.require_ready(task.requires[0]), kind=ArtifactKind.DISPLAYED_PL, state=ArtifactState.ABSENT, path=None
+    )
+    output: Artifact = replace(snapshot.require_output(task.produces[0]), kind=ArtifactKind.DISPLAYED_PL)
+    progress: _Progress = _Progress()
+    result: TaskResult = PublishTaskHandler(
+        run_root=tmp_path / "run", source_groups={source_group.group_id: source_group}
+    ).execute(
+        task,
+        ArtifactSnapshot({source.artifact_id: source}, {output.artifact_id: output}),
+        NeverCancelledToken(),
+        progress,
+    )
+    assert result.outputs == ()
+    assert result.absent_outputs == task.produces
+    assert [item.progress_percent for item in progress.notifications] == [100]
+    assert destination.read_bytes() == b"previous"
+    assert not (tmp_path / "run").exists()
 
 
 def test_publish_handler_rejects_destination_away_from_real_source_group(tmp_path: Path) -> None:

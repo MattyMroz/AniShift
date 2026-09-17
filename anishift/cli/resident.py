@@ -258,12 +258,16 @@ class ResidentSession:
         """Send a validated user action through the owner's command boundary."""
         return self._call(kind, payload)
 
-    def observe(self) -> Iterator[Mapping[str, object]]:
+    def observe(self, *, panel: bool = False) -> Iterator[Mapping[str, object]]:
         """Subscribe before reading the snapshot so concurrent progress is not lost."""
         events: ControlClient = self._connect()
         self._events = events
         try:
             events.subscribe()
+            if panel:
+                navigation: object = self._call("panel_attach").get("navigation")
+                if isinstance(navigation, Mapping):
+                    yield {"event": "panel_open", "payload": navigation}
             yield {"event": "state_changed", "payload": self._call("status")}
             yield from events.events()
         finally:

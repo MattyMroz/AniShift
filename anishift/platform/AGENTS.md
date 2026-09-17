@@ -16,8 +16,8 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
   The v4 callback carries the event in the low word of `lParam` and the icon ID in the high word,
   never a notification ID. Balloons are serialized; only a shown balloon in an uninterrupted
   click-consumed lifecycle may select its owner-validated result. Timeout, hide or lost lifecycle
-  revokes targeting for the icon lifetime. Icon activation still opens Home. `open_path` is the
-  shared desktop boundary for Library and notification results; callers validate the file first.
+  revokes targeting for the icon lifetime. Icon activation still opens Home; notification clicks
+  request Library navigation. `open_path` opens Library results after caller validation.
   Delivery failures retire only the active balloon; later offers remain eligible even while
   targeting is revoked. Failed submissions are never retried; retiring a balloon cancels its timer.
 - `DirectoryWatch` zakłada pierwszy odczyt `ReadDirectoryChangesW` przed uruchomieniem wątku.

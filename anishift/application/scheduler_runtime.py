@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Never
 
-from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
+from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import RunEventEmitter, RunEventKind, WorkerNotification, sanitize_event_message
 from anishift.application.intents import RequestOrigin
@@ -220,7 +220,7 @@ class ArtifactStore:
         inputs: dict[str, Artifact] = {}
         for artifact_id in task.requires:
             artifact: Artifact = self._artifacts[artifact_id]
-            if artifact.state is not ArtifactState.READY:
+            if artifact.state not in {ArtifactState.READY, ArtifactState.ABSENT}:
                 msg = f"Scheduler admitted task with unready artifact: {artifact_id}"
                 raise ExecutionError(msg)
             inputs[artifact_id] = artifact
@@ -238,27 +238,41 @@ class ArtifactStore:
             msg = "Task result ID does not match the completed task"
             raise ExecutionError(msg)
         expected_ids: frozenset[str] = frozenset(task.produces)
-        actual_ids: frozenset[str] = frozenset(output.artifact_id for output in result.outputs)
-        if actual_ids != expected_ids or len(result.outputs) != len(task.produces):
+        actual_ids: frozenset[str] = frozenset(output.artifact_id for output in result.outputs) | frozenset(
+            result.absent_outputs
+        )
+        if actual_ids != expected_ids:
             msg = "Task result outputs do not match the execution plan"
             raise ExecutionError(msg)
-        durable_outputs: tuple[ProducedArtifact, ...] = tuple(
-            output
-            for output in result.outputs
-            if self._artifacts[output.artifact_id].lifetime is ArtifactLifetime.DURABLE
+        durable: bool = any(
+            self._artifacts[identifier].lifetime is ArtifactLifetime.DURABLE for identifier in task.produces
         )
-        if durable_outputs and len(result.outputs) != 1:
+        if durable and len(task.produces) != 1:
             msg = "A durable publication task must produce exactly one artifact"
             raise ExecutionError(msg)
         replacements: dict[str, Artifact] = {}
+        for identifier in result.absent_outputs:
+            planned_absent: Artifact = self._artifacts[identifier]
+            if (
+                planned_absent.kind is not ArtifactKind.DISPLAYED_PL
+                or planned_absent.lifetime is ArtifactLifetime.SOURCE
+                or planned_absent.state is not ArtifactState.MISSING
+            ):
+                msg = "Only missing non-source displayed subtitles can be registered absent"
+                raise ExecutionError(msg)
+            replacements[identifier] = replace(planned_absent, path=None, state=ArtifactState.ABSENT)
         registered_outputs: list[ProducedArtifact] = []
         for output in result.outputs:
             planned: Artifact = self._artifacts[output.artifact_id]
             artifact, registered = self._validate_output(task, planned, output, commit_if_current)
             replacements[output.artifact_id] = artifact
             registered_outputs.append(registered)
-        self._artifacts.update(replacements)
-        return TaskResult(result.task_id, tuple(registered_outputs))
+        if result.absent_outputs and not commit_if_current(lambda: self._artifacts.update(replacements)):
+            msg = "Artifact registration was cancelled"
+            raise ExecutionError(msg)
+        if not result.absent_outputs:
+            self._artifacts.update(replacements)
+        return TaskResult(result.task_id, tuple(registered_outputs), result.absent_outputs)
 
     def artifact(self, artifact_id: str) -> Artifact:
         """Return the coordinator's latest immutable artifact value."""
@@ -454,6 +468,8 @@ def commit_success(task: PlanTask, result: TaskResult, runtime: SchedulerRuntime
     if runtime.journal is not None:
         runtime.journal.committed(registered)
     runtime.state.task_states[task.task_id] = TaskState.SUCCEEDED
+    if registered.absent_outputs:
+        logger.info("Displayed subtitle output omitted", task_kind=task.kind.value, group_id=task.group_id)
     runtime.emitter.emit(
         RunEventKind.TASK_FINISHED,
         group_id=task.group_id,

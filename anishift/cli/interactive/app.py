@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from time import monotonic
@@ -330,16 +330,20 @@ class _InteractiveApplication:
         if self._state is not None and self._state.finished():
             self._renderer.exit()
             return
-        if self._state is not None and self._state.take_open_request():
+        navigation: Mapping[str, object] | None = (
+            self._state.take_open_request()
+            if self._state is not None and self._mode is not _ViewMode.SETTINGS
+            else None
+        )
+        if self._state is not None and navigation is not None:
             from anishift.platform.tray import raise_panel  # noqa: PLC0415
 
             raise_panel(self._terminal_window)
-            if self._mode is not _ViewMode.SETTINGS:
+            if navigation.get("tab") == "library":
+                self._state.show_library(navigation)
+                self._show_state()
+            else:
                 self._show_home()
-        if self._state is not None and self._mode in {_ViewMode.HOME, _ViewMode.STATE, _ViewMode.MESSAGE}:
-            notice: str | None = self._state.take_notification_notice()
-            if notice is not None:
-                self._finish_with_message(self._generation, Text(notice, style="warning"))
         with self._lock:
             controller: SettingsController | None = self._settings if self._mode is _ViewMode.SETTINGS else None
             closing_at: float | None = self._closing_at

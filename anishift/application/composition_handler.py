@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Never, Protocol
 
-from anishift.application.artifacts import COVER_AUDIO_KINDS, Artifact, ArtifactKind
+from anishift.application.artifacts import COVER_AUDIO_KINDS, Artifact, ArtifactKind, ArtifactState
 from anishift.application.cancellation import CancellationToken
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.intents import BurnSubtitleProduct, MkvTrackProduct
@@ -209,7 +209,10 @@ def build_composition_request(task: PlanTask, artifacts: ArtifactSnapshot) -> Co
         _raise_execution("Only composition tasks can build a container request")
     if len(task.produces) != 1:
         _raise_execution("A composition task must produce exactly one container")
-    inputs: tuple[Artifact, ...] = tuple(artifacts.require_ready(artifact_id) for artifact_id in task.requires)
+    inputs: tuple[Artifact, ...] = tuple(
+        artifacts.artifacts[artifact_id] if artifacts.is_absent(artifact_id) else artifacts.require_ready(artifact_id)
+        for artifact_id in task.requires
+    )
     video: Artifact = _require_one(inputs, {ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4}, "source video")
     source_video: Path = _runtime_path(video)
     output: Artifact = artifacts.require_output(task.produces[0])
@@ -254,6 +257,8 @@ def _build_mkv_request(
             continue
         kind, role, track_name = spec
         artifact: Artifact = _require_one(inputs, {kind}, track.value)
+        if kind is ArtifactKind.DISPLAYED_PL and artifact.state is ArtifactState.ABSENT:
+            continue
         attached.append(
             AttachedSubtitle(
                 path=_runtime_path(artifact),
@@ -292,7 +297,9 @@ def _build_mp4_request(
     }[burn_product]
     burn_subtitle: Path | None = None
     if burn_kind is not None:
-        burn_subtitle = _runtime_path(_require_one(inputs, {burn_kind}, "burn subtitle"))
+        artifact: Artifact = _require_one(inputs, {burn_kind}, "burn subtitle")
+        if artifact.state is not ArtifactState.ABSENT:
+            burn_subtitle = _runtime_path(artifact)
     audio_source: str = _string_parameter(parameters, "audio_source")
     narration_audio: Path | None = None
     if audio_source == "narration":

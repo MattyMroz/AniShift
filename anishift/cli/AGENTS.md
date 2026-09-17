@@ -22,10 +22,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `run_resident()` zdobywa blokadę PRZED zapisem `instance.json` i klucza, więc przegrany wyścig
   kończy się `EXIT_REFUSED` bez śladu w katalogu stanu. Rezydent nie importuje `cli.interactive`
   ani Prompt Toolkit. `watch.py`
-- Tray result IDs reach the owner unchanged; only owner-validated paths reach Explorer.
-  Notification refusal travels through status and `panel_open` to the existing message view,
-  including a newly attached Home. Settings defers that message until editing ends; ordinary
-  icon activation still requests Home. `watch.py`, `interactive/state.py`, `interactive/app.py`
+- Tray result clicks open Library; only an owner-validated set ID selects an episode.
+  Unknown callbacks open Library without guessing a result. `panel_open` carries navigation;
+  a newly launched panel receives its pending target through `panel_attach` after subscribing,
+  with owner revalidation. Settings defers navigation until editing ends. Ordinary icon
+  activation requests Home. Library Enter still validates playback. `resident.py`,
+  `interactive/state.py`, `interactive/app.py`
 - Rezydent uruchamia `DirectoryWatch` przed pierwszym uzgodnieniem biblioteki i zamyka go przed
   zwolnieniem blokady. Zdarzenia i kontrola trafiają do tego samego właściciela; tylko inspekcja
   działa w puli I/O. Stare `run_daemon` pozostaje domyślne do przełączenia w P08. `watch.py`
@@ -50,7 +52,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   counts. A processing request plus `RichRunProgress.group_active` must prove started,
   nonterminal work; the owner's `accepted` state can already contain executing tasks.
   Cached progress alone is insufficient. Every live admitted request awaiting its first
-  task appears as unmeasured preparation, including local Manual work before progress restore.
+  task appears as preparation, including local Manual work before progress restore. All visible
+  bars use numeric zero fallback before any measurement, including initial and replayed snapshots.
+  Unknown backend facts stay unknown; unavailable readings retain the last verified display values.
   Recorded downloads also appear, using measured transfer bars and static metadata/pause/problem labels.
   Uncertain acquisitions are excluded from download/handoff rows regardless of cached transfer state;
   live admitted processing remains governed by its request and events. Filtered rows lose their timers.
@@ -111,13 +115,14 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   nie echuj `str(exc)` ani ścieżek bezpośrednio. `main.py`
 - `_QuietRunEvents` celowo gubi wszystkie eventy postępu — raport ma być
   parsowalny, bez przeplotu. Nie dodawaj tam renderowania. `main.py`
-- `RichRunProgress` preallocates one bar per file in natural order; unmeasured rows show
-  activity without a percentage. Processing task bars require evidence of actual start;
-  download bars use client measurements, and unmeasured handoffs have no percentage.
+- `RichRunProgress` preallocates new file rows at zero in natural order; live task starts
+  initialize their own percentage at zero. Later unmeasured activity keeps the last percentage
+  and freezes elapsed time. Processing task bars require evidence of actual start;
+  download bars use client measurements, and unmeasured handoffs display zero.
   Downloads use the identical phase/name, gradient, percentage and elapsed layout as TTS.
   Their panel-local monotonic clock counts observed transfer activity and freezes on pause
   or lost confirmation; never derive it from acquisition timestamps. Unobserved elapsed
-  time uses a fixed-width placeholder. ID-only label suppression belongs to remote
+  time displays fixed-width numeric zero. ID-only label suppression belongs to remote
   `from_snapshot`, not the local source-label constructor.
   `Extracted`, `Translate`, `Translated` i `TTS` reużywają ten sam
   wiersz. Procent pochodzi z pomiaru backendu; `progress_percent=None` z komunikatem

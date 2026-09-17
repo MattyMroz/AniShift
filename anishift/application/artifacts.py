@@ -47,6 +47,7 @@ class ArtifactState(StrEnum):
     MISSING = "missing"
     CANDIDATE = "candidate"
     READY = "ready"
+    ABSENT = "absent"
     INVALID = "invalid"
 
 
@@ -109,16 +110,24 @@ class Artifact:
         ):
             msg = "Final containers must be durable products, never sources"
             raise ValueError(msg)
-        if self.state is not ArtifactState.MISSING and self.path is None:
+        if self.state is ArtifactState.ABSENT and (
+            self.kind is not ArtifactKind.DISPLAYED_PL
+            or self.lifetime is ArtifactLifetime.SOURCE
+            or self.path is not None
+        ):
+            msg = "Only non-source displayed subtitles can be confirmed absent without a runtime path"
+            raise ValueError(msg)
+        if self.state not in {ArtifactState.MISSING, ArtifactState.ABSENT} and self.path is None:
             msg = f"Artifact in state {self.state.value!r} requires a runtime path"
             raise ValueError(msg)
         if self.duration_us is not None and self.duration_us < 0:
             msg = "Artifact duration cannot be negative"
             raise ValueError(msg)
         if self.preserved_path is not None and (
-            self.lifetime is not ArtifactLifetime.DURABLE or self.state is not ArtifactState.MISSING
+            self.lifetime is not ArtifactLifetime.DURABLE
+            or self.state not in {ArtifactState.MISSING, ArtifactState.ABSENT}
         ):
-            msg = "Only a missing durable replacement can preserve an existing product"
+            msg = "Only a missing or absent durable replacement can preserve an existing product"
             raise ValueError(msg)
         self._validate_lifetime()
 

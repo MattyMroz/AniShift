@@ -234,6 +234,14 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Worker otrzymuje w `ArtifactSnapshot` gotowe wejścia i niezmienne deskryptory
   planowanych wyjść, po czym zwraca `TaskResult`; mutable store pozostaje prywatny
   dla schedulera.
+- `ABSENT` is valid only for non-source `DISPLAYED_PL` with no runtime path.
+  Successful classification and an empty displayed writer establish absence; conversion,
+  publication and composition propagate it. `require_ready` stays strict. `RunJournal`
+  retains absence without a file proof, including explicit execution of saved joint splits.
+  Auto reuses journal snapshots verified during background inspection for unchanged sources;
+  journal revisions and current missing products gate reuse. Result warnings explain omissions.
+  Displayed-only no-ops
+  create no Library entry, and regeneration retains an existing good result.
 - `GraphCoordinator` przyjmuje wiele niezależnych kontekstów planów (`RunRequest` →
   `RunHandle`). Kontekst ma własny plan, sesję, handler, emitter, `ArtifactStore`,
   cancellation i `NaturalOrderGate`; wspólne są wyłącznie kolejki gotowych tasków per

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -26,7 +26,7 @@ from anishift.application import (
 )
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive.prompts import TerminalRenderer
-from anishift.cli.interactive.state import StateController
+from anishift.cli.interactive.state import StateController, _Tab
 from anishift.cli.resident import ResidentSession
 from anishift.cli.run import AutoRunRefusal, PreparedAutoRun
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError
@@ -194,25 +194,37 @@ def _mode(application: interactive_app._InteractiveApplication) -> interactive_a
     return application._mode
 
 
-@pytest.mark.parametrize("attached", [False, True])
 @pytest.mark.parametrize("editing", [False, True])
-def test_notification_refusal_is_visible_from_home_and_icon_activation_returns_home(
+@pytest.mark.parametrize("target", [None, "set-2", "missing"])
+def test_notification_opens_library_and_icon_activation_returns_home(
     monkeypatch: pytest.MonkeyPatch,
-    attached: bool,
     editing: bool,
+    target: str | None,
 ) -> None:
     application, renderer = _application(monkeypatch, _service())
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     raised: list[str | None] = []
     monkeypatch.setattr(tray_module, "raise_panel", raised.append)
-    session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda kind: {"subscriptions": []}))
+    session: ResidentSession = cast(
+        "ResidentSession",
+        SimpleNamespace(
+            command=lambda kind: {"subscriptions": []},
+            new_session=lambda: session,
+            library=lambda: (),
+            close=lambda: None,
+        ),
+    )
     controller: StateController = StateController(session, renderer.invalidate)
     application._state = controller
-    notice: str = "Windows nie wskazał powiadomienia. Otwórz wynik w Bibliotece"
+    navigation: dict[str, object] = {"tab": "library"}
+    if target is not None:
+        navigation["set_id"] = target
+    snapshot: Mapping[str, object] = {
+        "library": [{"set_id": "set-1", "name": "One"}, {"set_id": "set-2", "name": "Two"}]
+    }
     try:
-        controller._receive(session, {"event": "state_changed", "payload": {"notification_problem": notice}})
-        if attached:
-            controller._receive(session, {"event": "panel_open", "payload": {"notification_problem": notice}})
+        controller._receive(session, {"event": "panel_open", "payload": navigation})
+        controller._receive(session, {"event": "state_changed", "payload": {}})
         if editing:
             application._mode = interactive_app._ViewMode.SETTINGS
         application._handle_idle()
@@ -220,19 +232,19 @@ def test_notification_refusal_is_visible_from_home_and_icon_activation_returns_h
             assert _mode(application) is interactive_app._ViewMode.SETTINGS
             application._show_home()
             application._handle_idle()
-        assert _mode(application) is interactive_app._ViewMode.MESSAGE
-        assert notice in renderer.frame_provider(120, 40).plain
-        application._handle_key("enter")
+        assert _mode(application) is interactive_app._ViewMode.STATE
+        assert controller._tab == _Tab.FILES
+        controller._receive(session, {"event": "state_changed", "payload": snapshot})
+        assert controller._selected == (1 if target == "set-2" else 0)
+        controller.handle_key("home")
+        controller._receive(session, {"event": "state_changed", "payload": snapshot})
+        assert controller._selected == 0
         application._handle_idle()
-        assert _mode(application) is interactive_app._ViewMode.HOME
-        controller._receive(session, {"event": "panel_open", "payload": {"notification_problem": notice}})
-        application._handle_idle()
-        assert notice in renderer.frame_provider(120, 40).plain
+        assert _mode(application) is interactive_app._ViewMode.STATE
         controller._receive(session, {"event": "panel_open", "payload": {}})
         application._handle_idle()
         assert _mode(application) is interactive_app._ViewMode.HOME
-        assert notice not in renderer.frame_provider(120, 40).plain
-        assert len(raised) == 2 + int(attached)
+        assert len(raised) == 2
     finally:
         controller.close()
         application._mascot.close()

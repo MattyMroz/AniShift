@@ -49,13 +49,24 @@ from anishift.application.intents import (
 from anishift.application.library import file_identity
 from anishift.application.planning import TaskState
 from anishift.application.ready import ReadyMove, ReadyStore
+from anishift.application.recovery import RunJournal
+from anishift.application.results import DISPLAYED_ABSENCE_NOTE
 from anishift.application.service import AppService
 from anishift.application.watch_state import WatchStateStore
+from anishift.cli.interactive import app as interactive_app
+from anishift.cli.interactive.state import StateController, _library_rows, _Tab
+from anishift.cli.resident import ResidentSession
 from anishift.config.presets import AutoPresetFile
 from anishift.errors import ExecutionError
 from anishift.platform import tray as tray_module
 from anishift.platform.directory_watch import DirectoryChange
-from anishift.platform.local_control import ControlRequest, ControlResponse
+from anishift.platform.local_control import (
+    ControlClient,
+    ControlRequest,
+    ControlResponse,
+    ControlServer,
+    control_endpoint,
+)
 from anishift.platform.tray import TrayIcon, _Message
 from anishift.services.translation.types import FileTranslation
 
@@ -146,19 +157,28 @@ def test_real_completion_notifies_only_after_ready_and_does_not_repeat_after_res
         tray: TrayIcon = TrayIcon(owner.tray_action)
         tray._window = 1
         tray._arm_timer = lambda _identifier: 1
+        selected: list[str] = []
         for frame in frames:
             tray.notify(str(frame["title"]), str(frame["message"]), str(frame["notification_id"]))
-        for index, frame in enumerate(frames):
+        for frame in frames:
             tray._submit_balloon(lambda _balloon: True)
             tray._balloon_event(_Message.BALLOON_SHOW, 1)
             tray._balloon_event(_Message.BALLOON_CLICK, 1)
             assert owner.handle(_request("status")).ok
-            assert len(opened) == index + 1
-            assert opened[-1].name == f"{frame['message']}.pl.srt"
+            panel_id: str = f"panel-{frame['notification_id']}"
+            navigation: Mapping[str, object] = cast(
+                "Mapping[str, object]",
+                owner.handle(replace(_request("panel_attach"), session_id=panel_id)).result["navigation"],
+            )
+            selected.append(str(navigation["set_id"]))
+            record: ReadyGroup = next(item for item in owner.state.ready_groups if item.set_id == selected[-1])
+            assert record.stem == frame["message"]
+            owner.disconnect(panel_id)
+            assert owner.handle(_request("status")).ok
         tray._window = 0
         tray.close()
-        assert sorted(path.name for path in opened) == ["One.pl.srt", "Two.pl.srt"]
-        assert all(path.parent == tmp_path / "ready" and path.is_file() for path in opened)
+        assert len(set(selected)) == 2
+        assert not opened
         assert len(store.load().notified) == 2
         expired: str = str(frames[0]["notification_id"])
     restarted: AppService = _service(tmp_path, FakeTranslationService())
@@ -324,6 +344,91 @@ def test_successful_group_in_failed_run_can_regenerate_after_restart(
         assert not frames
 
 
+@pytest.mark.parametrize("ready", [False, True])
+def test_displayed_only_absence_is_noop_and_does_not_restart_unchanged_sources(  # noqa: PLR0915
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, ready: bool
+) -> None:
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.0)
+    write_media_source(tmp_path / "One.mkv")
+    (tmp_path / "One.pl.srt").write_bytes((tmp_path / "One.srt").read_bytes())
+    original: bytes = (tmp_path / "One.mkv").read_bytes()
+    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / "state.json")
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True)))
+    preset: AutoPreset = AutoPreset("signless", "Signless", ProductIntent(frozenset({ProductKind.DISPLAYED_PL})))
+    presets: list[AutoPresetFile] = [AutoPresetFile(1, (preset,), preset.preset_id)]
+    translation: FakeTranslationService = FakeTranslationService()
+    service: AppService = _service(
+        tmp_path, translation, inspector=WorkspaceInspector(FakeMediaProbe()), preset_store=presets
+    )
+    with _notifications(service, store, ready=ready) as (owner, frames, _opened):
+        _reconcile_automatic(owner)
+        assert _await(lambda: bool(owner.state.requests) and owner.state.requests[0].state is RequestState.SUCCEEDED)
+        run_id: str = owner.state.requests[0].request_id
+        assert owner.state.products == ()
+        assert owner.state.ready_groups == ()
+        response: ControlResponse = owner.handle(_request("run_result", {"run_id": run_id}))
+        assert response.result["result"]["warnings"] == [DISPLAYED_ABSENCE_NOTE]  # type: ignore[index]
+        assert not frames
+        assert not owner._on_owner(lambda: owner._ready_library)
+        _reconcile_automatic(owner)
+        assert len(owner.state.requests) == 1
+    restarted: AppService = _service(
+        tmp_path, translation, inspector=WorkspaceInspector(FakeMediaProbe()), preset_store=presets
+    )
+    with _notifications(restarted, store, ready=ready) as (owner, frames, _opened):
+        _reconcile_automatic(owner)
+        assert [request.request_id for request in owner.state.requests] == [run_id]
+        loaded: list[str] = []
+        original_load: Callable[[Path], RunJournal] = RunJournal.load
+
+        def observed_load(path: Path) -> RunJournal:
+            loaded.append(threading.current_thread().name)
+            return original_load(path)
+
+        monkeypatch.setattr(RunJournal, "load", observed_load)
+        for _ in range(3):
+            owner._on_owner(owner._refresh_automatic)
+        assert loaded == []
+        for _ in range(3):
+            _reconcile_automatic(owner)
+        assert loaded == []
+        response = owner.handle(_request("run_result", {"run_id": run_id}))
+        assert response.result["result"]["warnings"] == [DISPLAYED_ABSENCE_NOTE]  # type: ignore[index]
+        journal_path: Path = store.run_path(run_id)
+        journal_path.write_bytes(journal_path.read_bytes() + b"\n")
+        _reconcile_automatic(owner)
+        assert loaded
+        assert all(name != "anishift-owner" for name in loaded)
+        assert len(owner.state.requests) == 1
+        assert not owner.state.ready_groups
+        assert not frames
+        assert (tmp_path / "One.mkv").read_bytes() == original
+        assert not (tmp_path / "One.displayed.pl.srt").exists()
+        assert translation.calls == []
+        (tmp_path / "One.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nChanged\n", encoding="utf-8")
+        _reconcile_automatic(owner)
+        assert _await(lambda: len(owner.state.requests) == 2)
+
+
+def test_signless_regeneration_retains_existing_good_library_product(tmp_path: Path) -> None:
+    write_media_source(tmp_path / "One.mkv")
+    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / "state.json")
+    service: AppService = _service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()))
+    with _notifications(service, store) as (owner, frames, _opened):
+        _start(owner, service)
+        assert _await(lambda: len(frames) == 1)
+        original: ReadyGroup = owner.state.ready_groups[0]
+        assert original.main_result is not None
+        original_bytes: bytes = (tmp_path / original.main_result).read_bytes()
+        _start(owner, service, rebuild=True, products=frozenset({ProductKind.DISPLAYED_PL}))
+        assert _await(
+            lambda: len(owner.state.requests) == 2 and owner.state.requests[-1].state is RequestState.SUCCEEDED
+        )
+        assert owner.state.ready_groups[0].main_result == original.main_result
+        assert (tmp_path / original.main_result).read_bytes() == original_bytes
+        assert all(record.available for record in owner._on_owner(lambda: owner._ready_library))
+
+
 def test_partial_manual_notifies_the_success_and_reports_the_failed_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -361,7 +466,12 @@ def test_partial_manual_notifies_the_success_and_reports_the_failed_attempt(
         assert successes[0]["message"] == "One"
         owner.tray_action(f"notification:{successes[0]['notification_id']}")
         assert owner.handle(_request("status")).ok
-        assert [path.name for path in opened] == ["One.pl.srt"]
+        navigation: Mapping[str, object] = cast(
+            "Mapping[str, object]",
+            owner.handle(replace(_request("panel_attach"), session_id="panel")).result["navigation"],
+        )
+        assert navigation["set_id"] == owner.state.ready_groups[0].set_id
+        assert not opened
         assert any(frame["title"] == "Materiał wymaga uwagi" for frame in frames)
 
 
@@ -449,12 +559,18 @@ def test_notification_refuses_changed_missing_or_unidentified_results_with_a_vis
         status: ControlResponse = owner.handle(_request("status"))
         if change == "none":
             assert status.result["notification_problem"] is None
-            assert not panels
-            assert opened == [path]
+            assert panels == ["Home"]
         else:
-            assert "Bibliote" in str(status.result["notification_problem"])
+            assert bool(status.result["notification_problem"]) is (change != "ambiguous")
             assert panels == ["Home"]
             assert not opened
+        navigation: Mapping[str, object] = cast(
+            "Mapping[str, object]",
+            owner.handle(replace(_request("panel_attach"), session_id="panel")).result["navigation"],
+        )
+        assert navigation["tab"] == "library"
+        assert navigation.get("set_id") == (record.set_id if change == "none" else None)
+        assert not opened
     finally:
         owner.request_shutdown()
         thread.join(5.0)
@@ -495,7 +611,8 @@ def test_new_products_notify_once_and_a_cache_only_run_does_not_repeat(tmp_path:
         assert product.request_id == second
         owner.tray_action(f"notification:{frames[-1]['notification_id']}")
         assert owner.handle(_request("status")).ok
-        assert opened == [tmp_path / product.path]
+        assert owner._pending_panel_open == {"tab": "library", "set_id": record.set_id}
+        assert not opened
         third: str = _start(owner, service, auto=True, products=frozenset({ProductKind.FULL_PL, ProductKind.SPOKEN_PL}))
         assert _await(
             lambda: owner.handle(_request("run_result", {"run_id": third})).result.get("state") == "succeeded"
@@ -567,8 +684,8 @@ def test_pending_source_does_not_delay_notification_or_exact_main_result_opening
         assert source.is_file()
         owner.tray_action(f"notification:{frames[0]['notification_id']}")
         assert owner.handle(_request("status")).ok
-        assert opened == [tmp_path / "ready" / "One.pl.srt"]
-        assert opened[0].is_file()
+        assert owner._pending_panel_open == {"tab": "library", "set_id": record.set_id}
+        assert not opened
         owner._queue.put(lambda: owner._notify_ready_results((record.group_id,)))
         assert owner.handle(_request("status")).ok
         assert len(frames) == 1
@@ -585,8 +702,8 @@ def test_inline_ready_completion_uses_library_provenance_without_a_relocation_re
         assert not owner.state.ready_groups
         owner.tray_action(f"notification:{frames[0]['notification_id']}")
         assert owner.handle(_request("status")).result["notification_problem"] is None
-        assert opened == [tmp_path / "ready" / "One.pl.srt"]
-        assert opened[0].is_file()
+        assert owner._pending_panel_open == {"tab": "library", "set_id": owner._ready_library[0].set_id}
+        assert not opened
 
 
 @pytest.mark.parametrize("changed", [False, True])
@@ -643,12 +760,14 @@ def test_notification_inventory_and_click_do_not_block_owner_pause_behind_an_ind
                 _request("set_auto", {"enabled": False}, command_id="pause-after-click"),
             ).result(timeout=1.0)
             assert answer.ok
-            assert opened == ([] if changed else [product])
+            assert not opened
+            assert owner._pending_panel_open is not None
+            assert owner._pending_panel_open.get("set_id") == (None if changed else owner._ready_library[0].set_id)
         independent.result(timeout=1.0)
         assert bool(owner.handle(_request("status")).result["notification_problem"]) is changed
 
 
-def test_missing_windows_directory_refuses_notification_and_owner_answers_the_next_command(
+def test_notification_navigation_does_not_require_explorer_and_owner_answers_the_next_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -669,7 +788,8 @@ def test_missing_windows_directory_refuses_notification_and_owner_answers_the_ne
         assert answer.ok
         status: ControlResponse = owner.handle(_request("status"))
         assert status.ok
-        assert "Bibliote" in str(status.result["notification_problem"])
+        assert status.result["notification_problem"] is None
+        assert owner._pending_panel_open == {"tab": "library", "set_id": owner.state.ready_groups[0].set_id}
         assert not opened
         launch.assert_not_called()
 
@@ -695,7 +815,8 @@ def test_previous_notification_cannot_open_the_next_regenerated_revision(tmp_pat
         assert not opened
         owner.tray_action(f"notification:{frames[1]['notification_id']}")
         assert owner.handle(_request("status")).result["notification_problem"] is None
-        assert opened == [tmp_path / "ready" / "One.pl.srt"]
+        assert owner._pending_panel_open == {"tab": "library", "set_id": owner.state.ready_groups[0].set_id}
+        assert not opened
 
 
 def test_legacy_success_receipt_still_suppresses_an_offer_after_relocation(
@@ -772,9 +893,8 @@ def test_ambiguous_native_click_selects_nothing_and_requests_visible_panel_feedb
             tray._tray_event(1, (1 << 16) | _Message.BALLOON_SHOW)
             tray._tray_event(1, (1 << 16) | _Message.BALLOON_CLICK)
             status: ControlResponse = owner.handle(_request("status"))
-            notice: str = "Windows nie wskazał powiadomienia. Otwórz wynik w Bibliotece"
-            assert status.result["notification_problem"] == notice
-            assert {"event": "panel_open", "payload": {"notification_problem": notice}} in desktop_frames
+            assert status.result["notification_problem"] is None
+            assert {"event": "panel_open", "payload": {"tab": "library"}} in desktop_frames
             assert not opened
             owner.tray_action("open")
             assert owner.handle(_request("status")).result["notification_problem"] is None
@@ -782,3 +902,82 @@ def test_ambiguous_native_click_selects_nothing_and_requests_visible_panel_feedb
         finally:
             tray._window = 0
             tray.close()
+
+
+@pytest.mark.parametrize("attached", [False, True])
+@pytest.mark.parametrize("change", ["valid", "unknown", "deleted", "deleted_before_attach"])
+def test_notification_routes_through_owner_session_and_app_to_library(  # noqa: PLR0915
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, attached: bool, change: str
+) -> None:
+    (tmp_path / "translate").mkdir()
+    write_text_source(tmp_path / "translate" / "One.txt", "First text")
+    write_text_source(tmp_path / "translate" / "Two.txt", "Second text")
+    service: AppService = _service(tmp_path, FakeTranslationService())
+    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / "state.json")
+    monkeypatch.setattr(interactive_app, "TerminalRenderer", Mock())
+    monkeypatch.setattr(tray_module, "raise_panel", Mock())
+    with _notifications(service, store) as (owner, frames, opened):
+        _start(owner, service)
+        assert _await(lambda: len(frames) == 2)
+        frame: Mapping[str, object] = next(item for item in frames if item["message"] == "Two")
+        record: ReadyGroup = next(item for item in owner.state.ready_groups if item.stem == "Two")
+        assert record.main_result is not None
+        launch: Mock = Mock()
+        owner._open_panel = launch
+        endpoint: str = control_endpoint(tmp_path / ".control")
+        key: bytes = os.urandom(32)
+        server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+        owner.attach_broadcast(server.broadcast)
+        session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+        application: interactive_app._InteractiveApplication = interactive_app._InteractiveApplication(service)
+        controller: StateController | None = None
+        try:
+            if attached:
+                controller = StateController(session, lambda: None)
+                application._state = controller
+                assert _await(lambda: bool(owner._panels))
+            if change == "deleted":
+                (tmp_path / record.main_result).unlink()
+            identifier: str = "" if change == "unknown" else str(frame["notification_id"])
+            owner.tray_action(f"notification:{identifier}")
+            assert owner.handle(_request("status")).ok
+            if not attached:
+                launch.assert_called_once_with()
+                if change == "deleted_before_attach":
+                    (tmp_path / record.main_result).unlink()
+                controller = StateController(session, lambda: None)
+                application._state = controller
+            else:
+                launch.assert_not_called()
+            assert controller is not None
+            assert _await(lambda: controller is not None and controller._open_requested is not None)
+            application._handle_idle()
+            assert application._mode is interactive_app._ViewMode.STATE
+            assert controller._tab == _Tab.FILES
+            assert _await(lambda: controller is not None and controller._connected)
+            if change == "valid" or (attached and change == "deleted_before_attach"):
+                assert _await(lambda: controller is not None and controller._library_target is None)
+                assert _library_rows(controller._snapshot)[controller._selected]["set_id"] == record.set_id
+            else:
+                assert controller._library_target is None
+                rows: list[Mapping[str, object]] = _library_rows(controller._snapshot)
+                assert not rows or rows[controller._selected]["set_id"] != record.set_id
+            owner.tray_action(f"notification:{identifier}")
+            assert owner.handle(_request("status")).ok
+            assert _await(lambda: controller is not None and controller._open_requested is not None)
+            application._handle_idle()
+            assert controller._library_target is None
+            assert controller._tab == _Tab.FILES
+            owner.tray_action("open")
+            assert owner.handle(_request("status")).ok
+            assert _await(lambda: controller is not None and controller._open_requested is not None)
+            application._handle_idle()
+            assert str(application._mode) == "home"
+            assert not opened
+        finally:
+            if controller is not None:
+                controller.close()
+                controller._thread.join(5.0)
+            application._mascot.close()
+            session.close()
+            server.close()

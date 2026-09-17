@@ -53,6 +53,14 @@ class RunJournal:
         self._path: Path = path
         self._checkpoint: _Checkpoint = checkpoint
         self._failed: bool = False
+        self._revision: tuple[int, int, int, int] | None = None
+
+    def is_current(self) -> bool:
+        """Check journal identity without rereading its graph or validating media files."""
+        try:
+            return self._revision == _revision(self._path)
+        except OSError:
+            return False
 
     @property
     def plan(self) -> ExecutionPlan:
@@ -106,25 +114,34 @@ class RunJournal:
     @classmethod
     def load(cls, path: Path) -> RunJournal:
         """Reconcile an interrupted rename and reject changed or missing saved inputs."""
+        revision: tuple[int, int, int, int] = _revision(path)
         checkpoint: _Checkpoint = TypeAdapter(_Checkpoint).validate_json(path.read_bytes(), strict=True)
         if checkpoint.version != CHECKPOINT_VERSION:
             msg = "The saved run checkpoint has an unsupported version"
             raise ExecutionError(msg)
         journal: RunJournal = cls(path, checkpoint)
+        journal._revision = revision
         journal._reconcile_publication()
         journal.validate_inputs()
+        journal.validate_outputs()
+        if not journal.is_current():
+            msg = "The saved run checkpoint changed during validation"
+            raise ExecutionError(msg)
+        return journal
+
+    def validate_outputs(self) -> None:
+        """Reject changed required output proofs without rereading the saved graph."""
         required_outputs: set[str] = {
             artifact.artifact_id
-            for artifact in journal.plan.artifacts
-            if journal.plan.tasks or artifact.lifetime is ArtifactLifetime.DURABLE
+            for artifact in self.plan.artifacts
+            if self.plan.tasks or artifact.lifetime is ArtifactLifetime.DURABLE
         }
-        for output in journal._checkpoint.outputs:
+        for output in self._checkpoint.outputs:
             if output.artifact_id not in required_outputs:
                 continue
             if _proof(output.path, output.artifact_id) != output:
                 msg = "A saved run output changed or is missing"
                 raise ExecutionError(msg)
-        return journal
 
     def validate_inputs(self, group_id: str | None = None) -> None:
         """Reject changed inputs in the selected group or the complete saved run."""
@@ -208,6 +225,8 @@ class RunJournal:
             return
         if self._checkpoint.pending == result:
             return
+        if result.absent_outputs and not result.outputs:
+            return
         if len(result.outputs) != 1 or result.outputs[0].metadata.get("validated") is not True:
             msg = "Publication recovery requires exactly one validated staged product"
             raise ExecutionError(msg)
@@ -263,6 +282,7 @@ class RunJournal:
         finally:
             temporary.unlink(missing_ok=True)
         self._checkpoint = checkpoint
+        self._revision = _revision(self._path)
 
     def _require_writable(self) -> None:
         if self._failed:
@@ -276,6 +296,11 @@ def _proof(path: Path, artifact_id: str | None = None) -> _FileProof:
         msg = "A run checkpoint requires a regular file"
         raise ExecutionError(msg)
     return _FileProof(path, stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino, artifact_id)
+
+
+def _revision(path: Path) -> tuple[int, int, int, int]:
+    stat: os.stat_result = path.stat()
+    return stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino
 
 
 def _relocated_proof(proof: _FileProof, paths: dict[Path | None, Path | None]) -> _FileProof:
@@ -307,6 +332,9 @@ def _remaining(plan: ExecutionPlan, result: TaskResult) -> ExecutionPlan:
     produced: dict[str, ProducedArtifact] = {output.artifact_id: output for output in result.outputs}
     artifacts: list[Artifact] = []
     for artifact in plan.artifacts:
+        if artifact.artifact_id in result.absent_outputs:
+            artifacts.append(replace(artifact, path=None, state=ArtifactState.ABSENT))
+            continue
         output: ProducedArtifact | None = produced.get(artifact.artifact_id)
         artifacts.append(
             replace(

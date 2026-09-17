@@ -420,7 +420,7 @@ def _validate_task_dependencies(
             if producer_id is not None and producer_id not in task.depends_on:
                 msg = f"Task {task.task_id!r} is missing dependency {producer_id!r}"
                 raise PlanningError(msg)
-            if producer_id is None and artifact.state is not ArtifactState.READY:
+            if producer_id is None and artifact.state not in {ArtifactState.READY, ArtifactState.ABSENT}:
                 msg = f"Task {task.task_id!r} requires an artifact that is not ready and has no producer"
                 raise PlanningError(msg)
         for artifact_id in task.produces:

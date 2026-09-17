@@ -107,16 +107,16 @@ def _live_material(group_id: str, run_id: str = "run", state: str = "running") -
     ("state", "acquisition_state", "problem", "expected", "percentage"),
     [
         ("downloading", "accepted", None, "Pobieranie", True),
-        ("metaDL", "accepted", None, "Metadane", False),
-        ("stoppedDL", "accepted", None, "Wstrzymano", False),
+        ("metaDL", "accepted", None, "Metadane", True),
+        ("stoppedDL", "accepted", None, "Wstrzymano", True),
         (None, "accepted", None, "Brak transferu", False),
         ("downloading", "accepted", "unavailable", "Brak odczytu", False),
         ("missingFiles", "accepted", None, "Błąd transferu", False),
-        ("uploading", "accepted", None, "Pobrane", False),
-        ("stalledUP", "accepted", None, "Pobrane", False),
-        ("forcedUP", "accepted", None, "Pobrane", False),
-        ("queuedUP", "accepted", None, "Pobrane", False),
-        ("moving", "accepted", None, "Przenoszenie", False),
+        ("uploading", "accepted", None, "Pobrane", True),
+        ("stalledUP", "accepted", None, "Pobrane", True),
+        ("forcedUP", "accepted", None, "Pobrane", True),
+        ("queuedUP", "accepted", None, "Pobrane", True),
+        ("moving", "accepted", None, "Przenoszenie", True),
     ],
 )
 def test_processing_renders_named_owner_download_states_without_invented_measurement(  # noqa: PLR0913
@@ -156,7 +156,8 @@ def test_processing_renders_named_owner_download_states_without_invented_measure
         assert "Episode 01.mkv" in frame
         assert expected in frame
         assert ("37%" in frame) is percentage
-        assert ("%" in frame) is percentage
+        assert "%" in frame
+        assert "--" not in frame
         assert "hash" not in frame
         assert "░" in frame
         assert ("█" in frame) is percentage
@@ -195,7 +196,7 @@ def test_download_handoff_keeps_selection_until_real_task_start_and_removes_fini
         assert "37%" in controller.render(80, 24).plain
         item.update(stage="waiting", reason="preparing", downloaded=True)
         assert "Przygotowanie" in controller.render(80, 24).plain
-        assert "%" not in controller.render(80, 24).plain
+        assert " |   0% | " in controller.render(80, 24).plain
         assert "C anuluj" not in controller.render(80, 24).plain
         controller.handle_key("text:c")
         assert calls == []
@@ -251,7 +252,7 @@ def test_local_admitted_material_is_preparing_before_progress_restore_and_first_
         assert "Local.mkv" in initial
         assert "Przygotowanie" in initial
         assert "Przetwarzanie 1" in initial
-        assert "%" not in initial
+        assert " |   0% | 00:00:00.000" in initial
         assert "C anuluj całe zlecenie" in initial
         controller.handle_key("text:c")
         assert calls == [("cancel", {"run_id": "run"})]
@@ -301,7 +302,7 @@ def test_download_clock_tracks_observed_activity_freezes_and_drops_removed_mater
         return controller.render(120, 40).plain
 
     try:
-        assert "--:--:--.---" in receive()
+        assert " |   0% | 00:00:00.000" in receive()
         item.update(state="downloading", progress=0.37)
         assert "00:00:00.000" in receive()
         clock[0] = 112.5
@@ -311,8 +312,8 @@ def test_download_clock_tracks_observed_activity_freezes_and_drops_removed_mater
         clock[0] = 200.0
         assert controller.render(120, 40).plain == paused
         assert "00:00:12.500" in paused
-        assert "%" not in paused
-        assert "█" not in paused
+        assert "37%" in paused
+        assert "█" in paused
         item["state"] = "downloading"
         receive()
         clock[0] = 202.0
@@ -331,6 +332,160 @@ def test_download_clock_tracks_observed_activity_freezes_and_drops_removed_mater
     finally:
         controller.close()
         controller._thread.join(5)
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+@pytest.mark.parametrize("stage", ["download", "processing"])
+def test_live_new_admission_starts_zero_and_reconnect_preserves_last_display_value(
+    monkeypatch: pytest.MonkeyPatch, columns: int, stage: str
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    monkeypatch.setattr("anishift.cli.interactive.progress.time.monotonic", lambda: 100.0)
+    session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda *args: {"subscriptions": []}))
+    controller: StateController = StateController(session, lambda: None)
+    item: dict[str, object] = {
+        "material_id": "new",
+        "name": "Episode.mkv",
+        "stage": stage,
+        "group_id": "new",
+        "run_id": "run",
+        "state": "queuedDL" if stage == "download" else "accepted",
+        "acquisition_id": "order" if stage == "download" else None,
+        "acquisition_state": "accepted" if stage == "download" else None,
+        "progress": 0.0 if stage == "download" else None,
+    }
+    payload: dict[str, object] = {
+        "materials": [item],
+        "requests": [{"request_id": "run", "state": "accepted"}] if stage == "processing" else [],
+        "acquisitions": [{"operation_id": "order"}] if stage == "download" else [],
+    }
+    try:
+        controller._receive(session, {"event": "state_changed", "payload": {}})
+        controller._receive(session, {"event": "state_changed", "payload": payload})
+        assert " |   0% | 00:00:00.000" in controller.render(columns, 24).plain
+        controller._receive(session, {"event": "state_changed", "payload": payload})
+        assert " |   0% | 00:00:00.000" in controller.render(columns, 24).plain
+        if stage == "download":
+            item.update(state="downloading", progress=0.37)
+            controller._receive(session, {"event": "state_changed", "payload": payload})
+            assert "37%" in controller.render(columns, 24).plain
+            item["progress"] = None
+            controller._receive(session, {"event": "state_changed", "payload": payload})
+            assert "37%" in controller.render(columns, 24).plain
+        controller._connected = False
+        controller._observe_downloads()
+        controller._receive(session, {"event": "state_changed", "payload": payload})
+        assert ("37%" if stage == "download" else "  0%") in controller.render(columns, 24).plain
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+def test_download_numeric_display_retains_samples_and_freezes_until_verified_resume(
+    monkeypatch: pytest.MonkeyPatch, columns: int
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    clock: list[float] = [100.0]
+    monkeypatch.setattr("anishift.cli.interactive.progress.time.monotonic", lambda: clock[0])
+    session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda *args: {"subscriptions": []}))
+    controller: StateController = StateController(session, lambda: None)
+    item: dict[str, object] = {
+        "material_id": "download",
+        "name": "Episode.mkv",
+        "stage": "download",
+        "acquisition_id": "first",
+        "acquisition_state": "accepted",
+        "state": "metaDL",
+        "progress": None,
+    }
+
+    def receive() -> str:
+        controller._receive(session, {"event": "state_changed", "payload": {"materials": [dict(item)]}})
+        frame: str = controller.render(columns, 24).plain
+        assert "--" not in frame
+        return frame
+
+    try:
+        assert " |   0% | 00:00:00.000" in receive()
+        assert controller._download_timers["download"].fraction is None
+        assert item["progress"] is None
+        item.update(state="downloading", progress=0.17)
+        assert "17%" in receive()
+        clock[0] = 102.0
+        item["progress"] = 0.42
+        assert "42% | 00:00:02.000" in receive()
+        item["progress"] = None
+        receive()
+        clock[0] = 120.0
+        assert "42% | 00:00:02.000" in controller.render(columns, 24).plain
+        item["state"] = "stoppedDL"
+        assert "Wstrzymano" in receive()
+        controller._connected = False
+        controller._observe_downloads()
+        clock[0] = 150.0
+        disconnected: str = controller.render(columns, 24).plain
+        assert "Brak odczytu" in disconnected
+        assert "42% | 00:00:02.000" in disconnected
+        item.update(state="downloading", progress=0.42)
+        receive()
+        clock[0] = 153.0
+        assert "42% | 00:00:05.000" in controller.render(columns, 24).plain
+        item.update(acquisition_id="second", state="metaDL", progress=None)
+        assert " |   0% | 00:00:00.000" in receive()
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+def test_reconnected_task_keeps_verified_percentage_and_elapsed_for_the_same_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    clock: list[float] = [100.0]
+    monkeypatch.setattr("anishift.cli.interactive.progress.time.monotonic", lambda: clock[0])
+    view: RunProgressSnapshot = _live_snapshot(
+        "run",
+        {"group": "Episode.mkv"},
+        (
+            RunEvent("run", 1, RunEventKind.TASK_STARTED, group_id="group", task_id="tts-group"),
+            RunEvent("run", 2, RunEventKind.TASK_PROGRESS, group_id="group", task_id="tts-group", progress_percent=42),
+        ),
+    )
+    session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda *args: encode_view(view)))
+    controller: StateController = StateController(session, lambda: None)
+    payload: dict[str, object] = {
+        "materials": [_live_material("group")],
+        "requests": [{"request_id": "run", "state": "running"}],
+        "run_progress": [{"run_id": "run", "preview_id": view.preview.preview_id}],
+    }
+    try:
+        controller._receive(session, {"event": "state_changed", "payload": payload})
+        clock[0] = 105.0
+        controller._connected = False
+        controller._observe_downloads()
+        clock[0] = 120.0
+        assert "42% | 00:00:05.000" in controller.render(120, 24).plain
+        controller._receive(session, {"event": "state_changed", "payload": payload})
+        clock[0] = 122.0
+        assert "42% | 00:00:07.000" in controller.render(120, 24).plain
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+def test_replayed_start_displays_zero_without_claiming_a_measurement(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("anishift.cli.interactive.progress.time.monotonic", lambda: 100.0)
+    view: RunProgressSnapshot = _live_snapshot("run", {"old": "Old.mkv", "new": "New.mkv"}, ())
+    progress: RichRunProgress = RichRunProgress.from_snapshot(view, lambda: None)
+    assert " |   0% | 00:00:00.000" in progress.render(120).plain
+    assert not progress._files["old"].determinate
+    view = replace(view, events=(RunEvent("run", 1, RunEventKind.TASK_STARTED, group_id="old", task_id="tts-old"),))
+    progress = RichRunProgress.from_snapshot(view, lambda: None)
+    assert " |   0% | " in progress.render_group("old", 120).plain
+    progress.emit(RunEvent("run", 2, RunEventKind.TASK_STARTED, group_id="new", task_id="tts-new"))
+    assert " |   0% | 00:00:00.000" in progress.render_group("new", 120).plain
+    assert " |   0% | " in progress.render_group("old", 120).plain
 
 
 @pytest.mark.parametrize(("columns", "rows"), [(80, 24), (120, 40)])
@@ -481,8 +636,8 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
         assert "25%" in frame
         assert "░" in frame
         assert "█" in frame
-        assert "--" in frame
-        assert "0%" not in frame
+        assert "--" not in frame
+        assert "0%" in frame
         assert "Przetwarzanie 3 · Praca" in frame
         assert "Queued.mkv" in frame
         assert "Przygotowanie" in frame
@@ -561,7 +716,7 @@ def test_processing_requires_live_request_and_distinguishes_preparing_from_start
             assert "Brak aktywnego przetwarzania" in frame
             assert "C anuluj" not in frame
         assert "Episode.mkv" not in frame
-        assert "%" not in frame
+        assert ("%" in frame) is (state in {"accepted", "running"})
     finally:
         controller.close()
         controller._thread.join(5)
@@ -688,7 +843,7 @@ def test_new_progress_preview_discards_old_percentage_and_uses_only_source_label
         assert "Przygotowanie" in preparing
         assert "Przetwarzanie 1" in preparing
         assert "Old.mkv" not in preparing
-        assert "%" not in preparing
+        assert " |   0% | " in preparing
         controller._receive(
             session,
             {
@@ -702,7 +857,7 @@ def test_new_progress_preview_discards_old_percentage_and_uses_only_source_label
         assert (label if label == "translate/Book.srt" else "Materiał") in frame
         assert "group" not in frame
         assert "Old.mkv" not in frame
-        assert "%" not in frame
+        assert " |   0% | " in frame
         assert "░" in frame
         before: list[str] = calls.copy()
         controller.render(80, 24)
@@ -1397,10 +1552,19 @@ def test_a_panel_notice_disappears_once_the_resident_state_moves_on(tmp_path: Pa
 
 def test_notification_refusal_is_visible_across_unrelated_panel_refreshes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda kind: {"subscriptions": []}))
+    session: ResidentSession = cast(
+        "ResidentSession",
+        SimpleNamespace(
+            command=lambda kind: {"subscriptions": []},
+            new_session=lambda: session,
+            library=lambda: (),
+            close=lambda: None,
+        ),
+    )
     controller: StateController = StateController(session, lambda: None)
-    notice: str = "Windows nie wskazał powiadomienia. Otwórz wynik w Bibliotece"
+    notice: str = "Wynik powiadomienia jest niedostępny lub zmieniony w Bibliotece"
     try:
+        controller.show_library({"notification_problem": notice})
         controller._receive(session, {"event": "state_changed", "payload": {"notification_problem": notice}})
         controller._receive(
             session, {"event": "state_changed", "payload": {"notification_problem": notice, "auto_enabled": False}}

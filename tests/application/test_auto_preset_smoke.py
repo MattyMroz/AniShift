@@ -831,17 +831,25 @@ def test_mp4_auto_audio_follows_requested_narration(harness: _Harness, with_narr
     harness.check_mp4(products[ArtifactKind.FINAL_MP4], source, narration=with_narration, burn=False)
 
 
-def test_displayed_products_from_a_plain_srt_fail_at_execution_without_publishing(harness: _Harness) -> None:
-    harness.add_mkv("Episode 20", (("srt", _EN_SRT, "eng"),))
+def test_displayed_products_from_a_plain_srt_succeed_with_an_absence_note_without_publishing(harness: _Harness) -> None:
+    source: Path = harness.add_mkv("Episode 20", (("srt", _EN_SRT, "eng"),))
     _set_products(harness.panel(), frozenset({ProductKind.DISPLAYED_PL}))
 
-    _plan: ExecutionPlan
+    plan: ExecutionPlan
     result: RunResult
-    _plan, result = harness.run()
+    plan, result = harness.run()
 
-    assert not result.succeeded
-    assert result.groups[0].error_messages == ("Requested subtitle stream is empty: displayed_pl",)
+    assert plan.groups[0].intent.products.requested_products == frozenset({ProductKind.DISPLAYED_PL})
+    assert result.succeeded
+    assert result.groups[0].error_messages == ()
+    assert result.groups[0].products == ()
+    assert result.warnings == ("No displayed subtitle cues; no displayed subtitle file was created.",)
+    assert {artifact_id for task in result.groups[0].task_results for artifact_id in task.absent_outputs} == {
+        artifact.artifact_id for artifact in plan.artifacts if artifact.kind is ArtifactKind.DISPLAYED_PL
+    }
     assert not (harness.workspace / "Episode 20.displayed.pl.srt").exists()
+    assert {path for path in harness.workspace.iterdir() if path.is_file()} == {source}
+    assert harness.synthesized == []
 
 
 def test_an_empty_workspace_is_refused_before_planning(harness: _Harness) -> None:

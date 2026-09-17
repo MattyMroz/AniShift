@@ -666,6 +666,8 @@ def test_async_url_add_is_observed_once_through_owner_ipc_before_content_starts(
     filename: str = "Pack/09.mkv"
     added: list[str] = []
     started: threading.Event = threading.Event()
+    metadata_started: threading.Event = threading.Event()
+    metadata_release: threading.Event = threading.Event()
 
     def respond(request: httpx.Request) -> httpx.Response:
         nonlocal reads, filename
@@ -705,6 +707,9 @@ def test_async_url_add_is_observed_once_through_owner_ipc_before_content_starts(
                 ],
             )
         if path == "files":
+            if scenario == "partial":
+                metadata_started.set()
+                assert metadata_release.wait(_TIMEOUT_S)
             return httpx.Response(
                 200,
                 json=[]
@@ -778,10 +783,12 @@ def test_async_url_add_is_observed_once_through_owner_ipc_before_content_starts(
                 assert started.wait(_TIMEOUT_S)
                 assert _await(lambda: owner.state.acquisitions[-1].content_started)
                 assert panel.call("set_auto", {"enabled": False})["auto_enabled"] is False
-                assert _await(lambda: owner._active_io == 0)
+                assert _await(lambda: panel.call("status")["paused"] is True)
             elif scenario == "partial":
+                assert metadata_started.wait(_TIMEOUT_S)
                 assert panel.call("set_auto", {"enabled": False})["auto_enabled"] is False
-                assert _await(lambda: owner._active_io == 0)
+                metadata_release.set()
+                assert _await(lambda: panel.call("status")["paused"] is True)
             elif scenario == "shutdown":
                 thread.join(_TIMEOUT_S)
                 assert not thread.is_alive()
@@ -835,6 +842,7 @@ def test_async_url_add_is_observed_once_through_owner_ipc_before_content_starts(
                 assert duplicate.reason == "download_recorded"
                 assert tuple(paths) == calls
         finally:
+            metadata_release.set()
             panel.close()
             server.close()
             owner.request_shutdown()
@@ -5967,6 +5975,184 @@ def _idle_counts(
     return (requests, service.discover_calls, subscriptions.checks, management.resume_calls)
 
 
+@pytest.mark.integration
+def test_connected_panels_refresh_real_transfers_without_fanout_or_resetting_backoff(  # noqa: PLR0915
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now: list[float] = [100.0]
+    monkeypatch.setattr(automation_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    service, store, _ = _library(tmp_path)
+    reads: list[float] = []
+    files: list[float] = []
+    failing: bool = False
+    progress: float = 0.5
+    inspecting: threading.Event = threading.Event()
+    inspected: threading.Event = threading.Event()
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/info"):
+            reads.append(now[0])
+            if now[0] == 113.0:
+                inspecting.set()
+                assert inspected.wait(_TIMEOUT_S)
+            if failing:
+                return httpx.Response(503)
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "hash": "9",
+                        "name": "Pack",
+                        "progress": progress,
+                        "state": "downloading",
+                        "save_path": str(tmp_path),
+                        "size": 4,
+                        "completed": 2,
+                        "amount_left": 2,
+                    }
+                ],
+            )
+        assert request.url.path.endswith("/files")
+        files.append(now[0])
+        return httpx.Response(200, json=[{"index": 0, "name": "09.mkv", "size": 4, "progress": 0.5, "priority": 1}])
+
+    control: RequestControl = RequestControl(httpx.MockTransport(respond))
+    with httpx.Client(transport=control) as http:
+        _measured_acquisition(tmp_path, service, http, control)
+        store.save(
+            WatchState(
+                policy=AutomationPolicy(auto_enabled=True),
+                acquisitions=(_accepted_transfer("9", layout=((0, "09.mkv", 4),), started=True),),
+            )
+        )
+        owner: AutomationOwner = _owner(service, store)
+        thread: threading.Thread = _serving(owner)
+        key: bytes = os.urandom(32)
+        endpoint: str = control_endpoint(tmp_path)
+        server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+        observer: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+        first: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+        second: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+
+        def settled(count: int) -> None:
+            assert _await(lambda: owner._on_owner(lambda: len(reads) == count and not owner._transfers_inspecting))
+
+        def tick(moment: float, count: int) -> None:
+            now[0] = moment
+            for _ in range(3):
+                observer.call("status")
+            settled(count)
+
+        try:
+            settled(1)
+            tick(109.9, 1)
+            tick(110.0, 2)
+            now[0] = 112.0
+            progress = 0.6
+            first.call("panel_attach")
+            settled(3)
+            assert cast("list[dict[str, object]]", observer.call("status")["transfers"])[0]["progress"] == 0.6
+            now[0] = 112.2
+            second.call("panel_attach")
+            first.call("panel_attach")
+            tick(112.9, 3)
+            now[0] = 113.0
+            observer.call("status")
+            assert inspecting.wait(_TIMEOUT_S)
+            first.call("panel_attach")
+            second.call("panel_attach")
+            assert reads == [100.0, 110.0, 112.0, 113.0]
+            inspected.set()
+            settled(4)
+            first.close()
+            assert _await(lambda: owner._on_owner(lambda: len(owner._panels) == 1))
+            tick(114.0, 5)
+            second.close()
+            assert _await(lambda: owner._on_owner(lambda: not owner._panels))
+            tick(123.9, 5)
+            tick(124.0, 6)
+            assert reads == [100.0, 110.0, 112.0, 113.0, 114.0, 124.0]
+            assert files == [100.0, 112.0]
+            failing = True
+            tick(134.0, 7)
+            for moment in (135.0, 140.0):
+                now[0] = moment
+                with closing(ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)) as reconnect:
+                    reconnect.call("panel_attach")
+                    reconnect.call("panel_attach")
+                assert _await(lambda: owner._on_owner(lambda: not owner._panels))
+            tick(153.9, 7)
+            observer.call("panel_attach")
+            tick(154.0, 8)
+            tick(193.9, 8)
+            failing = False
+            tick(194.0, 9)
+            tick(195.0, 10)
+            assert reads[-4:] == [134.0, 154.0, 194.0, 195.0]
+        finally:
+            inspected.set()
+            first.close()
+            second.close()
+            observer.close()
+            server.close()
+            owner.request_shutdown()
+            thread.join(_TIMEOUT_S)
+        assert not thread.is_alive()
+
+
+@pytest.mark.integration
+def test_paused_broadcast_and_ipc_wait_for_completed_transfer_release_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, store, _ = _library(tmp_path)
+    control: RequestControl = RequestControl(httpx.MockTransport(_qbittorrent_replies(tmp_path)))
+    releasing: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    frames: list[Mapping[str, object]] = []
+    with httpx.Client(transport=control) as http:
+        management: _TorrentNetwork = _measured_acquisition(tmp_path, service, http, control)
+
+        def release_completed(hashes: frozenset[str]) -> frozenset[str]:
+            releasing.set()
+            assert release.wait(_TIMEOUT_S)
+            http.get("http://127.0.0.1:65000/api/v2/torrents/info")
+            return hashes
+
+        monkeypatch.setattr(management, "release_completed", release_completed)
+        completed: AcquisitionConfirmation = replace(_accepted_transfer("10"), state=AcquisitionState.COMPLETE)
+        pending: AcquisitionConfirmation = replace(
+            _accepted_transfer("9"), requested_action="stop", action_pending=True, action_id="stop-test"
+        )
+        store.save(WatchState(policy=AutomationPolicy(auto_enabled=False), acquisitions=(completed, pending)))
+        owner: AutomationOwner = _owner(service, store)
+        owner.attach_broadcast(lambda frame, terminal: frames.append(frame))
+        thread: threading.Thread = _serving(owner)
+        key: bytes = os.urandom(32)
+        endpoint: str = control_endpoint(tmp_path)
+        server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+        panel: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+        try:
+            assert releasing.wait(_TIMEOUT_S)
+            assert panel.call("status")["pausing"] is True
+            assert not any(cast("Mapping[str, object]", frame["payload"])["paused"] for frame in frames)
+            release.set()
+            assert _await(lambda: panel.call("status")["paused"] is True)
+            counts: list[dict[str, object]] = control.counts()
+            panel.call("panel_attach")
+            for _ in range(3):
+                assert panel.call("status")["paused"] is True
+            time.sleep(0.1)
+            assert control.counts() == counts
+            assert any(item["reason"] == "completed_download" for item in counts)
+        finally:
+            release.set()
+            panel.close()
+            server.close()
+            owner.request_shutdown()
+            thread.join(_TIMEOUT_S)
+        assert not thread.is_alive()
+
+
 def test_a_full_pause_stops_every_real_request_and_probe_that_a_live_panel_cannot_revive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5999,7 +6185,7 @@ def test_a_full_pause_stops_every_real_request_and_probe_that_a_live_panel_canno
         assert _await(lambda: _idle_counts(control, service, subscriptions, management)[0] > 1)
         assert panel.call("set_auto", {"enabled": False})["auto_enabled"] is False
         assert _await(lambda: ("9", "stop") in management.actions)
-        time.sleep(0.2)
+        assert _await(lambda: panel.call("status")["paused"] is True)
         watched: tuple[int, int, int, int] = _idle_counts(control, service, subscriptions, management)
         time.sleep(0.4)
         assert _idle_counts(control, service, subscriptions, management) == watched
@@ -6025,8 +6211,9 @@ def test_a_full_pause_stops_every_real_request_and_probe_that_a_live_panel_canno
     assert store.load().pause_owned_transfers == ("9",)
 
 
+@pytest.mark.parametrize("state", [AcquisitionState.COMPLETE, AcquisitionState.UNCERTAIN])
 def test_a_settled_working_resident_polls_nothing_while_its_schedule_stays_armed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: AcquisitionState
 ) -> None:
     monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
     service, store, _ = _library(tmp_path)
@@ -6043,6 +6230,9 @@ def test_a_settled_working_resident_polls_nothing_while_its_schedule_stays_armed
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
     try:
+        assert _await(lambda: owner._on_owner(lambda: owner._active_io == 0))
+        owner._on_owner(lambda: owner._save(replace(owner.state, acquisitions=(replace(finished, state=state),))))
+        assert owner.handle(_request("panel_attach", session_id="panel")).ok
         time.sleep(0.3)
         measured: tuple[int, int, int, int] = _idle_counts(control, service, subscriptions, management)
         time.sleep(0.4)

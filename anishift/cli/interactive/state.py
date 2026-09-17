@@ -233,8 +233,9 @@ class StateController:
         self._lock: threading.RLock = threading.RLock()
         self._stop: threading.Event = threading.Event()
         self._finished: bool = False
-        self._open_requested: threading.Event = threading.Event()
-        self._notification_notice: str | None = None
+        self._open_requested: Mapping[str, object] | None = None
+        self._library_target: str | None = None
+        self._library_notice: str = ""
         self._snapshot: Mapping[str, object] = {}
         self._subscriptions: list[Mapping[str, object]] = []
         self._runs: dict[str, tuple[str, RichRunProgress]] = {}
@@ -287,11 +288,12 @@ class StateController:
         """Answer whether the resident announced its end, so this view has to close with it."""
         return self._finished
 
-    def take_open_request(self) -> bool:
+    def take_open_request(self) -> Mapping[str, object] | None:
         """Consume a tray request on the panel's event loop."""
-        requested: bool = self._open_requested.is_set()
-        self._open_requested.clear()
-        return requested
+        with self._lock:
+            requested: Mapping[str, object] | None = self._open_requested
+            self._open_requested = None
+            return requested
 
     def take_manual_retry(self) -> RetryProposal | None:
         """Transfer a confirmed local proposal to the existing Manual controller."""
@@ -300,12 +302,36 @@ class StateController:
             self._manual_retry = None
             return proposal
 
-    def take_notification_notice(self) -> str | None:
-        """Consume desktop refusal feedback on the renderer thread, including a newly attached panel."""
+    def show_library(self, navigation: Mapping[str, object]) -> None:
+        """Open Library and select an owner-validated set once its snapshot arrives."""
         with self._lock:
-            notice: str | None = self._notification_notice
-            self._notification_notice = None
-            return notice
+            self._cancel_deletion()
+            self._details = None
+            self._operation_details = None
+            self._history_open = False
+            self._history_input = None
+            self._retry = None
+            self._draft = None
+            self._switch_tab(_Tab.FILES)
+            target: object = navigation.get("set_id")
+            self._library_target = target if isinstance(target, str) else None
+            self._library_notice = _safe_text(navigation.get("notification_problem") or "")
+            self._select_library_target(self._snapshot)
+            self._follow_cursor[_Tab.FILES] = True
+            self._work(lambda session: session.library(), success="")
+        self._invalidate()
+
+    def _select_library_target(self, payload: Mapping[str, object]) -> None:
+        if self._library_target is None:
+            return
+        position: int | None = next(
+            (index for index, item in enumerate(_library_rows(payload)) if item.get("set_id") == self._library_target),
+            None,
+        )
+        if position is not None:
+            self._selected = position
+            self._positions[_Tab.FILES] = position
+            self._library_target = None
 
     def show_processing(self) -> None:
         """Select current processing after the user starts a run."""
@@ -331,6 +357,7 @@ class StateController:
     def handle_key(self, key: str) -> StateResult:
         """Navigate the shared list or submit one explicit action."""
         with self._lock:
+            self._library_target = None
             if self._history_input is not None:
                 self._history_input_key(key)
                 return StateResult.CONTINUE
@@ -456,10 +483,12 @@ class StateController:
     def suspend(self) -> None:
         """Invalidate child completion navigation when the enclosing panel is hidden."""
         with self._lock:
+            self._library_target = None
             if self._anime is not None:
                 self._anime.cancel()
 
     def _switch_tab(self, tab: int) -> None:
+        self._library_target = None
         self._view_generation += 1
         if self._tab == _Tab.ANIME and self._anime is not None:
             self._anime.cancel()
@@ -887,10 +916,7 @@ class StateController:
             try:
                 session: ResidentSession = self._parent.new_session()
                 self._session = session
-                session.command("panel_attach")
-                with self._lock:
-                    self._runs.clear()
-                for frame in session.observe():
+                for frame in session.observe(panel=True):
                     if self._stop.is_set():
                         break
                     self._receive(session, frame)
@@ -907,18 +933,11 @@ class StateController:
             if self._stop.wait(_RECONNECT_S):
                 break
 
-    def _remember_notification_notice(self, payload: Mapping[str, object]) -> None:
-        notice: object = payload.get("notification_problem")
-        if notice and notice != self._snapshot.get("notification_problem"):
-            self._notification_notice = _safe_text(notice)
-
     def _receive(self, session: ResidentSession, frame: Mapping[str, object]) -> None:
         payload: object = frame.get("payload")
         if frame.get("event") == "panel_open":
             with self._lock:
-                notice: object = payload.get("notification_problem") if isinstance(payload, Mapping) else None
-                self._notification_notice = _safe_text(notice) if notice else None
-            self._open_requested.set()
+                self._open_requested = payload if isinstance(payload, Mapping) else {}
             self._invalidate()
             return
         if not isinstance(payload, Mapping):
@@ -943,13 +962,13 @@ class StateController:
                 previous_details: LibrarySet | None = self._details
             details: LibrarySet | None = self._refresh_details(session, previous_details)
             with self._lock:
-                self._remember_notification_notice(payload)
                 if payload != self._snapshot:
                     self._state_version += 1
                 self._preserve_tab_selection(_Tab.SUBSCRIPTIONS, self._subscriptions, subscriptions, "subscription_id")
                 self._preserve_processing_selection(previous_processing, self._processing_row_ids(payload))
                 self._preserve_library_selection(payload)
                 self._snapshot = payload
+                self._select_library_target(payload)
                 if self._anime is not None:
                     self._anime.refresh_acquisitions(_rows(payload.get("acquisitions")))
                 if self._operation_details is previous_operation_details:
@@ -1075,11 +1094,15 @@ class StateController:
             run_id: str = str(item["run_id"])
             with self._lock:
                 existing: tuple[str, RichRunProgress] | None = self._runs.get(run_id)
-            if existing is not None and existing[0] == item.get("preview_id"):
+            if existing is not None and existing[0] == item.get("preview_id") and self._connected:
                 continue
             snapshot: RunProgressSnapshot = decode_view(
                 RunProgressSnapshot, session.command("run_progress", {"run_id": run_id})
             )
+            if existing is not None and existing[0] == snapshot.preview.preview_id:
+                for event in snapshot.events:
+                    existing[1].emit(event)
+                continue
             restored: RichRunProgress = RichRunProgress.from_snapshot(snapshot, self._invalidate)
             with self._lock:
                 self._runs[run_id] = (snapshot.preview.preview_id, restored)
@@ -1230,8 +1253,8 @@ class StateController:
             result.append(actions)
         if self._notice:
             result.append(self._notice.rstrip("."))
-        if self._snapshot.get("notification_problem"):
-            result.append(_safe_text(self._snapshot["notification_problem"]))
+        if self._tab == _Tab.FILES and self._library_notice:
+            result.append(self._library_notice)
         if not self._connected:
             result.append("Brak połączenia")
         if self._operation_details is not None or self._details is not None:
@@ -1355,7 +1378,12 @@ class StateController:
         entries: list[tuple[str | Text, bool | None]] = []
         for item in self._processing_rows():
             if item.get("stage") == "processing":
-                line: Text = self._runs[str(item["run_id"])][1].render_group(str(item["group_id"]), columns)
+                status: str | None = (
+                    "Brak odczytu" if not self._connected else ("Wstrzymano" if self._snapshot.get("paused") else None)
+                )
+                line: Text = self._runs[str(item["run_id"])][1].render_group(
+                    str(item["group_id"]), columns, status=status
+                )
             else:
                 label, fraction = self._download_progress(item)
                 name: str = _safe_text(item.get("name", ""))
@@ -1363,18 +1391,28 @@ class StateController:
                     name = "Materiał"
                 timer: ObservedProgressTimer | None = self._download_timers.get(str(item.get("material_id")))
                 line = render_material_progress(
-                    name, label, fraction, columns, elapsed_seconds=None if timer is None else timer.elapsed()
+                    name,
+                    label,
+                    fraction if fraction is not None or timer is None else timer.fraction,
+                    columns,
+                    elapsed_seconds=None if timer is None else timer.elapsed(),
                 )
             entries.append((line, None))
         return entries
 
     def _observe_downloads(self) -> None:
+        for _preview, progress in self._runs.values():
+            progress.observe_activity(active=self._connected and not self._snapshot.get("paused"))
         current: dict[str, ObservedProgressTimer] = {}
         for item in self._processing_rows():
             if item.get("stage") == "processing":
                 continue
             identifier: str = str(item.get("material_id"))
             timer: ObservedProgressTimer = self._download_timers.get(identifier) or ObservedProgressTimer()
+            generation: str = str(item.get("acquisition_id"))
+            if item.get("stage") == "waiting" or timer.generation != generation:
+                timer = ObservedProgressTimer(generation=generation)
+            _label, fraction = self._download_progress(item)
             timer.observe(
                 active=self._connected
                 and not self._snapshot.get("transfers_problem")
@@ -1382,11 +1420,15 @@ class StateController:
                 and item.get("acquisition_state") == "accepted"
                 and item.get("stage") == "download"
                 and item.get("state") in {"downloading", "forcedDL"}
+                and fraction is not None,
+                fraction=fraction,
             )
             current[identifier] = timer
         self._download_timers = current
 
     def _download_progress(self, item: Mapping[str, object]) -> tuple[str, float | None]:  # noqa: PLR0911
+        fraction: object = item.get("progress")
+        measured: float | None = float(fraction) if isinstance(fraction, (int, float)) else None
         if item.get("stage") == "waiting":
             return ("Wstrzymano" if self._snapshot.get("paused") else "Przygotowanie"), None
         if item.get("problem"):
@@ -1395,18 +1437,17 @@ class StateController:
             return "Brak odczytu", None
         state: object = item.get("state")
         if state in {"pausedDL", "stoppedDL", "pausedUP", "stoppedUP"}:
-            return "Wstrzymano", None
+            return "Wstrzymano", measured
         if state in {"metaDL", "forcedMetaDL"} or item.get("acquisition_state") == "pending_send":
-            return "Metadane", None
+            return "Metadane", measured
         if state is None:
             return "Brak transferu", None
         if state in {"error", "missingFiles"}:
             return "Błąd transferu", None
-        fraction: object = item.get("progress")
         if state in {"downloading", "forcedDL", "stalledDL"}:
-            return ("Brak źródeł" if state == "stalledDL" else "Pobieranie"), (
-                float(fraction) if isinstance(fraction, (int, float)) else None
-            )
+            return (
+                "Brak odczytu" if measured is None else ("Brak źródeł" if state == "stalledDL" else "Pobieranie")
+            ), measured
         return {
             "queuedDL": "W kolejce",
             "uploading": "Pobrane",
@@ -1414,7 +1455,7 @@ class StateController:
             "forcedUP": "Pobrane",
             "queuedUP": "Pobrane",
             "moving": "Przenoszenie",
-        }.get(str(state), "Sprawdzanie"), None
+        }.get(str(state), "Sprawdzanie"), measured
 
     def _processing_rows(self, snapshot: Mapping[str, object] | None = None) -> list[Mapping[str, object]]:
         payload: Mapping[str, object] = self._snapshot if snapshot is None else snapshot

@@ -84,7 +84,7 @@ from anishift.application.planning import ExecutionPlan, TaskState
 from anishift.application.products import AUDIO_PRODUCT_PROFILES, main_product, product_suffix
 from anishift.application.ready import ReadyMove, ReadyStore
 from anishift.application.recovery import CHECKPOINT_VERSION, RunJournal
-from anishift.application.results import GroupResult, GroupStatus, ProducedArtifact, RunResult
+from anishift.application.results import DISPLAYED_ABSENCE_NOTE, GroupResult, GroupStatus, ProducedArtifact, RunResult
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids, resolve_readiness
 from anishift.application.subscriptions import SubscriptionOrder, repeat_of, resolve_subscription_id
@@ -145,6 +145,9 @@ IO_WORKERS: Final[int] = 2
 TRANSFER_CHECK_INTERVAL_S: Final[float] = 10.0
 """Delay between shared client reads while accepted transfers need completion proof."""
 
+PANEL_TRANSFER_CHECK_INTERVAL_S: Final[float] = 1.0
+"""Transfer measurement interval while at least one panel is connected."""
+
 TRANSFER_BACKOFF_CEILING_S: Final[float] = 300.0
 """Longest delay between shared client reads while reconciliation keeps failing."""
 
@@ -169,10 +172,7 @@ _ID_BYTES: Final[int] = 8
 _NOTIFICATION_LIMIT: Final[int] = 128
 """Maximum exact result references retained by this owner, never restored from history."""
 
-_UNIDENTIFIED_NOTIFICATION: Final[str] = "Windows nie wskazał powiadomienia. Otwórz wynik w Bibliotece"
-"""Visible refusal when the native callback cannot identify its original notification."""
-
-_UNAVAILABLE_NOTIFICATION: Final[str] = "Wynik powiadomienia jest niedostępny lub zmieniony. Sprawdź Bibliotekę"
+_UNAVAILABLE_NOTIFICATION: Final[str] = "Wynik powiadomienia jest niedostępny lub zmieniony w Bibliotece"
 """Visible refusal for an expired reference or a changed result revision."""
 
 _UNKNOWN_COMMAND: Final[str] = "The resident does not know this command"
@@ -409,6 +409,7 @@ class _FilesChanged:
 @dataclass(frozen=True, slots=True)
 class _Inspected:
     workspace: InspectedWorkspace | None
+    journals: tuple[tuple[ProcessingRequest, RunJournal], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,6 +448,8 @@ class AutomationOwner:
         self._open_result: Callable[[Path], None] | None = open_result
         self._notification_targets: dict[str, _NotificationTarget | None] = {}
         self._notification_problem: str | None = None
+        self._pending_panel_open: dict[str, object] | None = None
+        self._pending_notification_target: _NotificationTarget | None = None
         self._panels: set[str] = set()
         self._panel_opening_at: float = 0.0
         self._state: WatchState = store.load()
@@ -483,6 +486,7 @@ class AutomationOwner:
         self._client_sessions: dict[str, str] = {}
         self._pending: dict[str, frozenset[ProductKind]] = {}
         self._run_results: dict[str, RunResult] = {}
+        self._inspected_journals: dict[str, tuple[ProcessingRequest, RunJournal]] = {}
         self._completed_groups: dict[tuple[str, int, int, RequestState], frozenset[str]] = {}
         self._progress_lock: threading.Lock = threading.Lock()
         self._run_views: dict[str, RunProgressSnapshot] = {}
@@ -631,6 +635,7 @@ class AutomationOwner:
             self._open_notification(action.removeprefix("notification:"))
             return
         if action == "open":
+            self._pending_notification_target = None
             if self._notification_problem is not None:
                 self._notification_problem = None
                 self._publish_state()
@@ -647,13 +652,24 @@ class AutomationOwner:
             )
         )
 
-    def _show_panel(self, notice: str | None = None) -> None:
+    def _show_panel(self, navigation: dict[str, object] | None = None) -> None:
+        payload: dict[str, object] = navigation or {}
         if self._panels:
-            payload: dict[str, object] = {} if notice is None else {"notification_problem": notice}
             self._publish({"event": "panel_open", "payload": payload}, terminal=False)
-        elif self._open_panel is not None and time.monotonic() - self._panel_opening_at > _PANEL_START_GRACE_S:
+            return
+        self._pending_panel_open = payload
+        if self._open_panel is not None and time.monotonic() - self._panel_opening_at > _PANEL_START_GRACE_S:
             self._panel_opening_at = time.monotonic()
             self._open_panel()
+
+    def _take_panel_navigation(self) -> dict[str, object] | None:
+        navigation: dict[str, object] | None = self._pending_panel_open
+        target: _NotificationTarget | None = self._pending_notification_target
+        self._pending_panel_open = None
+        self._pending_notification_target = None
+        if navigation is not None and target is not None and not self._notification_current(target):
+            return {"tab": "library", "notification_problem": _UNAVAILABLE_NOTIFICATION}
+        return navigation
 
     def serve(self) -> None:
         """Run the owner loop until a shutdown drains every active request."""
@@ -760,7 +776,7 @@ class AutomationOwner:
             elif callable(item):
                 item()
             elif isinstance(item, _Inspected):
-                self._record_inspection(item.workspace)
+                self._record_inspection(item.workspace, item.journals)
             else:
                 self._dispatch(item)
             self._poll_transfers()
@@ -773,8 +789,13 @@ class AutomationOwner:
             return False
         return not self._pending and not self._service.active_run_ids() and not self._inspecting and not self._active_io
 
-    def _record_inspection(self, workspace: InspectedWorkspace | None) -> None:
+    def _record_inspection(
+        self, workspace: InspectedWorkspace | None, journals: tuple[tuple[ProcessingRequest, RunJournal], ...] = ()
+    ) -> None:
         self._inspecting = False
+        self._inspected_journals = {
+            request.request_id: (request, journal) for request, journal in journals if request in self._state.requests
+        }
         if workspace is not None:
             self._library = workspace
             self._ready_library = project_library(
@@ -825,9 +846,15 @@ class AutomationOwner:
             self._changed_paths.clear()
             self._reconcile = False
         self._inspecting = True
-        self._pool.submit(self._inspect_library, paths)
+        previous: dict[str, tuple[ProcessingRequest, RunJournal]] = dict(self._inspected_journals)
+        self._pool.submit(self._inspect_library, paths, self._state.requests, previous)
 
-    def _inspect_library(self, paths: tuple[Path, ...] | None) -> None:
+    def _inspect_library(
+        self,
+        paths: tuple[Path, ...] | None,
+        requests: tuple[ProcessingRequest, ...],
+        previous: Mapping[str, tuple[ProcessingRequest, RunJournal]],
+    ) -> None:
         if (
             paths
             and all(
@@ -840,12 +867,36 @@ class AutomationOwner:
             self._inspect_ready_changes(paths)
             return
         workspace: InspectedWorkspace | None = None
+        journals: list[tuple[ProcessingRequest, RunJournal]] = []
         try:
             workspace = self._service.discover(changed_paths=paths)
+            latest: dict[str, ProcessingRequest] = {
+                group: request for request in requests for group in request.group_ids
+            }
+            for request in requests:
+                if request.state not in {RequestState.SUCCEEDED, RequestState.PARTIAL, RequestState.FAILED}:
+                    continue
+                if not any(latest[group] == request for group in request.group_ids):
+                    continue
+                journal: RunJournal | None = self._inspect_journal(request, previous.get(request.request_id))
+                if journal is not None:
+                    journals.append((request, journal))
         except (AniShiftError, OSError) as problem:
             logger.warning("Library reconciliation failed", error_class=type(problem).__name__)
         finally:
-            self._queue.put(_Inspected(workspace))
+            self._queue.put(_Inspected(workspace, tuple(journals)))
+
+    def _inspect_journal(
+        self, request: ProcessingRequest, previous: tuple[ProcessingRequest, RunJournal] | None
+    ) -> RunJournal | None:
+        try:
+            if previous is not None and previous[0] == request and previous[1].is_current():
+                previous[1].validate_inputs()
+                previous[1].validate_outputs()
+                return previous[1]
+            return RunJournal.load(self._store.run_path(request.request_id))
+        except AniShiftError, OSError, ValueError:
+            return None
 
     def _inspect_ready_changes(self, paths: tuple[Path, ...]) -> None:
         groups: tuple[SourceGroup, ...] | None = None
@@ -865,7 +916,7 @@ class AutomationOwner:
 
     def _refresh_automatic(self) -> None:
         self._settle_at = None
-        if self._recovering:
+        if self._recovering or self._inspecting:
             return
         if any(receipt.pending is not None for receipt in self._state.command_receipts):
             return
@@ -899,6 +950,7 @@ class AutomationOwner:
                 self._automatic_products(group, preset),
                 succeeded_groups=succeeded_groups,
             )
+            and not self._confirmed_absence_completes(group, preset)
         )
         ready: tuple[str, ...] = self._ledger.candidates(
             InspectedWorkspace(eligible, ()),
@@ -914,6 +966,43 @@ class AutomationOwner:
 
     def _automatic_products(self, group: InspectedSourceGroup, preset: AutoPreset) -> frozenset[ProductKind]:
         return auto_group_products(group, preset.products, self._state.recipes).requested_products
+
+    def _confirmed_absence_completes(self, group: InspectedSourceGroup, preset: AutoPreset) -> bool:
+        request: ProcessingRequest | None = next(
+            (item for item in reversed(self._state.requests) if group.group_id in item.group_ids), None
+        )
+        if request is None or request.fingerprints.get(group.group_id) != _group_fingerprint(group):
+            return False
+        if request.state not in {RequestState.SUCCEEDED, RequestState.PARTIAL, RequestState.FAILED}:
+            return False
+        intent: GroupIntent | None = next((item for item in request.intents if item.group_id == group.group_id), None)
+        if intent is None or not self._automatic_products(group, preset).issubset(intent.products.requested_products):
+            return False
+        known: tuple[ProcessingRequest, RunJournal] | None = self._inspected_journals.get(request.request_id)
+        if known is None or known[0] != request or not known[1].is_current():
+            return False
+        journal: RunJournal = known[1]
+        verified: frozenset[tuple[ArtifactKind, Path]] = frozenset(
+            (artifact.kind, artifact.path)
+            for artifact in journal.plan.artifacts
+            if artifact.state is ArtifactState.READY and artifact.path is not None
+        )
+        ready: frozenset[str] = frozenset(
+            artifact.kind.value.removeprefix("final_")
+            for artifact in group.artifacts
+            if artifact.state is ArtifactState.READY
+            or (artifact.state is ArtifactState.CANDIDATE and (artifact.kind, artifact.path) in verified)
+        )
+        missing: frozenset[str] = self._automatic_products(group, preset) - ready
+        if missing != {ArtifactKind.DISPLAYED_PL.value} or journal.uncertain_remote_work:
+            return False
+        return any(
+            item.group_id == group.group_id and not item.task_ids and not any(p.is_blocking for p in item.problems)
+            for item in journal.plan.groups
+        ) and any(
+            artifact.group_id == group.group_id and artifact.state is ArtifactState.ABSENT
+            for artifact in journal.plan.artifacts
+        )
 
     def _start_automatic(self, group: InspectedSourceGroup, preset: AutoPreset) -> None:
         origin: RequestOrigin | None = self._file_origin(group)
@@ -1009,7 +1098,10 @@ class AutomationOwner:
         return None
 
     def _release_session(self, session_id: str) -> None:
+        had_panels: bool = bool(self._panels)
         self._panels.discard(session_id)
+        if had_panels and not self._panels:
+            self._refresh_transfer_cadence()
         self._deletion_previews = {
             key: value for key, value in self._deletion_previews.items() if value[1] != session_id
         }
@@ -1074,8 +1166,11 @@ class AutomationOwner:
             case "panel_attach":
                 if request.session_id is None:
                     return _invalid("A panel requires a connected session")
+                had_panels: bool = bool(self._panels)
                 self._panels.add(request.session_id)
-                return ControlResponse.succeeded({"attached": True})
+                if not had_panels:
+                    self._refresh_transfer_cadence()
+                return ControlResponse.succeeded({"attached": True, "navigation": self._take_panel_navigation()})
             case "ready_retry":
                 for request_id, result in tuple(self._run_results.items()):
                     self._prepare_ready(result, None, self._accepted_recipe(request_id))
@@ -1833,7 +1928,7 @@ class AutomationOwner:
         return ControlResponse.refused(ControlErrorCode.REFUSED, "The library operation is unavailable", reason=reason)
 
     def _pausing(self) -> bool:
-        return not self._state.policy.auto_enabled and self._settling()
+        return not self._state.policy.auto_enabled and (self._settling() or self._transfers_at is not None)
 
     def _pause_incomplete(self) -> bool:
         """Answer whether this pause reached its boundary leaving a transfer it could not stop."""
@@ -2399,6 +2494,7 @@ class AutomationOwner:
         self._pending[run_id] = preview.products
         self._run_groups[run_id] = preview.groups
         self._run_results.pop(run_id, None)
+        self._inspected_journals.pop(run_id, None)
         self._run_products[run_id] = {artifact.artifact_id: artifact for artifact in preview.plan.artifacts}
         with self._progress_lock:
             self._run_views[run_id] = RunProgressSnapshot(
@@ -2472,6 +2568,7 @@ class AutomationOwner:
         threading.Thread(target=wait, daemon=True).start()
 
     def _record_completion(self, completion: _Completion) -> None:
+        self._inspected_journals.pop(completion.request_id, None)
         if completion.result is not None:
             self._run_results[completion.request_id] = completion.result
         products: frozenset[ProductKind] = self._pending.pop(completion.request_id, frozenset())
@@ -2549,6 +2646,9 @@ class AutomationOwner:
                 and (item.size, item.modified_ns) == _file_identity(self._service.workspace_root / item.path)
             )
             headline: str | None = main_product([Path(name).name for name in selected])
+            if headline is None:
+                records.append(record)
+                continue
             records.append(
                 replace(
                     record,
@@ -2597,6 +2697,7 @@ class AutomationOwner:
             )
             for group_id in request.group_ids
         )
+
         completed: frozenset[str] = self._succeeded_groups(request)
         return RunResult(
             request.request_id,
@@ -2612,7 +2713,14 @@ class AutomationOwner:
                 )
                 for group in groups
             ),
+            warnings=(DISPLAYED_ABSENCE_NOTE,) if self._recovered_absence(request) else (),
         )
+
+    def _recovered_absence(self, request: ProcessingRequest) -> bool:
+        known: tuple[ProcessingRequest, RunJournal] | None = self._inspected_journals.get(request.request_id)
+        if known is None or known[0] != request or not known[1].is_current():
+            return False
+        return any(artifact.state is ArtifactState.ABSENT for artifact in known[1].plan.artifacts)
 
     # ── Settings, subscriptions and shutdown ──────────────────────────────────
 
@@ -3183,6 +3291,18 @@ class AutomationOwner:
         self._schedule_transfers()
         self._publish_state()
 
+    def _refresh_transfer_cadence(self) -> None:
+        if self._transfers_failure is not None:
+            return
+        previous: float = self._transfers_delay
+        self._transfers_delay = PANEL_TRANSFER_CHECK_INTERVAL_S if self._panels else TRANSFER_CHECK_INTERVAL_S
+        if (
+            self._transfers_at is not None
+            and self._working()
+            and not any(item.action_pending for item in self._state.acquisitions)
+        ):
+            self._transfers_at = max(time.monotonic(), self._transfers_at + self._transfers_delay - previous)
+
     def _schedule_transfers(self, delay: float = 0.0) -> None:
         if self._shutting_down or self._transfers is None or self._transfers_inspecting:
             return
@@ -3197,9 +3317,13 @@ class AutomationOwner:
         if self._transfers_at is None or self._transfers_at > time.monotonic():
             return
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
-            item for item in self._state.acquisitions if item.state is AcquisitionState.ACCEPTED or item.action_pending
+            item
+            for item in self._state.acquisitions
+            if (item.state is AcquisitionState.ACCEPTED and self._working()) or item.action_pending
         )
         self._transfers_at = None
+        if not acquisitions:
+            return
         self._transfers_inspecting = True
         self._active_io += 1
         self._pool.submit(self._inspect_transfers, acquisitions, self._reserved_names())
@@ -3342,8 +3466,6 @@ class AutomationOwner:
     ) -> None:
         self._note_transfers(failure, nature)
         self._transfers_problem = failure
-        self._active_io -= 1
-        self._transfers_inspecting = False
         updated: dict[str, AcquisitionConfirmation] = {item.operation_id: item for item in results}
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
             updated.get(item.operation_id, item)
@@ -3371,8 +3493,6 @@ class AutomationOwner:
         self._action_attempts = {
             key: value for key, value in self._action_attempts.items() if pending.get(key) == value[0]
         }
-        self._schedule_transfers(self._transfers_delay)
-        self._publish_state()
         self._retry_ready()
         completed: frozenset[str] = frozenset(
             item.info_hash for item in self._state.acquisitions if item.state is AcquisitionState.COMPLETE
@@ -3380,16 +3500,23 @@ class AutomationOwner:
         if completed and failure is None:
             self._active_io += 1
             self._pool.submit(self._release_completed, completed)
+        self._active_io -= 1
+        self._transfers_inspecting = False
+        self._schedule_transfers(self._transfers_delay)
+        self._publish_state()
 
     def _note_transfers(self, failure: str | None, nature: tuple[str, str] | None) -> None:
         previous: tuple[str, str] | None = self._transfers_failure
         self._transfers_failure = nature
         if nature is None:
-            self._transfers_delay = TRANSFER_CHECK_INTERVAL_S
+            self._transfers_delay = PANEL_TRANSFER_CHECK_INTERVAL_S if self._panels else TRANSFER_CHECK_INTERVAL_S
             if previous is not None:
                 logger.info("Transfer reconciliation recovered")
             return
-        self._transfers_delay = min(self._transfers_delay * _TRANSFER_BACKOFF_FACTOR, TRANSFER_BACKOFF_CEILING_S)
+        self._transfers_delay = min(
+            max(self._transfers_delay, TRANSFER_CHECK_INTERVAL_S) * _TRANSFER_BACKOFF_FACTOR,
+            TRANSFER_BACKOFF_CEILING_S,
+        )
         if previous == nature:
             return
         logger.warning(
@@ -3527,7 +3654,9 @@ class AutomationOwner:
         )
         result: RunResult = self._completed_result(request)
         self._run_results[request.request_id] = result
-        self._prepare_ready(result, sources, request.recipe)
+        known: tuple[ProcessingRequest, RunJournal] | None = self._inspected_journals.get(request.request_id)
+        artifacts: tuple[Artifact, ...] = known[1].plan.artifacts if known is not None and known[0] == request else ()
+        self._prepare_ready(result, sources, request.recipe, artifacts)
         self._notify_ready_results(request.group_ids, request.request_id)
 
     def _prepare_ready(
@@ -3573,6 +3702,12 @@ class AutomationOwner:
                     and (item.size, item.modified_ns) == _file_identity(self._service.workspace_root / item.path)
                 )
                 products: tuple[Path, ...] = tuple({*(product.path for product in completed.products), *reused})
+                absent: bool = any(item.absent_outputs for item in completed.task_results) or any(
+                    artifact.group_id == completed.group_id and artifact.state is ArtifactState.ABSENT
+                    for artifact in artifacts
+                )
+                if not products and absent:
+                    continue
                 move: ReadyMove | None = self._ready_store.prepare(group.source, products, recipe)
                 if move is not None:
                     self._ready_moves[move.group_id] = move
@@ -3593,6 +3728,7 @@ class AutomationOwner:
                 completed.add(request.request_id)
         moved: WatchState = move.apply(self._state, frozenset(completed))
         self._completed_groups.clear()
+        self._inspected_journals.clear()
         group: ReadyGroup | None = self._ready_group(move)
         if group is None:
             return moved
@@ -4583,21 +4719,18 @@ class AutomationOwner:
     def _open_notification(self, identifier: str) -> None:
         known: bool = identifier in self._notification_targets
         target: _NotificationTarget | None = self._notification_targets.pop(identifier, None)
-        if known and target is None:
-            self._tray_action("open")
-            return
-        if target is not None and self._notification_current(target) and self._open_result is not None:
-            try:
-                self._open_result(self._service.workspace_root / target.product.path)
-            except OSError, ValueError:
-                logger.warning("The notification result could not be opened")
-            else:
-                self._notification_problem = None
-                self._publish_state()
-                return
-        self._notification_problem = _UNIDENTIFIED_NOTIFICATION if not identifier else _UNAVAILABLE_NOTIFICATION
+        navigation: dict[str, object] = {"tab": "library"}
+        self._notification_problem = None
+        self._pending_notification_target = None
+        if target is not None and self._notification_current(target):
+            navigation["set_id"] = target.set_id
+            if not self._panels:
+                self._pending_notification_target = target
+        elif identifier and (not known or target is not None):
+            self._notification_problem = _UNAVAILABLE_NOTIFICATION
+            navigation["notification_problem"] = self._notification_problem
         self._publish_state()
-        self._show_panel(self._notification_problem)
+        self._show_panel(navigation)
 
     def _notification_current(self, target: _NotificationTarget) -> bool:
         record: LibrarySet | None = next(
