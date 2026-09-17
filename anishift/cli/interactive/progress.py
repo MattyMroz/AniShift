@@ -30,7 +30,7 @@ from anishift.application import (
 from anishift.cli.interactive.mascot import MascotController
 from anishift.cli.interactive.palette import hex_color, rim_color
 
-__all__ = ["RichRunProgress"]
+__all__ = ["ObservedProgressTimer", "RichRunProgress", "render_material_progress"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -58,6 +58,7 @@ _STAGE_RANK: Final[dict[str, int]] = {
     "tts": 2,
     "audio": 3,
     "composing": 4,
+    "cover": 4,
     "publishing": 5,
     "terminal": 6,
 }
@@ -75,6 +76,7 @@ _DETERMINATE_STAGE: Final[dict[TaskKind, str]] = {
     TaskKind.MIX_NARRATION: "audio",
     TaskKind.COMPOSE_MKV: "composing",
     TaskKind.COMPOSE_MP4: "composing",
+    TaskKind.COMPOSE_COVER: "cover",
     TaskKind.PUBLISH_ARTIFACT: "publishing",
 }
 """Task kinds owning measurable public stages."""
@@ -85,6 +87,7 @@ _ACTIVE_LABEL: Final[dict[str, str]] = {
     "tts": "TTS",
     "audio": "Audio",
     "composing": "Render",
+    "cover": "Okładka",
     "publishing": "Save",
 }
 """Labels shown while measurable stages are active."""
@@ -120,7 +123,7 @@ class _FileState:
     style: str | None = None
     started_at: float | None = None
     stopped_at: float | None = None
-    determinate: bool = True
+    determinate: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,8 +133,33 @@ class _RenderRow:
     description: str
     completed: int
     style: str | None
-    elapsed_seconds: float
+    elapsed_seconds: float | None
     determinate: bool
+    animate: bool = True
+
+
+@dataclass(slots=True)
+class ObservedProgressTimer:
+    """Measure panel-observed activity, excluding pauses and unobserved history."""
+
+    _started_at: float | None = None
+    _accumulated: float | None = None
+
+    def observe(self, *, active: bool) -> None:
+        """Start or freeze the clock at an observed activity transition."""
+        now: float = time.monotonic()
+        if active and self._started_at is None:
+            self._started_at = now
+            self._accumulated = self._accumulated or 0.0
+        elif not active and self._started_at is not None:
+            self._accumulated = (self._accumulated or 0.0) + max(now - self._started_at, 0.0)
+            self._started_at = None
+
+    def elapsed(self) -> float | None:
+        """Return observed elapsed activity, or no measurement before the first start."""
+        if self._started_at is None:
+            return self._accumulated
+        return (self._accumulated or 0.0) + max(time.monotonic() - self._started_at, 0.0)
 
 
 class _PreparedRun(Protocol):
@@ -172,7 +200,7 @@ class RichRunProgress:
         mascot: MascotController | None,
     ) -> None:
         self._files: dict[str, _FileState] = {
-            group.group_id: _new_file_state(labels.get(group.group_id, group.group_id)) for group in plan.groups
+            group.group_id: _new_file_state(labels.get(group.group_id) or "Materiał") for group in plan.groups
         }
         self._task_kinds: dict[str, TaskKind] = {task.task_id: task.kind for task in plan.tasks}
         self._stage_tasks: dict[tuple[str, str], tuple[str, ...]] = _index_stage_tasks(plan)
@@ -188,7 +216,8 @@ class RichRunProgress:
     def from_snapshot(cls, snapshot: RunProgressSnapshot, invalidate: Callable[[], None]) -> RichRunProgress:
         """Restore the same progress bars after a panel reconnects to the owner."""
         progress: RichRunProgress = cls.__new__(cls)
-        progress._initialize(snapshot.labels, snapshot.preview, invalidate, None, None)
+        labels: dict[str, str] = {group_id: label for group_id, label in snapshot.labels.items() if label != group_id}
+        progress._initialize(labels, snapshot.preview, invalidate, None, None)
         progress._open = True
         for event in snapshot.events:
             progress.emit(event)
@@ -282,6 +311,18 @@ class RichRunProgress:
             return Text()
         return self.render(columns, offset=identifiers.index(group_id), limit=1)
 
+    def group_active(self, group_id: str) -> bool:
+        """Return whether events prove this material started and has not finished."""
+        with self._lock:
+            state: _FileState | None = self._files.get(group_id)
+            return state is not None and state.started_at is not None and not state.terminal
+
+    def group_pending(self, group_id: str) -> bool:
+        """Return whether the material still awaits its first task event."""
+        with self._lock:
+            state: _FileState | None = self._files.get(group_id)
+            return state is not None and state.started_at is None and not state.terminal
+
     def _apply(self, event: RunEvent) -> bool:
         changed: bool = False
         if event.kind is RunEventKind.RUN_FINISHED:
@@ -289,7 +330,8 @@ class RichRunProgress:
         elif event.group_id is not None:
             state: _FileState | None = self._files.get(event.group_id)
             if state is not None and not state.terminal:
-                _start_timer(state)
+                if event.kind in {RunEventKind.TASK_STARTED, RunEventKind.TASK_PROGRESS, RunEventKind.TASK_RETRY}:
+                    _start_timer(state)
                 match event.kind:
                     case RunEventKind.TASK_STARTED:
                         changed = self._start_task(state, event)
@@ -317,7 +359,9 @@ class RichRunProgress:
         """Keep background publication from hiding active media work."""
         candidates: list[str] = [task_id for task_id in state.active_tasks if _stage_for(self._task_kinds.get(task_id))]
         if not candidates:
-            return False
+            state.description = _description(state.label, "Przygotowanie")
+            state.determinate = False
+            return True
         primary: list[str] = [
             task_id for task_id in candidates if self._task_kinds[task_id] is not TaskKind.PUBLISH_ARTIFACT
         ]
@@ -475,6 +519,21 @@ def _new_file_state(label: str) -> _FileState:
     return _FileState(label=label, description=_description(label, _ACTIVE_LABEL["extracting"]))
 
 
+def render_material_progress(
+    name: str, stage: str, fraction: float | None, columns: int, *, elapsed_seconds: float | None = None
+) -> Text:
+    """Render a transfer using the full processing row geometry and measured elapsed time."""
+    row: _RenderRow = _RenderRow(
+        _description(name, stage),
+        0 if fraction is None else round(min(max(fraction, 0.0), 1.0) * _COMPLETE),
+        None,
+        elapsed_seconds,
+        fraction is not None,
+        animate=False,
+    )
+    return _render_rows((row,), columns)
+
+
 def _render_rows(rows: tuple[_RenderRow, ...], columns: int) -> Text:
     """Render all file snapshots into one Rich text block."""
     result = Text()
@@ -514,9 +573,9 @@ def _append_row(result: Text, row: _RenderRow, description_width: int, bar_width
         result.append(" ")
     colors: tuple[str, ...] = _bar_colors(bar_width)
     filled: int = min(bar_width, max(0, row.completed) * bar_width // _COMPLETE)
-    cursor: int = int(row.elapsed_seconds * 8) % max(bar_width, 1)
+    cursor: int = int((row.elapsed_seconds or 0.0) * 8) % max(bar_width, 1)
     for index, color in enumerate(colors):
-        active: bool = index < filled if row.determinate else index == cursor
+        active: bool = index < filled if row.determinate else row.animate and index == cursor
         result.append("█" if active else "░", style=(row.style or color) if active else "progress_track")
     result.append(details, style=style)
 
@@ -524,7 +583,8 @@ def _append_row(result: Text, row: _RenderRow, description_width: int, bar_width
 def _row_details(row: _RenderRow, *, show_elapsed: bool) -> str:
     """Keep measured percentage or activity visible before the optional clock."""
     percent: str = f" | {row.completed:>3d}%" if row.determinate else " |  -- "
-    return f"{percent} | {_format_elapsed(row.elapsed_seconds)}" if show_elapsed else percent
+    elapsed: str = "--:--:--.---" if row.elapsed_seconds is None else _format_elapsed(row.elapsed_seconds)
+    return f"{percent} | {elapsed}" if show_elapsed else percent
 
 
 @lru_cache(maxsize=_MAX_BAR_COLUMNS)
@@ -597,6 +657,8 @@ def _source_label(group: InspectedSourceGroup) -> str:
         ArtifactKind.VIDEO_MKV,
         ArtifactKind.VIDEO_MP4,
         ArtifactKind.STANDALONE_TEXT,
+        ArtifactKind.SOURCE_AUDIO,
+        ArtifactKind.SOURCE_SUBTITLES,
     )
     for kind in preferred_kinds:
         path: Path | None = next(

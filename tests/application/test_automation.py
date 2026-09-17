@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+import json
 import os
 import subprocess
 import sys
@@ -37,6 +39,7 @@ from anishift.application.acquisition import (
     AcquisitionService,
     DownloadReceipt,
     ReleaseCatalog,
+    ReleaseChoice,
     TorrentClient,
     TorrentManagement,
 )
@@ -111,12 +114,13 @@ from anishift.application.subscriptions import (
 from anishift.application.tts_handler import TtsProgressObserver
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.application.workflows import WorkflowTarget
+from anishift.cli.interactive.anime import AnimeController
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
-from anishift.errors import ErrorCode, ErrorContext, ExecutionError
+from anishift.errors import ErrorCode, ErrorContext, ExecutionError, PlanningError
 from anishift.paths import COVER_DIRECTORY, READY_DIRECTORY, TRANSLATE_DIRECTORY, relocation_journal_dir
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import (
@@ -134,6 +138,7 @@ from anishift.services.http_requests import RequestControl
 from anishift.services.media import DefaultMediaProbe
 from anishift.services.torrents import Release, TorrentClientError, TorrentFile, TorrentInfo, parse_release_name
 from anishift.services.torrents.categories import SEARCH_CATEGORIES
+from anishift.services.torrents.nyaa import search_releases
 from anishift.services.torrents.qbittorrent import QBittorrentClient
 from anishift.services.tts import SpeechBatch, SpeechBatchResult
 
@@ -484,6 +489,526 @@ def _owner(
         scan_interval_s=scan_interval_s,
         recycler=recycler,
     )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("scenario", ["titles", "empty", "catalog_failed", "both_failed", "internal", "planning", "io"])
+def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0915
+    tmp_path: Path, scenario: str
+) -> None:
+    sent: list[str] = []
+    now: list[float] = [1000.0]
+    feed: str = (
+        '<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel><item>'
+        "<title>[SubsPlease] Fixture - 01 (1080p)</title>"
+        "<link>https://nyaa.si/download/1.torrent</link>"
+        "<nyaa:infoHash>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</nyaa:infoHash>"
+        "<nyaa:seeders>10</nyaa:seeders><pubDate>Sat, 05 Sep 2026 19:51:11 -0000</pubDate>"
+        "</item></channel></rss>"
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(request.url.host)
+        assert request.url.host in {"graphql.anilist.co", "nyaa.si"}
+        if scenario == "internal":
+            raise RuntimeError("private-provider-payload")
+        if scenario == "planning":
+            raise PlanningError(context=ErrorContext(code=ErrorCode.IO_ERROR, message="private-provider-payload"))
+        if scenario == "io":
+            raise OSError("private-provider-payload")
+        if request.url.host == "nyaa.si":
+            return httpx.Response(
+                503 if scenario == "both_failed" else 200, text=feed, headers={"Content-Type": "application/rss+xml"}
+            )
+        body: dict[str, object] = {
+            "data": {
+                "Page": {
+                    "media": []
+                    if scenario == "empty"
+                    else [{"id": 1, "title": {"romaji": "Fixture"}, "status": "FINISHED"}]
+                }
+            }
+        }
+        if scenario in {"catalog_failed", "both_failed"}:
+            body = {"errors": [{"message": "private-provider-payload"}]}
+        return httpx.Response(
+            200, headers={"Content-Encoding": "gzip"}, stream=httpx.ByteStream(gzip.compress(json.dumps(body).encode()))
+        )
+
+    control: RequestControl = RequestControl(
+        httpx.MockTransport(respond),
+        clock=lambda: now[0],
+        sleep=lambda delay: now.__setitem__(0, now[0] + delay),
+    )
+    with httpx.Client(transport=control) as http:
+
+        class Source:
+            def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> tuple[Release, ...]:
+                return search_releases(query, http=http, categories=categories)
+
+        acquisition: AcquisitionService = AcquisitionService(
+            source=Source(),
+            client=QBittorrentClient("http://unused.test", http=http),
+            workspace_root=tmp_path,
+            parse_name=parse_release_name,
+            title_catalog=AniListCatalog(http),
+            request_control=control,
+        )
+        service: AppService = _real_service(tmp_path, acquisition=acquisition)
+        owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME))
+        thread: threading.Thread = _serving(owner)
+        key: bytes = os.urandom(32)
+        endpoint: str = control_endpoint(tmp_path)
+        server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+        session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+        controller: AnimeController = AnimeController(service, lambda: None, resident=session)
+        captured: list[str] = []
+        handler_id: int = loguru_logger.add(
+            captured.append,
+            format="{message} {extra}",
+            level="WARNING",
+            filter=lambda record: record["extra"].get("command_kind") == "acquisition",
+        )
+        try:
+            controller.handle_key("enter")
+            controller.handle_key("text:Fixture")
+            controller.handle_key("enter")
+            worker: threading.Thread | None = controller._worker
+            if worker is not None:
+                worker.join(_TIMEOUT_S)
+                assert not worker.is_alive()
+            frame: str = controller.render(120, 30).plain
+            assert "private-provider-payload" not in frame
+            if scenario == "titles":
+                assert "Enter wybierz" in frame
+                assert sent == ["graphql.anilist.co"]
+            elif scenario == "both_failed":
+                assert "Nyaa nie odpowiada" in frame
+                assert sent == ["graphql.anilist.co", "nyaa.si"]
+                assert "TitleCatalogError" in "".join(captured)
+                assert "TITLE_CATALOG_FAILED" in "".join(captured)
+                assert "TorrentSourceError" in "".join(captured)
+                assert "TORRENT_SOURCE_FAILED" in "".join(captured)
+                assert "command_id" in "".join(captured)
+            elif scenario in {"internal", "planning", "io"}:
+                assert "Wewnętrzny błąd procesu w tle" in frame
+                assert sent == ["graphql.anilist.co"]
+                expected_class: str = {"internal": "RuntimeError", "planning": "PlanningError", "io": "OSError"}[
+                    scenario
+                ]
+                assert expected_class in "".join(captured)
+            else:
+                assert "SubsPlease" in frame
+                assert "wyniki dla hasła" in frame
+                assert sent[-2:] == ["nyaa.si", "nyaa.si"]
+                assert controller._groups[0].newest == datetime(2026, 9, 5, 19, 51, 11, tzinfo=UTC)
+            assert not owner.state.acquisitions
+            assert all(value not in "".join(captured) for value in ("private-provider-payload", "Fixture", "https://"))
+        finally:
+            loguru_logger.remove(handler_id)
+            session.close()
+            server.close()
+            owner.request_shutdown()
+            thread.join(_TIMEOUT_S)
+            service.close()
+        assert not thread.is_alive()
+
+
+def _anime_enter(controller: AnimeController, key: str = "enter") -> str:
+    controller.handle_key(key)
+    worker: threading.Thread | None = controller._worker
+    if worker is not None:
+        worker.join(_TIMEOUT_S)
+        assert not worker.is_alive()
+    return controller.render(160, 30).plain
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("scenario", "count"),
+    [
+        ("appears", 1),
+        ("reacquire", 1),
+        ("reacquire_failed", 1),
+        ("exhausted", 1),
+        ("exhausted", 2),
+        ("exhausted", 16),
+        ("partial", 2),
+        ("pause", 1),
+        ("shutdown", 1),
+    ],
+)
+def test_async_url_add_is_observed_once_through_owner_ipc_before_content_starts(  # noqa: C901, PLR0912, PLR0915
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str, count: int
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.02)
+    network: _TorrentNetwork = _TorrentNetwork()
+    release: Release = network.releases[0]
+    choice: ReleaseChoice = ReleaseChoice(release, parse_release_name(release.title))
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    repeating: bool = scenario in {"reacquire", "reacquire_failed"}
+    if repeating:
+        store.save(
+            WatchState(
+                policy=AutomationPolicy(auto_enabled=True),
+                acquisitions=(
+                    replace(
+                        _accepted_transfer(release.info_hash),
+                        state=AcquisitionState.FAILED if scenario == "reacquire_failed" else AcquisitionState.COMPLETE,
+                        nyaa_release_id=1,
+                        release_title=release.title,
+                    ),
+                ),
+            )
+        )
+    paths: list[str] = []
+    reads: int = 0
+    filename: str = "Pack/09.mkv"
+    added: list[str] = []
+    started: threading.Event = threading.Event()
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal reads, filename
+        assert request.url.host == "private-client.test"
+        path: str = request.url.path.rsplit("/", 1)[-1]
+        paths.append(path)
+        if path == "add":
+            assert store.load().acquisitions[-1].state in {AcquisitionState.PENDING_SEND, AcquisitionState.UNCERTAIN}
+            if repeating:
+                assert store.load().acquisitions[0] == previous
+            assert store.load().command_receipts
+            assert parse_qs(request.content.decode())["stopped"] == ["true"]
+            added.extend(parse_qs(request.content.decode())["urls"])
+            return httpx.Response(200, text="Ok.")
+        if path == "info":
+            assert paths.count("add") == count
+            reads += 1
+            if reads == 1 or scenario == "exhausted":
+                return httpx.Response(200, json=[])
+            if reads == 2 and scenario in {"pause", "shutdown"}:
+                action: str = "set_auto" if scenario == "pause" else "shutdown"
+                with closing(ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)) as controller:
+                    controller.call(action, {"enabled": False} if scenario == "pause" else {})
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "hash": release.info_hash,
+                        "name": release.title,
+                        "state": "stoppedDL",
+                        "progress": 0.0,
+                        "save_path": str(tmp_path),
+                        "size": 4,
+                        "completed": 0,
+                        "amount_left": 4,
+                    }
+                ],
+            )
+        if path == "files":
+            return httpx.Response(
+                200,
+                json=[]
+                if scenario == "partial"
+                else [{"index": 0, "name": filename, "size": 4, "progress": 0.0, "priority": 1}],
+            )
+        if path == "renameFile":
+            filename = parse_qs(request.content.decode())["newPath"][0]
+            return httpx.Response(200)
+        assert path == "start"
+        saved: AcquisitionConfirmation = store.load().acquisitions[-1]
+        assert saved.state is AcquisitionState.ACCEPTED
+        assert saved.file_layout == ((0, "09.mkv", 4),)
+        assert not saved.content_started
+        assert store.load().policy.auto_enabled
+        started.set()
+        return httpx.Response(200)
+
+    control: RequestControl = RequestControl(httpx.MockTransport(respond))
+    with httpx.Client(transport=control) as http:
+        acquisition: AcquisitionService = AcquisitionService(
+            source=network,
+            client=QBittorrentClient("http://private-client.test", http=http),
+            workspace_root=tmp_path,
+            parse_name=parse_release_name,
+            request_control=control,
+        )
+        service: AppService = _real_service(tmp_path, acquisition=acquisition)
+        owner: AutomationOwner = _owner(service, store)
+        thread: threading.Thread = _serving(owner)
+        key: bytes = os.urandom(32)
+        endpoint: str = control_endpoint(tmp_path)
+        server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+        panel: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+        kind: str = "reacquire" if repeating else "download"
+        payload: dict[str, object] = (
+            {"operation_id": f"operation-{release.info_hash}"}
+            if repeating
+            else {
+                "choices": [
+                    encode_view(
+                        replace(
+                            choice,
+                            release=replace(
+                                release,
+                                info_hash=str(9 + index),
+                                torrent_url=f"https://example.test/{9 + index}.torrent",
+                            ),
+                        )
+                    )
+                    for index in range(count)
+                ]
+            }
+        )
+        try:
+            if repeating:
+                previous: AcquisitionConfirmation = store.load().acquisitions[0]
+                with closing(ControlClient(endpoint, key)) as other_panel:
+                    if scenario == "reacquire_failed":
+                        with pytest.raises(ControlError, match="recorded"):
+                            other_panel.call("download", {"choices": [encode_view(choice)]}, command_id="stale-panel")
+                        assert paths == []
+                    else:
+                        assert other_panel.call("download", {"choices": [encode_view(choice)]})["count"] == 0
+                assert store.load().acquisitions == (previous,)
+            response: Mapping[str, object] = panel.call(kind, payload, command_id="async-add")
+            assert response == (
+                {"operation_id": "repeat-async-add"} if repeating else {"count": count, "directory": str(tmp_path)}
+            )
+            if scenario == "appears" or repeating:
+                assert started.wait(_TIMEOUT_S)
+                assert _await(lambda: owner.state.acquisitions[-1].content_started)
+                assert panel.call("set_auto", {"enabled": False})["auto_enabled"] is False
+                assert _await(lambda: owner._active_io == 0)
+            elif scenario == "partial":
+                assert panel.call("set_auto", {"enabled": False})["auto_enabled"] is False
+                assert _await(lambda: owner._active_io == 0)
+            elif scenario == "shutdown":
+                thread.join(_TIMEOUT_S)
+                assert not thread.is_alive()
+            saved: WatchState = store.load() if scenario == "shutdown" else owner._on_owner(store.load)
+            assert saved.acquisitions[-1].state is (
+                AcquisitionState.UNCERTAIN if scenario in {"exhausted", "partial"} else AcquisitionState.ACCEPTED
+            )
+            assert saved.acquisitions[-1].content_started is (scenario == "appears" or repeating)
+            if repeating:
+                assert saved.acquisitions[0].operation_id == previous.operation_id
+                assert saved.acquisitions[0].release_title == previous.release_title
+                assert len(saved.acquisitions) == 2
+                assert saved.acquisitions[-1].previous_operation_id == previous.operation_id
+            assert paths.count("add") == count
+            assert len(set(added)) == count
+            assert reads >= 2
+            if scenario in {"exhausted", "partial"}:
+                assert (
+                    sum(
+                        cast("int", item["count"])
+                        for item in control.counts()
+                        if item["operation"] == "torrents/info" and item["reason"] == "user_download"
+                    )
+                    == 3
+                )
+            if scenario == "partial":
+                assert saved.acquisitions[0].state is AcquisitionState.ACCEPTED
+            calls: tuple[str, ...] = tuple(paths)
+            time.sleep(0.1)
+            assert tuple(paths) == calls
+            if scenario != "shutdown":
+
+                def refuse_inventory() -> tuple[SourceGroup, ...]:
+                    raise AssertionError("receipt replay must not inspect the library")
+
+                monkeypatch.setattr(service, "library_inventory", refuse_inventory)
+                panel.call("status")
+                saved = store.load()
+                state_path: Path = tmp_path / "control" / WATCH_STATE_FILE_NAME
+                stamp: int = state_path.stat().st_mtime_ns
+                assert panel.call(kind, payload, command_id="async-add") == next(
+                    item.outcome for item in saved.command_receipts if item.command_id == "async-add"
+                )
+                assert state_path.stat().st_mtime_ns == stamp
+                assert store.load() == saved
+                assert tuple(paths) == calls
+            if scenario == "exhausted":
+                assert reads == 3
+                assert all(item.state is AcquisitionState.UNCERTAIN for item in saved.acquisitions)
+                duplicate: ControlResponse = owner.handle(_request("download", payload, command_id="async-new"))
+                assert duplicate.reason == "download_recorded"
+                assert tuple(paths) == calls
+        finally:
+            panel.close()
+            server.close()
+            owner.request_shutdown()
+            thread.join(_TIMEOUT_S)
+            service.close()
+        assert not thread.is_alive()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("scenario", "expected", "reason"),
+    [
+        ("unavailable", "qBittorrent nie odpowiada", "TORRENT_CLIENT_UNAVAILABLE"),
+        ("unauthorized", "qBittorrent odrzucił logowanie", "TORRENT_CLIENT_UNAUTHORIZED"),
+        ("refused", "qBittorrent odrzucił żądanie", "TORRENT_CLIENT_REFUSED"),
+        ("accepted", "Przyjęto 1 zamówień · pobieranie w prywatnym kliencie AniShift", ""),
+    ],
+)
+def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http(  # noqa: PLR0915
+    tmp_path: Path, scenario: str, expected: str, reason: str
+) -> None:
+    network: _TorrentNetwork = _TorrentNetwork()
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    paths: list[str] = []
+    tracked: list[dict[str, object]] = []
+    failing: bool = scenario != "accepted"
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "private-client.test"
+        paths.append(request.url.path)
+        if request.url.path.endswith("/info"):
+            return httpx.Response(200, json=tracked)
+        if request.url.path.endswith("/files"):
+            return httpx.Response(200, json=[])
+        assert store.load().acquisitions
+        assert store.load().command_receipts
+        if failing and scenario == "unavailable":
+            raise httpx.ConnectError("private-payload-secret", request=request)
+        if failing and scenario == "unauthorized":
+            return httpx.Response(200, text="Fails.") if request.url.path.endswith("/login") else httpx.Response(403)
+        if failing:
+            return httpx.Response(200, text="Fails.")
+        data: dict[str, list[str]] = parse_qs(request.content.decode())
+        release: Release = next(item for item in network.releases if item.torrent_url == data["urls"][0])
+        tracked.append(
+            {
+                "hash": release.info_hash,
+                "name": release.title,
+                "progress": 0.1,
+                "state": "stoppedDL",
+                "save_path": str(tmp_path),
+            }
+        )
+        return httpx.Response(200, text="Ok.")
+
+    requests: list[ControlRequest] = []
+    responses: list[ControlResponse] = []
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        acquisition: AcquisitionService = AcquisitionService(
+            source=network,
+            client=QBittorrentClient(
+                "http://private-client.test",
+                username="private-user",
+                password="private-secret",  # noqa: S106
+                http=http,
+            ),
+            workspace_root=tmp_path,
+            parse_name=parse_release_name,
+        )
+        service: AppService = _real_service(tmp_path, acquisition=acquisition)
+        owner: AutomationOwner = _owner(service, store)
+        thread: threading.Thread = _serving(owner)
+
+        def handle(request: ControlRequest) -> ControlResponse:
+            response: ControlResponse = owner.handle(request)
+            if request.kind == "download":
+                requests.append(request)
+                responses.append(response)
+            return response
+
+        key: bytes = os.urandom(32)
+        endpoint: str = control_endpoint(tmp_path)
+        server: ControlServer = ControlServer(endpoint, key, handle, on_disconnect=owner.disconnect)
+        session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+        controller: AnimeController = AnimeController(service, lambda: None, resident=session)
+        captured: list[str] = []
+        handler_id: int = loguru_logger.add(
+            captured.append,
+            format="{message} {extra}",
+            level="WARNING",
+            filter=lambda record: record["extra"].get("command_kind") == "download",
+        )
+        try:
+            controller.handle_key("enter")
+            controller.handle_key("text:Neko")
+            assert "SubsPlease" in _anime_enter(controller)
+            _anime_enter(controller)
+            controller.handle_key("space")
+            frame: str = _anime_enter(controller, "text:d")
+            assert expected in frame
+            first: ControlRequest = requests[0]
+            saved: WatchState = store.load()
+            assert len(saved.acquisitions) == 1
+            assert saved.acquisitions[0].state is (AcquisitionState.UNCERTAIN if failing else AcquisitionState.ACCEPTED)
+            assert len(saved.command_receipts) == 1
+            if failing:
+                assert responses[0].code is ControlErrorCode.INTERNAL
+                assert responses[0].reason == reason
+                assert "Sprawdź prywatny klient AniShift i log" in frame
+                assert "Web UI" not in frame
+                assert ".env" not in frame
+                assert "TorrentClientError" in "".join(captured)
+                assert first.command_id in "".join(captured)
+                assert reason in "".join(captured)
+                if scenario == "unavailable":
+                    assert "ConnectError" in "".join(captured)
+            assert all(
+                value not in "".join(captured)
+                for value in ("private-payload-secret", "private-secret", "private-user", "Neko", "http", str(tmp_path))
+            )
+            calls: tuple[str, ...] = tuple(paths)
+            state_path: Path = tmp_path / "control" / WATCH_STATE_FILE_NAME
+            modified: int = state_path.stat().st_mtime_ns
+            replay: Mapping[str, object] = session._client.call("download", first.payload, command_id=first.command_id)
+            assert replay == saved.command_receipts[0].outcome
+            assert replay == {"count": 1, "directory": str(tmp_path)}
+            assert responses[-1] == ControlResponse.succeeded(dict(saved.command_receipts[0].outcome))
+            assert state_path.stat().st_mtime_ns == modified
+            assert tuple(paths) == calls
+            assert store.load() == saved
+            if failing:
+                _anime_enter(controller)
+            else:
+                controller.cancel()
+                controller.handle_key("space")
+            duplicate: str = _anime_enter(controller, "text:d")
+            assert "Wysłano 0 do" not in duplicate
+            if failing:
+                assert "Przyjęto: 0 · już przyjęte: 0 · wynik przekazania niepotwierdzony: 1" in duplicate
+                assert "Sprawdź prywatny klient AniShift i log" in duplicate
+                assert responses[-1].reason == "download_recorded"
+            else:
+                assert "Zamówienia już zapisane · sprawdź prywatny klient AniShift" in duplicate
+                assert responses[-1].ok
+                assert responses[-1].result == {"count": 0, "directory": str(tmp_path)}
+            assert controller.render(160, 30).plain == duplicate
+            assert tuple(paths) == calls
+            if failing:
+                _anime_enter(controller)
+            else:
+                controller.cancel()
+            controller.handle_key("text:a")
+            failing = False
+            mixed: str = _anime_enter(controller, "text:d")
+            if scenario == "accepted":
+                assert "Przyjęto 1 zamówień · pobieranie w prywatnym kliencie AniShift" in mixed
+                assert responses[-1].ok
+                assert responses[-1].result["count"] == 1
+            else:
+                assert "Przyjęto: 1 · już przyjęte: 0 · wynik przekazania niepotwierdzony: 1" in mixed
+                assert "Sprawdź prywatny klient AniShift i log" in mixed
+                assert responses[-1].reason == "download_recorded"
+            assert controller.render(160, 30).plain == mixed
+            assert paths.count("/api/v2/torrents/add") == 2
+            assert store.load().acquisitions[0] == saved.acquisitions[0]
+            assert len(store.load().acquisitions) == 2
+        finally:
+            loguru_logger.remove(handler_id)
+            session.close()
+            server.close()
+            owner.request_shutdown()
+            thread.join(_TIMEOUT_S)
+            service.close()
+        assert not thread.is_alive()
 
 
 @pytest.mark.integration
@@ -3657,6 +4182,24 @@ def _material_rows(session: ResidentSession) -> list[dict[str, object]]:
     return cast("list[dict[str, object]]", session.command("status")["materials"])
 
 
+@pytest.mark.parametrize("title", [None, "[SubsPlease] Neko - 09 (1080p)"])
+def test_admitted_download_without_metadata_uses_retained_release_name(tmp_path: Path, title: str | None) -> None:
+    service, store, _ = _library(tmp_path)
+    confirmation: AcquisitionConfirmation = replace(
+        _accepted_transfer("a" * 40),
+        state=AcquisitionState.PENDING_SEND,
+        release_title=title,
+        nyaa_release_id=1 if title else None,
+    )
+    store.save(WatchState(acquisitions=(confirmation,)))
+    owner: AutomationOwner = _owner(service, store)
+    rows: list[dict[str, object]] = owner._processing_materials()
+    assert len(rows) == 1
+    assert rows[0]["name"] == (title or "Materiał")
+    assert rows[0]["progress"] is None
+    assert rows[0]["acquisition_state"] == "pending_send"
+
+
 def _projection_request(tmp_path: Path, state: RequestState) -> tuple[AutomationOwner, Path, tuple[str, ...]]:
     for number in range(1, 13):
         write_text_source(_library_dir(tmp_path) / f"{number:02d}.txt", "Text")
@@ -3827,7 +4370,7 @@ def test_subscription_list_projects_the_nearest_selected_unfinished_airing(tmp_p
 
 
 @pytest.mark.integration
-def test_processing_routes_retry_to_selected_deletion_or_relocation_beside_materials(  # noqa: PLR0915
+def test_library_routes_retry_to_selected_deletion_or_relocation(  # noqa: PLR0915
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", "isolated-test-token")
@@ -3872,8 +4415,11 @@ def test_processing_routes_retry_to_selected_deletion_or_relocation_beside_mater
         assert _await(lambda: len(recycled) == 1)
         controller: StateController = StateController(session, lambda: None)
         try:
-            assert _await(lambda: controller._connected and len(controller._entries(120)) == 3)
-            controller.handle_key("end")
+            assert _await(lambda: controller._connected)
+            assert "Brak aktywnego przetwarzania" in controller.render(120, 40).plain
+            controller.handle_key("right")
+            assert _await(lambda: not controller._busy)
+            controller.handle_key("home")
             assert "P ponów pozostałe pliki" in controller.render(120, 40).plain
             attempts: int = len(links)
             controller.handle_key("text:p")
@@ -3881,7 +4427,7 @@ def test_processing_routes_retry_to_selected_deletion_or_relocation_beside_mater
             assert len(links) == attempts
             controller.handle_key("home")
             controller.handle_key("down")
-            assert "P ponów wszystkie przenoszenia" in controller.render(120, 40).plain
+            assert "P ponów przenoszenie do biblioteki" in controller.render(120, 40).plain
             fail = False
             controller.handle_key("text:p")
             assert _await((tmp_path / "ready/Book.m4a").is_file)
@@ -3890,6 +4436,33 @@ def test_processing_routes_retry_to_selected_deletion_or_relocation_beside_mater
         finally:
             controller.close()
             controller._thread.join(_TIMEOUT_S)
+
+
+@pytest.mark.integration
+def test_standalone_subtitle_progress_uses_the_actual_source_filename(tmp_path: Path) -> None:
+    directory: Path = tmp_path / "translate"
+    directory.mkdir()
+    source: Path = directory / "Episode.srt"
+    source.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello world\n", encoding="utf-8")
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    with closing(service), _panel_owner(service, tmp_path) as (session, _store):
+        groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
+        session.reserve(groups)
+        preview: PlanPreview = session.plan_manual(
+            tuple(
+                GroupIntent(
+                    group_id,
+                    RunMode.MANUAL,
+                    ProductIntent(frozenset({ProductKind.FULL_PL})),
+                    target=WorkflowTarget.TRANSLATE,
+                )
+                for group_id in groups
+            )
+        )
+        result: RunResult = session.execute(preview, CollectingRunSink())
+        assert result.succeeded
+        progress: Mapping[str, object] = session.command("run_progress", {"run_id": result.run_id})
+        assert progress["labels"] == {groups[0]: "Episode.srt"}
 
 
 class _FailedTts:
@@ -6397,7 +6970,7 @@ def test_resuming_never_counts_the_pause_as_stall_time_when_the_last_client_read
 
 
 @pytest.mark.parametrize("state", [AcquisitionState.ACCEPTED, AcquisitionState.UNCERTAIN, AcquisitionState.FAILED])
-def test_global_pause_settles_a_public_resume_waiting_for_metadata_after_the_transfer_changes_state(
+def test_global_pause_settles_a_public_resume_waiting_for_metadata_after_the_transfer_changes_state(  # noqa: PLR0915
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: AcquisitionState
 ) -> None:
     monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
@@ -6449,10 +7022,16 @@ def test_global_pause_settles_a_public_resume_waiting_for_metadata_after_the_tra
         reordered: ControlResponse = owner.handle(
             _request("download", {"choices": [encode_view(catalog.groups[0].choices[0])]}, command_id="download-2")
         )
-        assert reordered.ok
-        assert reordered.result["count"] == (1 if state is AcquisitionState.FAILED else 0)
+        if state in {AcquisitionState.UNCERTAIN, AcquisitionState.FAILED}:
+            assert not reordered.ok
+            assert reordered.reason == "download_recorded"
+            assert reordered.details == {"sent": 0, "accepted": 0, "uncertain": 1}
+        else:
+            assert reordered.ok
+            assert reordered.result["count"] == 0
         assert settled.state is state
-        assert len(network.added) == (2 if state is AcquisitionState.FAILED else 1)
+        assert len(network.added) == 1
+        assert store.load().acquisitions[0].operation_id == settled.operation_id
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)

@@ -133,6 +133,13 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   drugiego wykonania (AC-042). `start` zapisuje `ProcessingRequest` razem z receipt przed
   `submit_plan`: odpowiedź potwierdza przyjęcie zamiaru; późniejsza awaria wykonania ma stan
   `FAILED`, a ponowienie polecenia zwraca ten sam `run_id`. `automation.py`
+- `ProcessingRequest.state == ACCEPTED` can include executing tasks. Public progress events
+  prove per-group activity; retained `run_progress` views also include terminal attempts.
+  The technical `materials` snapshot includes downloads and waiting/problem rows; the panel
+  selects admitted downloads, live requests awaiting their first task and proven active tasks. Ordinary download
+  admission protects every recorded hash, including failed acquisitions; explicit reacquire
+  retains the old confirmation and correlates the new attempt. Progress labels select primary source artifacts
+  using the group's workflow route, including standalone subtitles and audio. `automation.py`
 - Rezerwacje są własnością sesji klientów jednej instancji: `AutomationOwner` porzuca je przy
   wczytaniu stanu i po rozłączeniu panelu. Rozłączenie unieważnia także podglądy, również
   kończące się po zwolnieniu rezerwacji.

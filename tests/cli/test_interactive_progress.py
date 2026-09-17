@@ -8,9 +8,10 @@ from typing import cast
 
 import pytest
 from rich.cells import cell_len
+from rich.text import Text
 
 from anishift.application import ArtifactKind, RunEvent, RunEventKind, TaskKind, TaskState
-from anishift.cli.interactive.progress import RichRunProgress
+from anishift.cli.interactive.progress import RichRunProgress, render_material_progress
 from anishift.cli.run import PreparedAutoRun
 
 
@@ -114,22 +115,61 @@ def test_progress_preallocates_rows_in_natural_order() -> None:
 
     assert progress.row_count == 2
     assert rows == [
-        ("Extract Odcinek 02.mkv", 0),
-        ("Extract Odcinek 10.mkv", 0),
+        ("Extract Odcinek 02.mkv", None),
+        ("Extract Odcinek 10.mkv", None),
     ]
     assert frames == ["frame", "frame"]
 
 
-def test_an_extracting_row_shows_a_bar_percentage_and_elapsed_clock() -> None:
+@pytest.mark.parametrize("columns", [80, 120])
+@pytest.mark.parametrize("kind", [TaskKind.SYNTHESIZE_SPEECH, TaskKind.EXTRACT_TRACKS])
+def test_download_matches_full_processing_geometry_and_rich_spans(
+    monkeypatch: pytest.MonkeyPatch, columns: int, kind: TaskKind
+) -> None:
+    clock: list[float] = [100.0]
+    monkeypatch.setattr("anishift.cli.interactive.progress.time.monotonic", lambda: clock[0])
+    prepared: PreparedAutoRun = _prepared((("group-1", "Episode 01"),), (("task", "group-1", kind),))
+    with RichRunProgress(prepared, lambda: None) as progress:
+        progress.emit(_event(1, RunEventKind.TASK_STARTED, task_id="task"))
+        progress.emit(_event(2, RunEventKind.TASK_PROGRESS, task_id="task", progress_percent=37))
+        clock[0] = 112.5
+        original: Text = progress.render(columns)
+        download: Text = render_material_progress("Episode 01.mkv", "Pobieranie", 0.37, columns, elapsed_seconds=12.5)
+    assert download.plain == f"{'Pobieranie':14}" + original.plain[14:]
+    assert download.spans == original.spans
+    assert " |  37% | 00:00:12.500" in download.plain
+    assert download.plain.index("Episode") == 15
+    assert download.cell_len == original.cell_len
+
+
+@pytest.mark.parametrize("kind", [ArtifactKind.SOURCE_AUDIO, ArtifactKind.SOURCE_SUBTITLES])
+def test_local_standalone_progress_preserves_concrete_filename(kind: ArtifactKind) -> None:
+    prepared: PreparedAutoRun = _prepared((("group-1", "Episode"),), ())
+    path: Path = Path("Episode.flac" if kind is ArtifactKind.SOURCE_AUDIO else "Episode.srt")
+    group: SimpleNamespace = cast("SimpleNamespace", prepared.workspace.groups[0])
+    group.artifacts = (SimpleNamespace(kind=kind, path=path),)
+    assert path.name in RichRunProgress(prepared, lambda: None).render(120).plain
+
+
+def test_an_unmeasured_row_shows_activity_without_a_percentage() -> None:
     prepared: PreparedAutoRun = _prepared((("group-1", "Odcinek 01"),), ())
 
     with RichRunProgress(prepared, lambda: None) as progress:
         line: str = _lines(progress)[0]
 
     assert re.fullmatch(
-        r"Extract {8}Odcinek 01\.mkv [\u2588\u258c\u2591]+ \| {3}0% \| \d\d:\d\d:\d\d\.\d\d\d",
+        r"Extract {8}Odcinek 01\.mkv [\u2588\u258c\u2591]+ \|  --  \| \d\d:\d\d:\d\d\.\d\d\d",
         line,
     )
+
+
+def test_cover_composition_names_its_stage_and_uses_only_reported_progress() -> None:
+    prepared: PreparedAutoRun = _prepared((("group-1", "Cover"),), (("cover", "group-1", TaskKind.COMPOSE_COVER),))
+    with RichRunProgress(prepared, lambda: None) as progress:
+        progress.emit(_event(1, RunEventKind.TASK_STARTED, task_id="cover"))
+        assert _rows(progress) == [("Okładka Cover.mkv", None)]
+        progress.emit(_event(2, RunEventKind.TASK_PROGRESS, task_id="cover", progress_percent=35))
+        assert _rows(progress) == [("Okładka Cover.mkv", 35)]
 
 
 def test_file_reuses_one_row_across_every_auto_stage() -> None:
@@ -426,7 +466,7 @@ def test_rendering_a_shorter_window_keeps_every_row_intact() -> None:
         first_only: list[tuple[str, int | None]] = _parse(progress.render(140, limit=1).plain)
         last_only: list[tuple[str, int | None]] = _parse(progress.render(140, offset=1, limit=1).plain)
 
-    assert full == [("TTS Odcinek 01.mkv", 40), ("Extract Odcinek 02.mkv", 0)]
+    assert full == [("TTS Odcinek 01.mkv", 40), ("Extract Odcinek 02.mkv", None)]
     assert first_only == [full[0]]
     assert last_only == [full[1]]
 
@@ -590,6 +630,6 @@ def test_long_titles_do_not_shrink_the_full_progress_bar(columns: int) -> None:
     with RichRunProgress(prepared, lambda: None) as progress:
         line: str = progress.render(columns).plain
 
-    assert line.count("░") == 40
+    assert line.count("░") + line.count("█") == 40
     assert cell_len(line) == columns
     assert line.index("A very") == 15

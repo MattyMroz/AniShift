@@ -583,7 +583,7 @@ def test_failed_regeneration_stays_in_processing_beside_the_old_confirmed_librar
 
 
 @pytest.mark.integration
-def test_processing_retry_discloses_multigroup_scope_respects_pause_and_releases_reservations(
+def test_history_retry_discloses_multigroup_scope_respects_pause_and_releases_reservations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
@@ -594,7 +594,10 @@ def test_processing_retry_discloses_multigroup_scope_respects_pause_and_releases
         controller: StateController = StateController(session, lambda: None)
         try:
             assert _wait_for_resident(session, lambda _status: controller._connected)
-            assert "P ponów całe zlecenie · 2 materiałów" in controller.render(120, 40).plain
+            assert "Brak aktywnego przetwarzania" in controller.render(120, 40).plain
+            controller.handle_key("text:h")
+            assert _wait_for_resident(session, lambda _status: not controller._busy)
+            assert "błąd" in controller.render(120, 40).plain
             session.command("set_auto", {"enabled": False})
             controller.handle_key("text:p")
             assert _wait_for_resident(session, lambda _status: not controller._busy)
@@ -689,7 +692,7 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("key", ["text:u", "text:m"])
-def test_panel_settings_and_manual_return_restore_material_identity_and_detached_scroll(
+def test_panel_settings_and_manual_return_preserve_idle_processing_without_waiting_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
@@ -728,7 +731,8 @@ def test_panel_settings_and_manual_return_restore_material_identity_and_detached
             assert application._mode is _ViewMode.STATE
             assert application._state is panel
             assert panel._tab == 2
-            assert panel._selected == 34
+            assert panel._selected == 0
+            assert "Brak aktywnego przetwarzania" in before
             assert panel._offsets[2] == offset
             assert application._render_frame(80, 24).plain == before
         finally:

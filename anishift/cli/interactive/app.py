@@ -834,6 +834,8 @@ class _InteractiveApplication:
 
     def _show_home(self) -> None:
         self._close_settings()
+        if self._state is not None:
+            self._state.suspend()
         self._mascot.reset()
         with self._lock:
             self._mode = _ViewMode.HOME
@@ -1090,8 +1092,12 @@ def _control_code(problem: AniShiftError | OSError) -> str:
 
 
 def _problem_text(problem: AniShiftError | OSError) -> Text:
-    message = Text(f"Błąd · {refusal_text(problem)}", style="error")
-    suggestion: str = problem.context.suggestion if isinstance(problem, AniShiftError) else ""
+    message: Text = Text(f"Błąd · {refusal_text(problem)}", style="error")
+    suggestion: str = (
+        problem.context.suggestion
+        if isinstance(problem, AniShiftError) and not isinstance(problem, ControlError)
+        else ""
+    )
     if suggestion:
         message.append(f"\n  {_safe(suggestion)}", style="gray")
     message.append(f"\nSzczegóły: {_LOG_LOCATION}", style="gray")

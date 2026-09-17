@@ -46,6 +46,19 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Ekran Anime w trybie rezydenta używa `ResidentSession` także do katalogu, wydań,
   pobrania i dodania subskrypcji. Nie twórz w tym ekranie drugiego klienta HTTP ani
   lokalnego zapisu subskrypcji; receipt i admission pobrań należą do ownera.
+- Processing uses `StateController._processing_rows` for rendering, selection, actions and
+  counts. A processing request plus `RichRunProgress.group_active` must prove started,
+  nonterminal work; the owner's `accepted` state can already contain executing tasks.
+  Cached progress alone is insufficient. Every live admitted request awaiting its first
+  task appears as unmeasured preparation, including local Manual work before progress restore.
+  Recorded downloads also appear, using measured transfer bars and static metadata/pause/problem labels.
+  Uncertain acquisitions are excluded from download/handoff rows regardless of cached transfer state;
+  live admitted processing remains governed by its request and events. Filtered rows lose their timers.
+  Explicit Anime admission is consumed once by the visible panel's idle loop; navigation
+  invalidates late completions. Recorded hashes come from owner snapshots, never a UI store.
+  Terminal work is reached through History, and recycling/relocation actions through Library.
+  Progress labels come from the preview's source names, with `Materiał` for absent/ID-only
+  legacy labels. `interactive/state.py`, `interactive/progress.py`, `interactive/anime.py`
 - `StateController` opens History with H inside Processing; S or `/` uses the shared
   `TextInput` and suppresses application hotkeys while typing. Default rows are the latest
   50 terminal materials; explicit search includes retained order/download/regeneration boundaries.
@@ -98,8 +111,14 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   nie echuj `str(exc)` ani ścieżek bezpośrednio. `main.py`
 - `_QuietRunEvents` celowo gubi wszystkie eventy postępu — raport ma być
   parsowalny, bez przeplotu. Nie dodawaj tam renderowania. `main.py`
-- `RichRunProgress` prealokuje jeden pasek na plik w naturalnej kolejności i odtwarza przejścia
-  legacy `_PipelineProgressRows`: `Extract` od razu ma pasek i procent,
+- `RichRunProgress` preallocates one bar per file in natural order; unmeasured rows show
+  activity without a percentage. Processing task bars require evidence of actual start;
+  download bars use client measurements, and unmeasured handoffs have no percentage.
+  Downloads use the identical phase/name, gradient, percentage and elapsed layout as TTS.
+  Their panel-local monotonic clock counts observed transfer activity and freezes on pause
+  or lost confirmation; never derive it from acquisition timestamps. Unobserved elapsed
+  time uses a fixed-width placeholder. ID-only label suppression belongs to remote
+  `from_snapshot`, not the local source-label constructor.
   `Extracted`, `Translate`, `Translated` i `TTS` reużywają ten sam
   wiersz. Procent pochodzi z pomiaru backendu; `progress_percent=None` z komunikatem
   oznacza aktywność bez znanego procentu. Nie wyliczaj pozornego postępu z upływu czasu.
@@ -132,8 +151,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   działają jak na pełnej liście. `Esc` z wyników wraca do TITLES, gdy kandydaci są w pamięci —
   dlatego nowe hasło czyści `_candidates`. Teksty błędów tłumaczy `_PROBLEM_TEXTS`
   (`ErrorCode` → polskie zdanie), a nie warstwa domenowa. `interactive/anime.py`
-- Wyniki Anime mają jeden filtr odcinków i jedną kolejność na sesję ekranu: `A` zaznacza całą
-  podświetloną grupę (bez paczek i `other_season`), `Z` otwiera prompt zakresu w stopce, `S`
+- Anime opens a group locally; Enter/Space toggles a release and explicit Download submits
+  only the open group's draft. Each numbered episode has at most one pending variant;
+  explicit replacement shows a notice, and bulk selection preserves an existing choice.
+  `A` and `Z` skip packs, other-season releases and owner-recorded hashes. `Z` opens the range prompt; `S`
   przestawia grupy LOKALNIE przez `order_groups` fasady — bez sieci, bez drugiej reguły porządku,
   a znaczniki wracają po `info_hash`, nie po numerze wiersza —
   a `F` powtarza `search_title` bez filtra. Nowe pobrania i subskrypcje używają płaskiego
@@ -156,9 +177,17 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   klawisz specjalny przychodzi z pustym `data`, więc `Keys.Any` zlepia je w
   nierozróżnialne `"any"` — nowy klawisz MUSI dostać własny binding, inaczej nie da
   się go odróżnić. `interactive/prompts.py`
-- Wklejenie jest osobnym `Keys.BracketedPaste` → `paste:`; edytor odrzuca znaki
-  sterujące i maskuje sekrety. Left/Right/Home/End w tekście ruszają kursor,
-  poza tekstem służą nawigacji lub zmianie wartości. `interactive/settings.py`
+- Paste uses `Keys.BracketedPaste` → `paste:`; the editor rejects control characters
+  and masks secrets. Left/Right/Home/End move the text cursor in shared `TextInput`.
+  AnimeController owns explicit input focus: Enter activates the idle query; focused
+  arrows edit, Enter submits, and Esc or unselected Ctrl+C blurs without clearing.
+  Selected Ctrl+C copies without blurring. Range/group prompts open
+  focused; a second Esc closes the blurred prompt. Panel derives arrow routing from
+  that focus; Tab/Backtab always switch, preserving drafts but blurring inputs and
+  invalidating late completions. Only focused fields render a caret or selection;
+  the shared block caret highlights the existing grapheme, or one trailing space at
+  end of input, without inserting a character into the text.
+  `interactive/text_input.py`, `interactive/state.py`, `interactive/anime.py`
 - Edycja pól tekstowych ma jeden model `interactive/text_input.py`, oparty na `Buffer`
   i `Document` Prompt Toolkit. Wyszukiwarka, zakres odcinków, ścieżki Manual, ustawienia
   i formularz subskrypcji używają tego samego kursora, zaznaczenia, kasowania i undo.

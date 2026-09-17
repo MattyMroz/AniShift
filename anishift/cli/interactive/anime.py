@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
@@ -18,6 +18,7 @@ from anishift.application import (
     CatalogOrder,
     DownloadReceipt,
     EpisodeRange,
+    RefusalReason,
     ReleaseCatalog,
     ReleaseChoice,
     SearchQuery,
@@ -35,6 +36,7 @@ from anishift.cli.interactive.subscriptions import SubscriptionDraft
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError, ErrorCode
+from anishift.platform.local_control import ControlError
 from anishift.utils.logger import get_logger
 
 __all__ = ["AnimeController", "AnimeResult"]
@@ -58,7 +60,7 @@ _WORKER_NAME: Final[str] = "anishift-anime"
 _MIN_RESOLUTION_LABEL: Final[str] = "1080p"
 """Lowest release quality the catalog lists, named for the user."""
 
-_QUERY_HINT: Final[str] = "Enter szukaj · Tab widok · Esc wróć"
+_QUERY_HINT: Final[str] = "Enter edytuj · ←→ widok · Esc wróć"
 """Keyboard hint of the title input."""
 
 _TITLES_HINT: Final[str] = "Enter wybierz · Esc wróć"
@@ -72,6 +74,12 @@ _DONE_HINT: Final[str] = "dowolny klawisz: powrót"
 
 _PROBLEM_HINT: Final[str] = "Enter wróć · Esc menu"
 """Keyboard hint of the screen reporting a failure."""
+
+_RESUME_HINT: Final[str] = "Enter Wznów AniShift · Esc menu"
+"""Explicit recovery action offered after a paused download refusal."""
+
+_RESUMING: Final[str] = "Wznawiam AniShift…"
+"""Sentence shown while the owner processes an explicit resume command."""
 
 _SEARCHING_TITLE: Final[str] = "Szukam tytułu…"
 """Sentence shown while the anime catalog names the title behind the typed phrase."""
@@ -133,6 +141,9 @@ _HINT_SEPARATOR: Final[str] = " · "
 _HEADER_ROWS: Final[int] = 7
 """Rows the heading, hint and footer take away from a list without its own measurement."""
 
+_FULL_PICKER_ROWS: Final[int] = 11
+"""Minimum height retaining the heading, releases, pinned actions and help."""
+
 _STATUS_LABELS: Final[dict[TitleStatus, str]] = {
     TitleStatus.FINISHED: "zakończone",
     TitleStatus.RELEASING: "w emisji",
@@ -165,6 +176,12 @@ class _Screen(StrEnum):
     PROBLEM = "problem"
 
 
+class _Action(StrEnum):
+    SELECT_ALL = "select_all"
+    DOWNLOAD = "download"
+    BACK = "back"
+
+
 @dataclass(frozen=True, slots=True)
 class _Listing:
     """How one catalog was asked for, carried from the worker thread into the screen state."""
@@ -177,12 +194,13 @@ class _Listing:
 
 @dataclass(frozen=True, slots=True)
 class _Row:
-    """One rendered result line: a group header, or one selectable release."""
+    """One selectable group, release or explicit action."""
 
     label: str
     choice: ReleaseChoice | None = None
     group: int = 0
     detail: str = ""
+    action: _Action | None = None
 
 
 class AnimeController:
@@ -204,6 +222,7 @@ class AnimeController:
         self._worker: threading.Thread | None = None
         self._screen: _Screen = _Screen.QUERY
         self._query_input: TextInput = TextInput()
+        self._input_focused: bool = False
         self._searched: str = ""
         self._candidates: tuple[TitleCandidate, ...] = ()
         self._highlighted: int = 0
@@ -212,9 +231,12 @@ class AnimeController:
         self._episodes: EpisodeRange | None = None
         self._order: CatalogOrder = CatalogOrder.NEWEST
         self._groups: tuple[SeriesGroup, ...] = ()
+        self._opened_group: int | None = None
         self._rows: tuple[_Row, ...] = ()
         self._choices: tuple[int, ...] = ()
         self._marked: set[int] = set()
+        self._recorded: dict[str, str] = {}
+        self._downloaded: str | None = None
         self._selected: int = 0
         self._hidden: int = 0
         self._excluded: int = 0
@@ -228,8 +250,8 @@ class AnimeController:
         self._problem: str = ""
         self._suggestion: str = ""
         self._problem_return: _Screen = _Screen.QUERY
+        self._resume_available: bool = False
         self._draft: SubscriptionDraft | None = None
-        self._downloaded: bool = False
         if self._acquisition is None:
             self._screen = _Screen.PROBLEM
             self._problem = _UNAVAILABLE
@@ -237,6 +259,10 @@ class AnimeController:
     def handle_key(self, key: str) -> AnimeResult:
         """Apply one normalized terminal key without render-time I/O."""
         with self._lock:
+            if key in {"escape", "interrupt"}:
+                self._downloaded = None
+            if self._handle_input(key):
+                return AnimeResult.CONTINUE
             if self._screen is _Screen.QUERY:
                 result: AnimeResult = self._handle_query(key)
             elif self._screen is _Screen.TITLES:
@@ -246,17 +272,13 @@ class AnimeController:
             elif self._screen is _Screen.RESULTS:
                 result = self._handle_results(key)
             elif self._screen is _Screen.DONE:
-                result = AnimeResult.HOME
+                self._screen = _Screen.RESULTS
+                result = AnimeResult.CONTINUE
             else:
                 result = self._handle_problem(key)
             if self._draft is not None:
                 return AnimeResult.SUBSCRIBE
         return result
-
-    @property
-    def editing(self) -> bool:
-        """Whether arrows and command letters belong to a text field."""
-        return self._screen is _Screen.QUERY or self._range_input is not None or self._group_input is not None
 
     def take_draft(self) -> SubscriptionDraft | None:
         """Consume a prepared subscription without storing or checking it."""
@@ -265,14 +287,22 @@ class AnimeController:
             self._draft = None
             return draft
 
-    def take_downloaded(self) -> bool:
-        """Consume successful admission once, independently of rendering."""
+    def refresh_acquisitions(self, acquisitions: Sequence[Mapping[str, object]]) -> None:
+        """Apply recorded owner facts without creating a local admission history."""
         with self._lock:
-            downloaded: bool = self._downloaded
-            self._downloaded = False
-            if downloaded and self._screen is _Screen.DONE:
-                self._screen = _Screen.RESULTS
-            return downloaded
+            self._recorded = {
+                str(item["info_hash"]).casefold(): str(item.get("state", ""))
+                for item in acquisitions
+                if item.get("info_hash")
+            }
+            self._marked = {index for index in self._marked if not self._recorded_label(self._rows[index].choice)}
+
+    def take_downloaded(self) -> str | None:
+        """Consume completion only while its initiating generation remains current."""
+        with self._lock:
+            notice: str | None = self._downloaded
+            self._downloaded = None
+            return notice
 
     def render(self, columns: int, rows: int) -> Text:
         """Render the cached state of the current screen for one terminal geometry."""
@@ -289,20 +319,44 @@ class AnimeController:
         return rendered
 
     def cancel(self) -> None:
-        """Discard the result of network work still in flight."""
+        """Blur retained inputs and discard the result of network work still in flight."""
         with self._lock:
+            self._input_focused = False
             self._generation += 1
+            self._downloaded = None
             self._draft = None
-            self._downloaded = False
             if self._screen is _Screen.DONE:
                 self._screen = _Screen.RESULTS
             if self._screen is _Screen.BUSY:
-                self._screen = _Screen.QUERY
+                self._screen = self._work_return()
                 self._worker = None
 
+    @property
+    def input_focused(self) -> bool:
+        """Whether Anime currently owns cursor and selection navigation."""
+        with self._lock:
+            return self._input_focused
+
+    def _handle_input(self, key: str) -> bool:
+        editor: TextInput | None = None
+        if self._screen is _Screen.QUERY:
+            editor = self._query_input
+        elif self._screen is _Screen.RESULTS:
+            editor = self._group_input or self._range_input
+        if editor is None:
+            return False
+        if self._input_focused and key == "interrupt" and editor.handle(key):
+            return True
+        if key in {"escape", "interrupt"} and self._input_focused:
+            self._input_focused = False
+            return True
+        if not self._input_focused:
+            if key == "enter":
+                self._input_focused = True
+            return key not in {"escape", "interrupt"}
+        return editor.handle(key)
+
     def _handle_query(self, key: str) -> AnimeResult:
-        if self._query_input.handle(key):
-            return AnimeResult.CONTINUE
         if key in {"escape", "interrupt"}:
             return AnimeResult.HOME
         if key == "enter" and self._query.strip():
@@ -320,12 +374,7 @@ class AnimeController:
     @_range.setter
     def _range(self, value: str | None) -> None:
         self._range_input = None if value is None else TextInput(value)
-
-    def copy_selection(self) -> bool:
-        """Copy selected input text while leaving an unselected Ctrl+C to navigation."""
-        with self._lock:
-            editor: TextInput | None = self._query_input if self._screen is _Screen.QUERY else self._range_input
-            return editor is not None and editor.handle("interrupt")
+        self._input_focused = value is not None
 
     def _handle_titles(self, key: str) -> AnimeResult:
         if key in {"escape", "interrupt"} or not self._candidates:
@@ -342,8 +391,11 @@ class AnimeController:
             return AnimeResult.CONTINUE
         self._generation += 1
         self._worker = None
-        self._screen = _Screen.QUERY
+        self._screen = self._work_return()
         return AnimeResult.CONTINUE
+
+    def _work_return(self) -> _Screen:
+        return _Screen.RESULTS if self._busy in {_SENDING, _RESUMING} else _Screen.QUERY
 
     def _handle_results(self, key: str) -> AnimeResult:
         if self._group_input is not None:
@@ -363,6 +415,7 @@ class AnimeController:
     def _handle_empty(self, key: str) -> AnimeResult:
         if key.casefold() == "text:o" and self._candidate is not None:
             self._group_input = TextInput()
+            self._input_focused = True
         elif key in {"text:f", "text:F"} and self._episodes is not None:
             self._start_unfiltered_search()
         elif key == "enter":
@@ -371,10 +424,11 @@ class AnimeController:
 
     def _handle_group_input(self, key: str) -> None:
         editor: TextInput | None = self._group_input
-        if editor is None or editor.handle(key):
+        if editor is None:
             return
         if key in {"escape", "interrupt"}:
             self._group_input = None
+            self._input_focused = False
             return
         if key != "enter" or not editor.text.strip() or self._candidate is None:
             return
@@ -389,32 +443,62 @@ class AnimeController:
         )
         self._draft = SubscriptionDraft.from_order(order, ())
         self._group_input = None
+        self._input_focused = False
 
     def _leave_results(self) -> None:
+        if self._opened_group is not None:
+            group: int = self._opened_group
+            self._opened_group = None
+            self._choices = tuple(
+                index for index, row in enumerate(self._rows) if row.choice is None and row.action is None
+            )
+            self._selected = next(index for index in self._choices if self._rows[index].group == group)
+            return
         self._screen = _Screen.TITLES if self._candidates else _Screen.QUERY
 
     def _apply_results_key(self, key: str) -> None:
         if key in {"up", "down"}:
             self._move(-1 if key == "up" else 1)
+        elif key in {"home", "end"}:
+            self._selected = self._choices[0 if key == "home" else -1]
         elif key == "space":
             self._toggle()
         elif key == "enter":
+            self._activate_row()
+        elif key in {"text:d", "text:D"} and self._opened_group is not None:
             self._start_download()
         elif key in {"text:o", "text:O"}:
             self._start_subscription()
-        elif key in {"text:a", "text:A"}:
+        elif key in {"text:a", "text:A"} and self._opened_group is not None:
             self._mark_group()
-        elif key in {"text:z", "text:Z"}:
+        elif key in {"text:z", "text:Z"} and self._opened_group is not None:
             self._range = ""
         elif key in {"text:s", "text:S"}:
             self._reorder()
         elif key in {"text:f", "text:F"} and self._episodes is not None:
             self._start_unfiltered_search()
 
+    def _activate_row(self) -> None:
+        row: _Row = self._rows[self._selected]
+        if self._opened_group is None:
+            self._opened_group = row.group
+            self._choices = tuple(
+                index
+                for index, item in enumerate(self._rows)
+                if item.group == row.group and (item.choice is not None or item.action is not None)
+            )
+            self._selected = self._choices[0]
+        elif row.action is _Action.SELECT_ALL:
+            self._mark_group()
+        elif row.action is _Action.DOWNLOAD:
+            self._start_download()
+        elif row.action is _Action.BACK:
+            self._leave_results()
+        else:
+            self._toggle()
+
     def _handle_range(self, key: str) -> AnimeResult:
         typed: str = self._range or ""
-        if self._range_input is not None and self._range_input.handle(key):
-            return AnimeResult.CONTINUE
         if key in {"escape", "interrupt"}:
             self._range = None
         elif key == "enter":
@@ -423,8 +507,14 @@ class AnimeController:
         return AnimeResult.CONTINUE
 
     def _handle_problem(self, key: str) -> AnimeResult:
-        if key != "enter":
+        if key in {"escape", "interrupt"}:
             return AnimeResult.HOME
+        if key != "enter":
+            return AnimeResult.CONTINUE
+        if self._resume_available:
+            generation: int = self._start_work(_RESUMING)
+            self._spawn(self._resume, (generation,))
+            return AnimeResult.CONTINUE
         self._screen = self._problem_return
         self._problem = ""
         self._suggestion = ""
@@ -435,10 +525,38 @@ class AnimeController:
         self._selected = self._choices[(position + delta) % len(self._choices)]
 
     def _toggle(self) -> None:
+        row: _Row = self._rows[self._selected]
+        choice: ReleaseChoice | None = row.choice
+        if choice is None:
+            return
+        recorded: str = self._recorded_label(choice)
+        if recorded:
+            self._notice = f"{recorded} · ponowienie przez Historię"
+            return
         if self._selected in self._marked:
             self._marked.discard(self._selected)
             return
+        alternatives: set[int] = {
+            index
+            for index in self._marked
+            if _is_markable(choice, None)
+            and self._rows[index].group == row.group
+            and (other := self._rows[index].choice) is not None
+            and _is_markable(other, None)
+            and other.episode == choice.episode
+        }
+        self._marked.difference_update(alternatives)
+        if alternatives:
+            self._notice = "Zmieniono wersję odcinka"
         self._marked.add(self._selected)
+
+    def _recorded_label(self, choice: ReleaseChoice | None) -> str:
+        if choice is None:
+            return ""
+        state: str | None = self._recorded.get(choice.release.info_hash.casefold())
+        if state is None:
+            return ""
+        return "Pobrano" if state == "complete" else ("Zamówiono" if state == "accepted" else "Sprawdź historię")
 
     def _apply_range(self, typed: str) -> None:
         episodes: EpisodeRange | None = _parse_range(typed)
@@ -449,34 +567,64 @@ class AnimeController:
 
     def _mark_group(self, episodes: EpisodeRange | None = None) -> None:
         group: int = self._rows[self._selected].group
-        marked: tuple[int, ...] = tuple(
+        candidates: tuple[int, ...] = tuple(
             index
             for index in self._choices
-            if self._rows[index].group == group and _is_markable(self._rows[index].choice, episodes)
+            if self._rows[index].group == group
+            and _is_markable(self._rows[index].choice, episodes)
+            and not self._recorded_label(self._rows[index].choice)
         )
+        selected: dict[Decimal, int] = {
+            choice.episode: index
+            for index in candidates
+            if index in self._marked and (choice := self._rows[index].choice) is not None and choice.episode is not None
+        }
+        for index in candidates:
+            choice = self._rows[index].choice
+            if choice is not None and choice.episode is not None:
+                selected.setdefault(choice.episode, index)
+        marked: tuple[int, ...] = tuple(selected.values())
         self._marked.update(marked)
         wanted: int | None = None if episodes is None else _range_size(episodes)
-        if wanted is None or len(marked) >= wanted:
-            self._notice = f"zaznaczono {len(marked)}"
-            return
-        self._notice = f"zaznaczono {len(marked)} z {wanted}"
+        self._notice = f"zaznaczono {len(marked)}"
+        if wanted is not None and len(marked) < wanted:
+            self._notice += f" z {wanted}"
+        if len(candidates) > len(marked):
+            self._notice += f" · pominięto alternatywy: {len(candidates) - len(marked)}"
 
     def _reorder(self) -> None:
         marked: frozenset[str] = frozenset(
             choice.release.info_hash for index in self._marked if (choice := self._rows[index].choice) is not None
         )
-        highlighted: ReleaseChoice | None = self._rows[self._selected].choice
+        highlighted: _Row = self._rows[self._selected]
+        group: SeriesGroup = self._groups[highlighted.group]
         self._order = CatalogOrder.SEEDERS if self._order is CatalogOrder.NEWEST else CatalogOrder.NEWEST
         ranked: bool = any(group.matches_title for group in self._groups)
         self._groups = order_groups(self._groups, self._order, ranked=ranked)
         self._rows, self._choices = _catalog_rows(self._groups)
-        self._marked = {index for index in self._choices if _has_hash(self._rows[index].choice, marked)}
-        self._selected = _same_choice(self._rows, self._choices, highlighted)
+        self._marked = {index for index, row in enumerate(self._rows) if _has_hash(row.choice, marked)}
+        self._selected = next(index for index in self._choices if self._groups[self._rows[index].group] is group)
+        if self._opened_group is not None:
+            self._opened_group = None
+            self._activate_row()
+            self._selected = next(
+                (
+                    index
+                    for index in self._choices
+                    if self._rows[index].action == highlighted.action and self._rows[index].choice == highlighted.choice
+                ),
+                self._selected,
+            )
 
     def _start_search(self, text: str) -> None:
         self._searched = text
         self._candidates = ()
         self._candidate = None
+        self._groups = ()
+        self._rows = ()
+        self._choices = ()
+        self._marked.clear()
+        self._opened_group = None
         self._context = None
         query: SearchQuery = parse_query(text)
         self._episodes = query.episodes
@@ -485,7 +633,15 @@ class AnimeController:
 
     def _start_title_search(self) -> None:
         candidate: TitleCandidate = self._candidates[self._highlighted]
+        if candidate == self._candidate and self._rows:
+            self._screen = _Screen.RESULTS
+            return
         self._candidate = candidate
+        self._groups = ()
+        self._rows = ()
+        self._choices = ()
+        self._marked.clear()
+        self._opened_group = None
         generation: int = self._start_work(_SEARCHING_RELEASES)
         self._spawn(self._search_title, (candidate, self._episodes, self._order, generation))
 
@@ -499,18 +655,24 @@ class AnimeController:
 
     def _start_download(self) -> None:
         chosen: tuple[ReleaseChoice, ...] = tuple(
-            choice for index in sorted(self._marked) if (choice := self._rows[index].choice) is not None
+            choice
+            for index in self._choices
+            if index in self._marked
+            and (choice := self._rows[index].choice) is not None
+            and not self._recorded_label(choice)
         )
         if not chosen:
-            highlighted: ReleaseChoice | None = self._rows[self._selected].choice
-            if highlighted is None:
-                return
-            chosen = (highlighted,)
+            self._notice = "Zaznacz co najmniej jedno wydanie"
+            return
         generation: int = self._start_work(_SENDING)
         self._spawn(self._download, (chosen, generation))
 
     def _start_subscription(self) -> None:
-        choice: ReleaseChoice | None = self._rows[self._selected].choice
+        row: _Row = self._rows[self._selected]
+        group: SeriesGroup = self._groups[row.group]
+        choice: ReleaseChoice | None = row.choice
+        if self._opened_group is None:
+            choice = next((item for item in group.choices if _is_markable(item, None)), group.choices[0])
         if choice is None:
             return
         if choice.name.is_pack or choice.episode is None:
@@ -519,7 +681,6 @@ class AnimeController:
         if choice.other_season:
             self._notice = _OTHER_SEASON
             return
-        group: SeriesGroup = self._groups[self._rows[self._selected].group]
         order: SubscriptionOrder = SubscriptionOrder(
             group.series,
             group.group,
@@ -529,7 +690,7 @@ class AnimeController:
             anilist_id=self._candidate.anilist_id if self._candidate is not None else None,
         )
         numbers: tuple[Decimal, ...] = tuple(
-            item.episode for item in group.choices if item.episode is not None and not item.other_season
+            item.episode for item in group.choices if item.episode is not None and _is_markable(item, None)
         )
         self._draft = SubscriptionDraft.from_order(order, numbers)
 
@@ -540,7 +701,10 @@ class AnimeController:
         return f"{group.series} {group.group}"
 
     def _start_work(self, sentence: str) -> int:
+        self._input_focused = False
         self._generation += 1
+        self._downloaded = None
+        self._resume_available = False
         self._screen = _Screen.BUSY
         self._busy = sentence
         return self._generation
@@ -559,6 +723,9 @@ class AnimeController:
             candidates: tuple[TitleCandidate, ...] = acquisition.find_titles(title)
         except (AniShiftError, OSError) as problem:
             logger.warning("Anime title lookup failed", error_class=type(problem).__name__)
+            if _code(problem) is not ErrorCode.TITLE_CATALOG_FAILED:
+                self._report(generation, problem, _Screen.QUERY)
+                return
             self._search(text, _CATALOG_DOWN, generation)
             return
         if not candidates:
@@ -625,10 +792,37 @@ class AnimeController:
             logger.warning("Anime download failed", error_class=type(problem).__name__)
             self._report(generation, problem, _Screen.RESULTS)
             return
-        self._show_done(generation, f"Wysłano {receipt.count} do qBittorrenta → {_safe(receipt.directory.name)}")
+        sentence: str = f"Wysłano {receipt.count} do qBittorrenta → {_safe(receipt.directory.name)}"
+        if isinstance(acquisition, ResidentSession):
+            sentence = (
+                f"Przyjęto {receipt.count} zamówień · pobieranie w prywatnym kliencie AniShift"
+                if receipt.count > 0
+                else "Zamówienia już zapisane · sprawdź prywatny klient AniShift"
+            )
+            if receipt.count < len(choices):
+                sentence += f" · już zapisane: {len(choices) - receipt.count}"
+        self._show_done(generation, sentence, choices)
+
+    def _resume(self, generation: int) -> None:
+        resident: ResidentSession | None = self._resident
+        if resident is None:
+            return
+        try:
+            if resident.command("set_auto", {"enabled": True}).get("auto_enabled") is not True:
+                self._fail(generation, "Brak potwierdzenia wznowienia AniShift", "", _Screen.RESULTS, resume=True)
+                return
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("Anime resume failed", error_class=type(problem).__name__)
+            self._report(generation, problem, _Screen.RESULTS, resume=True)
+            return
         with self._lock:
-            if generation == self._generation:
-                self._downloaded = True
+            if generation != self._generation:
+                return
+            self._worker = None
+            self._screen = _Screen.RESULTS
+            self._problem = ""
+            self._suggestion = ""
+        self._invalidate()
 
     def _show_titles(self, generation: int, candidates: tuple[TitleCandidate, ...]) -> None:
         with self._lock:
@@ -650,6 +844,7 @@ class AnimeController:
             self._context = listing.context
             self._fallback = listing.fallback
             self._groups = catalog.groups
+            self._opened_group = None
             self._rows, self._choices = _catalog_rows(catalog.groups)
             self._hidden = catalog.hidden
             self._excluded = catalog.excluded
@@ -661,21 +856,32 @@ class AnimeController:
             self._screen = _Screen.RESULTS
         self._invalidate()
 
-    def _show_done(self, generation: int, sentence: str) -> None:
+    def _show_done(self, generation: int, sentence: str, choices: Sequence[ReleaseChoice] = ()) -> None:
         with self._lock:
             if generation != self._generation:
                 return
             self._worker = None
             self._done = sentence
+            hashes: frozenset[str] = frozenset(choice.release.info_hash for choice in choices)
+            self._marked = {index for index in self._marked if not _has_hash(self._rows[index].choice, hashes)}
+            self._downloaded = sentence
             self._screen = _Screen.DONE
         self._invalidate()
 
-    def _report(self, generation: int, problem: AniShiftError | OSError | ValueError, back: _Screen) -> None:
+    def _report(
+        self, generation: int, problem: AniShiftError | OSError | ValueError, back: _Screen, *, resume: bool = False
+    ) -> None:
         """State one failure of this screen in Polish and return the user to *back*."""
         sentence, hint = _stated(problem)
-        self._fail(generation, sentence, hint, back)
+        resume = resume or (
+            self._resident is not None
+            and back is _Screen.RESULTS
+            and isinstance(problem, ControlError)
+            and problem.reason == RefusalReason.PAUSED.value
+        )
+        self._fail(generation, sentence, hint, back, resume=resume)
 
-    def _fail(self, generation: int, sentence: str, suggestion: str, back: _Screen) -> None:
+    def _fail(self, generation: int, sentence: str, suggestion: str, back: _Screen, *, resume: bool = False) -> None:
         with self._lock:
             if generation != self._generation:
                 return
@@ -683,6 +889,7 @@ class AnimeController:
             self._problem = sentence
             self._suggestion = suggestion
             self._problem_return = back
+            self._resume_available = resume
             self._screen = _Screen.PROBLEM
         self._invalidate()
 
@@ -690,10 +897,11 @@ class AnimeController:
         content: Text = _header(_TITLE, columns, rows, 2) if rows >= _HEADER_ROWS else Text()
         left: int = max((columns - min(max(len(self._query) + 3, 32), columns)) // 2, 0)
         width: int = max(columns - left - 3, 1)
-        content.append(f"{' ' * left}> ", style="white_bold")
-        content.append_text(self._query_input.render(width))
+        content.append(f"{' ' * left}> ", style="brand_accent" if self._input_focused else "gray")
+        content.append_text(self._query_input.render(width, focused=self._input_focused))
         content.append("\n")
-        return _finish(content, _QUERY_HINT, columns, rows)
+        hint: str = "Enter szukaj · Esc zakończ · Tab widok" if self._input_focused else _QUERY_HINT
+        return _finish(content, hint, columns, rows)
 
     def _render_titles(self, columns: int, rows: int) -> Text:
         labels: tuple[str, ...] = tuple(
@@ -713,35 +921,72 @@ class AnimeController:
         content: Text = _header(_TITLE, columns, rows, 2)
         left: int = max((columns - len(self._busy)) // 2, 0)
         content.append(f"{' ' * left}{self._busy}\n", style="brand_accent")
-        return _finish(content, _BUSY_HINT, columns, rows)
+        hint: str = "Esc wróć · polecenie pozostaje w toku" if self._busy == _RESUMING else _BUSY_HINT
+        return _finish(content, hint, columns, rows)
 
     def _render_results(self, columns: int, rows: int) -> Text:
-        subtitle: str = self._title_header()
+        subtitle: str = (
+            _group_label(self._groups[self._opened_group]) if self._opened_group is not None else self._title_header()
+        )
         if not self._choices:
             return self._render_empty(columns, rows, subtitle)
-        labels: tuple[str, ...] = tuple(_row_label(row, max(columns - 8, 1)) for row in self._rows)
+        if rows < _FULL_PICKER_ROWS:
+            return self._render_compact_results(columns, rows)
+        labels: tuple[str, ...] = tuple(self._result_label(row, max(columns - 8, 1)) for row in self._rows)
         left: int = max((columns - min(max((len(label) for label in labels), default=1) + 8, columns)) // 2, 0)
         heading: int = 2 + int(bool(subtitle))
-        lines: tuple[str, ...] = _wrapped_hint(self._footer(), max(columns - 2, 1))[: max(rows - heading - 2, 1)]
-        start, end = _visible_window(len(self._rows), self._selected, max(rows - 1, 1), heading + len(lines))
-        content: Text = _header(_TITLE, columns, rows, end - start + len(lines) - 1 + int(bool(subtitle)), subtitle)
-        for index in range(start, end):
+        lines: tuple[str | Text, ...] = (
+            self._range_footer(columns)
+            if self._range_input is not None
+            else _wrapped_hint(self._footer(), max(columns - 2, 1))[: max(rows - heading - 2, 1)]
+        )
+        actions: tuple[int, ...] = tuple(index for index in self._choices if self._rows[index].action is not None)
+        entries: tuple[int, ...] = tuple(index for index in self._choices if self._rows[index].action is None)
+        position: int = entries.index(self._selected) if self._selected in entries else len(entries) - 1
+        start, end = _visible_window(len(entries), position, max(rows - 1, 1), heading + len(lines) + len(actions))
+        content: Text = _header(
+            _TITLE, columns, rows, end - start + len(actions) + len(lines) - 1 + int(bool(subtitle)), subtitle
+        )
+        for index in (*entries[start:end], *actions):
             self._append_row(content, left, labels[index], index)
+        return with_footer(content, lines, columns, rows)
+
+    def _range_footer(self, columns: int) -> tuple[str | Text, ...]:
+        prompt: Text = Text(f"{_RANGE_PROMPT}: ", style="gray")
         if self._range_input is not None:
-            prompt: Text = Text(f"{_RANGE_PROMPT}: ", style="gray")
-            content.append(" " * left)
-            content.append_text(prompt)
-            content.append_text(self._range_input.render(max(columns - left - prompt.cell_len, 1)))
-        else:
-            return with_footer(content, lines, columns, rows)
-        return with_footer(content, ("Enter zatwierdź · Esc anuluj",), columns, rows)
+            prompt.append_text(
+                self._range_input.render(max(columns - 2 - prompt.cell_len, 1), focused=self._input_focused)
+            )
+        hint: str = "Enter zatwierdź · Esc zakończ" if self._input_focused else "Enter edytuj · Esc anuluj"
+        return prompt, hint
+
+    def _result_label(self, row: _Row, width: int) -> str:
+        if row.action is _Action.DOWNLOAD:
+            count: int = len(self._marked.intersection(self._choices))
+            return f"Pobierz ({count})"
+        recorded: str = self._recorded_label(row.choice)
+        if recorded:
+            return _truncate_right(f"{recorded} · {row.label}", width)
+        return _row_label(row, width)
+
+    def _render_compact_results(self, columns: int, rows: int) -> Text:
+        position: int = self._choices.index(self._selected)
+        footer: tuple[str | Text, ...] = (
+            self._range_footer(columns) if self._range_input is not None else ("Enter wybierz · Esc wróć",)
+        )
+        start, end = _visible_window(len(self._choices), position, rows, 1 + len(footer))
+        content: Text = Text()
+        for index in self._choices[start:end]:
+            self._append_row(content, 0, self._result_label(self._rows[index], max(columns - 8, 1)), index)
+        return with_footer(content, footer, columns, rows)
 
     def _render_empty(self, columns: int, rows: int, subtitle: str) -> Text:
         if self._group_input is not None:
             content: Text = _header(_TITLE, columns, rows, 2, subtitle)
-            content.append("Grupa wydająca: ", style="white_bold")
-            content.append_text(self._group_input.render(max(columns - 17, 1)))
-            return _finish(content, "Enter wybierz zakres · Esc anuluj", columns, rows)
+            content.append("Grupa wydająca: ", style="brand_accent" if self._input_focused else "gray")
+            content.append_text(self._group_input.render(max(columns - 17, 1), focused=self._input_focused))
+            hint: str = "Enter wybierz zakres · Esc zakończ" if self._input_focused else "Enter edytuj · Esc anuluj"
+            return _finish(content, hint, columns, rows)
         sentence: str = self._empty_sentence()
         content = _header(_TITLE, columns, rows, 2, subtitle)
         left: int = max((columns - len(sentence)) // 2, 0)
@@ -765,14 +1010,13 @@ class AnimeController:
         return tuple(hints)
 
     def _append_row(self, content: Text, left: int, label: str, index: int) -> None:
-        if self._rows[index].choice is None:
-            content.append(f"{' ' * left}{label}\n", style="white_bold")
-            return
         style: str = "brand_accent" if index == self._selected else "white_bold"
-        marker: str = "[x] " if index in self._marked else "[ ] "
+        marker: str = ""
+        if self._rows[index].choice is not None:
+            marker = f"{'[x]' if index in self._marked else '[ ]'} {_BULLET} "
         content.append(" " * left)
         content.append(f"{_POINTER} " if index == self._selected else "  ", style=style)
-        content.append(f"{marker}{_BULLET} {label}\n", style=style)
+        content.append(f"{marker}{label}\n", style=style)
 
     def _render_done(self, columns: int, rows: int) -> Text:
         content: Text = _header(_TITLE, columns, rows, 2)
@@ -788,7 +1032,7 @@ class AnimeController:
         left: int = max((columns - min(max((len(line) for line in lines), default=1), columns)) // 2, 0)
         for index, line in enumerate(lines):
             content.append(f"{' ' * left}{line}\n", style="error" if index == 0 else "gray")
-        return _finish(content, _PROBLEM_HINT, columns, rows)
+        return _finish(content, _RESUME_HINT if self._resume_available else _PROBLEM_HINT, columns, rows)
 
     def _title_header(self) -> str:
         candidate: TitleCandidate | None = self._candidate
@@ -803,28 +1047,36 @@ class AnimeController:
         return _HINT_SEPARATOR.join(part for part in parts if part)
 
     def _footer(self) -> str:
-        if self._range is not None:
-            return f"{_RANGE_PROMPT}: {self._range}▌"
+        if not self._notice and self._choices and self._opened_group is not None:
+            choice: ReleaseChoice | None = self._rows[self._selected].choice
+            if (
+                choice is not None
+                and sum(
+                    _choice_label(other) == _choice_label(choice) for other in self._groups[self._opened_group].choices
+                )
+                > 1
+            ):
+                return f"{_safe(choice.release.title)} · Enter zaznacz · D pobierz · Esc wróć"
         return self._notice or self._results_hint()
 
     def _results_hint(self) -> str:
         hints: list[str] = [self._fallback] if self._fallback else []
-        hints.append(f"zaznaczone: {len(self._marked)}")
+        if self._opened_group is not None:
+            hints.append(f"zaznaczone: {len(self._marked.intersection(self._choices))}")
         if self._episodes is not None:
             hints.append(f"filtr: odc. {self._episodes.text}")
         hints.extend(self._counters())
         if self._filtered:
             hints.append(f"poza filtrem: {self._filtered}")
-        hints.extend(self._marking_hints())
-        hints.extend(("Enter pobierz", "O subskrybuj", self._order_hint()))
+        if self._opened_group is not None:
+            hints.extend(("Space/Enter zaznacz", "A wszystkie", "Z zakres", "D pobierz"))
+        else:
+            hints.append("Enter otwórz grupę")
+        hints.extend(("O subskrybuj", self._order_hint()))
         if self._episodes is not None:
             hints.append("F pokaż wszystkie")
         hints.append("Esc wróć")
         return _HINT_SEPARATOR.join(hints)
-
-    def _marking_hints(self) -> tuple[str, ...]:
-        finished: bool = self._candidate is not None and self._candidate.status is TitleStatus.FINISHED
-        return ("A cała grupa", "Space/Z zaznacz") if finished else ("Space/A/Z zaznacz",)
 
     def _order_hint(self) -> str:
         return "S najnowsze" if self._order is CatalogOrder.SEEDERS else "S seedy"
@@ -837,21 +1089,42 @@ class AnimeController:
 
 
 def _catalog_rows(groups: Sequence[SeriesGroup]) -> tuple[tuple[_Row, ...], tuple[int, ...]]:
-    """Flatten the listed groups into rendered rows and the indexes of the selectable ones."""
+    """Build catalog rows and the indexes of the initial group page."""
     rows: list[_Row] = []
     choices: list[int] = []
     for index, group in enumerate(groups):
+        if not group.choices:
+            continue
+        choices.append(len(rows))
         rows.append(_Row(_group_label(group), None, index, _newest_detail(group)))
-        for choice in group.choices:
-            choices.append(len(rows))
-            rows.append(_Row(_choice_label(choice), choice, index))
+        labels: tuple[str, ...] = tuple(_choice_label(choice) for choice in group.choices)
+        for choice, label in zip(group.choices, labels, strict=True):
+            identified: str = label
+            if labels.count(label) > 1:
+                date: str = choice.release.published.strftime("%d.%m.%Y %H:%M") if choice.release.published else ""
+                identified = f"{label} · {date} {_safe(choice.release.title)}".strip()
+            rows.append(_Row(identified, choice, index))
+        rows.extend(
+            (
+                _Row("Zaznacz wszystkie", group=index, action=_Action.SELECT_ALL),
+                _Row("Pobierz", group=index, action=_Action.DOWNLOAD),
+                _Row("Cofnij", group=index, action=_Action.BACK),
+            )
+        )
     return tuple(rows), tuple(choices)
 
 
 def _group_label(group: SeriesGroup) -> str:
     """Name one listed group by its release group, subtitle language, and series."""
     language: str = f"{_HINT_SEPARATOR}{group.subtitle_language.upper()}" if group.subtitle_language else ""
-    return f"[{_safe(group.group)}{language}] {_safe(group.series)}"
+    episodes: int = len({choice.episode for choice in group.choices if _is_markable(choice, None)})
+    count: int = len(group.choices)
+    noun: str = (
+        "wydanie"
+        if count == 1
+        else ("wydania" if count % 10 in {2, 3, 4} and count % 100 not in {12, 13, 14} else "wydań")
+    )
+    return f"[{_safe(group.group)}{language}] {_safe(group.series)} · {episodes} odc. / {count} {noun}"
 
 
 def _newest_detail(group: SeriesGroup) -> str:
@@ -864,6 +1137,7 @@ def _newest_detail(group: SeriesGroup) -> str:
 def _choice_label(choice: ReleaseChoice) -> str:
     facts: tuple[str, ...] = (
         _episode_label(choice),
+        f"v{choice.name.version}" if choice.name.version is not None else "",
         f"{choice.name.resolution}p" if choice.name.resolution is not None else "",
         f"{choice.release.seeders} seedów",
         _safe(choice.release.size_text),
@@ -873,7 +1147,7 @@ def _choice_label(choice: ReleaseChoice) -> str:
 
 def _episode_label(choice: ReleaseChoice) -> str:
     if choice.name.is_pack:
-        return "paczka"
+        return "cała paczka"
     episode: Decimal | None = choice.episode
     if episode is None:
         return "wydanie"
@@ -937,22 +1211,13 @@ def _range_size(episodes: EpisodeRange) -> int | None:
 
 def _is_markable(choice: ReleaseChoice | None, episodes: EpisodeRange | None) -> bool:
     """Whether one release is a numbered episode of the chosen season inside *episodes*."""
-    if choice is None or choice.episode is None or choice.other_season:
+    if choice is None or choice.name.is_pack or choice.episode is None or choice.other_season:
         return False
     return episodes is None or episodes.contains(choice.episode)
 
 
 def _has_hash(choice: ReleaseChoice | None, hashes: frozenset[str]) -> bool:
     return choice is not None and choice.release.info_hash in hashes
-
-
-def _same_choice(rows: Sequence[_Row], choices: Sequence[int], wanted: ReleaseChoice | None) -> int:
-    """Return the row holding *wanted* after a reorder, or the first selectable row."""
-    if wanted is not None:
-        for index in choices:
-            if _has_hash(rows[index].choice, frozenset({wanted.release.info_hash})):
-                return index
-    return choices[0] if choices else 0
 
 
 def _row_label(row: _Row, width: int) -> str:
@@ -1008,15 +1273,50 @@ def _truncate_right(value: str, width: int) -> str:
 
 
 def _stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:
-    """Return the Polish sentence and hint of *problem*, falling back to its own text."""
+    """Translate domain codes preserved locally or carried by a resident refusal."""
     from anishift.cli.interactive.state import refusal_text  # noqa: PLC0415
 
-    if isinstance(problem, AniShiftError):
-        stated: tuple[str, str] | None = _PROBLEM_TEXTS.get(problem.context.code)
-        if stated is not None:
-            return stated
-        return refusal_text(problem), _safe(problem.context.suggestion)
-    return refusal_text(problem), ""
+    if not isinstance(problem, AniShiftError):
+        return refusal_text(problem), ""
+    if isinstance(problem, ControlError) and problem.reason == "download_recorded":
+        counts: dict[str, int] | None = _download_counts(problem)
+        if counts is None:
+            return "Nie można potwierdzić wyniku zamówienia", "Sprawdź prywatny klient AniShift i log"
+        return (
+            f"Przyjęto: {counts['sent']} · już przyjęte: {counts['accepted']}"
+            f" · wynik przekazania niepotwierdzony: {counts['uncertain']}",
+            "Sprawdź prywatny klient AniShift i log",
+        )
+    code: ErrorCode | None = _code(problem)
+    stated: tuple[str, str] | None = _PROBLEM_TEXTS.get(code) if code is not None else None
+    if stated is not None:
+        if isinstance(problem, ControlError) and code in {
+            ErrorCode.TORRENT_CLIENT_UNAVAILABLE,
+            ErrorCode.TORRENT_CLIENT_UNAUTHORIZED,
+            ErrorCode.TORRENT_CLIENT_REFUSED,
+        }:
+            return stated[0], "Sprawdź prywatny klient AniShift i log"
+        return stated
+    return refusal_text(problem), "" if isinstance(problem, ControlError) else _safe(problem.context.suggestion)
+
+
+def _download_counts(problem: AniShiftError | OSError | ValueError) -> dict[str, int] | None:
+    if not isinstance(problem, ControlError) or problem.reason != "download_recorded":
+        return None
+    keys: tuple[str, ...] = ("sent", "accepted", "uncertain")
+    counts: dict[str, int] = {
+        key: value for key in keys if type(value := problem.context.details.get(key)) is int and value >= 0
+    }
+    return counts if len(counts) == len(keys) else None
+
+
+def _code(problem: AniShiftError | OSError | ValueError) -> ErrorCode | None:
+    if isinstance(problem, ControlError):
+        try:
+            return ErrorCode(problem.reason)
+        except ValueError:
+            return None
+    return problem.context.code if isinstance(problem, AniShiftError) else None
 
 
 def _safe(value: str) -> str:

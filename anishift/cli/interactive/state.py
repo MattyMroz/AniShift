@@ -36,12 +36,12 @@ from anishift.cli.interactive.menu import (
     with_footer,
     wrap_entries,
 )
-from anishift.cli.interactive.progress import RichRunProgress
+from anishift.cli.interactive.progress import ObservedProgressTimer, RichRunProgress, render_material_progress
 from anishift.cli.interactive.subscriptions import SubscriptionDraft
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
-from anishift.platform.local_control import ControlError
+from anishift.platform.local_control import ControlError, ControlErrorCode
 from anishift.platform.tray import open_path as _open_path
 
 __all__ = ["StateController", "StateResult", "refusal_text"]
@@ -82,36 +82,6 @@ _TABS: Final[tuple[str, ...]] = ("Anime", "Subskrypcje", "Przetwarzanie", "Bibli
 _MINIMUM_HEADER_ROWS: Final[int] = 12
 """Minimum height retaining the heading as well as tabs and actions."""
 
-_TRANSFER_LABELS: Final[dict[str, str]] = {
-    "downloading": "pobieranie",
-    "forcedDL": "pobieranie",
-    "stalledDL": "czeka na źródła",
-    "metaDL": "szuka metadanych",
-    "forcedMetaDL": "szuka metadanych",
-    "queuedDL": "w kolejce",
-    "pausedDL": "wstrzymane",
-    "stoppedDL": "wstrzymane",
-    "checkingDL": "sprawdzanie",
-    "checkingUP": "sprawdzanie",
-    "checkingResumeData": "sprawdzanie",
-    "moving": "przenoszenie",
-    "uploading": "pobrane",
-    "stalledUP": "pobrane",
-    "forcedUP": "pobrane",
-    "queuedUP": "pobrane",
-    "pausedUP": "pobrane",
-    "stoppedUP": "pobrane",
-    "missingFiles": "brakuje plików",
-    "error": "błąd klienta",
-}
-"""User-facing download states returned by qBittorrent."""
-
-_ATTENTION_LABEL: Final[str] = "wymaga uwagi"
-"""Label of a release that recorded a problem, whether or not the client still reports its transfer."""
-
-_UNCONFIRMED_LABEL: Final[str] = "brak potwierdzenia klienta"
-"""Label of an ordered release the torrent client does not report at all."""
-
 _RECONNECT_S: Final[float] = 2.0
 """Delay before reconnecting a lost panel event stream."""
 
@@ -147,6 +117,20 @@ _REFUSAL_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
 
 _UNKNOWN_REFUSAL: Final[str] = "Proces w tle odrzucił polecenie"
 """Polish sentence for a refusal this version cannot name any more precisely."""
+
+_CONTROL_PROBLEMS: Final[Mapping[ControlErrorCode, str]] = MappingProxyType(
+    {
+        ControlErrorCode.STALE_INSTANCE: "Proces w tle został uruchomiony ponownie · otwórz panel ponownie",
+        ControlErrorCode.UNKNOWN_COMMAND: "Proces w tle nie obsługuje tego polecenia",
+        ControlErrorCode.INVALID_PAYLOAD: "Proces w tle odrzucił niepoprawne dane polecenia",
+        ControlErrorCode.STALE_PREVIEW: "Podgląd jest nieaktualny · przygotuj go ponownie",
+        ControlErrorCode.CONFLICT: "Polecenie koliduje z bieżącą pracą",
+        ControlErrorCode.ALREADY_PROCESSING: "Ten odcinek jest już przetwarzany",
+        ControlErrorCode.REFUSED: _UNKNOWN_REFUSAL,
+        ControlErrorCode.INTERNAL: "Wewnętrzny błąd procesu w tle · sprawdź log",
+    }
+)
+"""Polish fallback for each public control code when no more precise reason is known."""
 
 _SUBSCRIPTION_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -200,7 +184,7 @@ _DELETION_STATUSES: Final[Mapping[str, str]] = MappingProxyType(
 
 
 def refusal_text(problem: BaseException) -> str:
-    """Return the Polish sentence for a refusal, degrading to its sanitized message."""
+    """Translate ControlError reasons and codes, otherwise return sanitized exception text."""
     reason: str = problem.reason if isinstance(problem, ControlError) else ""
     if reason in _RETRY_PROBLEMS:
         return _RETRY_PROBLEMS[reason]
@@ -210,7 +194,17 @@ def refusal_text(problem: BaseException) -> str:
         if isinstance(numbers, list) and all(isinstance(number, str) for number in numbers):
             suffix = f" · odcinki: {_safe_text(', '.join(numbers))}"
         return _SUBSCRIPTION_PROBLEMS[reason] + suffix
-    return _REFUSAL_TEXTS.get(reason) or _LIBRARY_PROBLEMS.get(reason) or _safe_text(str(problem)) or _UNKNOWN_REFUSAL
+    fallback: str = _safe_text(str(problem))
+    if isinstance(problem, ControlError):
+        fallback = (
+            _CONTROL_PROBLEMS[problem.code]
+            if problem.answered
+            else (
+                "Brak potwierdzonej odpowiedzi procesu w tle · sprawdź, czy proces działa, "
+                "oraz Historię i log przed ponowieniem"
+            )
+        )
+    return _REFUSAL_TEXTS.get(reason) or _LIBRARY_PROBLEMS.get(reason) or fallback or _UNKNOWN_REFUSAL
 
 
 class _Tab(IntEnum):
@@ -244,6 +238,7 @@ class StateController:
         self._snapshot: Mapping[str, object] = {}
         self._subscriptions: list[Mapping[str, object]] = []
         self._runs: dict[str, tuple[str, RichRunProgress]] = {}
+        self._download_timers: dict[str, ObservedProgressTimer] = {}
         self._tab: int = _Tab.PROGRESS
         self._selected: int = 0
         self._positions: dict[int, int] = {}
@@ -444,7 +439,25 @@ class StateController:
 
     def attach_anime(self, controller: AnimeController) -> None:
         """Reuse the session's one search controller inside the Anime tab."""
-        self._anime = controller
+        with self._lock:
+            self._anime = controller
+            controller.refresh_acquisitions(_rows(self._snapshot.get("acquisitions")))
+
+    def poll(self) -> None:
+        """Consume an initiating Anime completion on the visible panel's event loop."""
+        with self._lock:
+            if self._anime is None or self._tab != _Tab.ANIME:
+                return
+            notice: str | None = self._anime.take_downloaded()
+            if notice is not None:
+                self.show_processing()
+                self._notify(notice)
+
+    def suspend(self) -> None:
+        """Invalidate child completion navigation when the enclosing panel is hidden."""
+        with self._lock:
+            if self._anime is not None:
+                self._anime.cancel()
 
     def _switch_tab(self, tab: int) -> None:
         self._view_generation += 1
@@ -471,17 +484,11 @@ class StateController:
             self._follow_cursor[viewport] = False
         self._invalidate()
 
-    def poll(self) -> None:
-        """Show an admitted download only while its initiating view remains active."""
-        with self._lock:
-            if self._anime is not None and self._anime.take_downloaded() and self._tab == _Tab.ANIME:
-                self.show_processing()
-
     def _anime_key(self, key: str) -> StateResult:
         anime: AnimeController | None = self._anime
         if anime is None:
             return StateResult.CONTINUE
-        if key in {"tab", "backtab"} or (key in {"left", "right"} and not anime.editing):
+        if key in {"tab", "backtab"} or (key in {"left", "right"} and not anime.input_focused):
             self._switch_tab((self._tab + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS))
             self._invalidate()
             return StateResult.CONTINUE
@@ -595,21 +602,12 @@ class StateController:
         return StateResult.CONTINUE
 
     def _processing_action(self, key: str) -> None:
-        materials: list[Mapping[str, object]] = _rows(self._snapshot.get("materials"))
+        materials: list[Mapping[str, object]] = self._processing_rows()
         if self._selected >= len(materials):
-            if key == "p" and _relocation_problems(self._snapshot):
-                self._command("ready_retry")
             return
         item: Mapping[str, object] = materials[self._selected]
-        if item.get("stage") == "download" and key in {"p", "w", "x"}:
-            self._command(
-                "transfer", {"info_hash": item["info_hash"], "action": {"p": "stop", "w": "resume", "x": "cancel"}[key]}
-            )
-        elif item.get("run_id") and key == "c" and item.get("active"):
+        if key == "c" and (item.get("stage") == "processing" or item.get("admitted_processing")) and item.get("run_id"):
             self._command("cancel", {"run_id": item["run_id"]})
-        elif item.get("run_id") and key == "p" and item.get("state") in {"failed", "partial", "paused", "cancelled"}:
-            identifier: str = str(item["group_id"])
-            self._prepare_retry(lambda session: session.retry_proposal(identifier))
 
     def _load_history(self) -> None:
         generation: int = self._view_generation
@@ -756,7 +754,7 @@ class StateController:
         self._work(lambda session: _open_episode(session, set_id, show_folder=key == "f"))
 
     def _selected_deletion(self) -> Mapping[str, object] | None:
-        if self._tab == _Tab.PROGRESS and self._history_open:
+        if self._tab == _Tab.PROGRESS:
             return None
         operations: list[Mapping[str, object]] = _deletion_rows(self._snapshot)
         if self._operation_details is not None:
@@ -770,8 +768,7 @@ class StateController:
             return (
                 rows[self._selected] if self._selected < len(rows) and "operation_id" in rows[self._selected] else None
             )
-        position: int = self._selected - len(self._processing_entries(120))
-        return operations[position] if self._tab == _Tab.PROGRESS and 0 <= position < len(operations) else None
+        return None
 
     def _deletion_action(self, key: str) -> None:
         operation: Mapping[str, object] | None = self._selected_deletion()
@@ -905,6 +902,7 @@ class StateController:
                     self._session.close()
                 with self._lock:
                     self._connected = False
+                    self._observe_downloads()
                 self._invalidate()
             if self._stop.wait(_RECONNECT_S):
                 break
@@ -931,6 +929,7 @@ class StateController:
             )
             with self._lock:
                 previous_operation_details: PendingDeletion | None = self._operation_details
+                previous_processing: list[str] = self._processing_row_ids()
             self._restore_progress(session, payload)
             operation_details: PendingDeletion | None = (
                 decode_view(
@@ -948,9 +947,11 @@ class StateController:
                 if payload != self._snapshot:
                     self._state_version += 1
                 self._preserve_tab_selection(_Tab.SUBSCRIPTIONS, self._subscriptions, subscriptions, "subscription_id")
-                self._preserve_processing_selection(payload)
+                self._preserve_processing_selection(previous_processing, self._processing_row_ids(payload))
                 self._preserve_library_selection(payload)
                 self._snapshot = payload
+                if self._anime is not None:
+                    self._anime.refresh_acquisitions(_rows(payload.get("acquisitions")))
                 if self._operation_details is previous_operation_details:
                     self._operation_details = operation_details
                 if self._details is previous_details:
@@ -960,21 +961,29 @@ class StateController:
                 self._subscriptions = subscriptions
                 self._refresh_draft_work()
                 self._connected = True
+                self._observe_downloads()
                 if self._notice_version < self._state_version:
                     self._notice = ""
                 if payload.get("shutting_down"):
                     self._finished = True
                     self._stop.set()
         elif frame.get("event") == "run_event":
-            event: RunEvent = decode_view(RunEvent, payload)
-            with self._lock:
-                progress: tuple[str, RichRunProgress] | None = self._runs.get(event.run_id)
-            if progress is None:
-                self._restore_progress(session, session.command("status"))
-                progress = self._runs.get(event.run_id)
-            if progress is not None:
-                progress[1].emit(event)
+            self._receive_progress(session, decode_view(RunEvent, payload))
         self._invalidate()
+
+    def _receive_progress(self, session: ResidentSession, event: RunEvent) -> None:
+        with self._lock:
+            progress: tuple[str, RichRunProgress] | None = self._runs.get(event.run_id)
+        if progress is None:
+            self._restore_progress(session, session.command("status"))
+        with self._lock:
+            progress = self._runs.get(event.run_id)
+            if progress is None:
+                return
+            previous: list[str] = self._processing_row_ids()
+            progress[1].emit(event)
+            self._preserve_processing_selection(previous, self._processing_row_ids())
+            self._observe_downloads()
 
     def _refresh_draft_work(self) -> None:
         draft: SubscriptionDraft | None = self._draft
@@ -1017,9 +1026,7 @@ class StateController:
                 raise
             return None
 
-    def _preserve_processing_selection(self, payload: Mapping[str, object]) -> None:
-        old: list[str] = _processing_row_ids(self._snapshot)
-        new: list[str] = _processing_row_ids(payload)
+    def _preserve_processing_selection(self, old: list[str], new: list[str]) -> None:
         position: int = self._selected if self._operation_details is None else self._detail_selection
         if self._tab != _Tab.PROGRESS:
             position = self._positions.get(_Tab.PROGRESS, 0)
@@ -1141,7 +1148,11 @@ class StateController:
                 append_wrapped_row(content, left, lines, index == selected, marker)
                 remaining -= len(lines)
             if not entries:
-                empty: str = "Brak zadań" if self._tab == _Tab.PROGRESS else "Brak pozycji"
+                empty: str = (
+                    "Brak aktywnego przetwarzania"
+                    if self._tab == _Tab.PROGRESS and not self._history_open
+                    else "Brak pozycji"
+                )
                 if self._tab == _Tab.PROGRESS and self._history_open and self._history_problem:
                     empty = "Historia niedostępna"
                 content.append(" " * max((columns - len(empty)) // 2, 0) + empty + "\n", style="gray")
@@ -1238,7 +1249,9 @@ class StateController:
         hints: tuple[str | Text, ...] = (
             "Tab widok",
             "Space aktywność · Enter odcinki · D dodaj · X usuń · F sprawdź",
-            "H historia · M ręczny · O zatrzymaj/wznów · U ustawienia",
+            "H historia · M ręczny · "
+            + ("O Zatrzymaj AniShift" if self._snapshot.get("auto_enabled") else "O Wznów AniShift")
+            + " · U ustawienia",
             "Enter otwórz · F folder · D szczegóły · Delete Kosz",
         )
         result.append("←→ widok · ↑↓ wybierz · Esc wróć")
@@ -1248,17 +1261,15 @@ class StateController:
         return result
 
     def _processing_hint(self) -> str:
-        materials: list[Mapping[str, object]] = _rows(self._snapshot.get("materials"))
+        materials: list[Mapping[str, object]] = self._processing_rows()
         if self._selected >= len(materials):
-            return "P ponów wszystkie przenoszenia do biblioteki" if _relocation_problems(self._snapshot) else ""
+            return ""
         item: Mapping[str, object] = materials[self._selected]
-        if item.get("stage") == "download":
-            return "P wstrzymaj cały torrent · W wznów · X anuluj cały torrent"
-        if item.get("run_id"):
-            scope: object = item.get("group_ids", [])
-            count: int = len(scope) if isinstance(scope, list) else 1
-            return f"{'C anuluj' if item.get('active') else 'P ponów'} całe zlecenie · {count} materiałów"
-        return "M ręczny wybór źródła"
+        if not (item.get("stage") == "processing" or item.get("admitted_processing")) or not item.get("run_id"):
+            return ""
+        scope: object = item.get("group_ids", [])
+        count: int = len(scope) if isinstance(scope, list) else 1
+        return f"C anuluj całe zlecenie · {count} materiałów"
 
     def _global_status(self) -> str:
         counts: object = self._snapshot.get("material_counts", {})
@@ -1268,6 +1279,8 @@ class StateController:
             status = "Zatrzymywanie"
         if self._snapshot.get("pause_incomplete"):
             status = "Pauza niepełna"
+        if self._tab == _Tab.PROGRESS:
+            return f"Przetwarzanie {len(self._processing_rows())} · {status}"
         return (
             f"↓ {values.get('downloading', 0)} · Przetwarzanie {values.get('processing', 0)}"
             f" · Czeka {values.get('waiting', 0)} · {status}"
@@ -1302,10 +1315,7 @@ class StateController:
         if self._deletion is not None or self._details is not None or self._operation_details is not None:
             return entries
         if self._tab == _Tab.PROGRESS:
-            return [
-                *self._processing_entries(columns),
-                *((_deletion_label(item), None) for item in _deletion_rows(self._snapshot)),
-            ]
+            return self._processing_entries(columns)
         if self._tab == _Tab.SUBSCRIPTIONS:
             return [
                 (
@@ -1343,58 +1353,116 @@ class StateController:
 
     def _processing_entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
         entries: list[tuple[str | Text, bool | None]] = []
-        measured: bool = self._connected and not self._snapshot.get("transfers_problem")
-        for item in _rows(self._snapshot.get("materials")):
-            progress: tuple[str, RichRunProgress] | None = self._runs.get(str(item.get("run_id", "")))
-            if progress is not None:
-                line: Text = progress[1].render_group(str(item.get("group_id", "")), columns)
-                if line.plain:
-                    entries.append((line, None))
-                    continue
-            stage: str = str(item.get("stage"))
-            label: str = _safe_text(item.get("name", ""))
-            if stage == "download":
-                fraction: object = item.get("progress")
-                percentage: str = f" · {float(str(fraction)) * 100:.1f}%" if fraction is not None and measured else ""
-                label += f" · Pobieranie{percentage} · {_transfer_label(item, measured=measured)}"
-            elif stage == "waiting":
-                label += f" · {_waiting_label(str(item.get('reason')))}"
+        for item in self._processing_rows():
+            if item.get("stage") == "processing":
+                line: Text = self._runs[str(item["run_id"])][1].render_group(str(item["group_id"]), columns)
             else:
-                label += f" · {_processing_label(str(item.get('state')))}"
-            entries.append((label, None))
-        return [*entries, *self._relocation_entries()]
+                label, fraction = self._download_progress(item)
+                name: str = _safe_text(item.get("name", ""))
+                if not name or name in {item.get("info_hash"), item.get("material_id"), item.get("group_id")}:
+                    name = "Materiał"
+                timer: ObservedProgressTimer | None = self._download_timers.get(str(item.get("material_id")))
+                line = render_material_progress(
+                    name, label, fraction, columns, elapsed_seconds=None if timer is None else timer.elapsed()
+                )
+            entries.append((line, None))
+        return entries
 
-    def _relocation_entries(self) -> list[tuple[str | Text, bool | None]]:
-        return [
-            (f"{_safe_text(item['name'])} · błąd przenoszenia do biblioteki", None)
-            for item in _relocation_problems(self._snapshot)
+    def _observe_downloads(self) -> None:
+        current: dict[str, ObservedProgressTimer] = {}
+        for item in self._processing_rows():
+            if item.get("stage") == "processing":
+                continue
+            identifier: str = str(item.get("material_id"))
+            timer: ObservedProgressTimer = self._download_timers.get(identifier) or ObservedProgressTimer()
+            timer.observe(
+                active=self._connected
+                and not self._snapshot.get("transfers_problem")
+                and not item.get("problem")
+                and item.get("acquisition_state") == "accepted"
+                and item.get("stage") == "download"
+                and item.get("state") in {"downloading", "forcedDL"}
+            )
+            current[identifier] = timer
+        self._download_timers = current
+
+    def _download_progress(self, item: Mapping[str, object]) -> tuple[str, float | None]:  # noqa: PLR0911
+        if item.get("stage") == "waiting":
+            return ("Wstrzymano" if self._snapshot.get("paused") else "Przygotowanie"), None
+        if item.get("problem"):
+            return "Wymaga uwagi", None
+        if not self._connected or self._snapshot.get("transfers_problem"):
+            return "Brak odczytu", None
+        state: object = item.get("state")
+        if state in {"pausedDL", "stoppedDL", "pausedUP", "stoppedUP"}:
+            return "Wstrzymano", None
+        if state in {"metaDL", "forcedMetaDL"} or item.get("acquisition_state") == "pending_send":
+            return "Metadane", None
+        if state is None:
+            return "Brak transferu", None
+        if state in {"error", "missingFiles"}:
+            return "Błąd transferu", None
+        fraction: object = item.get("progress")
+        if state in {"downloading", "forcedDL", "stalledDL"}:
+            return ("Brak źródeł" if state == "stalledDL" else "Pobieranie"), (
+                float(fraction) if isinstance(fraction, (int, float)) else None
+            )
+        return {
+            "queuedDL": "W kolejce",
+            "uploading": "Pobrane",
+            "stalledUP": "Pobrane",
+            "forcedUP": "Pobrane",
+            "queuedUP": "Pobrane",
+            "moving": "Przenoszenie",
+        }.get(str(state), "Sprawdzanie"), None
+
+    def _processing_rows(self, snapshot: Mapping[str, object] | None = None) -> list[Mapping[str, object]]:
+        payload: Mapping[str, object] = self._snapshot if snapshot is None else snapshot
+        running: set[str] = {
+            str(item["request_id"])
+            for item in _rows(payload.get("requests"))
+            if item.get("state") in {"accepted", "running"}
+        }
+        processing: list[Mapping[str, object]] = [
+            item
+            for item in _rows(payload.get("materials"))
+            if item.get("stage") == "processing"
+            and item.get("state") in {"accepted", "running"}
+            and str(item.get("run_id")) in running
+            and (progress := self._runs.get(str(item.get("run_id")))) is not None
+            and progress[1].group_active(str(item.get("group_id")))
         ]
+        downloads: list[Mapping[str, object]] = [
+            item
+            for item in _rows(payload.get("materials"))
+            if item.get("acquisition_state") in {"pending_send", "accepted", "complete"}
+            and (
+                item.get("stage") == "download"
+                or (item.get("stage") == "waiting" and item.get("reason") == "preparing")
+            )
+        ]
+        preparing: list[Mapping[str, object]] = [
+            {**item, "stage": "waiting", "reason": "preparing", "admitted_processing": True}
+            for item in _rows(payload.get("materials"))
+            if item.get("stage") == "processing"
+            and item.get("state") in {"accepted", "running"}
+            and str(item.get("run_id")) in running
+            and (
+                (progress := self._runs.get(str(item.get("run_id")))) is None
+                or progress[1].group_pending(str(item.get("group_id")))
+            )
+        ]
+        return [*downloads, *preparing, *processing]
 
-
-def _transfer_label(row: Mapping[str, object], *, measured: bool) -> str:
-    """Return the Polish label of one download row, naming a recorded problem before any client state."""
-    if row.get("problem"):
-        return _ATTENTION_LABEL
-    if row.get("state") is None:
-        return _UNCONFIRMED_LABEL
-    return _TRANSFER_LABELS.get(str(row.get("state")), "") if measured else ""
-
-
-def _waiting_label(reason: str) -> str:
-    return {
-        "preparing": "pobrano · przygotowanie",
-        "video_missing": "czeka na film",
-        "sidecar_missing": "czeka na napisy",
-        "subtitle_source_missing": "potrzebne napisy",
-        "image_missing": "czeka na obraz",
-        "content_source_missing": "czeka na treść",
-        "source_incomplete": "czeka na komplet plików",
-        "ambiguous_sidecar": "wybierz napisy",
-        "ambiguous_image": "wybierz obraz",
-        "ambiguous_content_source": "wybierz źródło",
-        "source_path_collision": "konflikt ścieżek",
-        "unsupported_source": "źródło wymaga Ręcznego",
-    }.get(reason, "czeka na komplet")
+    def _processing_row_ids(self, snapshot: Mapping[str, object] | None = None) -> list[str]:
+        rows: list[Mapping[str, object]] = self._processing_rows(snapshot)
+        return [
+            str(item["acquisition_id"])
+            if item.get("acquisition_id")
+            and sum(other.get("acquisition_id") == item["acquisition_id"] for other in rows) == 1
+            else str(item.get("material_id") or f"{item.get('run_id')}:{item.get('group_id')}")
+            for item in rows
+        ]
 
 
 def _subscription_term(item: Mapping[str, object], now: datetime | None = None) -> str:
@@ -1427,25 +1495,6 @@ def _subscription_term(item: Mapping[str, object], now: datetime | None = None) 
     if item.get("calendar_problem"):
         term += " · Kalendarz niedostępny"
     return term
-
-
-def _processing_row_ids(snapshot: Mapping[str, object]) -> list[str]:
-    return [
-        *(f"material:{item['material_id']}" for item in _rows(snapshot.get("materials"))),
-        *(f"relocation:{item['group_id']}" for item in _relocation_problems(snapshot)),
-        *(f"deletion:{item['operation_id']}" for item in _deletion_rows(snapshot)),
-    ]
-
-
-def _processing_label(state: str) -> str:
-    return {
-        "accepted": "Przygotowanie",
-        "running": "Przetwarzanie",
-        "paused": "Wstrzymano",
-        "failed": "Błąd · wymaga ponowienia",
-        "partial": "Niepełne · wymaga ponowienia",
-        "cancelled": "Anulowano",
-    }.get(state, "Przygotowanie")
 
 
 def _rows(value: object) -> list[Mapping[str, object]]:

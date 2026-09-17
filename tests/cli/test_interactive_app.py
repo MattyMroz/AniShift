@@ -29,8 +29,31 @@ from anishift.cli.interactive.prompts import TerminalRenderer
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.cli.run import AutoRunRefusal, PreparedAutoRun
-from anishift.errors import ExecutionError
+from anishift.errors import ErrorCode, ErrorContext, ExecutionError
 from anishift.platform import tray as tray_module
+from anishift.platform.local_control import ControlError
+
+
+def test_control_problem_keeps_the_polish_recovery_hint_without_english_transport_prose() -> None:
+    problem: ControlError = ControlError("private transport prose")
+
+    assert problem.context.suggestion
+    assert interactive_app._problem_text(problem).plain == (
+        "Błąd · Brak potwierdzonej odpowiedzi procesu w tle · sprawdź, czy proces działa, "
+        "oraz Historię i log przed ponowieniem\nSzczegóły: logs/anishift.log.jsonl"
+    )
+
+
+def test_domain_problem_retains_its_recovery_hint() -> None:
+    problem: ExecutionError = ExecutionError(
+        context=ErrorContext(
+            code=ErrorCode.IO_ERROR, message="Nie można zapisać pliku", suggestion="Sprawdź wolne miejsce"
+        )
+    )
+
+    assert interactive_app._problem_text(problem).plain == (
+        "Błąd · Nie można zapisać pliku\n  Sprawdź wolne miejsce\nSzczegóły: logs/anishift.log.jsonl"
+    )
 
 
 class _Renderer:

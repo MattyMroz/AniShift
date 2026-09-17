@@ -245,6 +245,9 @@ _OCCUPIED_DESTINATION: Final[str] = "Something took a name reserved for this dow
 _NO_ANSWER: Final[str] = "The resident did not finish the command in time"
 """Reason returned when the owner thread was still busy when the budget ran out."""
 
+_COMMAND_FAILURE_REASON: Final[str] = "command_failed"
+"""Fallback reason when a command failure has no domain code."""
+
 _COMMAND_FAILED: Final[str] = "The resident could not complete the command"
 """Reason returned when performing one command raised instead of answering."""
 
@@ -1027,13 +1030,21 @@ class AutomationOwner:
     def _answer(self, command: _Command) -> None:
         try:
             command.answer(self._perform(command.request))
-        except Exception:  # noqa: BLE001 - the owner must survive any single faulty command
-            logger.warning("A control command failed", command_kind=command.request.kind)
+        except Exception as problem:  # noqa: BLE001 - the owner must survive any single faulty command
+            reason: str = failure_code(problem) or _COMMAND_FAILURE_REASON
+            logger.warning(
+                "A control command failed",
+                command_kind=command.request.kind,
+                command_id=command.request.command_id,
+                error_class=type(problem).__name__,
+                cause_class=type(problem.__cause__).__name__ if problem.__cause__ is not None else None,
+                reason=reason,
+            )
             receipt: CommandReceipt | None = self._receipt(command.request)
             if command.request.kind == "start" and receipt is not None:
                 command.answer(ControlResponse.succeeded(dict(receipt.outcome)))
             else:
-                command.answer(ControlResponse.refused(ControlErrorCode.INTERNAL, _COMMAND_FAILED))
+                command.answer(ControlResponse.refused(ControlErrorCode.INTERNAL, _COMMAND_FAILED, reason))
 
     def _perform(self, request: ControlRequest) -> ControlResponse:  # noqa: C901, PLR0911, PLR0912
         match request.kind:
@@ -1219,6 +1230,7 @@ class AutomationOwner:
                     "subscription_id": item.subscription_id,
                     "episode": item.episode,
                     "state": item.state.value,
+                    "name": item.release_title or "Materiał",
                     "stalled": self._transfers is not None and item.info_hash in self._transfers.stalled,
                     "group_ids": self._acquisition_groups(item),
                 }
@@ -1421,10 +1433,11 @@ class AutomationOwner:
         common: dict[str, object] = {
             "info_hash": acquisition.info_hash,
             "acquisition_id": acquisition.operation_id,
+            "acquisition_state": acquisition.state.value,
             "content_started": acquisition.content_started,
             "stage": "download",
             "state": None if transfer is None else transfer.state,
-            "active": active,
+            "active": active and acquisition.state is AcquisitionState.ACCEPTED and not acquisition.problem,
             "problem": acquisition.problem,
         }
         rows: dict[str, dict[str, object]] = {}
@@ -1482,7 +1495,9 @@ class AutomationOwner:
             acquisition.operation_id: {
                 **common,
                 "material_id": acquisition.operation_id,
-                "name": transfer.name if transfer is not None else acquisition.info_hash,
+                "name": (transfer.name if transfer is not None and transfer.name != acquisition.info_hash else None)
+                or acquisition.release_title
+                or "Materiał",
                 "progress": None if transfer is None else transfer.progress,
             }
         }
@@ -2390,12 +2405,13 @@ class AutomationOwner:
                             for artifact in preview.plan.artifacts
                             if artifact.group_id == group.group_id
                             and artifact.path is not None
-                            and artifact.kind
-                            in {ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4, ArtifactKind.STANDALONE_TEXT}
+                            and artifact.lifetime is ArtifactLifetime.SOURCE
+                            and (source_name := classify_artifact(artifact.path, group.source.route)) is not None
+                            and source_name.is_primary
                         ),
-                        group.group_id,
+                        group.source.stem,
                     )
-                    for group in preview.plan.groups
+                    for group in preview.groups
                 },
             )
             self._run_events[run_id] = {}
@@ -2873,11 +2889,38 @@ class AutomationOwner:
             with acquisition.requests("user_download"):
                 for choice in chosen:
                     acquisition.download((choice,))
-                hashes: frozenset[str] = acquisition.queued_hashes()
-                self._on_owner(lambda: self._reconcile_acquisitions(hashes))
+                self._confirm_download(acquisition, frozenset(choice.release.info_hash.casefold() for choice in chosen))
         finally:
             self._on_owner(lambda: self._reconcile_acquisitions(frozenset()))
-        return response
+        return self._on_owner(lambda: self._download_summary(choices, chosen, response))
+
+    def _confirm_download(self, acquisition: AcquisitionService, hashes: frozenset[str]) -> None:
+        for present in acquisition.observe_added(hashes, may_observe=lambda: self._on_owner(self._working)):
+            self._on_owner(partial(self._reconcile_acquisitions, present))
+
+    def _download_summary(
+        self,
+        choices: tuple[ReleaseChoice, ...],
+        sent: tuple[ReleaseChoice, ...],
+        response: ControlResponse,
+    ) -> ControlResponse:
+        sent_hashes: set[str] = {item.release.info_hash.casefold() for item in sent}
+        remaining: set[str] = {item.release.info_hash.casefold() for item in choices} - sent_hashes
+        if not remaining:
+            return response
+        accepted: set[str] = {
+            item.info_hash
+            for item in self._state.acquisitions
+            if item.info_hash in remaining and item.state in {AcquisitionState.ACCEPTED, AcquisitionState.COMPLETE}
+        }
+        if remaining <= accepted:
+            return response
+        return ControlResponse.refused(
+            ControlErrorCode.REFUSED,
+            "Some selected releases already have a recorded download intent",
+            "download_recorded",
+            details={"sent": len(sent_hashes), "accepted": len(accepted), "uncertain": len(remaining - accepted)},
+        )
 
     def _accept_download(
         self,
@@ -2891,9 +2934,7 @@ class AutomationOwner:
             return (), _refuse(RefusalReason.SHUTTING_DOWN)
         if not self._state.policy.auto_enabled:
             return (), _refuse(RefusalReason.PAUSED)
-        existing: set[str] = {
-            item.info_hash for item in self._state.acquisitions if item.state is not AcquisitionState.FAILED
-        }
+        existing: set[str] = {item.info_hash for item in self._state.acquisitions}
         unique: dict[str, ReleaseChoice] = {choice.release.info_hash.casefold(): choice for choice in choices}
         chosen: tuple[ReleaseChoice, ...] = tuple(choice for key, choice in unique.items() if key not in existing)
         confirmations: list[AcquisitionConfirmation] = [
@@ -2913,19 +2954,18 @@ class AutomationOwner:
             for choice in chosen
         ]
         outcome: CommandOutcome = {"count": len(chosen), "directory": str(self._service.workspace_root)}
-        replaced_hashes: set[str] = {item.info_hash for item in confirmations}
         failure: ControlResponse | None = self._commit(
             request,
             replace(
                 self._state,
-                acquisitions=(
-                    *(item for item in self._state.acquisitions if item.info_hash not in replaced_hashes),
-                    *confirmations,
-                ),
+                acquisitions=(*self._state.acquisitions, *confirmations),
             ),
             outcome,
         )
-        return chosen, failure or ControlResponse.succeeded(dict(outcome))
+        response: ControlResponse = failure or ControlResponse.succeeded(dict(outcome))
+        if failure is not None or chosen:
+            return chosen, response
+        return (), self._download_summary(choices, (), response)
 
     def _check_subscriptions(self, service: SubscriptionService, *, automatic: bool) -> tuple[CheckOutcome, ...]:
         if not automatic:
@@ -4254,8 +4294,7 @@ class AutomationOwner:
                 acquisition.reacquire(
                     cast("int", item.nyaa_release_id), cast("str", item.release_title), item.info_hash, item.episode
                 )
-                hashes: frozenset[str] = acquisition.queued_hashes()
-                self._on_owner(lambda: self._reconcile_acquisitions(hashes))
+                self._confirm_download(acquisition, frozenset({item.info_hash.casefold()}))
         finally:
             self._on_owner(lambda: self._reconcile_acquisitions(frozenset()))
         return response
