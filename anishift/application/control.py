@@ -592,8 +592,10 @@ def auto_admissible(  # noqa: PLR0913 - every admission condition stays an expli
     directory: str,
     fingerprint: SourceFingerprint,
     requested_products: frozenset[ProductKind],
+    *,
+    succeeded_groups: Mapping[str, frozenset[str]] | None = None,
 ) -> bool:
-    """Whether automatic processing may take *group_id* for that version of its sources."""
+    """Whether Auto may take this source version, with successful groups keyed by request ID."""
     if not policy.effective_auto(directory):
         return False
     if _reservation(state, group_id) is not None:
@@ -602,9 +604,9 @@ def auto_admissible(  # noqa: PLR0913 - every admission condition stays an expli
         return False
     if any(request.problem and request.fingerprints.get(group_id) == fingerprint for request in state.requests):
         return False
-    if _manual_blocks(state, group_id, fingerprint, requested_products):
+    if _latest_request_blocks(state, group_id, fingerprint, succeeded_groups):
         return False
-    return not _retries_exhausted(state, policy, group_id, fingerprint)
+    return not _manual_blocks(state, group_id, fingerprint, requested_products)
 
 
 def _directory_chain(directory: str) -> tuple[str, ...]:
@@ -633,15 +635,23 @@ def _manual_blocks(
     return marker is not None and bool(requested_products - marker.products)
 
 
-def _retries_exhausted(
+def _latest_request_blocks(
     state: WatchState,
-    policy: AutomationPolicy,
     group_id: str,
     fingerprint: SourceFingerprint,
+    succeeded_groups: Mapping[str, frozenset[str]] | None,
 ) -> bool:
-    failed: tuple[ProcessingRequest, ...] = tuple(
-        request
-        for request in state.requests
-        if request.state is RequestState.FAILED and request.fingerprints.get(group_id) == fingerprint
+    latest: ProcessingRequest | None = max(
+        (
+            request
+            for request in reversed(state.requests)
+            if group_id in request.group_ids and request.fingerprints.get(group_id) == fingerprint
+        ),
+        key=lambda request: request.accepted_at,
+        default=None,
     )
-    return bool(failed) and failed[-1].attempts >= policy.external_retry_budget
+    if latest is None:
+        return False
+    return latest.state in {RequestState.FAILED, RequestState.PARTIAL} and group_id not in (
+        () if succeeded_groups is None else succeeded_groups.get(latest.request_id, ())
+    )

@@ -19,6 +19,7 @@ from test_automation import _INSTANCE, _await, _completed_library, _owned, _requ
 from test_service import _service
 
 import anishift.application.automation as automation_module
+import anishift.application.watch as watch_module
 from anishift.application.artifacts import SourceGroup
 from anishift.application.automation import AutomationOwner, _NotificationTarget
 from anishift.application.control import (
@@ -50,17 +51,18 @@ from anishift.application.planning import TaskState
 from anishift.application.ready import ReadyMove, ReadyStore
 from anishift.application.service import AppService
 from anishift.application.watch_state import WatchStateStore
+from anishift.config.presets import AutoPresetFile
 from anishift.errors import ExecutionError
 from anishift.platform import tray as tray_module
 from anishift.platform.directory_watch import DirectoryChange
-from anishift.platform.local_control import ControlResponse
+from anishift.platform.local_control import ControlRequest, ControlResponse
 from anishift.platform.tray import TrayIcon, _Message
 from anishift.services.translation.types import FileTranslation
 
 
 @contextmanager
 def _notifications(
-    service: AppService, store: WatchStateStore
+    service: AppService, store: WatchStateStore, *, ready: bool = True
 ) -> Iterator[tuple[AutomationOwner, list[Mapping[str, object]], list[Path]]]:
     frames: list[Mapping[str, object]] = []
     opened: list[Path] = []
@@ -75,7 +77,9 @@ def _notifications(
         instance_id=_INSTANCE,
         broadcast=broadcast,
         open_result=opened.append,
-        ready_store=ReadyStore(service.workspace_root / ".control" / "relocations", service.workspace_root),
+        ready_store=ReadyStore(service.workspace_root / ".control" / "relocations", service.workspace_root)
+        if ready
+        else None,
     )
     thread: threading.Thread = _serving(owner)
     try:
@@ -182,6 +186,142 @@ def _failing_translation(monkeypatch: pytest.MonkeyPatch, text: str) -> FakeTran
 
     monkeypatch.setattr(translation, "translate_file", Mock(side_effect=selected))
     return translation
+
+
+def _reconcile_automatic(owner: AutomationOwner) -> None:
+    owner.files_changed(DirectoryChange(reconcile=True))
+    assert owner.handle(_request("status")).ok
+    assert _await(
+        lambda: owner._on_owner(lambda: owner._library is not None and not owner._inspecting and not owner._recovering)
+    )
+    owner._on_owner(owner._refresh_automatic)
+
+
+@pytest.mark.parametrize("terminal", [RequestState.FAILED, RequestState.PARTIAL])
+@pytest.mark.parametrize("followup", ["rebuild", "resume", "changed_source"])
+@pytest.mark.parametrize("automatic", [False, True])
+def test_terminal_failure_stays_stopped_on_reconcile_and_owner_restart(  # noqa: PLR0915
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: RequestState, followup: str, *, automatic: bool
+) -> None:
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.0)
+    write_media_source(tmp_path / "One.mkv")
+    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / "state.json")
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True)))
+    translation: FakeTranslationService = FakeTranslationService()
+    translate: Mock = Mock(wraps=translation.translate_file)
+    monkeypatch.setattr(translation, "translate_file", translate)
+    preset: AutoPreset = AutoPreset(
+        "notification", "Notification", ProductIntent(frozenset({ProductKind.FULL_PL, ProductKind.SPOKEN_PL}))
+    )
+    presets: list[AutoPresetFile] = [AutoPresetFile(1, (preset,), preset.preset_id)]
+    service: AppService = _service(
+        tmp_path, translation, inspector=WorkspaceInspector(FakeMediaProbe()), preset_store=presets
+    )
+    original_replace: Callable[[Path, Path], Path] = Path.replace
+    published: list[Path] = []
+
+    def fail_second_product(source: Path, destination: Path) -> Path:
+        if destination.parent == tmp_path and destination.name.endswith(".pl.srt"):
+            if published:
+                raise OSError("Synthetic publication failure")
+            published.append(destination)
+        return original_replace(source, destination)
+
+    with _notifications(service, store) as (owner, frames, _opened):
+        with monkeypatch.context() as failure:
+            if terminal is RequestState.FAILED:
+                translate.side_effect = ExecutionError("Synthetic translation failure")
+            else:
+                failure.setattr(Path, "replace", fail_second_product)
+            if automatic:
+                _reconcile_automatic(owner)
+            else:
+                _start(owner, service, auto=True, products=preset.products.requested_products)
+            assert _await(lambda: bool(owner.state.requests) and owner.state.requests[0].state is terminal)
+            run_id: str = owner.state.requests[0].request_id
+        assert owner.handle(_request("status")).ok
+        assert owner.state.requests[0].problem is None
+        assert len(frames) == 1
+        assert frames[0]["title"] == "Materiał wymaga uwagi"
+        calls: int = translate.call_count
+        _reconcile_automatic(owner)
+        assert [item.request_id for item in owner.state.requests] == [run_id]
+        assert translate.call_count == calls
+        assert len(frames) == 1
+    restarted: AppService = _service(
+        tmp_path, translation, inspector=WorkspaceInspector(FakeMediaProbe()), preset_store=presets
+    )
+    with _notifications(restarted, store) as (owner, frames, _opened):
+        _reconcile_automatic(owner)
+        assert [item.request_id for item in owner.state.requests] == [run_id]
+        assert translate.call_count == calls
+        assert not frames
+        translate.side_effect = None
+        if followup == "changed_source":
+            write_text_source(tmp_path / "One.srt", "1\n00:00:00,000 --> 00:00:01,000\nChanged text\n")
+            _reconcile_automatic(owner)
+            assert len(owner.state.requests) == 2
+        elif followup == "resume":
+            preview: ControlResponse = owner.handle(
+                _request(
+                    "preview",
+                    {
+                        "client_id": "notification-test",
+                        "group_ids": list(owner.state.requests[0].group_ids),
+                        "resume_run_id": run_id,
+                    },
+                    command_id="resume-preview",
+                )
+            )
+            assert preview.ok, preview
+            command: ControlRequest = _request(
+                "start",
+                {"client_id": "notification-test", "preview_id": preview.result["preview_id"]},
+                command_id="resume-start",
+            )
+            response: ControlResponse = owner.handle(command)
+            assert response.ok
+            assert response.result["run_id"] == run_id
+            assert owner.handle(command) == response
+        else:
+            retry_id: str = _start(
+                owner, restarted, rebuild=True, products=frozenset({ProductKind.FULL_PL, ProductKind.SPOKEN_PL})
+            )
+            assert retry_id != run_id
+        assert _await(lambda: owner.state.requests[-1].state is RequestState.SUCCEEDED)
+        if terminal is RequestState.FAILED or followup == "rebuild":
+            assert translate.call_count > calls
+
+
+def test_successful_group_in_failed_run_can_regenerate_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.0)
+    (tmp_path / "translate").mkdir()
+    write_text_source(tmp_path / "translate" / "One.txt", "First text")
+    write_text_source(tmp_path / "translate" / "Two.txt", "Second text")
+    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / "state.json")
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            recipes=RecipePreferences(translate=TranslateRecipe(text_result=TextResultFormat.SUBTITLES)),
+        )
+    )
+    service: AppService = _service(tmp_path, _failing_translation(monkeypatch, "Second text"))
+    with _notifications(service, store, ready=False) as (owner, _frames, _opened):
+        run_id: str = _start(owner, service)
+        assert _await(lambda: bool(owner.state.requests) and owner.state.requests[0].state is RequestState.FAILED)
+    (tmp_path / "translate" / "One.pl.srt").unlink()
+    translation: FakeTranslationService = FakeTranslationService()
+    restarted: AppService = _service(tmp_path, translation)
+    with _notifications(restarted, store, ready=False) as (owner, frames, _opened):
+        _reconcile_automatic(owner)
+        assert _await(
+            lambda: len(owner.state.requests) == 2 and owner.state.requests[-1].state is RequestState.SUCCEEDED
+        )
+        assert owner.state.requests[0].request_id == run_id
+        assert translation.calls == [("First text",)]
+        assert not frames
 
 
 def test_partial_manual_notifies_the_success_and_reports_the_failed_attempt(

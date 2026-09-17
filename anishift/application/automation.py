@@ -879,6 +879,11 @@ class AutomationOwner:
 
     def _admit_library(self, workspace: InspectedWorkspace) -> None:
         preset: AutoPreset = self._service.get_preset(self._service.default_preset_id())
+        succeeded_groups: dict[str, frozenset[str]] = {
+            request.request_id: self._succeeded_groups(request)
+            for request in self._state.requests
+            if request.state in {RequestState.FAILED, RequestState.PARTIAL}
+        }
         eligible: tuple[InspectedSourceGroup, ...] = tuple(
             group
             for group in workspace.groups
@@ -892,6 +897,7 @@ class AutomationOwner:
                 else group.source.directory.relative_to(self._service.workspace_root).as_posix(),
                 _group_fingerprint(group),
                 self._automatic_products(group, preset),
+                succeeded_groups=succeeded_groups,
             )
         )
         ready: tuple[str, ...] = self._ledger.candidates(

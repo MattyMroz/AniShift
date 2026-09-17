@@ -34,7 +34,15 @@ from anishift.application.control import (
     release,
     reserve,
 )
-from anishift.application.intents import ProductKind, RequestOrigin, TranslationAction
+from anishift.application.intents import (
+    GroupIntent,
+    ProductIntent,
+    ProductKind,
+    RebuildRequest,
+    RequestOrigin,
+    RunMode,
+    TranslationAction,
+)
 from anishift.application.workflows import WorkflowTarget
 from anishift.config.workspace import ensure_workspace_dir, occupied_task_dirs
 
@@ -195,10 +203,11 @@ def test_a_running_request_refuses_a_reservation_and_automatic_work() -> None:
     assert _admissible(state) is False
 
 
-def test_a_finished_request_leaves_the_group_free_again() -> None:
+@pytest.mark.parametrize("terminal", [RequestState.SUCCEEDED, RequestState.CANCELLED])
+def test_a_finished_request_without_failure_leaves_the_group_free_again(terminal: RequestState) -> None:
     accepted: WatchState = record_request(WatchState(policy=AutomationPolicy(auto_enabled=True)), _request())
 
-    finished: WatchState = record_request(accepted, _request(state=RequestState.SUCCEEDED))
+    finished: WatchState = record_request(accepted, _request(state=terminal))
 
     assert len(finished.requests) == 1
     assert _admissible(finished) is True
@@ -232,27 +241,95 @@ def test_a_second_manual_decision_of_the_same_version_replaces_the_first() -> No
     assert second.markers[0].products == _PRODUCTS
 
 
-def test_an_exhausted_retry_budget_of_that_version_blocks_automatic_work() -> None:
+@pytest.mark.parametrize("terminal", [RequestState.FAILED, RequestState.PARTIAL])
+@pytest.mark.parametrize("attempts", [1, 2, 3])
+def test_a_terminal_failure_blocks_automatic_work_regardless_of_retry_budget(
+    terminal: RequestState, attempts: int
+) -> None:
     policy: AutomationPolicy = AutomationPolicy(auto_enabled=True)
-    exhausted: WatchState = record_request(
+    state: WatchState = record_request(
         WatchState(policy=policy),
-        _request(state=RequestState.FAILED, attempts=policy.external_retry_budget),
-    )
-    remaining: WatchState = record_request(
-        WatchState(policy=policy),
-        _request(state=RequestState.FAILED, attempts=policy.external_retry_budget - 1),
+        _request(state=terminal, attempts=attempts),
     )
 
-    assert _admissible(exhausted) is False
-    assert _admissible(remaining) is True
+    assert _admissible(state) is False
 
 
-def test_a_failed_request_of_another_version_does_not_block_the_new_one() -> None:
+@pytest.mark.parametrize("problem", [None, "Automatic recovery attempts are exhausted"])
+def test_a_later_success_supersedes_only_an_old_failure_without_an_unresolved_problem(problem: str | None) -> None:
+    failed: ProcessingRequest = replace(_request(state=RequestState.FAILED, attempts=3), problem=problem)
+    succeeded: ProcessingRequest = replace(
+        _request(request_id="retry", state=RequestState.SUCCEEDED), accepted_at="2026-09-08T13:00:00+00:00"
+    )
+    state: WatchState = WatchState(policy=AutomationPolicy(auto_enabled=True), requests=(succeeded, failed))
+
+    assert _admissible(state) is (problem is None)
+    assert _admissible(mark_manual_handled(state, _marker(frozenset({ProductKind.FULL_PL})))) is False
+
+
+def test_a_narrow_rebuild_keeps_the_unresolved_remote_request_and_its_receipt_protected() -> None:
+    failed: ProcessingRequest = replace(
+        _request(state=RequestState.FAILED),
+        problem="A remote operation was interrupted without confirmation",
+    )
+    receipt: CommandReceipt = CommandReceipt("original-start", _TIMESTAMP, {"run_id": failed.request_id})
+    state: WatchState = WatchState(
+        policy=AutomationPolicy(auto_enabled=True), requests=(failed,), command_receipts=(receipt,)
+    )
+    products: frozenset[ProductKind] = frozenset({ProductKind.FULL_PL})
+    succeeded: ProcessingRequest = replace(
+        _request(request_id="narrow-rebuild", state=RequestState.SUCCEEDED),
+        accepted_at="2026-09-08T13:00:00+00:00",
+        source_selection=SourceSelection.MANUAL,
+        rebuild=RebuildRequest(products),
+        intents=(GroupIntent("episode-01", RunMode.MANUAL, ProductIntent(products)),),
+    )
+    rebuilt: WatchState = record_request(state, succeeded)
+
+    assert _admissible(rebuilt) is False
+    assert rebuilt.requests == (failed, succeeded)
+    assert rebuilt.command_receipts == (receipt,)
+    assert (
+        auto_admissible(
+            rebuilt,
+            rebuilt.policy,
+            "episode-01",
+            "",
+            _FINGERPRINT,
+            _PRODUCTS,
+            succeeded_groups={failed.request_id: frozenset(failed.group_ids)},
+        )
+        is False
+    )
+
+    resumed: WatchState = record_request(
+        rebuilt, replace(failed, state=RequestState.SUCCEEDED, generation=2, problem=None)
+    )
+
+    assert _admissible(resumed) is True
+    assert resumed.command_receipts == (receipt,)
+    assert resumed.requests[-1].request_id == failed.request_id
+
+
+def test_another_groups_success_does_not_supersede_a_failure() -> None:
+    state: WatchState = WatchState(
+        policy=AutomationPolicy(auto_enabled=True),
+        requests=(
+            _request(state=RequestState.FAILED),
+            _request(request_id="other", group_id="other", state=RequestState.SUCCEEDED),
+        ),
+    )
+
+    assert _admissible(state) is False
+
+
+@pytest.mark.parametrize("terminal", [RequestState.FAILED, RequestState.PARTIAL])
+def test_a_failed_request_of_another_version_does_not_block_the_new_one(terminal: RequestState) -> None:
     policy: AutomationPolicy = AutomationPolicy(auto_enabled=True)
     state: WatchState = record_request(
         WatchState(policy=policy),
         _request(
-            state=RequestState.FAILED,
+            state=terminal,
             attempts=policy.external_retry_budget,
             fingerprint=_OTHER_FINGERPRINT,
         ),
