@@ -8,8 +8,9 @@ from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
 from prompt_toolkit.selection import SelectionState
-from rich.cells import get_character_cell_size
 from rich.text import Text
+
+from anishift.text.graphemes import split_graphemes
 
 __all__ = ["EDIT_KEYS", "TextInput", "is_edit_key"]
 
@@ -105,16 +106,29 @@ class TextInput:
         self._insert("".join(character for character in text if character.isprintable()))
         return True
 
-    def render(self, width: int, *, masked: bool = False) -> Text:
-        """Render the visible value with its cursor and highlighted selection."""
+    def render(self, width: int, *, masked: bool = False, focused: bool = True) -> Text:
+        """Render the value, showing its cursor and selection only while focused."""
         value: str = "•" * len(self.text) if masked else self.text
-        line: Text = Text(value, style="white_bold")
+        line: Text = Text(value, style="white_bold" if focused else "gray")
+        if not focused:
+            line.truncate(max(width, 1), overflow="crop")
+            return line
         if self.selected:
-            start, end = self._buffer.document.selection_range()
-            line.stylize("reverse", start, end)
-        result: Text = line[: self.cursor] + Text("▌", style="brand_accent") + line[self.cursor :]
-        cursor_cells: int = Text(value[: self.cursor]).cell_len
-        offset: int = max(cursor_cells - max(width - 2, 0), 0)
+            selection_start, selection_end = self._buffer.document.selection_range()
+            line.stylize("reverse", selection_start, selection_end)
+        if self.cursor == len(value):
+            line.append(" ")
+        start: int = 0
+        end: int = 0
+        for grapheme in split_graphemes(line.plain):
+            end = start + len(grapheme)
+            if self.cursor < end:
+                break
+            start = end
+        line.stylize("reverse", start, end)
+        cursor_cells: int = line[:end].cell_len
+        offset: int = min(max(cursor_cells - max(width, 1), 0), line[:start].cell_len)
+        result: Text = line
         if offset:
             result = _visible_tail(result, offset)
         result.truncate(max(width, 1), overflow="crop")
@@ -200,7 +214,9 @@ class TextInput:
 def _visible_tail(text: Text, cells: int) -> Text:
     index: int = 0
     used: int = 0
-    while index < len(text) and used < cells:
-        used += get_character_cell_size(text.plain[index])
-        index += 1
+    for grapheme in split_graphemes(text.plain):
+        if used >= cells:
+            break
+        used += Text(grapheme).cell_len
+        index += len(grapheme)
     return text[index:]
