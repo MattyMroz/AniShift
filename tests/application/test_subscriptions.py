@@ -678,6 +678,30 @@ def test_check_does_not_record_a_release_the_client_dropped(tmp_path: Path) -> N
     assert service.list()[0].next_episode == Decimal(10)
 
 
+def test_check_confirms_an_async_add_without_sending_it_again(tmp_path: Path) -> None:
+    choice: ReleaseChoice = _choice(Decimal(9))
+    previous: ReleaseChoice = _choice(Decimal(10))
+    acquisition: _Acquisition = _Acquisition({"neko": _catalog(choice, previous)})
+    acquisition.queued.add(previous.release.info_hash.casefold())
+    acquisition.dropped = {choice.release.info_hash}
+    delays: list[float] = []
+
+    def wait(delay: float) -> None:
+        delays.append(delay)
+        acquisition.queued = {choice.release.info_hash.casefold()}
+
+    service: SubscriptionService = SubscriptionService(
+        store=_store(tmp_path), acquisition=acquisition, clock=_clock, sleep=wait
+    )
+    service.subscribe("neko", choice)
+    outcome: CheckOutcome = service.check(service.list()[0])
+
+    assert outcome.downloaded == 1
+    assert acquisition.downloaded == [(choice,)]
+    assert service.list()[0].taken == frozenset({choice.release.info_hash})
+    assert delays == [1.0, 1.0]
+
+
 def test_check_moves_past_an_episode_already_taken_without_a_new_download(tmp_path: Path) -> None:
     acquisition: _Acquisition = _Acquisition({"neko": _catalog(_choice(Decimal(9)))})
     store: SubscriptionStore = _store(tmp_path)

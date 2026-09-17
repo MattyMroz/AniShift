@@ -17,6 +17,8 @@ from statistics import median
 from typing import TYPE_CHECKING, Final
 
 from anishift.application.acquisition import (
+    CONFIRM_ATTEMPTS,
+    CONFIRM_DELAY_S,
     MIN_RESOLUTION,
     AcquisitionService,
     EpisodeReading,
@@ -78,12 +80,6 @@ SUBSCRIPTIONS_FILE_NAME: Final[str] = "subscriptions.json"
 
 CHECK_INTERVAL_S: Final[float] = 3600.0
 """Delay between two consecutive checks of every subscription."""
-
-CONFIRM_ATTEMPTS: Final[int] = 3
-"""How many times a check looks for a just-added release in the client before giving up on it."""
-
-CONFIRM_DELAY_S: Final[float] = 1.0
-"""Pause between two looks for a just-added release, because the client adds torrents asynchronously."""
 
 SCHEMA_VERSION: Final[int] = 4
 """Current schema of the persisted subscription file."""

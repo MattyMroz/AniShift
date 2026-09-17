@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -318,6 +318,32 @@ def test_queued_hashes_lists_the_tracked_torrents_in_lowercase(tmp_path: Path) -
     client.tracked.append(TorrentInfo(name="ep", info_hash="ABCDEF", progress=0.5, state="downloading", save_path="x"))
 
     assert _service(client, tmp_path).queued_hashes() == frozenset({"abcdef"})
+
+
+@pytest.mark.parametrize("stop", [False, True])
+def test_add_observation_preserves_seen_hashes_and_checks_admission_after_waiting(
+    tmp_path: Path, *, stop: bool
+) -> None:
+    client: _Client = _Client()
+    service: AcquisitionService = _service(client, tmp_path)
+    client.tracked = [TorrentInfo("first", "FIRST", 0.0, "stoppedDL", "x")]
+    allowed: bool = True
+    delays: list[float] = []
+
+    def wait(delay: float) -> None:
+        nonlocal allowed
+        delays.append(delay)
+        allowed = not stop
+        client.tracked = [TorrentInfo("second", "SECOND", 0.0, "stoppedDL", "x")]
+
+    observations: Iterator[frozenset[str]] = service.observe_added(
+        frozenset({"first", "second"}), sleep=wait, may_observe=lambda: allowed
+    )
+    assert next(observations) == frozenset({"first"})
+    assert list(observations) == ([] if stop else [frozenset({"second"})])
+    assert delays == [1.0]
+    assert client.added == []
+    assert client.started == []
 
 
 def test_download_refuses_an_empty_choice(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
 from collections import Counter
 from contextlib import AbstractContextManager, nullcontext
@@ -23,7 +24,7 @@ from anishift.services.torrents.names import base_title, season_hint, title_form
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from anishift.services.catalog import PrequelEntry, SeasonAiring, TitleCandidate
     from anishift.services.http_requests import RequestControl
@@ -65,6 +66,12 @@ MIN_RESOLUTION: Final[int] = 1080
 
 DOWNLOAD_CATEGORY: Final[str] = "AniShift"
 """Category every torrent added by AniShift carries inside the client."""
+
+CONFIRM_ATTEMPTS: Final[int] = 3
+"""Maximum fresh client reads to confirm a just-added release without resending it."""
+
+CONFIRM_DELAY_S: Final[float] = 1.0
+"""Delay between confirmation reads while the client asynchronously resolves an added URL."""
 
 MAX_GROUP_QUERIES: Final[int] = 5
 """Release groups asked for their own complete listing after a title search."""
@@ -527,6 +534,28 @@ class AcquisitionService:
     def queued_hashes(self) -> frozenset[str]:
         """Lowercase info hashes of every torrent the client already tracks under the AniShift category."""
         return frozenset(info.info_hash.casefold() for info in self._client.torrents(self._category))
+
+    def observe_added(
+        self,
+        hashes: frozenset[str],
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        may_observe: Callable[[], bool] | None = None,
+    ) -> Iterator[frozenset[str]]:
+        """Yield bounded fresh observations of this submission, stopping when all hashes are confirmed."""
+        remaining: frozenset[str] = hashes
+        for attempt in range(CONFIRM_ATTEMPTS):
+            if not remaining or (may_observe is not None and not may_observe()):
+                return
+            if attempt:
+                sleep(CONFIRM_DELAY_S)
+            if may_observe is not None and not may_observe():
+                return
+            present: frozenset[str] = self.queued_hashes() & hashes
+            yield present
+            remaining -= present
+        if remaining:
+            logger.warning("Torrent add confirmation exhausted", unconfirmed=len(remaining), attempts=CONFIRM_ATTEMPTS)
 
     def transfers(self) -> tuple[TorrentInfo, ...]:
         """Read the current state of every transfer in the AniShift category."""
