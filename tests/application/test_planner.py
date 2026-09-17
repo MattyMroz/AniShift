@@ -630,6 +630,60 @@ def test_auto_sidecar_translation_narration_and_mkv_share_only_needed_tasks() ->
     assert kinds.count(TaskKind.COMPOSE_MKV) == 1
 
 
+def test_subtitle_branches_share_translation_but_not_failure_dependencies() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    group: InspectedSourceGroup = _group(video)
+    products: ProductIntent = ProductIntent(
+        frozenset({ProductKind.SPOKEN_PL, ProductKind.DISPLAYED_PL, ProductKind.NARRATION_AUDIO})
+    )
+    plan: ExecutionPlan = plan_auto((group,), _preset(products), _settings())
+    splits: tuple[PlanTask, ...] = tuple(task for task in plan.tasks if task.kind is TaskKind.SPLIT_SUBTITLES)
+    translation: PlanTask = _task(plan, TaskKind.TRANSLATE_SUBTITLES)
+    artifacts: dict[str, Artifact] = {artifact.artifact_id: artifact for artifact in plan.artifacts}
+
+    assert plan.can_execute
+    assert len(splits) == 2
+    assert all(len(task.produces) == 1 for task in splits)
+    assert {artifacts[task.produces[0]].kind for task in splits} == {
+        ArtifactKind.SPOKEN_PL,
+        ArtifactKind.DISPLAYED_PL,
+    }
+    assert all(task.requires == translation.produces for task in splits)
+    assert all(task.depends_on == (translation.task_id,) for task in splits)
+    spoken: PlanTask = next(task for task in splits if artifacts[task.produces[0]].kind is ArtifactKind.SPOKEN_PL)
+    assert _task(plan, TaskKind.SYNTHESIZE_SPEECH).depends_on == (spoken.task_id,)
+    assert _task_kinds(plan).count(TaskKind.TRANSLATE_SUBTITLES) == 1
+    assert plan == plan_auto((group,), _preset(products), _settings())
+    narration_only: ExecutionPlan = plan_auto(
+        (group,), _preset(ProductIntent(frozenset({ProductKind.NARRATION_AUDIO}))), _settings()
+    )
+    assert _task(narration_only, TaskKind.SPLIT_SUBTITLES) == spoken
+
+
+def test_manual_regeneration_keeps_requested_branches_and_reuses_full_polish() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    full: Artifact = _artifact(ArtifactKind.FULL_PL, "1.pl.ass", language="pol", subtitle_format="ass")
+    group: InspectedSourceGroup = _group(video, full)
+    products: ProductIntent = ProductIntent(
+        frozenset({ProductKind.FULL_PL, ProductKind.SPOKEN_PL, ProductKind.DISPLAYED_PL, ProductKind.NARRATION_AUDIO})
+    )
+    intent: GroupIntent = _manual(
+        group,
+        products,
+        selected_subtitle_artifact_id=full.artifact_id,
+        subtitle_source_policy=SubtitleSourcePolicy.READY_POLISH,
+    )
+    plan: ExecutionPlan = plan_manual((group,), {group.group_id: intent}, _settings())
+
+    assert plan.can_execute
+    assert plan.groups[0].intent.products == products
+    assert TaskKind.TRANSLATE_SUBTITLES not in _task_kinds(plan)
+    splits: tuple[PlanTask, ...] = tuple(task for task in plan.tasks if task.kind is TaskKind.SPLIT_SUBTITLES)
+    assert len(splits) == 2
+    assert all(task.requires == (full.artifact_id,) and len(task.produces) == 1 for task in splits)
+    assert TaskKind.SYNTHESIZE_SPEECH in _task_kinds(plan)
+
+
 def test_llm_translation_uses_the_llm_worker_limit() -> None:
     video = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
     products = ProductIntent(frozenset({ProductKind.FULL_PL}))

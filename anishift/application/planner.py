@@ -1363,13 +1363,14 @@ class _GroupPlanner:
                 language="pol",
             )
             outputs.append(self._displayed_pl)
-        self._add_task(
-            TaskKind.SPLIT_SUBTITLES,
-            requires=(full,),
-            produces=tuple(outputs),
-            variant="polish",
-            resource_key="subtitles",
-        )
+        for output in outputs:
+            self._add_task(
+                TaskKind.SPLIT_SUBTITLES,
+                requires=(full,),
+                produces=(output,),
+                variant=output.kind.value,
+                resource_key="subtitles",
+            )
 
     def _convert_partial_product(self, source: Artifact, requested_kind: ProductKind) -> Artifact:
         if requested_kind not in self.intent.products.requested_products or self._requested_format_matches(source):
