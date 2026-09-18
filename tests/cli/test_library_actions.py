@@ -7,7 +7,6 @@ from typing import cast
 
 import pytest
 
-from anishift.application.control import DeletionRestore, PendingDeletion, RestoreOutcome
 from anishift.application.control_views import LibraryFile, LibraryFileIdentity, LibrarySet
 from anishift.application.workflows import WorkflowTarget
 from anishift.cli.interactive import state as module
@@ -104,11 +103,18 @@ def test_library_ctrl_z_uses_owner_latest_not_selected_set(monkeypatch: pytest.M
     )
     monkeypatch.setattr(controller, "_work", lambda action, **kwargs: controller._perform(action, ""))
     controller._tab = module._Tab.FILES
+    controller._connected = True
     if details:
         controller._details = LibrarySet("unrelated", "group", "name", None, None, (), False)
     try:
         controller.handle_key("undo")
         assert calls == ["latest"]
+        assert controller._notice == ""
+        monkeypatch.setattr(controller, "_work", StateController._work.__get__(controller))
+        controller._busy = True
+        controller.handle_key("undo")
+        assert calls == ["latest"]
+        assert controller._notice == ""
     finally:
         controller.close()
         controller._thread.join(5)
@@ -133,26 +139,25 @@ def test_action_context_capture_holds_lock_and_failure_releases_busy(monkeypatch
         controller._thread.join(5)
 
 
-def test_operation_details_expose_recorded_relative_staging_for_unsettled_bytes(
+def test_undo_refusal_is_visible_without_synthetic_operation_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
-    controller._tab = module._Tab.FILES
-    controller._operation_details = PendingDeletion(
-        "delete",
-        "set",
-        "now",
-        (("ready/01.txt", 1, 2),),
-        identities=(("ready/01.txt", 3, 4),),
-        restore=DeletionRestore(
-            "restore", (RestoreOutcome("ready/01.txt", "temp/.restore-one/0", "uncertain", "restore_incomplete", True),)
-        ),
+
+    def refuse() -> None:
+        raise ControlError("Nothing to undo", reason="restore_nothing", answered=True)
+
+    client: ResidentSession = cast("ResidentSession", SimpleNamespace(undo_deletion=refuse, close=lambda: None))
+    controller: StateController = StateController(
+        cast("ResidentSession", SimpleNamespace(new_session=lambda: client)), lambda: None
     )
+    monkeypatch.setattr(controller, "_work", lambda action, **kwargs: controller._perform(action, ""))
+    controller._tab = module._Tab.FILES
     try:
+        controller.handle_key("undo")
         frame: str = controller.render(120, 35).plain
-        assert "temp/.restore-one/0" in frame
-        assert "staging do sprawdzenia" in frame
+        assert "Brak usuniętego zestawu do przywrócenia" in frame
+        assert module._library_rows(controller._snapshot) == []
     finally:
         controller.close()
         controller._thread.join(5)

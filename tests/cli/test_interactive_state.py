@@ -31,7 +31,6 @@ from anishift.application import (
     TaskKind,
     TaskState,
 )
-from anishift.application.control import DeletionOutcome, DeletionStatus, PendingDeletion
 from anishift.application.control_views import (
     LibraryFile,
     LibraryFileIdentity,
@@ -1068,9 +1067,10 @@ def test_library_details_refresh_preserves_selection_without_reopening_or_discon
         controller._thread.join(5)
 
 
-@pytest.mark.parametrize("action", ["cancel", "confirm", "leave"])
-def test_whole_set_deletion_uses_one_confirmation_default_cancel_and_retains_its_session(
-    monkeypatch: pytest.MonkeyPatch, action: str
+@pytest.mark.parametrize("action", ["delete", "leave", "navigate", "refuse"])
+@pytest.mark.parametrize("details", [False, True])
+def test_delete_dispatches_whole_set_once_in_preview_session_unless_context_changes_or_owner_refuses(
+    monkeypatch: pytest.MonkeyPatch, action: str, details: bool
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     prepared: threading.Event = threading.Event()
@@ -1095,12 +1095,17 @@ def test_whole_set_deletion_uses_one_confirmation_default_cancel_and_retains_its
 
         def preview_deletion(self, set_id: str) -> DeletionPreview:
             assert set_id == preview.set_id
+            assert not controller._lock.locked()
             prepared.set()
             assert release.wait(5)
             return preview
 
         def delete_set(self, value: DeletionPreview) -> str:
             assert not self.closed
+            assert sessions == [self]
+            assert not controller._lock.locked()
+            if action == "refuse":
+                raise ControlError("held", reason="library_source_held", answered=True)
             submitted.append(value)
             return "operation-01"
 
@@ -1115,33 +1120,32 @@ def test_whole_set_deletion_uses_one_confirmation_default_cancel_and_retains_its
     }
     controller._selected = 3
     controller._connected = True
+    if details:
+        controller._details = LibrarySet("set-01", "group", "Episode 01", None, None, (), False)
+        controller._detail_selection = 3
+        controller._selected = 0
     try:
         controller.handle_key("delete")
         assert prepared.wait(5)
+        controller.handle_key("delete")
+        assert controller._notice == ""
         if action == "leave":
-            assert controller.handle_key("escape") is StateResult.HOME
+            controller.handle_key("escape")
+        elif action == "navigate":
+            controller.handle_key("down")
+            controller.handle_key("delete")
         release.set()
         _await_state_action(controller)
-        if action == "leave":
-            assert controller._deletion is None
-            assert submitted == []
-            return
         assert len(sessions) == 1
-        assert not sessions[0].closed
-        for width, height in ((120, 40), (80, 24), (40, 10), (40, 6), (40, 4)):
-            frame: str = controller.render(width, height).plain
-            assert "[Anuluj]" in frame
-            assert "1 plików" in frame
-            assert len(frame.splitlines()) <= height
-        if action == "confirm":
-            controller.handle_key("right")
-            for width, height in ((120, 40), (80, 24), (40, 6), (40, 4)):
-                assert "[Przenieś do Kosza]" in controller.render(width, height).plain
-        controller.handle_key("enter")
-        _await_state_action(controller)
-        assert submitted == ([preview] if action == "confirm" else [])
-        assert controller._deletion is None
-        assert controller._selected == 3
+        assert sessions[0].closed
+        assert submitted == ([preview] if action == "delete" else [])
+        if action == "delete":
+            assert controller._details is None
+            assert controller._selected == 3
+        if action == "refuse":
+            assert "Źródło czeka na zwolnienie przez torrent" in controller.render(80, 24).plain
+        else:
+            assert controller._notice == ""
     finally:
         release.set()
         _await_state_action(controller)
@@ -1151,9 +1155,7 @@ def test_whole_set_deletion_uses_one_confirmation_default_cancel_and_retains_its
 
 
 @pytest.mark.parametrize("tab", [state_module._Tab.PROGRESS, state_module._Tab.FILES])
-def test_unresolved_deletion_stays_visible_and_retry_targets_that_selected_operation(
-    monkeypatch: pytest.MonkeyPatch, tab: int
-) -> None:
+def test_deletion_operations_are_not_selectable_materials(monkeypatch: pytest.MonkeyPatch, tab: int) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     calls: list[tuple[str, Mapping[str, object]]] = []
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
@@ -1186,25 +1188,20 @@ def test_unresolved_deletion_stays_visible_and_retry_targets_that_selected_opera
             assert calls == []
             controller._tab = state_module._Tab.FILES
             frame = controller.render(120, 40).plain
-        assert "Kosz: B" in frame
-        assert "nierozliczone: 1/2" in frame
-        assert "P ponów" in frame
-        assert calls == []
-        controller.handle_key("text:p")
-        assert calls == [("deletion_retry", {"operation_id": "delete-B"})]
-        operations[1].update(recycled=2, remaining=0, retryable=False)
-        frame = controller.render(120, 40).plain
         assert "Kosz:" not in frame
+        assert "nierozliczone" not in frame
         assert "P ponów" not in frame
-        controller.handle_key("text:p")
-        assert len(calls) == 1
+        assert state_module._library_rows(controller._snapshot) == []
+        for key in ("text:p", "delete", "enter", "text:d"):
+            controller.handle_key(key)
+        assert calls == []
     finally:
         controller.close()
         controller._thread.join(5)
 
 
 @pytest.mark.parametrize("context", ["empty", "library", "deletion", "uncertain", "healthy"])
-def test_files_retries_reported_relocations_without_overriding_selected_deletion(
+def test_files_retries_reported_relocations_independently_of_deletion_history(
     monkeypatch: pytest.MonkeyPatch, context: str
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
@@ -1269,18 +1266,16 @@ def test_files_retries_reported_relocations_without_overriding_selected_deletion
         controller.render(80, 24)
         assert calls == []
         relocation_hint: str = "P ponów przenoszenie do biblioteki"
-        if context in {"empty", "library"}:
+        if context != "healthy":
             assert relocation_hint in frame
             assert "Episode.mkv" in frame
         else:
             assert relocation_hint not in frame
-        assert ("P ponów pozostałe pliki" in frame) is (context == "deletion")
+        assert "P ponów pozostałe pliki" not in frame
         controller.handle_key("text:P")
         _await_state_action(controller)
-        if context in {"empty", "library"}:
+        if context != "healthy":
             assert calls == [("ready_retry", None)]
-        elif context == "deletion":
-            assert calls == [("deletion_retry", {"operation_id": "delete-B"})]
         else:
             assert calls == []
     finally:
@@ -1318,7 +1313,7 @@ def test_merged_library_is_naturally_ordered_and_preserves_missing_selection(
     "problem",
     ["library_ownership_unknown", "library_result_changed", "library_result_missing", "library_source_missing"],
 )
-def test_library_details_explain_machine_coded_provenance_and_result_problem(
+def test_library_details_keep_provenance_without_missing_result_header(
     monkeypatch: pytest.MonkeyPatch, problem: str
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
@@ -1328,90 +1323,80 @@ def test_library_details_explain_machine_coded_provenance_and_result_problem(
     )
     try:
         frame: str = controller.render(120, 40).plain
-        assert state_module._LIBRARY_PROBLEMS[problem] in frame
-        if problem in {"library_result_changed", "library_source_missing"}:
-            assert state_module._LIBRARY_PROBLEMS["library_result_missing"] not in frame
+        assert (state_module._LIBRARY_PROBLEMS[problem] in frame) is (problem == "library_ownership_unknown")
+        assert state_module._LIBRARY_PROBLEMS["library_result_missing"] not in frame
     finally:
         controller.close()
         controller._thread.join(5)
 
 
-@pytest.mark.parametrize("can_confirm", [False, True])
-def test_uncertain_deletion_details_name_exact_paths_and_require_fresh_confirmation(
-    monkeypatch: pytest.MonkeyPatch,
-    can_confirm: bool,
-) -> None:
+def test_library_deletion_snapshot_removes_ghost_and_restore_returns_material(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    operation: PendingDeletion = PendingDeletion(
-        "delete-B",
-        "set-B",
-        "2026-09-16T12:00:00+00:00",
-        (("ready/B.pl.txt", 1, 1), ("ready/B.txt", 2, 2), ("ready/B.srt", 3, 3)),
-        recycled=("ready/B.pl.txt",),
-        identities=(("ready/B.pl.txt", 1, 1), ("ready/B.txt", 1, 2), ("ready/B.srt", 1, 3)),
-        outcomes=(
-            DeletionOutcome("ready/B.pl.txt", DeletionStatus.RECYCLED, "recycle_completed", "receipt"),
-            DeletionOutcome("ready/B.txt", DeletionStatus.UNCERTAIN, "recycle_cleanup_timeout"),
-        ),
-    )
-    calls: list[tuple[str, Mapping[str, object]]] = []
-    preview: DeletionPreview = DeletionPreview("new-preview", "instance", "set-B", "B", ())
-
-    class Session:
-        def new_session(self) -> ResidentSession:
-            return cast("ResidentSession", self)
-
-        def command(self, kind: str, payload: Mapping[str, object]) -> Mapping[str, object]:
-            calls.append((kind, payload))
-            assert kind == "deletion_get"
-            return encode_view(operation)
-
-        def preview_deletion(self, set_id: str) -> DeletionPreview:
-            calls.append(("deletion_preview", {"set_id": set_id}))
-            return preview
-
-        def close(self) -> None:
-            pass
-
-    controller: StateController = StateController(cast("ResidentSession", Session()), lambda: None)
+    client: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda kind: {"subscriptions": []}))
+    controller: StateController = StateController(client, lambda: None)
     controller._tab = state_module._Tab.FILES
     controller._connected = True
     controller._notice = ""
-    controller._snapshot = {
-        "deletions": [
-            {
-                "operation_id": "delete-B",
-                "set_id": "set-B",
-                "name": "B",
-                "total": 3,
-                "recycled": 1,
-                "remaining": 2,
-                "uncertain": True,
-                "retryable": False,
-                "can_confirm": can_confirm,
-            }
-        ]
+    material: dict[str, object] = {"set_id": "set-B", "name": "Episode B"}
+    deletion: dict[str, object] = {
+        "operation_id": "delete-B",
+        "set_id": "set-B",
+        "name": "Episode B",
+        "total": 3,
+        "recycled": 3,
     }
+    controller._snapshot = {"library": [material]}
     try:
-        assert "wynik niepewny" in controller.render(120, 40).plain
-        controller.handle_key("enter")
-        _await_state_action(controller)
-        frame: str = controller.render(120, 40).plain
-        assert "ready/B.pl.txt · w Koszu" in frame
-        assert "ready/B.txt · wynik niepewny" in frame
-        assert "ready/B.srt · nie podjęto" in frame
-        assert "P ponów" not in frame
-        assert ("Delete nowe potwierdzenie" in frame) is can_confirm
-        controller.handle_key("text:p")
-        controller.handle_key("down")
-        controller.render(80, 24)
-        assert calls == [("deletion_get", {"operation_id": "delete-B"})]
-        controller.handle_key("delete")
-        _await_state_action(controller)
-        assert controller._deletion == (preview if can_confirm else None)
-        if can_confirm:
-            assert "[Anuluj]" in controller.render(80, 24).plain
-        assert all(kind != "deletion_retry" for kind, _payload in calls)
+        controller._receive(
+            client,
+            {
+                "event": "state_changed",
+                "payload": {
+                    "library_problems": [{**material, "available": False, "problem": "library_result_missing"}],
+                    "deletions": [deletion],
+                },
+            },
+        )
+        assert state_module._library_rows(controller._snapshot) == []
+        frame: str = controller.render(80, 24).plain
+        assert all(text not in frame for text in ("Episode B", "Kosz", "Brakuje potwierdzonego", "Wstrzymano"))
+        controller._receive(
+            client,
+            {
+                "event": "state_changed",
+                "payload": {
+                    "library_problems": [material],
+                    "deletions": [{**deletion, "recycled": 1}],
+                },
+            },
+        )
+        assert state_module._library_rows(controller._snapshot) == [material]
+        frame = controller.render(80, 24).plain
+        assert "Episode B" in frame
+        assert "Kosz" not in frame
+        controller._receive(
+            client,
+            {
+                "event": "state_changed",
+                "payload": {
+                    "library": [material],
+                    "deletions": [deletion],
+                },
+            },
+        )
+        assert state_module._library_rows(controller._snapshot) == [material]
+        controller._receive(
+            client,
+            {
+                "event": "state_changed",
+                "payload": {
+                    "library_problems": [material],
+                    "deletions": [{**deletion, "restored": True}],
+                },
+            },
+        )
+        assert state_module._library_rows(controller._snapshot) == [material]
+        assert "Episode B" in controller.render(80, 24).plain
     finally:
         controller.close()
         controller._thread.join(5)
@@ -2094,7 +2079,7 @@ def test_processing_preserves_selected_identity_when_material_counts_change(
         if inactive:
             controller.handle_key("right")
         assert controller._selected == 0
-        assert controller._selected_deletion() is None
+        assert "Kosz:" not in controller.render(120, 40).plain
         controller._receive(
             session,
             {"event": "state_changed", "payload": {**controller._snapshot, "materials": list(reversed(materials))}},
@@ -2138,9 +2123,14 @@ def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_
         frame: str = interactive_app._fit_frame(
             controller.render(columns, rows), "test", "workspace", columns, rows
         ).plain
-        assert ("Przetwarzanie 0 · Praca" if tab == 2 else "↓ 2 · Przetwarzanie 3 · Czeka 4 · Praca") in frame
+        if tab == 3:
+            assert "Praca" not in frame
+            assert "↓ 2" not in frame
+            assert "Czeka 4" not in frame
+        else:
+            assert ("Przetwarzanie 0 · Praca" if tab == 2 else "↓ 2 · Przetwarzanie 3 · Czeka 4 · Praca") in frame
         assert "←→ widok" in frame
-        assert ("Enter odcinki", "H historia", "Delete cały zestaw")[tab - 1] in frame
+        assert ("Enter odcinki", "H historia", "Delete usuń")[tab - 1] in frame
         assert len(frame.splitlines()) <= rows
         assert all(len(line) <= columns for line in frame.splitlines())
         if tab == 1:

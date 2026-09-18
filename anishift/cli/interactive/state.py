@@ -21,7 +21,6 @@ from anishift.application import (
     HistoryEvent,
     LibraryFileIdentity,
     LibrarySet,
-    PendingDeletion,
     RefusalReason,
     RetryProposal,
     RunProgressSnapshot,
@@ -185,17 +184,6 @@ _FILE_ROLES: Final[Mapping[str, str]] = MappingProxyType(
 )
 """Roles shown beside files without implying ownership of an external manual reference."""
 
-_DELETION_STATUSES: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        "inflight": "w toku",
-        "recycled": "w Koszu",
-        "refused": "odmowa",
-        "uncertain": "wynik niepewny",
-        "pending": "nie podjęto",
-    }
-)
-"""File outcome labels keyed by durable deletion status, never native error prose."""
-
 
 def refusal_text(problem: BaseException) -> str:
     """Translate ControlError reasons and codes, otherwise return sanitized exception text."""
@@ -269,12 +257,7 @@ class StateController:
         self._notice_version: int = -1
         self._notice_persistent: bool = False
         self._details: LibrarySet | None = None
-        self._operation_details: PendingDeletion | None = None
-        self._operation_name: str = ""
         self._detail_selection: int = 0
-        self._deletion: DeletionPreview | None = None
-        self._deletion_session: ResidentSession | None = None
-        self._delete_confirmed: bool = False
         self._view_generation: int = 0
         self._history_open: bool = False
         self._history_items: tuple[HistoryEvent, ...] = ()
@@ -294,7 +277,6 @@ class StateController:
             self._anime.cancel()
         with self._lock:
             self._view_generation += 1
-            self._cancel_deletion()
         session: ResidentSession | None = self._session
         if session is not None:
             session.close()
@@ -320,9 +302,7 @@ class StateController:
     def show_library(self, navigation: Mapping[str, object]) -> None:
         """Open Library and select an owner-validated set once its snapshot arrives."""
         with self._lock:
-            self._cancel_deletion()
             self._details = None
-            self._operation_details = None
             self._history_open = False
             self._history_input = None
             self._retry = None
@@ -352,9 +332,7 @@ class StateController:
         """Select current processing after the user starts a run."""
         with self._lock:
             self._view_generation += 1
-            self._cancel_deletion()
             self._details = None
-            self._operation_details = None
             self._history_open = False
             self._switch_tab(_Tab.PROGRESS)
         self._invalidate()
@@ -374,11 +352,8 @@ class StateController:
         if self._tab != _Tab.FILES:
             return None
         details: LibrarySet | None = self._details
-        operation: PendingDeletion | None = self._operation_details
         if details is not None:
             return details.set_id, str(self._selected)
-        if operation is not None:
-            return operation.operation_id, str(self._selected)
         rows: list[Mapping[str, object]] = _library_rows(self._snapshot)
         return (_library_row_id(rows[self._selected]), "") if self._selected < len(rows) else ("", "")
 
@@ -386,11 +361,18 @@ class StateController:
         """Navigate the shared list or submit one explicit action."""
         with self._lock:
             self._library_target = None
-            if (
-                self._tab == _Tab.FILES
-                and key in {"up", "down", "home", "end", "escape", "backspace", "tab", "backtab", "left", "right"}
-                and self._deletion is None
-            ):
+            if self._tab == _Tab.FILES and key in {
+                "up",
+                "down",
+                "home",
+                "end",
+                "escape",
+                "backspace",
+                "tab",
+                "backtab",
+                "left",
+                "right",
+            }:
                 self._view_generation += 1
                 self._notify("")
             if self._history_input is not None:
@@ -441,8 +423,6 @@ class StateController:
                 self._selected = (self._selected + (-1 if key == "up" else 1)) % count
         elif key in {"space", "enter"} and self._tab == _Tab.SUBSCRIPTIONS:
             return self._subscription_key(key)
-        elif self._selected_deletion() is not None and key.casefold() in {"enter", "delete", "text:p", "text:d"}:
-            self._deletion_action(key.removeprefix("text:").casefold())
         elif key == "enter" and self._tab == _Tab.FILES:
             self._file_action("open")
         elif key == "delete" and self._tab == _Tab.FILES:
@@ -453,26 +433,8 @@ class StateController:
         return StateResult.CONTINUE
 
     def _modal_key(self, key: str) -> bool:
-        if self._tab == _Tab.FILES and key == "undo" and self._deletion is None:
-            self._work(lambda session: session.undo_deletion(), success="Przyjęto cofnięcie ostatniego usunięcia")
-            self._invalidate()
-            return True
-        if self._deletion is not None:
-            self._deletion_key(key)
-            return True
-        if self._operation_details is not None:
-            if key in {"escape", "interrupt", "backspace"}:
-                self._view_generation += 1
-                self._operation_details = None
-                self._selected = self._detail_selection
-            elif key.casefold() in {"text:p", "delete"}:
-                self._deletion_action(key.removeprefix("text:").casefold())
-            elif key in {"up", "down", "home", "end"}:
-                self._follow_cursor[self._viewport()] = True
-                count: int = max(len(self._entries(120)), 1)
-                self._selected = (self._selected + (-1 if key == "up" else 1)) % count
-                if key in {"home", "end"}:
-                    self._selected = 0 if key == "home" else count - 1
+        if self._tab == _Tab.FILES and key == "undo":
+            self._work(lambda session: session.undo_deletion(), success="")
             self._invalidate()
             return True
         if self._details is not None:
@@ -494,7 +456,7 @@ class StateController:
         elif key == "delete" and self._details is not None:
             set_id: str = self._details.set_id
             generation: int = self._view_generation
-            self._work(lambda session: self._show_deletion(session, set_id, generation))
+            self._work(lambda session: self._delete_set(session, set_id, generation), success="")
         elif key == "enter" or key.casefold() == "text:f":
             self._open_detail_file(reveal=key != "enter")
         elif key in {"up", "down", "home", "end"}:
@@ -510,6 +472,7 @@ class StateController:
         index: int = self._selected - (len(_library_detail_entries(details)) - len(details.files)) if details else -1
         if details is None or not 0 <= index < len(details.files):
             self._notify("Wybierz wiersz pliku")
+            self._notice_persistent = True
             return
         identity: LibraryFileIdentity | None = details.files[index].identity
         if identity is None:
@@ -562,7 +525,7 @@ class StateController:
     def _viewport(self) -> int:
         if self._draft is not None:
             return len(_TABS)
-        if self._details is not None or self._operation_details is not None:
+        if self._details is not None:
             return len(_TABS) + 1
         return self._tab
 
@@ -570,7 +533,7 @@ class StateController:
         """Move the visible list without changing its selected identity."""
         with self._lock:
             viewport: int = self._viewport()
-            if self._tab == _Tab.ANIME or self._deletion is not None:
+            if self._tab == _Tab.ANIME:
                 return
             self._offsets[viewport] = max(self._offsets.get(viewport, 0) + direction * 3, 0)
             self._follow_cursor[viewport] = False
@@ -823,21 +786,16 @@ class StateController:
 
     def _file_action(self, key: str) -> None:
         if key == "p":
-            if self._selected_deletion() is not None:
-                self._deletion_action(key)
-            elif _relocation_problems(self._snapshot):
+            if _relocation_problems(self._snapshot):
                 self._command("ready_retry")
             return
         library: list[Mapping[str, object]] = _library_rows(self._snapshot)
         if key not in {"open", "f", "d", "delete"} or self._selected >= len(library):
             return
-        if "operation_id" in library[self._selected]:
-            self._deletion_action(key)
-            return
         set_id: str = str(library[self._selected]["set_id"])
         if key == "delete":
             generation: int = self._view_generation
-            self._work(lambda session: self._show_deletion(session, set_id, generation))
+            self._work(lambda session: self._delete_set(session, set_id, generation), success="")
             return
         if key == "d":
             generation = self._view_generation
@@ -845,94 +803,18 @@ class StateController:
             return
         self._work(lambda session: _open_episode(session, set_id, show_folder=key == "f"))
 
-    def _selected_deletion(self) -> Mapping[str, object] | None:
-        if self._tab == _Tab.PROGRESS:
-            return None
-        operations: list[Mapping[str, object]] = _deletion_rows(self._snapshot)
-        if self._operation_details is not None:
-            return next(
-                (item for item in operations if item["operation_id"] == self._operation_details.operation_id), None
-            )
-        if self._details is not None:
-            return None
-        if self._tab == _Tab.FILES:
-            rows: list[Mapping[str, object]] = _library_rows(self._snapshot)
-            return (
-                rows[self._selected] if self._selected < len(rows) and "operation_id" in rows[self._selected] else None
-            )
-        return None
-
-    def _deletion_action(self, key: str) -> None:
-        operation: Mapping[str, object] | None = self._selected_deletion()
-        if operation is None:
-            return
-        generation: int = self._view_generation
-        if key in {"enter", "d"}:
-            self._work(lambda session: self._show_operation_details(session, operation, generation))
-        elif key == "p" and operation.get("retryable") and not operation.get("active"):
-            self._command("deletion_retry", {"operation_id": operation["operation_id"]})
-        elif key == "delete" and operation.get("can_confirm") and not operation.get("active"):
-            self._work(lambda session: self._show_deletion(session, str(operation["set_id"]), generation))
-
-    def _show_operation_details(
-        self, session: ResidentSession, operation: Mapping[str, object], generation: int
-    ) -> None:
-        details: PendingDeletion = decode_view(
-            PendingDeletion, session.command("deletion_get", {"operation_id": operation["operation_id"]})
-        )
-        with self._lock:
-            if self._stop.is_set() or generation != self._view_generation:
-                return
-            self._detail_selection = self._selected
-            self._selected = 0
-            self._follow_cursor[len(_TABS) + 1] = True
-            self._operation_name = str(operation["name"])
-            self._operation_details = details
-
-    def _show_deletion(self, session: ResidentSession, set_id: str, generation: int) -> None:
+    def _delete_set(self, session: ResidentSession, set_id: str, generation: int) -> None:
         preview: DeletionPreview = session.preview_deletion(set_id)
         with self._lock:
             if self._stop.is_set() or generation != self._view_generation:
                 return
-            self._deletion = preview
-            self._deletion_session = session
-            self._delete_confirmed = False
-
-    def _cancel_deletion(self) -> None:
-        session: ResidentSession | None = self._deletion_session
-        self._deletion_session = None
-        self._deletion = None
-        self._delete_confirmed = False
-        if session is not None:
-            session.close()
-
-    def _deletion_key(self, key: str) -> None:
-        if key in {"escape", "interrupt", "backspace"}:
-            self._cancel_deletion()
-        elif key in {"left", "right", "tab", "backtab", "up", "down"}:
-            self._delete_confirmed = not self._delete_confirmed
-        elif key == "enter" and not self._busy:
-            if not self._delete_confirmed:
-                self._cancel_deletion()
-            else:
-                self._confirm_deletion()
-        self._invalidate()
-
-    def _confirm_deletion(self) -> None:
-        preview: DeletionPreview | None = self._deletion
-        session: ResidentSession | None = self._deletion_session
-        if preview is None or session is None:
-            return
-        self._deletion = None
-        self._deletion_session = None
-
-        def submit(_unused: ResidentSession) -> None:
-            try:
-                session.delete_set(preview)
-            finally:
-                session.close()
-
-        self._work(submit)
+        session.delete_set(preview)
+        with self._lock:
+            if generation != self._view_generation or self._stop.is_set():
+                return
+            if self._details is not None and self._details.set_id == set_id:
+                self._details = None
+                self._selected = self._detail_selection
 
     def _show_details(self, session: ResidentSession, set_id: str, generation: int) -> None:
         details: LibrarySet = session.library_details(set_id)
@@ -949,10 +831,11 @@ class StateController:
 
     def _work(self, action: Callable[[ResidentSession], object], *, success: str = "Polecenie przyjęte") -> None:
         if self._busy:
-            self._notify("Poprzednia czynność jeszcze trwa; możesz przejść do ustawień")
+            if self._tab != _Tab.FILES:
+                self._notify("Poprzednia czynność jeszcze trwa; możesz przejść do ustawień")
             return
         self._busy = True
-        self._notify("Wykonywanie polecenia…")
+        self._notify("" if self._tab == _Tab.FILES else "Wykonywanie polecenia…")
         threading.Thread(
             target=self._perform,
             args=(action, success, self._view_generation),
@@ -977,14 +860,14 @@ class StateController:
             action(session)
             with self._lock:
                 if generation == self._view_generation and context == self._library_context():
-                    self._notify(success)
+                    self._notify("" if self._tab == _Tab.FILES else success)
         except (AniShiftError, ControlError, OSError, ValueError) as error:
             with self._lock:
                 if generation == self._view_generation and context == self._library_context():
                     self._notify(refusal_text(error))
                     self._notice_persistent = self._tab == _Tab.FILES
         finally:
-            if session is not None and session is not self._deletion_session:
+            if session is not None:
                 session.close()
             with self._lock:
                 self._busy = False
@@ -1002,6 +885,7 @@ class StateController:
             except (AniShiftError, ControlError, OSError, ValueError, TypeError) as error:
                 with self._lock:
                     self._notify(refusal_text(error))
+                    self._notice_persistent = self._tab == _Tab.FILES
             finally:
                 if self._session is not None:
                     self._session.close()
@@ -1026,17 +910,8 @@ class StateController:
                 session.command("subscriptions_list").get("subscriptions")
             )
             with self._lock:
-                previous_operation_details: PendingDeletion | None = self._operation_details
                 previous_processing: list[str] = self._processing_row_ids()
             self._restore_progress(session, payload)
-            operation_details: PendingDeletion | None = (
-                decode_view(
-                    PendingDeletion,
-                    session.command("deletion_get", {"operation_id": previous_operation_details.operation_id}),
-                )
-                if previous_operation_details is not None
-                else None
-            )
             with self._lock:
                 previous_details: LibrarySet | None = self._details
             details: LibrarySet | None = self._refresh_details(session, previous_details)
@@ -1051,8 +926,6 @@ class StateController:
                 self._select_library_target(payload)
                 if self._anime is not None:
                     self._anime.refresh_acquisitions(_rows(payload.get("acquisitions")))
-                if self._operation_details is previous_operation_details:
-                    self._operation_details = operation_details
                 if self._details is previous_details:
                     self._details = details
                     if previous_details is not None and details is None:
@@ -1128,7 +1001,7 @@ class StateController:
             return None
 
     def _preserve_processing_selection(self, old: list[str], new: list[str]) -> None:
-        position: int = self._selected if self._operation_details is None else self._detail_selection
+        position: int = self._selected
         if self._tab != _Tab.PROGRESS:
             position = self._positions.get(_Tab.PROGRESS, 0)
         if self._history_open:
@@ -1141,17 +1014,12 @@ class StateController:
         self._positions[_Tab.PROGRESS] = position
         if self._tab != _Tab.PROGRESS:
             return
-        if self._operation_details is None:
-            self._selected = position
-        else:
-            self._detail_selection = position
+        self._selected = position
 
     def _preserve_library_selection(self, payload: Mapping[str, object]) -> None:
         old: list[Mapping[str, object]] = _library_rows(self._snapshot)
         new: list[Mapping[str, object]] = _library_rows(payload)
-        position: int = (
-            self._selected if self._details is None and self._operation_details is None else self._detail_selection
-        )
+        position: int = self._selected if self._details is None else self._detail_selection
         if self._tab != _Tab.FILES:
             position = self._positions.get(_Tab.FILES, 0)
         selected_id: object = _library_row_id(old[position]) if position < len(old) else None
@@ -1162,7 +1030,7 @@ class StateController:
         self._positions[_Tab.FILES] = position
         if self._tab != _Tab.FILES:
             return
-        if self._details is None and self._operation_details is None:
+        if self._details is None:
             self._selected = position
         else:
             self._detail_selection = position
@@ -1190,10 +1058,8 @@ class StateController:
                 self._runs[run_id] = (snapshot.preview.preview_id, restored)
 
     def render(self, columns: int, rows: int) -> Text:
-        """Render tabs and the same centered selectable list used by Manual."""
+        """Render tabs with the shared selectable list."""
         with self._lock:
-            if self._deletion is not None and rows < _MINIMUM_HEADER_ROWS:
-                return self._compact_deletion(columns, rows)
             content: Text = Text()
             if rows >= _MINIMUM_HEADER_ROWS:
                 content.append(" " * max((columns - 5) // 2, 0) + "PANEL\n\n", style="white_bold")
@@ -1217,9 +1083,7 @@ class StateController:
                 if self._draft is not None and self._retry is None
                 else min(self._selected, max(len(entries) - 1, 0))
             )
-            if self._deletion is not None:
-                selected = 0
-            if self._deletion is None and self._draft is None and self._retry is None:
+            if self._draft is None and self._retry is None:
                 self._selected = selected
             labels: tuple[str, ...] = fit_entries(
                 tuple(label.plain if isinstance(label, Text) else label for label, _ in entries), columns
@@ -1238,7 +1102,7 @@ class StateController:
             remaining: int = max(rows - 1 - len(footer) - heading_rows, 1)
             start, end = visible_window(len(labels), selected, remaining + 7, heights=tuple(map(len, wrapped)))
             viewport: int = self._viewport()
-            if self._follow_cursor.get(viewport, True) or self._deletion is not None:
+            if self._follow_cursor.get(viewport, True):
                 self._offsets[viewport] = start
             else:
                 start = min(self._offsets.get(viewport, 0), max(len(entries) - 1, 0))
@@ -1262,17 +1126,6 @@ class StateController:
                     empty = "Historia niedostępna"
                 content.append(" " * max((columns - len(empty)) // 2, 0) + empty + "\n", style="gray")
             return with_footer(content, footer, columns, rows)
-
-    def _compact_deletion(self, columns: int, rows: int) -> Text:
-        preview: DeletionPreview | None = self._deletion
-        if preview is None:
-            return Text()
-        title: Text = Text(
-            f"Kosz · cały zestaw · {len(preview.files)} plików · {_safe_text(preview.name)}", style="white_bold"
-        )
-        title.truncate(max(columns - 2, 1), overflow="ellipsis")
-        selected: str = "[Przenieś do Kosza]" if self._delete_confirmed else "[Anuluj]"
-        return with_footer(title, (selected, "←→ wybierz · Enter · Esc anuluj"), columns, rows)
 
     def _tabs(self, columns: int = 120) -> Text:
         tabs: Text = Text()
@@ -1320,37 +1173,17 @@ class StateController:
 
     def _footer(self) -> list[str | Text]:
         result: list[str | Text] = []
-        if self._deletion is not None:
-            return [
-                "Anuluj   [Przenieś do Kosza]" if self._delete_confirmed else "[Anuluj]   Przenieś do Kosza",
-                f"{len(self._deletion.files)} plików · {self._deletion.total_size:,} B · cały zestaw",
-                "←→ wybierz · Enter zatwierdź · Esc anuluj",
-            ]
-        operation: Mapping[str, object] | None = self._selected_deletion()
-        if operation is not None:
-            result.append(_deletion_label(operation))
-            actions: str = "D szczegóły"
-            if operation.get("retryable") and not operation.get("active"):
-                actions += " · P ponów pozostałe pliki"
-            elif operation.get("can_confirm") and not operation.get("active"):
-                actions += " · Delete nowe potwierdzenie"
-            result.append(actions)
-        if self._notice:
+        if self._notice and (self._tab != _Tab.FILES or self._notice_persistent):
             result.append(self._notice.rstrip("."))
         if self._tab == _Tab.FILES and self._library_notice:
             result.append(self._library_notice)
         if not self._connected:
             result.append("Brak połączenia")
-        if self._operation_details is not None or self._details is not None:
+        if self._details is not None:
             return [
                 *result,
-                "↑↓ pliki · Enter otwórz plik · F folder · Delete cały zestaw · Ctrl+Z cofnij usunięcie · Esc wróć"
-                if self._details is not None
-                else "↑↓ pliki · Ctrl+Z cofnij usunięcie · Esc wróć",
-                self._global_status(),
+                "↑↓ pliki · Enter otwórz plik · F folder · Delete usuń · Ctrl+Z cofnij · Esc wróć",
             ]
-        if operation is not None:
-            return [*result, "←→ widok · ↑↓ wybierz · Esc wróć", self._global_status()]
         relocations: list[Mapping[str, object]] = _relocation_problems(self._snapshot)
         if self._tab == _Tab.FILES and relocations:
             names: str = ", ".join(_safe_text(item["name"]) for item in relocations)
@@ -1361,12 +1194,13 @@ class StateController:
             "H historia · M ręczny · "
             + ("O Zatrzymaj AniShift" if self._snapshot.get("auto_enabled") else "O Wznów AniShift")
             + " · U ustawienia",
-            "Enter otwórz · F folder · D szczegóły · Delete cały zestaw do Kosza · Ctrl+Z cofnij usunięcie",
+            "Enter otwórz · F folder · D szczegóły · Delete usuń · Ctrl+Z cofnij",
         )
         result.append("←→ widok · ↑↓ wybierz · Esc wróć")
         result.append(hints[self._tab])
         result.append(self._processing_hint() if self._tab == _Tab.PROGRESS else "")
-        result.append(self._global_status())
+        if self._tab != _Tab.FILES:
+            result.append(self._global_status())
         return result
 
     def _processing_hint(self) -> str:
@@ -1415,14 +1249,8 @@ class StateController:
                 for item in self._history_items
             ]
         entries: list[tuple[str | Text, bool | None]] = []
-        if self._deletion is not None:
-            entries = [("PRZENIEŚ CAŁY ZESTAW DO KOSZA?", None), (_safe_text(self._deletion.name), None)]
-        elif self._operation_details is not None:
-            entries = self._operation_entries(self._operation_details)
-        elif self._details is not None:
-            entries = _library_detail_entries(self._details)
-        if self._deletion is not None or self._details is not None or self._operation_details is not None:
-            return entries
+        if self._details is not None:
+            return _library_detail_entries(self._details)
         if self._tab == _Tab.PROGRESS:
             return self._processing_entries(columns)
         if self._tab == _Tab.SUBSCRIPTIONS:
@@ -1435,42 +1263,7 @@ class StateController:
                 for item in self._subscriptions
             ]
         if self._tab == _Tab.FILES:
-            entries = [
-                (
-                    _deletion_label(item) if "operation_id" in item else _library_label(item),
-                    None,
-                )
-                for item in _library_rows(self._snapshot)
-            ]
-        return entries
-
-    def _operation_entries(self, operation: PendingDeletion) -> list[tuple[str | Text, bool | None]]:
-        selected: Mapping[str, object] = self._selected_deletion() or {}
-        statuses: dict[str, str] = {
-            item.path: (
-                "uncertain" if item.status.value == "inflight" and not selected.get("active") else item.status.value
-            )
-            for item in operation.outcomes
-        }
-        entries: list[tuple[str | Text, bool | None]] = [(_safe_text(self._operation_name), None)]
-        reasons: dict[str, str] = {item.path: _LIBRARY_PROBLEMS.get(item.reason, "") for item in operation.outcomes}
-        for path, _size, _stamp in operation.files:
-            status: str = statuses.get(path, "recycled" if path in operation.recycled else "pending")
-            explanation: str = f" · {reasons[path]}" if reasons.get(path) else ""
-            entries.append((f"{_safe_text(path)} · {_DELETION_STATUSES[status]}{explanation}", None))
-        if operation.restore is not None:
-            entries.extend(
-                (
-                    f"{_safe_text(item.path)} · cofanie: {_LIBRARY_PROBLEMS.get(item.reason, item.status)}"
-                    + (
-                        f" · staging do sprawdzenia: {_safe_text(item.staging)}"
-                        if item.started and item.status != "restored"
-                        else ""
-                    ),
-                    None,
-                )
-                for item in operation.restore.outcomes
-            )
+            entries = [(_safe_text(item.get("name", "")), None) for item in _library_rows(self._snapshot)]
         return entries
 
     def _processing_entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
@@ -1651,58 +1444,31 @@ def _relocation_problems(snapshot: Mapping[str, object]) -> list[Mapping[str, ob
 
 
 def _library_rows(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:
+    deleted: set[str] = {
+        str(item["set_id"])
+        for item in _rows(snapshot.get("deletions"))
+        if not item.get("restored")
+        and (item.get("active") or (item.get("total") and item.get("recycled") == item.get("total")))
+    }
     return os_sorted(
-        [*_rows(snapshot.get("library")), *_rows(snapshot.get("library_problems")), *_deletion_rows(snapshot)],
+        [
+            *_rows(snapshot.get("library")),
+            *(item for item in _rows(snapshot.get("library_problems")) if str(item.get("set_id")) not in deleted),
+        ],
         key=lambda item: (str(item.get("name", "")), _library_row_id(item)),
     )
 
 
 def _library_row_id(item: Mapping[str, object]) -> str:
-    return str(item.get("operation_id", item.get("set_id", "")))
-
-
-def _library_label(item: Mapping[str, object]) -> str:
-    label: str = _safe_text(item.get("name", ""))
-    if item.get("available") is False:
-        label += " · " + _LIBRARY_PROBLEMS.get(str(item.get("problem")), _LIBRARY_PROBLEMS["library_result_missing"])
-    return label
-
-
-def _deletion_rows(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:
-    return [
-        item
-        for item in _rows(snapshot.get("deletions"))
-        if not item.get("restored")
-        and (item.get("active") or item.get("restore_problem") or item.get("recycled") != item.get("total"))
-    ]
-
-
-def _deletion_label(item: Mapping[str, object]) -> str:
-    if item.get("restored"):
-        return f"Przywrócono: {_safe_text(item.get('name', ''))}"
-    if item.get("restoring"):
-        return f"Przywracanie: {_safe_text(item.get('name', ''))}"
-    if item.get("restore_problem"):
-        return f"Cofanie: {_safe_text(item.get('name', ''))} · " + _LIBRARY_PROBLEMS.get(
-            str(item["restore_problem"]), "wynik niepewny"
-        )
-    status: str = "trwa" if item.get("active") else "niepełne"
-    if item.get("uncertain"):
-        status = "wynik niepewny"
-    return (
-        f"Kosz: {_safe_text(item.get('name', item.get('set_id', '')))} · {status} · "
-        f"nierozliczone: {item.get('remaining')}/{item.get('total')}"
-    )
+    return str(item.get("set_id", ""))
 
 
 def _library_detail_entries(details: LibrarySet) -> list[tuple[str | Text, bool | None]]:
     entries: list[tuple[str | Text, bool | None]] = [(_safe_text(details.name), None)]
     if details.target is None:
         entries.append(("Cel nierozstrzygnięty · regeneracja wymaga wyboru", None))
-    if details.problem is not None and details.problem in _LIBRARY_PROBLEMS:
+    if details.problem == "library_ownership_unknown":
         entries.append((_LIBRARY_PROBLEMS[details.problem], None))
-    elif not details.available:
-        entries.append((_LIBRARY_PROBLEMS["library_result_missing"], None))
     if details.provisional_timing:
         entries.append(("Czasy robocze · skrypt lektora bez synchronizacji z nagraniem", None))
     entries.extend(

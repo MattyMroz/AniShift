@@ -121,10 +121,10 @@ on the same volume. Name collisions preserve both episodes. Regenerate directly 
 
 In **Biblioteka**, Enter opens the final video or the recorded source video when the
 result consists of separate sidecars; F reveals the confirmed main product. In **Details**,
-Enter and F act on the selected file. Delete always previews the whole set and requires
-confirmation, with **Anuluj** selected initially. Ctrl+Z restores the last deleted set
+Enter and F act on the selected file. Delete moves the whole set to the Recycle Bin
+immediately, without confirmation. Ctrl+Z restores the last deleted set
 from the Windows Recycle Bin, including after a resident restart. It never overwrites an
-occupied destination; missing bin items and incomplete restores remain visible for recovery.
+occupied destination; action refusals appear as a concise error in the library.
 Undo is a single last-deletion action, not a stack of earlier deletions.
 
 Undo adds optional restore evidence to the existing schema-2 resident state. Builds from

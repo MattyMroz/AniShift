@@ -72,8 +72,11 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   F passes `playback=False` to reveal the confirmed main product. History
   failures remain visible across renders. `interactive/state.py`, `resident.py`
 - Library Details Enter/F submits the exact selected `LibraryFileIdentity` for owner membership
-  and freshness validation; informational rows have no file action. Delete still previews the
-  whole set with Cancel selected. Ctrl+Z delegates last-deletion Undo to the owner. Library
+  and freshness validation; informational rows have no file action. Delete previews and submits
+  the whole set in one worker session without a confirmation screen. Ctrl+Z delegates
+  last-deletion Undo to the owner. Library shows material names, not operation rows or routine
+  busy/success/global-progress messages; completed deletion removes the row and Undo restores it.
+  Partial leftovers remain accessible. Synchronous action
   refusals survive unrelated snapshots but not a changed selection/view; late action results
   cannot overwrite a newer context. `interactive/state.py`, `resident.py`
 - P prepares the owner's retry proposal; confirmation transfers local work to Manual with
