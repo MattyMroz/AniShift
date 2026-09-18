@@ -27,21 +27,58 @@ RECYCLE_CLEANUP_TIMEOUT_S: Final[float] = 1.0
 
 @dataclass(frozen=True, slots=True)
 class RecycleResult:
-    """Distinguish native evidence from refusal and an interrupted operation with unknown effects."""
+    """Report recycle/restore completion, read-only readiness, refusal or uncertain native effects."""
 
-    outcome: Literal["recycled", "refused", "uncertain"]
+    outcome: Literal["recycled", "restored", "ready", "refused", "uncertain"]
     reason: str
     receipt: str | None = None
 
 
 def recycle_file(path: Path, identity: tuple[int, int, int, int]) -> RecycleResult:
     """Recycle exactly one identified file; timeout or malformed evidence never authorizes a retry."""
+    result: RecycleResult = _run_worker({"path": str(path), "identity": identity})
+    return (
+        result
+        if result.outcome in {"recycled", "refused", "uncertain"}
+        else RecycleResult("uncertain", "recycle_invalid_evidence")
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreRequest:
+    """Exact durable paths and file identity supplied only by the deletion owner."""
+
+    workspace: Path
+    path: str
+    staging: str
+    identity: tuple[int, int, int, int]
+    receipt: str | None
+    started: bool = False
+
+
+def restore_file(request: RestoreRequest, check_only: bool = False) -> RecycleResult:
+    """Inspect or restore an exact recorded item through the bounded native worker."""
+    return _run_worker(
+        {
+            "operation": "restore",
+            "workspace": str(request.workspace),
+            "path": request.path,
+            "staging": request.staging,
+            "identity": request.identity,
+            "receipt": request.receipt,
+            "started": request.started,
+            "check_only": check_only,
+        }
+    )
+
+
+def _run_worker(request: dict[str, object]) -> RecycleResult:
     if not is_windows():
         return RecycleResult("refused", "recycle_unsupported")
     executable: object = getattr(sys, "_base_executable", None)
     if not isinstance(executable, str):
         return RecycleResult("refused", "recycle_unavailable")
-    payload: str = json.dumps({"path": str(path), "identity": identity, "parent_pid": os.getpid()})
+    payload: str = json.dumps({**request, "parent_pid": os.getpid()})
     try:
         process: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603
             [executable, "-m", "anishift.platform.recycle_worker"],
@@ -106,7 +143,13 @@ def _decode_result(output: str) -> RecycleResult:
         data: object = json.loads(output)
     except ValueError:
         return RecycleResult("uncertain", "recycle_invalid_evidence")
-    if not isinstance(data, dict) or data.get("outcome") not in {"recycled", "refused", "uncertain"}:
+    if not isinstance(data, dict) or data.get("outcome") not in {
+        "recycled",
+        "restored",
+        "ready",
+        "refused",
+        "uncertain",
+    }:
         return RecycleResult("uncertain", "recycle_invalid_evidence")
     if not isinstance(data.get("reason"), str) or not isinstance(data.get("receipt"), str | type(None)):
         return RecycleResult("uncertain", "recycle_invalid_evidence")

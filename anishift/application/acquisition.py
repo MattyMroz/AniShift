@@ -199,6 +199,10 @@ class TorrentManagement(Protocol):
         """Release only confirmed complete jobs without deleting their media."""
         ...
 
+    def released_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
+        """Read persisted release evidence without activating or changing the client."""
+        ...
+
     def transfer_action(self, info_hash: str, action: str) -> None:
         """Apply an explicit action to a managed transfer."""
         ...
@@ -604,6 +608,12 @@ class AcquisitionService:
         if self._torrent_management is None:
             return frozenset()
         return self._torrent_management.release_completed(hashes)
+
+    def released_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
+        """Read durable release evidence without contacting the torrent client."""
+        if self._torrent_management is None or not hashes:
+            return frozenset()
+        return self._torrent_management.released_hashes(hashes)
 
     def close(self) -> None:
         """Release private torrent process resources."""

@@ -32,6 +32,7 @@ from anishift.application.control import (
     AcquisitionState,
     CommandReceipt,
     DeletionOutcome,
+    DeletionRestore,
     DeletionStatus,
     ManualHandledMarker,
     PendingDeletion,
@@ -44,6 +45,7 @@ from anishift.application.control import (
     RefusalReason,
     RequestState,
     Reservation,
+    RestoreOutcome,
     SourceSelection,
     WatchState,
     auto_admissible,
@@ -96,7 +98,7 @@ from anishift.errors import AniShiftError
 from anishift.paths import READY_DIRECTORY
 from anishift.platform.directory_watch import DirectoryChange, source_is_available
 from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
-from anishift.platform.recycle import RecycleResult
+from anishift.platform.recycle import RecycleResult, RestoreRequest
 from anishift.services.catalog import TitleCandidate
 from anishift.services.torrents.query import EpisodeRange
 from anishift.utils.logger import get_logger
@@ -271,6 +273,7 @@ _NOT_PLANNABLE: Final[str] = "The sources cannot be planned into an executable r
 
 _MUTATING_KINDS: Final[frozenset[str]] = frozenset(
     {
+        "deletion_undo",
         "deletion_start",
         "deletion_retry",
         "set_auto",
@@ -294,6 +297,8 @@ _MUTATING_KINDS: Final[frozenset[str]] = frozenset(
 
 _SLOW_KINDS: Final[frozenset[str]] = frozenset(
     {
+        "deletion_undo",
+        "library_file_open",
         "discover",
         "register_external",
         "preview",
@@ -436,6 +441,7 @@ class AutomationOwner:
         ready_store: ReadyStore | None = None,
         scan_interval_s: float = SCAN_INTERVAL_S,
         recycler: Callable[[Path, tuple[int, int, int, int]], RecycleResult] | None = None,
+        restorer: Callable[[RestoreRequest, bool], RecycleResult] | None = None,
     ) -> None:
         """Load the persisted state and prepare the owner thread and its pool."""
         self._service: AppService = service
@@ -457,6 +463,8 @@ class AutomationOwner:
         self._run_groups: dict[str, tuple[InspectedSourceGroup, ...]] = {}
         self._ready_store: ReadyStore | None = ready_store
         self._recycler: Callable[[Path, tuple[int, int, int, int]], RecycleResult] | None = recycler
+        self._restorer: Callable[[RestoreRequest, bool], RecycleResult] | None = restorer
+        self._restoring: set[str] = set()
         self._deleting: dict[str, str] = {}
         self._deletion_retries: dict[str, int] = {}
         self._deletion_scopes: dict[str, frozenset[Path]] = {}
@@ -938,7 +946,7 @@ class AutomationOwner:
         eligible: tuple[InspectedSourceGroup, ...] = tuple(
             group
             for group in workspace.groups
-            if group.group_id not in self._relocating_groups()
+            if group.group_id not in self._relocating_groups() | self._deleting_groups()
             and auto_admissible(
                 self._state,
                 self._state.policy,
@@ -1189,13 +1197,14 @@ class AutomationOwner:
             case (
                 "library_refresh"
                 | "library_open"
+                | "library_file_open"
+                | "deletion_undo"
                 | "deletion_preview"
                 | "deletion_validate"
                 | "deletion_start"
                 | "deletion_retry"
             ):
-                groups: tuple[SourceGroup, ...] = self._service.library_inventory()
-                return self._on_owner(lambda: self._library_command(request, groups))
+                return self._inspect_library_command(request)
             case "library_details":
                 return self._library_details(request)
             case "deletion_get":
@@ -1376,7 +1385,8 @@ class AutomationOwner:
                         (group.stem for group in self._state.ready_groups if group.set_id == item.set_id), item.set_id
                     ),
                     "remaining": len(item.files) - len(item.recycled),
-                    "can_confirm": any(
+                    "can_confirm": (item.restore is None or (not item.restore.completed and not item.restore.unsettled))
+                    and any(
                         file.identity is not None
                         for group in self._ready_library
                         if group.set_id == item.set_id
@@ -1391,6 +1401,16 @@ class AutomationOwner:
                         for result in item.outcomes
                     ),
                     "retryable": self._deletion_retry_current(item),
+                    "restoring": item.operation_id in self._restoring,
+                    "restored": item.restore is not None and item.restore.completed,
+                    "restore_problem": next(
+                        (
+                            result.reason
+                            for result in (() if item.restore is None else item.restore.outcomes)
+                            if result.status in {"refused", "uncertain", "inflight"}
+                        ),
+                        None,
+                    ),
                 }
                 for item in self._state.pending_deletions
             ],
@@ -1610,13 +1630,34 @@ class AutomationOwner:
             return self._library_refusal("library_set_missing")
         return ControlResponse.succeeded(encode_view(group))
 
-    def _library_command(self, request: ControlRequest, groups: tuple[SourceGroup, ...]) -> ControlResponse:
+    def _inspect_library_command(self, request: ControlRequest) -> ControlResponse:
+        groups: tuple[SourceGroup, ...] = self._service.library_inventory()
+        acquisitions: tuple[AcquisitionConfirmation, ...] = self._on_owner(lambda: self._state.acquisitions)
+        try:
+            released: frozenset[str] = (
+                self._read_released(acquisitions) if request.kind.startswith("deletion_") else frozenset()
+            )
+        except AniShiftError, OSError, ValueError:
+            return self._library_refusal("library_release_unavailable")
+        return self._on_owner(lambda: self._library_command(request, groups, acquisitions, released))
+
+    def _library_command(  # noqa: PLR0911 - each library command has a distinct validated response
+        self,
+        request: ControlRequest,
+        groups: tuple[SourceGroup, ...],
+        acquisitions: tuple[AcquisitionConfirmation, ...] = (),
+        released: frozenset[str] = frozenset(),
+    ) -> ControlResponse:
+        if acquisitions != self._state.acquisitions and request.kind.startswith("deletion_"):
+            return self._library_refusal("library_scope_changed")
         self._ready_library = project_library(self._state, self._service.workspace_root, groups)
         self._publish_state()
+        if request.kind == "deletion_undo":
+            return self._start_restore(request, released)
         if request.kind == "library_refresh":
             return ControlResponse.succeeded({"sets": [encode_view(item) for item in self._ready_library]})
         if request.kind == "deletion_retry":
-            return self._retry_deletion(request)
+            return self._retry_deletion(request, released)
         identifier: str | None = _text(request.payload, "set_id")
         group: LibrarySet | None = next((item for item in self._ready_library if item.set_id == identifier), None)
         if group is None:
@@ -1626,7 +1667,14 @@ class AutomationOwner:
             if playback is None:
                 return _invalid("Library playback must be a boolean")
             return self._library_open(group, playback=playback)
-        return self._deletion_preview(request, group)
+        if request.kind == "library_file_open":
+            expected: LibraryFileIdentity = decode_view(LibraryFileIdentity, request.payload.get("file"))
+            if not any(item.path == expected.path and item.identity == expected for item in group.files):
+                return self._library_refusal("library_scope_changed")
+            if file_identity(self._service.workspace_root, expected.path) != expected:
+                return self._library_refusal("library_source_missing")
+            return ControlResponse.succeeded({"path": expected.path})
+        return self._deletion_preview(request, group, released)
 
     def _library_open(self, group: LibrarySet, *, playback: bool) -> ControlResponse:
         if not group.available or group.main_result is None:
@@ -1659,8 +1707,10 @@ class AutomationOwner:
             return self._library_refusal("library_source_missing")
         return ControlResponse.succeeded({"path": source})
 
-    def _deletion_preview(self, request: ControlRequest, group: LibrarySet) -> ControlResponse:
-        refusal: ControlResponse | None = self._deletion_conflict(group)
+    def _deletion_preview(
+        self, request: ControlRequest, group: LibrarySet, released: frozenset[str] = frozenset()
+    ) -> ControlResponse:
+        refusal: ControlResponse | None = self._deletion_conflict(group, released)
         if refusal is not None:
             return refusal
         files: tuple[LibraryFileIdentity, ...] = tuple(
@@ -1685,7 +1735,7 @@ class AutomationOwner:
             self._deletion_previews[preview.preview_id] = (preview, request.session_id, self._file_version)
         return ControlResponse.succeeded(encode_view(preview))
 
-    def _deletion_conflict(self, group: LibrarySet) -> ControlResponse | None:
+    def _deletion_conflict(self, group: LibrarySet, released: frozenset[str] = frozenset()) -> ControlResponse | None:
         if self._shutting_down:
             return _refuse(RefusalReason.SHUTTING_DOWN)
         record: ReadyGroup | None = next(
@@ -1693,7 +1743,7 @@ class AutomationOwner:
         )
         if record is None:
             return self._library_refusal("library_ownership_unknown")
-        if record.pending_sources or self._torrent_owns_set(group):
+        if record.pending_sources or self._torrent_owns_set(group, released):
             return self._library_refusal("library_source_held")
         refusal: ControlResponse | None = self._conflict((group.group_id, record.set_id), "")
         if refusal is not None:
@@ -1709,11 +1759,21 @@ class AutomationOwner:
             return self._library_refusal("library_scope_changed")
         return None
 
-    def _torrent_owns_set(self, group: LibrarySet) -> bool:
+    def _read_released(self, acquisitions: tuple[AcquisitionConfirmation, ...]) -> frozenset[str]:
+        service: AcquisitionService | None = self._service.acquisition
+        if service is None:
+            return frozenset()
+        hashes: frozenset[str] = frozenset(
+            item.info_hash for item in acquisitions if item.state is AcquisitionState.COMPLETE
+        )
+        return service.released_hashes(hashes)
+
+    def _torrent_owns_set(self, group: LibrarySet, released: frozenset[str] = frozenset()) -> bool:
         paths: set[str] = {item.path for item in group.files}
         return any(
             paths.intersection((Path(item.directory) / name).as_posix() for name in _assigned_files(item))
             for item in self._state.acquisitions
+            if item.state is not AcquisitionState.COMPLETE or item.info_hash not in released
         )
 
     def _start_deletion(
@@ -1748,14 +1808,180 @@ class AutomationOwner:
     def _deletion_by_id(self, operation_id: str | None) -> PendingDeletion | None:
         return next((item for item in self._state.pending_deletions if item.operation_id == operation_id), None)
 
-    def _retry_deletion(self, request: ControlRequest) -> ControlResponse:
+    def _latest_deletion(self) -> PendingDeletion | None:
+        return next(
+            (
+                item
+                for item in reversed(self._state.pending_deletions)
+                if item.recycled or any(outcome.status is not DeletionStatus.REFUSED for outcome in item.outcomes)
+            ),
+            None,
+        )
+
+    def _start_restore(self, request: ControlRequest, released: frozenset[str]) -> ControlResponse:  # noqa: PLR0911
+        receipt: CommandReceipt | None = self._receipt(request)
+        if receipt is not None:
+            return ControlResponse.succeeded(dict(receipt.outcome))
+        operation: PendingDeletion | None = self._latest_deletion()
+        if operation is None:
+            return self._library_refusal("restore_nothing")
+        if operation.restore is not None and operation.restore.completed:
+            return self._library_refusal("restore_already_completed")
+        if self._restorer is None:
+            return self._library_refusal("recycle_unsupported")
+        group: LibrarySet | None = next((item for item in self._ready_library if item.set_id == operation.set_id), None)
+        if group is None or not operation.identities:
+            return self._library_refusal("library_ownership_unknown")
+        refusal: ControlResponse | None = self._restore_conflict(group, operation, released)
+        if refusal is not None:
+            return refusal
+        if request.session_id in self._closed_sessions:
+            return _refuse(RefusalReason.SESSION_CLOSED)
+        restore: DeletionRestore = operation.restore or DeletionRestore(
+            f"restore-{token_hex(_ID_BYTES)}",
+            tuple(
+                RestoreOutcome(name, f"temp/.restore-{token_hex(_ID_BYTES)}/{index}")
+                for index, (name, _size, _stamp) in enumerate(operation.files)
+            ),
+        )
+        updated: PendingDeletion = replace(operation, restore=restore)
+        outcome: CommandOutcome = {"operation_id": operation.operation_id}
+        refusal = self._commit(request, self._replace_deletion(updated), outcome)
+        if refusal is not None:
+            return refusal
+        self._deletion_retries.pop(operation.operation_id, None)
+        self._deleting[operation.operation_id] = operation.set_id
+        self._restoring.add(operation.operation_id)
+        self._active_io += 1
+        self._pool.submit(self._restore_set, updated)
+        self._publish_state()
+        return ControlResponse.succeeded(outcome)
+
+    def _restore_conflict(
+        self, group: LibrarySet, operation: PendingDeletion, released: frozenset[str]
+    ) -> ControlResponse | None:
+        if operation.operation_id in self._deleting:
+            return self._library_refusal("library_deleting")
+        record: ReadyGroup | None = next(
+            (item for item in self._state.ready_groups if item.set_id == group.set_id), None
+        )
+        if record is None or self._shutting_down:
+            return self._library_refusal("library_ownership_unknown")
+        if record.pending_sources or self._torrent_owns_set(group, released):
+            return self._library_refusal("library_source_held")
+        return self._conflict((group.group_id, group.set_id), "", restoring=operation.operation_id)
+
+    def _replace_deletion(self, operation: PendingDeletion) -> WatchState:
+        return replace(
+            self._state,
+            pending_deletions=tuple(
+                operation if item.operation_id == operation.operation_id else item
+                for item in self._state.pending_deletions
+            ),
+        )
+
+    def _restore_request(self, operation: PendingDeletion, outcome: RestoreOutcome) -> RestoreRequest:
+        size, stamp = next((size, stamp) for name, size, stamp in operation.files if name == outcome.path)
+        device, inode = next((device, inode) for name, device, inode in operation.identities if name == outcome.path)
+        receipt: str | None = next((item.receipt for item in operation.outcomes if item.path == outcome.path), None)
+        return RestoreRequest(
+            self._service.workspace_root,
+            outcome.path,
+            outcome.staging,
+            (size, stamp, device, inode),
+            receipt,
+            outcome.started,
+        )
+
+    def _restore_set(self, operation: PendingDeletion) -> None:
+        try:
+            self._restore_files(operation)
+        except AniShiftError, OSError, ValueError:
+            logger.warning("Set restoration interrupted; persisted intent retained")
+        finally:
+            self._queue.put(partial(self._settle_restore, operation.operation_id))
+
+    def _restore_files(self, operation: PendingDeletion) -> None:
+        if operation.restore is None or self._restorer is None:
+            return
+        for outcome in operation.restore.outcomes:
+            result: RecycleResult = self._restorer(self._restore_request(operation, outcome), True)
+            if result.outcome == "restored" or result.reason == "restore_ready_bin":
+                reconciled: RestoreOutcome = replace(
+                    outcome,
+                    status="restored" if result.outcome == "restored" else "prepared",
+                    reason=result.reason,
+                    started=result.outcome == "restored",
+                )
+                if not self._on_owner(partial(self._save_restore_outcome, operation.operation_id, reconciled)):
+                    return
+            if result.outcome not in {"ready", "restored"}:
+                self._on_owner(partial(self._finish_restore_file, operation.operation_id, outcome, result))
+                return
+        for outcome in operation.restore.outcomes:
+            admitted: bool = self._on_owner(partial(self._begin_restore_file, operation.operation_id, outcome))
+            if not admitted:
+                return
+            result = self._restorer(self._restore_request(operation, outcome), False)
+            saved: bool = self._on_owner(partial(self._finish_restore_file, operation.operation_id, outcome, result))
+            if not saved or result.outcome != "restored":
+                return
+
+    def _begin_restore_file(self, operation_id: str, outcome: RestoreOutcome) -> bool:
+        if self._shutting_down:
+            return False
+        return self._save_restore_outcome(
+            operation_id, replace(outcome, status="inflight", reason="restore_inflight", started=True)
+        )
+
+    def _finish_restore_file(self, operation_id: str, outcome: RestoreOutcome, result: RecycleResult) -> bool:
+        status: str = result.outcome if result.outcome in {"restored", "refused"} else "uncertain"
+        operation: PendingDeletion | None = self._deletion_by_id(operation_id)
+        current: RestoreOutcome = (
+            next((item for item in operation.restore.outcomes if item.path == outcome.path), outcome)
+            if operation is not None and operation.restore is not None
+            else outcome
+        )
+        saved: bool = self._save_restore_outcome(operation_id, replace(current, status=status, reason=result.reason))
+        self._publish_state()
+        return saved
+
+    def _save_restore_outcome(self, operation_id: str, outcome: RestoreOutcome) -> bool:
+        operation: PendingDeletion | None = self._deletion_by_id(operation_id)
+        if operation is None or operation.restore is None:
+            return False
+        restored: DeletionRestore = replace(
+            operation.restore,
+            outcomes=tuple(outcome if item.path == outcome.path else item for item in operation.restore.outcomes),
+        )
+        return self._save(self._replace_deletion(replace(operation, restore=restored)))
+
+    def _settle_restore(self, operation_id: str) -> None:
+        operation: PendingDeletion | None = self._deletion_by_id(operation_id)
+        if operation is not None and operation.restore is not None:
+            complete: bool = all(item.status == "restored" for item in operation.restore.outcomes)
+            self._save(
+                self._replace_deletion(replace(operation, restore=replace(operation.restore, completed=complete)))
+            )
+            self.files_changed(
+                DirectoryChange(
+                    paths=tuple(self._service.workspace_root / name for name, _size, _stamp in operation.files),
+                    reason="restore_completed",
+                )
+            )
+        self._restoring.discard(operation_id)
+        self._deleting.pop(operation_id, None)
+        self._active_io -= 1
+        self._publish_state()
+
+    def _retry_deletion(self, request: ControlRequest, released: frozenset[str] = frozenset()) -> ControlResponse:
         operation: PendingDeletion | None = self._deletion_by_id(_text(request.payload, "operation_id"))
         if operation is None or not self._deletion_retry_current(operation):
             return self._library_refusal("library_scope_changed")
         group: LibrarySet | None = next((item for item in self._ready_library if item.set_id == operation.set_id), None)
         if group is None or operation.instance_id != self._instance_id:
             return self._library_refusal("library_scope_changed")
-        refusal: ControlResponse | None = self._deletion_conflict(group)
+        refusal: ControlResponse | None = self._deletion_conflict(group, released)
         if refusal is not None:
             return refusal
         if not self._deletion_scope_matches(operation, group):
@@ -1768,6 +1994,10 @@ class AutomationOwner:
         return ControlResponse.succeeded(outcome)
 
     def _deletion_retry_current(self, operation: PendingDeletion) -> bool:
+        if operation.restore is not None and (
+            operation.restore.unsettled or any(item.started for item in operation.restore.outcomes)
+        ):
+            return False
         group: LibrarySet | None = next((item for item in self._ready_library if item.set_id == operation.set_id), None)
         if group is None or operation.instance_id != self._instance_id:
             return False
@@ -1795,8 +2025,10 @@ class AutomationOwner:
         try:
             while self._recycler is not None:
                 groups: tuple[SourceGroup, ...] = self._service.library_inventory()
+                acquisitions: tuple[AcquisitionConfirmation, ...] = self._on_owner(lambda: self._state.acquisitions)
+                released: frozenset[str] = self._read_released(acquisitions)
                 item: LibraryFileIdentity | None = self._on_owner(
-                    partial(self._begin_deletion_file, operation_id, groups)
+                    partial(self._begin_deletion_file, operation_id, groups, acquisitions, released)
                 )
                 if item is None:
                     break
@@ -1836,7 +2068,15 @@ class AutomationOwner:
             or all(file_identity(self._service.workspace_root, name) == identity for name, identity in expected.items())
         )
 
-    def _begin_deletion_file(self, operation_id: str, groups: tuple[SourceGroup, ...]) -> LibraryFileIdentity | None:
+    def _begin_deletion_file(
+        self,
+        operation_id: str,
+        groups: tuple[SourceGroup, ...],
+        acquisitions: tuple[AcquisitionConfirmation, ...] = (),
+        released: frozenset[str] = frozenset(),
+    ) -> LibraryFileIdentity | None:
+        if acquisitions != self._state.acquisitions:
+            return None
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
         self._ready_library = project_library(self._state, self._service.workspace_root, groups)
         group: LibrarySet | None = next(
@@ -1852,7 +2092,7 @@ class AutomationOwner:
         record: ReadyGroup | None = next(
             (item for item in self._state.ready_groups if item.set_id == group.set_id), None
         )
-        if record is None or record.pending_sources or self._torrent_owns_set(group):
+        if record is None or record.pending_sources or self._torrent_owns_set(group, released):
             return None
         files: tuple[LibraryFileIdentity, ...] = tuple(
             item.identity for item in group.files if item.identity is not None
@@ -3239,6 +3479,8 @@ class AutomationOwner:
         if any(receipt.pending is not None for receipt in self._state.command_receipts):
             return False
         info_hash: str = choice.release.info_hash.casefold()
+        if any(item.info_hash == info_hash and self._protected_acquisition(item) for item in self._state.acquisitions):
+            return False
         identity: str | None = repeat_of(subscription, episode)
         if any(
             (item.info_hash == info_hash and item.repeat_id == identity)
@@ -3381,9 +3623,25 @@ class AutomationOwner:
         return self._on_owner(lambda: self._may_start_content(item))
 
     def _may_start_content(self, item: AcquisitionConfirmation) -> bool:
-        return self._working() and any(
-            row.operation_id == item.operation_id and row.action_id == item.action_id
-            for row in self._state.acquisitions
+        return (
+            self._working()
+            and not self._protected_acquisition(item)
+            and any(
+                row.operation_id == item.operation_id and row.action_id == item.action_id
+                for row in self._state.acquisitions
+            )
+        )
+
+    def _protected_acquisition(self, acquisition: AcquisitionConfirmation) -> bool:
+        paths: set[str] = {
+            name
+            for operation in self._state.pending_deletions
+            if operation.operation_id in self._deleting
+            or (operation.restore is not None and operation.restore.unsettled)
+            for name, _size, _stamp in operation.files
+        }
+        return bool(
+            paths.intersection((Path(acquisition.directory) / name).as_posix() for name in _assigned_files(acquisition))
         )
 
     def _working(self) -> bool:
@@ -3705,7 +3963,11 @@ class AutomationOwner:
         groups: dict[str, InspectedSourceGroup] = {group.group_id: group for group in sources}
         for completed in result.groups:
             group: InspectedSourceGroup | None = groups.get(completed.group_id)
-            if group is None or completed.status is not GroupStatus.SUCCEEDED:
+            if (
+                group is None
+                or completed.status is not GroupStatus.SUCCEEDED
+                or completed.group_id in self._deleting_groups()
+            ):
                 continue
             try:
                 request: ProcessingRequest | None = next(
@@ -3798,7 +4060,9 @@ class AutomationOwner:
         if self._shutting_down:
             return
         for group_id, move in self._ready_moves.items():
-            if group_id in self._ready_inflight:
+            if group_id in self._ready_inflight or {move.group_id, move.destination_group_id}.intersection(
+                self._deleting_groups()
+            ):
                 continue
             self._ready_inflight.add(group_id)
             self._active_io += 1
@@ -4518,11 +4782,13 @@ class AutomationOwner:
         )
         return (None, refusal) if refusal is not None else (item, ControlResponse.succeeded(dict(outcome)))
 
-    def _reacquire_refusal(
+    def _reacquire_refusal(  # noqa: PLR0911 - explicit refusal reasons preserve admission evidence
         self, previous: AcquisitionConfirmation, inventory: tuple[SourceGroup, ...]
     ) -> ControlResponse | None:
         if not self._working():
             return _refuse(RefusalReason.PAUSED)
+        if self._protected_acquisition(previous):
+            return self._library_refusal("library_deleting")
         if previous.nyaa_release_id is None:
             return self._retry_refusal("retry_reference_missing")
         groups: set[str] = set(self._acquisition_groups(previous))
@@ -4793,9 +5059,9 @@ class AutomationOwner:
         return self._conflict(group_ids, client_id, excluding=excluding) is not None
 
     def _conflict(
-        self, group_ids: Sequence[str], client_id: str, *, excluding: str | None = None
+        self, group_ids: Sequence[str], client_id: str, *, excluding: str | None = None, restoring: str | None = None
     ) -> ControlResponse | None:
-        if self._deleting_groups().intersection(group_ids):
+        if self._deleting_groups(restoring=restoring).intersection(group_ids):
             return self._library_refusal("library_deleting")
         if self._relocating_groups().intersection(group_ids):
             return _refuse(RefusalReason.GROUP_RELOCATING)
@@ -4812,11 +5078,16 @@ class AutomationOwner:
             return _refuse(RefusalReason.GROUP_PROCESSING)
         return None
 
-    def _deleting_groups(self) -> set[str]:
+    def _deleting_groups(self, *, restoring: str | None = None) -> set[str]:
+        protected: set[str] = set(self._deleting.values()) | {
+            item.set_id
+            for item in self._state.pending_deletions
+            if item.restore is not None and item.restore.unsettled and item.operation_id != restoring
+        }
         return {
             identifier
             for item in self._state.ready_groups
-            if item.set_id in self._deleting.values()
+            if item.set_id in protected
             for identifier in (item.set_id, item.group_id)
         }
 

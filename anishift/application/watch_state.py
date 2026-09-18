@@ -16,6 +16,7 @@ from anishift.application.control import (
     AutomationPolicy,
     CommandReceipt,
     DeletionOutcome,
+    DeletionRestore,
     DeletionStatus,
     ManualHandledMarker,
     NarrationTimeline,
@@ -28,6 +29,7 @@ from anishift.application.control import (
     RecipePreferences,
     RequestState,
     Reservation,
+    RestoreOutcome,
     SourceSelection,
     TextResultFormat,
     TranslateRecipe,
@@ -374,6 +376,26 @@ def _encode_ready_group(group: ReadyGroup) -> dict[str, object]:
 
 def _encode_pending_deletion(deletion: PendingDeletion) -> dict[str, object]:
     return {
+        **(
+            {
+                "restore": {
+                    "operation_id": deletion.restore.operation_id,
+                    "completed": deletion.restore.completed,
+                    "outcomes": [
+                        {
+                            "path": item.path,
+                            "staging": item.staging,
+                            "status": item.status,
+                            "reason": item.reason,
+                            "started": item.started,
+                        }
+                        for item in deletion.restore.outcomes
+                    ],
+                }
+            }
+            if deletion.restore is not None
+            else {}
+        ),
         "operation_id": deletion.operation_id,
         "set_id": deletion.set_id,
         "requested_at": deletion.requested_at,
@@ -609,6 +631,7 @@ def _pending_sources(single: object, pending: object) -> tuple[str, ...]:
 
 def _decode_pending_deletion(raw: object) -> PendingDeletion:
     document: dict[str, object] = dict(_strict_mapping(raw, "pending deletion"))
+    restore: DeletionRestore | None = _decode_restore(document.pop("restore")) if "restore" in document else None
     identities: FileObjectIdentities = _decode_object_identities(document.pop("identities", []))
     outcomes: tuple[DeletionOutcome, ...] = tuple(
         _decode_deletion_outcome(item) for item in _list(document.pop("outcomes", []), "deletion outcomes")
@@ -624,7 +647,29 @@ def _decode_pending_deletion(raw: object) -> PendingDeletion:
         identities=identities,
         outcomes=outcomes,
         instance_id=instance_id,
+        restore=restore,
     )
+
+
+def _decode_restore(raw: object) -> DeletionRestore:
+    document: dict[str, object] = _strict_object(
+        raw, frozenset({"operation_id", "completed", "outcomes"}), "deletion restore"
+    )
+    outcomes: list[RestoreOutcome] = []
+    for entry in _list(document["outcomes"], "restore outcomes"):
+        item: dict[str, object] = _strict_object(
+            entry, frozenset({"path", "staging", "status", "reason", "started"}), "restore outcome"
+        )
+        outcomes.append(
+            RestoreOutcome(
+                _text(item, "path"),
+                _text(item, "staging"),
+                _text(item, "status"),
+                _text(item, "reason"),
+                _flag(item, "started"),
+            )
+        )
+    return DeletionRestore(_text(document, "operation_id"), tuple(outcomes), _flag(document, "completed"))
 
 
 def _decode_object_identities(raw: object) -> FileObjectIdentities:

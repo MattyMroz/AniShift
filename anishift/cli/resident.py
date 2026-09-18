@@ -17,6 +17,7 @@ from anishift.application import (
     HistoryEvent,
     InspectedSourceGroup,
     InspectedWorkspace,
+    LibraryFileIdentity,
     LibrarySet,
     PlanPreview,
     RecipePreferences,
@@ -138,6 +139,21 @@ class ResidentSession:
     def preview_deletion(self, set_id: str) -> DeletionPreview:
         """Prepare an exact whole-set scope without performing any file operation."""
         return decode_view(DeletionPreview, self._call("deletion_preview", {"set_id": set_id}))
+
+    def library_file(self, set_id: str, identity: LibraryFileIdentity) -> Path:
+        """Resolve exactly the selected file after current owner-side membership validation."""
+        answer: Mapping[str, object] = self._call(
+            "library_file_open", {"set_id": set_id, "file": encode_view(identity)}
+        )
+        relative: Path = Path(str(answer["path"]))
+        if relative.is_absolute() or ".." in relative.parts:
+            msg = "The owner returned an invalid library path"
+            raise ValueError(msg)
+        return self.workspace_root / relative
+
+    def undo_deletion(self) -> str:
+        """Restore only the latest effected deletion retained by the owner."""
+        return str(self._call("deletion_undo")["operation_id"])
 
     def validate_deletion(self, preview: DeletionPreview) -> DeletionPreview:
         """Revalidate that exact scope and its owner-side exclusions without deleting files."""

@@ -119,6 +119,19 @@ and ignores hidden directories. Drop files directly into the workspace root. Aft
 processing, sources and related products move to `ready/` without rewriting their contents
 on the same volume. Name collisions preserve both episodes. Regenerate directly in `ready/`.
 
+In **Biblioteka**, Enter opens the final video or the recorded source video when the
+result consists of separate sidecars; F reveals the confirmed main product. In **Details**,
+Enter and F act on the selected file. Delete always previews the whole set and requires
+confirmation, with **Anuluj** selected initially. Ctrl+Z restores the last deleted set
+from the Windows Recycle Bin, including after a resident restart. It never overwrites an
+occupied destination; missing bin items and incomplete restores remain visible for recovery.
+Undo is a single last-deletion action, not a stack of earlier deletions.
+
+Undo adds optional restore evidence to the existing schema-2 resident state. Builds from
+before this feature reject that state after the first Undo admission. Downgrading then
+requires coordinated recovery of the state and media; do not remove the restore fields
+or replace the ledger with an older backup to bypass validation.
+
 ```bash
 uv run anishift autostart enable    # register the logon task and start watching now
 uv run anishift autostart disable   # remove the task and stop watching

@@ -223,6 +223,9 @@ class _TorrentNetwork:
         self.released.append(hashes)
         return hashes
 
+    def released_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
+        return hashes & frozenset(value for batch in self.released for value in batch)
+
     def finish_transfers(self) -> None:
         return
 

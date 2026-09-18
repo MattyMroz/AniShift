@@ -71,6 +71,11 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Final video products retain priority; missing or changed main products still refuse.
   F passes `playback=False` to reveal the confirmed main product. History
   failures remain visible across renders. `interactive/state.py`, `resident.py`
+- Library Details Enter/F submits the exact selected `LibraryFileIdentity` for owner membership
+  and freshness validation; informational rows have no file action. Delete still previews the
+  whole set with Cancel selected. Ctrl+Z delegates last-deletion Undo to the owner. Library
+  refusals survive unrelated snapshots but not a changed selection/view; late action results
+  cannot overwrite a newer context. `interactive/state.py`, `resident.py`
 - P prepares the owner's retry proposal; confirmation transfers local work to Manual with
   owner revalidation, or admits an explicit remote repeat. Pause permits History reads and
   validated result opening, but blocks new work. `interactive/state.py`, `interactive/app.py`

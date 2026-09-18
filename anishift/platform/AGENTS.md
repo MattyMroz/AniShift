@@ -10,6 +10,14 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 - `ManagedQBittorrent` dowodzi własności przez PID, czas utworzenia, własną binarkę
   i katalog profilu potwierdzony w API. GUI przejęte przez użytkownika blokuje automatyczne
   zamknięcie. Zwolnienie ukończonego torrenta zachowuje media (`deleteFiles=false`).
+- `ManagedQBittorrent.released_hashes()` reads and validates only the existing `process.json`.
+  Do not replace it with `_load()`: that path can initialize the profile and change ACLs.
+  New download admission invalidates the matching release receipt.
+- `recycle.py` runs bounded native workers. `restore_worker.py` resolves the exact saved receipt
+  inside the virtual Recycle Bin, moves it through Shell to recorded same-volume staging and
+  publishes by checked file handle without replacement. Keep parent/path/identity guards;
+  never use global Shell Undo or rename raw bin files. `FILE_RENAME_INFO.FileName` needs a
+  terminating WCHAR outside `FileNameLength`; uncertain staging stays recorded for explicit recovery.
 - Odczyt transferów prywatnego GUI pozostaje dostępny po ręcznym przejęciu; mutacje nadal
   wymagają własności. Zamknięcie przejętego klienta nie jest awarią startu i nie uruchamia go ponownie.
 - `tray.py` ładuje oryginalną maskotkę z pakietowego `app.ico` bez importowania frontendu.

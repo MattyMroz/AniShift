@@ -19,6 +19,7 @@ from rich.text import Text
 from anishift.application import (
     DeletionPreview,
     HistoryEvent,
+    LibraryFileIdentity,
     LibrarySet,
     PendingDeletion,
     RefusalReason,
@@ -151,7 +152,7 @@ _LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
         "library_source_missing": "Brakuje źródłowego pliku wideo tego zestawu",
         "library_scope_changed": "Zestaw zmienił się · przygotuj nowe potwierdzenie",
         "library_source_busy": "Plik jest nadal zapisywany lub niedostępny",
-        "library_deleting": "Trwa przenoszenie tego zestawu do Kosza",
+        "library_deleting": "Zestaw jest chroniony przez operację Kosza lub przywracania",
         "recycle_unsupported": "Kosz jest niedostępny dla tego środowiska",
         "recycle_unavailable": "Nie udało się potwierdzić dostępności operacji Kosza",
         "recycle_refused": "System odmówił przeniesienia pliku do Kosza",
@@ -160,6 +161,17 @@ _LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
         "recycle_interrupted": "Operacja została przerwana · jej wynik pozostaje niepewny",
         "recycle_invalid_evidence": "Brak poprawnego potwierdzenia operacji Kosza",
         "recycle_incomplete": "System nie potwierdził pełnego wyniku operacji",
+        "library_release_unavailable": "Nie można odczytać potwierdzenia zwolnienia torrenta",
+        "restore_nothing": "Brak usuniętego zestawu do przywrócenia",
+        "restore_already_completed": "Ostatnie usunięcie zostało już cofnięte",
+        "restore_destination_occupied": "Miejsce przywracania jest zajęte · istniejący plik pozostawiono bez zmian",
+        "restore_receipt_missing": "Brak dokładnego elementu w Koszu · mógł zostać opróżniony",
+        "restore_unsupported_destination": "Przywracanie wymaga dostępnego miejsca na tym samym woluminie NTFS",
+        "restore_unsafe_path": "Ścieżka przywracania jest niedostępna lub prowadzi przez dowiązanie",
+        "restore_scope_changed": "Pliki przywracania zmieniły się · nie wykonano kolejnej operacji",
+        "restore_interrupted": "Przywracanie przerwane · Ctrl+Z sprawdzi zapisany stan przed ponowieniem",
+        "restore_incomplete": "System nie potwierdził pełnego przywrócenia",
+        "restore_inflight": "Przywracanie wymaga rozliczenia zapisanej operacji",
     }
 )
 """Polish explanations keyed by the owner's library reason codes."""
@@ -255,6 +267,7 @@ class StateController:
         self._notice: str = "Łączenie z procesem w tle…"
         self._state_version: int = 0
         self._notice_version: int = -1
+        self._notice_persistent: bool = False
         self._details: LibrarySet | None = None
         self._operation_details: PendingDeletion | None = None
         self._operation_name: str = ""
@@ -355,11 +368,31 @@ class StateController:
     def _notify(self, message: str) -> None:
         self._notice = _safe_text(message).rstrip(".")
         self._notice_version = self._state_version
+        self._notice_persistent = False
+
+    def _library_context(self) -> tuple[str, str] | None:
+        if self._tab != _Tab.FILES:
+            return None
+        details: LibrarySet | None = self._details
+        operation: PendingDeletion | None = self._operation_details
+        if details is not None:
+            return details.set_id, str(self._selected)
+        if operation is not None:
+            return operation.operation_id, str(self._selected)
+        rows: list[Mapping[str, object]] = _library_rows(self._snapshot)
+        return (_library_row_id(rows[self._selected]), "") if self._selected < len(rows) else ("", "")
 
     def handle_key(self, key: str) -> StateResult:
         """Navigate the shared list or submit one explicit action."""
         with self._lock:
             self._library_target = None
+            if (
+                self._tab == _Tab.FILES
+                and key in {"up", "down", "home", "end", "escape", "backspace", "tab", "backtab", "left", "right"}
+                and self._deletion is None
+            ):
+                self._view_generation += 1
+                self._notify("")
             if self._history_input is not None:
                 self._history_input_key(key)
                 return StateResult.CONTINUE
@@ -420,6 +453,10 @@ class StateController:
         return StateResult.CONTINUE
 
     def _modal_key(self, key: str) -> bool:
+        if self._tab == _Tab.FILES and key == "undo" and self._deletion is None:
+            self._work(lambda session: session.undo_deletion(), success="Przyjęto cofnięcie ostatniego usunięcia")
+            self._invalidate()
+            return True
         if self._deletion is not None:
             self._deletion_key(key)
             return True
@@ -458,6 +495,8 @@ class StateController:
             set_id: str = self._details.set_id
             generation: int = self._view_generation
             self._work(lambda session: self._show_deletion(session, set_id, generation))
+        elif key == "enter" or key.casefold() == "text:f":
+            self._open_detail_file(reveal=key != "enter")
         elif key in {"up", "down", "home", "end"}:
             self._follow_cursor[self._viewport()] = True
             count: int = max(len(self._entries(120)), 1)
@@ -465,6 +504,28 @@ class StateController:
             if key in {"home", "end"}:
                 self._selected = 0 if key == "home" else count - 1
         self._invalidate()
+
+    def _open_detail_file(self, *, reveal: bool) -> None:
+        details: LibrarySet | None = self._details
+        index: int = self._selected - (len(_library_detail_entries(details)) - len(details.files)) if details else -1
+        if details is None or not 0 <= index < len(details.files):
+            self._notify("Wybierz wiersz pliku")
+            return
+        identity: LibraryFileIdentity | None = details.files[index].identity
+        if identity is None:
+            self._notify("Wybrany plik jest niedostępny")
+            self._notice_persistent = True
+            return
+        generation: int = self._view_generation
+
+        def action(session: ResidentSession) -> None:
+            path: Path = session.library_file(details.set_id, identity)
+            with self._lock:
+                if generation != self._view_generation or self._stop.is_set():
+                    return
+            _open_path(path, show_folder=reveal)
+
+        self._work(action, success="")
 
     def attach_anime(self, controller: AnimeController) -> None:
         """Reuse the session's one search controller inside the Anime tab."""
@@ -893,19 +954,35 @@ class StateController:
         self._busy = True
         self._notify("Wykonywanie polecenia…")
         threading.Thread(
-            target=self._perform, args=(action, success), name="anishift-state-action", daemon=True
+            target=self._perform,
+            args=(action, success, self._view_generation),
+            name="anishift-state-action",
+            daemon=True,
         ).start()
 
-    def _perform(self, action: Callable[[ResidentSession], object], success: str = "Polecenie przyjęte") -> None:
+    def _perform(
+        self,
+        action: Callable[[ResidentSession], object],
+        success: str = "Polecenie przyjęte",
+        generation: int | None = None,
+    ) -> None:
         session: ResidentSession | None = None
+        context: tuple[str, str] | None = None
         try:
+            with self._lock:
+                if generation is None:
+                    generation = self._view_generation
+                context = self._library_context()
             session = self._parent.new_session()
             action(session)
             with self._lock:
-                self._notify(success)
+                if generation == self._view_generation and context == self._library_context():
+                    self._notify(success)
         except (AniShiftError, ControlError, OSError, ValueError) as error:
             with self._lock:
-                self._notify(refusal_text(error))
+                if generation == self._view_generation and context == self._library_context():
+                    self._notify(refusal_text(error))
+                    self._notice_persistent = self._tab == _Tab.FILES
         finally:
             if session is not None and session is not self._deletion_session:
                 session.close()
@@ -964,6 +1041,7 @@ class StateController:
                 previous_details: LibrarySet | None = self._details
             details: LibrarySet | None = self._refresh_details(session, previous_details)
             with self._lock:
+                context: tuple[str, str] | None = self._library_context()
                 if payload != self._snapshot:
                     self._state_version += 1
                 self._preserve_tab_selection(_Tab.SUBSCRIPTIONS, self._subscriptions, subscriptions, "subscription_id")
@@ -983,8 +1061,10 @@ class StateController:
                 self._refresh_draft_work()
                 self._connected = True
                 self._observe_downloads()
-                if self._notice_version < self._state_version:
+                if self._notice_version < self._state_version and not self._notice_persistent:
                     self._notice = ""
+                if context != self._library_context() and self._notice_persistent:
+                    self._notify("")
                 if payload.get("shutting_down"):
                     self._finished = True
                     self._stop.set()
@@ -1187,7 +1267,9 @@ class StateController:
         preview: DeletionPreview | None = self._deletion
         if preview is None:
             return Text()
-        title: Text = Text(f"Kosz · {len(preview.files)} plików · {_safe_text(preview.name)}", style="white_bold")
+        title: Text = Text(
+            f"Kosz · cały zestaw · {len(preview.files)} plików · {_safe_text(preview.name)}", style="white_bold"
+        )
         title.truncate(max(columns - 2, 1), overflow="ellipsis")
         selected: str = "[Przenieś do Kosza]" if self._delete_confirmed else "[Anuluj]"
         return with_footer(title, (selected, "←→ wybierz · Enter · Esc anuluj"), columns, rows)
@@ -1262,7 +1344,9 @@ class StateController:
         if self._operation_details is not None or self._details is not None:
             return [
                 *result,
-                "↑↓ pliki · Esc wróć" + (" do biblioteki" if self._details is not None else ""),
+                "↑↓ pliki · Enter otwórz plik · F folder · Delete cały zestaw · Ctrl+Z cofnij usunięcie · Esc wróć"
+                if self._details is not None
+                else "↑↓ pliki · Ctrl+Z cofnij usunięcie · Esc wróć",
                 self._global_status(),
             ]
         if operation is not None:
@@ -1277,7 +1361,7 @@ class StateController:
             "H historia · M ręczny · "
             + ("O Zatrzymaj AniShift" if self._snapshot.get("auto_enabled") else "O Wznów AniShift")
             + " · U ustawienia",
-            "Enter otwórz · F folder · D szczegóły · Delete Kosz",
+            "Enter otwórz · F folder · D szczegóły · Delete cały zestaw do Kosza · Ctrl+Z cofnij usunięcie",
         )
         result.append("←→ widok · ↑↓ wybierz · Esc wróć")
         result.append(hints[self._tab])
@@ -1374,6 +1458,19 @@ class StateController:
             status: str = statuses.get(path, "recycled" if path in operation.recycled else "pending")
             explanation: str = f" · {reasons[path]}" if reasons.get(path) else ""
             entries.append((f"{_safe_text(path)} · {_DELETION_STATUSES[status]}{explanation}", None))
+        if operation.restore is not None:
+            entries.extend(
+                (
+                    f"{_safe_text(item.path)} · cofanie: {_LIBRARY_PROBLEMS.get(item.reason, item.status)}"
+                    + (
+                        f" · staging do sprawdzenia: {_safe_text(item.staging)}"
+                        if item.started and item.status != "restored"
+                        else ""
+                    ),
+                    None,
+                )
+                for item in operation.restore.outcomes
+            )
         return entries
 
     def _processing_entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
@@ -1575,11 +1672,20 @@ def _deletion_rows(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]
     return [
         item
         for item in _rows(snapshot.get("deletions"))
-        if item.get("active") or item.get("recycled") != item.get("total")
+        if not item.get("restored")
+        and (item.get("active") or item.get("restore_problem") or item.get("recycled") != item.get("total"))
     ]
 
 
 def _deletion_label(item: Mapping[str, object]) -> str:
+    if item.get("restored"):
+        return f"Przywrócono: {_safe_text(item.get('name', ''))}"
+    if item.get("restoring"):
+        return f"Przywracanie: {_safe_text(item.get('name', ''))}"
+    if item.get("restore_problem"):
+        return f"Cofanie: {_safe_text(item.get('name', ''))} · " + _LIBRARY_PROBLEMS.get(
+            str(item["restore_problem"]), "wynik niepewny"
+        )
     status: str = "trwa" if item.get("active") else "niepełne"
     if item.get("uncertain"):
         status = "wynik niepewny"

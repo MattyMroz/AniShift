@@ -393,6 +393,58 @@ class DeletionOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class RestoreOutcome:
+    """Durable progress for one exact receipt and its reserved staging path."""
+
+    path: str
+    staging: str
+    status: str = "prepared"
+    reason: str = "restore_prepared"
+    started: bool = False
+
+    def __post_init__(self) -> None:
+        require_relative_paths((self.path, self.staging), "A restored file")
+        if self.status not in {"prepared", "inflight", "restored", "refused", "uncertain"}:
+            msg = "Unknown restore outcome"
+            raise ValueError(msg)
+        if not self.staging.startswith("temp/.restore-") or self.staging == self.path:
+            msg = "Restore staging must stay in its private workspace temporary directory"
+            raise ValueError(msg)
+        if type(self.started) is not bool or (self.status in {"inflight", "restored"} and not self.started):
+            msg = "Restore effects require a persisted start"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class DeletionRestore:
+    """One explicit undo intent retained with the original deletion across restarts."""
+
+    operation_id: str
+    outcomes: tuple[RestoreOutcome, ...]
+    completed: bool = False
+
+    @property
+    def unsettled(self) -> bool:
+        """Protect only started native effects that have not been proven restored."""
+        return any(item.started and item.status != "restored" for item in self.outcomes)
+
+    def __post_init__(self) -> None:
+        names: tuple[str, ...] = tuple(item.path for item in self.outcomes)
+        staging: tuple[str, ...] = tuple(item.staging for item in self.outcomes)
+        if (
+            type(self.completed) is not bool
+            or not self.operation_id
+            or len(set(names)) != len(names)
+            or len(set(staging)) != len(staging)
+        ):
+            msg = "Restore requires one identity and unique file destinations"
+            raise ValueError(msg)
+        if self.completed and any(item.status != "restored" for item in self.outcomes):
+            msg = "Completed restoration requires every file result"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
 class PendingDeletion:
     """One confirmed whole-set deletion, the identity of each file it covers and what already went out."""
 
@@ -404,6 +456,7 @@ class PendingDeletion:
     identities: FileObjectIdentities = ()
     outcomes: tuple[DeletionOutcome, ...] = ()
     instance_id: str | None = None
+    restore: DeletionRestore | None = None
 
     def __post_init__(self) -> None:
         if not self.files:
@@ -432,6 +485,11 @@ class PendingDeletion:
             raise ValueError(msg)
         if self.outcomes and not self.identities:
             msg = "Native deletion outcomes require strong file identities"
+            raise ValueError(msg)
+        if self.restore is not None and (
+            not self.identities or {item.path for item in self.restore.outcomes} != set(names)
+        ):
+            msg = "Restoration must cover exactly the original strongly identified scope"
             raise ValueError(msg)
 
 

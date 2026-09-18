@@ -353,8 +353,7 @@ def _native_recycle(path: Path, identity: tuple[int, int, int, int]) -> RecycleR
         ole.CoUninitialize()
 
 
-def _read_request() -> tuple[Path, tuple[int, int, int, int]]:
-    payload: dict[str, object] = json.loads(sys.stdin.read())
+def _read_request(payload: dict[str, object]) -> tuple[Path, tuple[int, int, int, int]]:
     values: object = payload["identity"]
     path: object = payload["path"]
     parent_pid: object = payload["parent_pid"]
@@ -399,7 +398,15 @@ def main() -> None:
     result: RecycleResult = RecycleResult("refused", "recycle_unsupported")
     started: bool = False
     try:
-        path, identity = _read_request()
+        payload: dict[str, object] = json.loads(sys.stdin.read())
+        if payload.get("operation") == "restore":
+            from anishift.platform.restore_worker import restore_request  # noqa: PLC0415
+
+            result = restore_request(payload)
+            sys.stdout.write(json.dumps(asdict(result)))
+            sys.stdout.flush()
+            return
+        path, identity = _read_request(payload)
         if sys.platform == "win32" and _supported_path(path) and _identity(path) == identity:
             _private_desktop()
             with _locked_source(path, identity):

@@ -2140,7 +2140,7 @@ def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_
         ).plain
         assert ("Przetwarzanie 0 · Praca" if tab == 2 else "↓ 2 · Przetwarzanie 3 · Czeka 4 · Praca") in frame
         assert "←→ widok" in frame
-        assert ("Enter odcinki", "H historia", "Delete Kosz")[tab - 1] in frame
+        assert ("Enter odcinki", "H historia", "Delete cały zestaw")[tab - 1] in frame
         assert len(frame.splitlines()) <= rows
         assert all(len(line) <= columns for line in frame.splitlines())
         if tab == 1:

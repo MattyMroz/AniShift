@@ -42,6 +42,13 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   local rebuild enters Manual, and reacquire persists its correlated intent before sending.
   `AcquisitionConfirmation` retains only a verified numeric Nyaa ID and original release title;
   older or unsupported references remain absent. URL restoration belongs to `services/torrents/nyaa.py`.
+- Library deletion ignores a matching acquisition only when it is `COMPLETE` and the existing
+  manager receipt proves release. Read release evidence on the I/O pool and revalidate owner
+  state before admission; historical relocated paths alone do not prove active ownership.
+- Undo persists `PendingDeletion.restore` admission and per-file start before native effects.
+  Select the latest deletion with effects by append order; successful Undo consumes that target.
+  `DeletionRestore.unsettled` protects unresolved started effects after restart, not a harmless
+  preflight refusal. Keep original receipts, product proofs and dedup records. `automation.py`
 - `ReadyStore` przenosi ukończoną grupę do `ready/` przez wyłączne dowiązanie i usunięcie
   starej nazwy na tym samym woluminie. Dziennik pozostaje do zapisania nowych tożsamości
   w stanie właściciela; znany torrent musi wcześniej zwolnić pliki. Blokada relokacji
@@ -198,6 +205,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   dokument wersji 1 nie może zawierać żadnej z nich. Migracja nadaje `complete_files` z
   `required_files` wyłącznie potwierdzeniom w stanie `COMPLETE`. Trwałe ścieżki `ReadyGroup`
   i `PendingDeletion` przechodzą przez `require_relative_paths`. `watch_state.py`, `control.py`
+  Optional nested `PendingDeletion.restore` remains in schema 2; pre-Undo strict readers reject
+  it after the first Undo admission. Never strip recovery evidence to make a downgrade load.
 - `subscription_id` i `_matches` porównują serię po postaci znormalizowanej (`normalize_series`,
   `series_forms`), nie po surowym zapisie wybranego wydania. Etykietą grupy w katalogu jest
   pierwszy napotkany zapis, więc dosłowne porównanie cicho zabijało subskrypcję. `subscriptions.py`

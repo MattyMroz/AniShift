@@ -272,6 +272,14 @@ class ManagedQBittorrent:
             self._save(replace(self._load(), released=state.released | released))
             return released
 
+    def released_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
+        """Read only the existing process receipt, without locks, profile setup or client access."""
+        try:
+            payload: bytes = (self._root / "process.json").read_bytes()
+        except FileNotFoundError:
+            return frozenset()
+        return _STATE.validate_json(payload, strict=True).released & hashes
+
     def close_owned(self) -> None:
         """Shut the proven private client down on an explicit end, never touching a foreign one."""
         with self._lock:
