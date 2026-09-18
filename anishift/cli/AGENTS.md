@@ -66,7 +66,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `StateController` opens History with H inside Processing; S or `/` uses the shared
   `TextInput` and suppresses application hotkeys while typing. Default rows are the latest
   50 terminal materials; explicit search includes retained order/download/regeneration boundaries.
-  Enter uses `ResidentSession.library_result` validation, never a source fallback. History
+  Enter uses `ResidentSession.library_result` validation: completed sidecar-only video sets
+  open their recorded source video through the OS association, preferring MKV over MP4.
+  Final video products retain priority; missing or changed main products still refuse.
+  F passes `playback=False` to reveal the confirmed main product. History
   failures remain visible across renders. `interactive/state.py`, `resident.py`
 - P prepares the owner's retry proposal; confirmation transfers local work to Manual with
   owner revalidation, or admits an explicit remote repeat. Pause permits History reads and

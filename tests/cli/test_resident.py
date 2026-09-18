@@ -18,6 +18,7 @@ from anishift.application import AppService, InspectedWorkspace
 from anishift.cli import control as cli_control
 from anishift.cli import watch as watch_module
 from anishift.cli.exit_codes import EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS
+from anishift.cli.resident import ResidentSession
 from anishift.cli.watch import RESIDENT_LOCK_FILE_NAME, run_resident, spawn_resident
 from anishift.platform import autostart
 from anishift.platform import tray as tray_module
@@ -114,6 +115,24 @@ class _Service:
 
 def _as_service(service: _Service) -> AppService:
     return cast("AppService", service)
+
+
+@pytest.mark.parametrize("playback", [True, False])
+def test_library_result_sends_playback_only_for_confirmed_product_selection(tmp_path: Path, playback: bool) -> None:
+    def call(kind: str, payload: Mapping[str, object], *, instance_id: str | None = None) -> Mapping[str, object]:
+        assert kind == "library_open"
+        assert instance_id is None
+        assert isinstance(payload["client_id"], str)
+        assert {key: value for key, value in payload.items() if key != "client_id"} == {
+            "set_id": "episode",
+            **({} if playback else {"playback": False}),
+        }
+        return {"path": "ready/01.mkv" if playback else "ready/01.eac3"}
+
+    client: ControlClient = cast("ControlClient", SimpleNamespace(call=call))
+    session: ResidentSession = ResidentSession(tmp_path, lambda: client)
+    result: Path = session.library_result("episode") if playback else session.library_result("episode", playback=False)
+    assert result == tmp_path / ("ready/01.mkv" if playback else "ready/01.eac3")
 
 
 def test_a_second_resident_is_refused_and_records_no_instance(tmp_path: Path) -> None:

@@ -987,11 +987,19 @@ def _assert_title_wraps(controller: StateController) -> None:
 
 
 @pytest.mark.parametrize("show_folder", [False, True])
+@pytest.mark.parametrize("name", ["Episode.mkv", "Episode.pl.mkv"])
 def test_library_opens_only_the_owner_selected_result_or_selects_it_in_its_folder(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, show_folder: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, show_folder: bool, name: str
 ) -> None:
-    video: Path = tmp_path / "Episode.pl.mkv"
-    session = cast("ResidentSession", SimpleNamespace(library_result=lambda set_id: video))
+    video: Path = tmp_path / name
+    product: Path = tmp_path / "Episode.eac3"
+
+    def library_result(set_id: str, **kwargs: bool) -> Path:
+        assert set_id == "episode"
+        assert kwargs == ({"playback": False} if show_folder else {})
+        return product if show_folder else video
+
+    session = cast("ResidentSession", SimpleNamespace(library_result=library_result))
     opened: list[tuple[Path, bool]] = []
 
     def open_path(path: Path, *, show_folder: bool = False) -> None:
@@ -999,7 +1007,7 @@ def test_library_opens_only_the_owner_selected_result_or_selects_it_in_its_folde
 
     monkeypatch.setattr(state_module, "_open_path", open_path)
     state_module._open_episode(session, "episode", show_folder=show_folder)
-    assert opened == [(video, show_folder)]
+    assert opened == [(product if show_folder else video, show_folder)]
 
 
 @pytest.mark.parametrize("change", ["refresh", "dismiss", "missing"])
@@ -1306,7 +1314,10 @@ def test_merged_library_is_naturally_ordered_and_preserves_missing_selection(
         controller._thread.join(5)
 
 
-@pytest.mark.parametrize("problem", ["library_ownership_unknown", "library_result_changed", "library_result_missing"])
+@pytest.mark.parametrize(
+    "problem",
+    ["library_ownership_unknown", "library_result_changed", "library_result_missing", "library_source_missing"],
+)
 def test_library_details_explain_machine_coded_provenance_and_result_problem(
     monkeypatch: pytest.MonkeyPatch, problem: str
 ) -> None:
@@ -1318,7 +1329,7 @@ def test_library_details_explain_machine_coded_provenance_and_result_problem(
     try:
         frame: str = controller.render(120, 40).plain
         assert state_module._LIBRARY_PROBLEMS[problem] in frame
-        if problem == "library_result_changed":
+        if problem in {"library_result_changed", "library_source_missing"}:
             assert state_module._LIBRARY_PROBLEMS["library_result_missing"] not in frame
     finally:
         controller.close()

@@ -123,9 +123,12 @@ class ResidentSession:
         """Read the current owned-file inventory for one stable set identity."""
         return decode_view(LibrarySet, self._call("library_details", {"set_id": set_id}))
 
-    def library_result(self, set_id: str) -> Path:
-        """Resolve exactly the confirmed primary result at the owner."""
-        answer: Mapping[str, object] = self._call("library_open", {"set_id": set_id})
+    def library_result(self, set_id: str, *, playback: bool = True) -> Path:
+        """Resolve the owner-validated playback path, or the confirmed main result when playback is false."""
+        payload: dict[str, object] = {"set_id": set_id}
+        if not playback:
+            payload["playback"] = False
+        answer: Mapping[str, object] = self._call("library_open", payload)
         relative: Path = Path(str(answer["path"]))
         if relative.is_absolute() or ".." in relative.parts:
             msg = "The owner returned an invalid library path"

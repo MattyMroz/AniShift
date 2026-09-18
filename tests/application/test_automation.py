@@ -1730,22 +1730,30 @@ def _await_library_count(owner: AutomationOwner, expected: int) -> None:
 
 
 @pytest.mark.parametrize(
-    ("target", "products", "primary"),
+    ("target", "products", "primary", "source"),
     [
-        (WorkflowTarget.VIDEO, ("01.pl.mkv", "01.pl.mp4"), "01.pl.mkv"),
-        (WorkflowTarget.VIDEO, ("01.mp3", "01.pl.srt"), "01.mp3"),
-        (WorkflowTarget.AUDIOBOOK, ("01.mp3",), "01.mp3"),
-        (WorkflowTarget.TRANSLATE, ("01.pl.srt",), "01.pl.srt"),
-        (WorkflowTarget.COVER, ("01.cover.mp4", "01.mp3"), "01.cover.mp4"),
+        (WorkflowTarget.VIDEO, ("01.pl.mkv", "01.pl.mp4"), "01.pl.mkv", "ready/01.mkv"),
+        (WorkflowTarget.VIDEO, ("01.pl.mp4",), "01.pl.mp4", "ready/01.mkv"),
+        (WorkflowTarget.VIDEO, ("01.mp3", "01.pl.srt"), "01.mp3", "ready/01.mkv"),
+        (WorkflowTarget.VIDEO, ("01.eac3", "01.pl.srt"), "01.eac3", "ready/01.mkv"),
+        (WorkflowTarget.VIDEO, ("01.eac3",), "01.eac3", "01.mkv"),
+        (WorkflowTarget.VIDEO, ("01.eac3",), "01.eac3", "ready/01.mp4"),
+        (WorkflowTarget.VIDEO, ("01.pl.srt",), "01.pl.srt", "ready/01.txt"),
+        (WorkflowTarget.AUDIOBOOK, ("01.mp3",), "01.mp3", "ready/01.txt"),
+        (WorkflowTarget.TRANSLATE, ("01.pl.srt",), "01.pl.srt", "ready/01.txt"),
+        (WorkflowTarget.COVER, ("01.cover.mp4", "01.mp3"), "01.cover.mp4", "ready/01.txt"),
     ],
 )
-def test_library_opens_exact_recorded_primary_and_keeps_old_result_after_failed_regeneration(
+def test_library_opens_owned_video_or_recorded_product_after_failed_regeneration(
     tmp_path: Path,
     target: WorkflowTarget,
     products: tuple[str, ...],
     primary: str,
+    source: str,
 ) -> None:
     service, store, state = _completed_library(tmp_path)
+    (tmp_path / source).write_bytes(b"original source")
+    (tmp_path / "ready/010.mkv").write_bytes(b"another episode")
     record: ReadyGroup = state.ready_groups[0]
     confirmations: list[ProductConfirmation] = []
     for name in products:
@@ -1788,6 +1796,8 @@ def test_library_opens_exact_recorded_primary_and_keeps_old_result_after_failed_
                 replace(
                     record,
                     target=target,
+                    sources=(source,) if source.startswith("ready/") else (),
+                    pending_sources=() if source.startswith("ready/") else (source,),
                     products=tuple(f"ready/{name}" for name in products),
                     main_result=f"ready/{primary}",
                 ),
@@ -1800,13 +1810,84 @@ def test_library_opens_exact_recorded_primary_and_keeps_old_result_after_failed_
         sets: tuple[LibrarySet, ...] = _read_ready_sets(owner)
         assert sets[0].available
         assert sets[0].target is target
+        assert sets[0].main_result == f"ready/{primary}"
         opened: ControlResponse = owner.handle(_request("library_open", {"set_id": record.set_id}))
         assert opened.ok
-        assert opened.result["path"] == f"ready/{primary}"
+        expected: str = (
+            source if primary in {"01.mp3", "01.eac3"} and target is WorkflowTarget.VIDEO else f"ready/{primary}"
+        )
+        assert opened.result["path"] == expected
+        assert (tmp_path / source).read_bytes() == b"original source"
+        assert owner.state.ready_groups == store.load().ready_groups
+        (tmp_path / "ready" / primary).write_bytes(b"changed product")
+        changed: ControlResponse = owner.handle(_request("library_open", {"set_id": record.set_id}))
+        assert not changed.ok
+        assert changed.reason == "library_result_changed"
         (tmp_path / "ready" / primary).unlink()
         missing: ControlResponse = owner.handle(_request("library_open", {"set_id": record.set_id}))
         assert not missing.ok
         assert missing.reason == "library_result_missing"
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+@pytest.mark.parametrize("source_state", ["missing", "ambiguous", "unrecorded", "mkv_mp4"])
+def test_library_video_open_selects_owned_primary_and_folder_reveals_confirmed_product(
+    tmp_path: Path, source_state: str
+) -> None:
+    service, store, state = _completed_library(tmp_path, ("01", "010"))
+    record: ReadyGroup = state.ready_groups[0]
+    sources: tuple[str, ...] = ("ready/01.mkv",)
+    (tmp_path / "ready/010.mkv").write_bytes(b"another episode")
+    if source_state in {"ambiguous", "mkv_mp4"}:
+        (tmp_path / "ready/01.mkv").write_bytes(b"source")
+        second: str = "ready/01 alternate.mkv" if source_state == "ambiguous" else "ready/01.mp4"
+        (tmp_path / second).write_bytes(b"second source")
+        sources = (*sources, second)
+    elif source_state == "unrecorded":
+        (tmp_path / "ready/01.mp4").write_bytes(b"unrecorded replacement")
+    store.save(
+        replace(
+            state,
+            ready_groups=(replace(record, target=WorkflowTarget.VIDEO, sources=sources), state.ready_groups[1]),
+        )
+    )
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _read_ready_sets(owner)[0].available
+        revealed: ControlResponse = owner.handle(_request("library_open", {"set_id": record.set_id, "playback": False}))
+        assert revealed.ok
+        assert revealed.result == {"path": record.main_result}
+        opened: ControlResponse = owner.handle(_request("library_open", {"set_id": record.set_id}))
+        if source_state == "mkv_mp4":
+            assert opened.ok
+            assert opened.result == {"path": "ready/01.mkv"}
+            return
+        assert not opened.ok
+        assert opened.reason == ("library_scope_changed" if source_state == "ambiguous" else "library_source_missing")
+        assert "path" not in opened.result
+        (tmp_path / "ready/01.pl.txt").unlink()
+        assert owner.handle(_request("library_open", {"set_id": record.set_id, "playback": False})).reason == (
+            "library_result_missing"
+        )
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+@pytest.mark.parametrize("playback", [None, 0, 1, "false"])
+def test_library_open_rejects_non_boolean_playback(tmp_path: Path, playback: object) -> None:
+    service, store, _state = _completed_library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        response: ControlResponse = owner.handle(_request("library_open", {"set_id": "set-01", "playback": playback}))
+        assert not response.ok
+        assert response.code is ControlErrorCode.INVALID_PAYLOAD
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)

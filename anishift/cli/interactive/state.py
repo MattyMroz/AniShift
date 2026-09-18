@@ -8,6 +8,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import IntEnum, StrEnum
+from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
@@ -147,6 +148,7 @@ _LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
         "library_result_changed": "Główny wynik istnieje, ale jest zmieniony lub niepotwierdzony",
         "library_ownership_unknown": "Pochodzenie zestawu wymaga rozstrzygnięcia przed usunięciem",
         "library_source_held": "Źródło czeka na zwolnienie przez torrent",
+        "library_source_missing": "Brakuje źródłowego pliku wideo tego zestawu",
         "library_scope_changed": "Zestaw zmienił się · przygotuj nowe potwierdzenie",
         "library_source_busy": "Plik jest nadal zapisywany lub niedostępny",
         "library_deleting": "Trwa przenoszenie tego zestawu do Kosza",
@@ -1610,4 +1612,5 @@ def _library_detail_entries(details: LibrarySet) -> list[tuple[str | Text, bool 
 
 
 def _open_episode(session: ResidentSession, set_id: str, *, show_folder: bool = False) -> None:
-    _open_path(session.library_result(set_id), show_folder=show_folder)
+    path: Path = session.library_result(set_id, playback=False) if show_folder else session.library_result(set_id)
+    _open_path(path, show_folder=show_folder)

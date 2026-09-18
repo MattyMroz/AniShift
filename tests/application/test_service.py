@@ -370,8 +370,11 @@ def test_mixed_manual_run_relocates_success_and_retries_failure_without_rewritin
         entries: tuple[LibrarySet, ...] = session.library()
         assert len(entries) == 1
         entry: LibrarySet = entries[0]
-        product: Path = session.library_result(entry.set_id)
-        assert product.parent == tmp_path / "ready"
+        video: Path = session.library_result(entry.set_id)
+        assert video.parent == tmp_path / "ready"
+        assert video.name == ("01 [2].mkv" if collision else "01.mkv")
+        assert entry.main_result == f"ready/{'01 [2]' if collision else '01'}.spoken.pl.srt"
+        product: Path = tmp_path / entry.main_result
         assert (tmp_path / "ready" / ("01 [2].mkv" if collision else "01.mkv")).is_file()
         assert not (tmp_path / "01.mkv").exists()
         assert (tmp_path / "02.mkv").is_file()
@@ -383,7 +386,7 @@ def test_mixed_manual_run_relocates_success_and_retries_failure_without_rewritin
     restarted: AppService = _service(tmp_path, translation, inspector=WorkspaceInspector(FakeMediaProbe()))
     with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, store):
         session.discover()
-        assert session.library_result(entry.set_id) == product
+        assert session.library_result(entry.set_id) == video
         materials: list[dict[str, object]] = cast("list[dict[str, object]]", session.command("status")["materials"])
         assert [(item["group_id"], item["state"]) for item in materials] == [(groups["02"], "failed")]
         request: ProcessingRequest = store.load().requests[0]
@@ -493,7 +496,8 @@ def test_mixed_manual_ready_recovery_keeps_the_success_and_the_remaining_graph( 
         if restore_first and failure_at == "before_state":
             assert restored_statuses == {groups["01"]: GroupStatus.FAILED, groups["02"]: GroupStatus.FAILED}
         entry: LibrarySet = session.library()[0]
-        assert session.library_result(entry.set_id) == tmp_path / "ready" / "01.spoken.pl.srt"
+        assert session.library_result(entry.set_id) == tmp_path / "ready" / "01.mkv"
+        assert entry.main_result == "ready/01.spoken.pl.srt"
         materials: list[dict[str, object]] = cast("list[dict[str, object]]", session.command("status")["materials"])
         assert [(item["group_id"], item["state"]) for item in materials] == [(groups["02"], "failed")]
         request: ProcessingRequest = store.load().requests[0]
@@ -551,7 +555,10 @@ def test_failed_regeneration_stays_in_processing_beside_the_old_confirmed_librar
         session.reserve(groups)
         assert session.execute(session.plan_auto(groups, preset), CollectingRunSink()).succeeded
         entry: LibrarySet = session.library()[0]
-        product: Path = session.library_result(entry.set_id)
+        video: Path = session.library_result(entry.set_id)
+        assert video == tmp_path / "ready/01.mkv"
+        assert entry.main_result == "ready/01.spoken.pl.srt"
+        product: Path = tmp_path / entry.main_result
         content: bytes = product.read_bytes()
     failing: AppService = _service(
         tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()), fail_group_id=entry.group_id
@@ -576,7 +583,7 @@ def test_failed_regeneration_stays_in_processing_beside_the_old_confirmed_librar
         assert len(materials) == 1
         assert materials[0]["run_id"] == result.run_id
         assert materials[0]["state"] == "failed"
-        assert session.library_result(entry.set_id) == product
+        assert session.library_result(entry.set_id) == video
         assert product.read_bytes() == content
         assert session.history() == history
         assert session.retry_proposal(entry.set_id).action == "resume"

@@ -1622,10 +1622,42 @@ class AutomationOwner:
         if group is None:
             return self._library_refusal("library_set_missing")
         if request.kind == "library_open":
-            if not group.available:
-                return self._library_refusal(group.problem or "library_result_missing")
-            return ControlResponse.succeeded({"path": group.main_result})
+            playback: bool | None = _flag(request.payload, "playback") if "playback" in request.payload else True
+            if playback is None:
+                return _invalid("Library playback must be a boolean")
+            return self._library_open(group, playback=playback)
         return self._deletion_preview(request, group)
+
+    def _library_open(self, group: LibrarySet, *, playback: bool) -> ControlResponse:
+        if not group.available or group.main_result is None:
+            return self._library_refusal(group.problem or "library_result_missing")
+        if (
+            not playback
+            or group.target is not WorkflowTarget.VIDEO
+            or Path(group.main_result).suffix.casefold() in {".mkv", ".mp4"}
+        ):
+            return ControlResponse.succeeded({"path": group.main_result})
+        record: ReadyGroup | None = next(
+            (item for item in self._state.ready_groups if item.set_id == group.set_id), None
+        )
+        sources: set[str] = (
+            {
+                name
+                for name in (*record.sources, *record.pending_sources)
+                if Path(name).suffix.casefold() in {".mkv", ".mp4"}
+            }
+            if record is not None
+            else set()
+        )
+        if not sources:
+            return ControlResponse.succeeded({"path": group.main_result})
+        sources = {name for name in sources if Path(name).suffix.casefold() == ".mkv"} or sources
+        if len(sources) != 1:
+            return self._library_refusal("library_scope_changed")
+        source: str = next(iter(sources))
+        if not any(item.path == source and item.identity is not None for item in group.files):
+            return self._library_refusal("library_source_missing")
+        return ControlResponse.succeeded({"path": source})
 
     def _deletion_preview(self, request: ControlRequest, group: LibrarySet) -> ControlResponse:
         refusal: ControlResponse | None = self._deletion_conflict(group)
