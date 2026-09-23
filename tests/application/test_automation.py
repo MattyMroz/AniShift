@@ -5521,7 +5521,7 @@ def test_a_dangling_link_wearing_an_incoming_name_keeps_that_set_off_it(tmp_path
     _dangling_link(tmp_path / "09.mkv")
     network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "Pack/09.mkv", 4, 0.0, 1),))
     item: AcquisitionConfirmation = _accepted_transfer("9")
-    store.save(WatchState(acquisitions=(item,)))
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(item,)))
     owner: AutomationOwner = _owner(service, store)
 
     owner._inspect_transfers((item,), owner._reserved_names())

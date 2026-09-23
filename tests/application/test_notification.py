@@ -904,6 +904,14 @@ def test_ambiguous_native_click_selects_nothing_and_requests_visible_panel_feedb
             tray.close()
 
 
+def _unlinked(path: Path) -> bool:
+    try:
+        path.unlink(missing_ok=True)
+    except PermissionError:
+        return False
+    return True
+
+
 @pytest.mark.parametrize("attached", [False, True])
 @pytest.mark.parametrize("change", ["valid", "unknown", "deleted", "deleted_before_attach"])
 def test_notification_routes_through_owner_session_and_app_to_library(  # noqa: PLR0915
@@ -922,6 +930,7 @@ def test_notification_routes_through_owner_session_and_app_to_library(  # noqa: 
         frame: Mapping[str, object] = next(item for item in frames if item["message"] == "Two")
         record: ReadyGroup = next(item for item in owner.state.ready_groups if item.stem == "Two")
         assert record.main_result is not None
+        main_result: Path = tmp_path / record.main_result
         launch: Mock = Mock()
         owner._open_panel = launch
         endpoint: str = control_endpoint(tmp_path / ".control")
@@ -937,14 +946,14 @@ def test_notification_routes_through_owner_session_and_app_to_library(  # noqa: 
                 application._state = controller
                 assert _await(lambda: bool(owner._panels))
             if change == "deleted":
-                (tmp_path / record.main_result).unlink()
+                assert _await(lambda: _unlinked(main_result))
             identifier: str = "" if change == "unknown" else str(frame["notification_id"])
             owner.tray_action(f"notification:{identifier}")
             assert owner.handle(_request("status")).ok
             if not attached:
                 launch.assert_called_once_with()
                 if change == "deleted_before_attach":
-                    (tmp_path / record.main_result).unlink()
+                    assert _await(lambda: _unlinked(main_result))
                 controller = StateController(session, lambda: None)
                 application._state = controller
             else:
