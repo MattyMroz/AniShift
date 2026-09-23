@@ -19,10 +19,12 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 ## Twarde reguły
 
 - Kod, komentarze, nazwy i wszystko związane z gitem/GitHub (branch, commit, PR, issue, label) po angielsku. Rozmowa z userem po polsku. Kopiuj wzorce już zastane w repo (istniejące tytuły, opisy, nazwy branchy).
+- Dokumenty w `docs/work/` — plany, specyfikacje, intencje, manifesty, raporty, przeglądy i briefy dla subagentów — pisz po polsku. Nazwy plików, identyfikatory techniczne, kod, komendy i adresy URL zachowuj bez tłumaczenia. Ta reguła dotyczy także artefaktów tworzonych przez subagentów.
 - Zależności tylko przez `uv add` / `uv remove`. Nigdy nie edytuj `pyproject.toml` ręcznie.
 - Commity w formacie `typ(scope): opis` — scope OBOWIĄZKOWY, z listy w `scripts/hooks/check_commit_msg.py` (hook odrzuca commit bez scope lub ze scope spoza listy). Zero śladów AI (`Co-Authored-By`, stopki generatora) — też w treści PR.
 - Issue zakładaj wg szablonów z `.github/ISSUE_TEMPLATE/` (bug / feature / task). Tytuł z prefiksem Conventional Commits, jak w szablonie.
 - Rób tylko to, o co user prosi. Zero nieproszonych plików, refaktorów, issue.
+- AniShift jest teraz tylko na Windows; wsparcie Linuksa to osobna, przyszła ścieżka — nie rozwijaj go bez wyraźnego polecenia właściciela.
 - Przed większą lub planowaną zmianą potwierdź zakres z userem. Nie ruszaj od razu.
 - Nie commituj na `main`. Feature branch → PR → merge.
 - KISS/YAGNI — użyj skilla `simple` przy pisaniu i przeglądzie kodu.
@@ -77,7 +79,7 @@ Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit
 - **commit-msg:** `check_commit_msg.py` — `typ(scope): opis`, scope obowiązkowy z listy.
 - **pre-push:** mypy dla bieżącej platformy, mypy `--platform linux` i pytest (łapią błędy lokalnie zanim pójdą do CI).
 - **ruff select** wymusza m.in.: typy param/zwrot (`ANN`), `from __future__` (`FA`), `X | None` zamiast `Optional` (`UP`), docstringi modułów/klas/funkcji (`D`), zakaz `except Exception` (`BLE`).
-- **CI:** `.github/workflows/ci.yml` — ruff i hooki na Ubuntu; pip-audit eksportowanego locka na Ubuntu i Windowsie; mypy na Ubuntu w obu targetach (`--platform win32` obok domyślnego); pytest plus smoke `anishift --help` na Ubuntu i Windowsie.
+- **CI:** `.github/workflows/ci.yml` — ruff i hooki na Ubuntu; pip-audit eksportowanego locka na Ubuntu i Windowsie; mypy na Ubuntu w obu targetach (`--platform win32` obok domyślnego); pytest plus smoke `anishift --help` tylko na Windowsie, z narzędziami z `anishift setup`.
 - `testpaths` obejmuje też `anishift/utils/{logger,rich_console,timer}/tests` — samo `pytest tests/` je pomija.
 
 ## Dane runtime
