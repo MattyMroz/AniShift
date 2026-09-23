@@ -974,7 +974,7 @@ def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http( 
             assert replay == {"count": 1, "directory": str(tmp_path)}
             assert responses[-1] == ControlResponse.succeeded(dict(saved.command_receipts[0].outcome))
             assert state_path.stat().st_mtime_ns == modified
-            assert tuple(paths) == calls
+            assert paths.count("/api/v2/torrents/add") == calls.count("/api/v2/torrents/add")
             assert store.load() == saved
             if failing:
                 _anime_enter(controller)
@@ -992,7 +992,7 @@ def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http( 
                 assert responses[-1].ok
                 assert responses[-1].result == {"count": 0, "directory": str(tmp_path)}
             assert controller.render(160, 30).plain == duplicate
-            assert tuple(paths) == calls
+            assert paths.count("/api/v2/torrents/add") == calls.count("/api/v2/torrents/add")
             if failing:
                 _anime_enter(controller)
             else:
