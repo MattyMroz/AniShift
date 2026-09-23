@@ -3,7 +3,7 @@ kind: plan
 status: zaakceptowany
 version: 4
 baseline: 4b5e3f1
-branch: work/acquisition/00-model-catalog
+branch: work/acquisition/00-model-catalog-v2
 created: 2026-09-23
 ---
 
@@ -247,11 +247,10 @@ dla próby:
 
 ## Kolejność prac
 
-- **Wykonawca:** subagent Claude Code `general-purpose` z modelem `opus`; przed kodem czyta skille `simple` i `coding` (`python.md`, `comments-docstrings.md`, `testing.md`).
-- **Review:** `astra` (OpenCode, `foundry/gpt-6-astra`) i niezależny Claude Opus (świeży subagent, tylko odczyt).
-- **Odstępstwo od `AGENTS.md`** (tam koduje `astra`, a sprawdza `opus5`) — decyzja właściciela z 2026-09-23 w rozmowie: „będzie twój [subagent] kodował, a potem astra to oceni”.
+- **Wykonawca:** `astra` (OpenCode, `foundry/gpt-6-astra`) według [e00-projekt-kodu.md](e00-projekt-kodu.md); przed kodem czyta skille `simple` i `coding` (`python.md`, `comments-docstrings.md`, `testing.md`).
+- **Akceptacja:** zgoda trzech niezależnych recenzentów (świeża sesja `astra` i dwa świeże Claude Opus 5.5) oraz orkiestratora — decyzja właściciela z 2026-09-24.
 - **Po każdej fazie:** `ruff check`, `ruff format --check`, `mypy` (win32 i linux), `pytest`.
-- **Commit:** na `work/acquisition/00-model-catalog`, bez śladów AI.
+- **Commit:** na `work/acquisition/00-model-catalog-v2`, tematyczne, bez śladów AI.
 
 | Faza | Zakres | Commit |
 | --- | --- | --- |
