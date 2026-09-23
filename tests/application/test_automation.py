@@ -4462,7 +4462,7 @@ def test_subscription_list_projects_the_nearest_selected_unfinished_airing(tmp_p
 
 
 @pytest.mark.integration
-def test_library_routes_retry_to_selected_deletion_or_relocation(  # noqa: PLR0915
+def test_library_retry_after_refused_deletion_only_relocates(  # noqa: PLR0915
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", "isolated-test-token")
@@ -4512,18 +4512,15 @@ def test_library_routes_retry_to_selected_deletion_or_relocation(  # noqa: PLR09
             controller.handle_key("right")
             assert _await(lambda: not controller._busy)
             controller.handle_key("home")
-            assert "P ponów pozostałe pliki" in controller.render(120, 40).plain
+            frame: str = controller.render(120, 40).plain
+            assert "P ponów pozostałe pliki" not in frame
+            assert "P ponów przenoszenie do biblioteki" in frame
             attempts: int = len(links)
-            controller.handle_key("text:p")
-            assert _await(lambda: not controller._busy and len(recycled) == 2)
-            assert len(links) == attempts
-            controller.handle_key("home")
-            controller.handle_key("down")
-            assert "P ponów przenoszenie do biblioteki" in controller.render(120, 40).plain
             fail = False
             controller.handle_key("text:p")
             assert _await((tmp_path / "ready/Book.m4a").is_file)
-            assert recycled == ["01.pl.txt", "01.pl.txt"]
+            assert len(links) > attempts
+            assert recycled == ["01.pl.txt"]
             assert len(_material_rows(session)) == 1
         finally:
             controller.close()
