@@ -625,7 +625,19 @@ def test_the_key_is_created_once_and_read_back_unchanged(
     assert len(created) == _KEY_BYTES
     if windows:
         run.assert_called_once_with(
-            ["icacls", str(state_dir / KEY_FILE_NAME), "/inheritance:r", "/grant:r", "test-account:F"],
+            [
+                "icacls",
+                str(state_dir / KEY_FILE_NAME),
+                "/inheritance:r",
+                "/grant:r",
+                "test-account:F",
+                "/remove:g",
+                "*S-1-5-18",
+                "*S-1-5-32-544",
+                "*S-1-5-32-545",
+                "*S-1-5-11",
+                "*S-1-1-0",
+            ],
             capture_output=True,
             timeout=10.0,
             check=False,

@@ -103,6 +103,9 @@ _CONNECT_POLL_S: Final[float] = 0.1
 _ICACLS_TIMEOUT_S: Final[float] = 10.0
 """Budget for the one ``icacls`` call restricting the key file."""
 
+_SHARED_ACCOUNT_SIDS: Final[tuple[str, ...]] = ("*S-1-5-18", "*S-1-5-32-544", "*S-1-5-32-545", "*S-1-5-11", "*S-1-1-0")
+"""SYSTEM, Administrators, Users, Authenticated Users and Everyone, removed even when granted explicitly."""
+
 _TEMPORARY_SUFFIX: Final[str] = ".tmp"
 """Ending of the file an instance record is written to before it replaces the record."""
 
@@ -891,7 +894,15 @@ def _restrict_to_current_user(path: Path) -> None:
     if not account:
         logger.warning("Left the control key with inherited permissions; no account name was set")
         return
-    command: list[str] = ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:F"]
+    command: list[str] = [
+        "icacls",
+        str(path),
+        "/inheritance:r",
+        "/grant:r",
+        f"{account}:F",
+        "/remove:g",
+        *_SHARED_ACCOUNT_SIDS,
+    ]
     try:
         completed: subprocess.CompletedProcess[bytes] = subprocess.run(  # noqa: S603 - argv built here
             command,
