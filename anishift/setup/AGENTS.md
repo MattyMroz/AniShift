@@ -38,4 +38,6 @@ Pobieranie, weryfikacja SHA256 i instalacja zewnętrznych binarek z manifestu `e
   discovery używa `show_progress=False`, żeby instalator nie tworzył drugiego
   renderera. Opcjonalne `progress` dostaje przyrost bajtów, a `cancel` jest callable
   zwracającym bool; setup nie importuje warstwy application. `installer.py`
-- Jedyny format archiwum to `zip`, jedyny `kind` to `binary`, jedyny `SourceType` to `url` (Literal/frozenset). `manifest.py:32-47`
+- Manifest obsługuje `zip`, surowy plik, `7z` i `nsis`. Prywatny qBittorrent jest wyciągany
+  ze zweryfikowanej dystrybucji przez własne narzędzia 7-Zip, bez uruchamiania instalatora
+  systemowego. Binarki i helpery pozostają w `external/bin/`. `manifest.py`, `installer.py`

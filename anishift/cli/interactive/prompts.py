@@ -44,8 +44,11 @@ __all__ = [
 _HOME_MENU_WIDTH: Final[int] = 13
 """Width of the marker, spacing and longest Home label."""
 
-_HOME_MENU_ROWS: Final[int] = 6
+_HOME_MENU_ROWS: Final[int] = 5
 """Rows occupied by the choices and keyboard hint."""
+
+_KEY_SEQUENCE_TIMEOUT_S: Final[float] = 0.05
+"""Wait for a terminal key sequence without delaying a standalone Escape."""
 
 TEXT_MASCOT_SIZE: Final[tuple[int, int]] = (18, 10)
 """Cells covered by the half-block mascot used without a native image."""
@@ -62,7 +65,7 @@ BRAND_GAP_COLUMNS: Final[int] = 2
 _MASCOT_NUDGE_COLUMNS: Final[int] = 2
 """Columns the native image is drawn right of its reserved area, inside the gap."""
 
-_HOME_CHROME_ROWS: Final[int] = 11
+_HOME_CHROME_ROWS: Final[int] = 10
 """Rows Home spends on top padding, the menu gap, the menu and the footer."""
 
 _MINIMUM_QUEUE_ROWS: Final[int] = 3
@@ -77,7 +80,7 @@ _TERMINAL_SIZE_POLL_SECONDS: Final[float] = 0.1
 _AUTO_REFRESH_SECONDS: Final[float] = 0.1
 """Interval used by the single event loop to advance visible elapsed time."""
 
-_NORMALISED_KEYS: Final[tuple[tuple[Keys | str, str], ...]] = (
+_NORMALISED_KEYS: Final[tuple[tuple[Keys | str | tuple[Keys | str, ...], str], ...]] = (
     (Keys.Up, "up"),
     (Keys.Down, "down"),
     (Keys.Left, "left"),
@@ -94,6 +97,30 @@ _NORMALISED_KEYS: Final[tuple[tuple[Keys | str, str], ...]] = (
     (Keys.BackTab, "backtab"),
     (Keys.Escape, "escape"),
     (Keys.ControlC, "interrupt"),
+    (Keys.ControlLeft, "ctrl-left"),
+    (Keys.ControlRight, "ctrl-right"),
+    (Keys.ControlHome, "ctrl-home"),
+    (Keys.ControlEnd, "ctrl-end"),
+    (Keys.ControlW, "ctrl-backspace"),
+    (Keys.ControlDelete, "ctrl-delete"),
+    (Keys.ShiftLeft, "shift-left"),
+    (Keys.ShiftRight, "shift-right"),
+    (Keys.ShiftHome, "shift-home"),
+    (Keys.ShiftEnd, "shift-end"),
+    (Keys.ControlShiftLeft, "ctrl-shift-left"),
+    (Keys.ControlShiftRight, "ctrl-shift-right"),
+    (Keys.ControlShiftHome, "ctrl-shift-home"),
+    (Keys.ControlShiftEnd, "ctrl-shift-end"),
+    (Keys.ControlA, "select-all"),
+    (Keys.ControlX, "cut"),
+    (Keys.ControlV, "paste"),
+    (Keys.ControlZ, "undo"),
+    (Keys.ControlY, "redo"),
+    (Keys.ControlInsert, "copy"),
+    (Keys.ShiftInsert, "paste"),
+    (Keys.ShiftDelete, "cut"),
+    ((Keys.Escape, "d"), "ctrl-delete"),
+    ((Keys.Escape, Keys.Backspace), "ctrl-backspace"),
 )
 """Terminal keys the session forwards under a stable name."""
 
@@ -209,6 +236,8 @@ class TerminalRenderer:
             before_render=self._before_render,
             after_render=self._after_render,
         )
+        self._application.timeoutlen = _KEY_SEQUENCE_TIMEOUT_S
+        self._application.ttimeoutlen = _KEY_SEQUENCE_TIMEOUT_S
 
     @property
     def native_mascot_size(self) -> tuple[int, int] | None:
@@ -339,7 +368,8 @@ class TerminalRenderer:
     def _key_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
         for key, name in _NORMALISED_KEYS:
-            bindings.add(key)(self._forward(name))
+            sequence: tuple[Keys | str, ...] = key if isinstance(key, tuple) else (key,)
+            bindings.add(*sequence)(self._forward(name))
 
         @bindings.add(Keys.BracketedPaste)
         def paste(event: KeyPressEvent) -> None:

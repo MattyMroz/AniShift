@@ -1,6 +1,8 @@
-# plany etapów AniShift — spis
+# Historyczne plany etapów AniShift
 
-> źródło prawdy dla etapów 1–8: [`plan-anishift.md`](plan-anishift.md) (legacy roadmap). wzorce: [`../reference/mangashift-architecture/`](../reference/mangashift-architecture/) (engine-factory-standard, engine-standard, naming-glossary).
+> Bieżący punkt wejścia: [dokumenty](../README.md), [aktualna automatyzacja](automation/README.md). Poniższy spis jest historią, nie kolejką wykonania.
+
+> źródło historyczne dla etapów 1–8: [`plan-anishift.md`](plan-anishift.md) (legacy roadmap). wzorce: [`../reference/mangashift-architecture/`](../reference/mangashift-architecture/) (engine-factory-standard, engine-standard, naming-glossary).
 > zasady wspólne: recykling MangaShift 1:1, prostota (KISS/YAGNI), rejestr silników TYLKO w tts/translation/llm, fasady sync, zero kodu poza planem etapu.
 > artefakty workstreamu etapu 10 (wymagania, plan, graf zadań) leżą w [`../work/10-tui/`](../work/10-tui/), nie w `docs/plans/`. ich część interfejsowa jest już historyczna — patrz status etapu 10.
 
@@ -17,8 +19,8 @@
 | 6.1 | [etap-6.1-shared-text-primitives.md](etap-6.1-shared-text-primitives.md) | **ZROBIONE** — wspólne granice Unicode i grafemy dla translation/TTS. | 6 |
 | 7 | [etap-7-wymagania.md](etap-7-wymagania.md) + [etap-7-plan.md](etap-7-plan.md) | **ZROBIONE** — składanie players/MKV/MP4, `/compose` i pełny pipeline. | 6 |
 | 8 | [wymagania](etap-8-wymagania.md) + [plan](etap-8-dystrybucja-binarek.md) | **ZROBIONE** — launcher Windows, audyt legacy, walidacja i zamknięcie roadmapu. | 7 |
-| 9 | [produkt](etap-9-wymagania.md) + [interfejs](etap-9-interfejs-wymagania.md) + [plan](etap-9-plan.md) | **CZĘŚCIOWO** — dostarczono model artefaktów, strumieniowy scheduler i application API (`AppService`); warstwa Textual TUI odrzucona, przepisywana w etapie 10. issue #38 otwarte, nie zmergowane do `main`. | 8 |
-| 10 | [wymagania](../work/10-tui/spec.md) + [plan](../work/10-tui/plan.md) + [zadania](../work/10-tui/tasks.json) | **ZAMKNIĘTY INACZEJ** — utrzymano silnik LLM Palantir, format `anishift.models.jsonc`, usunięcie `anishift/pipeline/` i pytest Windows w CI. Warstwa Textual TUI po testach na żywo ODRZUCONA jako nadmiarowa: aplikacja nie ma interaktywnego UI, gołe `anishift` uruchamia domyślny preset. Pełny snapshot TUI zachowany na gałęzi `archive/textual-tui`. | 9 |
+| 9 | [produkt](etap-9-wymagania.md) + [interfejs](etap-9-interfejs-wymagania.md) + [plan](etap-9-plan.md) | **CZĘŚCIOWO** — dostarczono model artefaktów, strumieniowy scheduler i application API (`AppService`); warstwa Textual TUI odrzucona, przepisywana w etapie 10. historyczne issue #38 nadal opisuje odrzucony Textual; wspólny rdzeń jest już na main po PR #41. | 8 |
+| 10 | [wymagania](../work/10-tui/spec.md) + [plan](../work/10-tui/plan.md) + [zadania](../work/10-tui/tasks.json) | **ZAMKNIĘTY INACZEJ** — utrzymano silnik LLM Palantir, format `anishift.models.jsonc`, usunięcie `anishift/pipeline/` i pytest Windows w CI. Warstwa Textual TUI po testach na żywo ODRZUCONA jako nadmiarowa: obecny interaktywny terminal używa Prompt Toolkit, gołe `anishift` otwiera Home. Pełny snapshot TUI zachowany na gałęzi `archive/textual-tui`. | 9 |
 
 ## graf zależności
 
@@ -27,7 +29,7 @@
                       └→ 6 (tts+audio) → 6.1 (text) → 7 (e2e) → 8 (closure) → 9 (product/UI model) → 10 (TUI rewrite)
 ```
 
-etapy 5 i 6 mogły iść równolegle. decyzje etapu 9 są podejmowane po zamknięciu starego roadmapu w etapie 8. etap 10 przepisał odrzuconą warstwę TUI z etapu 9, po czym sam interfejs graficzny został porzucony — produkt zostaje jednokomendowy.
+etapy 5 i 6 mogły iść równolegle. decyzje etapu 9 są podejmowane po zamknięciu starego roadmapu w etapie 8. etap 10 przepisał odrzuconą warstwę TUI z etapu 9, po czym sam interfejs graficzny został porzucony — obecny frontend to Prompt Toolkit, a nie dawny Textual ani etap przejściowy bez menu.
 
 ## reguły obowiązujące w każdym etapie
 

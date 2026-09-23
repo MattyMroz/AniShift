@@ -9,13 +9,18 @@ from typing import TYPE_CHECKING
 from anishift.config.env_file import env_path
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings, load_user_settings
-from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_root
+from anishift.config.workspace import WorkspaceConflict, ensure_workspace_dir, resolve_workspace_root
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from anishift.application.acquisition import AcquisitionService
     from anishift.application.cancellation import CancellationToken
     from anishift.application.discovery import DiscoveryResult
     from anishift.application.service import AppService
+    from anishift.application.subscriptions import SubscriptionService
+    from anishift.services.torrents import Release
 
 __all__ = ["AppContext", "bootstrap", "create_app_service", "production_service"]
 
@@ -29,6 +34,7 @@ class AppContext:
     settings: Settings
     user_settings: UserSettings
     workspace_root: Path
+    workspace_conflicts: tuple[WorkspaceConflict, ...] = ()
 
 
 def bootstrap(
@@ -42,8 +48,7 @@ def bootstrap(
     workspace_root = resolve_workspace_root(
         override=resolved.workspace_root or None,
     )
-    if create_dirs:
-        ensure_workspace_dir(workspace_root)
+    conflicts: tuple[WorkspaceConflict, ...] = ensure_workspace_dir(workspace_root) if create_dirs else ()
 
     logger.debug(
         "Application context composed",
@@ -57,16 +62,18 @@ def bootstrap(
         settings=resolved,
         user_settings=user_settings,
         workspace_root=workspace_root,
+        workspace_conflicts=conflicts,
     )
 
 
-def create_app_service(context: AppContext) -> AppService:
+def create_app_service(context: AppContext, *, managed_torrents: bool = False) -> AppService:
     """Build the shared application facade while keeping providers lazy."""
     from anishift.application.inspection import WorkspaceInspector  # noqa: PLC0415
     from anishift.application.runtime import ProductionHandlerFactory  # noqa: PLC0415
     from anishift.application.service import AppService  # noqa: PLC0415
     from anishift.services.media import DefaultMediaProbe  # noqa: PLC0415
 
+    acquisition: AcquisitionService = _acquisition_service(context, managed_torrents=managed_torrents)
     service: AppService = AppService(
         workspace_root=context.workspace_root,
         settings=context.settings,
@@ -76,8 +83,66 @@ def create_app_service(context: AppContext) -> AppService:
         handler_factory=ProductionHandlerFactory(
             lambda: service.current_settings(),  # noqa: PLW0108 - defers the lookup until the service exists
         ),
+        acquisition=acquisition,
+        subscriptions=_subscription_service(acquisition),
     )
     return service
+
+
+def _acquisition_service(context: AppContext, *, managed_torrents: bool = False) -> AcquisitionService:
+    """Wire the public release index and the local torrent client from the environment settings."""
+    import httpx  # noqa: PLC0415
+
+    from anishift.application.acquisition import AcquisitionService, TorrentClient  # noqa: PLC0415
+    from anishift.paths import torrent_profile_dir  # noqa: PLC0415
+    from anishift.platform.qbittorrent_process import ManagedQBittorrent  # noqa: PLC0415
+    from anishift.services.catalog import AniListCatalog  # noqa: PLC0415
+    from anishift.services.http_requests import RequestControl  # noqa: PLC0415
+    from anishift.services.torrents import QBittorrentClient, parse_release_name, search_releases  # noqa: PLC0415
+    from anishift.services.torrents.categories import SEARCH_CATEGORIES  # noqa: PLC0415
+
+    request_control: RequestControl = RequestControl(httpx.HTTPTransport(retries=0))
+    http: httpx.Client = httpx.Client(transport=request_control, follow_redirects=True)
+
+    class NyaaSource:
+        """Public nyaa.si index queried through the shared HTTP client."""
+
+        def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> tuple[Release, ...]:
+            """Return the anime releases matching *query* in *categories*."""
+            return search_releases(query, http=http, categories=categories)
+
+    external: QBittorrentClient = QBittorrentClient(
+        context.settings.qbittorrent_url,
+        username=context.settings.qbittorrent_username,
+        password=context.settings.qbittorrent_password,
+        http=http,
+    )
+    managed: ManagedQBittorrent | None = (
+        ManagedQBittorrent(torrent_profile_dir(), http=http, previous=external) if managed_torrents else None
+    )
+    client: TorrentClient = managed if managed is not None else external
+    return AcquisitionService(
+        source=NyaaSource(),
+        client=client,
+        workspace_root=context.workspace_root,
+        parse_name=parse_release_name,
+        title_catalog=AniListCatalog(http),
+        request_control=request_control,
+        torrent_management=managed,
+    )
+
+
+def _subscription_service(acquisition: AcquisitionService) -> SubscriptionService:
+    """Wire the followed-series store beside the panel preferences onto the acquisition boundary."""
+    from anishift.application.subscriptions import (  # noqa: PLC0415
+        SUBSCRIPTIONS_FILE_NAME,
+        SubscriptionService,
+        SubscriptionStore,
+    )
+    from anishift.paths import config_dir  # noqa: PLC0415
+
+    store: SubscriptionStore = SubscriptionStore(config_dir() / SUBSCRIPTIONS_FILE_NAME)
+    return SubscriptionService(store=store, acquisition=acquisition)
 
 
 def _prepare_workspace_binaries(discovery: DiscoveryResult, cancel: CancellationToken) -> None:
@@ -91,7 +156,14 @@ def _prepare_workspace_binaries(discovery: DiscoveryResult, cancel: Cancellation
     binaries: list[Binary] = []
     if ArtifactKind.VIDEO_MKV in kinds:
         binaries.extend((Binary.MKVMERGE, Binary.MKVEXTRACT))
-    if kinds.intersection({ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4, ArtifactKind.NARRATION_AUDIO}):
+    if kinds.intersection(
+        {
+            ArtifactKind.VIDEO_MKV,
+            ArtifactKind.VIDEO_MP4,
+            ArtifactKind.NARRATION_AUDIO,
+            ArtifactKind.SOURCE_AUDIO,
+        }
+    ):
         binaries.extend((Binary.FFMPEG, Binary.FFPROBE))
     for binary in binaries:
         cancel.raise_if_cancelled()
@@ -109,6 +181,6 @@ def _prepare_workspace_binaries(discovery: DiscoveryResult, cancel: Cancellation
     cancel.raise_if_cancelled()
 
 
-def production_service() -> AppService:
+def production_service(*, managed_torrents: bool = False) -> AppService:
     """Compose the one application facade every production entry point runs on."""
-    return create_app_service(bootstrap())
+    return create_app_service(bootstrap(), managed_torrents=managed_torrents)

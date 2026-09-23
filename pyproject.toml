@@ -112,7 +112,8 @@ max-complexity = 15
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D", "ANN", "S101", "PLR2004", "TRY003"]
-"anishift/utils/*/tests/**" = ["D", "ANN", "S101", "PLR2004", "TRY003"]
+"anishift/utils/**" = ["TID252", "D102", "D103", "D417", "ANN", "BLE001", "PLR", "C901", "PERF", "SIM", "ARG", "PLC0415", "RUF100"]
+"anishift/utils/*/tests/**" = ["D", "ANN", "S101", "PLR2004", "TRY003", "T20", "S603", "BLE001", "E501", "PLR", "C901", "PT", "EM", "TC", "F841", "TRY301"]
 "anishift/utils/*/examples/**" = ["D", "PLR2004", "PLC0415", "TRY301"]
 "scripts/**" = ["D", "T20", "PERF"]
 
@@ -125,6 +126,10 @@ warn_unused_configs = true
 exclude = [
     "scripts/tmp/",
 ]
+
+[[tool.mypy.overrides]]
+module = ["onnxruntime.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = [

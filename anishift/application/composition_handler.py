@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Never, Protocol
 
-from anishift.application.artifacts import Artifact, ArtifactKind
+from anishift.application.artifacts import COVER_AUDIO_KINDS, Artifact, ArtifactKind, ArtifactState
 from anishift.application.cancellation import CancellationToken
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.intents import BurnSubtitleProduct, MkvTrackProduct
@@ -24,10 +25,17 @@ from anishift.services.composition import (
     ContainerCompositionRequest,
     ContainerCompositionResult,
     ContainerTarget,
+    CoverCompositionRequest,
+    CoverCompositionResult,
     SubtitleRole,
 )
 
-__all__ = ["CompositionTaskHandler", "LegacyCompositionAdapter", "build_composition_request"]
+__all__ = [
+    "CompositionTaskHandler",
+    "LegacyCompositionAdapter",
+    "build_composition_request",
+    "build_cover_request",
+]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -46,6 +54,16 @@ class ContainerComposer(Protocol):
         cancel: threading.Event | None = None,
     ) -> ContainerCompositionResult:
         """Compose one exact MKV or MP4 request."""
+        ...
+
+    def compose_cover(
+        self,
+        request: CoverCompositionRequest,
+        *,
+        callbacks: CompositionProgressSink | None = None,
+        cancel: threading.Event | None = None,
+    ) -> CoverCompositionResult:
+        """Compose one still-picture MP4 from an image and a finished recording."""
         ...
 
 
@@ -98,23 +116,20 @@ class CompositionTaskHandler:
     ) -> TaskResult:
         """Compose and validate one planned durable container staging file."""
         cancel.raise_if_cancelled()
+        if task.kind is TaskKind.COMPOSE_COVER:
+            return self._execute_cover(task, artifacts, cancel, progress)
         planned: ContainerCompositionRequest = build_composition_request(task, artifacts)
         output: Artifact = artifacts.require_output(task.produces[0])
         staging: Path = task_staging_path(self._run_root, task, output, f".{planned.target.value}")
         request: ContainerCompositionRequest = replace(planned, destination=staging)
-        event = threading.Event()
-        stop = threading.Event()
-        watcher = threading.Thread(target=_mirror_cancel, args=(cancel, event, stop), daemon=True)
-        watcher.start()
-        try:
-            result: ContainerCompositionResult = self._service.compose_container(
+        result: ContainerCompositionResult = self._guarded(
+            lambda event: self._service.compose_container(
                 request,
                 callbacks=_ProgressObserver(task.task_id, progress),
                 cancel=event,
-            )
-        finally:
-            stop.set()
-            watcher.join()
+            ),
+            cancel,
+        )
         cancel.raise_if_cancelled()
         _validate_result(result, request)
         progress.emit(WorkerNotification(WorkerNotificationKind.PROGRESS, task.task_id, 100))
@@ -125,6 +140,49 @@ class CompositionTaskHandler:
             "warning_count": len(result.warnings),
         }
         return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, staging, metadata),))
+
+    def _execute_cover(
+        self,
+        task: PlanTask,
+        artifacts: ArtifactSnapshot,
+        cancel: CancellationToken,
+        progress: TaskProgressSink,
+    ) -> TaskResult:
+        """Render one still-picture MP4 into staging, keeping the planned destination private from the worker."""
+        planned: CoverCompositionRequest = build_cover_request(task, artifacts)
+        output: Artifact = artifacts.require_output(task.produces[0])
+        staging: Path = task_staging_path(self._run_root, task, output, ".mp4")
+        request: CoverCompositionRequest = replace(planned, destination=staging)
+        result: CoverCompositionResult = self._guarded(
+            lambda event: self._service.compose_cover(
+                request,
+                callbacks=_ProgressObserver(task.task_id, progress),
+                cancel=event,
+            ),
+            cancel,
+        )
+        cancel.raise_if_cancelled()
+        _validate_cover_result(result, request)
+        progress.emit(WorkerNotification(WorkerNotificationKind.PROGRESS, task.task_id, 100))
+        metadata: dict[str, str | int | bool] = {
+            "validated": True,
+            "output_size_bytes": result.output_size_bytes,
+            "audio_duration_us": result.audio_duration_us,
+            "warning_count": len(result.warnings),
+        }
+        return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, staging, metadata),))
+
+    def _guarded[T](self, operation: Callable[[threading.Event], T], cancel: CancellationToken) -> T:
+        """Run one composition call while a watcher mirrors cancellation into the event the service understands."""
+        event = threading.Event()
+        stop = threading.Event()
+        watcher = threading.Thread(target=_mirror_cancel, args=(cancel, event, stop), daemon=True)
+        watcher.start()
+        try:
+            return operation(event)
+        finally:
+            stop.set()
+            watcher.join()
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,7 +209,10 @@ def build_composition_request(task: PlanTask, artifacts: ArtifactSnapshot) -> Co
         _raise_execution("Only composition tasks can build a container request")
     if len(task.produces) != 1:
         _raise_execution("A composition task must produce exactly one container")
-    inputs: tuple[Artifact, ...] = tuple(artifacts.require_ready(artifact_id) for artifact_id in task.requires)
+    inputs: tuple[Artifact, ...] = tuple(
+        artifacts.artifacts[artifact_id] if artifacts.is_absent(artifact_id) else artifacts.require_ready(artifact_id)
+        for artifact_id in task.requires
+    )
     video: Artifact = _require_one(inputs, {ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4}, "source video")
     source_video: Path = _runtime_path(video)
     output: Artifact = artifacts.require_output(task.produces[0])
@@ -196,6 +257,8 @@ def _build_mkv_request(
             continue
         kind, role, track_name = spec
         artifact: Artifact = _require_one(inputs, {kind}, track.value)
+        if kind is ArtifactKind.DISPLAYED_PL and artifact.state is ArtifactState.ABSENT:
+            continue
         attached.append(
             AttachedSubtitle(
                 path=_runtime_path(artifact),
@@ -234,7 +297,9 @@ def _build_mp4_request(
     }[burn_product]
     burn_subtitle: Path | None = None
     if burn_kind is not None:
-        burn_subtitle = _runtime_path(_require_one(inputs, {burn_kind}, "burn subtitle"))
+        artifact: Artifact = _require_one(inputs, {burn_kind}, "burn subtitle")
+        if artifact.state is not ArtifactState.ABSENT:
+            burn_subtitle = _runtime_path(artifact)
     audio_source: str = _string_parameter(parameters, "audio_source")
     narration_audio: Path | None = None
     if audio_source == "narration":
@@ -250,6 +315,42 @@ def _build_mp4_request(
         narration_audio=narration_audio,
         keep_original_audio=audio_source == "original",
     )
+
+
+def build_cover_request(task: PlanTask, artifacts: ArtifactSnapshot) -> CoverCompositionRequest:
+    """Translate one cover task into the exact picture, recording, and destination it was planned for."""
+    if task.kind is not TaskKind.COMPOSE_COVER:
+        _raise_execution("Only a cover task can build a cover request")
+    if len(task.produces) != 1:
+        _raise_execution("A cover task must produce exactly one film")
+    inputs: tuple[Artifact, ...] = tuple(artifacts.require_ready(artifact_id) for artifact_id in task.requires)
+    image: Artifact = _require_one(inputs, {ArtifactKind.SOURCE_IMAGE}, "still image")
+    audio: Artifact = _require_one(inputs, set(COVER_AUDIO_KINDS), "cover audio")
+    output: Artifact = artifacts.require_output(task.produces[0])
+    if output.kind is not ArtifactKind.COVER_MP4:
+        _raise_execution(f"{task.kind.value} must produce {ArtifactKind.COVER_MP4.value}")
+    destination: Path | None = output.planned_destination
+    if destination is None:
+        _raise_execution("A cover film requires a planned destination")
+    return CoverCompositionRequest(
+        still_image=_runtime_path(image),
+        audio=_runtime_path(audio),
+        destination=destination,
+    )
+
+
+def _validate_cover_result(result: CoverCompositionResult, request: CoverCompositionRequest) -> None:
+    valid: bool = (
+        result.still_image == request.still_image
+        and result.audio == request.audio
+        and result.output_path == request.destination
+        and result.output_size_bytes > 0
+        and result.audio_duration_us > 0
+        and result.output_path.is_file()
+        and result.output_path.stat().st_size == result.output_size_bytes
+    )
+    if not valid:
+        _raise_execution("Composition service returned an invalid cover result")
 
 
 def _validate_result(result: ContainerCompositionResult, request: ContainerCompositionRequest) -> None:

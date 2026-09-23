@@ -7,6 +7,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Never
+from unittest.mock import Mock
 
 import pytest
 from conftest import DATA_DIR
@@ -31,6 +32,25 @@ def test_parse_media_info_reads_real_identify_payload() -> None:
     ]
     assert info.tracks[1].language == "jpn"
     assert info.tracks[2].language == "pol"
+
+
+def test_identify_captures_metadata_without_a_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload: str = (DATA_DIR / "youjo-senki-ii-01.json").read_text(encoding="utf-8")
+    run: Mock = Mock(return_value=subprocess.CompletedProcess([], 0, stdout=payload, stderr=""))
+    monkeypatch.setattr(service, "ensure_binary", lambda _: Path("mkvmerge.exe"))
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert service.identify(Path("source.mkv")) == _info()
+    run.assert_called_once_with(
+        ["mkvmerge.exe", "--ui-language", "en", "-J", "source.mkv"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120.0,
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
 
 
 def test_parse_media_info_reads_attachment_names() -> None:

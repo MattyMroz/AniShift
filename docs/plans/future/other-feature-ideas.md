@@ -1,5 +1,9 @@
 # ficzery: pozostałe pomysły (skrót)
 
+> Materiał historyczny, nie aktualny plan wykonania. Bieżący kierunek i priorytety:
+> [automatyzacja AniShift](../automation/README.md). Propozycje technologii i modułów
+> poniżej wymagają ponownego sprawdzenia; nie zastępują obecnych AGENTS.md.
+
 > status: POMYSŁ (poza obecną przebudową)
 > cel: zebrane mniejsze pomysły — każdy z opisem, technologiami i szkicem modułu, żeby przy podjęciu decyzji nie zaczynać od zera.
 

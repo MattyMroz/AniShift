@@ -2,29 +2,43 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Final, Protocol
 
 from natsort import os_sorted
 
 from anishift.application.artifacts import (
+    COVER_AUDIO_KINDS,
     Artifact,
     ArtifactKind,
     ArtifactLifetime,
     ArtifactState,
     create_artifact_id,
 )
+from anishift.application.control import (
+    AudiobookRecipe,
+    RecipePreferences,
+    TextResultFormat,
+    TranslateRecipe,
+)
 from anishift.application.intents import (
+    AUDIOBOOK_PRODUCTS,
+    COVER_PRODUCTS,
+    TRANSLATE_PRODUCTS,
     AutoPreset,
     BurnSubtitleProduct,
     ExternalAudioRole,
     GroupIntent,
     MkvTrackProduct,
     Mp4AudioSource,
+    NarrationTimeline,
+    ProductIntent,
     ProductKind,
+    RebuildRequest,
     RunMode,
     SubtitleOutputFormat,
     SubtitleSourcePolicy,
@@ -39,11 +53,48 @@ from anishift.application.planning import (
     TaskKind,
     stable_topological_order,
 )
+from anishift.application.products import product_path
 from anishift.application.selection import choose_auto_sidecar, choose_primary_video
+from anishift.application.workflows import WorkflowTarget
 from anishift.errors import PlanningError
 
 if TYPE_CHECKING:
     from anishift.application.inspection import InspectedSourceGroup
+
+# ── Constants ──────────────────────────────────────────────────────────────
+
+_DOCUMENT_SOURCE_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
+    {ArtifactKind.STANDALONE_TEXT, ArtifactKind.SOURCE_SUBTITLES},
+)
+"""Documents a text place reads, whether a plain text or an authored subtitle file."""
+
+_UNTIMED_DOCUMENT_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
+    {ArtifactKind.STANDALONE_TEXT, ArtifactKind.TRANSLATED_TEXT},
+)
+"""Documents carrying words without a single timestamp, so nothing can be read by their own times."""
+
+_DOCUMENT_TARGETS: Final[frozenset[WorkflowTarget]] = frozenset(
+    {WorkflowTarget.TRANSLATE, WorkflowTarget.AUDIOBOOK, WorkflowTarget.COVER},
+)
+"""Targets reading one document or recording, so none of them validates a film selection it never makes."""
+
+_COVER_CONTENT_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
+    {
+        ArtifactKind.STANDALONE_TEXT,
+        ArtifactKind.SOURCE_SUBTITLES,
+        ArtifactKind.SOURCE_AUDIO,
+        ArtifactKind.NARRATION_AUDIO,
+    },
+)
+"""Sources a cover can play: a document it reads aloud, or a finished recording it uses exactly as it stands."""
+
+_COVER_DOCUMENT_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
+    {ArtifactKind.STANDALONE_TEXT, ArtifactKind.SOURCE_SUBTITLES},
+)
+"""Documents a cover reads aloud, whose voice this program records itself."""
+
+_NON_DIALOGUE_SUBTITLE_NAME: Final[re.Pattern[str]] = re.compile(r"sign|song|forced", re.I)
+"""Track names announcing signs, songs, or forced captions instead of full dialogue."""
 
 
 class _TrackKindView(Protocol):
@@ -65,7 +116,13 @@ class _MediaTrackView(Protocol):
     def language(self) -> str | None: ...
 
     @property
+    def name(self) -> str | None: ...
+
+    @property
     def is_default(self) -> bool: ...
+
+    @property
+    def is_forced(self) -> bool: ...
 
     @property
     def subtitle_format(self) -> str | None: ...
@@ -80,32 +137,113 @@ class _EmbeddedTrack:
     subtitle_format: str | None = None
 
 
-def plan_auto(
+def plan_auto(  # noqa: PLR0913 - every automatic planning input stays an explicit call-site choice
     groups: Sequence[InspectedSourceGroup],
     preset: AutoPreset,
     settings: RunSettingsSnapshot,
+    *,
+    rebuild: RebuildRequest | None = None,
+    overrides: Mapping[str, object] | None = None,
+    recipes: RecipePreferences | None = None,
+    targets: Mapping[str, WorkflowTarget] | None = None,
+    published: frozenset[Path] | None = None,
 ) -> ExecutionPlan:
-    """Build one fresh automatic plan for every selected inspected group."""
+    """Build one fresh automatic plan for every selected inspected group, each for the target of its own place."""
     ordered_groups: tuple[InspectedSourceGroup, ...] = _ordered_unique_groups(groups)
+    products: ProductIntent = (
+        preset.products
+        if rebuild is None
+        else replace(preset.products, requested_products=preset.products.requested_products | rebuild.products)
+    )
     intents: dict[str, GroupIntent] = {
-        group.group_id: GroupIntent(
-            group_id=group.group_id,
-            mode=RunMode.AUTO,
-            products=preset.products,
-            subtitle_source_policy=preset.subtitle_source_policy,
-            translation_action=preset.translation_action,
-            source_subtitle_language=preset.source_subtitle_language,
-            subtitle_output_format=preset.subtitle_output_format,
-        )
+        group.group_id: _auto_intent(group, preset, products, recipes, recorded_target(group, targets))
         for group in ordered_groups
     }
-    return _plan(ordered_groups, intents, settings)
+    snapshot: RunSettingsSnapshot = settings if overrides is None else settings.with_overrides(overrides)
+    return _plan(ordered_groups, intents, snapshot, rebuild=rebuild, published=published)
+
+
+def recorded_target(
+    group: InspectedSourceGroup,
+    targets: Mapping[str, WorkflowTarget] | None = None,
+) -> WorkflowTarget | None:
+    """Return the target one group is really planned for, recovered from its record when its place names none."""
+    route_target: WorkflowTarget | None = group.source.route.target
+    if route_target is not None or targets is None:
+        return route_target
+    return targets.get(group.group_id)
+
+
+def auto_group_products(
+    group: InspectedSourceGroup,
+    products: ProductIntent,
+    recipes: RecipePreferences | None = None,
+    target: WorkflowTarget | None = None,
+) -> ProductIntent:
+    """Return the products one group is automatically asked for, by the target of its own place or its record."""
+    resolved: WorkflowTarget | None = target if target is not None else group.source.route.target
+    if resolved is WorkflowTarget.AUDIOBOOK:
+        return ProductIntent(requested_products=AUDIOBOOK_PRODUCTS)
+    if resolved is WorkflowTarget.COVER:
+        return ProductIntent(requested_products=COVER_PRODUCTS)
+    if resolved is not WorkflowTarget.TRANSLATE:
+        return products
+    translate: TranslateRecipe = (recipes if recipes is not None else RecipePreferences()).translate
+    holds_text: bool = any(
+        artifact.kind is ArtifactKind.STANDALONE_TEXT and artifact.state is ArtifactState.READY
+        for artifact in group.artifacts
+    )
+    writes_text: bool = holds_text and translate.text_result is TextResultFormat.TEXT
+    product: ProductKind = ProductKind.TRANSLATED_TEXT if writes_text else ProductKind.FULL_PL
+    return ProductIntent(requested_products=frozenset({product}))
+
+
+def _auto_intent(
+    group: InspectedSourceGroup,
+    preset: AutoPreset,
+    products: ProductIntent,
+    recipes: RecipePreferences | None,
+    target: WorkflowTarget | None,
+) -> GroupIntent:
+    preferences: RecipePreferences = recipes if recipes is not None else RecipePreferences()
+    if target is WorkflowTarget.TRANSLATE:
+        return GroupIntent(
+            group_id=group.group_id,
+            mode=RunMode.AUTO,
+            products=auto_group_products(group, products, recipes, target),
+            translation_action=preferences.translate.translation_action,
+            target=WorkflowTarget.TRANSLATE,
+        )
+    if target in {WorkflowTarget.AUDIOBOOK, WorkflowTarget.COVER}:
+        audiobook: AudiobookRecipe = preferences.audiobook
+        return GroupIntent(
+            group_id=group.group_id,
+            mode=RunMode.AUTO,
+            products=auto_group_products(group, products, recipes, target),
+            translation_action=audiobook.translation_action,
+            narration_timeline=audiobook.timeline,
+            target=target,
+        )
+    return GroupIntent(
+        group_id=group.group_id,
+        mode=RunMode.AUTO,
+        products=products,
+        subtitle_source_policy=(
+            SubtitleSourcePolicy.SIDECAR if group.source.route.requires_sidecar else preset.subtitle_source_policy
+        ),
+        translation_action=preset.translation_action,
+        source_subtitle_language=preset.source_subtitle_language,
+        subtitle_output_format=preset.subtitle_output_format,
+        target=target,
+    )
 
 
 def plan_manual(
     groups: Sequence[InspectedSourceGroup],
     intents: Mapping[str, GroupIntent],
     settings: RunSettingsSnapshot,
+    *,
+    published: frozenset[Path] | None = None,
 ) -> ExecutionPlan:
     """Build independent manual plans using the exact intent of every group."""
     ordered_groups: tuple[InspectedSourceGroup, ...] = _ordered_unique_groups(groups)
@@ -116,7 +254,7 @@ def plan_manual(
     if any(intent.mode is not RunMode.MANUAL for intent in intents.values()):
         msg = "Manual planning accepts only manual group intents"
         raise PlanningError(msg)
-    return _plan(ordered_groups, intents, settings)
+    return _plan(ordered_groups, intents, settings, published=published)
 
 
 def _ordered_unique_groups(groups: Sequence[InspectedSourceGroup]) -> tuple[InspectedSourceGroup, ...]:
@@ -140,6 +278,9 @@ def _plan(
     groups: tuple[InspectedSourceGroup, ...],
     intents: Mapping[str, GroupIntent],
     settings: RunSettingsSnapshot,
+    *,
+    rebuild: RebuildRequest | None = None,
+    published: frozenset[Path] | None = None,
 ) -> ExecutionPlan:
     group_plans: list[GroupPlan] = []
     artifacts: list[Artifact] = []
@@ -147,7 +288,7 @@ def _plan(
     problems: list[PlanProblem] = []
     for group in groups:
         intent: GroupIntent = intents[group.group_id]
-        builder = _GroupPlanner(group, intent, settings)
+        builder: _GroupPlanner = _GroupPlanner(group, intent, settings, rebuild=rebuild, published=published)
         group_plan, group_artifacts, group_tasks = builder.build()
         group_plans.append(group_plan)
         artifacts.extend(group_artifacts)
@@ -167,9 +308,18 @@ def _plan(
             for group in groups
         }
         group_plans = [
-            replace(group_plan, artifact_ids=source_ids_by_group[group_plan.group_id], task_ids=())
+            replace(
+                group_plan,
+                artifact_ids=source_ids_by_group[group_plan.group_id],
+                task_ids=(),
+                problems=tuple(
+                    _without_planned_artifacts(problem, source_ids_by_group[group_plan.group_id])
+                    for problem in group_plan.problems
+                ),
+            )
             for group_plan in group_plans
         ]
+        problems = [problem for group_plan in group_plans for problem in group_plan.problems]
         artifacts = list(source_artifacts)
         tasks = []
     ordered_tasks: tuple[PlanTask, ...] = stable_topological_order(tasks)
@@ -182,16 +332,29 @@ def _plan(
     )
 
 
+def _without_planned_artifacts(problem: PlanProblem, source_ids: tuple[str, ...]) -> PlanProblem:
+    kept: tuple[str, ...] = tuple(artifact_id for artifact_id in problem.artifact_ids if artifact_id in source_ids)
+    if kept == problem.artifact_ids:
+        return problem
+    return replace(problem, artifact_ids=kept)
+
+
 class _GroupPlanner:
     def __init__(
         self,
         group: InspectedSourceGroup,
         intent: GroupIntent,
         settings: RunSettingsSnapshot,
+        *,
+        rebuild: RebuildRequest | None = None,
+        published: frozenset[Path] | None = None,
     ) -> None:
         self.group: InspectedSourceGroup = group
         self.intent: GroupIntent = intent
         self.settings: RunSettingsSnapshot = settings
+        self._published: frozenset[Path] = frozenset() if published is None else published
+        self._rebuild: frozenset[ProductKind] = frozenset() if rebuild is None else rebuild.products
+        self._invalidated: frozenset[ArtifactKind] = _invalidated_products(intent, self._rebuild)
         self.artifacts: dict[str, Artifact] = {artifact.artifact_id: artifact for artifact in group.artifacts}
         self.tasks: list[PlanTask] = []
         self.producer_by_artifact: dict[str, str] = {}
@@ -214,11 +377,10 @@ class _GroupPlanner:
                 "source_conflict",
                 "Source group contains an unresolved discovery conflict",
             )
+        self._require_accepted_target()
+        self._require_mandatory_sidecar()
         self._validate_manual_selections()
-        if any(artifact.kind is ArtifactKind.STANDALONE_TEXT for artifact in self.group.artifacts):
-            self._build_text_plan()
-        else:
-            self._build_media_plan()
+        self._build_target_plan()
         blocking: bool = any(problem.is_blocking for problem in self.problems)
         group_tasks: tuple[PlanTask, ...] = () if blocking else stable_topological_order(self.tasks)
         artifact_values: tuple[Artifact, ...] = tuple(
@@ -233,8 +395,58 @@ class _GroupPlanner:
         )
         return group_plan, artifact_values, group_tasks
 
+    @property
+    def _target(self) -> WorkflowTarget | None:
+        """Return the target this group is really planned for, recovered from its intent when its place names none."""
+        route_target: WorkflowTarget | None = self.group.source.route.target
+        return route_target if route_target is not None else self.intent.target
+
+    def _require_accepted_target(self) -> None:
+        route_target: WorkflowTarget | None = self.group.source.route.target
+        if route_target is None or self.intent.target is None or self.intent.target is route_target:
+            return
+        self._problem(
+            "intent_target_changed",
+            "This work was accepted for another place than the one its files sit in now",
+        )
+
+    def _require_mandatory_sidecar(self) -> None:
+        if not self.group.source.route.requires_sidecar:
+            return
+        if any(
+            artifact.kind is ArtifactKind.SOURCE_SUBTITLES and artifact.state is ArtifactState.READY
+            for artifact in self.group.artifacts
+        ):
+            return
+        self._problem(
+            "sidecar_required",
+            "This place pairs every film with its own subtitle file, whichever source the run reads",
+        )
+
+    def _build_target_plan(self) -> None:
+        target: WorkflowTarget | None = self._target
+        if target is WorkflowTarget.TRANSLATE:
+            self._build_translate_plan()
+            return
+        if target is WorkflowTarget.AUDIOBOOK:
+            self._build_audiobook_plan()
+            return
+        if target is WorkflowTarget.COVER:
+            self._build_cover_plan()
+            return
+        if ProductKind.TRANSLATED_TEXT in self.intent.products.requested_products:
+            self._problem(
+                "translated_text_unsupported",
+                "Only a translate place writes a plain translated text document",
+            )
+            return
+        if any(artifact.kind is ArtifactKind.STANDALONE_TEXT for artifact in self.group.artifacts):
+            self._build_text_plan()
+            return
+        self._build_media_plan()
+
     def _validate_manual_selections(self) -> None:
-        if self.intent.mode is not RunMode.MANUAL:
+        if self.intent.mode is not RunMode.MANUAL or self._target in _DOCUMENT_TARGETS:
             return
         if self.intent.preferred_video_artifact_id is not None:
             self._select_video()
@@ -279,6 +491,8 @@ class _GroupPlanner:
                 "Standalone TXT can produce only full Polish SRT subtitles",
             )
             return
+        if self._ready_product(ArtifactKind.FULL_PL) is not None:
+            return
         source: Artifact | None = self._ready_artifact(ArtifactKind.STANDALONE_TEXT)
         if source is None:
             self._problem("txt_invalid", "Standalone TXT source is not ready")
@@ -302,39 +516,457 @@ class _GroupPlanner:
             is_network=self.settings.translation_is_network,
             is_paid=self.settings.translation_is_paid,
         )
-        self._publish_subtitle(translated, ArtifactKind.FULL_PL, ".pl.srt")
+        self._draft_timings(translated)
+        self._publish_subtitle(translated, ArtifactKind.FULL_PL)
+
+    def _build_translate_plan(self) -> None:
+        requested: frozenset[ProductKind] = self.intent.products.requested_products
+        if not requested <= TRANSLATE_PRODUCTS:
+            self._problem(
+                "translate_products_unsupported",
+                "A translate place writes only a Polish text or subtitle document",
+            )
+            return
+        source: Artifact | None = self._document_source(
+            "translate_source_missing",
+            "translate_source_ambiguous",
+        )
+        if source is None:
+            return
+        if self.intent.translation_action is TranslationAction.DO_NOT_TRANSLATE:
+            self._problem(
+                "translate_translation_required",
+                "A translate place cannot write a Polish document without translating",
+                artifacts=(source,),
+            )
+            return
+        if source.kind is not ArtifactKind.STANDALONE_TEXT:
+            self._translate_subtitle_document(source, requested)
+            return
+        if ProductKind.TRANSLATED_TEXT in requested:
+            self._translate_text_document(source)
+        if ProductKind.FULL_PL in requested:
+            self._translate_text_to_draft_subtitles(source)
+
+    def _build_audiobook_plan(self) -> None:
+        requested: frozenset[ProductKind] = self.intent.products.requested_products
+        if not requested <= AUDIOBOOK_PRODUCTS:
+            self._problem(
+                "audiobook_products_unsupported",
+                "An audiobook place writes only the recording of one document",
+            )
+            return
+        source: Artifact | None = self._document_source(
+            "audiobook_source_missing",
+            "audiobook_source_ambiguous",
+        )
+        if source is None:
+            return
+        self._narration = self._ready_product(ArtifactKind.NARRATION_AUDIO)
+        if self._narration is None:
+            timeline: NarrationTimeline = self.intent.narration_timeline
+            if timeline is NarrationTimeline.SOURCE_TIMES and source.kind in _UNTIMED_DOCUMENT_KINDS:
+                self._problem(
+                    "narration_times_unavailable",
+                    "A plain text document carries no times a recording could keep",
+                    artifacts=(source,),
+                )
+                return
+            script: Artifact | None = self._narration_script(source)
+            if script is None:
+                return
+            self._read_document_aloud(script)
+        if ProductKind.NARRATION_AUDIO in requested and self._narration is not None:
+            self._publish_audio(self._narration)
+
+    def _build_cover_plan(self) -> None:
+        requested: frozenset[ProductKind] = self.intent.products.requested_products
+        if not requested <= COVER_PRODUCTS:
+            self._problem(
+                "cover_products_unsupported",
+                "A cover place writes only one film showing its own still picture",
+            )
+            return
+        image: Artifact | None = self._cover_image()
+        content: Artifact | None = self._cover_content()
+        if image is None or content is None:
+            return
+        if content.kind in COVER_AUDIO_KINDS:
+            self._compose_cover(image, content)
+            return
+        recorded: Artifact | None = self._reusable_recording()
+        if recorded is not None:
+            self._compose_cover(image, recorded)
+            return
+        if not self._record_cover_narration(content) or self._narration is None:
+            return
+        self._compose_cover(image, self._publish_audio(self._narration))
+
+    def _cover_image(self) -> Artifact | None:
+        """Return the one validated still a cover shows, because a picture is required before any work starts."""
+        chosen: Artifact | None = self._chosen_cover_image()
+        if chosen is not None:
+            return chosen
+        images: tuple[Artifact, ...] = tuple(
+            artifact
+            for artifact in self.artifacts.values()
+            if artifact.kind is ArtifactKind.SOURCE_IMAGE and artifact.state is ArtifactState.READY
+        )
+        if not images:
+            self._problem("cover_image_missing", "A cover needs one validated PNG or JPEG before it can be built")
+            return None
+        if len(images) > 1:
+            self._problem(
+                "cover_image_ambiguous",
+                "Choose which picture this cover shows",
+                artifacts=tuple(sorted(images, key=lambda artifact: artifact.artifact_id)),
+            )
+            return None
+        return images[0]
+
+    def _cover_content(self) -> Artifact | None:
+        """Return the one source a cover plays: a delivered one, or failing that the recording it published itself."""
+        chosen: Artifact | None = self._chosen_cover_content()
+        if chosen is not None:
+            return chosen
+        delivered: tuple[Artifact, ...] = self._delivered_cover_sources()
+        if not delivered:
+            own: Artifact | None = self._own_recording()
+            if own is None:
+                self._problem("cover_source_missing", "A cover needs one validated text, subtitle, or audio source")
+            return own
+        if len(delivered) > 1:
+            self._problem(
+                "cover_source_ambiguous",
+                "Choose which source this cover uses",
+                artifacts=delivered,
+            )
+            return None
+        return delivered[0]
+
+    def _delivered_cover_sources(self) -> tuple[Artifact, ...]:
+        """Return every content source a person put in this set, never a file proven to be this program's product."""
+        return tuple(
+            sorted(
+                (
+                    artifact
+                    for artifact in self.artifacts.values()
+                    if artifact.kind in _COVER_CONTENT_KINDS
+                    and artifact.state is ArtifactState.READY
+                    and (artifact.lifetime is ArtifactLifetime.SOURCE or artifact.kind in COVER_AUDIO_KINDS)
+                    and not self._is_published(artifact)
+                ),
+                key=lambda artifact: artifact.artifact_id,
+            )
+        )
+
+    def _reusable_recording(self) -> Artifact | None:
+        """Return the recording an automatic run plays instead of paying for the same voice twice."""
+        return self._own_recording() if self.intent.mode is RunMode.AUTO else None
+
+    def _own_recording(self) -> Artifact | None:
+        """Return the narration this program is proven to have published here, whichever mode asked for the film."""
+        if ArtifactKind.NARRATION_AUDIO in self._invalidated:
+            return None
+        return next(
+            (
+                artifact
+                for artifact in self.artifacts.values()
+                if artifact.kind in COVER_AUDIO_KINDS
+                and artifact.state is ArtifactState.READY
+                and self._is_published(artifact)
+            ),
+            None,
+        )
+
+    def _is_published(self, artifact: Artifact) -> bool:
+        """Report whether a durable record proves this program wrote the bytes this file currently holds."""
+        return artifact.path is not None and any(_same_path(artifact.path, item) for item in self._published)
+
+    def _narration_product_path(self) -> Path:
+        """Return the one pathname the narration product of this set occupies under the active audio profile."""
+        return product_path(
+            self.group.source.directory,
+            self.group.source.stem,
+            ArtifactKind.NARRATION_AUDIO,
+            audio_profile=self.settings.audio_output_profile.casefold(),
+        )
+
+    def _chosen_cover_image(self) -> Artifact | None:
+        selected_id: str | None = self.intent.selected_image_artifact_id
+        if selected_id is None:
+            return None
+        selected: Artifact | None = self.artifacts.get(selected_id)
+        if (
+            selected is None
+            or selected.kind is not ArtifactKind.SOURCE_IMAGE
+            or selected.state is not ArtifactState.READY
+        ):
+            self._problem("cover_selection_invalid", "Selected cover picture is unavailable or invalid")
+            return None
+        return selected
+
+    def _chosen_cover_content(self) -> Artifact | None:
+        selected_id: str | None = self.intent.selected_audio_artifact_id or self.intent.selected_subtitle_artifact_id
+        if selected_id is None:
+            return None
+        selected: Artifact | None = self.artifacts.get(selected_id)
+        if selected is None or selected.kind not in _COVER_CONTENT_KINDS or selected.state is not ArtifactState.READY:
+            self._problem("cover_selection_invalid", "Selected cover source is unavailable or invalid")
+            return None
+        return selected
+
+    def _record_cover_narration(self, document: Artifact) -> bool:
+        """Prepare the voice of a cover exactly as an audiobook does, keeping the recording out of the workspace."""
+        timeline: NarrationTimeline = self.intent.narration_timeline
+        if timeline is NarrationTimeline.SOURCE_TIMES and document.kind in _UNTIMED_DOCUMENT_KINDS:
+            self._problem(
+                "narration_times_unavailable",
+                "A plain text document carries no times a recording could keep",
+                artifacts=(document,),
+            )
+            return False
+        script: Artifact | None = self._narration_script(document)
+        if script is None:
+            return False
+        self._read_document_aloud(script)
+        return True
+
+    def _compose_cover(self, image: Artifact, audio: Artifact) -> None:
+        target: Artifact = self._durable_target(
+            ArtifactKind.COVER_MP4,
+            product_path(self.group.source.directory, self.group.source.stem, ArtifactKind.COVER_MP4),
+        )
+        self._add_task(
+            TaskKind.COMPOSE_COVER,
+            requires=(image, audio),
+            produces=(target,),
+            variant="cover",
+            resource_key=f"composition:{self.settings.composition_profile_id}",
+        )
+
+    def _narration_script(self, source: Artifact) -> Artifact | None:
+        """Return the document the voice really reads, translating first only when that was asked for."""
+        if self.intent.translation_action is TranslationAction.DO_NOT_TRANSLATE:
+            return source
+        if source.kind is not ArtifactKind.STANDALONE_TEXT:
+            self._subtitle_input = source
+            return self._ensure_full_pl()
+        script: Artifact = self._intermediate(
+            ArtifactKind.FULL_PL,
+            "narration-script",
+            subtitle_format="srt",
+            language="pol",
+        )
+        self._add_task(
+            TaskKind.TRANSLATE_SUBTITLES,
+            requires=(source,),
+            produces=(script,),
+            variant="narration-script",
+            resource_key=_translation_resource_key(self.settings),
+            parameters=(("source_kind", "txt"), ("output_format", "srt")),
+            is_network=self.settings.translation_is_network,
+            is_paid=self.settings.translation_is_paid,
+        )
+        self._draft_timings(script)
+        return script
+
+    def _read_document_aloud(self, script: Artifact) -> None:
+        """Record one document on the timeline its own place asked for."""
+        timeline: NarrationTimeline = self.intent.narration_timeline
+        manifest: Artifact = self._synthesize_speech(script, timeline)
+        profile: str = self.settings.audio_output_profile.casefold()
+        narration: Artifact = self._intermediate(
+            ArtifactKind.NARRATION_AUDIO,
+            f"narration-mix-{timeline.value}",
+            audio_codec=profile,
+        )
+        self._add_task(
+            TaskKind.MIX_NARRATION,
+            requires=(manifest,),
+            produces=(narration,),
+            variant=f"narration-{timeline.value}",
+            resource_key=f"audio:{self.settings.audio_profile_id}",
+            parameters=(("mix_source", "standalone"), ("output_profile", profile)),
+        )
+        self._narration = narration
+
+    def _synthesize_speech(self, script: Artifact, timeline: NarrationTimeline) -> Artifact:
+        manifest: Artifact = self._intermediate(ArtifactKind.TTS_MANIFEST, f"tts-manifest-{timeline.value}")
+        self._add_task(
+            TaskKind.SYNTHESIZE_SPEECH,
+            requires=(script,),
+            produces=(manifest,),
+            variant=f"narration-{timeline.value}",
+            resource_key=f"tts:{self.settings.tts_profile_id}",
+            parameters=(("narration_timeline", timeline.value), ("script_kind", script.kind.value)),
+            is_network=self.settings.tts_is_network,
+            is_paid=self.settings.tts_is_paid,
+        )
+        return manifest
+
+    def _document_source(self, missing_code: str, ambiguous_code: str) -> Artifact | None:
+        """Pick the one validated text or subtitle document the place of this group reads."""
+        selected_id: str | None = self.intent.selected_subtitle_artifact_id
+        if selected_id is not None:
+            selected: Artifact | None = self.artifacts.get(selected_id)
+            if selected is None or selected.kind not in _DOCUMENT_SOURCE_KINDS:
+                self._problem("subtitle_selection_invalid", "Selected translation source is unavailable or invalid")
+                return None
+            if selected.state is not ArtifactState.READY:
+                self._problem(
+                    "subtitle_selection_invalid",
+                    "Selected translation source is unavailable or invalid",
+                    artifacts=(selected,),
+                )
+                return None
+            return selected
+        candidates: tuple[Artifact, ...] = tuple(
+            artifact
+            for artifact in self.artifacts.values()
+            if artifact.kind in _DOCUMENT_SOURCE_KINDS
+            and artifact.state is ArtifactState.READY
+            and artifact.lifetime is ArtifactLifetime.SOURCE
+        )
+        if not candidates:
+            self._problem(missing_code, "A validated text or subtitle source is required")
+            return None
+        if len(candidates) > 1:
+            self._problem(
+                ambiguous_code,
+                "Choose which text or subtitle document this run reads",
+                artifacts=tuple(sorted(candidates, key=lambda artifact: artifact.artifact_id)),
+            )
+            return None
+        return candidates[0]
+
+    def _translate_subtitle_document(self, source: Artifact, requested: frozenset[ProductKind]) -> None:
+        if ProductKind.TRANSLATED_TEXT in requested:
+            self._problem(
+                "translated_text_unsupported",
+                "A subtitle source keeps its own format instead of becoming a plain text document",
+                artifacts=(source,),
+            )
+            return
+        self._full_pl = self._ready_product(ArtifactKind.FULL_PL)
+        self._subtitle_input = source
+        full: Artifact | None = self._ensure_full_pl()
+        if full is not None:
+            self._publish_subtitle(full, ArtifactKind.FULL_PL)
+
+    def _translate_text_document(self, source: Artifact) -> None:
+        if self._ready_product(ArtifactKind.TRANSLATED_TEXT) is not None:
+            return
+        translated: Artifact = self._intermediate(ArtifactKind.TRANSLATED_TEXT, "txt-text", language="pol")
+        self._add_task(
+            TaskKind.TRANSLATE_SUBTITLES,
+            requires=(source,),
+            produces=(translated,),
+            variant="txt-text",
+            resource_key=_translation_resource_key(self.settings),
+            parameters=(("source_kind", "txt"), ("output_format", "txt")),
+            is_network=self.settings.translation_is_network,
+            is_paid=self.settings.translation_is_paid,
+        )
+        self._publish_text(translated)
+
+    def _translate_text_to_draft_subtitles(self, source: Artifact) -> None:
+        if self._ready_product(ArtifactKind.FULL_PL) is not None:
+            return
+        translated: Artifact = self._intermediate(
+            ArtifactKind.FULL_PL,
+            "txt-translation",
+            subtitle_format="srt",
+            language="pol",
+        )
+        self._add_task(
+            TaskKind.TRANSLATE_SUBTITLES,
+            requires=(source,),
+            produces=(translated,),
+            variant="txt",
+            resource_key=_translation_resource_key(self.settings),
+            parameters=(("source_kind", "txt"), ("output_format", "srt")),
+            is_network=self.settings.translation_is_network,
+            is_paid=self.settings.translation_is_paid,
+        )
+        self._draft_timings(translated)
+        self._publish_subtitle(translated, ArtifactKind.FULL_PL)
+
+    def _draft_timings(self, artifact: Artifact) -> None:
+        self._problem(
+            "draft_subtitle_timings",
+            "Subtitles built from plain text are a narration script with estimated timings",
+            artifacts=(artifact,),
+            is_blocking=False,
+        )
+
+    def _publish_text(self, source: Artifact) -> Artifact | None:
+        destination: Path = product_path(
+            self.group.source.directory,
+            self.group.source.stem,
+            ArtifactKind.TRANSLATED_TEXT,
+        )
+        collision: Artifact | None = next(
+            (
+                artifact
+                for artifact in self.group.artifacts
+                if artifact.lifetime is ArtifactLifetime.SOURCE
+                and artifact.path is not None
+                and _same_path(artifact.path, destination)
+            ),
+            None,
+        )
+        if collision is not None:
+            self._problem(
+                "text_source_path_collision",
+                "A translated document cannot replace the source text it was read from",
+                artifacts=(collision,),
+            )
+            return None
+        target: Artifact = self._durable_target(ArtifactKind.TRANSLATED_TEXT, destination, language="pol")
+        self._add_publish(source, target)
+        return target
 
     def _build_media_plan(self) -> None:
-        products = self.intent.products
+        products: ProductIntent = self.intent.products
         requested: frozenset[ProductKind] = products.requested_products
+        compose_mkv: bool = ProductKind.MKV in requested and self._ready_product(ArtifactKind.FINAL_MKV) is None
+        compose_mp4: bool = ProductKind.MP4 in requested and self._ready_product(ArtifactKind.FINAL_MP4) is None
+        mkv_tracks: frozenset[MkvTrackProduct] = products.mkv_tracks if compose_mkv else frozenset()
+        burn: BurnSubtitleProduct = products.burn_subtitle_product if compose_mp4 else BurnSubtitleProduct.NONE
         needs_narration: bool = (
             ProductKind.NARRATION_AUDIO in requested
-            or MkvTrackProduct.NARRATION_AUDIO in products.mkv_tracks
-            or products.mp4_audio_source is Mp4AudioSource.NARRATION
+            or MkvTrackProduct.NARRATION_AUDIO in mkv_tracks
+            or (compose_mp4 and _mp4_uses_narration(products))
         )
-        if products.mp4_audio_source is Mp4AudioSource.AUTO and ProductKind.NARRATION_AUDIO in requested:
-            needs_narration = True
+        self._full_pl = self._ready_product(ArtifactKind.FULL_PL)
+        self._spoken_pl = self._ready_product(ArtifactKind.SPOKEN_PL)
+        self._displayed_pl = self._ready_product(ArtifactKind.DISPLAYED_PL)
+        if needs_narration:
+            self._narration = self._ready_product(ArtifactKind.NARRATION_AUDIO)
         self._adopt_manual_narration()
         needs_generated_narration: bool = needs_narration and self._narration is None
         needs_spoken: bool = ProductKind.SPOKEN_PL in requested or needs_generated_narration
         needs_displayed: bool = (
             ProductKind.DISPLAYED_PL in requested
-            or products.burn_subtitle_product is BurnSubtitleProduct.DISPLAYED_PL
-            or MkvTrackProduct.DISPLAYED_PL_SUBTITLES in products.mkv_tracks
+            or burn is BurnSubtitleProduct.DISPLAYED_PL
+            or MkvTrackProduct.DISPLAYED_PL_SUBTITLES in mkv_tracks
         )
         needs_full: bool = (
             ProductKind.FULL_PL in requested
-            or products.burn_subtitle_product is BurnSubtitleProduct.FULL_PL
-            or MkvTrackProduct.FULL_PL_SUBTITLES in products.mkv_tracks
+            or burn is BurnSubtitleProduct.FULL_PL
+            or MkvTrackProduct.FULL_PL_SUBTITLES in mkv_tracks
         )
         needs_source: bool = (
             ProductKind.SOURCE_SUBTITLES in requested
-            or products.burn_subtitle_product is BurnSubtitleProduct.SOURCE
-            or MkvTrackProduct.SOURCE_SUBTITLES in products.mkv_tracks
+            or burn is BurnSubtitleProduct.SOURCE
+            or MkvTrackProduct.SOURCE_SUBTITLES in mkv_tracks
         )
-        needs_any_subtitles: bool = needs_source or needs_full or needs_spoken or needs_displayed
+        needs_fresh_full: bool = self._full_pl is None and (
+            needs_full or (needs_spoken and self._spoken_pl is None) or (needs_displayed and self._displayed_pl is None)
+        )
 
-        if needs_any_subtitles:
+        if needs_source or needs_fresh_full:
             self._select_subtitle_input()
         self._prepare_bulk_extraction(needs_generated_narration=needs_generated_narration)
         if needs_source:
@@ -348,20 +980,17 @@ class _GroupPlanner:
         if ProductKind.SOURCE_SUBTITLES in requested and self._source_subtitles is not None:
             self._publish_source_subtitles(self._source_subtitles)
         if ProductKind.FULL_PL in requested and self._full_pl is not None:
-            suffix: str = f".pl.{self._subtitle_format(self._full_pl)}"
-            self._publish_subtitle(self._full_pl, ArtifactKind.FULL_PL, suffix)
+            self._publish_subtitle(self._full_pl, ArtifactKind.FULL_PL)
         if ProductKind.SPOKEN_PL in requested and self._spoken_pl is not None:
-            suffix = f".spoken.pl.{self._subtitle_format(self._spoken_pl)}"
-            self._publish_subtitle(self._spoken_pl, ArtifactKind.SPOKEN_PL, suffix)
+            self._publish_subtitle(self._spoken_pl, ArtifactKind.SPOKEN_PL)
         if ProductKind.DISPLAYED_PL in requested and self._displayed_pl is not None:
-            suffix = f".displayed.pl.{self._subtitle_format(self._displayed_pl)}"
-            self._publish_subtitle(self._displayed_pl, ArtifactKind.DISPLAYED_PL, suffix)
+            self._publish_subtitle(self._displayed_pl, ArtifactKind.DISPLAYED_PL)
         if ProductKind.NARRATION_AUDIO in requested and self._narration is not None:
             self._publish_audio(self._narration)
 
-        if ProductKind.MKV in requested:
+        if compose_mkv:
             self._compose_mkv()
-        if ProductKind.MP4 in requested:
+        if compose_mp4:
             self._compose_mp4()
 
     def _select_video(self) -> Artifact | None:
@@ -494,14 +1123,23 @@ class _GroupPlanner:
                 self._problem(f"{kind}_track_invalid", f"Selected embedded {kind} track is unavailable")
                 return None
         else:
+            demote: bool = kind == "subtitles"
             priorities: tuple[str, ...] = (
-                self.settings.subtitle_language_priority
-                if kind == "subtitles"
-                else self.settings.audio_language_priority
+                self.settings.subtitle_language_priority if demote else self.settings.audio_language_priority
             )
-            selected = min(candidates, key=lambda track: _track_rank(track, priorities), default=None)
+            selected = min(
+                candidates,
+                key=lambda track: _track_rank(track, priorities, demote_non_dialogue=demote),
+                default=None,
+            )
             if selected is None:
                 return None
+            if demote and all(_is_non_dialogue(track) for track in candidates):
+                self._problem(
+                    "subtitle_dialogue_missing",
+                    "Only signs, songs, or forced subtitle tracks are embedded, so the narration follows them",
+                    is_blocking=False,
+                )
         return _EmbeddedTrack(
             video=video,
             track_id=selected.track_id,
@@ -519,6 +1157,13 @@ class _GroupPlanner:
                 self._problem(
                     "source_subtitles_unavailable",
                     "The selected derived subtitle product cannot restore source subtitles",
+                    artifacts=(selected,),
+                )
+                return None
+            if ProductKind.SOURCE_SUBTITLES in self._rebuild and selected.lifetime is ArtifactLifetime.SOURCE:
+                self._problem(
+                    "source_product_not_rebuildable",
+                    "Source subtitle files cannot be replaced by a generated product",
                     artifacts=(selected,),
                 )
                 return None
@@ -549,7 +1194,6 @@ class _GroupPlanner:
         return extracted
 
     def _prepare_bulk_extraction(self, *, needs_generated_narration: bool) -> None:
-        """Plan one legacy MKV extraction when subtitles and source audio are both required."""
         selected: Artifact | _EmbeddedTrack | None = self._subtitle_input
         if (
             not needs_generated_narration
@@ -674,9 +1318,13 @@ class _GroupPlanner:
         return full
 
     def _ensure_split_outputs(self, *, needs_spoken: bool, needs_displayed: bool) -> None:
+        needs_spoken = needs_spoken and self._spoken_pl is None
+        needs_displayed = needs_displayed and self._displayed_pl is None
         if not needs_spoken and not needs_displayed:
             return
-        selected: Artifact | _EmbeddedTrack | None = self._subtitle_input or self._select_subtitle_input()
+        selected: Artifact | _EmbeddedTrack | None = (
+            self._full_pl or self._subtitle_input or self._select_subtitle_input()
+        )
         if isinstance(selected, Artifact) and selected.kind is ArtifactKind.SPOKEN_PL:
             self._spoken_pl = self._convert_partial_product(selected, ProductKind.SPOKEN_PL)
             if needs_displayed:
@@ -715,13 +1363,14 @@ class _GroupPlanner:
                 language="pol",
             )
             outputs.append(self._displayed_pl)
-        self._add_task(
-            TaskKind.SPLIT_SUBTITLES,
-            requires=(full,),
-            produces=tuple(outputs),
-            variant="polish",
-            resource_key="subtitles",
-        )
+        for output in outputs:
+            self._add_task(
+                TaskKind.SPLIT_SUBTITLES,
+                requires=(full,),
+                produces=(output,),
+                variant=output.kind.value,
+                resource_key="subtitles",
+            )
 
     def _convert_partial_product(self, source: Artifact, requested_kind: ProductKind) -> Artifact:
         if requested_kind not in self.intent.products.requested_products or self._requested_format_matches(source):
@@ -769,28 +1418,21 @@ class _GroupPlanner:
         source_audio: Artifact | None = self._select_source_audio()
         if spoken is None or source_audio is None:
             return None
-        manifest: Artifact = self._intermediate(ArtifactKind.TTS_MANIFEST, "tts-manifest")
-        self._add_task(
-            TaskKind.SYNTHESIZE_SPEECH,
-            requires=(spoken,),
-            produces=(manifest,),
-            variant="narration",
-            resource_key=f"tts:{self.settings.tts_profile_id}",
-            is_network=self.settings.tts_is_network,
-            is_paid=self.settings.tts_is_paid,
-        )
+        timeline: NarrationTimeline = NarrationTimeline.SOURCE_TIMES
+        manifest: Artifact = self._synthesize_speech(spoken, timeline)
+        profile: str = self.settings.audio_output_profile.casefold()
         narration: Artifact = self._intermediate(
             ArtifactKind.NARRATION_AUDIO,
-            "narration-mix",
-            audio_codec=self.settings.audio_output_profile.casefold(),
+            f"narration-mix-{timeline.value}",
+            audio_codec=profile,
         )
         self._add_task(
             TaskKind.MIX_NARRATION,
             requires=(source_audio, manifest),
             produces=(narration,),
-            variant="narration",
+            variant=f"narration-{timeline.value}",
             resource_key=f"audio:{self.settings.audio_profile_id}",
-            parameters=(("output_profile", self.settings.audio_output_profile.casefold()),),
+            parameters=(("mix_source", "video"), ("output_profile", profile)),
         )
         self._narration = narration
         return narration
@@ -872,14 +1514,20 @@ class _GroupPlanner:
         self._add_publish(source, target)
         return target
 
-    def _publish_subtitle(self, source: Artifact, kind: ArtifactKind, suffix: str) -> Artifact:
-        destination: Path = self.group.source.directory / f"{self.group.source.stem}{suffix}"
+    def _publish_subtitle(self, source: Artifact, kind: ArtifactKind) -> Artifact:
+        subtitle_format: str = self._subtitle_format(source)
+        destination: Path = product_path(
+            self.group.source.directory,
+            self.group.source.stem,
+            kind,
+            subtitle_format=subtitle_format,
+        )
         if source.state is ArtifactState.READY and source.path is not None and _same_path(source.path, destination):
             return source
         target: Artifact = self._durable_target(
             kind,
             destination,
-            subtitle_format=self._subtitle_format(source),
+            subtitle_format=subtitle_format,
             language="pol",
         )
         self._add_publish(source, target)
@@ -887,7 +1535,6 @@ class _GroupPlanner:
 
     def _publish_audio(self, source: Artifact) -> Artifact:
         profile: str = self.settings.audio_output_profile.casefold()
-        extension: str = _audio_product_extension(profile)
         publish_source: Artifact = source
         if (
             source.lifetime is ArtifactLifetime.SOURCE
@@ -907,7 +1554,7 @@ class _GroupPlanner:
                 resource_key=f"audio:{self.settings.audio_profile_id}",
                 parameters=(("output_profile", profile),),
             )
-        destination: Path = self.group.source.directory / f"{self.group.source.stem}{extension}"
+        destination: Path = self._narration_product_path()
         if (
             publish_source.state is ArtifactState.READY
             and publish_source.path is not None
@@ -942,7 +1589,7 @@ class _GroupPlanner:
             tracks.append(track.value)
         target: Artifact = self._durable_target(
             ArtifactKind.FINAL_MKV,
-            self.group.source.directory / f"{self.group.source.stem}.pl.mkv",
+            product_path(self.group.source.directory, self.group.source.stem, ArtifactKind.FINAL_MKV),
         )
         self._add_task(
             TaskKind.COMPOSE_MKV,
@@ -974,7 +1621,7 @@ class _GroupPlanner:
                 requires.append(self._narration)
         target: Artifact = self._durable_target(
             ArtifactKind.FINAL_MP4,
-            self.group.source.directory / f"{self.group.source.stem}.pl.mp4",
+            product_path(self.group.source.directory, self.group.source.stem, ArtifactKind.FINAL_MP4),
         )
         self._add_task(
             TaskKind.COMPOSE_MP4,
@@ -1001,6 +1648,19 @@ class _GroupPlanner:
             artifact
             for artifact in self.artifacts.values()
             if artifact.kind is kind and artifact.state is ArtifactState.READY
+        )
+        return min(candidates, key=_artifact_path_key, default=None)
+
+    def _ready_product(self, kind: ArtifactKind) -> Artifact | None:
+        if self.intent.mode is not RunMode.AUTO or kind in self._invalidated:
+            return None
+        candidates: tuple[Artifact, ...] = tuple(
+            artifact
+            for artifact in self.group.artifacts
+            if artifact.kind is kind
+            and artifact.state is ArtifactState.READY
+            and artifact.lifetime is ArtifactLifetime.DURABLE
+            and (artifact.subtitle_format is None or self._requested_format_matches(artifact))
         )
         return min(candidates, key=_artifact_path_key, default=None)
 
@@ -1055,10 +1715,8 @@ class _GroupPlanner:
                 artifacts=(existing,),
                 is_blocking=False,
             )
-        artifact_id: str = (
-            existing.artifact_id
-            if existing is not None
-            else create_artifact_id(self.group.group_id, kind, Path(destination.name))
+        artifact_id: str = create_artifact_id(
+            self.group.group_id, kind, Path(destination.name), variant="durable-output"
         )
         target = Artifact(
             artifact_id=artifact_id,
@@ -1202,7 +1860,18 @@ class _GroupPlanner:
         return _same_path(artifact.path, expected)
 
 
-def _track_rank(track: _MediaTrackView, priorities: tuple[str, ...]) -> tuple[int, int, int, int]:
+def _is_non_dialogue(track: _MediaTrackView) -> bool:
+    if track.is_forced:
+        return True
+    return track.name is not None and _NON_DIALOGUE_SUBTITLE_NAME.search(track.name) is not None
+
+
+def _track_rank(
+    track: _MediaTrackView,
+    priorities: tuple[str, ...],
+    *,
+    demote_non_dialogue: bool,
+) -> tuple[int, int, int, int, int]:
     normalized_priorities: tuple[str, ...] = tuple(language.casefold() for language in priorities)
     language: str | None = track.language.casefold() if track.language is not None else None
     try:
@@ -1211,7 +1880,52 @@ def _track_rank(track: _MediaTrackView, priorities: tuple[str, ...]) -> tuple[in
     except ValueError:
         priority = len(normalized_priorities)
         preferred = 1
-    return preferred, priority, 0 if track.is_default else 1, track.track_id
+    non_dialogue: int = 1 if demote_non_dialogue and _is_non_dialogue(track) else 0
+    return non_dialogue, preferred, priority, 0 if track.is_default else 1, track.track_id
+
+
+def _mp4_uses_narration(products: ProductIntent) -> bool:
+    return products.mp4_audio_source is Mp4AudioSource.NARRATION or (
+        products.mp4_audio_source is Mp4AudioSource.AUTO
+        and (
+            ProductKind.NARRATION_AUDIO in products.requested_products
+            or MkvTrackProduct.NARRATION_AUDIO in products.mkv_tracks
+        )
+    )
+
+
+def _invalidated_products(intent: GroupIntent, rebuild: frozenset[ProductKind]) -> frozenset[ArtifactKind]:
+    if not rebuild:
+        return frozenset()
+    invalidated: set[ProductKind] = set(rebuild)
+    if ProductKind.SOURCE_SUBTITLES in invalidated:
+        invalidated.add(ProductKind.FULL_PL)
+    if ProductKind.FULL_PL in invalidated:
+        invalidated.update({ProductKind.SPOKEN_PL, ProductKind.DISPLAYED_PL})
+    if ProductKind.SPOKEN_PL in invalidated:
+        invalidated.add(ProductKind.NARRATION_AUDIO)
+    products: ProductIntent = intent.products
+    track_products: dict[MkvTrackProduct, ProductKind] = {
+        MkvTrackProduct.SOURCE_SUBTITLES: ProductKind.SOURCE_SUBTITLES,
+        MkvTrackProduct.FULL_PL_SUBTITLES: ProductKind.FULL_PL,
+        MkvTrackProduct.DISPLAYED_PL_SUBTITLES: ProductKind.DISPLAYED_PL,
+        MkvTrackProduct.NARRATION_AUDIO: ProductKind.NARRATION_AUDIO,
+    }
+    if any(track_products[track] in invalidated for track in products.mkv_tracks):
+        invalidated.add(ProductKind.MKV)
+    burn: BurnSubtitleProduct = products.burn_subtitle_product
+    burned_product: ProductKind | None = {
+        BurnSubtitleProduct.NONE: None,
+        BurnSubtitleProduct.SOURCE: ProductKind.SOURCE_SUBTITLES,
+        BurnSubtitleProduct.FULL_PL: ProductKind.FULL_PL,
+        BurnSubtitleProduct.DISPLAYED_PL: ProductKind.DISPLAYED_PL,
+    }[burn]
+    if burned_product in invalidated or (ProductKind.NARRATION_AUDIO in invalidated and _mp4_uses_narration(products)):
+        invalidated.add(ProductKind.MP4)
+    return frozenset(
+        ArtifactKind(f"final_{product.value}" if product in {ProductKind.MKV, ProductKind.MP4} else product.value)
+        for product in invalidated
+    )
 
 
 def _task_id(group_id: str, kind: TaskKind, variant: str) -> str:
@@ -1240,7 +1954,3 @@ def _unique_artifacts(artifacts: Sequence[Artifact]) -> tuple[Artifact, ...]:
     for artifact in artifacts:
         unique.setdefault(artifact.artifact_id, artifact)
     return tuple(unique.values())
-
-
-def _audio_product_extension(profile: str) -> str:
-    return ".m4a" if profile == "aac" else f".{profile}"

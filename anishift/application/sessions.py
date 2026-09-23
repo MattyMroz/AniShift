@@ -38,21 +38,25 @@ class RunSession:
         "_generation",
         "_lock",
         "_owner_token",
+        "_preserved",
         "_registry_key",
+        "_resume",
         "_run_root",
     )
 
-    def __init__(self, run_root: Path) -> None:
+    def __init__(self, run_root: Path, *, resume: bool = False) -> None:
         """Store an explicit run directory that this session alone will create."""
         expected: Path = run_temp_dir(run_root.parent.parent, run_root.name)
         if run_root != expected:
             msg = "Run root must be an exact workspace/temp child directory"
             raise ValueError(msg)
         self._run_root: Path = run_root
+        self._resume: bool = resume
         self._registry_key: Path = run_root.resolve(strict=False)
         self._owner_token: str = token_hex(32)
         self._generation: int = 1
         self._active: bool = False
+        self._preserved: bool = False
         self._cleanup_warnings: list[str] = []
         self._lock: threading.Lock = threading.Lock()
 
@@ -65,7 +69,7 @@ class RunSession:
             )
             raise RunConflictError(context=context)
         with self._lock:
-            if self._active or self._run_root.exists():
+            if self._active or (self._run_root.exists() and not self._resume):
                 _release_root(self._registry_key)
                 context = ErrorContext(
                     code=ErrorCode.IO_ERROR,
@@ -74,7 +78,10 @@ class RunSession:
                 raise RunConflictError(context=context)
             try:
                 self._run_root.parent.mkdir(parents=True, exist_ok=True)
-                self._run_root.mkdir()
+                if self._resume:
+                    self._validate_resume_root()
+                else:
+                    self._run_root.mkdir()
                 marker: dict[str, str | int] = {
                     "pid": os.getpid(),
                     "run_id": self._run_root.name,
@@ -88,7 +95,7 @@ class RunSession:
                     message="Workflow run directory is already in use",
                 )
                 raise RunConflictError(context=context) from error
-            except OSError:
+            except OSError, ExecutionError, ValueError:
                 _release_root(self._registry_key)
                 raise
             self._active = True
@@ -100,16 +107,34 @@ class RunSession:
         exception: BaseException | None,
         traceback: TracebackType | None,
     ) -> Literal[False]:
-        """Close the generation gate and remove every file owned by this run."""
+        """Close ownership and clean staging unless this run was preserved for recovery."""
         del exception_type, traceback
         with self._lock:
             self._active = False
             self._generation += 1
         try:
-            self._cleanup(exception)
+            if not self._preserved:
+                self._cleanup(exception)
         finally:
             _release_root(self._registry_key)
         return False
+
+    def preserve(self) -> None:
+        """Retain this run's staged files when its ownership gate closes."""
+        with self._lock:
+            self._preserved = True
+
+    def _validate_resume_root(self) -> None:
+        if self._run_root.is_symlink() or self._run_root.is_junction() or not self._run_root.is_dir():
+            msg = "The retained run directory is unavailable or is a link"
+            raise ExecutionError(msg)
+        if self._owner_marker().is_symlink():
+            msg = "The retained ownership marker cannot be a link"
+            raise ExecutionError(msg)
+        marker: object = json.loads(self._owner_marker().read_text(encoding="utf-8"))
+        if not isinstance(marker, dict) or marker.get("run_id") != self._run_root.name or not marker.get("token"):
+            msg = "The retained run directory has no matching ownership marker"
+            raise ExecutionError(msg)
 
     @property
     def generation(self) -> int:

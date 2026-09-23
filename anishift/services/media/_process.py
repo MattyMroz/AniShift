@@ -19,6 +19,9 @@ _SHUTDOWN_GRACE_SECONDS: Final[float] = 5.0
 _NEW_PROCESS_GROUP: Final[int] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 """Windows process flag preventing console Ctrl+C from leaking into children."""
 
+_NO_WINDOW: Final[int] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+"""Windows flag keeping a console child from opening its own window when the parent has none."""
+
 
 class ProcessFailureReason(StrEnum):
     """Machine-readable reason a controlled subprocess did not succeed."""
@@ -91,7 +94,7 @@ class SubprocessRunner:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                creationflags=_NEW_PROCESS_GROUP,
+                creationflags=_NEW_PROCESS_GROUP | _NO_WINDOW,
             )
         except OSError as error:
             raise ProcessExecutionError(ProcessFailureReason.START_FAILED, cause=error) from error

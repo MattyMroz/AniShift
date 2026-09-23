@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Never, Protocol
 
-from anishift.application.artifacts import Artifact, SourceGroup
+from anishift.application.artifacts import Artifact, ArtifactKind, SourceGroup
 from anishift.application.cancellation import CancellationToken
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.planning import PlanTask, TaskKind
@@ -58,8 +58,12 @@ class PublishTaskHandler:
         cancel.raise_if_cancelled()
         if task.kind is not TaskKind.PUBLISH_ARTIFACT or len(task.requires) != 1 or len(task.produces) != 1:
             _raise_execution("Publish handler requires exactly one input and output")
-        source: Artifact = artifacts.require_ready(task.requires[0])
         output: Artifact = artifacts.require_output(task.produces[0])
+        if output.kind is ArtifactKind.DISPLAYED_PL and artifacts.is_absent(task.requires[0]):
+            cancel.raise_if_cancelled()
+            progress.emit(WorkerNotification(WorkerNotificationKind.PROGRESS, task.task_id, 100))
+            return TaskResult(task.task_id, (), (output.artifact_id,))
+        source: Artifact = artifacts.require_ready(task.requires[0])
         if source.path is None or output.planned_destination is None or source.kind is not output.kind:
             _raise_execution("Publish task source and target contracts do not match")
         source_group: SourceGroup | None = self._source_groups.get(task.group_id)

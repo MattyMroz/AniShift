@@ -69,7 +69,7 @@ def test_compose_without_material_is_skipped(tmp_path: Path) -> None:
     plan = CompositionPlan(
         source_path=tmp_path / "Episode.mkv",
         variant=OutputVariant.MERGE,
-        destination_dir=tmp_path / "output",
+        destination=tmp_path / "output" / "Episode.pl.mkv",
     )
 
     result = _service(_FakeRunner(), tmp_path).compose(plan)
@@ -87,7 +87,7 @@ def test_failed_merge_keeps_inputs_and_source(tmp_path: Path) -> None:
         source_path=source,
         variant=OutputVariant.MERGE,
         narration_audio=lector,
-        destination_dir=tmp_path / "output",
+        destination=tmp_path / "output" / "Episode.pl.mkv",
     )
 
     with pytest.raises(CompositionValidationError):
@@ -124,7 +124,7 @@ def test_players_does_not_require_external_tools(monkeypatch: pytest.MonkeyPatch
     plan = CompositionPlan(
         source_path=source,
         variant=OutputVariant.PLAYERS,
-        destination_dir=tmp_path,
+        destination=tmp_path / "Episode.pl.mkv",
     )
 
     monkeypatch.setattr(

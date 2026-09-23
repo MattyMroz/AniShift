@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Final, Literal, cast
 
 from anishift.errors import ErrorCode, ErrorContext, FatalError
+from anishift.paths import external_dir
 
 __all__ = [
     "ArchiveFormat",
@@ -28,7 +29,7 @@ ResourceKind = Literal["binary"]
 SourceType = Literal["url"]
 """How a resource is fetched (a future ``hf``/``licensed`` adds a literal here)."""
 
-ArchiveFormat = Literal["zip"]
+ArchiveFormat = Literal["zip", "raw", "7z", "nsis"]
 """Supported archive container formats."""
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -36,7 +37,7 @@ ArchiveFormat = Literal["zip"]
 _RESOURCE_KINDS: Final[frozenset[str]] = frozenset(("binary",))
 """Accepted values of the manifest ``kind`` field."""
 
-_ARCHIVE_FORMATS: Final[frozenset[str]] = frozenset(("zip",))
+_ARCHIVE_FORMATS: Final[frozenset[str]] = frozenset(("zip", "raw", "7z", "nsis"))
 """Accepted values of the manifest ``archive`` field."""
 
 _SHA256_HEX_LENGTH: Final[int] = 64
@@ -80,14 +81,9 @@ class Resource:
     members: tuple[Member, ...]
 
 
-def _repo_root() -> Path:
-    """Return the repository root (ancestor holding ``pyproject.toml``)."""
-    return Path(__file__).resolve().parents[2]
-
-
 def manifest_path() -> Path:
     """Return ``<repo>/external/bin_hashes.json``."""
-    return _repo_root() / "external" / "bin_hashes.json"
+    return external_dir() / "bin_hashes.json"
 
 
 def _fail(message: str) -> ManifestError:

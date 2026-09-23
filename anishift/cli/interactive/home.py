@@ -24,7 +24,7 @@ __all__ = [
 class HomeAction(StrEnum):
     """Identify an action selected from Home."""
 
-    AUTO = "auto"
+    STATE = "state"
     MANUAL = "manual"
     SETTINGS = "settings"
     EXIT = "exit"

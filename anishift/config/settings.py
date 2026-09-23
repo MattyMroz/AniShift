@@ -100,6 +100,11 @@ class Settings(BaseSettings):
         validation_alias=PALANTIR_TOKEN_COMPAT_ENV_VAR,
     )
 
+    # Torrents
+    qbittorrent_url: str = Field(default="http://127.0.0.1:8080", description="qBittorrent Web UI address")
+    qbittorrent_username: str = Field(default="", description="qBittorrent Web UI user name", repr=False)
+    qbittorrent_password: str = Field(default="", description="qBittorrent Web UI password", repr=False)
+
     # Workspace
     workspace_root: str = Field(default="", description="Workspace root override", repr=False)
 

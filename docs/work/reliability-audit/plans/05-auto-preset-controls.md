@@ -1,69 +1,106 @@
 ---
 kind: plan
-status: ready
-baseline: work/reliability/02-terminal-polish
+status: pending-human
+baseline: main 6eef7d1 (kod jak 369efcd)
 created: 2026-09-05
+branch: work/reliability/05-auto-preset-controls
 ---
 
 # Plan: komplet opcji domyślnego Auto w panelu
 
+Implementacja i poprawki review ukończone w `4dc99dc`, scalone lokalnie do
+`work/planning/automation-and-subtitles` w głównej kopii AniShift.
+Pełny suite: 3089 passed, 13 skipped; smoke: 30 passed. Czeka odbiór panelu.
+[Finalny wynik i ograniczenia](../outcomes/05-auto-preset-controls.md).
+Nie opublikowano na GitHub; pozostały pakiet planowania zachowano lokalnie.
+
+Właściciel zatwierdził wykonanie przez Fable 5.1 bez dalszych agentów oraz
+review prowadzącego. Rozszerzył odbiór o smoke MKV PL/EN: wszystkie opcje Auto,
+produkty i istotne interakcje, rzeczywiste narzędzia medialne, deterministyczne
+granice tłumaczenia/TTS. Macierz ma rozróżniać wykonane ścieżki, odmowy i skipy;
+nie jest deklaracją przetestowania live dostawców ani prywatnych odcinków.
+
 ## Rezultat
 
-Użytkownik ustawia istniejące polityki Auto bez ręcznej edycji `presets.json`.
-Każda zmiana zachowuje pozostałe pola presetu, a dozwolone wartości pochodzą
-z istniejącego katalogu `SettingSpec`, nie z drugiej ręcznej listy.
+Użytkownik ustawia wszystkie polityki domyślnego presetu Auto bez ręcznej
+edycji `presets.json`. Każda zmiana zachowuje pozostałe pola, dozwolone
+wartości pochodzą z katalogu `SettingSpec`, reset root przywraca cały preset.
+Ten etap jest A00 masterplanu automatyzacji; Plan 01 (watch) zależy od niego.
 
 ## Stan i granice
 
-Iteracja terminala udostępnia wszystkie siedem produktów. Pozostałe siedem
-`AUTO_PRESET` opisuje `anishift/config/field_catalog.py:_workflow_specs`, lecz
-`SettingsController` nie renderuje ich jako ustawień domyślnego przebiegu.
-Nie są polami `UserSettings`; nie wolno zapisywać ich przez `update_setting()`.
-Osiągalność `GLOBAL` i `ENGINE_PROFILE` nie dowodzi kompletności Auto.
+Panel edytuje tylko `requested_products` przez pełny `AutoPresetDraft`
+w `SettingsController._save_output`. Pozostałe siedem speców `AUTO_PRESET`
+z `field_catalog.py:_workflow_specs` nie jest renderowane. `setting_is_active`
+z `field_access.py` ocenia `depends_on` na `UserSettings` i rzuca `ValueError`
+dla identyfikatorów presetu. `_reset_scope` dla root woła `reset_settings()`
+i `_restore_default_products()`, czyli po dodaniu pól nie przywracałby
+całego presetu. Test osiągalności w `test_interactive_settings_layout.py`
+liczy tylko spece persystowane.
 
-Zakres: aktualny domyślny preset. Poza nim: zarządzanie wieloma presetami, zmiana
-schema, wybór konkretnych ścieżek grupy, nowe silniki, watcher i audiobook.
-Ten plan jest gotowy do następnej iteracji po ocenie terminala, nie opisuje
-zrealizowanych opcji.
+Zakres: aktualny domyślny preset. Poza nim: wiele presetów, zmiana schema,
+nowe silniki, watcher, audiobook. Dwa znane failing testy (prywatny styl
+`shadow-slave`) pozostają nietknięte.
 
 ## Pola i zależności
 
-| Pole | Odbiorca | Warunek |
+| Pole | Edytor | Warunek |
 | --- | --- | --- |
-| `subtitle_source_policy` | Wybór źródła napisów | Tylko wartości katalogu dla `RunMode.AUTO` |
-| `translation_action` | Automatyczne język / wymuszenie / zachowanie źródła | Nie ukrywać skutku dla polskich produktów |
-| `source_subtitle_language` | Korekta języka źródła | Pusta wartość usuwa override, nie jest pustym kodem |
-| `subtitle_output_format` | Preserve / ASS / SRT | Zachować obecną walidację formatu |
-| `burn_subtitle_product` | MP4 | Pokazywać tylko dla żądanego MP4 |
-| `mkv_tracks` | MKV | Wielokrotny wybór z katalogu; obecna semantyka pustego zbioru |
-| `mp4_audio_source` | MP4 | Pokazywać tylko dla żądanego MP4 |
+| `subtitle_source_policy` | select z `allowed_values` dla `RunMode.AUTO` | bez `external`/`ready_polish` |
+| `translation_action` | select | skutek dla produktów PL widoczny w opisie |
+| `source_subtitle_language` | text | pusta wartość = brak override |
+| `subtitle_output_format` | select | obecna walidacja formatu |
+| `burn_subtitle_product` | select | tylko gdy MP4 w produktach |
+| `mkv_tracks` | multiselect | tylko gdy MKV; pusty zbiór zachowuje obecną semantykę |
+| `mp4_audio_source` | select | tylko gdy MP4 |
+
+## Design
+
+- Ocena zależności: `field_access.py` dostaje mały evaluator warunku
+  z jawnym argumentem warunku i odczytem wartości używane przez istniejące `setting_is_active`
+  (preferencje) i nowe `preset_setting_is_active(spec, preset)` (wartości
+  z wąskiego adaptera odczytującego pola `AutoPreset` i `preset.products`). Bez drugiej listy pól.
+- Zapis: jeden helper `_save_preset_field(setting_id, value)` buduje pełny
+  `AutoPresetDraft` z bieżącego presetu i woła `save_preset`; `_save_output`
+  używa tego samego helpera. Zmiana produktów nadal zeruje zależne pola.
+- Reset root: zachować dotychczasowy kontrakt resetu preferencji; preset przywracać z
+  `default_preset_file()` pod bieżącym `preset_id`; reset zakresu „Wynik”
+  przywraca cały preset, nie same produkty. Ponieważ preferencje i preset są
+  w osobnych plikach, test częściowej awarii resetu ma pokazać rzeczywisty stan
+  i możliwość ponowienia; nie obiecywać atomowości dwóch niezależnych zapisów.
+- Sekcja „Auto” w istniejącym kontrolerze, obok produktów; bez nowego
+  routera i bez nowej akcji Home.
 
 ## Kolejność
 
-1. Przeczytać root, `anishift/cli`, `application`, `config` i `tests` AGENTS,
-   wynik Planu 04 oraz `field_catalog`, `AutoPreset`, `AutoPresetDraft`,
-   `AppService.save_preset`, `SettingsController._save_output`.
-2. Utrwalić red tests: read→edit→save→fresh load każdego pola; zmiana jednego
-   nie narusza pozostałych siedmiu ani wybranego modelu/globalnych preferencji.
-3. Dodać sekcję domyślnego Auto w istniejącym kontrolerze. Użyć obecnych edytorów
-   select/multiselect/text i `save_preset`, bez nowego uniwersalnego routera.
-4. Oprzeć odczyt/walidację na kontekście AUTO. Pokazywać tylko aktywne zależności
-   produktów, zachować jawne resetowanie całego właściwego zakresu.
-5. Testy błędnego zapisu: poprzedni plik i stan pozostają spójne; ponowienie oraz
-   świadome anulowanie nie wymagają restartu. Brak sekretów w podglądzie/diagnostyce.
-6. Sprawdzić keyboard, narrow window, scroll i działający plan Auto z każdym
-   wyborem przez fasadę. Bez live API do sprawdzania samego formularza.
-7. Pełne bramki repo, niezależne review, tematyczny commit i odbiór człowieka.
+1. Przeczytać root, `anishift/cli`, `application`, `config` i `tests`
+   AGENTS, wynik Planu 04, `field_catalog`, `AutoPreset`, `AutoPresetDraft`,
+   `save_preset`, `_save_output`, `_reset_scope`.
+2. Red tests: read→edit→save→fresh load każdego pola; zmiana jednego nie
+   narusza pozostałych ani preferencji; zależne pola ukryte bez MP4/MKV;
+   reset root przywraca cały preset.
+3. Ocena zależności na presecie, potem sekcja w kontrolerze z istniejącymi
+   edytorami select/multiselect/text.
+4. Testy błędnego zapisu: poprzedni plik i stan spójne; ponowienie i
+   anulowanie bez restartu; brak sekretów w podglądzie.
+5. Aktualizacja testu osiągalności o spece `AUTO_PRESET`; keyboard, narrow
+   window, scroll; plan Auto przez fasadę dla każdej kombinacji, bez live API.
+6. Pełne bramki repo, review, commit tematyczny ze scope z listy hooka,
+   odbiór człowieka.
 
 ## Warunki wyjścia
 
-- Wszystkie osiem opcji `AUTO_PRESET` ma prawdziwą edycję w panelu lub zależne
-  ukrycie zgodne z katalogiem; nie tylko etykietę z aktualną wartością.
+- Osiem opcji `AUTO_PRESET` ma prawdziwą edycję albo zależne ukrycie zgodne
+  z katalogiem.
 - Reset, anulowanie, brak zmiany, błąd dysku i reload mają regresje.
-- Nie naruszono tożsamości presetu, pozostałych preferencji ani materiałów źródłowych.
-- Użytkownik wybiera format/źródło i otrzymuje zgodny plan; niemożliwa kombinacja
-  pokazuje konkretną odmowę zamiast awarii w trakcie przetwarzania.
-- Wygląd i nazwy potwierdzono w scenariuszu ręcznym; testy nie zastępują tego odbioru.
+- Tożsamość presetu, pozostałe preferencje i źródła nienaruszone.
+- Niemożliwa kombinacja daje konkretną odmowę przed przetwarzaniem.
+- Wygląd i nazwy potwierdzone ręcznie; testy nie zastępują tego odbioru.
 
-Materialny brak backendu, konieczność migracji albo zmiana semantyki istniejącego
-pola oznacza przeplanowanie przed implementacją, nie ciche rozszerzenie zakresu.
+Materialny brak backendu, migracja albo zmiana semantyki istniejącego pola
+oznacza przeplanowanie, nie ciche rozszerzenie zakresu.
+
+Adapter zależności nie używa bezpośrednio `_encode_preset`: serializer ma
+zagnieżdżone `products`, a warunki katalogu używają płaskich identyfikatorów.
+Test rozróżnia to jawnie. To rozszerzenie wartości presetu, nie przebudowa
+ogólnego systemu ustawień ani publicznego formatu JSON.

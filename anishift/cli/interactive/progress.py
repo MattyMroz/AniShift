@@ -20,15 +20,17 @@ from anishift.application import (
     ExecutionPlan,
     InspectedSourceGroup,
     InspectedWorkspace,
+    PlanPreview,
     RunEvent,
     RunEventKind,
+    RunProgressSnapshot,
     TaskKind,
     TaskState,
 )
 from anishift.cli.interactive.mascot import MascotController
 from anishift.cli.interactive.palette import hex_color, rim_color
 
-__all__ = ["RichRunProgress"]
+__all__ = ["ObservedProgressTimer", "RichRunProgress", "render_material_progress"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -56,6 +58,7 @@ _STAGE_RANK: Final[dict[str, int]] = {
     "tts": 2,
     "audio": 3,
     "composing": 4,
+    "cover": 4,
     "publishing": 5,
     "terminal": 6,
 }
@@ -73,6 +76,7 @@ _DETERMINATE_STAGE: Final[dict[TaskKind, str]] = {
     TaskKind.MIX_NARRATION: "audio",
     TaskKind.COMPOSE_MKV: "composing",
     TaskKind.COMPOSE_MP4: "composing",
+    TaskKind.COMPOSE_COVER: "cover",
     TaskKind.PUBLISH_ARTIFACT: "publishing",
 }
 """Task kinds owning measurable public stages."""
@@ -83,6 +87,7 @@ _ACTIVE_LABEL: Final[dict[str, str]] = {
     "tts": "TTS",
     "audio": "Audio",
     "composing": "Render",
+    "cover": "Okładka",
     "publishing": "Save",
 }
 """Labels shown while measurable stages are active."""
@@ -112,13 +117,14 @@ class _FileState:
     description: str
     stage_rank: int = 0
     progress_by_task: dict[str, int] = field(default_factory=dict)
+    unmeasured_tasks: set[str] = field(default_factory=set)
     active_tasks: list[str] = field(default_factory=list)
     completed: int = 0
     terminal: bool = False
     style: str | None = None
     started_at: float | None = None
     stopped_at: float | None = None
-    determinate: bool = True
+    determinate: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,8 +134,35 @@ class _RenderRow:
     description: str
     completed: int
     style: str | None
-    elapsed_seconds: float
-    determinate: bool
+    elapsed_seconds: float | None
+
+
+@dataclass(slots=True)
+class ObservedProgressTimer:
+    """Measure panel-observed activity, excluding pauses and unobserved history."""
+
+    _started_at: float | None = None
+    _accumulated: float | None = None
+    fraction: float | None = None
+    generation: str | None = None
+
+    def observe(self, *, active: bool, fraction: float | None = None) -> None:
+        """Start or freeze the clock at an observed activity transition."""
+        now: float = time.monotonic()
+        if fraction is not None:
+            self.fraction = fraction
+        if active and self._started_at is None:
+            self._started_at = now
+            self._accumulated = self._accumulated or 0.0
+        elif not active and self._started_at is not None:
+            self._accumulated = (self._accumulated or 0.0) + max(now - self._started_at, 0.0)
+            self._started_at = None
+
+    def elapsed(self) -> float | None:
+        """Return observed elapsed activity, or no measurement before the first start."""
+        if self._started_at is None:
+            return self._accumulated
+        return (self._accumulated or 0.0) + max(time.monotonic() - self._started_at, 0.0)
 
 
 class _PreparedRun(Protocol):
@@ -141,7 +174,7 @@ class _PreparedRun(Protocol):
         ...
 
     @property
-    def plan(self) -> ExecutionPlan:
+    def plan(self) -> ExecutionPlan | PlanPreview:
         """Return the accepted execution plan."""
         ...
 
@@ -159,12 +192,21 @@ class RichRunProgress:
     ) -> None:
         """Create naturally ordered file rows without taking over the terminal."""
         labels: dict[str, str] = {group.group_id: _source_label(group) for group in prepared.workspace.groups}
+        self._initialize(labels, prepared.plan, invalidate, on_run_started, mascot)
+
+    def _initialize(
+        self,
+        labels: dict[str, str],
+        plan: ExecutionPlan | PlanPreview,
+        invalidate: Callable[[], None],
+        on_run_started: Callable[[str], None] | None,
+        mascot: MascotController | None,
+    ) -> None:
         self._files: dict[str, _FileState] = {
-            group.group_id: _new_file_state(labels.get(group.group_id, group.group_id))
-            for group in prepared.plan.groups
+            group.group_id: _new_file_state(labels.get(group.group_id) or "Materiał") for group in plan.groups
         }
-        self._task_kinds: dict[str, TaskKind] = {task.task_id: task.kind for task in prepared.plan.tasks}
-        self._stage_tasks: dict[tuple[str, str], tuple[str, ...]] = _index_stage_tasks(prepared)
+        self._task_kinds: dict[str, TaskKind] = {task.task_id: task.kind for task in plan.tasks}
+        self._stage_tasks: dict[tuple[str, str], tuple[str, ...]] = _index_stage_tasks(plan)
         self._invalidate: Callable[[], None] = invalidate
         self._on_run_started: Callable[[str], None] | None = on_run_started
         self._mascot: MascotController | None = mascot
@@ -172,6 +214,22 @@ class RichRunProgress:
         self._run_id: str | None = None
         self._last_sequence: int = 0
         self._open: bool = False
+        self._replaying: bool = False
+
+    @classmethod
+    def from_snapshot(cls, snapshot: RunProgressSnapshot, invalidate: Callable[[], None]) -> RichRunProgress:
+        """Restore the same progress bars after a panel reconnects to the owner."""
+        progress: RichRunProgress = cls.__new__(cls)
+        labels: dict[str, str] = {group_id: label for group_id, label in snapshot.labels.items() if label != group_id}
+        progress._initialize(labels, snapshot.preview, invalidate, None, None)
+        for state in progress._files.values():
+            state.determinate = False
+        progress._open = True
+        progress._replaying = True
+        for event in snapshot.events:
+            progress.emit(event)
+        progress._replaying = False
+        return progress
 
     @property
     def row_count(self) -> int:
@@ -232,7 +290,15 @@ class RichRunProgress:
                     return index
             return max(len(self._files) - 1, 0)
 
-    def render(self, columns: int, *, offset: int = 0, limit: int | None = None) -> Text:
+    def render(
+        self,
+        columns: int,
+        *,
+        offset: int = 0,
+        limit: int | None = None,
+        include_completed: bool = True,
+        status: str | None = None,
+    ) -> Text:
         """Render one width-fitted window of the queue through shared Rich bars."""
         now: float = time.monotonic()
         start: int = min(max(offset, 0), max(len(self._files) - 1, 0))
@@ -240,15 +306,46 @@ class RichRunProgress:
         with self._lock:
             rows: tuple[_RenderRow, ...] = tuple(
                 _RenderRow(
-                    state.description,
+                    state.description if status is None else _description(state.label, status),
                     state.completed,
                     state.style,
                     _elapsed(state, now),
-                    state.determinate,
                 )
                 for state in islice(self._files.values(), start, end)
+                if include_completed or not (state.terminal and state.completed == _COMPLETE)
             )
         return _render_rows(rows, columns)
+
+    def render_group(self, group_id: str, columns: int, *, status: str | None = None) -> Text:
+        """Render one durable group identity through the existing stage bars."""
+        with self._lock:
+            identifiers: tuple[str, ...] = tuple(self._files)
+        if group_id not in identifiers:
+            return Text()
+        return self.render(columns, offset=identifiers.index(group_id), limit=1, status=status)
+
+    def observe_activity(self, *, active: bool) -> None:
+        """Freeze unavailable observations and resume only measured active rows."""
+        with self._lock:
+            for state in self._files.values():
+                if state.terminal or state.started_at is None:
+                    continue
+                if active and state.determinate:
+                    _start_timer(state)
+                elif not active:
+                    _stop_timer(state)
+
+    def group_active(self, group_id: str) -> bool:
+        """Return whether events prove this material started and has not finished."""
+        with self._lock:
+            state: _FileState | None = self._files.get(group_id)
+            return state is not None and state.started_at is not None and not state.terminal
+
+    def group_pending(self, group_id: str) -> bool:
+        """Return whether the material still awaits its first task event."""
+        with self._lock:
+            state: _FileState | None = self._files.get(group_id)
+            return state is not None and state.started_at is None and not state.terminal
 
     def _apply(self, event: RunEvent) -> bool:
         changed: bool = False
@@ -257,7 +354,12 @@ class RichRunProgress:
         elif event.group_id is not None:
             state: _FileState | None = self._files.get(event.group_id)
             if state is not None and not state.terminal:
-                _start_timer(state)
+                if event.kind in {RunEventKind.TASK_STARTED, RunEventKind.TASK_PROGRESS, RunEventKind.TASK_RETRY} and (
+                    state.started_at is None
+                    or event.kind is RunEventKind.TASK_STARTED
+                    or event.progress_percent is not None
+                ):
+                    _start_timer(state)
                 match event.kind:
                     case RunEventKind.TASK_STARTED:
                         changed = self._start_task(state, event)
@@ -279,13 +381,17 @@ class RichRunProgress:
             return False
         if event.task_id not in state.active_tasks:
             state.active_tasks.append(event.task_id)
+            if not self._replaying:
+                state.progress_by_task.setdefault(event.task_id, 0)
         return self._show_active_task(state)
 
     def _show_active_task(self, state: _FileState) -> bool:
         """Keep background publication from hiding active media work."""
         candidates: list[str] = [task_id for task_id in state.active_tasks if _stage_for(self._task_kinds.get(task_id))]
         if not candidates:
-            return False
+            state.description = _description(state.label, "Przygotowanie")
+            state.determinate = False
+            return True
         primary: list[str] = [
             task_id for task_id in candidates if self._task_kinds[task_id] is not TaskKind.PUBLISH_ARTIFACT
         ]
@@ -300,7 +406,9 @@ class RichRunProgress:
         state.completed = state.progress_by_task.get(selected, 0)
         state.description = _description(state.label, _ACTIVE_LABEL[stage])
         state.style = None
-        state.determinate = selected in state.progress_by_task
+        state.determinate = selected in state.progress_by_task and selected not in state.unmeasured_tasks
+        if selected in state.unmeasured_tasks:
+            _stop_timer(state)
         return True
 
     def _update_task(self, group_id: str, state: _FileState, event: RunEvent) -> bool:
@@ -308,7 +416,9 @@ class RichRunProgress:
             return False
         kind: TaskKind | None = self._task_kinds.get(event.task_id)
         if event.progress_percent is None:
+            state.unmeasured_tasks.add(event.task_id)
             return self._show_activity(state, kind, event.message)
+        state.unmeasured_tasks.discard(event.task_id)
         if kind in {TaskKind.TRANSCODE_AUDIO, TaskKind.MIX_NARRATION} and event.message in _AUDIO_LABEL:
             state.progress_by_task[event.task_id] = event.progress_percent
             return self._show_audio_phase(state, event.message, event.progress_percent)
@@ -340,6 +450,7 @@ class RichRunProgress:
             return False
         state.determinate = False
         state.description = _description(state.label, _AUDIO_LABEL.get(message or "", _ACTIVE_LABEL[stage]))
+        _stop_timer(state)
         return True
 
     def _retry_task(self, state: _FileState, event: RunEvent) -> bool:
@@ -349,8 +460,10 @@ class RichRunProgress:
         }:
             return False
         state.description = _description(state.label, "Retry")
+        state.unmeasured_tasks.add(event.task_id)
         state.style = "warning"
         state.determinate = False
+        _stop_timer(state)
         return True
 
     def _finish_task(self, group_id: str, state: _FileState, event: RunEvent) -> bool:
@@ -359,6 +472,7 @@ class RichRunProgress:
         if event.task_id is None or event.state is not TaskState.SUCCEEDED:
             return False
         state.progress_by_task[event.task_id] = _COMPLETE
+        state.unmeasured_tasks.discard(event.task_id)
         if state.active_tasks:
             return self._show_active_task(state)
         stage: str | None = _stage_for(self._task_kinds.get(event.task_id))
@@ -378,7 +492,7 @@ class RichRunProgress:
             return False
         state.stage_rank = _STAGE_RANK["audio"]
         state.completed = percent
-        state.determinate = percent > 0
+        state.determinate = True
         state.description = _description(state.label, _AUDIO_LABEL[phase])
         state.style = None
         return True
@@ -440,7 +554,20 @@ class RichRunProgress:
 
 def _new_file_state(label: str) -> _FileState:
     """Create the initial extracting row for one source label."""
-    return _FileState(label=label, description=_description(label, _ACTIVE_LABEL["extracting"]))
+    return _FileState(label=label, description=_description(label, _ACTIVE_LABEL["extracting"]), determinate=True)
+
+
+def render_material_progress(
+    name: str, stage: str, fraction: float | None, columns: int, *, elapsed_seconds: float | None = None
+) -> Text:
+    """Render a transfer using the full processing row geometry and measured elapsed time."""
+    row: _RenderRow = _RenderRow(
+        _description(name, stage),
+        0 if fraction is None else round(min(max(fraction, 0.0), 1.0) * _COMPLETE),
+        None,
+        elapsed_seconds,
+    )
+    return _render_rows((row,), columns)
 
 
 def _render_rows(rows: tuple[_RenderRow, ...], columns: int) -> Text:
@@ -474,7 +601,7 @@ def _render_rows(rows: tuple[_RenderRow, ...], columns: int) -> Text:
 
 
 def _append_row(result: Text, row: _RenderRow, description_width: int, bar_width: int, details: str) -> None:
-    """Append measured progress or an honest activity indicator."""
+    """Append the last verified progress, defaulting to an empty numeric bar."""
     style: str = row.style or "brand_accent"
     description: str = set_cell_size(_short_filename(row.description, description_width), description_width)
     result.append(description, style=style)
@@ -482,17 +609,17 @@ def _append_row(result: Text, row: _RenderRow, description_width: int, bar_width
         result.append(" ")
     colors: tuple[str, ...] = _bar_colors(bar_width)
     filled: int = min(bar_width, max(0, row.completed) * bar_width // _COMPLETE)
-    cursor: int = int(row.elapsed_seconds * 8) % max(bar_width, 1)
     for index, color in enumerate(colors):
-        active: bool = index < filled if row.determinate else index == cursor
+        active: bool = index < filled
         result.append("█" if active else "░", style=(row.style or color) if active else "progress_track")
     result.append(details, style=style)
 
 
 def _row_details(row: _RenderRow, *, show_elapsed: bool) -> str:
-    """Keep measured percentage or activity visible before the optional clock."""
-    percent: str = f" | {row.completed:>3d}%" if row.determinate else " |  -- "
-    return f"{percent} | {_format_elapsed(row.elapsed_seconds)}" if show_elapsed else percent
+    """Display numeric fields with zero fallback for unavailable measurements."""
+    percent: str = f" | {row.completed:>3d}%"
+    elapsed: str = _format_elapsed(row.elapsed_seconds or 0.0)
+    return f"{percent} | {elapsed}" if show_elapsed else percent
 
 
 @lru_cache(maxsize=_MAX_BAR_COLUMNS)
@@ -511,9 +638,12 @@ def _format_elapsed(seconds: float) -> str:
 
 
 def _start_timer(state: _FileState) -> None:
-    """Start one row timer once."""
+    """Start or resume one row clock without counting frozen intervals."""
     if state.started_at is None:
         state.started_at = time.monotonic()
+    elif state.stopped_at is not None:
+        state.started_at += max(time.monotonic() - state.stopped_at, 0.0)
+        state.stopped_at = None
 
 
 def _stop_timer(state: _FileState) -> None:
@@ -521,13 +651,14 @@ def _stop_timer(state: _FileState) -> None:
     stopped_at: float = time.monotonic()
     if state.started_at is None:
         state.started_at = stopped_at
-    state.stopped_at = stopped_at
+    if state.stopped_at is None:
+        state.stopped_at = stopped_at
 
 
-def _elapsed(state: _FileState, now: float) -> float:
+def _elapsed(state: _FileState, now: float) -> float | None:
     """Return the non-negative elapsed time of one row."""
     if state.started_at is None:
-        return 0
+        return 0 if state.determinate else None
     return max((state.stopped_at or now) - state.started_at, 0)
 
 
@@ -538,10 +669,10 @@ def _stage_for(kind: TaskKind | None) -> str | None:
     return _DETERMINATE_STAGE.get(kind)
 
 
-def _index_stage_tasks(prepared: _PreparedRun) -> dict[tuple[str, str], tuple[str, ...]]:
+def _index_stage_tasks(plan: ExecutionPlan | PlanPreview) -> dict[tuple[str, str], tuple[str, ...]]:
     """Index measurable task IDs by source group and public stage."""
     grouped: dict[tuple[str, str], list[str]] = {}
-    for task in prepared.plan.tasks:
+    for task in plan.tasks:
         stage: str | None = _stage_for(task.kind)
         if stage is not None:
             grouped.setdefault((task.group_id, stage), []).append(task.task_id)
@@ -565,6 +696,8 @@ def _source_label(group: InspectedSourceGroup) -> str:
         ArtifactKind.VIDEO_MKV,
         ArtifactKind.VIDEO_MP4,
         ArtifactKind.STANDALONE_TEXT,
+        ArtifactKind.SOURCE_AUDIO,
+        ArtifactKind.SOURCE_SUBTITLES,
     )
     for kind in preferred_kinds:
         path: Path | None = next(

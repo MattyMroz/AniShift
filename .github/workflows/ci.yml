@@ -85,10 +85,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # AniShift ships to Windows, so the suite has to pass there, not only on the
-        # cheap runner: paths, file locks, the console code page and the ctypes
-        # process probe only answer for real on the shipping platform.
-        os: [ubuntu-latest, windows-latest]
+        # AniShift ships only to Windows for now: paths, file locks, the console code
+        # page, the private torrent client and the Recycle Bin answer only there.
+        os: [windows-latest]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -101,4 +100,12 @@ jobs:
       - run: uv sync --frozen --group dev
       - name: Entry point smoke
         run: uv run anishift --help
+      # Media tests drive the real bundled tools that `anishift setup` downloads and verifies.
+      - name: Cache bundled binaries
+        uses: actions/cache@v4
+        with:
+          path: external/bin
+          key: external-bin-${{ runner.os }}-${{ hashFiles('external/bin_hashes.json') }}
+      - name: Install bundled binaries
+        run: uv run anishift setup
       - run: uv run pytest

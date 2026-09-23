@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
+
+from anishift.application.workflows import WorkflowTarget
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -19,6 +21,13 @@ class RunMode(StrEnum):
     MANUAL = "manual"
 
 
+class RequestOrigin(StrEnum):
+    """Precedence class of one processing request."""
+
+    USER = "user"
+    BACKGROUND = "background"
+
+
 class ProductKind(StrEnum):
     """Durable products that a user can request."""
 
@@ -26,9 +35,11 @@ class ProductKind(StrEnum):
     FULL_PL = "full_pl"
     SPOKEN_PL = "spoken_pl"
     DISPLAYED_PL = "displayed_pl"
+    TRANSLATED_TEXT = "translated_text"
     NARRATION_AUDIO = "narration_audio"
     MKV = "mkv"
     MP4 = "mp4"
+    COVER_MP4 = "cover_mp4"
 
 
 class SubtitleSourcePolicy(StrEnum):
@@ -91,6 +102,33 @@ class TranslationAction(StrEnum):
     DO_NOT_TRANSLATE = "do_not_translate"
 
 
+class NarrationTimeline(StrEnum):
+    """How the audiobook target places narration in time."""
+
+    CONTINUOUS = "continuous"
+    SOURCE_TIMES = "source_times"
+
+
+# ── Constants ──────────────────────────────────────────────────────────────
+
+TRANSLATE_PRODUCTS: Final[frozenset[ProductKind]] = frozenset(
+    {ProductKind.FULL_PL, ProductKind.TRANSLATED_TEXT},
+)
+"""Documents a translate place can be asked for, none of which needs a picture or a voice."""
+
+AUDIOBOOK_PRODUCTS: Final[frozenset[ProductKind]] = frozenset({ProductKind.NARRATION_AUDIO})
+"""The single product an audiobook place writes: the recording of one document."""
+
+COVER_PRODUCTS: Final[frozenset[ProductKind]] = frozenset({ProductKind.COVER_MP4})
+"""The single product a cover place writes: one film showing a still picture for the whole recording."""
+
+VIDEO_PRODUCTS: Final[frozenset[ProductKind]] = frozenset(ProductKind) - {
+    ProductKind.TRANSLATED_TEXT,
+    ProductKind.COVER_MP4,
+}
+"""Products the video preset offers, excluding the documents and stills only a text or cover place writes."""
+
+
 @dataclass(frozen=True, slots=True)
 class ProductIntent:
     """Independent durable product and container-content decisions."""
@@ -119,6 +157,18 @@ class ProductIntent:
 
 
 @dataclass(frozen=True, slots=True)
+class RebuildRequest:
+    """Products a request must produce again instead of reusing a ready artifact."""
+
+    products: frozenset[ProductKind]
+
+    def __post_init__(self) -> None:
+        if not self.products:
+            msg = "A rebuild request must name at least one product"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
 class GroupIntent:
     """Complete automatic or manual intent for one source group."""
 
@@ -130,11 +180,14 @@ class GroupIntent:
     preferred_video_artifact_id: str | None = None
     selected_subtitle_artifact_id: str | None = None
     selected_audio_artifact_id: str | None = None
+    selected_image_artifact_id: str | None = None
     selected_audio_track_id: int | None = None
     selected_subtitle_track_id: int | None = None
     source_subtitle_language: str | None = None
     external_audio_role: ExternalAudioRole | None = None
     subtitle_output_format: SubtitleOutputFormat = SubtitleOutputFormat.PRESERVE
+    narration_timeline: NarrationTimeline = NarrationTimeline.CONTINUOUS
+    target: WorkflowTarget | None = None
 
     def __post_init__(self) -> None:
         if not self.group_id.strip():
@@ -143,6 +196,7 @@ class GroupIntent:
         _validate_optional_id(self.preferred_video_artifact_id)
         _validate_optional_id(self.selected_subtitle_artifact_id)
         _validate_optional_id(self.selected_audio_artifact_id)
+        _validate_optional_id(self.selected_image_artifact_id)
         _validate_optional_track_id(self.selected_audio_track_id)
         _validate_optional_track_id(self.selected_subtitle_track_id)
         if self.selected_subtitle_artifact_id and self.selected_subtitle_track_id is not None:
@@ -165,6 +219,7 @@ class GroupIntent:
                 self.preferred_video_artifact_id,
                 self.selected_subtitle_artifact_id,
                 self.selected_audio_artifact_id,
+                self.selected_image_artifact_id,
                 self.selected_audio_track_id,
                 self.selected_subtitle_track_id,
                 self.external_audio_role,
@@ -204,15 +259,16 @@ def apply_preset(preset: AutoPreset, groups: Sequence[SourceGroup]) -> tuple[Gro
         raise ValueError(msg)
     return tuple(
         GroupIntent(
-            group_id=group_id,
+            group_id=group.group_id,
             mode=RunMode.AUTO,
             products=preset.products,
             subtitle_source_policy=preset.subtitle_source_policy,
             translation_action=preset.translation_action,
             source_subtitle_language=preset.source_subtitle_language,
             subtitle_output_format=preset.subtitle_output_format,
+            target=group.route.target,
         )
-        for group_id in group_ids
+        for group in groups
     )
 
 

@@ -6,12 +6,16 @@ import shutil
 import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
+from socket import create_connection
 from typing import Any, Final
+from urllib.parse import SplitResult, urlsplit
 
+from anishift.config.env_file import env_path
 from anishift.config.settings import Settings
 from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_root
 from anishift.errors import AniShiftError
-from anishift.platform.binaries import Binary, is_windows, resolve_binary
+from anishift.platform.binaries import Binary, external_bin_root, is_windows, resolve_binary
+from anishift.platform.qbittorrent_config import installed_executable
 from anishift.utils.logger import get_logger
 
 __all__ = [
@@ -41,6 +45,21 @@ _API_KEYS: Final[dict[str, str]] = {
     "openai_compatible_api_key": "OpenAI-compatible",
 }
 """API keys surfaced by the doctor: Settings attribute name -> display label."""
+
+_WEB_UI_HOST: Final[str] = "127.0.0.1"
+"""Host probed when the configured Web UI address names none."""
+
+_WEB_UI_PORT: Final[int] = 8080
+"""Port probed when the configured Web UI address names none."""
+
+_WEB_UI_TIMEOUT: Final[float] = 1.0
+"""Seconds the doctor waits for the Web UI socket before calling it unreachable."""
+
+_TORRENT_INSTALL_HINT: Final[str] = "winget install qBittorrent.qBittorrent, then run `anishift qbit setup`"
+"""Advice offered when no qBittorrent installation was found."""
+
+_TORRENT_SETUP_HINT: Final[str] = "Run `anishift qbit setup` (close qBittorrent first) and start qBittorrent"
+"""Advice offered when qBittorrent is installed but its Web UI stays silent."""
 
 logger = get_logger(__name__)
 
@@ -167,18 +186,89 @@ def check_workspace() -> CheckResult:
     )
 
 
-def run_doctor(settings: Settings | None = None) -> list[CheckResult]:
+def check_torrent_client(settings: Settings | None = None) -> CheckResult:
+    """Check the qBittorrent Web UI answers and, when it stays silent, whether the client exists."""
+    if not is_windows():
+        return CheckResult(
+            name="torrent_client",
+            status=CheckStatus.SKIP,
+            message="qBittorrent is managed on Windows only",
+        )
+    resolved = settings if settings is not None else Settings()
+    host, port = _web_ui_endpoint(resolved.qbittorrent_url)
+    if _web_ui_answers(host, port):
+        return CheckResult(
+            name="torrent_client",
+            status=CheckStatus.OK,
+            message=f"Web UI answers on {host}:{port}",
+        )
+    if installed_executable() is None:
+        return CheckResult(
+            name="torrent_client",
+            status=CheckStatus.WARN,
+            message="qBittorrent is not installed",
+            suggestion=_TORRENT_INSTALL_HINT,
+        )
+    return CheckResult(
+        name="torrent_client",
+        status=CheckStatus.WARN,
+        message="qBittorrent Web UI is not reachable",
+        suggestion=_TORRENT_SETUP_HINT,
+    )
+
+
+def _web_ui_endpoint(url: str) -> tuple[str, int]:
+    """Split the configured Web UI address into the host and port to probe."""
+    parts: SplitResult = urlsplit(url)
+    try:
+        port: int | None = parts.port
+    except ValueError:
+        port = None
+    return parts.hostname or _WEB_UI_HOST, port or _WEB_UI_PORT
+
+
+def _web_ui_answers(host: str, port: int) -> bool:
+    """Report whether something accepts a connection on the Web UI endpoint."""
+    try:
+        with create_connection((host, port), timeout=_WEB_UI_TIMEOUT):
+            return True
+    except OSError:
+        return False
+
+
+def check_managed_torrent_client() -> CheckResult:
+    """Report private binary readiness without starting a client or touching its profile."""
+    if not is_windows():
+        return CheckResult("torrent_client", CheckStatus.SKIP, "Managed qBittorrent requires Windows")
+    from anishift.setup.installer import is_installed  # noqa: PLC0415
+    from anishift.setup.manifest import Resource, load_manifest  # noqa: PLC0415
+
+    resource: Resource = next(item for item in load_manifest() if item.name == "qbittorrent")
+    installed: bool = is_installed(resource, external_bin_root())
+    message: str = (
+        "Private qBittorrent prepared in external/bin/qbittorrent; starts for downloads only"
+        if installed
+        else "Private qBittorrent will be downloaded and verified on the first download order"
+    )
+    return CheckResult("torrent_client", CheckStatus.OK, message)
+
+
+def run_doctor(settings: Settings | None = None, *, managed_torrents: bool = False) -> list[CheckResult]:
     """Run every diagnostic check in order and return the collected list."""
     from anishift.cli.console import console_encoding_check  # noqa: PLC0415 - avoid circular import
 
     logger.info("Environment diagnostics started")
+    # The .env file sits beside the repository, so it is read the way bootstrap reads it
+    # instead of relying on the current working directory.
+    resolved: Settings = settings if settings is not None else Settings(_env_file=env_path())
     results = [
         check_python_version(),
         check_uv_installed(),
         check_binaries(),
-        check_api_keys(settings),
+        check_api_keys(resolved),
         check_workspace(),
         console_encoding_check(),
+        check_managed_torrent_client() if managed_torrents else check_torrent_client(resolved),
     ]
     logger.info(
         "Environment diagnostics completed",

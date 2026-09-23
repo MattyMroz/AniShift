@@ -8,15 +8,15 @@ import re
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Final, Never
+from typing import TYPE_CHECKING, Final, Never
 
-from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
-from anishift.application.cancellation import CommitCancellationToken
+from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState
+from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import RunEventEmitter, RunEventKind, WorkerNotification, sanitize_event_message
-from anishift.application.planning import ExecutionPlan, PlanTask, ProcessingOrderPolicy, TaskState
+from anishift.application.intents import RequestOrigin
+from anishift.application.planning import ExecutionPlan, PlanTask, ProcessingOrderPolicy, TaskKind, TaskState
 from anishift.application.results import (
     ArtifactSnapshot,
     GroupResult,
@@ -25,9 +25,18 @@ from anishift.application.results import (
     RunResult,
     TaskResult,
 )
-from anishift.application.scheduler_contracts import NaturalOrderGate, normalize_resource_key
+from anishift.application.scheduler_contracts import (
+    NaturalOrderGate,
+    RunRequest,
+    TaskHandler,
+    normalize_resource_key,
+)
+from anishift.application.sessions import RunSession
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext, ExecutionError
 from anishift.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from anishift.application.recovery import RunJournal
 
 logger = get_logger(__name__)
 
@@ -50,6 +59,11 @@ _PUBLICATION_LOCK_RETRY_DELAY_S: Final[float] = 0.25
 _WINDOWS_TRANSIENT_ERRORS: Final[frozenset[int]] = frozenset({5, 32, 33})
 """Windows denials that disappear once a scanner, mapping or reader handle closes."""
 
+_EXTRACTION_TASK_KINDS: Final[frozenset[TaskKind]] = frozenset(
+    {TaskKind.EXTRACT_AUDIO, TaskKind.EXTRACT_SUBTITLES, TaskKind.EXTRACT_TRACKS}
+)
+"""Task kinds competing for the shared media extraction pool."""
+
 
 @dataclass(frozen=True, slots=True)
 class TaskStarted:
@@ -62,8 +76,53 @@ class TaskStarted:
 class SubmittedTask:
     """Future ownership needed to maintain one resource admission window."""
 
+    run_id: str
     task: PlanTask
     resource_key: str
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class ReadyTask:
+    """One admissible task ordered by precedence, acceptance, then plan position."""
+
+    rank: int
+    sequence: int
+    task_index: int
+    run_id: str
+    task_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RunUpdate:
+    """One worker notification tagged with the graph context that produced it."""
+
+    run_id: str
+    update: TaskStarted | WorkerNotification
+
+
+class UpdateChannel:
+    """Worker-to-coordinator queue that also wakes the sleeping coordination loop."""
+
+    __slots__ = ("_queue", "_wake")
+
+    def __init__(self, wake: Callable[[], None]) -> None:
+        """Bind the queue to the callback that wakes the coordination thread."""
+        self._wake: Callable[[], None] = wake
+        self._queue: queue.SimpleQueue[RunUpdate] = queue.SimpleQueue()
+
+    def put(self, run_id: str, update: TaskStarted | WorkerNotification) -> None:
+        """Queue one worker update and wake the coordinator immediately."""
+        self._queue.put(RunUpdate(run_id, update))
+        self._wake()
+
+    def drain(self) -> tuple[RunUpdate, ...]:
+        """Remove and return every queued update without blocking."""
+        drained: list[RunUpdate] = []
+        while True:
+            try:
+                drained.append(self._queue.get_nowait())
+            except queue.Empty:
+                return tuple(drained)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,41 +162,48 @@ class RunState:
 
 @dataclass(slots=True)
 class SchedulerRuntime:
-    """Per-run objects shared by small coordinator methods."""
+    """One independent graph context; only ``ready`` and ``updates`` are shared."""
 
+    run_id: str
+    origin: RequestOrigin
+    sequence: int
     plan: ExecutionPlan
-    cancel: CommitCancellationToken
+    session: RunSession
+    handler: TaskHandler
+    cancel: EventCancellationToken
     emitter: RunEventEmitter
     generation: int
     store: ArtifactStore
     state: RunState
     gate: NaturalOrderGate | None
-    ready: dict[str, deque[PlanTask]]
-    executors: dict[str, ThreadPoolExecutor]
-    futures: dict[Future[TaskResult], SubmittedTask]
-    submitted: dict[str, int]
+    ready: dict[str, list[ReadyTask]]
     held: dict[str, list[tuple[PlanTask, TaskResult]]]
-    updates: queue.SimpleQueue[TaskStarted | WorkerNotification]
+    updates: UpdateChannel
     task_by_id: dict[str, PlanTask]
+    task_index: dict[str, int]
+    extraction_groups: frozenset[str]
     commit_if_current: Callable[[Callable[[], None]], bool]
     pending_publications: dict[str, PendingPublication] = field(default_factory=dict)
+    automatic: bool = False
+    journal: RunJournal | None = None
 
 
 class QueuedProgressSink:
     """Validate task ownership before queueing one worker notification."""
 
-    __slots__ = ("_task_id", "_updates")
+    __slots__ = ("_run_id", "_task_id", "_updates")
 
-    def __init__(self, task_id: str, updates: queue.SimpleQueue[TaskStarted | WorkerNotification]) -> None:
+    def __init__(self, task_id: str, run_id: str, updates: UpdateChannel) -> None:
         self._task_id: str = task_id
-        self._updates: queue.SimpleQueue[TaskStarted | WorkerNotification] = updates
+        self._run_id: str = run_id
+        self._updates: UpdateChannel = updates
 
     def emit(self, notification: WorkerNotification) -> None:
         """Queue a notification belonging to this sink's task."""
         if notification.task_id != self._task_id:
             msg = "Worker notification task ID does not match its running task"
             raise ExecutionError(msg)
-        self._updates.put(notification)
+        self._updates.put(self._run_id, notification)
 
 
 class ArtifactStore:
@@ -154,7 +220,7 @@ class ArtifactStore:
         inputs: dict[str, Artifact] = {}
         for artifact_id in task.requires:
             artifact: Artifact = self._artifacts[artifact_id]
-            if artifact.state is not ArtifactState.READY:
+            if artifact.state not in {ArtifactState.READY, ArtifactState.ABSENT}:
                 msg = f"Scheduler admitted task with unready artifact: {artifact_id}"
                 raise ExecutionError(msg)
             inputs[artifact_id] = artifact
@@ -172,27 +238,41 @@ class ArtifactStore:
             msg = "Task result ID does not match the completed task"
             raise ExecutionError(msg)
         expected_ids: frozenset[str] = frozenset(task.produces)
-        actual_ids: frozenset[str] = frozenset(output.artifact_id for output in result.outputs)
-        if actual_ids != expected_ids or len(result.outputs) != len(task.produces):
+        actual_ids: frozenset[str] = frozenset(output.artifact_id for output in result.outputs) | frozenset(
+            result.absent_outputs
+        )
+        if actual_ids != expected_ids:
             msg = "Task result outputs do not match the execution plan"
             raise ExecutionError(msg)
-        durable_outputs: tuple[ProducedArtifact, ...] = tuple(
-            output
-            for output in result.outputs
-            if self._artifacts[output.artifact_id].lifetime is ArtifactLifetime.DURABLE
+        durable: bool = any(
+            self._artifacts[identifier].lifetime is ArtifactLifetime.DURABLE for identifier in task.produces
         )
-        if durable_outputs and len(result.outputs) != 1:
+        if durable and len(task.produces) != 1:
             msg = "A durable publication task must produce exactly one artifact"
             raise ExecutionError(msg)
         replacements: dict[str, Artifact] = {}
+        for identifier in result.absent_outputs:
+            planned_absent: Artifact = self._artifacts[identifier]
+            if (
+                planned_absent.kind is not ArtifactKind.DISPLAYED_PL
+                or planned_absent.lifetime is ArtifactLifetime.SOURCE
+                or planned_absent.state is not ArtifactState.MISSING
+            ):
+                msg = "Only missing non-source displayed subtitles can be registered absent"
+                raise ExecutionError(msg)
+            replacements[identifier] = replace(planned_absent, path=None, state=ArtifactState.ABSENT)
         registered_outputs: list[ProducedArtifact] = []
         for output in result.outputs:
             planned: Artifact = self._artifacts[output.artifact_id]
             artifact, registered = self._validate_output(task, planned, output, commit_if_current)
             replacements[output.artifact_id] = artifact
             registered_outputs.append(registered)
-        self._artifacts.update(replacements)
-        return TaskResult(result.task_id, tuple(registered_outputs))
+        if result.absent_outputs and not commit_if_current(lambda: self._artifacts.update(replacements)):
+            msg = "Artifact registration was cancelled"
+            raise ExecutionError(msg)
+        if not result.absent_outputs:
+            self._artifacts.update(replacements)
+        return TaskResult(result.task_id, tuple(registered_outputs), result.absent_outputs)
 
     def artifact(self, artifact_id: str) -> Artifact:
         """Return the coordinator's latest immutable artifact value."""
@@ -266,6 +346,68 @@ def create_run_state(plan: ExecutionPlan) -> RunState:
     return RunState(task_states, unresolved, dependants, task_groups)
 
 
+def create_runtime(
+    request: RunRequest,
+    *,
+    sequence: int,
+    ready: dict[str, list[ReadyTask]],
+    updates: UpdateChannel,
+) -> SchedulerRuntime:
+    """Build one graph context bound to the coordinator's shared ready queues."""
+    plan: ExecutionPlan = request.plan
+    run_cancel: EventCancellationToken = EventCancellationToken(parent=request.cancel)
+    generation: int = request.session.generation
+    group_roots: dict[str, Path] = {group.group_id: request.session.group_temp(group.group_id) for group in plan.groups}
+    return SchedulerRuntime(
+        run_id=request.run_id,
+        origin=request.origin,
+        automatic=request.automatic or request.origin is RequestOrigin.BACKGROUND,
+        sequence=sequence,
+        plan=plan,
+        session=request.session,
+        handler=request.handler,
+        cancel=run_cancel,
+        emitter=RunEventEmitter(request.run_id, request.events),
+        generation=generation,
+        store=ArtifactStore(plan.artifacts, group_roots),
+        state=create_run_state(plan),
+        gate=natural_gate(plan),
+        ready=ready,
+        held=defaultdict(list),
+        updates=updates,
+        task_by_id={task.task_id: task for task in plan.tasks},
+        task_index={task.task_id: index for index, task in enumerate(plan.tasks)},
+        extraction_groups=extraction_group_ids(plan),
+        commit_if_current=_commit_gate(request.session, run_cancel, generation),
+        journal=request.journal,
+    )
+
+
+def extraction_group_ids(plan: ExecutionPlan) -> frozenset[str]:
+    """Return the groups of one plan that compete for the shared extraction pool."""
+    return frozenset(task.group_id for task in plan.tasks if task.kind in _EXTRACTION_TASK_KINDS)
+
+
+def _commit_gate(
+    session: RunSession,
+    cancel: EventCancellationToken,
+    generation: int,
+    validate: Callable[[], None] | None = None,
+) -> Callable[[Callable[[], None]], bool]:
+    def commit_if_current(action: Callable[[], None]) -> bool:
+        committed: bool = False
+
+        def commit_if_active() -> None:
+            nonlocal committed
+            if validate is not None:
+                validate()
+            committed = cancel.commit_if_active(action)
+
+        return session.commit_if_generation(generation, commit_if_active) and committed
+
+    return commit_if_current
+
+
 def natural_gate(plan: ExecutionPlan) -> NaturalOrderGate | None:
     """Create the ordered forwarding gate only for strict-natural runs."""
     if plan.settings.processing_order_policy is ProcessingOrderPolicy.READY_FIRST:
@@ -274,10 +416,18 @@ def natural_gate(plan: ExecutionPlan) -> NaturalOrderGate | None:
 
 
 def queue_task(task: PlanTask, runtime: SchedulerRuntime) -> None:
-    """Move one dependency-ready task into its bounded resource queue."""
+    """Move one dependency-ready task into the shared queue of its resource."""
     runtime.state.task_states[task.task_id] = TaskState.QUEUED
     resource_key: str = normalize_resource_key(task.resource_key)
-    runtime.ready[resource_key].append(task)
+    runtime.ready.setdefault(resource_key, []).append(
+        ReadyTask(
+            rank=0 if runtime.origin is RequestOrigin.USER else 1,
+            sequence=runtime.sequence,
+            task_index=runtime.task_index[task.task_id],
+            run_id=runtime.run_id,
+            task_id=task.task_id,
+        )
+    )
     runtime.emitter.emit(
         RunEventKind.TASK_QUEUED,
         group_id=task.group_id,
@@ -288,8 +438,24 @@ def queue_task(task: PlanTask, runtime: SchedulerRuntime) -> None:
 
 def commit_success(task: PlanTask, result: TaskResult, runtime: SchedulerRuntime) -> None:
     """Register outputs and forward readiness to direct dependants."""
+    commit: Callable[[Callable[[], None]], bool] = runtime.commit_if_current
+    journal: RunJournal | None = runtime.journal
+    if journal is not None and journal.failed:
+        runtime.state.task_states[task.task_id] = TaskState.BLOCKED
+        runtime.emitter.emit(
+            RunEventKind.TASK_FINISHED,
+            group_id=task.group_id,
+            task_id=task.task_id,
+            state=TaskState.BLOCKED,
+        )
+        return
     try:
-        registered: TaskResult = runtime.store.register(task, result, runtime.commit_if_current)
+        if journal is not None:
+            journal.prepare(task, result)
+            commit = _commit_gate(
+                runtime.session, runtime.cancel, runtime.generation, lambda: journal.validate_inputs(task.group_id)
+            )
+        registered: TaskResult = runtime.store.register(task, result, commit)
     except PublicationLockedError as locked:
         _defer_publication(task, result, runtime, locked)
         return
@@ -299,7 +465,11 @@ def commit_success(task: PlanTask, result: TaskResult, runtime: SchedulerRuntime
             "Durable publication resumed after destination lock", task_kind=task.kind.value, retries=pending.retries
         )
     runtime.state.task_results[task.task_id] = registered
+    if runtime.journal is not None:
+        runtime.journal.committed(registered)
     runtime.state.task_states[task.task_id] = TaskState.SUCCEEDED
+    if registered.absent_outputs:
+        logger.info("Displayed subtitle output omitted", task_kind=task.kind.value, group_id=task.group_id)
     runtime.emitter.emit(
         RunEventKind.TASK_FINISHED,
         group_id=task.group_id,
@@ -418,6 +588,12 @@ def build_group_result(group_id: str, runtime: SchedulerRuntime) -> GroupResult:
         for output in result.outputs
         if runtime.store.artifact(output.artifact_id).lifetime is ArtifactLifetime.DURABLE
     )
+    if runtime.journal is not None:
+        present: frozenset[str] = frozenset(product.artifact_id for product in products)
+        recovered: tuple[ProducedArtifact, ...] = tuple(
+            product for product in runtime.journal.products(group_id) if product.artifact_id not in present
+        )
+        products = (*recovered, *products)
     product_ids: frozenset[str] = frozenset(product.artifact_id for product in products)
     preserved_products: tuple[ProducedArtifact, ...] = tuple(
         ProducedArtifact(artifact.artifact_id, artifact.preserved_path, {"preserved": True})

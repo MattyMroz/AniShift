@@ -31,4 +31,4 @@ Przenośny (współdzielony z mm_avh): preskonfigurowana `console`, motyw `RICH_
 
 ## Uwaga
 
-- Docstringi importują jako `from rich_console import ...` (bez prefiksu `anishift.utils.`) — realna ścieżka to `anishift.utils.rich_console`. `console.py:8`
+- Standalone examples use `rich_console`; when nested, import `<pkg>.rich_console` with the utilities package prefix defined by the host.

@@ -13,6 +13,7 @@ from anishift.application.intents import (
     MkvTrackProduct,
     ProductIntent,
     ProductKind,
+    RebuildRequest,
     RunMode,
     SubtitleSourcePolicy,
     TranslationAction,
@@ -100,3 +101,8 @@ def test_apply_preset_rejects_duplicate_group_ids() -> None:
     preset = AutoPreset("default", "Default", _products())
     with pytest.raises(ValueError, match="unique"):
         apply_preset(preset, groups)
+
+
+def test_rebuild_request_rejects_an_empty_product_set() -> None:
+    with pytest.raises(ValueError, match="at least one product"):
+        RebuildRequest(frozenset())

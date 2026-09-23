@@ -2,17 +2,35 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Protocol
+from typing import TYPE_CHECKING, Final, Protocol
 
-from anishift.application.cancellation import CancellationToken
-from anishift.application.events import WorkerNotification
-from anishift.application.planning import PlanTask, RunSettingsSnapshot
+from anishift.application.cancellation import CancellationToken, CommitCancellationToken
+from anishift.application.events import RunEventSink, WorkerNotification
+from anishift.application.intents import RequestOrigin
+from anishift.application.planning import ExecutionPlan, PlanTask, RunSettingsSnapshot
 from anishift.application.results import ArtifactSnapshot, TaskResult
 
-__all__ = ["NaturalOrderGate", "ResourceLimits", "TaskHandler", "TaskProgressSink"]
+if TYPE_CHECKING:
+    from anishift.application.recovery import RunJournal
+    from anishift.application.sessions import RunSession
+
+__all__ = [
+    "NaturalOrderGate",
+    "ResourceLimits",
+    "RunRequest",
+    "TaskHandler",
+    "TaskProgressSink",
+    "extraction_worker_count",
+]
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+_EXTRACTION_IO_HEADROOM: Final[int] = 2
+"""Extra extraction workers kept above the core-derived pool size."""
 
 
 class TaskProgressSink(Protocol):
@@ -38,8 +56,28 @@ class TaskHandler(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class RunRequest:
+    """One immutable graph handed to the coordinator with its own execution scope."""
+
+    run_id: str
+    plan: ExecutionPlan
+    session: RunSession
+    handler: TaskHandler
+    cancel: CommitCancellationToken
+    events: RunEventSink
+    origin: RequestOrigin = RequestOrigin.USER
+    automatic: bool = False
+    journal: RunJournal | None = None
+
+    def __post_init__(self) -> None:
+        if not self.run_id.strip():
+            msg = "Run request requires a run ID"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
 class ResourceLimits:
-    """Bounded worker and pending-future limits for one scheduler run."""
+    """Bounded worker limits shared by every active graph; the pending-future field stays for API compatibility only."""
 
     extraction: int
     translation: Mapping[str, int]
@@ -47,6 +85,7 @@ class ResourceLimits:
     audio: int
     composition: int
     max_pending_per_resource: int
+    llm: int | None = None
 
     def __post_init__(self) -> None:
         copied_translation: dict[str, int] = {
@@ -68,10 +107,13 @@ class ResourceLimits:
         if type(self.max_pending_per_resource) is not int or self.max_pending_per_resource < 0:
             msg = "Pending resource limit must be a non-negative integer"
             raise ValueError(msg)
+        if self.llm is not None and (type(self.llm) is not int or self.llm < 1):
+            msg = "Resource worker limits must be positive integers"
+            raise ValueError(msg)
         object.__setattr__(self, "translation", MappingProxyType(copied_translation))
 
     @classmethod
-    def from_settings(
+    def from_settings(  # noqa: PLR0913 - one keyword per independently tuned resource pool
         cls,
         settings: RunSettingsSnapshot,
         *,
@@ -79,6 +121,7 @@ class ResourceLimits:
         audio: int = 2,
         composition: int = 1,
         max_pending_per_resource: int = 1,
+        llm: int | None = None,
     ) -> ResourceLimits:
         """Build default scheduler limits from one immutable settings snapshot."""
         translation: dict[str, int] = {settings.translation_profile_id: settings.translation_concurrency}
@@ -89,6 +132,7 @@ class ResourceLimits:
             audio=audio,
             composition=composition,
             max_pending_per_resource=max_pending_per_resource,
+            llm=settings.llm_max_concurrency if llm is None else llm,
         )
 
     def worker_limit(self, resource_key: str, settings: RunSettingsSnapshot) -> int:
@@ -98,7 +142,7 @@ class ResourceLimits:
         if family == "translation":
             limit = self.translation.get(provider, settings.translation_concurrency)
         elif family == "llm":
-            limit = settings.llm_max_concurrency
+            limit = settings.llm_max_concurrency if self.llm is None else self.llm
         elif family == "tts":
             limit = 1 if provider.startswith("sapi") else self.tts_group_jobs
         elif family == "audio":
@@ -108,6 +152,13 @@ class ResourceLimits:
         elif family == "filesystem":
             limit = 1
         return limit
+
+
+def extraction_worker_count(group_count: int) -> int:
+    """Return the legacy I/O pool size for the given number of extracting groups."""
+    cores: int = os.cpu_count() or 1
+    scaled_workers: int = round(cores**0.5) + _EXTRACTION_IO_HEADROOM
+    return max(1, min(group_count, scaled_workers))
 
 
 def normalize_resource_key(resource_key: str) -> str:

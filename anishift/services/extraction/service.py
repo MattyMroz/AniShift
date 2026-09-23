@@ -64,6 +64,9 @@ _SHUTDOWN_GRACE_SECONDS: Final[float] = 5.0
 _NEW_PROCESS_GROUP: Final[int] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 """Windows flag isolating the child from the console Ctrl+C; zero elsewhere."""
 
+_NO_WINDOW: Final[int] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+"""Windows flag keeping a console child from opening its own window when the parent has none."""
+
 logger = get_logger(__name__)
 
 
@@ -164,6 +167,7 @@ def identify(path: Path) -> MediaInfo:
             errors="replace",
             timeout=_IDENTIFY_TIMEOUT_S,
             check=False,
+            creationflags=_NO_WINDOW,
         )
     except subprocess.TimeoutExpired as exc:
         msg = f"{path}: mkvmerge identify timed out"
@@ -342,7 +346,7 @@ def extract_tracks(  # noqa: PLR0912,PLR0913,PLR0915 - extraction lifecycle stay
             encoding="utf-8",
             errors="replace",
             bufsize=1,
-            creationflags=_NEW_PROCESS_GROUP,
+            creationflags=_NEW_PROCESS_GROUP | _NO_WINDOW,
         )
         output: queue.SimpleQueue[str | OSError | None] = queue.SimpleQueue()
         reader = threading.Thread(target=_read_output, args=(process, output), daemon=True)

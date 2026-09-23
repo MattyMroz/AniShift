@@ -4,7 +4,9 @@ import threading
 from pathlib import Path
 
 import pytest
+from fakes import write_image_source
 
+from anishift.application import inspection as inspection_module
 from anishift.application.artifacts import ArtifactKind, ArtifactState
 from anishift.application.cancellation import CancellationToken, NeverCancelledToken
 from anishift.application.discovery import discover_groups
@@ -87,6 +89,25 @@ def _write_srt(path: Path) -> None:
         "1\n00:00:00,000 --> 00:00:01,000\nHello\n",
         encoding="utf-8",
     )
+
+
+def _write_ass(path: Path) -> None:
+    path.write_text(
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name\n"
+        "Style: Default\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,Dzień dobry\n",
+        encoding="utf-8",
+    )
+
+
+def _write_text_file(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
 
 
 def _inspect_video(root: Path, *, duration_us: int = 10_000_000) -> InspectedSourceGroup:
@@ -186,6 +207,144 @@ def test_external_subtitle_outside_workspace_uses_declared_language(tmp_path: Pa
     assert len(group.artifacts) + 1 == len(registered.artifacts)
 
 
+def test_external_styled_subtitles_register_under_the_format_they_are_read_as(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    group = _inspect_video(workspace_root)
+    external = tmp_path / "napisy.ssa"
+    _write_ass(external)
+    registered = WorkspaceInspector(_FakeProbe({})).register_external_subtitle(
+        group,
+        external,
+        declared_language=None,
+        cancel=NeverCancelledToken(),
+    )
+    artifact = registered.artifacts[-1]
+    assert artifact.subtitle_format == "ass"
+    assert artifact.state is ArtifactState.READY
+
+
+def test_external_subtitles_in_an_unknown_format_are_refused(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    group = _inspect_video(workspace_root)
+    external = tmp_path / "napisy.sub"
+    external.write_text("nic", encoding="utf-8")
+    with pytest.raises(ExecutionError, match="ASS, SSA, or SRT"):
+        WorkspaceInspector(_FakeProbe({})).register_external_subtitle(
+            group,
+            external,
+            declared_language=None,
+            cancel=NeverCancelledToken(),
+        )
+
+
+def test_standalone_audio_is_validated_without_any_video_to_compare_with(tmp_path: Path) -> None:
+    write_image_source(tmp_path / "cover" / "Book.png")
+    _write_text_file(tmp_path / "cover" / "Book.mp3", "audio")
+    workspace = WorkspaceInspector(_FakeProbe({}), runner=_FakeRunner(7_000_000)).inspect(
+        discover_groups(tmp_path),
+        cancel=NeverCancelledToken(),
+    )
+    states = {artifact.kind: artifact.state for artifact in workspace.groups[0].artifacts}
+    assert states[ArtifactKind.SOURCE_AUDIO] is ArtifactState.READY
+    assert states[ArtifactKind.SOURCE_IMAGE] is ArtifactState.READY
+    assert workspace.warnings == ()
+
+
+def test_an_empty_cover_image_is_reported_as_invalid(tmp_path: Path) -> None:
+    (tmp_path / "cover").mkdir()
+    (tmp_path / "cover" / "Book.png").write_bytes(b"")
+    _write_text_file(tmp_path / "cover" / "Book.txt", "Zażółć gęślą jaźń")
+    workspace = WorkspaceInspector(_FakeProbe({}), runner=_FakeRunner(0)).inspect(
+        discover_groups(tmp_path),
+        cancel=NeverCancelledToken(),
+    )
+    image = next(artifact for artifact in workspace.groups[0].artifacts if artifact.kind is ArtifactKind.SOURCE_IMAGE)
+    assert image.state is ArtifactState.INVALID
+    assert tuple(warning.code for warning in workspace.warnings) == ("image_invalid",)
+
+
+def _cover_image_state(tmp_path: Path) -> tuple[ArtifactState, tuple[str, ...]]:
+    _write_text_file(tmp_path / "cover" / "Book.txt", "Zażółć gęślą jaźń")
+    workspace = WorkspaceInspector(_FakeProbe({}), runner=_FakeRunner(0)).inspect(
+        discover_groups(tmp_path),
+        cancel=NeverCancelledToken(),
+    )
+    image = next(artifact for artifact in workspace.groups[0].artifacts if artifact.kind is ArtifactKind.SOURCE_IMAGE)
+    return image.state, tuple(warning.code for warning in workspace.warnings)
+
+
+def test_a_half_copied_cover_image_is_refused_instead_of_being_read_as_a_picture(tmp_path: Path) -> None:
+    write_image_source(tmp_path / "cover" / "whole.jpg", width=64, height=64)
+    complete: bytes = (tmp_path / "cover" / "whole.jpg").read_bytes()
+    (tmp_path / "cover" / "whole.jpg").unlink()
+    (tmp_path / "cover" / "Book.jpg").write_bytes(complete[: len(complete) // 2])
+
+    assert _cover_image_state(tmp_path) == (ArtifactState.INVALID, ("image_undecodable",))
+
+
+def test_a_cover_image_still_being_copied_waits_and_becomes_ready_once_it_is_whole(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_text_file(tmp_path / "cover" / "Book.txt", "Zażółć gęślą jaźń")
+    write_image_source(tmp_path / "cover" / "whole.jpg", width=64, height=64)
+    complete: bytes = (tmp_path / "cover" / "whole.jpg").read_bytes()
+    (tmp_path / "cover" / "whole.jpg").unlink()
+    picture: Path = tmp_path / "cover" / "Book.jpg"
+    picture.write_bytes(complete[: len(complete) // 2])
+    copying: dict[Path, bool] = {picture: False}
+    monkeypatch.setattr(
+        inspection_module,
+        "source_is_available",
+        lambda path: copying.get(Path(path), True),
+    )
+    inspector: WorkspaceInspector = WorkspaceInspector(_FakeProbe({}), runner=_FakeRunner(0))
+
+    busy = inspector.inspect(discover_groups(tmp_path), cancel=NeverCancelledToken())
+    busy_image = next(item for item in busy.groups[0].artifacts if item.kind is ArtifactKind.SOURCE_IMAGE)
+
+    assert busy_image.state is ArtifactState.MISSING
+    assert tuple(warning.code for warning in busy.warnings) == ("source_busy",)
+    assert busy.pending_paths == (picture,)
+
+    picture.write_bytes(complete)
+    copying[picture] = True
+    finished = inspector.inspect(discover_groups(tmp_path), cancel=NeverCancelledToken())
+    whole = next(item for item in finished.groups[0].artifacts if item.kind is ArtifactKind.SOURCE_IMAGE)
+
+    assert whole.state is ArtifactState.READY
+    assert finished.warnings == ()
+    assert finished.pending_paths == ()
+
+
+def test_a_cover_image_that_is_not_a_picture_at_all_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "cover").mkdir()
+    (tmp_path / "cover" / "Book.png").write_bytes(b"this text is not a picture")
+
+    assert _cover_image_state(tmp_path) == (ArtifactState.INVALID, ("image_undecodable",))
+
+
+def test_a_cover_image_is_judged_by_what_it_holds_rather_than_by_its_extension(tmp_path: Path) -> None:
+    write_image_source(tmp_path / "cover" / "real.jpg", width=32, height=32)
+    (tmp_path / "cover" / "Book.png").write_bytes((tmp_path / "cover" / "real.jpg").read_bytes())
+    (tmp_path / "cover" / "real.jpg").unlink()
+
+    assert _cover_image_state(tmp_path) == (ArtifactState.READY, ())
+
+
+@pytest.mark.parametrize(("width", "height"), [(101, 55), (40, 90), (2, 2)])
+def test_an_odd_sized_portrait_or_tiny_cover_image_is_still_a_real_picture(
+    tmp_path: Path,
+    width: int,
+    height: int,
+) -> None:
+    write_image_source(tmp_path / "cover" / "Book.png", width=width, height=height)
+
+    assert _cover_image_state(tmp_path) == (ArtifactState.READY, ())
+
+
 def test_external_audio_within_tolerance_is_fully_decoded(tmp_path: Path) -> None:
     group = _inspect_video(tmp_path, duration_us=10_000_000)
     audio = tmp_path / "external voice.anything"
@@ -215,7 +374,7 @@ def test_external_audio_beyond_tolerance_is_rejected(tmp_path: Path) -> None:
     audio.write_bytes(b"audio")
     inspector = WorkspaceInspector(
         _FakeProbe({}),
-        runner=_FakeRunner(11_000_001),
+        runner=_FakeRunner(20_000_001),
         ffmpeg=Path("ffmpeg.exe"),
     )
     with pytest.raises(ExecutionError, match="beyond tolerance"):

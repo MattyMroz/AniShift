@@ -15,7 +15,6 @@ __all__ = [
     "CodecSpec",
     "RenderInputs",
     "codec_spec",
-    "mixed_audio_path",
     "render_command",
     "validate_output_probe",
 ]
@@ -50,7 +49,6 @@ class CodecSpec:
 
     encoder: str
     container: str
-    extension: str
     arguments: tuple[str, ...]
     duration_tolerance_ms: int
 
@@ -73,35 +71,17 @@ def codec_spec(
     """Resolve codec, container, bitrate, and profile-specific arguments."""
     profile: AudioCodecProfile = config.codec_profile
     if profile is AudioCodecProfile.WAV:
-        return CodecSpec("pcm_s16le", "wav", ".wav", ("-rf64", "auto"), 2)
+        return CodecSpec("pcm_s16le", "wav", ("-rf64", "auto"), 2)
     if profile is AudioCodecProfile.FLAC:
-        return CodecSpec(
-            "flac",
-            "flac",
-            ".flac",
-            ("-compression_level", str(config.flac_compression_level)),
-            2,
-        )
+        return CodecSpec("flac", "flac", ("-compression_level", str(config.flac_compression_level)), 2)
     bitrate: str = config.bitrate or _DEFAULT_BITRATE[profile][channels]
     if profile is AudioCodecProfile.EAC3:
-        return CodecSpec("eac3", "eac3", ".eac3", ("-b:a", bitrate), _EAC3_DURATION_TOLERANCE_MS)
+        return CodecSpec("eac3", "eac3", ("-b:a", bitrate), _EAC3_DURATION_TOLERANCE_MS)
     if profile is AudioCodecProfile.MP3:
-        return CodecSpec("libmp3lame", "mp3", ".mp3", ("-b:a", bitrate), 80)
+        return CodecSpec("libmp3lame", "mp3", ("-b:a", bitrate), 80)
     if profile is AudioCodecProfile.OPUS:
-        return CodecSpec("libopus", "ogg", ".opus", ("-b:a", bitrate), 40)
-    return CodecSpec(
-        "aac",
-        "mp4",
-        ".m4a",
-        ("-profile:a", "aac_low", "-b:a", bitrate, "-movflags", "+faststart"),
-        50,
-    )
-
-
-def mixed_audio_path(source: Path, profile: AudioCodecProfile) -> Path:
-    """Return the one final sidecar path for a source media file."""
-    extension: str = ".m4a" if profile is AudioCodecProfile.AAC else f".{profile.value}"
-    return source.with_suffix(extension)
+        return CodecSpec("libopus", "ogg", ("-b:a", bitrate), 40)
+    return CodecSpec("aac", "mp4", ("-profile:a", "aac_low", "-b:a", bitrate, "-movflags", "+faststart"), 50)
 
 
 def render_command(

@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Final
 
 from anishift.application.artifacts import ArtifactKind
+from anishift.application.control import NarrationTimeline, TextResultFormat
 from anishift.application.intents import (
     BurnSubtitleProduct,
     ExternalAudioRole,
@@ -75,6 +76,7 @@ __all__ = [
     "SettingSpec",
     "SettingValue",
     "SettingValueType",
+    "recipe_setting_specs",
     "setting_catalog",
 ]
 
@@ -103,6 +105,7 @@ class SettingScope(StrEnum):
     GLOBAL = "global"
     ENGINE_PROFILE = "engine_profile"
     AUTO_PRESET = "auto_preset"
+    RECIPE = "recipe"
     MANUAL_RUN = "manual_run"
     SECRET = "secret"  # noqa: S105
     INTERNAL = "internal"
@@ -353,6 +356,7 @@ def setting_catalog(context: SettingCatalogContext | None = None) -> tuple[Setti
     defaults = UserSettings()
     catalog: tuple[SettingSpec, ...] = (
         *_workflow_specs(resolved_context),
+        *recipe_setting_specs(),
         *_global_specs(defaults),
         *_translation_specs(defaults, resolved_context),
         *_model_specs(defaults),
@@ -377,6 +381,48 @@ def setting_catalog(context: SettingCatalogContext | None = None) -> tuple[Setti
         msg = f"Settings catalog references unknown dependencies: {rendered}"
         raise ValueError(msg)
     return catalog
+
+
+def recipe_setting_specs() -> tuple[SettingSpec, ...]:
+    """Describe only the persisted target deltas owned by automation."""
+    return (
+        SettingSpec(
+            "translate.text_result",
+            "Text output",
+            "Choose translated TXT or an SRT script with provisional times.",
+            SettingValueType.STRING,
+            TextResultFormat.TEXT.value,
+            SettingScope.RECIPE,
+            allowed_values=tuple(item.value for item in TextResultFormat),
+        ),
+        SettingSpec(
+            "translate.translation_action",
+            "Translation",
+            "Choose language handling for standalone translation.",
+            SettingValueType.STRING,
+            TranslationAction.AUTO.value,
+            SettingScope.RECIPE,
+            allowed_values=tuple(item.value for item in TranslationAction),
+        ),
+        SettingSpec(
+            "audiobook.translation_action",
+            "Translation",
+            "Translate or read the supplied text unchanged.",
+            SettingValueType.STRING,
+            TranslationAction.AUTO.value,
+            SettingScope.RECIPE,
+            allowed_values=tuple(item.value for item in TranslationAction),
+        ),
+        SettingSpec(
+            "audiobook.timeline",
+            "SRT timing",
+            "Read continuously or preserve source SRT times.",
+            SettingValueType.STRING,
+            NarrationTimeline.CONTINUOUS.value,
+            SettingScope.RECIPE,
+            allowed_values=tuple(item.value for item in NarrationTimeline),
+        ),
+    )
 
 
 def _value_matches_type(value: SettingValue, value_type: SettingValueType) -> bool:
@@ -657,8 +703,8 @@ def _translation_specs(
         ),
         SettingSpec(
             setting_id="translation_chunk_chars",
-            label="Translation context size",
-            description="Set how much text one translation request carries at once.",
+            label="TXT fragment size",
+            description="Limit characters per narrated fragment when the source is a plain TXT file.",
             value_type=SettingValueType.INTEGER,
             default=defaults.translation_chunk_chars,
             scope=SettingScope.GLOBAL,
@@ -669,7 +715,7 @@ def _translation_specs(
         SettingSpec(
             setting_id="translation_batch_size",
             label="Translation batch size",
-            description="Set lines per request; zero uses the selected engine default.",
+            description="Set subtitle lines per request; zero means the engine default or, for LLM, the whole file.",
             value_type=SettingValueType.INTEGER,
             default=defaults.translation_batch_size,
             scope=SettingScope.GLOBAL,
@@ -679,8 +725,8 @@ def _translation_specs(
         ),
         SettingSpec(
             setting_id="translation_concurrency",
-            label="Translation concurrency",
-            description="Limit concurrent translation batches for one file.",
+            label="Translation file concurrency",
+            description="Limit files translated concurrently by the Google or DeepL engine.",
             value_type=SettingValueType.INTEGER,
             default=defaults.translation_concurrency,
             scope=SettingScope.GLOBAL,
@@ -926,7 +972,7 @@ def _profile_specs(context: SettingCatalogContext) -> tuple[SettingSpec, ...]:
             SettingSpec(
                 setting_id="tts_profile.concurrency",
                 label="TTS concurrency",
-                description="Limit simultaneous requests for the active engine and voice.",
+                description="Limit simultaneous synthesis requests within one file for the active engine and voice.",
                 value_type=SettingValueType.INTEGER,
                 default=profile.concurrency or 1,
                 scope=SettingScope.ENGINE_PROFILE,

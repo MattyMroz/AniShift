@@ -10,7 +10,6 @@ from anishift.services.audio.errors import AudioDecodeError
 from anishift.services.audio.output import (
     RenderInputs,
     codec_spec,
-    mixed_audio_path,
     render_command,
     validate_output_probe,
 )
@@ -105,28 +104,22 @@ def test_narrator_only_command_has_no_mix_gain() -> None:
 
 
 @pytest.mark.parametrize(
-    ("profile", "extension", "encoder"),
+    ("profile", "encoder"),
     [
-        (AudioCodecProfile.MP3, ".mp3", "libmp3lame"),
-        (AudioCodecProfile.WAV, ".wav", "pcm_s16le"),
-        (AudioCodecProfile.EAC3, ".eac3", "eac3"),
-        (AudioCodecProfile.OPUS, ".opus", "libopus"),
-        (AudioCodecProfile.FLAC, ".flac", "flac"),
-        (AudioCodecProfile.AAC, ".m4a", "aac"),
+        (AudioCodecProfile.MP3, "libmp3lame"),
+        (AudioCodecProfile.WAV, "pcm_s16le"),
+        (AudioCodecProfile.EAC3, "eac3"),
+        (AudioCodecProfile.OPUS, "libopus"),
+        (AudioCodecProfile.FLAC, "flac"),
+        (AudioCodecProfile.AAC, "aac"),
     ],
 )
-def test_codec_mapping(
-    profile: AudioCodecProfile,
-    extension: str,
-    encoder: str,
-) -> None:
+def test_codec_mapping(profile: AudioCodecProfile, encoder: str) -> None:
     config = AudioConfig(codec_profile=profile)
 
     spec = codec_spec(config, channels=1)
 
-    assert spec.extension == extension
     assert spec.encoder == encoder
-    assert mixed_audio_path(Path("Episode.mkv"), profile) == Path(f"Episode{extension}")
 
 
 def test_eac3_validation_accepts_one_frame_rounding_at_48_khz() -> None:

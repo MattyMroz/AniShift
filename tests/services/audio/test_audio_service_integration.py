@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 from audio_test_helpers import write_wav
 
+from anishift.application.artifacts import ArtifactKind
+from anishift.application.products import product_suffix
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.platform.binaries import Binary, resolve_binary
 from anishift.services.audio.commands import CommandResult, SubprocessRunner
@@ -104,6 +106,7 @@ def test_audio_service_renders_and_resumes_real_eac3(tmp_path: Path) -> None:
         source_audio_path=None,
         clips=(_timed_clip(clip_path),),
         temporary_root=tmp_path / "tmp" / "episode-scope" / "audio",
+        destination=output_path,
     )
     runner = _RecordingRunner()
     service = AudioService(
@@ -202,6 +205,7 @@ def test_small_real_rf64_clip_normalizes_and_renders_rf64_narrator_and_sidecar(t
         source_audio_path=None,
         clips=(_timed_clip(clip_path),),
         temporary_root=tmp_path / "audio-temp",
+        destination=tmp_path / "Episode.wav",
     )
 
     result: AudioRenderResult = service.render(request)
@@ -228,6 +232,37 @@ def test_small_real_rf64_clip_normalizes_and_renders_rf64_narrator_and_sidecar(t
     )
 
 
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+def test_a_recovered_render_still_reports_the_times_its_audio_really_has(tmp_path: Path) -> None:
+    clip_path: Path = tmp_path / "clip.wav"
+    write_wav(clip_path, frames=9_600)
+    request = AudioRenderRequest(
+        scope_id="placement-resume",
+        source_path=tmp_path / "Episode.mkv",
+        source_audio_path=None,
+        clips=(_timed_clip(clip_path),),
+        temporary_root=tmp_path / "tmp" / "placement-resume" / "audio",
+        destination=tmp_path / "Episode.eac3",
+    )
+    runner = _RecordingRunner()
+    service = AudioService(
+        AudioConfig(codec_profile=AudioCodecProfile.EAC3),
+        runner=runner,
+        ffmpeg=FFMPEG,
+        ffprobe=FFPROBE,
+    )
+
+    first: AudioRenderResult = service.render(request)
+    request.destination.unlink()
+    second: AudioRenderResult = service.render(request)
+
+    assert first.status is AudioRenderStatus.COMPLETED
+    assert second.status is AudioRenderStatus.COMPLETED
+    assert runner.operations.count("wrap_narrator") == 1
+    assert first.placements
+    assert second.placements == first.placements
+
+
 @pytest.mark.skipif(
     FFMPEG is None or FFPROBE is None,
     reason="bundled FFmpeg is unavailable",
@@ -244,6 +279,7 @@ def test_stream_preparation_is_reused_without_second_normalization(
         source_audio_path=None,
         clips=(clip,),
         temporary_root=tmp_path / "tmp" / "stream-reuse" / "audio",
+        destination=tmp_path / "Episode.eac3",
         post_process_tempo=1.25,
     )
     runner = _RecordingRunner()
@@ -284,6 +320,7 @@ def test_failed_output_validation_preserves_existing_sidecar_bit_for_bit(
         source_audio_path=None,
         clips=(_timed_clip(clip_path),),
         temporary_root=tmp_path / "tmp" / "failed-replacement" / "audio",
+        destination=output_path,
     )
     service = AudioService(
         AudioConfig(codec_profile=AudioCodecProfile.EAC3),
@@ -310,6 +347,7 @@ def test_audio_service_skips_empty_speech_without_sidecar(tmp_path: Path) -> Non
         source_audio_path=None,
         clips=(),
         temporary_root=tmp_path / "audio",
+        destination=tmp_path / "Episode.eac3",
     )
 
     result = service.render(request)
@@ -415,6 +453,7 @@ def test_audio_service_real_codec_and_channel_matrix(
         source_audio_path=original_path,
         clips=(_timed_clip(clip_path),),
         temporary_root=tmp_path / "tmp" / profile.value / "audio",
+        destination=tmp_path / f"Episode{product_suffix(ArtifactKind.NARRATION_AUDIO, audio_profile=profile.value)}",
     )
     service = AudioService(
         AudioConfig(codec_profile=profile),
@@ -483,6 +522,7 @@ def test_audio_service_uses_decoded_duration_for_vbr_adts_aac(
     write_wav(clip_path, frames=4_800)
     request = AudioRenderRequest(
         scope_id="scope-vbr-aac",
+        destination=tmp_path / f"Episode{product_suffix(ArtifactKind.NARRATION_AUDIO, audio_profile='aac')}",
         source_path=tmp_path / "Episode.mkv",
         source_audio_path=original_path,
         clips=(_timed_clip(clip_path),),

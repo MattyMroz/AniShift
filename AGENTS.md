@@ -19,13 +19,24 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 ## Twarde reguły
 
 - Kod, komentarze, nazwy i wszystko związane z gitem/GitHub (branch, commit, PR, issue, label) po angielsku. Rozmowa z userem po polsku. Kopiuj wzorce już zastane w repo (istniejące tytuły, opisy, nazwy branchy).
+- Dokumenty w `docs/work/` — plany, specyfikacje, intencje, manifesty, raporty, przeglądy i briefy dla subagentów — pisz po polsku. Nazwy plików, identyfikatory techniczne, kod, komendy i adresy URL zachowuj bez tłumaczenia. Ta reguła dotyczy także artefaktów tworzonych przez subagentów.
 - Zależności tylko przez `uv add` / `uv remove`. Nigdy nie edytuj `pyproject.toml` ręcznie.
 - Commity w formacie `typ(scope): opis` — scope OBOWIĄZKOWY, z listy w `scripts/hooks/check_commit_msg.py` (hook odrzuca commit bez scope lub ze scope spoza listy). Zero śladów AI (`Co-Authored-By`, stopki generatora) — też w treści PR.
 - Issue zakładaj wg szablonów z `.github/ISSUE_TEMPLATE/` (bug / feature / task). Tytuł z prefiksem Conventional Commits, jak w szablonie.
 - Rób tylko to, o co user prosi. Zero nieproszonych plików, refaktorów, issue.
+- AniShift jest teraz tylko na Windows; wsparcie Linuksa to osobna, przyszła ścieżka — nie rozwijaj go bez wyraźnego polecenia właściciela.
 - Przed większą lub planowaną zmianą potwierdź zakres z userem. Nie ruszaj od razu.
 - Nie commituj na `main`. Feature branch → PR → merge.
 - KISS/YAGNI — użyj skilla `simple` przy pisaniu i przeglądzie kodu.
+- Główny agent `astra` koordynuje pracę i deleguje kodowanie do subagenta `astra`.
+  Niezależny przegląd wykonuje `opus5` (read-only); `sol` jest opcjonalnym dodatkowym
+  reviewerem (read-only). Delegacja wyłącznie do `astra`, `opus5` i `sol`.
+  Pętla: `astra` koduje i testuje → świeży `opus5` sprawdza → `astra` poprawia →
+  `opus5` weryfikuje. Orkiestrator odpowiada za integrację i sprawdzenie dowodów.
+  Obowiązkowe skille: `simple`, `coding`, `subagent`, `workflow`. Briefy według
+  `.agents/skills/subagent/assets/SUBAGENT-BRIEF.template.md`: samowystarczalny
+  kontrakt, zakres zapisu, zakazy, baseline i wymagane dowody. Przy nieudanej
+  delegacji sprawdź najpierw brief, kontekst i podział pracy przed ponowieniem.
 
 ## Python
 
@@ -34,8 +45,10 @@ Python 3.14+. Standard pracy: `.agents/skills/coding/SKILL.md`; standard Pythona
 Reguły bez lintera (agent je łamie, nic ich nie łapie):
 
 - Typuj też zmienne lokalne i atrybuty, nie tylko parametry/zwroty (te wymusza mypy). Puste kolekcje z jawnym typem (`items: list[str] = []`).
-- Docstring stałej `Final` pod nią, nie nad (hook sprawdza że JEST, nie czy pod). Stałe grupuj w sekcji `# ── Constants ──`.
-- Docstring/komentarz mówi CO kod robi, nigdy historii zmian ani planu. Komentarze WHY, nie WHAT. Guard clauses, early return, max 2 poziomy zagnieżdżeń.
+- Docstring stałej `Final` pod nią, nie nad (hook sprawdza że JEST, nie czy pod). Zachowuj dekoracyjne nagłówki sekcji; stałe grupuj pod `# ── Constants ─────────────────────────────────────────────────────────────────`.
+- Nie dodawaj zwykłych komentarzy opisowych w kodzie. Wyjątki: dekoracyjne nagłówki sekcji oraz wymagane dyrektywy narzędzi (`# noqa`, `# type:`, `# pragma`).
+- Docstringi pisz w jednej linii; dłuższe tylko dla istotnego kontraktu, którego nie da się jasno opisać jednym zdaniem. Prywatne funkcje i metody nie potrzebują docstringów, jeśli ich cel wynika z nazwy i kodu. Opisuj kontrakt, nigdy historię zmian ani plan pracy. W testach obowiązuje całkowity zakaz opisowej prozy wskazany niżej.
+- Guard clauses, early return, max 2 poziomy zagnieżdżeń.
 
 Specyfika AniShift:
 
@@ -54,7 +67,7 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 - `external/` — pobrane binarki (gitignored) + docs HTML narzędzi; szczegóły w `external/README.md`
 - `config/` — runtime katalog na `settings.json` panelu (gitignored); opis w `config/README.md`
 - `scripts/hooks/` — hook `check_commit_msg.py` (Conventional Commits); `scripts/tmp/` — jednorazowe
-- `workspace/` — user wrzuca MKV, pliki pośrednie powstają obok (patrz Dane runtime)
+- `workspace/` — user wrzuca MKV do roota; gotowe odcinki zbiera `ready/`, staging leży w `temp/` (patrz Dane runtime)
 
 ## Twarde strażniki
 
@@ -66,14 +79,14 @@ Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit
 - **commit-msg:** `check_commit_msg.py` — `typ(scope): opis`, scope obowiązkowy z listy.
 - **pre-push:** mypy dla bieżącej platformy, mypy `--platform linux` i pytest (łapią błędy lokalnie zanim pójdą do CI).
 - **ruff select** wymusza m.in.: typy param/zwrot (`ANN`), `from __future__` (`FA`), `X | None` zamiast `Optional` (`UP`), docstringi modułów/klas/funkcji (`D`), zakaz `except Exception` (`BLE`).
-- **CI:** `.github/workflows/ci.yml` — ruff i hooki na Ubuntu; pip-audit eksportowanego locka na Ubuntu i Windowsie; mypy na Ubuntu w obu targetach (`--platform win32` obok domyślnego); pytest plus smoke `anishift --help` na Ubuntu i Windowsie.
+- **CI:** `.github/workflows/ci.yml` — ruff i hooki na Ubuntu; pip-audit eksportowanego locka na Ubuntu i Windowsie; mypy na Ubuntu w obu targetach (`--platform win32` obok domyślnego); pytest plus smoke `anishift --help` tylko na Windowsie, z narzędziami z `anishift setup`.
 - `testpaths` obejmuje też `anishift/utils/{logger,rich_console,timer}/tests` — samo `pytest tests/` je pomija.
 
 ## Dane runtime
 
-- `workspace/` — dozwolony jest tylko zarządzany podfolder `temp/`; trwałe produkty leżą obok źródła. Zero `input/`, `output/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`.
-- Preferencje panelu: `config/settings.json` (obok kodu, gitignored, poza workspace).
-- Settings API/env: pydantic-settings, prefix `ANISHIFT_`, z `.env`, wszystkie opcjonalne.
+- `workspace/` — wejście w root i podfolderach serii, skanowane rekurencyjnie z pominięciem `temp/` i katalogów od kropki. Po sukcesie źródło i produkty trafiają do płaskiego `ready/`; regeneracja działa tam na miejscu. `temp/` trzyma staging. Zero wymaganego `input/`, `output/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`; wspólny układ katalogów wylicza `anishift/paths.py`.
+- Preferencje panelu: `config/settings.json` (gitignored, poza workspace). Stan rezydenta: `config/watch/` (ledger, blokada, endpoint, chroniony klucz IPC, `runs/` i `relocations/`); subskrypcje: `config/subscriptions.json`. Prywatny profil klienta: `config/qbittorrent/` (gitignored, chronione dane uwierzytelnienia). Ledger nie zawiera kluczy usług ani mediów.
+- Settings API/env: pydantic-settings, prefix `ANISHIFT_`, z `.env`, wszystkie opcjonalne. Klient torrent: `ANISHIFT_QBITTORRENT_URL` (domyślnie `http://127.0.0.1:8080`), `ANISHIFT_QBITTORRENT_USERNAME`, `ANISHIFT_QBITTORRENT_PASSWORD`.
 - Diagnostyka runtime używa wyłącznie `from anishift.utils.logger import get_logger`
   oraz modułowego `logger = get_logger(__name__)`. Sinki konfiguruje tylko granica
   procesu w `cli/main.py`; kod domenowy nie importuje bezpośrednio Loguru.

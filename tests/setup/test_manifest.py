@@ -35,13 +35,16 @@ def _raw_resource(**overrides: object) -> dict[str, object]:
 
 def test_real_manifest_loads_declared_resources() -> None:
     resources = load_manifest(manifest_path())
-    assert {resource.name for resource in resources} == {"mkvtoolnix", "ffmpeg"}
+    assert {resource.name for resource in resources} == {"mkvtoolnix", "ffmpeg", "7zr", "7zip", "qbittorrent"}
 
 
 def test_real_manifest_dests_match_binaries_layout() -> None:
     for resource in load_manifest(manifest_path()):
         for member in resource.members:
             dest = PurePosixPath(member.dest)
+            if dest.suffix != ".exe":
+                assert str(dest) in {"7zip/7z.dll", "qbittorrent/qt.conf"}
+                continue
             binary = Binary(dest.name.removesuffix(".exe"))
             assert dest.parent == PurePosixPath(TOOL_DIR[binary]), f"{member.dest} contradicts TOOL_DIR[{binary}]"
 

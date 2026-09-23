@@ -13,8 +13,10 @@ import pytest
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState
 from anishift.application.cancellation import EventCancellationToken, NeverCancelledToken
 from anishift.application.events import WorkerNotification
-from anishift.application.planning import PlanTask, TaskKind
+from anishift.application.intents import NarrationTimeline
+from anishift.application.planning import ExecutionPlan, PlanTask, ProcessingOrderPolicy, RunSettingsSnapshot, TaskKind
 from anishift.application.results import ArtifactSnapshot, TaskResult
+from anishift.application.runtime import ProductionHandlerFactory
 from anishift.application.tts_clips import FfmpegClipService
 from anishift.application.tts_handler import (
     NarrationTiming,
@@ -23,7 +25,9 @@ from anishift.application.tts_handler import (
     build_narration_manifest,
     load_narration_manifest,
 )
+from anishift.config.settings import Settings
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError
+from anishift.platform.binaries import Binary, resolve_binary
 from anishift.services.audio.commands import CommandResult
 from anishift.services.audio.errors import AudioProcessError
 from anishift.services.tts import (
@@ -38,6 +42,11 @@ from anishift.services.tts import (
     SpeechRequest,
     SynthesisStatus,
     SynthesizedRequest,
+)
+
+_SPOKEN_PARAMETERS: tuple[tuple[str, str | int | bool], ...] = (
+    ("narration_timeline", "source_times"),
+    ("script_kind", "spoken_pl"),
 )
 
 
@@ -116,7 +125,16 @@ def test_tts_handler_writes_timed_clip_manifest(tmp_path: Path) -> None:
     output = Artifact(
         "manifest", "group-1", ArtifactKind.TTS_MANIFEST, None, ArtifactState.MISSING, ArtifactLifetime.INTERMEDIATE
     )
-    task = PlanTask("tts", "group-1", TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",), (), "tts:edge")
+    task = PlanTask(
+        "tts",
+        "group-1",
+        TaskKind.SYNTHESIZE_SPEECH,
+        ("spoken",),
+        ("manifest",),
+        (),
+        "tts:edge",
+        _SPOKEN_PARAMETERS,
+    )
 
     service = _Tts(tmp_path)
     result: TaskResult = TtsTaskHandler(
@@ -157,7 +175,16 @@ def test_a_subtitle_without_duration_still_gets_a_placement_window(tmp_path: Pat
     output = Artifact(
         "manifest", "group-1", ArtifactKind.TTS_MANIFEST, None, ArtifactState.MISSING, ArtifactLifetime.INTERMEDIATE
     )
-    task = PlanTask("tts", "group-1", TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",), (), "tts:edge")
+    task = PlanTask(
+        "tts",
+        "group-1",
+        TaskKind.SYNTHESIZE_SPEECH,
+        ("spoken",),
+        ("manifest",),
+        (),
+        "tts:edge",
+        _SPOKEN_PARAMETERS,
+    )
 
     result: TaskResult = TtsTaskHandler(
         _Tts(tmp_path),
@@ -181,6 +208,7 @@ def test_a_stored_manifest_window_without_duration_is_repaired_on_load(tmp_path:
         json.dumps(
             {
                 "scope_id": "group-1",
+                "timeline": "source_times",
                 "clips": [
                     {
                         "request_id": "group-1-214",
@@ -220,7 +248,16 @@ def test_tts_handler_forwards_legacy_visible_required_percentages(tmp_path: Path
     output = Artifact(
         "manifest", "group-1", ArtifactKind.TTS_MANIFEST, None, ArtifactState.MISSING, ArtifactLifetime.INTERMEDIATE
     )
-    task = PlanTask("tts", "group-1", TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",), (), "tts:edge")
+    task = PlanTask(
+        "tts",
+        "group-1",
+        TaskKind.SYNTHESIZE_SPEECH,
+        ("spoken",),
+        ("manifest",),
+        (),
+        "tts:edge",
+        _SPOKEN_PARAMETERS,
+    )
     progress = _Progress()
 
     TtsTaskHandler(
@@ -272,6 +309,7 @@ def test_tts_handler_reuses_service_and_closes_only_at_run_boundary(tmp_path: Pa
             (output.artifact_id,),
             (),
             "tts:edge",
+            _SPOKEN_PARAMETERS,
         )
         handler.execute(
             task,
@@ -291,7 +329,16 @@ def test_tts_handler_rejects_cancelled_task_before_synthesis(tmp_path: Path) -> 
     token = EventCancellationToken()
     token.cancel()
     service = _Tts(tmp_path)
-    task = PlanTask("tts", "group-1", TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",), (), "tts:edge")
+    task = PlanTask(
+        "tts",
+        "group-1",
+        TaskKind.SYNTHESIZE_SPEECH,
+        ("spoken",),
+        ("manifest",),
+        (),
+        "tts:edge",
+        _SPOKEN_PARAMETERS,
+    )
 
     with pytest.raises(ExecutionError) as raised:
         TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0}).execute(
@@ -316,6 +363,7 @@ def test_manifest_rejects_submitted_request_without_clip(tmp_path: Path) -> None
             replace(result, requests=(missing_clip,)),
             (NarrationTiming("request-1", 1000, 2000, 0),),
             expected_scope_id="group-1",
+            timeline=NarrationTimeline.SOURCE_TIMES,
         )
 
 
@@ -425,3 +473,235 @@ def test_clip_validation_starts_no_process_once_cancelled(tmp_path: Path) -> Non
 
     assert validation is None
     assert runner.operations == []
+
+
+def _script(path: Path, kind: ArtifactKind) -> Artifact:
+    return Artifact("script", "group-1", kind, path, ArtifactState.READY, ArtifactLifetime.SOURCE, path)
+
+
+def _manifest_slot() -> Artifact:
+    return Artifact(
+        "manifest", "group-1", ArtifactKind.TTS_MANIFEST, None, ArtifactState.MISSING, ArtifactLifetime.INTERMEDIATE
+    )
+
+
+def _speech_task(timeline: str, script_kind: ArtifactKind) -> PlanTask:
+    return PlanTask(
+        "tts",
+        "group-1",
+        TaskKind.SYNTHESIZE_SPEECH,
+        ("script",),
+        ("manifest",),
+        (),
+        "tts:edge",
+        (("narration_timeline", timeline), ("script_kind", script_kind.value)),
+    )
+
+
+def _read_aloud(
+    tmp_path: Path,
+    path: Path,
+    kind: ArtifactKind,
+    timeline: str,
+    service: _Tts | None = None,
+) -> TaskResult:
+    return TtsTaskHandler(
+        service if service is not None else _Tts(tmp_path),
+        run_root=tmp_path / "run",
+        group_ranks={"group-1": 0},
+    ).execute(
+        _speech_task(timeline, kind),
+        ArtifactSnapshot({"script": _script(path, kind)}, {"manifest": _manifest_slot()}),
+        NeverCancelledToken(),
+        _Progress(),
+    )
+
+
+def _book_srt(tmp_path: Path) -> Path:
+    path: Path = tmp_path / "book.pl.srt"
+    path.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nPierwsze zdanie\n\n"
+        "2\n00:05:00,000 --> 00:05:04,000\nDrugie zdanie\n\n"
+        "3\n00:05:03,000 --> 00:05:08,000\nTrzecie zdanie\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_a_continuous_reading_asks_for_no_place_in_time_at_all(tmp_path: Path) -> None:
+    path: Path = _book_srt(tmp_path)
+
+    result: TaskResult = _read_aloud(tmp_path, path, ArtifactKind.FULL_PL, "continuous")
+
+    manifest = load_narration_manifest(result.outputs[0].path)
+    assert [(clip.start_ms, clip.end_ms) for clip in manifest.clips] == [(0, 1), (0, 1), (0, 1)]
+    assert [clip.source_order for clip in manifest.clips] == [0, 1, 2]
+
+
+def test_a_reading_that_keeps_the_book_times_keeps_them_exactly(tmp_path: Path) -> None:
+    path: Path = _book_srt(tmp_path)
+
+    result: TaskResult = _read_aloud(tmp_path, path, ArtifactKind.FULL_PL, "source_times")
+
+    manifest = load_narration_manifest(result.outputs[0].path)
+    assert [(clip.start_ms, clip.end_ms) for clip in manifest.clips] == [
+        (1_000, 2_000),
+        (300_000, 304_000),
+        (303_000, 308_000),
+    ]
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize("prefix", [b"", b"\xef\xbb\xbf"])
+def test_reading_a_book_never_rewrites_one_byte_of_the_book(tmp_path: Path, newline: str, prefix: bytes) -> None:
+    path: Path = tmp_path / "book.pl.srt"
+    lines: str = newline.join(
+        (
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "Pierwsze zdanie",
+            "",
+            "2",
+            "00:05:00,000 --> 00:05:04,000",
+            "Drugie zdanie",
+            "",
+        )
+    )
+    before: bytes = prefix + lines.encode("utf-8")
+    path.write_bytes(before)
+
+    result: TaskResult = _read_aloud(tmp_path, path, ArtifactKind.FULL_PL, "continuous")
+
+    assert len(load_narration_manifest(result.outputs[0].path).clips) == 2
+    assert path.read_bytes() == before
+
+
+def test_a_plain_text_is_read_in_the_order_it_was_written(tmp_path: Path) -> None:
+    path: Path = tmp_path / "book.txt"
+    paragraphs: tuple[str, ...] = ("Alfa " * 100, "Beta " * 100, "Gamma " * 80)
+    path.write_text("".join(f"{paragraph.strip()}.\n\n" for paragraph in paragraphs), encoding="utf-8")
+    service = _Tts(tmp_path)
+
+    result: TaskResult = _read_aloud(tmp_path, path, ArtifactKind.STANDALONE_TEXT, "continuous", service)
+
+    manifest = load_narration_manifest(result.outputs[0].path)
+    spoken: tuple[str, ...] = tuple(request.text for request in service.batches[0].requests)
+    assert [text.split()[0] for text in spoken] == ["Alfa", "Beta", "Gamma"]
+    assert [clip.source_order for clip in manifest.clips] == [0, 1, 2]
+    assert [(clip.start_ms, clip.end_ms) for clip in manifest.clips] == [(0, 1), (0, 1), (0, 1)]
+
+
+def test_a_plain_text_cannot_be_read_at_times_it_never_had(tmp_path: Path) -> None:
+    path: Path = tmp_path / "book.txt"
+    path.write_text("Pierwsze zdanie.\n", encoding="utf-8")
+    service = _Tts(tmp_path)
+
+    with pytest.raises(ExecutionError, match="times"):
+        _read_aloud(tmp_path, path, ArtifactKind.STANDALONE_TEXT, "source_times", service)
+
+    assert service.batches == []
+
+
+def test_a_book_with_nothing_to_pronounce_fails_before_any_voice_is_asked(tmp_path: Path) -> None:
+    path: Path = tmp_path / "book.pl.srt"
+    path.write_text("1\n00:00:01,000 --> 00:00:02,000\n...\n\n2\n00:00:03,000 --> 00:00:04,000\n♪\n", encoding="utf-8")
+    service = _Tts(tmp_path)
+
+    with pytest.raises(ExecutionError, match="no pronounceable text"):
+        _read_aloud(tmp_path, path, ArtifactKind.FULL_PL, "continuous", service)
+
+    assert service.batches == []
+
+
+def test_a_script_that_is_not_the_one_the_plan_promised_is_refused(tmp_path: Path) -> None:
+    path: Path = _book_srt(tmp_path)
+    service = _Tts(tmp_path)
+    handler = TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0})
+
+    with pytest.raises(ExecutionError, match="does not match the document"):
+        handler.execute(
+            _speech_task("continuous", ArtifactKind.SPOKEN_PL),
+            ArtifactSnapshot({"script": _script(path, ArtifactKind.FULL_PL)}, {"manifest": _manifest_slot()}),
+            NeverCancelledToken(),
+            _Progress(),
+        )
+
+    assert service.batches == []
+
+
+def test_a_voice_the_engine_does_not_offer_is_refused_before_any_request_is_paid_for(tmp_path: Path) -> None:
+    path: Path = _book_srt(tmp_path)
+    service = _Tts(tmp_path)
+    handler = TtsTaskHandler(
+        service,
+        run_root=tmp_path / "run",
+        group_ranks={"group-1": 0},
+        voice_id="pl-PL-SomeoneElseNeural",
+        allowed_voice_ids=frozenset({"pl-PL-MarekNeural", "pl-PL-ZofiaNeural"}),
+    )
+
+    with pytest.raises(ExecutionError, match="not one the chosen TTS engine offers"):
+        handler.execute(
+            _speech_task("continuous", ArtifactKind.FULL_PL),
+            ArtifactSnapshot({"script": _script(path, ArtifactKind.FULL_PL)}, {"manifest": _manifest_slot()}),
+            NeverCancelledToken(),
+            _Progress(),
+        )
+
+    assert service.batches == []
+
+
+def test_a_voice_only_the_provider_can_name_is_never_refused_locally(tmp_path: Path) -> None:
+    path: Path = _book_srt(tmp_path)
+    service = _Tts(tmp_path)
+    handler = TtsTaskHandler(
+        service,
+        run_root=tmp_path / "run",
+        group_ranks={"group-1": 0},
+        voice_id="a-provider-only-id",
+    )
+
+    handler.execute(
+        _speech_task("continuous", ArtifactKind.FULL_PL),
+        ArtifactSnapshot({"script": _script(path, ArtifactKind.FULL_PL)}, {"manifest": _manifest_slot()}),
+        NeverCancelledToken(),
+        _Progress(),
+    )
+
+    assert len(service.batches) == 1
+
+
+def test_the_production_speech_handler_refuses_a_voice_its_own_engine_never_offered(tmp_path: Path) -> None:
+    if resolve_binary(Binary.FFMPEG) is None or resolve_binary(Binary.FFPROBE) is None:
+        pytest.skip("bundled FFmpeg is unavailable")
+    settings = RunSettingsSnapshot(
+        translation_profile_id="google",
+        translation_max_retries=2,
+        translation_concurrency=2,
+        llm_profile_id="gemini",
+        llm_max_concurrency=2,
+        tts_profile_id="edge",
+        tts_max_retries=2,
+        tts_group_jobs=2,
+        audio_profile_id="eac3",
+        composition_profile_id="balanced",
+        processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
+        tts_voice_id="pl-PL-SomeoneElseNeural",
+        tts_allowed_voice_ids=("pl-PL-MarekNeural", "pl-PL-ZofiaNeural"),
+    )
+    handler: TtsTaskHandler | None = ProductionHandlerFactory._tts_handler(
+        Settings(_env_file=None),
+        tmp_path / "run",
+        ExecutionPlan((), (), (), settings, ()),
+        frozenset({TaskKind.SYNTHESIZE_SPEECH}),
+    )
+    path: Path = _book_srt(tmp_path)
+
+    assert handler is not None
+    with pytest.raises(ExecutionError, match="not one the chosen TTS engine offers"):
+        handler.execute(
+            _speech_task("continuous", ArtifactKind.FULL_PL),
+            ArtifactSnapshot({"script": _script(path, ArtifactKind.FULL_PL)}, {"manifest": _manifest_slot()}),
+            NeverCancelledToken(),
+            _Progress(),
+        )

@@ -1,0 +1,449 @@
+"""Blocking Windows directory notifications with an explicit polling fallback."""
+
+from __future__ import annotations
+
+import ctypes
+import struct
+import sys
+import threading
+from collections.abc import Callable
+from ctypes import wintypes
+from dataclasses import dataclass
+from functools import cache
+from pathlib import Path
+from typing import TYPE_CHECKING, Final
+
+from anishift.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from _ctypes import CFuncPtr
+
+logger = get_logger(__name__)
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+BUFFER_BYTES: Final[int] = 64 * 1024
+"""Maximum notification buffer also accepted by Windows network redirectors."""
+
+FALLBACK_INTERVAL_S: Final[float] = 30.0
+"""Reconciliation interval when the filesystem cannot provide native notifications."""
+
+_FILE_LIST_DIRECTORY: Final[int] = 0x0001
+"""Directory access required for change notifications."""
+
+_GENERIC_READ: Final[int] = 0x80000000
+"""Read access used to admit complete sources, including read-only files."""
+
+_SHARE_READ: Final[int] = 0x0001
+"""Allow players to read a source while refusing existing writers."""
+
+_SHARE_ALL: Final[int] = 0x0007
+"""Keep read, write and deletion available to other directory users."""
+
+_OPEN_EXISTING: Final[int] = 3
+"""Open a directory without creating or replacing it."""
+
+_DIRECTORY_FLAGS: Final[int] = 0x42000000
+"""Backup semantics and overlapped I/O for a directory handle."""
+
+_NOTIFY_FILTER: Final[int] = 0x0000001F
+"""Watch names, directories, attributes, size and last-write changes."""
+
+_DIRECTORY_NAMES: Final[int] = 0x00000002
+"""Observe root replacement through directory names in its immediate parent."""
+
+_FILE_ACTION_MODIFIED: Final[int] = 3
+"""Windows metadata or content modification, distinct from a namespace create, delete or rename."""
+
+_INFINITE: Final[int] = 0xFFFFFFFF
+"""Wait for an event without periodic wakeups."""
+
+_ERROR_IO_PENDING: Final[int] = 997
+"""An asynchronous directory read was accepted and is still pending."""
+
+_ERROR_NOTIFY_ENUM_DIR: Final[int] = 1022
+"""Windows could not retain every change and requires reconciliation."""
+
+_CLOSE_TIMEOUT_S: Final[float] = 5.0
+"""Time allowed for the notification thread to acknowledge cancellation."""
+
+_DEVICE_NOTIFY_CALLBACK: Final[int] = 2
+"""Register a power callback without creating a window or polling the clock."""
+
+_RESUME_EVENTS: Final[frozenset[int]] = frozenset({7, 18})
+"""PBT_APMRESUMESUSPEND and PBT_APMRESUMEAUTOMATIC trigger library reconciliation."""
+
+
+@dataclass(frozen=True, slots=True)
+class DirectoryChange:
+    """Changed paths or a request to reconcile the complete directory."""
+
+    paths: tuple[Path, ...] = ()
+    reconcile: bool = False
+    reason: str = "change"
+    modified_paths: tuple[Path, ...] = ()
+
+
+def source_is_available(path: Path) -> bool:
+    """Check source readability and reject open writers on Windows."""
+    if sys.platform != "win32":
+        try:
+            with path.open("rb"):
+                return True
+        except OSError:
+            return False
+    api: ctypes.CDLL = _kernel32()
+    handle: int = int(api.CreateFileW(str(path), _GENERIC_READ, _SHARE_READ, None, _OPEN_EXISTING, 0, None))
+    if handle == ctypes.c_void_p(-1).value:
+        return False
+    api.CloseHandle(handle)
+    return True
+
+
+class DirectoryWatch:
+    """Observe a library without polling while native notifications are available."""
+
+    def __init__(self, root: Path, changed: Callable[[DirectoryChange], None]) -> None:
+        self._root: Path = root
+        self._changed: Callable[[DirectoryChange], None] = changed
+        self._stopped: threading.Event = threading.Event()
+        self._retry: threading.Event = threading.Event()
+        self._native: _WindowsChanges | None = None
+        self._parent: _WindowsChanges | None = None
+        self._parent_thread: threading.Thread | None = None
+        self._power: _PowerNotifications | None = None
+        self.mode: str = "native"
+        try:
+            self._native = _WindowsChanges(root)
+        except OSError:
+            self.mode = "polling"
+        if sys.platform == "win32":
+            try:
+                self._power = _PowerNotifications(self._resumed)
+                self._parent = _WindowsChanges(root.parent, recursive=False, notify_filter=_DIRECTORY_NAMES)
+                self._parent_thread = threading.Thread(target=self._observe_root, name="anishift-root", daemon=True)
+                self._parent_thread.start()
+            except OSError:
+                if self._native is not None:
+                    self._native.close()
+                    self._native = None
+                self.mode = "polling"
+                logger.warning("Power notifications are unavailable; using periodic reconciliation")
+        self._thread: threading.Thread = threading.Thread(target=self._run, name="anishift-files", daemon=True)
+        self._thread.start()
+
+    def close(self) -> None:
+        """Cancel the outstanding wait and release directory and event handles."""
+        self._stopped.set()
+        self._retry.set()
+        if self._parent is not None:
+            self._parent.stop()
+        if self._parent_thread is not None:
+            self._parent_thread.join(_CLOSE_TIMEOUT_S)
+            if self._parent_thread.is_alive():
+                msg = "The root watcher did not acknowledge cancellation"
+                raise TimeoutError(msg)
+        if self._power is not None:
+            self._power.close()
+            self._power = None
+        native: _WindowsChanges | None = self._native
+        if native is not None:
+            native.stop()
+        self._thread.join(_CLOSE_TIMEOUT_S)
+        if self._thread.is_alive():
+            msg = "The directory watcher did not acknowledge cancellation"
+            raise TimeoutError(msg)
+
+    def _run(self) -> None:
+        while not self._stopped.is_set():
+            self._retry.clear()
+            self._observe_native()
+            if self._stopped.is_set():
+                return
+            self.mode = "polling"
+            self._changed(DirectoryChange(reconcile=True, reason="polling_fallback"))
+            self._retry.wait(FALLBACK_INTERVAL_S)
+
+    def _observe_native(self) -> None:
+        native: _WindowsChanges | None = self._native
+        try:
+            if native is None and self._power is not None and self._parent is not None:
+                native = _WindowsChanges(self._root)
+                self._native = native
+                self.mode = "native"
+                self._changed(DirectoryChange(reconcile=True, reason="reconnected"))
+            if native is not None:
+                self._run_native(native)
+        except OSError:
+            logger.warning("Native directory notifications failed; using periodic reconciliation")
+        finally:
+            if native is not None:
+                native.close()
+                self._native = None
+
+    def _observe_root(self) -> None:
+        parent: _WindowsChanges | None = self._parent
+        if parent is None:
+            return
+        try:
+            while not self._stopped.is_set():
+                change: DirectoryChange | None = parent.read()
+                if change is None:
+                    return
+                if change.reconcile or self._root in change.paths:
+                    native: _WindowsChanges | None = self._native
+                    if native is not None:
+                        native.stop()
+                    self._retry.set()
+        except OSError:
+            logger.warning("Library root notifications failed; using periodic reconciliation")
+            native = self._native
+            if native is not None:
+                native.stop()
+        finally:
+            parent.close()
+            self._parent = None
+
+    def _resumed(self) -> None:
+        if not self._stopped.is_set():
+            self._changed(DirectoryChange(reconcile=True, reason="resume"))
+
+    def _run_native(self, native: _WindowsChanges) -> None:
+        while not self._stopped.is_set():
+            change: DirectoryChange | None = native.read()
+            if change is None:
+                return
+            self._changed(change)
+
+
+class _PowerParameters(ctypes.Structure):
+    _fields_ = [("callback", ctypes.c_void_p), ("context", ctypes.c_void_p)]
+
+
+class _PowerNotifications:
+    def __init__(self, resumed: Callable[[], None]) -> None:
+        if sys.platform != "win32":
+            msg = "Power notifications require Windows"
+            raise OSError(msg)
+        self._resumed: Callable[[], None] = resumed
+        self._api: ctypes.CDLL = ctypes.WinDLL("powrprof", use_last_error=True)
+        self._api.PowerRegisterSuspendResumeNotification.argtypes = [wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p]
+        self._api.PowerRegisterSuspendResumeNotification.restype = wintypes.DWORD
+        self._api.PowerUnregisterSuspendResumeNotification.argtypes = [ctypes.c_void_p]
+        self._api.PowerUnregisterSuspendResumeNotification.restype = wintypes.DWORD
+        self._callback: CFuncPtr = ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG, ctypes.c_void_p)(
+            self._notify
+        )
+        self._parameters: _PowerParameters = _PowerParameters(ctypes.cast(self._callback, ctypes.c_void_p), None)
+        self._handle: ctypes.c_void_p = ctypes.c_void_p()
+        error: int = self._api.PowerRegisterSuspendResumeNotification(
+            _DEVICE_NOTIFY_CALLBACK, ctypes.byref(self._parameters), ctypes.byref(self._handle)
+        )
+        if error:
+            raise OSError(error, "Could not register power notifications")
+
+    def close(self) -> None:
+        """Unregister the callback before releasing its Python callable."""
+        if self._handle.value is None:
+            return
+        error: int = self._api.PowerUnregisterSuspendResumeNotification(self._handle)
+        if error:
+            raise OSError(error, "Could not unregister power notifications")
+        self._handle = ctypes.c_void_p()
+
+    def _notify(self, context: int | None, event: int, setting: int | None) -> int:
+        del context, setting
+        if event in _RESUME_EVENTS:
+            self._resumed()
+        return 0
+
+
+class _Overlapped(ctypes.Structure):
+    _fields_ = [
+        ("Internal", ctypes.c_size_t),
+        ("InternalHigh", ctypes.c_size_t),
+        ("Offset", wintypes.DWORD),
+        ("OffsetHigh", wintypes.DWORD),
+        ("hEvent", wintypes.HANDLE),
+    ]
+
+
+class _WindowsChanges:
+    def __init__(self, root: Path, *, recursive: bool = True, notify_filter: int = _NOTIFY_FILTER) -> None:
+        self._api: ctypes.CDLL = _kernel32()
+        self._root: Path = root
+        self._recursive: bool = recursive
+        self._notify_filter: int = notify_filter
+        self._lock: threading.Lock = threading.Lock()
+        self._closed: bool = False
+        self._directory: int = int(
+            self._api.CreateFileW(
+                str(root),
+                _FILE_LIST_DIRECTORY,
+                _SHARE_ALL,
+                None,
+                _OPEN_EXISTING,
+                _DIRECTORY_FLAGS,
+                None,
+            )
+        )
+        if self._directory == ctypes.c_void_p(-1).value:
+            raise OSError(_last_error(), "Could not watch the library directory")
+        self._stop: int = 0
+        self._event: int = 0
+        self._buffer: ctypes.Array[wintypes.DWORD] = (
+            wintypes.DWORD * (BUFFER_BYTES // ctypes.sizeof(wintypes.DWORD))
+        )()
+        self._overlapped: _Overlapped = _Overlapped()
+        try:
+            self._stop = self._create_event()
+            self._event = self._create_event()
+            self._overlapped.hEvent = self._event
+            self._arm()
+        except OSError:
+            self.close()
+            raise
+
+    def _arm(self) -> None:
+        self._api.ResetEvent(self._event)
+        accepted: bool = bool(
+            self._api.ReadDirectoryChangesW(
+                self._directory,
+                self._buffer,
+                BUFFER_BYTES,
+                self._recursive,
+                self._notify_filter,
+                None,
+                ctypes.byref(self._overlapped),
+                None,
+            )
+        )
+        if not accepted and _last_error() != _ERROR_IO_PENDING:
+            raise OSError(_last_error(), "Could not start directory notifications")
+
+    def _create_event(self) -> int:
+        handle: int = int(self._api.CreateEventW(None, True, False, None) or 0)
+        if not handle:
+            raise OSError(_last_error(), "Could not create directory notification events")
+        return handle
+
+    def read(self) -> DirectoryChange | None:
+        handles: ctypes.Array[wintypes.HANDLE] = (wintypes.HANDLE * 2)(self._stop, self._event)
+        signalled: int = int(self._api.WaitForMultipleObjects(2, handles, False, _INFINITE))
+        if signalled == 0:
+            return None
+        if signalled != 1:
+            raise OSError(_last_error(), "Directory notification wait failed")
+        count: wintypes.DWORD = wintypes.DWORD()
+        complete: bool = bool(
+            self._api.GetOverlappedResult(
+                self._directory,
+                ctypes.byref(self._overlapped),
+                ctypes.byref(count),
+                False,
+            )
+        )
+        if not complete and _last_error() != _ERROR_NOTIFY_ENUM_DIR:
+            raise OSError(_last_error(), "Directory notification read failed")
+        payload: bytes = ctypes.string_at(self._buffer, count.value) if complete else b""
+        self._arm()
+        return _decode_changes(self._root, payload)
+
+    def stop(self) -> None:
+        with self._lock:
+            if not self._closed:
+                self._api.SetEvent(self._stop)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._api.CancelIoEx(self._directory, ctypes.byref(self._overlapped))
+            count: wintypes.DWORD = wintypes.DWORD()
+            self._api.GetOverlappedResult(self._directory, ctypes.byref(self._overlapped), ctypes.byref(count), True)
+            for handle in (self._directory, self._stop, self._event):
+                if handle:
+                    self._api.CloseHandle(handle)
+
+
+def _decode_changes(root: Path, payload: bytes) -> DirectoryChange:  # noqa: PLR0911
+    if not payload:
+        return DirectoryChange(reconcile=True, reason="overflow")
+    paths: dict[Path, bool] = {}
+    offset: int = 0
+    while True:
+        if offset + 12 > len(payload):
+            return DirectoryChange(reconcile=True, reason="invalid_notification")
+        following: int
+        length: int
+        following, action, length = struct.unpack_from("<III", payload, offset)
+        end: int = offset + 12 + length
+        if end > len(payload) or length % 2:
+            return DirectoryChange(reconcile=True, reason="invalid_notification")
+        try:
+            relative: Path = Path(payload[offset + 12 : end].decode("utf-16-le"))
+        except UnicodeDecodeError:
+            return DirectoryChange(reconcile=True, reason="invalid_notification")
+        if relative.is_absolute() or ".." in relative.parts:
+            return DirectoryChange(reconcile=True, reason="invalid_notification")
+        path: Path = root / relative
+        paths[path] = paths.get(path, True) and action == _FILE_ACTION_MODIFIED
+        if not following:
+            return DirectoryChange(
+                paths=tuple(paths), modified_paths=tuple(path for path, modified in paths.items() if modified)
+            )
+        if following < 12 + length or following % 4:
+            return DirectoryChange(reconcile=True, reason="invalid_notification")
+        offset += following
+
+
+def _last_error() -> int:
+    if sys.platform == "win32":
+        return ctypes.get_last_error()
+    msg = "Windows error state is unavailable on this platform"
+    raise OSError(msg)
+
+
+@cache
+def _kernel32() -> ctypes.CDLL:
+    if sys.platform != "win32":
+        msg = "Native directory notifications require Windows"
+        raise OSError(msg)
+    api: ctypes.CDLL = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    api.CreateFileW.restype = wintypes.HANDLE
+    api.CreateEventW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    api.CreateEventW.restype = wintypes.HANDLE
+    api.ReadDirectoryChangesW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+    ]
+    api.ReadDirectoryChangesW.restype = wintypes.BOOL
+    api.GetOverlappedResult.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.LPVOID, wintypes.BOOL]
+    api.GetOverlappedResult.restype = wintypes.BOOL
+    api.WaitForMultipleObjects.argtypes = [wintypes.DWORD, wintypes.LPVOID, wintypes.BOOL, wintypes.DWORD]
+    api.WaitForMultipleObjects.restype = wintypes.DWORD
+    api.CancelIoEx.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
+    api.CancelIoEx.restype = wintypes.BOOL
+    api.ResetEvent.argtypes = [wintypes.HANDLE]
+    api.ResetEvent.restype = wintypes.BOOL
+    api.SetEvent.argtypes = [wintypes.HANDLE]
+    api.SetEvent.restype = wintypes.BOOL
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    api.CloseHandle.restype = wintypes.BOOL
+    return api

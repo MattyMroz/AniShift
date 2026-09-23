@@ -4,6 +4,7 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
+from pydantic import TypeAdapter
 
 from anishift.application.results import (
     GroupResult,
@@ -104,3 +105,16 @@ def test_run_result_rejects_duplicate_groups() -> None:
 
     with pytest.raises(ValueError, match="unique"):
         RunResult(run_id="run-1", groups=(group, group))
+
+
+@pytest.mark.parametrize("absent", [("full-pl",), ("displayed", "displayed"), ("",)])
+def test_task_result_rejects_overlapping_duplicate_or_blank_absent_ids(absent: tuple[str, ...]) -> None:
+    with pytest.raises(ValueError, match="unique"):
+        TaskResult("task", (_product(),), absent)
+
+
+def test_old_task_result_decoding_defaults_to_no_absent_outputs() -> None:
+    decoded: TaskResult = TypeAdapter(TaskResult).validate_json(
+        '{"task_id":"task","outputs":[{"artifact_id":"full","path":"full.ass","metadata":{}}]}', strict=True
+    )
+    assert decoded.absent_outputs == ()

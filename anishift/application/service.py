@@ -6,6 +6,7 @@ import os
 import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -15,7 +16,8 @@ from secrets import token_hex
 from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application.cancellation import CancellationToken, EventCancellationToken, NeverCancelledToken
-from anishift.application.discovery import DiscoveryResult, discover_groups
+from anishift.application.control_payloads import decode_overrides
+from anishift.application.discovery import DiscoveryIndex, DiscoveryResult
 from anishift.application.events import RunEventSink
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
 from anishift.application.intents import (
@@ -23,24 +25,27 @@ from anishift.application.intents import (
     ExternalAudioRole,
     GroupIntent,
     ProductIntent,
+    RebuildRequest,
+    RequestOrigin,
     SubtitleOutputFormat,
     SubtitleSourcePolicy,
     TranslationAction,
 )
 from anishift.application.planner import plan_auto as build_auto_plan
 from anishift.application.planner import plan_manual as build_manual_plan
-from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot, TaskKind
+from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
 from anishift.application.results import RunResult
-from anishift.application.scheduler import GraphScheduler, ResourceLimits
-from anishift.application.scheduler_contracts import TaskHandler
+from anishift.application.scheduler import GraphCoordinator, ResourceLimits, RunHandle
+from anishift.application.scheduler_contracts import RunRequest, TaskHandler
 from anishift.application.sessions import RunSession
+from anishift.application.workflows import WorkflowTarget
 from anishift.config.env_file import env_path, update_env_value
 from anishift.config.field_access import assign_setting_value, setting_is_active, setting_is_persisted
 from anishift.config.field_catalog import SettingCatalogContext, SettingSpec, SettingValue, setting_catalog
 from anishift.config.model_catalog import ModelCatalog, ModelCatalogError, load_model_catalog
 from anishift.config.presets import AutoPresetFile, load_presets, save_presets
 from anishift.config.settings import Settings
-from anishift.config.user_settings import UserSettings, save_user_settings
+from anishift.config.user_settings import UserSettings, load_user_settings, save_user_settings
 from anishift.config.workspace import cleanup_orphaned_temp, run_temp_dir
 from anishift.errors import (
     AniShiftError,
@@ -51,6 +56,7 @@ from anishift.errors import (
     PlanningError,
     RunConflictError,
 )
+from anishift.paths import ready_dir
 from anishift.services.llm.engines import (
     available_engine_ids as available_llm_engine_ids,
 )
@@ -60,11 +66,18 @@ from anishift.services.llm.engines import (
 from anishift.services.llm.palantir_token import PALANTIR_TOKEN_COMPAT_ENV_VAR
 from anishift.services.translation.engines import available_engine_ids as available_translation_engine_ids
 from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
+from anishift.services.tts.engines.edge.constants import MAREK_VOICE_ID, ZOFIA_VOICE_ID
+from anishift.services.tts.engines.elevenbytes.constants import DALLIN_VOICE_ID
 from anishift.setup.doctor import CheckResult, run_doctor
 from anishift.setup.installer import ResourceResult, run_setup
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from anishift.application.acquisition import AcquisitionService
+    from anishift.application.artifacts import SourceGroup
+    from anishift.application.control import RecipePreferences
+    from anishift.application.recovery import RunJournal
+    from anishift.application.subscriptions import SubscriptionService
     from anishift.services.llm import LlmConfig
 
 __all__ = [
@@ -91,19 +104,20 @@ type ModelProber = Callable[[LlmConfig], None]
 type WorkspaceFingerprint = tuple[tuple[str, int, int], ...]
 """Path, size and modification time of every discovered file in scan order."""
 
+
 # ── Constants ────────────────────────────────────────────────────────────────
 
 _PALANTIR_ENGINE_ID: Final[str] = "palantir"
 """LLM engine whose readiness needs an enrollment address and a catalog alias."""
-
-_EXTRACTION_IO_HEADROOM: Final[int] = 2
-"""Legacy number of extraction workers added above the CPU-count square root."""
 
 _DISCOVERY_LOCK_POLL_S: Final[float] = 0.1
 """Maximum cancellation delay while another discovery prepares media tools."""
 
 _TTS_GROUP_JOBS: Final[int] = 1
 """Legacy file-level limit keeping one episode in synthesis at a time."""
+
+_UNRESOLVED_RUN: Final[str] = "The coordinator produced neither a result nor a failure"
+"""Failure a run is settled with when its context ended without either outcome."""
 
 
 class ModelAvailability(StrEnum):
@@ -211,6 +225,8 @@ class AppService:
         model_prober: ModelProber | None = None,
         env_file: Path | None = None,
         prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = None,
+        acquisition: AcquisitionService | None = None,
+        subscriptions: SubscriptionService | None = None,
     ) -> None:
         self._workspace_root: Path = workspace_root
         self._settings: Settings = settings
@@ -226,26 +242,46 @@ class AppService:
         self._model_prober: ModelProber | None = model_prober
         self._env_file: Path = env_file if env_file is not None else env_path()
         self._workspace: InspectedWorkspace | None = None
+        self._discovery: DiscoveryIndex = DiscoveryIndex(workspace_root)
         self._workspace_fingerprint: WorkspaceFingerprint | None = None
-        self._active_run_id: str | None = None
-        self._active_cancel: EventCancellationToken | None = None
+        self._active_runs: dict[str, EventCancellationToken] = {}
+        self._active_groups: dict[str, str] = {}
+        self._coordinator: GraphCoordinator | None = None
         self._run_lock: threading.Lock = threading.Lock()
         self._discover_lock: threading.Lock = threading.Lock()
         self._prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = prepare_workspace
+        self._acquisition: AcquisitionService | None = acquisition
+        self._subscriptions: SubscriptionService | None = subscriptions
+        self._retained_runs: set[str] = set()
+
+    @property
+    def acquisition(self) -> AcquisitionService | None:
+        """Release search and download hand-off, absent when no torrent client was composed."""
+        return self._acquisition
+
+    @property
+    def subscriptions(self) -> SubscriptionService | None:
+        """Followed series and their hourly checks, absent when no torrent client was composed."""
+        return self._subscriptions
 
     @property
     def workspace_root(self) -> Path:
         """The directory every discovered group and planned product lives under."""
         return self._workspace_root
 
-    def discover(self, *, cancel: CancellationToken | None = None) -> InspectedWorkspace:
+    def discover(
+        self,
+        *,
+        cancel: CancellationToken | None = None,
+        changed_paths: Sequence[Path] | None = None,
+    ) -> InspectedWorkspace:
         """Inspect the workspace once, reusing the last inspection of unchanged files."""
         token: CancellationToken = cancel or NeverCancelledToken()
         while not self._discover_lock.acquire(timeout=_DISCOVERY_LOCK_POLL_S):
             token.raise_if_cancelled()
         try:
             token.raise_if_cancelled()
-            discovery: DiscoveryResult = discover_groups(self._workspace_root)
+            discovery: DiscoveryResult = self._discovery.discover(changed_paths)
             if self._prepare_workspace is not None:
                 self._prepare_workspace(discovery, token)
             token.raise_if_cancelled()
@@ -259,6 +295,13 @@ class AppService:
             return inspected
         finally:
             self._discover_lock.release()
+
+    def library_inventory(self, changed_paths: Sequence[Path] | None = None) -> tuple[SourceGroup, ...]:
+        """Reconcile ready filenames through the shared index without probing or admitting work."""
+        with self._discover_lock:
+            return self._discovery.discover(
+                changed_paths if changed_paths is not None else (ready_dir(self._workspace_root),)
+            ).groups
 
     def register_external_subtitle(
         self,
@@ -331,68 +374,222 @@ class AppService:
         self._preset_saver(updated)
         return preset
 
-    def plan_auto(
+    def plan_auto(  # noqa: PLR0913 - the recovered target of a finished set stays an explicit planning input
         self,
         group_ids: Sequence[str],
         preset: AutoPreset | AutoPresetDraft,
+        *,
+        rebuild: RebuildRequest | None = None,
+        overrides: Mapping[str, object] | None = None,
+        recipes: RecipePreferences | None = None,
+        targets: Mapping[str, WorkflowTarget] | None = None,
+        published: frozenset[Path] | None = None,
     ) -> ExecutionPlan:
-        """Plan selected groups from a stored or one-shot automatic preset."""
+        """Plan selected groups from a stored or one-shot automatic preset and the persisted target recipes."""
         resolved: AutoPreset = preset.to_preset() if isinstance(preset, AutoPresetDraft) else preset
-        return build_auto_plan(self._selected_groups(group_ids), resolved, self._settings_snapshot())
+        settings: RunSettingsSnapshot = self._settings_snapshot()
+        if overrides:
+            settings = decode_overrides(settings, overrides)
+        return build_auto_plan(
+            self._selected_groups(group_ids),
+            resolved,
+            settings,
+            rebuild=rebuild,
+            recipes=recipes,
+            targets=targets,
+            published=published,
+        )
 
-    def plan_manual(self, intents: Sequence[GroupIntent]) -> ExecutionPlan:
+    def plan_manual(
+        self,
+        intents: Sequence[GroupIntent],
+        *,
+        overrides: Mapping[str, object] | None = None,
+        published: frozenset[Path] | None = None,
+    ) -> ExecutionPlan:
         """Plan one independent explicit intent for every selected group."""
         intent_by_group: dict[str, GroupIntent] = {intent.group_id: intent for intent in intents}
         if len(intent_by_group) != len(intents):
             msg = "Manual intent group IDs must be unique"
             raise PlanningError(msg)
         groups: tuple[InspectedSourceGroup, ...] = self._selected_groups(tuple(intent_by_group))
-        return build_manual_plan(groups, intent_by_group, self._settings_snapshot())
+        settings: RunSettingsSnapshot = self._settings_snapshot()
+        if overrides:
+            settings = decode_overrides(settings, overrides)
+        return build_manual_plan(groups, intent_by_group, settings, published=published)
 
     def execute(self, plan: ExecutionPlan, sink: RunEventSink) -> RunResult:
-        """Execute one accepted immutable plan through a private run session."""
+        """Execute one accepted immutable plan and wait for its complete result."""
+        handle: RunHandle = self.submit_plan(plan, sink, origin=RequestOrigin.USER)
+        try:
+            return handle.result()
+        except BaseException:
+            handle.cancel()
+            with suppress(Exception):
+                handle.result()
+            raise
+
+    def submit_plan(  # noqa: PLR0913
+        self,
+        plan: ExecutionPlan,
+        sink: RunEventSink,
+        *,
+        origin: RequestOrigin,
+        run_id: str | None = None,
+        automatic: bool = False,
+        journal: RunJournal | None = None,
+        resume: bool = False,
+    ) -> RunHandle:
+        """Hand one accepted plan to the shared coordinator without waiting for it."""
         if not plan.can_execute:
             msg = "A plan with blocking problems cannot be executed"
             raise ExecutionError(msg)
-        run_id: str = f"run-{token_hex(8)}"
+        if resume and journal is None:
+            msg = "Resuming a run requires its verified checkpoint"
+            raise ExecutionError(msg)
+        identity: str = run_id if run_id is not None else f"run-{token_hex(8)}"
         cancel = EventCancellationToken()
-        self._claim_run(run_id, cancel)
-        run_root: Path = run_temp_dir(self._workspace_root, run_id)
-        active_ids: tuple[str, ...] = (run_id,)
+        group_ids: tuple[str, ...] = tuple(item.group_id for item in plan.groups)
+        self._claim_run(identity, cancel, group_ids)
         try:
-            cleanup_orphaned_temp(self._workspace_root, active_run_ids=active_ids)
-            source_groups: dict[str, InspectedSourceGroup] = {
-                group.group_id: group for group in self._selected_groups(tuple(item.group_id for item in plan.groups))
-            }
-            session = RunSession(run_root)
-            with session:
-                handler: TaskHandler = self._handler_factory(run_root, plan, source_groups)
-                scheduler = GraphScheduler(
-                    handler,
-                    limits=ResourceLimits.from_settings(
-                        plan.settings,
-                        extraction=_extraction_worker_count(plan),
-                    ),
-                    run_id=run_id,
-                    session=session,
-                )
-                try:
-                    result: RunResult = scheduler.run(plan, cancel=cancel, events=sink)
-                finally:
-                    _close_handler(handler)
-            if session.cleanup_warnings:
-                result = replace(result, warnings=(*result.warnings, *session.cleanup_warnings))
-            return result
-        finally:
-            self._release_run(run_id)
+            return self._start_run(
+                plan, sink, identity, cancel, origin, automatic=automatic, journal=journal, resume=resume
+            )
+        except BaseException:
+            self._release_run(identity)
+            raise
 
     def cancel(self, run_id: str) -> bool:
-        """Request cancellation only when *run_id* is the active local run."""
+        """Request cancellation only when *run_id* is one of the active local runs."""
         with self._run_lock:
-            if self._active_run_id != run_id or self._active_cancel is None:
-                return False
-            self._active_cancel.cancel()
-            return True
+            cancel: EventCancellationToken | None = self._active_runs.get(run_id)
+        if cancel is None:
+            return False
+        cancel.cancel()
+        return True
+
+    def active_run_ids(self) -> tuple[str, ...]:
+        """Return every run this service still owns a temporary directory for."""
+        with self._run_lock:
+            return tuple(self._active_runs)
+
+    def set_background_admission(self, enabled: bool) -> None:
+        """Allow or hold back admission of tasks belonging to background requests."""
+        self._graph_coordinator().set_background_admission(enabled)
+
+    def close(self) -> None:
+        """Cancel unfinished runs and release the coordinator's worker threads."""
+        with self._run_lock:
+            coordinator: GraphCoordinator | None = self._coordinator
+            self._coordinator = None
+        if coordinator is not None:
+            coordinator.close()
+
+    def drain(self) -> None:
+        """Finish active tasks and retain unfinished runs for recovery."""
+        self._graph_coordinator().drain()
+
+    def pause_runs(self) -> None:
+        """Finish active tasks and hold the remaining graphs so a resume can restore them."""
+        self._graph_coordinator().pause()
+
+    def resume_runs(self) -> None:
+        """Admit graph tasks again after a pause."""
+        self._graph_coordinator().resume()
+
+    def retain_runs(self, run_ids: Sequence[str]) -> None:
+        """Protect durable unfinished requests from orphaned-temp cleanup."""
+        with self._run_lock:
+            self._retained_runs.update(run_ids)
+
+    def _start_run(  # noqa: PLR0913
+        self,
+        plan: ExecutionPlan,
+        sink: RunEventSink,
+        run_id: str,
+        cancel: EventCancellationToken,
+        origin: RequestOrigin,
+        *,
+        automatic: bool,
+        journal: RunJournal | None = None,
+        resume: bool = False,
+    ) -> RunHandle:
+        with self._run_lock:
+            protected: tuple[str, ...] = (*self._active_runs, *self._retained_runs)
+        cleanup_orphaned_temp(self._workspace_root, active_run_ids=protected)
+        source_groups: dict[str, InspectedSourceGroup] = {
+            group.group_id: group for group in self._selected_groups(tuple(item.group_id for item in plan.groups))
+        }
+        run_root: Path = run_temp_dir(self._workspace_root, run_id)
+        session = RunSession(run_root, resume=resume)
+        session.__enter__()
+        try:
+            handler: TaskHandler = self._handler_factory(run_root, plan, source_groups)
+        except BaseException:
+            session.__exit__(None, None, None)
+            raise
+        try:
+            submitted: RunHandle = self._graph_coordinator().submit(
+                RunRequest(
+                    run_id=run_id,
+                    plan=plan,
+                    session=session,
+                    handler=handler,
+                    cancel=cancel,
+                    events=sink,
+                    origin=origin,
+                    automatic=automatic,
+                    journal=journal,
+                )
+            )
+        except BaseException:
+            _close_handler(handler)
+            session.__exit__(None, None, None)
+            raise
+        handle = RunHandle(run_id, submitted.cancel)
+        threading.Thread(
+            target=self._finish_run,
+            args=(submitted, handle, session, handler, journal),
+            daemon=True,
+        ).start()
+        return handle
+
+    def _finish_run(
+        self,
+        submitted: RunHandle,
+        handle: RunHandle,
+        session: RunSession,
+        handler: TaskHandler,
+        journal: RunJournal | None = None,
+    ) -> None:
+        result: RunResult | None = None
+        failure: BaseException | None = None
+        try:
+            result = submitted.result()
+        except BaseException as error:  # noqa: BLE001 - one boundary forwarding any coordinator fault
+            failure = error
+        try:
+            _close_handler(handler)
+            if (result is not None and result.paused) or (
+                journal is not None and (result is None or not result.succeeded)
+            ):
+                session.preserve()
+                self.retain_runs((handle.run_id,))
+            _close_session(session, failure)
+            if result is not None and session.cleanup_warnings:
+                result = replace(result, warnings=(*result.warnings, *session.cleanup_warnings))
+        finally:
+            self._release_run(handle.run_id)
+            _settle(handle, result, failure)
+
+    def _graph_coordinator(self) -> GraphCoordinator:
+        with self._run_lock:
+            if self._coordinator is None:
+                self._coordinator = GraphCoordinator(self._resource_limits)
+            return self._coordinator
+
+    def _resource_limits(self) -> ResourceLimits:
+        return ResourceLimits.from_settings(self._settings_snapshot())
 
     def settings_catalog(self, draft: SettingsDraft | None = None) -> tuple[SettingSpec, ...]:
         """Return fields active for saved or explicitly supplied draft selections."""
@@ -577,7 +774,6 @@ class AppService:
         return deepcopy(candidate)
 
     def _valid_custom_model_id(self, model_id: str) -> bool:
-        """Accept provider identifiers without paths, control characters, or configured secrets."""
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*(?:/[A-Za-z0-9][A-Za-z0-9._:-]*)*", model_id) is None:
             return False
         if re.match(r"[A-Za-z]:", model_id) or any(part in {".", ".."} for part in model_id.split("/")):
@@ -611,6 +807,14 @@ class AppService:
             spec.validate_value(value)
         update_env_value(_env_variable(spec.setting_id), value, path=self._env_file)
         self._reload_settings()
+
+    def reload_preferences(self) -> None:
+        """Re-read the panel preferences and the environment file this service runs on."""
+        preferences: UserSettings = load_user_settings()
+        reloaded: Settings = Settings(_env_file=self._env_file)
+        with self._run_lock:
+            self._user_settings = deepcopy(preferences)
+            self._settings = reloaded
 
     def reload_environment(self) -> Mapping[str, bool]:
         """Re-read the environment file and report which env settings are configured."""
@@ -725,7 +929,9 @@ class AppService:
 
     def _unchanged_workspace(self, fingerprint: WorkspaceFingerprint) -> InspectedWorkspace | None:
         with self._run_lock:
-            if self._workspace_fingerprint != fingerprint:
+            if self._workspace_fingerprint != fingerprint or (
+                self._workspace is not None and self._workspace.pending_paths
+            ):
                 return None
             return self._workspace
 
@@ -735,7 +941,6 @@ class AppService:
         return _run_settings_snapshot(preferences)
 
     def _palantir_readiness(self, *, require_selected_model: bool = True) -> tuple[bool, str]:
-        """Report whether a token-configured Palantir provider could really run."""
         preferences: UserSettings = self.settings_snapshot()
         if not preferences.palantir_enrollment_base_url.strip():
             return False, "missing palantir_enrollment_base_url; set the enrollment address in Tools"
@@ -751,7 +956,6 @@ class AppService:
         return True, "ready"
 
     def _palantir_model_options(self) -> tuple[TranslationModelOption, ...]:
-        """Return configured Foundry aliases while rejecting example placeholders."""
         catalog: ModelCatalog = self.model_catalog()
         options: list[TranslationModelOption] = []
         for entry in catalog.models.values():
@@ -771,7 +975,6 @@ class AppService:
         return tuple(options)
 
     def _palantir_config(self, alias: str) -> LlmConfig:
-        """Resolve one alias into the configuration a connection test would use."""
         from anishift.application.runtime import palantir_llm_config  # noqa: PLC0415 - avoids an import cycle
 
         preferences: UserSettings = self.settings_snapshot()
@@ -783,29 +986,30 @@ class AppService:
         )
 
     def _prober(self) -> ModelProber:
-        """Return the injected connection test, or the production one."""
         if self._model_prober is not None:
             return self._model_prober
         from anishift.application.runtime import probe_palantir_model  # noqa: PLC0415 - avoids an import cycle
 
         return probe_palantir_model
 
-    def _claim_run(self, run_id: str, cancel: EventCancellationToken) -> None:
+    def _claim_run(self, run_id: str, cancel: EventCancellationToken, group_ids: tuple[str, ...]) -> None:
         with self._run_lock:
-            if self._active_run_id is not None:
+            busy: bool = run_id in self._active_runs or any(group_id in self._active_groups for group_id in group_ids)
+            if busy:
                 context = ErrorContext(
                     code=ErrorCode.IO_ERROR,
                     message="Another AniShift workflow is already active",
                 )
                 raise RunConflictError(context=context)
-            self._active_run_id = run_id
-            self._active_cancel = cancel
+            self._active_runs[run_id] = cancel
+            self._active_groups.update(dict.fromkeys(group_ids, run_id))
 
     def _release_run(self, run_id: str) -> None:
         with self._run_lock:
-            if self._active_run_id == run_id:
-                self._active_run_id = None
-                self._active_cancel = None
+            self._active_runs.pop(run_id, None)
+            for group_id in tuple(self._active_groups):
+                if self._active_groups[group_id] == run_id:
+                    del self._active_groups[group_id]
 
 
 def _env_variable(setting_id: str) -> str:
@@ -820,20 +1024,18 @@ def _has_system_override(setting_id: str) -> bool:
 
 
 def _is_placeholder_model_id(model_id: str) -> bool:
-    """Reject example tokens that cannot identify a real provider model."""
     normalized: str = model_id.strip().casefold()
     return normalized.startswith("replace-with-") or normalized.startswith("<select-")
 
 
-def _extraction_worker_count(plan: ExecutionPlan) -> int:
-    """Return the exact legacy I/O pool size for groups requiring extraction."""
-    extraction_kinds: frozenset[TaskKind] = frozenset(
-        {TaskKind.EXTRACT_AUDIO, TaskKind.EXTRACT_SUBTITLES, TaskKind.EXTRACT_TRACKS}
-    )
-    group_ids: frozenset[str] = frozenset(task.group_id for task in plan.tasks if task.kind in extraction_kinds)
-    cores: int = os.cpu_count() or 1
-    scaled_workers: int = round(cores**0.5) + _EXTRACTION_IO_HEADROOM
-    return max(1, min(len(group_ids), scaled_workers))
+def _tts_allowed_voice_ids(preferences: UserSettings) -> tuple[str, ...]:
+    """Return the voices the chosen engine really offers, empty where only the provider knows them."""
+    if preferences.tts_engine == "edge":
+        return (MAREK_VOICE_ID, ZOFIA_VOICE_ID)
+    if preferences.tts_engine == "elevenbytes":
+        custom: tuple[str, ...] = tuple(voice.voice_id for voice in preferences.elevenbytes_custom_voices)
+        return (DALLIN_VOICE_ID, *dict.fromkeys(item for item in custom if item != DALLIN_VOICE_ID))
+    return ()
 
 
 def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
@@ -871,6 +1073,7 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         tts_model_id=preferences.tts_provider_model_id,
         tts_voice_id=preferences.resolved_tts_voice_id,
         tts_voice_label=preferences.tts_voice_label,
+        tts_allowed_voice_ids=_tts_allowed_voice_ids(preferences),
         tts_native_rate=profile.native_rate,
         tts_native_volume=profile.native_volume,
         tts_native_pitch=profile.native_pitch,
@@ -887,8 +1090,32 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
 
 def _close_handler(handler: TaskHandler) -> None:
     close: object = getattr(handler, "close", None)
-    if callable(close):
+    if not callable(close):
+        return
+    try:
         close()
+    except Exception:  # noqa: BLE001 - a handler that cannot close must not strand the run
+        logger.warning("A task handler failed to close", handler_type=type(handler).__name__)
+
+
+def _close_session(session: RunSession, failure: BaseException | None) -> None:
+    try:
+        if failure is None:
+            session.__exit__(None, None, None)
+        else:
+            session.__exit__(type(failure), failure, failure.__traceback__)
+    except Exception:  # noqa: BLE001 - a session that cannot close must not strand the run
+        logger.warning("A run session failed to close")
+
+
+def _settle(handle: RunHandle, result: RunResult | None, failure: BaseException | None) -> None:
+    if failure is not None:
+        handle.fail(failure)
+        return
+    if result is not None:
+        handle.resolve(result)
+        return
+    handle.fail(ExecutionError(_UNRESOLVED_RUN))
 
 
 def _workspace_fingerprint(discovery: DiscoveryResult) -> WorkspaceFingerprint:

@@ -4,12 +4,87 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 
 ## Pliki
 
-- `main.py` — Typer app, `main()` (console script), subkomendy `doctor`/`setup`/`run --preset`, bare = Interactive CLI
+- `main.py` — Typer app, `main()` (console script), subkomendy `doctor`/`setup`/`run --preset`, grupy `watch` i `autostart`, bare = Interactive CLI
 - `console.py` — jedyny właściciel rekonfiguracji stdout/stderr na UTF-8 + check dla doctora
-- `run.py` — wspólny, UI-neutralny preflight Auto oraz wykonanie zaakceptowanego planu
+- `run.py` — wspólny, UI-neutralny preflight Auto (także dla wskazanego podzbioru grup) oraz wykonanie zaakceptowanego planu
+- `exit_codes.py` — kody wyjścia 0/1/3/4 i `run_exit_code()` wspólne dla `run --preset` i okna partii
+- `watch.py` — granica rezydenta bez renderera: blokada, IPC, obserwator plików i ikona; stara pętla pozostaje wyłącznie dla testów porównawczych
+- `control.py` — cienki klient rezydenta: `open_control()` (start na żądanie) i `resident_status()`
+- `resident.py` — sesja panelu: biblioteka, rezerwacje, podgląd zamiaru, zewnętrzne źródła, Start i wynik przez kanał
 - `interactive/` — lazy-loaded Home, jeden renderer Prompt Toolkit, maskotka, Settings, Manual i wspólny postęp
 
 ## Pułapki
+
+- `anishift watch` uruchamia rezydenta bez importu Prompt Toolkit; `watch resident` jest aliasem.
+  `watch batch` odmawia z komunikatem migracyjnym. Panel i `run --preset` łączą się z właścicielem
+  lub uruchamiają go na żądanie. Zamknięcie panelu nie anuluje zaakceptowanej pracy.
+  Status sprawdza też dawną blokadę, aby wykryć stary proces przed przełączeniem. `main.py`, `watch.py`
+- `run_resident()` zdobywa blokadę PRZED zapisem `instance.json` i klucza, więc przegrany wyścig
+  kończy się `EXIT_REFUSED` bez śladu w katalogu stanu. Rezydent nie importuje `cli.interactive`
+  ani Prompt Toolkit. `watch.py`
+- Tray result clicks open Library; only an owner-validated set ID selects an episode.
+  Unknown callbacks open Library without guessing a result. `panel_open` carries navigation;
+  a newly launched panel receives its pending target through `panel_attach` after subscribing,
+  with owner revalidation. Settings defers navigation until editing ends. Ordinary icon
+  activation requests Home. Library Enter still validates playback. `resident.py`,
+  `interactive/state.py`, `interactive/app.py`
+- Rezydent uruchamia `DirectoryWatch` przed pierwszym uzgodnieniem biblioteki i zamyka go przed
+  zwolnieniem blokady. Zdarzenia i kontrola trafiają do tego samego właściciela; tylko inspekcja
+  działa w puli I/O. Stare `run_daemon` pozostaje domyślne do przełączenia w P08. `watch.py`
+- `spawn_resident()` startuje `pythonw -m anishift.cli.main watch resident` z
+  `DETACHED_PROCESS | CREATE_NO_WINDOW` i strumieniami do `DEVNULL`; poza Windows
+  `start_new_session=True`. `watch.py`
+- `resident_status()` nie startuje rezydenta — czyta `instance.json` i próbuje `status`; tylko
+  udana odpowiedź dowodzi działania. `open_control()` jest jedynym miejscem, które uruchamia
+  rezydenta na żądanie klienta. `control.py`
+- Ukryte `anishift --resident` podłącza istniejący panel do rezydenta przed domyślnym
+  przełączeniem w P08. Auto, Ręczny i regeneracja korzystają wtedy z `ResidentSession`;
+  panel dostaje `PlanPreview`, nie graf wykonania. Oddzielna sesja edycji chroni wybrane
+  grupy od zaznaczenia do Start lub Esc. Wyjście z panelu odłącza go bez anulowania runu.
+  Zewnętrzne źródła są ponownie rejestrowane przy podglądzie po odświeżeniu biblioteki.
+  „Dokończ poprzednią pracę” w Ręcznym wymaga tego samego zakresu grup co zapisane zlecenie;
+  `plan_resume` odczytuje zweryfikowany pozostały graf, a Start zachowuje ID zlecenia.
+  Pełne recovery po zabiciu aktywnego procesu pozostaje osobnym zakresem P08.
+- Ekran Anime w trybie rezydenta używa `ResidentSession` także do katalogu, wydań,
+  pobrania i dodania subskrypcji. Nie twórz w tym ekranie drugiego klienta HTTP ani
+  lokalnego zapisu subskrypcji; receipt i admission pobrań należą do ownera.
+- Processing uses `StateController._processing_rows` for rendering, selection, actions and
+  counts. A processing request plus `RichRunProgress.group_active` must prove started,
+  nonterminal work; the owner's `accepted` state can already contain executing tasks.
+  Cached progress alone is insufficient. Every live admitted request awaiting its first
+  task appears as preparation, including local Manual work before progress restore. All visible
+  bars use numeric zero fallback before any measurement, including initial and replayed snapshots.
+  Unknown backend facts stay unknown; unavailable readings retain the last verified display values.
+  Recorded downloads also appear, using measured transfer bars and static metadata/pause/problem labels.
+  Uncertain acquisitions are excluded from download/handoff rows regardless of cached transfer state;
+  live admitted processing remains governed by its request and events. Filtered rows lose their timers.
+  Explicit Anime admission is consumed once by the visible panel's idle loop; navigation
+  invalidates late completions. Recorded hashes come from owner snapshots, never a UI store.
+  Terminal work is reached through History, and recycling/relocation actions through Library.
+  Progress labels come from the preview's source names, with `Materiał` for absent/ID-only
+  legacy labels. `interactive/state.py`, `interactive/progress.py`, `interactive/anime.py`
+- `StateController` opens History with H inside Processing; S or `/` uses the shared
+  `TextInput` and suppresses application hotkeys while typing. Default rows are the latest
+  50 terminal materials; explicit search includes retained order/download/regeneration boundaries.
+  Enter uses `ResidentSession.library_result` validation: completed sidecar-only video sets
+  open their recorded source video through the OS association, preferring MKV over MP4.
+  Final video products retain priority; missing or changed main products still refuse.
+  F passes `playback=False` to reveal the confirmed main product. History
+  failures remain visible across renders. `interactive/state.py`, `resident.py`
+- Library Details Enter/F submits the exact selected `LibraryFileIdentity` for owner membership
+  and freshness validation; informational rows have no file action. Delete previews and submits
+  the whole set in one worker session without a confirmation screen. Ctrl+Z delegates
+  last-deletion Undo to the owner. Library shows material names, not operation rows or routine
+  busy/success/global-progress messages; completed deletion removes the row and Undo restores it.
+  Partial leftovers remain accessible. Synchronous action
+  refusals survive unrelated snapshots but not a changed selection/view; late action results
+  cannot overwrite a newer context. `interactive/state.py`, `resident.py`
+- P prepares the owner's retry proposal; confirmation transfers local work to Manual with
+  owner revalidation, or admits an explicit remote repeat. Pause permits History reads and
+  validated result opening, but blocks new work. `interactive/state.py`, `interactive/app.py`
+- `run_interactive(service, batch=...)` zwraca kod wyjścia jak `run --preset` i po wyniku odlicza
+  10 s w `_handle_idle`, dowolny klawisz zamyka; `interrupt` w partii anuluje run i kończy kodem 4.
+  Test buduje aplikację ręcznie? Ustaw też `_batch` i `_closing_at`. `interactive/app.py`
 
 - `main()` woła `configure_utf8_streams()` PRZED jakimkolwiek outputem, a dopiero
   potem konfiguruje logger; nie odwracaj tej kolejności. `main.py`
@@ -51,8 +126,15 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   nie echuj `str(exc)` ani ścieżek bezpośrednio. `main.py`
 - `_QuietRunEvents` celowo gubi wszystkie eventy postępu — raport ma być
   parsowalny, bez przeplotu. Nie dodawaj tam renderowania. `main.py`
-- `RichRunProgress` prealokuje jeden pasek na plik w naturalnej kolejności i odtwarza przejścia
-  legacy `_PipelineProgressRows`: `Extract` od razu ma pasek i procent,
+- `RichRunProgress` preallocates new file rows at zero in natural order; live task starts
+  initialize their own percentage at zero. Later unmeasured activity keeps the last percentage
+  and freezes elapsed time. Processing task bars require evidence of actual start;
+  download bars use client measurements, and unmeasured handoffs display zero.
+  Downloads use the identical phase/name, gradient, percentage and elapsed layout as TTS.
+  Their panel-local monotonic clock counts observed transfer activity and freezes on pause
+  or lost confirmation; never derive it from acquisition timestamps. Unobserved elapsed
+  time displays fixed-width numeric zero. ID-only label suppression belongs to remote
+  `from_snapshot`, not the local source-label constructor.
   `Extracted`, `Translate`, `Translated` i `TTS` reużywają ten sam
   wiersz. Procent pochodzi z pomiaru backendu; `progress_percent=None` z komunikatem
   oznacza aktywność bez znanego procentu. Nie wyliczaj pozornego postępu z upływu czasu.
@@ -64,12 +146,43 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Run niepełny, anulowany albo z ostrzeżeniami pokazuje przewijany wynik grup:
   przyczyny błędów, zapisane i zachowane produkty oraz lokalizację logu.
   Treść przechodzi przez sanitizację i ten sam renderer. `interactive/app.py`
-- Home ma dokładnie `Auto`, `Ręczny`, `Ustawienia`, `Wyjście`. Settings działa w tym
+- Home rezydenta ma kolejność `Panel`, `Ręczny`, `Ustawienia`, `Wyjście`. Settings działa w tym
   samym rendererze, a mutacje `settings.json`, `presets.json` i `.env` przechodzą
   przez `AppService`. Manual przechowuje drafty wyłącznie lokalnie, rejestruje pliki
   zewnętrzne przez `AppService`, waliduje przez `plan_manual()` i przekazuje zaakceptowany
   plan do tej samej ścieżki wykonania oraz postępu co Auto.
   `interactive/app.py`, `interactive/settings.py`, `interactive/manual.py`, `run.py`
+- `AnimeController` jest jedynym właścicielem stanu ekranu Anime (QUERY → BUSY → TITLES → BUSY →
+  RESULTS → DONE/PROBLEM); `StateController` osadza go w zakładce Anime i przekazuje klawisze. Sieć
+  (`AppService.acquisition.find_titles`/`season_context`/`search_title`/`search`/`download`) idzie do
+  wątku `anishift-anime`, a licznik generacji odrzuca wynik spóźniony po `Esc`; `render()` nigdy nie
+  blokuje i nie robi I/O.
+  `_HOME_MENU_ROWS` i `_HOME_CHROME_ROWS` liczą rzeczywiste wiersze menu.
+  `interactive/anime.py`, `interactive/state.py`, `interactive/prompts.py`
+- `O` w wynikach Anime przygotowuje draft subskrypcji PODŚWIETLONEGO odcinka, nie zaznaczonych wierszy: paczka, brak numeru
+  albo `other_season` daje wyłącznie jednolinijkową notkę zamiast stopki, kasowaną następnym
+  klawiszem. Panel otwiera wybór numerów; dopiero Enter przyjmuje zakres przez ownera.
+  Po wyborze tytułu `O` używa PODŚWIETLONEJ grupy. `interactive/anime.py`, `interactive/state.py`
+- Pusta lista wyników nie jest ślepym zaułkiem: przy `filtered > 0` nazywa filtr, a `F` i `Esc`
+  działają jak na pełnej liście. `Esc` z wyników wraca do TITLES, gdy kandydaci są w pamięci —
+  dlatego nowe hasło czyści `_candidates`. Teksty błędów tłumaczy `_PROBLEM_TEXTS`
+  (`ErrorCode` → polskie zdanie), a nie warstwa domenowa. `interactive/anime.py`
+- Anime opens a group locally; Enter/Space toggles a release and explicit Download submits
+  only the open group's draft. Each numbered episode has at most one pending variant;
+  explicit replacement shows a notice, and bulk selection preserves an existing choice.
+  `A` and `Z` skip packs, other-season releases and owner-recorded hashes. `Z` opens the range prompt; `S`
+  przestawia grupy LOKALNIE przez `order_groups` fasady — bez sieci, bez drugiej reguły porządku,
+  a znaczniki wracają po `info_hash`, nie po numerze wiersza —
+  a `F` powtarza `search_title` bez filtra. Nowe pobrania i subskrypcje używają płaskiego
+  roota workspace, bez katalogu `candidate.folder_title()`. `interactive/anime.py`
+- Gdy AniList nie odpowiada albo nie zna tytułu, ekran pomija TITLES i pokazuje wyniki surowego
+  hasła z notką w stopce; ta notka jest osobnym polem, bo `_notice` znika po następnym klawiszu.
+  Ta ścieżka wraca posortowana po seedach, więc `_show_results` przyjmuje `_Listing` z faktyczną
+  kolejnością katalogu — podpowiedź `S` kłamałaby, gdyby `_order` został przy `NEWEST`.
+  Nieudany `season_context` nie przerywa wyszukiwania: zostawia w tym samym polu notkę
+  „numeracja sezonu niedostępna", bo bez niej te same wyniki znaczą dwie różne rzeczy.
+  Wysokość listy liczy się PO zmierzeniu stopki (`_visible_window(..., reserved)`): dłuższa stopka
+  zabiera wiersze listy, zamiast wypchnąć klatkę poza ekran. `interactive/anime.py`
 - `SettingsController.render()` korzysta wyłącznie z lokalnego, odświeżonego snapshotu;
   nie wykonuj w nim I/O ani wywołań sieciowych, bo renderer odświeża klatkę cyklicznie.
   Katalog modeli jest tylko do odczytu, a probe działa wyłącznie po jawnej akcji.
@@ -80,9 +193,22 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   klawisz specjalny przychodzi z pustym `data`, więc `Keys.Any` zlepia je w
   nierozróżnialne `"any"` — nowy klawisz MUSI dostać własny binding, inaczej nie da
   się go odróżnić. `interactive/prompts.py`
-- Wklejenie jest osobnym `Keys.BracketedPaste` → `paste:`; edytor odrzuca znaki
-  sterujące i maskuje sekrety. Left/Right/Home/End w tekście ruszają kursor,
-  poza tekstem służą nawigacji lub zmianie wartości. `interactive/settings.py`
+- Paste uses `Keys.BracketedPaste` → `paste:`; the editor rejects control characters
+  and masks secrets. Left/Right/Home/End move the text cursor in shared `TextInput`.
+  AnimeController owns explicit input focus: Enter activates the idle query; focused
+  arrows edit, Enter submits, and Esc or unselected Ctrl+C blurs without clearing.
+  Selected Ctrl+C copies without blurring. Range/group prompts open
+  focused; a second Esc closes the blurred prompt. Panel derives arrow routing from
+  that focus; Tab/Backtab always switch, preserving drafts but blurring inputs and
+  invalidating late completions. Only focused fields render a caret or selection;
+  the shared block caret highlights the existing grapheme, or one trailing space at
+  end of input, without inserting a character into the text.
+  `interactive/text_input.py`, `interactive/state.py`, `interactive/anime.py`
+- Edycja pól tekstowych ma jeden model `interactive/text_input.py`, oparty na `Buffer`
+  i `Document` Prompt Toolkit. Wyszukiwarka, zakres odcinków, ścieżki Manual, ustawienia
+  i formularz subskrypcji używają tego samego kursora, zaznaczenia, kasowania i undo.
+  Nie dopisuj osobnych operacji na stringach w kontrolerach. Kopiowanie zaznaczenia
+  ma pierwszeństwo przed wyjściem przez Ctrl+C; walidacja i moment zapisu należą do pola.
 - Nieudany zapis zachowuje `_pending` i widoczny błąd; idle nie ponawia go co klatkę.
   Kolejne klawisze mogą ponowić zapis, a dwa kolejne Ctrl+C po ostrzeżeniu jawnie
   porzucają edycję. Brak zmiany nie zapisuje pliku. `interactive/settings.py`
@@ -131,9 +257,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   (`_SCOPE_FIELDS`). Wiersz ma JEDNĄ ścieżkę na wszystkich ekranach, root włącznie:
   `_open_scoped_reset` → `_EditorAction.RESET_SCOPE` → `_reset_scope`, a pytanie ma
   zawsze kształt `PRZYWRÓCIĆ DOMYŚLNE · <ZAKRES>?` (root = scope `all`, tytuł
-  `WSZYSTKO`). Root przywraca wszystko DOSŁOWNIE: obok `reset_settings()` woła
-  `_restore_default_products()`, bo produkty siedzą w presecie, nie w katalogu pól, i
-  bez tego przeżywały reset, który obiecywał całość. Reset idzie polami w kolejności
+  `WSZYSTKO`). Root resets shared preferences, the video preset and owner-held recipes.
+  Auto resets all three base recipes; its child screens reset only their own recipe.
+  Output resets the video preset under its existing identity. Recipe fields use
+  `ResidentSession.recipes/update_recipe/reset_recipe`, never a second settings file.
+  Ordinary saved preference edits reload the owner before new orders use them.
+  Reset preferencji idzie polami w kolejności
   ekranu i pomija te, które po drodze przestały być aktywne, bo zmiana silnika
   przebudowuje resztę. JEDEN wyjątek od kolejności ekranu: zakres `translation`
   zaczyna się od `_TRANSLATION_MODEL_FIELDS`, bo `llm_provider` i

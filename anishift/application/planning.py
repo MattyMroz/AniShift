@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, fields, replace
 from enum import StrEnum
-from typing import Final
+from types import UnionType
+from typing import Final, get_args, get_origin, get_type_hints
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
 from anishift.application.intents import GroupIntent
+from anishift.application.products import AUDIO_PRODUCT_PROFILES
 from anishift.errors import PlanningError
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -35,6 +37,7 @@ class TaskKind(StrEnum):
     MIX_NARRATION = "mix_narration"
     COMPOSE_MKV = "compose_mkv"
     COMPOSE_MP4 = "compose_mp4"
+    COMPOSE_COVER = "compose_cover"
     PUBLISH_ARTIFACT = "publish_artifact"
 
 
@@ -169,6 +172,7 @@ class RunSettingsSnapshot:
     tts_model_id: str = "default"
     tts_voice_id: str = "default"
     tts_voice_label: str = "default"
+    tts_allowed_voice_ids: tuple[str, ...] = ()
     tts_native_rate: str | float | None = None
     tts_native_volume: str | float | None = None
     tts_native_pitch: str | float | None = None
@@ -186,6 +190,37 @@ class RunSettingsSnapshot:
         _validate_runtime_settings(self)
         _require_unique(self.subtitle_language_priority, "subtitle language priorities")
         _require_unique(self.audio_language_priority, "audio language priorities")
+
+    def with_overrides(self, overrides: Mapping[str, object]) -> RunSettingsSnapshot:
+        """Validate run-only overrides and return an independent settings snapshot."""
+        values: dict[str, object] = dict(overrides)
+        names: set[str] = {field.name for field in fields(self)}
+        if values.keys() - names:
+            msg: str = "Unknown run setting override"
+            raise ValueError(msg)
+        annotations: dict[str, object] = get_type_hints(type(self))
+        for name, value in values.items():
+            if not _matches_setting_type(value, annotations[name]):
+                msg = f"Invalid value type for run setting {name}"
+                raise ValueError(msg)
+        return replace(self, **values)  # type: ignore[arg-type]  # Values match the dataclass annotations above.
+
+
+def _matches_setting_type(value: object, annotation: object) -> bool:
+    arguments: tuple[object, ...] = get_args(annotation)
+    if get_origin(annotation) is UnionType:
+        return any(_matches_setting_type(value, member) for member in arguments)
+    if get_origin(annotation) is tuple:
+        if not isinstance(value, tuple):
+            return False
+        if arguments and arguments[-1] is Ellipsis:
+            return all(_matches_setting_type(item, arguments[0]) for item in value)
+        return len(value) == len(arguments) and all(
+            _matches_setting_type(item, member) for item, member in zip(value, arguments, strict=True)
+        )
+    if annotation in {float, int, bool, str}:
+        return type(value) is annotation or (annotation is float and type(value) is int)
+    return isinstance(annotation, type) and isinstance(value, annotation)
 
 
 def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
@@ -205,8 +240,7 @@ def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
     _require_range(settings.tts_max_retries, 0, 10, "TTS retries")
     _require_range(settings.tts_group_jobs, 1, 100, "TTS group jobs")
     _require_range(settings.tts_request_concurrency, 1, 100, "TTS request concurrency")
-    supported_audio_profiles: frozenset[str] = frozenset({"aac", "eac3", "mp3", "opus", "flac", "wav"})
-    if settings.audio_output_profile.casefold() not in supported_audio_profiles:
+    if settings.audio_output_profile.casefold() not in AUDIO_PRODUCT_PROFILES:
         msg = "Audio output profile is unsupported"
         raise ValueError(msg)
     if settings.audio_duration_tolerance_us < 0:
@@ -231,6 +265,10 @@ def _validate_runtime_settings(settings: RunSettingsSnapshot) -> None:
     if any(not value.strip() for value in runtime_ids):
         msg = "Run setting runtime IDs cannot be empty"
         raise ValueError(msg)
+    if any(not value.strip() for value in settings.tts_allowed_voice_ids):
+        msg = "Offered TTS voice IDs cannot be empty"
+        raise ValueError(msg)
+    _require_unique(settings.tts_allowed_voice_ids, "offered TTS voice IDs")
     option_names: tuple[str, ...] = tuple(name for name, _ in settings.tts_engine_options)
     _require_unique(option_names, "TTS engine option names")
     if settings.llm_temperature is not None and not 0 <= settings.llm_temperature <= _MAX_LLM_TEMPERATURE:
@@ -382,7 +420,7 @@ def _validate_task_dependencies(
             if producer_id is not None and producer_id not in task.depends_on:
                 msg = f"Task {task.task_id!r} is missing dependency {producer_id!r}"
                 raise PlanningError(msg)
-            if producer_id is None and artifact.state is not ArtifactState.READY:
+            if producer_id is None and artifact.state not in {ArtifactState.READY, ArtifactState.ABSENT}:
                 msg = f"Task {task.task_id!r} requires an artifact that is not ready and has no producer"
                 raise PlanningError(msg)
         for artifact_id in task.produces:
@@ -475,8 +513,15 @@ def _validate_task_parameter_names(kind: TaskKind, names: frozenset[str]) -> Non
             frozenset({"output_format"}),
             frozenset({"output_format", "source_kind"}),
         ),
+        TaskKind.SYNTHESIZE_SPEECH: (
+            frozenset({"narration_timeline", "script_kind"}),
+            frozenset({"narration_timeline", "script_kind"}),
+        ),
         TaskKind.TRANSCODE_AUDIO: (frozenset({"output_profile"}), frozenset({"output_profile"})),
-        TaskKind.MIX_NARRATION: (frozenset({"output_profile"}), frozenset({"output_profile"})),
+        TaskKind.MIX_NARRATION: (
+            frozenset({"mix_source", "output_profile"}),
+            frozenset({"mix_source", "output_profile"}),
+        ),
         TaskKind.COMPOSE_MKV: (frozenset({"mkv_tracks"}), frozenset({"mkv_tracks"})),
         TaskKind.COMPOSE_MP4: (
             frozenset({"audio_source", "burn_subtitles"}),

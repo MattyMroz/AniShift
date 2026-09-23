@@ -25,12 +25,14 @@ def test_narration_fingerprint_ignores_mix_settings_but_tracks_tempo_and_timing(
         scope_id="scope",
         clips=(clip,),
         post_process_tempo=1.0,
+        paragraph_pauses=False,
         config=config,
     )
     mix_changed = narration_fingerprint(
         scope_id="scope",
         clips=(clip,),
         post_process_tempo=1.0,
+        paragraph_pauses=False,
         config=replace(
             config,
             narrator_mix_base_gain_db=9,
@@ -41,18 +43,29 @@ def test_narration_fingerprint_ignores_mix_settings_but_tracks_tempo_and_timing(
         scope_id="scope",
         clips=(clip,),
         post_process_tempo=1.25,
+        paragraph_pauses=False,
         config=config,
     )
     timing_changed = narration_fingerprint(
         scope_id="scope",
         clips=(replace(clip, start_ms=500),),
         post_process_tempo=1.0,
+        paragraph_pauses=False,
+        config=config,
+    )
+
+    paragraphs_changed = narration_fingerprint(
+        scope_id="scope",
+        clips=(clip,),
+        post_process_tempo=1.0,
+        paragraph_pauses=True,
         config=config,
     )
 
     assert baseline == mix_changed
     assert baseline != tempo_changed
     assert baseline != timing_changed
+    assert baseline != paragraphs_changed
 
 
 def test_mix_fingerprint_tracks_original_gain_and_codec(tmp_path: Path) -> None:

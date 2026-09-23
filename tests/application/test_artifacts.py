@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, asdict
+from dataclasses import FrozenInstanceError, asdict, replace
 from pathlib import Path
 
 import pytest
@@ -90,6 +90,33 @@ def test_candidate_artifact_requires_runtime_path() -> None:
             path=None,
             state=ArtifactState.CANDIDATE,
             lifetime=ArtifactLifetime.INTERMEDIATE,
+        )
+
+
+@pytest.mark.parametrize("kind", list(ArtifactKind))
+def test_absence_is_limited_to_non_source_displayed_subtitles(kind: ArtifactKind) -> None:
+    displayed: Artifact = Artifact(
+        "displayed", "episode", ArtifactKind.DISPLAYED_PL, None, ArtifactState.ABSENT, ArtifactLifetime.INTERMEDIATE
+    )
+    if kind is ArtifactKind.DISPLAYED_PL:
+        assert displayed.path is None
+        with pytest.raises(ExecutionError, match="not ready"):
+            ArtifactSnapshot({"displayed": displayed}).require_ready("displayed")
+        return
+    with pytest.raises(ValueError, match=r"non-source displayed|Final containers"):
+        replace(displayed, kind=kind)
+
+
+@pytest.mark.parametrize("source", [False, True])
+def test_confirmed_absence_rejects_runtime_paths_and_source_ownership(*, source: bool) -> None:
+    with pytest.raises(ValueError, match="non-source displayed"):
+        Artifact(
+            "displayed",
+            "episode",
+            ArtifactKind.DISPLAYED_PL,
+            None if source else Path("signs.ass"),
+            ArtifactState.ABSENT,
+            ArtifactLifetime.SOURCE if source else ArtifactLifetime.INTERMEDIATE,
         )
 
 

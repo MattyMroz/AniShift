@@ -10,6 +10,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Final
 
+from anishift.paths import env_path
 from anishift.utils.logger import get_logger
 
 __all__ = ["env_path", "update_env_value"]
@@ -24,11 +25,6 @@ _NEWLINE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\r\n|\n|\r")
 
 _UTF8_BOM: Final[bytes] = b"\xef\xbb\xbf"
 """UTF-8 byte-order mark preserved when already present."""
-
-
-def env_path() -> Path:
-    """Return the repository-level ``.env`` path."""
-    return Path(__file__).resolve().parents[2] / ".env"
 
 
 def update_env_value(

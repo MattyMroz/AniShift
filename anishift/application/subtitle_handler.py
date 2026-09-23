@@ -12,6 +12,7 @@ from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.planning import PlanTask, TaskKind
+from anishift.application.products import product_path
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
 from anishift.application.scheduler_contracts import TaskProgressSink
 from anishift.application.task_paths import task_staging_path
@@ -75,9 +76,9 @@ class LegacySubtitleAdapter:
     def write_polish(self, split: SubtitleSplit, base: Path, kind: SubtitleKind) -> LegacySubtitleProducts:
         """Write complete, spoken, and displayed products from a Polish source."""
         return LegacySubtitleProducts(
-            write_full(split, base.with_name(f"{base.name}.pl.{kind}")),
-            write_spoken(split, base.with_name(f"{base.name}.spoken.pl.{kind}")),
-            write_displayed(split, base.with_name(f"{base.name}.displayed.pl.{kind}")),
+            write_full(split, _product_path(base, ArtifactKind.FULL_PL, kind)),
+            write_spoken(split, _product_path(base, ArtifactKind.SPOKEN_PL, kind)),
+            write_displayed(split, _product_path(base, ArtifactKind.DISPLAYED_PL, kind)),
         )
 
     def write_translated_products(
@@ -90,9 +91,9 @@ class LegacySubtitleAdapter:
     ) -> LegacySubtitleProducts:
         """Write the three translated products with the existing layout policy."""
         return LegacySubtitleProducts(
-            write_translated(split, displayed, spoken, base.with_name(f"{base.name}.pl.{kind}")),
-            write_translated_spoken(split, spoken, base.with_name(f"{base.name}.spoken.pl.{kind}")),
-            write_translated_displayed(split, displayed, base.with_name(f"{base.name}.displayed.pl.{kind}")),
+            write_translated(split, displayed, spoken, _product_path(base, ArtifactKind.FULL_PL, kind)),
+            write_translated_spoken(split, spoken, _product_path(base, ArtifactKind.SPOKEN_PL, kind)),
+            write_translated_displayed(split, displayed, _product_path(base, ArtifactKind.DISPLAYED_PL, kind)),
         )
 
 
@@ -129,10 +130,12 @@ class SubtitleTaskHandler:
         if len(task.requires) != 1 or len(task.produces) != 1:
             msg = "Subtitle normalization requires exactly one input and output"
             raise ExecutionError(msg)
-        source: Artifact = artifacts.require_ready(task.requires[0])
-        source_path: Path = _subtitle_path(source)
         output: Artifact = artifacts.require_output(task.produces[0])
         output_kind: SubtitleKind = _output_kind(task, output)
+        if output.kind is ArtifactKind.DISPLAYED_PL and artifacts.is_absent(task.requires[0]):
+            return TaskResult(task.task_id, (), (output.artifact_id,))
+        source: Artifact = artifacts.require_ready(task.requires[0])
+        source_path: Path = _subtitle_path(source)
         destination: Path = task_staging_path(self._run_root, task, output, f".{output_kind}")
         normalize_subtitles(source_path, destination, kind=output_kind)
         return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, destination, {}),))
@@ -149,6 +152,7 @@ class SubtitleTaskHandler:
             raise ExecutionError(msg)
         source_split: SubtitleSplit = split_subtitles(load_subtitles(source_path), kind=source_kind)
         produced: list[ProducedArtifact] = []
+        absent: list[str] = []
         for artifact_id in task.produces:
             output: Artifact = artifacts.require_output(artifact_id)
             output_kind: SubtitleKind = _artifact_subtitle_kind(output)
@@ -162,11 +166,22 @@ class SubtitleTaskHandler:
             else:
                 msg = "Subtitle split output must be spoken or displayed Polish subtitles"
                 raise ExecutionError(msg)
+            if (
+                written is None
+                and output.kind is ArtifactKind.DISPLAYED_PL
+                and source_split.stats.displayed_events == 0
+            ):
+                absent.append(output.artifact_id)
+                continue
             if written is None:
                 msg = f"Requested subtitle stream is empty: {output.kind.value}"
                 raise ExecutionError(msg)
             produced.append(ProducedArtifact(output.artifact_id, written, {}))
-        return TaskResult(task.task_id, tuple(produced))
+        return TaskResult(task.task_id, tuple(produced), tuple(absent))
+
+
+def _product_path(base: Path, kind: ArtifactKind, subtitle_format: SubtitleKind) -> Path:
+    return product_path(base.parent, base.name, kind, subtitle_format=subtitle_format)
 
 
 def _subtitle_path(artifact: Artifact) -> Path:

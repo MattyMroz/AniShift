@@ -39,7 +39,6 @@ from anishift.services.audio.fingerprint import (
 from anishift.services.audio.normalize import NormalizationContext, normalize_clip
 from anishift.services.audio.output import (
     RenderInputs,
-    mixed_audio_path,
     render_command,
     validate_output_probe,
 )
@@ -48,7 +47,7 @@ from anishift.services.audio.probe import (
     probe_audio,
     validate_decode,
 )
-from anishift.services.audio.resume import AudioResumeRepository
+from anishift.services.audio.resume import AudioResumeRepository, NarrationResume
 from anishift.services.audio.timeline import plan_timeline, write_raw_timeline
 from anishift.services.audio.types import (
     AudioProbe,
@@ -58,6 +57,7 @@ from anishift.services.audio.types import (
     ChannelPlan,
     NormalizedClip,
     TimedClip,
+    TimelinePlacement,
     TimelinePlan,
 )
 from anishift.utils.logger import get_logger
@@ -174,9 +174,10 @@ class AudioService:
             scope_id=request.scope_id,
             clips=request.clips,
             post_process_tempo=request.post_process_tempo,
+            paragraph_pauses=request.paragraph_pauses,
             config=self._config,
         )
-        narrator_path, plan, narrator_probe = self._narrator(
+        narrator_path, placements, narrator_probe = self._narrator(
             request,
             repository,
             narration_id,
@@ -200,10 +201,7 @@ class AudioService:
             channel_plan=channel_plan,
             config=self._config,
         )
-        destination: Path = mixed_audio_path(
-            request.source_path,
-            self._config.codec_profile,
-        )
+        destination: Path = request.destination
         expected_duration_ms: int = max(
             narrator_probe.duration_ms,
             original_duration_ms,
@@ -230,7 +228,7 @@ class AudioService:
                 narrator_path=narrator_path,
                 output_path=destination,
                 output_probe=hit_probe,
-                plan=plan,
+                placements=placements,
                 channel_plan=channel_plan,
                 narration_id=narration_id,
                 mix_id=mix_id,
@@ -260,7 +258,7 @@ class AudioService:
             narrator_path=narrator_path,
             output_path=destination,
             output_probe=output_probe,
-            plan=plan,
+            placements=placements,
             channel_plan=channel_plan,
             narration_id=narration_id,
             mix_id=mix_id,
@@ -275,19 +273,20 @@ class AudioService:
         callbacks: AudioProgressSink | None,
         on_percent: Callable[[int], None] | None,
         cancel: threading.Event | None,
-    ) -> tuple[Path, TimelinePlan | None, AudioProbe]:
-        hit: Path | None = repository.narration_hit(narration_id)
+    ) -> tuple[Path, tuple[TimelinePlacement, ...], AudioProbe]:
+        clip_ids: frozenset[str] = frozenset(clip.request_id for clip in request.clips)
+        hit: NarrationResume | None = repository.narration_hit(narration_id, clip_ids)
         if hit is not None:
-            hit_probe: AudioProbe | None = self._valid_narrator_hit(hit, cancel=cancel)
+            hit_probe: AudioProbe | None = self._valid_narrator_hit(hit.path, cancel=cancel)
             if hit_probe is not None:
                 _notify(callbacks, request.scope_id, "narration_resume")
-                return hit, None, hit_probe
+                return hit.path, hit.placements, hit_probe
         _notify(callbacks, request.scope_id, "normalizing")
         normalized: tuple[NormalizedClip, ...] = self._normalize_many(
             request,
             cancel=cancel,
         )
-        plan: TimelinePlan | None = plan_timeline(normalized)
+        plan: TimelinePlan | None = plan_timeline(normalized, paragraph_pauses=request.paragraph_pauses)
         if plan is None:
             _raise_decode("Narration timeline unexpectedly contains no clips")
         _notify(callbacks, request.scope_id, "timeline")
@@ -330,10 +329,10 @@ class AudioService:
             _validate_narrator_probe(probe, plan)
             _check_cancel(cancel)
             temporary_wav.replace(narrator_path)
-            repository.commit_narration(narration_id, narrator_path)
+            repository.commit_narration(narration_id, narrator_path, plan.placements)
         finally:
             temporary_wav.unlink(missing_ok=True)
-        return narrator_path, plan, probe
+        return narrator_path, plan.placements, probe
 
     def _normalize_many(
         self,
@@ -551,7 +550,7 @@ def _result(  # noqa: PLR0913
     narrator_path: Path,
     output_path: Path,
     output_probe: AudioProbe,
-    plan: TimelinePlan | None,
+    placements: tuple[TimelinePlacement, ...],
     channel_plan: ChannelPlan,
     narration_id: str,
     mix_id: str,
@@ -562,7 +561,7 @@ def _result(  # noqa: PLR0913
         narrator_path=narrator_path,
         output_path=output_path,
         output_probe=output_probe,
-        placements=plan.placements if plan is not None else (),
+        placements=placements,
         warnings=(channel_plan.warning,) if channel_plan.warning is not None else (),
         narration_fingerprint=narration_id,
         mix_fingerprint=mix_id,

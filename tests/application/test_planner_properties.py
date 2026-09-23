@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from random import Random
 
+import pytest
+
 from anishift.application.artifacts import (
     Artifact,
     ArtifactKind,
@@ -12,12 +14,14 @@ from anishift.application.artifacts import (
 )
 from anishift.application.inspection import InspectedSourceGroup
 from anishift.application.intents import (
+    VIDEO_PRODUCTS,
     AutoPreset,
     BurnSubtitleProduct,
     MkvTrackProduct,
     Mp4AudioSource,
     ProductIntent,
     ProductKind,
+    RebuildRequest,
 )
 from anishift.application.planner import plan_auto
 from anishift.application.planning import (
@@ -85,7 +89,7 @@ def _group(artifacts: tuple[Artifact, ...]) -> InspectedSourceGroup:
 
 
 def _products(random: Random) -> ProductIntent:
-    all_products = tuple(ProductKind)
+    all_products = tuple(sorted(VIDEO_PRODUCTS))
     requested = frozenset(product for product in all_products if random.choice((False, True)))
     if not requested:
         requested = frozenset({random.choice(all_products)})
@@ -99,7 +103,8 @@ def _products(random: Random) -> ProductIntent:
     return ProductIntent(requested, burn, mkv_tracks, mp4_audio)
 
 
-def test_generated_auto_plans_preserve_graph_invariants() -> None:
+@pytest.mark.parametrize("rebuild", [None, RebuildRequest(frozenset({ProductKind.FULL_PL}))])
+def test_generated_auto_plans_preserve_graph_invariants(rebuild: RebuildRequest | None) -> None:
     random = Random(9)  # noqa: S311
     settings = _settings()
     for index in range(500):
@@ -114,8 +119,8 @@ def test_generated_auto_plans_preserve_graph_invariants() -> None:
         random.shuffle(artifacts)
         group = _group(tuple(artifacts))
         preset = AutoPreset(f"preset-{index}", "Generated", _products(random))
-        first = plan_auto((group,), preset, settings)
-        second = plan_auto((_group(tuple(reversed(artifacts))),), preset, settings)
+        first = plan_auto((group,), preset, settings, rebuild=rebuild)
+        second = plan_auto((_group(tuple(reversed(artifacts))),), preset, settings, rebuild=rebuild)
         assert first == second
         assert first.can_execute is True
         assert first.tasks == stable_topological_order(first.tasks)
@@ -131,7 +136,10 @@ def test_generated_auto_plans_preserve_graph_invariants() -> None:
         missing = {artifact.artifact_id for artifact in first.artifacts if artifact.state is ArtifactState.MISSING}
         assert missing.issubset(producer_by_artifact)
         required = {artifact_id for task in first.tasks for artifact_id in task.requires}
-        assert previous.artifact_id not in required
+        assert previous.artifact_id not in produced
+        assert previous in first.artifacts
+        if rebuild is not None:
+            assert previous.artifact_id not in required
         publish_tasks = tuple(task for task in first.tasks if task.kind is TaskKind.PUBLISH_ARTIFACT)
         assert all(set(task.requires).isdisjoint(task.produces) for task in publish_tasks)
         source_paths = {artifact.path for artifact in group.artifacts if artifact.lifetime is ArtifactLifetime.SOURCE}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -9,6 +10,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final
+
+from PIL import Image, ImageOps
 
 from anishift.application.artifacts import (
     Artifact,
@@ -20,12 +23,12 @@ from anishift.application.artifacts import (
     create_artifact_id,
 )
 from anishift.application.cancellation import CancellationToken
-from anishift.application.discovery import DiscoveryResult
+from anishift.application.discovery import SOURCE_SUBTITLE_FORMATS, DiscoveryResult
 from anishift.application.intents import ExternalAudioRole
-from anishift.application.planning import DEFAULT_AUDIO_TOLERANCE_US
 from anishift.application.selection import choose_primary_video
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, MediaProbeError
 from anishift.platform.binaries import Binary, require_binary
+from anishift.platform.directory_watch import source_is_available
 from anishift.services.media._process import (
     ProcessExecutionError,
     ProcessFailureReason,
@@ -37,12 +40,20 @@ from anishift.services.media.types import MediaCatalog
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.service import load_subtitles
 
+# ── Constants ─────────────────────────────────────────────────────────────────
+
 _DEFAULT_PROBE_TIMEOUT_SECONDS: Final[float] = 120.0
 """Default upper bound for one media or audio inspection subprocess."""
+
+NARRATION_DURATION_TOLERANCE_US: Final[int] = 10_000_000
+"""Accepted gap between a narration track and its container; a truncated render is off by far more."""
 
 
 _MAX_INSPECTION_WORKERS: Final[int] = 8
 """Upper bound on groups probed at once, because probing waits on subprocesses."""
+
+_SUPPORTED_IMAGE_FORMATS: Final[frozenset[str]] = frozenset({"JPEG", "PNG"})
+"""Pillow format names a cover still may really be written in, judged by content rather than by extension."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +102,24 @@ class InspectedWorkspace:
     groups: tuple[InspectedSourceGroup, ...]
     warnings: tuple[InspectionWarning, ...]
 
+    @property
+    def pending_paths(self) -> tuple[Path, ...]:
+        """Return sources waiting for an active writer to release them."""
+        pending: set[str] = {warning.artifact_id for warning in self.warnings if warning.code == "source_busy"}
+        return tuple(
+            artifact.path
+            for group in self.groups
+            for artifact in group.artifacts
+            if artifact.artifact_id in pending and artifact.path is not None
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedInspection:
+    fingerprints: Mapping[str, tuple[str, int, int]]
+    group: InspectedSourceGroup
+    warnings: tuple[InspectionWarning, ...]
+
 
 class WorkspaceInspector:
     """Validate discovery results without mutating their source artifacts."""
@@ -102,7 +131,7 @@ class WorkspaceInspector:
         runner: ProcessRunner | None = None,
         ffmpeg: Path | None = None,
         timeout_s: float = _DEFAULT_PROBE_TIMEOUT_SECONDS,
-        audio_tolerance_us: int = DEFAULT_AUDIO_TOLERANCE_US,
+        audio_tolerance_us: int = NARRATION_DURATION_TOLERANCE_US,
     ) -> None:
         if timeout_s <= 0 or audio_tolerance_us < 0:
             msg = "Inspection timeout must be positive and audio tolerance non-negative"
@@ -112,6 +141,7 @@ class WorkspaceInspector:
         self._ffmpeg: Path | None = ffmpeg
         self._timeout_s: float = timeout_s
         self._audio_tolerance_us: int = audio_tolerance_us
+        self._cache: dict[str, _CachedInspection] = {}
 
     def inspect(
         self,
@@ -123,18 +153,65 @@ class WorkspaceInspector:
         cancel.raise_if_cancelled()
         sources: tuple[SourceGroup, ...] = discovery.groups
         if not sources:
+            self._cache.clear()
             return InspectedWorkspace(groups=(), warnings=())
         with ThreadPoolExecutor(
             max_workers=min(len(sources), _MAX_INSPECTION_WORKERS),
             thread_name_prefix="anishift-inspect",
         ) as pool:
-            inspected: tuple[tuple[InspectedSourceGroup, tuple[InspectionWarning, ...]], ...] = tuple(
-                pool.map(lambda source: self._inspect_group(source, cancel=cancel), sources)
+            inspected: tuple[_CachedInspection, ...] = tuple(
+                pool.map(lambda source: self._inspect_cached(source, cancel=cancel), sources)
             )
+        cancel.raise_if_cancelled()
+        self._cache = {
+            item.group.group_id: self._cache.get(item.group.group_id, item)
+            if any(warning.code == "source_busy" for warning in item.warnings)
+            else item
+            for item in inspected
+        }
         return InspectedWorkspace(
-            groups=tuple(group for group, _ in inspected),
-            warnings=tuple(warning for _, group_warnings in inspected for warning in group_warnings),
+            groups=tuple(item.group for item in inspected),
+            warnings=tuple(warning for item in inspected for warning in item.warnings),
         )
+
+    def _inspect_cached(self, source: SourceGroup, *, cancel: CancellationToken) -> _CachedInspection:
+        cancel.raise_if_cancelled()
+        fingerprints: dict[str, tuple[str, int, int]] = {
+            artifact.artifact_id: _file_stamp(artifact.path) for artifact in source.artifacts
+        }
+        previous: _CachedInspection | None = self._cache.get(source.group_id)
+        busy: tuple[Artifact, ...] = tuple(
+            artifact
+            for artifact in source.artifacts
+            if artifact.path is not None and artifact.path.is_file() and not source_is_available(artifact.path)
+        )
+        if busy:
+            return _CachedInspection(
+                fingerprints,
+                InspectedSourceGroup(
+                    source,
+                    tuple(replace(artifact, state=ArtifactState.MISSING) for artifact in source.artifacts),
+                    {},
+                    source.conflicts,
+                ),
+                tuple(
+                    InspectionWarning(
+                        "source_busy",
+                        "File is still being written or is unavailable",
+                        source.group_id,
+                        artifact.artifact_id,
+                    )
+                    for artifact in busy
+                ),
+            )
+        if previous is not None and any(warning.code == "source_busy" for warning in previous.warnings):
+            previous = None
+        if previous is not None and previous.fingerprints == fingerprints and previous.group.source == source:
+            return previous
+        group: InspectedSourceGroup
+        warnings: tuple[InspectionWarning, ...]
+        group, warnings = self._inspect_group(source, cancel=cancel, previous=previous, fingerprints=fingerprints)
+        return _CachedInspection(fingerprints, group, warnings)
 
     def register_external_subtitle(
         self,
@@ -144,11 +221,11 @@ class WorkspaceInspector:
         declared_language: str | None,
         cancel: CancellationToken,
     ) -> InspectedSourceGroup:
-        """Validate and register one manual ASS or SRT source outside discovery."""
+        """Validate and register one manual ASS, SSA, or SRT source outside discovery."""
         cancel.raise_if_cancelled()
-        subtitle_format: str = path.suffix.casefold().removeprefix(".")
-        if subtitle_format not in {"ass", "srt"}:
-            msg = "External subtitles must use ASS or SRT format"
+        subtitle_format: str | None = SOURCE_SUBTITLE_FORMATS.get(path.suffix.casefold())
+        if subtitle_format is None:
+            msg = "External subtitles must use ASS, SSA, or SRT format"
             raise ExecutionError(msg)
         language: str | None = _declared_language(declared_language)
         self._require_valid_subtitles(path, cancel=cancel)
@@ -201,6 +278,8 @@ class WorkspaceInspector:
         source: SourceGroup,
         *,
         cancel: CancellationToken,
+        previous: _CachedInspection | None,
+        fingerprints: Mapping[str, tuple[str, int, int]],
     ) -> tuple[InspectedSourceGroup, tuple[InspectionWarning, ...]]:
         cancel.raise_if_cancelled()
         catalogs: dict[str, MediaCatalog] = {}
@@ -208,7 +287,12 @@ class WorkspaceInspector:
         warnings: list[InspectionWarning] = []
         for artifact in source.artifacts:
             if artifact.kind in {ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4}:
-                inspected, catalog, warning = self._inspect_video(artifact, cancel=cancel)
+                inspected, catalog, warning = self._inspect_changed_video(
+                    artifact,
+                    cancel=cancel,
+                    previous=previous,
+                    fingerprint=fingerprints[artifact.artifact_id],
+                )
                 artifacts.append(inspected)
                 if catalog is not None:
                     catalogs[artifact.artifact_id] = catalog
@@ -236,6 +320,23 @@ class WorkspaceInspector:
             ),
             tuple(warnings),
         )
+
+    def _inspect_changed_video(
+        self,
+        artifact: Artifact,
+        *,
+        cancel: CancellationToken,
+        previous: _CachedInspection | None,
+        fingerprint: tuple[str, int, int],
+    ) -> tuple[Artifact, MediaCatalog | None, InspectionWarning | None]:
+        if previous is None or previous.fingerprints.get(artifact.artifact_id) != fingerprint:
+            return self._inspect_video(artifact, cancel=cancel)
+        known: Artifact = next(item for item in previous.group.artifacts if item.artifact_id == artifact.artifact_id)
+        warning: InspectionWarning | None = next(
+            (item for item in previous.warnings if item.artifact_id == artifact.artifact_id),
+            None,
+        )
+        return known, previous.group.media_catalogs.get(artifact.artifact_id), warning
 
     def _inspect_video(
         self,
@@ -276,11 +377,33 @@ class WorkspaceInspector:
             ArtifactKind.DISPLAYED_PL,
         }:
             return self._inspect_subtitles(artifact, cancel=cancel)
-        if artifact.kind is ArtifactKind.STANDALONE_TEXT:
+        if artifact.kind in {ArtifactKind.STANDALONE_TEXT, ArtifactKind.TRANSLATED_TEXT}:
             return self._inspect_text(artifact, cancel=cancel)
-        if artifact.kind is ArtifactKind.NARRATION_AUDIO:
+        if artifact.kind in {ArtifactKind.NARRATION_AUDIO, ArtifactKind.SOURCE_AUDIO}:
             return self._inspect_audio(artifact, catalogs=catalogs, cancel=cancel)
+        if artifact.kind is ArtifactKind.SOURCE_IMAGE:
+            return self._inspect_image(artifact, cancel=cancel)
         return artifact, None
+
+    def _inspect_image(
+        self,
+        artifact: Artifact,
+        *,
+        cancel: CancellationToken,
+    ) -> tuple[Artifact, InspectionWarning | None]:
+        cancel.raise_if_cancelled()
+        path: Path | None = artifact.path
+        if path is None or not path.is_file() or path.stat().st_size == 0:
+            invalid, _, warning = self._invalid(artifact, "image_invalid", "Image source is missing or empty")
+            return invalid, warning
+        if _oriented_image_size(path) is None:
+            invalid, _, warning = self._invalid(
+                artifact,
+                "image_undecodable",
+                "Image failed full decode or carries no usable dimensions",
+            )
+            return invalid, warning
+        return replace(artifact, state=ArtifactState.READY), None
 
     def _inspect_subtitles(
         self,
@@ -335,7 +458,6 @@ class WorkspaceInspector:
             return invalid, warning
         try:
             duration_us: int = self._decode_audio_duration(artifact.path, cancel=cancel)
-            video_duration_us: int = _catalog_video_duration(catalogs)
         except ExecutionError as error:
             if error.context.code is ErrorCode.CANCELLED:
                 raise
@@ -345,7 +467,8 @@ class WorkspaceInspector:
                 "Audio failed full decode or duration validation",
             )
             return invalid, warning
-        if abs(duration_us - video_duration_us) > self._audio_tolerance_us:
+        video_duration_us: int | None = _catalog_video_duration(catalogs)
+        if video_duration_us is not None and abs(duration_us - video_duration_us) > self._audio_tolerance_us:
             invalid, _, warning = self._invalid(
                 artifact,
                 "audio_duration_mismatch",
@@ -415,6 +538,16 @@ class WorkspaceInspector:
         )
 
 
+def _file_stamp(path: Path | None) -> tuple[str, int, int]:
+    if path is None:
+        return "", 0, 0
+    try:
+        status: os.stat_result = path.stat()
+    except OSError:
+        return path.as_posix(), -1, -1
+    return path.as_posix(), status.st_size, status.st_mtime_ns
+
+
 def _append_external_artifact(group: InspectedSourceGroup, artifact: Artifact) -> InspectedSourceGroup:
     if any(existing.artifact_id == artifact.artifact_id for existing in group.artifacts):
         msg = "External artifact is already registered for this group"
@@ -454,11 +587,26 @@ def _primary_video_duration(group: InspectedSourceGroup) -> int:
     return catalog.duration_us
 
 
-def _catalog_video_duration(catalogs: Mapping[str, MediaCatalog]) -> int:
+def _oriented_image_size(path: Path) -> tuple[int, int] | None:
+    """Return the fully decoded size a supported still image really displays at, or ``None`` when unusable."""
+    try:
+        with Image.open(path) as source:
+            if source.format not in _SUPPORTED_IMAGE_FORMATS:
+                return None
+            oriented: Image.Image = ImageOps.exif_transpose(source) or source
+            oriented.load()
+            width, height = oriented.size
+    except OSError, ValueError, Image.DecompressionBombError:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _catalog_video_duration(catalogs: Mapping[str, MediaCatalog]) -> int | None:
     durations: tuple[int, ...] = tuple(catalog.duration_us for catalog in catalogs.values() if catalog.duration_us > 0)
     if not durations:
-        msg = "Audio validation requires known video duration"
-        raise _inspection_error(msg)
+        return None
     return durations[0]
 
 

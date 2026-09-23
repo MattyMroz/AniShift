@@ -14,6 +14,8 @@ __all__ = [
     "ContainerCompositionRequest",
     "ContainerCompositionResult",
     "ContainerTarget",
+    "CoverCompositionRequest",
+    "CoverCompositionResult",
     "OutputVariant",
     "QualityPreset",
     "SubtitleRole",
@@ -109,6 +111,36 @@ class ContainerCompositionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CoverCompositionRequest:
+    """One still picture and the finished recording it is shown for, with the MP4 they become."""
+
+    still_image: Path
+    audio: Path
+    destination: Path
+
+    def __post_init__(self) -> None:
+        if self.destination in {self.still_image, self.audio}:
+            msg = "Cover destination must differ from both of its inputs"
+            raise ValueError(msg)
+        if self.destination.suffix.casefold() != ".mp4":
+            msg = "Cover destination must end with .mp4"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class CoverCompositionResult:
+    """Outcome of showing one picture for the whole length of one recording."""
+
+    still_image: Path
+    audio: Path
+    output_path: Path
+    output_size_bytes: int
+    audio_duration_us: int
+    duration_ms: float
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class CompositionPlan:
     """Neutral description of what to assemble for one source file."""
 
@@ -120,7 +152,7 @@ class CompositionPlan:
     source_subtitle_kind: str = "ass"
     scope_id: str = ""
     temporary_root: Path = Path()
-    destination_dir: Path = Path()
+    destination: Path = Path()
 
     @property
     def has_material(self) -> bool:

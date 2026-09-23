@@ -6,7 +6,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Final
@@ -27,22 +27,47 @@ from anishift.application import (
     InspectedSourceGroup,
     InspectedWorkspace,
     Mp4AudioSource,
+    NarrationTimeline,
+    PlanPreview,
     ProductIntent,
     ProductKind,
+    RebuildRequest,
+    RetryProposal,
     RunMode,
     SubtitleOutputFormat,
     SubtitleSourcePolicy,
+    TaskKind,
     TranslationAction,
+    WorkflowTarget,
+    legal_narration_timelines,
+    legal_products,
+    preview_plan,
 )
 from anishift.application.events import sanitize_event_message
+from anishift.cli.interactive.menu import (
+    append_row as _append_row,
+)
+from anishift.cli.interactive.menu import (
+    fit_entries as _fit_entries,
+)
+from anishift.cli.interactive.menu import (
+    header as _header,
+)
+from anishift.cli.interactive.menu import (
+    left_padding as _left_padding,
+)
+from anishift.cli.interactive.menu import (
+    visible_window as _visible_window,
+)
+from anishift.cli.interactive.menu import with_footer
+from anishift.cli.interactive.state import refusal_text
+from anishift.cli.interactive.text_input import TextInput
+from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
 
 __all__ = ["ManualController", "ManualDraft", "ManualResult", "ManualRun", "default_draft", "materialize_intent"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-
-_POINTER: Final[str] = "\u276f"
-"""Marker placed before the active row."""
 
 _MENU_HINT: Final[str] = "↑↓ · Enter · Esc"
 """Keyboard hint used by single-choice menus."""
@@ -50,16 +75,40 @@ _MENU_HINT: Final[str] = "↑↓ · Enter · Esc"
 _MULTI_HINT: Final[str] = "↑↓ · Enter/Space zmień · Esc wróć"
 """Keyboard hint used by multi-choice menus."""
 
+_GROUP_ACTIONS: Final[tuple[tuple[str, ProductKind | None], ...]] = (
+    ("Podgląd", None),
+    ("Dostosuj źródła i produkty", None),
+    ("Regeneruj lektora", ProductKind.NARRATION_AUDIO),
+    ("Regeneruj polskie napisy", ProductKind.FULL_PL),
+    ("Dokończ poprzednią pracę", None),
+    ("Anuluj", None),
+)
+"""Actions applied to the selected episode scope."""
+
 _INPUT_HINT: Final[str] = "Enter zatwierdź · Esc wróć"
 """Keyboard hint used by external path input."""
 
-_PRODUCTS: Final[tuple[tuple[ProductKind, str], ...]] = (
+_PRODUCT_LABELS: Final[tuple[tuple[ProductKind, str], ...]] = (
     (ProductKind.FULL_PL, "Polskie napisy"),
     (ProductKind.NARRATION_AUDIO, "Polski lektor"),
     (ProductKind.MKV, "MKV"),
     (ProductKind.MP4, "MP4"),
+    (ProductKind.COVER_MP4, "Okładka MP4"),
 )
-"""Public products selectable for one source group."""
+"""Every public product the panel can name, in the order a screen offers the ones a group allows."""
+
+_TIMELINE_LABELS: Final[tuple[tuple[NarrationTimeline, str], ...]] = (
+    (NarrationTimeline.CONTINUOUS, "Jedno po drugim, z krótką pauzą"),
+    (NarrationTimeline.SOURCE_TIMES, "W czasach z dokumentu"),
+)
+"""Every reading an audiobook can be recorded on, in the order a screen offers the ones a group allows."""
+
+_PREVIEW_STAGES: Final[tuple[tuple[TaskKind, str], ...]] = (
+    (TaskKind.TRANSLATE_SUBTITLES, "tłumaczenie"),
+    (TaskKind.SYNTHESIZE_SPEECH, "synteza mowy"),
+    (TaskKind.MIX_NARRATION, "miks audio"),
+)
+"""Potentially costly work made explicit before starting a preview."""
 
 _SUBTITLE_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
     {
@@ -97,12 +146,23 @@ class _Screen(StrEnum):
     GROUP_ACTION = "group_action"
     CUSTOM = "custom"
     PRODUCTS = "products"
+    TIMELINE = "timeline"
     SUBTITLES = "subtitles"
     AUDIO = "audio"
     VIDEO = "video"
     PREVIEW = "preview"
     INPUT = "input"
     BUSY = "busy"
+
+
+class _CustomRow(StrEnum):
+    PRODUCTS = "Wynik"
+    SUBTITLES = "Napisy źródłowe"
+    AUDIO = "Audio źródłowe"
+    VIDEO = "Wideo źródłowe"
+    TIMELINE = "Czytanie"
+    DONE = "Gotowe"
+    BACK = "Wróć"
 
 
 class _InputKind(StrEnum):
@@ -134,6 +194,8 @@ class ManualDraft:
     source_subtitle_language: str | None = None
     external_audio_role: ExternalAudioRole | None = None
     subtitle_output_format: SubtitleOutputFormat = SubtitleOutputFormat.PRESERVE
+    narration_timeline: NarrationTimeline = NarrationTimeline.CONTINUOUS
+    target: WorkflowTarget | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +203,8 @@ class ManualRun:
     """Carry the inspected workspace and accepted manual plan to shared execution."""
 
     workspace: InspectedWorkspace
-    plan: ExecutionPlan
+    plan: ExecutionPlan | PlanPreview
+    resident: ResidentSession | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,16 +218,27 @@ class _SourceChoice:
     audio_role: ExternalAudioRole | None = None
 
 
-def default_draft(group_id: str, preset: AutoPreset) -> ManualDraft:
-    """Project the active automatic preset into an independent manual draft."""
-    return ManualDraft(
-        group_id=group_id,
+def default_draft(group: InspectedSourceGroup, preset: AutoPreset) -> ManualDraft:
+    """Project the active automatic preset onto one group, keeping only the products its place allows."""
+    draft = ManualDraft(
+        group_id=group.group_id,
         products=preset.products,
         subtitle_source_policy=preset.subtitle_source_policy,
         translation_action=preset.translation_action,
         source_subtitle_language=preset.source_subtitle_language,
         subtitle_output_format=preset.subtitle_output_format,
+        target=group.source.route.target,
     )
+    allowed: frozenset[ProductKind] = legal_products(group)
+    requested: frozenset[ProductKind] = preset.products.requested_products & allowed
+    if requested == preset.products.requested_products:
+        return draft
+    return _with_products(draft, requested or _first_product(allowed))
+
+
+def _first_product(allowed: frozenset[ProductKind]) -> frozenset[ProductKind]:
+    """Return the one product a place offers first, because a draft can never request nothing at all."""
+    return frozenset({next(product for product, _label in _PRODUCT_LABELS if product in allowed)})
 
 
 def materialize_intent(draft: ManualDraft) -> GroupIntent:
@@ -183,6 +257,8 @@ def materialize_intent(draft: ManualDraft) -> GroupIntent:
         source_subtitle_language=draft.source_subtitle_language,
         external_audio_role=draft.external_audio_role,
         subtitle_output_format=draft.subtitle_output_format,
+        narration_timeline=draft.narration_timeline,
+        target=draft.target,
     )
 
 
@@ -352,32 +428,37 @@ class ManualController:
 
     def __init__(
         self,
-        service: AppService,
+        service: AppService | ResidentSession,
         workspace: InspectedWorkspace,
         preset: AutoPreset,
         invalidate: Callable[[], None],
     ) -> None:
-        self._service: AppService = service
+        self._service: AppService | ResidentSession = service
+        self._scope_actions: tuple[tuple[str, ProductKind | None], ...] = (
+            _GROUP_ACTIONS if isinstance(service, ResidentSession) else (*_GROUP_ACTIONS[:-2], _GROUP_ACTIONS[-1])
+        )
         self._workspace: InspectedWorkspace = workspace
         self._preset: AutoPreset = preset
         self._invalidate: Callable[[], None] = invalidate
         self._groups: dict[str, InspectedSourceGroup] = {group.group_id: group for group in workspace.groups}
         self._group_ids: tuple[str, ...] = tuple(self._groups)
         self._labels: dict[str, str] = _group_labels(workspace.groups, service.workspace_root)
-        self._selected_groups: set[str] = {group.group_id for group in workspace.groups if not group.conflicts}
+        self._selected_groups: set[str] = set()
         self._drafts: dict[str, ManualDraft] = {
-            group_id: default_draft(group_id, preset) for group_id in self._group_ids
+            group_id: default_draft(group, preset) for group_id, group in self._groups.items()
         }
         self._screen: _Screen = _Screen.GROUPS
         self._selected: int = 0
         self._edit_ids: tuple[str, ...] = ()
         self._edit_index: int = 0
         self._product_selection: set[ProductKind] = set()
+        self._product_rows: tuple[tuple[ProductKind, str], ...] = ()
         self._source_choices: tuple[_SourceChoice, ...] = ()
-        self._plan: ExecutionPlan | None = None
+        self._plan: ExecutionPlan | PlanPreview | None = None
+        self._automatic_preview: bool = False
         self._ready_run: ManualRun | None = None
         self._input_kind: _InputKind | None = None
-        self._input_buffer: str = ""
+        self._input: TextInput = TextInput()
         self._feedback: str | None = None
         self._cancel: EventCancellationToken | None = None
         self._generation: int = 0
@@ -402,6 +483,9 @@ class ManualController:
             elif self._screen is _Screen.PRODUCTS:
                 self._handle_products(key)
                 result = ManualResult.STAY
+            elif self._screen is _Screen.TIMELINE:
+                self._handle_timeline(key)
+                result = ManualResult.STAY
             elif self._screen in {_Screen.SUBTITLES, _Screen.AUDIO, _Screen.VIDEO}:
                 self._handle_source(key)
                 result = ManualResult.STAY
@@ -409,6 +493,8 @@ class ManualController:
                 result = self._handle_preview(key)
             else:
                 result = ManualResult.STAY
+        if result is ManualResult.BACK_HOME and isinstance(self._service, ResidentSession):
+            self._service.close()
         return result
 
     def render(self, columns: int, rows: int) -> Text:
@@ -419,6 +505,7 @@ class ManualController:
                 _Screen.GROUP_ACTION: self._render_group_action,
                 _Screen.CUSTOM: self._render_custom,
                 _Screen.PRODUCTS: self._render_products,
+                _Screen.TIMELINE: self._render_timeline,
                 _Screen.SUBTITLES: self._render_sources,
                 _Screen.AUDIO: self._render_sources,
                 _Screen.VIDEO: self._render_sources,
@@ -437,6 +524,8 @@ class ManualController:
             self._cancel = None
         if token is not None:
             token.cancel()
+        if isinstance(self._service, ResidentSession):
+            self._service.close()
 
     def take_ready_run(self) -> ManualRun | None:
         """Return and clear the run accepted by the preview."""
@@ -445,9 +534,36 @@ class ManualController:
             self._ready_run = None
         return ready
 
+    def prepare_retry(self, proposal: RetryProposal) -> None:
+        """Open the exact owner-classified scope with its retained choices and an explicit preview."""
+        if proposal.action not in {"resume", "manual"}:
+            msg = "Źródło zmieniło się; wróć i ponownie wybierz Ponów"
+            raise ValueError(msg)
+        if not set(proposal.group_ids) <= self._groups.keys():
+            msg = "Źródło lub część zapisanego zlecenia już nie istnieje"
+            raise ValueError(msg)
+        self._select_scope(set(proposal.group_ids))
+        if self._selected_groups != set(proposal.group_ids):
+            return
+        for intent in proposal.intents:
+            if intent.group_id in self._drafts:
+                self._drafts[intent.group_id] = ManualDraft(
+                    **{item.name: getattr(intent, item.name) for item in fields(ManualDraft)}
+                )
+        self._edit_ids = proposal.group_ids
+        self._edit_index = 0
+        if proposal.action == "resume":
+            self._start_remote_preview(len(self._scope_actions) - 2)
+        else:
+            self._open(_Screen.GROUP_ACTION)
+            self._selected = 1
+
     def _handle_busy_key(self, key: str) -> ManualResult:
         if key not in {"escape", "interrupt"}:
             return ManualResult.STAY
+        if isinstance(self._service, ResidentSession):
+            self._generation += 1
+            return ManualResult.BACK_HOME
         self._generation += 1
         token: EventCancellationToken | None = self._cancel
         self._cancel = None
@@ -458,35 +574,102 @@ class ManualController:
         return ManualResult.STAY
 
     def _handle_groups(self, key: str) -> ManualResult:
-        row_count: int = len(self._group_ids) + 2
+        row_count: int = len(self._group_ids) + len(self._scope_actions)
         if key == "up":
             self._move(-1, row_count)
         elif key == "down":
             self._move(1, row_count)
         elif key in {"space", "enter"} and self._selected < len(self._group_ids):
             group_id: str = self._group_ids[self._selected]
-            if group_id in self._selected_groups:
-                self._selected_groups.remove(group_id)
-            else:
-                self._selected_groups.add(group_id)
-            self._feedback = None
-        elif key == "enter" and self._selected == len(self._group_ids):
-            if not self._selected_groups:
-                self._feedback = "✗ Wybierz co najmniej jeden odcinek"
-            else:
-                self._edit_ids = tuple(group_id for group_id in self._group_ids if group_id in self._selected_groups)
-                self._edit_index = 0
-                self._open(_Screen.GROUP_ACTION)
+            self._select_scope(self._selected_groups ^ {group_id})
         elif key == "enter":
-            return ManualResult.BACK_HOME
+            return self._handle_scope_action(self._selected - len(self._group_ids))
+        elif key == "a":
+            self._select_scope(set() if self._selected_groups else set(self._group_ids))
+        elif key == "home":
+            self._selected = 0
+        elif key == "end":
+            self._selected = len(self._group_ids)
         return ManualResult.STAY
+
+    def _select_scope(self, selected: set[str]) -> None:
+        if isinstance(self._service, ResidentSession):
+            try:
+                self._service.reserve(tuple(group for group in self._group_ids if group in selected))
+            except (AniShiftError, OSError) as problem:
+                self._feedback = f"✗ Nie można zarezerwować odcinków · {refusal_text(problem)}"
+                return
+        self._selected_groups = selected
+        self._feedback = None
+
+    def _handle_scope_action(self, action: int) -> ManualResult:
+        if action == len(self._scope_actions) - 1:
+            return ManualResult.BACK_HOME
+        if not self._selected_groups:
+            self._feedback = "✗ Wybierz co najmniej jeden odcinek"
+            return ManualResult.STAY
+        self._edit_ids = tuple(group_id for group_id in self._group_ids if group_id in self._selected_groups)
+        self._edit_index = 0
+        self._automatic_preview = action != 1
+        if isinstance(self._service, ResidentSession):
+            self._start_remote_preview(action)
+            return ManualResult.STAY
+        if action == 1:
+            self._open(_Screen.GROUP_ACTION)
+            return ManualResult.STAY
+        product: ProductKind | None = self._scope_actions[action][1]
+        rebuild: RebuildRequest | None = None if product is None else RebuildRequest(frozenset({product}))
+        try:
+            self._plan = self._service.plan_auto(self._edit_ids, self._preset, rebuild=rebuild)
+        except (AniShiftError, OSError, TypeError, ValueError) as problem:
+            self._plan = None
+            self._feedback = f"✗ Nie można zbudować planu · {refusal_text(problem)}"
+        self._open(_Screen.PREVIEW, clear_feedback=False)
+        return ManualResult.STAY
+
+    def _start_remote_preview(self, action: int | None = None) -> None:
+        service: AppService | ResidentSession = self._service
+        if not isinstance(service, ResidentSession):
+            return
+        self._generation += 1
+        generation: int = self._generation
+        self._screen = _Screen.BUSY
+        self._feedback = None
+        group_ids: tuple[str, ...] = self._edit_ids
+        intents: tuple[GroupIntent, ...] = tuple(materialize_intent(self._drafts[group_id]) for group_id in group_ids)
+
+        def prepare() -> None:
+            plan: PlanPreview | None = None
+            problem: str | None = None
+            try:
+                service.reserve(group_ids)
+                if action is None:
+                    plan = service.plan_manual(intents)
+                elif action == len(self._scope_actions) - 2:
+                    plan = service.plan_resume(group_ids)
+                elif action != 1:
+                    product: ProductKind | None = self._scope_actions[action][1]
+                    rebuild: RebuildRequest | None = None if product is None else RebuildRequest(frozenset({product}))
+                    plan = service.plan_auto(group_ids, self._preset, rebuild=rebuild)
+            except (AniShiftError, OSError, TypeError, ValueError) as error:
+                problem = f"✗ Nie można przygotować odcinków · {refusal_text(error)}"
+            with self._lock:
+                if generation != self._generation:
+                    return
+                self._plan = plan
+                self._feedback = problem
+                target: _Screen = _Screen.GROUP_ACTION if action == 1 and problem is None else _Screen.PREVIEW
+                self._open(target, clear_feedback=False)
+            self._invalidate()
+
+        threading.Thread(target=prepare, name="anishift-manual-preview", daemon=True).start()
 
     def _handle_group_action(self, key: str) -> ManualResult:
         if not self._navigate(key, 3):
             return ManualResult.STAY
         group_id: str = self._current_group_id()
         if self._selected == 0:
-            self._drafts[group_id] = default_draft(group_id, self._preset)
+            self._drafts[group_id] = default_draft(self._current_group(), self._preset)
             self._advance_group()
         elif self._selected == 1:
             self._open(_Screen.CUSTOM)
@@ -494,44 +677,76 @@ class ManualController:
             return self._previous_group()
         return ManualResult.STAY
 
+    def _custom_rows(self) -> tuple[_CustomRow, ...]:
+        rows: list[_CustomRow] = [_CustomRow.PRODUCTS, _CustomRow.SUBTITLES, _CustomRow.AUDIO]
+        if self._has_video_choice():
+            rows.append(_CustomRow.VIDEO)
+        if len(self._timeline_rows()) > 1:
+            rows.append(_CustomRow.TIMELINE)
+        rows.extend((_CustomRow.DONE, _CustomRow.BACK))
+        return tuple(rows)
+
+    def _timeline_rows(self) -> tuple[tuple[NarrationTimeline, str], ...]:
+        allowed: frozenset[NarrationTimeline] = legal_narration_timelines(self._current_group())
+        return tuple(item for item in _TIMELINE_LABELS if item[0] in allowed)
+
     def _handle_custom(self, key: str) -> ManualResult:
-        item_count: int = 6 if self._has_video_choice() else 5
-        subtitle_index: int = 1
-        audio_index: int = 2
-        video_index: int = 3
-        if not self._navigate(key, item_count):
+        rows: tuple[_CustomRow, ...] = self._custom_rows()
+        if not self._navigate(key, len(rows)):
             return ManualResult.STAY
-        if self._selected == 0:
+        chosen: _CustomRow = rows[self._selected]
+        if chosen is _CustomRow.PRODUCTS:
             draft: ManualDraft = self._drafts[self._current_group_id()]
-            self._product_selection = set(draft.products.requested_products)
+            allowed: frozenset[ProductKind] = legal_products(self._current_group())
+            self._product_rows = tuple(item for item in _PRODUCT_LABELS if item[0] in allowed)
+            self._product_selection = set(draft.products.requested_products) & allowed
             self._open(_Screen.PRODUCTS)
-        elif self._selected == subtitle_index:
+        elif chosen is _CustomRow.SUBTITLES:
             self._source_choices = _subtitle_choices(self._current_group())
             self._open(_Screen.SUBTITLES)
             self._selected = self._source_selection_index()
-        elif self._selected == audio_index:
+        elif chosen is _CustomRow.AUDIO:
             self._source_choices = _audio_choices(self._current_group())
             self._open(_Screen.AUDIO)
             self._selected = self._source_selection_index()
-        elif self._has_video_choice() and self._selected == video_index:
+        elif chosen is _CustomRow.VIDEO:
             self._source_choices = _video_choices(self._current_group())
             self._open(_Screen.VIDEO)
             self._selected = self._source_selection_index()
-        elif self._selected == item_count - 2:
+        elif chosen is _CustomRow.TIMELINE:
+            self._open(_Screen.TIMELINE)
+            self._selected = self._timeline_selection_index()
+        elif chosen is _CustomRow.DONE:
             self._advance_group()
         else:
             self._open(_Screen.GROUP_ACTION)
         return ManualResult.STAY
 
+    def _timeline_selection_index(self) -> int:
+        current: NarrationTimeline = self._drafts[self._current_group_id()].narration_timeline
+        rows: tuple[tuple[NarrationTimeline, str], ...] = self._timeline_rows()
+        return next((index for index, (timeline, _label) in enumerate(rows) if timeline is current), 0)
+
+    def _handle_timeline(self, key: str) -> None:
+        rows: tuple[tuple[NarrationTimeline, str], ...] = self._timeline_rows()
+        if not self._navigate(key, len(rows) + 1):
+            return
+        if self._selected == len(rows):
+            self._open(_Screen.CUSTOM)
+            return
+        group_id: str = self._current_group_id()
+        self._drafts[group_id] = replace(self._drafts[group_id], narration_timeline=rows[self._selected][0])
+        self._open(_Screen.CUSTOM)
+
     def _handle_products(self, key: str) -> None:
-        save_index: int = len(_PRODUCTS)
+        save_index: int = len(self._product_rows)
         back_index: int = save_index + 1
         if key == "up":
             self._move(-1, back_index + 1)
         elif key == "down":
             self._move(1, back_index + 1)
-        elif key in {"space", "enter"} and self._selected < len(_PRODUCTS):
-            product: ProductKind = _PRODUCTS[self._selected][0]
+        elif key in {"space", "enter"} and self._selected < len(self._product_rows):
+            product: ProductKind = self._product_rows[self._selected][0]
             if product in self._product_selection:
                 self._product_selection.remove(product)
             else:
@@ -568,7 +783,7 @@ class ManualController:
                 if choice.audio_role is ExternalAudioRole.SOURCE_AUDIO
                 else _InputKind.NARRATION_MIX
             )
-            self._input_buffer = ""
+            self._input.reset()
             self._open(_Screen.INPUT)
             return
         group_id: str = self._current_group_id()
@@ -583,31 +798,33 @@ class ManualController:
         self._open(_Screen.CUSTOM)
 
     def _handle_preview(self, key: str) -> ManualResult:
-        plan: ExecutionPlan | None = self._plan
+        plan: ExecutionPlan | PlanPreview | None = self._plan
         option_count: int = 3 if plan is not None and plan.can_execute else 2
         if not self._navigate(key, option_count):
             return ManualResult.STAY
         if plan is not None and plan.can_execute and self._selected == 0:
-            self._ready_run = ManualRun(self._workspace, plan)
+            resident: ResidentSession | None = self._service if isinstance(self._service, ResidentSession) else None
+            self._ready_run = ManualRun(self._workspace, plan, resident)
             return ManualResult.START_RUN
         back_index: int = 1 if plan is not None and plan.can_execute else 0
         if self._selected == back_index:
             self._edit_index = 0
-            self._open(_Screen.GROUP_ACTION)
+            self._open(_Screen.GROUPS if self._automatic_preview else _Screen.GROUP_ACTION)
             return ManualResult.STAY
         return ManualResult.BACK_HOME
 
+    def copy_selection(self) -> bool:
+        """Copy the selected external-source path without leaving its editor."""
+        with self._lock:
+            return self._screen is _Screen.INPUT and self._input.handle("interrupt")
+
     def _handle_input_key(self, key: str) -> None:
+        if self._input.handle(key):
+            return
         if key in {"escape", "interrupt"}:
             self._open(_Screen.CUSTOM)
-        elif key == "backspace":
-            self._input_buffer = self._input_buffer[:-1]
-        elif key == "space":
-            self._input_buffer += " "
-        elif key.startswith("text:"):
-            self._input_buffer += key.removeprefix("text:")
         elif key == "enter":
-            raw_path: str = self._input_buffer.strip().strip('"')
+            raw_path: str = self._input.text.strip().strip('"')
             if not raw_path:
                 self._feedback = "✗ Podaj ścieżkę pliku"
                 return
@@ -711,7 +928,7 @@ class ManualController:
             self._cancel = None
             self._screen = _Screen.CUSTOM
             if problem is not None or updated is None or artifact is None:
-                reason: str = _safe(str(problem)) if problem is not None else "Nieznany błąd"
+                reason: str = refusal_text(problem) if problem is not None else "Nieznany błąd"
                 self._feedback = f"✗ Nie udało się dodać pliku · {reason}"
             else:
                 self._replace_group(updated)
@@ -755,6 +972,9 @@ class ManualController:
         return ManualResult.STAY
 
     def _build_preview(self) -> None:
+        if isinstance(self._service, ResidentSession):
+            self._start_remote_preview()
+            return
         try:
             intents: tuple[GroupIntent, ...] = tuple(
                 materialize_intent(self._drafts[group_id]) for group_id in self._edit_ids
@@ -762,7 +982,7 @@ class ManualController:
             self._plan = self._service.plan_manual(intents)
         except (AniShiftError, OSError, TypeError, ValueError) as problem:
             self._plan = None
-            self._feedback = f"✗ Nie można zbudować planu · {_safe(str(problem))}"
+            self._feedback = f"✗ Nie można zbudować planu · {refusal_text(problem)}"
         self._open(_Screen.PREVIEW, clear_feedback=False)
 
     def _back(self) -> ManualResult:
@@ -773,6 +993,7 @@ class ManualController:
         if self._screen in {
             _Screen.CUSTOM,
             _Screen.PRODUCTS,
+            _Screen.TIMELINE,
             _Screen.SUBTITLES,
             _Screen.AUDIO,
             _Screen.VIDEO,
@@ -782,7 +1003,7 @@ class ManualController:
             self._open(target)
             return ManualResult.STAY
         self._edit_index = 0
-        self._open(_Screen.GROUP_ACTION)
+        self._open(_Screen.GROUPS if self._automatic_preview else _Screen.GROUP_ACTION)
         return ManualResult.STAY
 
     def _navigate(self, key: str, count: int) -> bool:
@@ -798,6 +1019,8 @@ class ManualController:
         self._feedback = None
 
     def _open(self, screen: _Screen, *, clear_feedback: bool = True) -> None:
+        if screen is _Screen.GROUPS and isinstance(self._service, ResidentSession):
+            self._service.release()
         self._screen = screen
         self._selected = 0
         if clear_feedback:
@@ -841,7 +1064,7 @@ class ManualController:
 
     def _render_groups(self, columns: int, rows: int) -> Text:
         labels: tuple[str, ...] = tuple(self._labels[group_id] for group_id in self._group_ids)
-        entries: tuple[str, ...] = (*labels, "Dalej", "Anuluj")
+        entries: tuple[str, ...] = (*labels, *(label for label, _ in self._scope_actions))
         shown: tuple[str, ...] = _fit_entries(entries, columns)
         start, end = _visible_window(len(entries), self._selected, rows)
         content: Text = _header("WYBIERZ ODCINKI", columns, rows, end - start)
@@ -851,7 +1074,7 @@ class ManualController:
                 f"{'●' if self._group_ids[index] in self._selected_groups else '○'} " if index < len(labels) else "  "
             )
             _append_row(content, left, shown[index], index == self._selected, marker)
-        return self._finish(content, left, _MULTI_HINT)
+        return self._finish(content, columns, rows, "↑↓ · Space wybierz · A wszystkie · End podgląd · Esc wróć")
 
     def _render_group_action(self, columns: int, rows: int) -> Text:
         entries: tuple[str, ...] = ("Użyj ustawień domyślnych", "Dostosuj ten odcinek", "Wróć")
@@ -859,23 +1082,35 @@ class ManualController:
         return self._render_menu(title, entries, columns, rows)
 
     def _render_custom(self, columns: int, rows: int) -> Text:
-        entries: list[str] = ["Wynik", "Napisy źródłowe", "Audio źródłowe"]
-        if self._has_video_choice():
-            entries.append("Wideo źródłowe")
-        entries.extend(("Gotowe", "Wróć"))
-        return self._render_menu(self._labels[self._current_group_id()], tuple(entries), columns, rows)
+        entries: tuple[str, ...] = tuple(row.value for row in self._custom_rows())
+        return self._render_menu(self._labels[self._current_group_id()], entries, columns, rows)
+
+    def _render_timeline(self, columns: int, rows: int) -> Text:
+        offered: tuple[tuple[NarrationTimeline, str], ...] = self._timeline_rows()
+        current: int = self._timeline_selection_index()
+        entries: tuple[str, ...] = (*(label for _timeline, label in offered), "Wróć")
+        shown: tuple[str, ...] = _fit_entries(entries, columns)
+        content: Text = _header("CZYTANIE ODCINKA", columns, rows, len(entries))
+        left: int = _left_padding(columns, shown)
+        for index, _label in enumerate(entries):
+            marker: str = f"{'●' if index == current else '○'} " if index < len(offered) else "  "
+            _append_row(content, left, shown[index], index == self._selected, marker)
+        return self._finish(content, columns, rows, _MENU_HINT)
 
     def _render_products(self, columns: int, rows: int) -> Text:
-        entries: tuple[str, ...] = (*(label for _product, label in _PRODUCTS), "Zapisz", "Wróć")
+        rows_offered: tuple[tuple[ProductKind, str], ...] = self._product_rows
+        entries: tuple[str, ...] = (*(label for _product, label in rows_offered), "Zapisz", "Wróć")
         shown: tuple[str, ...] = _fit_entries(entries, columns)
         content: Text = _header("WYNIK ODCINKA", columns, rows, len(entries))
         left: int = _left_padding(columns, shown)
         for index, _label in enumerate(entries):
             marker: str = (
-                f"{'●' if _PRODUCTS[index][0] in self._product_selection else '○'} " if index < len(_PRODUCTS) else "  "
+                f"{'●' if rows_offered[index][0] in self._product_selection else '○'} "
+                if index < len(rows_offered)
+                else "  "
             )
             _append_row(content, left, shown[index], index == self._selected, marker)
-        return self._finish(content, left, _MULTI_HINT)
+        return self._finish(content, columns, rows, _MULTI_HINT)
 
     def _render_sources(self, columns: int, rows: int) -> Text:
         title: str = {
@@ -896,10 +1131,10 @@ class ManualController:
                 else f"{'●' if index == current else '○'} "
             )
             _append_row(content, left, shown[index], index == self._selected, marker)
-        return self._finish(content, left, _MENU_HINT)
+        return self._finish(content, columns, rows, _MENU_HINT)
 
     def _render_preview(self, columns: int, rows: int) -> Text:
-        plan: ExecutionPlan | None = self._plan
+        plan: ExecutionPlan | PlanPreview | None = self._plan
         summary: tuple[str, ...] = _fit_entries(self._preview_summary(plan), columns)
         blockers: tuple[str, ...] = _fit_entries(self._blocker_lines(plan), columns)
         warnings: tuple[str, ...] = _fit_entries(self._warning_lines(plan), columns)
@@ -922,19 +1157,36 @@ class ManualController:
         content.append("\n")
         for index, label in enumerate(entries):
             _append_row(content, left, label, index == self._selected)
-        return self._finish(content, left, _MENU_HINT)
+        return self._finish(content, columns, rows, _MENU_HINT)
 
-    def _preview_summary(self, plan: ExecutionPlan | None) -> tuple[str, ...]:
+    def _preview_summary(self, plan: ExecutionPlan | PlanPreview | None) -> tuple[str, ...]:
         if plan is None:
             return ("Plan nie jest dostępny",)
         counts: Counter[ProductKind] = Counter(
             product for group in plan.groups for product in group.intent.products.requested_products
         )
         lines: list[str] = [f"{len(plan.groups)} odcinków"]
-        lines.extend(f"{label}: {counts[product]}" for product, label in _PRODUCTS if counts[product])
+        lines.extend(f"{label}: {counts[product]}" for product, label in _PRODUCT_LABELS if counts[product])
+        view: PlanPreview = plan if isinstance(plan, PlanPreview) else preview_plan(plan, "", "")
+        for label, attribute in (("Zachowane", "preserved_products"), ("Do wykonania", "planned_products")):
+            products: Counter[str] = Counter(
+                product.value for group in view.groups for product in getattr(group, attribute)
+            )
+            shown: list[str] = [
+                f"{name.lower()} ({products[kind.value]})" for kind, name in _PRODUCT_LABELS if products[kind.value]
+            ]
+            if shown:
+                lines.append(f"{label}: {', '.join(shown)}")
+        work: list[str] = [
+            f"{label} ({len({task.group_id for task in view.tasks if task.kind is kind})})"
+            for kind, label in _PREVIEW_STAGES
+            if any(task.kind is kind for task in view.tasks)
+        ]
+        if work:
+            lines.append(f"Wymagane: {', '.join(work)}")
         return tuple(lines)
 
-    def _blocker_lines(self, plan: ExecutionPlan | None) -> tuple[str, ...]:
+    def _blocker_lines(self, plan: ExecutionPlan | PlanPreview | None) -> tuple[str, ...]:
         if plan is None:
             return ()
         return tuple(
@@ -944,7 +1196,7 @@ class ManualController:
             if problem.is_blocking
         )
 
-    def _warning_lines(self, plan: ExecutionPlan | None) -> tuple[str, ...]:
+    def _warning_lines(self, plan: ExecutionPlan | PlanPreview | None) -> tuple[str, ...]:
         if plan is None:
             return ()
         return tuple(
@@ -956,12 +1208,12 @@ class ManualController:
     def _render_input(self, columns: int, rows: int) -> Text:
         title: str = "ZEWNĘTRZNE NAPISY" if self._input_kind is _InputKind.SUBTITLE else "ZEWNĘTRZNE AUDIO"
         content: Text = _header(title, columns, rows, 3)
-        left: int = max((columns - min(max(len(self._input_buffer) + 3, 24), columns)) // 2, 0)
+        left: int = max((columns - min(max(len(self._input.text) + 3, 24), columns)) // 2, 0)
         width: int = max(columns - left - 3, 1)
-        shown: str = self._input_buffer[-width:]
-        content.append(f"{' ' * left}> {shown}▌", style="white_bold")
+        content.append(f"{' ' * left}> ", style="white_bold")
+        content.append_text(self._input.render(width))
         content.append("\n")
-        return self._finish(content, left, _INPUT_HINT)
+        return self._finish(content, columns, rows, _INPUT_HINT)
 
     def _render_busy(self, columns: int, rows: int) -> Text:
         spinner: str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(time.monotonic() * 10) % 10]
@@ -969,7 +1221,7 @@ class ManualController:
         content: Text = _header("TRYB RĘCZNY", columns, rows, 2)
         left: int = max((columns - len(line)) // 2, 0)
         content.append(f"{' ' * left}{line}", style="brand_accent")
-        return self._finish(content, left, "Esc anuluj")
+        return self._finish(content, columns, rows, "Esc anuluj")
 
     def _render_menu(self, title: str, entries: tuple[str, ...], columns: int, rows: int) -> Text:
         shown: tuple[str, ...] = _fit_entries(entries, columns)
@@ -978,40 +1230,12 @@ class ManualController:
         left: int = _left_padding(columns, shown)
         for index in range(start, end):
             _append_row(content, left, shown[index], index == self._selected)
-        return self._finish(content, left, _MENU_HINT)
+        return self._finish(content, columns, rows, _MENU_HINT)
 
-    def _finish(self, content: Text, left: int, hint: str) -> Text:
+    def _finish(self, content: Text, columns: int, rows: int, hint: str) -> Text:
         if self._feedback is not None:
-            content.append(f"{' ' * left}{self._feedback}\n", style="error")
-        content.append(f"{' ' * left}{hint}", style="gray")
-        return content
-
-
-def _header(title: str, columns: int, rows: int, content_rows: int) -> Text:
-    top: int = max((rows - content_rows - 5) // 2, 0)
-    shown: str = _truncate_right(title, max(columns - 2, 1))
-    left: int = max((columns - len(shown)) // 2, 0)
-    content = Text("\n" * top)
-    content.append(f"{' ' * left}{shown}\n\n", style="white_bold")
-    return content
-
-
-def _append_row(content: Text, left: int, label: str, active: bool, marker: str = "  ") -> None:
-    content.append(" " * left)
-    content.append(f"{_POINTER} " if active else "  ", style="brand_accent" if active else "white_bold")
-    content.append(marker, style="brand_accent" if active else "white_bold")
-    content.append(label, style="brand_accent" if active else "white_bold")
-    content.append("\n")
-
-
-def _left_padding(columns: int, entries: Sequence[str]) -> int:
-    width: int = max((len(entry) for entry in entries), default=1) + 4
-    return max((columns - min(width, columns)) // 2, 0)
-
-
-def _fit_entries(entries: Sequence[str], columns: int) -> tuple[str, ...]:
-    width: int = max(columns - 8, 1)
-    return tuple(_truncate_right(entry, width) for entry in entries)
+            content.append(self._feedback + "\n", style="error")
+        return with_footer(content, (hint,), columns, rows)
 
 
 def _limit_problems(
@@ -1032,22 +1256,6 @@ def _limit_problems(
     if visible_warnings:
         return visible_blockers, (*visible_warnings[:-1], marker)
     return (*visible_blockers[:-1], marker), ()
-
-
-def _truncate_right(value: str, width: int) -> str:
-    if len(value) <= width:
-        return value
-    if width <= 1:
-        return "…"
-    return f"{value[: width - 1]}…"
-
-
-def _visible_window(count: int, selected: int, rows: int) -> tuple[int, int]:
-    budget: int = max(rows - 7, 1)
-    if count <= budget:
-        return 0, count
-    start: int = min(max(selected - budget // 2, 0), count - budget)
-    return start, start + budget
 
 
 def _safe(value: str) -> str:

@@ -15,14 +15,29 @@ from typing import Any, Final, Never
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.errors import AudioResumeError
 from anishift.services.audio.fingerprint import sha256_file
+from anishift.services.audio.types import PlacementReason, TimelinePlacement
 from anishift.utils.logger import get_logger
 
-__all__ = ["AudioResumeRepository"]
+__all__ = ["AudioResumeRepository", "NarrationResume"]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-_SCHEMA_VERSION: Final[int] = 1
+_SCHEMA_VERSION: Final[int] = 2
 """Current all-or-nothing Audio resume manifest schema."""
+
+_PLACEMENT_INT_FIELDS: Final[tuple[str, ...]] = (
+    "source_order",
+    "planned_start_ms",
+    "planned_end_ms",
+    "actual_start_ms",
+    "actual_end_ms",
+    "drift_ms",
+    "clip_duration_ms",
+    "window_duration_ms",
+    "start_frame",
+    "end_frame",
+)
+"""Integer placement fields stored beside the narrator, in payload order."""
 
 _LOCKS_GUARD: Final[threading.Lock] = threading.Lock()
 """Protects creation of process-local manifest locks."""
@@ -40,6 +55,20 @@ class _ArtifactEntry:
     file_hash: str
 
 
+@dataclass(frozen=True, slots=True)
+class _NarrationEntry:
+    entry: _ArtifactEntry
+    placements: tuple[TimelinePlacement, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NarrationResume:
+    """A recovered narrator together with the timeline it was really built on."""
+
+    path: Path
+    placements: tuple[TimelinePlacement, ...]
+
+
 class AudioResumeRepository:
     """Own one scope's narration metadata and final sidecar ownership."""
 
@@ -49,7 +78,7 @@ class AudioResumeRepository:
         self._scope_id: str = scope_id
         self._manifest_path: Path = root / "manifest.json"
         self._lock: threading.RLock = _manifest_lock(self._manifest_path)
-        self._narration: _ArtifactEntry | None = None
+        self._narration: _NarrationEntry | None = None
         self._outputs: dict[str, _ArtifactEntry] = {}
         self._initialize()
         with self._lock:
@@ -60,27 +89,38 @@ class AudioResumeRepository:
         """Return the directory containing Audio-owned narrator artifacts."""
         return self._root / "narration"
 
-    def narration_hit(self, fingerprint: str) -> Path | None:
-        """Return a valid narrator for the exact fingerprint."""
+    def narration_hit(self, fingerprint: str, clip_ids: frozenset[str]) -> NarrationResume | None:
+        """Return a narrator whose stored timeline still describes exactly *clip_ids*, or nothing at all."""
         with self._lock:
             self._reload()
-            entry: _ArtifactEntry | None = self._narration
-            if entry is None or entry.fingerprint != fingerprint:
+            narration: _NarrationEntry | None = self._narration
+            if narration is None or narration.entry.fingerprint != fingerprint:
                 return None
-            path: Path = self._relative_path(entry.path)
-            if not _matches(path, entry.file_hash):
+            if {placement.request_id for placement in narration.placements} != clip_ids:
+                logger.warning(
+                    "Stored narrator timeline does not describe the clips of its own render",
+                    scope_id=self._scope_id,
+                    stored_placements=len(narration.placements),
+                    requested_clips=len(clip_ids),
+                )
                 return None
-            return path
+            path: Path = self._relative_path(narration.entry.path)
+            if not _matches(path, narration.entry.file_hash):
+                return None
+            return NarrationResume(path, narration.placements)
 
-    def commit_narration(self, fingerprint: str, path: Path) -> None:
-        """Record a validated Audio-owned narrator WAV."""
+    def commit_narration(self, fingerprint: str, path: Path, placements: tuple[TimelinePlacement, ...]) -> None:
+        """Record a validated Audio-owned narrator WAV together with the timeline it was really built on."""
         with self._lock:
             self._reload()
             relative: str = self._relative_name(path)
-            self._narration = _ArtifactEntry(
-                fingerprint=fingerprint,
-                path=relative,
-                file_hash=sha256_file(path),
+            self._narration = _NarrationEntry(
+                _ArtifactEntry(
+                    fingerprint=fingerprint,
+                    path=relative,
+                    file_hash=sha256_file(path),
+                ),
+                placements,
             )
             self._snapshot()
 
@@ -138,7 +178,7 @@ class AudioResumeRepository:
         payload: dict[str, object] = {
             "schema_version": _SCHEMA_VERSION,
             "scope_id": self._scope_id,
-            "narration": _entry_payload(self._narration),
+            "narration": _narration_payload(self._narration),
             "outputs": {key: _entry_payload(entry) for key, entry in sorted(self._outputs.items())},
         }
         _atomic_json(self._manifest_path, payload)
@@ -179,7 +219,7 @@ class AudioResumeRepository:
 
 def _parse_manifest(
     raw: object,
-) -> tuple[int, str, _ArtifactEntry | None, dict[str, _ArtifactEntry]]:
+) -> tuple[int, str, _NarrationEntry | None, dict[str, _ArtifactEntry]]:
     if not isinstance(raw, dict):
         raise TypeError
     manifest: dict[str, Any] = raw
@@ -192,7 +232,7 @@ def _parse_manifest(
         raise ValueError
     if not isinstance(outputs_raw, dict):
         raise TypeError
-    narration: _ArtifactEntry | None = _parse_optional_entry(manifest["narration"])
+    narration: _NarrationEntry | None = _parse_optional_narration(manifest["narration"])
     outputs: dict[str, _ArtifactEntry] = {}
     for key, value in outputs_raw.items():
         if not isinstance(key, str):
@@ -210,10 +250,50 @@ def _manifest_schema_version(raw: object) -> int:
     return schema
 
 
-def _parse_optional_entry(raw: object) -> _ArtifactEntry | None:
+def _parse_optional_narration(raw: object) -> _NarrationEntry | None:
     if raw is None:
         return None
-    return _parse_entry(raw)
+    if not isinstance(raw, dict) or set(raw) != {"fingerprint", "path", "file_hash", "placements"}:
+        raise ValueError
+    values: dict[str, object] = raw
+    placements_raw: object = values["placements"]
+    if not isinstance(placements_raw, list):
+        raise TypeError
+    entry: _ArtifactEntry = _parse_entry(
+        {key: value for key, value in values.items() if key != "placements"},
+    )
+    placements: tuple[TimelinePlacement, ...] = tuple(_parse_placement(item) for item in placements_raw)
+    if len({placement.request_id for placement in placements}) != len(placements):
+        raise ValueError
+    return _NarrationEntry(entry, placements)
+
+
+def _parse_placement(raw: object) -> TimelinePlacement:
+    if not isinstance(raw, dict) or set(raw) != {"request_id", "reason", "overlap_group_id", *_PLACEMENT_INT_FIELDS}:
+        raise ValueError
+    values: dict[str, object] = raw
+    request_id: object = values["request_id"]
+    reason: object = values["reason"]
+    overlap_group_id: object = values["overlap_group_id"]
+    if not isinstance(request_id, str) or not request_id:
+        raise ValueError
+    if not isinstance(reason, str) or reason not in set(PlacementReason):
+        raise ValueError
+    if overlap_group_id is not None and type(overlap_group_id) is not int:
+        raise ValueError
+    numbers: dict[str, int] = {field: _placement_int(values[field]) for field in _PLACEMENT_INT_FIELDS}
+    return TimelinePlacement(
+        request_id=request_id,
+        reason=PlacementReason(reason),
+        overlap_group_id=overlap_group_id,
+        **numbers,
+    )
+
+
+def _placement_int(value: object) -> int:
+    if type(value) is not int:
+        raise ValueError
+    return value
 
 
 def _parse_entry(raw: object) -> _ArtifactEntry:
@@ -244,6 +324,25 @@ def _entry_payload(entry: _ArtifactEntry | None) -> dict[str, str] | None:
         "path": entry.path,
         "file_hash": entry.file_hash,
     }
+
+
+def _narration_payload(narration: _NarrationEntry | None) -> dict[str, object] | None:
+    if narration is None:
+        return None
+    entry: dict[str, str] | None = _entry_payload(narration.entry)
+    if entry is None:
+        return None
+    return {**entry, "placements": [_placement_payload(item) for item in narration.placements]}
+
+
+def _placement_payload(placement: TimelinePlacement) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "request_id": placement.request_id,
+        "reason": placement.reason.value,
+        "overlap_group_id": placement.overlap_group_id,
+    }
+    payload.update({field: getattr(placement, field) for field in _PLACEMENT_INT_FIELDS})
+    return payload
 
 
 def _atomic_json(path: Path, payload: dict[str, object]) -> None:

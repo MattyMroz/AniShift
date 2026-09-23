@@ -403,7 +403,7 @@ class TestHighlightOutsideRichMarkup:
 
 
 class TestPatchedConsolePrint:
-    @patch("anishift.utils.rich_console.console._original_console_print")
+    @patch(f"{_patched_console_print.__module__}._original_console_print")
     def test_plain_text_auto_highlighted(self, mock_print: MagicMock) -> None:
         _patched_console_print("value 42")
         mock_print.assert_called_once()
@@ -411,7 +411,7 @@ class TestPatchedConsolePrint:
         assert isinstance(arg, Text)
         assert styled(arg, "repr.number") == ["42"]
 
-    @patch("anishift.utils.rich_console.console._original_console_print")
+    @patch(f"{_patched_console_print.__module__}._original_console_print")
     def test_markup_text_highlights_unstyled_tail(self, mock_print: MagicMock) -> None:
         _patched_console_print("[bold]hello[/bold]")
         arg = mock_print.call_args[0][0]
@@ -426,47 +426,47 @@ class TestPatchedConsolePrint:
         arg = mock_print.call_args[0][0]
         assert styled(arg, "repr.number") == ["8.04 GB"]
 
-    @patch("anishift.utils.rich_console.console._original_console_print")
+    @patch(f"{_patched_console_print.__module__}._original_console_print")
     def test_explicit_highlight_true_with_markup(self, mock_print: MagicMock) -> None:
         _patched_console_print("[bold]hi[/bold] 42", highlight=True)
         arg = mock_print.call_args[0][0]
         assert styled(arg, "bold") == ["hi"]
         assert styled(arg, "repr.number") == ["42"]
 
-    @patch("anishift.utils.rich_console.console._original_console_print")
+    @patch(f"{_patched_console_print.__module__}._original_console_print")
     def test_explicit_highlight_true_plain(self, mock_print: MagicMock) -> None:
         _patched_console_print("value 99", highlight=True)
         arg = mock_print.call_args[0][0]
         assert styled(arg, "repr.number") == ["99"]
 
-    @patch("anishift.utils.rich_console.console._original_console_print")
+    @patch(f"{_patched_console_print.__module__}._original_console_print")
     def test_highlight_false_no_highlighting(self, mock_print: MagicMock) -> None:
         _patched_console_print("value 42", highlight=False)
         arg = mock_print.call_args[0][0]
         assert isinstance(arg, Text)
         assert not arg.spans
 
-    @patch("anishift.utils.rich_console.console._original_console_print")
+    @patch(f"{_patched_console_print.__module__}._original_console_print")
     def test_highlight_false_plain_brackets_stay_literal(self, mock_print: MagicMock) -> None:
         _patched_console_print("config [section]", highlight=False)
         arg = mock_print.call_args[0][0]
         assert isinstance(arg, Text)
         assert arg.plain == "config [section]"
 
-    @patch("anishift.utils.rich_console.console._original_console_print")
+    @patch(f"{_patched_console_print.__module__}._original_console_print")
     def test_highlight_false_markup_passed_through(self, mock_print: MagicMock) -> None:
         _patched_console_print("[bold]hi[/bold]", highlight=False)
         arg = mock_print.call_args[0][0]
         assert arg == "[bold]hi[/bold]"
 
-    @patch("anishift.utils.rich_console.console._original_console_print")
+    @patch(f"{_patched_console_print.__module__}._original_console_print")
     def test_non_string_passthrough(self, mock_print: MagicMock) -> None:
         obj = {"key": "value"}
         _patched_console_print(obj)
         mock_print.assert_called_once()
         assert mock_print.call_args[0][0] is obj
 
-    @patch("anishift.utils.rich_console.console._original_console_print")
+    @patch(f"{_patched_console_print.__module__}._original_console_print")
     def test_comma_normalization(self, mock_print: MagicMock) -> None:
         _patched_console_print("value 1,5", highlight=False)
         arg = mock_print.call_args[0][0]

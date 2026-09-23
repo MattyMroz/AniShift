@@ -11,7 +11,7 @@ from pathlib import PurePath, PureWindowsPath
 from traceback import FrameSummary, StackSummary, TracebackException
 from typing import TYPE_CHECKING, Any, Final, cast
 
-__all__ = ["scrub_message", "scrub_patcher"]
+__all__ = ["scrub_message", "scrub_patcher", "set_url_route_prefixes"]
 
 if TYPE_CHECKING:
     from loguru import Record, RecordException, RecordFile
@@ -52,6 +52,19 @@ _SENSITIVE_VALUE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
 )
 """Secret values copied by Loguru from formatting arguments into ``extra``."""
 
+# ── Configuration ────────────────────────────────────────────────────────────
+_url_route_prefixes: tuple[str, ...] = ()
+
+
+def set_url_route_prefixes(prefixes: tuple[str, ...]) -> None:
+    """Exempt paths starting with any of ``prefixes`` from masking.
+
+    Args:
+        prefixes: URL route prefixes such as ``("/api/",)`` that must stay readable.
+    """
+    global _url_route_prefixes  # noqa: PLW0603
+    _url_route_prefixes = prefixes
+
 
 def scrub_message(text: str) -> str:
     """Replace sensitive patterns in a log message.
@@ -71,6 +84,8 @@ def _path_name(match: re.Match[str]) -> str:
     """Retain only a path's basename and its surrounding quote."""
     quote: str = match.group("quote") or ""
     path: str = match.group("quoted") or match.group("plain")
+    if path.startswith(_url_route_prefixes):
+        return match.group(0)
     name: str = PureWindowsPath(path).name or "<path>"
     return f"{quote}{name}{quote}"
 
@@ -136,7 +151,7 @@ def _safe_traceback(exception: RecordException) -> str:
     return scrub_message("".join(summary.format())).rstrip()
 
 
-def _scrub_value(  # noqa: PLR0911 — one guard clause per type keeps dispatch flat and readable
+def _scrub_value(
     value: object,
     *,
     key: str = "",

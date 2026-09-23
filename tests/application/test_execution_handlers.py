@@ -1,16 +1,28 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import threading
-from collections.abc import Callable
+import wave
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
+from fakes import FakeMediaProbe
 from pysubs2 import SSAEvent, SSAFile
+from test_automation import _await, _owned, _request
+from test_composition_handler import FFMPEG, FFPROBE, _Composer
+from test_notification import _notifications, _reconcile_automatic
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState, SourceGroup
+from anishift.application.audio_handler import AudioTaskHandler
 from anishift.application.cancellation import CancellationToken, NeverCancelledToken
-from anishift.application.events import RunEvent, WorkerNotification
+from anishift.application.composition_handler import CompositionTaskHandler
+from anishift.application.control import AutomationPolicy, RequestState, WatchState
+from anishift.application.control_views import LibrarySet
+from anishift.application.events import RunEvent, RunEventKind, WorkerNotification
 from anishift.application.extraction_handler import LegacyExtractionAdapter
 from anishift.application.handlers import (
     ExecutionHandlers,
@@ -19,9 +31,19 @@ from anishift.application.handlers import (
     SubtitleTaskHandler,
     TranslationTaskHandler,
 )
-from anishift.application.inspection import InspectedSourceGroup
-from anishift.application.intents import AutoPreset, GroupIntent, ProductIntent, ProductKind, RunMode
-from anishift.application.planner import plan_auto
+from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
+from anishift.application.intents import (
+    AutoPreset,
+    BurnSubtitleProduct,
+    GroupIntent,
+    MkvTrackProduct,
+    Mp4AudioSource,
+    ProductIntent,
+    ProductKind,
+    RequestOrigin,
+    RunMode,
+)
+from anishift.application.planner import plan_auto, plan_manual
 from anishift.application.planning import (
     ExecutionPlan,
     GroupPlan,
@@ -29,14 +51,27 @@ from anishift.application.planning import (
     ProcessingOrderPolicy,
     RunSettingsSnapshot,
     TaskKind,
+    TaskState,
 )
-from anishift.application.results import ArtifactSnapshot, GroupStatus, TaskResult
-from anishift.application.scheduler import GraphScheduler, ResourceLimits
+from anishift.application.ready import ReadyStore
+from anishift.application.recovery import RunJournal
+from anishift.application.results import DISPLAYED_ABSENCE_NOTE, ArtifactSnapshot, GroupStatus, RunResult, TaskResult
+from anishift.application.scheduler import GraphCoordinator, GraphScheduler, ResourceLimits, RunRequest
+from anishift.application.scheduler_runtime import ArtifactStore
+from anishift.application.service import AppService
 from anishift.application.sessions import RunSession
 from anishift.application.subtitle_handler import LegacySubtitleAdapter
 from anishift.application.task_paths import task_staging_path
 from anishift.application.translation_handler import displayed_lines
-from anishift.errors import ExecutionError
+from anishift.application.tts_handler import TtsTaskHandler
+from anishift.application.watch_state import WatchStateStore
+from anishift.config.presets import AutoPresetFile
+from anishift.config.settings import Settings
+from anishift.config.user_settings import UserSettings
+from anishift.errors import AniShiftError, ExecutionError
+from anishift.platform.local_control import ControlResponse
+from anishift.services.audio import AudioRenderRequest, AudioRenderResult, AudioRenderStatus
+from anishift.services.composition import CompositionConfig, CompositionService
 from anishift.services.extraction import (
     ExtractionRequest,
     ExtractionResult,
@@ -56,6 +91,16 @@ from anishift.services.subtitles import (
 )
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
+from anishift.services.tts import (
+    AudioFormat,
+    SpeechBatch,
+    SpeechBatchResult,
+    SpeechBatchStats,
+    SpeechBatchStatus,
+    SpeechClip,
+    SynthesisStatus,
+    SynthesizedRequest,
+)
 
 
 def _ass_split(events: list[SSAEvent]) -> SubtitleSplit:
@@ -426,6 +471,150 @@ def test_subtitle_handler_splits_spoken_and_displayed_outputs(tmp_path: Path) ->
     assert all(output.path.is_file() for output in result.outputs)
 
 
+def test_saved_joint_split_executes_with_confirmed_absence_without_rewriting_before_execution(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "episode.pl.srt"
+    _write_srt(source_path, "Cześć")
+    source: Artifact = _ready("full", ArtifactKind.FULL_PL, source_path)
+    spoken: Artifact = _output("spoken", ArtifactKind.SPOKEN_PL, subtitle_format="srt")
+    displayed: Artifact = _output("displayed", ArtifactKind.DISPLAYED_PL, subtitle_format="srt")
+    split: PlanTask = _task(TaskKind.SPLIT_SUBTITLES, ("full",), ("spoken", "displayed"))
+    intent: GroupIntent = GroupIntent(
+        "group-1", RunMode.AUTO, ProductIntent(frozenset({ProductKind.SPOKEN_PL, ProductKind.DISPLAYED_PL}))
+    )
+    plan: ExecutionPlan = ExecutionPlan(
+        (GroupPlan("group-1", intent, ("full", "spoken", "displayed"), (split.task_id,)),),
+        (source, spoken, displayed),
+        (split,),
+        _settings(),
+        (),
+    )
+    run_root: Path = tmp_path / "temp" / "legacy-run"
+    journal_path: Path = tmp_path / "legacy-run.json"
+    RunJournal.create(journal_path, plan, run_root)
+    saved: bytes = journal_path.read_bytes()
+    restored: RunJournal = RunJournal.load(journal_path)
+
+    assert restored.plan == plan
+    assert journal_path.read_bytes() == saved
+    result: TaskResult = SubtitleTaskHandler(run_root=run_root).execute(
+        restored.plan.tasks[0],
+        ArtifactSnapshot({"full": source}, {"spoken": spoken, "displayed": displayed}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+    assert result.absent_outputs == ("displayed",)
+    assert tuple(item.artifact_id for item in result.outputs) == ("spoken",)
+    assert "Cześć" in result.outputs[0].path.read_text(encoding="utf-8")
+    restored.committed(result)
+    reloaded: RunJournal = RunJournal.load(journal_path)
+    assert reloaded.plan.tasks == ()
+    assert reloaded.plan.artifacts[-1].state is ArtifactState.ABSENT
+    assert reloaded.plan.artifacts[-1].path is None
+    assert reloaded.products("group-1") == ()
+
+
+@pytest.mark.parametrize("kind", [ArtifactKind.SPOKEN_PL, ArtifactKind.FULL_PL, ArtifactKind.NARRATION_AUDIO])
+def test_store_rejects_absence_for_required_product_kinds(tmp_path: Path, kind: ArtifactKind) -> None:
+    output: Artifact = _output("output", kind)
+    store: ArtifactStore = ArtifactStore((output,), {"group-1": tmp_path})
+    task: PlanTask = _task(TaskKind.SPLIT_SUBTITLES, (), ("output",))
+    with pytest.raises(ExecutionError, match="displayed subtitles"):
+        store.register(task, TaskResult(task.task_id, (), ("output",)), lambda action: True)
+    assert store.artifact("output") == output
+
+
+@pytest.mark.parametrize("current", [False, True])
+def test_absence_registration_obeys_commit_gate_and_preserves_former_product(tmp_path: Path, *, current: bool) -> None:
+    destination: Path = tmp_path / "episode.displayed.pl.ass"
+    destination.write_bytes(b"previous good product")
+    output: Artifact = replace(
+        _output("displayed", ArtifactKind.DISPLAYED_PL),
+        lifetime=ArtifactLifetime.DURABLE,
+        planned_destination=destination,
+        preserved_path=destination,
+    )
+    store: ArtifactStore = ArtifactStore((output,), {"group-1": tmp_path / "run"})
+    task: PlanTask = _task(TaskKind.PUBLISH_ARTIFACT, (), ("displayed",))
+
+    def commit(action: Callable[[], None]) -> bool:
+        if current:
+            action()
+        return current
+
+    result: TaskResult = TaskResult(task.task_id, (), ("displayed",))
+    if current:
+        assert store.register(task, result, commit) == result
+        assert store.artifact("displayed").state is ArtifactState.ABSENT
+        assert store.artifact("displayed").preserved_path == destination
+    else:
+        with pytest.raises(ExecutionError, match="cancelled"):
+            store.register(task, result, commit)
+        assert store.artifact("displayed") == output
+    assert destination.read_bytes() == b"previous good product"
+
+
+def test_displayed_format_conversion_propagates_only_confirmed_absence(tmp_path: Path) -> None:
+    source: Artifact = replace(_output("source", ArtifactKind.DISPLAYED_PL), state=ArtifactState.ABSENT)
+    output: Artifact = _output("output", ArtifactKind.DISPLAYED_PL, subtitle_format="srt")
+    task: PlanTask = _task(TaskKind.NORMALIZE_SUBTITLES, ("source",), ("output",), (("output_format", "srt"),))
+    handler: SubtitleTaskHandler = SubtitleTaskHandler(run_root=tmp_path / "run")
+    result: TaskResult = handler.execute(
+        task, ArtifactSnapshot({"source": source}, {"output": output}), NeverCancelledToken(), _ProgressSink()
+    )
+    assert result.outputs == ()
+    assert result.absent_outputs == ("output",)
+    with pytest.raises(ExecutionError, match="not ready"):
+        handler.execute(
+            task,
+            ArtifactSnapshot({"source": replace(source, state=ArtifactState.MISSING)}, {"output": output}),
+            NeverCancelledToken(),
+            _ProgressSink(),
+        )
+
+
+def test_displayed_writer_cannot_claim_absence_when_classification_contains_signs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path: Path = tmp_path / "full.ass"
+    _write_ass(path)
+    source: Artifact = _ready("full", ArtifactKind.FULL_PL, path)
+    output: Artifact = _output("displayed", ArtifactKind.DISPLAYED_PL, subtitle_format="ass")
+    monkeypatch.setattr("anishift.application.subtitle_handler.write_displayed", lambda split, destination: None)
+    with pytest.raises(ExecutionError, match="Requested subtitle stream is empty"):
+        SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+            _task(TaskKind.SPLIT_SUBTITLES, ("full",), ("displayed",)),
+            ArtifactSnapshot({"full": source}, {"displayed": output}),
+            NeverCancelledToken(),
+            _ProgressSink(),
+        )
+
+
+@pytest.mark.parametrize("failure", ["read", "write", "parse"])
+def test_subtitle_absence_does_not_mask_real_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    source_path: Path = tmp_path / "episode.pl.srt"
+    _write_srt(source_path)
+    kind: ArtifactKind = ArtifactKind.DISPLAYED_PL
+    output: Artifact = _output("output", kind, subtitle_format="srt")
+    source: Artifact = _ready("full", ArtifactKind.FULL_PL, source_path)
+    if failure == "read":
+        source_path.unlink()
+    elif failure == "write":
+        monkeypatch.setattr(
+            "anishift.application.subtitle_handler.write_displayed", Mock(side_effect=OSError("write failed"))
+        )
+    else:
+        source_path.write_text("", encoding="utf-8")
+    with pytest.raises((OSError, AniShiftError, ValueError)):
+        SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+            _task(TaskKind.SPLIT_SUBTITLES, ("full",), ("output",)),
+            ArtifactSnapshot({"full": source}, {"output": output}),
+            NeverCancelledToken(),
+            _ProgressSink(),
+        )
+
+
 def test_legacy_subtitle_adapter_keeps_split_and_product_parity(tmp_path: Path) -> None:
     source = tmp_path / "episode.ass"
     _write_ass(source)
@@ -611,7 +800,12 @@ def test_execution_handlers_rejects_family_not_available_in_increment_10a(tmp_pa
         SubtitleTaskHandler(run_root=tmp_path / "run"),
         TranslationTaskHandler(_TranslationService(), run_root=tmp_path / "run"),
     )
-    task = _task(TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",))
+    task = _task(
+        TaskKind.SYNTHESIZE_SPEECH,
+        ("spoken",),
+        ("manifest",),
+        (("narration_timeline", "source_times"), ("script_kind", "spoken_pl")),
+    )
 
     with pytest.raises(ExecutionError, match="unavailable"):
         handlers.execute(task, ArtifactSnapshot({}), NeverCancelledToken(), _ProgressSink())
@@ -730,3 +924,372 @@ def test_planner_to_scheduler_executes_standalone_text_plan(tmp_path: Path) -> N
 
     assert result.groups[0].status is GroupStatus.SUCCEEDED
     assert "PL Hello from a standalone file." in published.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("streams", ["spoken", "displayed", "both"])
+def test_planner_scheduler_completes_independent_subtitle_branches(tmp_path: Path, streams: str) -> None:
+    inspected: InspectedSourceGroup = _subtitle_branch_group(tmp_path, streams)
+    source_group: SourceGroup = inspected.source
+    products: ProductIntent = ProductIntent(
+        frozenset(
+            {
+                ProductKind.FULL_PL,
+                ProductKind.SPOKEN_PL,
+                ProductKind.DISPLAYED_PL,
+                ProductKind.NARRATION_AUDIO,
+                ProductKind.MKV,
+                ProductKind.MP4,
+            }
+        ),
+        burn_subtitle_product=BurnSubtitleProduct.DISPLAYED_PL,
+        mkv_tracks=frozenset({MkvTrackProduct.NARRATION_AUDIO, MkvTrackProduct.DISPLAYED_PL_SUBTITLES}),
+        mp4_audio_source=Mp4AudioSource.NARRATION,
+    )
+    intent: GroupIntent = GroupIntent("group-1", RunMode.MANUAL, products, selected_audio_artifact_id="audio")
+    plan: ExecutionPlan = plan_manual(
+        (inspected,), {"group-1": intent}, replace(_settings(), audio_output_profile="wav")
+    )
+    assert plan.can_execute
+    translation: Mock = Mock(wraps=_TranslationService())
+    tts: Mock = Mock()
+    tts.synthesize.side_effect = lambda batch, **kwargs: _synthesize_pcm_batch(batch, tmp_path)
+    mixer: Mock = Mock()
+    mixer.render.side_effect = lambda request, **kwargs: _render_pcm_clip(request)
+    run_root: Path = tmp_path / "temp" / "run-branches"
+    sink: _RunEventSink = _RunEventSink()
+    composer: _Composer = _Composer()
+
+    with RunSession(run_root) as session:
+        handlers: ExecutionHandlers = ExecutionHandlers(
+            ExtractionTaskHandler(_ExtractionService(), run_root=run_root, timeout_s=30.0),
+            SubtitleTaskHandler(run_root=run_root),
+            TranslationTaskHandler(translation, run_root=run_root),
+            tts=TtsTaskHandler(tts, run_root=run_root, group_ranks={"group-1": 0}),
+            audio=AudioTaskHandler(mixer, Mock(), run_root=run_root),
+            composition=CompositionTaskHandler(composer, run_root=run_root),
+            publish=PublishTaskHandler(run_root=run_root, source_groups={"group-1": source_group}),
+        )
+        result: RunResult = GraphScheduler(
+            handlers, limits=ResourceLimits.from_settings(plan.settings), run_id="run-branches", session=session
+        ).run(plan, cancel=NeverCancelledToken(), events=sink)
+
+    translation.translate_file.assert_called_once()
+    assert result.groups[0].status is (GroupStatus.PARTIAL if streams == "displayed" else GroupStatus.SUCCEEDED)
+    assert result.groups[0].error_messages == (
+        ("Requested subtitle stream is empty: spoken_pl",) if streams == "displayed" else ()
+    )
+    expected: set[str] = {"episode.pl.ass"}
+    if streams != "displayed":
+        expected.update({"episode.spoken.pl.ass", "episode.wav", "episode.pl.mkv", "episode.pl.mp4"})
+        assert len(composer.requests) == 2
+        if streams == "spoken":
+            assert all(
+                request.burn_subtitle is None and not request.attached_subtitles for request in composer.requests
+            )
+        assert all(request.narration_audio is not None for request in composer.requests)
+        tts.synthesize.assert_called_once()
+        batch: SpeechBatch = tts.synthesize.call_args.args[0]
+        assert [request.text for request in batch.requests] == ["PL Hello"]
+        assert [event.text for event in load_subtitles(tmp_path / "episode.spoken.pl.ass")] == ["PL Hello"]
+        with wave.open(str(tmp_path / "episode.wav"), "rb") as recording:
+            assert recording.getnframes() == 12_000
+            assert recording.readframes(12_000) == b"\x01\x00" * 12_000
+    else:
+        tts.synthesize.assert_not_called()
+        mixer.render.assert_not_called()
+        assert not (tmp_path / "episode.spoken.pl.ass").exists()
+        assert not (tmp_path / "episode.wav").exists()
+    if streams != "spoken":
+        expected.add("episode.displayed.pl.ass")
+        assert [event.text for event in load_subtitles(tmp_path / "episode.displayed.pl.ass")] == [r"{\p1}m 0 0 l 1 1"]
+    else:
+        assert not (tmp_path / "episode.displayed.pl.ass").exists()
+    assert {product.path.name for product in result.groups[0].products} == expected
+    assert all(product.metadata["published"] is True for product in result.groups[0].products)
+    finished: list[str | None] = [event.task_id for event in sink.events if event.kind is RunEventKind.TASK_FINISHED]
+    assert len(finished) == len(set(finished)) == len(plan.tasks)
+    assert all(
+        event.state is not TaskState.RUNNING for event in sink.events if event.kind is RunEventKind.TASK_FINISHED
+    )
+
+
+def _subtitle_branch_group(tmp_path: Path, streams: str) -> InspectedSourceGroup:
+    source_path: Path = tmp_path / "episode.ass"
+    _write_ass(source_path)
+    subtitles: SSAFile = load_subtitles(source_path)
+    if streams != "both":
+        subtitles.events = [subtitles.events[0 if streams == "spoken" else 1]]
+    subtitles.save(str(source_path))
+    source: Artifact = replace(
+        _ready("source", ArtifactKind.SOURCE_SUBTITLES, source_path), subtitle_format="ass", language="eng"
+    )
+    audio_path: Path = tmp_path / "original.wav"
+    _write_pcm_clip(audio_path)
+    audio: Artifact = replace(_ready("audio", ArtifactKind.SOURCE_AUDIO, audio_path), duration_us=10_000_000)
+    video_path: Path = tmp_path / "episode.mkv"
+    video_path.write_bytes(b"video source")
+    video: Artifact = replace(_ready("video", ArtifactKind.VIDEO_MKV, video_path), duration_us=10_000_000)
+    source_group: SourceGroup = SourceGroup("group-1", "episode", tmp_path, (source, audio, video))
+    return InspectedSourceGroup(
+        source_group,
+        source_group.artifacts,
+        {video.artifact_id: FakeMediaProbe().identify(video_path, cancel=NeverCancelledToken(), timeout_s=30.0)},
+        (),
+    )
+
+
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@pytest.mark.parametrize("target", [ProductKind.MKV, ProductKind.MP4])
+def test_confirmed_absence_restarts_before_real_composition_without_retranslation(
+    tmp_path: Path, target: ProductKind
+) -> None:
+    inspected: InspectedSourceGroup = _subtitle_branch_group(tmp_path, "spoken")
+    video: Path = tmp_path / "episode.mkv"
+    _write_synthetic_video(video)
+    products: ProductIntent = ProductIntent(
+        frozenset({ProductKind.DISPLAYED_PL, target}),
+        burn_subtitle_product=BurnSubtitleProduct.DISPLAYED_PL
+        if target is ProductKind.MP4
+        else BurnSubtitleProduct.NONE,
+        mkv_tracks=frozenset({MkvTrackProduct.DISPLAYED_PL_SUBTITLES}) if target is ProductKind.MKV else frozenset(),
+    )
+    plan: ExecutionPlan = plan_auto((inspected,), AutoPreset("signless", "Signless", products), _settings())
+    run_root: Path = tmp_path / "temp" / "restart"
+    journal_path: Path = tmp_path / "restart.json"
+    journal: RunJournal = RunJournal.create(journal_path, plan, run_root)
+    with RunSession(run_root) as initial_session:
+        initial_session.preserve()
+    translation: Mock = Mock(wraps=_TranslationService())
+    handlers: ExecutionHandlers = ExecutionHandlers(
+        ExtractionTaskHandler(_ExtractionService(), run_root=run_root, timeout_s=30.0),
+        SubtitleTaskHandler(run_root=run_root),
+        TranslationTaskHandler(translation, run_root=run_root),
+        composition=CompositionTaskHandler(
+            CompositionService(CompositionConfig(), ffmpeg=FFMPEG, ffprobe=FFPROBE), run_root=run_root
+        ),
+        publish=PublishTaskHandler(run_root=run_root, source_groups={"group-1": inspected.source}),
+    )
+    store: ArtifactStore = ArtifactStore(plan.artifacts, {"group-1": run_root / "group-1"})
+
+    def commit(action: Callable[[], None]) -> bool:
+        action()
+        return True
+
+    for task in plan.tasks:
+        if task.kind in {TaskKind.COMPOSE_MKV, TaskKind.COMPOSE_MP4}:
+            continue
+        output: TaskResult = handlers.execute(task, store.snapshot(task), NeverCancelledToken(), _ProgressSink())
+        journal.prepare(task, output)
+        journal.committed(store.register(task, output, commit))
+    document: dict[str, object] = json.loads(journal_path.read_bytes())
+    assert document["version"] == 1
+    assert document["outputs"]
+    restored: RunJournal = RunJournal.load(journal_path)
+    assert len(restored.plan.tasks) == 1
+    assert all(task.kind in {TaskKind.COMPOSE_MKV, TaskKind.COMPOSE_MP4} for task in restored.plan.tasks)
+    absent: tuple[Artifact, ...] = tuple(item for item in restored.plan.artifacts if item.state is ArtifactState.ABSENT)
+    assert len(absent) == 2
+    assert all(item.path is None for item in absent)
+    assert all(
+        item["artifact_id"] not in {artifact.artifact_id for artifact in absent}
+        for item in json.loads(journal_path.read_bytes())["outputs"]
+    )
+    with RunSession(run_root, resume=True) as session:
+        coordinator: GraphCoordinator = GraphCoordinator(lambda: ResourceLimits.from_settings(plan.settings))
+        try:
+            result: RunResult = coordinator.submit(
+                RunRequest(
+                    "restart",
+                    restored.plan,
+                    session,
+                    handlers,
+                    NeverCancelledToken(),
+                    _RunEventSink(),
+                    journal=restored,
+                )
+            ).result(timeout=10.0)
+        finally:
+            coordinator.close()
+    assert result.succeeded
+    translation.translate_file.assert_called_once()
+    produced: Path = result.groups[0].products[0].path
+    assert produced != video
+    assert produced.stat().st_size > 0
+    probe: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603
+        [str(FFPROBE), "-v", "error", "-of", "json", "-show_streams", str(produced)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert {stream["codec_type"] for stream in json.loads(probe.stdout)["streams"]} == {"video"}
+    assert not (tmp_path / "episode.displayed.pl.ass").exists()
+    assert not RunJournal.load(journal_path).plan.tasks
+
+
+def _write_pcm_clip(path: Path) -> None:
+    with wave.open(str(path), "wb") as recording:
+        recording.setnchannels(1)
+        recording.setsampwidth(2)
+        recording.setframerate(24_000)
+        recording.writeframes(b"\x01\x00" * 12_000)
+
+
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@pytest.mark.parametrize("boundary", ["no_store", "ready", "held", "halted", "deleted"])
+def test_signless_narration_and_video_reach_library_and_do_not_restart(  # noqa: PLR0915
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    ready: bool = boundary not in {"no_store", "deleted"}
+    if boundary == "halted":
+        monkeypatch.setattr(ReadyStore, "execute", Mock(side_effect=OSError("Relocation interrupted")))
+    monkeypatch.setattr("anishift.application.watch.QUIET_S", 0.0)
+    _subtitle_branch_group(tmp_path, "spoken")
+    _write_synthetic_video(tmp_path / "episode.mkv")
+    (tmp_path / "original.wav").unlink()
+    (tmp_path / "episode.pl.ass").write_bytes((tmp_path / "episode.ass").read_bytes())
+    _write_pcm_clip(tmp_path / "episode.wav")
+    products: ProductIntent = ProductIntent(
+        frozenset({ProductKind.NARRATION_AUDIO, ProductKind.MKV, ProductKind.DISPLAYED_PL}),
+        mkv_tracks=frozenset({MkvTrackProduct.NARRATION_AUDIO, MkvTrackProduct.DISPLAYED_PL_SUBTITLES}),
+    )
+    preset: AutoPreset = AutoPreset("signless", "Signless", products)
+    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / "state.json")
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(
+                _owned(
+                    ("episode.mkv", "later.mkv"),
+                    ("episode.mkv",),
+                    RequestOrigin.USER,
+                    (tmp_path / "episode.mkv").stat().st_size,
+                    directory="",
+                ),
+            )
+            if boundary == "held"
+            else (),
+        )
+    )
+    translation: Mock = Mock(wraps=_TranslationService())
+    composer: Mock = Mock(wraps=CompositionService(CompositionConfig(), ffmpeg=FFMPEG, ffprobe=FFPROBE))
+
+    def handlers(
+        run_root: Path, plan: ExecutionPlan, source_groups: Mapping[str, InspectedSourceGroup]
+    ) -> ExecutionHandlers:
+        del plan
+        return ExecutionHandlers(
+            ExtractionTaskHandler(_ExtractionService(), run_root=run_root, timeout_s=30.0),
+            SubtitleTaskHandler(run_root=run_root),
+            TranslationTaskHandler(translation, run_root=run_root),
+            composition=CompositionTaskHandler(composer, run_root=run_root),
+            publish=PublishTaskHandler(
+                run_root=run_root, source_groups={key: value.source for key, value in source_groups.items()}
+            ),
+        )
+
+    def service() -> AppService:
+        return AppService(
+            workspace_root=tmp_path,
+            settings=Settings(_env_file=None),
+            user_settings=UserSettings(tts_output_profile="wav"),
+            inspector=WorkspaceInspector(FakeMediaProbe()),
+            handler_factory=handlers,
+            preset_loader=lambda: AutoPresetFile(1, (preset,), preset.preset_id),
+        )
+
+    first: AppService = service()
+    first.discover()
+    initial_plan: ExecutionPlan = first.plan_auto(tuple(group.group_id for group in first.discover().groups), preset)
+    assert initial_plan.can_execute, initial_plan.problems
+    with _notifications(first, store, ready=ready) as (owner, frames, _opened):
+        _reconcile_automatic(owner)
+        assert _await(lambda: bool(owner.state.requests) and owner.state.requests[0].state is RequestState.SUCCEEDED)
+        if ready and boundary != "halted":
+            assert _await(lambda: bool(frames))
+            assert owner.handle(_request("library_refresh")).ok
+            library: tuple[LibrarySet, ...] = owner._on_owner(lambda: owner._ready_library)
+            assert len(library) == 1
+            assert library[0].available
+            assert library[0].main_result is not None
+            assert (tmp_path / library[0].main_result).stat().st_size > 0
+            if boundary == "held":
+                assert owner.state.ready_groups[0].pending_sources == ("episode.mkv",)
+                assert (tmp_path / "episode.mkv").is_file()
+        run_id: str = owner.state.requests[0].request_id
+        if boundary != "halted":
+            response: ControlResponse = owner.handle(_request("run_result", {"run_id": run_id}))
+            assert response.result["result"]["warnings"] == [DISPLAYED_ABSENCE_NOTE]  # type: ignore[index]
+        if boundary == "halted":
+            assert _await(lambda: bool(owner._on_owner(lambda: owner._ready_problems)))
+            assert (tmp_path / "episode.mkv").is_file()
+    if boundary == "deleted":
+        (tmp_path / "episode.pl.mkv").unlink()
+    if boundary == "no_store":
+        assert RunJournal.load(store.run_path(run_id)).plan.tasks == ()
+    with _notifications(service(), store, ready=ready) as (owner, _frames, _opened):
+        _reconcile_automatic(owner)
+        if boundary == "deleted":
+            assert _await(lambda: len(owner.state.requests) == 2)
+            assert _await(lambda: owner.state.requests[-1].state is RequestState.SUCCEEDED)
+            assert (tmp_path / "episode.pl.mkv").stat().st_size > 0
+            assert composer.compose_container.call_count == 2
+            return
+        assert [item.request_id for item in owner.state.requests] == [run_id]
+        if boundary == "no_store":
+            response = owner.handle(_request("run_result", {"run_id": run_id}))
+            assert response.result["result"]["warnings"] == [DISPLAYED_ABSENCE_NOTE]  # type: ignore[index]
+            inspected: InspectedSourceGroup = owner._on_owner(lambda: owner._library.groups[0])  # type: ignore[union-attr]
+            missing_audio: InspectedSourceGroup = replace(
+                inspected, artifacts=tuple(a for a in inspected.artifacts if a.kind is not ArtifactKind.NARRATION_AUDIO)
+            )
+            assert owner._on_owner(lambda: owner._confirmed_absence_completes(inspected, preset))
+            assert not owner._on_owner(lambda: owner._confirmed_absence_completes(missing_audio, preset))
+        composer.compose_container.assert_called_once()
+        assert not composer.compose_container.call_args.args[0].attached_subtitles
+        assert composer.compose_container.call_args.args[0].narration_audio is not None
+        assert translation.translate_file.call_count == 0
+
+
+def _write_synthetic_video(path: Path) -> None:
+    subprocess.run(  # noqa: S603
+        [
+            str(FFMPEG),
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=160x120:rate=10:duration=1",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _synthesize_pcm_batch(batch: SpeechBatch, root: Path) -> SpeechBatchResult:
+    executions: list[SynthesizedRequest] = []
+    for request in batch.requests:
+        path: Path = root / f"{request.request_id}.wav"
+        _write_pcm_clip(path)
+        clip: SpeechClip = SpeechClip(
+            request.request_id, path, AudioFormat.WAV, 24_000, 1, 500, "edge", "edge-default", "voice", 1, 10.0, False
+        )
+        executions.append(SynthesizedRequest(request, SynthesisStatus.SYNTHESIZED, clip, "", 0))
+    count: int = len(executions)
+    stats: SpeechBatchStats = SpeechBatchStats(count, count, 0, 0, 0, count, 0, 10.0, "edge", "edge-default", "voice")
+    return SpeechBatchResult(batch.scope_id, SpeechBatchStatus.COMPLETED, tuple(executions), stats, None)
+
+
+def _render_pcm_clip(request: AudioRenderRequest) -> AudioRenderResult:
+    assert len(request.clips) == 1
+    assert request.clips[0].start_ms == 0
+    assert request.clips[0].end_ms == 1000
+    assert request.source_audio_path is not None
+    request.destination.write_bytes(request.clips[0].clip_path.read_bytes())
+    return AudioRenderResult(
+        request.scope_id, AudioRenderStatus.COMPLETED, None, request.destination, None, (), (), "n", "m"
+    )

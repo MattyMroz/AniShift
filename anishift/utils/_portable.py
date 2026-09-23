@@ -31,10 +31,10 @@ Portable modules:
     safe_fs.py       — retry-on-lock filesystem ops (safe_rmtree, safe_move)
     _retry.py        — configurable asynchronous retry helper and network preset
 
-Smoke test (after copying to a clean project):
-    python -c "from anishift.utils.logger import setup_mode, LoggerMode; setup_mode(LoggerMode.SILENT); print('OK')"
-    python -c "from anishift.utils.timer import Timer; t = Timer('x', auto_start=True); t.stop(); print('OK')"
-    python -c "from anishift.utils.rich_console import console; console.print('[bold]OK[/bold]')"
+Smoke test (after copying this directory as ``portable_utils`` into a clean project):
+    python -c "from portable_utils.logger import get_logger; assert get_logger('smoke') is not None"
+    python -c "from portable_utils.timer import Timer; t = Timer('x', auto_start=True); t.stop(); print('OK')"
+    python -c "from portable_utils.rich_console import console; console.print('[bold]OK[/bold]')"
 """
 
 from __future__ import annotations

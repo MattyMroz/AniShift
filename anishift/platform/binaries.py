@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Final
 
 from anishift.errors import ErrorCode, ErrorContext, FatalError
+from anishift.paths import external_bin_root
 from anishift.utils.logger import get_logger
 
 __all__ = [
     "TOOL_DIR",
     "Binary",
     "BinaryNotFoundError",
+    "bundled_binary_path",
     "external_bin_root",
     "is_windows",
     "require_binary",
@@ -29,6 +31,9 @@ class Binary(StrEnum):
     FFPROBE = "ffprobe"
     MKVEXTRACT = "mkvextract"
     MKVMERGE = "mkvmerge"
+    QBITTORRENT = "qbittorrent"
+    SEVEN_ZIP = "7z"
+    SEVEN_ZIP_REDUCED = "7zr"
 
 
 class BinaryNotFoundError(FatalError):
@@ -42,6 +47,9 @@ TOOL_DIR: Final[dict[Binary, str]] = {
     Binary.FFPROBE: "ffmpeg",
     Binary.MKVEXTRACT: "mkvtoolnix",
     Binary.MKVMERGE: "mkvtoolnix",
+    Binary.QBITTORRENT: "qbittorrent",
+    Binary.SEVEN_ZIP: "7zip",
+    Binary.SEVEN_ZIP_REDUCED: "7zip",
 }
 """Subdirectory of ``external/bin/`` that holds each binary."""
 
@@ -56,14 +64,9 @@ def is_windows() -> bool:
     return sys.platform == "win32"
 
 
-def _repo_root() -> Path:
-    """Return the repository root (ancestor holding ``pyproject.toml``)."""
-    return Path(__file__).resolve().parents[2]
-
-
-def external_bin_root() -> Path:
-    """Return ``<repo>/external/bin`` (not guaranteed to exist)."""
-    return _repo_root() / "external" / "bin"
+def bundled_binary_path(binary: Binary, *, root: Path | None = None) -> Path:
+    """Return the exact bundled location without searching the system or creating files."""
+    return (external_bin_root() if root is None else root) / TOOL_DIR[binary] / _exe_name(binary)
 
 
 def _exe_name(binary: Binary) -> str:
@@ -73,7 +76,7 @@ def _exe_name(binary: Binary) -> str:
 
 def resolve_binary(binary: Binary) -> Path | None:
     """Return the best non-empty file for *binary*, or ``None`` if unavailable."""
-    bundled: Path = external_bin_root() / TOOL_DIR[binary] / _exe_name(binary)
+    bundled: Path = bundled_binary_path(binary)
     if _is_nonempty_file(bundled):
         logger.debug("External binary resolved", binary=binary.value, source="bundled")
         return bundled

@@ -19,7 +19,7 @@ from portable_utils.logger import get_logger
 from portable_utils.rich_console import console
 from portable_utils.timer import Timer
 
-assert not any(name == 'anishift' or name.startswith('anishift.') for name in sys.modules)
+assert not any(name == sys.argv[2] or name.startswith(sys.argv[2] + '.') for name in sys.modules)
 assert _portable.MIN_PYTHON == '3.14'
 assert 'tenacity' in _portable.MODULE_DEPS['_retry']
 attempts = 0
@@ -40,7 +40,7 @@ console.print('PORTABLE_UTILS_OK: retry recovered after 2 attempts')
 """
 
     result: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603
-        [sys.executable, "-I", "-c", script, str(tmp_path)],
+        [sys.executable, "-I", "-c", script, str(tmp_path), __package__.split(".")[0]],
         cwd=tmp_path,
         capture_output=True,
         text=True,

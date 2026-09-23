@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
@@ -10,6 +11,7 @@ from anishift.application import (
     AutoPreset,
     ExecutionPlan,
     InspectedWorkspace,
+    PlanPreview,
     RunEventSink,
     RunResult,
     ready_group_ids,
@@ -21,9 +23,11 @@ __all__ = [
     "AutoRunBlocker",
     "AutoRunRefusal",
     "PreparedAutoRun",
+    "auto_plan_refusal",
     "execute_auto_run",
     "execute_plan",
     "prepare_auto_run",
+    "select_auto_groups",
 ]
 
 logger = get_logger(__name__)
@@ -47,6 +51,18 @@ _PLAN_BLOCKED: Final[str] = "The plan cannot run because of a blocking problem."
 
 _PLAN_SCOPE: Final[str] = "plan"
 """Fallback scope assigned to a blocker without a group."""
+
+_SELECTION_BLOCKED: Final[str] = "The run cannot take every requested source group."
+"""Refusal returned when a requested group is unknown or unready."""
+
+_SELECTION_HINT: Final[str] = "Request only groups the workspace holds and reports ready, then run the preset again."
+"""Suggestion returned beside a rejected group selection."""
+
+_UNKNOWN_GROUP: Final[str] = "The workspace holds no such source group."
+"""Blocker message assigned to a requested group discovery never reported."""
+
+_UNREADY_GROUP: Final[str] = "This source group is not ready to run."
+"""Blocker message assigned to a requested group discovery reports unready."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +97,7 @@ def prepare_auto_run(
     preset_id: str,
     *,
     cancel: CancellationToken | None = None,
+    group_ids: Sequence[str] | None = None,
 ) -> PreparedAutoRun | AutoRunRefusal:
     """Discover, validate and plan one automatic run without rendering UI."""
     token: CancellationToken = cancel or NeverCancelledToken()
@@ -90,20 +107,54 @@ def prepare_auto_run(
         return AutoRunRefusal(_NO_SOURCES, _NO_SOURCES_HINT)
     preset: AutoPreset = service.get_preset(preset_id)
     token.raise_if_cancelled()
-    group_ids: tuple[str, ...] = ready_group_ids(workspace.groups)
-    if not group_ids:
-        return AutoRunRefusal(_NO_READY_SOURCES, _NO_READY_SOURCES_HINT)
-    plan: ExecutionPlan = service.plan_auto(group_ids, preset)
+    selection: tuple[str, ...] | AutoRunRefusal = select_auto_groups(workspace, group_ids)
+    if isinstance(selection, AutoRunRefusal):
+        return selection
+    plan: ExecutionPlan = service.plan_auto(selection, preset)
     token.raise_if_cancelled()
+    refusal: AutoRunRefusal | None = auto_plan_refusal(plan)
+    if refusal is not None:
+        return refusal
+    logger.info("Automatic run planned", preset_id=preset_id, groups=len(selection), tasks=len(plan.tasks))
+    return PreparedAutoRun(preset_id, workspace, selection, plan)
+
+
+def select_auto_groups(
+    workspace: InspectedWorkspace,
+    requested: Sequence[str] | None = None,
+) -> tuple[str, ...] | AutoRunRefusal:
+    """Resolve the requested group IDs against the workspace, keeping its ready order."""
+    if not workspace.groups:
+        return AutoRunRefusal(_NO_SOURCES, _NO_SOURCES_HINT)
+    ready: tuple[str, ...] = ready_group_ids(workspace.groups)
+    if requested is None:
+        if not ready:
+            return AutoRunRefusal(_NO_READY_SOURCES, _NO_READY_SOURCES_HINT)
+        return ready
+    known: frozenset[str] = frozenset(group.group_id for group in workspace.groups)
+    runnable: frozenset[str] = frozenset(ready)
+    rejected: tuple[AutoRunBlocker, ...] = tuple(
+        AutoRunBlocker(group_id, _UNREADY_GROUP if group_id in known else _UNKNOWN_GROUP)
+        for group_id in requested
+        if group_id not in runnable
+    )
+    if rejected:
+        return AutoRunRefusal(_SELECTION_BLOCKED, _SELECTION_HINT, rejected)
+    wanted: frozenset[str] = frozenset(requested)
+    selected: tuple[str, ...] = tuple(group_id for group_id in ready if group_id in wanted)
+    if not selected:
+        return AutoRunRefusal(_NO_READY_SOURCES, _NO_READY_SOURCES_HINT)
+    return selected
+
+
+def auto_plan_refusal(plan: ExecutionPlan | PlanPreview) -> AutoRunRefusal | None:
+    """Report blocking problems identically for local plans and resident previews."""
     blockers: tuple[AutoRunBlocker, ...] = tuple(
         AutoRunBlocker(problem.group_id or _PLAN_SCOPE, problem.message)
         for problem in plan.problems
         if problem.is_blocking
     )
-    if blockers:
-        return AutoRunRefusal(_PLAN_BLOCKED, blockers=blockers)
-    logger.info("Automatic run planned", preset_id=preset_id, groups=len(group_ids), tasks=len(plan.tasks))
-    return PreparedAutoRun(preset_id, workspace, group_ids, plan)
+    return AutoRunRefusal(_PLAN_BLOCKED, blockers=blockers) if not plan.can_execute else None
 
 
 def execute_auto_run(service: AppService, prepared: PreparedAutoRun, sink: RunEventSink) -> RunResult:

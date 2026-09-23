@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import Final
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
 from anishift.application.events import sanitize_event_message
@@ -20,6 +21,11 @@ __all__ = [
     "RunResult",
     "TaskResult",
 ]
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+DISPLAYED_ABSENCE_NOTE: Final[str] = "No displayed subtitle cues; no displayed subtitle file was created."
+"""Public informational note for a successfully omitted displayed subtitle product."""
 
 
 class _FrozenMapping[K, V](Mapping[K, V]):
@@ -88,6 +94,14 @@ class ArtifactSnapshot:
             raise ExecutionError(msg)
         return artifact
 
+    def is_absent(self, artifact_id: str) -> bool:
+        """Return whether a required input has confirmed domain-valid absence."""
+        artifact: Artifact | None = self.artifacts.get(artifact_id)
+        if artifact is None:
+            msg = f"Required artifact is absent from snapshot: {artifact_id}"
+            raise ExecutionError(msg)
+        return artifact.state is ArtifactState.ABSENT
+
 
 @dataclass(frozen=True, slots=True)
 class ProducedArtifact:
@@ -110,16 +124,17 @@ class TaskResult:
 
     task_id: str
     outputs: tuple[ProducedArtifact, ...]
+    absent_outputs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.task_id.strip():
             msg = "Task result ID cannot be empty"
             raise ValueError(msg)
-        if not self.outputs:
-            msg = "Task result must contain at least one produced artifact"
+        if not self.outputs and not self.absent_outputs:
+            msg = "Task result must contain at least one produced or absent artifact"
             raise ValueError(msg)
-        output_ids: tuple[str, ...] = tuple(output.artifact_id for output in self.outputs)
-        if len(output_ids) != len(set(output_ids)):
+        output_ids: tuple[str, ...] = (*tuple(output.artifact_id for output in self.outputs), *self.absent_outputs)
+        if any(not identifier.strip() for identifier in output_ids) or len(output_ids) != len(set(output_ids)):
             msg = "Task result output IDs must be unique"
             raise ValueError(msg)
 
@@ -184,6 +199,7 @@ class RunResult:
     run_id: str
     groups: tuple[GroupResult, ...]
     warnings: tuple[str, ...] = ()
+    paused: bool = False
 
     def __post_init__(self) -> None:
         if not self.run_id.strip() or not self.groups:
@@ -191,7 +207,10 @@ class RunResult:
             raise ValueError(msg)
         group_ids: tuple[str, ...] = tuple(group.group_id for group in self.groups)
         _require_unique_result_ids(group_ids, "run group IDs")
-        safe_warnings: tuple[str, ...] = tuple(sanitize_event_message(warning) or "" for warning in self.warnings)
+        warnings: tuple[str, ...] = self.warnings
+        if any(task.absent_outputs for group in self.groups for task in group.task_results):
+            warnings = (*warnings, DISPLAYED_ABSENCE_NOTE) if DISPLAYED_ABSENCE_NOTE not in warnings else warnings
+        safe_warnings: tuple[str, ...] = tuple(sanitize_event_message(warning) or "" for warning in warnings)
         if any(not warning.strip() for warning in safe_warnings):
             msg = "Run result warnings cannot be blank"
             raise ValueError(msg)
@@ -200,7 +219,7 @@ class RunResult:
     @property
     def succeeded(self) -> bool:
         """Return whether every group completed successfully."""
-        return all(group.status is GroupStatus.SUCCEEDED for group in self.groups)
+        return not self.paused and all(group.status is GroupStatus.SUCCEEDED for group in self.groups)
 
     @property
     def cancelled(self) -> bool:

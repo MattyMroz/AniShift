@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -26,8 +26,34 @@ from anishift.application import (
 )
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive.prompts import TerminalRenderer
+from anishift.cli.interactive.state import StateController, _Tab
+from anishift.cli.resident import ResidentSession
 from anishift.cli.run import AutoRunRefusal, PreparedAutoRun
-from anishift.errors import ExecutionError
+from anishift.errors import ErrorCode, ErrorContext, ExecutionError
+from anishift.platform import tray as tray_module
+from anishift.platform.local_control import ControlError
+
+
+def test_control_problem_keeps_the_polish_recovery_hint_without_english_transport_prose() -> None:
+    problem: ControlError = ControlError("private transport prose")
+
+    assert problem.context.suggestion
+    assert interactive_app._problem_text(problem).plain == (
+        "Błąd · Brak potwierdzonej odpowiedzi procesu w tle · sprawdź, czy proces działa, "
+        "oraz Historię i log przed ponowieniem\nSzczegóły: logs/anishift.log.jsonl"
+    )
+
+
+def test_domain_problem_retains_its_recovery_hint() -> None:
+    problem: ExecutionError = ExecutionError(
+        context=ErrorContext(
+            code=ErrorCode.IO_ERROR, message="Nie można zapisać pliku", suggestion="Sprawdź wolne miejsce"
+        )
+    )
+
+    assert interactive_app._problem_text(problem).plain == (
+        "Błąd · Nie można zapisać pliku\n  Sprawdź wolne miejsce\nSzczegóły: logs/anishift.log.jsonl"
+    )
 
 
 class _Renderer:
@@ -168,6 +194,62 @@ def _mode(application: interactive_app._InteractiveApplication) -> interactive_a
     return application._mode
 
 
+@pytest.mark.parametrize("editing", [False, True])
+@pytest.mark.parametrize("target", [None, "set-2", "missing"])
+def test_notification_opens_library_and_icon_activation_returns_home(
+    monkeypatch: pytest.MonkeyPatch,
+    editing: bool,
+    target: str | None,
+) -> None:
+    application, renderer = _application(monkeypatch, _service())
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    raised: list[str | None] = []
+    monkeypatch.setattr(tray_module, "raise_panel", raised.append)
+    session: ResidentSession = cast(
+        "ResidentSession",
+        SimpleNamespace(
+            command=lambda kind: {"subscriptions": []},
+            new_session=lambda: session,
+            library=lambda: (),
+            close=lambda: None,
+        ),
+    )
+    controller: StateController = StateController(session, renderer.invalidate)
+    application._state = controller
+    navigation: dict[str, object] = {"tab": "library"}
+    if target is not None:
+        navigation["set_id"] = target
+    snapshot: Mapping[str, object] = {
+        "library": [{"set_id": "set-1", "name": "One"}, {"set_id": "set-2", "name": "Two"}]
+    }
+    try:
+        controller._receive(session, {"event": "panel_open", "payload": navigation})
+        controller._receive(session, {"event": "state_changed", "payload": {}})
+        if editing:
+            application._mode = interactive_app._ViewMode.SETTINGS
+        application._handle_idle()
+        if editing:
+            assert _mode(application) is interactive_app._ViewMode.SETTINGS
+            application._show_home()
+            application._handle_idle()
+        assert _mode(application) is interactive_app._ViewMode.STATE
+        assert controller._tab == _Tab.FILES
+        controller._receive(session, {"event": "state_changed", "payload": snapshot})
+        assert controller._selected == (1 if target == "set-2" else 0)
+        controller.handle_key("home")
+        controller._receive(session, {"event": "state_changed", "payload": snapshot})
+        assert controller._selected == 0
+        application._handle_idle()
+        assert _mode(application) is interactive_app._ViewMode.STATE
+        controller._receive(session, {"event": "panel_open", "payload": {}})
+        application._handle_idle()
+        assert _mode(application) is interactive_app._ViewMode.HOME
+        assert len(raised) == 2
+    finally:
+        controller.close()
+        application._mascot.close()
+
+
 def _frame(application: interactive_app._InteractiveApplication, columns: int = 120, rows: int = 40) -> str:
     return application._render_frame(columns, rows).plain
 
@@ -192,7 +274,7 @@ def test_the_only_renderer_owns_the_alternate_screen_for_the_whole_session() -> 
     assert renderer._application.erase_when_done is True
 
 
-def test_the_auto_row_starts_the_preflight_of_the_default_preset(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_technical_batch_starts_the_preflight_of_the_default_preset(monkeypatch: pytest.MonkeyPatch) -> None:
     presets: list[str] = []
 
     def refuse(service: AppService, preset_id: str, *, cancel: object = None) -> AutoRunRefusal:
@@ -204,7 +286,7 @@ def test_the_auto_row_starts_the_preflight_of_the_default_preset(monkeypatch: py
     application, _renderer = _application(monkeypatch, _service(default_preset_id=lambda: "evening"))
     application._selected = 0
 
-    application._handle_key("enter")
+    application._start_auto()
     _settle(application)
 
     assert presets == ["evening"]
@@ -294,7 +376,7 @@ def test_an_auto_refusal_stays_a_sentence_with_a_hint_and_returns_home(monkeypat
     application._handle_key("any")
 
     assert _mode(application) is interactive_app._ViewMode.HOME
-    assert "Auto" in _frame(application)
+    assert "Panel" in _frame(application)
 
 
 def test_a_finished_auto_run_keeps_the_queue_and_footer_until_a_key_returns_home(
@@ -412,4 +494,4 @@ def test_interrupting_a_running_auto_cancels_it_and_leaves_no_error_on_screen(
     assert application._progress is None
     assert "Odcinek 01" not in home
     assert "Błąd" not in home
-    assert "Auto" in home
+    assert "Panel" in home

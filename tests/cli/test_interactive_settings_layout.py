@@ -3,9 +3,11 @@ from __future__ import annotations
 import pytest
 
 from anishift.cli.interactive.settings import (
+    _AUTO_FIELDS,
     _FIELDS_COVERED_ELSEWHERE,
     _GENERAL_FIELDS,
     _KNOWN_LAYOUT_GAPS,
+    _RECIPE_FIELDS,
     _SUBTITLE_FIELDS,
     _TRANSLATION_FIELDS,
     _TTS_FIELDS,
@@ -19,7 +21,7 @@ from anishift.config.field_catalog import (
 )
 from anishift.config.user_settings import UserSettings
 
-_PANEL_SCOPES = (SettingScope.GLOBAL, SettingScope.ENGINE_PROFILE)
+_PANEL_SCOPES = (SettingScope.GLOBAL, SettingScope.ENGINE_PROFILE, SettingScope.AUTO_PRESET, SettingScope.RECIPE)
 
 _TTS_ENGINES = ("edge", "elevenbytes", "elevenlabs", "sapi")
 
@@ -27,7 +29,13 @@ _TRANSLATION_ENGINES = ("llm", "deepl", "google")
 
 
 def _layout_fields() -> tuple[_SettingField, ...]:
-    return (*_GENERAL_FIELDS, *_SUBTITLE_FIELDS, *_TRANSLATION_FIELDS, *_TTS_FIELDS)
+    return (
+        *_GENERAL_FIELDS,
+        *_SUBTITLE_FIELDS,
+        *_TRANSLATION_FIELDS,
+        *_TTS_FIELDS,
+        *(item for fields in _RECIPE_FIELDS.values() for item in fields),
+    )
 
 
 def _layout_ids() -> tuple[str, ...]:
@@ -99,3 +107,10 @@ def test_layout_only_names_settings_the_catalog_can_produce() -> None:
 
 def test_every_editable_field_is_reachable_so_no_gap_is_tracked() -> None:
     assert _KNOWN_LAYOUT_GAPS == {}
+
+
+def test_every_video_preset_field_has_a_recipe_row() -> None:
+    preset_ids: set[str] = {spec.setting_id for spec in setting_catalog() if spec.scope is SettingScope.AUTO_PRESET}
+    auto_ids: set[str] = {setting_id for setting_id, _label, _section in _AUTO_FIELDS}
+
+    assert auto_ids == preset_ids

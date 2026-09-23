@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Protocol
+from typing import Final, Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
@@ -36,13 +38,22 @@ from anishift.services.translation.protocols import TranslationCancellation, Tra
 from anishift.services.translation.types import FileTranslation
 
 __all__ = [
+    "TextDocument",
+    "TextFragment",
     "TranslationTaskHandler",
     "TranslationVerses",
     "displayed_lines",
+    "read_text_document",
     "text_spoken_lines",
     "translate_subtitle_split",
     "translation_verses",
+    "write_text_document",
 ]
+
+# ── Constants ──────────────────────────────────────────────────────────────
+
+_RE_TRAILING_BREAK: Final[re.Pattern[str]] = re.compile(r"(?:\r?\n[^\S\r\n]*)+\Z")
+"""The run of line breaks closing one paragraph, kept verbatim so blank lines survive translation."""
 
 
 class TranslationExecutor(Protocol):
@@ -112,6 +123,33 @@ class TranslationVerses:
     spoken: tuple[tuple[str, ...], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TextFragment:
+    """One translator-sized piece of a plain text document, identified by its place in it."""
+
+    paragraph: int
+    position: int
+    text: str
+
+    @property
+    def identity(self) -> str:
+        """Place of this fragment in the document, carried across translation as the line style."""
+        return f"{self.paragraph}:{self.position}"
+
+
+@dataclass(frozen=True, slots=True)
+class TextDocument:
+    """Identified fragments of one plain text document and the break closing every paragraph."""
+
+    fragments: tuple[TextFragment, ...]
+    breaks: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if any(fragment.paragraph >= len(self.breaks) for fragment in self.fragments):
+            msg = "Text fragment belongs to a paragraph the document does not have"
+            raise ValueError(msg)
+
+
 class TranslationTaskHandler:
     """Translate one subtitle artifact and write a complete Polish staging file."""
 
@@ -148,16 +186,27 @@ class TranslationTaskHandler:
             msg = "Translation task requires ready source subtitles or text"
             raise ExecutionError(msg)
         output: Artifact = artifacts.require_output(task.produces[0])
-        if output.kind is not ArtifactKind.FULL_PL:
-            msg = "Translation task must produce complete Polish subtitles"
+        if output.kind not in {ArtifactKind.FULL_PL, ArtifactKind.TRANSLATED_TEXT}:
+            msg = "Translation task must produce complete Polish subtitles or text"
             raise ExecutionError(msg)
-        output_kind: SubtitleKind = _output_kind(task, output)
+        if output.kind is ArtifactKind.TRANSLATED_TEXT and source.kind is not ArtifactKind.STANDALONE_TEXT:
+            msg = "A translated text document can be written only from a plain text source"
+            raise ExecutionError(msg)
         cancel.raise_if_cancelled()
         observer = _ProgressObserver(task.task_id, progress)
-        if source.kind is ArtifactKind.STANDALONE_TEXT:
+        if output.kind is ArtifactKind.TRANSLATED_TEXT:
+            result, written = self._translate_document(task, source, output, cancel, observer)
+        elif source.kind is ArtifactKind.STANDALONE_TEXT:
             result, written = self._translate_text(task, source, output, cancel, observer)
         else:
-            result, written = self._translate_subtitles(task, source, output, output_kind, cancel, observer)
+            result, written = self._translate_subtitles(
+                task,
+                source,
+                output,
+                _output_kind(task, output),
+                cancel,
+                observer,
+            )
         if not result.is_success:
             if result.error_context is not None:
                 raise TranslationError(context=result.error_context)
@@ -172,6 +221,35 @@ class TranslationTaskHandler:
             "failed_lines": result.failed_lines,
         }
         return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, written, metadata),))
+
+    def _translate_document(
+        self,
+        task: PlanTask,
+        source: Artifact,
+        output: Artifact,
+        cancel: CancellationToken,
+        observer: TranslationObserver,
+    ) -> tuple[FileTranslation, Path | None]:
+        parameters: dict[str, str | int | bool] = dict(task.parameters)
+        if parameters.get("source_kind") != "txt" or parameters.get("output_format") != "txt" or source.path is None:
+            msg = "Text document translation requires source_kind=txt and a txt output"
+            raise ExecutionError(msg)
+        document: TextDocument = read_text_document(read_txt(source.path), self._layout)
+        spoken: tuple[SpokenLine, ...] = tuple(
+            SpokenLine(start=0, end=0, text=fragment.text, style=fragment.identity) for fragment in document.fragments
+        )
+        result: FileTranslation = self._service.translate_file(
+            list(spoken),
+            [],
+            source_lang="auto",
+            cancel=_CancellationView(cancel),
+            observer=observer,
+        )
+        _require_complete_translation(result, spoken, ())
+        cancel.raise_if_cancelled()
+        destination: Path = task_staging_path(self._run_root, task, output, ".txt")
+        translated: tuple[str, ...] = tuple(line.text for line in result.spoken)
+        return result, write_text_document(document, translated, destination)
 
     def _translate_text(
         self,
@@ -271,6 +349,50 @@ def translate_subtitle_split(
         cancel=_CancellationView(cancel),
         observer=observer,
     )
+
+
+def read_text_document(text: str, layout: LayoutConfig | None = None) -> TextDocument:
+    """Split one plain text document into identified paragraph fragments, keeping every blank line verbatim."""
+    from anishift.services.translation.chunking import chunk_text, split_paragraphs  # noqa: PLC0415 - keep engines lazy
+
+    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
+    fragments: list[TextFragment] = []
+    breaks: list[str] = []
+    for paragraph, raw in enumerate(split_paragraphs(text)):
+        match: re.Match[str] | None = _RE_TRAILING_BREAK.search(raw)
+        breaks.append("" if match is None else match.group())
+        body: str = raw if match is None else raw[: match.start()]
+        chunks: list[str] = chunk_text(
+            " ".join(body.split()),
+            char_limit=limits.chunk_chars,
+            chunk_limit=limits.chunk_pieces,
+        )
+        pieces: tuple[str, ...] = tuple(piece for piece in (chunk.strip() for chunk in chunks) if piece)
+        fragments.extend(TextFragment(paragraph, position, piece) for position, piece in enumerate(pieces))
+    return TextDocument(tuple(fragments), tuple(breaks))
+
+
+def write_text_document(document: TextDocument, translated: Sequence[str], destination: Path) -> Path | None:
+    """Compose translated fragments by identifier and write the document, or return ``None`` when it is empty."""
+    if len(translated) != len(document.fragments):
+        msg = "Translated text does not cover every fragment of the source document"
+        raise ExecutionError(msg)
+    paragraphs: list[list[str]] = [[] for _ in document.breaks]
+    ordered: list[tuple[TextFragment, str]] = sorted(
+        zip(document.fragments, translated, strict=True),
+        key=lambda pair: (pair[0].paragraph, pair[0].position),
+    )
+    for fragment, text in ordered:
+        paragraphs[fragment.paragraph].append(text)
+    rendered: str = "".join(
+        " ".join(pieces) + closing for pieces, closing in zip(paragraphs, document.breaks, strict=True)
+    )
+    if not rendered.strip():
+        return None
+    temporary: Path = destination.with_name(f"{destination.name}.tmp")
+    temporary.write_text(rendered, encoding="utf-8")
+    temporary.replace(destination)
+    return destination
 
 
 def text_spoken_lines(text: str, layout: LayoutConfig | None = None) -> tuple[SpokenLine, ...]:

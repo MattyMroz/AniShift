@@ -19,6 +19,11 @@ sidecara audio przez FFmpeg.
 - Polityka v1 to wyłącznie `serialize`, mono PCM S16LE. Nowa polityka timeline
   wymaga osobnej implementacji i fingerprint version bump. `config.py`,
   `fingerprint.py`
+- `paragraph_pauses` rozdziela kolejne klipy stałą ciszą `_PARAGRAPH_GAP_MS`
+  (jedyny literał tej wartości): N fragmentów dostaje N-1 przerw, bez ciszy na
+  początku i na końcu. Żądanie z własnymi czasami nie dostaje ani milisekundy
+  więcej. Flaga wchodzi do `narration_fingerprint`, więc gapless manifest nigdy nie
+  jest trafieniem resume. `timeline.py`, `fingerprint.py`
 - Brak klipów spoken zwraca `skipped_no_spoken`; nie twórz pustego narratora ani
   kopii oryginalnego audio. `service.py`
 - `scope_id` jest jednym bezpiecznym segmentem ścieżki i nie może być nazwą
@@ -46,8 +51,13 @@ sidecara audio przez FFmpeg.
   schema version jest błędem, nie kandydatem do kwarantanny. `resume.py`
 - Blokady manifestu są tylko process-local. Nie zakładaj bezpieczeństwa dwóch
   równoległych procesów AniShift dla tego samego scope. `resume.py`
-- Resume narratora może zwrócić `plan=None`; nie zakładaj, że historyczne
-  placements są odtwarzane z manifestu. `service.py`
+- Resume narratora nie przelicza timeline, więc placements pochodzą z manifestu
+  (`commit_narration` zapisuje je razem z fingerprintem narratora). `AudioRenderResult.placements`
+  jest puste tylko dla `skipped_no_spoken`. `service.py`, `resume.py`
+- Zapisane placements muszą opisywać DOKŁADNIE klipy swojego renderu: powtórzony
+  `request_id` to uszkodzony manifest (kwarantanna), a zbiór `request_id` różny od
+  `clip_ids` żądania oznacza brak trafienia i przeliczenie od nowa — nigdy podstawienia
+  cudzej osi czasu. `resume.py`, `service.py`
 
 ## Subprocessy i callbacki
 

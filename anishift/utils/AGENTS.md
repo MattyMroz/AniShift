@@ -1,6 +1,6 @@
 # utils
 
-Przenośne (współdzielone z mm_avh): zero zależności od AniShift. Fasada `__init__` reeksportuje tylko lekkie `safe_*`/`PathTraversalError`; ciężkie zależności (torch przez `device`) NIE są ładowane przy imporcie pakietu.
+Portable utilities with no host application dependencies. The package facade exports only lightweight filesystem helpers. In commands below, `<pkg>` means the installed utilities package, including its host prefix when nested.
 
 ## Podpakiety (każdy ma własny AGENTS.md)
 
@@ -31,7 +31,7 @@ Przenośne (współdzielone z mm_avh): zero zależności od AniShift. Fasada `__
 
 ## Konwencje
 
-- `secrets.py` przesłania stdlibowy `secrets` — wewnątrz pakietu bezpieczne, ale absolutny `import secrets` po dodaniu `anishift` do ścieżki może trafić w ten plik. `secrets.py:1`
+- Do not add the utilities directory itself to `sys.path`: `secrets.py` would shadow the standard-library module.
 - `_retry.py` i `device.py` używają `except Exception` (device.py przy sondowaniu torch/ort) mimo reguły „nigdy except Exception". `device.py:53,93`
 - `NETWORK_RETRY` ma budżet CZASOWY 60 s (`stop_after_delay`), `build_retry` limit LICZBY prób — dwa modele stopu. `_retry.py:61,104-110`
-- `_retry` importowany pełną ścieżką `anishift.utils._retry`, nie z `__init__`. `_retry.py:9`
+- Import retry helpers from `<pkg>._retry`, not the package facade. `TransientError` and `DownloadError` are recognized through MRO names without importing host exceptions.

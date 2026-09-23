@@ -336,8 +336,11 @@ def test_home_balances_the_three_gaps_around_the_resting_brand_and_menu() -> Non
     content: Text = _home_content(120, 40, 0, MascotState.IDLE, native_size=(18, 10))
     lines: list[str] = [line.plain for line in content.split("\n")]
 
-    assert next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line) == 6
-    assert next(index for index, line in enumerate(lines) if "Auto" in line) == 25
+    anchor: int = next(index for index, line in enumerate(lines) if NATIVE_MASCOT_ANCHOR in line)
+    menu_top: int = next(index for index, line in enumerate(lines) if "Panel" in line)
+    menu_bottom: int = next(index for index, line in enumerate(lines) if "Wyjście" in line)
+    gaps: tuple[int, int, int] = (anchor + 3, menu_top - anchor - 10, 40 - menu_bottom - 3)
+    assert max(gaps) - min(gaps) <= 1
 
 
 def test_resting_padding_matches_the_packaged_gif_silhouette() -> None:
@@ -441,6 +444,8 @@ def test_settings_view_does_not_render_the_mascot() -> None:
         SimpleNamespace(render=lambda _columns, _rows: Text("Ustawienia")),
     )
     application._manual = None
+    application._batch = None
+    application._closing_at = None
     application._mascot = cast("MascotController", SimpleNamespace(state=MascotState.IDLE))
     application._renderer = cast("TerminalRenderer", SimpleNamespace(native_mascot_size=(20, 10)))
     application._directory = "~"

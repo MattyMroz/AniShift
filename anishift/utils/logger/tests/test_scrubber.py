@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from loguru._recattrs import RecordException
 
-from ..scrubber import scrub_message, scrub_patcher
+from ..scrubber import scrub_message, scrub_patcher, set_url_route_prefixes
 
 
 class TestScrubMessage:
@@ -103,6 +103,19 @@ class TestScrubMessage:
         assert "secret123" not in result
         assert "hunter2" not in result
         assert result.count("***") >= 2
+
+
+def test_registered_routes_preserve_paths_but_scrub_secrets() -> None:
+    set_url_route_prefixes(())
+    try:
+        assert scrub_message("GET /api/v1/projects") == "GET projects"
+        set_url_route_prefixes(("/api/",))
+        assert scrub_message("GET /api/v1/projects token=hidden") == "GET /api/v1/projects token=***"
+        assert scrub_message("file /private/files/input.txt") == "file input.txt"
+        set_url_route_prefixes(())
+        assert scrub_message("GET /api/v1/projects") == "GET projects"
+    finally:
+        set_url_route_prefixes(())
 
 
 class TestScrubPatcher:

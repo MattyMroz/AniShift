@@ -257,7 +257,7 @@ class TestWidthValidation:
         assert isinstance(result, str)
 
 
-def _mock_task(  # noqa: PLR0913 — one keyword per mocked Task attribute, all optional overrides
+def _mock_task(
     *,
     total: float | None = 100,
     completed: float = 50,
@@ -602,25 +602,25 @@ class TestPerTaskColumn:
         col = _PerTaskColumn(ColoredPercentageColumn("green_bold"), "show_percentage")
         task = _mock_task(completed=50)
         task.fields = {"show_percentage": False}
-        assert cast(Text, col.render(task)).plain == ""
+        assert cast("Text", col.render(task)).plain == ""
 
     def test_visible_delegates_to_wrapped_column(self) -> None:
         col = _PerTaskColumn(ColoredPercentageColumn("green_bold"), "show_percentage")
         task = _mock_task(completed=50)
         task.fields = {"show_percentage": True}
-        assert "50%" in cast(Text, col.render(task)).plain
+        assert "50%" in cast("Text", col.render(task)).plain
 
     def test_visible_uses_task_style_field(self) -> None:
         col = _PerTaskColumn(ColoredPercentageColumn("green_bold"), "show_percentage")
         task = _mock_task(completed=50)
         task.fields = {"show_percentage": True, "style": "blue_bold"}
-        assert cast(Text, col.render(task)).style == "blue_bold"
+        assert cast("Text", col.render(task)).style == "blue_bold"
 
     def test_spinner_checkmark_on_finished_task(self) -> None:
         col = _PerTaskColumn(DynamicSpinnerColumn("red_bold"), "show_spinner")
         task = _mock_task(finished=True)
         task.fields = {"show_spinner": True, "style": "green_bold"}
-        rendered = cast(Text, col.render(task))
+        rendered = cast("Text", col.render(task))
         assert "✓" in rendered.plain
         assert rendered.style == "green_bold"
 
@@ -877,7 +877,7 @@ _BRACKET_NAMES = (
 
 
 def _render_independent_row(mp: MultiProgressManager, task_index: int) -> str:
-    column = cast(_IndependentRowColumn, mp._progress.columns[0])
+    column = cast("_IndependentRowColumn", mp._progress.columns[0])
     task = mp._progress.tasks[task_index]
     return column.render(task).plain
 

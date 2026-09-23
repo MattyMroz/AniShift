@@ -64,6 +64,32 @@ def test_failed_validation_preserves_existing_product(tmp_path: Path) -> None:
     assert destination.read_bytes() == b"previous"
 
 
+def test_a_translated_text_product_is_published_with_its_content(tmp_path: Path) -> None:
+    source: Path = tmp_path / "temp.txt"
+    source.write_text("Zażółć gęślą jaźń.\n", encoding="utf-8")
+    destination: Path = tmp_path / "Episode.pl.txt"
+
+    artifact: Artifact = ArtifactPublisher().publish(
+        _request(source, destination, ArtifactKind.TRANSLATED_TEXT),
+    )
+
+    assert artifact.path == destination
+    assert destination.read_text(encoding="utf-8") == "Zażółć gęślą jaźń.\n"
+
+
+@pytest.mark.parametrize("body", ["   \n\n\t\n", "\ufeff \n"])
+def test_a_translated_text_product_without_readable_content_is_refused(tmp_path: Path, body: str) -> None:
+    source: Path = tmp_path / "temp.txt"
+    source.write_text(body, encoding="utf-8")
+    destination: Path = tmp_path / "Episode.pl.txt"
+    destination.write_text("Poprzedni tekst.\n", encoding="utf-8")
+
+    with pytest.raises(ExecutionError, match="no readable content"):
+        ArtifactPublisher().publish(_request(source, destination, ArtifactKind.TRANSLATED_TEXT))
+
+    assert destination.read_text(encoding="utf-8") == "Poprzedni tekst.\n"
+
+
 def test_corrupt_copy_before_replace_preserves_existing_product(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

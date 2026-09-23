@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
+from typing import Final
+
+from anishift.application.workflows import ROOT_ROUTE, WorkflowRoute
 
 
 class ArtifactKind(StrEnum):
@@ -18,13 +21,24 @@ class ArtifactKind(StrEnum):
     SPOKEN_PL = "spoken_pl"
     DISPLAYED_PL = "displayed_pl"
     SOURCE_AUDIO = "source_audio"
+    SOURCE_IMAGE = "source_image"
     NARRATION_AUDIO = "narration_audio"
     NORMALIZED_SUBTITLES = "normalized_subtitles"
     TTS_CLIP = "tts_clip"
     TTS_MANIFEST = "tts_manifest"
     FINAL_MKV = "final_mkv"
     FINAL_MP4 = "final_mp4"
+    COVER_MP4 = "cover_mp4"
     STANDALONE_TEXT = "standalone_text"
+    TRANSLATED_TEXT = "translated_text"
+
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+COVER_AUDIO_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
+    {ArtifactKind.SOURCE_AUDIO, ArtifactKind.NARRATION_AUDIO},
+)
+"""Kinds a cover film may play, because the same recording is classified differently in each place it sits."""
 
 
 class ArtifactState(StrEnum):
@@ -33,6 +47,7 @@ class ArtifactState(StrEnum):
     MISSING = "missing"
     CANDIDATE = "candidate"
     READY = "ready"
+    ABSENT = "absent"
     INVALID = "invalid"
 
 
@@ -90,21 +105,29 @@ class Artifact:
         if not self.artifact_id.strip() or not self.group_id.strip():
             msg = "Artifact and group IDs cannot be empty"
             raise ValueError(msg)
-        if self.kind in {ArtifactKind.FINAL_MKV, ArtifactKind.FINAL_MP4} and (
+        if self.kind in {ArtifactKind.FINAL_MKV, ArtifactKind.FINAL_MP4, ArtifactKind.COVER_MP4} and (
             self.lifetime is not ArtifactLifetime.DURABLE
         ):
             msg = "Final containers must be durable products, never sources"
             raise ValueError(msg)
-        if self.state is not ArtifactState.MISSING and self.path is None:
+        if self.state is ArtifactState.ABSENT and (
+            self.kind is not ArtifactKind.DISPLAYED_PL
+            or self.lifetime is ArtifactLifetime.SOURCE
+            or self.path is not None
+        ):
+            msg = "Only non-source displayed subtitles can be confirmed absent without a runtime path"
+            raise ValueError(msg)
+        if self.state not in {ArtifactState.MISSING, ArtifactState.ABSENT} and self.path is None:
             msg = f"Artifact in state {self.state.value!r} requires a runtime path"
             raise ValueError(msg)
         if self.duration_us is not None and self.duration_us < 0:
             msg = "Artifact duration cannot be negative"
             raise ValueError(msg)
         if self.preserved_path is not None and (
-            self.lifetime is not ArtifactLifetime.DURABLE or self.state is not ArtifactState.MISSING
+            self.lifetime is not ArtifactLifetime.DURABLE
+            or self.state not in {ArtifactState.MISSING, ArtifactState.ABSENT}
         ):
-            msg = "Only a missing durable replacement can preserve an existing product"
+            msg = "Only a missing or absent durable replacement can preserve an existing product"
             raise ValueError(msg)
         self._validate_lifetime()
 
@@ -133,6 +156,7 @@ class SourceGroup:
     directory: Path
     artifacts: tuple[Artifact, ...]
     conflicts: tuple[GroupConflict, ...] = ()
+    route: WorkflowRoute = ROOT_ROUTE
 
     def __post_init__(self) -> None:
         if not self.group_id.strip() or not self.stem.strip():
