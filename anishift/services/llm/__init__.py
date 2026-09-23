@@ -27,16 +27,19 @@ from anishift.services.llm.errors import (
 from anishift.services.llm.protocols import LlmAttemptObserver, LlmEngine, StreamingLlmEngine
 from anishift.services.llm.service import LlmService
 from anishift.services.llm.types import (
+    FilePart,
     LlmContentPart,
     LlmMessage,
     LlmRequest,
     LlmResponse,
     LlmRole,
     LlmUsage,
+    Modality,
     TextPart,
 )
 
 __all__ = [
+    "FilePart",
     "LlmAttemptObserver",
     "LlmAuthError",
     "LlmCancelledError",
@@ -61,6 +64,7 @@ __all__ = [
     "LlmService",
     "LlmTimeoutError",
     "LlmUsage",
+    "Modality",
     "StreamingLlmEngine",
     "TextPart",
     "available_engine_ids",

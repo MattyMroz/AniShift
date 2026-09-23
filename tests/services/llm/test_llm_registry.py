@@ -11,9 +11,11 @@ import pytest
 
 from anishift.errors import AniShiftError, ErrorCode, FatalError, TransientError
 from anishift.services.llm import (
+    FilePart,
     LlmAttemptObserver,
     LlmConfig,
     LlmConfigError,
+    LlmContentPart,
     LlmEngine,
     LlmEngineId,
     LlmMessage,
@@ -24,6 +26,7 @@ from anishift.services.llm import (
     LlmResponse,
     LlmRole,
     LlmUsage,
+    Modality,
     TextPart,
     available_engine_ids,
     create_engine,
@@ -46,8 +49,10 @@ class FakeEngine:
     is_available = True
 
     def complete(self, request: LlmRequest) -> LlmResponse:
+        part: LlmContentPart = request.messages[0].parts[0]
+        assert isinstance(part, TextPart)
         return LlmResponse(
-            text=request.messages[0].parts[0].text,
+            text=part.text,
             engine_id=self.engine_id,
             provider_model_id="custom-model",
             finish_reason="stop",
@@ -247,6 +252,49 @@ def test_request_requires_user_message_and_non_empty_text() -> None:
 
     with pytest.raises(LlmRequestError):
         TextPart("  ")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("media_type", "modality"),
+    [
+        ("image/png", "image"),
+        ("image/jpeg", "image"),
+        ("image/webp", "image"),
+        ("application/pdf", "pdf"),
+        ("audio/mpeg", "audio"),
+        ("video/mp4", "video"),
+    ],
+)
+def test_file_part_maps_media_type_to_modality(media_type: str, modality: Modality) -> None:
+    assert FilePart(media_type=media_type, data=b"file").modality == modality
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("media_type", "data"), [("image/png", b""), ("text/plain", b"file")])
+def test_file_part_rejects_empty_data_or_unknown_media_type(media_type: str, data: bytes) -> None:
+    with pytest.raises(LlmRequestError):
+        FilePart(media_type=media_type, data=data)
+
+
+@pytest.mark.unit
+def test_file_part_repr_hides_data() -> None:
+    part: FilePart = FilePart(media_type="image/png", data=b"private-file-content")
+    assert "private-file-content" not in repr(part)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("role", [LlmRole.SYSTEM, LlmRole.ASSISTANT])
+def test_message_rejects_file_outside_user_role(role: LlmRole) -> None:
+    with pytest.raises(LlmRequestError):
+        LlmMessage(role=role, parts=(TextPart("Describe"), FilePart(media_type="image/png", data=b"file")))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("parts", [(), (FilePart(media_type="image/png", data=b"file"),)])
+def test_message_requires_text_part(parts: tuple[LlmContentPart, ...]) -> None:
+    with pytest.raises(LlmRequestError):
+        LlmMessage(role=LlmRole.USER, parts=parts)
 
 
 def test_usage_derives_total_only_from_complete_components() -> None:

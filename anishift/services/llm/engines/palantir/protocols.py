@@ -288,12 +288,6 @@ def _texts(message: LlmMessage) -> list[str]:
                 engine_id=PALANTIR_ENGINE_ID,
             )
         texts.append(part.text)
-    if not texts:
-        raise_request_error(
-            "Palantir message must contain at least one text part",
-            suggestion="Add text content to every LLM message.",
-            engine_id=PALANTIR_ENGINE_ID,
-        )
     return texts
 
 

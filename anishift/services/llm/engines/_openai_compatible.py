@@ -13,6 +13,12 @@ from typing import Any, Final, Literal, Protocol, Self, cast
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.llm.config import LlmConfig
 from anishift.services.llm.engines._sdk_helpers import (
+    DEFAULT_PDF_NAME,
+    group_adjacent_text_parts,
+    joined_text,
+    require_file_modalities,
+)
+from anishift.services.llm.engines._sdk_helpers import (
     error_with_context as _error_with_context,
 )
 from anishift.services.llm.engines._sdk_helpers import (
@@ -46,7 +52,16 @@ from anishift.services.llm.errors import (
     LlmRequestError,
     LlmTimeoutError,
 )
-from anishift.services.llm.types import LlmRequest, LlmResponse, LlmUsage, TextPart
+from anishift.services.llm.types import (
+    FilePart,
+    LlmContentPart,
+    LlmMessage,
+    LlmRequest,
+    LlmResponse,
+    LlmUsage,
+    Modality,
+    TextPart,
+)
 
 __all__ = [
     "ClientFactory",
@@ -140,6 +155,7 @@ class OpenAiCompatibleProvider:
     requires_api_key: bool
     api_key_env_var: str | None
     max_tokens_parameter: MaxTokensParameter
+    file_modalities: frozenset[Modality]
     unavailable_finish_reasons: frozenset[str] = frozenset()
 
 
@@ -205,8 +221,8 @@ class OpenAiCompatibleTransport:
                 "LLM provider is already closed",
                 suggestion="Create a new provider instance before sending another request.",
             )
-        client: _OpenAiClient = self._ensure_client()
         kwargs: dict[str, object] = self._build_completion_kwargs(request)
+        client: _OpenAiClient = self._ensure_client()
         started_at: float = time.perf_counter()
         try:
             response: Any = client.chat.completions.create(**kwargs)
@@ -267,25 +283,11 @@ class OpenAiCompatibleTransport:
         return configured or self._provider.default_base_url
 
     def _build_completion_kwargs(self, request: LlmRequest) -> dict[str, object]:
-        messages: list[dict[str, str]] = []
-        for message in request.messages:
-            content_parts: list[str] = []
-            for part in message.parts:
-                if not isinstance(part, TextPart):
-                    _raise_request_error(
-                        "OpenAI-compatible provider received an unsupported content part",
-                        suggestion="Use text content parts for this provider.",
-                    )
-                content_parts.append(part.text)
-            if not content_parts:
-                _raise_request_error(
-                    "OpenAI-compatible message must contain at least one text part",
-                    suggestion="Add text content to every LLM message.",
-                )
-            messages.append({"role": message.role.value, "content": "\n".join(content_parts)})
-
+        require_file_modalities(request, accepted=self._provider.file_modalities, engine_id=self.engine_id)
         kwargs: dict[str, object] = {
-            "messages": messages,
+            "messages": [
+                {"role": message.role.value, "content": self._message_content(message)} for message in request.messages
+            ],
             "model": self._config.provider_model_id,
         }
         if self._config.temperature is not None:
@@ -295,6 +297,18 @@ class OpenAiCompatibleTransport:
         if self._config.max_output_tokens is not None:
             kwargs[self._provider.max_tokens_parameter] = self._config.max_output_tokens
         return kwargs
+
+    def _message_content(self, message: LlmMessage) -> str | list[dict[str, object]]:
+        if any(isinstance(part, FilePart) for part in message.parts):
+            return [self._content_block(part) for part in group_adjacent_text_parts(message.parts)]
+        return joined_text(message.parts)
+
+    def _content_block(self, part: LlmContentPart) -> dict[str, object]:
+        if isinstance(part, TextPart):
+            return {"type": "text", "text": part.text}
+        if part.modality == "image":
+            return {"type": "image_url", "image_url": {"url": part.data_url}}
+        return {"type": "file", "file": {"filename": part.name or DEFAULT_PDF_NAME, "file_data": part.data_url}}
 
     def _normalize_response(self, response: Any, *, latency_ms: float) -> LlmResponse:
         choices: object = getattr(response, "choices", ())

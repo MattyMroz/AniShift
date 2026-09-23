@@ -11,8 +11,11 @@ import pytest
 
 from anishift.errors import ErrorCode
 from anishift.services.llm.config import LlmConfig
+from anishift.services.llm.engines.deepseek import DeepseekService
+from anishift.services.llm.engines.openai import OpenaiService
 from anishift.services.llm.engines.openai_compatible import OpenaiCompatibleService
 from anishift.services.llm.engines.openai_compatible.constants import SUGGESTED_MODEL_IDS
+from anishift.services.llm.engines.openrouter import OpenrouterService
 from anishift.services.llm.errors import (
     LlmAuthError,
     LlmConfigError,
@@ -26,7 +29,7 @@ from anishift.services.llm.errors import (
     LlmRequestError,
     LlmTimeoutError,
 )
-from anishift.services.llm.types import LlmMessage, LlmRequest, LlmRole, TextPart
+from anishift.services.llm.types import FilePart, LlmMessage, LlmRequest, LlmRole, TextPart
 
 
 @dataclass(slots=True)
@@ -110,10 +113,18 @@ def _request() -> LlmRequest:
 
 def _service(
     *,
+    service_type: type[
+        OpenaiCompatibleService | OpenaiService | OpenrouterService | DeepseekService
+    ] = OpenaiCompatibleService,
     response: object | None = None,
     error: BaseException | None = None,
     config: LlmConfig | None = None,
-) -> tuple[OpenaiCompatibleService, FakeClientFactory, FakeClient, FakeCompletions]:
+) -> tuple[
+    OpenaiCompatibleService | OpenaiService | OpenrouterService | DeepseekService,
+    FakeClientFactory,
+    FakeClient,
+    FakeCompletions,
+]:
     completions = FakeCompletions(response=response or _response(), error=error)
     client = FakeClient(completions)
     factory = FakeClientFactory(client)
@@ -124,7 +135,9 @@ def _service(
         timeout_s=12.5,
         max_retries=9,
     )
-    service = OpenaiCompatibleService(resolved_config, _client_factory=factory)
+    service: OpenaiCompatibleService | OpenaiService | OpenrouterService | DeepseekService = service_type(
+        resolved_config, _client_factory=factory
+    )
     return service, factory, client, completions
 
 
@@ -140,10 +153,25 @@ def _status_error(
     return error_type("provider error", response=response, body=body)
 
 
-def test_openai_compatible_maps_ordered_messages_and_optional_parameters() -> None:
-    config = LlmConfig(
-        engine_id="openai_compatible",
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("service_type", "engine_id", "max_tokens_parameter"),
+    [
+        (OpenaiCompatibleService, "openai_compatible", "max_tokens"),
+        (OpenaiService, "openai", "max_completion_tokens"),
+        (OpenrouterService, "openrouter", "max_tokens"),
+        (DeepseekService, "deepseek", "max_tokens"),
+    ],
+)
+def test_openai_compatible_maps_ordered_messages_and_optional_parameters(
+    service_type: type[OpenaiCompatibleService | OpenaiService | OpenrouterService | DeepseekService],
+    engine_id: str,
+    max_tokens_parameter: str,
+) -> None:
+    config: LlmConfig = LlmConfig(
+        engine_id=engine_id,
         provider_model_id="custom-model",
+        api_key="test-key",
         base_url="http://localhost:11434/v1",
         temperature=0.4,
         top_p=0.8,
@@ -151,7 +179,7 @@ def test_openai_compatible_maps_ordered_messages_and_optional_parameters() -> No
         timeout_s=12.5,
         max_retries=9,
     )
-    service, factory, _, completions = _service(config=config)
+    service, factory, _, completions = _service(config=config, service_type=service_type)
 
     result = service.complete(_request())
 
@@ -164,7 +192,7 @@ def test_openai_compatible_maps_ordered_messages_and_optional_parameters() -> No
             "model": "custom-model",
             "temperature": 0.4,
             "top_p": 0.8,
-            "max_tokens": 321,
+            max_tokens_parameter: 321,
         }
     ]
     assert factory.calls[0]["base_url"] == "http://localhost:11434/v1"
@@ -172,13 +200,144 @@ def test_openai_compatible_maps_ordered_messages_and_optional_parameters() -> No
     assert factory.calls[0]["max_retries"] == 0
     assert factory.calls[0]["api_key"]
     assert result.text == "translated"
-    assert result.engine_id == "openai_compatible"
+    assert result.engine_id == engine_id
     assert result.provider_model_id == "custom-model"
     assert result.finish_reason == "stop"
     assert result.latency_ms >= 0
     assert result.usage.input_tokens == 11
     assert result.usage.output_tokens == 7
     assert result.usage.total_tokens == 18
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("service_type", "engine_id", "media_type", "name", "file_block"),
+    [
+        (
+            OpenaiService,
+            "openai",
+            "image/png",
+            "",
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmlsZQ=="}},
+        ),
+        (
+            OpenrouterService,
+            "openrouter",
+            "image/png",
+            "",
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmlsZQ=="}},
+        ),
+        (
+            OpenaiCompatibleService,
+            "openai_compatible",
+            "image/png",
+            "",
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmlsZQ=="}},
+        ),
+        (
+            DeepseekService,
+            "deepseek",
+            "image/png",
+            "",
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmlsZQ=="}},
+        ),
+        (
+            OpenaiService,
+            "openai",
+            "application/pdf",
+            "",
+            {"type": "file", "file": {"filename": "document.pdf", "file_data": "data:application/pdf;base64,ZmlsZQ=="}},
+        ),
+        (
+            OpenrouterService,
+            "openrouter",
+            "application/pdf",
+            "chapter.pdf",
+            {"type": "file", "file": {"filename": "chapter.pdf", "file_data": "data:application/pdf;base64,ZmlsZQ=="}},
+        ),
+    ],
+)
+def test_chat_provider_maps_mixed_file_content(
+    service_type: type[OpenaiCompatibleService | OpenaiService | OpenrouterService | DeepseekService],
+    engine_id: str,
+    media_type: str,
+    name: str,
+    file_block: dict[str, object],
+) -> None:
+    config: LlmConfig = LlmConfig(
+        engine_id=engine_id,
+        provider_model_id="custom-model",
+        api_key="test-key",
+        base_url="https://provider.invalid/v1",
+    )
+    service, _, _, completions = _service(config=config, service_type=service_type)
+    request: LlmRequest = LlmRequest(
+        messages=(
+            LlmMessage(
+                role=LlmRole.USER,
+                parts=(
+                    TextPart("First"),
+                    TextPart("Second"),
+                    FilePart(media_type=media_type, data=b"file", name=name),
+                    TextPart("Third"),
+                    TextPart("Fourth"),
+                ),
+            ),
+        ),
+    )
+
+    service.complete(request)
+
+    assert completions.calls[0]["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "First\nSecond"},
+                file_block,
+                {"type": "text", "text": "Third\nFourth"},
+            ],
+        },
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("service_type", "engine_id", "media_type"),
+    [
+        (OpenaiService, "openai", "audio/mpeg"),
+        (OpenaiService, "openai", "video/mp4"),
+        (OpenrouterService, "openrouter", "audio/mpeg"),
+        (OpenrouterService, "openrouter", "video/mp4"),
+        (OpenaiCompatibleService, "openai_compatible", "application/pdf"),
+        (OpenaiCompatibleService, "openai_compatible", "audio/mpeg"),
+        (OpenaiCompatibleService, "openai_compatible", "video/mp4"),
+        (DeepseekService, "deepseek", "application/pdf"),
+        (DeepseekService, "deepseek", "audio/mpeg"),
+        (DeepseekService, "deepseek", "video/mp4"),
+    ],
+)
+def test_chat_provider_rejects_unsupported_file_before_sdk_call(
+    service_type: type[OpenaiCompatibleService | OpenaiService | OpenrouterService | DeepseekService],
+    engine_id: str,
+    media_type: str,
+) -> None:
+    config: LlmConfig = LlmConfig(
+        engine_id=engine_id,
+        provider_model_id="custom-model",
+        api_key="test-key",
+        base_url="https://provider.invalid/v1",
+    )
+    service, factory, _, completions = _service(config=config, service_type=service_type)
+    request: LlmRequest = LlmRequest(
+        messages=(
+            LlmMessage(role=LlmRole.USER, parts=(TextPart("Describe"), FilePart(media_type=media_type, data=b"file"))),
+        ),
+    )
+
+    with pytest.raises(LlmRequestError, match=f"{engine_id}.*{media_type}"):
+        service.complete(request)
+    assert completions.calls == []
+    assert factory.calls == []
 
 
 def test_openai_compatible_omits_unset_generation_parameters() -> None:

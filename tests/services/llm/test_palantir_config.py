@@ -4,7 +4,6 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
 from typing import Any, cast
 
 import httpx
@@ -45,7 +44,7 @@ from anishift.services.llm.errors import (
     LlmRequestError,
     LlmTimeoutError,
 )
-from anishift.services.llm.types import LlmMessage, LlmRequest, LlmRole, TextPart
+from anishift.services.llm.types import FilePart, LlmMessage, LlmRequest, LlmRole, TextPart
 from anishift.services.llm.wire_protocol import ModelProtocol
 
 _CANARY = "palantir-canary-value-c0ffee"
@@ -83,11 +82,6 @@ def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         if name.startswith("ANISHIFT_"):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("FOUNDRY_API_TOKEN", raising=False)
-
-
-@dataclass(frozen=True, slots=True)
-class _UnsupportedPart:
-    kind: str
 
 
 def _config(
@@ -390,23 +384,15 @@ def test_google_generate_request_encodes_the_model_in_the_route_and_maps_roles()
 
 
 @pytest.mark.parametrize("protocol", list(ModelProtocol))
-def test_every_protocol_rejects_an_unsupported_content_part(protocol: ModelProtocol) -> None:
+def test_every_protocol_rejects_a_file_part(protocol: ModelProtocol) -> None:
     request = LlmRequest(
         messages=(
             LlmMessage(
                 role=LlmRole.USER,
-                parts=(cast("TextPart", _UnsupportedPart(kind="image")),),
+                parts=(TextPart("Describe"), FilePart(media_type="image/png", data=b"file")),
             ),
         ),
     )
-
-    with pytest.raises(LlmRequestError):
-        build_palantir_request(_config(protocol=protocol), request)
-
-
-@pytest.mark.parametrize("protocol", list(ModelProtocol))
-def test_every_protocol_rejects_a_message_without_any_text_part(protocol: ModelProtocol) -> None:
-    request = LlmRequest(messages=(LlmMessage(role=LlmRole.USER, parts=()),))
 
     with pytest.raises(LlmRequestError):
         build_palantir_request(_config(protocol=protocol), request)

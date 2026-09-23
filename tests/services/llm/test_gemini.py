@@ -25,7 +25,7 @@ from anishift.services.llm.errors import (
     LlmRequestError,
     LlmTimeoutError,
 )
-from anishift.services.llm.types import LlmMessage, LlmRequest, LlmRole, TextPart
+from anishift.services.llm.types import FilePart, LlmMessage, LlmRequest, LlmRole, TextPart
 
 
 class FakeModels:
@@ -227,16 +227,34 @@ def test_gemini_empty_text_candidate_is_request_error() -> None:
         service.complete(_conversation_request())
 
 
-def test_gemini_rejects_unsupported_content_part() -> None:
-    unsupported_part = cast("Any", SimpleNamespace(kind="image"))
-    request = LlmRequest(messages=(LlmMessage(role=LlmRole.USER, parts=(unsupported_part,)),))
-    service = GeminiService(
+@pytest.mark.unit
+@pytest.mark.parametrize("media_type", ["image/png", "application/pdf", "audio/mpeg", "video/mp4"])
+def test_gemini_maps_mixed_file_content(media_type: str) -> None:
+    models: FakeModels = FakeModels()
+    request: LlmRequest = LlmRequest(
+        messages=(
+            LlmMessage(
+                role=LlmRole.USER,
+                parts=(TextPart("Before"), FilePart(media_type=media_type, data=b"file"), TextPart("After")),
+            ),
+        ),
+    )
+    service: GeminiService = GeminiService(
         _gemini_config(),
-        _client_factory=FakeGeminiFactory(FakeGeminiClient(FakeModels())),
+        _client_factory=FakeGeminiFactory(FakeGeminiClient(models)),
     )
 
-    with pytest.raises(LlmRequestError):
-        service.complete(request)
+    service.complete(request)
+
+    contents: list[Any] = models.calls[0]["contents"]
+    assert len(contents) == 1
+    assert contents[0].role == "user"
+    parts: list[Any] = contents[0].parts
+    assert len(parts) == 3
+    assert parts[0].text == "Before"
+    assert parts[1].inline_data.mime_type == media_type
+    assert parts[1].inline_data.data == b"file"
+    assert parts[2].text == "After"
 
 
 @pytest.mark.parametrize(
