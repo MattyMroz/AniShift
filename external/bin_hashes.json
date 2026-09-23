@@ -25,18 +25,18 @@
       "kind": "binary",
       "source": {
         "type": "url",
-        "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-15-14-01/ffmpeg-N-125628-ga5e6c0175a-win64-gpl.zip"
+        "url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-full_build.zip"
       },
-      "sha256": "1c7a6a3d7126e85c6148c42e83bdfb6f964c4a04453075323828a52b331ca149",
-      "size_bytes": 168700637,
+      "sha256": "759d0a9831c436a0eb331ad36f236c06cb04aaa0005da46571f0e9d3d9206f6b",
+      "size_bytes": 257736868,
       "archive": "zip",
       "members": [
         {
-          "archive_path": "ffmpeg-N-125628-ga5e6c0175a-win64-gpl/bin/ffmpeg.exe",
+          "archive_path": "ffmpeg-9.0.2-full_build/bin/ffmpeg.exe",
           "dest": "ffmpeg/ffmpeg.exe"
         },
         {
-          "archive_path": "ffmpeg-N-125628-ga5e6c0175a-win64-gpl/bin/ffprobe.exe",
+          "archive_path": "ffmpeg-9.0.2-full_build/bin/ffprobe.exe",
           "dest": "ffmpeg/ffprobe.exe"
         }
       ]
