@@ -173,9 +173,9 @@ files remain available for advanced or initial setup:
 |---|---|
 | `config/presets.json` | Automatic presets and the default preset |
 | `config/settings.json` | Workflow and engine preferences |
-| `config/anishift.models.jsonc` | Local catalogue of selectable models |
 | `.env` | API keys and tokens |
 
+The Palantir model list is built into `anishift/services/llm/engines/palantir/constants.py`.
 The LLM provider is Palantir Foundry. Its token is read from
 `ANISHIFT_PALANTIR_TOKEN`, or from `FOUNDRY_API_TOKEN` when the prefixed value is
 absent. Secrets are never displayed; diagnostics only report whether one is

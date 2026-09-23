@@ -4,12 +4,11 @@ import json
 import os
 import subprocess
 import sys
-from typing import Any, cast
+from typing import cast
 
 import httpx
 import pytest
 
-from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
 from anishift.config.model_catalog import ModelProtocol as CatalogModelProtocol
 from anishift.errors import ErrorCode, FatalError, TransientError
 from anishift.services.llm.engines.palantir import (
@@ -113,16 +112,6 @@ def _request() -> LlmRequest:
             ),
             LlmMessage(role=LlmRole.ASSISTANT, parts=(TextPart(text="Ready."),)),
         ),
-    )
-
-
-def _catalog_source(providers: dict[str, Any], models: dict[str, Any]) -> str:
-    return json.dumps(
-        {
-            "schema_version": 1,
-            "providers": providers,
-            "models": models,
-        },
     )
 
 
@@ -253,25 +242,6 @@ def test_palantir_model_config_keeps_the_token_out_of_its_repr() -> None:
     assert _CANARY not in repr(config)
     assert _CANARY not in str(config)
     assert config.token == _CANARY
-
-
-def test_model_catalog_load_keeps_an_unsupported_protocol_visible_as_a_configuration_issue() -> None:
-    source = _catalog_source(
-        {
-            "foundry-openai": {"protocol": "openai_chat", "path": _ROUTE},
-            "foundry-legacy": {"protocol": "cohere_chat", "path": "/api/v2/llm/proxy/legacy/v1"},
-        },
-        {
-            "foundry/gpt-main": {"provider": "foundry-openai", "model": "gpt-main-5"},
-            "foundry/legacy": {"provider": "foundry-legacy", "model": "legacy-1"},
-        },
-    )
-
-    catalog: ModelCatalog = parse_model_catalog(source)
-
-    assert set(catalog.providers) == {"foundry-openai"}
-    assert set(catalog.models) == {"foundry/gpt-main"}
-    assert {issue.key for issue in catalog.issues} == {"foundry-legacy", "foundry/legacy"}
 
 
 def test_request_builder_covers_every_protocol_the_catalog_can_declare() -> None:
@@ -491,8 +461,12 @@ def test_configuration_and_request_building_create_no_http_client(monkeypatch: p
         assert not hasattr(module, "httpx")
 
 
-def test_importing_the_palantir_package_loads_no_http_client_no_sdk_and_no_other_engine() -> None:
-    added = _modules_added_by_importing("anishift.services.llm.engines.palantir")
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "module", ["anishift.services.llm.engines.palantir", "anishift.services.llm.engines.palantir.constants"]
+)
+def test_importing_the_palantir_package_loads_no_http_client_no_sdk_and_no_other_engine(module: str) -> None:
+    added: list[str] = _modules_added_by_importing(module)
 
     heavy = [name for name in added if name.split(".")[0] in _HEAVY_ROOTS]
     other_engines = [
@@ -503,11 +477,19 @@ def test_importing_the_palantir_package_loads_no_http_client_no_sdk_and_no_other
         and name not in _SHARED_ENGINE_MODULES
     ]
     configuration_layer = [name for name in added if name.startswith("anishift.config")]
+    application_layer: list[str] = [name for name in added if name.startswith("anishift.application")]
+    transport: list[str] = [
+        name
+        for name in added
+        if name in {"anishift.services.llm.engines.palantir.http", "anishift.services.llm.engines.palantir.service"}
+    ]
 
     assert added
     assert heavy == []
     assert other_engines == []
     assert configuration_layer == []
+    assert application_layer == []
+    assert transport == []
 
 
 def test_the_shared_wire_protocol_module_is_a_leaf_the_configuration_layer_can_import() -> None:

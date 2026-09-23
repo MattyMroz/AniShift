@@ -16,7 +16,7 @@ Rozbudować istniejący, samowystarczalny serwis `anishift/services/llm/`:
 1. **Każdy silnik ma własną, aktualną listę modeli** w swoim katalogu. Palantir dostaje ją jako jedyny, który jej dziś nie ma; pozostałe listy są odświeżone według oficjalnych źródeł dostawców.
 2. **Multimodalność w całym serwisie.** Wiadomość użytkownika może zawierać obraz, PDF, audio i wideo. Każdy silnik wysyła je w formie swojego API albo odmawia przed wysłaniem.
 3. **Palantir jak OpenCode:**
-   - 20 modeli z typami plików i poziomami myślenia;
+   - 22 modele z typami plików i poziomami myślenia;
    - OpenAI przez `/responses`;
    - wybór poziomu myślenia;
    - mechanizm drugiego konta przy limicie.
@@ -79,7 +79,7 @@ anishift/services/llm/
     ├── deepseek/service.py       # MODIFY: file_modalities = {} (odmowa)
     ├── openai_compatible/service.py  # MODIFY: file_modalities = {image}
     └── palantir/
-        ├── constants.py          # NEW: providery i 20 modeli
+        ├── constants.py          # NEW: providery i 22 modele
         ├── accounts.py           # NEW: kolejność kont i cooldown
         ├── config.py             # MODIFY: modalności, request_options, konta
         ├── protocols.py          # MODIFY: pliki, opcje, Responses (OpenAI i xAI)
@@ -133,7 +133,7 @@ Reguła ról wynika z API: `system` przyjmuje tylko tekst w Anthropic, Chat Comp
 
 **Palantir — `palantir/constants.py` (nowy):**
 - **providery:** id, protokół, ścieżka proxy (jak w dzisiejszym przykładzie JSONC). `foundry-openai` przechodzi na `openai_responses` w fazie 3, razem z transportem.
-- **20 modeli:** alias (jak dziś, np. `foundry/gpt-5.5`), id modelu, etykieta, limity, typy plików, `reasoning`, opcje domyślne, warianty.
+- **22 modele:** alias (jak dziś, np. `foundry/gpt-5.5`), id modelu, etykieta, limity, typy plików, `reasoning`, opcje domyślne, warianty.
 - **Wartości:** przepisane z `agents/skills/opencode/assets/opencode.jsonc@a2174c1`, w nazwach pól żądania:
 
 | OpenCode | Pole żądania |
@@ -255,7 +255,7 @@ dla próby:
 | Faza | Zakres | Commit |
 | --- | --- | --- |
 | 1 | `FilePart`/`Modality`, reguła ról; pliki w `anthropic`, `gemini`, `_openai_compatible` (+ `file_modalities` providerów); eksport; `tests/application/test_runtime_config.py:139-140` | `feat(llm): accept image, pdf, audio and video parts in every engine` |
-| 2 | `palantir/constants.py` (20 modeli, `foundry-openai` jeszcze `openai_chat`), rejestr, `config/model_catalog.py`, usunięcie plików katalogu, `uv remove json5`, testy poza serwisem, README | `feat(llm): keep the palantir model list inside its engine` |
+| 2 | `palantir/constants.py` (22 modele, `foundry-openai` jeszcze `openai_chat`), rejestr, `config/model_catalog.py`, usunięcie plików katalogu, `uv remove json5`, testy poza serwisem, README | `feat(llm): keep the palantir model list inside its engine` |
 | 3 | Palantir: `openai_responses` (enum, lista, builder, reader, strumień), linia etykiety w `settings.py`, pliki, `reasoning_variant`, temperatura, błędy generowania, filtr `thought`, usunięcie kodu Chat Completions; testy spoza serwisu z `OPENAI_CHAT`/`openai_chat` (`tests/cli/test_interactive_settings_models.py:38`, `tests/config/test_model_settings.py:57-67, 394`) | `feat(llm): send files and reasoning variants through palantir responses` |
 | 4 | Palantir: drugie konto; walidacja pól Palantira w innych silnikach | `feat(llm): fail over between two palantir accounts` |
 | 5 | Listy `openai`, `anthropic`, `gemini`; `services/llm/AGENTS.md`, `config/AGENTS.md` | `feat(llm): refresh model suggestions from provider documentation` |
@@ -271,7 +271,7 @@ dla próby:
   - odmowa niewspieranego typu przed wywołaniem SDK/HTTP.
 - **Palantir, tekst:** treść, kolejność i separatory części tekstu jak dziś (przy nowej obudowie `/responses` i opcjach).
 - **Palantir, lista:**
-  - 20 modeli, rejestr, `suggested_model_ids("palantir")`;
+  - 22 modele, rejestr, `suggested_model_ids("palantir")`;
   - `load_model_catalog()` daje dzisiejsze aliasy + `foundry/gpt-6-astra`;
   - wszystkie opcje i warianty mają znane pola.
 - **Palantir, żądania:**
@@ -299,7 +299,7 @@ dla próby:
 
 ## Warunki końcowe
 
-- [ ] Każdy silnik ma listę modeli w swoim katalogu; Palantir ma 20 modeli, w Ustawieniach widać GPT-6 Astra; listy `openai`, `anthropic` i `gemini` odpowiadają dokumentacji dostawców.
+- [ ] Każdy silnik ma listę modeli w swoim katalogu; Palantir ma 22 modele, w Ustawieniach widać GPT-6 Astra; listy `openai`, `anthropic` i `gemini` odpowiadają dokumentacji dostawców.
 - [ ] Obraz i PDF przechodzą przez każdy silnik, który je przyjmuje; pozostałe odmawiają przed wysłaniem.
 - [ ] Palantir: `reasoning_variant`, `/responses` dla OpenAI i mechanizm drugiego konta działają w serwisie.
 - [ ] Tłumaczenie działa (checkpoint właściciela).

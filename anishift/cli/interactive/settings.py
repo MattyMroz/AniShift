@@ -1174,8 +1174,6 @@ class SettingsController:
         entry: ModelEntry | None = catalog.models.get(alias)
         if entry is None:
             return f"Palantir · {alias}"
-        if entry.model_id.casefold().startswith("replace-with-"):
-            return "Palantir · model nieustawiony"
         return f"Palantir · {entry.label}"
 
     def _open_setting_editor(self, setting_id: str) -> None:

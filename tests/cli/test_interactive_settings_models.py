@@ -11,7 +11,6 @@ from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.service import AppService
 from anishift.cli.interactive.settings import SettingsController
 from anishift.config.model_catalog import (
-    CatalogDefaults,
     ModelCatalog,
     ModelEntry,
     ModelProtocol,
@@ -34,11 +33,8 @@ def _unused_handler(
 
 def _catalog() -> ModelCatalog:
     return ModelCatalog(
-        1,
         {"proxy": ProviderEntry("proxy", ModelProtocol.OPENAI_CHAT, "/proxy")},
         {"valid": ModelEntry("valid", "proxy", "model-1", "Valid model")},
-        CatalogDefaults(),
-        (),
     )
 
 

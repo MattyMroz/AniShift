@@ -131,7 +131,7 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 ### Model tłumaczenia (`llm_provider` + `llm_provider_model_id`)
 
 - Co robi: dostawca i identyfikator modelu używane przez silnik `llm`. Lista
-  pokazuje modele z `config/anishift.models.jsonc` (aliasy Palantira) i dostawców
+  pokazuje modele Palantira z listy wbudowanej w serwis LLM i dostawców
   z ustawionym kluczem; `Własny model…` pozwala wpisać identyfikator modelu dostawcy,
   pod warunkiem przejścia walidacji formatu.
   Obie wartości zapisują się razem.
