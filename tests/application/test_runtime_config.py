@@ -32,6 +32,7 @@ from anishift.services.llm import (
     LlmService,
     LlmTimeoutError,
     LlmUsage,
+    TextPart,
 )
 from anishift.services.translation.errors import (
     TranslationAuthError,
@@ -119,6 +120,7 @@ def test_the_run_snapshot_becomes_the_speech_configuration() -> None:
     assert config.metadata_cache_root.name == "config"
 
 
+@pytest.mark.unit
 def test_llm_completer_preserves_system_and_separate_user_parts() -> None:
     service = _RecordingLlmService()
     completer = _LlmCompleter(cast("LlmService", service), threading.Event())
@@ -136,12 +138,14 @@ def test_llm_completer_preserves_system_and_separate_user_parts() -> None:
         LlmRole.SYSTEM,
         LlmRole.USER,
     )
-    assert tuple(part.text for part in service.request.messages[0].parts) == ("system",)
-    assert tuple(part.text for part in service.request.messages[1].parts) == (
-        "translation",
-        "style",
-        '{"subtitles":[]}',
-    )
+    contents: list[tuple[str, ...]] = []
+    for message in service.request.messages:
+        texts: list[str] = []
+        for part in message.parts:
+            assert isinstance(part, TextPart)
+            texts.append(part.text)
+        contents.append(tuple(texts))
+    assert contents == [("system",), ("translation", "style", '{"subtitles":[]}')]
 
 
 def test_the_elevenbytes_profile_keeps_its_own_deadline_and_retry_delays() -> None:

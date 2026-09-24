@@ -24,7 +24,7 @@ from anishift.services.llm.errors import (
     LlmRequestError,
     LlmTimeoutError,
 )
-from anishift.services.llm.types import LlmMessage, LlmRequest, LlmRole, TextPart
+from anishift.services.llm.types import FilePart, LlmMessage, LlmRequest, LlmRole, TextPart
 
 
 class FakeMessages:
@@ -71,6 +71,7 @@ class FakeAnthropicFactory:
         return self.client
 
 
+@pytest.mark.integration
 def test_anthropic_registry_and_suggestions_are_lazy() -> None:
     sys.modules.pop("anthropic", None)
 
@@ -78,9 +79,10 @@ def test_anthropic_registry_and_suggestions_are_lazy() -> None:
 
     assert isinstance(engine, AnthropicService)
     assert suggested_model_ids("anthropic") == (
-        "claude-sonnet-5",
         "claude-haiku-4-5",
-        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-5-5",
+        "claude-fable-5-1",
     )
     assert "anthropic" not in sys.modules
 
@@ -210,16 +212,56 @@ def test_anthropic_empty_text_response_is_request_error() -> None:
         service.complete(_conversation_request())
 
 
-def test_anthropic_rejects_unsupported_content_part() -> None:
-    unsupported_part = cast("Any", SimpleNamespace(kind="image"))
-    request = LlmRequest(messages=(LlmMessage(role=LlmRole.USER, parts=(unsupported_part,)),))
-    service = AnthropicService(
+@pytest.mark.unit
+@pytest.mark.parametrize(("media_type", "block_type"), [("image/png", "image"), ("application/pdf", "document")])
+def test_anthropic_maps_mixed_file_content(media_type: str, block_type: str) -> None:
+    messages: FakeMessages = FakeMessages()
+    service: AnthropicService = AnthropicService(
         _anthropic_config(),
-        _client_factory=FakeAnthropicFactory(FakeAnthropicClient(FakeMessages())),
+        _client_factory=FakeAnthropicFactory(FakeAnthropicClient(messages)),
+    )
+    request: LlmRequest = LlmRequest(
+        messages=(
+            LlmMessage(
+                role=LlmRole.USER,
+                parts=(TextPart("Before"), FilePart(media_type=media_type, data=b"file"), TextPart("After")),
+            ),
+        ),
     )
 
-    with pytest.raises(LlmRequestError):
+    service.complete(request)
+
+    assert messages.calls[0]["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Before"},
+                {"type": block_type, "source": {"type": "base64", "media_type": media_type, "data": "ZmlsZQ=="}},
+                {"type": "text", "text": "After"},
+            ],
+        },
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("media_type", ["audio/mpeg", "video/mp4"])
+def test_anthropic_rejects_unsupported_file_before_sdk_call(media_type: str) -> None:
+    messages: FakeMessages = FakeMessages()
+    factory: FakeAnthropicFactory = FakeAnthropicFactory(FakeAnthropicClient(messages))
+    request: LlmRequest = LlmRequest(
+        messages=(
+            LlmMessage(role=LlmRole.USER, parts=(TextPart("Describe"), FilePart(media_type=media_type, data=b"file"))),
+        ),
+    )
+    service: AnthropicService = AnthropicService(
+        _anthropic_config(),
+        _client_factory=factory,
+    )
+
+    with pytest.raises(LlmRequestError, match=f"anthropic.*{media_type}"):
         service.complete(request)
+    assert messages.calls == []
+    assert factory.calls == []
 
 
 @pytest.mark.parametrize(

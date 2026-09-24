@@ -10,9 +10,9 @@ from anishift.application import runtime
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
 from anishift.application.scheduler_contracts import TaskHandler
-from anishift.application.service import AppService, ModelAvailability, ModelProbeResult
+from anishift.application.service import AppService, EngineAvailability, ModelAvailability, ModelProbeResult
 from anishift.config import user_settings as user_settings_module
-from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
+from anishift.config.model_catalog import ModelCatalog, ModelEntry, ProviderEntry
 from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings, load_user_settings, save_user_settings
@@ -54,26 +54,22 @@ def _unused_handlers(
     raise AssertionError("Editing model settings must not execute a plan")
 
 
-def _catalog(source: str | None = None) -> ModelCatalog:
-    default = """
-    {
-      "schema_version": 1,
-      "providers": {
-        "foundry-openai": { "protocol": "openai_chat", "path": "/api/v2/llm/proxy/openai/v1" }
-      },
-      "models": { "foundry/gpt-main": { "provider": "foundry-openai", "model": "gpt-provider-id" } },
-      "defaults": { "primary": "foundry/gpt-main", "translation": "foundry/gpt-main" }
-    }
-    """
-    return parse_model_catalog(source if source is not None else default)
+def _catalog() -> ModelCatalog:
+    return ModelCatalog(
+        providers={
+            "foundry-openai": ProviderEntry(
+                "foundry-openai", ModelProtocol.OPENAI_RESPONSES, "/api/v2/llm/proxy/openai/v1"
+            ),
+        },
+        models={_ALIAS: ModelEntry(_ALIAS, "foundry-openai", "gpt-provider-id", _ALIAS)},
+    )
 
 
-def _service(  # noqa: PLR0913 - one builder for every service variant these tests need
+def _service(
     tmp_path: Path,
     *,
     user_settings: UserSettings | None = None,
     settings: Settings | None = None,
-    catalog: ModelCatalog | None = None,
     prober: _RecordingProber | None = None,
     saved: list[UserSettings] | None = None,
 ) -> AppService:
@@ -87,7 +83,7 @@ def _service(  # noqa: PLR0913 - one builder for every service variant these tes
         preset_loader=default_preset_file,
         preset_saver=lambda value: None,
         settings_saver=store.append,
-        catalog_loader=lambda: catalog if catalog is not None else _catalog(),
+        catalog_loader=_catalog,
         model_prober=prober,
         env_file=tmp_path / ".env",
     )
@@ -352,14 +348,8 @@ def test_a_configured_token_alone_is_not_reported_as_a_ready_palantir_engine(tmp
     assert "palantir_enrollment_base_url" in statuses["llm", "palantir"].reason
 
 
-def test_an_empty_catalog_or_an_absent_translation_alias_is_not_reported_as_ready(tmp_path: Path) -> None:
-    empty: ModelCatalog = _catalog('{"schema_version": 1, "providers": {}, "models": {}}')
-    without_models: AppService = _service(
-        tmp_path,
-        user_settings=UserSettings(palantir_enrollment_base_url=_ENROLLMENT),
-        settings=Settings(_env_file=None, palantir_token=_TOKEN),
-        catalog=empty,
-    )
+@pytest.mark.unit
+def test_an_absent_translation_alias_is_not_reported_as_ready(tmp_path: Path) -> None:
     stale: AppService = _service(
         tmp_path,
         user_settings=UserSettings(
@@ -370,15 +360,15 @@ def test_an_empty_catalog_or_an_absent_translation_alias_is_not_reported_as_read
         settings=Settings(_env_file=None, palantir_token=_TOKEN),
     )
 
-    first = {(item.domain, item.engine_id): item for item in without_models.engine_availability()}
-    second = {(item.domain, item.engine_id): item for item in stale.engine_availability()}
+    statuses: dict[tuple[str, str], EngineAvailability] = {
+        (item.domain, item.engine_id): item for item in stale.engine_availability()
+    }
 
-    assert not first["llm", "palantir"].is_available
-    assert "empty model catalog" in first["llm", "palantir"].reason
-    assert not second["llm", "palantir"].is_available
-    assert "absent from the catalog" in second["llm", "palantir"].reason
+    assert not statuses["llm", "palantir"].is_available
+    assert "absent from the catalog" in statuses["llm", "palantir"].reason
 
 
+@pytest.mark.integration
 def test_resolving_an_alias_builds_the_complete_palantir_configuration() -> None:
     config: LlmConfig = runtime.palantir_llm_config(
         _catalog(),
@@ -391,7 +381,7 @@ def test_resolving_an_alias_builds_the_complete_palantir_configuration() -> None
     assert config.engine_id == "palantir"
     assert config.alias == _ALIAS
     assert config.provider_id == "foundry-openai"
-    assert config.protocol is ModelProtocol.OPENAI_CHAT
+    assert config.protocol is ModelProtocol.OPENAI_RESPONSES
     assert config.base_url == f"{_ENROLLMENT}/api/v2/llm/proxy/openai/v1"
     assert config.provider_model_id == "gpt-provider-id"
     assert config.api_key == _TOKEN

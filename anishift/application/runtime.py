@@ -491,9 +491,7 @@ def palantir_llm_config(
     entry: ModelEntry | None = catalog.models.get(alias.strip())
     if entry is None:
         raise _alias_error(alias)
-    provider: ProviderEntry | None = catalog.providers.get(entry.provider_id)
-    if provider is None:
-        raise _alias_error(alias)
+    provider: ProviderEntry = catalog.providers[entry.provider_id]
     model: PalantirModelConfig = palantir_model_config(
         alias=entry.alias,
         provider_id=provider.provider_id,
@@ -527,12 +525,12 @@ def probe_palantir_model(config: LlmConfig) -> None:
 
 
 def _alias_error(alias: str) -> ConfigError:
-    """Build the failure of an alias no usable catalog entry serves."""
+    """Build the failure for an alias outside the built-in Palantir model list."""
     return ConfigError(
         context=ErrorContext(
             code=ErrorCode.CONFIG_INVALID,
-            message=f"Model alias is not served by the local catalog: {alias}",
-            suggestion="Select one of the aliases the model catalog defines with a usable provider",
+            message=f"Model alias is not in the built-in Palantir model list: {alias}",
+            suggestion="Select one of the aliases from the built-in Palantir model list",
         ),
     )
 

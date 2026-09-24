@@ -11,8 +11,10 @@ from typing import Any, Final, Never, Protocol, cast
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.llm.config import LlmConfig
 from anishift.services.llm.engines._sdk_helpers import (
+    anthropic_content_block,
     error_with_context,
     raise_request_error,
+    require_file_modalities,
     transient_error_with_context,
 )
 from anishift.services.llm.engines._sdk_helpers import (
@@ -44,9 +46,14 @@ from anishift.services.llm.errors import (
     LlmRequestError,
     LlmTimeoutError,
 )
-from anishift.services.llm.types import LlmRequest, LlmResponse, LlmUsage, TextPart
+from anishift.services.llm.types import LlmRequest, LlmResponse, LlmUsage, Modality
 
 __all__ = ["AnthropicService", "ClientFactory"]
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_FILE_MODALITIES: Final[frozenset[Modality]] = frozenset({"image", "pdf"})
+"""File modalities supported by Anthropic Messages."""
 
 _PAYMENT_MARKERS: Final[frozenset[str]] = frozenset(
     {
@@ -132,8 +139,8 @@ class AnthropicService:
                 "Anthropic provider is already closed",
                 suggestion="Create a new provider instance before sending another request.",
             )
-        client: _AnthropicClient = self._ensure_client()
         kwargs: dict[str, object] = self._build_completion_kwargs(request)
+        client: _AnthropicClient = self._ensure_client()
         started_at: float = time.perf_counter()
         try:
             response: Any = client.messages.create(**kwargs)
@@ -173,10 +180,11 @@ class AnthropicService:
         return self._client
 
     def _build_completion_kwargs(self, request: LlmRequest) -> dict[str, object]:
-        system_parts: list[dict[str, str]] = []
+        require_file_modalities(request, accepted=_FILE_MODALITIES, engine_id=self.engine_id)
+        system_parts: list[dict[str, object]] = []
         messages: list[dict[str, object]] = []
         for message in request.messages:
-            content: list[dict[str, str]] = _text_blocks(message.parts)
+            content: list[dict[str, object]] = [anthropic_content_block(part) for part in message.parts]
             if message.role.value == "system":
                 system_parts.extend(content)
                 continue
@@ -236,23 +244,6 @@ class AnthropicService:
     def _sdk_api_error_type() -> type[BaseException]:
         sdk: ModuleType = _load_anthropic_sdk()
         return cast("type[BaseException]", sdk.APIError)
-
-
-def _text_blocks(parts: tuple[TextPart, ...]) -> list[dict[str, str]]:
-    if not parts:
-        _raise_request_error(
-            "Anthropic messages must contain at least one text part",
-            suggestion="Add text content to every LLM message.",
-        )
-    blocks: list[dict[str, str]] = []
-    for part in parts:
-        if not isinstance(part, TextPart):
-            _raise_request_error(
-                "Anthropic received an unsupported content part",
-                suggestion="Use text content parts for this provider.",
-            )
-        blocks.append({"type": "text", "text": part.text})
-    return blocks
 
 
 def _default_client_factory(

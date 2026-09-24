@@ -11,7 +11,6 @@ from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.service import AppService
 from anishift.cli.interactive.settings import SettingsController
 from anishift.config.model_catalog import (
-    CatalogDefaults,
     ModelCatalog,
     ModelEntry,
     ModelProtocol,
@@ -34,11 +33,8 @@ def _unused_handler(
 
 def _catalog() -> ModelCatalog:
     return ModelCatalog(
-        1,
-        {"proxy": ProviderEntry("proxy", ModelProtocol.OPENAI_CHAT, "/proxy")},
+        {"proxy": ProviderEntry("proxy", ModelProtocol.OPENAI_RESPONSES, "/proxy")},
         {"valid": ModelEntry("valid", "proxy", "model-1", "Valid model")},
-        CatalogDefaults(),
-        (),
     )
 
 
@@ -59,6 +55,20 @@ def _service(
         catalog_loader=_catalog,
         env_file=tmp_path / "unused.env",
     )
+
+
+@pytest.mark.integration
+def test_palantir_responses_group_keeps_openai_label(tmp_path: Path) -> None:
+    service: AppService = _service(
+        tmp_path,
+        [],
+        settings=Settings.model_construct(palantir_token="synthetic-token-sentinel"),  # noqa: S106
+        preferences=UserSettings(palantir_enrollment_base_url="https://enrollment.example.invalid"),
+    )
+    panel: SettingsController = SettingsController(service, lambda: None)
+    panel._open_model_editor()
+
+    assert "PALANTIR FOUNDRY · OPENAI" in panel.render(100, 30).plain
 
 
 def test_first_custom_model_is_selectable_without_editing_configuration_files(tmp_path: Path) -> None:

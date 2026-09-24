@@ -71,7 +71,7 @@ _REGISTRY: Final[dict[LlmEngineId, _RegistryEntry]] = {
     "palantir": (
         "anishift.services.llm.engines.palantir.service",
         "PalantirService",
-        None,
+        "anishift.services.llm.engines.palantir.constants",
     ),
 }
 """Provider module, service class, and optional suggestions module by engine id."""

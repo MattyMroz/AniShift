@@ -42,7 +42,7 @@ from anishift.application.workflows import WorkflowTarget
 from anishift.config.env_file import env_path, update_env_value
 from anishift.config.field_access import assign_setting_value, setting_is_active, setting_is_persisted
 from anishift.config.field_catalog import SettingCatalogContext, SettingSpec, SettingValue, setting_catalog
-from anishift.config.model_catalog import ModelCatalog, ModelCatalogError, load_model_catalog
+from anishift.config.model_catalog import ModelCatalog, ProviderEntry, load_model_catalog
 from anishift.config.presets import AutoPresetFile, load_presets, save_presets
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings, load_user_settings, save_user_settings
@@ -687,7 +687,7 @@ class AppService:
         return tuple(options)
 
     def model_catalog(self) -> ModelCatalog:
-        """Return the validated local catalog of Palantir providers and models."""
+        """Return the built-in list of Palantir providers and models."""
         return self._catalog_loader()
 
     def probe_model(self, alias: str) -> ModelProbeResult:
@@ -944,12 +944,7 @@ class AppService:
         preferences: UserSettings = self.settings_snapshot()
         if not preferences.palantir_enrollment_base_url.strip():
             return False, "missing palantir_enrollment_base_url; set the enrollment address in Tools"
-        try:
-            catalog: ModelCatalog = self.model_catalog()
-        except ModelCatalogError:
-            return False, "unusable model catalog; fix the catalog file the setup describes"
-        if not catalog.models:
-            return False, "empty model catalog; add one model entry with a usable provider"
+        catalog: ModelCatalog = self.model_catalog()
         alias: str = preferences.llm_provider_model_id.strip()
         if require_selected_model and preferences.llm_provider == _PALANTIR_ENGINE_ID and alias not in catalog.models:
             return False, "translation model alias is absent from the catalog; select one again"
@@ -959,11 +954,7 @@ class AppService:
         catalog: ModelCatalog = self.model_catalog()
         options: list[TranslationModelOption] = []
         for entry in catalog.models.values():
-            if _is_placeholder_model_id(entry.model_id):
-                continue
-            provider = catalog.providers.get(entry.provider_id)
-            if provider is None:
-                continue
+            provider: ProviderEntry = catalog.providers[entry.provider_id]
             options.append(
                 TranslationModelOption(
                     provider_id=_PALANTIR_ENGINE_ID,
@@ -1021,11 +1012,6 @@ def _has_system_override(setting_id: str) -> bool:
     if _env_variable(setting_id) in os.environ:
         return True
     return setting_id == "palantir_token" and PALANTIR_TOKEN_COMPAT_ENV_VAR in os.environ
-
-
-def _is_placeholder_model_id(model_id: str) -> bool:
-    normalized: str = model_id.strip().casefold()
-    return normalized.startswith("replace-with-") or normalized.startswith("<select-")
 
 
 def _tts_allowed_voice_ids(preferences: UserSettings) -> tuple[str, ...]:

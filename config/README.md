@@ -7,8 +7,6 @@ the code:
 
 - `settings.json` stores workflow and engine preferences;
 - `presets.json` stores reusable run presets and the default preset;
-- `anishift.models.jsonc` is the local model catalog copied from
-  `anishift.models.example.jsonc`;
 - `subscriptions.json` stores followed series and episode scheduling;
 - `watch/` stores resident control state and its local endpoint credentials;
 - `qbittorrent/` stores the resident's private client profile, process
@@ -21,8 +19,9 @@ account can keep its own preferences, watch state and subscriptions elsewhere.
 moves into `workspace/ready/`. These contain state, never media.
 Shared locations are defined in `anishift/paths.py`; resolving a path does not create it.
 Durable products are published beside their source and collect in `workspace/ready/`, never here.
-Per-machine files are gitignored; only this README and the model-catalog
-example are tracked.
+Per-machine files are gitignored; only this README is tracked.
+The Palantir model catalog comes from the built-in list in
+`anishift/services/llm/engines/palantir/constants.py`.
 
 The private torrent profile is restricted to the current account. Its first
 creation imports only speed and connection-count preferences from an existing

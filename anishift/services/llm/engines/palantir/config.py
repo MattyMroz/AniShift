@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Final
 from urllib.parse import SplitResult, urlsplit
 
 from anishift.services.llm.engines.palantir.auth import validated_palantir_token
+from anishift.services.llm.engines.palantir.constants import PALANTIR_MODELS, PalantirModel
 from anishift.services.llm.engines.palantir.errors import raise_palantir_config_error
+from anishift.services.llm.types import Modality
 from anishift.services.llm.wire_protocol import ModelProtocol
 from anishift.utils.logger import get_logger
 
 __all__ = [
     "PalantirGenerationOptions",
     "PalantirModelConfig",
+    "palantir_model",
     "palantir_model_config",
+    "request_options",
+    "require_palantir_origin",
 ]
 
 logger = get_logger(__name__)
@@ -27,11 +33,12 @@ _REQUIRED_SCHEME: Final[str] = "https"
 
 @dataclass(frozen=True, slots=True)
 class PalantirGenerationOptions:
-    """Generation limits a protocol builder may put into a request body."""
+    """Generation limits and request options passed to a protocol builder."""
 
     temperature: float | None = None
     top_p: float | None = None
     max_output_tokens: int | None = None
+    request_options: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +51,7 @@ class PalantirModelConfig:
     base_url: str
     provider_model_id: str
     token: str = field(repr=False)
+    file_modalities: frozenset[Modality] = frozenset()
 
     def __post_init__(self) -> None:
         """Validate every field before any client or request can be built."""
@@ -57,6 +65,33 @@ class PalantirModelConfig:
         _require_protocol(self.protocol)
         _require_base_url(self.base_url)
         validated_palantir_token(self.token)
+
+
+def palantir_model(alias: str) -> PalantirModel:
+    """Resolve a supported model alias to its capabilities and options."""
+    for model in PALANTIR_MODELS:
+        if model.alias == alias:
+            return model
+    return raise_palantir_config_error(
+        "Palantir model alias is not in the built-in list",
+        field_name="alias",
+        suggestion="Select a supported Palantir model alias.",
+    )
+
+
+def request_options(model: PalantirModel, variant: str | None) -> dict[str, object]:
+    """Combine model defaults with the selected reasoning variant."""
+    options: dict[str, object] = dict(model.options)
+    if variant is None:
+        return options
+    if variant not in model.variants:
+        raise_palantir_config_error(
+            "Palantir reasoning variant is not supported by the selected model",
+            field_name="reasoning_variant",
+            suggestion="Select a reasoning variant from the model's built-in list.",
+        )
+    options.update(model.variants[variant])
+    return options
 
 
 def palantir_model_config(  # noqa: PLR0913 - one explicit argument per resolved catalog value
@@ -113,12 +148,27 @@ def _relative_route(provider_path: str) -> str:
 def _require_base_url(base_url: str) -> None:
     """Reject anything that is not a plain https enrollment address."""
     parts: SplitResult = urlsplit(base_url.strip())
-    if parts.scheme != _REQUIRED_SCHEME or not parts.netloc or parts.query or parts.fragment:
+    if not _is_plain_https(parts):
         raise_palantir_config_error(
             "Palantir enrollment address must be an https URL without a query or a fragment",
             field_name="base_url",
             suggestion="Set the enrollment address to the https origin of your enrollment in /connect.",
         )
+
+
+def require_palantir_origin(origin: str) -> None:
+    """Require an https fallback origin without a path, query or fragment."""
+    parts: SplitResult = urlsplit(origin.strip())
+    if not _is_plain_https(parts) or parts.path not in {"", "/"}:
+        raise_palantir_config_error(
+            "Palantir fallback_origin must be an https origin without a path, query or fragment",
+            field_name="fallback_origin",
+            suggestion="Set fallback_origin to the https origin of the second enrollment.",
+        )
+
+
+def _is_plain_https(parts: SplitResult) -> bool:
+    return parts.scheme == _REQUIRED_SCHEME and bool(parts.netloc) and not parts.query and not parts.fragment
 
 
 def _require_protocol(protocol: ModelProtocol) -> None:

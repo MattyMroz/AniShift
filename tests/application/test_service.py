@@ -75,7 +75,7 @@ from anishift.cli.interactive.manual import ManualController, ManualResult, Manu
 from anishift.cli.interactive.state import StateController, StateResult
 from anishift.cli.resident import ResidentSession
 from anishift.cli.watch import run_resident
-from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
+from anishift.config.model_catalog import ModelCatalog, ModelEntry, ModelProtocol, ProviderEntry
 from anishift.config.presets import AutoPresetFile, default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
@@ -166,14 +166,14 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
 
 
 def _catalog() -> ModelCatalog:
-    source = """
-    {
-      "schema_version": 1,
-      "providers": { "foundry-openai": { "protocol": "openai_chat", "path": "/api/v2/llm/proxy/openai/v1" } },
-      "models": { "foundry/gpt-main": { "provider": "foundry-openai", "model": "id-1" } }
-    }
-    """
-    return parse_model_catalog(source)
+    return ModelCatalog(
+        providers={
+            "foundry-openai": ProviderEntry(
+                "foundry-openai", ModelProtocol.OPENAI_RESPONSES, "/api/v2/llm/proxy/openai/v1"
+            ),
+        },
+        models={"foundry/gpt-main": ModelEntry("foundry/gpt-main", "foundry-openai", "id-1", "foundry/gpt-main")},
+    )
 
 
 @contextmanager

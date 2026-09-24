@@ -19,6 +19,7 @@ _PROVIDER: Final[OpenAiCompatibleProvider] = OpenAiCompatibleProvider(
     requires_api_key=True,
     api_key_env_var="ANISHIFT_OPENAI_API_KEY",
     max_tokens_parameter="max_completion_tokens",
+    file_modalities=frozenset({"image", "pdf"}),
 )
 """OpenAI-specific settings for the shared transport."""
 

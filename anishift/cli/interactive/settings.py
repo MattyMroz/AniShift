@@ -1174,8 +1174,6 @@ class SettingsController:
         entry: ModelEntry | None = catalog.models.get(alias)
         if entry is None:
             return f"Palantir · {alias}"
-        if entry.model_id.casefold().startswith("replace-with-"):
-            return "Palantir · model nieustawiony"
         return f"Palantir · {entry.label}"
 
     def _open_setting_editor(self, setting_id: str) -> None:
@@ -1940,7 +1938,7 @@ def _model_group_label(group_id: str) -> str:
         "openai": "OPENAI",
         "openai_compatible": "OPENAI-COMPATIBLE",
         "openrouter": "OPENROUTER",
-        "palantir:openai_chat": "PALANTIR FOUNDRY · OPENAI",
+        "palantir:openai_responses": "PALANTIR FOUNDRY · OPENAI",
         "palantir:anthropic_messages": "PALANTIR FOUNDRY · ANTHROPIC",
         "palantir:google_generate": "PALANTIR FOUNDRY · GOOGLE",
         "palantir:xai_responses": "PALANTIR FOUNDRY · XAI",
