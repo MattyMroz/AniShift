@@ -12,15 +12,12 @@ from anishift.services.llm.engines.palantir import (
     PALANTIR_TOKEN_COMPAT_ENV_VAR,
     PALANTIR_TOKEN_ENV_VAR,
     PALANTIR_TOKEN_ENV_VARS,
-    REDACTED_HEADER_VALUE,
     PalantirHttpRequest,
     PalantirModelConfig,
     authorization_headers,
     build_palantir_request,
     palantir_model_config,
     palantir_status_error,
-    redacted_headers,
-    require_palantir_token,
     resolve_palantir_token,
 )
 from anishift.services.llm.errors import LlmAuthError, LlmError
@@ -99,16 +96,6 @@ def test_resolve_palantir_token_reads_the_process_environment_by_default(
     monkeypatch.setenv(PALANTIR_TOKEN_ENV_VAR, "from-process-canonical")
 
     assert resolve_palantir_token() == "from-process-canonical"
-
-
-def test_require_palantir_token_raises_a_typed_auth_error_naming_the_canonical_variable() -> None:
-    with pytest.raises(LlmAuthError) as rejected:
-        require_palantir_token({})
-
-    assert rejected.value.context.code is ErrorCode.LLM_AUTH_FAILED
-    assert rejected.value.context.details["field"] == PALANTIR_TOKEN_ENV_VAR
-    assert PALANTIR_TOKEN_ENV_VAR in rejected.value.context.suggestion
-    assert PALANTIR_TOKEN_COMPAT_ENV_VAR not in rejected.value.context.suggestion
 
 
 @pytest.mark.parametrize(
@@ -256,24 +243,13 @@ def test_authorization_headers_reject_a_token_that_cannot_be_sent(token: str) ->
     assert rejected.value.context.details["field"] == PALANTIR_TOKEN_ENV_VAR
 
 
-def test_redacted_headers_replace_the_whole_authorization_value() -> None:
-    masked = redacted_headers(authorization_headers(_CANARY))
-
-    assert masked["Authorization"] == REDACTED_HEADER_VALUE
-    assert masked["Content-Type"] == "application/json"
-    assert _CANARY not in repr(masked)
-    assert _CANARY[:8] not in repr(masked)
-
-
 def test_the_token_never_reaches_reprs_errors_or_debug_logs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(PALANTIR_TOKEN_ENV_VAR, _CANARY)
     captured: list[str] = []
     handler_id = loguru_logger.add(captured.append, format="{message} {extra}", level="DEBUG")
     try:
-        token = require_palantir_token()
-        config = _config(token)
+        config = _config()
         built: PalantirHttpRequest = build_palantir_request(config, _request())
-        masked = redacted_headers(built.headers)
         settings = Settings(_env_file=None)
         failure: LlmError = palantir_status_error(
             401,
@@ -290,7 +266,6 @@ def test_the_token_never_reaches_reprs_errors_or_debug_logs(monkeypatch: pytest.
         str(config),
         repr(built),
         str(built),
-        repr(masked),
         repr(settings),
         str(failure),
         repr(failure),
@@ -302,7 +277,6 @@ def test_the_token_never_reaches_reprs_errors_or_debug_logs(monkeypatch: pytest.
     ]
 
     assert captured
-    assert token == _CANARY
     assert built.headers["Authorization"] == f"Bearer {_CANARY}"
     assert all(_CANARY not in surface for surface in surfaces)
     assert all("Bearer" not in surface for surface in captured)

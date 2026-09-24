@@ -20,6 +20,7 @@ __all__ = [
     "palantir_model",
     "palantir_model_config",
     "request_options",
+    "require_palantir_origin",
 ]
 
 logger = get_logger(__name__)
@@ -147,12 +148,27 @@ def _relative_route(provider_path: str) -> str:
 def _require_base_url(base_url: str) -> None:
     """Reject anything that is not a plain https enrollment address."""
     parts: SplitResult = urlsplit(base_url.strip())
-    if parts.scheme != _REQUIRED_SCHEME or not parts.netloc or parts.query or parts.fragment:
+    if not _is_plain_https(parts):
         raise_palantir_config_error(
             "Palantir enrollment address must be an https URL without a query or a fragment",
             field_name="base_url",
             suggestion="Set the enrollment address to the https origin of your enrollment in /connect.",
         )
+
+
+def require_palantir_origin(origin: str) -> None:
+    """Require an https fallback origin without a path, query or fragment."""
+    parts: SplitResult = urlsplit(origin.strip())
+    if not _is_plain_https(parts) or parts.path not in {"", "/"}:
+        raise_palantir_config_error(
+            "Palantir fallback_origin must be an https origin without a path, query or fragment",
+            field_name="fallback_origin",
+            suggestion="Set fallback_origin to the https origin of the second enrollment.",
+        )
+
+
+def _is_plain_https(parts: SplitResult) -> bool:
+    return parts.scheme == _REQUIRED_SCHEME and bool(parts.netloc) and not parts.query and not parts.fragment
 
 
 def _require_protocol(protocol: ModelProtocol) -> None:

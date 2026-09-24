@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Final, Self, cast
 
 from anishift.services.llm.config import LlmConfig
 from anishift.services.llm.engines._sdk_helpers import raise_request_error
+from anishift.services.llm.engines.palantir.accounts import PalantirAccount, palantir_accounts
 from anishift.services.llm.engines.palantir.config import (
     PalantirGenerationOptions,
     PalantirModelConfig,
@@ -59,7 +60,7 @@ _STREAM_TEXTS: Final[dict[ModelProtocol, Callable[[Mapping[str, Any]], str]]] = 
 class PalantirService:
     """Synchronous engine for one catalog alias served by a Foundry proxy."""
 
-    __slots__ = ("_client", "_closed", "_config", "_generation", "_model_config")
+    __slots__ = ("_accounts", "_client", "_closed", "_config", "_generation", "_model_config")
 
     def __init__(self, config: LlmConfig, *, client: httpx.Client | None = None) -> None:
         """Resolve the immutable model configuration without opening a socket."""
@@ -67,6 +68,7 @@ class PalantirService:
         model: PalantirModel = palantir_model(config.alias)
         self._model_config: PalantirModelConfig = _resolve_model_config(config, model)
         self._generation: PalantirGenerationOptions = self._generation_options(model)
+        self._accounts: tuple[PalantirAccount, ...] = palantir_accounts(config)
         self._client: httpx.Client | None = client
         self._closed: bool = False
 
@@ -100,6 +102,7 @@ class PalantirService:
             self._ensure_client(),
             built,
             alias=self._model_config.alias,
+            accounts=self._accounts,
         )
         latency_ms: float = (time.perf_counter() - started_at) * 1000
         return normalize_palantir_response(
@@ -138,6 +141,7 @@ class PalantirService:
             self._ensure_client(),
             built,
             alias=self._model_config.alias,
+            accounts=self._accounts,
             on_event=self._text_reporter(on_text),
         )
         latency_ms: float = (time.perf_counter() - started_at) * 1000

@@ -229,16 +229,35 @@ def test_config_accepts_custom_model_empty_key_and_empty_compatible_url() -> Non
     assert config.provider_model_id == "my-private-model"
 
 
+@pytest.mark.unit
 def test_config_is_frozen_and_hides_api_key_from_repr() -> None:
     config = LlmConfig(
-        engine_id="gemini",
+        engine_id="palantir",
         provider_model_id="custom-model",
         api_key="top-secret-key",
+        fallback_origin="https://private.example.invalid",
+        fallback_api_key="fallback-secret-key",
     )
     assert "top-secret-key" not in repr(config)
+    assert "private.example.invalid" not in repr(config)
+    assert "fallback-secret-key" not in repr(config)
     attribute_name: str = "engine_id"
     with pytest.raises(FrozenInstanceError):
         setattr(config, attribute_name, "openai")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field_name", ["reasoning_variant", "fallback_origin", "fallback_api_key"])
+def test_non_palantir_config_rejects_palantir_settings(field_name: str) -> None:
+    with pytest.raises(LlmConfigError) as rejected:
+        LlmConfig(
+            engine_id="openai",
+            provider_model_id="custom-model",
+            reasoning_variant="high" if field_name == "reasoning_variant" else None,
+            fallback_origin="https://fallback.example.invalid" if field_name == "fallback_origin" else "",
+            fallback_api_key="synthetic-token" if field_name == "fallback_api_key" else "",
+        )
+    assert rejected.value.context.details == {"field": field_name}
 
 
 def test_request_requires_user_message_and_non_empty_text() -> None:

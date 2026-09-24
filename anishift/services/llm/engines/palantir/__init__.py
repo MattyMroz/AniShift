@@ -6,10 +6,7 @@ from anishift.services.llm.engines.palantir.auth import (
     PALANTIR_TOKEN_COMPAT_ENV_VAR,
     PALANTIR_TOKEN_ENV_VAR,
     PALANTIR_TOKEN_ENV_VARS,
-    REDACTED_HEADER_VALUE,
     authorization_headers,
-    redacted_headers,
-    require_palantir_token,
     resolve_palantir_token,
     validated_palantir_token,
 )
@@ -41,7 +38,6 @@ __all__ = [
     "PALANTIR_TOKEN_COMPAT_ENV_VAR",
     "PALANTIR_TOKEN_ENV_VAR",
     "PALANTIR_TOKEN_ENV_VARS",
-    "REDACTED_HEADER_VALUE",
     "PalantirGenerationOptions",
     "PalantirHttpRequest",
     "PalantirModelConfig",
@@ -57,9 +53,7 @@ __all__ = [
     "palantir_unavailable_error",
     "raise_palantir_auth_error",
     "raise_palantir_config_error",
-    "redacted_headers",
     "request_builder",
-    "require_palantir_token",
     "resolve_palantir_token",
     "validated_palantir_token",
 ]

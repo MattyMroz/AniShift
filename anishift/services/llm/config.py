@@ -33,6 +33,8 @@ class LlmConfig:
     provider_id: str = ""
     protocol: ModelProtocol | None = None
     reasoning_variant: str | None = None
+    fallback_origin: str = field(default="", repr=False)
+    fallback_api_key: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         """Validate provider-independent configuration constraints."""
@@ -56,6 +58,15 @@ class LlmConfig:
             )
         if self.top_p is not None and not 0 <= self.top_p <= 1:
             _raise_config_error("LLM top-p must be between 0 and 1", field_name="top_p")
+        if self.engine_id == "palantir":
+            return
+        for field_name, configured in (
+            ("reasoning_variant", self.reasoning_variant is not None),
+            ("fallback_origin", bool(self.fallback_origin)),
+            ("fallback_api_key", bool(self.fallback_api_key)),
+        ):
+            if configured:
+                _raise_config_error("LLM setting requires the palantir engine", field_name=field_name)
 
 
 def _raise_config_error(message: str, *, field_name: str) -> Never:

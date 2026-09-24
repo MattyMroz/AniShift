@@ -133,6 +133,7 @@ def test_palantir_model_config_keeps_an_enrollment_path_prefix_and_normalizes_sl
     assert config.base_url == "https://example.palantirfoundry.com/tenant/api/v2/llm/proxy/openai/v1"
 
 
+@pytest.mark.unit
 def test_palantir_model_config_rejects_a_missing_token_before_any_request() -> None:
     with pytest.raises(LlmAuthError) as rejected:
         _config(token="")
@@ -141,6 +142,7 @@ def test_palantir_model_config_rejects_a_missing_token_before_any_request() -> N
     assert rejected.value.context.details["field"] == palantir_auth.PALANTIR_TOKEN_ENV_VAR
     assert isinstance(rejected.value, FatalError)
     assert palantir_auth.PALANTIR_TOKEN_ENV_VAR in rejected.value.context.suggestion
+    assert rejected.value.context.suggestion.endswith("in the environment or the .env file.")
 
 
 @pytest.mark.parametrize("token", ["   ", "with space", "with\ttab", "with\nnewline", "bad\x00byte"])
