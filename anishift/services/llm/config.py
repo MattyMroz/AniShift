@@ -32,6 +32,7 @@ class LlmConfig:
     alias: str = ""
     provider_id: str = ""
     protocol: ModelProtocol | None = None
+    reasoning_variant: str | None = None
 
     def __post_init__(self) -> None:
         """Validate provider-independent configuration constraints."""

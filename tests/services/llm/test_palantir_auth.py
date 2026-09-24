@@ -48,7 +48,7 @@ def _config(token: str = _CANARY) -> PalantirModelConfig:
     return palantir_model_config(
         alias="foundry/gpt-main",
         provider_id="foundry-openai",
-        protocol=ModelProtocol.OPENAI_CHAT,
+        protocol=ModelProtocol.OPENAI_RESPONSES,
         enrollment_base_url=_ENROLLMENT,
         provider_path=_ROUTE,
         provider_model_id="gpt-main-5",

@@ -168,7 +168,9 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
 def _catalog() -> ModelCatalog:
     return ModelCatalog(
         providers={
-            "foundry-openai": ProviderEntry("foundry-openai", ModelProtocol.OPENAI_CHAT, "/api/v2/llm/proxy/openai/v1"),
+            "foundry-openai": ProviderEntry(
+                "foundry-openai", ModelProtocol.OPENAI_RESPONSES, "/api/v2/llm/proxy/openai/v1"
+            ),
         },
         models={"foundry/gpt-main": ModelEntry("foundry/gpt-main", "foundry-openai", "id-1", "foundry/gpt-main")},
     )

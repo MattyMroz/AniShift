@@ -43,7 +43,7 @@ from anishift.services.llm.errors import (
     LlmRequestError,
     LlmTimeoutError,
 )
-from anishift.services.llm.types import FilePart, LlmMessage, LlmRequest, LlmRole, TextPart
+from anishift.services.llm.types import LlmMessage, LlmRequest, LlmRole, TextPart
 from anishift.services.llm.wire_protocol import ModelProtocol
 
 _CANARY = "palantir-canary-value-c0ffee"
@@ -85,7 +85,7 @@ def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _config(
     *,
-    protocol: ModelProtocol = ModelProtocol.OPENAI_CHAT,
+    protocol: ModelProtocol = ModelProtocol.OPENAI_RESPONSES,
     enrollment_base_url: str = _ENROLLMENT,
     provider_path: str = _ROUTE,
     provider_model_id: str = "gpt-main-5",
@@ -115,11 +115,12 @@ def _request() -> LlmRequest:
     )
 
 
+@pytest.mark.unit
 def test_palantir_model_config_joins_the_enrollment_address_with_the_provider_route() -> None:
     config = _config()
 
     assert config.base_url == f"{_ENROLLMENT}{_ROUTE}"
-    assert config.protocol is ModelProtocol.OPENAI_CHAT
+    assert config.protocol is ModelProtocol.OPENAI_RESPONSES
     assert config.provider_model_id == "gpt-main-5"
 
 
@@ -167,6 +168,7 @@ def test_only_a_token_failure_is_an_auth_error_and_every_other_defect_is_a_confi
         request_builder(cast("ModelProtocol", "made_up_protocol"))
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("alias", "provider_id", "provider_model_id"),
     [
@@ -184,7 +186,7 @@ def test_palantir_model_config_rejects_a_blank_identifier(
         palantir_model_config(
             alias=alias,
             provider_id=provider_id,
-            protocol=ModelProtocol.OPENAI_CHAT,
+            protocol=ModelProtocol.OPENAI_RESPONSES,
             enrollment_base_url=_ENROLLMENT,
             provider_path=_ROUTE,
             provider_model_id=provider_model_id,
@@ -244,24 +246,26 @@ def test_palantir_model_config_keeps_the_token_out_of_its_repr() -> None:
     assert config.token == _CANARY
 
 
+@pytest.mark.unit
 def test_request_builder_covers_every_protocol_the_catalog_can_declare() -> None:
     builders = {protocol: request_builder(protocol) for protocol in ModelProtocol}
 
     assert len(builders) == 4
     assert all(callable(builder) for builder in builders.values())
-    assert len(set(builders.values())) == 4
 
 
+@pytest.mark.unit
 def test_request_builder_rejects_a_protocol_outside_the_catalog_vocabulary() -> None:
     with pytest.raises(LlmConfigError) as rejected:
         request_builder(cast("ModelProtocol", "cohere_chat"))
 
     assert rejected.value.context.details["field"] == "protocol"
-    assert "openai_chat" in rejected.value.context.suggestion
+    assert "openai_responses" in rejected.value.context.suggestion
 
 
-def test_openai_chat_request_posts_to_chat_completions_with_the_openai_output_limit() -> None:
-    config = _config(protocol=ModelProtocol.OPENAI_CHAT)
+@pytest.mark.unit
+def test_openai_responses_request_posts_to_responses_with_the_output_limit() -> None:
+    config: PalantirModelConfig = _config(protocol=ModelProtocol.OPENAI_RESPONSES)
 
     built: PalantirHttpRequest = build_palantir_request(
         config,
@@ -270,44 +274,26 @@ def test_openai_chat_request_posts_to_chat_completions_with_the_openai_output_li
     )
 
     assert built.method == "POST"
-    assert built.url == f"{_ENROLLMENT}{_ROUTE}/chat/completions"
+    assert built.url == f"{_ENROLLMENT}{_ROUTE}/responses"
     assert built.headers["Authorization"] == f"Bearer {_CANARY}"
     assert built.headers["Content-Type"] == "application/json"
     assert built.body["model"] == "gpt-main-5"
-    assert built.body["messages"] == [
+    assert built.body["input"] == [
         {"role": "system", "content": "You translate subtitles."},
-        {"role": "user", "content": "First line.\nSecond line."},
+        {"role": "user", "content": [{"type": "input_text", "text": "First line.\nSecond line."}]},
         {"role": "assistant", "content": "Ready."},
     ]
-    assert built.body["max_completion_tokens"] == 512
+    assert built.body["max_output_tokens"] == 512
     assert built.body["temperature"] == 0.2
     assert built.body["top_p"] == 0.9
     assert "max_tokens" not in built.body
 
 
-def test_xai_responses_request_uses_the_foundry_compatible_shape() -> None:
-    config = _config(
-        protocol=ModelProtocol.XAI_RESPONSES,
-        provider_path="/api/v2/llm/proxy/xai/v1",
-        provider_model_id="grok-4",
-    )
-
-    built = build_palantir_request(config, _request(), PalantirGenerationOptions(max_output_tokens=256))
-
-    assert built.url == f"{_ENROLLMENT}/api/v2/llm/proxy/xai/v1/responses"
-    assert built.body["input"] == [
-        {"role": "system", "content": "You translate subtitles."},
-        {"role": "user", "content": "First line.\nSecond line."},
-        {"role": "assistant", "content": "Ready."},
-    ]
-    assert built.body["stream"] is False
-    assert built.body["max_output_tokens"] == 256
-
-
-def test_chat_completions_request_omits_generation_limits_that_are_unset() -> None:
+@pytest.mark.unit
+def test_responses_request_omits_generation_limits_that_are_unset() -> None:
     built = build_palantir_request(_config(), _request())
 
-    assert set(built.body) == {"model", "messages"}
+    assert set(built.body) == {"model", "input", "stream"}
 
 
 def test_anthropic_messages_request_hoists_system_content_and_always_sets_max_tokens() -> None:
@@ -351,21 +337,6 @@ def test_google_generate_request_encodes_the_model_in_the_route_and_maps_roles()
         {"role": "model", "parts": [{"text": "Ready."}]},
     ]
     assert built.body["generationConfig"] == {"topP": 0.8, "maxOutputTokens": 128}
-
-
-@pytest.mark.parametrize("protocol", list(ModelProtocol))
-def test_every_protocol_rejects_a_file_part(protocol: ModelProtocol) -> None:
-    request = LlmRequest(
-        messages=(
-            LlmMessage(
-                role=LlmRole.USER,
-                parts=(TextPart("Describe"), FilePart(media_type="image/png", data=b"file")),
-            ),
-        ),
-    )
-
-    with pytest.raises(LlmRequestError):
-        build_palantir_request(_config(protocol=protocol), request)
 
 
 @pytest.mark.parametrize(

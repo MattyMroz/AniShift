@@ -11,6 +11,7 @@ import httpx
 
 from anishift.services.llm.engines.palantir.errors import (
     PalantirResponseDefect,
+    palantir_generation_error,
     palantir_response_error,
     palantir_status_error,
     palantir_timeout_error,
@@ -78,6 +79,8 @@ def stream_palantir_request(
                 )
             collected: list[Mapping[str, Any]] = []
             for event in _sse_events(response.iter_lines(), alias=alias):
+                if event.get("type") == "error":
+                    raise palantir_generation_error(event.get("code"), alias=alias)
                 if event.get("error") is not None:
                     error_payload: object = event["error"]
                     code: object = error_payload.get("code") if isinstance(error_payload, Mapping) else None
@@ -96,7 +99,7 @@ def stream_palantir_request(
     except httpx.TransportError as error:
         raise palantir_unavailable_error(alias=alias) from error
     if not events:
-        raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.UNREADABLE_BODY)
+        raise palantir_unavailable_error(alias=alias)
     return events
 
 

@@ -28,6 +28,7 @@ __all__ = [
     "PALANTIR_ENGINE_ID",
     "PalantirResponseDefect",
     "palantir_blocked_error",
+    "palantir_generation_error",
     "palantir_response_error",
     "palantir_status_error",
     "palantir_timeout_error",
@@ -152,6 +153,16 @@ def palantir_status_error(
         error_code=str(error.context.code),
     )
     return error
+
+
+def palantir_generation_error(code: object, *, alias: str) -> LlmError:
+    """Map a Responses generation failure without retaining the provider message."""
+    status: int = HTTPStatus.BAD_REQUEST
+    if code == "server_error":
+        status = HTTPStatus.INTERNAL_SERVER_ERROR
+    elif code == "rate_limit_exceeded":
+        status = HTTPStatus.TOO_MANY_REQUESTS
+    return palantir_status_error(status, alias=alias)
 
 
 def palantir_timeout_error(*, alias: str) -> LlmError:

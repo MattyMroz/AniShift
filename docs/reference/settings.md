@@ -179,6 +179,8 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 ### Temperatura (`llm_temperature`)
 
 - Co robi: losowość próbkowania modelu; puste pole zostawia wartość dostawcy.
+- Palantir: parametr nie jest wysyłany przy aktywnym myśleniu — OpenAI/xAI
+  bez wariantu `none` (także domyślnie) oraz Claude z opcją `thinking`.
 - Zakres · domyślnie: 0,0–2,0 · 0,3.
 - Silnik: tylko `llm`.
 - Przykład: bardziej powtarzalne tłumaczenie — 0,1.
@@ -186,6 +188,8 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 ### Top-p (`llm_top_p`)
 
 - Co robi: próbkowanie jądrowe modelu; puste pole zostawia wartość dostawcy.
+- Palantir: parametr nie jest wysyłany przy aktywnym myśleniu — OpenAI/xAI
+  bez wariantu `none` (także domyślnie) oraz Claude z opcją `thinking`.
 - Zakres · domyślnie: 0,0–1,0 · 1,0.
 - Silnik: tylko `llm`.
 

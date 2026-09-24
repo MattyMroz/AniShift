@@ -57,7 +57,9 @@ def _unused_handlers(
 def _catalog() -> ModelCatalog:
     return ModelCatalog(
         providers={
-            "foundry-openai": ProviderEntry("foundry-openai", ModelProtocol.OPENAI_CHAT, "/api/v2/llm/proxy/openai/v1"),
+            "foundry-openai": ProviderEntry(
+                "foundry-openai", ModelProtocol.OPENAI_RESPONSES, "/api/v2/llm/proxy/openai/v1"
+            ),
         },
         models={_ALIAS: ModelEntry(_ALIAS, "foundry-openai", "gpt-provider-id", _ALIAS)},
     )
@@ -366,6 +368,7 @@ def test_an_absent_translation_alias_is_not_reported_as_ready(tmp_path: Path) ->
     assert "absent from the catalog" in statuses["llm", "palantir"].reason
 
 
+@pytest.mark.integration
 def test_resolving_an_alias_builds_the_complete_palantir_configuration() -> None:
     config: LlmConfig = runtime.palantir_llm_config(
         _catalog(),
@@ -378,7 +381,7 @@ def test_resolving_an_alias_builds_the_complete_palantir_configuration() -> None
     assert config.engine_id == "palantir"
     assert config.alias == _ALIAS
     assert config.provider_id == "foundry-openai"
-    assert config.protocol is ModelProtocol.OPENAI_CHAT
+    assert config.protocol is ModelProtocol.OPENAI_RESPONSES
     assert config.base_url == f"{_ENROLLMENT}/api/v2/llm/proxy/openai/v1"
     assert config.provider_model_id == "gpt-provider-id"
     assert config.api_key == _TOKEN

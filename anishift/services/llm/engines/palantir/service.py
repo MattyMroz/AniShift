@@ -5,14 +5,17 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Final, Self
+from typing import TYPE_CHECKING, Any, Final, Self, cast
 
 from anishift.services.llm.config import LlmConfig
 from anishift.services.llm.engines._sdk_helpers import raise_request_error
 from anishift.services.llm.engines.palantir.config import (
     PalantirGenerationOptions,
     PalantirModelConfig,
+    palantir_model,
+    request_options,
 )
+from anishift.services.llm.engines.palantir.constants import PalantirModel
 from anishift.services.llm.engines.palantir.errors import PALANTIR_ENGINE_ID, raise_palantir_config_error
 from anishift.services.llm.engines.palantir.http import (
     build_palantir_client,
@@ -22,9 +25,9 @@ from anishift.services.llm.engines.palantir.http import (
 from anishift.services.llm.engines.palantir.normalize import (
     google_stream_delta,
     merge_google_stream,
-    merge_openai_stream,
+    merge_responses_stream,
     normalize_palantir_response,
-    openai_stream_delta,
+    responses_stream_delta,
 )
 from anishift.services.llm.engines.palantir.protocols import PalantirHttpRequest, build_palantir_request
 from anishift.services.llm.types import LlmRequest, LlmResponse
@@ -42,13 +45,13 @@ logger = get_logger(__name__)
 
 _STREAM_MERGERS: Final[dict[ModelProtocol, Callable[[tuple[Mapping[str, Any], ...]], Mapping[str, Any]]]] = {
     ModelProtocol.GOOGLE_GENERATE: merge_google_stream,
-    ModelProtocol.OPENAI_CHAT: merge_openai_stream,
+    ModelProtocol.OPENAI_RESPONSES: merge_responses_stream,
 }
 """Stream mergers per protocol; an absent protocol has no server-sent shape."""
 
 _STREAM_TEXTS: Final[dict[ModelProtocol, Callable[[Mapping[str, Any]], str]]] = {
     ModelProtocol.GOOGLE_GENERATE: google_stream_delta,
-    ModelProtocol.OPENAI_CHAT: openai_stream_delta,
+    ModelProtocol.OPENAI_RESPONSES: responses_stream_delta,
 }
 """Arriving-text extractors, one per protocol in :data:`_STREAM_MERGERS`."""
 
@@ -56,12 +59,14 @@ _STREAM_TEXTS: Final[dict[ModelProtocol, Callable[[Mapping[str, Any]], str]]] = 
 class PalantirService:
     """Synchronous engine for one catalog alias served by a Foundry proxy."""
 
-    __slots__ = ("_client", "_closed", "_config", "_model_config")
+    __slots__ = ("_client", "_closed", "_config", "_generation", "_model_config")
 
     def __init__(self, config: LlmConfig, *, client: httpx.Client | None = None) -> None:
         """Resolve the immutable model configuration without opening a socket."""
         self._config: LlmConfig = config
-        self._model_config: PalantirModelConfig = _resolve_model_config(config)
+        model: PalantirModel = palantir_model(config.alias)
+        self._model_config: PalantirModelConfig = _resolve_model_config(config, model)
+        self._generation: PalantirGenerationOptions = self._generation_options(model)
         self._client: httpx.Client | None = client
         self._closed: bool = False
 
@@ -88,7 +93,7 @@ class PalantirService:
         built: PalantirHttpRequest = build_palantir_request(
             self._model_config,
             request,
-            self._generation_options(),
+            self._generation,
         )
         started_at: float = time.perf_counter()
         payload = send_palantir_request(
@@ -125,7 +130,7 @@ class PalantirService:
         built: PalantirHttpRequest = build_palantir_request(
             self._model_config,
             request,
-            self._generation_options(),
+            self._generation,
             stream=True,
         )
         started_at: float = time.perf_counter()
@@ -191,15 +196,22 @@ class PalantirService:
             self._client = build_palantir_client(self._config.timeout_s)
         return self._client
 
-    def _generation_options(self) -> PalantirGenerationOptions:
+    def _generation_options(self, model: PalantirModel) -> PalantirGenerationOptions:
+        options: dict[str, object] = request_options(model, self._config.reasoning_variant)
+        reasoning: Mapping[str, object] = cast("Mapping[str, object]", options.get("reasoning", {}))
+        thinking: bool = "thinking" in options or (
+            self._model_config.protocol in {ModelProtocol.OPENAI_RESPONSES, ModelProtocol.XAI_RESPONSES}
+            and reasoning.get("effort") != "none"
+        )
         return PalantirGenerationOptions(
-            temperature=self._config.temperature,
-            top_p=self._config.top_p,
+            temperature=None if thinking else self._config.temperature,
+            top_p=None if thinking else self._config.top_p,
             max_output_tokens=self._config.max_output_tokens,
+            request_options=options,
         )
 
 
-def _resolve_model_config(config: LlmConfig) -> PalantirModelConfig:
+def _resolve_model_config(config: LlmConfig, model: PalantirModel) -> PalantirModelConfig:
     """Build the immutable model configuration from the neutral config."""
     if config.protocol is None:
         raise_palantir_config_error(
@@ -214,4 +226,5 @@ def _resolve_model_config(config: LlmConfig) -> PalantirModelConfig:
         base_url=config.base_url or "",
         provider_model_id=config.provider_model_id,
         token=config.api_key,
+        file_modalities=model.file_modalities,
     )

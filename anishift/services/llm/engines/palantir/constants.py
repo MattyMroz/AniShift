@@ -62,7 +62,7 @@ _THINKING_LEVELS: Final[tuple[str, ...]] = ("low", "medium", "high", "xhigh", "m
 """Full thinking effort range for recent GPT and Claude models."""
 
 PALANTIR_PROVIDERS: Final[tuple[PalantirProvider, ...]] = (
-    PalantirProvider("foundry-openai", ModelProtocol.OPENAI_CHAT, "/api/v2/llm/proxy/openai/v1"),
+    PalantirProvider("foundry-openai", ModelProtocol.OPENAI_RESPONSES, "/api/v2/llm/proxy/openai/v1"),
     PalantirProvider("foundry-anthropic", ModelProtocol.ANTHROPIC_MESSAGES, "/api/v2/llm/proxy/anthropic/v1"),
     PalantirProvider("foundry-google", ModelProtocol.GOOGLE_GENERATE, "/api/v2/llm/proxy/google/v1"),
     PalantirProvider("foundry-xai", ModelProtocol.XAI_RESPONSES, "/api/v2/llm/proxy/xai/v1"),
