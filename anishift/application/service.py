@@ -782,13 +782,14 @@ class AppService:
         return not any(
             model_id == getattr(settings, name)
             for name in Settings.model_fields
-            if name.endswith("_api_key") or name.startswith("palantir_token")
+            if name.endswith("_api_key") or (name.startswith("palantir_") and "token" in name)
         )
 
     def reset_settings(self) -> UserSettings:
         """Restore persisted panel preferences without touching secrets or presets."""
         defaults: UserSettings = UserSettings()
         defaults.palantir_enrollment_base_url = self.settings_snapshot().palantir_enrollment_base_url
+        defaults.palantir_fallback_enrollment_base_url = self.settings_snapshot().palantir_fallback_enrollment_base_url
         self._settings_saver(defaults)
         with self._run_lock:
             self._user_settings = deepcopy(defaults)
@@ -974,6 +975,8 @@ class AppService:
             alias,
             enrollment_base_url=preferences.palantir_enrollment_base_url,
             token=self.current_settings().palantir_token,
+            fallback_enrollment_base_url=preferences.palantir_fallback_enrollment_base_url,
+            fallback_token=self.current_settings().palantir_fallback_token,
         )
 
     def _prober(self) -> ModelProber:

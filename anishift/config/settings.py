@@ -90,6 +90,7 @@ class Settings(BaseSettings):
         repr=False,
     )
     palantir_token: str = Field(default="", description="Palantir Foundry token", repr=False)
+    palantir_fallback_token: str = Field(default="", description="Second Palantir account token", repr=False)
     # The compatibility name carries no ``ANISHIFT_`` prefix, so it needs an
     # explicit alias. It is a raw input of the precedence rule, not a setting.
     palantir_token_compat: str = Field(

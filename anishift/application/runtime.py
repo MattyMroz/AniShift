@@ -479,13 +479,15 @@ def _translation_service(settings: Settings, plan: ExecutionPlan) -> _Translatio
     return _TranslationRuntime(service, llm_cancel)
 
 
-def palantir_llm_config(
+def palantir_llm_config(  # noqa: PLR0913
     catalog: ModelCatalog,
     alias: str,
     *,
     enrollment_base_url: str,
     token: str,
     max_retries: int = 0,
+    fallback_enrollment_base_url: str = "",
+    fallback_token: str = "",
 ) -> LlmConfig:
     """Resolve one catalog alias into a complete Palantir configuration."""
     entry: ModelEntry | None = catalog.models.get(alias.strip())
@@ -510,6 +512,8 @@ def palantir_llm_config(
         alias=model.alias,
         provider_id=model.provider_id,
         protocol=model.protocol,
+        fallback_origin=fallback_enrollment_base_url,
+        fallback_api_key=fallback_token,
     )
 
 
@@ -586,6 +590,8 @@ def _palantir_translation_config(settings: Settings, snapshot: RunSettingsSnapsh
         enrollment_base_url=preferences.palantir_enrollment_base_url,
         token=settings.palantir_token,
         max_retries=snapshot.translation_max_retries,
+        fallback_enrollment_base_url=preferences.palantir_fallback_enrollment_base_url,
+        fallback_token=settings.palantir_fallback_token,
     )
     return replace(
         config,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -217,3 +218,38 @@ def test_stepping_a_value_does_not_reload_the_model_catalog(tmp_path: Path, monk
 
     assert calls == ["load"]
     assert saved == []
+
+
+@pytest.mark.integration
+def test_second_palantir_connection_edits_address_and_masked_token_independently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in tuple(os.environ):
+        if name.startswith("ANISHIFT_") or name == "FOUNDRY_API_TOKEN":
+            monkeypatch.delenv(name, raising=False)
+    saved: list[UserSettings] = []
+    service: AppService = _service(tmp_path, saved)
+    panel: SettingsController = SettingsController(service, lambda: None)
+    panel._selected = next(index for index, item in enumerate(panel._items) if item.key == "category:connections")
+    panel.handle_key("enter")
+    panel._selected = next(
+        index for index, item in enumerate(panel._items) if item.key == "connection:palantir-fallback"
+    )
+    panel.handle_key("enter")
+    panel.handle_key("enter")
+    panel.handle_key("paste:synthetic-fallback-sentinel")
+    assert "synthetic-fallback-sentinel" not in panel.render(100, 30).plain
+    assert not (tmp_path / "unused.env").exists()
+    panel.handle_key("enter")
+    assert service.current_settings().palantir_fallback_token == "synthetic-fallback-sentinel"  # noqa: S105
+    assert service.current_settings().palantir_token == ""
+    panel.handle_key("down")
+    panel.handle_key("enter")
+    panel.handle_key("paste:https://second.example.invalid")
+    panel.handle_key("enter")
+    assert service.settings_snapshot().palantir_fallback_enrollment_base_url == "https://second.example.invalid"
+    assert service.settings_snapshot().palantir_enrollment_base_url == ""
+    assert saved[-1].palantir_fallback_enrollment_base_url == "https://second.example.invalid"
+    panel.handle_key("escape")
+    assert "skonfigurowane" in panel.render(100, 30).plain

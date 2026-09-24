@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
 
+import httpx
 import pytest
+from loguru import logger as loguru_logger
 
 from anishift.application import runtime
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
@@ -12,18 +15,35 @@ from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, 
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.service import AppService, EngineAvailability, ModelAvailability, ModelProbeResult
 from anishift.config import user_settings as user_settings_module
-from anishift.config.model_catalog import ModelCatalog, ModelEntry, ProviderEntry
+from anishift.config.model_catalog import ModelCatalog, ModelEntry, ProviderEntry, load_model_catalog
 from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings, load_user_settings, save_user_settings
 from anishift.errors import ConfigError, ErrorCode
-from anishift.services.llm import LlmAuthError, LlmConfig, LlmRequest, LlmResponse, LlmTimeoutError, LlmUsage
+from anishift.services.llm import (
+    LlmAuthError,
+    LlmConfig,
+    LlmConfigError,
+    LlmError,
+    LlmMessage,
+    LlmRequest,
+    LlmResponse,
+    LlmRole,
+    LlmService,
+    LlmTimeoutError,
+    LlmUsage,
+    TextPart,
+)
+from anishift.services.llm.engines.palantir import accounts
+from anishift.services.llm.engines.palantir import service as palantir_service
 from anishift.services.llm.wire_protocol import ModelProtocol
 from anishift.services.media import DefaultMediaProbe
 
 _ENROLLMENT = "https://acme.palantirfoundry.com"
 _TOKEN = "palantir-token-sentinel-cafebabe"  # noqa: S105
 _ALIAS = "foundry/gpt-main"
+_FALLBACK = "https://second.example.invalid"
+_FALLBACK_TOKEN = "second-${LITERAL}-sentinel"  # noqa: S105
 
 
 @pytest.fixture(autouse=True)
@@ -494,3 +514,189 @@ def test_only_the_openai_compatible_engine_inherits_its_own_base_url() -> None:
 
     assert compatible.base_url == "https://compat.invalid"
     assert anthropic.base_url is None
+
+
+@pytest.mark.integration
+def test_second_account_panel_round_trip_and_both_production_call_sites(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(user_settings_module, "config_path", lambda: tmp_path / "settings.json")
+    prober = _RecordingProber()
+    service: AppService = _connected(tmp_path, prober)
+    service.update_secret("palantir_fallback_token", _FALLBACK_TOKEN)
+    updated: UserSettings = service.update_setting("palantir_fallback_enrollment_base_url", _FALLBACK)
+    save_user_settings(updated)
+    loaded: UserSettings = load_user_settings()
+    assert loaded.palantir_fallback_enrollment_base_url == _FALLBACK
+    assert _FALLBACK not in repr(loaded)
+    assert service.current_settings().palantir_fallback_token == _FALLBACK_TOKEN
+    assert service.environment_statuses()["palantir_fallback_token"] is True
+    assert "ANISHIFT_PALANTIR_FALLBACK_TOKEN=" in (tmp_path / ".env").read_text(encoding="utf-8")
+    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _TOKEN)
+    service.reload_environment()
+    assert service.probe_model(_ALIAS).availability is ModelAvailability.VERIFIED
+    monkeypatch.setattr(runtime, "load_user_settings", lambda: loaded)
+    monkeypatch.setattr(runtime, "load_model_catalog", _catalog)
+    translated: LlmConfig = runtime._llm_config(service.current_settings(), _plan())
+    for config in (prober.calls[0], translated):
+        assert config.fallback_origin == _FALLBACK
+        assert config.fallback_api_key == _FALLBACK_TOKEN
+        assert len(accounts.palantir_accounts(config)) == 2
+    assert service.reset_settings().palantir_fallback_enrollment_base_url == _FALLBACK
+    assert not service._valid_custom_model_id(_FALLBACK_TOKEN)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("value", ["", "https://second.example.invalid/", "http://bad.invalid", "bad", 42])
+def test_second_address_uses_primary_loader_and_panel_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: object,
+) -> None:
+    path: Path = tmp_path / "settings.json"
+    monkeypatch.setattr(user_settings_module, "config_path", lambda: path)
+    path.write_text(
+        json.dumps(
+            {
+                "palantir_enrollment_base_url": value,
+                "palantir_fallback_enrollment_base_url": value,
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded: UserSettings = load_user_settings()
+    assert loaded.palantir_enrollment_base_url == loaded.palantir_fallback_enrollment_base_url
+    catalog = {spec.setting_id: spec for spec in _service(tmp_path).settings_catalog()}
+    assert catalog["palantir_fallback_enrollment_base_url"].validation_pattern == (
+        catalog["palantir_enrollment_base_url"].validation_pattern
+    )
+
+
+@pytest.mark.integration
+def test_second_token_is_literal_and_environment_overrides_only_its_own_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path: Path = tmp_path / "synthetic.env"
+    path.write_text(f'ANISHIFT_PALANTIR_FALLBACK_TOKEN="{_FALLBACK_TOKEN}"\n', encoding="utf-8")
+    monkeypatch.setenv("LITERAL", "must-not-expand")
+    monkeypatch.setenv("FOUNDRY_API_TOKEN", _TOKEN)
+    loaded: Settings = Settings(_env_file=path)
+    assert loaded.palantir_fallback_token == _FALLBACK_TOKEN
+    assert loaded.palantir_token == _TOKEN
+    monkeypatch.setenv("ANISHIFT_PALANTIR_FALLBACK_TOKEN", "env-sentinel")
+    assert Settings(_env_file=path).palantir_fallback_token == "env-sentinel"  # noqa: S105
+    assert _FALLBACK_TOKEN not in repr(loaded)
+    assert "palantir_fallback_origin" not in Settings.model_fields
+    assert "palantir_fallback_api_key" not in Settings.model_fields
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(("origin", "token"), [("", ""), (_FALLBACK, ""), ("", _FALLBACK_TOKEN)])
+def test_missing_second_account_pair_keeps_primary(origin: str, token: str) -> None:
+    settings: Settings = Settings(_env_file=None, palantir_token=_TOKEN, palantir_fallback_token=token)
+    preferences = UserSettings(palantir_fallback_enrollment_base_url=origin)
+    config: LlmConfig = runtime.palantir_llm_config(
+        _catalog(),
+        _ALIAS,
+        enrollment_base_url=_ENROLLMENT,
+        token=settings.palantir_token,
+        fallback_enrollment_base_url=preferences.palantir_fallback_enrollment_base_url,
+        fallback_token=settings.palantir_fallback_token,
+    )
+    resolved: tuple[accounts.PalantirAccount, ...] = accounts.palantir_accounts(config)
+    assert len(resolved) == 1
+    assert resolved[0].origin == _ENROLLMENT
+    assert resolved[0].token == _TOKEN
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("origin", "token", "error_type"),
+    [
+        (_FALLBACK + "/path", _FALLBACK_TOKEN, LlmConfigError),
+        ("http://second.example.invalid", _FALLBACK_TOKEN, LlmConfigError),
+        (_FALLBACK, "invalid token sentinel", LlmAuthError),
+    ],
+)
+def test_invalid_complete_second_account_is_rejected_without_private_values(
+    origin: str,
+    token: str,
+    error_type: type[LlmError],
+) -> None:
+    settings = Settings(_env_file=None, palantir_token=_TOKEN, palantir_fallback_token=token)
+    config: LlmConfig = runtime.palantir_llm_config(
+        _catalog(),
+        _ALIAS,
+        enrollment_base_url=_ENROLLMENT,
+        token=settings.palantir_token,
+        fallback_enrollment_base_url=origin,
+        fallback_token=settings.palantir_fallback_token,
+    )
+    with pytest.raises(error_type) as raised:
+        accounts.palantir_accounts(config)
+    surfaces: str = repr(settings) + repr(config) + str(raised.value) + repr(raised.value.context)
+    assert origin not in surfaces
+    assert token not in surfaces
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("status", [429, 500, 503])
+def test_settings_to_service_failover_preserves_route_and_hides_private_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+) -> None:
+    path: Path = tmp_path / "synthetic.env"
+    path.write_text(
+        f'ANISHIFT_PALANTIR_TOKEN="{_TOKEN}"\nANISHIFT_PALANTIR_FALLBACK_TOKEN="{_FALLBACK_TOKEN}"\n', encoding="utf-8"
+    )
+    settings = Settings(_env_file=path)
+    preferences = UserSettings(
+        palantir_enrollment_base_url=_ENROLLMENT, palantir_fallback_enrollment_base_url=_FALLBACK
+    )
+    sent: list[httpx.Request] = []
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        if len(sent) == 1:
+            return httpx.Response(status, json={"error": {"message": _FALLBACK_TOKEN + _FALLBACK}})
+        return httpx.Response(
+            200, text='data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n'
+        )
+
+    accounts.reset_cooldowns()
+    monkeypatch.setattr(
+        palantir_service,
+        "build_palantir_client",
+        lambda timeout_s: httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    sink: int = loguru_logger.add(captured.append, format="{message} {extra}", level="DEBUG")
+    try:
+        config: LlmConfig = runtime.palantir_llm_config(
+            load_model_catalog(),
+            "foundry-google/gemini-3.1-pro-preview",
+            enrollment_base_url=preferences.palantir_enrollment_base_url,
+            token=settings.palantir_token,
+            fallback_enrollment_base_url=preferences.palantir_fallback_enrollment_base_url,
+            fallback_token=settings.palantir_fallback_token,
+        )
+        with LlmService(config) as service:
+            response: LlmResponse = service.complete(LlmRequest((LlmMessage(LlmRole.USER, (TextPart("ping"),)),)))
+    finally:
+        loguru_logger.remove(sink)
+        accounts.reset_cooldowns()
+    assert response.text == "ok"
+    assert len(sent) == 2
+    assert sent[0].url.host == "acme.palantirfoundry.com"
+    assert sent[1].url.host == "second.example.invalid"
+    assert sent[0].url.raw_path == sent[1].url.raw_path
+    assert sent[1].url.query == b"alt=sse"
+    assert sent[1].headers["authorization"] == f"Bearer {_FALLBACK_TOKEN}"
+    assert sent[0].content == sent[1].content
+    assert captured
+    surfaces: str = repr(settings) + repr(preferences) + repr(config) + "".join(captured)
+    assert _FALLBACK not in surfaces
+    assert _FALLBACK_TOKEN not in surfaces

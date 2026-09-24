@@ -329,6 +329,7 @@ USER_SETTING_DISPOSITIONS: Final[MappingProxyType[str, SettingDisposition]] = Ma
         "llm_max_concurrency": SettingDisposition.VISIBLE,
         "primary_model_alias": SettingDisposition.VISIBLE,
         "palantir_enrollment_base_url": SettingDisposition.VISIBLE,
+        "palantir_fallback_enrollment_base_url": SettingDisposition.VISIBLE,
         "tts_engine": SettingDisposition.VISIBLE,
         "tts_provider_model_id": SettingDisposition.CONDITIONAL,
         "tts_voice_id": SettingDisposition.CONDITIONAL,
@@ -847,6 +848,16 @@ def _model_specs(defaults: UserSettings) -> tuple[SettingSpec, ...]:
             validation_pattern=PALANTIR_ENROLLMENT_URL_PATTERN,
             invalidates=_TRANSLATION_INVALIDATES,
         ),
+        SettingSpec(
+            setting_id="palantir_fallback_enrollment_base_url",
+            label="Second Palantir enrollment address",
+            description="Configure the https origin of the second enrollment for account failover.",
+            value_type=SettingValueType.STRING,
+            default=defaults.palantir_fallback_enrollment_base_url,
+            scope=SettingScope.GLOBAL,
+            validation_pattern=PALANTIR_ENROLLMENT_URL_PATTERN,
+            invalidates=_TRANSLATION_INVALIDATES,
+        ),
     )
 
 
@@ -1274,6 +1285,12 @@ def _environment_specs() -> tuple[SettingSpec, ...]:
                 "palantir_token",
                 "Palantir token",
                 "Configure the Foundry token used by every Palantir model.",
+                (),
+            ),
+            (
+                "palantir_fallback_token",
+                "Second Palantir token",
+                "Configure the Foundry token of the second enrollment for account failover.",
                 (),
             ),
         )

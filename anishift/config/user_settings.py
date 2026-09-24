@@ -261,6 +261,7 @@ class UserSettings:
     llm_max_concurrency: int = 4
     primary_model_alias: str = ""
     palantir_enrollment_base_url: str = ""
+    palantir_fallback_enrollment_base_url: str = field(default="", repr=False)
     tts_engine: str = "elevenbytes"
     tts_provider_model_id: str = "run6"
     tts_voice_id: str = DALLIN_ALIAS
@@ -540,9 +541,8 @@ def _clean_free_string(raw: dict[str, Any], key: str) -> None:
     raw[key] = value.strip()
 
 
-def _clean_enrollment_base_url(raw: dict[str, Any]) -> None:
+def _clean_enrollment_base_url(raw: dict[str, Any], key: str) -> None:
     """Keep a valid https enrollment address, or drop the field to its default."""
-    key: str = "palantir_enrollment_base_url"
     value = raw.get(key)
     if not isinstance(value, str):
         raw.pop(key, None)
@@ -836,7 +836,8 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_prompt_selection(filtered)
     _clean_integer(filtered, "llm_max_concurrency", *LLM_MAX_CONCURRENCY_RANGE)
     _clean_free_string(filtered, "primary_model_alias")
-    _clean_enrollment_base_url(filtered)
+    _clean_enrollment_base_url(filtered, "palantir_enrollment_base_url")
+    _clean_enrollment_base_url(filtered, "palantir_fallback_enrollment_base_url")
     filtered["schema_version"] = SETTINGS_SCHEMA_VERSION
     _clean_string(filtered, "tts_engine", tts_engine_ids)
     _clean_free_string(filtered, "tts_provider_model_id")

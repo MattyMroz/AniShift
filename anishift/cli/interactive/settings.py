@@ -264,6 +264,7 @@ _FIELDS_COVERED_ELSEWHERE: Final[dict[str, str]] = {
     "llm_provider_model_id": "chosen atomically together with the provider",
     "openai_compatible_base_url": "edited inside the connections category",
     "palantir_enrollment_base_url": "edited inside the connections category",
+    "palantir_fallback_enrollment_base_url": "edited inside the connections category",
     "primary_model_alias": "deliberately hidden from the product surface",
 }
 """Editable fields intentionally absent from the section layout, with the reason."""
@@ -459,6 +460,12 @@ class _Feedback:
 
 _CONNECTIONS: Final[tuple[_Connection, ...]] = (
     _Connection("palantir", "Palantir Foundry", "palantir_token", "palantir_enrollment_base_url", True),
+    _Connection(
+        "palantir-fallback",
+        "Palantir Foundry · konto 2",
+        "palantir_fallback_token",
+        "palantir_fallback_enrollment_base_url",
+    ),
     _Connection("gemini", "Gemini", "gemini_api_key"),
     _Connection("openai", "OpenAI", "openai_api_key"),
     _Connection("anthropic", "Anthropic", "anthropic_api_key"),
@@ -1146,8 +1153,8 @@ class SettingsController:
         return tuple(items)
 
     def _connection_address(self, connection: _Connection) -> str:
-        if connection.address_id == "palantir_enrollment_base_url":
-            return self._service.settings_snapshot().palantir_enrollment_base_url or "brak"
+        if connection.address_id in {"palantir_enrollment_base_url", "palantir_fallback_enrollment_base_url"}:
+            return str(getattr(self._service.settings_snapshot(), connection.address_id)) or "brak"
         value: str = getattr(self._service.current_settings(), connection.address_id, "")
         return value or "brak"
 
@@ -1391,7 +1398,7 @@ class SettingsController:
             current = ""
         action: _EditorAction = (
             _EditorAction.UPDATE_SETTING
-            if connection.address_id == "palantir_enrollment_base_url"
+            if connection.address_id in {"palantir_enrollment_base_url", "palantir_fallback_enrollment_base_url"}
             else _EditorAction.UPDATE_ENVIRONMENT
         )
         self._editor = _Editor(
