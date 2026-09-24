@@ -91,5 +91,6 @@ def test_deepseek_insufficient_system_resource_is_transient() -> None:
         service.complete(_request())
 
 
+@pytest.mark.unit
 def test_deepseek_suggestions_are_official_aliases() -> None:
-    assert SUGGESTED_MODEL_IDS == ("deepseek-v4-flash", "deepseek-v4-pro")
+    assert SUGGESTED_MODEL_IDS == ("deepseek-flash", "deepseek-v4-pro")

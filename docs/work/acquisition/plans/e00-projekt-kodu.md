@@ -33,6 +33,17 @@ Rozstrzygają niejednoznaczności planu wskazane przez autora projektu oraz uwag
     3. `feat(llm): send files and reasoning variants through palantir responses`
     4. `feat(llm): fail over between two palantir accounts`
     5. `feat(llm): refresh model suggestions from provider documentation`
+13. **Listy modeli wszystkich silników natywnych (decyzja właściciela z 2026-09-24, rozszerza fazę 5):** `openai_compatible` bez listy (model wpisuje użytkownik); pozostałe według źródeł z 2026-09-24:
+    - `openai`: `gpt-6-sol`, `gpt-6-luna`, `gpt-6-astra`;
+    - `anthropic`: `claude-opus-5-5`, `claude-sonnet-5`, `claude-haiku-4-5`, `claude-fable-5-1`;
+    - `gemini`: `gemini-3.8-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`;
+    - `deepseek`: `deepseek-flash`, `deepseek-v4-pro` ([api-docs.deepseek.com/quick_start/pricing](https://api-docs.deepseek.com/quick_start/pricing));
+    - `openrouter`: `openai/gpt-6-sol`, `anthropic/claude-opus-5.5`, `google/gemini-3.8-flash`, `deepseek/deepseek-v4.1-flash` (sprawdzone w `https://openrouter.ai/api/v1/models`).
+14. **DeepSeek przyjmuje obrazy:** `deepseek` dostaje `file_modalities = {image}` zamiast `{}` — `deepseek-flash` przyjmuje `image_url` z data URL w Chat Completions ([api-docs.deepseek.com/guides/vision](https://api-docs.deepseek.com/guides/vision/)).
+15. **Martwy kontrakt katalogu (przegląd kodu, runda 1; rozszerza granicę o same usunięcia):** z `config/model_catalog.py` znikają nieczytane pola i typy (`schema_version`, `issues`, `defaults`, `experimental`, `limits`, `CatalogIssue`, `CatalogSection`, `CatalogDefaults`, `ModelLimits`, `CATALOG_SCHEMA_VERSION`), a z serwisu `CATALOG_DEFAULTS` i limity w `PalantirModel`. U konsumentów znikają wyłącznie martwe gałęzie: `ModelCatalogError` z obsługą w `application/service.py`, gałąź pustego katalogu i filtry placeholderów `replace-with-`, jeśli po sprawdzeniu nic innego z nich nie korzysta.
+16. **Jeden standard treści mieszanej:** Chat Completions i Responses łączą sąsiednie `TextPart` przez `"\n"` jedną wspólną funkcją; plik przerywa grupę. Anthropic i Google zachowują osobne bloki. Kształt bloków Anthropic Messages (tekst, obraz, dokument) istnieje raz, w `_sdk_helpers.py`, dla obu silników. Odmowa niewspieranego pliku w każdym silniku odbywa się tak samo: raz dla całego żądania, na początku budowania, jednym helperem.
+17. **Nowe modele Palantira:** `gpt-6-sol` i `gpt-6-luna` dopisane do listy (22 modele). Próba na żywo 2026-09-24: przyjmują warianty `none`, `low`, `medium`, `high`, `xhigh`, `max` i obrazy; PDF proxy odrzuca (HTTP 400), więc typy plików = `{image}`.
+18. **Przegląd kodu, runda 2:** `PalantirModel.reasoning` usunięte — myślenie OpenAI/xAI wynika z protokołu i `reasoning.effort` (każdy model GPT i Grok myśli); treść listy Palantira to dane potwierdzane próbą na żywo, testy sprawdzają tylko strukturę (unikalność aliasów, zgodność sugestii, ścieżki pól), bez listy aliasów i bez liczby modeli; pusty strumień (bez zdarzeń) daje błąd przejściowy w każdym protokole; martwe gałęzie `provider is None` przy wbudowanej liście znikają (`application/service.py`, `application/runtime.py`); separator `"\n"` istnieje w jednej funkcji.
 
 Poniżej odwołania **§1–§4** oznaczają punkty sekcji „Szczegóły” zaakceptowanego planu. Sygnatury pomijają `self`, gdy nie powoduje to niejasności. Szacunki obejmują fizyczne linie dodane/usunięte, również wymianę istniejących testów.
 
@@ -146,7 +157,7 @@ PalantirModel(
 Stałe:
 
 - `PALANTIR_PROVIDERS: tuple[PalantirProvider, ...]` — cztery trasy; OpenAI jeszcze `OPENAI_CHAT`.
-- `PALANTIR_MODELS: tuple[PalantirModel, ...]` — 20 wpisów w kolejności assetu.
+- `PALANTIR_MODELS: tuple[PalantirModel, ...]` — 22 wpisy w kolejności assetu.
 - `SUGGESTED_MODEL_IDS` — wyliczone z `PALANTIR_MODELS`.
 - `CATALOG_DEFAULTS: Mapping[str, str]` — dwa aliasy z planu.
 - Wspólne stałe opcji i wariantów dla rodzin.
@@ -204,7 +215,7 @@ Nie ma odczytu OpenCode ani JSONC podczas działania aplikacji.
 
 **Nowy `test_palantir_constants.py`:**
 
-- `test_palantir_model_list_matches_expected_aliases` — jawna lista 20 aliasów, kolejność, jednoznaczność.
+- `test_palantir_model_list_matches_expected_aliases` — jawna lista 22 aliasów, kolejność, jednoznaczność.
 - `test_palantir_suggestions_expose_model_aliases` — wynik publicznego rejestru.
 - `test_palantir_options_and_variants_use_known_request_fields` — parametry rodzin; sprawdza również zagnieżdżone pola, np. `generationConfig.thinkingConfig`.
 - Rozszerzyć istniejącą próbę świeżego importu o `palantir.constants`: brak `anishift.config`, `anishift.application`, SDK i transportu. To istniejący test izolacji, nie nowy mechanizm.
@@ -567,7 +578,7 @@ DeepSeek, OpenRouter i pusty katalog custom endpointu zachowują istniejące tes
 ## Faza 6
 
 - **Wykonawca:** orchestrator. Skrypt `scripts/tmp/e00_live.py` (katalog jednorazowy, poza commitami) woła `LlmService` z `LlmConfig` zbudowanym przez istniejące `Settings` i `palantir_llm_config`; token czyta aplikacja, skrypt go nie wypisuje.
-- **Macierz na koncie 1:** każdy z 20 modeli × (tekst z opcjami domyślnymi; każdy typ pliku z jego listy; każdy wariant). Małe pliki próbne: PNG, PDF, MP3, MP4.
+- **Macierz na koncie 1:** każdy z 22 modeli × (tekst z opcjami domyślnymi; każdy typ pliku z jego listy; każdy wariant). Małe pliki próbne: PNG, PDF, MP3, MP4.
 - **`probe_palantir_model`:** jeden model z każdej rodziny; raport rozróżnia „HTTP i generowanie działają” od „przyszedł tekst” (Rozstrzygnięcie 1).
 - **Konto 2:** gdy właściciel poda token; adres i token przekazane wprost skryptowi.
 - **Wynik:** tabela zbiorcza w `docs/work/acquisition/outcomes/e00.md` (bez treści odpowiedzi, tokenów i adresów).

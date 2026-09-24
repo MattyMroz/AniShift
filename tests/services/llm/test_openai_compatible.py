@@ -14,7 +14,6 @@ from anishift.services.llm.config import LlmConfig
 from anishift.services.llm.engines.deepseek import DeepseekService
 from anishift.services.llm.engines.openai import OpenaiService
 from anishift.services.llm.engines.openai_compatible import OpenaiCompatibleService
-from anishift.services.llm.engines.openai_compatible.constants import SUGGESTED_MODEL_IDS
 from anishift.services.llm.engines.openrouter import OpenrouterService
 from anishift.services.llm.errors import (
     LlmAuthError,
@@ -543,7 +542,3 @@ def test_openai_compatible_reports_usage_cost_when_present() -> None:
     result = service.complete(_request())
 
     assert result.usage.reported_cost == 0.0125
-
-
-def test_openai_compatible_suggestions_are_empty() -> None:
-    assert SUGGESTED_MODEL_IDS == ()

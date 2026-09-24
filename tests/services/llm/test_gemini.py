@@ -65,6 +65,7 @@ class FakeGeminiFactory:
         return self.client
 
 
+@pytest.mark.integration
 def test_gemini_registry_and_suggestions_are_lazy() -> None:
     for module_name in ("google.genai", "google.genai.types", "google.genai.errors"):
         sys.modules.pop(module_name, None)
@@ -74,8 +75,8 @@ def test_gemini_registry_and_suggestions_are_lazy() -> None:
     assert isinstance(engine, GeminiService)
     assert suggested_model_ids("gemini") == (
         "gemini-3.5-flash-lite",
-        "gemini-3.5-flash",
-        "gemini-3.6-flash",
+        "gemini-3.8-flash",
+        "gemini-3.1-pro-preview",
     )
     assert "google.genai" not in sys.modules
 

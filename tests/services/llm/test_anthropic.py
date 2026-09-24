@@ -79,9 +79,10 @@ def test_anthropic_registry_and_suggestions_are_lazy() -> None:
 
     assert isinstance(engine, AnthropicService)
     assert suggested_model_ids("anthropic") == (
-        "claude-sonnet-5",
         "claude-haiku-4-5",
-        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-opus-5-5",
+        "claude-fable-5-1",
     )
     assert "anthropic" not in sys.modules
 
