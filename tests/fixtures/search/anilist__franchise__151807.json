@@ -1,0 +1,681 @@
+{
+  "selected_id": 151807,
+  "depth": 3,
+  "requests": [
+    {
+      "depth": 3,
+      "ids": [
+        151807
+      ],
+      "status": 200,
+      "body": {
+        "data": {
+          "Page": {
+            "media": [
+              {
+                "id": 151807,
+                "type": "ANIME",
+                "format": "TV",
+                "status": "FINISHED",
+                "seasonYear": 2024,
+                "startDate": {
+                  "year": 2024,
+                  "month": 1,
+                  "day": 7
+                },
+                "title": {
+                  "romaji": "Ore dake Level Up na Ken",
+                  "english": "Solo Leveling",
+                  "native": "俺だけレベルアップな件"
+                },
+                "relations": {
+                  "edges": [
+                    {
+                      "relationType": "ADAPTATION",
+                      "node": {
+                        "id": 105398,
+                        "type": "MANGA",
+                        "format": "MANGA",
+                        "status": "FINISHED",
+                        "seasonYear": null,
+                        "startDate": {
+                          "year": 2018,
+                          "month": 3,
+                          "day": 4
+                        },
+                        "title": {
+                          "romaji": "Na Honjaman Level Up",
+                          "english": "Solo Leveling",
+                          "native": "나 혼자만 레벨업"
+                        },
+                        "relations": {
+                          "edges": [
+                            {
+                              "relationType": "ADAPTATION",
+                              "node": {
+                                "id": 151807,
+                                "type": "ANIME",
+                                "format": "TV",
+                                "status": "FINISHED",
+                                "seasonYear": 2024,
+                                "startDate": {
+                                  "year": 2024,
+                                  "month": 1,
+                                  "day": 7
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken",
+                                  "english": "Solo Leveling",
+                                  "native": "俺だけレベルアップな件"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "ADAPTATION",
+                              "node": {
+                                "id": 176496,
+                                "type": "ANIME",
+                                "format": "TV",
+                                "status": "FINISHED",
+                                "seasonYear": 2025,
+                                "startDate": {
+                                  "year": 2025,
+                                  "month": 1,
+                                  "day": 5
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow",
+                                  "english": "Solo Leveling Season 2 -Arise from the Shadow-",
+                                  "native": "俺だけレベルアップな件 Season 2 -Arise from the Shadow-"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "SEQUEL",
+                              "node": {
+                                "id": 179445,
+                                "type": "MANGA",
+                                "format": "MANGA",
+                                "status": "RELEASING",
+                                "seasonYear": null,
+                                "startDate": {
+                                  "year": 2024,
+                                  "month": 7,
+                                  "day": 31
+                                },
+                                "title": {
+                                  "romaji": "Na Honjaman Level Up: Ragnarok",
+                                  "english": "Solo Leveling: Ragnarok",
+                                  "native": "나 혼자만 레벨업 : 라그나로크"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "ADAPTATION",
+                              "node": {
+                                "id": 184694,
+                                "type": "ANIME",
+                                "format": "MOVIE",
+                                "status": "FINISHED",
+                                "seasonYear": 2024,
+                                "startDate": {
+                                  "year": 2024,
+                                  "month": 11,
+                                  "day": 29
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken: ReAwakening",
+                                  "english": "Solo Leveling -ReAwakening-",
+                                  "native": "俺だけレベルアップな件 -ReAwakening-"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "ADAPTATION",
+                              "node": {
+                                "id": 213846,
+                                "type": "ANIME",
+                                "format": "MOVIE",
+                                "status": "NOT_YET_RELEASED",
+                                "seasonYear": null,
+                                "startDate": {
+                                  "year": null,
+                                  "month": null,
+                                  "day": null
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken: Beyond the System",
+                                  "english": "Solo Leveling: Beyond the System",
+                                  "native": "俺だけレベルアップな件 - Beyond the System -"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "relationType": "SEQUEL",
+                      "node": {
+                        "id": 176496,
+                        "type": "ANIME",
+                        "format": "TV",
+                        "status": "FINISHED",
+                        "seasonYear": 2025,
+                        "startDate": {
+                          "year": 2025,
+                          "month": 1,
+                          "day": 5
+                        },
+                        "title": {
+                          "romaji": "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow",
+                          "english": "Solo Leveling Season 2 -Arise from the Shadow-",
+                          "native": "俺だけレベルアップな件 Season 2 -Arise from the Shadow-"
+                        },
+                        "relations": {
+                          "edges": [
+                            {
+                              "relationType": "ADAPTATION",
+                              "node": {
+                                "id": 105398,
+                                "type": "MANGA",
+                                "format": "MANGA",
+                                "status": "FINISHED",
+                                "seasonYear": null,
+                                "startDate": {
+                                  "year": 2018,
+                                  "month": 3,
+                                  "day": 4
+                                },
+                                "title": {
+                                  "romaji": "Na Honjaman Level Up",
+                                  "english": "Solo Leveling",
+                                  "native": "나 혼자만 레벨업"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "PREQUEL",
+                              "node": {
+                                "id": 151807,
+                                "type": "ANIME",
+                                "format": "TV",
+                                "status": "FINISHED",
+                                "seasonYear": 2024,
+                                "startDate": {
+                                  "year": 2024,
+                                  "month": 1,
+                                  "day": 7
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken",
+                                  "english": "Solo Leveling",
+                                  "native": "俺だけレベルアップな件"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "PREQUEL",
+                              "node": {
+                                "id": 184694,
+                                "type": "ANIME",
+                                "format": "MOVIE",
+                                "status": "FINISHED",
+                                "seasonYear": 2024,
+                                "startDate": {
+                                  "year": 2024,
+                                  "month": 11,
+                                  "day": 29
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken: ReAwakening",
+                                  "english": "Solo Leveling -ReAwakening-",
+                                  "native": "俺だけレベルアップな件 -ReAwakening-"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "SEQUEL",
+                              "node": {
+                                "id": 213846,
+                                "type": "ANIME",
+                                "format": "MOVIE",
+                                "status": "NOT_YET_RELEASED",
+                                "seasonYear": null,
+                                "startDate": {
+                                  "year": null,
+                                  "month": null,
+                                  "day": null
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken: Beyond the System",
+                                  "english": "Solo Leveling: Beyond the System",
+                                  "native": "俺だけレベルアップな件 - Beyond the System -"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "relationType": "SUMMARY",
+                      "node": {
+                        "id": 184694,
+                        "type": "ANIME",
+                        "format": "MOVIE",
+                        "status": "FINISHED",
+                        "seasonYear": 2024,
+                        "startDate": {
+                          "year": 2024,
+                          "month": 11,
+                          "day": 29
+                        },
+                        "title": {
+                          "romaji": "Ore dake Level Up na Ken: ReAwakening",
+                          "english": "Solo Leveling -ReAwakening-",
+                          "native": "俺だけレベルアップな件 -ReAwakening-"
+                        },
+                        "relations": {
+                          "edges": [
+                            {
+                              "relationType": "SEQUEL",
+                              "node": {
+                                "id": 176496,
+                                "type": "ANIME",
+                                "format": "TV",
+                                "status": "FINISHED",
+                                "seasonYear": 2025,
+                                "startDate": {
+                                  "year": 2025,
+                                  "month": 1,
+                                  "day": 5
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow",
+                                  "english": "Solo Leveling Season 2 -Arise from the Shadow-",
+                                  "native": "俺だけレベルアップな件 Season 2 -Arise from the Shadow-"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "PARENT",
+                              "node": {
+                                "id": 151807,
+                                "type": "ANIME",
+                                "format": "TV",
+                                "status": "FINISHED",
+                                "seasonYear": 2024,
+                                "startDate": {
+                                  "year": 2024,
+                                  "month": 1,
+                                  "day": 7
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken",
+                                  "english": "Solo Leveling",
+                                  "native": "俺だけレベルアップな件"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "ADAPTATION",
+                              "node": {
+                                "id": 105398,
+                                "type": "MANGA",
+                                "format": "MANGA",
+                                "status": "FINISHED",
+                                "seasonYear": null,
+                                "startDate": {
+                                  "year": 2018,
+                                  "month": 3,
+                                  "day": 4
+                                },
+                                "title": {
+                                  "romaji": "Na Honjaman Level Up",
+                                  "english": "Solo Leveling",
+                                  "native": "나 혼자만 레벨업"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "depth": 3,
+      "ids": [
+        213846
+      ],
+      "status": 200,
+      "body": {
+        "data": {
+          "Page": {
+            "media": [
+              {
+                "id": 213846,
+                "type": "ANIME",
+                "format": "MOVIE",
+                "status": "NOT_YET_RELEASED",
+                "seasonYear": null,
+                "startDate": {
+                  "year": null,
+                  "month": null,
+                  "day": null
+                },
+                "title": {
+                  "romaji": "Ore dake Level Up na Ken: Beyond the System",
+                  "english": "Solo Leveling: Beyond the System",
+                  "native": "俺だけレベルアップな件 - Beyond the System -"
+                },
+                "relations": {
+                  "edges": [
+                    {
+                      "relationType": "PREQUEL",
+                      "node": {
+                        "id": 176496,
+                        "type": "ANIME",
+                        "format": "TV",
+                        "status": "FINISHED",
+                        "seasonYear": 2025,
+                        "startDate": {
+                          "year": 2025,
+                          "month": 1,
+                          "day": 5
+                        },
+                        "title": {
+                          "romaji": "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow",
+                          "english": "Solo Leveling Season 2 -Arise from the Shadow-",
+                          "native": "俺だけレベルアップな件 Season 2 -Arise from the Shadow-"
+                        },
+                        "relations": {
+                          "edges": [
+                            {
+                              "relationType": "ADAPTATION",
+                              "node": {
+                                "id": 105398,
+                                "type": "MANGA",
+                                "format": "MANGA",
+                                "status": "FINISHED",
+                                "seasonYear": null,
+                                "startDate": {
+                                  "year": 2018,
+                                  "month": 3,
+                                  "day": 4
+                                },
+                                "title": {
+                                  "romaji": "Na Honjaman Level Up",
+                                  "english": "Solo Leveling",
+                                  "native": "나 혼자만 레벨업"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "PREQUEL",
+                              "node": {
+                                "id": 151807,
+                                "type": "ANIME",
+                                "format": "TV",
+                                "status": "FINISHED",
+                                "seasonYear": 2024,
+                                "startDate": {
+                                  "year": 2024,
+                                  "month": 1,
+                                  "day": 7
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken",
+                                  "english": "Solo Leveling",
+                                  "native": "俺だけレベルアップな件"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "PREQUEL",
+                              "node": {
+                                "id": 184694,
+                                "type": "ANIME",
+                                "format": "MOVIE",
+                                "status": "FINISHED",
+                                "seasonYear": 2024,
+                                "startDate": {
+                                  "year": 2024,
+                                  "month": 11,
+                                  "day": 29
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken: ReAwakening",
+                                  "english": "Solo Leveling -ReAwakening-",
+                                  "native": "俺だけレベルアップな件 -ReAwakening-"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "SEQUEL",
+                              "node": {
+                                "id": 213846,
+                                "type": "ANIME",
+                                "format": "MOVIE",
+                                "status": "NOT_YET_RELEASED",
+                                "seasonYear": null,
+                                "startDate": {
+                                  "year": null,
+                                  "month": null,
+                                  "day": null
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken: Beyond the System",
+                                  "english": "Solo Leveling: Beyond the System",
+                                  "native": "俺だけレベルアップな件 - Beyond the System -"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "relationType": "ADAPTATION",
+                      "node": {
+                        "id": 105398,
+                        "type": "MANGA",
+                        "format": "MANGA",
+                        "status": "FINISHED",
+                        "seasonYear": null,
+                        "startDate": {
+                          "year": 2018,
+                          "month": 3,
+                          "day": 4
+                        },
+                        "title": {
+                          "romaji": "Na Honjaman Level Up",
+                          "english": "Solo Leveling",
+                          "native": "나 혼자만 레벨업"
+                        },
+                        "relations": {
+                          "edges": [
+                            {
+                              "relationType": "ADAPTATION",
+                              "node": {
+                                "id": 151807,
+                                "type": "ANIME",
+                                "format": "TV",
+                                "status": "FINISHED",
+                                "seasonYear": 2024,
+                                "startDate": {
+                                  "year": 2024,
+                                  "month": 1,
+                                  "day": 7
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken",
+                                  "english": "Solo Leveling",
+                                  "native": "俺だけレベルアップな件"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "ADAPTATION",
+                              "node": {
+                                "id": 176496,
+                                "type": "ANIME",
+                                "format": "TV",
+                                "status": "FINISHED",
+                                "seasonYear": 2025,
+                                "startDate": {
+                                  "year": 2025,
+                                  "month": 1,
+                                  "day": 5
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow",
+                                  "english": "Solo Leveling Season 2 -Arise from the Shadow-",
+                                  "native": "俺だけレベルアップな件 Season 2 -Arise from the Shadow-"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "SEQUEL",
+                              "node": {
+                                "id": 179445,
+                                "type": "MANGA",
+                                "format": "MANGA",
+                                "status": "RELEASING",
+                                "seasonYear": null,
+                                "startDate": {
+                                  "year": 2024,
+                                  "month": 7,
+                                  "day": 31
+                                },
+                                "title": {
+                                  "romaji": "Na Honjaman Level Up: Ragnarok",
+                                  "english": "Solo Leveling: Ragnarok",
+                                  "native": "나 혼자만 레벨업 : 라그나로크"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "ADAPTATION",
+                              "node": {
+                                "id": 184694,
+                                "type": "ANIME",
+                                "format": "MOVIE",
+                                "status": "FINISHED",
+                                "seasonYear": 2024,
+                                "startDate": {
+                                  "year": 2024,
+                                  "month": 11,
+                                  "day": 29
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken: ReAwakening",
+                                  "english": "Solo Leveling -ReAwakening-",
+                                  "native": "俺だけレベルアップな件 -ReAwakening-"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "ADAPTATION",
+                              "node": {
+                                "id": 213846,
+                                "type": "ANIME",
+                                "format": "MOVIE",
+                                "status": "NOT_YET_RELEASED",
+                                "seasonYear": null,
+                                "startDate": {
+                                  "year": null,
+                                  "month": null,
+                                  "day": null
+                                },
+                                "title": {
+                                  "romaji": "Ore dake Level Up na Ken: Beyond the System",
+                                  "english": "Solo Leveling: Beyond the System",
+                                  "native": "俺だけレベルアップな件 - Beyond the System -"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

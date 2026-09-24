@@ -1,0 +1,275 @@
+{
+  "selected_id": 387,
+  "depth": 3,
+  "requests": [
+    {
+      "depth": 3,
+      "ids": [
+        387
+      ],
+      "status": 200,
+      "body": {
+        "data": {
+          "Page": {
+            "media": [
+              {
+                "id": 387,
+                "type": "ANIME",
+                "format": "TV",
+                "status": "FINISHED",
+                "seasonYear": 2002,
+                "startDate": {
+                  "year": 2002,
+                  "month": 10,
+                  "day": 10
+                },
+                "title": {
+                  "romaji": "Haibane Renmei",
+                  "english": "Haibane Renmei",
+                  "native": "灰羽連盟"
+                },
+                "relations": {
+                  "edges": [
+                    {
+                      "relationType": "ADAPTATION",
+                      "node": {
+                        "id": 35356,
+                        "type": "MANGA",
+                        "format": "MANGA",
+                        "status": "FINISHED",
+                        "seasonYear": null,
+                        "startDate": {
+                          "year": 2000,
+                          "month": 8,
+                          "day": 30
+                        },
+                        "title": {
+                          "romaji": "Old Home no Haibanetachi",
+                          "english": null,
+                          "native": "オールドホームの灰羽達"
+                        },
+                        "relations": {
+                          "edges": [
+                            {
+                              "relationType": "ADAPTATION",
+                              "node": {
+                                "id": 387,
+                                "type": "ANIME",
+                                "format": "TV",
+                                "status": "FINISHED",
+                                "seasonYear": 2002,
+                                "startDate": {
+                                  "year": 2002,
+                                  "month": 10,
+                                  "day": 10
+                                },
+                                "title": {
+                                  "romaji": "Haibane Renmei",
+                                  "english": "Haibane Renmei",
+                                  "native": "灰羽連盟"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "PREQUEL",
+                              "node": {
+                                "id": 64211,
+                                "type": "MANGA",
+                                "format": "MANGA",
+                                "status": "FINISHED",
+                                "seasonYear": null,
+                                "startDate": {
+                                  "year": 2002,
+                                  "month": 12,
+                                  "day": 30
+                                },
+                                "title": {
+                                  "romaji": "Old Home no Haibanetachi: Bangai-hen",
+                                  "english": null,
+                                  "native": "オールドホームの灰羽達 番外編"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "SIDE_STORY",
+                              "node": {
+                                "id": 134953,
+                                "type": "MANGA",
+                                "format": "MANGA",
+                                "status": "FINISHED",
+                                "seasonYear": null,
+                                "startDate": {
+                                  "year": 2002,
+                                  "month": 8,
+                                  "day": 11
+                                },
+                                "title": {
+                                  "romaji": "Haibane Seikatsu Nisshi",
+                                  "english": null,
+                                  "native": "灰羽せいかつ日誌"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "relationType": "SIDE_STORY",
+                      "node": {
+                        "id": 134953,
+                        "type": "MANGA",
+                        "format": "MANGA",
+                        "status": "FINISHED",
+                        "seasonYear": null,
+                        "startDate": {
+                          "year": 2002,
+                          "month": 8,
+                          "day": 11
+                        },
+                        "title": {
+                          "romaji": "Haibane Seikatsu Nisshi",
+                          "english": null,
+                          "native": "灰羽せいかつ日誌"
+                        },
+                        "relations": {
+                          "edges": [
+                            {
+                              "relationType": "PARENT",
+                              "node": {
+                                "id": 35356,
+                                "type": "MANGA",
+                                "format": "MANGA",
+                                "status": "FINISHED",
+                                "seasonYear": null,
+                                "startDate": {
+                                  "year": 2000,
+                                  "month": 8,
+                                  "day": 30
+                                },
+                                "title": {
+                                  "romaji": "Old Home no Haibanetachi",
+                                  "english": null,
+                                  "native": "オールドホームの灰羽達"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "PARENT",
+                              "node": {
+                                "id": 387,
+                                "type": "ANIME",
+                                "format": "TV",
+                                "status": "FINISHED",
+                                "seasonYear": 2002,
+                                "startDate": {
+                                  "year": 2002,
+                                  "month": 10,
+                                  "day": 10
+                                },
+                                "title": {
+                                  "romaji": "Haibane Renmei",
+                                  "english": "Haibane Renmei",
+                                  "native": "灰羽連盟"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "relationType": "ALTERNATIVE",
+                      "node": {
+                        "id": 64211,
+                        "type": "MANGA",
+                        "format": "MANGA",
+                        "status": "FINISHED",
+                        "seasonYear": null,
+                        "startDate": {
+                          "year": 2002,
+                          "month": 12,
+                          "day": 30
+                        },
+                        "title": {
+                          "romaji": "Old Home no Haibanetachi: Bangai-hen",
+                          "english": null,
+                          "native": "オールドホームの灰羽達 番外編"
+                        },
+                        "relations": {
+                          "edges": [
+                            {
+                              "relationType": "SEQUEL",
+                              "node": {
+                                "id": 35356,
+                                "type": "MANGA",
+                                "format": "MANGA",
+                                "status": "FINISHED",
+                                "seasonYear": null,
+                                "startDate": {
+                                  "year": 2000,
+                                  "month": 8,
+                                  "day": 30
+                                },
+                                "title": {
+                                  "romaji": "Old Home no Haibanetachi",
+                                  "english": null,
+                                  "native": "オールドホームの灰羽達"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            },
+                            {
+                              "relationType": "ALTERNATIVE",
+                              "node": {
+                                "id": 387,
+                                "type": "ANIME",
+                                "format": "TV",
+                                "status": "FINISHED",
+                                "seasonYear": 2002,
+                                "startDate": {
+                                  "year": 2002,
+                                  "month": 10,
+                                  "day": 10
+                                },
+                                "title": {
+                                  "romaji": "Haibane Renmei",
+                                  "english": "Haibane Renmei",
+                                  "native": "灰羽連盟"
+                                },
+                                "relations": {
+                                  "edges": []
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
