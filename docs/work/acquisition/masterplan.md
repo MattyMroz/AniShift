@@ -1,7 +1,7 @@
 ---
 kind: masterplan
 status: active
-updated: 2026-09-23
+updated: 2026-09-24
 baseline: 0e8a6bf9194d2786d426d3f3a58f48272b3eb087
 ---
 
@@ -29,15 +29,15 @@ Użytkownik wybiera w AniShift tytuł → sezon → odcinki i klika Pobierz albo
 - **Silnik LLM (`anishift.services.llm`):** po E00 (PR #57) — pliki (obraz, PDF, audio, wideo) w każdym silniku; lista 22 modeli Palantira w `engines/palantir/constants.py` (katalog aplikacji to jej projekcja, bez pliku JSONC); OpenAI przez `/responses` z wariantami rozumowania; mechanizm drugiego konta w serwisie (odczyt tokena 2 z `.env` — osobny krok); próby na żywo 182/182 ([outcomes/e00.md](outcomes/e00.md)).
 - **Niepewne:** metadane z samego hasha (N-03), opóźnienie Torrentio dla premier (N-01), heurystyka na korpusie ≥ 2000 tytułów (N-02), filmy (N-04).
 - **Blokery:** brak.
-- **Znany błąd poza etapami:** `ResidentSession.season_context()` dla „4th Season” (AniList `182205`) daje `offset=48`, przez co ranking panelu uznaje S04E23 za inny sezon, a S03E23 za właściwy (wykryte 2026-09-24).
+- **Znany błąd poza etapami:** dla „4th Season” (AniList `182205`) ranking panelu uznaje S04E23 za inny sezon, a S03E23 za właściwy; `ResidentSession.season_context()` zwraca przy tym `offset=48` (wykryte 2026-09-24). Jawny sezon jest porównywany z `context.index`, a offset służy numeracji absolutnej (`anishift/application/acquisition.py:read_episode`, linie 313–320); sam offset 48 nie wyjaśnia odrzucenia S04E23. Dokładnej odpowiedzi AniList powodującej błędny kontekst nie odtworzono. Decyzja właściciela 2026-09-24: E1 omija stary kalkulator w nowej drodze; starej drogi pod `G` nie naprawiamy osobno, bo jej UI znika w E3, a stare zaplecze w E5.
 
 ## Etapy
 
 | Nr | Etap | Rezultat | Zależności | Warunek wyjścia | Status |
 | --- | --- | --- | --- | --- | --- |
-| E0 | Pakiet decyzyjny | Specyfikacja, masterplan, plan E1 i UX bez sprzeczności; ustalenia `inżynierska` zaakceptowane lub zawetowane | — | Właściciel akceptuje pakiet (lista weta w manifeście) i zgody na pomiary E1 | current |
+| E0 | Pakiet decyzyjny | Specyfikacja, masterplan, plan E1 i UX bez sprzeczności; ustalenia `inżynierska` zaakceptowane lub zawetowane | — | Właściciel akceptuje pakiet (lista weta w manifeście) i zgody na pomiary E1 | accepted |
 | E00 | Katalog modeli i wywołania zgodne z OpenCode | Silnik LLM AniShift zna wszystkie modele OpenCode z limitami, modalnościami i wariantami rozumowania; katalog nadąża za kanonicznym `opencode.jsonc` jedną drogą; każdy model odpowiada przez obecne proxy; obrazy i PDF trafiają do modeli, które je deklarują, pozostałe jawnie odmawiają; decyzja o dwóch enrollmentach podjęta w planie E00 | E0; osobny plan E00 zaakceptowany przez właściciela | Bramki zielone; katalog zgodny z kanonicznym plikiem; smoke request na każdym modelu (obraz i PDF tam, gdzie deklarowane) zaliczony; review `opus5` bez otwartych findingów krytycznych i poważnych | accepted |
-| E1 | Wybór odcinka na prawdziwych danych + pomiary | Nowa ścieżka Anime: tytuł → wpisy → odcinki → sugestia i inne wydania (bez pobierania). Stara lista wydań wg grup zostaje pod klawiszem `G`, więc pobieranie i dodawanie subskrypcji działa jak dziś. Adaptery ani.zip i Torrentio, heurystyka i ranking w kodzie. Raport N-01–N-04 | E0, E00 (oceniający korpusu N-02 działają przez silnik LLM po E00) | Testy i bramki zielone; parytet 231/231 z badaniem; korpus ≥ 2000 tytułów oceniony w całości przez agentów, 0 błędnych `zgodnych`; H1 zaliczone; raport pomiarów z decyzjami dla E2 i E3 | planned |
+| E1 | Wybór odcinka na prawdziwych danych + pomiary | Najpierw oznaczony korpus ≥ 2000 tytułów / ≥ 10 000 rekordów, zamrożony podział i heurystyka zbudowana od zera na części roboczej; po egzaminie kod domeny, adaptery, usługa/IPC i nowa ścieżka Anime: tytuł → wpisy → odcinki → sugestia i inne wydania (bez pobierania). Stara lista wydań wg grup pod `G` zachowuje pobieranie i subskrypcje. Ranking właściciela bez zmian; raport N-01–N-04 | E0, E00 (oceniający korpusu N-02 działają przez silnik LLM po E00) | Heurystyka zbudowana na korpusie ≥ 2000 tytułów / ≥ 10 000 rekordów; jednorazowy egzamin na niewidzianej odłożonej części: 0 błędnych `zgodnych`; metryki `niepewnych` i błędnych `niezgodnych` per warstwa zaakceptowane przez właściciela. Testy oznaczonych fixture i bramki zielone; H1 zaliczone; raport pomiarów z decyzjami dla E2 i E3 | current |
 | E2 | Jednorazowe pobieranie nową drogą | Pobierz z listy odcinków: zlecenie per odcinek, magnet → lista plików → tylko wybrane pliki → kompletność per odcinek → istniejące przetwarzanie → Biblioteka. Pobierz ponownie. Pomost `G` (stara lista wg grup) zostaje, bo tylko z niego da się jeszcze dodać subskrypcję | E1 (N-03 pozytywne) | Test integracyjny z prawdziwym qB na syntetyku (E1/E3 bez E2, restart); migracja WatchState na kopii stanu właściciela; H2 zaliczone | planned |
 | E3 | Subskrypcje na wspólnym mechanizmie | Subskrybuj z listy odcinków, zakładka Subskrypcje (lista, szczegóły, dodaj, usuń, wstrzymaj, szukaj teraz), harmonogram U-13–U-15, autozamknięcie, przeniesienie starych subskrypcji; usunięty pomost `G` i stara droga grup w UI | E2; decyzja o źródle świeżych odcinków z N-01 | Testy fake clock (emisja, brak wydania, koniec sezonu, restart, izolacja problemów); migracja na kopii; H3: tydzień bez dotykania | planned |
 | E4 | Kontrola zawartości po pobraniu | PL napisy → bez tłumaczenia; obce → tłumaczenie; brak napisów → jedna zamiana wydania; lektor zawsze | E2; N-05 | Testy planera na syntetykach; H4 na prawdziwym odcinku z PL i bez PL | planned |
@@ -45,13 +45,13 @@ Użytkownik wybiera w AniShift tytuł → sezon → odcinki i klika Pobierz albo
 
 Gałąź i PR E00 ustala jego plan; E1 startuje od stanu po E00 (nie od samego `0e8a6bf`).
 
-Gałęzie: cały łańcuch startuje od `work/local-automation/06-efficiency` (niescalonej jeszcze z `main`); gałęzie etapów według wzorca repo `work/acquisition/<nn>-<slug>`. Scalanie: E1, E2 i E3 to osobne, piętrowe PR-y. Do `main` trafiają razem po akceptacji E3, bo dopiero wtedy nowa droga ma i pobieranie, i subskrypcje (inaczej `main` traciłby jedną z nich). E4 i E5 to osobne PR-y po nich.
+Gałęzie: `work/local-automation/06-efficiency` scalono do `main` przez PR #56 (2026-09-23, merge `c58392a`); E1 startuje od stanu po E00: `work/acquisition/00-model-catalog-v2` na `bde35d7`. Gałęzie etapów według wzorca repo `work/acquisition/<nn>-<slug>`. Scalanie: E1, E2 i E3 to osobne, piętrowe PR-y. Do `main` trafiają razem po akceptacji E3, bo dopiero wtedy nowa droga ma i pobieranie, i subskrypcje (inaczej `main` traciłby jedną z nich). E4 i E5 to osobne PR-y po nich.
 
 ## Aktualny etap
 
-**Etap:** E00 zakończone (kod zaakceptowany, PR #57 czeka na merge) → E1.
+**Etap:** E1 — wybór odcinka na prawdziwych danych i pomiary. E0 zaakceptowane zgodnie z [README.md](README.md) §2; E00 zakończone (kod zaakceptowany, PR #57 czeka na merge).
 
-**Następny krok:** aktualizacja planu E1 ([plans/e1-wybor-odcinka.md](plans/e1-wybor-odcinka.md)) na stanie po E00 i jego akceptacja przez właściciela; E1 startuje od gałęzi E00.
+**Następny krok:** akceptacja zaktualizowanego [planu E1](plans/e1-wybor-odcinka.md) na stanie po E00, potem preflight i zbieranie/etykietowanie korpusu przed budową heurystyki; E1 startuje od gałęzi E00. Obecna Z-1 pozwala rozpocząć podstawową próbę, ale osiągnięcie ≥ 10 000 rekordów lub nowy egzamin może wymagać jej rozszerzenia (plan E1 §15).
 
 **Dlaczego E00 przed E1:** E1 ocenia korpus N-02 modelami przez silnik LLM AniShift. Właściciel wymaga, by ten silnik najpierw znał aktualne modele i aktualną specyfikację wywołań; inaczej ocena korpusu biegłaby na nieaktualnym katalogu i niepotwierdzonej drodze do modeli OpenAI.
 
@@ -82,10 +82,12 @@ Gałęzie: cały łańcuch startuje od `work/local-automation/06-efficiency` (ni
 ### E1 — wybór odcinka na prawdziwych danych
 
 - **Cel:** nowa ścieżka wyboru działa na żywych danych, a niewiadome N-01–N-04 mają zmierzone odpowiedzi.
-- **Wejście:** zaakceptowany E0, zgody na pomiary.
-- **Rezultat:** Anime → tytuł → wpisy franczyzy → odcinki wpisu → sugestia wydania i inne wydania z oceną tożsamości; raport pomiarów.
-- **Nie zawiera:** pobierania, subskrybowania, zmian stanu trwałego, migracji.
-- **Ryzyko:** AniList odrzuci zagnieżdżone zapytanie o relacje (sprawdzane w fazie 0 planu); heurystyka zostawi zbyt wiele `niepewnych` (N-02) — wtedy E2 dostaje zadanie rozszerzenia reguł na podstawie zebranego korpusu.
+- **Wejście:** zaakceptowane E0 i E00, zgody na pomiary; ewentualne rozszerzenie Z-1 rozstrzygane przed przekroczeniem budżetu/czasu.
+- **Kolejność:** zebranie ≥ 2000 tytułów / ≥ 10 000 rekordów → niezależne etykiety Astra/Opus 5, arbitraż Gemini Pro i rozliczenie sporów przez właściciela → stały losowy podział stratyfikowany z ziarnem i sumami → budowa reguł od zera na części roboczej → jeden egzamin → czysta domena i adaptery → N-01, usługa/IPC/UI, N-03 i H1. N-04 poprzedza zbieranie filmów korpusu.
+- **Rezultat:** heurystyka zbudowana na oznaczonym korpusie, sprawdzona na odłożonej części niedostępnej autorowi; Anime → tytuł → wpisy franczyzy → odcinki wpisu → sugestia wydania i inne wydania z oceną tożsamości; raport pomiarów. Historyczne 231 rekordów pozostaje danymi z etykietami i źródłem kontroli, bez wymogu parytetu z prototypem. Ranking U-04/U-05/U-24 pozostaje bez zmian.
+- **Warunek wyjścia:** ≥ 2000 tytułów / ≥ 10 000 oznaczonych rekordów, jednorazowy egzamin na odłożonej części: **0 błędnych `zgodnych`**, a udział `niepewnych` i błędnych `niezgodnych` per warstwa zmierzony i zaakceptowany przez właściciela bez wymyślonego progu. Testy na stałych oznaczonych próbkach, bramki, H1 i raport N-01–N-04 spełniają plan E1.
+- **Nie zawiera:** pobierania, subskrybowania, zmian stanu trwałego ani migracji; jedyny wyjątek to istniejący zapis `WatchState.provider_locks` po 429, bez nowego modelu danych (D4, [plan E1](plans/e1-wybor-odcinka.md) §7 i §15).
+- **Ryzyko:** AniList odrzuci zagnieżdżone zapytanie o relacje (faza 0); zgoda Z-1 nie wystarczy na liczność/warstwy korpusu; egzamin wykaże błędne `zgodne` albo nieakceptowalne pokrycie. Porażka → nowa iteracja na części roboczej i nowa niewykorzystana część odłożona; stara nie stanowi ponownie dowodu. Osobne pliki, uprawnienia opiekuna, sumy przed/po i skrypt zwracający wyłącznie metryki chronią egzamin (plan E1 §9).
 
 ### E2 — jednorazowe pobieranie
 
@@ -131,6 +133,7 @@ Gałęzie: cały łańcuch startuje od `work/local-automation/06-efficiency` (ni
 
 | Data | Zmiana | Dowód / powód | Wpływ |
 | --- | --- | --- | --- |
+| 2026-09-24 | Właściciel: heurystyka tożsamości od zera na ≥ 2000 tytułów / ≥ 10 000 oznaczonych rekordów, zamiast portu i parytetu 231/231 | Decyzja właściciela: około 200 przypadków nie wystarcza; błąd ma być anomalią, a jakość sprawdzona na danych niewidzianych przy budowie | Korpus i etykiety przed domeną; zamrożony podział, budowa tylko na części roboczej i jednorazowy egzamin z 0 błędnych `zgodnych`; pozostałe metryki ocenia właściciel. Porażka wymaga nowej części odłożonej. Ranking bez zmian; E0 accepted, E1 current |
 | 2026-09-23 | Właściciel: nowy etap E00 przed E1 — katalog modeli i wywołania zgodne 1:1 ze skillem OpenCode, multimodalność; oceniający N-02 przez `anishift.services.llm` (silnik Palantir), nie przez silnik tłumaczenia | Decyzja właściciela | E00 dodany (planned; wejście: osobny plan zaakceptowany przez właściciela); E1 zależy od E00; plan E1 §9 N-02 i faza 0 pkt 5a zmienione |
 | 2026-09-23 | Właściciel: ocena całego korpusu przez nieograniczoną liczbę agentów | Decyzja właściciela | N-02: zamiast próbki 700 — cały korpus, dwóch agentów na rekord, rekordy kontrolne, lista dla właściciela |
 | 2026-09-23 | Właściciel: kodek bez znaczenia; pomiary na VPS z VpsOracleManager | Decyzja właściciela | U-25; N-06 zamknięte; miejsce pomiarów ustalone |
@@ -142,7 +145,10 @@ Gałęzie: cały łańcuch startuje od `work/local-automation/06-efficiency` (ni
 
 ## Nierozstrzygnięte decyzje
 
-- Weto właściciela do ustaleń `inżynierska` (lista w [manifest.md](manifest.md) §3).
-- Zgody na pomiary E1 (manifest §4).
+Weto i decyzje właściciela są rozliczone ([README.md](README.md) §3); Z-1 i Z-3 udzielone, Z-2 wycofana (§4). Szczegóły E00 rozstrzygnięto w zaakceptowanych planach [katalogu](plans/e00-katalog-modeli.md) i [projektu kodu](plans/e00-projekt-kodu.md): katalog jest projekcją stałych, mechanizm dwóch kont istnieje w silniku. Podłączenie danych konta 2 jest krokiem D2 fazy 0 E1, nie otwartą decyzją E00 ([plan E1](plans/e1-wybor-odcinka.md) §9 i §15).
+
+Pozostają:
+
+- **Warunkowo w E1:** rozszerzenie Z-1, jeśli 2000 tytułów / około 4000 zapytań w 2–3 doby nie da ≥ 10 000 rekordów we wszystkich warstwach albo zabraknie świeżej części egzaminacyjnej; jedno pytanie z rachunkiem w planie E1 §15.
 - N-01–N-05 — rozstrzygają etapy wskazane w spec §15.
-- Szczegóły E00 (forma synchronizacji katalogu, dwa enrollmenty) — rozstrzyga plan E00 zaakceptowany przez właściciela.
+- **Przed E3:** co zastąpi fallback po braku tytułu w AniList (D5, spec W-08, UX U01), gdy zniknie stara lista wydań Nyaa? Zachowanie E1 pozostaje rozstrzygnięte; odpowiedź wymaga decyzji właściciela przed usunięciem tej drogi w E3.

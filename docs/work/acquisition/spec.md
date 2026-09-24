@@ -80,7 +80,7 @@ Konkretnej przyczyny u użytkownika nie ustalono. Potwierdzono mechanizmy, z kt�
 
 ## 4. Ustalenia
 
-Status `właściciel` — wynika z wypowiedzi właściciela. Status `inżynierska` — rozstrzygnięte przez autora pakietu na podstawie dowodów; obowiązuje, dopóki właściciel nie zawetuje (lista do weta: [manifest.md](manifest.md) §3).
+Status `właściciel` — wynika z wypowiedzi właściciela. Status `inżynierska` — rozstrzygnięte przez autora pakietu na podstawie dowodów; obowiązuje, dopóki właściciel nie zawetuje (lista do weta: [README.md](README.md) §3).
 
 | ID | Ustalenie | Skutek | Status, podstawa |
 | --- | --- | --- | --- |
@@ -121,7 +121,7 @@ Status `właściciel` — wynika z wypowiedzi właściciela. Status `inżyniersk
 - **W-05** Relacje do mangi i powieści nie są pokazywane. „Zakończony” dotyczy tylko danego wpisu, nie franczyzy.
 - **W-06** Wybór wpisu pokazuje listę jego odcinków: numer, tytuł, data emisji (czas lokalny), stan (§5.5). Dodatki `S…` z ani.zip są pokazane pod listą jako informacja, bez akcji pobrania. OVA mające własny wpis pobiera się z ich wpisu.
 - **W-07** Przyszły odcinek bez obiektu w ani.zip jest pokazany, gdy AniList zna jego numer (z harmonogramu lub liczby odcinków).
-- **W-08** Gdy AniList lub ani.zip nie odpowiada, widok mówi, które źródło zawiodło i kiedy można spróbować ponownie. Nie pokazuje „0 odcinków”. Nie przełącza się na surowe wyszukiwanie Nyaa.
+- **W-08** Gdy AniList lub ani.zip nie odpowiada, widok mówi, które źródło zawiodło i kiedy można spróbować ponownie. Nie pokazuje „0 odcinków” i nie przełącza się na surowe wyszukiwanie Nyaa z powodu awarii. Gdy poprawnie zakończone wyszukiwanie AniList nie znalazło tytułu, pokazuje komunikat „Brak tytułu w AniList, szukam wydań na Nyaa” i przechodzi do wyszukiwania wpisanego hasła na Nyaa (stara lista wydań); wynik zachowuje informację o tym przejściu. Decyzja właściciela 2026-09-24.
 
 ### 5.2 Wybór wydania
 
@@ -219,7 +219,7 @@ Jeden odcinek ma w każdym widoku ten sam stan, wyliczany z trwałych danych rez
 
 ## 8. Ograniczenia
 
-- Windows jest jedyną platformą uruchomieniową. Bramki CI dla Linuksa (mypy, pytest) pozostają zgodnie z `AGENTS.md`; nie ma testów runtime na Linuksie.
+- Windows jest jedyną platformą uruchomieniową. CI uruchamia pytest i smoke aplikacji tylko na Windows; lint i mypy na Ubuntu, z mypy także dla targetu Windows, zgodnie z `AGENTS.md` i `.github/workflows/ci.yml`. Nie ma testów runtime aplikacji na Linuksie.
 - Python 3.14, istniejące zależności (`httpx`, `prompt_toolkit`, `rich`, `pydantic`). Nowa zależność tylko przez `uv add` i tylko po zgodzie właściciela.
 - qBittorrent 5.x w prywatnym profilu AniShift, Web API.
 - Pomiary E1 (N-01, N-02, N-04) działają na VPS właściciela (Oracle Always Free, Ubuntu na ARM), zarządzanym z repozytorium `../../../../../VpsOracleManager` (`deploy/connect.ps1`). Próba N-03 działa lokalnie na Windows, bo dotyczy binarki qBittorrent używanej przez AniShift.
@@ -295,7 +295,7 @@ Ta praca nie zmienia poniższych zachowań (kontrakt `../local-automation-2/spec
 | Obszar | Warunek | Instrument |
 | --- | --- | --- |
 | Wyszukiwanie | Dla 10 tytułów z listy właściciela, w tym Slime S1E4 (A:S-01), właściwy wpis i odcinek są osiągalne w ≤ 3 wyborach od wpisania nazwy | Scenariusz H1 |
-| Tożsamość | Na zapisanych odpowiedziach z badań nowa heurystyka daje te same 231 decyzji co `workspace/.archive/acquisition/evidence/replay.py`; na korpusie ≥ 2000 tytułów, ocenionym w całości, 0 błędnych `zgodnych` | Testy jednostkowe + raport E1 (N-02) |
+| Tożsamość | Heurystyka zbudowana od zera na oznaczonym korpusie ≥ 2000 tytułów / ≥ 10 000 rekordów (odcinek + kandydat), po stałym losowym podziale stratyfikowanym z zapisanym ziarnem i sumami. Budowa wyłącznie na części roboczej; jednorazowy egzamin na części odłożonej, niewidzianej przez autora: 0 błędnych `zgodnych`. Udział `niepewnych` i błędnych `niezgodnych` per warstwa przedstawiony właścicielowi do decyzji bez narzuconego progu. Porażka wymaga nowej części odłożonej; historyczne 231 rekordów to dane z etykietami i kontrole, bez parytetu z prototypem (decyzja właściciela 2026-09-24) | Testy jednostkowe na stałych oznaczonych próbkach + manifest podziału, dowód izolacji i raport jednorazowego egzaminu E1 (N-02) |
 | Ranking | Kolejność U-04/U-05 na przypadkach granicznych (1080p bez PL vs 720p z PL, 2160p vs 720p, PL vs MultiSub w 1080p, MultiSub vs NF bez MultiSub, 1440×1080, brak seedów, nieobsługiwany kontener) | Testy jednostkowe |
 | Pobieranie | Syntetyczna paczka: E1 i E3 bez E2, jeden transfer, restart w trakcie, oba odcinki w Bibliotece, E2 nieprzetworzone (A:S-08) | Test integracyjny z rzeczywistym qB na syntetyku |
 | Pobieranie | Właściciel pobiera jeden prawdziwy odcinek i ogląda wynik w Bibliotece | Scenariusz H2 |

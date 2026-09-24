@@ -43,9 +43,9 @@ Po Enter na „Pobierz” widok przechodzi do Przetwarzania z zaznaczonymi nowym
 │                                                                        │
 │  Rok   Tytuł                                              Format        │
 │> 2024  That Time I Got Reincarnated as a Slime Season 3   TV            │
+│  2022  That Time I Got Reincarnated as a Slime the Movie  Film          │
 │  2021  That Time I Got Reincarnated as a Slime Season 2   TV            │
 │  2018  That Time I Got Reincarnated as a Slime            TV            │
-│  2022  That Time I Got Reincarnated as a Slime the Movie  Film          │
 │                                                                        │
 │ Enter wybierz · G wydania wg grup · / szukaj · Esc wróć                │
 └────────────────────────────────────────────────────────────────────────┘
@@ -54,7 +54,7 @@ Po Enter na „Pobierz” widok przechodzi do Przetwarzania z zaznaczonymi nowym
 - Pole wyszukiwania startuje bez fokusu; Enter na polu lub `/` włącza edycję; Enter w edycji szuka; Esc wyłącza edycję i zostawia tekst.
 - Lista: rok premiery wpisu malejąco, bez roku na końcu, w roku alfabetycznie (W-03). Tytuł angielski, gdy istnieje, inaczej romaji. Bez liczby odcinków.
 - Wyszukiwanie w toku: w miejscu listy „Szukam tytułu…”; Esc przerywa.
-- Brak wyników: „Nie znaleziono tytułu „slime”. Zmień hasło.”
+- Brak tytułu po poprawnie zakończonym wyszukiwaniu AniList: „Brak tytułu w AniList, szukam wydań na Nyaa” → wyszukiwanie wpisanego hasła → stara lista wydań wg grup. Na wynikach pozostaje notka „Brak tytułu w AniList, wyniki dla hasła”; Esc wraca do zapytania. To przejście nie dotyczy awarii AniList (W-08).
 - AniList niedostępny: „AniList nie odpowiada · spróbuj za 1 min” (czas z ochłodzenia).
 - `G` (E1–E2): otwiera dotychczasową listę wydań pogrupowanych według grup wydających — bez zmian, z działającym `D` pobierz i `O` subskrybuj. Pomost na czas E1–E2; usuwany w E3, gdy nowa droga ma Pobierz i Subskrybuj.
 
@@ -155,7 +155,7 @@ Stopka w kolejnych etapach: E2 dodaje „P pobierz ponownie”, E3 dodaje „O s
 │>   zgodny        [Erai-raws] … - 03 [1080p][Multi] 1080p  MultiSub  312 │
 │    zgodny        [SubsPlease] … - 03 (1080p)      1080p  —         820 │
 │    zgodny        [EMBER] … S04E03 (paczka)        1080p  —          45 │
-│    niepewny      … 03 [720p]                      720p   —           ? │
+│    niepewny      … 03                             ?     —           ? │
 │    niezgodny     Tensura Nikki - 03               1080p  —         110 │
 │                                                                        │
 │  Powód: brak rozpoznanego aliasu tytułu                                │
