@@ -61,9 +61,10 @@
       }
     },
     "label": "mismatch",
-    "label_strength": "name_consistent",
-    "label_provenance": "historical B/OVA classification of names, not payload",
-    "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."
+    "label_strength": "title_or_tvdb_anchor",
+    "label_provenance": "phase0c review: archived AniList 101280 SPIN_OFF 116741 and ani.zip S01E04",
+    "label_rationale": "Selected filename names Tensura Nikki, visible in target other_series and independently mapped to the separate spin-off, not target TV S01E04.",
+    "label_history": [{"label": "mismatch", "label_strength": "name_consistent", "label_provenance": "historical B/OVA classification of names, not payload", "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."}]
   },
   {
     "id": "slime-s1e4:3",
@@ -292,9 +293,10 @@
       }
     },
     "label": "mismatch",
-    "label_strength": "name_consistent",
-    "label_provenance": "historical B/OVA classification of names, not payload",
-    "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."
+    "label_strength": "title_or_tvdb_anchor",
+    "label_provenance": "phase0c review: archived AniList 101280 SIDE_STORY 106509 format OVA and ani.zip S01E04",
+    "label_rationale": "Selected filename identifies OAD, independently catalogued as a separate OVA work, not target TV S01E04; no local OVA episode order assumed.",
+    "label_history": [{"label": "mismatch", "label_strength": "name_consistent", "label_provenance": "historical B/OVA classification of names, not payload", "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."}]
   },
   {
     "id": "slime-s1e4:10",
@@ -358,9 +360,10 @@
       }
     },
     "label": "mismatch",
-    "label_strength": "name_consistent",
-    "label_provenance": "historical B/OVA classification of names, not payload",
-    "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."
+    "label_strength": "title_or_tvdb_anchor",
+    "label_provenance": "phase0c review: archived AniList 101280 SPIN_OFF 116741 and ani.zip S01E04",
+    "label_rationale": "Selected filename names The Slime Diaries, visible in target other_series and independently mapped to the separate spin-off, not target TV S01E04.",
+    "label_history": [{"label": "mismatch", "label_strength": "name_consistent", "label_provenance": "historical B/OVA classification of names, not payload", "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."}]
   },
   {
     "id": "slime-s1e4:12",
@@ -391,9 +394,10 @@
       }
     },
     "label": "mismatch",
-    "label_strength": "name_consistent",
-    "label_provenance": "historical B/OVA classification of names, not payload",
-    "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."
+    "label_strength": "title_or_tvdb_anchor",
+    "label_provenance": "phase0c review: archived AniList 101280 SIDE_STORY 106509 format OVA and ani.zip S01E04",
+    "label_rationale": "Selected file belongs to an explicitly OAD-only 01-05 release, independently catalogued as a separate OVA work, not target TV S01E04; no OVA order assumed.",
+    "label_history": [{"label": "mismatch", "label_strength": "name_consistent", "label_provenance": "historical B/OVA classification of names, not payload", "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."}]
   },
   {
     "id": "slime-s1e4:13",
@@ -886,9 +890,10 @@
       }
     },
     "label": "mismatch",
-    "label_strength": "name_consistent",
-    "label_provenance": "historical B/OVA classification of names, not payload",
-    "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."
+    "label_strength": "title_or_tvdb_anchor",
+    "label_provenance": "phase0c review: archived AniList 101280 SIDE_STORY 106509 format OVA and ani.zip S01E04",
+    "label_rationale": "Selected filename identifies OVA, independently catalogued as a separate work, not target TV S01E04; no local OVA episode order assumed.",
+    "label_history": [{"label": "mismatch", "label_strength": "name_consistent", "label_provenance": "historical B/OVA classification of names, not payload", "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."}]
   },
   {
     "id": "slime-s1e4:28",
@@ -1117,9 +1122,10 @@
       }
     },
     "label": "mismatch",
-    "label_strength": "name_consistent",
-    "label_provenance": "historical B/OVA classification of names, not payload",
-    "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."
+    "label_strength": "title_or_tvdb_anchor",
+    "label_provenance": "phase0c review: archived AniList 101280 SIDE_STORY 106509 format OVA and ani.zip S01E04",
+    "label_rationale": "Selected filename identifies OAD, independently catalogued as a separate OVA work, not target TV S01E04; no local OVA episode order assumed.",
+    "label_history": [{"label": "mismatch", "label_strength": "name_consistent", "label_provenance": "historical B/OVA classification of names, not payload", "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."}]
   },
   {
     "id": "slime-s1e4:35",
@@ -1447,9 +1453,10 @@
       }
     },
     "label": "mismatch",
-    "label_strength": "name_consistent",
-    "label_provenance": "historical B/OVA classification of names, not payload",
-    "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."
+    "label_strength": "title_or_tvdb_anchor",
+    "label_provenance": "phase0c review: archived AniList 101280 SPIN_OFF 116741 and ani.zip S01E04",
+    "label_rationale": "Selected filename names The Slime Diaries, visible in target other_series and independently mapped to the separate spin-off, not target TV S01E04.",
+    "label_history": [{"label": "mismatch", "label_strength": "name_consistent", "label_provenance": "historical B/OVA classification of names, not payload", "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."}]
   },
   {
     "id": "slime-s1e4:45",
@@ -1546,9 +1553,10 @@
       }
     },
     "label": "mismatch",
-    "label_strength": "name_consistent",
-    "label_provenance": "historical B/OVA classification of names, not payload",
-    "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."
+    "label_strength": "title_or_tvdb_anchor",
+    "label_provenance": "phase0c review: archived AniList 101280 SIDE_STORY 106509 format OVA and ani.zip S01E04",
+    "label_rationale": "Selected file belongs to an explicitly OAD-only 01-05 release, independently catalogued as a separate OVA work, not target TV S01E04; no OVA order assumed.",
+    "label_history": [{"label": "mismatch", "label_strength": "name_consistent", "label_provenance": "historical B/OVA classification of names, not payload", "label_rationale": "The selected filename or its parent release explicitly identifies a spin-off or OAD/OVA instead of the requested TV episode."}]
   },
   {
     "id": "slime-s4e23:1",
@@ -5371,9 +5379,10 @@
       }
     },
     "label": "mismatch",
-    "label_strength": "name_consistent",
-    "label_provenance": "historical B/OVA classification of names, not payload",
-    "label_rationale": "The release and/or selected file identifies another work, a menu, or an EPUB rather than Cowboy Bebop episode 1."
+    "label_strength": "title_or_tvdb_anchor",
+    "label_provenance": "phase0c review: archived Kitsu anime 1 titles and AniList search Mushoku Tensei III 178789",
+    "label_rationale": "Selected filename names Mushoku Tensei S3 and Isekai Ittara Honki Dasu, matching independent AniList title components; Kitsu confirms the target is Cowboy Bebop.",
+    "label_history": [{"label": "mismatch", "label_strength": "name_consistent", "label_provenance": "historical B/OVA classification of names, not payload", "label_rationale": "The release and/or selected file identifies another work, a menu, or an EPUB rather than Cowboy Bebop episode 1."}]
   },
   {
     "id": "bebop-e1:18",
@@ -5560,9 +5569,10 @@
       }
     },
     "label": "mismatch",
-    "label_strength": "name_consistent",
-    "label_provenance": "historical B/OVA classification of names, not payload",
-    "label_rationale": "The release and/or selected file identifies another work, a menu, or an EPUB rather than Cowboy Bebop episode 1."
+    "label_strength": "title_or_tvdb_anchor",
+    "label_provenance": "phase0c review: archived Kitsu anime 1 TV identity and explicit selected-file Menu 01 marker",
+    "label_rationale": "Selected filename explicitly identifies Menu 01, a non-episode item, while independent Kitsu metadata confirms a TV anime target. No candidate-title translation is needed.",
+    "label_history": [{"label": "mismatch", "label_strength": "name_consistent", "label_provenance": "historical B/OVA classification of names, not payload", "label_rationale": "The release and/or selected file identifies another work, a menu, or an EPUB rather than Cowboy Bebop episode 1."}]
   },
   {
     "id": "bebop-e1:25",
@@ -6289,9 +6299,10 @@
       }
     },
     "label": "mismatch",
-    "label_strength": "name_consistent",
-    "label_provenance": "historical B/OVA classification of names, not payload",
-    "label_rationale": "The release and/or selected file identifies another work, a menu, or an EPUB rather than Cowboy Bebop episode 1."
+    "label_strength": "title_or_tvdb_anchor",
+    "label_provenance": "phase0c review: archived Kitsu anime 1 TV identity and explicit release Light Novel / epub markers",
+    "label_rationale": "No selected file exists; the release explicitly says Light Novel and epub, a book rather than the independently catalogued TV anime target. Payload unverified.",
+    "label_history": [{"label": "mismatch", "label_strength": "name_consistent", "label_provenance": "historical B/OVA classification of names, not payload", "label_rationale": "The release and/or selected file identifies another work, a menu, or an EPUB rather than Cowboy Bebop episode 1."}]
   },
   {
     "id": "ova-4:1",
@@ -7003,9 +7014,15 @@
       }
     },
     "label": "mismatch",
-    "label_strength": "name_consistent",
-    "label_provenance": "historical B/OVA classification of names, not payload",
-    "label_rationale": "Explicit Hey! Butts title equals ani.zip local episode 2, not target local episode 1."
+    "label_strength": "title_or_tvdb_anchor",
+    "label_provenance": "phase0c offline verification: ani.zip 106509 episodes 1/2 and sonarr-ova TVDB 7205861/7205862",
+    "label_rationale": "Selected filename names Hey! Butts, visible among other episode titles; archived mappings identify it as local 2 / S00E03, not The Tragedy of M, local 1 / S00E02.",
+    "label_history": [{
+      "label": "mismatch",
+      "label_strength": "name_consistent",
+      "label_provenance": "historical B/OVA classification of names, not payload",
+      "label_rationale": "Explicit Hey! Butts title equals ani.zip local episode 2, not target local episode 1."
+    }]
   },
   {
     "id": "ova-1:2",
@@ -7297,9 +7314,15 @@
       }
     },
     "label": "mismatch",
-    "label_strength": "name_consistent",
-    "label_provenance": "historical B/OVA classification of names, not payload",
-    "label_rationale": "Explicit Hey! Butts title equals ani.zip local episode 2, not target local episode 1."
+    "label_strength": "title_or_tvdb_anchor",
+    "label_provenance": "phase0c offline verification: ani.zip 106509 episodes 1/2 and sonarr-ova TVDB 7205861/7205862",
+    "label_rationale": "Selected filename names Hey! Butts, visible among other episode titles; archived mappings identify it as local 2 / S00E03, not The Tragedy of M, local 1 / S00E02.",
+    "label_history": [{
+      "label": "mismatch",
+      "label_strength": "name_consistent",
+      "label_provenance": "historical B/OVA classification of names, not payload",
+      "label_rationale": "Explicit Hey! Butts title equals ani.zip local episode 2, not target local episode 1."
+    }]
   },
   {
     "id": "ova-1:9",
