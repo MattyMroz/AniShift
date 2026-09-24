@@ -26,16 +26,17 @@ Użytkownik wybiera w AniShift tytuł → sezon → odcinki i klika Pobierz albo
 - **Działa, ale zostanie zastąpione:** zakładka Anime z wyborem grupy (Nyaa), subskrypcje przypięte do grupy.
 - **Nie działa:** subskrypcje (8 potwierdzonych mechanizmów zatrzymania, spec §3.2); pobieranie wybranych plików z paczki; reguła PL/MultiSub/1080p.
 - **Potwierdzone badaniami, nie w kodzie:** łańcuch AniList → ani.zip → Torrentio, heurystyka tożsamości, wybór plików w qB (na pliku .torrent).
-- **Silnik LLM (`anishift.services.llm`, silnik Palantir):** katalog modeli AniShift (`config/anishift.models.example.jsonc`, `schema_version` 1) ma 19 modeli wobec 20 w OpenCode (brak `gpt-6-astra`), bez modalności i wariantów rozumowania; żądania są wyłącznie tekstowe (`LlmContentPart` = `TextPart`); provider `foundry-openai` wysyła `/chat/completions`, a OpenCode woła modele OpenAI przez `@ai-sdk/openai` (`/responses`) — działanie obecnej drogi niepotwierdzone; jeden enrollment.
+- **Silnik LLM (`anishift.services.llm`):** po E00 (PR #57) — pliki (obraz, PDF, audio, wideo) w każdym silniku; lista 22 modeli Palantira w `engines/palantir/constants.py` (katalog aplikacji to jej projekcja, bez pliku JSONC); OpenAI przez `/responses` z wariantami rozumowania; mechanizm drugiego konta w serwisie (odczyt tokena 2 z `.env` — osobny krok); próby na żywo 182/182 ([outcomes/e00.md](outcomes/e00.md)).
 - **Niepewne:** metadane z samego hasha (N-03), opóźnienie Torrentio dla premier (N-01), heurystyka na korpusie ≥ 2000 tytułów (N-02), filmy (N-04).
-- **Blokery:** brak. E0 czeka na akceptację właściciela.
+- **Blokery:** brak.
+- **Znany błąd poza etapami:** `ResidentSession.season_context()` dla „4th Season” (AniList `182205`) daje `offset=48`, przez co ranking panelu uznaje S04E23 za inny sezon, a S03E23 za właściwy (wykryte 2026-09-24).
 
 ## Etapy
 
 | Nr | Etap | Rezultat | Zależności | Warunek wyjścia | Status |
 | --- | --- | --- | --- | --- | --- |
 | E0 | Pakiet decyzyjny | Specyfikacja, masterplan, plan E1 i UX bez sprzeczności; ustalenia `inżynierska` zaakceptowane lub zawetowane | — | Właściciel akceptuje pakiet (lista weta w manifeście) i zgody na pomiary E1 | current |
-| E00 | Katalog modeli i wywołania zgodne z OpenCode | Silnik LLM AniShift zna wszystkie modele OpenCode z limitami, modalnościami i wariantami rozumowania; katalog nadąża za kanonicznym `opencode.jsonc` jedną drogą; każdy model odpowiada przez obecne proxy; obrazy i PDF trafiają do modeli, które je deklarują, pozostałe jawnie odmawiają; decyzja o dwóch enrollmentach podjęta w planie E00 | E0; osobny plan E00 zaakceptowany przez właściciela | Bramki zielone; katalog zgodny z kanonicznym plikiem; smoke request na każdym modelu (obraz i PDF tam, gdzie deklarowane) zaliczony; review `opus5` bez otwartych findingów krytycznych i poważnych | planned |
+| E00 | Katalog modeli i wywołania zgodne z OpenCode | Silnik LLM AniShift zna wszystkie modele OpenCode z limitami, modalnościami i wariantami rozumowania; katalog nadąża za kanonicznym `opencode.jsonc` jedną drogą; każdy model odpowiada przez obecne proxy; obrazy i PDF trafiają do modeli, które je deklarują, pozostałe jawnie odmawiają; decyzja o dwóch enrollmentach podjęta w planie E00 | E0; osobny plan E00 zaakceptowany przez właściciela | Bramki zielone; katalog zgodny z kanonicznym plikiem; smoke request na każdym modelu (obraz i PDF tam, gdzie deklarowane) zaliczony; review `opus5` bez otwartych findingów krytycznych i poważnych | accepted |
 | E1 | Wybór odcinka na prawdziwych danych + pomiary | Nowa ścieżka Anime: tytuł → wpisy → odcinki → sugestia i inne wydania (bez pobierania). Stara lista wydań wg grup zostaje pod klawiszem `G`, więc pobieranie i dodawanie subskrypcji działa jak dziś. Adaptery ani.zip i Torrentio, heurystyka i ranking w kodzie. Raport N-01–N-04 | E0, E00 (oceniający korpusu N-02 działają przez silnik LLM po E00) | Testy i bramki zielone; parytet 231/231 z badaniem; korpus ≥ 2000 tytułów oceniony w całości przez agentów, 0 błędnych `zgodnych`; H1 zaliczone; raport pomiarów z decyzjami dla E2 i E3 | planned |
 | E2 | Jednorazowe pobieranie nową drogą | Pobierz z listy odcinków: zlecenie per odcinek, magnet → lista plików → tylko wybrane pliki → kompletność per odcinek → istniejące przetwarzanie → Biblioteka. Pobierz ponownie. Pomost `G` (stara lista wg grup) zostaje, bo tylko z niego da się jeszcze dodać subskrypcję | E1 (N-03 pozytywne) | Test integracyjny z prawdziwym qB na syntetyku (E1/E3 bez E2, restart); migracja WatchState na kopii stanu właściciela; H2 zaliczone | planned |
 | E3 | Subskrypcje na wspólnym mechanizmie | Subskrybuj z listy odcinków, zakładka Subskrypcje (lista, szczegóły, dodaj, usuń, wstrzymaj, szukaj teraz), harmonogram U-13–U-15, autozamknięcie, przeniesienie starych subskrypcji; usunięty pomost `G` i stara droga grup w UI | E2; decyzja o źródle świeżych odcinków z N-01 | Testy fake clock (emisja, brak wydania, koniec sezonu, restart, izolacja problemów); migracja na kopii; H3: tydzień bez dotykania | planned |
@@ -48,9 +49,9 @@ Gałęzie: cały łańcuch startuje od `work/local-automation/06-efficiency` (ni
 
 ## Aktualny etap
 
-**Etap:** E0 → E00 → E1.
+**Etap:** E00 zakończone (kod zaakceptowany, PR #57 czeka na merge) → E1.
 
-**Następny krok:** napisanie osobnego szczegółowego planu E00 (`plans/e00-katalog-modeli.md`) na aktualnym baseline i jego akceptacja przez właściciela. Bez zaakceptowanego planu E00 nie zaczyna się ani E00, ani E1.
+**Następny krok:** aktualizacja planu E1 ([plans/e1-wybor-odcinka.md](plans/e1-wybor-odcinka.md)) na stanie po E00 i jego akceptacja przez właściciela; E1 startuje od gałęzi E00.
 
 **Dlaczego E00 przed E1:** E1 ocenia korpus N-02 modelami przez silnik LLM AniShift. Właściciel wymaga, by ten silnik najpierw znał aktualne modele i aktualną specyfikację wywołań; inaczej ocena korpusu biegłaby na nieaktualnym katalogu i niepotwierdzonej drodze do modeli OpenAI.
 
@@ -58,7 +59,7 @@ Gałęzie: cały łańcuch startuje od `work/local-automation/06-efficiency` (ni
 
 **Największa niewiadoma:** N-03 — czy qBittorrent pobierze listę plików z samego hasha i pozwoli wybrać pliki przed zapisem treści.
 
-**Następny artefakt:** plan E00; potem wynik E00, wynik E1 (`outcomes/e1.md`) i plan E2 napisany na stanie po E1.
+**Następny artefakt:** zaktualizowany plan E1; potem wynik E1 (`outcomes/e1.md`) i plan E2 napisany na stanie po E1.
 
 ## Stany etapów
 
