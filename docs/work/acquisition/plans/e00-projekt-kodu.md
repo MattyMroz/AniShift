@@ -34,16 +34,18 @@ Rozstrzygają niejednoznaczności planu wskazane przez autora projektu oraz uwag
     4. `feat(llm): fail over between two palantir accounts`
     5. `feat(llm): refresh model suggestions from provider documentation`
 13. **Listy modeli wszystkich silników natywnych (decyzja właściciela z 2026-09-24, rozszerza fazę 5):** `openai_compatible` bez listy (model wpisuje użytkownik); pozostałe według źródeł z 2026-09-24:
-    - `openai`: `gpt-6-sol`, `gpt-6-luna`, `gpt-6-astra`;
-    - `anthropic`: `claude-opus-5-5`, `claude-sonnet-5`, `claude-haiku-4-5`, `claude-fable-5-1`;
-    - `gemini`: `gemini-3.8-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`;
+    - `openai`: `gpt-6-luna`, `gpt-6-sol`, `gpt-6-astra`;
+    - `anthropic`: `claude-haiku-4-5`, `claude-sonnet-5`, `claude-opus-5-5`, `claude-fable-5-1`;
+    - `gemini`: `gemini-3.5-flash-lite`, `gemini-3.8-flash`, `gemini-3.1-pro-preview`;
     - `deepseek`: `deepseek-flash`, `deepseek-v4-pro` ([api-docs.deepseek.com/quick_start/pricing](https://api-docs.deepseek.com/quick_start/pricing));
-    - `openrouter`: `openai/gpt-6-sol`, `anthropic/claude-opus-5.5`, `google/gemini-3.8-flash`, `deepseek/deepseek-v4.1-flash` (sprawdzone w `https://openrouter.ai/api/v1/models`).
+    - `openrouter`: `openai/gpt-6-luna`, `deepseek/deepseek-v4.1-flash`, `google/gemini-3.5-flash-lite`, `anthropic/claude-haiku-4.5` (sprawdzone w `https://openrouter.ai/api/v1/models`).
 14. **DeepSeek przyjmuje obrazy:** `deepseek` dostaje `file_modalities = {image}` zamiast `{}` — `deepseek-flash` przyjmuje `image_url` z data URL w Chat Completions ([api-docs.deepseek.com/guides/vision](https://api-docs.deepseek.com/guides/vision/)).
 15. **Martwy kontrakt katalogu (przegląd kodu, runda 1; rozszerza granicę o same usunięcia):** z `config/model_catalog.py` znikają nieczytane pola i typy (`schema_version`, `issues`, `defaults`, `experimental`, `limits`, `CatalogIssue`, `CatalogSection`, `CatalogDefaults`, `ModelLimits`, `CATALOG_SCHEMA_VERSION`), a z serwisu `CATALOG_DEFAULTS` i limity w `PalantirModel`. U konsumentów znikają wyłącznie martwe gałęzie: `ModelCatalogError` z obsługą w `application/service.py`, gałąź pustego katalogu i filtry placeholderów `replace-with-`, jeśli po sprawdzeniu nic innego z nich nie korzysta.
 16. **Jeden standard treści mieszanej:** Chat Completions i Responses łączą sąsiednie `TextPart` przez `"\n"` jedną wspólną funkcją; plik przerywa grupę. Anthropic i Google zachowują osobne bloki. Kształt bloków Anthropic Messages (tekst, obraz, dokument) istnieje raz, w `_sdk_helpers.py`, dla obu silników. Odmowa niewspieranego pliku w każdym silniku odbywa się tak samo: raz dla całego żądania, na początku budowania, jednym helperem.
 17. **Nowe modele Palantira:** `gpt-6-sol` i `gpt-6-luna` dopisane do listy (22 modele). Próba na żywo 2026-09-24: przyjmują warianty `none`, `low`, `medium`, `high`, `xhigh`, `max` i obrazy; PDF proxy odrzuca (HTTP 400), więc typy plików = `{image}`.
 18. **Przegląd kodu, runda 2:** `PalantirModel.reasoning` usunięte — myślenie OpenAI/xAI wynika z protokołu i `reasoning.effort` (każdy model GPT i Grok myśli); treść listy Palantira to dane potwierdzane próbą na żywo, testy sprawdzają tylko strukturę (unikalność aliasów, zgodność sugestii, ścieżki pól), bez listy aliasów i bez liczby modeli; pusty strumień (bez zdarzeń) daje błąd przejściowy w każdym protokole; martwe gałęzie `provider is None` przy wbudowanej liście znikają (`application/service.py`, `application/runtime.py`); separator `"\n"` istnieje w jednej funkcji.
+19. **Przegląd kodu, runda 3:** w silnikach SDK (`anthropic`, `gemini`, Chat Completions) żądanie jest budowane przed utworzeniem klienta SDK, więc odrzucony plik nie tworzy klienta (zastępuje zdanie „Kolejność w `complete()` zostaje bez zmian” z fazy 1); `PalantirService` nie trzyma modelu po konstrukcji; odczyt kandydata Google to `_first_candidate`.
+20. **Kolejność i dobór sugestii (decyzja właściciela z 2026-09-24):** listy natywne są uporządkowane od najtańszego modelu, a OpenRouter podpowiada tanie modele według cen z [API modeli OpenRouter](https://openrouter.ai/api/v1/models) z 2026-09-24; obowiązujące listy i ich kolejność podaje Rozstrzygnięcie 13. DeepSeek pozostaje bez zmian.
 
 Poniżej odwołania **§1–§4** oznaczają punkty sekcji „Szczegóły” zaakceptowanego planu. Sygnatury pomijają `self`, gdy nie powoduje to niejasności. Szacunki obejmują fizyczne linie dodane/usunięte, również wymianę istniejących testów.
 
