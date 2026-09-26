@@ -53,11 +53,6 @@ _GEMINI_VARIANTS: Final[Mapping[str, Mapping[str, object]]] = {
 }
 """Explicit thinking budgets shared by Gemini models."""
 
-_GROK_VARIANTS: Final[Mapping[str, Mapping[str, object]]] = {
-    level: {"reasoning": {"effort": level}} for level in ("low", "high")
-}
-"""Reasoning efforts supported by Grok models."""
-
 _THINKING_LEVELS: Final[tuple[str, ...]] = ("low", "medium", "high", "xhigh", "max")
 """Full thinking effort range for recent GPT and Claude models."""
 
@@ -112,7 +107,7 @@ def _gemini(model_id: str, label: str) -> PalantirModel:
     )
 
 
-def _grok(model_id: str, label: str) -> PalantirModel:
+def _grok(model_id: str, label: str, levels: tuple[str, ...] = ("low", "high")) -> PalantirModel:
     return PalantirModel(
         alias=f"foundry-xai/{model_id}",
         provider_id="foundry-xai",
@@ -120,7 +115,7 @@ def _grok(model_id: str, label: str) -> PalantirModel:
         label=label,
         file_modalities=frozenset({"image"}),
         options=_RESPONSES_OPTIONS,
-        variants=_GROK_VARIANTS,
+        variants={level: {"reasoning": {"effort": level}} for level in levels},
     )
 
 
@@ -134,6 +129,7 @@ PALANTIR_MODELS: Final[tuple[PalantirModel, ...]] = (
     _gpt("gpt-5.6-terra", "Foundry: GPT-5.6 Terra", ("none", *_THINKING_LEVELS)),
     _gpt("gpt-5.6-luna", "Foundry: GPT-5.6 Luna", ("none", *_THINKING_LEVELS)),
     _gpt("gpt-5.5", "Foundry: GPT-5.5", ("none", "low", "medium", "high", "xhigh")),
+    _claude("claude-opus-5-5", "Foundry: Claude Opus 5.5", _THINKING_LEVELS),
     _claude("claude-opus-5", "Foundry: Claude Opus 5", _THINKING_LEVELS),
     _claude("claude-opus-4-8", "Foundry: Claude Opus 4.8", _THINKING_LEVELS),
     _claude("claude-opus-4-7", "Foundry: Claude Opus 4.7", _THINKING_LEVELS),
@@ -155,6 +151,7 @@ PALANTIR_MODELS: Final[tuple[PalantirModel, ...]] = (
     _gemini("gemini-3.6-flash", "Foundry: Gemini 3.6 Flash"),
     _gemini("gemini-3.5-flash", "Foundry: Gemini 3.5 Flash"),
     _gemini("gemini-3.5-flash-lite", "Foundry: Gemini 3.5 Flash-Lite"),
+    _grok("grok-4.7", "Foundry: Grok 4.7", ("low", "medium", "high", "xhigh")),
     _grok("grok-4.6", "Foundry: Grok 4.6"),
     _grok("grok-4.5", "Foundry: Grok 4.5"),
 )

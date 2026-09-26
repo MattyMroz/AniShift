@@ -7,6 +7,8 @@ from typing import Any
 import httpx
 import pytest
 
+from anishift.application.runtime import palantir_llm_config
+from anishift.config.model_catalog import load_model_catalog
 from anishift.services.llm import (
     FilePart,
     LlmConfig,
@@ -23,7 +25,7 @@ from anishift.services.llm.wire_protocol import ModelProtocol
 
 _MODELS: dict[ModelProtocol, tuple[str, str, str]] = {
     ModelProtocol.OPENAI_RESPONSES: ("foundry/gpt-5.6-sol", "foundry-openai", "openai"),
-    ModelProtocol.XAI_RESPONSES: ("foundry-xai/grok-4.6", "foundry-xai", "xai"),
+    ModelProtocol.XAI_RESPONSES: ("foundry-xai/grok-4.7", "foundry-xai", "xai"),
     ModelProtocol.ANTHROPIC_MESSAGES: ("foundry-anthropic/claude-opus-5", "foundry-anthropic", "anthropic"),
     ModelProtocol.GOOGLE_GENERATE: ("foundry-google/gemini-3.8-flash", "foundry-google", "google"),
 }
@@ -75,6 +77,74 @@ def _send(config: LlmConfig, request: LlmRequest, captured: list[httpx.Request])
 
 def _request(parts: tuple[LlmContentPart, ...] = (TextPart("First"),)) -> LlmRequest:
     return LlmRequest((LlmMessage(LlmRole.USER, parts),))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", [None, "low", "medium", "high", "xhigh", "max"])
+def test_opus55_catalog_selection_builds_anthropic_request(variant: str | None) -> None:
+    config: LlmConfig = replace(
+        palantir_llm_config(
+            load_model_catalog(),
+            "foundry-anthropic/claude-opus-5-5",
+            enrollment_base_url="https://example.invalid",
+            token="synthetic-token",  # noqa: S106
+        ),
+        reasoning_variant=variant,
+        max_output_tokens=128000,
+        temperature=0.3,
+        top_p=0.8,
+    )
+    captured: list[httpx.Request] = []
+    body: dict[str, Any] = _send(
+        config,
+        _request((TextPart("First"), FilePart("image/png", b"image"), FilePart("application/pdf", b"pdf"))),
+        captured,
+    )
+
+    assert config.provider_id == "foundry-anthropic"
+    assert config.protocol is ModelProtocol.ANTHROPIC_MESSAGES
+    assert str(captured[0].url) == "https://example.invalid/api/v2/llm/proxy/anthropic/v1/messages"
+    assert body["model"] == "claude-opus-5-5"
+    assert body["max_tokens"] == 128000
+    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert body.get("output_config") == (None if variant is None else {"effort": variant})
+    assert [part["type"] for part in body["messages"][0]["content"]] == ["text", "image", "document"]
+    assert "temperature" not in body
+    assert "top_p" not in body
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", [None, "low", "medium", "high", "xhigh"])
+def test_grok47_catalog_selection_builds_responses_request(variant: str | None) -> None:
+    config: LlmConfig = replace(
+        palantir_llm_config(
+            load_model_catalog(),
+            "foundry-xai/grok-4.7",
+            enrollment_base_url="https://example.invalid",
+            token="synthetic-token",  # noqa: S106
+        ),
+        reasoning_variant=variant,
+        max_output_tokens=100000,
+        temperature=0.3,
+        top_p=0.8,
+    )
+    captured: list[httpx.Request] = []
+    body: dict[str, Any] = _send(
+        config,
+        _request((TextPart("First"), FilePart("image/png", b"image"))),
+        captured,
+    )
+
+    assert config.provider_id == "foundry-xai"
+    assert config.protocol is ModelProtocol.XAI_RESPONSES
+    assert str(captured[0].url) == "https://example.invalid/api/v2/llm/proxy/xai/v1/responses"
+    assert body["model"] == "grok-4.7"
+    assert body["max_output_tokens"] == 100000
+    assert body["store"] is False
+    assert body.get("reasoning") == (None if variant is None else {"effort": variant})
+    assert [part["type"] for part in body["input"][0]["content"]] == ["input_text", "input_image"]
+    assert "temperature" not in body
+    assert "top_p" not in body
 
 
 @pytest.mark.integration
