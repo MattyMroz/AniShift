@@ -44,7 +44,15 @@ Lista weta rozliczona z właścicielem 2026-09-23. Wszystkie ustalenia w spec ob
 | Szukanie po emisji | Co 15 min przez dobę, co godzinę do 3. doby, potem codziennie; po 7 dniach powiadomienie. |
 | Fonty | Nie pobieramy osobnych plików fontów; fonty wewnątrz MKV zostają. |
 | Lista MAL | Niepotrzebna; próbka pomiaru z Twoich subskrypcji i popularnych tytułów w emisji. |
-| Sprawdzenie heurystyki | Na co najmniej 2000 tytułach (TV, kontynuacje, OVA, filmy, różne lata). Każde wydanie z korpusu oceniają dwa modele różnych rodzin („oceniający”), wywoływane skryptem przez silnik LLM AniShift (`anishift.services.llm`, silnik Palantir, modele z katalogu po E00) z poleceniem oceny i Twoim kluczem Palantir; w każdej paczce są wydania kontrolne o znanej odpowiedzi. Niezgodności rozstrzyga trzeci model, a trudne przypadki i 50 losowych trafiają do Ciebie. Cel: 0 błędnie uznanych za zgodne w całym korpusie. |
+| Sprawdzenie heurystyki | Na co najmniej 2000 tytułach (TV, kontynuacje, OVA, filmy, różne lata). Każde wydanie z korpusu oceniają dwa modele różnych rodzin („oceniający”), wywoływane skryptem przez silnik LLM AniShift (`anishift.services.llm`, silnik Palantir, modele z katalogu po E00) z poleceniem oceny i Twoim kluczem Palantir; w każdej paczce są wydania kontrolne o znanej odpowiedzi. Niezgodności rozstrzyga trzeci model, a trudne przypadki i 50 losowych trafiają do Ciebie. Cel: 0 błędnie uznanych za zgodne w całym korpusie (zawężone 2026-09-28 — niżej). |
+
+Zmiany z 2026-09-28 (szczegóły: [plans/e1-przeplyw-subskrypcji.md](plans/e1-przeplyw-subskrypcji.md)):
+
+| Temat | Ustalenie |
+| --- | --- |
+| Subskrypcja a zaległe | Subskrypcja pobiera tylko odcinki emitowane po jej dodaniu; wyemitowane zaznaczasz i pobierasz ręcznie. |
+| Budżet odcinka w subskrypcji | Skończona liczba prób i próg pobranych GB na odcinek zamiast limitu dwóch pobrań; progi z pomiaru, do tego czasu konfiguracja tymczasowa do Twojej akceptacji. |
+| Bramka heurystyki | 0 błędnie uznanych za zgodne wśród przypadków rozpoznawalnych z nazwy/metadanych; pozostałe raportowane jako „domena heurystyki 2”. |
 
 Wszystkie decyzje są rozstrzygnięte. Kodek i pochodzenie wydania (WEB/Blu-ray) nie wpływają na wybór (U-25).
 

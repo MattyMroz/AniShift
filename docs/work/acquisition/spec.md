@@ -1,7 +1,7 @@
 ---
 kind: specification
 status: do-akceptacji-właściciela
-updated: 2026-09-23
+updated: 2026-09-28
 baseline: 0e8a6bf9194d2786d426d3f3a58f48272b3eb087
 ---
 
@@ -50,9 +50,9 @@ Fakty potrzebne do zrozumienia zmiany. Źródła: kod na baseline, `research/sub
 - Subskrypcję tworzy się klawiszem `O` na podświetlonym wydaniu w wynikach Anime; wymaga nazwy grupy wydającej, która jest też częścią identyfikatora subskrypcji.
 - Zakładka Subskrypcje istnieje jako druga z czterech. Panel startuje na Przetwarzaniu; do Subskrypcji prowadzi tylko ←/→ lub Tab. W terminalu węższym niż ok. 50 kolumn nazwa zakładki znika z nagłówka. Stopka listy: „Space aktywność · Enter odcinki · D dodaj · X usuń · F sprawdź”. `D` przełącza do Anime; `X` usuwa bez potwierdzenia; Enter otwiera wybór numerów, nie szczegóły.
 - Istnieje jeden rezydent (`anishift watch`), jeden właściciel zapisu stanu (`AutomationOwner`), prywatny profil qBittorrent, graf przetwarzania, Biblioteka z Koszem i Ctrl+Z, Historia (30 dni, domyślnie 50 pozycji). Panel jest klientem rezydenta przez IPC (ramka do 1 MiB sprawdzana tylko przy odbiorze; przekroczenie zrywa połączenie).
-- Pliki stanu: `config/watch/state.json` (WatchState, wersja 2), `config/subscriptions.json` (wersja 4). Użytkownik ma w nim rzeczywiste subskrypcje (m.in. seria dodana 2026-09-06 z listy MAL).
+- Pliki stanu: `config/watch/state.json` (WatchState, wersja 2), `config/subscriptions.json` (wersja 4). Użytkownik ma w nim rzeczywiste subskrypcje (m.in. seria dodana 2026-09-06 z listy MAL). Dochodzą `config/watch/decisions.jsonl` (rejestr decyzji automatu, [plan przepływu](plans/e1-przeplyw-subskrypcji.md) §5.6) i `config/watch/cases.jsonl` (lokalna baza zweryfikowanych przypadków, tamże §5.7).
 - Dzisiejsze przetwarzanie wymaga napisów tekstowych przy wideo (`selection.py:199–211`). Osadzona ścieżka audio jest zawsze tłem do miksu z lektorem; nie ma drogi „polskie audio zamiast lektora”.
-- Parametry subskrypcji są polami `AutomationPolicy` (`control.py:93–108`): opóźnienie po emisji 3 h, sprawdzanie co 1 h, okno 72 h, 3 próby przy błędzie źródła, przerwy 60 s i 300 s, zastój transferu 30 min.
+- Parametry subskrypcji są polami `AutomationPolicy` (`control.py:93–108`): opóźnienie po emisji 3 h, sprawdzanie co 1 h, okno 72 h, 3 próby przy błędzie źródła, przerwy 60 s i 300 s, zastój transferu 30 min. Opóźnienie 3 h, okno 72 h i 3 próby przy błędzie źródła zastępują P-1, U-14 i przejście 8 [planu przepływu](plans/e1-przeplyw-subskrypcji.md) (§3.6, §4).
 
 ### 3.2 Dlaczego subskrypcje „nie działają” — mechanizmy potwierdzone w kodzie
 
@@ -82,27 +82,29 @@ Konkretnej przyczyny u użytkownika nie ustalono. Potwierdzono mechanizmy, z kt�
 
 Status `właściciel` — wynika z wypowiedzi właściciela. Status `inżynierska` — rozstrzygnięte przez autora pakietu na podstawie dowodów; obowiązuje, dopóki właściciel nie zawetuje (lista do weta: [README.md](README.md) §3).
 
+Przepływ ścieżki ręcznej i subskrypcji (punkt odcięcia, cel, próba, dopuszczalność, budżet, kontrola po pobraniu H2, rejestr decyzji, parametry P-1..P-10) definiuje zaakceptowany [plan przepływu](plans/e1-przeplyw-subskrypcji.md); wymagania poniżej odwołują się do jego sekcji.
+
 | ID | Ustalenie | Skutek | Status, podstawa |
 | --- | --- | --- | --- |
 | U-01 | Jedna droga: tytuł → sezon → odcinki → Pobierz albo Subskrybuj. | Stary wybór grupy znika z interfejsu i z kodu. | właściciel, E:6997, E:8124 |
 | U-02 | Katalog: AniList (tytuły, relacje, emisja) + ani.zip (odcinki, numeracja, Kitsu ID). Kandydaci: Torrentio. | Nyaa nie jest już wyszukiwarką w UI. Czy subskrypcje potrzebują Nyaa jako drugiego źródła świeżych odcinków, rozstrzyga pomiar E1 (N-01); do tego czasu kod Nyaa zostaje. | inżynierska, `research/anime-api-report.md` §13 |
-| U-03 | Tożsamość kandydata rozstrzyga heurystyka: `zgodny` / `niezgodny` / `niepewny` + powód. Bez procentów. Ocena dotyczy pary (hash, plik), nie samego hasha. | Automat bierze `zgodny`. Gdy odcinek nie ma `zgodnego`, automat bierze najlepszego `niepewnego` (ta sama kolejność U-04) i oznacza odcinek w Bibliotece jako „niepewne wydanie”. Decyzja właściciela z 2026-09-26: lepiej pobrać za dużo niż nie pobrać, a niechciany plik właściciel pominie. `niezgodny` wyłącznie po jawnym wyborze użytkownika z potwierdzeniem (R-04). | właściciel E:5535; kształt wyniku inżynierska |
+| U-03 | Tożsamość kandydata rozstrzyga heurystyka: `zgodny` / `niezgodny` / `niepewny` + powód. Bez procentów. Ocena dotyczy pary (hash, plik), nie samego hasha. | Automat bierze `zgodny`. Gdy odcinek nie ma `zgodnego`, automat bierze najlepszego `niepewnego` (ta sama kolejność U-04) i oznacza odcinek w Bibliotece jako „niepewne wydanie”. Decyzja właściciela z 2026-09-26: lepiej pobrać za dużo niż nie pobrać, a niechciany plik właściciel pominie. `niezgodny` wyłącznie po jawnym wyborze użytkownika z potwierdzeniem (R-04). W subskrypcji `niepewny` tylko według dopuszczalności planu przepływu §3.3; w ścieżce ręcznej bez zmian. | właściciel E:5535; kształt wyniku inżynierska |
 | U-04 | Kolejność zgodnych kandydatów: (1) klasa rozdzielczości (U-05), (2) w tej samej klasie deklaracja PL, (3) deklaracja MultiSub, (4) oznaczenie Netflix/Crunchyroll, (5) więcej seedów, nieznane na końcu, (6) kolejność odpowiedzi źródła. | Jakość obrazu wygrywa: 1080p bez PL wygrywa z 720p z PL. Wśród wydań 1080p pierwsze są polskie, potem MultiSub. Rozmiar, grupa i kodek są tylko informacją. W badaniu 17 z 20 flag PL było przy 1080p, więc polskie wydania zwykle nadal wygrywają. | właściciel, decyzja 2026-09-23; kolejność PL → MultiSub wewnątrz rozdzielczości: E:8124, E:9687, E:9718 |
 | U-05 | Klasy rozdzielczości: 1080 (także 1440×1080) → 2160 → 720 → pozostałe znane, bliższe 1080 wyżej → nieznana. | 720p tylko jako ostateczność. Automat bierze 1080p, gdy istnieje; 2160p tylko, gdy nie ma 1080p. | właściciel, decyzja 2026-09-23 |
 | U-06 | Kandydat w kontenerze, którego istniejące przetwarzanie nie obsługuje, jest pomijany z powodem „format nieobsługiwany”. | Brak pobrań, których nie da się przetworzyć. | inżynierska; w próbie 5 mp4, 1 ts, 1 avi na 159 |
 | U-07 | Rzeczywisty język sprawdzamy po pobraniu (ścieżki w pliku). Deklaracja PL nie pomija tłumaczenia. | Decyduje zawartość, nie nazwa. | inżynierska, `research/polish-1080-selection-validation.md` |
-| U-08 | Po pobraniu: lektor powstaje **zawsze**, także przy polskiej ścieżce dubbingu. Pełne polskie napisy → bez tłumaczenia. Tylko obce napisy → tłumaczenie. Brak użytecznych napisów → automatycznie jedno kolejne wydanie z rankingu; po drugiej porażce problem do ręcznego wyboru. Tło lektora wybiera istniejące ustawienie priorytetu języków audio; ta praca go nie zmienia. | Nigdy więcej niż dwa pobrania jednego odcinka bez decyzji użytkownika. | właściciel E:8124 (tłumaczenie ważniejsze) i decyzja 2026-09-23 (lektor zawsze); limit dwóch pobrań inżynierska |
-| U-09 | Subskrypcja obejmuje **jeden sezon** (jeden wpis katalogu) i jego zwykłe odcinki od numeru N do końca tego wpisu. | Nigdy nie przechodzi sama na kolejny sezon. Dodatki nie wchodzą do subskrypcji; pobiera się je jednorazowo. | właściciel E:8124, A:R-10; wyłączenie dodatków inżynierska (§3.3: dane nie odróżniają fabularnych OVA od wywiadów, klucze `S…` nie są odpytywalne w Torrentio) |
+| U-08 | Po pobraniu: lektor powstaje **zawsze**, także przy polskiej ścieżce dubbingu. Pełne polskie napisy → bez tłumaczenia. Tylko obce napisy → tłumaczenie. Brak użytecznych napisów → automatycznie jedno kolejne wydanie z rankingu; po drugiej porażce problem do ręcznego wyboru. Tło lektora wybiera istniejące ustawienie priorytetu języków audio; ta praca go nie zmienia. | Limit dwóch pobrań dotyczy tylko ścieżki ręcznej: nigdy więcej niż dwa pobrania jednego odcinka bez decyzji użytkownika. W subskrypcji limit zastępuje budżet celu według planu przepływu §3.3–§3.4. | właściciel E:8124 (tłumaczenie ważniejsze) i decyzja 2026-09-23 (lektor zawsze); limit dwóch pobrań inżynierska |
+| U-09 | Subskrypcja obejmuje **jeden sezon** (jeden wpis katalogu) i jego zwykłe odcinki niewyemitowane w chwili dodania — cele według punktu odcięcia (plan przepływu §3.1). „Od N” jest wyliczane z punktu odcięcia, nie wybierane. | Wyemitowane przed dodaniem pobiera się ręcznie (§5.3). Nigdy nie przechodzi sama na kolejny sezon. Dodatki nie wchodzą do subskrypcji; pobiera się je jednorazowo. | właściciel E:8124, A:R-10; wyłączenie dodatków inżynierska (§3.3: dane nie odróżniają fabularnych OVA od wywiadów, klucze `S…` nie są odpytywalne w Torrentio) |
 | U-10 | Subskrybować można wpis, który ma jeszcze przyszłe odcinki: status „w emisji”, „zapowiedziany” albo „przerwa w emisji”. Wpis zakończony ma tylko Pobierz. | Zapowiedziany sezon można dodać przed premierą. | właściciel E:8124 („aktualnie wychodzi”), A:R-03 (także przed startem sezonu) |
-| U-11 | Subskrypcja kończy się sama, gdy AniList oznaczył wpis jako zakończony, liczba odcinków jest znana i każdy odcinek zakresu ma potwierdzone pobranie. | Znika z listy. Koniec emisji bez pobrania nie jest sukcesem. Nie czeka na koniec lektora. | właściciel E:8124; warunek inżynierska |
+| U-11 | Subskrypcja kończy się sama, gdy AniList oznaczył wpis jako zakończony, liczba odcinków jest znana i każdy cel (plan przepływu §3.1) jest spełniony. Cel `wyczerpany` blokuje samozakończenie. | Znika z listy. Koniec emisji bez pobrania nie jest sukcesem. Nie czeka na koniec lektora. | właściciel E:8124; warunek inżynierska |
 | U-12 | Ręczne Usuń kończy tylko monitoring. | Pobrane pliki, trwające pobrania i przetwarzanie zostają. | właściciel E:8124; skutki inżynierska |
 | U-13 | Czas emisji pochodzi z AniList (`airingSchedule`). ani.zip służy do numeracji i tytułów. Odliczanie liczy czas do emisji; po emisji „Czeka na wydanie”. | Jedno źródło czasu; sprzeczne daty ani.zip nie sterują monitoringiem. | właściciel E:8124 (odliczanie do emisji); źródło inżynierska (§3.3) |
-| U-14 | Szukanie po emisji: co 15 min przez pierwszą dobę, co godzinę do końca 3. doby, potem raz na dobę, aż do znalezienia, usunięcia albo zakończenia subskrypcji. Brak twardego końca szukania. Po 7 dobach bez zgodnego wydania: powiadomienie w zasobniku systemowym (istniejące `tray.notify`) i problem „Nie znaleziono E6 od 7 dni” na liście; szukanie trwa dalej raz na dobę. | Spóźnione wydanie zostanie znalezione bez ręcznego „ponów”. Szukanie odcinka kończy się w chwili znalezienia, więc typowe obciążenie jest małe. Najgorszy przypadek (30 odcinków/dzień, żaden nieznaleziony): 30 × 96 + 60 × 24 ≈ 4320 zapytań/dobę — blisko niepotwierdzonego limitu 5000/dobę/IP. Pomiar E1 (N-01) pokazuje typowe opóźnienie i odpowiedzi 429; przy zagrożeniu limitu E3 rzednie interwał 15 min. | właściciel, decyzja 2026-09-23; A:R-14; likwiduje mechanizm §3.2 pkt 4 |
-| U-15 | Odcinek zakresu bez daty emisji jest szukany, gdy wpis jest „w emisji” lub „zakończony” i jego numer jest ≤ liczbie już wyemitowanych odcinków według AniList. | Likwiduje mechanizm §3.2 pkt 5. | inżynierska |
+| U-14 | Szukanie po emisji: co 15 min przez pierwszą dobę, co godzinę do końca 3. doby, potem raz na dobę, aż do znalezienia, usunięcia albo zakończenia subskrypcji. Brak twardego końca szukania. Po 7 dobach bez zgodnego wydania: powiadomienie w zasobniku systemowym (istniejące `tray.notify`) i problem „Nie znaleziono E6 od 7 dni” na liście; szukanie trwa dalej raz na dobę. Harmonogram startuje od `t_due + T_start` (P-1), rzednie według P-10, a cel `wyczerpany` nie jest szukany (plan przepływu §3.1, §4). | Spóźnione wydanie zostanie znalezione bez ręcznego „ponów”. Szukanie odcinka kończy się w chwili znalezienia, więc typowe obciążenie jest małe. Najgorszy przypadek (30 odcinków/dzień, żaden nieznaleziony): 30 × 96 + 60 × 24 ≈ 4320 zapytań/dobę — blisko niepotwierdzonego limitu 5000/dobę/IP. Pomiar E1 (N-01) pokazuje typowe opóźnienie i odpowiedzi 429; przy zagrożeniu limitu E3 rzednie interwał 15 min. | właściciel, decyzja 2026-09-23; A:R-14; likwiduje mechanizm §3.2 pkt 4 |
+| U-15 | Odcinek zakresu bez daty emisji jest szukany, gdy wpis jest „w emisji” lub „zakończony” i jego numer jest ≤ liczbie już wyemitowanych odcinków według AniList. Jego termin `t_due` to pierwsza obserwacja spełnienia tego warunku (plan przepływu §3.1). | Likwiduje mechanizm §3.2 pkt 5. | inżynierska |
 | U-16 | Zlecony odcinek nie jest zlecany drugi raz: ani przez drugie Pobierz, ani przez subskrypcję, ani po restarcie, usunięciu pliku czy wygaśnięciu Historii. Ponowne pobranie tylko jawnym „Pobierz ponownie”. | Pamięć zleceń jest trwała i niezależna od Historii i subskrypcji. | A:R-13; kontrakt L:R-014/R-028 |
 | U-17 | Z paczki pobieramy tylko pliki zamówionych odcinków i ich pliki towarzyszące o tej samej nazwie (napisy, audio). Fonty i reszta paczki nie są pobierane. | Mniejszy transfer. Typesetting może gorzej się wyświetlać — zgodnie z priorytetem tłumaczenia. | właściciel E:8124; reguła inżynierska |
 | U-18 | Plik w paczce wskazujemy tak: `fileIdx` z Torrentio jest podpowiedzią; decyduje lista plików z qBittorrenta: (a) plik o tej samej, unikalnej nazwie; (b) inaczej heurystyka tożsamości na pełnych ścieżkach listy; (c) inaczej odcinek czeka na wybór użytkownika. | Nigdy „największy plik” ani samo `fileIdx`. | inżynierska (§3.3: padding, tylko nazwa pliku, kolizje nazw) |
-| U-19 | Nowe pobrania trafiają płasko do roota workspace i są przetwarzane istniejącym Auto; wynik w Bibliotece. | Bez nowych folderów serii. | kontrakt L:R-029 |
+| U-19 | Nowe pobrania trafiają płasko do roota workspace i są przetwarzane istniejącym Auto; wynik w Bibliotece. Plik próby automatycznej subskrypcji wchodzi do Auto tylko przy trwałym wyniku próby `przyjęta` (plan przepływu §3.4). | Bez nowych folderów serii. | kontrakt L:R-029 |
 | U-20 | Istniejące subskrypcje użytkownika są przenoszone automatycznie przy pierwszym starcie nowej wersji (§5.6). | Nic nie ginie; nic nie jest pobierane masowo bez ruchu użytkownika. | inżynierska |
 | U-21 | Filmy: widoczne w powiązaniach. Pobierz dla filmu tylko, jeśli pomiar E1 potwierdzi kandydatów Torrentio dla filmów (N-04). | Brak obietnicy bez dowodu. | inżynierska |
 | U-22 | Kitsu ID sezonu jest zapisywane w subskrypcji przy jej dodaniu. | Awaria ani.zip blokuje tylko nowe tytuły, nie działające subskrypcje. | inżynierska (§3.3) |
@@ -131,7 +133,7 @@ Status `właściciel` — wynika z wypowiedzi właściciela. Status `inżyniersk
 - **R-04** „Inne wydania” pokazuje wszystkich kandydatów odcinka z oceną tożsamości i powodem. Użytkownik może wybrać innego `zgodnego` bez pytania, `niepewnego` po potwierdzeniu „To wydanie może nie być tym odcinkiem”, a `niezgodnego` po potwierdzeniu z powodem heurystyki („Heurystyka uznała to za inny materiał: …”). Automat nigdy nie wybiera `niezgodnego`; `niepewnego` bierze tylko wtedy, gdy nie ma `zgodnego` (U-03). Ręczny wybór `niezgodnego` istnieje, bo prototyp heurystyki z badania błędnie odrzucił 2 zgodne wydania na 231.
 - **R-05** Brak seedów lub rozmiaru pokazuje „?”, nie zero. Zero seedów nie wyklucza kandydata.
 - **R-06** Brak zgodnego kandydata, ale jest `niepewny`: sugestią jest najlepszy `niepewny` z oznaczeniem „Niepewne wydanie E6: może nie być tym odcinkiem”, a pobrany plik ma w Bibliotece oznaczenie „niepewne”. Brak `zgodnego` i `niepewnego`: „Brak wydania E6 (sprawdzono HH:MM; niezgodnych: m)”, a pobranie wymaga ręcznego wyboru z „Inne wydania”.
-- **R-07** Ta sama reguła wyboru obowiązuje dla Pobierz, subskrypcji i zamiany wydania po nieudanej kontroli zawartości (U-08).
+- **R-07** Ta sama reguła wyboru obowiązuje dla Pobierz, subskrypcji i zamiany wydania po nieudanej kontroli zawartości (U-08): ta sama heurystyka i ranking. Dopuszczalność kandydata w subskrypcji określa plan przepływu §3.3.
 - **R-08** Pusta odpowiedź Torrentio znaczy „brak kandydatów w źródle”, nie „odcinek nie wyszedł”.
 
 ### 5.3 Pobieranie jednorazowe
@@ -140,27 +142,28 @@ Status `właściciel` — wynika z wypowiedzi właściciela. Status `inżyniersk
 - **P-02** `D` otwiera podgląd pobrania (R-03) dla zaznaczonych odcinków. Enter na „Pobierz” zleca wszystkie odcinki z sugestią. Odcinki bez sugestii są wypisane jako niepobrane z powodem; nie blokują zlecenia reszty.
 - **P-03** Po zleceniu widok przechodzi do Przetwarzania i pokazuje zlecone odcinki (o ile użytkownik nie opuścił ekranu w trakcie).
 - **P-04** Zlecenie jest trwałe: przetrwa zamknięcie panelu, restart rezydenta i komputera.
-- **P-05** Odcinek zlecony, pobrany lub gotowy ma na liście swój stan i nie da się go zaznaczyć do zwykłego Pobierz. `P` („Pobierz ponownie”) na podświetlonym odcinku tworzy nowe zlecenie po potwierdzeniu jednym wierszem.
+- **P-05** Odcinek zlecony, pobrany lub gotowy ma na liście swój stan i nie da się go zaznaczyć do zwykłego Pobierz. `P` („Pobierz ponownie”, E2) na podświetlonym odcinku po potwierdzeniu jednym wierszem pokazuje wybrane wydanie w podglądzie (R-03) przed pobraniem; zastępowane wydanie jest wyłączone z wyboru. Przyjęte wydanie `niepewne` zamienia się tylko w ten sposób, nigdy automatycznie (plan przepływu W-g). Ręczne zlecenie odcinka w trakcie subskrypcji rezerwuje jej cel (plan przepływu §3.6 przejścia 17–19).
 - **P-06** Kilka odcinków z tej samej paczki to jeden transfer w qBittorrencie. Dołożenie odcinka do pobieranej paczki dopisuje jego pliki do tego transferu.
-- **P-07** Odcinek przechodzi do przetwarzania, gdy wszystkie jego pliki są kompletne na dysku (qBittorrent zgłasza 100% i plik istnieje z oczekiwanym rozmiarem), niezależnie od pozostałych plików paczki.
+- **P-07** Odcinek przechodzi do przetwarzania, gdy wszystkie jego pliki są kompletne na dysku (qBittorrent zgłasza 100% i plik istnieje z oczekiwanym rozmiarem), niezależnie od pozostałych plików paczki. Próba subskrypcji przechodzi przed tłumaczeniem/TTS kontrolę po pobraniu H2, o ile H2 zostaje (plan przepływu §3.3 bramka przyjęcia, §5.4). Awaria włączonej H2 kończy tylko H2 wynikiem „niewykonana” (widocznym i zapisanym w rejestrze); przyjęcie nadal wymaga U-07/U-08 (bramka przyjęcia, plan przepływu §3.3, §3.6 przejścia 14–15).
 - **P-08** Pliki paczki, których nikt nie zamówił, a które qBittorrent zapisał przez wspólne kawałki, nie są przetwarzane automatycznie.
 
 ### 5.4 Subskrypcje
 
-- **S-01** Na liście odcinków wpisu spełniającego U-10 `O` otwiera szkic subskrypcji: tytuł, sezon, „od odcinka N” (domyślnie podświetlony odcinek, edytowalne), co zostanie pobrane teraz (wyemitowane ≥ N), co później, data następnej emisji. Enter na „Dodaj subskrypcję” zapisuje.
-- **S-02** Wyemitowane odcinki zakresu są zlecane od razu, tak jak Pobierz. Przyszłe — po emisji (U-14, U-15).
-- **S-03** Zakładka Subskrypcje pokazuje wszystkie aktywne subskrypcje w kolejności: najpierw wpisy z problemem, potem według najbliższej emisji, wpisy bez terminu i wstrzymane na końcu; remis alfabetycznie. Kolejność zmienia się tylko po emisji odcinka albo zmianie stanu, nie co sekundę. Wiersz: tytuł i sezon, zakres („od 5”), `Pobrano x/y` (y = liczba odcinków zakresu albo `?`), `Gotowe z`, oraz jedno z: odliczanie do emisji następnego odcinka, „Czeka na wydanie E6 (od 2 dni)”, „Termin nieznany”, „Przerwa w emisji”, „Wstrzymana”, opis problemu.
+- **S-01** Na liście odcinków wpisu spełniającego U-10 `O` otwiera szkic subskrypcji: tytuł, sezon, „od odcinka N” wyliczone z punktu odcięcia (U-09, bez edycji), co zostanie pobrane później, data następnej emisji, notka o wyemitowanych odcinkach spoza subskrypcji z podpowiedzią pobrania ręcznego oraz próg budżetu na odcinek (P-4). Enter na „Dodaj subskrypcję” zapisuje.
+- **S-02** Usunięte (plan przepływu §7): wyemitowane odcinki nie są zlecane przez subskrypcję; pobiera się je ręcznie (§5.3). Cele subskrypcji są szukane po emisji (U-14, U-15).
+- **S-03** Zakładka Subskrypcje pokazuje wszystkie aktywne subskrypcje w kolejności: najpierw wpisy z problemem, potem według najbliższej emisji, wpisy bez terminu i wstrzymane na końcu; remis alfabetycznie. Kolejność zmienia się tylko po emisji odcinka albo zmianie stanu, nie co sekundę. Wiersz: tytuł i sezon, zakres („od 5”, wyliczony), `Pobrano x/y` (y = liczba celów albo `?`), `Gotowe z`, oraz jedno z: odliczanie do emisji następnego odcinka, „Czeka na wydanie E6 (od 2 dni)”, „Kontrola E6”, „Termin nieznany”, „Przerwa w emisji”, „Wstrzymana”, opis problemu (np. „E6: wyczerpano próby (2 pobrania, 2,8 GB)”).
 - **S-04** Nad listą jest widoczna akcja „Dodaj subskrypcję”. Otwiera wyszukiwarkę Anime; Esc wraca do listy; po dodaniu widok wraca do listy z nowym wpisem podświetlonym.
-- **S-05** Enter na subskrypcji otwiera szczegóły: odcinki zakresu z ich stanami, wynik ostatniego sprawdzenia, lista dodatków tego sezonu (klucze `S…` z ani.zip) i powiązanych wpisów OVA/special z AniList — tylko informacja, z przejściem do wpisu OVA, gdzie można go pobrać — oraz akcje: Pobierz zaznaczone, Zmień „od N”, Wstrzymaj/Wznów, Szukaj teraz, Usuń.
+- **S-05** Enter na subskrypcji otwiera szczegóły: odcinki zakresu z ich stanami, wynik ostatniego sprawdzenia, lista dodatków tego sezonu (klucze `S…` z ani.zip) i powiązanych wpisów OVA/special z AniList — tylko informacja, z przejściem do wpisu OVA, gdzie można go pobrać — próg budżetu na odcinek (próg zatrzymania, nie maksimum; plan przepływu §3.3) oraz akcje: Pobierz zaznaczone, Wstrzymaj/Wznów, Szukaj teraz, Usuń.
 - **S-06** „Szukaj teraz” wykonuje jedno sprawdzenie tej subskrypcji i pokazuje wynik: „Sprawdzono: E6 — 12 kandydatów, 0 zgodnych (8 niepewnych, 4 niezgodnych)” albo „Zlecono E6”.
 - **S-07** Wstrzymaj zatrzymuje nowe zlecenia tej subskrypcji. Trwające pobrania i przetwarzanie trwają.
 - **S-08** Delete usuwa subskrypcję od razu, bez pytania, i kończy monitoring (U-12). Ctrl+Z na liście subskrypcji przywraca ostatnio usuniętą subskrypcję z jej zakresem i stanem, także po restarcie — tak jak Kosz w Bibliotece.
 - **S-09** Zakończona subskrypcja (U-11) znika z listy; w Historii pojawia się wpis „Subskrypcja zakończona: tytuł, sezon, pobrano y/y”.
-- **S-10** Zmiana „od N” nie anuluje już zleconych odcinków.
+- **S-10** Usunięte (plan przepływu §7): subskrypcja nie ma „Zmień od N”; zakres wynika z punktu odcięcia (U-09).
 - **S-11** Globalna pauza Auto wstrzymuje nowe zlecenia wszystkich subskrypcji; lista pokazuje to w stałym wierszu nad wpisami.
 - **S-12** Problem jednej subskrypcji nie zatrzymuje pozostałych. Błąd całego monitoringu (np. zapis stanu) jest widoczny w stałym wierszu nad listą z przyczyną; monitoring ponawia próbę po czasie z ustawień i wraca sam, gdy przyczyna ustąpi.
 - **S-14** Po 7 dobach bez zgodnego wydania odcinka subskrypcji rezydent wysyła jedno powiadomienie w zasobniku systemowym („Nie znaleziono Slime S4 E6 od 7 dni”), a lista pokazuje ten problem przy wpisie (U-14).
-- **S-13** Każde sprawdzenie zapisuje w logu: subskrypcję, odcinek, liczby kandydatów według oceny tożsamości, decyzję (zlecono / brak / błąd źródła) — bez payloadów.
+- **S-13** Każde sprawdzenie zapisuje w logu: subskrypcję, odcinek, liczby kandydatów według oceny tożsamości, decyzję (zlecono / brak / błąd źródła) — bez payloadów. Treść decyzji (kandydaci, oceny, wybór) trafia do rejestru decyzji (plan przepływu §5.6), nie do logu.
+- **S-15** Aplikacja ma przełącznik trybu cienia: subskrypcje przechodzą maszynę stanów, ale zamiast próby zapisują propozycję w rejestrze decyzji, bez qBittorrenta i plików (plan przepływu §5.5). Przełącznik jest opcjonalny i nie jest bramką uruchomienia automatu.
 
 ### 5.5 Stany odcinka
 
@@ -175,15 +178,18 @@ Jeden odcinek ma w każdym widoku ten sam stan, wyliczany z trwałych danych rez
 | Zlecono | Zlecenie zapisane; transfer jeszcze nie ruszył albo trwa pobieranie listy plików. |
 | Pobieranie | Transfer trwa; procent z qBittorrenta. |
 | Pobrano | Pliki odcinka kompletne na dysku. |
+| Kontrola | Próba subskrypcji: pliki kompletne, trwa kontrola po pobraniu (H2, U-07/U-08) — „Kontrola E6”. |
 | Przetwarzanie | Przyjęty do grafu przetwarzania. |
 | Gotowe | Produkty opublikowane w Bibliotece. |
-| Problem | Konkretny powód, np. „Brak napisów w dwóch wydaniach”, „Nie ustalono pliku w paczce”. |
+| Problem | Konkretny powód, np. „Brak napisów w dwóch wydaniach”, „Nie ustalono pliku w paczce”, „E6: wyczerpano próby (2 pobrania, 2,8 GB)”. |
+
+„Kontrola niewykonana” to oznaczenie przyjętego odcinka po awarii H2 (P-07), nie osobny stan.
 
 ### 5.6 Przeniesienie istniejących subskrypcji
 
-- **M-01** Aktywna stara subskrypcja z identyfikatorem AniList i numerem startu staje się subskrypcją tego wpisu „od N”, z zachowanym stanem włączona/wyłączona.
+- **M-01** Aktywna stara subskrypcja z identyfikatorem AniList i numerem startu staje się subskrypcją tego wpisu z zachowanym stanem włączona/wyłączona; punkt odcięcia i cele według planu przepływu §3.2 (`t_sub` = data utworzenia starej subskrypcji). Gdy ma należne, niespełnione cele sprzed migracji, startuje jako **wstrzymana** i pobiera je dopiero po „Wznów” (U-20). Przypadki nierozstrzygalne zostają w ścieżce ręcznej z notką w szczegółach.
 - **M-02** Odcinki oznaczone w starej subskrypcji jako przekazane (taken) są traktowane jako zlecone (U-16) i nie są pobierane ponownie.
-- **M-03** Stara subskrypcja zakończona przez kalendarz, która ma niepobrane odcinki zakresu, staje się subskrypcją **wstrzymaną** z opisem „Zakończona przez starą wersję; brakuje E5–E8 · Wznów, aby pobrać”.
+- **M-03** Stara subskrypcja zakończona przez kalendarz, która ma niepobrane odcinki zakresu, staje się subskrypcją **wstrzymaną** z opisem „Zakończona przez starą wersję; brakuje E5–E8 · Wznów, aby pobrać”. Po „Wznów” automatycznie pobierane są tylko braki będące celami (plan przepływu §3.2, W-f).
 - **M-04** Stara subskrypcja zakończona z kompletem pobrań nie pojawia się na liście.
 - **M-05** Stara subskrypcja bez rozpoznawalnego wpisu AniList pojawia się z problemem „Nie rozpoznano sezonu — usuń i dodaj ponownie”.
 - **M-06** Trwające stare pobrania kończą się i są przetwarzane tak jak dotąd: cel przetwarzania według ustawień z chwili przekazania do przetwarzania (tak działa obecna wersja).
@@ -215,7 +221,7 @@ Jeden odcinek ma w każdym widoku ten sam stan, wyliczany z trwałych danych rez
 - **I-05** Nawigacja, odliczanie, render, restart i wygaśnięcie Historii nie tworzą zleceń.
 - **I-06** Ten sam fizyczny odcinek z dwóch wejść (subskrypcja i Pobierz, dwa panele) daje jedno zlecenie i jeden przebieg przetwarzania.
 - **I-07** Niezamówiony plik z paczki nie uruchamia automatycznego przetwarzania, także po restarcie.
-- **I-08** Każda decyzja automatu (wybór wydania, zamiana wydania, pominięcie) ma zapisany powód widoczny w szczegółach odcinka.
+- **I-08** Każda decyzja automatu (wybór wydania, zamiana wydania, pominięcie) ma zapisany powód widoczny w szczegółach odcinka. Powód trzyma właściciel zlecenia (`AutomationOwner`); rejestr decyzji jest kopią dowodową do przeglądu (plan przepływu §5.6).
 
 ## 8. Ograniczenia
 
@@ -240,7 +246,7 @@ Jeden odcinek ma w każdym widoku ten sam stan, wyliczany z trwałych danych rez
 
 ## 10. Zakres i poza zakresem
 
-**W zakresie:** W-01–W-08, R-01–R-08, P-01–P-08, S-01–S-13, stany §5.5, M-01–M-07, B-01–B-02, Q-01–Q-08, kontrola zawartości U-07/U-08, usunięcie starego wyboru grup, aktualizacja `AGENTS.md` i `README.md` w zmienianych obszarach.
+**W zakresie:** W-01–W-08, R-01–R-08, P-01–P-08, S-01–S-15 (bez usuniętych S-02 i S-10), stany §5.5, M-01–M-07, B-01–B-02, Q-01–Q-08, kontrola zawartości U-07/U-08, usunięcie starego wyboru grup, aktualizacja `AGENTS.md` i `README.md` w zmienianych obszarach.
 
 **Poza zakresem:** synchronizacja z MAL/AniList, śledzenie obejrzanych odcinków, automatyczny typesetting, łączenie napisów z kilku wydań, zewnętrzne serwisy napisów, AnimeSchedule, powiadomienia (Discord itp.), odtwarzacz, nowe funkcje Ręcznego, nowe formaty tekstowe, zmiany TTS i tłumaczenia.
 
@@ -278,10 +284,10 @@ Ta praca nie zmienia poniższych zachowań (kontrakt `../local-automation-2/spec
 | ID | L:R | Zachowanie |
 | --- | --- | --- |
 | PR-01 | 001–005, 018 | Jeden rezydent i właściciel; wiele paneli; Ręczny ma priorytet bez przerywania zadania; zamknięcie panelu nie zatrzymuje pracy. |
-| PR-02 | 006–007, 012–014, 027 | Zakres „od N”, przyszłe odcinki, brak trackera oglądania, trwałe przyjęcia. Odstępstwa: obowiązkowa grupa i minimum 1080p (L:R-006/027) zastąpione przez U-04; Subskrybuj otwiera szkic, a nie kartę w zakładce (L:R-027). |
+| PR-02 | 006–007, 012–014, 027 | Zakres „od N”, przyszłe odcinki, brak trackera oglądania, trwałe przyjęcia. Odstępstwa: obowiązkowa grupa i minimum 1080p (L:R-006/027) zastąpione przez U-04; Subskrybuj otwiera szkic, a nie kartę w zakładce (L:R-027); „od N” wyliczane z punktu odcięcia, bez edycji (U-09). |
 | PR-03 | 008–011 | Sekundowy zegar bez sekundowego HTTP; wspólne limity źródeł. Odstępstwo: okno 72 h z L:R-010 zastąpione przez U-14; etykieta „Brak terminu” (L:R-008) → „Termin nieznany”. |
 | PR-04 | 015, 021, 024, 030 | Prywatny profil qB, globalna pauza, wznowienie tylko własnych transferów, zamknięcie i autostart. |
-| PR-05 | 016–017, 019–020, 028 | Kompletność przed przetwarzaniem, niezmienny snapshot przyjęcia runu, błędy z przyczyną, regeneracja, zachowanie starych wyników. |
+| PR-05 | 016–017, 019–020, 028 | Kompletność przed przetwarzaniem, niezmienny snapshot przyjęcia runu, błędy z przyczyną, regeneracja, zachowanie starych wyników. Plik próby automatycznej subskrypcji wchodzi do Auto tylko przy wyniku `przyjęta` (U-19). |
 | PR-06 | 022–023, 025, 043–044 | Home z marką, cztery zakładki, pierwsze wejście w Przetwarzanie, spokojny stan bezczynności, jeden renderer. |
 | PR-07 | 026, 029, 031–032 | Presety, ustawienia, płaskie nowe pobrania, wspólne `ready/`, źródło czeka na zwolnienie. |
 | PR-08 | 033–034, 038 | `subs/` czeka na parę; sam TXT/SRT w root nie uruchamia audio; nazwa pliku napisów nie dowodzi języka. |
@@ -295,12 +301,15 @@ Ta praca nie zmienia poniższych zachowań (kontrakt `../local-automation-2/spec
 | Obszar | Warunek | Instrument |
 | --- | --- | --- |
 | Wyszukiwanie | Dla 10 tytułów z listy właściciela, w tym Slime S1E4 (A:S-01), właściwy wpis i odcinek są osiągalne w ≤ 3 wyborach od wpisania nazwy | Scenariusz H1 |
-| Tożsamość | Heurystyka zbudowana od zera na oznaczonym korpusie ≥ 2000 tytułów / ≥ 10 000 rekordów (odcinek + kandydat), po stałym losowym podziale stratyfikowanym z zapisanym ziarnem i sumami. Budowa wyłącznie na części roboczej; jednorazowy egzamin na części odłożonej, niewidzianej przez autora: 0 błędnych `zgodnych`. Udział `niepewnych` i błędnych `niezgodnych` per warstwa przedstawiony właścicielowi do decyzji bez narzuconego progu. Porażka wymaga nowej części odłożonej; historyczne 231 rekordów to dane z etykietami i kontrole, bez parytetu z prototypem (decyzja właściciela 2026-09-24) | Testy jednostkowe na stałych oznaczonych próbkach + manifest podziału, dowód izolacji i raport jednorazowego egzaminu E1 (N-02) |
+| Tożsamość | Heurystyka zbudowana od zera na oznaczonym korpusie ≥ 2000 tytułów / ≥ 10 000 rekordów (odcinek + kandydat), po stałym losowym podziale stratyfikowanym z zapisanym ziarnem i sumami. Budowa wyłącznie na części roboczej; jednorazowy egzamin na części odłożonej, niewidzianej przez autora: 0 błędnych `zgodnych` wśród przypadków rozpoznawalnych z nazwy/metadanych; pozostałe raportowane jako „domena heurystyki 2” (plan E1 D6). Udział `niepewnych` i błędnych `niezgodnych` per warstwa przedstawiony właścicielowi do decyzji bez narzuconego progu. Porażka wymaga nowej części odłożonej; historyczne 231 rekordów to dane z etykietami i kontrole, bez parytetu z prototypem (decyzja właściciela 2026-09-24) | Testy jednostkowe na stałych oznaczonych próbkach + manifest podziału, dowód izolacji i raport jednorazowego egzaminu E1 (N-02) |
 | Ranking | Kolejność U-04/U-05 na przypadkach granicznych (1080p bez PL vs 720p z PL, 2160p vs 720p, PL vs MultiSub w 1080p, MultiSub vs NF bez MultiSub, 1440×1080, brak seedów, nieobsługiwany kontener) | Testy jednostkowe |
 | Pobieranie | Syntetyczna paczka: E1 i E3 bez E2, jeden transfer, restart w trakcie, oba odcinki w Bibliotece, E2 nieprzetworzone (A:S-08) | Test integracyjny z rzeczywistym qB na syntetyku |
 | Pobieranie | Właściciel pobiera jeden prawdziwy odcinek i ogląda wynik w Bibliotece | Scenariusz H2 |
 | Subskrypcje | Fake clock: emisja → wyszukanie → zlecenie; brak wydania 72 h → dalej raz na dobę; zakończenie sezonu → zniknięcie z listy; restart w każdym punkcie; problem jednego wpisu nie blokuje innych (A:S-03, S-04, S-06) | Testy integracyjne |
 | Subskrypcje | Jeden aktualnie emitowany tytuł przez tydzień: odcinek pojawia się w Bibliotece bez dotykania aplikacji | Scenariusz H3 |
+| Parametry przepływu | Raport kompromisu P-2, P-3, P-5 (i P-4) zaakceptowany przez właściciela; do tego czasu konfiguracja tymczasowa zaakceptowana razem z integracją | Raport według planu przepływu §4 |
+| Kontrola po pobraniu | Decyzja H2: zostaje / wypada / tylko zapis | Pomiar według planu przepływu §5.4 |
+| Historia | Replay całej bazy przypadków i części roboczej korpusu bez naruszeń przy każdej zmianie heurystyki lub parametrów | Test regresyjny według planu przepływu §5.7 |
 | Migracja | Kopia rzeczywistego `subscriptions.json` i `state.json` właściciela przechodzi M-01–M-07 bez utraty wpisu | Test na kopii |
 | Folder lokalny | Istniejące przetwarzanie MKV z workspace bez zmian (A:S-07) | Istniejące testy + H2 |
 | Regresje | Pełne bramki `AGENTS.md` zielone; PR-01–PR-12 mają testy | CI + lokalne bramki |
@@ -312,8 +321,8 @@ Każda pozycja ma etap i metodę rozstrzygnięcia. Żadna nie blokuje planu etap
 
 | ID | Pytanie | Dlaczego ważne | Rozstrzyga |
 | --- | --- | --- | --- |
-| N-01 | Po jakim czasie od emisji nowy odcinek ma zgodnego kandydata w Torrentio, a po jakim w Nyaa RSS? Czy Torrentio zawiera wszystkie zgodne wydania, które ma Nyaa (porównanie hashy tego samego odcinka)? | Czy Torrentio może być jedynym źródłem — dla subskrypcji i dla zwykłego Pobierz | Pomiar E1: 8–12 tytułów w emisji przez 7 dni |
-| N-02 | Jak heurystyka działa na korpusie co najmniej 2000 tytułów (TV, kontynuacje, OVA, filmy, różne lata): jaki odsetek odcinków ma zgodnego kandydata i czy któryś `zgodny` jest błędny? | 231 rekordów z trzech franczyz to za mało (decyzja właściciela); za dużo `niepewnych` = automat nic nie pobierze | Pomiar E1: cały korpus oceniony przez dwa modele różnych rodzin (skrypt, klucz Palantir), z rekordami kontrolnymi o znanej etykiecie; niezgodności do trzeciego modelu i właściciela; cel 0 błędnych `zgodnych` |
+| N-01 | Po jakim czasie od emisji nowy odcinek ma zgodnego kandydata w Torrentio, a po jakim w Nyaa RSS? Czy Torrentio zawiera wszystkie zgodne wydania, które ma Nyaa (porównanie hashy tego samego odcinka)? | Czy Torrentio może być jedynym źródłem — dla subskrypcji i dla zwykłego Pobierz | Pomiar E1: 8–12 tytułów w emisji przez 7 dni; dodatkowo M-6 i liczba 429 ze wspólnym deadline (plan przepływu §5.1) |
+| N-02 | Jak heurystyka działa na korpusie co najmniej 2000 tytułów (TV, kontynuacje, OVA, filmy, różne lata): jaki odsetek odcinków ma zgodnego kandydata i czy któryś `zgodny` jest błędny? | 231 rekordów z trzech franczyz to za mało (decyzja właściciela); za dużo `niepewnych` = automat nic nie pobierze | Pomiar E1: cały korpus oceniony przez dwa modele różnych rodzin (skrypt, klucz Palantir), z rekordami kontrolnymi o znanej etykiecie; niezgodności do trzeciego modelu i właściciela; cel 0 błędnych `zgodnych` rozpoznawalnych z nazwy/metadanych (plan E1 D6) |
 | N-03 | Czy qBittorrent w prywatnym profilu AniShift pobiera metadane torrenta z samego hasha (magnet z trackerami z `sources`, DHT), zatrzymuje się przed zapisem treści i pozwala ustawić priorytety plików przed startem? Ile to trwa? | Bez tego nie ma pobierania z Torrentio (zwraca tylko hash) ani U-17 | Próba techniczna E1 (tylko metadane, bez treści) |
 | N-04 | Czy Torrentio zwraca kandydatów dla filmów po `kitsu:<id>`? | U-21 | Pomiar E1 |
 | N-05 | Jak rozpoznać w kontenerze „pełne napisy” wobec „tylko napisy ekranowe (signs)”? | U-08 | Próba na pobranych plikach w E4 |
@@ -332,7 +341,7 @@ Każda pozycja ma etap i metodę rozstrzygnięcia. Żadna nie blokuje planu etap
 | A:R-08 paczki | U-17, U-18, P-06–P-08 |
 | A:R-09 rzetelność pokrycia | R-06, R-08, W-08, §5.5 |
 | A:R-10 jeden sezon | U-09 |
-| A:R-11 natychmiastowe uzupełnienie | S-02 |
+| A:R-11 natychmiastowe uzupełnienie | Zmienione: zaległe pobiera się ręcznie (§5.3); S-02 usunięte |
 | A:R-12 brak historii oglądania | Poza zakresem (tracker), P-01 |
 | A:R-13 duplikaty | U-16, I-03, I-06 |
 | A:R-14 publikacja, nie zakładany czas | U-13, U-14 |

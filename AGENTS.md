@@ -28,12 +28,16 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 - Przed większą lub planowaną zmianą potwierdź zakres z userem. Nie ruszaj od razu.
 - Nie commituj na `main`. Feature branch → PR → merge.
 - KISS/YAGNI — użyj skilla `simple` przy pisaniu i przeglądzie kodu.
-- Główny agent `astra` koordynuje pracę i deleguje kodowanie do subagenta `astra`.
-  Niezależny przegląd wykonuje `opus5` (read-only); `sol` jest opcjonalnym dodatkowym
-  reviewerem (read-only). Delegacja wyłącznie do `astra`, `opus5` i `sol`.
-  Pętla: `astra` koduje i testuje → świeży `opus5` sprawdza → `astra` poprawia →
-  `opus5` weryfikuje. Orkiestrator odpowiada za integrację i sprawdzenie dowodów.
-  Obowiązkowe skille: `simple`, `coding`, `subagent`, `workflow`. Briefy według
+- Orkiestrator (Claude) koordynuje, decyduje, integruje i sprawdza dowody.
+  Równorzędni wykonawcy: `astra` (GPT-6 Astra), `opus55` (Claude Opus 5.5) i
+  `sol6` (GPT-6 Sol) — kodują, testują, badają i przeglądają. `sol` (GPT-5.6 Sol)
+  tylko do zadań wymagających dużego kontekstu; `opus5` (Claude Opus 5) w
+  ostateczności, gdy pozostali zawiodą. Najwyżej 2 równoległe instancje jednego
+  modelu. Zasada krzyżowa: pracy nigdy nie ocenia jej autor — jeśli pisze jeden
+  model, przegląd robi świeża instancja innego (najlepiej z innej rodziny), potem
+  role się zmieniają. Pętla: autor koduje i testuje → inny model sprawdza →
+  autor poprawia → recenzent weryfikuje. Obowiązkowe skille: `simple`, `coding`, `subagent`,
+  `workflow`; przy researchu `research`, przy przeglądzie `review`. Briefy według
   `.agents/skills/subagent/assets/SUBAGENT-BRIEF.template.md`: samowystarczalny
   kontrakt, zakres zapisu, zakazy, baseline i wymagane dowody. Przy nieudanej
   delegacji sprawdź najpierw brief, kontekst i podział pracy przed ponowieniem.
@@ -85,7 +89,7 @@ Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit
 ## Dane runtime
 
 - `workspace/` — wejście w root i podfolderach serii, skanowane rekurencyjnie z pominięciem `temp/` i katalogów od kropki. Po sukcesie źródło i produkty trafiają do płaskiego `ready/`; regeneracja działa tam na miejscu. `temp/` trzyma staging. Zero wymaganego `input/`, `output/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`; wspólny układ katalogów wylicza `anishift/paths.py`.
-- Preferencje panelu: `config/settings.json` (gitignored, poza workspace). Stan rezydenta: `config/watch/` (ledger, blokada, endpoint, chroniony klucz IPC, `runs/` i `relocations/`); subskrypcje: `config/subscriptions.json`. Prywatny profil klienta: `config/qbittorrent/` (gitignored, chronione dane uwierzytelnienia). Ledger nie zawiera kluczy usług ani mediów.
+- Preferencje panelu: `config/settings.json` (gitignored, poza workspace). Stan rezydenta: `config/watch/` (ledger, blokada, endpoint, chroniony klucz IPC, `runs/` i `relocations/`); subskrypcje: `config/subscriptions.json`. `config/watch/decisions.jsonl` to rejestr decyzji automatu (tylko dopisywanie), `config/watch/cases.jsonl` — lokalna baza zweryfikowanych przypadków; oba bez sekretów, mediów i ścieżek absolutnych. Prywatny profil klienta: `config/qbittorrent/` (gitignored, chronione dane uwierzytelnienia). Ledger nie zawiera kluczy usług ani mediów.
 - Settings API/env: pydantic-settings, prefix `ANISHIFT_`, z `.env`, wszystkie opcjonalne. Klient torrent: `ANISHIFT_QBITTORRENT_URL` (domyślnie `http://127.0.0.1:8080`), `ANISHIFT_QBITTORRENT_USERNAME`, `ANISHIFT_QBITTORRENT_PASSWORD`.
 - Diagnostyka runtime używa wyłącznie `from anishift.utils.logger import get_logger`
   oraz modułowego `logger = get_logger(__name__)`. Sinki konfiguruje tylko granica

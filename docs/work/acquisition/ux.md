@@ -1,7 +1,7 @@
 ---
 kind: ux-contract
 status: do-akceptacji-właściciela
-updated: 2026-09-23
+updated: 2026-09-28
 baseline: 0e8a6bf9194d2786d426d3f3a58f48272b3eb087
 ---
 
@@ -15,7 +15,7 @@ baseline: 0e8a6bf9194d2786d426d3f3a58f48272b3eb087
 - `[x]` = zaznaczone w szkicu, `>` = kursor. Zaznaczenie nigdy nie oznacza zlecenia.
 - Każda akcja widoczna w stopce działa klawiszem; skrót literowy nie działa, gdy aktywne jest pole tekstowe.
 - Esc wraca o jeden ekran i odtwarza poprzedni kursor, zaznaczenia i przewinięcie, bez ponownego pobierania danych.
-- Zlecenie powstaje wyłącznie przez: Enter na „Pobierz” (U04), Enter na „Dodaj subskrypcję” (U06), Enter na „Tak” w potwierdzeniu „Pobierz ponownie” (U03). Nawigacja, render, odliczanie, Tab i Esc niczego nie zlecają.
+- Zlecenie powstaje wyłącznie przez: Enter na „Pobierz” (U04, także po „Pobierz ponownie” z U03) albo automatycznie dla celu subskrypcji dodanej przez Enter na „Dodaj subskrypcję” (U06). Nawigacja, render, odliczanie, Tab i Esc niczego nie zlecają.
 
 ## 2. Przejścia
 
@@ -118,7 +118,7 @@ Stopka w kolejnych etapach: E2 dodaje „P pobierz ponownie”, E3 dodaje „O s
 - Brak mapowania ani.zip: zamiast listy „Brak mapowania odcinków dla tego wpisu · Esc wróć”.
 - Terminy emisji niedostępne: notka nad listą „Terminy emisji niedostępne (AniList)”.
 
-**Pobierz ponownie (E2):** `P` na podświetlonym odcinku, który jest zlecony/pobrany/gotowy, pokazuje w stopce: „Pobrać E3 ponownie? Obecne pliki zostają. Enter tak · Esc nie”. Tak → nowe zlecenie tylko tego odcinka z nową sugestią (bez podglądu), widok zostaje.
+**Pobierz ponownie (E2):** `P` na podświetlonym odcinku, który jest zlecony/pobrany/gotowy, pokazuje w stopce: „Pobrać E3 ponownie? Obecne pliki zostają. Enter tak · Esc nie”. Tak → U04 tylko dla tego odcinka z nową sugestią; zastępowane wydanie jest wyłączone z wyboru; zlecenie dopiero Enter na „Pobierz” (spec P-05). W subskrypcji ręczne zlecenie rezerwuje cel odcinka.
 
 ## 6. U04 — podgląd pobrania i inne wydania (E1; Pobierz w E2)
 
@@ -129,11 +129,12 @@ Stopka w kolejnych etapach: E2 dodaje „P pobierz ponownie”, E3 dodaje „O s
 │  Odc  Sugerowane wydanie                  Obraz  Język      Seedy  Rozm│
 │>   3  [Erai-raws] … - 03 [1080p][Multi]   1080p  MultiSub     312  1.4G│
 │    5  [SubsPlease] … - 05 (1080p)         1080p  —            820  1.3G│
-│    7  Brak pewnego wydania (sprawdzono 14:02; niepewnych 6, niezgodnych 2)│
+│    7  [Anon] … 07 (niepewne wydanie)      1080p  —              ?  1.2G│
+│    9  Brak wydania E9 (sprawdzono 14:02; niezgodnych: 2)               │
 │                                                                        │
 │  Powód E3: MultiSub · 1080p · najwięcej seedów wśród zgodnych          │
 │                                                                        │
-│  [ Pobierz 2 odcinki ]                                           (E2)  │
+│  [ Pobierz 3 odcinki ]                                           (E2)  │
 │                                                                        │
 │ ↑↓ wybierz · Enter/I inne wydania · Esc odcinki                        │
 └────────────────────────────────────────────────────────────────────────┘
@@ -144,7 +145,8 @@ Stopka w kolejnych etapach: E2 dodaje „P pobierz ponownie”, E3 dodaje „O s
 - Rozmiar: przybliżony rozmiar pliku odcinka; brak → „?”. Seedy brak → „?”.
 - Wiersz „Powód” pokazuje uzasadnienie dla podświetlonego odcinka.
 - E1: wiersz „[ Pobierz … ]” nie istnieje; stopka jak w makiecie bez „Enter pobierz”.
-- E2: ↑↓ dochodzi do wiersza „[ Pobierz N odcinki ]”; Enter na nim zleca odcinki z sugestią. Odcinki bez sugestii nie są zlecane; po zleceniu notka „Nie zlecono: E7 (brak pewnego wydania)”.
+- E2: ↑↓ dochodzi do wiersza „[ Pobierz N odcinki ]”; Enter na nim zleca odcinki z sugestią, także `niepewną`. Odcinki bez sugestii (brak `zgodnych` i `niepewnych`) nie są zlecane; po zleceniu notka „Nie zlecono: E9 (brak wydania)”.
+- Brak `zgodnego`, ale jest `niepewny` (spec R-06): sugestią jest najlepszy `niepewny` z dopiskiem „(niepewne wydanie)” w wierszu; wiersz „Powód” pokazuje „Niepewne wydanie E7: może nie być tym odcinkiem”.
 - Zmiana wydania w U04b zmienia sugestię tylko tego odcinka w tym podglądzie.
 
 ```text
@@ -196,11 +198,14 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
 │ Nowa subskrypcja                                                       │
 │                                                                        │
 │  Tytuł:     That Time I Got Reincarnated as a Slime Season 4           │
-│  Od odc.:   [5]                                                        │
-│  Teraz:     E5–E23 (wyemitowane) — pobiorę od razu                     │
+│  Od odc.:   24                                                         │
 │  Później:   E24 — emisja 25.09 18:00                                   │
 │  Koniec:    po pobraniu E24 (sezon ma 24 odcinki)                      │
 │  Dodatki:   nie; pobierasz je osobno z listy wpisów                    │
+│  Próg na odcinek: 1.5 GB (zatrzymanie przy przekroczeniu)              │
+│                                                                        │
+│  Wyemitowane E1–E23 nie wchodzą do subskrypcji                         │
+│  · zaznacz je i D, aby pobrać                                          │
 │                                                                        │
 │> [ Dodaj subskrypcję ]                                                 │
 │  [ Anuluj ]                                                            │
@@ -209,7 +214,9 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- „Od odc.” domyślnie podświetlony odcinek z U03; Enter na polu włącza edycję (liczba całkowita); wiersze „Teraz/Później/Koniec” przeliczają się na bieżąco.
+- „Od odc.” jest wyliczone z punktu odcięcia (spec U-09): pierwszy odcinek niewyemitowany w chwili dodania; pole nie jest edytowalne.
+- Notka „Wyemitowane E1–E23 nie wchodzą do subskrypcji · zaznacz je i D, aby pobrać” pojawia się, gdy wpis ma wyemitowane odcinki; Esc wraca do U03, gdzie można je zaznaczyć.
+- „Próg na odcinek” to próg zatrzymania budżetu celu, nie maksimum (spec U-08).
 - Liczba odcinków nieznana: „Koniec: gdy sezon się zakończy i wszystkie odcinki będą pobrane”.
 - Zapowiedź bez dat: „Później: od E1 — termin nieznany”.
 - Globalna pauza: dodatkowy wiersz „AniShift jest wstrzymany — subskrypcja zacznie działać po wznowieniu”.
@@ -243,26 +250,27 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
 
 ## 10. U08 — szczegóły subskrypcji (E3)
 
-To jest U03 tego wpisu z nagłówkiem subskrypcji. Lista zawiera odcinki od N.
+To jest U03 tego wpisu z nagłówkiem subskrypcji. Lista zawiera cele subskrypcji (odcinki od wyliczonego N, spec U-09).
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
 │ Subskrypcje › Frieren Season 2                                         │
 │ Od odc. 1 · Pobrano 7/? · Gotowe 6 · Czeka na wydanie E8 (od 5 h)      │
 │ Ostatnie sprawdzenie 14:02: E8 — 9 kandydatów, 0 zgodnych (9 niepewnych)│
+│ Próg na odcinek: 1.5 GB (zatrzymanie przy przekroczeniu)               │
 │                                                                        │
 │      Nr  Tytuł                         Emisja          Stan            │
 │       7  …                             21.09 17:00     Gotowe          │
 │>      8  …                             28.09 17:00     Czeka na wydanie│
 │       9  …                             5.10 17:00      Czeka na emisję │
 │                                                                        │
-│ Space zaznacz · D podgląd · I wydania · P ponownie · N od odc.         │
+│ Space zaznacz · D podgląd · I wydania · P ponownie                     │
 │ W wstrzymaj · F szukaj teraz · X usuń · Esc lista                      │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 - Pod listą odcinków sekcja „Dodatki tego sezonu”: klucze `S…` z ani.zip i powiązane wpisy OVA/special z AniList (tylko informacja; Enter na wpisie OVA przechodzi do jego U03, gdzie można pobrać). Subskrypcja ich nie pobiera.
-- Wszystkie klawisze odcinków jak w U03 (Space i Enter zaznaczają, A, Z, D, P). Dodatkowo: `N` zmienia „od odc.” (pole w stopce, spec S-10), `W`, `F`, `X` jak w U07.
+- Wszystkie klawisze odcinków jak w U03 (Space i Enter zaznaczają, A, Z, D, P). Dodatkowo: `W`, `F`, `X` jak w U07. „Od odc.” nie jest edytowalne (spec S-10 usunięte).
 - `I` na podświetlonym odcinku otwiera U04b tego odcinka (np. ręczny wybór przy „Czeka na wydanie”).
 
 ## 11. Stany i komunikaty
@@ -275,7 +283,8 @@ To jest U03 tego wpisu z nagłówkiem subskrypcji. Lista zawiera odcinki od N.
 | Torrentio niedostępny | „Źródło wydań nie odpowiada · spróbuj za N s” | jw. |
 | Brak mapowania | „Brak mapowania odcinków dla tego wpisu” | Esc |
 | Brak kandydatów | „Brak kandydatów w źródle (sprawdzono HH:MM)” | Esc |
-| Brak zgodnego | „Brak pewnego wydania (sprawdzono HH:MM; niepewnych n, niezgodnych m)” | Enter → U04b |
+| Brak zgodnego, jest niepewny | Sugestia z dopiskiem „(niepewne wydanie)”; Powód: „Niepewne wydanie E6: może nie być tym odcinkiem” | Enter → U04b |
+| Brak zgodnego i niepewnego | „Brak wydania E6 (sprawdzono HH:MM; niezgodnych: m)” | Enter → U04b |
 | Rezydent nie wykonał nowego polecenia (np. starsza wersja) | „Rezydent nie wykonał polecenia. Jeśli AniShift był właśnie aktualizowany, uruchom go ponownie.” | Esc |
 | Zlecono, lista plików w drodze (E2) | wiersz Przetwarzania „Pobieranie listy plików” | — |
 | Nie ustalono pliku (E2) | „Nie ustalono pliku w paczce” | Enter → U05 |
@@ -284,6 +293,9 @@ To jest U03 tego wpisu z nagłówkiem subskrypcji. Lista zawiera odcinki od N.
 | Przerwa w emisji (E3) | „Przerwa w emisji” | — |
 | Brak wydania od 7 dni (E3) | „Nie znaleziono E6 od 7 dni · szukam raz dziennie” + jedno powiadomienie w zasobniku | F szukaj teraz, I inne wydania |
 | Czeka na wydanie (E3) | „Czeka na wydanie E8 (od 5 h)” / „(od 3 dni; sprawdzam raz dziennie)” | F szukaj teraz |
+| Kontrola po pobraniu w toku (E3) | „Kontrola E6” | — |
+| Kontrola po pobraniu nie wykonała się (E3) | „Kontrola niewykonana” przy odcinku | — |
+| Budżet celu wyczerpany (E3) | „E6: wyczerpano próby (2 pobrania, 2,8 GB)” | I inne wydania, P pobierz ponownie |
 | Pauza globalna | „AniShift wstrzymany — …” w stałym wierszu | O wznów (listy główne) |
 
 Tekst błędu jest krótki, bez URL-i, ścieżek absolutnych i szczegółów technicznych.
@@ -308,15 +320,15 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 1. Pobierz jeden odcinek z pojedynczego wydania i dwa (E1, E3) z tej samej paczki.
 2. W trakcie pobierania zamknij panel i uruchom ponownie AniShift.
    Oczekiwane: jeden transfer paczki; pobierają się tylko E1 i E3; po restarcie praca trwa; oba odcinki w Bibliotece z lektorem; E2 nie pojawia się w Przetwarzaniu.
-3. `P` na pobranym odcinku → Tak.
-   Oczekiwane: nowe zlecenie tylko tego odcinka; poprzedni wynik zostaje.
+3. `P` na pobranym odcinku → Tak → podgląd → Pobierz.
+   Oczekiwane: podgląd bez zastępowanego wydania; nowe zlecenie tylko tego odcinka; poprzedni wynik zostaje.
 
 ### H3 — subskrypcje (koniec E3, 7 dni)
 
-1. Subskrypcje → D → wyszukaj tytuł w emisji → `O` → od bieżącego odcinka → Dodaj.
-   Oczekiwane: wpis na liście, odliczanie do emisji.
+1. Subskrypcje → D → wyszukaj tytuł w emisji → `O` → Dodaj.
+   Oczekiwane: szkic pokazuje wyliczone „Od odc.”, notkę o wyemitowanych i próg na odcinek; wpis na liście, odliczanie do emisji; wyemitowane odcinki nie są zlecane.
 2. Sprawdź przeniesione stare subskrypcje.
-   Oczekiwane: aktywne są aktywne; zakończone z brakami są wstrzymane z opisem.
+   Oczekiwane: aktywne bez należnych celów sprzed migracji są aktywne; aktywne z należnymi celami sprzed migracji są wstrzymane i nic nie pobierają przed „Wznów”, a po wznowieniu te cele ruszają (spec M-01); zakończone z brakami są wstrzymane z opisem (spec M-03).
 3. Usuń jedną subskrypcję `Delete`, potem `Ctrl+Z`.
    Oczekiwane: znika bez pytania; po Ctrl+Z wraca z tym samym zakresem; pobrane pliki cały czas na miejscu.
 4. Nie dotykaj aplikacji przez 7 dni.
@@ -355,7 +367,6 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 | U07, U08 | F | Szukaj teraz — tylko podświetlona/otwarta subskrypcja | zmiana: dziś wszystkie |
 | U07, U08 | Delete, X | Usuń od razu, bez pytania | Delete nowe; X jak dziś |
 | U07 | Ctrl+Z | Przywróć ostatnio usuniętą subskrypcję | E3 |
-| U08 | N | Zmień „od odc.” | E3 |
 | Przetwarzanie | Enter na wierszu z problemem | Ekran naprawy (U05 / U04b) | E2 |
 | Listy główne (U07, Przetwarzanie, Historia, Biblioteka) | U / M / O | Ustawienia / Ręczny / pauza globalna | bez zmian |
 
