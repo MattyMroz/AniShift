@@ -1,7 +1,7 @@
 ---
 kind: masterplan
 status: active
-updated: 2026-09-24
+updated: 2026-09-28
 baseline: 0e8a6bf9194d2786d426d3f3a58f48272b3eb087
 ---
 
@@ -15,7 +15,7 @@ Użytkownik wybiera w AniShift tytuł → sezon → odcinki i klika Pobierz albo
 
 - [spec.md](spec.md) — co ma być prawdą (U-, W-, R-, P-, S-, M-, Q-, I-, PR-).
 - [ux.md](ux.md) — makiety, przejścia, klawisze, scenariusze odbioru H1–H4.
-- [plans/e1-wybor-odcinka.md](plans/e1-wybor-odcinka.md) — szczegółowy plan etapu E1.
+- [plans/e1-wybor-odcinka.md](plans/e1-wybor-odcinka.md) — szczegółowy plan etapu E1; fazy 3–9 wykonuje [plans/e1-integracja.md](plans/e1-integracja.md).
 - Skill OpenCode (`agents/skills/opencode/`: `assets/opencode.jsonc`, `references/models.md`, `references/foundry-proxy.md`, `references/configuration.md`) — kanoniczne źródło modeli i reguł wywołań proxy dla E00.
 - `AGENTS.md` (root i scoped) — reguły repozytorium, bramki jakości, zakazy.
 - Badania: `research/summary.md`, `research/anime-api-report.md`, `research/*.md`, `workspace/.archive/acquisition/evidence/`.
@@ -37,7 +37,7 @@ Użytkownik wybiera w AniShift tytuł → sezon → odcinki i klika Pobierz albo
 | --- | --- | --- | --- | --- | --- |
 | E0 | Pakiet decyzyjny | Specyfikacja, masterplan, plan E1 i UX bez sprzeczności; ustalenia `inżynierska` zaakceptowane lub zawetowane | — | Właściciel akceptuje pakiet (lista weta w manifeście) i zgody na pomiary E1 | accepted |
 | E00 | Katalog modeli i wywołania zgodne z OpenCode | Silnik LLM AniShift zna wszystkie modele OpenCode z limitami, modalnościami i wariantami rozumowania; katalog nadąża za kanonicznym `opencode.jsonc` jedną drogą; każdy model odpowiada przez obecne proxy; obrazy i PDF trafiają do modeli, które je deklarują, pozostałe jawnie odmawiają; decyzja o dwóch enrollmentach podjęta w planie E00 | E0; osobny plan E00 zaakceptowany przez właściciela | Bramki zielone; katalog zgodny z kanonicznym plikiem; smoke request na każdym modelu (obraz i PDF tam, gdzie deklarowane) zaliczony; review `opus5` bez otwartych findingów krytycznych i poważnych | accepted |
-| E1 | Wybór odcinka na prawdziwych danych + pomiary | Najpierw oznaczony korpus ≥ 2000 tytułów / ≥ 10 000 rekordów, zamrożony podział i heurystyka zbudowana od zera na części roboczej; po egzaminie kod domeny, adaptery, usługa/IPC i nowa ścieżka Anime: tytuł → wpisy → odcinki → sugestia i inne wydania (bez pobierania). Stara lista wydań wg grup pod `G` zachowuje pobieranie i subskrypcje. Ranking właściciela bez zmian; pilot N-01 (decyzja U-02) i raport N-02–N-04 | E0, E00 (oceniający korpusu N-02 działają przez silnik LLM po E00) | Heurystyka zbudowana na korpusie ≥ 2000 tytułów / ≥ 10 000 rekordów; jednorazowy egzamin na niewidzianej odłożonej części: 0 błędnych `zgodnych` rozpoznawalnych z nazwy/metadanych (plan E1 D6); metryki `niepewnych` i błędnych `niezgodnych` per warstwa zaakceptowane przez właściciela. Testy oznaczonych fixture i bramki zielone; H1 zaliczone; raport pomiarów z decyzjami dla E2 i E3. Stan 2026-09-28: egzamin v9.2 FAIL, ponowny na rezerwie (sekcja E1) | current |
+| E1 | Wybór odcinka na prawdziwych danych + pomiary | Najpierw oznaczony korpus ≥ 2000 tytułów / ≥ 10 000 rekordów, zamrożony podział i heurystyka zbudowana od zera na części roboczej; po egzaminie kod domeny, adaptery, usługa/IPC i nowa ścieżka Anime: tytuł → wpisy → odcinki → sugestia i inne wydania (bez pobierania). Stara lista wydań wg grup pod `G` zachowuje pobieranie i subskrypcje. Ranking właściciela bez zmian; pilot N-01 (decyzja U-02) i raport N-02–N-04 | E0, E00 (oceniający korpusu N-02 działają przez silnik LLM po E00) | Heurystyka zbudowana na korpusie ≥ 2000 tytułów / ≥ 10 000 rekordów; jednorazowy egzamin na niewidzianej odłożonej części: 0 błędnych `zgodnych` rozpoznawalnych z nazwy/metadanych (plan E1 D6); metryki `niepewnych` i błędnych `niezgodnych` per warstwa zaakceptowane przez właściciela. Testy oznaczonych fixture i bramki zielone; H1 zaliczone; raport pomiarów z decyzjami dla E2 i E3. Stan 2026-09-28: egzamin 2 (v10.3) PASS, v10.3 przyjęta; integracja według [plans/e1-integracja.md](plans/e1-integracja.md) | current |
 | E2 | Jednorazowe pobieranie nową drogą | Pobierz z listy odcinków: zlecenie per odcinek, magnet → lista plików → tylko wybrane pliki → kompletność per odcinek → istniejące przetwarzanie → Biblioteka. Pobierz ponownie z podglądem wydania (spec P-05). Rejestr decyzji ścieżki ręcznej (`config/watch/decisions.jsonl`, [plan przepływu](plans/e1-przeplyw-subskrypcji.md) §5.6). Pomost `G` (stara lista wg grup) zostaje, bo tylko z niego da się jeszcze dodać subskrypcję | E1 (N-03 pozytywne) | Test integracyjny z prawdziwym qB na syntetyku (E1/E3 bez E2, restart); migracja WatchState na kopii stanu właściciela; H2 zaliczone | planned |
 | E3 | Subskrypcje na wspólnym mechanizmie | Subskrybuj z listy odcinków, zakładka Subskrypcje (lista, szczegóły, dodaj, usuń, wstrzymaj, szukaj teraz), harmonogram U-13–U-15, autozamknięcie, przeniesienie starych subskrypcji; usunięty pomost `G` i stara droga grup w UI | E2; źródło świeżych odcinków rozstrzygnięte (U-02: tylko Torrentio) | Testy fake clock (emisja, brak wydania, koniec sezonu, restart, izolacja problemów); migracja na kopii; H3: tydzień bez dotykania | planned |
 | E4 | Kontrola zawartości po pobraniu | PL napisy → bez tłumaczenia; obce → tłumaczenie; brak napisów → jedna zamiana wydania; lektor zawsze | E2; N-05 | Testy planera na syntetykach; H4 na prawdziwym odcinku z PL i bez PL | planned |
@@ -51,7 +51,7 @@ Gałęzie: `work/local-automation/06-efficiency` scalono do `main` przez PR #56 
 
 **Etap:** E1 — wybór odcinka na prawdziwych danych i pomiary. E0 zaakceptowane zgodnie z [README.md](README.md) §2; E00 zakończone (kod zaakceptowany, PR #57 czeka na merge).
 
-**Następny krok:** akceptacja zaktualizowanego [planu E1](plans/e1-wybor-odcinka.md) na stanie po E00, potem preflight i zbieranie/etykietowanie korpusu przed budową heurystyki; E1 startuje od gałęzi E00. Obecna Z-1 pozwala rozpocząć podstawową próbę, ale osiągnięcie ≥ 10 000 rekordów lub nowy egzamin może wymagać jej rozszerzenia (plan E1 §15).
+**Następny krok:** konsensus przeglądów astra ↔ opus55 nad [planem integracji](plans/e1-integracja.md), commit zaakceptowanej dokumentacji (ten commit jest baseline wykonania), potem fazy tego planu na `work/acquisition/01-episode-selection`: F0 preflight (baseline, SHA zamrożonych skryptów, bramki) → F1 port H1 + bramka A → F2 kontrakty i czyste funkcje (`identity_target` = `project_title`, wejście H1 bez dowodów) → F3 adaptery ani.zip/Torrentio/franczyza + bramka B → F4 usługa, IPC, limit ramki, pomiar czasu → F5 UI Anime → F6 H1 z właścicielem, `outcomes/e1.md`, review końcowe. Korpus, podział i egzamin są zamknięte (egzamin 2 PASS).
 
 **Dlaczego E00 przed E1:** E1 ocenia korpus N-02 modelami przez silnik LLM AniShift. Właściciel wymaga, by ten silnik najpierw znał aktualne modele i aktualną specyfikację wywołań; inaczej ocena korpusu biegłaby na nieaktualnym katalogu i niepotwierdzonej drodze do modeli OpenAI.
 
@@ -59,7 +59,7 @@ Gałęzie: `work/local-automation/06-efficiency` scalono do `main` przez PR #56 
 
 **Największa niewiadoma:** N-03 — czy qBittorrent pobierze listę plików z samego hasha i pozwoli wybrać pliki przed zapisem treści.
 
-**Następny artefakt:** zaktualizowany plan E1; potem wynik E1 (`outcomes/e1.md`) i plan E2 napisany na stanie po E1.
+**Następny artefakt:** zaakceptowany plan integracji E1; potem wynik E1 (`outcomes/e1.md`) i plan E2 napisany na stanie po E1.
 
 ## Stany etapów
 
@@ -86,7 +86,7 @@ Gałęzie: `work/local-automation/06-efficiency` scalono do `main` przez PR #56 
 - **Kolejność:** zebranie ≥ 2000 tytułów / ≥ 10 000 rekordów → niezależne etykiety Astra/Opus 5, arbitraż Gemini Pro i rozliczenie sporów przez właściciela → stały losowy podział stratyfikowany z ziarnem i sumami → budowa reguł od zera na części roboczej → jeden egzamin → czysta domena i adaptery → usługa/IPC/UI, N-03 i H1 (N-01 rozstrzygnięty pilotem historycznym, [plan przepływu](plans/e1-przeplyw-subskrypcji.md) §5.1). N-04 poprzedza zbieranie filmów korpusu.
 - **Rezultat:** heurystyka zbudowana na oznaczonym korpusie, sprawdzona na odłożonej części niedostępnej autorowi; Anime → tytuł → wpisy franczyzy → odcinki wpisu → sugestia wydania i inne wydania z oceną tożsamości; raport pomiarów. Historyczne 231 rekordów pozostaje danymi z etykietami i źródłem kontroli, bez wymogu parytetu z prototypem. Ranking U-04/U-05/U-24 pozostaje bez zmian.
 - **Warunek wyjścia:** ≥ 2000 tytułów / ≥ 10 000 oznaczonych rekordów, jednorazowy egzamin na odłożonej części: **0 błędnych `zgodnych`** rozpoznawalnych z nazwy/metadanych (plan E1 D6), a udział `niepewnych` i błędnych `niezgodnych` per warstwa zmierzony i zaakceptowany przez właściciela bez wymyślonego progu. Testy na stałych oznaczonych próbkach, bramki, H1 i raport (pilot N-01 z decyzją U-02, N-02–N-04) spełniają plan E1.
-- **Stan (2026-09-28):** egzamin heurystyki v9.2 — **FAIL** (4 błędne `zgodne` rozpoznawalne z nazwy/metadanych, pokrycie 79,5%). Wykorzystana część egzaminacyjna jest zużyta; poprawka v10 na części roboczej, ponowny egzamin na świeżej części z rezerwy ([plan E1](plans/e1-wybor-odcinka.md) §15).
+- **Stan (2026-09-28):** egzamin 1 (v9.2) — FAIL; egzamin 2 na świeżej części z rezerwy (H1 v10.3) — **PASS**: 0 błędnych `zgodnych` na 3 911 rekordach, pokrycie `zgodny` 46,9% (2021+: 69,6%), `zgodny ∪ niepewny` 93–100% odcinków. Właściciel przyjął v10.3 i zamknął strojenie; egzaminu 3 nie ma. **Zasada regresji:** błąd z praktyki, który da się naprawić heurystyką, staje się stałym przypadkiem regresyjnym w `tests/fixtures/`, a poprawka nie może psuć wcześniejszych przypadków ([plan integracji](plans/e1-integracja.md) §10.6). Reszta E1 (port H1 1:1, adaptery, usługa/IPC, UI, H1, outcome): [plans/e1-integracja.md](plans/e1-integracja.md).
 - **Nie zawiera:** pobierania, subskrybowania, zmian stanu trwałego ani migracji; jedyny wyjątek to istniejący zapis `WatchState.provider_locks` po 429, bez nowego modelu danych (D4, [plan E1](plans/e1-wybor-odcinka.md) §7 i §15).
 - **Ryzyko:** AniList odrzuci zagnieżdżone zapytanie o relacje (faza 0); zgoda Z-1 nie wystarczy na liczność/warstwy korpusu; egzamin wykaże błędne `zgodne` albo nieakceptowalne pokrycie. Porażka → nowa iteracja na części roboczej i nowa niewykorzystana część odłożona; stara nie stanowi ponownie dowodu. Osobne pliki, uprawnienia opiekuna, sumy przed/po i skrypt zwracający wyłącznie metryki chronią egzamin (plan E1 §9).
 

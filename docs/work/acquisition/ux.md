@@ -304,7 +304,7 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 ### H1 — wybór odcinka (koniec E1)
 
 1. Panel → Anime → wpisz „slime” → wybierz 2018 → Season 1 → zaznacz 4 → D.
-   Oczekiwane: sugestia to wydanie S1E4 serii głównej; Slime Diaries i OAD są „niezgodne” w I.
+   Oczekiwane: sugestia to wydanie S1E4 serii głównej; Slime Diaries i OAD nie są „zgodne” w I (mogą być „niepewne” albo „niezgodne”).
 2. Powtórz dla 9 tytułów, które oglądasz (w emisji i zakończonych).
    Oczekiwane: do właściwego wpisu i odcinka w ≤ 3 wyborach od wpisania nazwy; sugestie sensowne albo wskazany konkretny błąd.
 3. Zaznacz 1 i 3, `Z` wpisz `5-`, Esc w trakcie podglądu, wróć.
