@@ -18,7 +18,7 @@ Plan zapisuje decyzje właściciela z 2026-09-28 i koryguje kierunek fazy 2 plan
 | H-2 | Tryb ręczny: heurystyka tylko **sugeruje i sortuje**, właściciel wybiera. Musi być szybka. |
 | H-3 | Tryb subskrypcji: dotyczy **nowych tytułów** (w emisji, praktycznie 2021+) i tylko odcinków niewyemitowanych w chwili dodania. Pobiera automatycznie `zgodne`; `niepewne` tylko według dopuszczalności `e1-przeplyw-subskrypcji.md` §3.3. |
 | H-4 | Do właściciela trafia wyłącznie to, czego system nie rozstrzygnął po wszystkich krokach (eskalacje: `e1-przeplyw-subskrypcji.md` §5.6). Skoro coś trafia do właściciela, to jest ważne. Brak powiadomienia oznacza, że wszystko przeszło. |
-| H-5 | Weryfikacja po pobraniu (H2) dotyczy tylko automatycznych pobrań subskrypcji; czy zostaje, wypada, czy działa w trybie „tylko zapis”, rozstrzyga `e1-przeplyw-subskrypcji.md` §5.4. Gdy plik okaże się zły: zatrzymaj transfer, usuń plik tylko przy warunkach K-09, wyklucz parę (hash, plik), spróbuj następnego kandydata w budżecie celu (tamże §3.3). Po wyczerpaniu budżetu zgłoś właścicielowi. |
+| H-5 | Weryfikacja po pobraniu (H2) dotyczy tylko automatycznych pobrań subskrypcji; czy zostaje, wypada, czy działa w trybie „tylko zapis”, rozstrzyga `e1-przeplyw-subskrypcji.md` §5.4. Gdy plik okaże się zły: zatrzymaj transfer, usuń plik tylko przy warunkach K-09, wyklucz parę (hash, plik), spróbuj następnego kandydata w limicie prób celu (tamże §3.3). Po wyczerpaniu limitu zgłoś właścicielowi. |
 | H-6 | Żadna warstwa nie daje 100%. Bezpieczeństwo wynika z nakładania warstw (heurystyka → weryfikacja po pobraniu → pętla ponowienia → eskalacja), a nie z jednej doskonałej reguły. |
 | H-7 | Bez nowych zależności, jeśli nie dają wyraźnego zysku. Najpierw sprawdzić istniejące otwarte parsery i rozwiązania; nie pisać od zera tego, co już istnieje. Zależność tylko po pomiarze szybkości, stabilności i licencji, przez `uv add`. |
 | H-8 | Kod heurystyki ma jakość produkcyjną i dobrą dokumentację, ale na tym etapie **nie jest jeszcze wpięty** w aplikację. |
@@ -58,11 +58,11 @@ katalog odcinka ─► WYSZUKIWARKA ─► lista kandydatów z oceną zgodny / n
                                                           │
                                   przyjęta ◄──────────────┤
                                                           └─ odrzucona: wyklucz parę,
-                                                             następny dopuszczalny w budżecie celu
+                                                             następny dopuszczalny w limicie prób
                                                              → po wyczerpaniu eskalacja
 ```
 
-Dopuszczalność, budżet celu, bramka przyjęcia i przejścia: `e1-przeplyw-subskrypcji.md`
+Dopuszczalność, limit prób celu, bramka przyjęcia i przejścia: `e1-przeplyw-subskrypcji.md`
 §3.3–§3.6 (diagram jest skrótem, nie kopią reguł).
 
 Weryfikator po pobraniu (pierwsza wersja, bez nowych zależności):

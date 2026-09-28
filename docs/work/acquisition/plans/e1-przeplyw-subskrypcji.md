@@ -22,11 +22,11 @@ Odstępstwa od nich wymienia §7.
 | W-a | Ścieżka **ręczna**: wyemitowane odcinki użytkownik zaznacza i pobiera; H1 szereguje, użytkownik zatwierdza; nie wlicza się do subskrypcji. |
 | W-b | Ścieżka **subskrypcji**: tylko odcinki niewyemitowane w chwili dodania; pobierane automatycznie. |
 | W-c | H1 zawsze i natychmiast. H2 tylko dla automatycznych pobrań subskrypcji; o jej istnieniu decyduje pomiar. |
-| W-d | Lepiej pobrać coś niż nic, ale ze skończonym budżetem — nigdy „10 GB bez sensu”. |
-| W-e | Progi wynikają z pomiaru, nie z pytań do właściciela. |
+| W-d | Lepiej pobrać coś niż nic, ale ze skończonym limitem: 3 automatyczne próby na odcinek, potem problem i powiadomienie (decyzja 2026-09-28). Bez budżetu GB: subskrypcja pobiera świeże wydania WEB, wielkość nie świadczy o poprawności (podwójne odcinki, premiery), a ochronę daje limit prób. |
+| W-e | Progi wynikają z pomiaru, nie z pytań do właściciela (poza limitem prób, W-d). |
 | W-f | Przeniesiona stara subskrypcja: odcinki wyemitowane po jej utworzeniu i niepobrane są pobierane automatycznie po „Wznów”, tam gdzie to rozstrzygalne. |
 | W-g | Przyjęte wydanie `niepewne` nie jest podmieniane automatycznie; zamiana tylko ręcznym „Pobierz ponownie” (E2). |
-| W-h | Symulator: wszystkie seriale TV z AniList od zimy 2024, pozyskane raz do lokalnego cache, z podziałem strojenie/kontrola i wynikami osobno dla popularnych i niszowych — pod warunkiem wykonalności (§5.2). |
+| W-h | Symulator: wszystkie seriale TV z AniList od zimy 2024, pozyskane raz do lokalnego cache, z podziałem strojenie/kontrola i wynikami osobno dla popularnych i niszowych — pod warunkiem wykonalności (§5.2); odłożony 2026-09-28 (§5.3). |
 | W-i | Tryb cienia dopiero po wpięciu heurystyki, jako przełącznik aplikacji; integracja nie czeka na wyniki pomiarów. |
 | W-j | Rejestr decyzji w `config/watch/`, cotygodniowy przegląd; poprawka wchodzi tylko po akceptacji właściciela. |
 | W-k | Historia jako zestaw regresyjny; nie zastępuje ślepego egzaminu korpusu. |
@@ -40,10 +40,10 @@ Odstępstwa od nich wymienia §7.
    (U-03, R-06); zmiana w U04b (R-04).
 4. „Pobierz” → trwałe zlecenie (P-04, U-16), wybór pliku wg U-18, tylko pliki zamówione (U-17).
 5. Pliki kompletne (P-07) → kontrola języka i napisów U-07/U-08 → przetwarzanie → Biblioteka.
-6. Bez H2 i bez budżetu subskrypcji. Limit U-08 (dwa pobrania bez decyzji użytkownika) zostaje.
+6. Bez H2 i bez limitu prób subskrypcji. Limit U-08 (dwa pobrania bez decyzji użytkownika) zostaje.
 
 U06 nie zleca zaległych: zamiast „Teraz” — „Wyemitowane E1–E23 nie wchodzą do
-subskrypcji · zaznacz je i D, aby pobrać”, oraz wiersz „Próg na odcinek: B GB” (P-4).
+subskrypcji · zaznacz je i D, aby pobrać”.
 
 ## 3. Ścieżka subskrypcji
 
@@ -71,7 +71,7 @@ subskrypcji · zaznacz je i D, aby pobrać”, oraz wiersz „Próg na odcinek: 
 - Nierozstrzygalne (brak daty utworzenia, brak daty odcinka) nie stają się celami —
   zostają w ścieżce ręcznej, z notką w szczegółach subskrypcji.
 
-### 3.3 Cel, próba, dopuszczalność, budżet
+### 3.3 Cel, próba, dopuszczalność, limit prób
 
 **Próba** = jedno automatyczne pobranie jednej pary (hash, plik). Cel ma najwyżej jedną
 aktywną próbę. Bieżący stan celu i próby oraz powód trzyma istniejący właściciel zleceń
@@ -84,35 +84,18 @@ Kandydat jest **dopuszczalny**, gdy wszystkie:
   sprzeczności dzieła, sezonu, rodzaju materiału (D-3.4, K-05; `12.5` ≠ E12);
 - para nie była próbą tego celu i nie jest plikiem przyjętym dla innego celu subskrypcji;
 - nigdy `niezgodny`;
-- rozmiar wybranych plików ≤ pozostały budżet celu;
 - < 1080p dopiero po `T_rozdzielczość` (P-5).
 
 Wybór: pierwszy dopuszczalny według `rank`.
 
-**Budżet celu** = `N_prób` (P-3) i `B_cel` (P-4) — **rzeczywiście pobrane bajty** wszystkich
-prób celu, łącznie z martwymi, odrzuconymi i zastąpionymi ręcznie.
-
-- **Rozliczenie:** koszt próby = przyrost `downloaded` jej torrentu w qB od startu próby.
-  Torrent współdzielony z innym celem lub zleceniem: **cały przyrost obciąża każdy cel**.
-  Konserwatywnie i bez podziału kawałków; zawyża koszt tylko przy rzadkich paczkach dla
-  świeżych odcinków.
-- **Egzekwowanie:** `B_cel` to **próg zatrzymania**, nie ścisłe maksimum. Rozmiar z listy
-  plików qB ≤ pozostały budżet przed startem treści (także po wyborze pliku U05). W trakcie
-  transferu, przy najbliższym odczycie stanu qB przez właściciela: pliki próby niekompletne
-  i koszt ≥ pozostały budżet → zatrzymanie transferu (§3.4), próba „martwa (budżet)”.
-  Rzeczywiste przekroczenie progu (bajty ponad próg) trafia do rejestru.
-- **Ukończone pobranie:** kompletne pliki idą do kontroli mimo przekroczenia progu.
-  Wyczerpanie budżetu blokuje dalszy transfer i kolejne próby, nie dyskwalifikuje
-  ukończonego pobrania.
-- **Restart:** właściciel trwale zapisuje `downloaded` z chwili startu próby i koszt
-  zamkniętych prób. Koszt aktywnej = bieżące `downloaded` z qB − wartość startowa; brak
-  torrentu w qB → ostatni zapisany koszt.
-
-Automat nie włącza się, dopóki `B_cel` nie ma skończonej wartości z pomiaru (§4).
-U06 i U08 pokazują budżet jako próg: „Próg na odcinek: B GB (zatrzymanie przy przekroczeniu)”.
+**Limit prób celu** = `N_prób` (P-3) = 3 automatyczne próby (W-d). Liczą się wszystkie
+próby celu: martwe, odrzucone i zastąpione ręcznie. Licznik jest trwały w stanie
+właściciela; restart go nie zeruje. Rozmiar wydania nie jest kryterium dopuszczalności
+ani przerwania próby (W-d). Wyczerpanie limitu blokuje kolejne próby, nie dyskwalifikuje
+próby już ukończonej.
 
 **Stan po zamknięciu próby lub zlecenia ręcznego** (jedna reguła, w kolejności):
-budżet wyczerpany → `wyczerpany`; `now < t_due` → `oczekuje_emisji`; w przeciwnym razie
+limit prób wyczerpany → `wyczerpany`; `now < t_due` → `oczekuje_emisji`; w przeciwnym razie
 `należny`. Pauza lub usunięcie subskrypcji nie zmienia stanu, tylko blokuje nowe próby.
 
 **Bramka przyjęcia:** próba jest `przyjęta` wyłącznie, gdy H2 jest **wyłączona** (decyzja
@@ -125,7 +108,7 @@ i napisów U-07/U-08 przeszła. Przy wyłączonej H2 nie ma probe, ponowień ani
 
 - **Dopuszczenie do Auto wyprowadzone z wyniku próby:** plik próby automatycznej wchodzi do
   Auto (skan roota, restart, regeneracja; U-19, PR-05) tylko wtedy, gdy trwały wynik jego
-  próby w stanie właściciela to `przyjęta`. Próba w toku, martwa, pominięta, odrzucona bez
+  próby w stanie właściciela to `przyjęta`. Próba w toku, martwa, odrzucona bez
   usunięcia pliku i zastąpiona ręcznie — plik nigdy nie wchodzi automatycznie (chyba że
   ten sam plik jest wynikiem zlecenia ręcznego). Bez osobnego znacznika.
 - **Zatrzymanie przed kolejną próbą:** próba martwa lub odrzucona najpierw zatrzymuje swój
@@ -153,18 +136,16 @@ stateDiagram-v2
         w_próbie --> spełniony: próba przyjęta (bramka przyjęcia)
         w_próbie --> należny: zamknięta bez przyjęcia → reguła stanu po zamknięciu
         w_próbie --> oczekuje_emisji: jw., termin przesunięty w przyszłość
-        w_próbie --> wyczerpany: jw., budżet wyczerpany
+        w_próbie --> wyczerpany: jw., limit prób wyczerpany
         spełniony --> [*]
     }
     state "Próba" as P {
         [*] --> metadane
         metadane --> wybór_pliku: plik w paczce niejednoznaczny (U-18c)
-        wybór_pliku --> pobieranie: plik wskazany (U05), rozmiar w budżecie
-        wybór_pliku --> pominięta: plik wskazany, rozmiar ponad budżet
-        metadane --> pobieranie: plik ustalony, rozmiar w budżecie
-        metadane --> pominięta: rozmiar ponad budżet
+        wybór_pliku --> pobieranie: plik wskazany (U05)
+        metadane --> pobieranie: plik ustalony
         metadane --> martwa: brak metadanych w T_metadane
-        pobieranie --> martwa: zastój ≥ T_zastój albo koszt ≥ próg przy niekompletnych plikach
+        pobieranie --> martwa: zastój ≥ T_zastój
         pobieranie --> kontrola: pliki kompletne (P-07)
         kontrola --> przyjęta: bramka przyjęcia spełniona
         kontrola --> odrzucona: sprzeczność H2 albo U-07/U-08 nie przeszła
@@ -182,21 +163,21 @@ stateDiagram-v2
 | 5 | Jest dopuszczalny `zgodny` | należny | w_próbie | Próba z najlepszym. |
 | 6 | Brak dopuszczalnego, niewypróbowanego `zgodnego`; dopuszczalny `niepewny` | należny | w_próbie | Plik oznaczony „niepewne wydanie”. |
 | 7 | Brak dopuszczalnego | należny | należny | Następne sprawdzenie U-14; po 7 dobach jedno powiadomienie (S-14). |
-| 8 | Błąd źródła (sieć, 429, 403; pusta odpowiedź = brak kandydatów, R-08) | należny | należny | Bez kosztu budżetu; odstęp `RequestControl`/U-14. |
-| 9 | Rozmiar ponad pozostały budżet (po metadanych albo po wyborze U05) | w_próbie | reguła stanu po zamknięciu | „Pominięta”, bez kosztu; para wykluczona. |
-| 10 | Plik w paczce niejednoznaczny (U-18c) | w_próbie | w_próbie | Istniejący ręczny wybór pliku U05; wskazany plik przechodzi bramkę budżetu (w. 9). |
-| 11 | Brak metadanych, zastój (P-9) albo koszt ≥ próg przy niekompletnych plikach | w_próbie | reguła stanu po zamknięciu | „Martwa”: zatrzymaj transfer (§3.4); zużywa próbę i pobrane bajty; przekroczenie progu w rejestrze. |
+| 8 | Błąd źródła (sieć, 429, 403; pusta odpowiedź = brak kandydatów, R-08) | należny | należny | Nie zużywa próby; odstęp `RequestControl`/U-14. |
+| 9 | Usunięte (decyzja 2026-09-28, W-d): rozmiar nie jest kryterium, brak prób „pominiętych”. | — | — | — |
+| 10 | Plik w paczce niejednoznaczny (U-18c) | w_próbie | w_próbie | Istniejący ręczny wybór pliku U05. |
+| 11 | Brak metadanych albo zastój (P-9) | w_próbie | reguła stanu po zamknięciu | „Martwa”: zatrzymaj transfer (§3.4); zużywa próbę. |
 | 12 | Bramka przyjęcia spełniona (§3.3) | w_próbie | spełniony | Plik dopuszczony do Auto (§3.4); „niepewne” zostaje przy kandydacie `niepewnym` (K-01); „kontrola niewykonana” widoczna, jeśli dotyczy. |
 | 13 | Sprzeczność H2 albo U-07/U-08 nie przeszła | w_próbie | reguła stanu po zamknięciu | Zatrzymaj transfer; usuń plik tylko przy warunkach K-09; para wykluczona. |
 | 14 | H2 włączona: timeout albo zły JSON | w_próbie | w_próbie | Jedno ponowienie po `T_kontroli`; drugi raz → w. 15. |
-| 15 | H2 włączona: brak binarki albo drugi timeout | w_próbie | w_próbie | H2 kończy się wynikiem „niewykonana” (bez ponawiania przy braku binarki), wpis w rejestrze, także dla `zgodnego`; dalej U-07/U-08 i bramka przyjęcia (w. 12/13). Budżet nie maleje. |
-| 16 | Budżet wyczerpany | w_próbie | wyczerpany | Trwałe (K-09); problem „E6: wyczerpano próby (2 pobrania, 2,8 GB)”; rozwiązanie przez `I`/`P`. |
-| 17 | Ręczne zlecenie odcinka (U04 albo `P`) | należny / w_próbie / wyczerpany | zlecony_ręcznie | Rezerwuje cel, blokuje duplikat (I-06). Aktywna próba automatu: zatrzymanie transferu (§3.4), wynik „zastąpiona ręcznie”, pobrane bajty zostają w rejestrze. |
+| 15 | H2 włączona: brak binarki albo drugi timeout | w_próbie | w_próbie | H2 kończy się wynikiem „niewykonana” (bez ponawiania przy braku binarki), wpis w rejestrze, także dla `zgodnego`; dalej U-07/U-08 i bramka przyjęcia (w. 12/13). Bez dodatkowej próby. |
+| 16 | Limit prób wyczerpany | w_próbie | wyczerpany | Trwałe (K-09); problem „E6: wyczerpano próby (3 z 3)” i powiadomienie (W-d); rozwiązanie przez `I`/`P`. |
+| 17 | Ręczne zlecenie odcinka (U04 albo `P`) | należny / w_próbie / wyczerpany | zlecony_ręcznie | Rezerwuje cel, blokuje duplikat (I-06). Aktywna próba automatu: zatrzymanie transferu (§3.4), wynik „zastąpiona ręcznie”; próba liczy się do limitu. |
 | 18 | Zlecenie ręczne: pobranie potwierdzone i U-07/U-08 bez problemu | zlecony_ręcznie | spełniony | Bez H2 (I-02: zlecenie ≠ pobrano). |
-| 19 | Zlecenie ręczne kończy się problemem | zlecony_ręcznie | reguła stanu po zamknięciu | Automat szuka dalej w pozostałym budżecie, o ile monitoring aktywny. |
+| 19 | Zlecenie ręczne kończy się problemem | zlecony_ręcznie | reguła stanu po zamknięciu | Automat szuka dalej w pozostałym limicie prób, o ile monitoring aktywny. |
 | 20 | Restart | dowolny | ten sam | Uzgodnienie z qB bez ponownego przekazania (§3.4). |
 | 21 | Pauza subskrypcji (S-07) / globalna (S-11) | dowolny | ten sam | Bez sprawdzeń i nowych prób; aktywna próba kończy się; zegary biegną. |
-| 22 | Usunięcie subskrypcji (S-08) | dowolny | zamrożony | Aktywna próba kończy się z kontrolą i przetwarzaniem (K-10); po odrzuceniu **brak następnej**. Ctrl+Z przywraca cele ze zużytym budżetem. |
+| 22 | Usunięcie subskrypcji (S-08) | dowolny | zamrożony | Aktywna próba kończy się z kontrolą i przetwarzaniem (K-10); po odrzuceniu **brak następnej**. Ctrl+Z przywraca cele ze zużytymi próbami. |
 | 23 | Konflikt katalogu (K-06) | należny | należny, zablokowany | Odśwież dane; problem widoczny; bez nowych prób; numeracja bez zmian. |
 | 24 | Konflikt ustąpił | należny, zablokowany | należny | Zdjęcie problemu; zwykły harmonogram. |
 | 25 | Wpis zakończony, liczba znana, wszystkie cele spełnione | — | koniec subskrypcji | U-11, S-09; `wyczerpany` blokuje zakończenie. |
@@ -205,48 +186,41 @@ stateDiagram-v2
 
 | Nr | Parametr | Steruje | Start | Źródło pomiaru |
 | --- | --- | --- | --- | --- |
-| P-1 | `T_start` | pierwsze sprawdzenie po `t_due` | 0 (U-14); dziś 3 h | N-01: najkrótsze opóźnienie Torrentio w dół do 15 min (reguła N-01) |
-| P-2 | `T_niepewny` | kiedy wolno `niepewnego` | 0 (U-03) | symulator, siatka {0, 1, 3, 6, 12, 24, 72 h} |
-| P-3 | `N_prób` | próby na cel (tożsamość + napisy, K-09) | 2 (U-08) | scenariusze modelowane (§5.3) {1, 2, 3} |
-| P-4 | `B_cel` | pobrane bajty na cel | brak — **wymagany przed włączeniem automatu** | `N_prób` × P99 rozmiaru poprawnych wyborów (symulator, inaczej korpus 2021+), w górę do 0,5 GB |
-| P-5 | `T_rozdzielczość` | czekanie na 1080p | 0 (U-04/U-05) | symulator {0, 1, 3 h} |
+| P-1 | `T_start` | pierwsze sprawdzenie po `t_due` | 0 (U-14; decyzja 2026-09-28); dziś 3 h | ustalone; opóźnienie Torrentio potwierdza rejestr/cień po integracji (§5.1) |
+| P-2 | `T_niepewny` | kiedy wolno `niepewnego` | 72 h — konfiguracja tymczasowa | rejestr decyzji po uruchomieniu; symulator, siatka {0, 1, 3, 6, 12, 24, 72 h}, tylko gdy rejestr nie wystarczy (§5.3) |
+| P-3 | `N_prób` | próby na cel (tożsamość + napisy, K-09) | 3 — ustalone przez właściciela (W-d) | nie jest mierzony |
+| P-4 | `B_cel` — Usunięte (decyzja 2026-09-28, W-d): budżet GB na cel | — | — | — |
+| P-5 | `T_rozdzielczość` | czekanie na 1080p | 0 (U-04/U-05) | rejestr decyzji po uruchomieniu; symulator {0, 1, 3 h}, tylko gdy rejestr nie wystarczy (§5.3) |
 | P-6 | tolerancje H2 | granice długości | wartości z kodu | §5.4 |
 | P-7 | H2 | zostaje / wypada | wł. | §5.4 |
 | P-8 | `T_kontroli` | limit `ffprobe`, odstęp ponowienia | 30 s | §5.4: 10 × P95, min. 5 s |
 | P-9 | `T_metadane`, `T_zastój` | próba martwa | — / 30 min | N-03; logi E3 |
-| P-10 | rzednienie U-14 | obciążenie Torrentio | brak | N-01: przy ≥ 1 serii 429 pierwsza doba co 30 min |
+| P-10 | rzednienie U-14 | obciążenie Torrentio | brak | rejestr po integracji: przy ≥ 1 serii 429 pierwsza doba co 30 min |
 
-Nie są otwarte: harmonogram U-14, powiadomienie po 7 dobach, ranking U-04/U-05, lektor zawsze.
+Nie są otwarte: harmonogram U-14, powiadomienie po 7 dobach, ranking U-04/U-05, lektor zawsze, limit prób P-3 = 3.
 
-**Wybór P-2, P-3, P-5** (na części strojeniowej, wynik na kontrolnej, osobno popularne
-i niszowe). Kolejność kryteriów:
+**Wybór P-2, P-5** (na rejestrze decyzji; przy symulatorze na części strojeniowej, wynik
+na kontrolnej, osobno popularne i niszowe). Kolejność kryteriów:
 
 1. najwięcej celów **poprawnie** spełnionych w 7 dni (wybrany plik = właściwy odcinek według
    etykiet A/B);
 2. najmniej złych pobrań nieprzechwyconych przez H2;
-3. najmniej pobranych GB (z przerwanymi i odrzuconymi);
-4. najmniejsze opóźnienie P90.
+3. najmniejsze opóźnienie P90.
 
-Kryteria 2–3 dla P-3 pochodzą z jawnie modelowanych scenariuszy (§5.3), nie z pomiaru.
+Kryterium 2 pochodzi z jawnie modelowanych scenariuszy (§5.3), nie z pomiaru.
 Siatka nie zawiera wartości „nigdy”, więc wynik zawsze pobiera. Raport kompromisu (najlepsza
 konfiguracja i sąsiednie: co zyskują, co tracą) idzie do akceptacji właściciela.
 
-Bez symulatora (§5.2 negatywna): `T_niepewny` = czas, po którym w N-01 ≥ 90 % odcinków
-zbioru rozstrzygającego miało `zgodnego`; gdy 90 % nie zostało osiągnięte — czas ostatniego
-pierwszego `zgodnego` w N-01, najwyżej 72 h; gdy przy wystarczających obserwacjach nie
-znaleziono żadnego pierwszego `zgodnego` — 72 h (granica siatki). Przy niewystarczającej
-próbie N-01 (reguła „mniej niż 5 pełnych obserwacji”) wynik jest **nierozstrzygający**
-i wraca do właściciela. P-3 = 2, P-5 = 0.
+Bez symulatora (odłożony, §5.3) P-2 i P-5 wynikają z rejestru decyzji (§5.6); do tego
+czasu obowiązuje konfiguracja tymczasowa.
 
 Wybór parametrów jest rozdzielony od bramki H1: H1 nadal musi mieć 0 błędnych `zgodnych`
 rozpoznawalnych z nazwy/metadanych (K-03) w ślepym egzaminie; parametry przepływu tego nie
 zmieniają.
 
 Integracja nie czeka na pomiar. **Konfiguracja tymczasowa** pozwala włączyć automat zaraz
-po integracji: P-2 = 72 h, P-3 = 2, P-5 = 0, P-4 = 2 × P99 rozmiaru poprawnych pojedynczych
-odcinków korpusu 2021+ (część robocza), zaokrąglone w górę do 0,5 GB; H2 w trybie „tylko
-zapis” do decyzji §5.4. Wyliczenie P-4 i wynikowe wartości idą do akceptacji właściciela
-razem z integracją. Pomiary (§5) zastępują konfigurację tymczasową w kroku 5; każda zmiana
+po integracji: P-2 = 72 h, P-3 = 3, P-5 = 0; H2 w trybie „tylko zapis” do decyzji §5.4.
+Wartości idą do akceptacji właściciela razem z integracją. Rejestr (§5.6), a w razie potrzeby symulator (§5.3), zastępuje konfigurację tymczasową w kroku 5; każda zmiana
 parametru przechodzi raport kompromisu.
 
 ## 5. Weryfikacja
@@ -258,20 +232,20 @@ Bez nowych zależności.
 
 ### 5.1 N-01 — świeżość źródeł
 
-- **Przygotowanie:** tryb `freshness` w `acquisition_probe.py` nie istnieje (parser
-  `mode`, ok. l. 1343: `export-ids`, `movies`, `corpus`, `collect`, `status`, `stop`).
-  Krok 1: dodać tryb z trwałym wznowieniem (JSONL, po restarcie pomija wykonane odczyty,
-  wzorzec `collect`) i odłączonym startem.
-- **Pomiar:** jak `e1-wybor-odcinka.md` §9 N-01 (7 dni, lokalny Windows, Z-1), plus:
-  - **M-6:** dla każdego odcinka czas od `airingAt` do pierwszego odczytu ani.zip, w którym
-    `episodes["<n>"].length` jest dodatnią liczbą; odczyt co 6 h;
-  - liczba odpowiedzi 429 (P-10).
-- **Wspólny deadline:** N-01 i M-6 kończą się razem (start + 7 dni, bez przedłużania).
-  Odcinek, którego okno obserwacji (N-01: reguły `incomplete_observation`; M-6: 7 dni od
-  emisji) nie mieści się przed deadline albo ma lukę odczytów, jest **niepełną obserwacją**
-  — raportowany osobno, nie jako „brak”.
-- N-01 idzie teraz, bo rozstrzyga U-02 (Nyaa jako drugie źródło) przed E3, daje P-1
-  i opóźnienie Torrentio dla symulatora.
+- **Zastąpione (decyzja właściciela 2026-09-28):** pomiar na żywo przez 7 dni nie jest
+  wykonywany — lokalny przebieg zatrzymano po kilku minutach, archiwum zachowane. Tryb
+  `freshness` nie powstaje.
+- **Pilot historyczny** (`%USERPROFILE%\acquisition-history\pilot\report.md`; 5 seriali TV
+  z zimy 2024, 73 odcinki; izolacja egzaminu zachowana według §5.3): Torrentio ma dziś
+  ≥ 1 `zgodny` dla 73/73 odcinków; 0 odcinków ze `zgodnym` tylko w Nyaa. Nyaa: pierwszy
+  `zgodny` P50 1,51 h, P90 2,60 h po emisji (61/73; 12 braków to słabość wyszukiwania po
+  jednym tytule, późniejsza paczka). Historia nie mówi, kiedy hash trafił do Torrentio;
+  według właściciela wydania WEB (Crunchyroll/Netflix) są od razu, inne zwykle po ~1 h,
+  do ~5 h.
+- **Decyzja U-02:** Torrentio jest jedynym źródłem kandydatów dla subskrypcji i Pobierz;
+  Nyaa nie jest drugim źródłem. P-1 = 0 (U-14 co 15 min od emisji). Opóźnienie Torrentio,
+  liczbę 429 (P-10) i M-6 (czas do dodatniego `episodes["<n>"].length` w ani.zip dla
+  świeżych odcinków) potwierdza rejestr (§5.6, wpisy `check`) i tryb cienia (§5.5) po integracji.
 
 ### 5.2 Próba wykonalności osi historycznej
 
@@ -290,12 +264,19 @@ Przed symulatorem mała próba na 5 serialach z zimy 2024. Wykonuje ją **opieku
 Negatywna próba = brak danych historycznych; symulator odpada, parametry według
 zapasowej reguły §4. Brak historii nie jest traktowany jako „brak wydania”.
 
-### 5.3 Symulator (tylko po pozytywnej próbie)
+**Wykonana 2026-09-28** jako pilot z §5.1: oś historyczna Nyaa jest dostępna; szacowany
+koszt pełnej skali ~33–47 h zapytań.
 
+### 5.3 Symulator (odłożony)
+
+- **Odłożony (decyzja właściciela 2026-09-28):** P-2 (tymczasowo 72 h) i P-5 (0) są
+  strojone na rejestrze decyzji po uruchomieniu (§5.6). Symulator na historii Nyaa
+  (~33–47 h zapytań, §5.2) powstaje tylko, jeśli rejestr nie wystarczy; wtedy obowiązuje
+  opis poniżej.
 - **Próbka:** wszystkie seriale TV/TV_SHORT/ONA z AniList od zimy 2024; podział strojenie/
   kontrola z ziarnem 20260925; znacznik popularne/niszowe (mediana popularności AniList).
 - **Osie:** emisja z AniList `airingSchedule`; wydania z cache §5.2; opóźnienie Torrentio
-  z N-01 dodane do czasu uploadu.
+  z rejestru (§5.6) dodane do czasu uploadu.
 - **Izolacja egzaminu H1 (przed udostępnieniem czegokolwiek autorowi):** opiekun, nie
   autor, porównuje listę serii symulatora z manifestem podziału
   `%USERPROFILE%\acquisition-labels\split-v1-labels-fix3` (tylko manifest: klucze grup
@@ -313,10 +294,11 @@ zapasowej reguły §4. Brak historii nie jest traktowany jako „brak wydania”
   i **który** jest wybrany. Metryki mierzone: M-1 opóźnienie emisja → wybór (P50, P90);
   M-2 cele z poprawnym wyborem w 7 dni (etykiety); M-3 złe wybory według klasy błędu;
   M-7 wybory < 1080p przy późniejszym 1080p; przyjęte `niepewne`.
-- **Scenariusze modelowane (nie pomiar skuteczności):** ponowienia, GB i napisy liczone
-  z jawnych założeń: koszt = deklarowany rozmiar; H2 odrzuca złą próbę tylko w klasach
-  wykrywalnych i tylko przy `length` dostępnym według M-6; brak napisów nie jest
-  modelowany (wymaga N-05). Wyniki M-4 (GB) i skutki P-3 oznaczone jako „model”.
+- **Scenariusze modelowane (nie pomiar skuteczności):** ponowienia i napisy liczone
+  z jawnych założeń: H2 odrzuca złą próbę tylko w klasach wykrywalnych i tylko przy
+  `length` dostępnym według M-6; brak napisów nie jest modelowany (wymaga N-05). M-4
+  (pobrane GB, z deklarowanego rozmiaru) jest wyłącznie informacją, bez wpływu na wybór
+  parametrów. Wyniki M-4 i skutki limitu prób oznaczone jako „model”.
 - **Przybliżenie (jawne):** Nyaa zastępuje Torrentio; seedy z dnia pozyskania; kandydaci
   „brak nazwy pliku” poza metrykami głównymi.
 
@@ -364,11 +346,14 @@ sekretów, ścieżek absolutnych, podpisanych URL-i i trackerów:
 
 | `kind` | Treść |
 | --- | --- |
-| `selection` | Snapshot faktycznych wejść `classify`/`rank`: cel (AniList ID, numer lokalny/TVDB/absolutny, tytuły i aliasy, tytuły odcinków, rok, format, sąsiednie dzieła); kandydaci (hash, nazwa wydania, ścieżka w torrencie, nazwa pliku, rozmiar, seedy, rozdzielczość, PL/MultiSub/platforma, języki). Kontekst: `t_due`, czas sprawdzenia, wykluczone pary z wcześniejszych prób, zużyty i pozostały budżet, wersja parametrów. Wynik: ocena H1 i powód każdego kandydata, wybór i powód. Lista pól = schemat `schema`; nic ponad nie. |
-| `selection` — kiedy | Tylko przy starcie próby, przy zmianie zbioru kandydatów lub decyzji względem poprzedniego wpisu celu oraz przy każdym wyborze ręcznym; puste i niezmienione sprawdzenia U-14 niczego nie dopisują. |
-| `attempt` | Wynik próby, wynik H2 i powód, wynik U-07/U-08, koszt w bajtach. |
+| `selection` | Snapshot faktycznych wejść `classify`/`rank`: cel (AniList ID, numer lokalny/TVDB/absolutny, tytuły i aliasy, tytuły odcinków, rok, format, sąsiednie dzieła); kandydaci (hash, nazwa wydania, ścieżka w torrencie, nazwa pliku, rozmiar, seedy, rozdzielczość, PL/MultiSub/platforma, języki). Kontekst: `t_due`, czas sprawdzenia, wykluczone pary z wcześniejszych prób, liczba zużytych prób, wersja parametrów. Wynik: ocena H1 i powód każdego kandydata, wybór i powód. Lista pól = schemat `schema`; nic ponad nie. |
+| `selection` — kiedy | Tylko przy starcie próby, przy zmianie zbioru kandydatów lub decyzji względem poprzedniego wpisu celu oraz przy każdym wyborze ręcznym; puste i niezmienione sprawdzenia U-14 nie dopisują `selection` (każdy odczyt zapisuje `check`). |
+| `attempt` | Numer próby, wynik próby, wynik H2 i powód, wynik U-07/U-08. |
 | `correction` | Korekta użytkownika z powodem `jakość` (inne wydanie tego samego odcinka) albo `zły_odcinek`: „Pobierz ponownie”, ręczny wybór wydania, wybór pliku U05. |
 | `escalation` | 7 dni, wyczerpanie, konflikt katalogu, „kontrola niewykonana”. |
+| `check` | Surowy odczyt źródła dla celu (opóźnienie Torrentio, 429/P-10, M-6): jedna zwarta linia na każdy odczyt, dopisywana od razu po odczycie. Pola: czas odczytu; źródło `torrentio` / `anizip`; cel (seria + odcinek); `aired_at` celu (czas emisji z AniList, jeśli znany; brak → wpis nie wchodzi do rozkładu „od emisji”); wynik z zamkniętej listy — Torrentio: `brak` / `kandydaci` / `zgodny` / `429` / `błąd`; ani.zip: `brak_length` / `length` / `błąd`. Bez nazw, hashy, payloadów, ścieżek i sekretów. Lista pól = schemat `schema`; nic ponad nie. |
+| `check` — analiza | Luki, kompletność i rozkłady opóźnień liczy analiza offline z surowych czasów, osobno per źródło. Tylko poprawne odczyty (nie `429` / `błąd`) potwierdzają brak lub obecność. Lukę wyznacza analiza według harmonogramu U-14/P-10 obowiązującego w chwili odczytu. Restart zachowuje zapisane wpisy; niezapisany odczyt pozostaje brakiem obserwacji; brak wpisów = brak obserwacji, nigdy potwierdzony brak. |
+| `check` — objętość | Przy odczycie obu źródeł na sprawdzenie U-14: ok. 2 × 96 linii w pierwszej dobie, 2 × 24 na dobę do 72 h, potem 2 na dobę — ok. 300 linii na cel w 7 dni (P-10 co 30 min zmniejsza pierwszą dobę o połowę). Rotacja/retencja to temat E3, jeśli w ogóle. |
 
 Co tydzień agent przygotowuje raport (złe pobrania, eskalacje, korekty) i może zaproponować
 poprawkę z testem na osobnej gałęzi; wchodzi tylko po akceptacji właściciela.
@@ -392,27 +377,27 @@ Tory A i B równolegle; B nie czeka na wyniki A.
 
 | Krok | Tor | Wynik | Warunek przejścia |
 | --- | --- | --- | --- |
-| 1 | A | Tryb `freshness`, potem N-01 7 dni (§5.1) | reguły N-01; M-6, 429 |
+| 1 | A | Pilot historyczny zamiast N-01 na żywo (§5.1, §5.2) | wykonany 2026-09-28; decyzja U-02 |
 | 2 | A | H2: syntetyki i realne pliki (§5.4) | decyzja H2 albo „tylko zapis”; P-6, P-8 |
-| 3 | A | Izolacja egzaminu → próba wykonalności przez opiekuna (§5.2) → symulator (§5.3) | przecięcie z egzaminem/rezerwą usunięte; metryki albo jawny brak danych |
-| 4 | B | Aktualizacja spec/ux (§7); integracja: rejestr ścieżki ręcznej w E2, maszyna stanów, budżet, H2 w przepływie i przełącznik cienia w E3 (`masterplan.md`) | bramki `AGENTS.md` |
-| 4a | B | Konfiguracja tymczasowa (§4) wyliczona z korpusu, akceptacja właściciela | automat może działać po integracji |
-| 5 | A+B | Wybór parametrów z pomiarów (§4), akceptacja raportu kompromisu | zastąpienie konfiguracji tymczasowej |
+| 3 | A | Symulator (§5.3) odłożony — tylko, jeśli rejestr nie wystarczy | izolacja egzaminu jak w §5.3; metryki albo jawny brak danych |
+| 4 | B | Aktualizacja spec/ux (§7); integracja: rejestr ścieżki ręcznej w E2, maszyna stanów, limit prób, H2 w przepływie i przełącznik cienia w E3 (`masterplan.md`) | bramki `AGENTS.md` |
+| 4a | B | Konfiguracja tymczasowa (§4), akceptacja właściciela | automat może działać po integracji |
+| 5 | A+B | Wybór P-2, P-5 z rejestru decyzji (§4), akceptacja raportu kompromisu | zastąpienie konfiguracji tymczasowej |
 | 6 | B | Praca produkcyjna, cień opcjonalnie, przegląd co tydzień (§5.6–§5.7) | — |
 
 ## 7. Zmiany w spec, ux i planach
 
-**Bez zmian:** U-01, U-02, U-04–U-07, U-10, U-12, U-13, U-16–U-18, U-21–U-25; R-01–R-06,
+**Bez zmian:** U-01, U-04–U-07, U-10, U-12, U-13, U-16–U-18, U-21–U-25; R-01–R-06,
 R-08; P-01–P-04, P-06–P-08; S-03 (kolejność), S-04, S-06–S-09, S-11, S-12, S-14;
 M-04–M-07; I-01–I-07; harmonogram U-14.
 
 | Miejsce | Zmiana |
 | --- | --- |
-| U-09, S-01, U06 | Zakres = cele wg punktu odcięcia (§3.1); „od N” wyliczane; zamiast „Teraz” notka o zaległych i „Próg na odcinek”. |
+| U-09, S-01, U06 | Zakres = cele wg punktu odcięcia (§3.1); „od N” wyliczane; zamiast „Teraz” notka o zaległych. |
 | S-02 | Usunięte: zaległe nie są zlecane przez subskrypcję. |
-| S-05, S-10, klawisz `N` w U08 | Bez „Zmień od N”. U08 pokazuje próg budżetu na odcinek (nie maksimum). |
+| S-05, S-10, klawisz `N` w U08 | Bez „Zmień od N”. |
 | U-03 | W subskrypcji `niepewny` tylko wg §3.3; w ścieżce ręcznej bez zmian. |
-| U-08 | W subskrypcji limit dwóch pobrań zastępuje budżet `N_prób` + `B_cel` (pobrane bajty, K-09): wspólny torrent obciąża każdy cel całym przyrostem, zatrzymanie w trakcie transferu, licznik odtwarzany po restarcie (§3.3). |
+| U-08 | W subskrypcji limit dwóch pobrań zastępuje limit 3 automatycznych prób celu (§3.3, W-d); ścieżka ręczna bez zmian. |
 | U-11 | Liczone na celach; `wyczerpany` blokuje samozakończenie. |
 | U-14, U-15 | Start od `t_due + T_start`; rzednienie P-10; `wyczerpany` nie jest szukany; `t_due` bez daty wg §3.1. |
 | U-19, PR-05 | Plik próby automatycznej wchodzi do Auto tylko przy trwałym wyniku `przyjęta` (§3.4). |
@@ -428,12 +413,15 @@ M-04–M-07; I-01–I-07; harmonogram U-14.
 | `AutomationPolicy` | Opóźnienie 3 h, okno 72 h, „3 próby przy błędzie źródła” zastąpione P-1, U-14 i w. 8. |
 | K-13 „błąd kontroli → eskalacja” | Awaria włączonej H2 kończy tylko H2 („niewykonana”, widoczne, w rejestrze); przyjęcie nadal wymaga U-07/U-08 (w. 14–15, bramka przyjęcia). |
 | D6 (`e1-wybor-odcinka.md`), runda 2 K-03 | Bramka H1 „0 błędnych `zgodnych`” liczona wśród przypadków rozpoznawalnych z nazwy/metadanych; pozostałe raportowane jako „domena heurystyki 2”. Wybór parametrów przepływu od niej oddzielony (§4). |
-| Q-1..Q-3 | Q-1: U-03 (2026-09-26) — `niepewny` dostaje lektora i oznaczenie. Q-2: tak (K-02). Q-3: P-2, P-3; zaległe są ręczne. |
+| Q-1..Q-3 | Q-1: U-03 (2026-09-26) — `niepewny` dostaje lektora i oznaczenie. Q-2: tak (K-02). Q-3: P-2; limit prób P-3 = 3 (W-d); zaległe są ręczne. |
 | §14 | Dodatkowo: raport kompromisu parametrów, decyzja H2 (§5.4), replay historii bez naruszeń (§5.7); ślepy egzamin bez zmian. |
-| N-01 | Tryb `freshness` do napisania; dochodzi M-6 i liczenie 429; wspólny deadline, niepełna obserwacja ≠ brak. |
+| U-02 | Torrentio jedynym źródłem dla subskrypcji i Pobierz; Nyaa nie jest drugim źródłem (decyzja 2026-09-28, §5.1). |
+| N-01 | Pomiar na żywo zastąpiony pilotem historycznym i decyzją U-02 (§5.1); opóźnienie Torrentio, 429 i M-6 z rejestru/cienia po integracji. |
 | `download_verification.py` | Twarde odrzucenie długości tylko przy `anizip.length` i braku sygnału sprzecznych granic (K-04); dziś przy każdym źródle. Poprawka w K-6. |
 
 ## 8. Poza zakresem
 
-Automatyczna podmiana przyjętego `niepewnego` (W-g); globalny dobowy limit GB; rodzaj
-dodatków; zmiany kodu aplikacji przed akceptacją tego dokumentu.
+Automatyczna podmiana przyjętego `niepewnego` (W-g); budżet GB na odcinek i globalny
+dobowy limit GB (W-d); rodzaj dodatków; zmiany kodu aplikacji przed akceptacją tego
+dokumentu. Miejsce na dysku (sprawdzanie wolnego miejsca, sprzątanie oryginałów) to osobny
+temat; wstrzymanie subskrypcji (S-07) i globalne (S-11) już istnieje.

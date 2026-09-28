@@ -51,7 +51,9 @@ Zmiany z 2026-09-28 (szczegóły: [plans/e1-przeplyw-subskrypcji.md](plans/e1-pr
 | Temat | Ustalenie |
 | --- | --- |
 | Subskrypcja a zaległe | Subskrypcja pobiera tylko odcinki emitowane po jej dodaniu; wyemitowane zaznaczasz i pobierasz ręcznie. |
-| Budżet odcinka w subskrypcji | Skończona liczba prób i próg pobranych GB na odcinek zamiast limitu dwóch pobrań; progi z pomiaru, do tego czasu konfiguracja tymczasowa do Twojej akceptacji. |
+| Limit prób w subskrypcji | 3 automatyczne próby na odcinek, potem problem i powiadomienie; bez budżetu GB (wielkość świeżego wydania WEB nie świadczy o poprawności). Ścieżka ręczna: dwa pobrania jak dotąd. |
+| Źródło wydań | Tylko Torrentio, dla subskrypcji i Pobierz; Nyaa nie jest drugim źródłem. Zamiast 7-dniowego pomiaru na żywo (N-01) rozstrzygnął pilot historyczny ([plans/e1-przeplyw-subskrypcji.md](plans/e1-przeplyw-subskrypcji.md) §5.1); opóźnienie potwierdzi rejestr po uruchomieniu. |
+| Strojenie parametrów | Pełny symulator odłożony; czas na `niepewny` (tymczasowo 72 h) i czekanie na 1080p (0) stroimy na rejestrze decyzji po uruchomieniu. |
 | Bramka heurystyki | 0 błędnie uznanych za zgodne wśród przypadków rozpoznawalnych z nazwy/metadanych; pozostałe raportowane jako „domena heurystyki 2”. |
 
 Wszystkie decyzje są rozstrzygnięte. Kodek i pochodzenie wydania (WEB/Blu-ray) nie wpływają na wybór (U-25).
@@ -60,7 +62,7 @@ Wszystkie decyzje są rozstrzygnięte. Kodek i pochodzenie wydania (WEB/Blu-ray)
 
 | Nr | Zgoda | Stan |
 | --- | --- | --- |
-| Z-1 | Pomiar świeżości i pokrycia Torrentio vs Nyaa przez 7 dni oraz korpus 2000 tytułów (~4000 zapytań Torrentio w 2–3 doby) | Zgoda; na VPS przez `VpsOracleManager` (`deploy/connect.ps1`, konfiguracja i klucz już są) |
+| Z-1 | Pomiar świeżości i pokrycia Torrentio vs Nyaa przez 7 dni oraz korpus 2000 tytułów (~4000 zapytań Torrentio w 2–3 doby) | Zgoda. Aktualnie: korpus lokalnie na Windows (Torrentio z VPS blokowane 403); 7-dniowy pomiar zastąpiony 2026-09-28 pilotem historycznym ([plans/e1-przeplyw-subskrypcji.md](plans/e1-przeplyw-subskrypcji.md) §5.1). Historycznie: VPS przez `VpsOracleManager` |
 | Z-2 | Odczyt listy MAL | Wycofana — niepotrzebna |
 | Z-3 | Próba metadanych magnetu w tymczasowym qBittorrencie | Zgoda |
 

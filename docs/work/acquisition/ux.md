@@ -202,7 +202,6 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
 │  Później:   E24 — emisja 25.09 18:00                                   │
 │  Koniec:    po pobraniu E24 (sezon ma 24 odcinki)                      │
 │  Dodatki:   nie; pobierasz je osobno z listy wpisów                    │
-│  Próg na odcinek: 1.5 GB (zatrzymanie przy przekroczeniu)              │
 │                                                                        │
 │  Wyemitowane E1–E23 nie wchodzą do subskrypcji                         │
 │  · zaznacz je i D, aby pobrać                                          │
@@ -216,7 +215,6 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
 
 - „Od odc.” jest wyliczone z punktu odcięcia (spec U-09): pierwszy odcinek niewyemitowany w chwili dodania; pole nie jest edytowalne.
 - Notka „Wyemitowane E1–E23 nie wchodzą do subskrypcji · zaznacz je i D, aby pobrać” pojawia się, gdy wpis ma wyemitowane odcinki; Esc wraca do U03, gdzie można je zaznaczyć.
-- „Próg na odcinek” to próg zatrzymania budżetu celu, nie maksimum (spec U-08).
 - Liczba odcinków nieznana: „Koniec: gdy sezon się zakończy i wszystkie odcinki będą pobrane”.
 - Zapowiedź bez dat: „Później: od E1 — termin nieznany”.
 - Globalna pauza: dodatkowy wiersz „AniShift jest wstrzymany — subskrypcja zacznie działać po wznowieniu”.
@@ -257,7 +255,6 @@ To jest U03 tego wpisu z nagłówkiem subskrypcji. Lista zawiera cele subskrypcj
 │ Subskrypcje › Frieren Season 2                                         │
 │ Od odc. 1 · Pobrano 7/? · Gotowe 6 · Czeka na wydanie E8 (od 5 h)      │
 │ Ostatnie sprawdzenie 14:02: E8 — 9 kandydatów, 0 zgodnych (9 niepewnych)│
-│ Próg na odcinek: 1.5 GB (zatrzymanie przy przekroczeniu)               │
 │                                                                        │
 │      Nr  Tytuł                         Emisja          Stan            │
 │       7  …                             21.09 17:00     Gotowe          │
@@ -295,7 +292,7 @@ To jest U03 tego wpisu z nagłówkiem subskrypcji. Lista zawiera cele subskrypcj
 | Czeka na wydanie (E3) | „Czeka na wydanie E8 (od 5 h)” / „(od 3 dni; sprawdzam raz dziennie)” | F szukaj teraz |
 | Kontrola po pobraniu w toku (E3) | „Kontrola E6” | — |
 | Kontrola po pobraniu nie wykonała się (E3) | „Kontrola niewykonana” przy odcinku | — |
-| Budżet celu wyczerpany (E3) | „E6: wyczerpano próby (2 pobrania, 2,8 GB)” | I inne wydania, P pobierz ponownie |
+| Limit prób wyczerpany (E3) | „E6: wyczerpano próby (3 z 3)” + jedno powiadomienie w zasobniku | I inne wydania, P pobierz ponownie |
 | Pauza globalna | „AniShift wstrzymany — …” w stałym wierszu | O wznów (listy główne) |
 
 Tekst błędu jest krótki, bez URL-i, ścieżek absolutnych i szczegółów technicznych.
@@ -326,7 +323,7 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 ### H3 — subskrypcje (koniec E3, 7 dni)
 
 1. Subskrypcje → D → wyszukaj tytuł w emisji → `O` → Dodaj.
-   Oczekiwane: szkic pokazuje wyliczone „Od odc.”, notkę o wyemitowanych i próg na odcinek; wpis na liście, odliczanie do emisji; wyemitowane odcinki nie są zlecane.
+   Oczekiwane: szkic pokazuje wyliczone „Od odc.”, notkę o wyemitowanych; wpis na liście, odliczanie do emisji; wyemitowane odcinki nie są zlecane.
 2. Sprawdź przeniesione stare subskrypcje.
    Oczekiwane: aktywne bez należnych celów sprzed migracji są aktywne; aktywne z należnymi celami sprzed migracji są wstrzymane i nic nie pobierają przed „Wznów”, a po wznowieniu te cele ruszają (spec M-01); zakończone z brakami są wstrzymane z opisem (spec M-03).
 3. Usuń jedną subskrypcję `Delete`, potem `Ctrl+Z`.
