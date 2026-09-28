@@ -234,7 +234,7 @@ def test_second_palantir_connection_edits_address_and_masked_token_independently
     panel._selected = next(index for index, item in enumerate(panel._items) if item.key == "category:connections")
     panel.handle_key("enter")
     panel._selected = next(
-        index for index, item in enumerate(panel._items) if item.key == "connection:palantir-fallback"
+        index for index, item in enumerate(panel._items) if item.key == "connection:palantir-secondary"
     )
     panel.handle_key("enter")
     panel.handle_key("enter")
@@ -242,7 +242,7 @@ def test_second_palantir_connection_edits_address_and_masked_token_independently
     assert "synthetic-fallback-sentinel" not in panel.render(100, 30).plain
     assert not (tmp_path / "unused.env").exists()
     panel.handle_key("enter")
-    assert service.current_settings().palantir_fallback_token == "synthetic-fallback-sentinel"  # noqa: S105
+    assert service.current_settings().palantir_secondary_token == "synthetic-fallback-sentinel"  # noqa: S105
     assert service.current_settings().palantir_token == ""
     panel.handle_key("down")
     panel.handle_key("enter")

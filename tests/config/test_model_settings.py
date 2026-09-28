@@ -524,15 +524,15 @@ def test_second_account_panel_round_trip_and_both_production_call_sites(
     monkeypatch.setattr(user_settings_module, "config_path", lambda: tmp_path / "settings.json")
     prober = _RecordingProber()
     service: AppService = _connected(tmp_path, prober)
-    service.update_secret("palantir_fallback_token", _FALLBACK_TOKEN)
+    service.update_secret("palantir_secondary_token", _FALLBACK_TOKEN)
     updated: UserSettings = service.update_setting("palantir_fallback_enrollment_base_url", _FALLBACK)
     save_user_settings(updated)
     loaded: UserSettings = load_user_settings()
     assert loaded.palantir_fallback_enrollment_base_url == _FALLBACK
     assert _FALLBACK not in repr(loaded)
-    assert service.current_settings().palantir_fallback_token == _FALLBACK_TOKEN
-    assert service.environment_statuses()["palantir_fallback_token"] is True
-    assert "ANISHIFT_PALANTIR_FALLBACK_TOKEN=" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert service.current_settings().palantir_secondary_token == _FALLBACK_TOKEN
+    assert service.environment_statuses()["palantir_secondary_token"] is True
+    assert "ANISHIFT_PALANTIR_SECONDARY_TOKEN=" in (tmp_path / ".env").read_text(encoding="utf-8")
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _TOKEN)
     service.reload_environment()
     assert service.probe_model(_ALIAS).availability is ModelAvailability.VERIFIED
@@ -579,23 +579,42 @@ def test_second_token_is_literal_and_environment_overrides_only_its_own_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path: Path = tmp_path / "synthetic.env"
-    path.write_text(f'ANISHIFT_PALANTIR_FALLBACK_TOKEN="{_FALLBACK_TOKEN}"\n', encoding="utf-8")
+    path.write_text(f'ANISHIFT_PALANTIR_SECONDARY_TOKEN="{_FALLBACK_TOKEN}"\n', encoding="utf-8")
     monkeypatch.setenv("LITERAL", "must-not-expand")
     monkeypatch.setenv("FOUNDRY_API_TOKEN", _TOKEN)
     loaded: Settings = Settings(_env_file=path)
-    assert loaded.palantir_fallback_token == _FALLBACK_TOKEN
+    assert loaded.palantir_secondary_token == _FALLBACK_TOKEN
     assert loaded.palantir_token == _TOKEN
-    monkeypatch.setenv("ANISHIFT_PALANTIR_FALLBACK_TOKEN", "env-sentinel")
-    assert Settings(_env_file=path).palantir_fallback_token == "env-sentinel"  # noqa: S105
+    monkeypatch.setenv("ANISHIFT_PALANTIR_SECONDARY_TOKEN", "env-sentinel")
+    assert Settings(_env_file=path).palantir_secondary_token == "env-sentinel"  # noqa: S105
     assert _FALLBACK_TOKEN not in repr(loaded)
     assert "palantir_fallback_origin" not in Settings.model_fields
     assert "palantir_fallback_api_key" not in Settings.model_fields
 
 
 @pytest.mark.integration
+def test_secondary_token_accepts_explicit_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANISHIFT_PALANTIR_SECONDARY_TOKEN", _FALLBACK_TOKEN)
+    loaded: Settings = Settings(_env_file=None)
+    assert loaded.palantir_secondary_token == _FALLBACK_TOKEN
+    assert _FALLBACK_TOKEN not in repr(loaded)
+    monkeypatch.setenv("ANISHIFT_PALANTIR_SECONDARY_TOKEN", "")
+    assert Settings(_env_file=None).palantir_secondary_token == ""
+
+
+@pytest.mark.integration
+def test_secondary_panel_edit_and_removal(tmp_path: Path) -> None:
+    service: AppService = _service(tmp_path)
+    service.update_secret("palantir_secondary_token", _FALLBACK_TOKEN)
+    assert service.current_settings().palantir_secondary_token == _FALLBACK_TOKEN
+    service.update_secret("palantir_secondary_token", None)
+    assert not service.current_settings().palantir_secondary_token
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(("origin", "token"), [("", ""), (_FALLBACK, ""), ("", _FALLBACK_TOKEN)])
 def test_missing_second_account_pair_keeps_primary(origin: str, token: str) -> None:
-    settings: Settings = Settings(_env_file=None, palantir_token=_TOKEN, palantir_fallback_token=token)
+    settings: Settings = Settings(_env_file=None, palantir_token=_TOKEN, palantir_secondary_token=token)
     preferences = UserSettings(palantir_fallback_enrollment_base_url=origin)
     config: LlmConfig = runtime.palantir_llm_config(
         _catalog(),
@@ -603,7 +622,7 @@ def test_missing_second_account_pair_keeps_primary(origin: str, token: str) -> N
         enrollment_base_url=_ENROLLMENT,
         token=settings.palantir_token,
         fallback_enrollment_base_url=preferences.palantir_fallback_enrollment_base_url,
-        fallback_token=settings.palantir_fallback_token,
+        fallback_token=settings.palantir_secondary_token,
     )
     resolved: tuple[accounts.PalantirAccount, ...] = accounts.palantir_accounts(config)
     assert len(resolved) == 1
@@ -625,14 +644,14 @@ def test_invalid_complete_second_account_is_rejected_without_private_values(
     token: str,
     error_type: type[LlmError],
 ) -> None:
-    settings = Settings(_env_file=None, palantir_token=_TOKEN, palantir_fallback_token=token)
+    settings = Settings(_env_file=None, palantir_token=_TOKEN, palantir_secondary_token=token)
     config: LlmConfig = runtime.palantir_llm_config(
         _catalog(),
         _ALIAS,
         enrollment_base_url=_ENROLLMENT,
         token=settings.palantir_token,
         fallback_enrollment_base_url=origin,
-        fallback_token=settings.palantir_fallback_token,
+        fallback_token=settings.palantir_secondary_token,
     )
     with pytest.raises(error_type) as raised:
         accounts.palantir_accounts(config)
@@ -650,7 +669,7 @@ def test_settings_to_service_failover_preserves_route_and_hides_private_values(
 ) -> None:
     path: Path = tmp_path / "synthetic.env"
     path.write_text(
-        f'ANISHIFT_PALANTIR_TOKEN="{_TOKEN}"\nANISHIFT_PALANTIR_FALLBACK_TOKEN="{_FALLBACK_TOKEN}"\n', encoding="utf-8"
+        f'ANISHIFT_PALANTIR_TOKEN="{_TOKEN}"\nANISHIFT_PALANTIR_SECONDARY_TOKEN="{_FALLBACK_TOKEN}"\n', encoding="utf-8"
     )
     settings = Settings(_env_file=path)
     preferences = UserSettings(
@@ -681,7 +700,7 @@ def test_settings_to_service_failover_preserves_route_and_hides_private_values(
             enrollment_base_url=preferences.palantir_enrollment_base_url,
             token=settings.palantir_token,
             fallback_enrollment_base_url=preferences.palantir_fallback_enrollment_base_url,
-            fallback_token=settings.palantir_fallback_token,
+            fallback_token=settings.palantir_secondary_token,
         )
         with LlmService(config) as service:
             response: LlmResponse = service.complete(LlmRequest((LlmMessage(LlmRole.USER, (TextPart("ping"),)),)))

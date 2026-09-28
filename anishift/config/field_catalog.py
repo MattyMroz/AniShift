@@ -851,7 +851,7 @@ def _model_specs(defaults: UserSettings) -> tuple[SettingSpec, ...]:
         SettingSpec(
             setting_id="palantir_fallback_enrollment_base_url",
             label="Second Palantir enrollment address",
-            description="Configure the https origin of the second enrollment for account failover.",
+            description="Configure the https origin belonging to Palantir account 2.",
             value_type=SettingValueType.STRING,
             default=defaults.palantir_fallback_enrollment_base_url,
             scope=SettingScope.GLOBAL,
@@ -1288,9 +1288,9 @@ def _environment_specs() -> tuple[SettingSpec, ...]:
                 (),
             ),
             (
-                "palantir_fallback_token",
+                "palantir_secondary_token",
                 "Second Palantir token",
-                "Configure the Foundry token of the second enrollment for account failover.",
+                "Configure the Foundry token belonging to Palantir account 2.",
                 (),
             ),
         )

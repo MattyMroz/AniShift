@@ -78,7 +78,7 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
         "original_gain_db",
         "palantir_enrollment_base_url",
         "palantir_fallback_enrollment_base_url",
-        "palantir_fallback_token",
+        "palantir_secondary_token",
         "palantir_token",
         "preferred_video_artifact_id",
         "primary_model_alias",
@@ -298,7 +298,7 @@ def test_secret_catalog_covers_environment_keys_without_exposing_workspace() -> 
     secret_ids = {setting_id for setting_id, spec in catalog.items() if spec.is_secret}
     expected_secret_ids = {field_name for field_name in Settings.model_fields if field_name.endswith("_api_key")} | {
         "palantir_token",
-        "palantir_fallback_token",
+        "palantir_secondary_token",
     }
 
     assert secret_ids == expected_secret_ids

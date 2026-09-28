@@ -461,9 +461,9 @@ class _Feedback:
 _CONNECTIONS: Final[tuple[_Connection, ...]] = (
     _Connection("palantir", "Palantir Foundry", "palantir_token", "palantir_enrollment_base_url", True),
     _Connection(
-        "palantir-fallback",
+        "palantir-secondary",
         "Palantir Foundry · konto 2",
-        "palantir_fallback_token",
+        "palantir_secondary_token",
         "palantir_fallback_enrollment_base_url",
     ),
     _Connection("gemini", "Gemini", "gemini_api_key"),

@@ -591,7 +591,7 @@ def _palantir_translation_config(settings: Settings, snapshot: RunSettingsSnapsh
         token=settings.palantir_token,
         max_retries=snapshot.translation_max_retries,
         fallback_enrollment_base_url=preferences.palantir_fallback_enrollment_base_url,
-        fallback_token=settings.palantir_fallback_token,
+        fallback_token=settings.palantir_secondary_token,
     )
     return replace(
         config,

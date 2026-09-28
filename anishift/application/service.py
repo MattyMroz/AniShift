@@ -976,7 +976,7 @@ class AppService:
             enrollment_base_url=preferences.palantir_enrollment_base_url,
             token=self.current_settings().palantir_token,
             fallback_enrollment_base_url=preferences.palantir_fallback_enrollment_base_url,
-            fallback_token=self.current_settings().palantir_fallback_token,
+            fallback_token=self.current_settings().palantir_secondary_token,
         )
 
     def _prober(self) -> ModelProber:
