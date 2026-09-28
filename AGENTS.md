@@ -29,8 +29,10 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 - Nie commituj na `main`. Feature branch → PR → merge.
 - KISS/YAGNI — użyj skilla `simple` przy pisaniu i przeglądzie kodu.
 - Orkiestrator (Claude) koordynuje, decyduje, integruje i sprawdza dowody.
-  Równorzędni wykonawcy: `astra` (GPT-6 Astra), `opus55` (Claude Opus 5.5) i
-  `sol6` (GPT-6 Sol) — kodują, testują, badają i przeglądają. `sol` (GPT-5.6 Sol)
+  Równorzędni wykonawcy: `astra` (GPT-6 Astra) i `opus55` (Claude Opus 5.5) —
+  planują, kodują, testują, badają i przeglądają. `sol6` (GPT-6 Sol) i inne
+  modele: dodatkowe przeglądy, research i zadania mniej wymagające, nie
+  kodowanie produkcyjne. `sol` (GPT-5.6 Sol)
   tylko do zadań wymagających dużego kontekstu; `opus5` (Claude Opus 5) w
   ostateczności, gdy pozostali zawiodą. Najwyżej 2 równoległe instancje jednego
   modelu. Zasada krzyżowa: pracy nigdy nie ocenia jej autor — jeśli pisze jeden
