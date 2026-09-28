@@ -196,7 +196,7 @@ Oba nowe moduły aplikacji są czyste i trafiają do `_PURE_MODULES`: `episode_i
 
 Kopia v10.3 wyłącznie z tymi zmianami:
 
-- usunięte `from __future__ import annotations` (konwencja repo dla Python 3.14; sprawdzić sąsiednie moduły);
+- `from __future__ import annotations` zostaje — mają go wszystkie moduły `application/` i ruff `FA` (sprawdzone w F1);
 - `Verdict` zamieniony na `IdentityVerdict(StrEnum)` w tym module: `MATCH = "match"`, `INSUFFICIENT = "insufficient_evidence"`, `MISMATCH = "mismatch"` (1:1 z `zgodny` / `niepewny` / `niezgodny`); `Assessment` → `IdentityAssessment(verdict, reason)`;
 - `classify_many(target, candidates) -> tuple[IdentityAssessment, ...]`: waliduje wejście i przygotowuje `_target` raz na pustych dowodach, potem woła `_classify` dla każdego kandydata. To wiernie ścieżka oryginalnego `rank`; przy niepoprawnym wejściu każdy kandydat dostaje `_invalid_evidence_assessment`;
 - `REASONS: Final[frozenset[str]]`: jawny zbiór wszystkich powodów, także zwracanych przez helpery konfliktów (`_selected_work_conflict`, `_directory_season_conflict`, `_editing_variant_conflict`, `_context_conflict` i ich pomocnicze). Stała nie zmienia logiki;
