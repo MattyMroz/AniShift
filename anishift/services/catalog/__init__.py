@@ -1,6 +1,7 @@
 """Anime title catalog: candidates, aliases, and season episode offsets."""
 
 from anishift.services.catalog.anilist import AniListCatalog
+from anishift.services.catalog.anizip import AniZipCatalog
 from anishift.services.catalog.errors import TitleCatalogError
 from anishift.services.catalog.types import (
     EpisodeAiring,
@@ -13,6 +14,7 @@ from anishift.services.catalog.types import (
 
 __all__ = [
     "AniListCatalog",
+    "AniZipCatalog",
     "EpisodeAiring",
     "PrequelEntry",
     "SeasonAiring",

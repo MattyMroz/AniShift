@@ -11,6 +11,24 @@ from anishift.services.http_requests import RequestControl
 from anishift.services.torrents.qbittorrent import QBittorrentClient
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(("host", "provider"), [("api.ani.zip", "anizip"), ("torrentio.strem.fun", "torrentio")])
+def test_episode_providers_charge_their_own_budget(host: str, provider: str) -> None:
+    now: list[float] = [1000.0]
+    control: RequestControl = RequestControl(
+        httpx.MockTransport(lambda _: httpx.Response(200)),
+        clock=lambda: now[0],
+        sleep=lambda delay: now.__setitem__(0, now[0] + delay),
+    )
+    with httpx.Client(transport=control) as http, control.scope("user", {provider: 1}):
+        assert http.get(f"https://{host}/").status_code == 200
+        with pytest.raises(httpx.TransportError, match="budget"):
+            http.get(f"https://{host}/")
+    assert control.counts() == [
+        {"provider": provider, "operation": "metadata", "reason": "user", "result": "200", "count": 1}
+    ]
+
+
 def test_provider_cooldown_is_shared_restored_and_does_not_block_another_provider() -> None:
     now: list[float] = [1000.0]
     sent: list[str] = []

@@ -26,6 +26,9 @@ from anishift.application.episode_selection import (
     release_facts,
     suggestion,
 )
+from anishift.services.catalog.anilist import parse_franchise_page
+from anishift.services.catalog.anizip import parse_mapping
+from anishift.services.torrents.torrentio import parse_streams
 
 pytestmark = pytest.mark.unit
 
@@ -79,33 +82,12 @@ def _read(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _collect(node: dict[str, Any], nodes: dict[int, dict[str, Any]]) -> None:
-    if node["type"] != "ANIME":
-        return
-    identifier: int = node["id"]
-    if identifier not in nodes:
-        nodes[identifier] = node
-    elif "relations" in node:
-        previous: dict[str, Any] = nodes[identifier]
-        merged: dict[tuple[int, str], dict[str, Any]] = {
-            (edge["node"]["id"], edge["relationType"]): edge for edge in previous.get("relations", {}).get("edges", [])
-        }
-        merged.update({(edge["node"]["id"], edge["relationType"]): edge for edge in node["relations"]["edges"]})
-        nodes[identifier] = {**previous, "relations": {"edges": list(merged.values())}}
-    for edge in node.get("relations", {}).get("edges", []):
-        _collect(edge["node"], nodes)
-
-
 def _fixture_graph(root_id: int) -> FranchiseGraph:
     recorded: dict[str, Any] = _read(_SEARCH / f"anilist__franchise__{root_id}.json")
-    nodes: dict[int, dict[str, Any]] = {}
-    queried: set[int] = set()
+    graph: FranchiseGraph = FranchiseGraph(root_id, {}, frozenset(), False)
     for request in recorded["requests"]:
-        for node in request["body"]["data"]["Page"]["media"]:
-            _collect(node, nodes)
-        queried.update(request["ids"])
-    _, _, missing = franchise_traversal(root_id, nodes, frozenset(queried))
-    return FranchiseGraph(root_id=root_id, nodes=nodes, queried=frozenset(queried), complete=not missing)
+        graph = parse_franchise_page(request["body"]["data"], root_id, frozenset(request["ids"]), graph)
+    return graph
 
 
 def _mapping(raw_episodes: dict[str, Any], *, episodes: tuple[ListedEpisode, ...] = ()) -> AniZipMapping:
@@ -121,25 +103,11 @@ def _mapping(raw_episodes: dict[str, Any], *, episodes: tuple[ListedEpisode, ...
 
 
 def _fixture_mapping(anilist_id: int) -> AniZipMapping:
-    return _mapping(_read(_SEARCH / f"anizip__{anilist_id}.json")["episodes"])
+    return parse_mapping(_read(_SEARCH / f"anizip__{anilist_id}.json"))
 
 
 def _fixture_streams(name: str) -> list[StreamCandidate]:
-    streams: list[StreamCandidate] = []
-    for stream in _read(_SEARCH / name)["streams"]:
-        lines: list[str] = stream["title"].splitlines()
-        path: str | None = lines[1] if len(lines) > 1 and not lines[1].startswith("\U0001f464") else None
-        streams.append(
-            _stream(
-                stream.get("behaviorHints", {}).get("filename"),
-                info_hash=stream["infoHash"].lower(),
-                name=stream.get("name"),
-                file_index=stream.get("fileIdx"),
-                release=lines[0],
-                path=path,
-            )
-        )
-    return streams
+    return list(parse_streams(_read(_SEARCH / name)))
 
 
 def _stream(file_name: str | None = "Star Garden - 05.mkv", **changes: Any) -> StreamCandidate:

@@ -14,6 +14,7 @@ from xml.etree import ElementTree
 import httpx
 
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.services.http_requests import USER_AGENT
 from anishift.services.torrents.categories import (
     CATEGORY_ENGLISH_TRANSLATED,
     CATEGORY_NON_ENGLISH_TRANSLATED,
@@ -63,9 +64,6 @@ _DEFAULT_LANGUAGES: Final[dict[str, str | None]] = {
 
 MAX_BODY_BYTES: Final[int] = 4 * 1024 * 1024
 """Largest feed body accepted before the response is rejected."""
-
-USER_AGENT: Final[str] = "AniShift/0.1"
-"""Client identity sent with every search request."""
 
 DEFAULT_SEARCH_TIMEOUT_S: Final[float] = 20.0
 """Timeout applied to one search request."""

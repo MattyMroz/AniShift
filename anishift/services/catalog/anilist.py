@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from http import HTTPStatus
+from time import perf_counter
 from typing import Any, Final
 
 import httpx
 
+from anishift.application.episode_selection import FranchiseGraph, JsonObject, franchise_traversal
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.catalog.errors import TitleCatalogError
 from anishift.services.catalog.types import (
@@ -28,6 +31,7 @@ __all__ = [
     "MAX_PREQUEL_HOPS",
     "OFFSET_FORMATS",
     "AniListCatalog",
+    "parse_franchise_page",
 ]
 
 logger = get_logger(__name__)
@@ -88,6 +92,21 @@ _SHORTENED_WORD_RATIO: Final[float] = 0.6
 _CATALOG_SUGGESTION: Final[str] = "Search again in a minute or type the title exactly"
 """Recovery hint shown for every catalog failure."""
 
+_MAX_FRANCHISE_REQUESTS: Final[int] = 4
+"""Bound entry latency under AniList's roughly thirty requests per minute limit."""
+
+_FRANCHISE_FIELDS: Final[str] = (
+    "id type format status seasonYear startDate { year month day } title { romaji english native }"
+)
+"""Entry projection preserved at every franchise depth."""
+
+
+def _franchise_query() -> str:
+    fragment: str = _FRANCHISE_FIELDS
+    for _ in range(3):
+        fragment = _FRANCHISE_FIELDS + " relations { edges { relationType node { " + fragment + " } } }"
+    return "query ($ids: [Int]) { Page(perPage: 50) { media(id_in: $ids, type: ANIME) { " + fragment + " } } }"
+
 
 class _CatalogFailure(StrEnum):
     """Ways one AniList request or body can be unusable."""
@@ -142,6 +161,32 @@ class AniListCatalog:
     def episode_offset(self, candidate: TitleCandidate) -> int:
         """Return how many episodes aired before *candidate*, following its prequel chain."""
         return sum(entry.episodes for entry in self.prequel_episodes(candidate))
+
+    def franchise(self, anilist_id: int) -> FranchiseGraph:
+        """Fetch the depth-three anime graph, expanding missing chain frontiers at most four times."""
+        started: float = perf_counter()
+        graph: FranchiseGraph = FranchiseGraph(anilist_id, {}, frozenset(), False)
+        pending: list[int] = [anilist_id]
+        try:
+            for _ in range(_MAX_FRANCHISE_REQUESTS):
+                data: Mapping[str, Any] = self._post(_franchise_query(), {"ids": pending})
+                graph = parse_franchise_page(data, anilist_id, frozenset(pending), graph)
+                if graph.complete:
+                    break
+                _, _, missing = franchise_traversal(anilist_id, graph.nodes, graph.queried)
+                pending = sorted(missing)
+        except TitleCatalogError:
+            logger.warning("Franchise lookup failed", provider="anilist", code=ErrorCode.TITLE_CATALOG_FAILED)
+            raise
+        logger.info(
+            "Franchise lookup completed",
+            provider="anilist",
+            operation="franchise",
+            count=len(graph.nodes),
+            complete=graph.complete,
+            elapsed_s=perf_counter() - started,
+        )
+        return graph
 
     def airing_schedule(self, anilist_id: int) -> SeasonAiring:
         """Read all available episode dates for that season without inventing missing history."""
@@ -211,6 +256,61 @@ class AniListCatalog:
         if not isinstance(data, Mapping):
             raise _catalog_error(_CatalogFailure.MALFORMED)
         return data
+
+
+def parse_franchise_page(
+    data: object,
+    root_id: int,
+    queried: frozenset[int],
+    previous: FranchiseGraph | None = None,
+) -> FranchiseGraph:
+    """Merge one GraphQL data page without reordering nodes, titles or relation edges."""
+    page: object = data.get("Page") if isinstance(data, Mapping) else None
+    media: object = page.get("media") if isinstance(page, Mapping) else None
+    if not isinstance(media, list):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    nodes: dict[int, JsonObject] = dict(previous.nodes) if previous else {}
+    for node in media:
+        _collect_franchise(deepcopy(node), nodes)
+    if root_id not in nodes:
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    all_queried: frozenset[int] = queried | (previous.queried if previous else frozenset())
+    _, _, missing = franchise_traversal(root_id, nodes, all_queried)
+    return FranchiseGraph(root_id, nodes, all_queried, not missing)
+
+
+def _collect_franchise(raw: object, nodes: dict[int, JsonObject]) -> None:
+    if not isinstance(raw, dict) or not isinstance(raw.get("type"), str):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    if raw["type"] != "ANIME":
+        return
+    identifier: object = raw.get("id")
+    if type(identifier) is not int or identifier <= 0 or "format" not in raw:
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    title: object = raw.get("title")
+    if not isinstance(title, dict) or any(value is not None and not isinstance(value, str) for value in title.values()):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    relations: object = raw.get("relations", {"edges": []})
+    if not isinstance(relations, Mapping) or not isinstance(relations.get("edges"), list):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    edges: list[Any] = relations["edges"]
+    for edge in edges:
+        if not isinstance(edge, dict) or not isinstance(edge.get("relationType"), str):
+            raise _catalog_error(_CatalogFailure.MALFORMED)
+        child: object = edge.get("node")
+        if not isinstance(child, dict) or type(child.get("id")) is not int:
+            raise _catalog_error(_CatalogFailure.MALFORMED)
+    if identifier not in nodes:
+        nodes[identifier] = raw
+    elif "relations" in raw:
+        previous: JsonObject = nodes[identifier]
+        merged: dict[tuple[int, str], JsonObject] = {
+            (edge["node"]["id"], edge["relationType"]): edge for edge in previous.get("relations", {}).get("edges", [])
+        }
+        merged.update({(edge["node"]["id"], edge["relationType"]): edge for edge in edges})
+        nodes[identifier] = {**previous, "relations": {"edges": list(merged.values())}}
+    for edge in edges:
+        _collect_franchise(edge["node"], nodes)
 
 
 def _schedule_page(raw: object, page: int) -> tuple[tuple[EpisodeAiring, ...], bool]:

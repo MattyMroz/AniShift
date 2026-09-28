@@ -3,15 +3,87 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Final
 
 import httpx
 import pytest
 
+from anishift.application.episode_selection import FranchiseGraph
 from anishift.errors import ErrorCode
 from anishift.services.catalog.anilist import ANILIST_URL, AniListCatalog
 from anishift.services.catalog.errors import TitleCatalogError
 from anishift.services.catalog.types import EpisodeAiring, PrequelEntry, SeasonAiring, TitleCandidate, TitleStatus
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("identifier", [101280, 116741, 106509, 151807, 387])
+def test_franchise_fixture_replays_exact_frontiers_with_depth_three(identifier: int) -> None:
+    fixture: Path = Path(__file__).parents[2] / f"fixtures/search/anilist__franchise__{identifier}.json"
+    recorded: dict[str, Any] = json.loads(fixture.read_text(encoding="utf-8"))
+    calls: list[list[int]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        body: dict[str, Any] = json.loads(request.content)
+        saved: dict[str, Any] = recorded["requests"][len(calls)]
+        assert str(request.url) == ANILIST_URL
+        assert body["variables"] == {"ids": saved["ids"]}
+        assert body["query"].count("relations {") == 3
+        calls.append(body["variables"]["ids"])
+        return httpx.Response(saved["status"], json=saved["body"])
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        graph: FranchiseGraph = AniListCatalog(http).franchise(identifier)
+    assert graph.complete
+    assert graph.root_id == identifier
+    assert 1 <= len(calls) <= 4
+    assert len(calls) == len(recorded["requests"])
+    assert graph.queried == frozenset(value for call in calls for value in call)
+    assert all(node["type"] == "ANIME" for node in graph.nodes.values())
+    if identifier == 101280:
+        assert len(graph.nodes) == 25
+
+
+@pytest.mark.unit
+def test_franchise_four_requests_leave_unexpanded_frontier_incomplete() -> None:
+    calls: list[int] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        identifier: int = json.loads(request.content)["variables"]["ids"][0]
+        calls.append(identifier)
+        child: dict[str, Any] = {"id": identifier + 1, "type": "ANIME", "format": "TV", "title": {"romaji": "Next"}}
+        node: dict[str, Any] = {
+            "id": identifier,
+            "type": "ANIME",
+            "format": "TV",
+            "title": {"romaji": "Root"},
+            "relations": {"edges": [{"relationType": "SEQUEL", "node": child}]},
+        }
+        return httpx.Response(200, json=_page([node]))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        graph: FranchiseGraph = AniListCatalog(http).franchise(1)
+    assert calls == [1, 2, 3, 4]
+    assert not graph.complete
+    assert set(graph.nodes) == {1, 2, 3, 4, 5}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"data": {"Page": {"media": []}}},
+        {"data": {"Page": {"media": [{"id": 1, "type": "ANIME"}]}}},
+        {"errors": [{"message": "Failed"}]},
+    ],
+)
+def test_franchise_invalid_body_is_catalog_failure(body: object) -> None:
+    with (
+        httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body))) as http,
+        pytest.raises(TitleCatalogError),
+    ):
+        AniListCatalog(http).franchise(1)
+
 
 _SOLO_LEVELING: Final[dict[str, Any]] = {
     "id": 176496,

@@ -24,6 +24,9 @@ logger = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
+USER_AGENT: Final[str] = "AniShift/0.1"
+"""Client identity sent with public metadata requests."""
+
 _RETRY_AFTER_S: Final[float] = 60.0
 """Fallback cooldown when a provider omits its retry deadline."""
 
@@ -143,7 +146,7 @@ class RequestControl(httpx.BaseTransport):
                 delay: float = self._next.get(provider, 0.0) - now
                 if delay <= 0:
                     self._charge(provider, request)
-                    if provider in {"anilist", "nyaa"}:
+                    if provider in {"anilist", "nyaa", "anizip", "torrentio"}:
                         self._next[provider] = now + _REMOTE_INTERVAL_S
                     return
             self._sleep(delay)
@@ -193,6 +196,10 @@ def _provider(request: httpx.Request) -> str:
         return "anilist"
     if request.url.host == "nyaa.si":
         return "nyaa"
+    if request.url.host == "api.ani.zip":
+        return "anizip"
+    if request.url.host == "torrentio.strem.fun":
+        return "torrentio"
     return "qbittorrent" if request.url.path.startswith("/api/v2/") else "other"
 
 
