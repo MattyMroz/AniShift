@@ -453,6 +453,7 @@ class _Acquisition:
         self.events: list[str] = []
         self.request_control: None = None
         self.refusing: bool = refusing
+        self.selective: bool = False
 
     def prepare_client(self) -> None:
         self.events.append("prepare")

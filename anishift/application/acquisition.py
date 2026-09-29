@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_selection import (
@@ -652,6 +652,30 @@ class AcquisitionService:
     def start_transfer(self, info_hash: str) -> None:
         """Let a transfer write content once every one of its names is reserved."""
         self._client.resume(info_hash)
+
+    def add_metadata(self, info_hash: str, trackers: tuple[str, ...], save_path: Path) -> None:
+        """Own one admitted hash and ask the private client for its file list only."""
+        client: SelectiveTorrentClient = self._selective()
+        with cast("TorrentManagement", self._torrent_management).download_scope(frozenset({info_hash.casefold()})):
+            client.add_metadata(info_hash, trackers=trackers, save_path=save_path, category=self._category)
+        logger.info("Selective transfer submitted for metadata", trackers=len(trackers))
+
+    def select_files(
+        self, info_hash: str, files: tuple[TorrentFile, ...], selected: frozenset[int], save_path: Path
+    ) -> tuple[TorrentFile, ...]:
+        """Apply one recorded union to a stopped private transfer and return the verified readback."""
+        return self._selective().select_files(info_hash, files, selected, save_path=save_path)
+
+    @property
+    def selective(self) -> bool:
+        """Whether the private client can fetch metadata only and verify a file selection."""
+        return self._torrent_management is not None and hasattr(self._client, "select_files")
+
+    def _selective(self) -> SelectiveTorrentClient:
+        if not self.selective:
+            msg = "Selective downloads require the private torrent client"
+            raise ValueError(msg)
+        return cast("SelectiveTorrentClient", self._client)
 
     def queued_hashes(self) -> frozenset[str]:
         """Lowercase info hashes of every torrent the client already tracks under the AniShift category."""

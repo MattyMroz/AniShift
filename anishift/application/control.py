@@ -304,10 +304,15 @@ class TorrentioReference:
     info_hash: str
     file_index: int | None = None
     file_name: str | None = None
+    release: str = ""
+    trackers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.info_hash.strip():
             msg = "A Torrentio reference requires its info hash"
+            raise ValueError(msg)
+        if not all(isinstance(item, str) and item for item in self.trackers):
+            msg = "A Torrentio tracker must be a non-empty address"
             raise ValueError(msg)
         if self.file_index is not None and (type(self.file_index) is not int or self.file_index < 0):
             msg = "A Torrentio file index must be a non-negative whole number"
@@ -345,11 +350,34 @@ class EpisodeAssignment:
     source: AdmissionSource
     choice: EpisodeChoice
     previous_admission_id: str | None = None
+    file_map: str | None = None
+    files: tuple[FileReservation, ...] = ()
+    conflict: tuple[str, ...] = ()
+    replaced: bool = False
 
     def __post_init__(self) -> None:
         if not self.admission_id.strip() or not self.admitted_at.strip():
             msg = "An episode assignment requires its own admission identity and time"
             raise ValueError(msg)
+        if self.files and self.file_map is None:
+            msg = "Episode files require the file map they were bound on"
+            raise ValueError(msg)
+        indexes: tuple[int, ...] = tuple(index for index, _path, _size in self.files)
+        if any(index < 0 for index in indexes) or len(set(indexes)) != len(indexes):
+            msg = "An episode file must carry one unique client file index"
+            raise ValueError(msg)
+        if any(size < 0 for _index, _path, size in self.files):
+            msg = "An episode file must carry the size its torrent declares"
+            raise ValueError(msg)
+        require_relative_paths((path for _index, path, _size in self.files), "An episode file of a torrent")
+        if not all(isinstance(item, str) and item for item in self.conflict):
+            msg = "An overridden legacy conflict is named by non-empty references"
+            raise ValueError(msg)
+
+    @property
+    def mapped(self) -> bool:
+        """Whether the episode was bound against the metadata of its torrent, with or without a file."""
+        return self.file_map is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,13 +424,31 @@ class AcquisitionConfirmation:
     previous_operation_id: str | None = None
     assignments: tuple[EpisodeAssignment, ...] = ()
     legacy_scope: LegacyScope | None = None
+    selection_revision: int = 0
+    applied_revision: int = 0
 
     @property
     def selective(self) -> bool:
         """Whether this transfer was admitted per catalogue episode instead of as a legacy release."""
         return bool(self.assignments)
 
+    @property
+    def active_assignments(self) -> tuple[EpisodeAssignment, ...]:
+        """Episodes of this transfer that no later explicit repeat replaced."""
+        return tuple(item for item in self.assignments if not item.replaced)
+
+    @property
+    def wanted_files(self) -> frozenset[int]:
+        """Client file indexes every still active episode of this transfer needs."""
+        return frozenset(index for item in self.active_assignments for index, _path, _size in item.files)
+
     def __post_init__(self) -> None:
+        if type(self.selection_revision) is not int or type(self.applied_revision) is not int:
+            msg = "A selection revision is a whole number"
+            raise TypeError(msg)
+        if not 0 <= self.applied_revision <= self.selection_revision:
+            msg = "A confirmed selection cannot be newer than the recorded one"
+            raise ValueError(msg)
         if self.assignments and self.legacy_scope is not None:
             msg = "A selective transfer carries episode assignments, never a legacy scope"
             raise ValueError(msg)

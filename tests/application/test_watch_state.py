@@ -49,7 +49,7 @@ _FINGERPRINT: SourceFingerprint = (("episode-01.mkv", 1024, 111),)
 
 _SCHEMA_TWO_SECTIONS: tuple[str, ...] = ("recipes", "ready_groups", "pause_owned_transfers", "pending_deletions")
 
-_SCHEMA_THREE_FIELDS: tuple[str, ...] = ("assignments", "legacy_scope")
+_SCHEMA_THREE_FIELDS: tuple[str, ...] = ("assignments", "legacy_scope", "selection_revision", "applied_revision")
 
 
 def test_deletion_evidence_round_trips_and_legacy_scope_never_gains_invented_identity(tmp_path: Path) -> None:

@@ -77,6 +77,7 @@ _FAILURES_BEFORE_PROBLEM: Final[int] = 3
 class _Files:
     entries: tuple[TorrentFile, ...]
     signature: tuple[str, str, bool, float, int | None]
+    stale: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +214,17 @@ class TransferInspector:
                 key for key, item in progress.items() if item.downloading and item.idle_s >= stall_after_s
             )
 
+    def idle_s(self, info_hash: str) -> float:
+        """Return how long the observed transfer kept working without any progress."""
+        with self._progress_lock:
+            progress: _Progress | None = self._progress.get(info_hash.casefold())
+            return 0.0 if progress is None else progress.idle_s
+
+    def restart_idle(self, info_hash: str) -> None:
+        """Start a new idle measurement for one transfer, as an explicit resume begins a new attempt."""
+        with self._progress_lock:
+            self._progress.pop(info_hash.casefold(), None)
+
     def declared(self, info_hash: str) -> tuple[TorrentFile, ...]:
         """Return the file identities the last inspection read, contacting no client of its own."""
         cached: _Files | None = self._files.get(info_hash.casefold())
@@ -237,8 +249,9 @@ class TransferInspector:
         complete: tuple[str, ...] = _complete_files(
             directory, selected, names, settling=transfer.state in _SETTLING_STATES
         )
-        if finished:
-            self._files.pop(acquisition.info_hash, None)
+        if finished and transfer.info_hash.casefold() in self._files:
+            key: str = transfer.info_hash.casefold()
+            self._files[key] = replace(self._files[key], stale=True)
         relative: Path = directory.relative_to(self._root)
         whole: bool = finished and bool(selected) and len(complete) == len(names)
         candidate: AcquisitionConfirmation = replace(
@@ -260,7 +273,7 @@ class TransferInspector:
             transfer.completed,
         )
         cached: _Files | None = self._files.get(info_hash)
-        if cached is None or not cached.entries or cached.signature != signature:
+        if cached is None or cached.stale or not cached.entries or cached.signature != signature:
             cached = _Files(self._acquisition.transfer_files(info_hash), signature)
             self._files[info_hash] = cached
         return cached.entries

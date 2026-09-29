@@ -233,17 +233,21 @@ def test_a_repeated_command_replays_its_admission_and_refuses_another_episode(tm
 def test_one_episode_is_admitted_once_whatever_stream_while_its_neighbour_still_passes(tmp_path: Path) -> None:
     library: _Library = _library(tmp_path)
     with _running(library) as owner:
-        assert owner.admit_episode("admit-1", _choice(3, "first-stream")).ok
+        first: ControlResponse = owner.admit_episode("admit-1", _choice(3, "first-stream"))
         duplicate: ControlResponse = owner.admit_episode("admit-2", _choice(3, "second-stream"))
         same_stream: ControlResponse = owner.admit_episode("admit-3", _choice(4, "first-stream"))
-        neighbour: ControlResponse = owner.admit_episode("admit-4", _choice(4, "third-stream"))
-        other_entry: ControlResponse = owner.admit_episode("admit-5", _choice(3, anilist_id=_OTHER_ENTRY))
+        repeated: ControlResponse = owner.admit_episode("admit-4", _choice(4, "third-stream"))
+        neighbour: ControlResponse = owner.admit_episode("admit-5", _choice(5, "third-stream"))
+        other_entry: ControlResponse = owner.admit_episode("admit-6", _choice(3, anilist_id=_OTHER_ENTRY))
 
     assert (duplicate.ok, duplicate.reason) == (False, "episode_admitted")
-    assert (same_stream.ok, same_stream.reason) == (False, "transfer_recorded")
+    assert same_stream.ok
+    assert same_stream.result["operation_id"] == first.result["operation_id"]
+    assert (repeated.ok, repeated.reason) == (False, "episode_admitted")
     assert neighbour.ok
     assert other_entry.ok
-    assert _admitted(library.store) == [(_ENTRY, 3), (_ENTRY, 4), (_OTHER_ENTRY, 3)]
+    assert _admitted(library.store) == [(_ENTRY, 3), (_ENTRY, 4), (_ENTRY, 5), (_OTHER_ENTRY, 3)]
+    assert [len(item.assignments) for item in library.store.load().acquisitions] == [2, 1, 1]
 
 
 def test_two_clients_admitting_one_episode_at_once_create_one_admission(tmp_path: Path) -> None:

@@ -236,8 +236,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   it after the first Undo admission. Never strip recovery evidence to make a downgrade load.
 - `AutomationOwner.admit_episode` to synchroniczna bramka I-06: jeden zapis przyjęcia
   `ADMITTED` (selektywne `AcquisitionConfirmation` z `EpisodeAssignment`) razem z receipt,
-  bez skutków qB; `ADMITTED` nie jest uzgadniane, wznawiane ani odpytywane, a komenda
-  `transfer` na jego hash dostaje `transfer_not_started`. Konflikt liczy
+  bez skutków qB; `ADMITTED` nie jest uzgadniane ani wznawiane, a komenda
+  `transfer` na jego hash dostaje `transfer_not_started`. Kolejne przyjęcie tego samego hasha
+  dopisuje przypisanie do tego samego potwierdzenia; hash legacy, `COMPLETE`, `FAILED` albo
+  z kilkoma rekordami → `transfer_recorded` (priorytety M-06 nietknięte). Konflikt liczy
   `control.episode_conflict`: klucz → `episode_admitted`, `LegacyScope` zapisany albo odczytany
   z subskrypcji (taken, ORDERED/COMPLETE, stare potwierdzenia) → `episode_possibly_admitted`.
   G i subskrypcje w E2 pozostają legacy-unkeyed (przed przyjęciem brak nazwy pliku dla H1;
@@ -246,6 +248,28 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   Panel podaje przez `ResidentSession.download` ID wybranego tytułu i offset jego sezonu;
   nieznany offset daje zakres całego ID. Zapisane numery są już lokalne — offset odejmuje się wyłącznie od
   numeru surowego wydania G bez odczytu sezonu. `automation.py`, `control.py`
+- Selektywny cykl prowadzi istniejący poller, tylko gdy `AcquisitionService.selective`: `ADMITTED` →
+  trwałe `PENDING_SEND` → `add_metadata` → `ACCEPTED` (wyjątek add → `UNCERTAIN`). Po mapie plików
+  owner zapisuje przypisania z podniesionym `selection_revision` PRZED `select_files`; potwierdzenie
+  zapisuje `applied_revision` tylko dla niezmienionej rewizji i zeruje `content_started`. Start wymaga
+  potwierdzonej selekcji, niepustego zestawu, stanu stop i braku żądanego stop/cancel. Działający
+  transfer przed nową selekcją dostaje stop i czeka na kolejną rundę. Wynik workera selektywnego
+  scala się tylko przy niezmienionym `_selection_basis`, a granica `_may_settle` odrzuca go po
+  stop/cancel zleconym w trakcie rundy. Przed KAŻDYM startem i KAŻDYM resume selektywnym (także po
+  restarcie i po końcu pauzy) owner czyta klienta na świeżo (`_mismatched`) i porównuje `save_path`
+  ze stagingiem, mapę index/path/size z przypisaniami i priorytety z `wanted_files`; niezgodność albo
+  brak transferu zatrzymuje go i daje `_SELECTION_MISMATCH` — cache inspektora tu nie wystarcza. Po tym
+  odczycie, tuż przed startem, owner ponownie sprawdza `_may_start_selection` (polityka, action ID,
+  `_selection_basis`); resume chroni `_mark_sent`, który odrzuca akcję zastąpioną w trakcie odczytu. Rekord
+  selektywny nie przechodzi w `COMPLETE`/release, dopóki selekcja nie jest zastosowana i każde aktywne
+  przypisanie ma pliki; inspektor zachowuje listę plików ukończonego transferu (`stale`). Timeout
+  metadanych (`METADATA_TIMEOUT_S`) liczy się w pamięci na próbę; jawne resume zaczyna nową
+  (`restart_idle`). Resume bez potwierdzonej selekcji nigdy nie wysyła `resume` do klienta: w `metaDL`
+  pobieranie metadanych trwa, zatrzymany transfer bez metadanych dostaje `_METADATA_STOPPED` (znane
+  ograniczenie E2: brak ponownego add). Pauza zatrzymuje każdy transfer z `applied_revision > 0`.
+  Selektywne `PENDING_SEND` jest uzgadniane z klientem bez ponownego add: niewidoczny hash dostaje do
+  `_SEND_CHECKS` odczytów, potem `UNCERTAIN` z `_SEND_UNCONFIRMED`, a resume sprawdza go od nowa.
+  `automation.py`, `transfers.py`
 - `subscription_id` i `_matches` porównują serię po postaci znormalizowanej (`normalize_series`,
   `series_forms`), nie po surowym zapisie wybranego wydania. Etykietą grupy w katalogu jest
   pierwszy napotkany zapis, więc dosłowne porównanie cicho zabijało subskrypcję. `subscriptions.py`

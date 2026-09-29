@@ -100,7 +100,12 @@ _SCHEMA_TWO: Final[int] = 2
 _SUPPORTED_SCHEMA_VERSIONS: Final[frozenset[int]] = frozenset({_SCHEMA_ONE, _SCHEMA_TWO, WATCH_STATE_SCHEMA_VERSION})
 """Schema versions of the automation state this build still reads."""
 
-_SCHEMA_THREE_ACQUISITION_FIELDS: Final[tuple[str, ...]] = ("assignments", "legacy_scope")
+_SCHEMA_THREE_ACQUISITION_FIELDS: Final[tuple[str, ...]] = (
+    "assignments",
+    "legacy_scope",
+    "selection_revision",
+    "applied_revision",
+)
 """Acquisition fields schema 3 added, which every schema 3 document must carry and no older one may."""
 
 _SCHEMA_TWO_SECTIONS: Final[tuple[str, ...]] = (
@@ -240,11 +245,15 @@ _ASSIGNMENT_KEYS: Final[frozenset[str]] = frozenset(
         "verdict",
         "reason",
         "deviation_confirmed",
+        "file_map",
+        "files",
+        "conflict",
+        "replaced",
     }
 )
 """Keys a serialized episode assignment must carry."""
 
-_REFERENCE_KEYS: Final[frozenset[str]] = frozenset({"info_hash", "file_index", "file_name"})
+_REFERENCE_KEYS: Final[frozenset[str]] = frozenset({"info_hash", "file_index", "file_name", "release", "trackers"})
 """Keys a serialized Torrentio reference must carry."""
 
 _LEGACY_SCOPE_KEYS: Final[frozenset[str]] = frozenset({"anilist_id", "number"})
@@ -570,6 +579,8 @@ def _encode_acquisition(confirmation: AcquisitionConfirmation) -> dict[str, obje
             if confirmation.legacy_scope is None
             else {"anilist_id": confirmation.legacy_scope.anilist_id, "number": confirmation.legacy_scope.number}
         ),
+        "selection_revision": confirmation.selection_revision,
+        "applied_revision": confirmation.applied_revision,
     }
 
 
@@ -586,11 +597,17 @@ def _encode_assignment(assignment: EpisodeAssignment) -> dict[str, object]:
             "info_hash": choice.reference.info_hash,
             "file_index": choice.reference.file_index,
             "file_name": choice.reference.file_name,
+            "release": choice.reference.release,
+            "trackers": list(choice.reference.trackers),
         },
         "target": dict(choice.target),
         "verdict": choice.verdict.value,
         "reason": choice.reason,
         "deviation_confirmed": choice.deviation_confirmed,
+        "file_map": assignment.file_map,
+        "files": [[index, path, size] for index, path, size in assignment.files],
+        "conflict": list(assignment.conflict),
+        "replaced": assignment.replaced,
     }
 
 
@@ -879,7 +896,7 @@ def _decode_acquisition(raw: object, schema_version: int) -> AcquisitionConfirma
     previous: str | None = _optional_text(
         {"previous_operation_id": stored.pop("previous_operation_id", None)}, "previous_operation_id"
     )
-    assignments, scope = _schema_three_identity(stored, schema_version)
+    assignments, scope, revisions = _schema_three_identity(stored, schema_version)
     document: dict[str, object] = _strict_object(
         {
             "requested_action": None,
@@ -923,18 +940,20 @@ def _decode_acquisition(raw: object, schema_version: int) -> AcquisitionConfirma
         action_sent=sent,
         assignments=assignments,
         legacy_scope=scope,
+        selection_revision=revisions[0],
+        applied_revision=revisions[1],
     )
 
 
 def _schema_three_identity(
     document: dict[str, object], schema_version: int
-) -> tuple[tuple[EpisodeAssignment, ...], LegacyScope | None]:
+) -> tuple[tuple[EpisodeAssignment, ...], LegacyScope | None, tuple[int, int]]:
     fields: dict[str, object] = {key: document.pop(key) for key in _SCHEMA_THREE_ACQUISITION_FIELDS if key in document}
     if schema_version != WATCH_STATE_SCHEMA_VERSION:
         if fields:
             msg = "An acquisition confirmation older than schema 3 cannot carry episode identity"
             raise ValueError(msg)
-        return (), None
+        return (), None, (0, 0)
     if frozenset(fields) != frozenset(_SCHEMA_THREE_ACQUISITION_FIELDS):
         msg = "A schema 3 acquisition confirmation must state its episode identity"
         raise ValueError(msg)
@@ -946,7 +965,15 @@ def _schema_three_identity(
         scope = LegacyScope(
             _whole(stored, "anilist_id"), None if number is None else _as_whole(number, "legacy scope episode")
         )
-    return tuple(_decode_assignment(item) for item in _list(fields["assignments"], "episode assignments")), scope
+    revisions: tuple[int, int] = (
+        _as_whole(fields["selection_revision"], "selection revision"),
+        _as_whole(fields["applied_revision"], "confirmed selection revision"),
+    )
+    return (
+        tuple(_decode_assignment(item) for item in _list(fields["assignments"], "episode assignments")),
+        scope,
+        revisions,
+    )
 
 
 def _decode_assignment(raw: object) -> EpisodeAssignment:
@@ -958,6 +985,10 @@ def _decode_assignment(raw: object) -> EpisodeAssignment:
         admitted_at=_text(document, "admitted_at"),
         source=AdmissionSource(_text(document, "source")),
         previous_admission_id=_optional_text(document, "previous_admission_id"),
+        file_map=_optional_text(document, "file_map"),
+        files=_decode_layout(document["files"]),
+        conflict=_decode_texts(document["conflict"], "overridden legacy conflict"),
+        replaced=_flag(document, "replaced"),
         choice=EpisodeChoice(
             anilist_id=_whole(document, "anilist_id"),
             number=_whole(document, "number"),
@@ -965,6 +996,8 @@ def _decode_assignment(raw: object) -> EpisodeAssignment:
                 _text(reference, "info_hash"),
                 None if index is None else _as_whole(index, "Torrentio file index"),
                 _optional_text(reference, "file_name"),
+                _as_text(reference["release"], "Torrentio release"),
+                _decode_texts(reference["trackers"], "Torrentio trackers"),
             ),
             target=_strict_mapping(document["target"], "H1 target"),
             verdict=IdentityVerdict(_text(document, "verdict")),

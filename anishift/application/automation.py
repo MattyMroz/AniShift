@@ -25,6 +25,7 @@ from anishift.application.acquisition import (
     ReleaseChoice,
     SeasonContext,
 )
+from anishift.application.acquisition_staging import staging_path, torrent_relative_path
 from anishift.application.artifacts import ArtifactKind, ArtifactLifetime, ArtifactState, create_group_id
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.control import (
@@ -97,7 +98,13 @@ from anishift.application.results import DISPLAYED_ABSENCE_NOTE, GroupResult, Gr
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids, resolve_readiness
 from anishift.application.subscriptions import EpisodeState, SubscriptionOrder, repeat_of, resolve_subscription_id
-from anishift.application.transfers import TransferInspector, flat_layout, reserved_stem
+from anishift.application.transfers import (
+    TransferInspector,
+    episode_files,
+    file_map_revision,
+    flat_layout,
+    reserved_stem,
+)
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
 from anishift.config.workspace import run_temp_dir
@@ -123,6 +130,7 @@ if TYPE_CHECKING:
         FileReservation,
         SettingsSnapshot,
         SourceFingerprint,
+        TorrentioReference,
     )
     from anishift.application.events import RunEvent
     from anishift.application.inspection import InspectedSourceGroup
@@ -136,7 +144,7 @@ if TYPE_CHECKING:
         SubscriptionService,
     )
     from anishift.application.watch_state import WatchStateStore
-    from anishift.services.torrents import TorrentFile
+    from anishift.services.torrents import TorrentFile, TorrentInfo
 
 __all__ = ["AutomationOwner"]
 
@@ -291,6 +299,35 @@ _STOPPED_TRANSFER_STATES: Final[frozenset[str]] = frozenset(
     {"stoppedDL", "pausedDL", "stoppedUP", "pausedUP", "error", "missingFiles"}
 )
 """Client states proving a transfer is not working, whoever or whatever stopped it."""
+
+_SELECTABLE_STATES: Final[frozenset[str]] = frozenset({"stoppedDL", "pausedDL", "stoppedUP", "pausedUP"})
+"""Client states in which file priorities of a selective transfer may be changed and verified."""
+
+_SETTLING_SELECTION_STATES: Final[frozenset[str]] = frozenset(
+    {"metaDL", "forcedMetaDL", "checkingResumeData", "checkingDL", "checkingUP", "queuedForChecking", "allocating"}
+)
+"""Transient client states a selective transfer is waited out in, never read as a missing stop."""
+
+METADATA_TIMEOUT_S: Final[float] = 600.0
+"""Working time a selective transfer may spend without its file list before it is reported (D-02)."""
+
+_NO_FILE_LIST: Final[str] = "No file list was received for this download; resume it to keep waiting"
+"""Problem recorded when a selective transfer did not deliver its metadata in time."""
+
+_FILE_MAP_CHANGED: Final[str] = "The file list of this download changed after its episodes were bound to it"
+"""Problem recorded when the client lists other files than the ones the saved episodes name."""
+
+_SELECTION_MISMATCH: Final[str] = "This download no longer matches its saved file selection or folder"
+"""Problem recorded when the client location, file map or priorities differ from the applied selection."""
+
+_SEND_UNCONFIRMED: Final[str] = "The client does not show this download; resume it to check again"
+"""Problem recorded when the client kept not listing a transfer whose submission was not confirmed."""
+
+_SEND_CHECKS: Final[int] = 5
+"""Consecutive client reads a submitted selective transfer may be missing from before it is reported."""
+
+_METADATA_STOPPED: Final[str] = "This download was stopped before its file list arrived and cannot resume safely"
+"""Problem recorded when resuming a transfer without metadata would let the client fetch every file."""
 
 _NO_SUBSCRIPTIONS: Final[str] = "This resident was composed without a torrent client"
 """Reason returned for a subscription command with no subscription service behind it."""
@@ -538,6 +575,7 @@ class AutomationOwner:
             TransferInspector(service.acquisition, service.workspace_root) if service.acquisition is not None else None
         )
         self._transfers_at: float | None = None
+        self._send_misses: dict[str, int] = {}
         self._transfers_inspecting: bool = False
         self._action_attempts: dict[str, tuple[str, int]] = {}
         self._transfers_problem: str | None = None
@@ -2355,6 +2393,7 @@ class AutomationOwner:
                 or (_transfer_action(item) and item.requested_action == "resume")
             )
             and item.requested_action not in {"stop", "cancel"}
+            and (not item.selective or item.applied_revision > 0)
         )
 
     def _enabled_subscriptions(self) -> frozenset[str] | None:
@@ -3628,17 +3667,24 @@ class AutomationOwner:
             return refusal
         now: str = self._now()
         assignment: EpisodeAssignment = EpisodeAssignment(token_hex(_ID_BYTES), now, AdmissionSource.MANUAL, choice)
-        confirmation: AcquisitionConfirmation = AcquisitionConfirmation(
-            operation_id=token_hex(_ID_BYTES),
-            info_hash=choice.reference.info_hash,
-            directory="",
-            required_files=(),
-            state=AcquisitionState.ADMITTED,
-            origin=RequestOrigin.USER,
-            subscription_id=None,
-            episode=str(choice.number),
-            updated_at=now,
-            assignments=(assignment,),
+        shared: AcquisitionConfirmation | None = next(
+            (item for item in self._state.acquisitions if item.info_hash == choice.reference.info_hash), None
+        )
+        confirmation: AcquisitionConfirmation = (
+            AcquisitionConfirmation(
+                operation_id=token_hex(_ID_BYTES),
+                info_hash=choice.reference.info_hash,
+                directory="",
+                required_files=(),
+                state=AcquisitionState.ADMITTED,
+                origin=RequestOrigin.USER,
+                subscription_id=None,
+                episode=str(choice.number),
+                updated_at=now,
+                assignments=(assignment,),
+            )
+            if shared is None
+            else replace(shared, assignments=(*shared.assignments, assignment), updated_at=now)
         )
         outcome: CommandOutcome = {
             "operation_id": confirmation.operation_id,
@@ -3646,10 +3692,16 @@ class AutomationOwner:
             "anilist_id": choice.anilist_id,
             "number": choice.number,
         }
-        candidate: WatchState = replace(self._state, acquisitions=(*self._state.acquisitions, confirmation))
+        acquisitions: tuple[AcquisitionConfirmation, ...] = (
+            (*self._state.acquisitions, confirmation)
+            if shared is None
+            else tuple(confirmation if item is shared else item for item in self._state.acquisitions)
+        )
+        candidate: WatchState = replace(self._state, acquisitions=acquisitions)
         if not self._save(record_command(candidate, CommandReceipt(command_id, now, outcome))):
             return ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED)
-        logger.info("Episode admitted", anilist_id=choice.anilist_id, number=choice.number)
+        logger.info("Episode admitted", anilist_id=choice.anilist_id, number=choice.number, shared=shared is not None)
+        self._schedule_transfers()
         self._publish_state()
         return ControlResponse.succeeded(dict(outcome))
 
@@ -3662,7 +3714,10 @@ class AutomationOwner:
         if legacy is None:
             return ControlResponse.refused(ControlErrorCode.REFUSED, _LEGACY_UNREADABLE, "legacy_unreadable")
         conflict: AdmissionConflict | None = episode_conflict(self._state, choice.anilist_id, choice.number, legacy)
-        if conflict is None and any(item.info_hash == choice.reference.info_hash for item in self._state.acquisitions):
+        recorded: tuple[AcquisitionConfirmation, ...] = tuple(
+            item for item in self._state.acquisitions if item.info_hash == choice.reference.info_hash
+        )
+        if conflict is None and recorded and not _joinable(recorded):
             conflict = AdmissionConflict.TRANSFER_RECORDED
         if conflict is None:
             return None
@@ -3757,19 +3812,24 @@ class AutomationOwner:
         if self._shutting_down or self._transfers is None or self._transfers_inspecting:
             return
         working: bool = self._state.policy.auto_enabled
+        selective: bool = self._selective_client()
         active: bool = any(
-            (item.state is AcquisitionState.ACCEPTED and working) or _transfer_action(item)
+            (_polled(item, selective=selective) and working) or _transfer_action(item)
             for item in self._state.acquisitions
         )
         self._transfers_at = time.monotonic() + delay if active else None
 
+    def _selective_client(self) -> bool:
+        return self._service.acquisition is not None and self._service.acquisition.selective
+
     def _poll_transfers(self) -> None:
         if self._transfers_at is None or self._transfers_at > time.monotonic():
             return
+        selective: bool = self._selective_client()
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
             item
             for item in self._state.acquisitions
-            if (item.state is AcquisitionState.ACCEPTED and self._working()) or _transfer_action(item)
+            if (_polled(item, selective=selective) and self._working()) or _transfer_action(item)
         )
         self._transfers_at = None
         if not acquisitions:
@@ -3828,6 +3888,7 @@ class AutomationOwner:
         acquisitions: tuple[AcquisitionConfirmation, ...],
         reserved: frozenset[str] | None,
     ) -> None:
+        basis: tuple[AcquisitionConfirmation, ...] = acquisitions
         results: tuple[AcquisitionConfirmation, ...] = ()
         failure: str | None = None
         nature: tuple[str, str] | None = None
@@ -3837,9 +3898,19 @@ class AutomationOwner:
                 if acquisition is not None:
                     with acquisition.requests("transfer"):
                         acquisitions = self._apply_transfer_actions(acquisition, acquisitions)
+                        for item in acquisitions:
+                            if item.state is AcquisitionState.ADMITTED:
+                                self._send_selective(acquisition, item)
+                        acquisitions = tuple(
+                            item for item in acquisitions if item.state is not AcquisitionState.ADMITTED
+                        )
                         results = acquisitions
                         results = self._transfers.inspect(
                             acquisitions, stall_after_s=self._state.policy.transfer_stall_s
+                        )
+                        results = tuple(
+                            _unfinished_selection(self._unseen_send(before, after))
+                            for before, after in zip(acquisitions, results, strict=True)
                         )
                         results = self._settle_layouts(acquisition, results, reserved)
         except Exception as problem:  # noqa: BLE001
@@ -3848,7 +3919,22 @@ class AutomationOwner:
             if self._transfers is not None:
                 self._transfers.reset_clock()
         finally:
-            self._queue.put(lambda: self._record_transfers(results, failure, nature))
+            self._queue.put(lambda: self._record_transfers(results, failure, nature, basis))
+
+    def _unseen_send(self, before: AcquisitionConfirmation, after: AcquisitionConfirmation) -> AcquisitionConfirmation:
+        """Keep checking a submitted selective transfer the client does not list yet, then report it for resume."""
+        if not before.selective or before.state is not AcquisitionState.PENDING_SEND:
+            return after
+        if after.state is not AcquisitionState.UNCERTAIN:
+            self._send_misses.pop(before.operation_id, None)
+            return after
+        misses: int = self._send_misses.get(before.operation_id, 0) + 1
+        if misses < _SEND_CHECKS:
+            self._send_misses[before.operation_id] = misses
+            return before
+        self._send_misses.pop(before.operation_id, None)
+        logger.warning("A submitted selective transfer stayed missing from the client", checks=misses)
+        return replace(after, problem=_SEND_UNCONFIRMED)
 
     def _settle_layouts(
         self,
@@ -3856,13 +3942,17 @@ class AutomationOwner:
         results: tuple[AcquisitionConfirmation, ...],
         reserved: frozenset[str] | None,
     ) -> tuple[AcquisitionConfirmation, ...]:
-        if reserved is None:
-            return tuple(self._settle_layout(service, item, None) for item in results)
-        taken: set[str] = set(reserved)
+        taken: set[str] | None = None if reserved is None else set(reserved)
         settled: list[AcquisitionConfirmation] = []
         for item in results:
-            outcome: AcquisitionConfirmation = self._settle_layout(service, item, frozenset(taken))
-            taken.update(_reserved_stems(outcome))
+            if item.selective:
+                settled.append(self._settle_selection(service, item))
+                continue
+            outcome: AcquisitionConfirmation = self._settle_layout(
+                service, item, None if taken is None else frozenset(taken)
+            )
+            if taken is not None:
+                taken.update(_reserved_stems(outcome))
             settled.append(outcome)
         return tuple(settled)
 
@@ -3924,18 +4014,231 @@ class AutomationOwner:
         logger.info("Transfer content started after its names were reserved")
         return replace(item, content_started=True, problem=None)
 
+    def _owned[T](self, action: Callable[[], T]) -> T:
+        return self._on_owner(action) if self._serving else action()
+
+    def _confirmation(self, operation_id: str) -> AcquisitionConfirmation | None:
+        return next((row for row in self._state.acquisitions if row.operation_id == operation_id), None)
+
+    def _replace_acquisition(self, updated: AcquisitionConfirmation) -> bool:
+        acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
+            updated if row.operation_id == updated.operation_id else row for row in self._state.acquisitions
+        )
+        if not self._save(replace(self._state, acquisitions=acquisitions)):
+            return False
+        self._publish_state()
+        return True
+
+    def _send_selective(self, service: AcquisitionService, item: AcquisitionConfirmation) -> None:
+        """Record the send intent of one admitted transfer, then ask the client for its metadata only."""
+        try:
+            directory: Path = staging_path(self._service.workspace_root, item.operation_id)
+        except ValueError as problem:
+            logger.warning("The staging directory of an admission is unusable", error_class=type(problem).__name__)
+            return
+        sent: AcquisitionConfirmation | None = self._owned(partial(self._begin_send, item.operation_id, directory))
+        if sent is None:
+            return
+        state: AcquisitionState = AcquisitionState.ACCEPTED
+        try:
+            service.add_metadata(sent.info_hash, sent.assignments[0].choice.reference.trackers, directory)
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("A selective transfer was not confirmed by the client", error_class=type(problem).__name__)
+            state = AcquisitionState.UNCERTAIN
+        self._owned(partial(self._finish_send, item.operation_id, state))
+
+    def _begin_send(self, operation_id: str, directory: Path) -> AcquisitionConfirmation | None:
+        current: AcquisitionConfirmation | None = self._confirmation(operation_id)
+        if current is None or current.state is not AcquisitionState.ADMITTED or not self._working():
+            return None
+        sent: AcquisitionConfirmation = replace(
+            current,
+            state=AcquisitionState.PENDING_SEND,
+            directory=directory.relative_to(self._service.workspace_root.absolute()).as_posix(),
+            updated_at=self._now(),
+        )
+        return sent if self._replace_acquisition(sent) else None
+
+    def _finish_send(self, operation_id: str, state: AcquisitionState) -> None:
+        current: AcquisitionConfirmation | None = self._confirmation(operation_id)
+        if current is None or current.state is not AcquisitionState.PENDING_SEND:
+            return
+        if self._replace_acquisition(replace(current, state=state, updated_at=self._now())):
+            logger.info("Selective transfer sent", state=state.value)
+            self._schedule_transfers()
+
+    def _settle_selection(self, service: AcquisitionService, item: AcquisitionConfirmation) -> AcquisitionConfirmation:
+        """Advance one selective transfer: bind its episodes, verify their file union, then start its content."""
+        if (
+            self._transfers is None
+            or item.state is not AcquisitionState.ACCEPTED
+            or item.problem is not None
+            or item.action_pending
+            or not self._may_settle(item)
+        ):
+            return item
+        files: tuple[TorrentFile, ...] = self._transfers.declared(item.info_hash)
+        if not files:
+            if self._transfers.idle_s(item.info_hash) < METADATA_TIMEOUT_S:
+                return item
+            logger.warning("A selective transfer received no file list in time", timeout_s=METADATA_TIMEOUT_S)
+            return replace(item, problem=_NO_FILE_LIST)
+        observed: str | None = next(
+            (entry.state for entry in self._transfers.snapshot() if entry.info_hash.casefold() == item.info_hash),
+            None,
+        )
+        stopped: bool = observed in _SELECTABLE_STATES
+        try:
+            current: AcquisitionConfirmation | None = item
+            if not all(assignment.mapped for assignment in item.active_assignments):
+                current = self._owned(
+                    partial(self._record_mapping, item, file_map_revision(files), _episode_bindings(item, files))
+                )
+            if current is not None and current.applied_revision < current.selection_revision:
+                current = self._apply_selection(service, current, files, observed)
+                stopped = current is not None
+            if current is not None and stopped and self._start_selection(service, current):
+                return replace(item, problem=_SELECTION_MISMATCH)
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("A selective transfer could not advance", error_class=type(problem).__name__)
+            return replace(item, problem=sanitize_event_message(str(problem)))
+        return item
+
+    def _mismatched(self, service: AcquisitionService, item: AcquisitionConfirmation) -> bool:
+        """Read the client now and answer whether its staging, file map or priorities differ from the selection."""
+        transfer: TorrentInfo | None = next(
+            (entry for entry in service.transfers() if entry.info_hash.casefold() == item.info_hash), None
+        )
+        if transfer is None:
+            return True
+        files: tuple[TorrentFile, ...] = service.transfer_files(item.info_hash)
+        if not _selection_mismatch(
+            item, files, transfer.save_path, staging_path(self._service.workspace_root, item.operation_id)
+        ):
+            return False
+        logger.warning("A selective transfer no longer matches its applied selection")
+        return True
+
+    def _record_mapping(
+        self, item: AcquisitionConfirmation, revision: str, bindings: Mapping[str, tuple[FileReservation, ...]]
+    ) -> AcquisitionConfirmation | None:
+        current: AcquisitionConfirmation | None = self._confirmation(item.operation_id)
+        if current is None or current.state is not AcquisitionState.ACCEPTED:
+            return None
+        assignments: tuple[EpisodeAssignment, ...] = tuple(
+            replace(assignment, file_map=revision, files=bindings[assignment.admission_id])
+            if not assignment.mapped and assignment.admission_id in bindings
+            else assignment
+            for assignment in current.assignments
+        )
+        if assignments == current.assignments:
+            return None
+        updated: AcquisitionConfirmation = replace(
+            current,
+            assignments=assignments,
+            selection_revision=current.selection_revision + 1,
+            updated_at=self._now(),
+        )
+        if not self._replace_acquisition(updated):
+            return None
+        logger.info(
+            "Selective transfer episodes bound",
+            episodes=len(bindings),
+            unresolved=sum(1 for files in bindings.values() if not files),
+            revision=updated.selection_revision,
+        )
+        return updated
+
+    def _apply_selection(
+        self,
+        service: AcquisitionService,
+        item: AcquisitionConfirmation,
+        files: tuple[TorrentFile, ...],
+        observed: str | None,
+    ) -> AcquisitionConfirmation | None:
+        if observed not in _SELECTABLE_STATES:
+            if observed is None or observed in _SETTLING_SELECTION_STATES:
+                return None
+            if item.applied_revision > 0:
+                service.control_transfer(item.info_hash, "stop")
+                logger.info("A selective transfer is stopped to change its file selection")
+                return None
+        revision: str = file_map_revision(files)
+        if any(assignment.file_map != revision for assignment in item.active_assignments):
+            raise ValueError(_FILE_MAP_CHANGED)
+        if not self._may_settle(item):
+            return None
+        service.select_files(
+            item.info_hash, files, item.wanted_files, staging_path(self._service.workspace_root, item.operation_id)
+        )
+        self._transfers_forget(item.info_hash)
+        return self._owned(partial(self._confirm_selection, item.operation_id, item.selection_revision))
+
+    def _transfers_forget(self, info_hash: str) -> None:
+        if self._transfers is not None:
+            self._transfers.forget(info_hash)
+
+    def _confirm_selection(self, operation_id: str, revision: int) -> AcquisitionConfirmation | None:
+        current: AcquisitionConfirmation | None = self._confirmation(operation_id)
+        if current is None or current.selection_revision != revision:
+            logger.info("A stale selective transfer selection was not recorded", revision=revision)
+            return None
+        updated: AcquisitionConfirmation = replace(
+            current, applied_revision=revision, content_started=False, updated_at=self._now()
+        )
+        if not self._replace_acquisition(updated):
+            return None
+        logger.info("Selective transfer selection verified", revision=revision, files=len(updated.wanted_files))
+        return updated
+
+    def _start_selection(self, service: AcquisitionService, item: AcquisitionConfirmation) -> bool:
+        """Start a verified selection after a fresh client read, answering whether that read refused it."""
+        if (
+            not _selection_confirmed(item)
+            or not item.wanted_files
+            or item.content_started
+            or not self._owned(partial(self._may_start_selection, item))
+        ):
+            return False
+        if self._mismatched(service, item):
+            return True
+        if not self._owned(partial(self._may_start_selection, item)):
+            return False
+        service.start_transfer(item.info_hash)
+        self._owned(partial(self._started_selection, item.operation_id, item.applied_revision))
+        return False
+
+    def _may_start_selection(self, item: AcquisitionConfirmation) -> bool:
+        current: AcquisitionConfirmation | None = self._confirmation(item.operation_id)
+        return (
+            current is not None
+            and self._may_start_content(item)
+            and _selection_basis(current) == _selection_basis(item)
+            and current.requested_action not in {"stop", "cancel"}
+        )
+
+    def _started_selection(self, operation_id: str, revision: int) -> None:
+        current: AcquisitionConfirmation | None = self._confirmation(operation_id)
+        if current is None or current.applied_revision != revision:
+            return
+        if self._replace_acquisition(replace(current, content_started=True, updated_at=self._now())):
+            logger.info("Selective transfer content started", revision=revision)
+
     def _record_transfers(
         self,
         results: tuple[AcquisitionConfirmation, ...],
         failure: str | None = None,
         nature: tuple[str, str] | None = None,
+        basis: tuple[AcquisitionConfirmation, ...] = (),
     ) -> None:
         self._note_transfers(failure, nature)
         self._transfers_problem = failure
         updated: dict[str, AcquisitionConfirmation] = {item.operation_id: item for item in results}
+        read: dict[str, tuple[object, ...]] = {item.operation_id: _selection_basis(item) for item in basis}
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
             updated.get(item.operation_id, item)
             if updated.get(item.operation_id, item).action_id == item.action_id
+            and (not item.selective or read.get(item.operation_id) == _selection_basis(item))
             else item
             for item in self._state.acquisitions
         )
@@ -4401,9 +4704,11 @@ class AutomationOwner:
     def _apply_transfer_action(
         self, service: AcquisitionService, item: AcquisitionConfirmation, reported: Mapping[str, str]
     ) -> AcquisitionConfirmation:
-        if not item.action_pending:
+        if not item.action_pending or item.state is AcquisitionState.ADMITTED:
             return item
-        if item.requested_action == "resume" and not item.file_layout:
+        if item.requested_action == "resume" and item.selective:
+            return self._resume_selection(service, item)
+        if item.requested_action == "resume" and not item.file_layout and not item.selective:
             return item
         if _pause_stop(item) and reported.get(item.info_hash) in _STOPPED_TRANSFER_STATES:
             return self._settled_stop(item)
@@ -4433,6 +4738,35 @@ class AutomationOwner:
             problem=None,
             state=state,
         )
+
+    def _resume_selection(self, service: AcquisitionService, item: AcquisitionConfirmation) -> AcquisitionConfirmation:
+        """Resume selective content only after a fresh client read proves its saved selection, else keep it waiting."""
+        confirmed: bool = _selection_confirmed(item)
+        try:
+            reported: str | None = next(
+                (entry.state for entry in service.transfers() if entry.info_hash.casefold() == item.info_hash), None
+            )
+            listed: bool = reported is not None and (
+                any(assignment.mapped for assignment in item.assignments)
+                or bool(service.transfer_files(item.info_hash))
+            )
+            mismatched: bool = reported is not None and confirmed and self._mismatched(service, item)
+        except (AniShiftError, OSError, ValueError) as problem:
+            return self._refused_action(item, problem)
+        if reported is None:
+            logger.warning("A selective transfer is still not shown by the client")
+            return replace(item, action_pending=False, problem=_SEND_UNCONFIRMED)
+        if mismatched:
+            return replace(item, action_pending=False, problem=_SELECTION_MISMATCH)
+        if confirmed:
+            return self._perform_action(service, item)
+        if not listed and reported in _SELECTABLE_STATES:
+            logger.warning("A selective transfer stopped before its metadata cannot resume safely")
+            return replace(item, action_pending=False, problem=_METADATA_STOPPED)
+        if self._transfers is not None:
+            self._transfers.restart_idle(item.info_hash)
+        logger.info("A resume of a selective transfer waits for its verified file selection")
+        return replace(item, state=AcquisitionState.ACCEPTED, action_pending=False, problem=None)
 
     def _settled_stop(self, item: AcquisitionConfirmation) -> AcquisitionConfirmation:
         """Settle a stop the client already shows done, keeping the pause ownership of one we sent ourselves."""
@@ -5326,6 +5660,83 @@ def _marked(
 def _transfer_action(item: AcquisitionConfirmation) -> bool:
     """Answer whether a pending client action belongs to a transfer that has a client lifecycle."""
     return item.action_pending and item.state is not AcquisitionState.ADMITTED
+
+
+def _polled(item: AcquisitionConfirmation, *, selective: bool) -> bool:
+    """Answer whether a working owner still has to observe, reconcile or, with a selective client, send it."""
+    return (
+        item.state is AcquisitionState.ACCEPTED
+        or (item.selective and item.state is AcquisitionState.PENDING_SEND)
+        or (selective and item.state is AcquisitionState.ADMITTED and item.problem is None)
+    )
+
+
+def _joinable(recorded: Sequence[AcquisitionConfirmation]) -> bool:
+    """Answer whether one more episode may join the only, still unfinished selective transfer of its hash."""
+    return (
+        len(recorded) == 1
+        and recorded[0].selective
+        and recorded[0].state not in {AcquisitionState.COMPLETE, AcquisitionState.FAILED}
+    )
+
+
+def _selection_confirmed(item: AcquisitionConfirmation) -> bool:
+    """Answer whether the client verified the file union every active episode of this transfer recorded."""
+    return (
+        item.selection_revision > 0
+        and item.applied_revision == item.selection_revision
+        and all(assignment.mapped for assignment in item.active_assignments)
+    )
+
+
+def _unfinished_selection(item: AcquisitionConfirmation) -> AcquisitionConfirmation:
+    """Keep a selective transfer accepted until every admitted episode has files and the client finished them."""
+    if (
+        item.selective
+        and item.state is AcquisitionState.COMPLETE
+        and (not _selection_confirmed(item) or not all(assignment.files for assignment in item.active_assignments))
+    ):
+        return replace(item, state=AcquisitionState.ACCEPTED)
+    return item
+
+
+def _selection_mismatch(
+    item: AcquisitionConfirmation, files: Sequence[TorrentFile], save_path: str | None, staging: Path
+) -> bool:
+    """Answer whether the client location, file map or priorities differ from the applied selection."""
+    revision: str = file_map_revision(files)
+    return (
+        save_path is None
+        or Path(save_path).resolve() != staging.resolve()
+        or any(assignment.file_map != revision for assignment in item.active_assignments)
+        or frozenset(entry.index for entry in files if entry.priority > 0) != item.wanted_files
+    )
+
+
+def _episode_bindings(
+    item: AcquisitionConfirmation, files: Sequence[TorrentFile]
+) -> dict[str, tuple[FileReservation, ...]]:
+    """Bind every unbound episode to its files, leaving one without a file when its video is already taken."""
+    taken: set[int] = {index for assignment in item.active_assignments for index, _path, _size in assignment.files}
+    bindings: dict[str, tuple[FileReservation, ...]] = {}
+    for assignment in item.active_assignments:
+        if assignment.mapped:
+            continue
+        reference: TorrentioReference = assignment.choice.reference
+        chosen: tuple[FileReservation, ...] = tuple(
+            (entry.index, torrent_relative_path(entry.name).as_posix(), entry.size)
+            for entry in episode_files(files, reference, assignment.choice.target, reference.release)
+        )
+        if any(index in taken for index, _path, _size in chosen):
+            chosen = ()
+        taken.update(index for index, _path, _size in chosen)
+        bindings[assignment.admission_id] = chosen
+    return bindings
+
+
+def _selection_basis(item: AcquisitionConfirmation) -> tuple[object, ...]:
+    """Return the lifecycle facts a worker read, so a result taken on older ones is dropped."""
+    return (item.state, item.assignments, item.selection_revision, item.applied_revision, item.content_started)
 
 
 def _resumable(item: AcquisitionConfirmation, paused: frozenset[str], enabled: frozenset[str] | None) -> bool:
