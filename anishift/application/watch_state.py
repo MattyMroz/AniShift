@@ -12,12 +12,16 @@ from anishift.application.control import (
     WATCH_STATE_SCHEMA_VERSION,
     AcquisitionConfirmation,
     AcquisitionState,
+    AdmissionSource,
     AudiobookRecipe,
     AutomationPolicy,
     CommandReceipt,
     DeletionOutcome,
     DeletionRestore,
     DeletionStatus,
+    EpisodeAssignment,
+    EpisodeChoice,
+    LegacyScope,
     ManualHandledMarker,
     NarrationTimeline,
     PendingDeletion,
@@ -32,11 +36,13 @@ from anishift.application.control import (
     RestoreOutcome,
     SourceSelection,
     TextResultFormat,
+    TorrentioReference,
     TranslateRecipe,
     WatchState,
     preflight,
 )
 from anishift.application.control_payloads import decode_intent, encode_intent
+from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.intents import (
     GroupIntent,
     ProductKind,
@@ -44,6 +50,7 @@ from anishift.application.intents import (
     RequestOrigin,
     TranslationAction,
 )
+from anishift.application.subscriptions import SUBSCRIPTIONS_FILE_NAME
 from anishift.application.workflows import WorkflowTarget
 from anishift.errors import ConfigError, ErrorCode, ErrorContext
 from anishift.paths import run_journal_dir, watch_dir
@@ -81,11 +88,20 @@ _BACKUP_SUFFIX: Final[str] = ".bak"
 _SCHEMA_BACKUP_TEMPLATE: Final[str] = ".v{version}.bak"
 """Ending of the copy kept from a document an older schema wrote, before it is rewritten."""
 
+_MIGRATION_BACKUP_SUFFIX: Final[str] = ".e2-migration.bak"
+"""Ending of the byte-identical copies kept of both owner files before the first schema 3 write."""
+
 _SCHEMA_ONE: Final[int] = 1
 """Schema this build still reads and migrates once, filling the sections it never wrote."""
 
-_SUPPORTED_SCHEMA_VERSIONS: Final[frozenset[int]] = frozenset({_SCHEMA_ONE, WATCH_STATE_SCHEMA_VERSION})
+_SCHEMA_TWO: Final[int] = 2
+"""Schema this build still reads and migrates once, marking every acquisition as legacy."""
+
+_SUPPORTED_SCHEMA_VERSIONS: Final[frozenset[int]] = frozenset({_SCHEMA_ONE, _SCHEMA_TWO, WATCH_STATE_SCHEMA_VERSION})
 """Schema versions of the automation state this build still reads."""
+
+_SCHEMA_THREE_ACQUISITION_FIELDS: Final[tuple[str, ...]] = ("assignments", "legacy_scope")
+"""Acquisition fields schema 3 added, which every schema 3 document must carry and no older one may."""
 
 _SCHEMA_TWO_SECTIONS: Final[tuple[str, ...]] = (
     "recipes",
@@ -211,6 +227,29 @@ _PENDING_DELETION_KEYS: Final[frozenset[str]] = frozenset(
 _RECEIPT_KEYS: Final[frozenset[str]] = frozenset({"command_id", "accepted_at", "outcome"})
 """Keys a serialized command receipt must carry."""
 
+_ASSIGNMENT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "admission_id",
+        "admitted_at",
+        "source",
+        "previous_admission_id",
+        "anilist_id",
+        "number",
+        "reference",
+        "target",
+        "verdict",
+        "reason",
+        "deviation_confirmed",
+    }
+)
+"""Keys a serialized episode assignment must carry."""
+
+_REFERENCE_KEYS: Final[frozenset[str]] = frozenset({"info_hash", "file_index", "file_name"})
+"""Keys a serialized Torrentio reference must carry."""
+
+_LEGACY_SCOPE_KEYS: Final[frozenset[str]] = frozenset({"anilist_id", "number"})
+"""Keys a serialized legacy scope must carry."""
+
 _FINGERPRINT_FIELDS: Final[int] = 3
 """Name, size and modification time of one source file."""
 
@@ -240,8 +279,11 @@ def _fresh_state() -> WatchState:
 class WatchStateStore:
     """Reads and writes the automation state without ever answering with an empty one."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, subscriptions_path: Path | None = None) -> None:
         self._path: Path = path
+        self._subscriptions_path: Path = (
+            subscriptions_path if subscriptions_path is not None else path.parent.parent / SUBSCRIPTIONS_FILE_NAME
+        )
 
     def run_path(self, run_id: str) -> Path:
         """Locate the private checkpoint of one safe run identifier."""
@@ -269,6 +311,8 @@ class WatchStateStore:
 
     def save(self, state: WatchState) -> None:
         """Persist *state*, keeping the last readable version as a backup beside it."""
+        if not self._path.exists():
+            self._preserve_before_migration()
         payload: str = json.dumps(_encode_state(state), indent=2, ensure_ascii=False) + "\n"
         self._path.parent.mkdir(parents=True, exist_ok=True)
         temporary: Path = self._path.with_name(f"{self._path.name}{_TEMPORARY_SUFFIX}")
@@ -285,6 +329,7 @@ class WatchStateStore:
         )
         if not backup.exists():
             backup.write_text(text, encoding="utf-8", newline="\n")
+        self._preserve_before_migration()
         migrated: WatchState = replace(stored, schema_version=WATCH_STATE_SCHEMA_VERSION)
         self.save(migrated)
         findings: tuple[PreflightFinding, ...] = preflight(migrated)
@@ -295,6 +340,28 @@ class WatchStateStore:
             findings=tuple(sorted({finding.kind.value for finding in findings})),
         )
         return migrated
+
+    def _preserve_before_migration(self) -> None:
+        for source in (self._path, self._subscriptions_path):
+            backup: Path = source.with_name(f"{source.name}{_MIGRATION_BACKUP_SUFFIX}")
+            try:
+                if backup.exists():
+                    continue
+                content: bytes = source.read_bytes()
+            except FileNotFoundError:
+                logger.info("No file to preserve before the automation state migration", file=source.name)
+                continue
+            except OSError as problem:
+                raise _migration_blocked() from problem
+            temporary: Path = backup.with_name(f"{backup.name}{_TEMPORARY_SUFFIX}")
+            try:
+                with temporary.open("wb") as handle:
+                    handle.write(content)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                temporary.replace(backup)
+            except OSError as problem:
+                raise _migration_blocked() from problem
 
     def _back_up(self) -> None:
         try:
@@ -322,6 +389,16 @@ def _invalid_file() -> ConfigError:
             code=ErrorCode.CONFIG_INVALID,
             message=_INVALID_MESSAGE,
             suggestion=_INVALID_SUGGESTION,
+        )
+    )
+
+
+def _migration_blocked() -> ConfigError:
+    return ConfigError(
+        context=ErrorContext(
+            code=ErrorCode.IO_ERROR,
+            message="The owner files could not be preserved before the automation state migration",
+            suggestion="Free the config directory for writing and start the resident again",
         )
     )
 
@@ -487,6 +564,33 @@ def _encode_acquisition(confirmation: AcquisitionConfirmation) -> dict[str, obje
         "nyaa_release_id": confirmation.nyaa_release_id,
         "release_title": confirmation.release_title,
         "previous_operation_id": confirmation.previous_operation_id,
+        "assignments": [_encode_assignment(item) for item in confirmation.assignments],
+        "legacy_scope": (
+            None
+            if confirmation.legacy_scope is None
+            else {"anilist_id": confirmation.legacy_scope.anilist_id, "number": confirmation.legacy_scope.number}
+        ),
+    }
+
+
+def _encode_assignment(assignment: EpisodeAssignment) -> dict[str, object]:
+    choice: EpisodeChoice = assignment.choice
+    return {
+        "admission_id": assignment.admission_id,
+        "admitted_at": assignment.admitted_at,
+        "source": assignment.source.value,
+        "previous_admission_id": assignment.previous_admission_id,
+        "anilist_id": choice.anilist_id,
+        "number": choice.number,
+        "reference": {
+            "info_hash": choice.reference.info_hash,
+            "file_index": choice.reference.file_index,
+            "file_name": choice.reference.file_name,
+        },
+        "target": dict(choice.target),
+        "verdict": choice.verdict.value,
+        "reason": choice.reason,
+        "deviation_confirmed": choice.deviation_confirmed,
     }
 
 
@@ -775,6 +879,7 @@ def _decode_acquisition(raw: object, schema_version: int) -> AcquisitionConfirma
     previous: str | None = _optional_text(
         {"previous_operation_id": stored.pop("previous_operation_id", None)}, "previous_operation_id"
     )
+    assignments, scope = _schema_three_identity(stored, schema_version)
     document: dict[str, object] = _strict_object(
         {
             "requested_action": None,
@@ -816,6 +921,56 @@ def _decode_acquisition(raw: object, schema_version: int) -> AcquisitionConfirma
         release_title=title,
         previous_operation_id=previous,
         action_sent=sent,
+        assignments=assignments,
+        legacy_scope=scope,
+    )
+
+
+def _schema_three_identity(
+    document: dict[str, object], schema_version: int
+) -> tuple[tuple[EpisodeAssignment, ...], LegacyScope | None]:
+    fields: dict[str, object] = {key: document.pop(key) for key in _SCHEMA_THREE_ACQUISITION_FIELDS if key in document}
+    if schema_version != WATCH_STATE_SCHEMA_VERSION:
+        if fields:
+            msg = "An acquisition confirmation older than schema 3 cannot carry episode identity"
+            raise ValueError(msg)
+        return (), None
+    if frozenset(fields) != frozenset(_SCHEMA_THREE_ACQUISITION_FIELDS):
+        msg = "A schema 3 acquisition confirmation must state its episode identity"
+        raise ValueError(msg)
+    raw_scope: object = fields["legacy_scope"]
+    scope: LegacyScope | None = None
+    if raw_scope is not None:
+        stored: dict[str, object] = _strict_object(raw_scope, _LEGACY_SCOPE_KEYS, "legacy scope")
+        number: object = stored["number"]
+        scope = LegacyScope(
+            _whole(stored, "anilist_id"), None if number is None else _as_whole(number, "legacy scope episode")
+        )
+    return tuple(_decode_assignment(item) for item in _list(fields["assignments"], "episode assignments")), scope
+
+
+def _decode_assignment(raw: object) -> EpisodeAssignment:
+    document: dict[str, object] = _strict_object(raw, _ASSIGNMENT_KEYS, "episode assignment")
+    reference: dict[str, object] = _strict_object(document["reference"], _REFERENCE_KEYS, "Torrentio reference")
+    index: object = reference["file_index"]
+    return EpisodeAssignment(
+        admission_id=_text(document, "admission_id"),
+        admitted_at=_text(document, "admitted_at"),
+        source=AdmissionSource(_text(document, "source")),
+        previous_admission_id=_optional_text(document, "previous_admission_id"),
+        choice=EpisodeChoice(
+            anilist_id=_whole(document, "anilist_id"),
+            number=_whole(document, "number"),
+            reference=TorrentioReference(
+                _text(reference, "info_hash"),
+                None if index is None else _as_whole(index, "Torrentio file index"),
+                _optional_text(reference, "file_name"),
+            ),
+            target=_strict_mapping(document["target"], "H1 target"),
+            verdict=IdentityVerdict(_text(document, "verdict")),
+            reason=_text(document, "reason"),
+            deviation_confirmed=_flag(document, "deviation_confirmed"),
+        ),
     )
 
 

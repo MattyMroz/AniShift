@@ -11,11 +11,15 @@ from anishift.application.control import (
     WATCH_STATE_SCHEMA_VERSION,
     AcquisitionConfirmation,
     AcquisitionState,
+    AdmissionSource,
     AudiobookRecipe,
     AutomationPolicy,
     CommandReceipt,
     DeletionOutcome,
     DeletionStatus,
+    EpisodeAssignment,
+    EpisodeChoice,
+    LegacyScope,
     ManualHandledMarker,
     NarrationTimeline,
     PendingDeletion,
@@ -29,9 +33,11 @@ from anishift.application.control import (
     SourceFingerprint,
     SourceSelection,
     TextResultFormat,
+    TorrentioReference,
     TranslateRecipe,
     WatchState,
 )
+from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.intents import ProductKind, RebuildRequest, RequestOrigin, TranslationAction
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore, watch_state_path
 from anishift.application.workflows import WorkflowTarget
@@ -42,6 +48,8 @@ _TIMESTAMP: str = "2026-09-08T12:00:00+00:00"
 _FINGERPRINT: SourceFingerprint = (("episode-01.mkv", 1024, 111),)
 
 _SCHEMA_TWO_SECTIONS: tuple[str, ...] = ("recipes", "ready_groups", "pause_owned_transfers", "pending_deletions")
+
+_SCHEMA_THREE_FIELDS: tuple[str, ...] = ("assignments", "legacy_scope")
 
 
 def test_deletion_evidence_round_trips_and_legacy_scope_never_gains_invented_identity(tmp_path: Path) -> None:
@@ -162,9 +170,18 @@ def _write(tmp_path: Path, document: object) -> None:
     (tmp_path / WATCH_STATE_FILE_NAME).write_text(json.dumps(document), encoding="utf-8")
 
 
-def _schema_one_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
+def _schema_two_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
     _store(tmp_path).save(state)
     document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+    document["schema_version"] = 2
+    for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
+        for key in _SCHEMA_THREE_FIELDS:
+            acquisition.pop(key)
+    return document
+
+
+def _schema_one_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
+    document: dict[str, object] = _schema_two_document(tmp_path, state)
     document["schema_version"] = 1
     for key in _SCHEMA_TWO_SECTIONS:
         document.pop(key)
@@ -194,9 +211,7 @@ def test_legacy_transfer_actions_do_not_invent_a_durable_send_record(tmp_path: P
     store: WatchStateStore = _store(tmp_path)
     store.save(state)
     document: dict[str, object] = (
-        _schema_one_document(tmp_path, state)
-        if schema == 1
-        else json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+        _schema_one_document(tmp_path, state) if schema == 1 else _schema_two_document(tmp_path, state)
     )
     for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
         acquisition.pop("action_sent")
@@ -523,6 +538,181 @@ def test_the_store_round_trips_the_facts_added_by_schema_two(tmp_path: Path) -> 
     store.save(state)
 
     assert store.load() == state
+
+
+def _selective() -> AcquisitionConfirmation:
+    choice: EpisodeChoice = EpisodeChoice(
+        anilist_id=500,
+        number=3,
+        reference=TorrentioReference("FFEE", 2, "Neko S2 - 03.mkv"),
+        target={"aliases": ["Neko"], "local_episode": 3, "absolute": 27},
+        verdict=IdentityVerdict.INSUFFICIENT,
+        reason="Bare number",
+        deviation_confirmed=True,
+    )
+    return AcquisitionConfirmation(
+        operation_id="operation-3",
+        info_hash="ffee",
+        directory="",
+        required_files=(),
+        state=AcquisitionState.ADMITTED,
+        origin=RequestOrigin.USER,
+        subscription_id=None,
+        episode=None,
+        updated_at=_TIMESTAMP,
+        assignments=(EpisodeAssignment("admission-1", _TIMESTAMP, AdmissionSource.MANUAL, choice),),
+    )
+
+
+def _owner_files(tmp_path: Path) -> tuple[WatchStateStore, Path]:
+    subscriptions: Path = tmp_path / "subscriptions.json"
+    subscriptions.write_bytes(b'{"schema_version": 4, "subscriptions": []}\r\n')
+    return WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=subscriptions), subscriptions
+
+
+def _migration_backup(path: Path) -> Path:
+    return path.with_name(f"{path.name}.e2-migration.bak")
+
+
+def test_schema_three_round_trips_episode_assignments_and_legacy_scopes(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    legacy: AcquisitionConfirmation = replace(_state().acquisitions[0], legacy_scope=LegacyScope(500, None))
+    numbered: AcquisitionConfirmation = replace(legacy, operation_id="operation-4", legacy_scope=LegacyScope(500, 4))
+    state: WatchState = replace(_state(), acquisitions=(legacy, numbered, _selective()))
+
+    store.save(state)
+
+    assert store.load() == state
+    assert [item.selective for item in store.load().acquisitions] == [False, False, True]
+
+
+@pytest.mark.parametrize("schema", [1, 2])
+def test_an_older_state_migrates_once_to_schema_three_after_preserving_both_owner_files(
+    tmp_path: Path, schema: int
+) -> None:
+    store, subscriptions = _owner_files(tmp_path)
+    state_path: Path = tmp_path / WATCH_STATE_FILE_NAME
+    document: dict[str, object] = (
+        _schema_one_document(tmp_path, _state()) if schema == 1 else _schema_two_document(tmp_path, _state())
+    )
+    state_path.write_bytes(json.dumps(document).encode() + b"\r\n")
+    original: bytes = state_path.read_bytes()
+    listing: bytes = subscriptions.read_bytes()
+
+    migrated: WatchState = store.load()
+    written: bytes = state_path.read_bytes()
+    again: WatchState = store.load()
+
+    assert migrated == again == _state()
+    assert json.loads(written)["schema_version"] == WATCH_STATE_SCHEMA_VERSION
+    assert state_path.read_bytes() == written
+    assert _migration_backup(state_path).read_bytes() == original
+    assert _migration_backup(subscriptions).read_bytes() == listing
+    assert subscriptions.read_bytes() == listing
+    assert len(migrated.acquisitions) == 1
+    assert not migrated.acquisitions[0].selective
+    assert migrated.acquisitions[0].legacy_scope is None
+
+
+def test_a_schema_three_state_loads_without_any_migration_copy(tmp_path: Path) -> None:
+    store, subscriptions = _owner_files(tmp_path)
+    store.save(_state())
+    _migration_backup(subscriptions).unlink()
+
+    assert store.load() == _state()
+    assert not _migration_backup(tmp_path / WATCH_STATE_FILE_NAME).exists()
+    assert not _migration_backup(subscriptions).exists()
+
+
+def test_migration_without_subscriptions_preserves_the_state_and_invents_no_listing(tmp_path: Path) -> None:
+    store, subscriptions = _owner_files(tmp_path)
+    subscriptions.unlink()
+    original: str = _write_schema_one(tmp_path, _state())
+
+    assert store.load() == _state()
+    assert _migration_backup(tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8") == original
+    assert not subscriptions.exists()
+    assert not _migration_backup(subscriptions).exists()
+
+
+def test_migration_keeps_an_earlier_migration_copy(tmp_path: Path) -> None:
+    store, subscriptions = _owner_files(tmp_path)
+    _write_schema_one(tmp_path, _state())
+    _migration_backup(subscriptions).write_bytes(b"kept")
+
+    store.load()
+
+    assert _migration_backup(subscriptions).read_bytes() == b"kept"
+
+
+def test_a_copy_that_cannot_be_made_blocks_the_first_schema_three_write(tmp_path: Path) -> None:
+    subscriptions: Path = tmp_path / "subscriptions.json"
+    subscriptions.mkdir()
+    store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=subscriptions)
+    original: str = _write_schema_one(tmp_path, _state())
+
+    with pytest.raises(ConfigError) as failure:
+        store.load()
+
+    assert failure.value.context.code is ErrorCode.IO_ERROR
+    assert (tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8") == original
+
+
+def test_the_first_write_without_a_state_preserves_existing_subscriptions_once(tmp_path: Path) -> None:
+    store, subscriptions = _owner_files(tmp_path)
+    original: bytes = subscriptions.read_bytes()
+
+    store.save(_state())
+    subscriptions.write_bytes(b"changed")
+    store.save(_state())
+
+    assert _migration_backup(subscriptions).read_bytes() == original
+    assert not _migration_backup(tmp_path / WATCH_STATE_FILE_NAME).exists()
+
+
+def test_a_copy_that_cannot_be_made_blocks_the_first_write_without_a_state(tmp_path: Path) -> None:
+    subscriptions: Path = tmp_path / "subscriptions.json"
+    subscriptions.mkdir()
+    store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=subscriptions)
+
+    with pytest.raises(ConfigError) as failure:
+        store.save(_state())
+
+    assert failure.value.context.code is ErrorCode.IO_ERROR
+    assert not (tmp_path / WATCH_STATE_FILE_NAME).exists()
+
+
+@pytest.mark.parametrize("field", _SCHEMA_THREE_FIELDS)
+def test_a_schema_two_acquisition_carrying_episode_identity_is_refused(tmp_path: Path, field: str) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    document: dict[str, object] = _schema_two_document(tmp_path, _state())
+    cast("list[dict[str, object]]", document["acquisitions"])[0][field] = [] if field == "assignments" else None
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        store.load()
+
+
+@pytest.mark.parametrize("field", _SCHEMA_THREE_FIELDS)
+def test_a_schema_three_acquisition_without_its_episode_identity_is_refused(tmp_path: Path, field: str) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    store.save(_state())
+    document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+    cast("list[dict[str, object]]", document["acquisitions"])[0].pop(field)
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        store.load()
+
+
+def test_an_admission_without_an_episode_assignment_is_refused() -> None:
+    with pytest.raises(ValueError, match="selective"):
+        replace(_selective(), assignments=())
+
+
+def test_an_episode_choice_without_a_match_requires_a_confirmed_deviation() -> None:
+    with pytest.raises(ValueError, match="deviation"):
+        replace(_selective().assignments[0].choice, deviation_confirmed=False)
 
 
 def test_the_state_lives_beside_the_other_watch_files() -> None:

@@ -211,15 +211,32 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `WatchStateStore` zapisuje atomowo: `state.json.tmp` + `fsync`, kopia czytelnego `state.json`
   do `state.json.bak`, dopiero potem `replace`. Uszkodzony JSON, nieznany klucz i nieobsługiwana
   wersja schematu dają `ConfigError`, nigdy pustego stanu; brak pliku to stan domyślny z pracującą
-  automatyzacją, a zapisana pauza pozostaje pauzą. `WATCH_STATE_SCHEMA_VERSION` to `2`, a loader przyjmuje 1 i 2: starszy plik `load()` migruje
-  raz, zostawia kopię `state.json.v1.bak` i przepisuje plik, więc drugi `load()` nie zmienia bajtów.
-  Walidacja jest wersjonowana — dokument wersji 2 musi zawierać wszystkie sekcje schematu 2
+  automatyzacją, a zapisana pauza pozostaje pauzą. `WATCH_STATE_SCHEMA_VERSION` to `3`, a loader przyjmuje 1, 2 i 3: starszy plik `load()` migruje
+  raz, zostawia kopię `state.json.v<wersja>.bak` i przepisuje plik, więc drugi `load()` nie zmienia bajtów.
+  Przed pierwszym zapisem schematu 3 kopiuje bajt w bajt `state.json` i `subscriptions.json`
+  do `*.e2-migration.bak` (istniejącej kopii nie nadpisuje, brak subskrypcji tylko loguje);
+  to samo przy pierwszym `save()`, gdy `state.json` jeszcze nie istnieje.
+  błąd kopii to `ConfigError` `IO_ERROR` i zero zapisu nowego formatu.
+  Walidacja jest wersjonowana — dokument wersji 2+ musi zawierać wszystkie sekcje schematu 2
   (`recipes`, `ready_groups`, `pause_owned_transfers`, `pending_deletions`, `complete_files`), a
-  dokument wersji 1 nie może zawierać żadnej z nich. Migracja nadaje `complete_files` z
+  dokument wersji 1 nie może zawierać żadnej z nich; potwierdzenie wersji 3 musi mieć
+  `assignments` i `legacy_scope`, starsze nie mogą. Migracja nadaje `complete_files` z
   `required_files` wyłącznie potwierdzeniom w stanie `COMPLETE`. Trwałe ścieżki `ReadyGroup`
   i `PendingDeletion` przechodzą przez `require_relative_paths`. `watch_state.py`, `control.py`
   Optional nested `PendingDeletion.restore` remains in schema 2; pre-Undo strict readers reject
   it after the first Undo admission. Never strip recovery evidence to make a downgrade load.
+- `AutomationOwner.admit_episode` to synchroniczna bramka I-06: jeden zapis przyjęcia
+  `ADMITTED` (selektywne `AcquisitionConfirmation` z `EpisodeAssignment`) razem z receipt,
+  bez skutków qB; `ADMITTED` nie jest uzgadniane, wznawiane ani odpytywane, a komenda
+  `transfer` na jego hash dostaje `transfer_not_started`. Konflikt liczy
+  `control.episode_conflict`: klucz → `episode_admitted`, `LegacyScope` zapisany albo odczytany
+  z subskrypcji (taken, ORDERED/COMPLETE, stare potwierdzenia) → `episode_possibly_admitted`.
+  G i subskrypcje w E2 pozostają legacy-unkeyed (przed przyjęciem brak nazwy pliku dla H1;
+  potwierdzenie klucza po metadanych to E3); dostają `LegacyScope(ID, numer lokalny)` i
+  odmawiają wobec przyjęć kluczowych (`legacy_conflict`), także przy powtórzeniu odcinka.
+  Panel podaje przez `ResidentSession.download` ID wybranego tytułu i offset jego sezonu;
+  nieznany offset daje zakres całego ID. Zapisane numery są już lokalne — offset odejmuje się wyłącznie od
+  numeru surowego wydania G bez odczytu sezonu. `automation.py`, `control.py`
 - `subscription_id` i `_matches` porównują serię po postaci znormalizowanej (`normalize_series`,
   `series_forms`), nie po surowym zapisie wybranego wydania. Etykietą grupy w katalogu jest
   pierwszy napotkany zapis, więc dosłowne porównanie cicho zabijało subskrypcję. `subscriptions.py`

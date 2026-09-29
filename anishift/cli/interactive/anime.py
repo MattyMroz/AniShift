@@ -1164,7 +1164,9 @@ class AnimeController:
             self._notice = "Zaznacz co najmniej jedno wydanie"
             return
         generation: int = self._start_work(_SENDING, _Screen.RESULTS)
-        self._spawn(self._download, (chosen, generation))
+        anilist_id: int | None = self._candidate.anilist_id if self._candidate is not None else None
+        offset: int | None = self._context.offset if self._context is not None else None
+        self._spawn(self._download, (chosen, generation, anilist_id, offset))
 
     def _start_subscription(self) -> None:
         row: _Row = self._rows[self._selected]
@@ -1313,13 +1315,19 @@ class AnimeController:
             return
         self._show_results(generation, catalog, listing)
 
-    def _download(self, choices: Sequence[ReleaseChoice], generation: int) -> None:
+    def _download(
+        self, choices: Sequence[ReleaseChoice], generation: int, anilist_id: int | None, offset: int | None
+    ) -> None:
         acquisition: AcquisitionService | ResidentSession | None = self._acquisition
         if acquisition is None:
             self._fail(generation, _UNAVAILABLE, "", _Screen.RESULTS)
             return
         try:
-            receipt: DownloadReceipt = acquisition.download(choices)
+            receipt: DownloadReceipt = (
+                acquisition.download(choices, anilist_id=anilist_id, episode_offset=offset)
+                if isinstance(acquisition, ResidentSession)
+                else acquisition.download(choices)
+            )
         except (AniShiftError, OSError) as problem:
             logger.warning("Anime download failed", error_class=type(problem).__name__)
             self._report(generation, problem, _Screen.RESULTS)

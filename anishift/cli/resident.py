@@ -267,12 +267,20 @@ class ResidentSession:
             self._episode_read({"operation": "offer", "anilist_id": key.anilist_id, "number": key.number}),
         )
 
-    def download(self, choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
-        """Persist a download order at the owner before it contacts the torrent client."""
-        return decode_view(
-            DownloadReceipt,
-            self._call("download", {"choices": [encode_view(choice) for choice in choices]}),
-        )
+    def download(
+        self,
+        choices: Sequence[ReleaseChoice],
+        *,
+        anilist_id: int | None = None,
+        episode_offset: int | None = None,
+    ) -> DownloadReceipt:
+        """Persist a download order at the owner, with the catalogue entry and numbering it was read in."""
+        payload: dict[str, object] = {"choices": [encode_view(choice) for choice in choices]}
+        if anilist_id is not None:
+            payload["anilist_id"] = anilist_id
+        if episode_offset is not None:
+            payload["episode_offset"] = episode_offset
+        return decode_view(DownloadReceipt, self._call("download", payload))
 
     def set_range(
         self,

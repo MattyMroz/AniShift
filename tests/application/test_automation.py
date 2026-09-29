@@ -5913,7 +5913,7 @@ def test_a_paused_resident_refuses_an_explicit_start_and_an_explicit_download(tm
                 command_id="start-1",
             )
         )
-        _chosen, download = owner._accept_download(_request("download", {}, command_id="download-1"), ())
+        _chosen, download = owner._accept_download(_request("download", {}, command_id="download-1"), (), {})
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)

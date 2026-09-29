@@ -2435,6 +2435,43 @@ def test_stale_download_notice_counts_already_recorded_choices(admitted: int) ->
     assert calls == [[encode_view(choice) for choice in choices]]
 
 
+@pytest.mark.parametrize("titled", [True, False], ids=["chosen-title", "free-text"])
+def test_a_resident_download_carries_only_the_known_title_and_season_offset(titled: bool) -> None:
+    choice: ReleaseChoice = _choice("27", reading=_reading("3", absolute="27") if titled else None)
+    payloads: list[Mapping[str, object]] = []
+
+    def call(kind: str, payload: Mapping[str, object], **options: object) -> Mapping[str, object]:
+        del options
+        if kind == "download":
+            payloads.append(payload)
+            return encode_view(DownloadReceipt(1, Path("workspace")))
+        assert kind == "acquisition"
+        if payload["operation"] == "titles":
+            return {"items": [encode_view(_title())] if titled else []}
+        if payload["operation"] == "franchise":
+            return encode_view(Franchise(1, (), (), True))
+        if payload["operation"] == "season":
+            return encode_view(_season(2, 24, 12))
+        return encode_view(_catalog((choice,)))
+
+    client: ControlClient = cast("ControlClient", SimpleNamespace(call=call))
+    session: ResidentSession = ResidentSession(Path("workspace"), lambda: client)
+    controller: AnimeController = AnimeController(_service(), lambda: None, resident=session)
+    for key in ("enter", "text:oshi", "enter"):
+        controller.handle_key(key)
+    _settle(controller)
+    if titled:
+        controller.handle_key("text:g")
+        _settle(controller)
+    for key in ("enter", "text:a", "text:d"):
+        controller.handle_key(key)
+    _settle(controller)
+
+    assert len(payloads) == 1
+    assert payloads[0].get("anilist_id") == (1 if titled else None)
+    assert payloads[0].get("episode_offset") == (24 if titled else None)
+
+
 def test_equal_sized_same_version_releases_show_available_date_and_title() -> None:
     first: ReleaseChoice = _choice("1")
     first = replace(

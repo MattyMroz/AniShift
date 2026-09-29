@@ -30,10 +30,14 @@ from anishift.application.cancellation import EventCancellationToken
 from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
+    AdmissionConflict,
+    AdmissionSource,
     CommandReceipt,
     DeletionOutcome,
     DeletionRestore,
     DeletionStatus,
+    EpisodeAssignment,
+    LegacyScope,
     ManualHandledMarker,
     PendingDeletion,
     PreflightFinding,
@@ -49,6 +53,8 @@ from anishift.application.control import (
     SourceSelection,
     WatchState,
     auto_admissible,
+    episode_conflict,
+    legacy_conflict,
     mark_manual_handled,
     preflight,
     record_command,
@@ -90,7 +96,7 @@ from anishift.application.recovery import CHECKPOINT_VERSION, RunJournal
 from anishift.application.results import DISPLAYED_ABSENCE_NOTE, GroupResult, GroupStatus, ProducedArtifact, RunResult
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids, resolve_readiness
-from anishift.application.subscriptions import SubscriptionOrder, repeat_of, resolve_subscription_id
+from anishift.application.subscriptions import EpisodeState, SubscriptionOrder, repeat_of, resolve_subscription_id
 from anishift.application.transfers import TransferInspector, flat_layout, reserved_stem
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
@@ -113,6 +119,7 @@ if TYPE_CHECKING:
     from anishift.application.control import (
         AutomationPolicy,
         CommandOutcome,
+        EpisodeChoice,
         FileReservation,
         SettingsSnapshot,
         SourceFingerprint,
@@ -239,6 +246,24 @@ _REFUSALS: Final[Mapping[RefusalReason, tuple[ControlErrorCode, str]]] = Mapping
 
 _STATE_NOT_SAVED: Final[str] = "The automation state could not be saved, so nothing changed"
 """Reason returned when the command was abandoned instead of applied unrecorded."""
+
+_ADMISSION_REFUSALS: Final[Mapping[AdmissionConflict, str]] = MappingProxyType(
+    {
+        AdmissionConflict.ADMITTED: "This episode was already ordered",
+        AdmissionConflict.POSSIBLY_ADMITTED: "An older order may already cover this episode",
+        AdmissionConflict.TRANSFER_RECORDED: "This release already has a recorded download",
+    }
+)
+"""Reason returned for each duplicate a new episode admission would create."""
+
+_LEGACY_UNREADABLE: Final[str] = "Subscription orders could not be read, so no episode was admitted"
+"""Reason returned when the legacy orders an admission must respect cannot be read."""
+
+_COMMAND_REUSED: Final[str] = "This command identifier already admitted another episode"
+"""Reason returned when one command identifier arrives again for a different episode."""
+
+_TRANSFER_NOT_STARTED: Final[str] = "This episode is admitted but its transfer has not started yet"
+"""Reason returned when a client action targets an admission that has no transfer lifecycle."""
 
 _UNREADABLE_DESTINATION: Final[str] = "The download destination could not be read, so no name was reserved"
 """Problem recorded against one release when its destination cannot be listed before a reservation."""
@@ -2221,7 +2246,7 @@ class AutomationOwner:
             or self._inspecting
             or self._active_io
             or self._ready_inflight
-            or any(item.action_pending for item in self._state.acquisitions)
+            or any(_transfer_action(item) for item in self._state.acquisitions)
         )
 
     def _set_auto(self, request: ControlRequest) -> ControlResponse:
@@ -2325,7 +2350,10 @@ class AutomationOwner:
         return tuple(
             item.info_hash
             for item in state.acquisitions
-            if (item.state is AcquisitionState.ACCEPTED or (item.action_pending and item.requested_action == "resume"))
+            if (
+                item.state is AcquisitionState.ACCEPTED
+                or (_transfer_action(item) and item.requested_action == "resume")
+            )
             and item.requested_action not in {"stop", "cancel"}
         )
 
@@ -3294,10 +3322,24 @@ class AutomationOwner:
         raw: object = request.payload.get("choices")
         if acquisition is None or not isinstance(raw, list) or not raw:
             return _invalid("A download requires selected releases")
+        anilist_id: object = request.payload.get("anilist_id")
+        offset: object = request.payload.get("episode_offset")
+        if (anilist_id is not None and (type(anilist_id) is not int or anilist_id < 1)) or (
+            offset is not None and (type(offset) is not int or offset < 0)
+        ):
+            return _invalid("A download context requires a positive AniList ID and a non-negative episode offset")
         choices: tuple[ReleaseChoice, ...] = tuple(decode_view(ReleaseChoice, item) for item in raw)
+        entry: int | None = anilist_id if isinstance(anilist_id, int) else None
+        shift: int | None = offset if isinstance(offset, int) else None
+        scopes: dict[str, LegacyScope | None] = {
+            choice.release.info_hash.casefold(): None
+            if entry is None
+            else LegacyScope(entry, _choice_number(choice, shift))
+            for choice in choices
+        }
         chosen: tuple[ReleaseChoice, ...]
         response: ControlResponse
-        chosen, response = self._on_owner(lambda: self._accept_download(request, choices))
+        chosen, response = self._on_owner(lambda: self._accept_download(request, choices, scopes))
         if not response.ok or not chosen:
             return response
         try:
@@ -3341,6 +3383,7 @@ class AutomationOwner:
         self,
         request: ControlRequest,
         choices: tuple[ReleaseChoice, ...],
+        scopes: Mapping[str, LegacyScope | None],
     ) -> tuple[tuple[ReleaseChoice, ...], ControlResponse]:
         receipt: CommandReceipt | None = self._receipt(request)
         if receipt is not None:
@@ -3351,7 +3394,11 @@ class AutomationOwner:
             return (), _refuse(RefusalReason.PAUSED)
         existing: set[str] = {item.info_hash for item in self._state.acquisitions}
         unique: dict[str, ReleaseChoice] = {choice.release.info_hash.casefold(): choice for choice in choices}
-        chosen: tuple[ReleaseChoice, ...] = tuple(choice for key, choice in unique.items() if key not in existing)
+        chosen: tuple[ReleaseChoice, ...] = tuple(
+            choice
+            for key, choice in unique.items()
+            if key not in existing and not self._admitted_elsewhere(scopes.get(key))
+        )
         confirmations: list[AcquisitionConfirmation] = [
             AcquisitionConfirmation(
                 token_hex(_ID_BYTES),
@@ -3365,6 +3412,7 @@ class AutomationOwner:
                 self._now(),
                 nyaa_release_id=AcquisitionService.retained_reference(choice)[0],
                 release_title=AcquisitionService.retained_reference(choice)[1],
+                legacy_scope=scopes.get(choice.release.info_hash.casefold()),
             )
             for choice in chosen
         ]
@@ -3524,6 +3572,8 @@ class AutomationOwner:
         confirmation: AcquisitionConfirmation = self._new_acquisition(
             subscription, episode, choice, AcquisitionState.PENDING_SEND, origin=origin
         )
+        if self._admitted_elsewhere(confirmation.legacy_scope):
+            return False
         if not self._save(replace(self._state, acquisitions=(*self._state.acquisitions, confirmation))):
             raise OSError(_STATE_NOT_SAVED)
         self._publish_state()
@@ -3551,6 +3601,103 @@ class AutomationOwner:
             repeat_id=repeat_of(subscription, episode),
             nyaa_release_id=AcquisitionService.retained_reference(choice)[0],
             release_title=AcquisitionService.retained_reference(choice)[1],
+            legacy_scope=(
+                None
+                if subscription.anilist_id is None
+                else LegacyScope(subscription.anilist_id, _local_number(episode))
+            ),
+        )
+
+    def _admitted_elsewhere(self, scope: LegacyScope | None) -> bool:
+        return scope is not None and legacy_conflict(self._state, scope)
+
+    def admit_episode(self, command_id: str, choice: EpisodeChoice) -> ControlResponse:
+        """Record one prepared catalogue episode and its receipt in one save, before any client effect."""
+        return self._on_owner(lambda: self._admit_episode(command_id, choice))
+
+    def _admit_episode(self, command_id: str, choice: EpisodeChoice) -> ControlResponse:
+        receipt: CommandReceipt | None = next(
+            (item for item in self._state.command_receipts if item.command_id == command_id), None
+        )
+        if receipt is not None:
+            if (receipt.outcome.get("anilist_id"), receipt.outcome.get("number")) != (choice.anilist_id, choice.number):
+                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
+            return ControlResponse.succeeded(dict(receipt.outcome))
+        refusal: ControlResponse | None = self._admission_refusal(choice)
+        if refusal is not None:
+            return refusal
+        now: str = self._now()
+        assignment: EpisodeAssignment = EpisodeAssignment(token_hex(_ID_BYTES), now, AdmissionSource.MANUAL, choice)
+        confirmation: AcquisitionConfirmation = AcquisitionConfirmation(
+            operation_id=token_hex(_ID_BYTES),
+            info_hash=choice.reference.info_hash,
+            directory="",
+            required_files=(),
+            state=AcquisitionState.ADMITTED,
+            origin=RequestOrigin.USER,
+            subscription_id=None,
+            episode=str(choice.number),
+            updated_at=now,
+            assignments=(assignment,),
+        )
+        outcome: CommandOutcome = {
+            "operation_id": confirmation.operation_id,
+            "admission_id": assignment.admission_id,
+            "anilist_id": choice.anilist_id,
+            "number": choice.number,
+        }
+        candidate: WatchState = replace(self._state, acquisitions=(*self._state.acquisitions, confirmation))
+        if not self._save(record_command(candidate, CommandReceipt(command_id, now, outcome))):
+            return ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED)
+        logger.info("Episode admitted", anilist_id=choice.anilist_id, number=choice.number)
+        self._publish_state()
+        return ControlResponse.succeeded(dict(outcome))
+
+    def _admission_refusal(self, choice: EpisodeChoice) -> ControlResponse | None:
+        if self._shutting_down or not self._finish_pending_commands():
+            return _refuse(RefusalReason.SHUTTING_DOWN)
+        if not self._state.policy.auto_enabled:
+            return _refuse(RefusalReason.PAUSED)
+        legacy: tuple[LegacyScope, ...] | None = self._legacy_scopes()
+        if legacy is None:
+            return ControlResponse.refused(ControlErrorCode.REFUSED, _LEGACY_UNREADABLE, "legacy_unreadable")
+        conflict: AdmissionConflict | None = episode_conflict(self._state, choice.anilist_id, choice.number, legacy)
+        if conflict is None and any(item.info_hash == choice.reference.info_hash for item in self._state.acquisitions):
+            conflict = AdmissionConflict.TRANSFER_RECORDED
+        if conflict is None:
+            return None
+        logger.info("Episode admission refused", reason=conflict.value)
+        return ControlResponse.refused(ControlErrorCode.REFUSED, _ADMISSION_REFUSALS[conflict], conflict.value)
+
+    def _legacy_scopes(self) -> tuple[LegacyScope, ...] | None:
+        service: SubscriptionService | None = self._service.subscriptions
+        if service is None:
+            return ()
+        try:
+            subscriptions: tuple[Subscription, ...] = tuple(service.list())
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("Subscription orders could not be read for an admission", error_class=type(problem).__name__)
+            return None
+        linked: dict[str, int] = {
+            item.subscription_id: item.anilist_id for item in subscriptions if item.anilist_id is not None
+        }
+        ordered: list[tuple[str, str | Decimal | None]] = []
+        for item in subscriptions:
+            ordered.extend((item.subscription_id, number) for number in item.taken_episodes)
+            ordered.extend(
+                (item.subscription_id, order.number)
+                for order in item.episodes
+                if order.state in {EpisodeState.ORDERED, EpisodeState.COMPLETE}
+            )
+        ordered.extend(
+            (acquisition.subscription_id, acquisition.episode)
+            for acquisition in self._state.acquisitions
+            if acquisition.subscription_id is not None and acquisition.legacy_scope is None
+        )
+        return tuple(
+            LegacyScope(linked[subscription_id], _local_number(number))
+            for subscription_id, number in ordered
+            if subscription_id in linked
         )
 
     def _record_subscription(  # noqa: PLR0913
@@ -3602,7 +3749,7 @@ class AutomationOwner:
         if (
             self._transfers_at is not None
             and self._working()
-            and not any(item.action_pending for item in self._state.acquisitions)
+            and not any(_transfer_action(item) for item in self._state.acquisitions)
         ):
             self._transfers_at = max(time.monotonic(), self._transfers_at + self._transfers_delay - previous)
 
@@ -3611,7 +3758,7 @@ class AutomationOwner:
             return
         working: bool = self._state.policy.auto_enabled
         active: bool = any(
-            (item.state is AcquisitionState.ACCEPTED and working) or item.action_pending
+            (item.state is AcquisitionState.ACCEPTED and working) or _transfer_action(item)
             for item in self._state.acquisitions
         )
         self._transfers_at = time.monotonic() + delay if active else None
@@ -3622,7 +3769,7 @@ class AutomationOwner:
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
             item
             for item in self._state.acquisitions
-            if (item.state is AcquisitionState.ACCEPTED and self._working()) or item.action_pending
+            if (item.state is AcquisitionState.ACCEPTED and self._working()) or _transfer_action(item)
         )
         self._transfers_at = None
         if not acquisitions:
@@ -4201,6 +4348,10 @@ class AutomationOwner:
             item.info_hash == info_hash for item in self._state.acquisitions
         ):
             return _invalid("A transfer command needs a known hash and stop, resume or cancel")
+        if any(
+            item.info_hash == info_hash and item.state is AcquisitionState.ADMITTED for item in self._state.acquisitions
+        ):
+            return ControlResponse.refused(ControlErrorCode.REFUSED, _TRANSFER_NOT_STARTED, "transfer_not_started")
         if self._shutting_down:
             return _refuse(RefusalReason.SHUTTING_DOWN)
         if action == "resume" and not self._state.policy.auto_enabled:
@@ -5172,6 +5323,11 @@ def _marked(
     return marked
 
 
+def _transfer_action(item: AcquisitionConfirmation) -> bool:
+    """Answer whether a pending client action belongs to a transfer that has a client lifecycle."""
+    return item.action_pending and item.state is not AcquisitionState.ADMITTED
+
+
 def _resumable(item: AcquisitionConfirmation, paused: frozenset[str], enabled: frozenset[str] | None) -> bool:
     """Answer whether a globally paused transfer still has an active order to take up again."""
     return (
@@ -5461,6 +5617,28 @@ def _episode_numbers(payload: Mapping[str, object], key: str) -> tuple[Decimal, 
 def _stored_numbers(raw: object) -> tuple[Decimal, ...]:
     """Return the episode numbers a receipt recorded, which validation already accepted."""
     return tuple(Decimal(str(item)) for item in json.loads(str(raw)))
+
+
+def _local_number(value: str | Decimal | None) -> int | None:
+    """Return a recorded season-local episode as a catalogue number, or nothing when it cannot be one."""
+    if value is None:
+        return None
+    try:
+        number: Decimal = Decimal(value)
+    except InvalidOperation:
+        return None
+    if not number.is_finite() or number != number.to_integral_value() or number < 1:
+        return None
+    return int(number)
+
+
+def _choice_number(choice: ReleaseChoice, offset: int | None) -> int | None:
+    """Return the local episode of one G release in known numbering, subtracting *offset* only from an unread number."""
+    if choice.other_season or choice.episode is None or offset is None:
+        return None
+    if choice.reading is not None:
+        return _local_number(choice.episode)
+    return _local_number(choice.episode - offset)
 
 
 def _episode_number(payload: Mapping[str, object], key: str) -> Decimal | None:

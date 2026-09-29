@@ -8,6 +8,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
+from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.intents import (
     GroupIntent,
     NarrationTimeline,
@@ -25,11 +26,16 @@ __all__ = [
     "WATCH_STATE_SCHEMA_VERSION",
     "AcquisitionConfirmation",
     "AcquisitionState",
+    "AdmissionConflict",
+    "AdmissionSource",
     "AudiobookRecipe",
     "AutomationPolicy",
     "CommandReceipt",
+    "EpisodeAssignment",
+    "EpisodeChoice",
     "FileObjectIdentities",
     "FileReservation",
+    "LegacyScope",
     "ManualHandledMarker",
     "NarrationTimeline",
     "NotificationKey",
@@ -46,9 +52,12 @@ __all__ = [
     "SourceFingerprint",
     "SourceSelection",
     "TextResultFormat",
+    "TorrentioReference",
     "TranslateRecipe",
     "WatchState",
     "auto_admissible",
+    "episode_conflict",
+    "legacy_conflict",
     "mark_manual_handled",
     "preflight",
     "record_command",
@@ -60,7 +69,7 @@ __all__ = [
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-WATCH_STATE_SCHEMA_VERSION: Final[int] = 2
+WATCH_STATE_SCHEMA_VERSION: Final[int] = 3
 """Current schema of the persisted automation state."""
 
 type SourceFingerprint = tuple[tuple[str, int, int], ...]
@@ -163,11 +172,27 @@ class RequestState(StrEnum):
 class AcquisitionState(StrEnum):
     """Lifecycle of one release handed to the torrent client."""
 
+    ADMITTED = "admitted"
     PENDING_SEND = "pending_send"
     UNCERTAIN = "uncertain"
     ACCEPTED = "accepted"
     COMPLETE = "complete"
     FAILED = "failed"
+
+
+class AdmissionSource(StrEnum):
+    """Entry path that admitted one catalogue episode."""
+
+    MANUAL = "manual"
+    LEGACY = "legacy"
+
+
+class AdmissionConflict(StrEnum):
+    """Why the owner refuses a new admission of one catalogue episode."""
+
+    ADMITTED = "episode_admitted"
+    POSSIBLY_ADMITTED = "episode_possibly_admitted"
+    TRANSFER_RECORDED = "transfer_recorded"
 
 
 _UNFINISHED_STATES: Final[frozenset[RequestState]] = frozenset(
@@ -273,6 +298,78 @@ class ProcessingRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class TorrentioReference:
+    """Stream chosen from Torrentio; its file index and name only hint at the file inside the torrent."""
+
+    info_hash: str
+    file_index: int | None = None
+    file_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.info_hash.strip():
+            msg = "A Torrentio reference requires its info hash"
+            raise ValueError(msg)
+        if self.file_index is not None and (type(self.file_index) is not int or self.file_index < 0):
+            msg = "A Torrentio file index must be a non-negative whole number"
+            raise ValueError(msg)
+        object.__setattr__(self, "info_hash", self.info_hash.casefold())
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeChoice:
+    """One catalogue episode, the stream chosen for it and the H1 evidence it was chosen on."""
+
+    anilist_id: int
+    number: int
+    reference: TorrentioReference
+    target: Mapping[str, object]
+    verdict: IdentityVerdict
+    reason: str
+    deviation_confirmed: bool = False
+
+    def __post_init__(self) -> None:
+        if not _positive(self.anilist_id) or not _positive(self.number):
+            msg = "An episode choice requires a positive AniList ID and episode number"
+            raise ValueError(msg)
+        if self.verdict is not IdentityVerdict.MATCH and not self.deviation_confirmed:
+            msg = "A stream without an H1 match requires a confirmed deviation"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeAssignment:
+    """One catalogue episode admitted into a selective transfer."""
+
+    admission_id: str
+    admitted_at: str
+    source: AdmissionSource
+    choice: EpisodeChoice
+    previous_admission_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.admission_id.strip() or not self.admitted_at.strip():
+            msg = "An episode assignment requires its own admission identity and time"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyScope:
+    """Catalogue entry, and its local episode when known, that one unkeyed legacy order may cover."""
+
+    anilist_id: int
+    number: int | None
+
+    def __post_init__(self) -> None:
+        if not _positive(self.anilist_id) or (self.number is not None and not _positive(self.number)):
+            msg = "A legacy scope requires a positive AniList ID and, when known, a positive episode"
+            raise ValueError(msg)
+
+    def covers(self, anilist_id: int, number: int) -> bool:
+        """Whether this order may be the one that already took *number* of *anilist_id*."""
+        return self.anilist_id == anilist_id and self.number in {None, number}
+
+
+@dataclass(frozen=True, slots=True)
 class AcquisitionConfirmation:
     """What is known about one release handed to the torrent client."""
 
@@ -297,8 +394,28 @@ class AcquisitionConfirmation:
     nyaa_release_id: int | None = None
     release_title: str | None = None
     previous_operation_id: str | None = None
+    assignments: tuple[EpisodeAssignment, ...] = ()
+    legacy_scope: LegacyScope | None = None
+
+    @property
+    def selective(self) -> bool:
+        """Whether this transfer was admitted per catalogue episode instead of as a legacy release."""
+        return bool(self.assignments)
 
     def __post_init__(self) -> None:
+        if self.assignments and self.legacy_scope is not None:
+            msg = "A selective transfer carries episode assignments, never a legacy scope"
+            raise ValueError(msg)
+        if self.state is AcquisitionState.ADMITTED and not self.assignments:
+            msg = "Only a selective transfer can wait as an admission"
+            raise ValueError(msg)
+        admissions: tuple[str, ...] = tuple(item.admission_id for item in self.assignments)
+        if len(set(admissions)) != len(admissions):
+            msg = "Every episode assignment requires its own admission identity"
+            raise ValueError(msg)
+        if any(item.choice.reference.info_hash != self.info_hash.casefold() for item in self.assignments):
+            msg = "An episode assignment must reference the transfer that carries it"
+            raise ValueError(msg)
         if (self.nyaa_release_id is None) != (self.release_title is None):
             msg = "A retained release requires both its verified Nyaa identifier and original title"
             raise ValueError(msg)
@@ -665,6 +782,40 @@ def auto_admissible(  # noqa: PLR0913 - every admission condition stays an expli
     if _latest_request_blocks(state, group_id, fingerprint, succeeded_groups):
         return False
     return not _manual_blocks(state, group_id, fingerprint, requested_products)
+
+
+def episode_conflict(
+    state: WatchState,
+    anilist_id: int,
+    number: int,
+    legacy: Iterable[LegacyScope] = (),
+) -> AdmissionConflict | None:
+    """Why admitting *number* of *anilist_id* would repeat an order, with *legacy* read beside the ledger."""
+    if any(
+        item.choice.anilist_id == anilist_id and item.choice.number == number
+        for acquisition in state.acquisitions
+        for item in acquisition.assignments
+    ):
+        return AdmissionConflict.ADMITTED
+    recorded: tuple[LegacyScope, ...] = tuple(
+        item.legacy_scope for item in state.acquisitions if item.legacy_scope is not None
+    )
+    if any(scope.covers(anilist_id, number) for scope in (*recorded, *legacy)):
+        return AdmissionConflict.POSSIBLY_ADMITTED
+    return None
+
+
+def legacy_conflict(state: WatchState, scope: LegacyScope) -> bool:
+    """Whether an unkeyed legacy order in *scope* may repeat an episode admitted per catalogue key."""
+    return any(
+        scope.covers(item.choice.anilist_id, item.choice.number)
+        for acquisition in state.acquisitions
+        for item in acquisition.assignments
+    )
+
+
+def _positive(value: object) -> bool:
+    return type(value) is int and value >= 1
 
 
 def _directory_chain(directory: str) -> tuple[str, ...]:
