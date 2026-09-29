@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     )
     from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
     from anishift.services.catalog import TitleCandidate, TitleCatalogError, TitleStatus
+    from anishift.services.torrents.names import parse_release_name
     from anishift.services.torrents.query import EpisodeRange, SearchQuery, parse_query
     from anishift.setup.doctor import CheckResult
     from anishift.setup.installer import ResourceResult
@@ -314,6 +315,7 @@ __all__ = [
     "legal_products",
     "order_groups",
     "parse_query",
+    "parse_release_name",
     "plan_auto",
     "plan_manual",
     "preview_plan",
@@ -359,6 +361,7 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "EpisodeRange": ("anishift.services.torrents.query", "EpisodeRange"),
     "SearchQuery": ("anishift.services.torrents.query", "SearchQuery"),
     "parse_query": ("anishift.services.torrents.query", "parse_query"),
+    "parse_release_name": ("anishift.services.torrents.names", "parse_release_name"),
     "TitleCandidate": ("anishift.services.catalog", "TitleCandidate"),
     "TitleCatalogError": ("anishift.services.catalog", "TitleCatalogError"),
     "TitleStatus": ("anishift.services.catalog", "TitleStatus"),

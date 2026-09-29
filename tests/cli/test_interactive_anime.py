@@ -396,7 +396,7 @@ def _search_panel_from_subscriptions(panel: StateController, anime: AnimeControl
     panel.handle_key("text:oshi")
     panel.handle_key("enter")
     _settle(anime)
-    panel.handle_key("enter")
+    panel.handle_key("text:g")
     _settle(anime)
 
 
@@ -673,7 +673,7 @@ def test_upcoming_title_group_input_is_local_and_routes_command_letters_as_text(
     _type(controller, "oshi")
     controller.handle_key("enter")
     _settle(controller)
-    controller.handle_key("enter")
+    controller.handle_key("text:g")
     _settle(controller)
     controller.handle_key("text:o")
     controller.handle_key("text:SomeGroup")
@@ -740,7 +740,7 @@ def _chosen(controller: AnimeController, phrase: str = "oshi no ko") -> None:
     _type(controller, phrase)
     controller.handle_key("enter")
     _settle(controller)
-    controller.handle_key("enter")
+    controller.handle_key("text:g" if controller._screen is _Screen.TITLES else "enter")
     _settle(controller)
 
 
@@ -1057,14 +1057,14 @@ def test_returning_to_the_same_title_keeps_marks_but_new_search_clears_them() ->
         _service(extra={"find_titles": lambda text: (_title(),), "search_title": search_title})
     )
     _chosen(controller)
-    for key in ("enter", "space", "escape", "escape", "enter", "enter"):
+    for key in ("enter", "space", "escape", "escape", "text:g", "enter"):
         controller.handle_key(key)
     assert "Pobierz (1)" in _frame(controller)
     assert len(searches) == 1
     for key in ("escape", "escape", "escape", "enter", "enter"):
         controller.handle_key(key)
     _settle(controller)
-    controller.handle_key("enter")
+    controller.handle_key("text:g")
     _settle(controller)
     controller.handle_key("enter")
     assert "Pobierz (0)" in _frame(controller)
@@ -1124,7 +1124,7 @@ def test_a_failed_search_states_a_known_error_code_in_polish() -> None:
     reported: str = _frame(controller)
 
     assert _screen(controller) is _Screen.PROBLEM
-    assert "Nyaa nie odpowiada" in reported
+    assert "Źródło wydań nie odpowiada" in reported
     assert "Sprawdź połączenie i spróbuj ponownie" in reported
     assert "could not be reached" not in reported
     assert "Traceback" not in reported
@@ -1264,7 +1264,7 @@ def test_the_fallback_results_name_the_order_they_arrived_in() -> None:
 
 @pytest.mark.parametrize("remote", [False, True])
 @pytest.mark.parametrize("code", [ErrorCode.TITLE_CATALOG_FAILED, ErrorCode.IO_ERROR, ErrorCode.UNKNOWN])
-def test_only_a_catalog_failure_falls_back_to_release_search(remote: bool, code: ErrorCode) -> None:
+def test_a_catalog_failure_never_falls_back_to_release_search(remote: bool, code: ErrorCode) -> None:
     searched: list[str] = []
 
     def titles(text: str) -> tuple[TitleCandidate, ...]:
@@ -1282,8 +1282,8 @@ def test_only_a_catalog_failure_falls_back_to_release_search(remote: bool, code:
     controller.handle_key("enter")
     _settle(controller)
 
-    assert searched == (["oshi"] if code is ErrorCode.TITLE_CATALOG_FAILED else [])
-    assert _screen(controller) is (_Screen.RESULTS if code is ErrorCode.TITLE_CATALOG_FAILED else _Screen.PROBLEM)
+    assert searched == []
+    assert _screen(controller) is _Screen.PROBLEM
 
 
 def test_a_broken_season_lookup_notes_that_the_numbering_is_missing() -> None:
@@ -1377,9 +1377,11 @@ def test_a_failed_download_returns_to_the_results_and_escape_leaves_home() -> No
 
 def test_escape_during_the_search_discards_a_late_result() -> None:
     release: threading.Event = threading.Event()
+    entered: threading.Event = threading.Event()
 
     def search(query: str) -> ReleaseCatalog:
         del query
+        entered.set()
         assert release.wait(timeout=5)
         return _catalog((_choice("11"),))
 
@@ -1388,8 +1390,9 @@ def test_escape_during_the_search_discards_a_late_result() -> None:
     controller.handle_key("enter")
     worker: threading.Thread | None = controller._worker
 
+    assert entered.wait(5)
     assert _screen(controller) is _Screen.BUSY
-    assert "Szukam tytułu…" in _frame(controller)
+    assert "Brak tytułu w AniList, szukam wydań na Nyaa" in _frame(controller)
 
     controller.handle_key("escape")
     release.set()
@@ -1649,7 +1652,7 @@ def test_the_results_fit_inside_every_terminal_height(size: tuple[int, int]) -> 
     assert any("\u276f" in line for line in lines)
 
 
-def test_enter_lists_every_title_candidate_with_its_year_format_and_status() -> None:
+def test_enter_lists_titles_by_descending_year_with_english_names_and_format_only() -> None:
     asked: list[str] = []
 
     def find_titles(text: str) -> tuple[TitleCandidate, ...]:
@@ -1673,9 +1676,12 @@ def test_enter_lists_every_title_candidate_with_its_year_format_and_status() -> 
 
     assert asked == ["solo leveling"]
     assert _screen(controller) is _Screen.TITLES
-    assert "Solo Leveling · 2024 · TV · 12 odc. · zakończone" in listed
-    assert "Ore dake Level Up na Ken Season 2 · 2025 · TV · 13 odc. · w emisji · Solo Leveling Season 2" in listed
-    assert "Enter wybierz · Esc wróć" in listed
+    assert "2024 · Solo Leveling · TV" in listed
+    assert "2025 · Solo Leveling Season 2 · TV" in listed
+    assert listed.index("2025") < listed.index("2024")
+    assert "odc." not in listed
+    assert "Ore dake" not in listed
+    assert "G wydania wg grup (stara wersja)" in listed
 
     controller.handle_key("escape")
 
@@ -1710,7 +1716,7 @@ def test_choosing_a_candidate_searches_its_releases_with_the_parsed_filter_and_t
     assert (episodes.first, episodes.last) == (Decimal(1), Decimal(1))
 
 
-def test_a_broken_title_catalog_falls_back_to_the_typed_phrase() -> None:
+def test_a_broken_title_catalog_reports_anilist_without_raw_search() -> None:
     searched: list[str] = []
 
     def find_titles(text: str) -> tuple[TitleCandidate, ...]:
@@ -1729,9 +1735,9 @@ def test_a_broken_title_catalog_falls_back_to_the_typed_phrase() -> None:
     _settle(controller)
     listed: str = _frame(controller)
 
-    assert searched == ["oshi no ko 1"]
-    assert _screen(controller) is _Screen.RESULTS
-    assert "AniList nie odpowiada, wyniki dla hasła" in listed
+    assert searched == []
+    assert _screen(controller) is _Screen.PROBLEM
+    assert "AniList nie odpowiada" in listed
     assert "filtr:" not in listed
 
 

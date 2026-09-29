@@ -5,11 +5,16 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+from math import ceil
+from time import time
 from typing import Final
 
+from natsort import natsorted
+from rich.console import Console
 from rich.text import Text
 
 from anishift.application import (
@@ -17,7 +22,16 @@ from anishift.application import (
     AppService,
     CatalogOrder,
     DownloadReceipt,
+    EntryGroup,
+    EpisodeKey,
+    EpisodeListing,
+    EpisodeOffer,
     EpisodeRange,
+    Franchise,
+    FranchiseEntry,
+    IdentityVerdict,
+    ListedEpisode,
+    RankedCandidate,
     RefusalReason,
     ReleaseCatalog,
     ReleaseChoice,
@@ -29,6 +43,7 @@ from anishift.application import (
     TitleStatus,
     order_groups,
     parse_query,
+    parse_release_name,
 )
 from anishift.application.events import sanitize_event_message
 from anishift.cli.interactive.menu import with_footer
@@ -36,7 +51,7 @@ from anishift.cli.interactive.subscriptions import SubscriptionDraft
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError, ErrorCode
-from anishift.platform.local_control import ControlError
+from anishift.platform.local_control import ControlError, ControlErrorCode
 from anishift.utils.logger import get_logger
 
 __all__ = ["AnimeController", "AnimeResult"]
@@ -63,7 +78,7 @@ _MIN_RESOLUTION_LABEL: Final[str] = "1080p"
 _QUERY_HINT: Final[str] = "Enter edytuj · ←→ widok · Esc wróć"
 """Keyboard hint of the title input."""
 
-_TITLES_HINT: Final[str] = "Enter wybierz · Esc wróć"
+_TITLES_HINT: Final[str] = "Enter wybierz · G wydania wg grup (stara wersja) · / szukaj · Esc wróć"
 """Keyboard hint of the title candidate list."""
 
 _BUSY_HINT: Final[str] = "Esc anuluj"
@@ -99,9 +114,6 @@ _EPISODE_ONLY: Final[str] = "Subskrybuj działa tylko na numerowanym odcinku"
 _OTHER_SEASON: Final[str] = "To wydanie wygląda na inny sezon"
 """Notice shown when the highlighted release belongs to a season other than the chosen one."""
 
-_CATALOG_DOWN: Final[str] = "AniList nie odpowiada, wyniki dla hasła"
-"""Footer note shown when the title catalog failed and the raw phrase was searched instead."""
-
 _NO_TITLE: Final[str] = "Brak tytułu w AniList, wyniki dla hasła"
 """Footer note shown when the title catalog knows no title and the raw phrase was searched instead."""
 
@@ -121,7 +133,8 @@ _NO_SEASON_NUMBERING: Final[str] = "numeracja sezonu niedostępna"
 """Footer note shown when the season chain failed and episodes are numbered as named."""
 
 _PROBLEM_TEXTS: Final[dict[ErrorCode, tuple[str, str]]] = {
-    ErrorCode.TORRENT_SOURCE_FAILED: ("Nyaa nie odpowiada", "Sprawdź połączenie i spróbuj ponownie"),
+    ErrorCode.TORRENT_SOURCE_FAILED: ("Źródło wydań nie odpowiada", "Sprawdź połączenie i spróbuj ponownie"),
+    ErrorCode.EPISODE_CATALOG_FAILED: ("Lista odcinków niedostępna (ani.zip)", "Spróbuj ponownie"),
     ErrorCode.TORRENT_CLIENT_UNAVAILABLE: ("qBittorrent nie odpowiada", "Uruchom qBittorrenta z włączonym Web UI"),
     ErrorCode.TORRENT_CLIENT_UNAUTHORIZED: (
         "qBittorrent odrzucił logowanie",
@@ -158,6 +171,145 @@ _RANGE_RE: Final[re.Pattern[str]] = re.compile(
 )
 """Span typed in the footer: one episode, a closed span, an open end, or an upper bound."""
 
+_COMMAND_FAILED: Final[str] = (
+    "Rezydent nie wykonał polecenia. Jeśli AniShift był właśnie aktualizowany, uruchom go ponownie."
+)
+"""Safe explanation shared by failed catalogue commands and local worker defects."""
+
+_ENTRY_GROUPS: Final[dict[EntryGroup, str]] = {
+    EntryGroup.SEASON: "SEZONY I CZĘŚCI",
+    EntryGroup.EXTRA: "DODATKI",
+    EntryGroup.OTHER: "FILMY I INNE",
+}
+"""Section headings of the franchise projection."""
+
+_ENTRY_STATUSES: Final[dict[str, str]] = {
+    "FINISHED": "zakończony",
+    "RELEASING": "w emisji",
+    "NOT_YET_RELEASED": "zapowiedź",
+    "HIATUS": "przerwa w emisji",
+    "CANCELLED": "anulowany",
+    "UNKNOWN": "—",
+}
+"""Airing labels referring only to the displayed entry."""
+
+_VERDICT_LABELS: Final[dict[IdentityVerdict, str]] = {
+    IdentityVerdict.MATCH: "zgodny",
+    IdentityVerdict.INSUFFICIENT: "niepewny",
+    IdentityVerdict.MISMATCH: "niezgodny",
+}
+"""Polish identity labels, without confidence percentages."""
+
+_DATE_COLUMNS: Final[int] = 75
+"""Minimum episode view width retaining the local airing timestamp."""
+
+_SEED_COLUMNS: Final[int] = 70
+"""Minimum release row width retaining its seeder measurement."""
+
+_SIZE_COLUMNS: Final[int] = 90
+"""Minimum release row width retaining its approximate file size."""
+
+_REASON_TEXTS: Final[dict[str, str]] = {
+    "Mapped absolute number exceeds the local episode range under a specific title.": (
+        "Numer absolutny wykracza poza zakres odcinków tego wpisu."
+    ),
+    "Named season, local episode and catalog episode title agree.": (
+        "Sezon, numer lokalny i katalogowy tytuł odcinka są zgodne."
+    ),
+    "Season marker conflicts with the target numbering system.": (
+        "Oznaczenie sezonu jest sprzeczne z numeracją szukanego odcinka."
+    ),
+    "Part/cour marker conflicts with the target.": "Oznaczenie części jest sprzeczne z wybranym wpisem.",
+    "A franchise alias does not identify this installment.": "Nazwa franczyzy nie wskazuje jednoznacznie tego wpisu.",
+    "The required part/cour is not established.": "Nie ustalono wymaganej części sezonu.",
+    "Explicit mapped episode differs from target.": "Podany numer katalogowy wskazuje inny odcinek.",
+    "Work anchor and exact mapped season/episode match; residual is technical or catalogued.": (
+        "Tytuł oraz katalogowe numery sezonu i odcinka są zgodne; pozostały tekst jest rozpoznany."
+    ),
+    "Movie segment or numbering requires a more specific identity anchor.": (
+        "Część lub numer filmu wymaga dokładniejszego potwierdzenia tożsamości."
+    ),
+    "Movie title matches with compatible year and no unidentified residual.": (
+        "Tytuł filmu jest zgodny, rok nie jest sprzeczny i nie ma nierozpoznanego tekstu."
+    ),
+    "OVA/special needs a mapped episode or catalog episode title.": (
+        "Dodatek wymaga numeru katalogowego lub katalogowego tytułu odcinka."
+    ),
+    "No unambiguous selected episode number.": "Brak jednoznacznego numeru wybranego odcinka.",
+    "Bare number is not the local episode; absolute numbering is not established.": (
+        "Numer nie pasuje do odcinka lokalnego; nie potwierdzono numeracji absolutnej."
+    ),
+    "Local and mapped numbering conflict.": "Numeracja lokalna i katalogowa są sprzeczne.",
+    "Specific work title and local episode match; residual is technical or catalogued.": (
+        "Dokładny tytuł i numer lokalny odcinka są zgodne; pozostały tekst jest rozpoznany."
+    ),
+    "Package directory explicitly identifies Plex extra material.": "Katalog paczki wskazuje materiał dodatkowy Plex.",
+    "Package explicitly identifies a neighboring work.": "Paczka wskazuje inny powiązany tytuł.",
+    "Package explicitly identifies a different season.": "Paczka wskazuje inny sezon.",
+    "Package explicitly identifies a different part/cour.": "Paczka wskazuje inną część sezonu.",
+    "Package explicitly identifies a different final season.": "Paczka wskazuje inny sezon finałowy.",
+    "Package contains an unresolved sequel qualifier.": "Paczka zawiera niejednoznaczny dopisek sequela.",
+    "Package localized season conflicts with the target or is unresolved.": (
+        "Obcojęzyczne oznaczenie sezonu w paczce jest sprzeczne lub niejednoznaczne."
+    ),
+    "Package Roman season/part conflicts with the target or is unresolved.": (
+        "Rzymski numer sezonu lub części w paczce jest sprzeczny lub niejednoznaczny."
+    ),
+    "Package ordinal part/cour conflicts with the target.": "Numer porządkowy części w paczce wskazuje inną część.",
+    "Package localized movie format conflicts with the target.": (
+        "Obcojęzyczne oznaczenie filmu w paczce nie pasuje do wybranego wpisu."
+    ),
+    "Package contains an unresolved continuation marker.": "Paczka zawiera niejednoznaczne oznaczenie ciągu dalszego.",
+    "Package contains an uncatalogued title suffix.": "Paczka zawiera końcówkę tytułu nieznaną katalogowi.",
+    "Package explicitly identifies a different language-specific media format.": (
+        "Obcojęzyczne oznaczenie w paczce wskazuje inny rodzaj materiału."
+    ),
+    "Package season declaration conflicts with the target or is unresolved.": (
+        "Deklaracja sezonu w paczce jest sprzeczna lub niejednoznaczna."
+    ),
+    "Package Russian season declaration is unresolved.": "Rosyjskie oznaczenie sezonu w paczce jest niejednoznaczne.",
+    "Package explicitly identifies non-episode material.": "Paczka wskazuje materiał inny niż odcinek.",
+    "Package explicitly identifies a different media type.": "Paczka wskazuje inny rodzaj materiału.",
+    "Package year conflicts with target metadata.": "Rok paczki jest sprzeczny z metadanymi wybranego wpisu.",
+    "Package explicitly identifies a numbered sequel.": "Paczka wskazuje numerowaną kontynuację.",
+    "Titleless file lacks an unambiguous nearest work directory or single-work release.": (
+        "Plik bez tytułu nie ma jednoznacznego katalogu ani wydania jednego tytułu."
+    ),
+    "Selected file or work directory identifies a neighboring catalogue work.": (
+        "Wybrany plik lub katalog wskazuje inny tytuł katalogowy."
+    ),
+    "Selected directory has a numbered season conflicting with the target.": (
+        "Numer sezonu w wybranym katalogu jest sprzeczny z wybranym odcinkiem."
+    ),
+    "Selected TV variant conflicts with the target editing variant.": (
+        "Wariant telewizyjny pliku jest sprzeczny z wybraną wersją montażową."
+    ),
+    "Release editing variant is not established for the target episode.": (
+        "Nie potwierdzono wersji montażowej wydania dla tego odcinka."
+    ),
+    "Malformed candidate metadata.": "Metadane wydania mają niepoprawny format.",
+    "No selected file.": "Brak wskazanego pliku.",
+    "Selected file has no allowed video extension.": "Wybrany plik nie ma dozwolonego rozszerzenia wideo.",
+    "Malformed target or archived identity metadata.": "Metadane celu lub tożsamości mają niepoprawny format.",
+    "Selected filename has an explicit Plex extra suffix.": "Nazwa pliku oznacza materiał dodatkowy Plex.",
+    "Selected residual explicitly identifies non-episode material.": (
+        "Dodatkowy tekst nazwy wskazuje materiał inny niż odcinek."
+    ),
+    "Unresolved leading bracket is the nearest identity context.": (
+        "Nierozpoznany początkowy nawias uniemożliwia ustalenie tożsamości."
+    ),
+    "Selected filename more specifically identifies a neighboring work.": (
+        "Dokładniejsza nazwa pliku wskazuje inny powiązany tytuł."
+    ),
+    "Filename year is missing from or conflicts with runtime target metadata.": (
+        "Roku z nazwy pliku nie ma w metadanych celu albo jest z nimi sprzeczny."
+    ),
+    "Unconsumed filename text is neither technical metadata nor a catalog episode title.": (
+        "Pozostały tekst nazwy nie jest metadanymi technicznymi ani katalogowym tytułem odcinka."
+    ),
+}
+"""Translate every frozen H1 explanation at the UI boundary."""
+
 
 class AnimeResult(StrEnum):
     """Signal whether the anime controller stays open or returns Home."""
@@ -174,6 +326,10 @@ class _Screen(StrEnum):
     RESULTS = "results"
     DONE = "done"
     PROBLEM = "problem"
+    ENTRIES = "entries"
+    EPISODES = "episodes"
+    OFFER = "offer"
+    CANDIDATES = "candidates"
 
 
 class _Action(StrEnum):
@@ -206,7 +362,7 @@ class _Row:
 class AnimeController:
     """Own one ephemeral release search while AppService owns the network boundary."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         service: AppService,
         invalidate: Callable[[], None],
@@ -252,6 +408,22 @@ class AnimeController:
         self._problem_return: _Screen = _Screen.QUERY
         self._resume_available: bool = False
         self._draft: SubscriptionDraft | None = None
+        self._clock: Callable[[], float] = time
+        self._franchise: Franchise | None = None
+        self._entry: FranchiseEntry | None = None
+        self._listing: EpisodeListing | None = None
+        self._episode_marks: set[int] = set()
+        self._offer_numbers: tuple[int, ...] = ()
+        self._offers: dict[int, EpisodeOffer] = {}
+        self._offers_running: bool = False
+        self._release_candidates: tuple[RankedCandidate, ...] = ()
+        self._positions: dict[_Screen, int] = {}
+        self._offsets: dict[_Screen, int] = {}
+        self._visible_count: int = 1
+        self._follow_cursor: bool = True
+        self._busy_return: _Screen = _Screen.QUERY
+        self._provider_locks: dict[str, float] = {}
+        self._problem_provider: str = ""
         if self._acquisition is None:
             self._screen = _Screen.PROBLEM
             self._problem = _UNAVAILABLE
@@ -271,6 +443,9 @@ class AnimeController:
                 result = self._handle_busy(key)
             elif self._screen is _Screen.RESULTS:
                 result = self._handle_results(key)
+            elif self._screen in {_Screen.ENTRIES, _Screen.EPISODES, _Screen.OFFER, _Screen.CANDIDATES}:
+                self._handle_episode_screen(key)
+                result = AnimeResult.CONTINUE
             elif self._screen is _Screen.DONE:
                 self._screen = _Screen.RESULTS
                 result = AnimeResult.CONTINUE
@@ -304,6 +479,25 @@ class AnimeController:
             self._downloaded = None
             return notice
 
+    def refresh_provider_locks(self, locks: Sequence[Mapping[str, object]]) -> None:
+        """Project owner retry deadlines without admitting or repeating a request."""
+        deadlines: dict[str, float] = {}
+        for item in locks:
+            provider, until = item.get("provider"), item.get("until")
+            if not isinstance(provider, str) or not isinstance(until, str):
+                continue
+            deadline: float | None = _deadline(until)
+            if deadline is not None:
+                deadlines[provider] = deadline
+        with self._lock:
+            self._provider_locks = deadlines
+
+    def scroll(self, direction: int) -> None:
+        """Scroll a catalogue view without changing its highlighted identity."""
+        with self._lock:
+            self._offsets[self._screen] = max(self._offsets.get(self._screen, 0) + direction * 3, 0)
+            self._follow_cursor = False
+
     def render(self, columns: int, rows: int) -> Text:
         """Render the cached state of the current screen for one terminal geometry."""
         with self._lock:
@@ -314,6 +508,10 @@ class AnimeController:
                 _Screen.RESULTS: self._render_results,
                 _Screen.DONE: self._render_done,
                 _Screen.PROBLEM: self._render_problem,
+                _Screen.ENTRIES: self._render_entries,
+                _Screen.EPISODES: self._render_episodes,
+                _Screen.OFFER: self._render_offers,
+                _Screen.CANDIDATES: self._render_candidates,
             }[self._screen]
             rendered: Text = renderer(columns, rows)
         return rendered
@@ -325,10 +523,11 @@ class AnimeController:
             self._generation += 1
             self._downloaded = None
             self._draft = None
+            self._offers_running = False
             if self._screen is _Screen.DONE:
                 self._screen = _Screen.RESULTS
             if self._screen is _Screen.BUSY:
-                self._screen = self._work_return()
+                self._screen = self._busy_return
                 self._worker = None
 
     @property
@@ -343,6 +542,8 @@ class AnimeController:
             editor = self._query_input
         elif self._screen is _Screen.RESULTS:
             editor = self._group_input or self._range_input
+        elif self._screen is _Screen.EPISODES:
+            editor = self._range_input
         if editor is None:
             return False
         if self._input_focused and key == "interrupt" and editor.handle(key):
@@ -351,7 +552,7 @@ class AnimeController:
             self._input_focused = False
             return True
         if not self._input_focused:
-            if key == "enter":
+            if key == "enter" or (self._screen is _Screen.QUERY and key == "text:/"):
                 self._input_focused = True
             return key not in {"escape", "interrupt"}
         return editor.handle(key)
@@ -383,7 +584,12 @@ class AnimeController:
             delta: int = -1 if key == "up" else 1
             self._highlighted = (self._highlighted + delta) % len(self._candidates)
         elif key == "enter":
+            self._start_franchise()
+        elif key.casefold() == "text:g":
             self._start_title_search()
+        elif key == "text:/":
+            self._screen = _Screen.QUERY
+            self._input_focused = True
         return AnimeResult.CONTINUE
 
     def _handle_busy(self, key: str) -> AnimeResult:
@@ -391,11 +597,8 @@ class AnimeController:
             return AnimeResult.CONTINUE
         self._generation += 1
         self._worker = None
-        self._screen = self._work_return()
+        self._screen = self._busy_return
         return AnimeResult.CONTINUE
-
-    def _work_return(self) -> _Screen:
-        return _Screen.RESULTS if self._busy in {_SENDING, _RESUMING} else _Screen.QUERY
 
     def _handle_results(self, key: str) -> AnimeResult:
         if self._group_input is not None:
@@ -508,17 +711,275 @@ class AnimeController:
 
     def _handle_problem(self, key: str) -> AnimeResult:
         if key in {"escape", "interrupt"}:
+            if self._problem_return in {_Screen.TITLES, _Screen.ENTRIES, _Screen.EPISODES}:
+                self._screen = self._problem_return
+                return AnimeResult.CONTINUE
             return AnimeResult.HOME
         if key != "enter":
             return AnimeResult.CONTINUE
         if self._resume_available:
-            generation: int = self._start_work(_RESUMING)
+            generation: int = self._start_work(_RESUMING, _Screen.RESULTS)
             self._spawn(self._resume, (generation,))
             return AnimeResult.CONTINUE
         self._screen = self._problem_return
         self._problem = ""
         self._suggestion = ""
         return AnimeResult.CONTINUE
+
+    def _handle_episode_screen(self, key: str) -> None:
+        if self._screen is _Screen.EPISODES and self._range_input is not None:
+            if key in {"escape", "interrupt"}:
+                self._range = None
+            elif key == "enter":
+                typed: str = self._range_input.text
+                self._range = None
+                self._apply_episode_range(typed)
+            return
+        self._notice = ""
+        if key in {"escape", "interrupt"}:
+            self._back_episode_screen()
+            return
+        count: int = self._episode_screen_count()
+        if not count:
+            return
+        if key in {"up", "down", "home", "end", "pageup", "pagedown"}:
+            self._navigate_episode_screen(key, count)
+            return
+        if self._screen is _Screen.ENTRIES and key == "enter":
+            self._start_episodes()
+        elif self._screen is _Screen.EPISODES:
+            self._episode_key(key)
+        elif self._screen is _Screen.OFFER and key in {"enter", "text:i", "text:I"}:
+            self._open_candidates()
+
+    def _episode_screen_count(self) -> int:
+        if self._screen is _Screen.ENTRIES:
+            return len(self._franchise.entries) if self._franchise else 0
+        if self._screen is _Screen.EPISODES:
+            return len(self._listing.episodes) if self._listing and self._listing.kitsu_id is not None else 0
+        if self._screen is _Screen.OFFER:
+            return len(self._offer_numbers)
+        return len(self._release_candidates)
+
+    def _navigate_episode_screen(self, key: str, count: int) -> None:
+        position: int = self._positions.get(self._screen, 0)
+        if key in {"home", "end"}:
+            position = 0 if key == "home" else count - 1
+        elif key in {"pageup", "pagedown"}:
+            position = min(max(position + (-1 if key == "pageup" else 1) * self._visible_count, 0), count - 1)
+        else:
+            position = (position + (-1 if key == "up" else 1)) % count
+        self._positions[self._screen] = position
+        self._follow_cursor = True
+
+    def _back_episode_screen(self) -> None:
+        if self._screen is _Screen.CANDIDATES:
+            self._screen = _Screen.OFFER
+        elif self._screen is _Screen.OFFER:
+            self._generation += 1
+            self._worker = None
+            self._offers_running = False
+            self._screen = _Screen.EPISODES
+        elif self._screen is _Screen.EPISODES:
+            self._screen = _Screen.ENTRIES
+        else:
+            self._screen = _Screen.TITLES
+
+    def _episode_key(self, key: str) -> None:
+        listing: EpisodeListing | None = self._listing
+        if listing is None:
+            return
+        episode: ListedEpisode = listing.episodes[self._positions.get(_Screen.EPISODES, 0)]
+        if key in {"space", "enter"}:
+            if not self._aired(episode):
+                self._notice = f"E{episode.number} jeszcze nie wyemitowano"
+            elif episode.number in self._episode_marks:
+                self._episode_marks.remove(episode.number)
+            else:
+                self._episode_marks.add(episode.number)
+        elif key.casefold() == "text:a":
+            self._episode_marks = {item.number for item in listing.episodes if self._aired(item)}
+        elif key.casefold() == "text:z":
+            self._range = ""
+        elif key.casefold() == "text:d":
+            self._start_offers(episode)
+
+    def _aired(self, episode: ListedEpisode) -> bool:
+        listing: EpisodeListing | None = self._listing
+        if listing is None:
+            return False
+        return (
+            listing.status in {"RELEASING", "FINISHED"}
+            and listing.aired is not None
+            and episode.number <= listing.aired
+        )
+
+    def _apply_episode_range(self, typed: str) -> None:
+        if self._listing is None:
+            return
+        available: dict[int, ListedEpisode] = {item.number: item for item in self._listing.episodes}
+        numbers, problem = _episode_range(typed, available)
+        if problem:
+            self._notice = problem
+            return
+        self._episode_marks = {number for number in numbers if self._aired(available[number])}
+        if len(self._episode_marks) != len(numbers):
+            self._notice = "Pominięto niewyemitowane odcinki"
+
+    def _start_franchise(self) -> None:
+        candidate: TitleCandidate = self._candidates[self._highlighted]
+        if self._franchise is not None and self._franchise.selected_id == candidate.anilist_id:
+            self._screen = _Screen.ENTRIES
+            return
+        self._franchise = None
+        self._entry = None
+        self._listing = None
+        self._episode_marks.clear()
+        self._offers.clear()
+        generation: int = self._start_work("Wczytuję wpisy…", _Screen.TITLES)
+        self._spawn(self._load_franchise, (candidate.anilist_id, generation))
+
+    def _load_franchise(self, anilist_id: int, generation: int) -> None:
+        if self._acquisition is None:
+            return
+        try:
+            franchise: Franchise = self._acquisition.franchise(anilist_id)
+        except Exception as problem:  # noqa: BLE001 - the UI worker reports a failed command without a partial view
+            self._catalog_failure(generation, problem, _Screen.TITLES, "anilist")
+            return
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._franchise = franchise
+            self._positions[_Screen.ENTRIES] = next(
+                (index for index, entry in enumerate(franchise.entries) if entry.anilist_id == franchise.selected_id), 0
+            )
+            self._offsets[_Screen.ENTRIES] = 0
+            self._follow_cursor = True
+            self._screen = _Screen.ENTRIES
+            self._worker = None
+        self._invalidate()
+
+    def _start_episodes(self) -> None:
+        if self._franchise is None:
+            return
+        entry: FranchiseEntry = self._franchise.entries[self._positions.get(_Screen.ENTRIES, 0)]
+        same: bool = self._entry == entry and self._listing is not None
+        if same and self._listing is not None and not self._listing.schedule_warning:
+            self._screen = _Screen.EPISODES
+            return
+        self._entry = entry
+        if not same:
+            self._listing = None
+            self._episode_marks.clear()
+            self._positions[_Screen.EPISODES] = 0
+            self._offsets[_Screen.EPISODES] = 0
+        generation: int = self._start_work("Wczytuję odcinki…", _Screen.ENTRIES)
+        self._spawn(self._load_episodes, (entry, generation))
+
+    def _load_episodes(self, entry: FranchiseEntry, generation: int) -> None:
+        if self._acquisition is None:
+            return
+        try:
+            listing: EpisodeListing = self._acquisition.episodes(entry.anilist_id)
+        except Exception as problem:  # noqa: BLE001 - the UI worker reports a failed command without a partial view
+            self._catalog_failure(generation, problem, _Screen.ENTRIES, "anizip")
+            return
+        with self._lock:
+            if generation != self._generation:
+                return
+            if entry.format == "MOVIE":
+                film: ListedEpisode = next((item for item in listing.episodes if item.number == 1), ListedEpisode(1))
+                listing = replace(listing, episodes=(film,))
+            self._listing = listing
+            self._episode_marks.intersection_update(item.number for item in listing.episodes)
+            self._positions[_Screen.EPISODES] = min(
+                self._positions.get(_Screen.EPISODES, 0), max(len(listing.episodes) - 1, 0)
+            )
+            self._follow_cursor = True
+            self._screen = _Screen.EPISODES
+            self._worker = None
+        self._invalidate()
+
+    def _start_offers(self, highlighted: ListedEpisode) -> None:
+        if self._listing is None or self._listing.kitsu_id is None:
+            self._notice = "Brak mapowania"
+            return
+        selected: set[int] = self._episode_marks or {highlighted.number}
+        numbers: tuple[int, ...] = tuple(
+            item.number for item in self._listing.episodes if item.number in selected and self._aired(item)
+        )
+        if not numbers:
+            self._notice = f"E{highlighted.number} jeszcze nie wyemitowano"
+            return
+        generation: int = self._start_work("Szukam…", _Screen.EPISODES)
+        self._screen = _Screen.OFFER
+        self._offers_running = True
+        self._offers.clear()
+        self._offer_numbers = numbers
+        self._positions[_Screen.OFFER] = 0
+        self._offsets[_Screen.OFFER] = 0
+        self._follow_cursor = True
+        self._spawn(self._load_offers, (self._listing.anilist_id, numbers, generation))
+
+    def _load_offers(self, anilist_id: int, numbers: tuple[int, ...], generation: int) -> None:
+        if self._acquisition is None:
+            return
+        for number in numbers:
+            if not self._offer_pending(generation):
+                return
+            try:
+                offer: EpisodeOffer = self._acquisition.offer(EpisodeKey(anilist_id, number))
+            except Exception as problem:  # noqa: BLE001 - defects fail the whole offer instead of inventing a verdict
+                self._catalog_failure(generation, problem, _Screen.EPISODES, "torrentio")
+                return
+            if not self._receive_offer(generation, number, offer):
+                return
+            self._invalidate()
+        with self._lock:
+            if generation == self._generation:
+                self._worker = None
+                self._offers_running = False
+        self._invalidate()
+
+    def _offer_pending(self, generation: int) -> bool:
+        with self._lock:
+            return generation == self._generation
+
+    def _receive_offer(self, generation: int, number: int, offer: EpisodeOffer) -> bool:
+        with self._lock:
+            if generation != self._generation:
+                return False
+            self._offers[number] = offer
+            return True
+
+    def _catalog_failure(self, generation: int, problem: Exception, back: _Screen, provider: str) -> None:
+        logger.warning("Anime catalogue command failed", error_class=type(problem).__name__)
+        if isinstance(problem, (AniShiftError, OSError)):
+            self._report(generation, problem, back, provider=provider, catalog_command=True)
+            return
+        self._fail(generation, _COMMAND_FAILED, "", back)
+
+    def _open_candidates(self) -> None:
+        offer: EpisodeOffer | None = self._highlighted_offer()
+        if offer is None:
+            return
+        high: bool = any(
+            item.identity.verdict is IdentityVerdict.MATCH and item.facts.resolution in {1080, 2160}
+            for item in offer.candidates
+        )
+        self._release_candidates = tuple(
+            item for item in offer.candidates if not high or item.facts.resolution in {1080, 2160, None}
+        )
+        self._positions[_Screen.CANDIDATES] = 0
+        self._offsets[_Screen.CANDIDATES] = 0
+        self._follow_cursor = True
+        self._screen = _Screen.CANDIDATES
+
+    def _highlighted_offer(self) -> EpisodeOffer | None:
+        if not self._offer_numbers:
+            return None
+        return self._offers.get(self._offer_numbers[self._positions.get(_Screen.OFFER, 0)])
 
     def _move(self, delta: int) -> None:
         position: int = self._choices.index(self._selected) if self._selected in self._choices else 0
@@ -626,9 +1087,14 @@ class AnimeController:
         self._marked.clear()
         self._opened_group = None
         self._context = None
+        self._franchise = None
+        self._entry = None
+        self._listing = None
+        self._offers.clear()
+        self._episode_marks.clear()
         query: SearchQuery = parse_query(text)
         self._episodes = query.episodes
-        generation: int = self._start_work(_SEARCHING_TITLE)
+        generation: int = self._start_work(_SEARCHING_TITLE, _Screen.QUERY)
         self._spawn(self._find_titles, (query.title, text, generation))
 
     def _start_title_search(self) -> None:
@@ -642,14 +1108,14 @@ class AnimeController:
         self._choices = ()
         self._marked.clear()
         self._opened_group = None
-        generation: int = self._start_work(_SEARCHING_RELEASES)
+        generation: int = self._start_work(_SEARCHING_RELEASES, _Screen.TITLES)
         self._spawn(self._search_title, (candidate, self._episodes, self._order, generation))
 
     def _start_unfiltered_search(self) -> None:
         candidate: TitleCandidate | None = self._candidate
         if candidate is None:
             return
-        generation: int = self._start_work(_SEARCHING_RELEASES)
+        generation: int = self._start_work(_SEARCHING_RELEASES, _Screen.QUERY)
         listing: _Listing = _Listing(self._order, context=self._context, fallback=self._fallback)
         self._spawn(self._search_releases, (candidate, listing, generation))
 
@@ -664,7 +1130,7 @@ class AnimeController:
         if not chosen:
             self._notice = "Zaznacz co najmniej jedno wydanie"
             return
-        generation: int = self._start_work(_SENDING)
+        generation: int = self._start_work(_SENDING, _Screen.RESULTS)
         self._spawn(self._download, (chosen, generation))
 
     def _start_subscription(self) -> None:
@@ -704,11 +1170,14 @@ class AnimeController:
         group: SeriesGroup = self._groups[self._rows[self._selected].group]
         return f"{group.series} {group.group}"
 
-    def _start_work(self, sentence: str) -> int:
+    def _start_work(self, sentence: str, back: _Screen) -> int:
         self._input_focused = False
         self._generation += 1
         self._downloaded = None
         self._resume_available = False
+        self._problem_provider = ""
+        self._offers_running = False
+        self._busy_return = back
         self._screen = _Screen.BUSY
         self._busy = sentence
         return self._generation
@@ -727,12 +1196,14 @@ class AnimeController:
             candidates: tuple[TitleCandidate, ...] = acquisition.find_titles(title)
         except (AniShiftError, OSError) as problem:
             logger.warning("Anime title lookup failed", error_class=type(problem).__name__)
-            if _code(problem) is not ErrorCode.TITLE_CATALOG_FAILED:
-                self._report(generation, problem, _Screen.QUERY)
-                return
-            self._search(text, _CATALOG_DOWN, generation)
+            self._report(generation, problem, _Screen.QUERY, provider="anilist")
             return
         if not candidates:
+            with self._lock:
+                if generation != self._generation:
+                    return
+                self._busy = "Brak tytułu w AniList, szukam wydań na Nyaa"
+            self._invalidate()
             self._search(text, _NO_TITLE, generation)
             return
         self._show_titles(generation, candidates)
@@ -746,7 +1217,7 @@ class AnimeController:
             catalog: ReleaseCatalog = acquisition.search(query)
         except (AniShiftError, OSError) as problem:
             logger.warning("Anime search failed", error_class=type(problem).__name__)
-            self._report(generation, problem, _Screen.QUERY)
+            self._report(generation, problem, _Screen.QUERY, provider="nyaa")
             return
         self._show_results(generation, catalog, _Listing(CatalogOrder.SEEDERS, fallback=fallback))
 
@@ -781,7 +1252,7 @@ class AnimeController:
             )
         except (AniShiftError, OSError) as problem:
             logger.warning("Anime title search failed", error_class=type(problem).__name__)
-            self._report(generation, problem, _Screen.QUERY)
+            self._report(generation, problem, _Screen.QUERY, provider="nyaa")
             return
         self._show_results(generation, catalog, listing)
 
@@ -833,7 +1304,12 @@ class AnimeController:
             if generation != self._generation:
                 return
             self._worker = None
-            self._candidates = candidates
+            self._candidates = tuple(
+                sorted(
+                    natsorted(candidates, key=lambda item: (item.english or item.romaji).casefold()),
+                    key=lambda item: -(item.year or 0),
+                )
+            )
             self._highlighted = 0
             self._screen = _Screen.TITLES
         self._invalidate()
@@ -872,24 +1348,72 @@ class AnimeController:
             self._screen = _Screen.DONE
         self._invalidate()
 
-    def _report(
-        self, generation: int, problem: AniShiftError | OSError | ValueError, back: _Screen, *, resume: bool = False
+    def _report(  # noqa: PLR0913
+        self,
+        generation: int,
+        problem: AniShiftError | OSError | ValueError,
+        back: _Screen,
+        *,
+        resume: bool = False,
+        provider: str = "",
+        catalog_command: bool = False,
     ) -> None:
         """State one failure of this screen in Polish and return the user to *back*."""
         sentence, hint = _stated(problem)
+        code: ErrorCode | None = _code(problem)
+        provider = (
+            {
+                ErrorCode.TITLE_CATALOG_FAILED: "anilist",
+                ErrorCode.EPISODE_CATALOG_FAILED: "anizip",
+            }.get(code, provider)
+            if code is not None
+            else provider
+        )
+        if (
+            catalog_command
+            and isinstance(problem, ControlError)
+            and (problem.code is ControlErrorCode.INTERNAL and problem.reason == "command_failed")
+        ):
+            sentence, hint = _COMMAND_FAILED, ""
+        if code not in {
+            ErrorCode.TITLE_CATALOG_FAILED,
+            ErrorCode.EPISODE_CATALOG_FAILED,
+            ErrorCode.TORRENT_SOURCE_FAILED,
+        }:
+            provider = ""
+        deadline: float = 0.0
+        if provider and isinstance(self._acquisition, AcquisitionService):
+            deadline = self._acquisition.blocked_until((provider,))
         resume = resume or (
             self._resident is not None
             and back is _Screen.RESULTS
             and isinstance(problem, ControlError)
             and problem.reason == RefusalReason.PAUSED.value
         )
-        self._fail(generation, sentence, hint, back, resume=resume)
+        self._fail(generation, sentence, hint, back, resume=resume, provider=provider, deadline=deadline)
 
-    def _fail(self, generation: int, sentence: str, suggestion: str, back: _Screen, *, resume: bool = False) -> None:
+    def _fail(  # noqa: PLR0913
+        self,
+        generation: int,
+        sentence: str,
+        suggestion: str,
+        back: _Screen,
+        *,
+        resume: bool = False,
+        provider: str = "",
+        deadline: float = 0.0,
+    ) -> None:
         with self._lock:
             if generation != self._generation:
                 return
             self._worker = None
+            self._offers_running = False
+            if back is _Screen.EPISODES:
+                self._offers.clear()
+                self._release_candidates = ()
+            self._problem_provider = provider
+            if deadline:
+                self._provider_locks[provider] = deadline
             self._problem = sentence
             self._suggestion = suggestion
             self._problem_return = back
@@ -920,6 +1444,179 @@ class AnimeController:
             content.append(f"{_POINTER} " if index == self._highlighted else "  ", style=style)
             content.append(f"{labels[index]}\n", style=style)
         return _finish(content, _TITLES_HINT, columns, rows)
+
+    def _episode_view(
+        self,
+        columns: int,
+        rows: int,
+        heading: str,
+        lines: Sequence[tuple[str, int | None]],
+        footer: Sequence[str | Text],
+    ) -> Text:
+        width: int = max(columns - 2, 1)
+        hints: list[Text] = [
+            Text(line, style="gray") if isinstance(hint, str) else hint.copy()
+            for hint in footer
+            for line in (_wrapped_hint(hint, width) if isinstance(hint, str) else (hint.plain,))
+        ]
+        budget: int = rows - len(hints) - 3
+        if budget < 1:
+            return with_footer(Text("Powiększ terminal"), ("Esc wróć · Tab widok",), columns, rows)
+        selected: int = self._positions.get(self._screen, 0)
+        cursor: int = next((index for index, (_, position) in enumerate(lines) if position == selected), 0)
+        start: int = min(self._offsets.get(self._screen, 0), max(len(lines) - budget, 0))
+        if self._follow_cursor:
+            start = min(start, cursor)
+            start = max(start, cursor - budget + 1)
+        self._offsets[self._screen] = start
+        self._visible_count = budget
+        content: Text = Text(_fit_text(heading, width) + "\n\n", style="white_bold")
+        for label, position in lines[start : start + budget]:
+            active: bool = position is not None and position == selected
+            content.append(
+                _fit_text((f"{_POINTER} " if active else "  ") + label, width) + "\n",
+                style="brand_accent" if active else "white_bold",
+            )
+        return with_footer(content, hints, columns, rows)
+
+    def _render_entries(self, columns: int, rows: int) -> Text:
+        franchise: Franchise | None = self._franchise
+        widths: tuple[int, ...] = (4, max(columns - 36, 1), 5, 17)
+        lines: list[tuple[str, int | None]] = [(_columns(("Rok", "Tytuł", "Typ", "Status"), widths), None)]
+        previous: EntryGroup | None = None
+        for index, entry in enumerate(franchise.entries if franchise else ()):
+            if previous != entry.group:
+                lines.append((_ENTRY_GROUPS[entry.group], None))
+                previous = entry.group
+            lines.append(
+                (
+                    _columns(
+                        (
+                            str(entry.year or "—"),
+                            _safe(entry.english or entry.romaji),
+                            _format_label(entry.format),
+                            _ENTRY_STATUSES.get(entry.status, "—"),
+                        ),
+                        widths,
+                    ),
+                    index,
+                )
+            )
+        if franchise is not None and not franchise.complete:
+            lines.append(("Lista niepełna — pokazano najbliższe powiązania", None))
+        title: str = _safe(self._candidates[self._highlighted].english or self._candidates[self._highlighted].romaji)
+        return self._episode_view(columns, rows, f"Anime \u203a {title}", lines, ("Enter odcinki · Esc tytuły",))
+
+    def _retry_hint(self, provider: str, fallback: float = 0.0) -> str:
+        deadline: float = self._provider_locks.get(provider, fallback)
+        if not deadline:
+            return ""
+        remaining: int = max(ceil(deadline - self._clock()), 0)
+        return f"spróbuj za {remaining} s" if remaining else "Możesz spróbować ponownie"
+
+    def _render_episodes(self, columns: int, rows: int) -> Text:
+        listing: EpisodeListing | None = self._listing
+        lines: list[tuple[str, int | None]] = []
+        if listing is None or listing.kitsu_id is None:
+            lines.append(("Brak mapowania odcinków dla tego wpisu", None))
+            return self._episode_view(columns, rows, self._entry_heading(), lines, ("Esc wróć",))
+        film: bool = self._entry is not None and self._entry.format == "MOVIE"
+        if film:
+            lines.append(("Pobieranie filmów zależy od pomiaru E1", None))
+        lines.append(("Zaznaczone: " + (", ".join(map(str, sorted(self._episode_marks))) or "—"), None))
+        date_width: int = (22 if listing.schedule_warning else 11) if columns >= _DATE_COLUMNS else 0
+        widths: tuple[int, ...] = (3, 4, max(columns - 34 - date_width, 1), date_width, 15)
+        lines.append((_columns(("", "Nr", "Tytuł", "Emisja", "Stan"), widths), None))
+        for index, episode in enumerate(listing.episodes):
+            state: str = "Nie zamówiono" if self._aired(episode) else "Nie wyemitowano"
+            number: str = "Film" if film else str(episode.number)
+            marker: str = "[x]" if episode.number in self._episode_marks else "[ ]"
+            date: str = episode.airs_at.astimezone().strftime("%d.%m %H:%M") if episode.airs_at else "—"
+            if listing.schedule_warning and episode.airs_at:
+                date += " (ani.zip)"
+            lines.append((_columns((marker, number, _safe(episode.title or "—"), date, state), widths), index))
+        if listing.specials:
+            lines.append(("DODATKI (informacja)", None))
+            lines.extend(
+                (f"{item.key}  {_safe(item.title or '—')}  {item.airs_on or '—'}", None) for item in listing.specials
+            )
+        footer: list[str | Text] = []
+        if listing.schedule_warning:
+            fallback: float = listing.schedule_retry_at.timestamp() if listing.schedule_retry_at else 0.0
+            retry: str = self._retry_hint("anilist", fallback)
+            if not retry or retry == "Możesz spróbować ponownie":
+                retry = "Możesz spróbować ponownie — wróć do wpisów i otwórz wpis"
+            footer.extend(("Terminy emisji niedostępne (AniList)", retry))
+        if self._notice:
+            footer.append(self._notice)
+        if self._range_input is not None:
+            prompt: Text = Text("Zakres: ", style="gray")
+            prompt.append_text(self._range_input.render(max(columns - 10, 1), focused=self._input_focused))
+            footer.extend((prompt, "1,3,9-12 albo 5- · Enter zatwierdź · Esc zakończ"))
+        else:
+            footer.append("Space zaznacz · A wyemitowane · Z zakres · D podgląd · Esc wpisy")
+        return self._episode_view(columns, rows, self._entry_heading(), lines, footer)
+
+    def _entry_heading(self) -> str:
+        entry: FranchiseEntry | None = self._entry
+        return (
+            "Anime" if entry is None else f"Anime \u203a {_safe(entry.english or entry.romaji)} ({entry.year or '—'})"
+        )
+
+    def _render_offers(self, columns: int, rows: int) -> Text:
+        widths: tuple[int, ...] = _release_widths(columns - 10)
+        lines: list[tuple[str, int | None]] = [
+            ("Odc   " + _columns(("Sugerowane wydanie", "Obraz", "Język", "Seedy", "Rozm"), widths), None)
+        ]
+        for index, number in enumerate(self._offer_numbers):
+            offer: EpisodeOffer | None = self._offers.get(number)
+            if offer is None:
+                label: str = "Szukam…" if self._offers_running else "Przerwano wyszukiwanie"
+            elif offer.suggestion is None:
+                label = _empty_offer(offer)
+            else:
+                item: RankedCandidate = offer.candidates[offer.suggestion]
+                label = _stream_row(item, widths, uncertain=True)
+            lines.append((f"E{number:<3}  {label}", index))
+        highlighted: EpisodeOffer | None = self._highlighted_offer()
+        reason: str = _offer_reason(highlighted) if highlighted else ""
+        return self._episode_view(
+            columns,
+            rows,
+            self._entry_heading() + " \u203a Podgląd",
+            lines,
+            (reason, "↑↓ wybierz · Enter/I inne wydania · Esc odcinki"),
+        )
+
+    def _render_candidates(self, columns: int, rows: int) -> Text:
+        widths: tuple[int, ...] = _release_widths(
+            columns - 16, unsupported=any(item.facts.supported is False for item in self._release_candidates)
+        )
+        lines: list[tuple[str, int | None]] = [
+            ("Tożsamość   " + _columns(("Wydanie", "Obraz", "Język", "Seedy", "Rozm"), widths), None)
+        ]
+        lines.extend(
+            (f"{_VERDICT_LABELS[item.identity.verdict]:10}  {_stream_row(item, widths)}", index)
+            for index, item in enumerate(self._release_candidates)
+        )
+        footer: list[str | Text] = []
+        if self._release_candidates:
+            selected: RankedCandidate = self._release_candidates[self._positions.get(_Screen.CANDIDATES, 0)]
+            reason: str = _REASON_TEXTS.get(selected.identity.reason, _identity_fallback(selected.identity.verdict))
+            width: int = max(columns - 2, 1)
+            console: Console = Console(width=width)
+            footer.extend(
+                line
+                for detail in ("Powód: " + reason, _candidate_details(selected))
+                for line in Text(detail, style="gray").wrap(console, width)
+            )
+        else:
+            offer: EpisodeOffer | None = self._highlighted_offer()
+            lines.append((_empty_offer(offer) if offer else "Brak kandydatów", None))
+        footer.append("Esc podgląd")
+        number: int = self._offer_numbers[self._positions.get(_Screen.OFFER, 0)]
+        title: str = _safe(self._entry.english or self._entry.romaji) if self._entry else "—"
+        return self._episode_view(columns, rows, f"Inne wydania \u203a {title} \u203a E{number}", lines, footer)
 
     def _render_busy(self, columns: int, rows: int) -> Text:
         content: Text = _header(_TITLE, columns, rows, 2)
@@ -1029,8 +1726,13 @@ class AnimeController:
         return _finish(content, _DONE_HINT, columns, rows)
 
     def _render_problem(self, columns: int, rows: int) -> Text:
+        hint: str = self._retry_hint(self._problem_provider) or self._suggestion
+        console: Console = Console(width=max(columns - 4, 1))
         lines: tuple[str, ...] = tuple(
-            _truncate_right(line, max(columns - 4, 1)) for line in (self._problem, self._suggestion) if line
+            wrapped.plain
+            for line in (self._problem, hint)
+            if line
+            for wrapped in Text(line).wrap(console, max(columns - 4, 1))
         )
         content: Text = _header(_TITLE, columns, rows, len(lines))
         left: int = max((columns - min(max((len(line) for line in lines), default=1), columns)) // 2, 0)
@@ -1169,12 +1871,9 @@ def _episode_number(episode: Decimal) -> str:
 def _candidate_label(candidate: TitleCandidate) -> str:
     """Describe one title candidate the way the chooser lists it."""
     facts: tuple[str, ...] = (
-        _safe(candidate.romaji),
-        str(candidate.year) if candidate.year else "",
-        _safe(candidate.format or ""),
-        f"{candidate.episodes} odc." if candidate.episodes else "",
-        _status_label(candidate.status),
-        _english_title(candidate),
+        str(candidate.year) if candidate.year else "—",
+        _safe(candidate.english or candidate.romaji),
+        _format_label(candidate.format),
     )
     return _HINT_SEPARATOR.join(fact for fact in facts if fact)
 
@@ -1251,13 +1950,13 @@ def _wrapped_hint(hint: str, width: int) -> tuple[str, ...]:
     current: str = ""
     for part in hint.split(_HINT_SEPARATOR):
         candidate: str = f"{current}{_HINT_SEPARATOR}{part}" if current else part
-        if current and len(candidate) > width:
+        if current and Text(candidate).cell_len > width:
             lines.append(current)
             current = part
             continue
         current = candidate
     lines.append(current)
-    return tuple(_truncate_right(line, width) for line in lines)
+    return tuple(_fit_text(line, width) for line in lines)
 
 
 def _visible_window(count: int, selected: int, rows: int, reserved: int = _HEADER_ROWS) -> tuple[int, int]:
@@ -1276,12 +1975,14 @@ def _truncate_right(value: str, width: int) -> str:
     return f"{value[: width - 1]}…"
 
 
-def _stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:
+def _stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:  # noqa: PLR0911
     """Translate domain codes preserved locally or carried by a resident refusal."""
     from anishift.cli.interactive.state import refusal_text  # noqa: PLC0415
 
     if not isinstance(problem, AniShiftError):
         return refusal_text(problem), ""
+    if isinstance(problem, ControlError) and problem.reason == "response_too_large":
+        return "Odpowiedź rezydenta jest za duża", ""
     if isinstance(problem, ControlError) and problem.reason == "download_recorded":
         counts: dict[str, int] | None = _download_counts(problem)
         if counts is None:
@@ -1325,3 +2026,121 @@ def _code(problem: AniShiftError | OSError | ValueError) -> ErrorCode | None:
 
 def _safe(value: str) -> str:
     return (sanitize_event_message(value) or "").rstrip(".")
+
+
+def _deadline(value: str) -> float | None:
+    try:
+        parsed: datetime = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.timestamp() if parsed.tzinfo is not None else None
+
+
+def _fit_text(value: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    text: Text = Text(value)
+    text.truncate(width, overflow="ellipsis")
+    return text.plain
+
+
+def _format_label(value: str | None) -> str:
+    return "Film" if value == "MOVIE" else value or "—"
+
+
+def _episode_range(typed: str, available: Mapping[int, ListedEpisode]) -> tuple[set[int], str]:
+    selected: set[int] = set()
+    for part in typed.split(","):
+        match: re.Match[str] | None = re.fullmatch(r"\s*([0-9]{1,6})(?:-([0-9]{0,6}))?\s*", part)
+        if match is None:
+            return set(), "Zakres: podaj 1,3,9-12 albo 5-"
+        first: int = int(match[1])
+        last: int = first if match[2] is None else int(match[2]) if match[2] else max(available, default=0)
+        if last < first:
+            return set(), "Zakres: początek musi poprzedzać koniec"
+        missing: int | None = next((number for number in range(first, last + 1) if number not in available), None)
+        if missing is not None:
+            return set(), f"Brak odcinka {missing} w tym wpisie"
+        selected.update(range(first, last + 1))
+    return selected, ""
+
+
+def _language(item: RankedCandidate) -> str:
+    return (
+        " · ".join(
+            label for label, present in (("PL", item.facts.polish), ("MultiSub", item.facts.multisub)) if present
+        )
+        or "—"
+    )
+
+
+def _columns(values: Sequence[str], widths: Sequence[int]) -> str:
+    return "  ".join(
+        _fit_text(value, width) + " " * max(width - Text(_fit_text(value, width)).cell_len, 0)
+        for value, width in zip(values, widths, strict=True)
+        if width > 0
+    ).rstrip()
+
+
+def _release_widths(width: int, *, unsupported: bool = False) -> tuple[int, ...]:
+    image: int = 13 if unsupported else 5
+    seeds: int = 5 if width >= _SEED_COLUMNS else 0
+    size: int = 7 if width >= _SIZE_COLUMNS else 0
+    language: int = 13
+    gaps: int = 4 + 2 * bool(seeds) + 2 * bool(size)
+    return max(width - image - language - seeds - size - gaps, 1), image, language, seeds, size
+
+
+def _stream_row(item: RankedCandidate, widths: tuple[int, ...], *, uncertain: bool = False) -> str:
+    image: str = f"{item.facts.resolution}p" if item.facts.resolution else "?"
+    if item.facts.supported is False:
+        image += f" ({item.facts.container})"
+    suffix: str = " (niepewne wydanie)" if uncertain and item.identity.verdict is IdentityVerdict.INSUFFICIENT else ""
+    title: str = _fit_text(_safe(item.stream.release), max(widths[0] - Text(suffix).cell_len, 1)) + suffix
+    return _columns(
+        (
+            title,
+            image,
+            _language(item),
+            str(item.stream.seeders) if item.stream.seeders is not None else "?",
+            _safe(item.stream.size_text or "?"),
+        ),
+        widths,
+    )
+
+
+def _empty_offer(offer: EpisodeOffer) -> str:
+    checked: str = offer.checked_at.astimezone().strftime("%H:%M")
+    if not offer.candidates:
+        return f"Brak kandydatów w źródle (sprawdzono {checked})"
+    return f"Brak wydania E{offer.key.number} (sprawdzono {checked}; niezgodnych: {offer.counts.get('mismatch', 0)})"
+
+
+def _offer_reason(offer: EpisodeOffer) -> str:
+    if offer.suggestion is None:
+        return ""
+    item: RankedCandidate = offer.candidates[offer.suggestion]
+    group: str = _safe(parse_release_name(item.stream.release).group or "—")
+    if item.identity.verdict is IdentityVerdict.INSUFFICIENT:
+        return f"Niepewne wydanie E{offer.key.number}: może nie być tym odcinkiem · grupa: {group}"
+    image: str = f"{item.facts.resolution}p" if item.facts.resolution else "obraz nieznany"
+    platform: str = f" · {item.facts.platform}" if item.facts.platform else ""
+    return (
+        f"Powód E{offer.key.number}: {image} · {_language(item)}{platform} · grupa: {group}"
+        " · pierwsze zgodne według preferencji"
+    )
+
+
+def _identity_fallback(verdict: IdentityVerdict) -> str:
+    return {
+        IdentityVerdict.MATCH: "Nazwa wskazuje wybrany odcinek.",
+        IdentityVerdict.INSUFFICIENT: "Nie można jednoznacznie ustalić tożsamości odcinka.",
+        IdentityVerdict.MISMATCH: "Nazwa wskazuje inny materiał.",
+    }[verdict]
+
+
+def _candidate_details(item: RankedCandidate) -> str:
+    index: str = str(item.stream.file_index) if item.stream.file_index is not None else "brak"
+    platform: str = item.facts.platform or "—"
+    support: str = " · format nieobsługiwany" if item.facts.supported is False else ""
+    return f"Plik: {_safe(item.stream.file_name or 'brak')} · indeks: {index} · platforma: {platform}{support}"

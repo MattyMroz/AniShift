@@ -495,6 +495,7 @@ class StateController:
         with self._lock:
             self._anime = controller
             controller.refresh_acquisitions(_rows(self._snapshot.get("acquisitions")))
+            controller.refresh_provider_locks(_rows(self._snapshot.get("provider_locks")))
 
     def poll(self) -> None:
         """Consume an initiating Anime completion on the visible panel's event loop."""
@@ -534,6 +535,9 @@ class StateController:
         with self._lock:
             viewport: int = self._viewport()
             if self._tab == _Tab.ANIME:
+                if self._anime is not None:
+                    self._anime.scroll(direction)
+                self._invalidate()
                 return
             self._offsets[viewport] = max(self._offsets.get(viewport, 0) + direction * 3, 0)
             self._follow_cursor[viewport] = False
@@ -926,6 +930,7 @@ class StateController:
                 self._select_library_target(payload)
                 if self._anime is not None:
                     self._anime.refresh_acquisitions(_rows(payload.get("acquisitions")))
+                    self._anime.refresh_provider_locks(_rows(payload.get("provider_locks")))
                 if self._details is previous_details:
                     self._details = details
                     if previous_details is not None and details is None:
@@ -1134,7 +1139,7 @@ class StateController:
                 tabs.append(" · ", style="gray")
             tabs.append(name, style="brand_accent" if self._tab == index else "gray")
         if tabs.cell_len > max(columns - 2, 1):
-            return Text(f"← {_TABS[self._tab]} ({self._tab + 1}/4) →", style="brand_accent")
+            return Text(f"← {_TABS[self._tab]} ({self._tab + 1}/{len(_TABS)}) →", style="brand_accent")
         return tabs
 
     def _view_footer(self) -> list[str | Text]:

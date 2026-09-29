@@ -8,7 +8,8 @@ statusu na polski; te decyzje należą do warstwy aplikacyjnej.
 
 - `types.py` — `TitleCandidate` (frozen, slots) z `aliases()` i `folder_title()`, `TitleStatus`
 - `errors.py` — `TitleCatalogError` (transient)
-- `anilist.py` — `AniListCatalog`: `search` (GraphQL POST) i leniwy `episode_offset`
+- `anilist.py` — `AniListCatalog`: title search, prequels, airing schedules and full franchise graphs
+- `anizip.py` — `AniZipCatalog.mapping` and `parse_mapping`: episode metadata with raw identity fields
 
 ## Inwarianty
 
@@ -21,7 +22,13 @@ statusu na polski; te decyzje należą do warstwy aplikacyjnej.
   casefold-unikalne, w kolejności AniList; `native` jest tylko do wyświetlania.
 - `episode_offset` jest leniwy (osobne zapytania), liczy tylko formaty `TV`/`TV_SHORT`/`ONA`,
   ignoruje cykle, traktuje nieznane `episodes` jako 0 i zatrzymuje się po `MAX_PREQUEL_HOPS` wpisach.
-- Do logów trafia hasło i liczba trafień, nigdy ciało odpowiedzi.
+- `franchise` expands a depth-three graph in at most four requests, retaining nodes outside the
+  displayed entries. `FranchiseGraph` and raw `AniZipMapping` stay inside the service; IPC carries
+  projections. Identity input is built in `application/episode_selection.py`, without H1 evidence.
+- ani.zip 404 means an absent mapping; transport, status and malformed data failures use
+  `EPISODE_CATALOG_FAILED`. Preserve raw episode order and fields, including `S…`; these feed H1.
+  Do not normalize them to fix identity errors: follow `application/AGENTS.md` regression rules.
+- Logs contain counts, operation and timing, never search text or response bodies.
 
 ## Testy
 

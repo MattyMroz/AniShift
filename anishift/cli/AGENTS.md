@@ -152,13 +152,24 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   zewnętrzne przez `AppService`, waliduje przez `plan_manual()` i przekazuje zaakceptowany
   plan do tej samej ścieżki wykonania oraz postępu co Auto.
   `interactive/app.py`, `interactive/settings.py`, `interactive/manual.py`, `run.py`
-- `AnimeController` jest jedynym właścicielem stanu ekranu Anime (QUERY → BUSY → TITLES → BUSY →
-  RESULTS → DONE/PROBLEM); `StateController` osadza go w zakładce Anime i przekazuje klawisze. Sieć
-  (`AppService.acquisition.find_titles`/`season_context`/`search_title`/`search`/`download`) idzie do
-  wątku `anishift-anime`, a licznik generacji odrzuca wynik spóźniony po `Esc`; `render()` nigdy nie
-  blokuje i nie robi I/O.
+- `AnimeController` jest właścicielem stanu Anime. Enter na TITLES otwiera ENTRIES → EPISODES →
+  OFFER → CANDIDATES przez `franchise`/`episodes`/`offer`; ta droga służy wyłącznie do podglądu.
+  `G` otwiera dawną drogę RESULTS z pobieraniem i subskrypcjami. `StateController` przekazuje
+  klawisze i przewijanie. Sieć działa w wątku `anishift-anime`; Esc lub zmiana zakładki unieważnia
+  spóźnione wyniki przez licznik generacji i zatrzymuje kolejne zapytania ofert. `render()` nie robi I/O.
   `_HOME_MENU_ROWS` i `_HOME_CHROME_ROWS` liczą rzeczywiste wiersze menu.
   `interactive/anime.py`, `interactive/state.py`, `interactive/prompts.py`
+- Zakres odcinków zastępuje zaznaczenia i przyjmuje nieciągłe numery całkowite; nawigacja i powroty
+  z podglądu zachowują zaznaczenia oraz kursor. Film ma jeden wiersz Film i `EpisodeKey(id, 1)`;
+  podgląd wymaga mapowania. Enter na kandydacie nic nie robi. `interactive/anime.py`
+- `_REASON_TEXTS` pokrywa dokładnie `episode_identity.REASONS`. Błąd programistyczny oceny tożsamości
+  przerywa cały podgląd, loguje tylko `error_class` i nigdy nie tworzy niepewnej sugestii.
+  Tylko IPC INTERNAL + `command_failed` nowej operacji katalogowej sugeruje restart rezydenta;
+  `response_too_large` jest osobnym problemem. Wejście H1 i reguły regresji: `application/AGENTS.md`.
+- Terminy ponowienia pochodzą z `provider_locks` ownera, przekazywanych przy dołączeniu i zdarzeniu
+  `state_changed`, albo lokalnego `AcquisitionService.blocked_until`. Terminy Nyaa i Torrentio są
+  osobne. Awaria harmonogramu zachowuje listę odcinków i ostrzeżenie; jawne ponowne wejście ponawia
+  odczyt harmonogramu. Renderowanie odliczania nie ponawia zapytań. `interactive/anime.py`, `interactive/state.py`
 - `O` w wynikach Anime przygotowuje draft subskrypcji PODŚWIETLONEGO odcinka, nie zaznaczonych wierszy: paczka, brak numeru
   albo `other_season` daje wyłącznie jednolinijkową notkę zamiast stopki, kasowaną następnym
   klawiszem. Panel otwiera wybór numerów; dopiero Enter przyjmuje zakres przez ownera.
@@ -175,14 +186,14 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   a znaczniki wracają po `info_hash`, nie po numerze wiersza —
   a `F` powtarza `search_title` bez filtra. Nowe pobrania i subskrypcje używają płaskiego
   roota workspace, bez katalogu `candidate.folder_title()`. `interactive/anime.py`
-- Gdy AniList nie odpowiada albo nie zna tytułu, ekran pomija TITLES i pokazuje wyniki surowego
-  hasła z notką w stopce; ta notka jest osobnym polem, bo `_notice` znika po następnym klawiszu.
-  Ta ścieżka wraca posortowana po seedach, więc `_show_results` przyjmuje `_Listing` z faktyczną
-  kolejnością katalogu — podpowiedź `S` kłamałaby, gdyby `_order` został przy `NEWEST`.
-  Nieudany `season_context` nie przerywa wyszukiwania: zostawia w tym samym polu notkę
-  „numeracja sezonu niedostępna", bo bez niej te same wyniki znaczą dwie różne rzeczy.
-  Wysokość listy liczy się PO zmierzeniu stopki (`_visible_window(..., reserved)`): dłuższa stopka
-  zabiera wiersze listy, zamiast wypchnąć klatkę poza ekran. `interactive/anime.py`
+- Tylko poprawny pusty wynik AniList uruchamia wyszukiwanie wpisanego hasła na Nyaa, z trwałą
+  notką w stopce i powrotem przez Esc do QUERY. Awaria AniList, także 429, otwiera PROBLEM bez
+  zapytań Nyaa. Brak mapowania ani.zip również nie uruchamia Nyaa. Notka jest osobna od `_notice`,
+  które znika po następnym klawiszu. Wyniki są sortowane po seedach; `_show_results` otrzymuje
+  `_Listing` z faktyczną kolejnością, aby podpowiedź `S` była zgodna. Błąd `season_context` zachowuje
+  wyszukiwanie z trwałą notką o niedostępnej numeracji. Stopkę mierz przed wyliczeniem wysokości
+  listy przez `_visible_window(..., reserved)`, aby dłuższe podpowiedzi nie wypychały klatki poza ekran.
+  `interactive/anime.py`
 - `SettingsController.render()` korzysta wyłącznie z lokalnego, odświeżonego snapshotu;
   nie wykonuj w nim I/O ani wywołań sieciowych, bo renderer odświeża klatkę cyklicznie.
   Katalog modeli jest tylko do odczytu, a probe działa wyłącznie po jawnej akcji.

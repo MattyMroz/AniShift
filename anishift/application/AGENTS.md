@@ -23,6 +23,19 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 
 ## Inwarianty
 
+- `episode_identity.py` owns frozen H1 classification; `episode_selection.py` owns its pure input
+  builder, franchise/episode projections, release facts and ranking. Production passes only
+  `target` and `candidate`, without evidence, year additions, labels or hashes. Build the target
+  from the full `FranchiseGraph` and raw ani.zip episodes, never from the displayed franchise.
+- H1 changes require a minimal failing case in `tests/fixtures/acquisition/identity-regressions.json`,
+  a cause-specific fix, reason translations, identity/golden tests and a reported parity comparison.
+  Follow `docs/work/acquisition/plans/e1-integracja.md` §10.6; golden updates require independent review.
+  Never convert a programming exception into an uncertain verdict.
+- `AcquisitionService.franchise/episodes/offer` are read-only catalogue operations exposed by owner
+  IPC. Graphs, mappings and schedules stay in service memory; no admission or receipt is created.
+  Schedule failure preserves mapping data with a warning and retry deadline. `offer` uses the
+  remembered graph without expanding an incomplete selected leaf; movies call `movie_streams`
+  with `EpisodeKey(id, 1)`. Suggestions exclude mismatches and known unsupported containers.
 - `AutomationOwner` zapisuje przyjęcie pracy i jest jedynym autorem stanu rezydenta.
   `RunJournal` zapisuje pozostały graf i potwierdzenia publikacji; niepewne operacje zdalne
   po przerwaniu procesu wymagają jawnego wznowienia, bez automatycznego powtarzania opłat.

@@ -504,7 +504,9 @@ def _owner(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("scenario", ["titles", "empty", "catalog_failed", "both_failed", "internal", "planning", "io"])
+@pytest.mark.parametrize(
+    "scenario", ["titles", "empty", "catalog_failed", "source_failed", "internal", "planning", "io"]
+)
 def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0915
     tmp_path: Path, scenario: str
 ) -> None:
@@ -530,18 +532,18 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
             raise OSError("private-provider-payload")
         if request.url.host == "nyaa.si":
             return httpx.Response(
-                503 if scenario == "both_failed" else 200, text=feed, headers={"Content-Type": "application/rss+xml"}
+                503 if scenario == "source_failed" else 200, text=feed, headers={"Content-Type": "application/rss+xml"}
             )
         body: dict[str, object] = {
             "data": {
                 "Page": {
                     "media": []
-                    if scenario == "empty"
+                    if scenario in {"empty", "source_failed"}
                     else [{"id": 1, "title": {"romaji": "Fixture"}, "status": "FINISHED"}]
                 }
             }
         }
-        if scenario in {"catalog_failed", "both_failed"}:
+        if scenario == "catalog_failed":
             body = {"errors": [{"message": "private-provider-payload"}]}
         return httpx.Response(
             200, headers={"Content-Encoding": "gzip"}, stream=httpx.ByteStream(gzip.compress(json.dumps(body).encode()))
@@ -594,11 +596,14 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
             if scenario == "titles":
                 assert "Enter wybierz" in frame
                 assert sent == ["graphql.anilist.co"]
-            elif scenario == "both_failed":
-                assert "Nyaa nie odpowiada" in frame
-                assert sent == ["graphql.anilist.co", "nyaa.si"]
+            elif scenario == "catalog_failed":
+                assert "AniList nie odpowiada" in frame
+                assert sent == ["graphql.anilist.co"]
                 assert "TitleCatalogError" in "".join(captured)
                 assert "TITLE_CATALOG_FAILED" in "".join(captured)
+            elif scenario == "source_failed":
+                assert "Źródło wydań nie odpowiada" in frame
+                assert sent == ["graphql.anilist.co", "graphql.anilist.co", "nyaa.si"]
                 assert "TorrentSourceError" in "".join(captured)
                 assert "TORRENT_SOURCE_FAILED" in "".join(captured)
                 assert "command_id" in "".join(captured)
