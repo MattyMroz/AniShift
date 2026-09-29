@@ -218,8 +218,16 @@ class _PausedClient:
         self.failure: ControlError | None = None
         self.confirmed: bool = True
 
-    def call(self, kind: str, payload: Mapping[str, object], *, instance_id: str | None = None) -> Mapping[str, object]:
+    def call(
+        self,
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        instance_id: str | None = None,
+        command_id: str | None = None,
+    ) -> Mapping[str, object]:
         del instance_id
+        del command_id
         self.calls.append(kind)
         if kind == "acquisition":
             if payload["operation"] == "titles":

@@ -84,6 +84,9 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 - Serwer przypisuje `session_id` połączenia, którego klient nie może podać w JSON. Odpowiedzi
   obsługuje osobny wątek z ograniczoną kolejką, więc wolny podgląd nie blokuje odczytu EOF
   i zwolnienia rezerwacji przez `on_disconnect`. `local_control.py`
+- Episode events coalesce by event type, batch `command_id` and episode key, not the absent run/task IDs.
+  Terminal episode results and batch completion remain recoverable through the batch receipt when an
+  outbox evicts them. `local_control.py`
 - `resident_command()` to `watch_command()` z dopiskiem `resident`, więc obie drogi startu mają
   jedno źródło ścieżki `pythonw.exe`. `autostart.py`
 - `autostart.py` zarządza wyłącznie zadaniem `AniShift Watch`. Rejestruje je z pliku XML

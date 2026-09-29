@@ -787,6 +787,8 @@ def _close_quietly(connection: ChannelConnection) -> None:
 def _event_key(frame: Mapping[str, object]) -> tuple[str, str, str]:
     payload: object = frame.get("payload")
     fields: Mapping[str, object] = payload if isinstance(payload, Mapping) else {}
+    if frame.get("event") in {"episode_searching", "episode_result", "episode_batch"}:
+        return (_key_text(frame.get("event")), _key_text(fields.get("command_id")), str(fields.get("key", "")))
     subject: str = _key_text(fields.get("task_id")) or _key_text(fields.get("group_id"))
     return (_key_text(frame.get("event")), _key_text(fields.get("run_id")), subject)
 

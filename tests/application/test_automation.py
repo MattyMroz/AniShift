@@ -306,6 +306,7 @@ class _Subscriptions:
         self.entries: list[SimpleNamespace] = [
             SimpleNamespace(
                 subscription_id="a",
+                anilist_id=None,
                 series="Series",
                 group="Group",
                 next_episode="3",

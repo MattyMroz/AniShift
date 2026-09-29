@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum, auto
 from functools import partial
+from hashlib import sha256
 from pathlib import Path
 from queue import Empty, SimpleQueue
 from secrets import token_hex
@@ -38,6 +39,7 @@ from anishift.application.control import (
     DeletionRestore,
     DeletionStatus,
     EpisodeAssignment,
+    EpisodeChoice,
     LegacyScope,
     ManualHandledMarker,
     PendingDeletion,
@@ -52,6 +54,7 @@ from anishift.application.control import (
     Reservation,
     RestoreOutcome,
     SourceSelection,
+    TorrentioReference,
     WatchState,
     auto_admissible,
     episode_conflict,
@@ -74,8 +77,25 @@ from anishift.application.control_views import (
     encode_view,
     preview_plan,
 )
-from anishift.application.discovery import ArtifactName, classify_artifact, is_derived_product
-from anishift.application.episode_selection import EpisodeKey
+from anishift.application.discovery import VIDEO_SOURCE_SUFFIXES, ArtifactName, classify_artifact, is_derived_product
+from anishift.application.episode_commands import (
+    EpisodeBatch,
+    EpisodeFile,
+    EpisodeFiles,
+    EpisodeOfferView,
+    EpisodeResult,
+    EpisodeStatus,
+    validate_episode_keys,
+)
+from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_selection import (
+    EpisodeKey,
+    EpisodeListing,
+    EpisodeOffer,
+    RankedCandidate,
+    StreamCandidate,
+    suggestion,
+)
 from anishift.application.events import RunEventKind, failure_code, sanitize_event_message
 from anishift.application.history import HistoryEvent, HistoryJournal, HistoryKind
 from anishift.application.inspection import InspectedWorkspace
@@ -104,6 +124,7 @@ from anishift.application.transfers import (
     file_map_revision,
     flat_layout,
     reserved_stem,
+    video_sidecars,
 )
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
@@ -126,11 +147,9 @@ if TYPE_CHECKING:
     from anishift.application.control import (
         AutomationPolicy,
         CommandOutcome,
-        EpisodeChoice,
         FileReservation,
         SettingsSnapshot,
         SourceFingerprint,
-        TorrentioReference,
     )
     from anishift.application.events import RunEvent
     from anishift.application.inspection import InspectedSourceGroup
@@ -355,12 +374,16 @@ _MUTATING_KINDS: Final[frozenset[str]] = frozenset(
         "download",
         "reacquire",
         "transfer",
+        "episode_file_choose",
     }
 )
 """Commands whose outcome is recorded, so repeating an identifier repeats no effect."""
 
 _SLOW_KINDS: Final[frozenset[str]] = frozenset(
     {
+        "episode_offer",
+        "episode_files",
+        "episode_file_choose",
         "deletion_undo",
         "library_file_open",
         "discover",
@@ -557,6 +580,8 @@ class AutomationOwner:
         self._previews_lock: threading.Lock = threading.Lock()
         self._source_checks: dict[str, EventCancellationToken] = {}
         self._catalog_reads: dict[str, EventCancellationToken] = {}
+        self._episode_offers: dict[str, tuple[EpisodeOfferView, Mapping[str, object]]] = {}
+        self._episode_reads: dict[str, str] = {}
         self._closed_sessions: set[str] = set()
         self._sessions: set[str] = set()
         self._client_sessions: dict[str, str] = {}
@@ -1122,7 +1147,7 @@ class AutomationOwner:
         with self._files_lock:
             return RequestOrigin.USER if self._fresh_sources.intersection(paths) else RequestOrigin.BACKGROUND
 
-    def _dispatch(self, command: _Command) -> None:
+    def _dispatch(self, command: _Command) -> None:  # noqa: PLR0911
         request: ControlRequest = command.request
         if request.kind not in {"status", "shutdown"} and not self._finish_pending_commands():
             command.answer(ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED))
@@ -1131,8 +1156,16 @@ class AutomationOwner:
         if unbound is not None:
             command.answer(unbound)
             return
+        if request.kind in {"episode_download", "episode_choose"}:
+            self._answer(command)
+            return
         receipt: CommandReceipt | None = self._receipt(request)
         if receipt is not None:
+            if request.kind == "episode_file_choose" and receipt.outcome.get("selection") != _episode_command_signature(
+                request
+            ):
+                command.answer(ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused"))
+                return
             if request.kind == "shutdown":
                 self._begin_shutdown()
             command.answer(ControlResponse.succeeded(dict(receipt.outcome)))
@@ -1175,6 +1208,8 @@ class AutomationOwner:
         return None
 
     def _release_session(self, session_id: str) -> None:
+        self._episode_offers.pop(session_id, None)
+        self._episode_reads.pop(session_id, None)
         had_panels: bool = bool(self._panels)
         self._panels.discard(session_id)
         if had_panels and not self._panels:
@@ -1222,7 +1257,7 @@ class AutomationOwner:
             else:
                 command.answer(ControlResponse.refused(ControlErrorCode.INTERNAL, _COMMAND_FAILED, reason))
 
-    def _perform(self, request: ControlRequest) -> ControlResponse:  # noqa: C901, PLR0911, PLR0912
+    def _perform(self, request: ControlRequest) -> ControlResponse:  # noqa: C901, PLR0911, PLR0912, PLR0915
         match request.kind:
             case "history":
                 query: object = request.payload.get("query", "")
@@ -1321,6 +1356,16 @@ class AutomationOwner:
                 return self._acquisition_command(request)
             case "download":
                 return self._download_command(request)
+            case "episode_download":
+                return self._episode_download(request)
+            case "episode_offer":
+                return self._episode_offer(request)
+            case "episode_choose":
+                return self._episode_choose(request)
+            case "episode_states":
+                return self._episode_states(request)
+            case "episode_files" | "episode_file_choose":
+                return self._episode_files_command(request)
             case "transfer":
                 return self._transfer_command(request)
             case kind if kind.startswith("subscription"):
@@ -3254,6 +3299,15 @@ class AutomationOwner:
         episodes: tuple[Decimal, ...] | None = _episode_numbers(request.payload, "episodes")
         if identifier is None or not episodes:
             return _invalid("A repeat needs a known subscription and the episode numbers it orders again")
+        subscription: Subscription = next(item for item in service.list() if item.subscription_id == identifier)
+        if subscription.anilist_id is not None and any(
+            self._admitted_elsewhere(LegacyScope(subscription.anilist_id, _local_number(number))) for number in episodes
+        ):
+            return ControlResponse.refused(
+                ControlErrorCode.REFUSED,
+                "Inspect an episode repeat offer before replacing this order",
+                "episode_repeat_required",
+            )
         wanted: frozenset[Decimal] = frozenset(episodes)
         available: list[Decimal] = sorted(
             {
@@ -3654,7 +3708,514 @@ class AutomationOwner:
         """Record one prepared catalogue episode and its receipt in one save, before any client effect."""
         return self._on_owner(lambda: self._admit_episode(command_id, choice))
 
-    def _admit_episode(self, command_id: str, choice: EpisodeChoice) -> ControlResponse:
+    def _episode_states(self, request: ControlRequest) -> ControlResponse:
+        try:
+            entry: int = decode_view(int, request.payload.get("anilist_id"))
+            numbers: tuple[int, ...] = decode_view(tuple[int, ...], request.payload.get("numbers"))
+            keys: tuple[EpisodeKey, ...] = tuple(EpisodeKey(entry, number) for number in numbers)
+            validate_episode_keys(keys)
+        except ValueError, TypeError:
+            return _invalid("Episode states require 1-100 unique positive numbers of one entry")
+        legacy: tuple[LegacyScope, ...] | None = self._legacy_scopes()
+        if legacy is None:
+            return ControlResponse.refused(ControlErrorCode.REFUSED, _LEGACY_UNREADABLE, "legacy_unreadable")
+        return ControlResponse.succeeded({"items": [encode_view(self._episode_status(key, legacy)) for key in keys]})
+
+    def _episode_files_command(self, request: ControlRequest) -> ControlResponse:
+        receipt: CommandReceipt | None = self._on_owner(lambda: self._receipt(request))
+        if receipt is not None:
+            if receipt.outcome.get("selection") != _episode_command_signature(request):
+                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
+            return ControlResponse.succeeded(dict(receipt.outcome))
+        admission: str | None = _text(request.payload, "admission_id")
+        current: tuple[AcquisitionConfirmation, EpisodeAssignment] | None = self._on_owner(
+            lambda: self._unresolved_episode(admission)
+        )
+        acquisition: AcquisitionService | None = self._service.acquisition
+        if current is None or acquisition is None:
+            return _invalid("An unresolved episode admission is required")
+        transfer, assignment = current
+        files: tuple[TorrentFile, ...] = acquisition.transfer_files(transfer.info_hash)
+        revision: str = file_map_revision(files)
+        if request.kind == "episode_files":
+            view: EpisodeFiles = EpisodeFiles(
+                assignment.admission_id,
+                revision,
+                tuple(
+                    EpisodeFile(item.index, torrent_relative_path(item.name).as_posix(), item.size)
+                    for item in files
+                    if torrent_relative_path(item.name).suffix.casefold() in VIDEO_SOURCE_SUFFIXES
+                ),
+            )
+            return ControlResponse.succeeded(encode_view(view))
+        try:
+            selected: EpisodeFile = decode_view(EpisodeFile, request.payload.get("file"))
+        except ValueError, TypeError:
+            return _invalid("A file choice requires an index, relative path and size")
+        return self._on_owner(
+            partial(self._choose_episode_file, request, transfer, assignment, files, revision, selected)
+        )
+
+    def _unresolved_episode(self, admission: str | None) -> tuple[AcquisitionConfirmation, EpisodeAssignment] | None:
+        return next(
+            (
+                (transfer, assignment)
+                for transfer in self._state.acquisitions
+                for assignment in transfer.active_assignments
+                if assignment.admission_id == admission
+                and assignment.mapped
+                and not assignment.files
+                and transfer.state is AcquisitionState.ACCEPTED
+            ),
+            None,
+        )
+
+    def _choose_episode_file(  # noqa: PLR0911, PLR0913
+        self,
+        request: ControlRequest,
+        transfer: AcquisitionConfirmation,
+        assignment: EpisodeAssignment,
+        files: tuple[TorrentFile, ...],
+        revision: str,
+        selected: EpisodeFile,
+    ) -> ControlResponse:
+        receipt: CommandReceipt | None = self._receipt(request)
+        if receipt is not None:
+            if receipt.outcome.get("selection") != _episode_command_signature(request):
+                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
+            return ControlResponse.succeeded(dict(receipt.outcome))
+        if not self._working():
+            return _refuse(RefusalReason.PAUSED)
+        current: AcquisitionConfirmation | None = self._confirmation(transfer.operation_id)
+        if (
+            current is None
+            or current.selection_revision != transfer.selection_revision
+            or assignment not in current.active_assignments
+            or current.state is not AcquisitionState.ACCEPTED
+            or request.payload.get("revision") != revision
+        ):
+            return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _FILE_MAP_CHANGED, "file_map_changed")
+        transfer = current
+        video: TorrentFile | None = next(
+            (
+                item
+                for item in files
+                if (item.index, torrent_relative_path(item.name).as_posix(), item.size)
+                == (selected.index, selected.path, selected.size)
+            ),
+            None,
+        )
+        if video is None or torrent_relative_path(video.name).suffix.casefold() not in VIDEO_SOURCE_SUFFIXES:
+            return _invalid("The selected video is not in the shown file map")
+        reserved: tuple[FileReservation, ...] = tuple(
+            (item.index, torrent_relative_path(item.name).as_posix(), item.size)
+            for item in video_sidecars(files, video)
+        )
+        if any(
+            selected.path == path
+            for other in transfer.assignments
+            if other.admission_id != assignment.admission_id
+            for _index, path, _size in other.files
+        ):
+            return ControlResponse.refused(
+                ControlErrorCode.CONFLICT, "This video was already assigned", "episode_file_taken"
+            )
+        updated: AcquisitionConfirmation = replace(
+            transfer,
+            assignments=tuple(
+                replace(item, files=reserved, file_map=revision)
+                if item.admission_id == assignment.admission_id
+                else item
+                for item in transfer.assignments
+            ),
+            selection_revision=transfer.selection_revision + 1,
+            problem=None,
+            updated_at=self._now(),
+        )
+        outcome: CommandOutcome = {
+            "admission_id": assignment.admission_id,
+            "operation_id": transfer.operation_id,
+            "selection": _episode_command_signature(request),
+        }
+        state: WatchState = replace(
+            self._state, acquisitions=tuple(updated if item is transfer else item for item in self._state.acquisitions)
+        )
+        if not self._save(record_command(state, CommandReceipt(request.command_id, self._now(), outcome))):
+            return ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED)
+        self._transfers_forget(transfer.info_hash)
+        self._schedule_transfers()
+        self._publish_state()
+        return ControlResponse.succeeded(dict(outcome))
+
+    def _episode_status(self, key: EpisodeKey, legacy: tuple[LegacyScope, ...]) -> EpisodeStatus:
+        matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
+        if not matches:
+            conflict: AdmissionConflict | None = episode_conflict(self._state, key.anilist_id, key.number, legacy)
+            return EpisodeStatus(
+                key, "possibly_admitted" if conflict else "not_ordered", conflict.value if conflict else None
+            )
+        transfer: AcquisitionConfirmation
+        assignment: EpisodeAssignment
+        transfer, assignment = matches[-1]
+        state: str = "downloaded" if transfer.state is AcquisitionState.COMPLETE else "ordered"
+        reason: str | None = transfer.problem
+        if not self._replacement_ready(transfer):
+            reason = "waiting_previous_transfer"
+        if assignment.mapped and not assignment.files:
+            reason = "episode_file_unresolved"
+        return EpisodeStatus(
+            key,
+            state,
+            reason,
+            assignment.admission_id,
+            transfer.operation_id,
+            assignment.choice.verdict is not IdentityVerdict.MATCH,
+        )
+
+    def _episode_assignments(self, key: EpisodeKey) -> tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...]:
+        matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = tuple(
+            (transfer, assignment)
+            for transfer in self._state.acquisitions
+            for assignment in transfer.assignments
+            if (assignment.choice.anilist_id, assignment.choice.number) == (key.anilist_id, key.number)
+        )
+        return tuple(sorted(matches, key=lambda item: not item[1].replaced))
+
+    def _episode_conflicts(self, key: EpisodeKey) -> tuple[str, ...]:
+        scopes: tuple[LegacyScope, ...] | None = self._legacy_scopes()
+        if scopes is None:
+            raise ValueError(_LEGACY_UNREADABLE)
+        references: list[str] = [
+            _episode_conflict_reference(item)
+            for item in self._state.acquisitions
+            if item.legacy_scope is not None and item.legacy_scope.covers(key.anilist_id, key.number)
+        ]
+        service: SubscriptionService | None = self._service.subscriptions
+        if service is not None:
+            for subscription in service.list():
+                if subscription.anilist_id != key.anilist_id:
+                    continue
+                numbers: set[str] = set(subscription.taken_episodes)
+                numbers.update(
+                    str(item.number)
+                    for item in subscription.episodes
+                    if item.state in {EpisodeState.ORDERED, EpisodeState.COMPLETE}
+                )
+                references.extend(
+                    f"subscription:{subscription.subscription_id}:{number}"
+                    for number in numbers
+                    if _local_number(number) in {None, key.number}
+                )
+                references.extend(
+                    f"subscription:{subscription.subscription_id}:{item.number}:"
+                    f"{item.info_hash}:{item.acquisition_id}:{item.repeat_id}"
+                    for item in subscription.episodes
+                    if str(item.number) in numbers and _local_number(item.number) in {None, key.number}
+                )
+                references.extend(
+                    _episode_conflict_reference(item)
+                    for item in self._state.acquisitions
+                    if item.subscription_id == subscription.subscription_id
+                    and item.legacy_scope is None
+                    and _local_number(item.episode) in {None, key.number}
+                )
+        return tuple(sorted(set(references)))
+
+    def _episode_offer(self, request: ControlRequest) -> ControlResponse:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        if acquisition is None or request.session_id is None:
+            return _invalid("An episode offer requires an acquisition service and a connected session")
+        generation: str = token_hex(_ID_BYTES)
+        try:
+            key: EpisodeKey = decode_view(EpisodeKey, request.payload.get("key"))
+            validate_episode_keys((key,))
+            prepared: ControlResponse | tuple[str | None, tuple[str, ...]] = self._on_owner(
+                partial(self._begin_episode_offer, request, key, generation)
+            )
+        except ValueError, TypeError:
+            return _invalid("An episode offer requires a valid key and readable conflict")
+        if isinstance(prepared, ControlResponse):
+            return prepared
+        previous, conflict = prepared
+        with acquisition.episode_requests():
+            listing: EpisodeListing = acquisition.episodes(key.anilist_id)
+            if not any(item.number == key.number and item.aired for item in listing.episodes):
+                return ControlResponse.refused(
+                    ControlErrorCode.REFUSED, "This episode has not aired", "episode_not_aired"
+                )
+            offer: EpisodeOffer
+            target: dict[str, object]
+            offer, target = acquisition.prepare_episode(key)
+        return self._on_owner(
+            partial(self._store_episode_offer, request, generation, offer, target, previous, conflict)
+        )
+
+    def _begin_episode_offer(
+        self,
+        request: ControlRequest,
+        key: EpisodeKey,
+        generation: str,
+    ) -> ControlResponse | tuple[str | None, tuple[str, ...]]:
+        if request.session_id in self._closed_sessions:
+            return _refuse(RefusalReason.SESSION_CLOSED)
+        previous: str | None = _text(request.payload, "previous_admission_id")
+        repeating: bool = decode_view(bool, request.payload.get("repeat", False)) or previous is not None
+        matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
+        conflict: tuple[str, ...] = self._episode_conflicts(key) if repeating else ()
+        if repeating and matches:
+            latest: EpisodeAssignment = matches[-1][1]
+            if previous is not None and previous != latest.admission_id:
+                return ControlResponse.refused(
+                    ControlErrorCode.STALE_PREVIEW, "The previous admission changed", "episode_changed"
+                )
+            previous = latest.admission_id
+        if repeating and not matches and not conflict:
+            return _invalid("Repeat requires a previous admission or a possible legacy conflict")
+        session: str = str(request.session_id)
+        self._episode_reads[session] = generation
+        self._episode_offers.pop(session, None)
+        return previous, conflict
+
+    def _store_episode_offer(  # noqa: PLR0913
+        self,
+        request: ControlRequest,
+        generation: str,
+        offer: EpisodeOffer,
+        target: Mapping[str, object],
+        previous: str | None,
+        conflict: tuple[str, ...],
+    ) -> ControlResponse:
+        session: str = str(request.session_id)
+        if self._episode_reads.get(session) != generation or session in self._closed_sessions:
+            return ControlResponse.refused(
+                ControlErrorCode.STALE_PREVIEW, "The episode interaction expired", "offer_expired"
+            )
+        repeating: bool = previous is not None or bool(conflict)
+        candidates: tuple[RankedCandidate, ...] = tuple(
+            item
+            for item in offer.candidates
+            if not repeating or not self._excluded_episode_pair(offer.key, item.stream)
+        )
+        filtered: EpisodeOffer = replace(offer, candidates=candidates, suggestion=suggestion(candidates))
+        unknown: bool = bool(conflict) or any(
+            not assignment.files for _item, assignment in self._episode_assignments(offer.key)
+        )
+        view: EpisodeOfferView = EpisodeOfferView(generation, self._instance_id, filtered, previous, conflict, unknown)
+        self._episode_offers[session] = view, target
+        return ControlResponse.succeeded(encode_view(view))
+
+    def _excluded_episode_pair(self, key: EpisodeKey, stream: StreamCandidate) -> bool:
+        for _transfer, assignment in self._episode_assignments(key):
+            reference: TorrentioReference = assignment.choice.reference
+            if reference.info_hash != stream.info_hash.casefold():
+                continue
+            if not assignment.files:
+                if (
+                    reference.file_name == stream.file_name
+                    if reference.file_name is not None
+                    else reference.release == stream.release
+                ):
+                    return True
+            elif any(
+                path.replace("\\", "/") == stream.path.replace("\\", "/")
+                if stream.path is not None
+                else Path(path).name == stream.file_name
+                for _index, path, _size in assignment.files
+            ):
+                return True
+        return any(
+            item.info_hash == stream.info_hash.casefold()
+            and item.legacy_scope is not None
+            and item.legacy_scope.covers(key.anilist_id, key.number)
+            for item in self._state.acquisitions
+        )
+
+    def _episode_choose(self, request: ControlRequest) -> ControlResponse:  # noqa: PLR0911
+        receipt: CommandReceipt | None = next(
+            (item for item in self._state.command_receipts if item.command_id == request.command_id), None
+        )
+        signature: str = _episode_command_signature(request)
+        if receipt is not None:
+            if receipt.outcome.get("selection") != signature:
+                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
+            return ControlResponse.succeeded(dict(receipt.outcome))
+        if request.instance_id not in {None, self._instance_id}:
+            return ControlResponse.refused(ControlErrorCode.STALE_INSTANCE, _STALE_INSTANCE)
+        stored: tuple[EpisodeOfferView, Mapping[str, object]] | None = self._episode_offers.get(str(request.session_id))
+        if stored is None or stored[0].offer_id != request.payload.get("offer_id"):
+            return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, "The episode offer expired", "offer_expired")
+        view, target = stored
+        try:
+            stream: StreamCandidate = decode_view(StreamCandidate, request.payload.get("candidate"))
+            confirmed: bool = decode_view(bool, request.payload.get("deviation_confirmed", False))
+            conflict_confirmed: bool = decode_view(bool, request.payload.get("conflict_confirmed", False))
+            conflict: tuple[str, ...] = (
+                self._episode_conflicts(view.offer.key) if view.previous_admission_id or view.conflict else ()
+            )
+        except ValueError, TypeError:
+            return _invalid("An episode choice requires a valid candidate, confirmations and readable conflict")
+        candidate: RankedCandidate | None = next(
+            (item for item in view.offer.candidates if item.stream == stream), None
+        )
+        if candidate is None or candidate.facts.supported is False:
+            return _invalid("The candidate is not available in this offer")
+        if candidate.identity.verdict is not IdentityVerdict.MATCH and not confirmed:
+            return ControlResponse.refused(
+                ControlErrorCode.REFUSED, "Confirm this exact identity deviation", "deviation_unconfirmed"
+            )
+        if view.conflict and not conflict_confirmed:
+            return ControlResponse.refused(
+                ControlErrorCode.REFUSED, "Confirm the shown legacy conflict", "conflict_unconfirmed"
+            )
+        if (view.previous_admission_id or view.conflict) and conflict != view.conflict:
+            return ControlResponse.refused(
+                ControlErrorCode.STALE_PREVIEW, "The episode conflict changed", "episode_changed"
+            )
+        response: ControlResponse = self._admit_episode(
+            request.command_id,
+            _episode_choice(view.offer.key, candidate, target, confirmed=confirmed),
+            previous=view.previous_admission_id,
+            conflict=view.conflict,
+            selection=signature,
+        )
+        if response.ok:
+            self._episode_offers.pop(str(request.session_id), None)
+        return response
+
+    def _episode_download(self, request: ControlRequest) -> ControlResponse:  # noqa: PLR0911
+        try:
+            keys: tuple[EpisodeKey, ...] = decode_view(tuple[EpisodeKey, ...], request.payload.get("keys"))
+            validate_episode_keys(keys)
+        except ValueError, TypeError:
+            return _invalid("A batch requires 1-100 unique positive episode keys of one entry")
+        receipt: CommandReceipt | None = next(
+            (item for item in self._state.command_receipts if item.command_id == request.command_id), None
+        )
+        if receipt is not None:
+            if receipt.outcome.get("kind") != "episode_download":
+                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
+            batch: EpisodeBatch = decode_view(EpisodeBatch, json.loads(str(receipt.outcome["batch"])))
+            if batch.keys != keys:
+                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
+            if batch.state == "accepted" and batch.instance_id != self._instance_id:
+                batch = replace(batch, state="interrupted")
+            batch = self._recover_episode_results(batch)
+            return ControlResponse.succeeded(encode_view(batch))
+        if self._shutting_down:
+            return _refuse(RefusalReason.SHUTTING_DOWN)
+        if not self._state.policy.auto_enabled:
+            return _refuse(RefusalReason.PAUSED)
+        if self._service.acquisition is None:
+            return _invalid("No acquisition service is configured")
+        batch = EpisodeBatch(request.command_id, self._instance_id, keys, "accepted")
+        if not self._save_batch(batch):
+            return ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED)
+        self._active_io += 1
+        self._pool.submit(self._run_episode_batch, batch)
+        logger.info("Episode batch accepted", command_id=request.command_id, episodes=len(keys))
+        return ControlResponse.succeeded(encode_view(batch))
+
+    def _save_batch(self, batch: EpisodeBatch) -> bool:
+        receipt: CommandReceipt = CommandReceipt(
+            batch.command_id, self._now(), {"kind": "episode_download", "batch": json.dumps(encode_view(batch))}
+        )
+        remaining: tuple[CommandReceipt, ...] = tuple(
+            item for item in self._state.command_receipts if item.command_id != batch.command_id
+        )
+        return self._save(replace(self._state, command_receipts=(*remaining, receipt)))
+
+    def _recover_episode_results(self, batch: EpisodeBatch) -> EpisodeBatch:
+        known: dict[EpisodeKey, EpisodeResult] = {item.key: item for item in batch.results}
+        receipts: dict[str, CommandReceipt] = {item.command_id: item for item in self._state.command_receipts}
+        for key in batch.keys:
+            receipt: CommandReceipt | None = receipts.get(f"{batch.command_id}:episode:{key.number}")
+            if key not in known and receipt is not None:
+                known[key] = EpisodeResult(
+                    key,
+                    "admitted",
+                    str(receipt.outcome["admission_id"]),
+                    str(receipt.outcome["operation_id"]),
+                )
+        return replace(batch, results=tuple(known[key] for key in batch.keys if key in known))
+
+    def _run_episode_batch(self, batch: EpisodeBatch) -> None:
+        try:
+            for key in batch.keys:
+                if not self._on_owner(self._working):
+                    break
+                self._publish(
+                    {
+                        "event": "episode_searching",
+                        "payload": {
+                            "command_id": batch.command_id,
+                            "key": encode_view(key),
+                        },
+                    },
+                    terminal=False,
+                )
+                result: EpisodeResult = self._download_episode(batch.command_id, key)
+                batch = replace(batch, results=(*batch.results, result))
+                if not self._on_owner(partial(self._save_batch, batch)):
+                    break
+                self._publish(
+                    {
+                        "event": "episode_result",
+                        "payload": {
+                            "command_id": batch.command_id,
+                            **encode_view(result),
+                        },
+                    },
+                    terminal=True,
+                )
+            batch = replace(batch, state="completed" if len(batch.results) == len(batch.keys) else "interrupted")
+            self._on_owner(partial(self._save_batch, batch))
+            self._publish({"event": "episode_batch", "payload": encode_view(batch)}, terminal=True)
+        except Exception as problem:  # noqa: BLE001 - terminate this admitted batch without resuming it
+            logger.warning("Episode batch interrupted", error_class=type(problem).__name__)
+            interrupted: EpisodeBatch = replace(batch, state="interrupted")
+            self._on_owner(partial(self._save_batch, interrupted))
+            self._publish({"event": "episode_batch", "payload": encode_view(interrupted)}, terminal=True)
+        finally:
+            self._queue.put(self._finish_io)
+
+    def _download_episode(self, command_id: str, key: EpisodeKey) -> EpisodeResult:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        if acquisition is None:
+            return EpisodeResult(key, "acquisition_unavailable")
+        try:
+            with acquisition.episode_requests():
+                listing: EpisodeListing = acquisition.episodes(key.anilist_id)
+                if not any(item.number == key.number and item.aired for item in listing.episodes):
+                    return EpisodeResult(key, "episode_not_aired")
+                offer: EpisodeOffer
+                target: dict[str, object]
+                offer, target = acquisition.prepare_episode(key)
+            if offer.suggestion is None:
+                return EpisodeResult(key, "no_suggestion")
+            candidate: RankedCandidate = offer.candidates[offer.suggestion]
+            if candidate.identity.verdict is IdentityVerdict.MISMATCH or candidate.facts.supported is False:
+                return EpisodeResult(key, "no_suggestion")
+            choice: EpisodeChoice = _episode_choice(offer.key, candidate, target, confirmed=False)
+            response: ControlResponse = self.admit_episode(f"{command_id}:episode:{key.number}", choice)
+            return EpisodeResult(
+                key,
+                "admitted" if response.ok else response.reason or "admission_failed",
+                str(response.result["admission_id"]) if response.ok else None,
+                str(response.result["operation_id"]) if response.ok else None,
+            )
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("Episode batch lookup failed", error_class=type(problem).__name__)
+            return EpisodeResult(key, failure_code(problem) or "source_failed")
+
+    def _admit_episode(
+        self,
+        command_id: str,
+        choice: EpisodeChoice,
+        *,
+        previous: str | None = None,
+        conflict: tuple[str, ...] = (),
+        selection: str | None = None,
+    ) -> ControlResponse:
         receipt: CommandReceipt | None = next(
             (item for item in self._state.command_receipts if item.command_id == command_id), None
         )
@@ -3662,11 +4223,18 @@ class AutomationOwner:
             if (receipt.outcome.get("anilist_id"), receipt.outcome.get("number")) != (choice.anilist_id, choice.number):
                 return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
             return ControlResponse.succeeded(dict(receipt.outcome))
-        refusal: ControlResponse | None = self._admission_refusal(choice)
+        refusal: ControlResponse | None = self._admission_refusal(choice, previous=previous, conflict=conflict)
         if refusal is not None:
             return refusal
         now: str = self._now()
-        assignment: EpisodeAssignment = EpisodeAssignment(token_hex(_ID_BYTES), now, AdmissionSource.MANUAL, choice)
+        assignment: EpisodeAssignment = EpisodeAssignment(
+            token_hex(_ID_BYTES),
+            now,
+            AdmissionSource.MANUAL,
+            choice,
+            previous_admission_id=previous,
+            conflict=conflict,
+        )
         shared: AcquisitionConfirmation | None = next(
             (item for item in self._state.acquisitions if item.info_hash == choice.reference.info_hash), None
         )
@@ -3691,12 +4259,15 @@ class AutomationOwner:
             "admission_id": assignment.admission_id,
             "anilist_id": choice.anilist_id,
             "number": choice.number,
+            "selection": selection,
         }
         acquisitions: tuple[AcquisitionConfirmation, ...] = (
             (*self._state.acquisitions, confirmation)
             if shared is None
             else tuple(confirmation if item is shared else item for item in self._state.acquisitions)
         )
+        if previous is not None:
+            acquisitions = tuple(_replace_episode_scope(item, previous, now) for item in acquisitions)
         candidate: WatchState = replace(self._state, acquisitions=acquisitions)
         if not self._save(record_command(candidate, CommandReceipt(command_id, now, outcome))):
             return ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED)
@@ -3705,7 +4276,13 @@ class AutomationOwner:
         self._publish_state()
         return ControlResponse.succeeded(dict(outcome))
 
-    def _admission_refusal(self, choice: EpisodeChoice) -> ControlResponse | None:
+    def _admission_refusal(
+        self,
+        choice: EpisodeChoice,
+        *,
+        previous: str | None = None,
+        conflict: tuple[str, ...] = (),
+    ) -> ControlResponse | None:
         if self._shutting_down or not self._finish_pending_commands():
             return _refuse(RefusalReason.SHUTTING_DOWN)
         if not self._state.policy.auto_enabled:
@@ -3713,16 +4290,24 @@ class AutomationOwner:
         legacy: tuple[LegacyScope, ...] | None = self._legacy_scopes()
         if legacy is None:
             return ControlResponse.refused(ControlErrorCode.REFUSED, _LEGACY_UNREADABLE, "legacy_unreadable")
-        conflict: AdmissionConflict | None = episode_conflict(self._state, choice.anilist_id, choice.number, legacy)
+        key: EpisodeKey = EpisodeKey(choice.anilist_id, choice.number)
+        matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
+        if previous is not None and (not matches or matches[-1][1].admission_id != previous):
+            return ControlResponse.refused(
+                ControlErrorCode.STALE_PREVIEW, "The episode admission changed", "episode_changed"
+            )
+        duplicate: AdmissionConflict | None = episode_conflict(self._state, choice.anilist_id, choice.number, legacy)
+        if previous is not None or (conflict and not matches):
+            duplicate = None
         recorded: tuple[AcquisitionConfirmation, ...] = tuple(
             item for item in self._state.acquisitions if item.info_hash == choice.reference.info_hash
         )
-        if conflict is None and recorded and not _joinable(recorded):
-            conflict = AdmissionConflict.TRANSFER_RECORDED
-        if conflict is None:
+        if duplicate is None and recorded and not _joinable(recorded):
+            duplicate = AdmissionConflict.TRANSFER_RECORDED
+        if duplicate is None:
             return None
-        logger.info("Episode admission refused", reason=conflict.value)
-        return ControlResponse.refused(ControlErrorCode.REFUSED, _ADMISSION_REFUSALS[conflict], conflict.value)
+        logger.info("Episode admission refused", reason=duplicate.value)
+        return ControlResponse.refused(ControlErrorCode.REFUSED, _ADMISSION_REFUSALS[duplicate], duplicate.value)
 
     def _legacy_scopes(self) -> tuple[LegacyScope, ...] | None:
         service: SubscriptionService | None = self._service.subscriptions
@@ -3863,7 +4448,9 @@ class AutomationOwner:
             self._working()
             and not self._protected_acquisition(item)
             and any(
-                row.operation_id == item.operation_id and row.action_id == item.action_id
+                row.operation_id == item.operation_id
+                and row.action_id == item.action_id
+                and (not item.selective or _selection_basis(row) == _selection_basis(item))
                 for row in self._state.acquisitions
             )
         )
@@ -4049,7 +4636,12 @@ class AutomationOwner:
 
     def _begin_send(self, operation_id: str, directory: Path) -> AcquisitionConfirmation | None:
         current: AcquisitionConfirmation | None = self._confirmation(operation_id)
-        if current is None or current.state is not AcquisitionState.ADMITTED or not self._working():
+        if (
+            current is None
+            or current.state is not AcquisitionState.ADMITTED
+            or not current.active_assignments
+            or not self._working()
+        ):
             return None
         sent: AcquisitionConfirmation = replace(
             current,
@@ -4123,7 +4715,11 @@ class AutomationOwner:
         self, item: AcquisitionConfirmation, revision: str, bindings: Mapping[str, tuple[FileReservation, ...]]
     ) -> AcquisitionConfirmation | None:
         current: AcquisitionConfirmation | None = self._confirmation(item.operation_id)
-        if current is None or current.state is not AcquisitionState.ACCEPTED:
+        if (
+            current is None
+            or current.state is not AcquisitionState.ACCEPTED
+            or _selection_basis(current) != _selection_basis(item)
+        ):
             return None
         assignments: tuple[EpisodeAssignment, ...] = tuple(
             replace(assignment, file_map=revision, files=bindings[assignment.admission_id])
@@ -4215,6 +4811,25 @@ class AutomationOwner:
             and self._may_start_content(item)
             and _selection_basis(current) == _selection_basis(item)
             and current.requested_action not in {"stop", "cancel"}
+            and self._replacement_ready(current)
+        )
+
+    def _replacement_ready(self, item: AcquisitionConfirmation) -> bool:
+        previous: set[str] = {
+            assignment.previous_admission_id
+            for assignment in item.active_assignments
+            if assignment.previous_admission_id is not None
+        }
+        return all(
+            old.operation_id == item.operation_id
+            or old.state in {AcquisitionState.ADMITTED, AcquisitionState.COMPLETE, AcquisitionState.FAILED}
+            or (
+                old.state is AcquisitionState.ACCEPTED
+                and old.problem is None
+                and old.applied_revision == old.selection_revision
+            )
+            for old in self._state.acquisitions
+            if any(assignment.admission_id in previous for assignment in old.assignments)
         )
 
     def _started_selection(self, operation_id: str, revision: int) -> None:
@@ -4758,7 +5373,7 @@ class AutomationOwner:
             return replace(item, action_pending=False, problem=_SEND_UNCONFIRMED)
         if mismatched:
             return replace(item, action_pending=False, problem=_SELECTION_MISMATCH)
-        if confirmed:
+        if confirmed and item.wanted_files and self._owned(partial(self._replacement_ready, item)):
             return self._perform_action(service, item)
         if not listed and reported in _SELECTABLE_STATES:
             logger.warning("A selective transfer stopped before its metadata cannot resume safely")
@@ -4807,6 +5422,8 @@ class AutomationOwner:
         return self._on_owner(lambda: self._mark_sent(item))
 
     def _mark_sent(self, item: AcquisitionConfirmation) -> _ActionRecord:
+        if item.selective and item.requested_action == "resume" and not self._may_start_content(item):
+            return _ActionRecord.SUPERSEDED
         current: AcquisitionConfirmation | None = next(
             (
                 row
@@ -5657,6 +6274,47 @@ def _marked(
     return marked
 
 
+def _episode_choice(
+    key: EpisodeKey, candidate: RankedCandidate, target: Mapping[str, object], *, confirmed: bool
+) -> EpisodeChoice:
+    stream: StreamCandidate = candidate.stream
+    return EpisodeChoice(
+        key.anilist_id,
+        key.number,
+        TorrentioReference(stream.info_hash, stream.file_index, stream.file_name, stream.release, stream.trackers),
+        target,
+        candidate.identity.verdict,
+        candidate.identity.reason,
+        confirmed,
+    )
+
+
+def _episode_command_signature(request: ControlRequest) -> str:
+    encoded: str = json.dumps(
+        {key: value for key, value in request.payload.items() if key != "client_id"},
+        sort_keys=True,
+    )
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _episode_conflict_reference(item: AcquisitionConfirmation) -> str:
+    identity: str = json.dumps(
+        [item.info_hash, item.episode, item.release_title, item.required_files, encode_view(item.legacy_scope)],
+        sort_keys=True,
+    )
+    return f"acquisition:{item.operation_id}:{sha256(identity.encode('utf-8')).hexdigest()}"
+
+
+def _replace_episode_scope(item: AcquisitionConfirmation, previous: str, now: str) -> AcquisitionConfirmation:
+    if not any(assignment.admission_id == previous for assignment in item.assignments):
+        return item
+    assignments: tuple[EpisodeAssignment, ...] = tuple(
+        replace(assignment, replaced=True) if assignment.admission_id == previous else assignment
+        for assignment in item.assignments
+    )
+    return replace(item, assignments=assignments, selection_revision=item.selection_revision + 1, updated_at=now)
+
+
 def _transfer_action(item: AcquisitionConfirmation) -> bool:
     """Answer whether a pending client action belongs to a transfer that has a client lifecycle."""
     return item.action_pending and item.state is not AcquisitionState.ADMITTED
@@ -5667,7 +6325,12 @@ def _polled(item: AcquisitionConfirmation, *, selective: bool) -> bool:
     return (
         item.state is AcquisitionState.ACCEPTED
         or (item.selective and item.state is AcquisitionState.PENDING_SEND)
-        or (selective and item.state is AcquisitionState.ADMITTED and item.problem is None)
+        or (
+            selective
+            and item.state is AcquisitionState.ADMITTED
+            and item.problem is None
+            and bool(item.active_assignments)
+        )
     )
 
 
@@ -5717,7 +6380,7 @@ def _episode_bindings(
     item: AcquisitionConfirmation, files: Sequence[TorrentFile]
 ) -> dict[str, tuple[FileReservation, ...]]:
     """Bind every unbound episode to its files, leaving one without a file when its video is already taken."""
-    taken: set[int] = {index for assignment in item.active_assignments for index, _path, _size in assignment.files}
+    taken: set[int] = {index for assignment in item.assignments for index, _path, _size in assignment.files}
     bindings: dict[str, tuple[FileReservation, ...]] = {}
     for assignment in item.active_assignments:
         if assignment.mapped:

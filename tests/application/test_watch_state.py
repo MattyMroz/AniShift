@@ -710,9 +710,15 @@ def test_an_admission_without_an_episode_assignment_is_refused() -> None:
         replace(_selective(), assignments=())
 
 
-def test_an_episode_choice_without_a_match_requires_a_confirmed_deviation() -> None:
+def test_a_mismatched_episode_choice_requires_a_confirmed_deviation() -> None:
     with pytest.raises(ValueError, match="deviation"):
-        replace(_selective().assignments[0].choice, deviation_confirmed=False)
+        replace(_selective().assignments[0].choice, verdict=IdentityVerdict.MISMATCH, deviation_confirmed=False)
+
+
+def test_an_uncertain_suggestion_preserves_the_absence_of_explicit_confirmation() -> None:
+    choice: EpisodeChoice = replace(_selective().assignments[0].choice, deviation_confirmed=False)
+    assert choice.verdict is IdentityVerdict.INSUFFICIENT
+    assert not choice.deviation_confirmed
 
 
 def test_the_state_lives_beside_the_other_watch_files() -> None:

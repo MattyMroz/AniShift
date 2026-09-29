@@ -13,10 +13,15 @@ from anishift.application import (
     CatalogOrder,
     DeletionPreview,
     DownloadReceipt,
+    EpisodeBatch,
+    EpisodeFile,
+    EpisodeFiles,
     EpisodeKey,
     EpisodeListing,
     EpisodeOffer,
+    EpisodeOfferView,
     EpisodeRange,
+    EpisodeStatus,
     Franchise,
     HistoryEvent,
     InspectedSourceGroup,
@@ -29,6 +34,7 @@ from anishift.application import (
     ReleaseChoice,
     RetryProposal,
     SeasonContext,
+    StreamCandidate,
     Subscription,
     SubscriptionOrder,
     TitleCandidate,
@@ -282,6 +288,81 @@ class ResidentSession:
             payload["episode_offset"] = episode_offset
         return decode_view(DownloadReceipt, self._call("download", payload))
 
+    def episode_download(self, keys: Sequence[EpisodeKey], *, command_id: str) -> EpisodeBatch:
+        """Admit one owner batch, or recover its receipt using the original command identifier."""
+        return decode_view(
+            EpisodeBatch,
+            self._call("episode_download", {"keys": [encode_view(key) for key in keys]}, command_id=command_id),
+        )
+
+    def episode_offer(
+        self,
+        key: EpisodeKey,
+        *,
+        repeat: bool = False,
+        previous_admission_id: str | None = None,
+    ) -> EpisodeOfferView:
+        """Inspect one session-bound choice, including the exact conflict an explicit repeat would override."""
+        return decode_view(
+            EpisodeOfferView,
+            self._episode_interaction(
+                "episode_offer",
+                {
+                    "key": encode_view(key),
+                    "repeat": repeat,
+                    "previous_admission_id": previous_admission_id,
+                },
+            ),
+        )
+
+    def episode_choose(
+        self,
+        offer: EpisodeOfferView,
+        candidate: StreamCandidate,
+        *,
+        command_id: str,
+        deviation_confirmed: bool = False,
+        conflict_confirmed: bool = False,
+    ) -> Mapping[str, object]:
+        """Accept the exact inspected candidate with independently confirmed identity and legacy deviations."""
+        return self._episode_interaction(
+            "episode_choose",
+            {
+                "offer_id": offer.offer_id,
+                "candidate": encode_view(candidate),
+                "deviation_confirmed": deviation_confirmed,
+                "conflict_confirmed": conflict_confirmed,
+            },
+            instance_id=offer.instance_id,
+            command_id=command_id,
+        )
+
+    def episode_files(self, admission_id: str) -> EpisodeFiles:
+        """Read safe video choices from the current torrent file map."""
+        return decode_view(EpisodeFiles, self._call("episode_files", {"admission_id": admission_id}))
+
+    def episode_file_choose(
+        self, files: EpisodeFiles, selected: EpisodeFile, *, command_id: str
+    ) -> Mapping[str, object]:
+        """Bind the exact inspected video and its sidecars through the owner."""
+        return self._call(
+            "episode_file_choose",
+            {
+                "admission_id": files.admission_id,
+                "revision": files.revision,
+                "file": encode_view(selected),
+            },
+            command_id=command_id,
+        )
+
+    def episode_states(self, anilist_id: int, numbers: Sequence[int]) -> tuple[EpisodeStatus, ...]:
+        """Read bounded episode states without a catalogue request."""
+        items: object = self._call("episode_states", {"anilist_id": anilist_id, "numbers": list(numbers)}).get("items")
+        if not isinstance(items, list):
+            msg = "The owner returned invalid episode states"
+            raise TypeError(msg)
+        return tuple(decode_view(EpisodeStatus, item) for item in items)
+
     def set_range(
         self,
         subscription_id: str,
@@ -493,10 +574,20 @@ class ResidentSession:
                 other.close()
 
     def _call(
-        self, kind: str, payload: Mapping[str, object] | None = None, *, instance_id: str | None = None
+        self,
+        kind: str,
+        payload: Mapping[str, object] | None = None,
+        *,
+        instance_id: str | None = None,
+        command_id: str | None = None,
     ) -> Mapping[str, object]:
         with self._lock:
-            return self._client.call(kind, {"client_id": self._client_id, **(payload or {})}, instance_id=instance_id)
+            return self._client.call(
+                kind,
+                {"client_id": self._client_id, **(payload or {})},
+                instance_id=instance_id,
+                command_id=command_id,
+            )
 
     def _episode_read(
         self, payload: Mapping[str, object], cancel: CancellationToken | None = None
@@ -511,6 +602,26 @@ class ResidentSession:
             with self._state_lock:
                 self._require_current(interrupts)
             return channel.call("acquisition", payload, timeout_s=episode_read_timeout_s())
+
+    def _episode_interaction(
+        self,
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        instance_id: str | None = None,
+        command_id: str | None = None,
+    ) -> Mapping[str, object]:
+        with self._state_lock:
+            interrupts: int = self._interrupts
+        with self._catalog_lock:
+            channel: ControlClient = self._catalog_channel(interrupts)
+            return channel.call(
+                kind,
+                payload,
+                instance_id=instance_id,
+                command_id=command_id,
+                timeout_s=episode_read_timeout_s(),
+            )
 
     def _catalog_channel(self, interrupts: int) -> ControlClient:
         with self._state_lock:

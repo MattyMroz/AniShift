@@ -270,6 +270,23 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   Selektywne `PENDING_SEND` jest uzgadniane z klientem bez ponownego add: niewidoczny hash dostaje do
   `_SEND_CHECKS` odczytów, potem `UNCERTAIN` z `_SEND_UNCONFIRMED`, a resume sprawdza go od nowa.
   `automation.py`, `transfers.py`
+- `episode_download` saves one batch receipt before source reads; each admission has a receipt keyed
+  by batch ID and episode number. Disconnect preserves the batch, restart marks unfinished batches
+  interrupted without resuming their remaining keys. Recover admission results from individual receipts
+  when the batch result save was interrupted. `episode_commands.py`, `automation.py`
+- `episode_offer` keeps one interaction per connection; newer reads and disconnect invalidate it.
+  `episode_choose` consumes the exact stored candidate without another source read. Uncertain automatic
+  suggestions are allowed, but explicit uncertain/mismatched choices require separate confirmation.
+  Repeat consent binds current legacy order identities and the latest admission. Unknown legacy transfers
+  remain untouched; known replaced assignments retain their files and lose only their active scope.
+  New content waits for the previous scope's applied revision. `automation.py`
+  Unsettled or problematic predecessors project `waiting_previous_transfer` in `episode_states`.
+- `episode_file_choose` reads a fresh file map, checks its revision and exact index/path/size, then saves
+  the video and exact-stem sidecars with the receipt before selection. Recheck receipt on the owner after
+  the read to settle concurrent retries idempotently. Never reuse a video from an older assignment.
+  Revalidate the selection revision and assignment, not the whole confirmation: timestamp-only updates
+  do not invalidate a file choice. Batch termination emits `episode_batch` even if its final save fails;
+  this event reports the current attempt, while durable admission receipts remain authoritative.
 - `subscription_id` i `_matches` porównują serię po postaci znormalizowanej (`normalize_series`,
   `series_forms`), nie po surowym zapisie wybranego wydania. Etykietą grupy w katalogu jest
   pierwszy napotkany zapis, więc dosłowne porównanie cicho zabijało subskrypcję. `subscriptions.py`

@@ -336,8 +336,8 @@ class EpisodeChoice:
         if not _positive(self.anilist_id) or not _positive(self.number):
             msg = "An episode choice requires a positive AniList ID and episode number"
             raise ValueError(msg)
-        if self.verdict is not IdentityVerdict.MATCH and not self.deviation_confirmed:
-            msg = "A stream without an H1 match requires a confirmed deviation"
+        if self.verdict is IdentityVerdict.MISMATCH and not self.deviation_confirmed:
+            msg = "An H1 mismatch requires a confirmed deviation"
             raise ValueError(msg)
 
 

@@ -132,8 +132,15 @@ def _as_service(service: _Service) -> AppService:
 
 @pytest.mark.parametrize("playback", [True, False])
 def test_library_result_sends_playback_only_for_confirmed_product_selection(tmp_path: Path, playback: bool) -> None:
-    def call(kind: str, payload: Mapping[str, object], *, instance_id: str | None = None) -> Mapping[str, object]:
+    def call(
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        instance_id: str | None = None,
+        command_id: str | None = None,
+    ) -> Mapping[str, object]:
         assert kind == "library_open"
+        assert command_id is None
         assert instance_id is None
         assert isinstance(payload["client_id"], str)
         assert {key: value for key, value in payload.items() if key != "client_id"} == {

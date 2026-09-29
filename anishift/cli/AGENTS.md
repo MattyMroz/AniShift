@@ -48,6 +48,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Ekran Anime w trybie rezydenta używa `ResidentSession` także do katalogu, wydań,
   pobrania i dodania subskrypcji. Nie twórz w tym ekranie drugiego klienta HTTP ani
   lokalnego zapisu subskrypcji; receipt i admission pobrań należą do ownera.
+- `ResidentSession.episode_offer/episode_choose` share the interruptible catalogue connection:
+  offers belong to its server session, so choosing on the main control connection would refuse them.
+  `interrupt_reads` invalidates that interaction. Batch download uses the main connection and survives
+  disconnect. Episode mutations take an explicit `command_id`; retain it when recovering a lost response.
 - Processing uses `StateController._processing_rows` for rendering, selection, actions and
   counts. A processing request plus `RichRunProgress.group_active` must prove started,
   nonterminal work; the owner's `accepted` state can already contain executing tasks.

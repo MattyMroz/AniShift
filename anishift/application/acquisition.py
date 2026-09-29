@@ -761,6 +761,10 @@ class AcquisitionService:
 
     def offer(self, key: EpisodeKey) -> EpisodeOffer:
         """Rank the live stream candidates of one episode against its remembered identity."""
+        return self.prepare_episode(key)[0]
+
+    def prepare_episode(self, key: EpisodeKey) -> tuple[EpisodeOffer, dict[str, object]]:
+        """Read one live offer together with the exact target used to assess its candidates."""
         now: float = self._clock()
         graph: FranchiseGraph = self._context_graph(key.anilist_id, now)
         mapping: AniZipMapping = self._mapping(key.anilist_id, now)
@@ -773,15 +777,14 @@ class AcquisitionService:
             streams = self._streams().movie_streams(mapping.kitsu_id)
         elif mapping.kitsu_id is not None:
             streams = self._streams().streams(mapping.kitsu_id, key.number)
-        ranked: tuple[RankedCandidate, ...] = rank_candidates(
-            identity_target(graph, key.anilist_id, mapping, key.number), streams
-        )
+        target: dict[str, object] = identity_target(graph, key.anilist_id, mapping, key.number)
+        ranked: tuple[RankedCandidate, ...] = rank_candidates(target, streams)
         counts: dict[str, int] = {
             verdict.value: sum(1 for item in ranked if item.identity.verdict is verdict) for verdict in IdentityVerdict
         }
         suggested: int | None = suggestion(ranked)
         logger.info("Episode offer ranked", count=len(ranked), suggested=suggested is not None, movie=movie)
-        return EpisodeOffer(key, ranked, suggested, datetime.fromtimestamp(self._clock(), UTC), counts)
+        return EpisodeOffer(key, ranked, suggested, datetime.fromtimestamp(self._clock(), UTC), counts), target
 
     def _titles(self) -> TitleCatalog:
         if self._title_catalog is None:
