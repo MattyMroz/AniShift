@@ -394,6 +394,8 @@ class AnimeController:
         self._candidate: TitleCandidate | None = None
         self._context: SeasonContext | None = None
         self._episodes: EpisodeRange | None = None
+        self._query_episodes: EpisodeRange | None = None
+        self._episode_releases: bool = False
         self._order: CatalogOrder = CatalogOrder.NEWEST
         self._groups: tuple[SeriesGroup, ...] = ()
         self._opened_group: int | None = None
@@ -682,6 +684,9 @@ class AnimeController:
             )
             self._selected = next(index for index in self._choices if self._rows[index].group == group)
             return
+        if self._episode_releases:
+            self._screen = _Screen.EPISODES
+            return
         if not self._candidates:
             self._screen = _Screen.QUERY
             return
@@ -794,7 +799,7 @@ class AnimeController:
         if self._screen is _Screen.ENTRIES:
             return len(self._franchise.entries) if self._franchise else 0
         if self._screen is _Screen.EPISODES:
-            return len(self._listing.episodes) if self._listing and self._listing.kitsu_id is not None else 0
+            return len(self._listing.episodes) if self._listing else 0
         if self._screen is _Screen.OFFER:
             return len(self._offer_numbers)
         return len(self._release_candidates)
@@ -976,13 +981,15 @@ class AnimeController:
                 self._listing_preloaded = True
                 self._screen = _Screen.ENTRIES
             self._worker = None
-            unmapped: TitleCandidate | None = self._entry_release_candidate() if listing.kitsu_id is None else None
+            unmapped: TitleCandidate | None = (
+                self._entry_release_candidate() if listing.kitsu_id is None and not listing.episodes else None
+            )
             if unmapped is not None:
                 self._start_title_search(unmapped)
         self._invalidate()
 
     def _start_offers(self, highlighted: ListedEpisode) -> None:
-        if self._listing is None or self._listing.kitsu_id is None:
+        if self._listing is None:
             self._notice = "Brak mapowania"
             return
         selected: set[int] = self._episode_marks or {highlighted.number}
@@ -991,6 +998,9 @@ class AnimeController:
         )
         if not numbers:
             self._notice = f"E{highlighted.number} jeszcze nie wyemitowano"
+            return
+        if self._listing.kitsu_id is None:
+            self._start_unmapped_preview(numbers)
             return
         generation: int = self._start_work("Szukam…", _Screen.EPISODES)
         self._screen = _Screen.OFFER
@@ -1001,6 +1011,45 @@ class AnimeController:
         self._offsets[_Screen.OFFER] = 0
         self._follow_cursor = True
         self._spawn(self._load_offers, (self._listing.anilist_id, numbers, generation))
+
+    def _start_unmapped_preview(self, numbers: tuple[int, ...]) -> None:
+        entry: FranchiseEntry | None = self._entry
+        if entry is None:
+            self._notice = _ENTRY_ONLY_RELEASES
+            return
+        if entry.format == "MOVIE":
+            numbers = ()
+        candidate: TitleCandidate | None = next(
+            (item for item in self._candidates if item.anilist_id == entry.anilist_id), None
+        )
+        if candidate is not None:
+            self._start_title_search(candidate, numbers=numbers, episode_releases=True)
+            return
+        generation: int = self._start_work(_SEARCHING_TITLE, _Screen.EPISODES)
+        self._spawn(self._resolve_episode_title, (entry, numbers, generation))
+
+    def _resolve_episode_title(self, entry: FranchiseEntry, numbers: tuple[int, ...], generation: int) -> None:
+        candidates: tuple[TitleCandidate, ...] = ()
+        try:
+            if self._acquisition is not None:
+                candidates = self._acquisition.find_titles(entry.romaji)
+        except (AniShiftError, OSError) as problem:
+            logger.warning("Anime episode title lookup failed", error_class=type(problem).__name__)
+            self._report(generation, problem, _Screen.EPISODES, provider="anilist")
+            return
+        candidate: TitleCandidate | None = next(
+            (item for item in candidates if item.anilist_id == entry.anilist_id), None
+        )
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._worker = None
+            self._screen = _Screen.EPISODES
+            if candidate is None:
+                self._notice = _ENTRY_ONLY_RELEASES
+            else:
+                self._start_title_search(candidate, numbers=numbers, episode_releases=True)
+        self._invalidate()
 
     def _load_offers(self, anilist_id: int, numbers: tuple[int, ...], generation: int) -> None:
         if self._acquisition is None:
@@ -1162,6 +1211,7 @@ class AnimeController:
 
     def _start_search(self, text: str) -> None:
         self._searched = text
+        self._episode_releases = False
         self._candidates = ()
         self._titles_shown = False
         self._entries_skipped = False
@@ -1179,14 +1229,18 @@ class AnimeController:
         self._offers.clear()
         self._episode_marks.clear()
         query: SearchQuery = parse_query(text)
+        self._query_episodes = query.episodes
         self._episodes = query.episodes
         generation: int = self._start_work(_SEARCHING_TITLE, _Screen.QUERY)
         self._spawn(self._find_titles, (query.title, text, generation, self._work_cancel))
 
-    def _start_title_search(self, candidate: TitleCandidate) -> None:
-        if candidate == self._candidate and self._rows:
+    def _start_title_search(
+        self, candidate: TitleCandidate, *, numbers: tuple[int, ...] = (), episode_releases: bool = False
+    ) -> None:
+        if candidate == self._candidate and self._rows and not episode_releases and not self._episode_releases:
             self._screen = _Screen.RESULTS
             return
+        self._episode_releases = episode_releases
         self._candidate = candidate
         self._groups = ()
         self._rows = ()
@@ -1194,7 +1248,10 @@ class AnimeController:
         self._marked.clear()
         self._opened_group = None
         generation: int = self._start_work(_SEARCHING_RELEASES, self._screen)
-        self._spawn(self._search_title, (candidate, self._episodes, self._order, generation))
+        episodes: EpisodeRange | None = None if episode_releases else self._query_episodes
+        if numbers:
+            episodes = EpisodeRange(Decimal(min(numbers)), Decimal(max(numbers)))
+        self._spawn(self._search_title, (candidate, episodes, self._order, generation, numbers))
 
     def _start_unfiltered_search(self) -> None:
         candidate: TitleCandidate | None = self._candidate
@@ -1338,6 +1395,7 @@ class AnimeController:
         episodes: EpisodeRange | None,
         order: CatalogOrder,
         generation: int,
+        numbers: tuple[int, ...] = (),
     ) -> None:
         acquisition: AcquisitionService | ResidentSession | None = self._acquisition
         if acquisition is None:
@@ -1350,9 +1408,11 @@ class AnimeController:
             logger.warning("Anime season lookup failed", error_class=type(problem).__name__)
             context = None
             note = _NO_SEASON_NUMBERING
-        self._search_releases(candidate, _Listing(order, episodes, context, note), generation)
+        self._search_releases(candidate, _Listing(order, episodes, context, note), generation, numbers=numbers)
 
-    def _search_releases(self, candidate: TitleCandidate, listing: _Listing, generation: int) -> None:
+    def _search_releases(
+        self, candidate: TitleCandidate, listing: _Listing, generation: int, *, numbers: tuple[int, ...] = ()
+    ) -> None:
         acquisition: AcquisitionService | ResidentSession | None = self._acquisition
         if acquisition is None:
             self._fail(generation, _UNAVAILABLE, "", _Screen.QUERY)
@@ -1365,6 +1425,17 @@ class AnimeController:
             logger.warning("Anime title search failed", error_class=type(problem).__name__)
             self._report(generation, problem, _Screen.QUERY, provider="nyaa")
             return
+        if numbers:
+            groups: tuple[SeriesGroup, ...] = tuple(
+                replace(group, choices=tuple(choice for choice in group.choices if choice.episode in numbers))
+                for group in catalog.groups
+            )
+            removed: int = sum(len(group.choices) for group in catalog.groups) - sum(
+                len(group.choices) for group in groups
+            )
+            catalog = replace(
+                catalog, groups=tuple(group for group in groups if group.choices), filtered=catalog.filtered + removed
+            )
         self._show_results(generation, catalog, listing)
 
     def _download(
@@ -1685,7 +1756,7 @@ class AnimeController:
     def _render_episodes(self, columns: int, rows: int) -> Text:
         listing: EpisodeListing | None = self._listing
         lines: list[tuple[str, int | None]] = []
-        if listing is None or listing.kitsu_id is None:
+        if listing is None or (listing.kitsu_id is None and not listing.episodes):
             lines.append(("Brak mapowania odcinków dla tego wpisu", None))
             hint: str = "G grupy · Esc wróć" if self._episode_groups_available() else "Esc wróć"
             return self._episode_view(

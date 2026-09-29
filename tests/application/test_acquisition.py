@@ -1213,6 +1213,36 @@ def test_failed_schedule_keeps_the_ani_zip_list_with_a_warning_and_the_anilist_r
     assert titles.scheduled == [_S1]
 
 
+def test_unmapped_new_ona_lists_twelve_anilist_episodes_without_invented_titles(tmp_path: Path) -> None:
+    premiere: datetime = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    schedule: SeasonAiring = SeasonAiring(
+        1,
+        TitleStatus.RELEASING,
+        12,
+        tuple(EpisodeAiring(number, premiere + timedelta(weeks=number - 1)) for number in range(1, 13)),
+    )
+    titles: _TitleCatalog = _TitleCatalog(schedules={1: schedule})
+    episodes: _EpisodeCatalog = _EpisodeCatalog({1: AniZipMapping(None, None, None, (), (), None, {})})
+    streams: _StreamSource = _StreamSource()
+    service: AcquisitionService = _episode_service(
+        tmp_path,
+        titles,
+        episodes,
+        streams,
+        clock=_Clock(datetime(2026, 9, 29, tzinfo=UTC).timestamp()),
+    )
+    listing: EpisodeListing = service.episodes(1)
+    assert listing.kitsu_id is None
+    assert [episode.number for episode in listing.episodes] == list(range(1, 13))
+    assert all(episode.title is None for episode in listing.episodes)
+    assert [episode.airs_at for episode in listing.episodes] == [episode.airing_at for episode in schedule.episodes]
+    assert [episode.number for episode in listing.episodes if episode.aired] == [1]
+    assert not any(episode.airs_at_fallback for episode in listing.episodes)
+    assert titles.scheduled == [1]
+    assert episodes.asked == [1]
+    assert not streams.asked
+
+
 def test_failed_schedule_takes_the_remembered_franchise_status_without_inventing_aired(tmp_path: Path) -> None:
     titles: _TitleCatalog = _slime_titles()
     titles.schedule_fails = True

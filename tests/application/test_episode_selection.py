@@ -13,6 +13,7 @@ from anishift.application.episode_identity import IdentityVerdict, classify
 from anishift.application.episode_selection import (
     AniZipMapping,
     EntryGroup,
+    EpisodeListing,
     FranchiseEntry,
     FranchiseGraph,
     ListedEpisode,
@@ -483,6 +484,14 @@ def test_valid_empty_schedule_marks_every_ani_zip_date_as_fallback() -> None:
 def test_episode_listing_unknown_count_and_empty_sources_invent_nothing() -> None:
     listing = episode_listing(5, _mapping({}), "UNKNOWN", None, (), _NOW)
     assert (listing.episodes, listing.episode_count, listing.aired) == ((), None, None)
+
+
+def test_episode_listing_unknown_count_keeps_only_four_scheduled_rows_out_of_twelve() -> None:
+    schedule: tuple[ListedEpisode, ...] = tuple(ListedEpisode(number, airs_at=_NOW) for number in (1, 2, 11, 12))
+    listing: EpisodeListing = episode_listing(5, _mapping({}), "RELEASING", None, schedule, _NOW)
+    assert listing.episode_count is None
+    assert [episode.number for episode in listing.episodes] == [1, 2, 11, 12]
+    assert all(episode.title is None and episode.airs_at == _NOW for episode in listing.episodes)
 
 
 def test_episode_listing_falls_back_to_mapping_count_and_keeps_source_fields() -> None:

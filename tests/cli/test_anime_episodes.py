@@ -7,7 +7,8 @@ import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Final, cast
@@ -29,6 +30,7 @@ from anishift.application import (
     EpisodeKey,
     EpisodeListing,
     EpisodeOffer,
+    EpisodeRange,
     Franchise,
     FranchiseEntry,
     IdentityAssessment,
@@ -39,17 +41,20 @@ from anishift.application import (
     RankedCandidate,
     ReleaseCatalog,
     ReleaseFacts,
+    SeasonContext,
     StreamCandidate,
     TitleCandidate,
     TitleStatus,
     WorkspaceInspector,
 )
+from anishift.application.acquisition import catalog_releases
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.episode_identity import REASONS
+from anishift.application.episode_selection import AniZipMapping, episode_listing
 from anishift.application.planning import ExecutionPlan
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.watch_state import WatchStateStore
-from anishift.cli.interactive.anime import _REASON_TEXTS, AnimeController, _Screen
+from anishift.cli.interactive.anime import _ENTRY_ONLY_RELEASES, _REASON_TEXTS, AnimeController, _Screen
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
@@ -136,8 +141,9 @@ class _Catalog:
         self.cancel = cancel
         return self.franchise_read(identifier)
 
-    def season_context(self, candidate: TitleCandidate) -> None:
+    def season_context(self, candidate: TitleCandidate) -> SeasonContext | None:
         self.calls.append(("season", candidate.anilist_id))
+        return None
 
     def search_title(self, candidate: TitleCandidate, **options: object) -> object:
         self.calls.append(("releases", candidate.anilist_id))
@@ -158,9 +164,12 @@ def _controller(catalog: _Catalog) -> AnimeController:
 
 def _settle(controller: AnimeController) -> None:
     worker: threading.Thread | None = controller._worker
-    if worker is not None:
+    while worker is not None:
         worker.join(10)
         assert not worker.is_alive()
+        if controller._worker is worker:
+            break
+        worker = controller._worker
 
 
 def _key(controller: AnimeController, key: str) -> None:
@@ -269,24 +278,259 @@ def test_extra_entry_does_not_skip_the_franchise_screen() -> None:
 
 
 class _GroupCatalog(_Catalog):
+    def __init__(self) -> None:
+        super().__init__()
+        self.filters: list[object] = []
+
     def search_title(self, candidate: TitleCandidate, **options: object) -> ReleaseCatalog:
-        del options
+        self.filters.append(options.get("episodes"))
         self.calls.append(("releases", candidate.anilist_id))
         return ReleaseCatalog((), 0)
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("movie", [False, True])
-def test_unmapped_skipped_entry_opens_its_releases_without_a_dead_end(movie: bool) -> None:
-    catalog: _GroupCatalog = _GroupCatalog()
+def test_unmapped_skipped_entry_keeps_its_known_episode_list(movie: bool) -> None:
+    class Releases(_GroupCatalog):
+        def search_title(self, candidate: TitleCandidate, **options: object) -> ReleaseCatalog:
+            super().search_title(candidate, **options)
+            span: object = options["episodes"]
+            assert span is None or isinstance(span, EpisodeRange)
+            title: str = "[Group] Slime [1080p].mkv" if movie else "[Group] Slime - 01 [1080p].mkv"
+            release: Release = Release(title, "https://example.test/1", "1", 10, "1 GB", None, "en")
+            return catalog_releases((release,), parse_release_name, episodes=span)
+
+    catalog: Releases = Releases()
     catalog.view = Franchise(1, (_entry(format="MOVIE") if movie else _entry(),), (), True)
     catalog.listing = replace(catalog.listing, specials=(), kitsu_id=None)
     controller: AnimeController = _controller(catalog)
     for key in ("paste:slime", "enter"):
         _key(controller, key)
-    assert _at(controller) is _Screen.RESULTS
-    assert catalog.calls[-1] == ("releases", 1)
+    assert _at(controller) is _Screen.EPISODES
+    assert catalog.calls[-1] == ("episodes", 1)
     assert "Brak mapowania" not in _frame(controller)
+    _key(controller, "text:d")
+    assert _at(controller) is _Screen.RESULTS
+    assert catalog.filters == [None if movie else EpisodeRange(Decimal(1), Decimal(1))]
+    assert [choice.release.info_hash for group in controller._groups for choice in group.choices] == ["1"]
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.EPISODES
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("width", [80, 120])
+def test_overgeared_without_mapping_uses_anilist_rows_and_explicit_nyaa_preview(width: int) -> None:
+    catalog: _GroupCatalog = _GroupCatalog()
+    premiere: datetime = datetime(2026, 9, 27, 12, tzinfo=UTC)
+    catalog.view = Franchise(
+        1, (replace(_entry(format="ONA"), romaji="Overgeared", english="Overgeared", year=2026),), (), True
+    )
+    catalog.titles = (
+        replace(_title(), romaji="Overgeared", english="Overgeared", format="ONA", year=2026, episodes=12),
+    )
+    catalog.listing = episode_listing(
+        1,
+        AniZipMapping(None, None, None, (), (), None, {}),
+        "RELEASING",
+        12,
+        tuple(ListedEpisode(number, airs_at=premiere + timedelta(weeks=number - 1)) for number in range(1, 13)),
+        datetime(2026, 9, 29, tzinfo=UTC),
+    )
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:Overgeared", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.EPISODES
+    assert controller._episode_screen_count() == 12
+    frame: str = controller.render(width, 40).plain
+    assert "Overgeared" in frame
+    assert "Nie zamówiono" in frame
+    assert "Nie wyemitowano" in frame
+    assert "Odcinek " not in frame
+    assert all(episode.title is None for episode in catalog.listing.episodes)
+    assert "27.09" in frame
+    assert not catalog.filters
+    for key in ("down", "text:d"):
+        _key(controller, key)
+    assert not catalog.filters
+    for key in ("home", "text:d"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.RESULTS
+    assert catalog.filters == [EpisodeRange(Decimal(1), Decimal(1))]
+    assert not any(operation == "offer" for operation, _ in catalog.calls)
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.EPISODES
+
+
+@pytest.mark.unit
+def test_unmapped_entry_without_any_episode_data_retains_the_nyaa_escape_route() -> None:
+    catalog: _GroupCatalog = _GroupCatalog()
+    catalog.view = Franchise(1, (_entry(),), (), True)
+    catalog.listing = replace(catalog.listing, kitsu_id=None, episodes=(), specials=())
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.RESULTS
+    assert catalog.filters == [None]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("related", [False, True])
+def test_unmapped_preview_filters_exact_selected_numbers_and_returns_to_episode_draft(related: bool) -> None:
+    class Releases(_GroupCatalog):
+        def search_title(self, candidate: TitleCandidate, **options: object) -> ReleaseCatalog:
+            super().search_title(candidate, **options)
+            span: object = options["episodes"]
+            assert isinstance(span, EpisodeRange)
+            releases: tuple[Release, ...] = tuple(
+                Release(
+                    f"[Group] Slime - {number:02d} [1080p].mkv",
+                    "https://example.test/1",
+                    str(number),
+                    10,
+                    "1 GB",
+                    None,
+                    "en",
+                )
+                for number in range(1, 7)
+            )
+            return catalog_releases(releases, parse_release_name, episodes=span)
+
+    catalog: Releases = Releases()
+    catalog.listing = replace(catalog.listing, kitsu_id=None, specials=())
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime", "enter"):
+        _key(controller, key)
+    if related:
+        _key(controller, "down")
+        catalog.titles = (replace(_title(), anilist_id=2),)
+    _key(controller, "enter")
+    for key in ("space", "down", "down", "space", "text:d"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.RESULTS
+    assert {choice.episode for group in controller._groups for choice in group.choices} == {Decimal(1), Decimal(3)}
+    assert catalog.calls[-1] == ("releases", 2 if related else 1)
+    assert catalog.filters == [EpisodeRange(Decimal(1), Decimal(3))]
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.EPISODES
+    assert controller._episode_marks == {1, 3}
+    for key in ("text:a", "text:a", "home", "text:d"):
+        _key(controller, key)
+    assert {choice.episode for group in controller._groups for choice in group.choices} == {Decimal(1)}
+    assert len(catalog.filters) == 2
+
+
+@pytest.mark.unit
+def test_unmapped_sequel_looks_up_full_title_before_reading_absolute_episode_numbers() -> None:
+    sequel: TitleCandidate = replace(
+        _title(), anilist_id=2, romaji="Slime 2", episodes=12, prequel_ids=(1,), synonyms=("Slime Second Season",)
+    )
+
+    class Releases(_GroupCatalog):
+        def find_titles(self, query: str) -> tuple[TitleCandidate, ...]:
+            super().find_titles(query)
+            return (_title(), sequel) if query == sequel.romaji else (_title(),)
+
+        def season_context(self, candidate: TitleCandidate) -> SeasonContext:
+            assert candidate == sequel
+            return SeasonContext(2, 12, candidate.episodes)
+
+        def search_title(self, candidate: TitleCandidate, **options: object) -> ReleaseCatalog:
+            super().search_title(candidate, **options)
+            span: object = options["episodes"]
+            context: object = options["context"]
+            assert isinstance(span, EpisodeRange)
+            assert isinstance(context, SeasonContext)
+            releases: tuple[Release, ...] = (
+                Release("[Group] Slime - 13 [1080p].mkv", "https://example.test/13", "13", 10, "1 GB", None, "en"),
+                Release("[Group] Slime - 14 [1080p].mkv", "https://example.test/14", "14", 10, "1 GB", None, "en"),
+            )
+            return catalog_releases(releases, parse_release_name, episodes=span, context=context)
+
+    catalog: Releases = Releases()
+    catalog.view = Franchise(1, (_entry(), replace(_entry(2), romaji=sequel.romaji)), (), True)
+    catalog.listing = replace(catalog.listing, kitsu_id=None, specials=())
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime", "enter", "down", "enter", "text:d"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.RESULTS
+    assert catalog.calls[-2:] == [("titles", len(sequel.romaji)), ("releases", 2)]
+    assert [choice.release.info_hash for group in controller._groups for choice in group.choices] == ["13"]
+    assert controller._context == SeasonContext(2, 12, 12)
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.EPISODES
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("unavailable", ["missing", "failed", "entry"])
+def test_unmapped_preview_without_a_resolved_title_shows_a_notice(unavailable: str) -> None:
+    class Titles(_GroupCatalog):
+        def find_titles(self, query: str) -> tuple[TitleCandidate, ...]:
+            if unavailable == "failed" and self.calls:
+                raise OSError("offline")
+            return super().find_titles(query)
+
+    catalog: Titles = Titles()
+    catalog.listing = replace(catalog.listing, kitsu_id=None, specials=())
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime", "enter", "down", "enter"):
+        _key(controller, key)
+    if unavailable == "entry":
+        controller._entry = None
+    _key(controller, "text:d")
+    assert not catalog.filters
+    if unavailable == "failed":
+        assert _at(controller) is _Screen.PROBLEM
+        assert controller._problem_return is _Screen.EPISODES
+        assert _ENTRY_ONLY_RELEASES not in _frame(controller)
+        _key(controller, "escape")
+        assert _at(controller) is _Screen.EPISODES
+    else:
+        assert _at(controller) is _Screen.EPISODES
+        assert _ENTRY_ONLY_RELEASES in _frame(controller)
+
+
+@pytest.mark.unit
+def test_unmapped_preview_then_groups_restores_the_search_phrase_episode_range() -> None:
+    catalog: _GroupCatalog = _GroupCatalog()
+    catalog.view = Franchise(1, (_entry(),), (), True)
+    catalog.listing = replace(catalog.listing, kitsu_id=None, specials=())
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime 4-6", "enter", "text:d", "escape", "text:g"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.RESULTS
+    assert catalog.filters == [EpisodeRange(Decimal(1), Decimal(1)), EpisodeRange(Decimal(4), Decimal(6))]
+
+
+@pytest.mark.unit
+def test_cancelled_unmapped_title_lookup_does_not_start_release_search() -> None:
+    started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    class Titles(_GroupCatalog):
+        def find_titles(self, query: str) -> tuple[TitleCandidate, ...]:
+            if self.calls:
+                started.set()
+                assert release.wait(10)
+                return (replace(_title(), anilist_id=2),)
+            return super().find_titles(query)
+
+    catalog: Titles = Titles()
+    catalog.listing = replace(catalog.listing, kitsu_id=None, specials=())
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime", "enter", "down", "enter"):
+        _key(controller, key)
+    controller.handle_key("text:d")
+    worker: threading.Thread | None = controller._worker
+    assert worker is not None
+    try:
+        assert started.wait(10)
+        controller.handle_key("escape")
+    finally:
+        release.set()
+        worker.join(10)
+    assert not worker.is_alive()
+    assert _at(controller) is _Screen.EPISODES
+    assert not catalog.filters
 
 
 @pytest.mark.unit
