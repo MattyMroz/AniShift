@@ -59,6 +59,18 @@ BRAND_THEME: Final[Theme] = Theme(
         "gray": "#8892ad",
         "white_bold": "#e2e7f5 bold",
         "progress_track": "#303a54",
+        "anime_base": "#e2e7f5 on #171c23",
+        "anime_text": "#e2e7f5",
+        "anime_muted": "#b5bed1",
+        "anime_border": "#56647c",
+        "anime_accent": "#8ab7ff bold",
+        "anime_heading": "#c7adff bold",
+        "anime_tab": "#171c23 on #8ab7ff bold",
+        "anime_active": "#e2e7f5 on #293952",
+        "anime_flash": "#e2e7f5 on #204a32",
+        "anime_success": "#a4e8b1",
+        "anime_warning": "#ffc18b",
+        "anime_selection": "#171c23 on #e2e7f5",
     },
 )
 """Accent style every interactive view uses on top of the shared Rich theme."""

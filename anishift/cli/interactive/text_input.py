@@ -83,6 +83,17 @@ class TextInput:
         self._buffer.reset(document=Document(text, len(text)))
         self.pristine = pristine
 
+    @property
+    def selected_text(self) -> str:
+        """Return the selected source text without changing clipboard or selection."""
+        start, end = self._buffer.document.selection_range()
+        return self.text[start:end] if self.selected else ""
+
+    @property
+    def selection_range(self) -> tuple[int, int] | None:
+        """Return selected character bounds for a renderer without changing the buffer."""
+        return self._buffer.document.selection_range() if self.selected else None
+
     def handle(self, key: str) -> bool:
         """Apply one key and report consumption; unselected Ctrl+C remains an interrupt."""
         if key == "interrupt":

@@ -72,6 +72,7 @@ def _renderer_with(image: NativeMascotImage | None, writes: list[str]) -> Termin
         ),
     )
     renderer._native_mascot = image
+    renderer._use_mascot = True
     return renderer
 
 

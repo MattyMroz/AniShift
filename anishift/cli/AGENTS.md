@@ -15,6 +15,17 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 
 ## Pułapki
 
+- `interactive/anime_panel.py`, `anime_state.py` and `anime_view.py` are the P1 presentation
+  boundary, exercised through the offline `scripts/tmp/anime_panel_demo.py`; the live Anime/G
+  controller is not switched yet. Rows and admission results come from an injected adapter.
+  The pure renderer receives a snapshot and clock; its text hit map excludes tabs, markers,
+  checkboxes and borders. Selection summaries and range editing reserve bottom rows.
+  `anime_clipboard.py` sends BOM-prefixed UTF-16LE bytes to Windows `clip.exe`.
+  Selected-text Ctrl+C/C precedes navigation; unselected Ctrl+C keeps back/blur semantics.
+  `_WheelControl` converts Prompt Toolkit character positions to terminal cells before the
+  optional mouse callback. Keep CJK/combining characters aligned with the hit map.
+- `main._default` catches resident `ControlError`, reports a Polish connection failure and
+  exits with `EXIT_REFUSED`; service cleanup also runs when session construction fails.
 - `anishift watch` uruchamia rezydenta bez importu Prompt Toolkit; `watch resident` jest aliasem.
   `watch batch` odmawia z komunikatem migracyjnym. Panel i `run --preset` łączą się z właścicielem
   lub uruchamiają go na żądanie. Zamknięcie panelu nie anuluje zaakceptowanej pracy.

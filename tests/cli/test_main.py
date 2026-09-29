@@ -24,6 +24,7 @@ from anishift.config.workspace import ENV_WORKSPACE_ROOT, WorkspaceRootNotResolv
 from anishift.errors import ConfigError, ErrorCode, ErrorContext
 from anishift.platform import autostart, qbittorrent_config
 from anishift.platform.autostart import AutostartStatus, AutostartUnsupportedError
+from anishift.platform.local_control import ControlError
 
 cli_main = importlib.import_module("anishift.cli.main")
 
@@ -66,6 +67,34 @@ codes = [
 prefixes = tuple(json.loads(sys.argv[1]))
 print(json.dumps({"codes": codes, "loaded": sorted(n for n in sys.modules if n.startswith(prefixes))}))
 """
+
+
+def test_resident_start_failure_is_polish_nonzero_and_closes_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    service: Mock = Mock(workspace_root=Path("unused"))
+    monkeypatch.setattr(cli_main, "_composed_service", lambda: service)
+    monkeypatch.setattr(cli_control, "open_control", Mock(side_effect=ControlError("Resident unavailable")))
+    result: Result = CliRunner().invoke(cli_main.app, [])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "Nie udało się połączyć z rezydentem" in result.output
+    assert "anishift watch status" in result.output
+    assert "Traceback" not in result.output
+    service.close.assert_called_once()
+
+
+def test_interactive_control_failure_is_not_misreported_as_start_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    resident_module = importlib.import_module("anishift.cli.resident")
+    service: Mock = Mock(workspace_root=Path("unused"))
+    session: Mock = Mock()
+    problem: ControlError = ControlError("Interaction failed")
+    monkeypatch.setattr(cli_main, "_composed_service", lambda: service)
+    monkeypatch.setattr(resident_module, "ResidentSession", Mock(return_value=session))
+    monkeypatch.setattr(interactive_package, "run_interactive", Mock(side_effect=problem))
+    result: Result = CliRunner().invoke(cli_main.app, [])
+    assert result.exception is problem
+    assert "Nie udało się połączyć z rezydentem" not in result.output
+    session.close.assert_called_once()
+    service.close.assert_called_once()
 
 
 def test_an_unresolved_workspace_reports_the_reason_and_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:

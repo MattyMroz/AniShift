@@ -9,11 +9,12 @@ from io import StringIO
 from typing import Final
 
 from prompt_toolkit import Application
-from prompt_toolkit.formatted_text import ANSI, AnyFormattedText
+from prompt_toolkit.data_structures import Point
+from prompt_toolkit.formatted_text import ANSI, AnyFormattedText, fragment_list_to_text, to_formatted_text
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import FormattedTextControl, Layout, Window
-from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
+from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import ColorDepth
 from rich.console import Console
 from rich.text import Text
@@ -174,36 +175,69 @@ class AutoGeometry:
 class _WheelControl(FormattedTextControl):
     """Turn wheel events into scroll requests the surrounding window cannot serve."""
 
-    def __init__(self, scroll_handler: Callable[[int], None] | None, **arguments: object) -> None:
+    def __init__(
+        self,
+        scroll_handler: Callable[[int], None] | None,
+        mouse_handler: Callable[[MouseEvent], None] | None = None,
+        **arguments: object,
+    ) -> None:
         super().__init__(**arguments)  # type: ignore[arg-type]
         self._scroll_handler: Callable[[int], None] | None = scroll_handler
+        self._mouse_callback: Callable[[MouseEvent], None] | None = mouse_handler
 
     def mouse_handler(self, mouse_event: MouseEvent) -> object:
-        """Consume wheel events and delegate everything else to the base control."""
+        """Forward wheel and left-button gestures without consuming unrelated pointer events."""
         wheel: dict[MouseEventType, int] = {
             MouseEventType.SCROLL_UP: -1,
             MouseEventType.SCROLL_DOWN: 1,
         }
         direction: int | None = wheel.get(mouse_event.event_type)
-        if direction is None or self._scroll_handler is None:
-            return super().mouse_handler(mouse_event)
-        self._scroll_handler(direction)
-        return None
+        if direction is not None:
+            if self._scroll_handler is None:
+                return NotImplemented
+            self._scroll_handler(direction)
+            return None
+        if mouse_event.button is not MouseButton.LEFT or mouse_event.event_type not in {
+            MouseEventType.MOUSE_DOWN,
+            MouseEventType.MOUSE_MOVE,
+            MouseEventType.MOUSE_UP,
+        }:
+            return NotImplemented
+        if self._mouse_callback is not None:
+            lines: list[str] = fragment_list_to_text(to_formatted_text(self.text)).split("\n")
+            row: int = mouse_event.position.y
+            column: int = mouse_event.position.x
+            if 0 <= row < len(lines):
+                column = Text(lines[row][:column]).cell_len
+            self._mouse_callback(
+                MouseEvent(
+                    Point(column, row),
+                    mouse_event.event_type,
+                    mouse_event.button,
+                    mouse_event.modifiers,
+                )
+            )
+            return None
+        return NotImplemented
 
 
 class TerminalRenderer:
     """Render the entire interactive session through one Prompt Toolkit application."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         frame_provider: Callable[[int, int], Text],
         key_handler: Callable[[str], None],
         idle_handler: Callable[[], None] | None = None,
         scroll_handler: Callable[[int], None] | None = None,
+        *,
+        mouse_handler: Callable[[MouseEvent], None] | None = None,
+        use_mascot: bool = True,
     ) -> None:
         self._frame_provider: Callable[[int, int], Text] = frame_provider
         self._key_handler: Callable[[str], None] = key_handler
         self._idle_handler: Callable[[], None] | None = idle_handler
+        self._use_mascot: bool = use_mascot
         self._render_width: int = 0
         self._render_stream: StringIO | None = None
         self._rich_console: Console | None = None
@@ -217,6 +251,7 @@ class TerminalRenderer:
         bindings: KeyBindings = self._key_bindings()
         control = _WheelControl(
             scroll_handler,
+            mouse_handler,
             text=lambda: self._prepared_frame,
             focusable=False,
             show_cursor=False,
@@ -256,10 +291,10 @@ class TerminalRenderer:
 
     def run(self) -> None:
         """Run the terminal event loop until the user exits."""
-        cell: tuple[int, int] | None = native_mascot_cell()
+        cell: tuple[int, int] | None = native_mascot_cell() if self._use_mascot else None
         if cell is not None:
             self._native_mascot = load_native_mascot(cell_size=cell, query_terminal=False)
-        if self._native_mascot is None:
+        if self._native_mascot is None and self._use_mascot:
             mascot_art(TEXT_MASCOT_SIZE[0], TEXT_MASCOT_SIZE[1] - 2)
         self._native_animation_started_at = time.monotonic()
         self._application.run()

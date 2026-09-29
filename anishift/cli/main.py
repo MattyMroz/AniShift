@@ -165,13 +165,21 @@ def _default(
     from anishift.cli.interactive import run_interactive  # noqa: PLC0415 - keep prompts off technical commands
     from anishift.cli.resident import ResidentSession  # noqa: PLC0415
     from anishift.cli.watch import watch_state_dir  # noqa: PLC0415
+    from anishift.platform.local_control import ControlError  # noqa: PLC0415
 
     del resident
-    session: ResidentSession = ResidentSession(service.workspace_root, lambda: open_control(watch_state_dir()))
+    session: ResidentSession | None = None
     try:
+        try:
+            session = ResidentSession(service.workspace_root, lambda: open_control(watch_state_dir()))
+        except ControlError as error:
+            logger.error("Interactive resident connection failed", error_class=type(error).__name__)  # noqa: TRY400
+            _tell("Nie udało się połączyć z rezydentem AniShift. Sprawdź stan: anishift watch status.")
+            raise typer.Exit(code=EXIT_REFUSED) from None
         run_interactive(service, resident=session, show_state=state, terminal_window=terminal_window)
     finally:
-        session.close()
+        if session is not None:
+            session.close()
         service.close()
 
 
