@@ -1071,9 +1071,10 @@ class StateController:
             tabs: Text = self._tabs(columns)
             content.append(" " * max((columns - tabs.cell_len) // 2, 0))
             content.append_text(tabs)
-            content.append("\n")
+            anime: bool = self._tab == _Tab.ANIME and self._anime is not None
+            content.append("\n" if anime or rows < _MINIMUM_HEADER_ROWS else "\n\n")
             heading_rows: int = content.plain.count("\n")
-            if self._tab == _Tab.ANIME and self._anime is not None:
+            if anime and self._anime is not None:
                 status: str = self._global_status()
                 status_rows: int = len(Text(status).wrap(Console(width=max(columns - 2, 1)), max(columns - 2, 1)))
                 content.append_text(self._anime.render(columns, max(rows - heading_rows - status_rows, 1)))

@@ -248,7 +248,7 @@ def test_search_opens_entries_directly_when_every_result_is_a_displayed_franchis
 @pytest.mark.parametrize("first", ["text:slime", "paste:slime"])
 @pytest.mark.parametrize("complete", [True, False])
 @pytest.mark.parametrize("extras", [True, False])
-def test_single_complete_entry_skips_entries_only_without_extras(first: str, complete: bool, extras: bool) -> None:
+def test_single_complete_entry_skips_entries_even_with_extras(first: str, complete: bool, extras: bool) -> None:
     catalog: _Catalog = _Catalog()
     catalog.view = Franchise(1, (_entry(),), (), complete)
     catalog.listing = replace(catalog.listing, specials=catalog.listing.specials if extras else ())
@@ -258,8 +258,9 @@ def test_single_complete_entry_skips_entries_only_without_extras(first: str, com
     assert controller._query == "slime"
     assert catalog.calls == []
     _key(controller, "enter")
-    skipped: bool = complete and not extras
+    skipped: bool = complete
     assert _at(controller) is (_Screen.EPISODES if skipped else _Screen.ENTRIES)
+    assert "Dodatki" not in _frame(controller)
     if skipped:
         assert not controller._episode_marks
         assert not controller._offers
@@ -271,15 +272,15 @@ def test_single_complete_entry_skips_entries_only_without_extras(first: str, com
 
 
 @pytest.mark.unit
-def test_extra_entry_does_not_skip_the_franchise_screen() -> None:
+def test_single_extra_entry_opens_its_episodes_directly() -> None:
     catalog: _Catalog = _Catalog()
     catalog.view = Franchise(1, (replace(_entry(), group=EntryGroup.EXTRA),), (), True)
     catalog.listing = replace(catalog.listing, specials=())
     controller: AnimeController = _controller(catalog)
     for key in ("paste:slime", "enter"):
         _key(controller, key)
-    assert _at(controller) is _Screen.ENTRIES
-    assert catalog.calls == [("titles", 5), ("franchise", 1)]
+    assert _at(controller) is _Screen.EPISODES
+    assert catalog.calls == [("titles", 5), ("franchise", 1), ("episodes", 1)]
 
 
 class _GroupCatalog(_Catalog):
@@ -590,24 +591,6 @@ def test_skipped_entry_catalogue_failure_returns_to_entries_and_allows_retry(bac
 
 
 @pytest.mark.unit
-def test_preloaded_extra_listing_is_consumed_once_before_explicit_refresh() -> None:
-    catalog: _Catalog = _Catalog()
-    catalog.view = Franchise(1, (_entry(),), (), True)
-    controller: AnimeController = _controller(catalog)
-    for key in ("paste:slime", "enter"):
-        _key(controller, key)
-    assert _at(controller) is _Screen.ENTRIES
-    assert catalog.calls.count(("episodes", 1)) == 1
-    _key(controller, "enter")
-    assert _at(controller) is _Screen.EPISODES
-    assert "Dodatki" not in _frame(controller)
-    assert catalog.calls.count(("episodes", 1)) == 1
-    for key in ("escape", "enter"):
-        _key(controller, key)
-    assert catalog.calls.count(("episodes", 1)) == 2
-
-
-@pytest.mark.unit
 def test_new_search_resets_skipped_entry_navigation() -> None:
     catalog: _Catalog = _Catalog()
     catalog.view = Franchise(1, (_entry(),), (), True)
@@ -626,7 +609,7 @@ def test_new_search_resets_skipped_entry_navigation() -> None:
 
 
 @pytest.mark.unit
-def test_single_unrelated_franchise_entry_does_not_skip_title_selection() -> None:
+def test_single_unrelated_franchise_entry_keeps_title_selection_then_opens_episodes() -> None:
     catalog: _Catalog = _Catalog()
     catalog.view = Franchise(1, (_entry(9),), (), True)
     catalog.listing = replace(catalog.listing, specials=())
@@ -636,8 +619,9 @@ def test_single_unrelated_franchise_entry_does_not_skip_title_selection() -> Non
     assert _at(controller) is _Screen.TITLES
     assert catalog.calls == [("titles", 5), ("franchise", 1)]
     _key(controller, "enter")
-    assert _at(controller) is _Screen.ENTRIES
-    assert "G grupy" not in _frame(controller)
+    assert _at(controller) is _Screen.EPISODES
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.TITLES
 
 
 @pytest.mark.unit

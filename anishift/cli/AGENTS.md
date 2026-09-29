@@ -178,11 +178,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Po wyszukiwaniu `_find_titles` od razu czyta franczyzę pierwszego wyniku; TITLES pojawia się
   (`_titles_shown`) tylko, gdy któryś wynik nie jest w `Franchise.entries` — nie w `FranchiseGraph.nodes`,
   bo niewidoczne węzły byłyby wtedy nieosiągalne. Esc z ENTRIES wraca do TITLES albo QUERY według
-  `_titles_shown`. `_entries_skipped` skips ENTRIES only for one matching result and one complete
-  franchise entry without extras; episodes are read first to check ani.zip specials. Esc then returns
-  to QUERY. An episode-read failure clears skipping and returns to ENTRIES. `_listing_preloaded`
-  consumes the already-read special-bearing listing on the first Enter; later explicit entry refreshes.
-  New search resets both flags. Kolejność TITLES i ENTRIES liczy wyłącznie `premiere_order` z fasady.
+  `_titles_shown`. `_entries_skipped` skips ENTRIES whenever the opened franchise is complete and has
+  exactly one entry, from the search or from TITLES; Esc then returns to TITLES or QUERY by
+  `_titles_shown`. An episode-read failure clears skipping and returns to ENTRIES. New search resets it. Kolejność TITLES i ENTRIES liczy wyłącznie `premiere_order` z fasady.
   `G` otwiera dawną drogę RESULTS z pobieraniem i subskrypcjami, także z ENTRIES dla wpisu obecnego
   w `_candidates`. G also works on EPISODES when `_entries_skipped` is true and that entry is among
   search results, including missing mapping; the footer advertises it only then. Leaving RESULTS

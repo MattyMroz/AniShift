@@ -454,7 +454,6 @@ class AnimeController:
         self._franchise: Franchise | None = None
         self._entry: FranchiseEntry | None = None
         self._listing: EpisodeListing | None = None
-        self._listing_preloaded: bool = False
         self._episode_marks: set[int] = set()
         self._offer_numbers: tuple[int, ...] = ()
         self._offers: dict[int, EpisodeOffer] = {}
@@ -872,7 +871,10 @@ class AnimeController:
             self._offers_running = False
             self._screen = _Screen.EPISODES
         elif self._screen is _Screen.EPISODES:
-            self._screen = _Screen.QUERY if self._entries_skipped else _Screen.ENTRIES
+            if not self._entries_skipped:
+                self._screen = _Screen.ENTRIES
+            else:
+                self._screen = _Screen.TITLES if self._titles_shown else _Screen.QUERY
         else:
             self._screen = _Screen.TITLES if self._titles_shown else _Screen.QUERY
 
@@ -976,7 +978,7 @@ class AnimeController:
     def _start_franchise(self) -> None:
         candidate: TitleCandidate = self._candidates[self._highlighted]
         if self._franchise is not None and self._franchise.selected_id == candidate.anilist_id:
-            self._screen = _Screen.ENTRIES
+            self._open_entries(self._franchise)
             return
         self._franchise = None
         self._entry = None
@@ -997,12 +999,16 @@ class AnimeController:
         with self._lock:
             if generation != self._generation:
                 return
-            self._open_entries(franchise)
             self._worker = None
+            self._open_entries(franchise)
         self._invalidate()
 
     def _open_entries(self, franchise: Franchise) -> None:
         self._adopt_franchise(franchise)
+        self._entries_skipped = len(franchise.entries) == 1 and franchise.complete
+        if self._entries_skipped:
+            self._start_episodes(_Screen.TITLES if self._titles_shown else _Screen.QUERY)
+            return
         self._screen = _Screen.ENTRIES
 
     def _adopt_franchise(self, franchise: Franchise) -> None:
@@ -1013,24 +1019,18 @@ class AnimeController:
         self._offsets[_Screen.ENTRIES] = 0
         self._follow_cursor = True
 
-    def _start_episodes(self) -> None:
+    def _start_episodes(self, back: _Screen = _Screen.ENTRIES) -> None:
         if self._franchise is None:
             return
         entry: FranchiseEntry = self._franchise.entries[self._positions.get(_Screen.ENTRIES, 0)]
         same: bool = self._entry == entry and self._listing is not None
         self._entry = entry
-        preloaded: bool = self._listing_preloaded
-        self._listing_preloaded = False
-        if same and preloaded:
-            self._screen = _Screen.EPISODES
-            self._follow_cursor = True
-            return
         if not same:
             self._listing = None
             self._episode_marks.clear()
             self._positions[_Screen.EPISODES] = 0
             self._offsets[_Screen.EPISODES] = 0
-        generation: int = self._start_work("Wczytuję odcinki…", _Screen.ENTRIES)
+        generation: int = self._start_work("Wczytuję odcinki…", back)
         self._spawn(self._load_episodes, (entry, generation))
 
     def _read_episode_states(self, listing: EpisodeListing) -> dict[EpisodeKey, str]:
@@ -1071,10 +1071,6 @@ class AnimeController:
             )
             self._follow_cursor = True
             self._screen = _Screen.EPISODES
-            if self._entries_skipped and listing.specials:
-                self._entries_skipped = False
-                self._listing_preloaded = True
-                self._screen = _Screen.ENTRIES
             self._worker = None
             unmapped: TitleCandidate | None = (
                 self._entry_release_candidate() if listing.kitsu_id is None and not listing.episodes else None
@@ -1310,7 +1306,6 @@ class AnimeController:
         self._candidates = ()
         self._titles_shown = False
         self._entries_skipped = False
-        self._listing_preloaded = False
         self._candidate = None
         self._groups = ()
         self._rows = ()
@@ -1593,10 +1588,8 @@ class AnimeController:
             else:
                 self._highlighted = self._candidates.index(candidates[0])
                 self._screen = _Screen.ENTRIES
-            if len(candidates) == 1 and len(franchise.entries) == 1 and franchise.complete:
+            if not self._titles_shown and len(franchise.entries) == 1 and franchise.complete:
                 entry = franchise.entries[0]
-                if entry.group is EntryGroup.EXTRA or entry.anilist_id != candidates[0].anilist_id:
-                    entry = None
             if entry is not None:
                 self._entries_skipped = True
                 self._entry = entry

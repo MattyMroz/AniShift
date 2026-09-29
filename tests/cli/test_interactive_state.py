@@ -2027,7 +2027,8 @@ def _assert_list_fills_available_rows(controller: StateController) -> None:
         {"series": f"Series {index}", "enabled": False, "group": "Group", "next_episode": 1} for index in range(20)
     )
     frame: str = controller.render(80, 24).plain
-    assert sum("● " in line or "○ " in line for line in frame.splitlines()) == 17
+    assert sum("● " in line or "○ " in line for line in frame.splitlines()) == 16
+    assert frame.splitlines()[3] == ""
     assert "Space aktywność" in frame
     assert len(frame.splitlines()) <= 24
     controller.handle_key("end")
