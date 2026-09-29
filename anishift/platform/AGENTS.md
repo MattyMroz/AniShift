@@ -50,7 +50,9 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
   z sha256 katalogu stanu>`, poza nim `<state_dir>/control.sock`. Nigdy TCP i nigdy `send`/`recv`
   (pickle) — wyłącznie `send_bytes`/`recv_bytes` z JSON i limitem `MAX_FRAME_BYTES`; `recv_bytes`
   z limitem podnosi `OSError` i psuje połączenie, więc ramka ponad limit kończy je bez odpowiedzi.
-  `local_control.py`
+  Dlatego `ControlServer._respond` mierzy zakodowaną odpowiedź: ponad limit wysyła odmowę
+  `REFUSED` z `reason="response_too_large"` (bez obcinania treści), a połączenie obsługuje
+  kolejne polecenia. Zdarzenia `publish` nie mają tej kontroli. `local_control.py`
 - `PipeListener.accept()` blokuje na `WaitForMultipleObjects(..., INFINITE)`, więc `close()` budzi
   wątek accept własnym połączeniem do siebie; samo zamknięcie listenera go nie odblokuje.
   `local_control.py`

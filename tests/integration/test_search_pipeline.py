@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 from harness import Composed, Resolved, composed_fixture  # noqa: F401
 
 from anishift.application.acquisition import MAX_REQUESTS, ReleaseChoice, SeasonContext
+from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_selection import EntryGroup, EpisodeKey, EpisodeListing, EpisodeOffer, Franchise
 from anishift.services.catalog import TitleStatus
 from anishift.services.torrents.nyaa import CATEGORY_ENGLISH_TRANSLATED, CATEGORY_NON_ENGLISH_TRANSLATED
 
@@ -15,6 +17,9 @@ if TYPE_CHECKING:
 SOLO_SEASON_1 = "Ore dake Level Up na Ken"
 SOLO_SEASON_2 = "Arise from the Shadow"
 MUSHOKU_SEASON_3 = "III"
+SLIME_SEASON_1 = 101280
+SLIME_OAD = 106509
+SLIME_DIARIES = 116741
 
 
 def _choices(found: Resolved) -> Iterator[ReleaseChoice]:
@@ -158,3 +163,25 @@ def test_a_title_search_asks_both_categories_for_a_title_and_one_for_a_group(com
     assert asked[found.candidate.romaji] == {CATEGORY_ENGLISH_TRANSLATED, CATEGORY_NON_ENGLISH_TRANSLATED}
     assert refined
     assert all(len(categories) == 1 for categories in refined.values())
+
+
+def test_slime_first_season_entry_ranks_episode_four_from_recorded_franchise_mapping_and_streams(
+    composed: Composed,
+) -> None:
+    view: Franchise = composed.acquisition.franchise(SLIME_SEASON_1)
+    groups: dict[int, EntryGroup] = {entry.anilist_id: entry.group for entry in view.entries}
+    assert (groups[SLIME_OAD], groups[SLIME_DIARIES]) == (EntryGroup.EXTRA, EntryGroup.OTHER)
+    listing: EpisodeListing = composed.acquisition.episodes(SLIME_SEASON_1)
+    assert (listing.kitsu_id, len(listing.episodes)) == (41024, 24)
+    offer: EpisodeOffer = composed.acquisition.offer(EpisodeKey(SLIME_SEASON_1, 4))
+    assert offer.suggestion is not None
+    assert offer.candidates[offer.suggestion].identity.verdict is IdentityVerdict.MATCH
+
+
+def test_twelve_offers_after_entering_slime_ask_torrentio_twelve_times_and_nothing_else(composed: Composed) -> None:
+    composed.acquisition.franchise(SLIME_SEASON_1)
+    composed.acquisition.episodes(SLIME_SEASON_1)
+    composed.hosts.clear()
+    for number in range(1, 13):
+        composed.acquisition.offer(EpisodeKey(SLIME_SEASON_1, number))
+    assert composed.hosts == ["torrentio.strem.fun"] * 12

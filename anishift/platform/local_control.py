@@ -124,6 +124,12 @@ _SUBSCRIBE_KIND: Final[str] = "subscribe"
 _HANDLER_FAILED: Final[str] = "The resident could not complete the command"
 """Reason returned when the owner of the state raised instead of answering."""
 
+_RESPONSE_TOO_LARGE: Final[str] = "Response too large"
+"""Refusal sent instead of an answer whose frame would pass the size limit."""
+
+_RESPONSE_TOO_LARGE_REASON: Final[str] = "response_too_large"
+"""Machine-readable reason of an answer refused for its size."""
+
 _ACCEPT_JOIN_S: Final[float] = 5.0
 """Wait for the accept thread to notice that the server is closing."""
 
@@ -468,7 +474,14 @@ class ControlServer:
                 reason=ControlErrorCode.INTERNAL.value,
             )
             return _error_frame(request.command_id, ControlErrorCode.INTERNAL, _HANDLER_FAILED)
-        return _response_frame(request.command_id, response)
+        frame: dict[str, object] = _response_frame(request.command_id, response)
+        size: int = len(_encode_frame(frame))
+        if size <= MAX_FRAME_BYTES:
+            return frame
+        logger.warning("A control response passed the frame limit", command_kind=request.kind, size=size)
+        return _error_frame(
+            request.command_id, ControlErrorCode.REFUSED, _RESPONSE_TOO_LARGE, reason=_RESPONSE_TOO_LARGE_REASON
+        )
 
     def _forget(self, served: _ServedConnection) -> None:
         with self._lock:

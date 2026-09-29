@@ -13,7 +13,11 @@ from anishift.application import (
     CatalogOrder,
     DeletionPreview,
     DownloadReceipt,
+    EpisodeKey,
+    EpisodeListing,
+    EpisodeOffer,
     EpisodeRange,
+    Franchise,
     HistoryEvent,
     InspectedSourceGroup,
     InspectedWorkspace,
@@ -218,6 +222,23 @@ class ResidentSession:
                     "context": encode_view(context) if context is not None else None,
                 },
             ),
+        )
+
+    def franchise(self, anilist_id: int) -> Franchise:
+        """Read the franchise view of one entry through the owner."""
+        return decode_view(Franchise, self._call("acquisition", {"operation": "franchise", "anilist_id": anilist_id}))
+
+    def episodes(self, anilist_id: int) -> EpisodeListing:
+        """Read the episode list of one entry through the owner."""
+        return decode_view(
+            EpisodeListing, self._call("acquisition", {"operation": "episodes", "anilist_id": anilist_id})
+        )
+
+    def offer(self, key: EpisodeKey) -> EpisodeOffer:
+        """Read the ranked live candidates of one episode through the owner."""
+        return decode_view(
+            EpisodeOffer,
+            self._call("acquisition", {"operation": "offer", "anilist_id": key.anilist_id, "number": key.number}),
         )
 
     def download(self, choices: Sequence[ReleaseChoice]) -> DownloadReceipt:

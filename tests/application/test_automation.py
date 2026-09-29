@@ -80,6 +80,8 @@ from anishift.application.control import (
 )
 from anishift.application.control_views import DeletionPreview, LibrarySet, PlanPreview, decode_view, encode_view
 from anishift.application.discovery import discover_groups
+from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_selection import EpisodeKey, EpisodeListing, EpisodeOffer
 from anishift.application.events import RunEvent, RunEventKind
 from anishift.application.history import HistoryJournal, HistoryKind
 from anishift.application.inspection import (
@@ -133,10 +135,17 @@ from anishift.platform.local_control import (
     control_endpoint,
 )
 from anishift.platform.recycle import RecycleResult
-from anishift.services.catalog import AniListCatalog
+from anishift.services.catalog import AniListCatalog, AniZipCatalog
 from anishift.services.http_requests import RequestControl
 from anishift.services.media import DefaultMediaProbe
-from anishift.services.torrents import Release, TorrentClientError, TorrentFile, TorrentInfo, parse_release_name
+from anishift.services.torrents import (
+    Release,
+    TorrentClientError,
+    TorrentFile,
+    TorrentInfo,
+    TorrentioSource,
+    parse_release_name,
+)
 from anishift.services.torrents.categories import SEARCH_CATEGORIES
 from anishift.services.torrents.nyaa import search_releases
 from anishift.services.torrents.qbittorrent import QBittorrentClient
@@ -7362,3 +7371,160 @@ def test_a_pause_of_an_uncertain_resume_waits_for_stop_and_reports_a_refusal(
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
     assert not thread.is_alive()
+
+
+_SEARCH_FIXTURES: Final[Path] = Path(__file__).parents[1] / "fixtures" / "search"
+
+_SLIME_S1: Final[int] = 101280
+
+
+def _slime_replay(scenario: str, sent: list[str]) -> Callable[[httpx.Request], httpx.Response]:
+    recorded: dict[str, object] = json.loads(
+        (_SEARCH_FIXTURES / f"anilist__franchise__{_SLIME_S1}.json").read_text(encoding="utf-8")
+    )
+    requests: object = recorded["requests"]
+    assert isinstance(requests, list)
+    pages: dict[tuple[int, ...], object] = {tuple(sorted(page["ids"])): page["body"] for page in requests}
+    schedule: dict[str, object] = {
+        "data": {
+            "Media": {
+                "id": _SLIME_S1,
+                "status": "FINISHED",
+                "episodes": 24,
+                "startDate": {"year": 2018, "month": 10, "day": 2},
+                "airingSchedule": {"pageInfo": {"currentPage": 1, "hasNextPage": False}, "nodes": []},
+            }
+        }
+    }
+
+    failing: str | None = {
+        "anilist_failed": "graphql.anilist.co",
+        "anizip_failed": "api.ani.zip",
+        "torrentio_failed": "torrentio.strem.fun",
+    }.get(scenario)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        host: str = request.url.host
+        sent.append(host)
+        variables: dict[str, object] = json.loads(request.content)["variables"] if request.content else {}
+        if host == failing:
+            return httpx.Response(503)
+        if host == "graphql.anilist.co" and "ids" not in variables:
+            return (
+                httpx.Response(429, headers={"Retry-After": "60"})
+                if scenario == "schedule_limited"
+                else (httpx.Response(200, json=schedule))
+            )
+        if host == "graphql.anilist.co":
+            ids: object = variables["ids"]
+            assert isinstance(ids, list)
+            return httpx.Response(200, json=pages[tuple(sorted(ids))])
+        if host == "api.ani.zip":
+            return httpx.Response(200, content=(_SEARCH_FIXTURES / f"anizip__{_SLIME_S1}.json").read_bytes())
+        assert (host, request.url.path) == ("torrentio.strem.fun", "/stream/series/kitsu:41024:4.json")
+        return httpx.Response(200, content=(_SEARCH_FIXTURES / "torrentio__kitsu-41024-4.json").read_bytes())
+
+    return respond
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "scenario",
+    ["ok", "schedule_limited", "anilist_failed", "anizip_failed", "torrentio_failed", "offer_raises"],
+)
+def test_episode_selection_crosses_owner_ipc_with_the_provider_reason_preserved(  # noqa: PLR0915
+    tmp_path: Path, scenario: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[str] = []
+    now: list[float] = [1000.0]
+    control: RequestControl = RequestControl(
+        httpx.MockTransport(_slime_replay(scenario, sent)),
+        clock=lambda: now[0],
+        sleep=lambda delay: now.__setitem__(0, now[0] + delay),
+    )
+    with httpx.Client(transport=control) as http:
+        acquisition: AcquisitionService = AcquisitionService(
+            source=_NoSource(),
+            client=QBittorrentClient("http://unused.test", http=http),
+            workspace_root=tmp_path,
+            parse_name=parse_release_name,
+            title_catalog=AniListCatalog(http),
+            request_control=control,
+            episode_catalog=AniZipCatalog(http),
+            stream_source=TorrentioSource(http),
+            clock=lambda: now[0],
+        )
+        if scenario == "offer_raises":
+
+            def broken(key: EpisodeKey) -> EpisodeOffer:
+                raise ValueError(key.number)
+
+            monkeypatch.setattr(acquisition, "offer", broken)
+        service: AppService = _real_service(tmp_path, acquisition=acquisition)
+        owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME))
+        thread: threading.Thread = _serving(owner)
+        key: bytes = os.urandom(32)
+        endpoint: str = control_endpoint(tmp_path)
+        server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+        session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+        captured: list[str] = []
+        handler_id: int = loguru_logger.add(
+            captured.append,
+            format="{message} {extra}",
+            level="WARNING",
+            filter=lambda record: record["extra"].get("command_kind") == "acquisition",
+        )
+        try:
+            failures: dict[str, ControlError] = {}
+            for name, call in (
+                ("franchise", lambda: session.franchise(_SLIME_S1)),
+                ("episodes", lambda: session.episodes(_SLIME_S1)),
+                ("offer", lambda: session.offer(EpisodeKey(_SLIME_S1, 4))),
+            ):
+                try:
+                    call()
+                except ControlError as error:
+                    failures[name] = error
+            expected: dict[str, tuple[str, str]] = {
+                "anilist_failed": ("franchise", ErrorCode.TITLE_CATALOG_FAILED.value),
+                "anizip_failed": ("episodes", ErrorCode.EPISODE_CATALOG_FAILED.value),
+                "torrentio_failed": ("offer", ErrorCode.TORRENT_SOURCE_FAILED.value),
+                "offer_raises": ("offer", "command_failed"),
+            }
+            if scenario in expected:
+                operation, reason = expected[scenario]
+                assert operation in failures
+                assert (failures[operation].code, failures[operation].reason) == (ControlErrorCode.INTERNAL, reason)
+                assert "error_class" in "".join(captured)
+            if scenario == "offer_raises":
+                assert "ValueError" in "".join(captured)
+            if scenario in {"ok", "schedule_limited"}:
+                assert not failures
+                listing: EpisodeListing = session.episodes(_SLIME_S1)
+                offer: EpisodeOffer = session.offer(EpisodeKey(_SLIME_S1, 4))
+                assert offer.suggestion is not None
+                assert offer.candidates[offer.suggestion].identity.verdict is IdentityVerdict.MATCH
+                assert len(listing.episodes) == 24
+            if scenario == "schedule_limited":
+                assert (listing.schedule_warning, listing.schedule_retry_at) == (
+                    "TITLE_CATALOG_FAILED",
+                    datetime.fromtimestamp(control.blocked_until(("anilist",)), UTC),
+                )
+                assert (listing.status, listing.aired) == ("FINISHED", None)
+            if scenario == "ok":
+                assert (listing.schedule_warning, listing.aired) == (None, 24)
+                assert sent.count("api.ani.zip") == 1
+            assert all(value not in "".join(captured) for value in ("https://", "Slime", "kitsu"))
+        finally:
+            loguru_logger.remove(handler_id)
+            session.close()
+            server.close()
+            owner.request_shutdown()
+            thread.join(_TIMEOUT_S)
+            service.close()
+        assert not thread.is_alive()
+
+
+class _NoSource:
+    def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> tuple[Release, ...]:
+        raise AssertionError(query)

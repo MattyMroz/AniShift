@@ -738,6 +738,42 @@ def test_a_handler_fault_is_answered_without_dropping_the_channel(tmp_path: Path
     assert "private-handler-payload" not in "".join(captured)
 
 
+def test_an_answer_above_the_frame_limit_is_refused_and_the_connection_keeps_serving(tmp_path: Path) -> None:
+    state_dir: Path = _state_dir(tmp_path)
+
+    def bulky(request: ControlRequest) -> ControlResponse:
+        if request.kind == "bulky":
+            return ControlResponse.succeeded({"blob": "x" * (MAX_FRAME_BYTES + 1)})
+        if request.kind == "status":
+            return ControlResponse.succeeded({"alive": True})
+        return _echo(request)
+
+    server, endpoint, key = _serving(state_dir, bulky)
+    client = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    captured: list[str] = []
+    handler_id: int = loguru_logger.add(
+        captured.append,
+        format="{message} {extra}",
+        level="WARNING",
+        filter=lambda record: record["extra"].get("command_kind") == "bulky",
+    )
+    try:
+        with pytest.raises(ControlError) as refusal:
+            client.call("bulky")
+        status: Mapping[str, object] = client.call("status")
+    finally:
+        loguru_logger.remove(handler_id)
+        client.close()
+        server.close()
+
+    assert refusal.value.code is ControlErrorCode.REFUSED
+    assert refusal.value.reason == "response_too_large"
+    assert refusal.value.answered
+    assert status == {"alive": True}
+    assert "size" in "".join(captured)
+    assert "xxxx" not in "".join(captured)
+
+
 def test_a_slow_handler_never_blocks_another_connection(tmp_path: Path) -> None:
     state_dir: Path = _state_dir(tmp_path)
     entered = threading.Event()

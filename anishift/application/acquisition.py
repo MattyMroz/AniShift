@@ -3,18 +3,30 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 import unicodedata
-from collections import Counter
+from collections import Counter, OrderedDict
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
 
-from anishift.errors import AniShiftError
+from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_selection import (
+    EpisodeOffer,
+    ListedEpisode,
+    episode_listing,
+    franchise_traversal,
+    franchise_view,
+    identity_target,
+    rank_candidates,
+    suggestion,
+)
+from anishift.errors import AniShiftError, ErrorCode
 from anishift.services.torrents.categories import (
     CATEGORY_ENGLISH_TRANSLATED,
     CATEGORY_NON_ENGLISH_TRANSLATED,
@@ -26,6 +38,15 @@ from anishift.utils.logger import get_logger
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
 
+    from anishift.application.episode_selection import (
+        AniZipMapping,
+        EpisodeKey,
+        EpisodeListing,
+        Franchise,
+        FranchiseGraph,
+        RankedCandidate,
+        StreamCandidate,
+    )
     from anishift.services.catalog import PrequelEntry, SeasonAiring, TitleCandidate
     from anishift.services.http_requests import RequestControl
     from anishift.services.torrents import Release, ReleaseName, TorrentFile, TorrentInfo
@@ -41,11 +62,13 @@ __all__ = [
     "CatalogOrder",
     "ClientStatus",
     "DownloadReceipt",
+    "EpisodeCatalog",
     "EpisodeReading",
     "ReleaseCatalog",
     "ReleaseChoice",
     "SeasonContext",
     "SeriesGroup",
+    "StreamSource",
     "TitleCatalog",
     "TorrentClient",
     "TorrentSource",
@@ -111,6 +134,21 @@ _FALLBACK_DIRECTORY: Final[str] = "Nieznana seria"
 _NON_ENGLISH_LANGUAGE: Final[str] = "fr"
 """Subtitle language whose releases the index keeps outside the English-translated category."""
 
+_FALLBACK_CACHE_S: Final[int] = 900
+"""Freshness of remembered entry data when ani.zip omits it; its ``Cache-Control`` measured 2026-09-22."""
+
+_REMEMBERED_ENTRIES: Final[int] = 64
+"""Entries the resident process keeps in memory before forgetting the least recently used one."""
+
+_SCHEDULE_WARNING: Final[str] = "TITLE_CATALOG_FAILED"
+"""Listing warning code when the airing schedule is unavailable."""
+
+_UNKNOWN_STATUS: Final[str] = "UNKNOWN"
+"""Status value used when no catalog source names one."""
+
+_MOVIE_FORMAT: Final[str] = "MOVIE"
+"""AniList format whose only row is fetched as a Torrentio movie."""
+
 
 class TorrentSource(Protocol):
     """Index of public releases answering one free-text title query."""
@@ -133,6 +171,30 @@ class TitleCatalog(Protocol):
 
     def airing_schedule(self, anilist_id: int) -> SeasonAiring:
         """Return the known episode dates of one season."""
+        ...
+
+    def franchise(self, anilist_id: int) -> FranchiseGraph:
+        """Return the anime relation graph rooted at one entry."""
+        ...
+
+
+class EpisodeCatalog(Protocol):
+    """Episode mapping of one catalog entry."""
+
+    def mapping(self, anilist_id: int) -> AniZipMapping:
+        """Return the episode mapping, empty for an unknown entry."""
+        ...
+
+
+class StreamSource(Protocol):
+    """Live stream candidates of one episode or movie."""
+
+    def streams(self, kitsu_id: int, number: int) -> tuple[StreamCandidate, ...]:
+        """Return the candidates of one local episode."""
+        ...
+
+    def movie_streams(self, kitsu_id: int) -> tuple[StreamCandidate, ...]:
+        """Return the candidates of one movie."""
         ...
 
 
@@ -303,6 +365,20 @@ class ClientStatus:
     suggestion: str = ""
 
 
+@dataclass(slots=True)
+class _Remembered:
+    graph: FranchiseGraph | None = None
+    graph_at: float = 0.0
+    mapping: AniZipMapping | None = None
+    mapping_at: float = 0.0
+    schedule: SeasonAiring | None = None
+    schedule_at: float = 0.0
+
+    def fresh(self, fetched_at: float, now: float) -> bool:
+        age: int | None = self.mapping.max_age_s if self.mapping is not None else None
+        return now - fetched_at < (age if age is not None else _FALLBACK_CACHE_S)
+
+
 def read_episode(name: ReleaseName, context: SeasonContext | None) -> EpisodeReading:
     """Read the episode of *name* in the numbering of the season *context* describes."""
     episode: Decimal | None = name.episode
@@ -401,6 +477,9 @@ class AcquisitionService:
         title_catalog: TitleCatalog | None = None,
         request_control: RequestControl | None = None,
         torrent_management: TorrentManagement | None = None,
+        episode_catalog: EpisodeCatalog | None = None,
+        stream_source: StreamSource | None = None,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self._source: TorrentSource = source
         self._client: TorrentClient = client
@@ -410,6 +489,11 @@ class AcquisitionService:
         self._title_catalog: TitleCatalog | None = title_catalog
         self.request_control: RequestControl | None = request_control
         self._torrent_management: TorrentManagement | None = torrent_management
+        self._episode_catalog: EpisodeCatalog | None = episode_catalog
+        self._stream_source: StreamSource | None = stream_source
+        self._clock: Callable[[], float] = clock
+        self._memory: OrderedDict[int, _Remembered] = OrderedDict()
+        self._memory_lock: threading.Lock = threading.Lock()
 
     def requests(self, reason: str) -> AbstractContextManager[None]:
         """Share one metadata budget across the adapters used by an operation."""
@@ -576,6 +660,157 @@ class AcquisitionService:
             msg = "No title catalog is configured"
             raise ValueError(msg)
         return self._title_catalog.airing_schedule(anilist_id)
+
+    def franchise(self, anilist_id: int) -> Franchise:
+        """Return the franchise view rooted at one entry, remembering its graph while fresh."""
+        return franchise_view(self._franchise_graph(anilist_id), anilist_id)
+
+    def _franchise_graph(self, anilist_id: int) -> FranchiseGraph:
+        now: float = self._clock()
+        with self._memory_lock:
+            entry: _Remembered = self._remembered(anilist_id)
+            graph: FranchiseGraph | None = entry.graph if entry.fresh(entry.graph_at, now) else None
+        if graph is None:
+            fetched: FranchiseGraph = self._titles().franchise(anilist_id)
+            with self._memory_lock:
+                entry = self._remembered(anilist_id)
+                if fetched.complete or entry.graph is None or not entry.graph.complete:
+                    entry.graph = fetched
+                entry.graph_at = now
+                graph = entry.graph
+        return graph
+
+    def episodes(self, anilist_id: int) -> EpisodeListing:
+        """Return the episode list, keeping ani.zip data when the airing schedule is unavailable."""
+        now: float = self._clock()
+        mapping: AniZipMapping = self._mapping(anilist_id, now)
+        schedule: SeasonAiring | None
+        failed: bool
+        schedule, failed = self._schedule(anilist_id, now)
+        retry: float = self.blocked_until(("anilist",)) if failed else 0.0
+        return episode_listing(
+            anilist_id,
+            mapping,
+            schedule.status.value if schedule is not None else self._known_status(anilist_id),
+            schedule.episode_count if schedule is not None else None,
+            tuple(ListedEpisode(item.episode, airs_at=item.airing_at) for item in schedule.episodes)
+            if schedule is not None
+            else (),
+            datetime.fromtimestamp(now, UTC),
+            schedule_warning=_SCHEDULE_WARNING if failed else None,
+            schedule_retry_at=datetime.fromtimestamp(retry, UTC) if retry > now else None,
+        )
+
+    def offer(self, key: EpisodeKey) -> EpisodeOffer:
+        """Rank the live stream candidates of one episode against its remembered identity."""
+        now: float = self._clock()
+        graph: FranchiseGraph = self._context_graph(key.anilist_id, now)
+        mapping: AniZipMapping = self._mapping(key.anilist_id, now)
+        movie: bool = graph.nodes[key.anilist_id].get("format") == _MOVIE_FORMAT
+        if movie and key.number != 1:
+            msg = "A movie has only its first row"
+            raise ValueError(msg)
+        streams: tuple[StreamCandidate, ...] = ()
+        if mapping.kitsu_id is not None and movie:
+            streams = self._streams().movie_streams(mapping.kitsu_id)
+        elif mapping.kitsu_id is not None:
+            streams = self._streams().streams(mapping.kitsu_id, key.number)
+        ranked: tuple[RankedCandidate, ...] = rank_candidates(
+            identity_target(graph, key.anilist_id, mapping, key.number), streams
+        )
+        counts: dict[str, int] = {
+            verdict.value: sum(1 for item in ranked if item.identity.verdict is verdict) for verdict in IdentityVerdict
+        }
+        suggested: int | None = suggestion(ranked)
+        logger.info("Episode offer ranked", count=len(ranked), suggested=suggested is not None, movie=movie)
+        return EpisodeOffer(key, ranked, suggested, datetime.fromtimestamp(self._clock(), UTC), counts)
+
+    def _titles(self) -> TitleCatalog:
+        if self._title_catalog is None:
+            msg = "No title catalog is configured"
+            raise ValueError(msg)
+        return self._title_catalog
+
+    def _streams(self) -> StreamSource:
+        if self._stream_source is None:
+            msg = "No stream source is configured"
+            raise ValueError(msg)
+        return self._stream_source
+
+    def _remembered(self, anilist_id: int) -> _Remembered:
+        entry: _Remembered = self._memory.setdefault(anilist_id, _Remembered())
+        self._memory.move_to_end(anilist_id)
+        while len(self._memory) > _REMEMBERED_ENTRIES:
+            self._memory.popitem(last=False)
+        return entry
+
+    def _mapping(self, anilist_id: int, now: float) -> AniZipMapping:
+        with self._memory_lock:
+            entry: _Remembered = self._remembered(anilist_id)
+            if entry.mapping is not None and entry.fresh(entry.mapping_at, now):
+                return entry.mapping
+        if self._episode_catalog is None:
+            msg = "No episode catalog is configured"
+            raise ValueError(msg)
+        mapping: AniZipMapping = self._episode_catalog.mapping(anilist_id)
+        with self._memory_lock:
+            entry = self._remembered(anilist_id)
+            entry.mapping, entry.mapping_at = mapping, now
+        return mapping
+
+    def _schedule(self, anilist_id: int, now: float) -> tuple[SeasonAiring | None, bool]:
+        with self._memory_lock:
+            entry: _Remembered = self._remembered(anilist_id)
+            if entry.schedule is not None and entry.fresh(entry.schedule_at, now):
+                return entry.schedule, False
+        if self.blocked_until(("anilist",)) > now:
+            return None, True
+        try:
+            schedule: SeasonAiring = self._titles().airing_schedule(anilist_id)
+        except AniShiftError as error:
+            if error.context.code is not ErrorCode.TITLE_CATALOG_FAILED:
+                raise
+            logger.warning("Airing schedule unavailable", provider="anilist", code=error.context.code)
+            return None, True
+        with self._memory_lock:
+            entry = self._remembered(anilist_id)
+            entry.schedule, entry.schedule_at = schedule, now
+        return schedule, False
+
+    def _known_status(self, anilist_id: int) -> str:
+        with self._memory_lock:
+            for entry in self._memory.values():
+                status: object = entry.graph.nodes.get(anilist_id, {}).get("status") if entry.graph else None
+                if isinstance(status, str):
+                    return status
+        return _UNKNOWN_STATUS
+
+    def _context_graph(self, anilist_id: int, now: float) -> FranchiseGraph:
+        known: FranchiseGraph | None = self._known_graph(anilist_id, now)
+        graph: FranchiseGraph = known if known is not None else self._franchise_graph(anilist_id)
+        if anilist_id not in graph.nodes:
+            msg = "The entry is absent from its own franchise"
+            raise ValueError(msg)
+        return graph
+
+    def _known_graph(self, anilist_id: int, now: float) -> FranchiseGraph | None:
+        """Pick a fresh graph holding the entry: complete traversal, then its own root, then the lowest root ID."""
+        with self._memory_lock:
+            known: list[tuple[bool, bool, int, FranchiseGraph]] = [
+                (
+                    bool(franchise_traversal(anilist_id, entry.graph.nodes, entry.graph.queried)[2]),
+                    root != anilist_id,
+                    root,
+                    entry.graph,
+                )
+                for root, entry in self._memory.items()
+                if entry.graph is not None and anilist_id in entry.graph.nodes and entry.fresh(entry.graph_at, now)
+            ]
+            if not known:
+                return None
+            chosen: tuple[bool, bool, int, FranchiseGraph] = min(known, key=lambda item: item[:3])
+            self._memory.move_to_end(chosen[2])
+        return chosen[3]
 
     def transfer_files(self, info_hash: str) -> tuple[TorrentFile, ...]:
         """Read selection and completion for one tracked transfer."""

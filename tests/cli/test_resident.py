@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Final, cast
@@ -14,7 +15,16 @@ from typing import Any, Final, cast
 import pytest
 
 import anishift.application as application_module
-from anishift.application import AppService, InspectedWorkspace
+from anishift.application import (
+    AppService,
+    EpisodeKey,
+    EpisodeListing,
+    EpisodeOffer,
+    Franchise,
+    InspectedWorkspace,
+    ListedEpisode,
+    encode_view,
+)
 from anishift.cli import control as cli_control
 from anishift.cli import watch as watch_module
 from anishift.cli.exit_codes import EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS
@@ -133,6 +143,35 @@ def test_library_result_sends_playback_only_for_confirmed_product_selection(tmp_
     session: ResidentSession = ResidentSession(tmp_path, lambda: client)
     result: Path = session.library_result("episode") if playback else session.library_result("episode", playback=False)
     assert result == tmp_path / ("ready/01.mkv" if playback else "ready/01.eac3")
+
+
+def test_episode_selection_reads_send_only_their_keys_and_decode_the_owner_views(tmp_path: Path) -> None:
+    franchise: Franchise = Franchise(selected_id=7, entries=(), relations=(), complete=False)
+    listing: EpisodeListing = EpisodeListing(7, 70, "TV", "RELEASING", 1, (ListedEpisode(1),), (), None, None, None)
+    offer: EpisodeOffer = EpisodeOffer(
+        EpisodeKey(7, 1), (), None, datetime(2026, 9, 29, 12, tzinfo=UTC), {"match": 0, "insufficient_evidence": 0}
+    )
+    answers: dict[str, Franchise | EpisodeListing | EpisodeOffer] = {
+        "franchise": franchise,
+        "episodes": listing,
+        "offer": offer,
+    }
+    sent: list[dict[str, object]] = []
+
+    def call(kind: str, payload: Mapping[str, object], *, instance_id: str | None = None) -> Mapping[str, object]:
+        assert (kind, instance_id) == ("acquisition", None)
+        sent.append({key: value for key, value in payload.items() if key != "client_id"})
+        return encode_view(answers[str(payload["operation"])])
+
+    session: ResidentSession = ResidentSession(tmp_path, lambda: cast("ControlClient", SimpleNamespace(call=call)))
+    assert session.franchise(7) == franchise
+    assert session.episodes(7) == listing
+    assert session.offer(EpisodeKey(7, 1)) == offer
+    assert sent == [
+        {"operation": "franchise", "anilist_id": 7},
+        {"operation": "episodes", "anilist_id": 7},
+        {"operation": "offer", "anilist_id": 7, "number": 1},
+    ]
 
 
 def test_a_second_resident_is_refused_and_records_no_instance(tmp_path: Path) -> None:

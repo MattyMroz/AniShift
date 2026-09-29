@@ -13,8 +13,8 @@ import pytest
 
 from anishift.application.acquisition import AcquisitionService, CatalogOrder
 from anishift.application.subscriptions import SUBSCRIPTIONS_FILE_NAME, SubscriptionService, SubscriptionStore
-from anishift.services.catalog import AniListCatalog
-from anishift.services.torrents import QBittorrentClient, parse_release_name, search_releases
+from anishift.services.catalog import AniListCatalog, AniZipCatalog
+from anishift.services.torrents import QBittorrentClient, TorrentioSource, parse_release_name, search_releases
 from anishift.services.torrents.categories import SEARCH_CATEGORIES
 from anishift.services.torrents.nyaa import NYAA_NAMESPACE
 from anishift.services.torrents.query import parse_query
@@ -35,6 +35,12 @@ QBITTORRENT_HOST: Final[str] = "127.0.0.1"
 NYAA_HOST: Final[str] = "nyaa.si"
 
 ANILIST_HOST: Final[str] = "graphql.anilist.co"
+
+ANIZIP_HOST: Final[str] = "api.ani.zip"
+
+TORRENTIO_HOST: Final[str] = "torrentio.strem.fun"
+
+UNRECORDED_STREAMS: Final[bytes] = b'{"streams": []}'
 
 XML_CONTENT_TYPE: Final[str] = "application/xml; charset=utf-8"
 
@@ -78,6 +84,22 @@ def _anilist_bodies(manifest: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _franchise_pages(manifest: dict[str, Any]) -> dict[tuple[int, ...], str]:
+    pages: dict[tuple[int, ...], str] = {}
+    for entry in manifest["anilist_franchise"]:
+        recorded: dict[str, Any] = json.loads((FIXTURES / entry["file"]).read_text(encoding="utf-8"))
+        for request in recorded["requests"]:
+            pages.setdefault(tuple(sorted(request["ids"])), json.dumps(request["body"]))
+    return pages
+
+
+def _stream_bodies(manifest: dict[str, Any]) -> dict[str, bytes]:
+    return {
+        f"/stream/series/kitsu:{entry['kitsu_id']}:{entry['number']}.json": (FIXTURES / entry["file"]).read_bytes()
+        for entry in manifest["torrentio"]
+    }
+
+
 def _feed_index(bodies: dict[tuple[str, str], str]) -> tuple[dict[str, str], dict[str, str]]:
     hashes: dict[str, str] = {}
     titles: dict[str, str] = {}
@@ -99,6 +121,14 @@ MANIFEST: Final[dict[str, Any]] = _manifest()
 NYAA_BODIES: Final[dict[tuple[str, str], str]] = _nyaa_bodies(MANIFEST)
 
 ANILIST_BODIES: Final[dict[str, str]] = _anilist_bodies(MANIFEST)
+
+FRANCHISE_PAGES: Final[dict[tuple[int, ...], str]] = _franchise_pages(MANIFEST)
+
+ANIZIP_BODIES: Final[dict[str, bytes]] = {
+    str(entry["anilist_id"]): (FIXTURES / entry["file"]).read_bytes() for entry in MANIFEST["anizip"]
+}
+
+STREAM_BODIES: Final[dict[str, bytes]] = _stream_bodies(MANIFEST)
 
 INFO_HASHES, TORRENT_TITLES = _feed_index(NYAA_BODIES)
 
@@ -193,6 +223,7 @@ class Composed:
     store: SubscriptionStore
     workspace_root: Path
     nyaa_queries: list[tuple[str, str]]
+    hosts: list[str] = field(default_factory=list)
 
     def resolve(self, phrase: str, prefer: str) -> Resolved:
         query = parse_query(phrase)
@@ -223,12 +254,17 @@ class Resolved:
 def composed_fixture(tmp_path: Path) -> Iterator[Composed]:
     client: FakeQBittorrent = FakeQBittorrent()
     queries: list[tuple[str, str]] = []
-    http: httpx.Client = httpx.Client(transport=httpx.MockTransport(handler(client, queries)), follow_redirects=True)
+    hosts: list[str] = []
+    http: httpx.Client = httpx.Client(
+        transport=httpx.MockTransport(handler(client, queries, hosts)), follow_redirects=True
+    )
     with http:
-        yield _build(client, http, tmp_path, queries)
+        yield _build(client, http, tmp_path, queries, hosts)
 
 
-def _build(client: FakeQBittorrent, http: httpx.Client, tmp_path: Path, queries: list[tuple[str, str]]) -> Composed:
+def _build(
+    client: FakeQBittorrent, http: httpx.Client, tmp_path: Path, queries: list[tuple[str, str]], hosts: list[str]
+) -> Composed:
     class NyaaSource:
         def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> tuple[Release, ...]:
             return search_releases(query, http=http, categories=categories)
@@ -241,6 +277,8 @@ def _build(client: FakeQBittorrent, http: httpx.Client, tmp_path: Path, queries:
         workspace_root=workspace_root,
         parse_name=parse_release_name,
         title_catalog=AniListCatalog(http),
+        episode_catalog=AniZipCatalog(http),
+        stream_source=TorrentioSource(http),
     )
     store: SubscriptionStore = SubscriptionStore(tmp_path / "config" / SUBSCRIPTIONS_FILE_NAME)
     return Composed(
@@ -250,12 +288,24 @@ def _build(client: FakeQBittorrent, http: httpx.Client, tmp_path: Path, queries:
         store=store,
         workspace_root=workspace_root,
         nyaa_queries=queries,
+        hosts=hosts,
     )
 
 
-def handler(client: FakeQBittorrent, queries: list[tuple[str, str]]) -> Callable[[httpx.Request], httpx.Response]:
-    def handle(request: httpx.Request) -> httpx.Response:
+def handler(
+    client: FakeQBittorrent, queries: list[tuple[str, str]], hosts: list[str]
+) -> Callable[[httpx.Request], httpx.Response]:
+    def handle(request: httpx.Request) -> httpx.Response:  # noqa: PLR0911
         host: str | None = request.url.host
+        hosts.append(host or "")
+        if host == ANIZIP_HOST:
+            mapping: bytes | None = ANIZIP_BODIES.get(request.url.params.get("anilist_id", ""))
+            if mapping is None:
+                return httpx.Response(HTTPStatus.NOT_FOUND, text="")
+            return httpx.Response(HTTPStatus.OK, content=mapping, headers={"content-type": JSON_CONTENT_TYPE})
+        if host == TORRENTIO_HOST:
+            streams: bytes = STREAM_BODIES.get(request.url.path, UNRECORDED_STREAMS)
+            return httpx.Response(HTTPStatus.OK, content=streams, headers={"content-type": JSON_CONTENT_TYPE})
         if host == NYAA_HOST:
             key: tuple[str, str] = (request.url.params.get("q", ""), request.url.params.get("c", ""))
             queries.append(key)
@@ -264,8 +314,12 @@ def handler(client: FakeQBittorrent, queries: list[tuple[str, str]]) -> Callable
                 HTTPStatus.OK, content=body.encode("utf-8"), headers={"content-type": XML_CONTENT_TYPE}
             )
         if host == ANILIST_HOST:
-            variables: object = json.loads(request.content.decode("utf-8"))["variables"]
-            payload: str | None = ANILIST_BODIES.get(json.dumps(variables, sort_keys=True))
+            variables: dict[str, Any] = json.loads(request.content.decode("utf-8"))["variables"]
+            payload: str | None = (
+                FRANCHISE_PAGES.get(tuple(sorted(variables["ids"])))
+                if "ids" in variables
+                else ANILIST_BODIES.get(json.dumps(variables, sort_keys=True))
+            )
             if payload is None:
                 return httpx.Response(HTTPStatus.NOT_FOUND, text="")
             return httpx.Response(

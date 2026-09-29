@@ -68,6 +68,7 @@ from anishift.application.control_views import (
     preview_plan,
 )
 from anishift.application.discovery import ArtifactName, classify_artifact, is_derived_product
+from anishift.application.episode_selection import EpisodeKey
 from anishift.application.events import RunEventKind, failure_code, sanitize_event_message
 from anishift.application.history import HistoryEvent, HistoryJournal, HistoryKind
 from anishift.application.inspection import InspectedWorkspace
@@ -3232,12 +3233,9 @@ class AutomationOwner:
             return _invalid("No acquisition service is configured")
         payload: Mapping[str, object] = request.payload
         with acquisition.requests("user"):
-            if payload.get("operation") == "titles":
-                return ControlResponse.succeeded(
-                    {"items": [encode_view(item) for item in acquisition.find_titles(str(payload.get("query", "")))]}
-                )
-            if payload.get("operation") == "search":
-                return ControlResponse.succeeded(encode_view(acquisition.search(str(payload.get("query", "")))))
+            read: ControlResponse | None = _catalog_read(acquisition, payload)
+            if read is not None:
+                return read
             candidate: TitleCandidate = decode_view(TitleCandidate, payload.get("candidate"))
             if payload.get("operation") == "season":
                 return ControlResponse.succeeded(encode_view(acquisition.season_context(candidate)))
@@ -5378,6 +5376,28 @@ def _external_sources(payload: Mapping[str, object]) -> tuple[dict[str, object],
         msg = "External registrations must be a list of objects"
         raise TypeError(msg)
     return tuple(cast("dict[str, object]", entry) for entry in registrations)
+
+
+def _catalog_read(acquisition: AcquisitionService, payload: Mapping[str, object]) -> ControlResponse | None:
+    operation: object = payload.get("operation")
+    if operation == "titles":
+        return ControlResponse.succeeded(
+            {"items": [encode_view(item) for item in acquisition.find_titles(str(payload.get("query", "")))]}
+        )
+    if operation == "search":
+        return ControlResponse.succeeded(encode_view(acquisition.search(str(payload.get("query", "")))))
+    if operation == "franchise":
+        return ControlResponse.succeeded(
+            encode_view(acquisition.franchise(decode_view(int, payload.get("anilist_id"))))
+        )
+    if operation == "episodes":
+        return ControlResponse.succeeded(encode_view(acquisition.episodes(decode_view(int, payload.get("anilist_id")))))
+    if operation != "offer":
+        return None
+    key: EpisodeKey = decode_view(
+        EpisodeKey, {"anilist_id": payload.get("anilist_id"), "number": payload.get("number")}
+    )
+    return ControlResponse.succeeded(encode_view(acquisition.offer(key)))
 
 
 def _flag(payload: Mapping[str, object], key: str) -> bool | None:
