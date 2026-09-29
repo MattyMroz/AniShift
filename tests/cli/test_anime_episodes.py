@@ -4,6 +4,7 @@ import json
 import os
 import re
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
@@ -27,10 +28,12 @@ from anishift.application import (
     AppService,
     AutomationOwner,
     EntryGroup,
+    EpisodeBatch,
     EpisodeKey,
     EpisodeListing,
     EpisodeOffer,
     EpisodeRange,
+    EpisodeStatus,
     Franchise,
     FranchiseEntry,
     IdentityAssessment,
@@ -49,11 +52,13 @@ from anishift.application import (
 )
 from anishift.application.acquisition import catalog_releases
 from anishift.application.cancellation import EventCancellationToken
+from anishift.application.episode_commands import EpisodeResult
 from anishift.application.episode_identity import REASONS
 from anishift.application.episode_selection import AniZipMapping, episode_listing
 from anishift.application.planning import ExecutionPlan
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.watch_state import WatchStateStore
+from anishift.cli.interactive import anime as anime_module
 from anishift.cli.interactive.anime import _ENTRY_ONLY_RELEASES, _REASON_TEXTS, AnimeController, _Screen
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
@@ -345,7 +350,8 @@ def test_overgeared_without_mapping_uses_anilist_rows_and_explicit_nyaa_preview(
     assert "Overgeared" in frame
     assert "Nie zamówiono" in frame
     assert "Nie wyemitowano" in frame
-    assert "Odcinek " not in frame
+    assert "Odcinek 1" in frame
+    assert "Odcinek 12" in frame
     assert all(episode.title is None for episode in catalog.listing.episodes)
     assert "27.09" in frame
     assert not catalog.filters
@@ -594,7 +600,7 @@ def test_preloaded_extra_listing_is_consumed_once_before_explicit_refresh() -> N
     assert catalog.calls.count(("episodes", 1)) == 1
     _key(controller, "enter")
     assert _at(controller) is _Screen.EPISODES
-    assert "Dodatki" in _frame(controller)
+    assert "Dodatki" not in _frame(controller)
     assert catalog.calls.count(("episodes", 1)) == 1
     for key in ("escape", "enter"):
         _key(controller, key)
@@ -931,17 +937,15 @@ def test_offer_language_width_follows_the_longest_visible_suggestion() -> None:
 
 
 @pytest.mark.unit
-def test_extra_group_and_episode_specials_use_the_same_heading() -> None:
+def test_entries_and_episodes_show_no_group_or_special_headings() -> None:
     catalog: _Catalog = _Catalog()
     catalog.view = replace(catalog.view, entries=(_entry(), replace(_entry(2), group=EntryGroup.EXTRA)))
     controller: AnimeController = _controller(catalog)
     for key in ("paste:slime", "enter"):
         _key(controller, key)
-    assert "Dodatki" in _frame(controller)
-    assert "DODATKI" not in _frame(controller)
+    assert all(heading not in _frame(controller) for heading in ("Dodatki", "SEZONY", "FILMY"))
     _key(controller, "enter")
-    assert "Dodatki" in _frame(controller)
-    assert "DODATKI" not in _frame(controller)
+    assert "Dodatki" not in _frame(controller)
 
 
 @pytest.mark.unit
@@ -1275,6 +1279,62 @@ def test_candidate_reason_and_file_details_remain_complete_at_fifty_columns() ->
     assert "Esc podgląd" in frame
 
 
+class _Owner(_Catalog):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release: threading.Event = threading.Event()
+        self.batches: list[tuple[tuple[EpisodeKey, ...], str]] = []
+
+    def episode_states(self, anilist_id: int, numbers: Sequence[int]) -> tuple[EpisodeStatus, ...]:
+        return tuple(
+            EpisodeStatus(EpisodeKey(anilist_id, number), "ordered" if number == 2 else "not_ordered")
+            for number in numbers
+        )
+
+    def episode_download(self, keys: Sequence[EpisodeKey], *, command_id: str) -> EpisodeBatch:
+        self.batches.append((tuple(keys), command_id))
+        if len(self.batches) == 1:
+            assert self.release.wait(10)
+            return EpisodeBatch(command_id, "fixture", tuple(keys), "accepted")
+        results: tuple[EpisodeResult, ...] = (
+            EpisodeResult(keys[0], "admitted", "a1", "o1"),
+            EpisodeResult(keys[1], "no_suggestion"),
+        )
+        return EpisodeBatch(command_id, "fixture", tuple(keys), "completed", results)
+
+
+@pytest.mark.unit
+def test_download_orders_marked_episodes_through_the_owner_and_stays_on_the_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(anime_module, "_BATCH_POLL_S", 0.0)
+    owner: _Owner = _Owner()
+    controller: AnimeController = AnimeController(
+        cast("AppService", SimpleNamespace(acquisition=None)), lambda: None, resident=cast("ResidentSession", owner)
+    )
+    _open(controller)
+    assert re.search(r"2\s+Episode 2\s+.*Zlecono", _frame(controller))
+    for key in ("space", "down", "down", "space", "text:d"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.EPISODES
+    assert "szukam" in _frame(controller)
+    assert "Zaznaczone" not in _frame(controller)
+    owner.release.set()
+    deadline: float = time.monotonic() + 10
+    while controller._sending and time.monotonic() < deadline:
+        time.sleep(0.01)
+    frame: str = _frame(controller)
+    assert _at(controller) is _Screen.EPISODES
+    assert "Zlecono E1" in frame
+    assert re.search(r"1\s+Episode 1\s+.*Zlecono", frame)
+    assert re.search(r"3\s+Episode 3\s+.*Brak wydania", frame)
+    assert [keys for keys, _ in owner.batches] == [(EpisodeKey(1, 1), EpisodeKey(1, 3))] * 2
+    assert len({command_id for _, command_id in owner.batches}) == 1
+    assert not any(operation == "offer" for operation, _ in owner.calls)
+    _key(controller, "text:i")
+    assert _at(controller) is _Screen.OFFER
+
+
 @pytest.mark.unit
 def test_episode_footer_wraps_only_between_complete_shortcuts() -> None:
     controller: AnimeController = _controller(_Catalog())
@@ -1282,7 +1342,7 @@ def test_episode_footer_wraps_only_between_complete_shortcuts() -> None:
     lines: list[str] = controller.render(50, 24).plain.splitlines()
     assert all(
         any(hint in line for line in lines)
-        for hint in ("Space zaznacz", "A wszystkie/żadne", "Z zakres", "D podgląd", "Esc wpisy")
+        for hint in ("Space zaznacz", "A wszystkie/żadne", "Z zakres", "D pobierz", "I wybierz wydanie", "Esc wpisy")
     )
 
 

@@ -24,6 +24,7 @@ from anishift.application.episode_selection import (
     franchise_traversal,
     franchise_view,
     identity_target,
+    premiere_order,
     rank_candidates,
     release_facts,
     suggestion,
@@ -349,10 +350,10 @@ def test_franchise_view_slime_projects_ten_entries_from_twenty_five_nodes() -> N
     graph: FranchiseGraph = _fixture_graph(_SLIME_S1)
     view = franchise_view(graph, _SLIME_S1)
     assert (len(graph.nodes), len(view.entries), view.complete) == (25, 10, True)
-    assert view.entries[0].anilist_id == _SLIME_S1
-    assert view.entries[0].relation == "SELF"
-    groups: list[EntryGroup] = [entry.group for entry in view.entries]
-    assert groups == sorted(groups, key=list(EntryGroup).index)
+    assert view.entries[0].anilist_id == _SLIME_S4
+    assert next(entry for entry in view.entries if entry.anilist_id == _SLIME_S1).relation == "SELF"
+    starts: list[tuple[bool, int, int, int]] = [premiere_order(entry.year, entry.start) for entry in view.entries]
+    assert starts == sorted(starts, key=lambda start: (not start[0], *start[1:]), reverse=True)
     by_id: dict[int, EntryGroup] = {entry.anilist_id: entry.group for entry in view.entries}
     assert (by_id[_SLIME_S4], by_id[_SLIME_OAD], by_id[_SLIME_DIARIES]) == (
         EntryGroup.SEASON,
@@ -366,16 +367,21 @@ def test_franchise_view_diaries_projects_two_entries_from_eight_nodes() -> None:
     assert (len(graph.nodes), len(franchise_view(graph, _SLIME_DIARIES).entries)) == (8, 2)
 
 
-def test_franchise_view_orders_groups_by_start_and_keeps_every_anime_relation() -> None:
+def test_franchise_view_orders_every_entry_newest_first_and_keeps_every_anime_relation() -> None:
     view = franchise_view(_star_garden_graph(), 2)
-    assert [(entry.anilist_id, entry.group, entry.relation) for entry in view.entries] == [
-        (1, EntryGroup.SEASON, "PREQUEL"),
-        (2, EntryGroup.SEASON, "SELF"),
-        (3, EntryGroup.EXTRA, "SIDE_STORY"),
-        (4, EntryGroup.OTHER, "SPIN_OFF"),
-    ]
-    assert view.entries[1].start == date(2020, 1, 1)
-    assert view.entries[1].year == 2020
+    entries: dict[int, FranchiseEntry] = {entry.anilist_id: entry for entry in view.entries}
+    assert [(entry.anilist_id, entry.group, entry.relation) for entry in view.entries] == sorted(
+        [
+            (1, EntryGroup.SEASON, "PREQUEL"),
+            (2, EntryGroup.SEASON, "SELF"),
+            (3, EntryGroup.EXTRA, "SIDE_STORY"),
+            (4, EntryGroup.OTHER, "SPIN_OFF"),
+        ],
+        key=lambda item: (premiere_order(entries[item[0]].year, entries[item[0]].start), item[0]),
+        reverse=True,
+    )
+    assert entries[2].start == date(2020, 1, 1)
+    assert entries[2].year == 2020
     assert [(relation.source_id, relation.target_id, relation.relation) for relation in view.relations] == [
         (1, 2, "SEQUEL"),
         (2, 1, "PREQUEL"),
@@ -385,7 +391,7 @@ def test_franchise_view_orders_groups_by_start_and_keeps_every_anime_relation() 
     assert view.complete
 
 
-def test_franchise_view_undated_entry_leads_its_group_and_year_only_closes_its_year() -> None:
+def test_franchise_view_undated_entry_leads_and_newest_premiere_follows() -> None:
     year_only: dict[str, Any] = {**_node(4, "OVA", {"romaji": "D"}, year=2030), "startDate": {"year": 2030}}
     graph: FranchiseGraph = _graph(
         _node(
@@ -401,9 +407,9 @@ def test_franchise_view_undated_entry_leads_its_group_and_year_only_closes_its_y
         {**_node(5, "OVA", {"romaji": "E"}), "startDate": {"year": 2031, "month": 2, "day": 3}, "seasonYear": 2030},
     )
     entries: tuple[FranchiseEntry, ...] = franchise_view(graph, 1).entries
-    assert [entry.anilist_id for entry in entries] == [1, 2, 3, 4, 5]
-    assert entries[1].status == "FINISHED"
-    assert (entries[3].year, entries[3].start, entries[4].year) == (2030, None, 2031)
+    assert [entry.anilist_id for entry in entries] == [2, 5, 4, 3, 1]
+    assert entries[0].status == "FINISHED"
+    assert (entries[2].year, entries[2].start, entries[1].year) == (2030, None, 2031)
 
 
 def test_franchise_view_unexpanded_chain_is_incomplete() -> None:

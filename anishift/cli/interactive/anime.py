@@ -10,8 +10,9 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from math import ceil
-from time import time
+from time import sleep, time
 from typing import Final
+from uuid import uuid4
 
 from natsort import natsorted
 from rich.console import Console
@@ -23,10 +24,12 @@ from anishift.application import (
     CatalogOrder,
     DownloadReceipt,
     EntryGroup,
+    EpisodeBatch,
     EpisodeKey,
     EpisodeListing,
     EpisodeOffer,
     EpisodeRange,
+    EpisodeStatus,
     Franchise,
     FranchiseEntry,
     IdentityVerdict,
@@ -111,6 +114,34 @@ _SEARCHING_RELEASES: Final[str] = "Szukam wydań…"
 
 _SENDING: Final[str] = "Wysyłam…"
 """Sentence shown while the torrent client takes the chosen releases."""
+
+_MAX_BATCH: Final[int] = 100
+"""Most episodes one D press sends to the owner, matching its batch limit."""
+
+_BATCH_POLL_S: Final[float] = 1.0
+"""Pause between reads of one accepted episode batch receipt."""
+
+_BATCH_WAIT_S: Final[float] = 180.0
+"""Longest time the panel follows one episode batch before leaving it to the owner."""
+
+_BATCH_STATES: Final[dict[str, str]] = {
+    "admitted": "Zlecono",
+    "no_suggestion": "Brak wydania",
+    "episode_not_aired": "Nie wyemitowano",
+    "episode_admitted": "Zlecono",
+    "episode_possibly_admitted": "Już zlecone?",
+}
+"""Stan column label of each owner batch result reason."""
+
+_EPISODE_STATE_LABELS: Final[dict[str, str]] = {
+    "ordered": "Zlecono",
+    "downloaded": "Pobrano",
+    "possibly_admitted": "Już zlecone?",
+}
+"""Stan column label of each owner episode state other than not ordered."""
+
+_SPINNER: Final[str] = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+"""Frames of the spinner shown while an episode is being searched and ordered."""
 
 _UNAVAILABLE: Final[str] = "Pobieranie jest niedostępne w tej sesji"
 """Sentence shown when the session was built without an acquisition boundary."""
@@ -438,6 +469,8 @@ class AnimeController:
         self._work_cancel: EventCancellationToken = EventCancellationToken()
         self._provider_locks: dict[str, float] = {}
         self._problem_provider: str = ""
+        self._sending: set[EpisodeKey] = set()
+        self._episode_states: dict[EpisodeKey, str] = {}
         if self._acquisition is None:
             self._screen = _Screen.PROBLEM
             self._problem = _UNAVAILABLE
@@ -876,8 +909,57 @@ class AnimeController:
             self._episode_marks = set() if aired and aired <= self._episode_marks else aired
         elif key.casefold() == "text:z":
             self._range = ""
-        elif key.casefold() == "text:d":
+        elif key.casefold() == "text:i":
             self._start_offers(episode)
+        elif key.casefold() == "text:d":
+            if self._resident is None or listing.kitsu_id is None:
+                self._start_offers(episode)
+            else:
+                self._start_episode_download(self._resident, listing, episode)
+
+    def _start_episode_download(
+        self, resident: ResidentSession, listing: EpisodeListing, highlighted: ListedEpisode
+    ) -> None:
+        selected: set[int] = self._episode_marks or {highlighted.number}
+        keys: tuple[EpisodeKey, ...] = tuple(
+            EpisodeKey(listing.anilist_id, item.number)
+            for item in listing.episodes
+            if item.number in selected
+            and item.aired
+            and EpisodeKey(listing.anilist_id, item.number) not in self._sending
+        )[:_MAX_BATCH]
+        if not keys:
+            self._notice = f"E{highlighted.number} jeszcze nie wyemitowano"
+            return
+        self._sending.update(keys)
+        self._episode_marks.clear()
+        threading.Thread(
+            target=self._send_episodes, args=(resident, keys, uuid4().hex), name=_WORKER_NAME, daemon=True
+        ).start()
+
+    def _send_episodes(self, resident: ResidentSession, keys: tuple[EpisodeKey, ...], command_id: str) -> None:
+        batch: EpisodeBatch | None = None
+        try:
+            batch = resident.episode_download(keys, command_id=command_id)
+            deadline: float = self._clock() + _BATCH_WAIT_S
+            while batch.state == "accepted" and self._clock() < deadline:
+                sleep(_BATCH_POLL_S)
+                batch = resident.episode_download(keys, command_id=command_id)
+        except (AniShiftError, OSError) as problem:
+            logger.warning("Anime episode download failed", error_class=type(problem).__name__)
+            with self._lock:
+                self._sending.difference_update(keys)
+                self._notice = "Nie zlecono: " + _stated(problem)[0]
+            self._invalidate()
+            return
+        results: dict[EpisodeKey, str] = {item.key: item.reason for item in batch.results}
+        with self._lock:
+            self._sending.difference_update(keys)
+            for key in keys:
+                self._episode_states[key] = _BATCH_STATES.get(results.get(key, ""), "Nie zlecono")
+            admitted: list[str] = [f"E{key.number}" for key in keys if results.get(key) == "admitted"]
+            self._notice = "Zlecono " + ", ".join(admitted) if admitted else "Nie zlecono"
+        self._invalidate()
 
     def _apply_episode_range(self, typed: str) -> None:
         if self._listing is None:
@@ -951,6 +1033,17 @@ class AnimeController:
         generation: int = self._start_work("Wczytuję odcinki…", _Screen.ENTRIES)
         self._spawn(self._load_episodes, (entry, generation))
 
+    def _read_episode_states(self, listing: EpisodeListing) -> dict[EpisodeKey, str]:
+        numbers: list[int] = [item.number for item in listing.episodes if item.aired][:_MAX_BATCH]
+        if self._resident is None or not numbers:
+            return {}
+        try:
+            statuses: tuple[EpisodeStatus, ...] = self._resident.episode_states(listing.anilist_id, numbers)
+        except (AniShiftError, OSError, TypeError) as problem:
+            logger.warning("Anime episode states read failed", error_class=type(problem).__name__)
+            return {}
+        return {item.key: _EPISODE_STATE_LABELS[item.state] for item in statuses if item.state in _EPISODE_STATE_LABELS}
+
     def _load_episodes(self, entry: FranchiseEntry, generation: int) -> None:
         if self._acquisition is None:
             return
@@ -963,9 +1056,11 @@ class AnimeController:
                 self._entries_skipped = False
             self._catalog_failure(generation, problem, _Screen.ENTRIES, "anizip")
             return
+        states: dict[EpisodeKey, str] = self._read_episode_states(listing)
         with self._lock:
             if generation != self._generation:
                 return
+            self._episode_states.update(states)
             if entry.format == "MOVIE":
                 film: ListedEpisode = next((item for item in listing.episodes if item.number == 1), ListedEpisode(1))
                 listing = replace(listing, episodes=(film,))
@@ -1716,12 +1811,7 @@ class AnimeController:
         franchise: Franchise | None = self._franchise
         widths: tuple[int, ...] = (4, max(columns - 36, 1), 5, 17)
         lines: list[tuple[str, int | None]] = [(_columns(("Rok", "Tytuł", "Typ", "Status"), widths), None)]
-        previous: EntryGroup | None = None
-        grouped: bool = franchise is not None and len({entry.group for entry in franchise.entries}) > 1
         for index, entry in enumerate(franchise.entries if franchise else ()):
-            if grouped and previous != entry.group:
-                lines.append((_ENTRY_GROUPS[entry.group], None))
-                previous = entry.group
             lines.append(
                 (
                     _columns(
@@ -1763,42 +1853,43 @@ class AnimeController:
                 columns, rows, self._entry_heading(), lines, (*((self._notice,) if self._notice else ()), hint)
             )
         film: bool = self._entry is not None and self._entry.format == "MOVIE"
-        if film:
-            lines.append(("Tylko podgląd wydań", None))
-        if self._episode_marks:
-            lines.append((_marked_label(self._episode_marks), None))
         date_width: int = 11 if columns >= _DATE_COLUMNS else 0
         widths: tuple[int, ...] = (3, 4, max(columns - 34 - date_width, 1), date_width, 15)
         lines.append((_columns(("", "Nr", "Tytuł", "Emisja", "Stan"), widths), None))
+        spinner: str = _SPINNER[int(self._clock() * 10) % len(_SPINNER)]
         for index, episode in enumerate(listing.episodes):
-            state: str = "Nie zamówiono" if episode.aired else "Nie wyemitowano"
-            number: str = "Film" if film else str(episode.number)
-            marker: str = "[x]" if episode.number in self._episode_marks else "[ ]"
-            date: str = episode.airs_at.astimezone().strftime("%d.%m %H:%M") if episode.airs_at else "—"
-            lines.append((_columns((marker, number, _safe(episode.title or "—"), date, state), widths), index))
-        if listing.specials:
-            lines.append(("Dodatki", None))
-            lines.extend(
-                (f"{item.key}  {_safe(item.title or '—')}  {item.airs_on or '—'}", None) for item in listing.specials
+            key: EpisodeKey = EpisodeKey(listing.anilist_id, episode.number)
+            state: str = (
+                f"{spinner} szukam"
+                if key in self._sending
+                else self._episode_states.get(key, "Nie zamówiono" if episode.aired else "Nie wyemitowano")
             )
-        footer: list[str | Text] = []
+            number: str = "Film" if film else str(episode.number)
+            marker: str = ("[x]" if episode.number in self._episode_marks else "[ ]") if episode.aired else ""
+            date: str = episode.airs_at.astimezone().strftime("%d.%m.%Y") if episode.airs_at else "—"
+            untitled: str = "Film" if film else f"Odcinek {episode.number}"
+            title: str = _safe(episode.title) if episode.title else untitled
+            lines.append((_columns((marker, number, title, date, state), widths), index))
         current: int = self._positions.get(_Screen.EPISODES, 0)
-        if listing.episodes and listing.episodes[current].airs_at_fallback:
-            footer.append(f"E{listing.episodes[current].number}: termin emisji niepotwierdzony (ani.zip)")
+        unconfirmed: str = (
+            f"E{listing.episodes[current].number}: termin emisji niepotwierdzony (ani.zip)"
+            if listing.episodes and listing.episodes[current].airs_at_fallback
+            else ""
+        )
+        marked: str = _marked_label(self._episode_marks) if self._episode_marks else ""
+        footer: list[str | Text] = [" · ".join(part for part in (marked, self._notice, unconfirmed) if part) or " "]
         if listing.schedule_warning:
             fallback: float = listing.schedule_retry_at.timestamp() if listing.schedule_retry_at else 0.0
             remaining: int = max(ceil(self._provider_locks.get("anilist", fallback) - self._clock()), 0)
             retry: str = f"ponów za {remaining} s" if remaining else "wróć i otwórz ponownie"
             footer.append("Brak terminów emisji (AniList) · " + retry)
-        if self._notice:
-            footer.append(self._notice)
         if self._range_input is not None:
             prompt: Text = Text("Zakres: ", style="gray")
             prompt.append_text(self._range_input.render(max(columns - 10, 1), focused=self._input_focused))
             footer.extend((prompt, "1,3,9-12 albo 5- · Enter zatwierdź · Esc zakończ"))
         else:
             footer.append(
-                "Space zaznacz · A wszystkie/żadne · Z zakres · D podgląd · "
+                "Space zaznacz · A wszystkie/żadne · Z zakres · D pobierz · I wybierz wydanie · "
                 + ("G grupy · " if self._episode_groups_available() else "")
                 + ("Esc wróć" if self._entries_skipped else "Esc wpisy")
             )

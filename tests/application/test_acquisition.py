@@ -944,15 +944,17 @@ def _blocked_control(until: float) -> RequestControl:
     return control
 
 
-def test_franchise_of_slime_lists_every_season_then_the_oad_as_extra_and_diaries_as_other(tmp_path: Path) -> None:
+def test_franchise_of_slime_lists_seasons_newest_first_with_the_oad_as_extra_and_diaries_as_other(
+    tmp_path: Path,
+) -> None:
     view: Franchise = _episode_service(tmp_path).franchise(_S1)
     groups: dict[int, EntryGroup] = {entry.anilist_id: entry.group for entry in view.entries}
     assert [anilist for anilist, group in groups.items() if group is EntryGroup.SEASON] == [
-        _S1,
-        108511,
-        116742,
-        156822,
         _S4,
+        156822,
+        116742,
+        108511,
+        _S1,
     ]
     assert groups[_OAD] is EntryGroup.EXTRA
     assert groups[_DIARIES] is EntryGroup.OTHER

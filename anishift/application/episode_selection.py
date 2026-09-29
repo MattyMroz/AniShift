@@ -321,7 +321,7 @@ def franchise_view(graph: FranchiseGraph, selected_id: int) -> Franchise:
         _entry(graph.nodes[identifier], relation, in_chain=identifier in members)
         for identifier, relation in attached.items()
     ]
-    entries.sort(key=_entry_order)
+    entries.sort(key=_entry_order, reverse=True)
     return Franchise(
         selected_id=selected_id,
         entries=tuple(entries),
@@ -550,8 +550,9 @@ def premiere_order(year: int | None, start: date | None) -> tuple[bool, int, int
     return True, year, start.month, start.day
 
 
-def _entry_order(entry: FranchiseEntry) -> tuple[int, tuple[bool, int, int, int], int]:
-    return tuple(EntryGroup).index(entry.group), premiere_order(entry.year, entry.start), entry.anilist_id
+def _entry_order(entry: FranchiseEntry) -> tuple[bool, int, int, int, int]:
+    dated, year, month, day = premiere_order(entry.year, entry.start)
+    return not dated, year, month, day, entry.anilist_id
 
 
 def _titles(node: JsonObject, *, sort_keys: bool = False) -> list[str]:

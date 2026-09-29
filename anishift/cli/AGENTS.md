@@ -169,6 +169,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `interactive/app.py`, `interactive/settings.py`, `interactive/manual.py`, `run.py`
 - `AnimeController` jest właścicielem stanu Anime. Enter na TITLES otwiera ENTRIES → EPISODES →
   OFFER → CANDIDATES przez `franchise`/`episodes`/`offer`; ta droga służy wyłącznie do podglądu.
+  ENTRIES to jedna płaska lista malejąco po premierze, bez nagłówków grup; EPISODES nie pokazuje
+  dodatków. W trybie rezydenta D na zmapowanym wpisie zleca zaznaczone (albo podświetlony) odcinki
+  przez `ResidentSession.episode_download` w osobnym wątku, zostaje na liście, pokazuje spinner
+  w kolumnie Stan i odczytuje wynik z receipt tego samego `command_id`; I otwiera OFFER. Stan
+  odcinków po wejściu pochodzi z `episode_states`. Pierwszy wiersz stopki jest zawsze wydany
+  (zaznaczenie, notka, niepotwierdzony termin), więc lista się nie przesuwa.
   Po wyszukiwaniu `_find_titles` od razu czyta franczyzę pierwszego wyniku; TITLES pojawia się
   (`_titles_shown`) tylko, gdy któryś wynik nie jest w `Franchise.entries` — nie w `FranchiseGraph.nodes`,
   bo niewidoczne węzły byłyby wtedy nieosiągalne. Esc z ENTRIES wraca do TITLES albo QUERY według
