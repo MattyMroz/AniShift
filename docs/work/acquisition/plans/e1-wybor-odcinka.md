@@ -457,6 +457,8 @@ ListedEpisode
   season: int | None            # seasonNumber (TVDB)
   episode: int | None           # episodeNumber (TVDB)
   absolute: int | None          # absoluteEpisodeNumber
+  aired: bool = False           # integracja E1: data AniList tego odcinka ≤ teraz; bez daty AniList → U-15; data ani.zip nigdy; UI czyta tylko to pole
+  airs_at_fallback: bool = False  # integracja E1: True, gdy airs_at pochodzi z ani.zip; tylko informacja, nigdy nie potwierdza emisji; panel oznacza „(ani.zip)”
 
 ListedSpecial
   key: str                      # "S1", "S2"…

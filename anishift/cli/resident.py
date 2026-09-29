@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from decimal import Decimal
 from pathlib import Path
 from secrets import token_hex
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from anishift.application import (
     CatalogOrder,
@@ -35,6 +35,7 @@ from anishift.application import (
     decode_view,
     encode_intent,
     encode_view,
+    episode_read_timeout_s,
 )
 from anishift.application.cancellation import NeverCancelledToken
 from anishift.application.events import RunEvent, RunEventKind
@@ -46,6 +47,11 @@ if TYPE_CHECKING:
     from anishift.application.cancellation import CancellationToken
     from anishift.application.events import RunEventSink
     from anishift.application.intents import AutoPreset, ExternalAudioRole, GroupIntent, RebuildRequest
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_SESSION_CLOSED: Final[str] = "The panel session is closed"
+"""Refusal raised for a catalogue read started after the session closed."""
 
 
 class ResidentSession:
@@ -59,6 +65,10 @@ class ResidentSession:
         self._lock: threading.Lock = threading.Lock()
         self._reserved: tuple[str, ...] = ()
         self._events: ControlClient | None = None
+        self._catalog: ControlClient | None = None
+        self._catalog_lock: threading.Lock = threading.Lock()
+        self._state_lock: threading.Lock = threading.Lock()
+        self._closed: bool = False
         self._external: dict[str, dict[str, object]] = {}
 
     def discover(self, *, cancel: CancellationToken | None = None) -> InspectedWorkspace:
@@ -226,19 +236,17 @@ class ResidentSession:
 
     def franchise(self, anilist_id: int) -> Franchise:
         """Read the franchise view of one entry through the owner."""
-        return decode_view(Franchise, self._call("acquisition", {"operation": "franchise", "anilist_id": anilist_id}))
+        return decode_view(Franchise, self._episode_read({"operation": "franchise", "anilist_id": anilist_id}))
 
     def episodes(self, anilist_id: int) -> EpisodeListing:
         """Read the episode list of one entry through the owner."""
-        return decode_view(
-            EpisodeListing, self._call("acquisition", {"operation": "episodes", "anilist_id": anilist_id})
-        )
+        return decode_view(EpisodeListing, self._episode_read({"operation": "episodes", "anilist_id": anilist_id}))
 
     def offer(self, key: EpisodeKey) -> EpisodeOffer:
         """Read the ranked live candidates of one episode through the owner."""
         return decode_view(
             EpisodeOffer,
-            self._call("acquisition", {"operation": "offer", "anilist_id": key.anilist_id, "number": key.number}),
+            self._episode_read({"operation": "offer", "anilist_id": key.anilist_id, "number": key.number}),
         )
 
     def download(self, choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
@@ -450,16 +458,37 @@ class ResidentSession:
 
     def close(self) -> None:
         """Detach the panel and release editing ownership without cancelling a run."""
+        with self._state_lock:
+            self._closed = True
+            catalog: ControlClient | None = self._catalog
         self._client.close()
-        events: ControlClient | None = self._events
-        if events is not None:
-            events.close()
+        for other in (self._events, catalog):
+            if other is not None:
+                other.close()
 
     def _call(
         self, kind: str, payload: Mapping[str, object] | None = None, *, instance_id: str | None = None
     ) -> Mapping[str, object]:
         with self._lock:
             return self._client.call(kind, {"client_id": self._client_id, **(payload or {})}, instance_id=instance_id)
+
+    def _episode_read(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+        with self._catalog_lock:
+            return self._catalog_channel().call("acquisition", payload, timeout_s=episode_read_timeout_s())
+
+    def _catalog_channel(self) -> ControlClient:
+        with self._state_lock:
+            if self._closed:
+                raise ControlError(_SESSION_CLOSED, code=ControlErrorCode.REFUSED)
+            if self._catalog is not None:
+                return self._catalog
+        opened: ControlClient = self._connect()
+        with self._state_lock:
+            if not self._closed:
+                self._catalog = opened
+                return opened
+        opened.close()
+        raise ControlError(_SESSION_CLOSED, code=ControlErrorCode.REFUSED)
 
     def _register(self, payload: Mapping[str, object], cancel: CancellationToken | None) -> InspectedSourceGroup:
         token: CancellationToken = cancel or NeverCancelledToken()

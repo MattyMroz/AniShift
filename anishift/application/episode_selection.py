@@ -201,6 +201,8 @@ class ListedEpisode:
     season: int | None = None
     episode: int | None = None
     absolute: int | None = None
+    aired: bool = False
+    airs_at_fallback: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,8 +367,17 @@ def episode_listing(  # noqa: PLR0913
     schedule_warning: str | None = None,
     schedule_retry_at: datetime | None = None,
 ) -> EpisodeListing:
-    """Join ani.zip episodes with the AniList schedule and fill numbers up to the known episode count."""
+    """Join ani.zip episodes with the AniList schedule and fill numbers up to the known episode count.
+
+    An episode is aired when its AniList date has passed; without an AniList date, when U-15 confirms
+    its number against the AniList aired count. An ani.zip date never confirms airing and marks
+    the episode with ``airs_at_fallback``.
+    """
     count: int | None = episode_count if episode_count is not None else mapping.episode_count
+    aired: int | None = _aired(status, episode_count, schedule, now)
+    dated: dict[int, datetime] = {
+        planned.number: planned.airs_at for planned in schedule if planned.airs_at is not None
+    }
     listed: dict[int, ListedEpisode] = {episode.number: episode for episode in mapping.episodes}
     for planned in schedule:
         known: ListedEpisode | None = listed.get(planned.number)
@@ -379,9 +390,16 @@ def episode_listing(  # noqa: PLR0913
         catalog_type=mapping.catalog_type,
         status=status,
         episode_count=count,
-        episodes=tuple(listed[number] for number in sorted(listed)),
+        episodes=tuple(
+            replace(
+                listed[number],
+                aired=_episode_aired(number, dated.get(number), aired, now),
+                airs_at_fallback=listed[number].airs_at is not None and number not in dated,
+            )
+            for number in sorted(listed)
+        ),
         specials=mapping.specials,
-        aired=_aired(status, episode_count, schedule, now),
+        aired=aired,
         schedule_warning=schedule_warning,
         schedule_retry_at=schedule_retry_at,
     )
@@ -555,6 +573,12 @@ def _aired(status: str, episode_count: int | None, schedule: Sequence[ListedEpis
     if status != _RELEASING or not schedule:
         return None
     return sum(1 for planned in schedule if planned.airs_at is not None and planned.airs_at <= now)
+
+
+def _episode_aired(number: int, anilist_date: datetime | None, aired: int | None, now: datetime) -> bool:
+    if anilist_date is not None:
+        return anilist_date <= now
+    return aired is not None and number <= aired
 
 
 def _resolution(texts: Sequence[str]) -> int | None:

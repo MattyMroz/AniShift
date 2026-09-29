@@ -33,7 +33,7 @@ _RETRY_AFTER_S: Final[float] = 60.0
 _MAX_BODY_BYTES: Final[int] = 8 * 1024 * 1024
 """Maximum buffered metadata response shared by concurrent callers."""
 
-_REMOTE_INTERVAL_S: Final[float] = 1.0
+REMOTE_INTERVAL_S: Final[float] = 1.0
 """Minimum separation of actual calls to each remote metadata provider."""
 
 
@@ -146,8 +146,8 @@ class RequestControl(httpx.BaseTransport):
                 delay: float = self._next.get(provider, 0.0) - now
                 if delay <= 0:
                     self._charge(provider, request)
-                    if provider in {"anilist", "nyaa", "anizip", "torrentio"}:
-                        self._next[provider] = now + _REMOTE_INTERVAL_S
+                    if provider in {"anilist", "nyaa"}:
+                        self._next[provider] = now + REMOTE_INTERVAL_S
                     return
             self._sleep(delay)
 

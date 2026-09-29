@@ -73,6 +73,7 @@ __all__ = [
     "TorrentClient",
     "TorrentSource",
     "catalog_releases",
+    "episode_read_timeout_s",
     "normalize_series",
     "order_groups",
     "read_episode",
@@ -396,6 +397,15 @@ def read_episode(name: ReleaseName, context: SeasonContext | None) -> EpisodeRea
     return EpisodeReading(episode, other_season=True)
 
 
+def episode_read_timeout_s() -> float:
+    """Client wait for one budgeted episode read: every schedule page at the AniList spacing plus the answer margin."""
+    from anishift.platform.local_control import DEFAULT_TIMEOUT_S  # noqa: PLC0415
+    from anishift.services.catalog.anilist import MAX_SCHEDULE_PAGES  # noqa: PLC0415
+    from anishift.services.http_requests import REMOTE_INTERVAL_S  # noqa: PLC0415
+
+    return MAX_SCHEDULE_PAGES * REMOTE_INTERVAL_S + DEFAULT_TIMEOUT_S
+
+
 def catalog_releases(  # noqa: PLR0913 - every listing rule stays an explicit call-site choice
     releases: Sequence[Release],
     parse_name: Callable[[str], ReleaseName],
@@ -500,6 +510,14 @@ class AcquisitionService:
         if self.request_control is None:
             return nullcontext()
         return self.request_control.scope(reason, {"nyaa": MAX_REQUESTS, "anilist": MAX_REQUESTS})
+
+    def episode_requests(self) -> AbstractContextManager[None]:
+        """Budget one franchise, episode or offer read to the AniList schedule pagination."""
+        from anishift.services.catalog.anilist import MAX_SCHEDULE_PAGES  # noqa: PLC0415
+
+        if self.request_control is None:
+            return nullcontext()
+        return self.request_control.scope("user", {"anilist": MAX_SCHEDULE_PAGES})
 
     def blocked_until(self, providers: tuple[str, ...]) -> float:
         """Return the earliest allowed provider retry, or zero when unblocked."""

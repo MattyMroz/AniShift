@@ -791,28 +791,18 @@ class AnimeController:
             return
         episode: ListedEpisode = listing.episodes[self._positions.get(_Screen.EPISODES, 0)]
         if key in {"space", "enter"}:
-            if not self._aired(episode):
+            if not episode.aired:
                 self._notice = f"E{episode.number} jeszcze nie wyemitowano"
             elif episode.number in self._episode_marks:
                 self._episode_marks.remove(episode.number)
             else:
                 self._episode_marks.add(episode.number)
         elif key.casefold() == "text:a":
-            self._episode_marks = {item.number for item in listing.episodes if self._aired(item)}
+            self._episode_marks = {item.number for item in listing.episodes if item.aired}
         elif key.casefold() == "text:z":
             self._range = ""
         elif key.casefold() == "text:d":
             self._start_offers(episode)
-
-    def _aired(self, episode: ListedEpisode) -> bool:
-        listing: EpisodeListing | None = self._listing
-        if listing is None:
-            return False
-        return (
-            listing.status in {"RELEASING", "FINISHED"}
-            and listing.aired is not None
-            and episode.number <= listing.aired
-        )
 
     def _apply_episode_range(self, typed: str) -> None:
         if self._listing is None:
@@ -822,7 +812,7 @@ class AnimeController:
         if problem:
             self._notice = problem
             return
-        self._episode_marks = {number for number in numbers if self._aired(available[number])}
+        self._episode_marks = {number for number in numbers if available[number].aired}
         if len(self._episode_marks) != len(numbers):
             self._notice = "Pominięto niewyemitowane odcinki"
 
@@ -865,9 +855,6 @@ class AnimeController:
             return
         entry: FranchiseEntry = self._franchise.entries[self._positions.get(_Screen.ENTRIES, 0)]
         same: bool = self._entry == entry and self._listing is not None
-        if same and self._listing is not None and not self._listing.schedule_warning:
-            self._screen = _Screen.EPISODES
-            return
         self._entry = entry
         if not same:
             self._listing = None
@@ -907,7 +894,7 @@ class AnimeController:
             return
         selected: set[int] = self._episode_marks or {highlighted.number}
         numbers: tuple[int, ...] = tuple(
-            item.number for item in self._listing.episodes if item.number in selected and self._aired(item)
+            item.number for item in self._listing.episodes if item.number in selected and item.aired
         )
         if not numbers:
             self._notice = f"E{highlighted.number} jeszcze nie wyemitowano"
@@ -965,7 +952,9 @@ class AnimeController:
         if offer is None:
             return
         high: bool = any(
-            item.identity.verdict is IdentityVerdict.MATCH and item.facts.resolution in {1080, 2160}
+            item.identity.verdict is IdentityVerdict.MATCH
+            and item.facts.resolution in {1080, 2160}
+            and item.facts.supported is not False
             for item in offer.candidates
         )
         self._release_candidates = tuple(
@@ -1524,15 +1513,16 @@ class AnimeController:
         if film:
             lines.append(("Pobieranie filmów zależy od pomiaru E1", None))
         lines.append(("Zaznaczone: " + (", ".join(map(str, sorted(self._episode_marks))) or "—"), None))
-        date_width: int = (22 if listing.schedule_warning else 11) if columns >= _DATE_COLUMNS else 0
+        fallback_dates: bool = any(episode.airs_at_fallback for episode in listing.episodes)
+        date_width: int = (22 if fallback_dates else 11) if columns >= _DATE_COLUMNS else 0
         widths: tuple[int, ...] = (3, 4, max(columns - 34 - date_width, 1), date_width, 15)
         lines.append((_columns(("", "Nr", "Tytuł", "Emisja", "Stan"), widths), None))
         for index, episode in enumerate(listing.episodes):
-            state: str = "Nie zamówiono" if self._aired(episode) else "Nie wyemitowano"
+            state: str = "Nie zamówiono" if episode.aired else "Nie wyemitowano"
             number: str = "Film" if film else str(episode.number)
             marker: str = "[x]" if episode.number in self._episode_marks else "[ ]"
             date: str = episode.airs_at.astimezone().strftime("%d.%m %H:%M") if episode.airs_at else "—"
-            if listing.schedule_warning and episode.airs_at:
+            if episode.airs_at_fallback:
                 date += " (ani.zip)"
             lines.append((_columns((marker, number, _safe(episode.title or "—"), date, state), widths), index))
         if listing.specials:

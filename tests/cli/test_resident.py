@@ -25,6 +25,7 @@ from anishift.application import (
     ListedEpisode,
     encode_view,
 )
+from anishift.application.acquisition import episode_read_timeout_s
 from anishift.cli import control as cli_control
 from anishift.cli import watch as watch_module
 from anishift.cli.exit_codes import EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS
@@ -37,6 +38,8 @@ from anishift.platform.local_control import (
     INSTANCE_FILE_NAME,
     KEY_FILE_NAME,
     ControlClient,
+    ControlError,
+    ControlErrorCode,
     ControlResponse,
     connect,
     control_endpoint,
@@ -157,10 +160,14 @@ def test_episode_selection_reads_send_only_their_keys_and_decode_the_owner_views
         "offer": offer,
     }
     sent: list[dict[str, object]] = []
+    waits: list[float | None] = []
 
-    def call(kind: str, payload: Mapping[str, object], *, instance_id: str | None = None) -> Mapping[str, object]:
+    def call(
+        kind: str, payload: Mapping[str, object], *, instance_id: str | None = None, timeout_s: float | None = None
+    ) -> Mapping[str, object]:
         assert (kind, instance_id) == ("acquisition", None)
-        sent.append({key: value for key, value in payload.items() if key != "client_id"})
+        sent.append(dict(payload))
+        waits.append(timeout_s)
         return encode_view(answers[str(payload["operation"])])
 
     session: ResidentSession = ResidentSession(tmp_path, lambda: cast("ControlClient", SimpleNamespace(call=call)))
@@ -172,6 +179,99 @@ def test_episode_selection_reads_send_only_their_keys_and_decode_the_owner_views
         {"operation": "episodes", "anilist_id": 7},
         {"operation": "offer", "anilist_id": 7, "number": 1},
     ]
+    assert waits == [episode_read_timeout_s()] * 3
+
+
+class _Channel:
+    def __init__(self, reply: threading.Event | None = None) -> None:
+        self.sent: list[Mapping[str, object]] = []
+        self.closed: threading.Event = threading.Event()
+        self.calling: threading.Event = threading.Event()
+        self._reply: threading.Event | None = reply
+
+    def call(
+        self,
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        instance_id: str | None = None,
+        timeout_s: float | None = None,
+    ) -> Mapping[str, object]:
+        self.sent.append(payload)
+        self.calling.set()
+        if self._reply is not None:
+            assert self._reply.wait(_TIMEOUT_S)
+        return encode_view(EpisodeListing(1, None, None, "UNKNOWN", None, (), (), None, None, None))
+
+    def close(self) -> None:
+        self.closed.set()
+
+
+def test_an_episode_read_after_close_is_refused_without_opening_a_channel(tmp_path: Path) -> None:
+    channels: list[_Channel] = []
+
+    def opened() -> ControlClient:
+        channels.append(_Channel())
+        return cast("ControlClient", channels[-1])
+
+    session: ResidentSession = ResidentSession(tmp_path, opened)
+    session.close()
+    with pytest.raises(ControlError, match="closed"):
+        session.episodes(1)
+    assert len(channels) == 1
+    assert channels[0].sent == []
+
+
+def test_a_channel_opened_while_the_session_closes_is_closed_without_sending_the_read(tmp_path: Path) -> None:
+    connecting: threading.Event = threading.Event()
+    proceed: threading.Event = threading.Event()
+    main: _Channel = _Channel()
+    late: _Channel = _Channel()
+    replies: list[_Channel] = [main, late]
+
+    def opened() -> ControlClient:
+        channel: _Channel = replies.pop(0)
+        if channel is late:
+            connecting.set()
+            assert proceed.wait(_TIMEOUT_S)
+        return cast("ControlClient", channel)
+
+    session: ResidentSession = ResidentSession(tmp_path, opened)
+    failures: list[ControlError] = []
+
+    def read() -> None:
+        try:
+            session.episodes(1)
+        except ControlError as error:
+            failures.append(error)
+
+    reader: threading.Thread = threading.Thread(target=read)
+    reader.start()
+    assert connecting.wait(_TIMEOUT_S)
+    session.close()
+    proceed.set()
+    reader.join(_TIMEOUT_S)
+    assert not reader.is_alive()
+    assert [error.code for error in failures] == [ControlErrorCode.REFUSED]
+    assert late.closed.is_set()
+    assert late.sent == []
+
+
+def test_close_returns_during_an_unanswered_episode_read_and_closes_its_channel(tmp_path: Path) -> None:
+    reply: threading.Event = threading.Event()
+    channels: list[_Channel] = [_Channel(), _Channel(reply)]
+    session: ResidentSession = ResidentSession(tmp_path, lambda: cast("ControlClient", channels.pop(0)))
+    catalog: _Channel = channels[-1]
+    reader: threading.Thread = threading.Thread(target=lambda: session.episodes(1))
+    reader.start()
+    try:
+        assert catalog.calling.wait(_TIMEOUT_S)
+        session.close()
+        assert catalog.closed.is_set()
+    finally:
+        reply.set()
+        reader.join(_TIMEOUT_S)
+    assert not reader.is_alive()
 
 
 def test_a_second_resident_is_refused_and_records_no_instance(tmp_path: Path) -> None:

@@ -403,6 +403,37 @@ def test_episode_listing_known_count_without_sources_lists_bare_numbers() -> Non
     assert upcoming.aired is None
     finished = episode_listing(5, _mapping({}), "FINISHED", 12, (), _NOW)
     assert finished.aired == 12
+    assert all(episode.aired for episode in finished.episodes)
+
+
+def _aired_numbers(status: str, count: int | None, schedule: tuple[ListedEpisode, ...]) -> list[int]:
+    past: datetime = datetime(2026, 1, 1, tzinfo=UTC)
+    mapping: AniZipMapping = _mapping({}, episodes=tuple(ListedEpisode(n, airs_at=past) for n in range(1, 7)))
+    listing = episode_listing(5, mapping, status, count, schedule, _NOW)
+    return [episode.number for episode in listing.episodes if episode.aired]
+
+
+def test_hiatus_episode_with_a_past_anilist_date_is_aired_while_undated_numbers_are_not() -> None:
+    schedule: tuple[ListedEpisode, ...] = (ListedEpisode(1, airs_at=datetime(2026, 1, 1, tzinfo=UTC)),)
+    assert _aired_numbers("HIATUS", 6, schedule) == [1]
+
+
+def test_schedule_gap_airs_its_dated_episode_and_confirms_undated_numbers_only_up_to_the_aired_count() -> None:
+    schedule: tuple[ListedEpisode, ...] = (ListedEpisode(5, airs_at=datetime(2026, 1, 1, tzinfo=UTC)),)
+    assert _aired_numbers("RELEASING", 6, schedule) == [1, 5]
+
+
+def test_future_anilist_date_blocks_its_episode_even_below_the_aired_count() -> None:
+    schedule: tuple[ListedEpisode, ...] = (
+        ListedEpisode(1, airs_at=datetime(2026, 12, 1, tzinfo=UTC)),
+        ListedEpisode(2, airs_at=datetime(2026, 1, 1, tzinfo=UTC)),
+    )
+    assert _aired_numbers("RELEASING", 6, schedule) == [2]
+
+
+@pytest.mark.parametrize("status", ["UNKNOWN", "RELEASING", "FINISHED", "HIATUS"])
+def test_past_ani_zip_dates_never_confirm_airing_without_anilist_schedule_or_count(status: str) -> None:
+    assert _aired_numbers(status, None, ()) == []
 
 
 def test_episode_listing_partial_sources_fill_gaps_without_losing_metadata() -> None:
@@ -420,12 +451,21 @@ def test_episode_listing_partial_sources_fill_gaps_without_losing_metadata() -> 
     )
     listing = episode_listing(5, mapping, "RELEASING", 4, schedule, _NOW)
     assert listing.episodes == (
-        ListedEpisode(1, "First", datetime(2026, 1, 1, tzinfo=UTC), 1, 1, 1),
-        ListedEpisode(2, "Second", datetime(2026, 1, 9, tzinfo=UTC), 1, 2, 2),
-        ListedEpisode(3, airs_at=datetime(2026, 1, 16, tzinfo=UTC)),
+        ListedEpisode(1, "First", datetime(2026, 1, 1, tzinfo=UTC), 1, 1, 1, aired=True, airs_at_fallback=True),
+        ListedEpisode(2, "Second", datetime(2026, 1, 9, tzinfo=UTC), 1, 2, 2, aired=True),
+        ListedEpisode(3, airs_at=datetime(2026, 1, 16, tzinfo=UTC), aired=True),
         ListedEpisode(4),
     )
     assert listing.aired == 2
+
+
+def test_valid_empty_schedule_marks_every_ani_zip_date_as_fallback() -> None:
+    mapping: AniZipMapping = _mapping(
+        {}, episodes=(ListedEpisode(1, airs_at=datetime(2026, 1, 1, tzinfo=UTC)), ListedEpisode(2))
+    )
+    listing = episode_listing(5, mapping, "FINISHED", 2, (), _NOW)
+    assert listing.schedule_warning is None
+    assert [episode.airs_at_fallback for episode in listing.episodes] == [True, False]
 
 
 def test_episode_listing_unknown_count_and_empty_sources_invent_nothing() -> None:

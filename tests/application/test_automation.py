@@ -7414,6 +7414,10 @@ def _slime_replay(scenario: str, sent: list[str]) -> Callable[[httpx.Request], h
         variables: dict[str, object] = json.loads(request.content)["variables"] if request.content else {}
         if host == failing:
             return httpx.Response(503)
+        if host == "graphql.anilist.co" and "ids" not in variables and scenario == "long_schedule":
+            page: object = variables["page"]
+            assert isinstance(page, int)
+            return httpx.Response(200, json=_long_schedule_page(page))
         if host == "graphql.anilist.co" and "ids" not in variables:
             return (
                 httpx.Response(429, headers={"Retry-After": "60"})
@@ -7432,10 +7436,31 @@ def _slime_replay(scenario: str, sent: list[str]) -> Callable[[httpx.Request], h
     return respond
 
 
+_LONG_SCHEDULE_EPISODES: Final[int] = 425
+
+
+def _long_schedule_page(page: int) -> dict[str, object]:
+    numbers: range = range((page - 1) * 25 + 1, min(page * 25, _LONG_SCHEDULE_EPISODES) + 1)
+    return {
+        "data": {
+            "Media": {
+                "id": _SLIME_S1,
+                "status": "RELEASING",
+                "episodes": None,
+                "startDate": {"year": 2018, "month": 10, "day": 2},
+                "airingSchedule": {
+                    "pageInfo": {"currentPage": page, "hasNextPage": numbers.stop <= _LONG_SCHEDULE_EPISODES},
+                    "nodes": [{"episode": number, "airingAt": number} for number in numbers],
+                },
+            }
+        }
+    }
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "scenario",
-    ["ok", "schedule_limited", "anilist_failed", "anizip_failed", "torrentio_failed", "offer_raises"],
+    ["ok", "schedule_limited", "long_schedule", "anilist_failed", "anizip_failed", "torrentio_failed", "offer_raises"],
 )
 def test_episode_selection_crosses_owner_ipc_with_the_provider_reason_preserved(  # noqa: PLR0915
     tmp_path: Path, scenario: str, monkeypatch: pytest.MonkeyPatch
@@ -7516,12 +7541,77 @@ def test_episode_selection_crosses_owner_ipc_with_the_provider_reason_preserved(
                     datetime.fromtimestamp(control.blocked_until(("anilist",)), UTC),
                 )
                 assert (listing.status, listing.aired) == ("FINISHED", None)
+                assert not any(episode.aired for episode in listing.episodes)
             if scenario == "ok":
                 assert (listing.schedule_warning, listing.aired) == (None, 24)
+                assert all(episode.aired for episode in listing.episodes)
                 assert sent.count("api.ani.zip") == 1
+            if scenario == "long_schedule":
+                assert not failures
+                long: EpisodeListing = session.episodes(_SLIME_S1)
+                assert (long.schedule_warning, long.status, long.aired) == (None, "RELEASING", _LONG_SCHEDULE_EPISODES)
+                assert len(long.episodes) == _LONG_SCHEDULE_EPISODES
+                assert all(episode.aired for episode in long.episodes)
+                assert sent.count("graphql.anilist.co") == 3 + 17
             assert all(value not in "".join(captured) for value in ("https://", "Slime", "kitsu"))
         finally:
             loguru_logger.remove(handler_id)
+            session.close()
+            server.close()
+            owner.request_shutdown()
+            thread.join(_TIMEOUT_S)
+            service.close()
+        assert not thread.is_alive()
+
+
+@pytest.mark.integration
+def test_a_long_schedule_read_outlasts_the_default_answer_wait_while_other_commands_stay_answered(
+    tmp_path: Path,
+) -> None:
+    sent: list[str] = []
+    paging: threading.Event = threading.Event()
+    replay: Callable[[httpx.Request], httpx.Response] = _slime_replay("long_schedule", sent)
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "graphql.anilist.co" and "ids" not in json.loads(request.content)["variables"]:
+            paging.set()
+            time.sleep(0.04)
+        return replay(request)
+
+    now: list[float] = [1000.0]
+    control: RequestControl = RequestControl(
+        httpx.MockTransport(slow), clock=lambda: now[0], sleep=lambda delay: now.__setitem__(0, now[0] + delay)
+    )
+    with httpx.Client(transport=control) as http:
+        acquisition: AcquisitionService = AcquisitionService(
+            source=_NoSource(),
+            client=QBittorrentClient("http://unused.test", http=http),
+            workspace_root=tmp_path,
+            parse_name=parse_release_name,
+            title_catalog=AniListCatalog(http),
+            request_control=control,
+            episode_catalog=AniZipCatalog(http),
+            stream_source=TorrentioSource(http),
+            clock=lambda: now[0],
+        )
+        service: AppService = _real_service(tmp_path, acquisition=acquisition)
+        owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME))
+        thread: threading.Thread = _serving(owner)
+        key: bytes = os.urandom(32)
+        endpoint: str = control_endpoint(tmp_path)
+        server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+        session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key, timeout_s=0.2))
+        listings: list[EpisodeListing] = []
+        reader: threading.Thread = threading.Thread(target=lambda: listings.append(session.episodes(_SLIME_S1)))
+        try:
+            reader.start()
+            assert paging.wait(_TIMEOUT_S)
+            assert "material_counts" in session.command("status")
+            reader.join(_TIMEOUT_S)
+            assert not reader.is_alive()
+            assert [len(listing.episodes) for listing in listings] == [_LONG_SCHEDULE_EPISODES]
+            assert sent.count("graphql.anilist.co") == 17
+        finally:
             session.close()
             server.close()
             owner.request_shutdown()

@@ -29,6 +29,45 @@ def test_episode_providers_charge_their_own_budget(host: str, provider: str) -> 
     ]
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(("host", "provider"), [("api.ani.zip", "anizip"), ("torrentio.strem.fun", "torrentio")])
+def test_episode_providers_send_bursts_without_sleep_but_honor_429(host: str, provider: str) -> None:
+    now: list[float] = [1000.0]
+    sleeps: list[float] = []
+    sent: list[str] = []
+    saved: dict[str, float] = {}
+
+    def sleep(delay: float) -> None:
+        sleeps.append(delay)
+        now[0] += delay
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(request.url.path)
+        if request.url.path == "/limited":
+            return httpx.Response(429, headers={"Retry-After": "60"})
+        return httpx.Response(200)
+
+    control: RequestControl = RequestControl(httpx.MockTransport(respond), clock=lambda: now[0], sleep=sleep)
+    control.restore({}, lambda name, until: saved.update({name: until}))
+    with httpx.Client(transport=control) as http:
+        for number in range(12):
+            assert http.get(f"https://{host}/{number}").status_code == 200
+        assert sleeps == []
+        assert now[0] == 1000.0
+        assert len(sent) == 12
+        assert http.get(f"https://{host}/limited").status_code == 429
+        assert saved == {provider: 1060.0}
+        assert control.blocked_until((provider,)) == 1060.0
+        with pytest.raises(httpx.TransportError, match="cooldown"):
+            http.get(f"https://{host}/blocked")
+        assert len(sent) == 13
+        now[0] = 1060.0
+        assert http.get(f"https://{host}/resumed").status_code == 200
+        assert http.get(f"https://{host}/next").status_code == 200
+    assert sleeps == []
+    assert len(sent) == 15
+
+
 def test_provider_cooldown_is_shared_restored_and_does_not_block_another_provider() -> None:
     now: list[float] = [1000.0]
     sent: list[str] = []

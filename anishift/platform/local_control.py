@@ -524,8 +524,9 @@ class ControlClient:
         *,
         command_id: str | None = None,
         instance_id: str | None = None,
+        timeout_s: float | None = None,
     ) -> Mapping[str, object]:
-        """Send one command and return its result."""
+        """Send one command and return its result, waiting *timeout_s* instead of the connection default."""
         if self._subscribed:
             msg = "A subscribed connection carries events, not commands"
             raise ControlError(msg, code=ControlErrorCode.REFUSED)
@@ -539,7 +540,7 @@ class ControlClient:
                 "payload": dict(payload) if payload is not None else {},
             }
         )
-        return _accepted_result(self._receive(), identity)
+        return _accepted_result(self._receive(timeout_s), identity)
 
     def subscribe(self) -> None:
         """Turn this connection into the event stream of the resident."""
@@ -572,9 +573,9 @@ class ControlClient:
             msg = "The resident closed the control connection"
             raise ControlError(msg, code=ControlErrorCode.REFUSED) from problem
 
-    def _receive(self) -> Mapping[str, object]:
+    def _receive(self, timeout_s: float | None = None) -> Mapping[str, object]:
         try:
-            if not self._connection.poll(self._timeout_s):
+            if not self._connection.poll(self._timeout_s if timeout_s is None else timeout_s):
                 msg = "The resident did not answer in time"
                 raise ControlError(msg, code=ControlErrorCode.INTERNAL)
             raw: bytes = self._connection.recv_bytes(maxlength=MAX_FRAME_BYTES)

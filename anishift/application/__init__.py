@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         ReleaseChoice,
         SeasonContext,
         SeriesGroup,
+        episode_read_timeout_s,
         order_groups,
         read_episode,
     )
@@ -310,6 +311,7 @@ __all__ = [
     "decode_view",
     "encode_intent",
     "encode_view",
+    "episode_read_timeout_s",
     "group_is_ready",
     "legal_narration_timelines",
     "legal_products",
@@ -358,6 +360,7 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "EpisodeReading": ("anishift.application.acquisition", "EpisodeReading"),
     "SeasonContext": ("anishift.application.acquisition", "SeasonContext"),
     "read_episode": ("anishift.application.acquisition", "read_episode"),
+    "episode_read_timeout_s": ("anishift.application.acquisition", "episode_read_timeout_s"),
     "EpisodeRange": ("anishift.services.torrents.query", "EpisodeRange"),
     "SearchQuery": ("anishift.services.torrents.query", "SearchQuery"),
     "parse_query": ("anishift.services.torrents.query", "parse_query"),

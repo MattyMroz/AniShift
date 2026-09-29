@@ -10,7 +10,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import httpx
 import pytest
@@ -81,7 +81,7 @@ def _listing() -> EpisodeListing:
         "TV",
         "FINISHED",
         6,
-        tuple(ListedEpisode(n, f"Episode {n}") for n in range(1, 7)),
+        tuple(ListedEpisode(n, f"Episode {n}", aired=True) for n in range(1, 7)),
         (ListedSpecial("S1", "Extra", None),),
         6,
         None,
@@ -168,7 +168,7 @@ def test_all_frozen_identity_reasons_have_polish_texts() -> None:
 
 
 @pytest.mark.unit
-def test_episode_flow_keeps_noncontiguous_selection_and_returns_without_reads() -> None:
+def test_episode_flow_keeps_noncontiguous_selection_and_rereads_episodes_only_on_explicit_entry() -> None:
     catalog: _Catalog = _Catalog()
     controller: AnimeController = _controller(catalog)
     _open(controller)
@@ -182,10 +182,11 @@ def test_episode_flow_keeps_noncontiguous_selection_and_returns_without_reads() 
     assert controller._screen is _Screen.EPISODES
     assert controller._episode_marks == {1, 3}
     assert controller._positions[_Screen.EPISODES] == 2
+    assert catalog.calls == calls
     for key in ("escape", "enter", "escape", "escape", "enter"):
         _key(controller, key)
     assert controller._screen.value == "entries"
-    assert catalog.calls == calls
+    assert catalog.calls == [*calls, ("episodes", 1)]
 
 
 @pytest.mark.unit
@@ -243,9 +244,55 @@ def test_past_mapping_dates_do_not_make_unconfirmed_episodes_selectable(
 
 
 @pytest.mark.unit
+def test_ani_zip_label_follows_each_episode_date_origin_without_a_schedule_warning() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.listing = replace(
+        catalog.listing,
+        schedule_warning=None,
+        episodes=(
+            ListedEpisode(1, "Episode 1", datetime(2020, 1, 1, tzinfo=UTC), aired=True, airs_at_fallback=True),
+            ListedEpisode(2, "Episode 2", datetime(2020, 1, 8, tzinfo=UTC), aired=True),
+        ),
+    )
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    rows: dict[str, str] = {
+        name: line for line in _frame(controller).splitlines() for name in ("Episode 1", "Episode 2") if name in line
+    }
+    assert "(ani.zip)" in rows["Episode 1"]
+    assert "(ani.zip)" not in rows["Episode 2"]
+
+
+@pytest.mark.unit
+def test_episode_selectability_follows_only_the_domain_aired_flag_of_each_episode() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.listing = replace(
+        catalog.listing,
+        status="HIATUS",
+        aired=None,
+        episodes=(ListedEpisode(1, "Episode 1", aired=False), ListedEpisode(2, "Episode 2", aired=True)),
+    )
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    for key in ("text:a", "space", "down", "space", "space"):
+        _key(controller, key)
+    assert controller._episode_marks == {2}
+    assert "E1 jeszcze nie wyemitowano" not in _frame(controller)
+    _key(controller, "home")
+    _key(controller, "space")
+    assert "E1 jeszcze nie wyemitowano" in _frame(controller)
+    assert controller._episode_marks == {2}
+
+
+@pytest.mark.unit
 def test_preview_without_marks_uses_highlighted_episode_and_future_episode_is_not_selectable() -> None:
     catalog: _Catalog = _Catalog()
-    catalog.listing = replace(catalog.listing, status="RELEASING", aired=3)
+    catalog.listing = replace(
+        catalog.listing,
+        status="RELEASING",
+        aired=3,
+        episodes=tuple(replace(item, aired=item.number <= 3) for item in catalog.listing.episodes),
+    )
     controller: AnimeController = _controller(catalog)
     _open(controller)
     for key in ("end", "space", "text:d"):
@@ -349,6 +396,18 @@ def test_other_releases_hide_low_resolutions_only_with_a_matching_high_release(h
 
 
 @pytest.mark.unit
+def test_unsupported_high_resolution_match_does_not_hide_a_supported_lower_match() -> None:
+    catalog: _Catalog = _Catalog()
+    avi: RankedCandidate = replace(_candidate(), facts=ReleaseFacts(1080, False, False, None, False, ".avi", False))
+    catalog.offer_read = lambda key: _offer(key, (avi, _candidate(resolution=720)))
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    _key(controller, "text:d")
+    _key(controller, "text:i")
+    assert [item.facts.resolution for item in controller._release_candidates] == [1080, 720]
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("size", [(120, 40), (50, 24), (40, 12), (20, 5)])
 def test_all_episode_views_fit_without_rendering_network_or_mutating_selection(size: tuple[int, int]) -> None:
     catalog: _Catalog = _Catalog()
@@ -367,7 +426,9 @@ def test_all_episode_views_fit_without_rendering_network_or_mutating_selection(s
 @pytest.mark.unit
 def test_episode_scroll_preserves_selection_and_keyboard_follows_cursor() -> None:
     catalog: _Catalog = _Catalog()
-    catalog.listing = replace(catalog.listing, episodes=tuple(ListedEpisode(n) for n in range(1, 51)), aired=50)
+    catalog.listing = replace(
+        catalog.listing, episodes=tuple(ListedEpisode(n, aired=True) for n in range(1, 51)), aired=50
+    )
     controller: AnimeController = _controller(catalog)
     _open(controller)
     _key(controller, "space")
@@ -616,6 +677,9 @@ def _unused_handler(
     raise AssertionError((run_root, plan, source_groups))
 
 
+_START: Final[int] = int(datetime(2026, 9, 29, tzinfo=UTC).timestamp())
+
+
 def _replay(scenario: list[str], sent: list[str]) -> Callable[[httpx.Request], httpx.Response]:
     fixtures: Path = Path(__file__).parents[1] / "fixtures" / "search"
     recorded: dict[str, Any] = json.loads((fixtures / "anilist__franchise__101280.json").read_text(encoding="utf-8"))
@@ -670,15 +734,24 @@ def _replay(scenario: list[str], sent: list[str]) -> Callable[[httpx.Request], h
             assert isinstance(identifiers, list)
             return httpx.Response(200, json=pages[tuple(sorted(identifiers))])
         if "id" in variables:
+            releasing: bool = scenario[0] == "releasing"
             return httpx.Response(
                 200,
                 json={
                     "data": {
                         "Media": {
                             "id": variables["id"],
-                            "status": "FINISHED",
+                            "status": "RELEASING" if releasing else "FINISHED",
                             "episodes": 24,
-                            "airingSchedule": {"pageInfo": {"currentPage": 1, "hasNextPage": False}, "nodes": []},
+                            "airingSchedule": {
+                                "pageInfo": {"currentPage": 1, "hasNextPage": False},
+                                "nodes": [
+                                    {"episode": number, "airingAt": _START + (60 if number == 4 else -86400 * number)}
+                                    for number in range(1, 5)
+                                ]
+                                if releasing
+                                else [],
+                            },
                         }
                     }
                 },
@@ -807,6 +880,32 @@ def test_slime_fixture_flows_from_query_to_s1e4_preview_without_admission(tmp_pa
         ]
         assert neighbours
         assert IdentityVerdict.MATCH not in neighbours
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("remote", [False, True])
+def test_reentering_an_entry_after_an_airing_makes_that_episode_selectable_and_keeps_cursor_and_marks(
+    tmp_path: Path, remote: bool
+) -> None:
+    sent: list[str] = []
+    now: list[float] = [float(_START)]
+    with _running_panel(tmp_path, ["releasing"], sent, now, remote=remote) as (controller, _, _):
+        _open(controller)
+        for key in ("space", "down", "down", "down", "space"):
+            _key(controller, key)
+        assert controller._episode_marks == {1}
+        assert "E4 jeszcze nie wyemitowano" in _frame(controller)
+        reads: int = len(sent)
+        now[0] += 120
+        _key(controller, "space")
+        assert controller._episode_marks == {1}
+        for key in ("escape", "enter"):
+            _key(controller, key)
+        assert controller._screen is _Screen.EPISODES
+        assert controller._positions[_Screen.EPISODES] == 3
+        _key(controller, "space")
+        assert controller._episode_marks == {1, 4}
+        assert len(sent) == reads
 
 
 @pytest.mark.integration

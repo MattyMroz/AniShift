@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import httpx
 import pytest
@@ -48,6 +48,7 @@ from anishift.application.episode_selection import (
     EpisodeOffer,
     Franchise,
     FranchiseGraph,
+    ListedEpisode,
     RankedCandidate,
     StreamCandidate,
     identity_target,
@@ -1191,6 +1192,7 @@ def test_episodes_use_the_airing_schedule_count_status_and_dates(tmp_path: Path)
     )
     assert [episode.number for episode in listing.episodes] == list(range(1, 26))
     assert listing.episodes[3].airs_at == aired
+    assert all(episode.aired for episode in listing.episodes)
 
 
 def test_failed_schedule_keeps_the_ani_zip_list_with_a_warning_and_the_anilist_retry_time(tmp_path: Path) -> None:
@@ -1201,6 +1203,7 @@ def test_failed_schedule_keeps_the_ani_zip_list_with_a_warning_and_the_anilist_r
     listing: EpisodeListing = service.episodes(_S1)
     assert (listing.status, listing.episode_count, listing.aired) == ("UNKNOWN", 24, None)
     assert len(listing.episodes) == 24
+    assert all(episode.airs_at is not None and not episode.aired for episode in listing.episodes)
     assert (listing.schedule_warning, listing.schedule_retry_at) == ("TITLE_CATALOG_FAILED", None)
     blocked: EpisodeListing = _episode_service(
         tmp_path, titles, clock=clock, request_control=_blocked_control(clock.now + 60)
@@ -1216,6 +1219,7 @@ def test_failed_schedule_takes_the_remembered_franchise_status_without_inventing
     service.franchise(_S1)
     listing: EpisodeListing = service.episodes(_S4)
     assert (listing.status, listing.episode_count, listing.aired) == ("RELEASING", 24, None)
+    assert not any(episode.aired for episode in listing.episodes)
 
 
 def test_expired_schedule_is_not_a_fallback_after_a_later_failure(tmp_path: Path) -> None:
@@ -1276,8 +1280,14 @@ def test_a_refetched_incomplete_graph_never_replaces_the_complete_one(tmp_path: 
 def test_episode_selection_views_survive_a_strict_ipc_round_trip(tmp_path: Path) -> None:
     service: AcquisitionService = _episode_service(tmp_path)
     view: Franchise = service.franchise(_S1)
+    listed: EpisodeListing = service.episodes(_S1)
     listing: EpisodeListing = replace(
-        service.episodes(_S1),
+        listed,
+        episodes=(
+            replace(listed.episodes[0], aired=True, airs_at_fallback=True),
+            replace(listed.episodes[1], airs_at_fallback=False),
+            *listed.episodes[2:],
+        ),
         schedule_warning="TITLE_CATALOG_FAILED",
         schedule_retry_at=datetime(2026, 9, 29, 12, tzinfo=UTC),
     )
@@ -1285,6 +1295,14 @@ def test_episode_selection_views_survive_a_strict_ipc_round_trip(tmp_path: Path)
     assert any(item.stream.file_index is None or item.stream.path is None for item in offer.candidates)
     assert decode_view(Franchise, encode_view(view)) == view
     assert decode_view(EpisodeListing, encode_view(listing)) == listing
+    decoded: tuple[ListedEpisode, ...] = decode_view(EpisodeListing, encode_view(listing)).episodes
+    assert {episode.aired for episode in decoded} == {True, False}
+    assert {episode.airs_at_fallback for episode in decoded} == {True, False}
+    for field in ("aired", "airs_at_fallback"):
+        mistyped: dict[str, Any] = encode_view(listing)
+        mistyped["episodes"][0][field] = "yes"
+        with pytest.raises(ValidationError):
+            decode_view(EpisodeListing, mistyped)
     assert decode_view(EpisodeOffer, encode_view(offer)) == offer
     choice: ReleaseChoice = ReleaseChoice(_release("sp-10"), _NAMES["sp-10"], EpisodeReading(Decimal(10)))
     assert decode_view(ReleaseChoice, encode_view(choice)) == choice

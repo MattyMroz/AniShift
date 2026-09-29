@@ -106,6 +106,7 @@ from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from contextlib import AbstractContextManager
 
     from anishift.application.acquisition import AcquisitionService, ReleaseChoice
     from anishift.application.artifacts import Artifact, SourceGroup
@@ -322,6 +323,9 @@ _SLOW_KINDS: Final[frozenset[str]] = frozenset(
 
 _INSTANCE_CHECKED_KINDS: Final[frozenset[str]] = frozenset({"start", "reserve", "release", "cancel"})
 """Commands a client may only send to the instance it last read the state from."""
+
+_EPISODE_READS: Final[frozenset[str]] = frozenset({"franchise", "episodes", "offer"})
+"""Acquisition reads budgeted to the AniList schedule pagination instead of the release search limit."""
 
 _ACTIVE_STATES: Final[frozenset[RequestState]] = frozenset(
     {RequestState.ACCEPTED, RequestState.RUNNING, RequestState.PAUSED}
@@ -3232,7 +3236,12 @@ class AutomationOwner:
         if acquisition is None:
             return _invalid("No acquisition service is configured")
         payload: Mapping[str, object] = request.payload
-        with acquisition.requests("user"):
+        budget: AbstractContextManager[None] = (
+            acquisition.episode_requests()
+            if payload.get("operation") in _EPISODE_READS
+            else acquisition.requests("user")
+        )
+        with budget:
             read: ControlResponse | None = _catalog_read(acquisition, payload)
             if read is not None:
                 return read
