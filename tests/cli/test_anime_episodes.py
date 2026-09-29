@@ -268,17 +268,32 @@ def test_extra_entry_does_not_skip_the_franchise_screen() -> None:
     assert catalog.calls == [("titles", 5), ("franchise", 1)]
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize("mapped", [True, False])
-def test_skipped_entry_keeps_groups_and_subscription_route_reachable(mapped: bool) -> None:
-    class GroupCatalog(_Catalog):
-        def search_title(self, candidate: TitleCandidate, **options: object) -> ReleaseCatalog:
-            self.calls.append(("releases", candidate.anilist_id))
-            return ReleaseCatalog((), 0)
+class _GroupCatalog(_Catalog):
+    def search_title(self, candidate: TitleCandidate, **options: object) -> ReleaseCatalog:
+        del options
+        self.calls.append(("releases", candidate.anilist_id))
+        return ReleaseCatalog((), 0)
 
-    catalog: GroupCatalog = GroupCatalog()
+
+@pytest.mark.unit
+@pytest.mark.parametrize("movie", [False, True])
+def test_unmapped_skipped_entry_opens_its_releases_without_a_dead_end(movie: bool) -> None:
+    catalog: _GroupCatalog = _GroupCatalog()
+    catalog.view = Franchise(1, (_entry(format="MOVIE") if movie else _entry(),), (), True)
+    catalog.listing = replace(catalog.listing, specials=(), kitsu_id=None)
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.RESULTS
+    assert catalog.calls[-1] == ("releases", 1)
+    assert "Brak mapowania" not in _frame(controller)
+
+
+@pytest.mark.unit
+def test_skipped_entry_keeps_groups_and_subscription_route_reachable() -> None:
+    catalog: _GroupCatalog = _GroupCatalog()
     catalog.view = Franchise(1, (_entry(),), (), True)
-    catalog.listing = replace(catalog.listing, specials=(), kitsu_id=10 if mapped else None)
+    catalog.listing = replace(catalog.listing, specials=(), kitsu_id=10)
     controller: AnimeController = _controller(catalog)
     for key in ("paste:slime", "enter"):
         _key(controller, key)
@@ -805,11 +820,10 @@ def test_preview_without_marks_uses_highlighted_episode_and_future_episode_is_no
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("mapped", [True, False])
-def test_movie_has_one_film_row_and_only_previews_its_first_episode_when_mapped(mapped: bool) -> None:
+def test_movie_has_one_film_row_and_only_previews_its_first_episode_when_mapped() -> None:
     catalog: _Catalog = _Catalog()
     catalog.view = replace(catalog.view, entries=(_entry(format="MOVIE"),))
-    catalog.listing = replace(catalog.listing, kitsu_id=10 if mapped else None, specials=())
+    catalog.listing = replace(catalog.listing, kitsu_id=10, specials=())
     controller: AnimeController = _controller(catalog)
     for key in ("paste:slime", "enter"):
         _key(controller, key)
@@ -818,11 +832,10 @@ def test_movie_has_one_film_row_and_only_previews_its_first_episode_when_mapped(
     assert catalog.calls.count(("episodes", 1)) == 1
     assert controller._listing is not None
     assert [item.number for item in controller._listing.episodes] == [1]
-    assert ("Film" if mapped else "Brak mapowania") in _frame(controller)
+    assert "Film" in _frame(controller)
     _key(controller, "text:d")
-    assert [call for call in catalog.calls if call[0] == "offer"] == ([("offer", 1)] if mapped else [])
-    if mapped:
-        _key(controller, "escape")
+    assert [call for call in catalog.calls if call[0] == "offer"] == [("offer", 1)]
+    _key(controller, "escape")
     _key(controller, "escape")
     assert _at(controller) is _Screen.QUERY
 
@@ -981,7 +994,8 @@ def test_catalogue_headers_name_the_work_and_columns_align_at_both_widths(width:
     assert header.index("Obraz") == offered.index("1080p")
     _key(controller, "text:i")
     candidates: list[str] = controller.render(width, 40).plain.splitlines()
-    assert "Inne wydania \u203a Slime \u203a E1" in candidates[0]
+    assert candidates[0] == ""
+    assert "Inne wydania \u203a Slime \u203a E1" in candidates[1]
     header = next(line for line in candidates if "Wydanie" in line and "Seedy" in line)
     image_column: int = Text(header[: header.index("Obraz")]).cell_len
     release_rows: list[str] = [line for line in candidates if "1080p" in line]

@@ -976,6 +976,9 @@ class AnimeController:
                 self._listing_preloaded = True
                 self._screen = _Screen.ENTRIES
             self._worker = None
+            unmapped: TitleCandidate | None = self._entry_release_candidate() if listing.kitsu_id is None else None
+            if unmapped is not None:
+                self._start_title_search(unmapped)
         self._invalidate()
 
     def _start_offers(self, highlighted: ListedEpisode) -> None:
@@ -1618,7 +1621,7 @@ class AnimeController:
             for hint in footer
             for line in (_wrapped_hint(hint, width) if isinstance(hint, str) else (hint.plain,))
         ]
-        budget: int = rows - len(hints) - 3
+        budget: int = rows - len(hints) - 4
         if budget < 1:
             return with_footer(Text("Powiększ terminal"), ("Esc wróć · Tab widok",), columns, rows)
         selected: int = self._positions.get(self._screen, 0)
@@ -1629,7 +1632,7 @@ class AnimeController:
             start = max(start, cursor - budget + 1)
         self._offsets[self._screen] = start
         self._visible_count = budget
-        content: Text = Text(_fit_text(heading, width) + "\n\n", style="white_bold")
+        content: Text = Text("\n" + _fit_text(heading, width) + "\n\n", style="white_bold")
         for label, position in lines[start : start + budget]:
             active: bool = position is not None and position == selected
             content.append(
