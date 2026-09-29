@@ -118,7 +118,7 @@ Przepływ ścieżki ręcznej i subskrypcji (punkt odcięcia, cel, próba, dopusz
 
 - **W-01** Zakładka Anime ma jedno pole wyszukiwania. Szukanie uwzględnia nazwy angielskie, romaji i synonimy.
 - **W-02** Lista tytułów pokazuje: rok premiery tego wpisu, tytuł (angielski, gdy istnieje, inaczej romaji), format. Nie pokazuje liczby odcinków ani wydań.
-- **W-03** Lista tytułów jest posortowana: rok malejąco, wpisy bez roku na końcu, w obrębie roku alfabetycznie (naturalnie).
+- **W-03** Lista tytułów jest posortowana: zapowiedzi bez daty premiery na górze, potem pełna data premiery AniList malejąco (sam rok liczy się jak koniec roku), remis alfabetycznie (naturalnie). Wpisy franczyzy w grupie: bez daty na górze, potem data rosnąco. Decyzja właściciela 2026-09-29 (H1).
 - **W-04** Wybór tytułu pokazuje powiązane wpisy anime tej franczyzy w trzech grupach: „Sezony i części” (TV, TV short, ONA połączone relacją poprzednik/następca), „Dodatki” (OVA, special), „Filmy i inne” (film, spin-off, historia poboczna). Każdy wpis: rok, nazwa, format, status emisji. Kolejność w grupie: data premiery.
 - **W-05** Relacje do mangi i powieści nie są pokazywane. „Zakończony” dotyczy tylko danego wpisu, nie franczyzy.
 - **W-06** Wybór wpisu pokazuje listę jego odcinków: numer, tytuł, data emisji (czas lokalny), stan (§5.5). Dodatki `S…` z ani.zip są pokazane pod listą jako informacja, bez akcji pobrania. OVA mające własny wpis pobiera się z ich wpisu.

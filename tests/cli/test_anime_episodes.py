@@ -39,6 +39,7 @@ from anishift.application import (
     TitleStatus,
     WorkspaceInspector,
 )
+from anishift.application.cancellation import EventCancellationToken
 from anishift.application.episode_identity import REASONS
 from anishift.application.planning import ExecutionPlan
 from anishift.application.scheduler_contracts import TaskHandler
@@ -114,17 +115,28 @@ def _offer(key: EpisodeKey, candidates: tuple[RankedCandidate, ...] | None = Non
 class _Catalog:
     def __init__(self) -> None:
         self.view: Franchise = Franchise(1, (_entry(),), (), True)
+        self.titles: tuple[TitleCandidate, ...] = (_title(),)
         self.listing: EpisodeListing = _listing()
         self.calls: list[tuple[str, int]] = []
         self.offer_read: Callable[[EpisodeKey], EpisodeOffer] = _offer
+        self.franchise_read: Callable[[int], Franchise] = lambda identifier: self.view
+        self.cancel: object = None
 
     def find_titles(self, query: str) -> tuple[TitleCandidate, ...]:
         self.calls.append(("titles", len(query)))
-        return (_title(),)
+        return self.titles
 
-    def franchise(self, identifier: int) -> Franchise:
+    def franchise(self, identifier: int, *, cancel: object = None) -> Franchise:
         self.calls.append(("franchise", identifier))
-        return self.view
+        self.cancel = cancel
+        return self.franchise_read(identifier)
+
+    def season_context(self, candidate: TitleCandidate) -> None:
+        self.calls.append(("season", candidate.anilist_id))
+
+    def search_title(self, candidate: TitleCandidate, **options: object) -> object:
+        self.calls.append(("releases", candidate.anilist_id))
+        raise OSError("offline")
 
     def episodes(self, identifier: int) -> EpisodeListing:
         self.calls.append(("episodes", identifier))
@@ -152,13 +164,17 @@ def _key(controller: AnimeController, key: str) -> None:
 
 
 def _open(controller: AnimeController) -> None:
-    for key in ("text:/", "text:slime", "enter", "enter", "enter"):
+    for key in ("text:/", "text:slime", "enter", "enter"):
         _key(controller, key)
     assert controller._screen is _Screen.EPISODES
 
 
 def _frame(controller: AnimeController) -> str:
     return controller.render(120, 40).plain
+
+
+def _at(controller: AnimeController) -> _Screen:
+    return controller._screen
 
 
 @pytest.mark.unit
@@ -179,14 +195,189 @@ def test_episode_flow_keeps_noncontiguous_selection_and_rereads_episodes_only_on
     calls: list[tuple[str, int]] = catalog.calls.copy()
     for key in ("down", "text:i", "enter", "escape", "escape"):
         _key(controller, key)
-    assert controller._screen is _Screen.EPISODES
+    assert _at(controller) is _Screen.EPISODES
     assert controller._episode_marks == {1, 3}
     assert controller._positions[_Screen.EPISODES] == 2
     assert catalog.calls == calls
-    for key in ("escape", "enter", "escape", "escape", "enter"):
+    for key in ("escape", "enter", "escape"):
         _key(controller, key)
-    assert controller._screen.value == "entries"
+    assert _at(controller) is _Screen.ENTRIES
     assert catalog.calls == [*calls, ("episodes", 1)]
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.QUERY
+
+
+@pytest.mark.unit
+def test_search_opens_entries_directly_when_every_result_is_a_displayed_franchise_entry() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.titles = (replace(_title(), anilist_id=2, year=2021), _title())
+    catalog.view = Franchise(2, (_entry(1), _entry(2)), (), True)
+    controller: AnimeController = _controller(catalog)
+    for key in ("text:/", "text:slime", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.ENTRIES
+    assert controller._positions[_Screen.ENTRIES] == 1
+    assert catalog.calls == [("titles", 5), ("franchise", 2)]
+    assert "Esc wróć" in _frame(controller)
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.QUERY
+
+
+@pytest.mark.unit
+def test_search_lists_titles_when_a_result_is_outside_the_displayed_franchise() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.titles = (_title(), replace(_title(), anilist_id=9, romaji="Other", english="Other", year=2010))
+    controller: AnimeController = _controller(catalog)
+    for key in ("text:/", "text:slime", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.TITLES
+    assert controller._candidates[controller._highlighted].anilist_id == 1
+    _key(controller, "enter")
+    assert _at(controller) is _Screen.ENTRIES
+    assert catalog.calls == [("titles", 5), ("franchise", 1)]
+    assert "Esc tytuły" in _frame(controller)
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.TITLES
+
+
+@pytest.mark.unit
+def test_franchise_failure_after_search_keeps_the_titles_reachable() -> None:
+    catalog: _Catalog = _Catalog()
+
+    def refused(identifier: int) -> Franchise:
+        raise ControlError("private-payload", code=ControlErrorCode.REFUSED, reason="command_failed", answered=True)
+
+    catalog.franchise_read = refused
+    controller: AnimeController = _controller(catalog)
+    for key in ("text:/", "text:slime", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.PROBLEM
+    assert "private-payload" not in _frame(controller)
+    _key(controller, "enter")
+    assert _at(controller) is _Screen.TITLES
+    assert [item.anilist_id for item in controller._candidates] == [1]
+
+
+@pytest.mark.unit
+def test_titles_kept_after_search_open_entries_on_the_selected_entry() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.titles = (_title(), replace(_title(), anilist_id=9, romaji="Other", english="Other", year=2010))
+    catalog.view = Franchise(1, (_entry(2), _entry(1)), (), True)
+    controller: AnimeController = _controller(catalog)
+    for key in ("text:/", "text:slime", "enter", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.ENTRIES
+    assert controller._positions[_Screen.ENTRIES] == 1
+    assert catalog.calls == [("titles", 5), ("franchise", 1)]
+
+
+@pytest.mark.unit
+def test_a_new_search_with_a_shorter_franchise_resets_the_entry_cursor() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.view = Franchise(1, (_entry(1), _entry(2), _entry(3)), (), True)
+    controller: AnimeController = _controller(catalog)
+    for key in ("text:/", "text:slime", "enter", "end", "escape"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.QUERY
+    catalog.view = Franchise(1, (_entry(1),), (), True)
+    catalog.titles = (_title(), replace(_title(), anilist_id=9, romaji="Other", english="Other", year=2010))
+    for key in ("text:/", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.TITLES
+    for key in ("enter", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.EPISODES
+    assert catalog.calls[-1] == ("episodes", 1)
+
+
+@pytest.mark.unit
+def test_escape_while_the_franchise_loads_cancels_its_expansion() -> None:
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    catalog: _Catalog = _Catalog()
+
+    def slow(identifier: int) -> Franchise:
+        entered.set()
+        assert release.wait(5)
+        return catalog.view
+
+    catalog.franchise_read = slow
+    controller: AnimeController = _controller(catalog)
+    for key in ("text:/", "text:slime"):
+        _key(controller, key)
+    controller.handle_key("enter")
+    worker: threading.Thread | None = controller._worker
+    try:
+        assert entered.wait(5)
+        assert isinstance(catalog.cancel, EventCancellationToken)
+        assert not catalog.cancel.is_cancelled()
+        controller.handle_key("escape")
+        assert catalog.cancel.is_cancelled()
+    finally:
+        release.set()
+        assert worker is not None
+        worker.join(5)
+    assert _at(controller) is _Screen.QUERY
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("moves", "searched"), [((), True), (("down",), False)])
+def test_entry_releases_open_only_for_an_entry_found_by_the_search(moves: tuple[str, ...], searched: bool) -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.view = Franchise(1, (_entry(1), _entry(7)), (), True)
+    controller: AnimeController = _controller(catalog)
+    for key in ("text:/", "text:slime", "enter", *moves, "text:g"):
+        _key(controller, key)
+    assert (catalog.calls[-1] == ("releases", 1)) is searched
+    assert _at(controller) is (_Screen.PROBLEM if searched else _Screen.ENTRIES)
+    assert ("G działa dla tytułów z wyników wyszukiwania" in _frame(controller)) is not searched
+
+
+@pytest.mark.unit
+def test_a_toggles_every_aired_episode_and_the_label_counts_marks() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.listing = replace(
+        catalog.listing,
+        episodes=tuple(replace(item, aired=item.number <= 4) for item in catalog.listing.episodes),
+    )
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    assert "Zaznaczone: —" in _frame(controller)
+    _key(controller, "text:a")
+    assert controller._episode_marks == {1, 2, 3, 4}
+    assert "Zaznaczone (4): 1, 2, 3, 4" in _frame(controller)
+    _key(controller, "text:A")
+    assert controller._episode_marks == set()
+    for key in ("down", "space", "text:a"):
+        _key(controller, key)
+    assert controller._episode_marks == {1, 2, 3, 4}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("unsupported", [False, True])
+@pytest.mark.parametrize("width", [50, 100, 120])
+def test_other_releases_always_show_aligned_seeds(width: int, unsupported: bool) -> None:
+    catalog: _Catalog = _Catalog()
+    first: RankedCandidate = _candidate()
+    seeded: RankedCandidate = replace(first, stream=replace(first.stream, seeders=321))
+    if unsupported:
+        seeded = replace(seeded, facts=ReleaseFacts(1080, True, True, None, False, ".avi", False))
+    catalog.offer_read = lambda key: _offer(key, (seeded, first))
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    for key in ("text:d", "text:i"):
+        _key(controller, key)
+    lines: list[str] = controller.render(width, 40).plain.splitlines()
+    header: str = next(line for line in lines if "Tożsamość" in line)
+    known: str = next(line for line in lines if "321" in line)
+    unknown: str = next(line for line in lines if "zgodny" in line and "321" not in line)
+    assert header.index("Seedy") == known.index("321")
+    assert unknown[header.index("Seedy")] == "?"
+    if unsupported:
+        assert "PL · MultiSub" in known
+        assert ("1080p (.avi)" in known) is (width > 50)
+        assert "format nieobsługiwany (.avi)" in " ".join(" ".join(lines).split())
+    assert all(Text(line).cell_len <= width for line in lines)
 
 
 @pytest.mark.unit
@@ -510,7 +701,7 @@ def test_episode_footer_wraps_only_between_complete_shortcuts() -> None:
     lines: list[str] = controller.render(50, 24).plain.splitlines()
     assert all(
         any(hint in line for line in lines)
-        for hint in ("Space zaznacz", "A wyemitowane", "Z zakres", "D podgląd", "Esc wpisy")
+        for hint in ("Space zaznacz", "A wszystkie/żadne", "Z zakres", "D podgląd", "Esc wpisy")
     )
 
 

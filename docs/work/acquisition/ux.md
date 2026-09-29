@@ -41,18 +41,20 @@ Po Enter na „Pobierz” widok przechodzi do Przetwarzania z zaznaczonymi nowym
 │                                                                        │
 │ Szukaj anime: [slime_____________________________]                     │
 │                                                                        │
-│  Rok   Tytuł                                              Format        │
-│> 2024  That Time I Got Reincarnated as a Slime Season 3   TV            │
-│  2022  That Time I Got Reincarnated as a Slime the Movie  Film          │
-│  2021  That Time I Got Reincarnated as a Slime Season 2   TV            │
-│  2018  That Time I Got Reincarnated as a Slime            TV            │
+│  Rok   Tytuł                                        Typ    Status      │
+│> —     Slime Isekai Chronicle                       TV     zapowiedź   │
+│  2024  That Time I Got Reincarnated as a Slime S3   TV     zakończony  │
+│  2022  … the Movie: Scarlet Bond                    Film   zakończony  │
+│  2018  That Time I Got Reincarnated as a Slime      TV     zakończony  │
+│  2015  Tensei Shitara Slime (manga PV)              ONA    zakończony  │
 │                                                                        │
-│ Enter wybierz · G wydania wg grup · / szukaj · Esc wróć                │
+│ Enter wybierz · G wydania wg grup (stara wersja) · / szukaj · Esc wróć │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 - Pole wyszukiwania startuje bez fokusu; Enter na polu lub `/` włącza edycję; Enter w edycji szuka; Esc wyłącza edycję i zostawia tekst.
-- Lista: rok premiery wpisu malejąco, bez roku na końcu, w roku alfabetycznie (W-03). Tytuł angielski, gdy istnieje, inaczej romaji. Bez liczby odcinków.
+- Ekran pojawia się tylko, gdy choć jeden wynik wyszukiwania nie jest wpisem franczyzy pierwszego wyniku widocznym w U02. Gdy wszystkie wyniki są w U02, wyszukiwanie od razu otwiera U02 z kursorem na pierwszym wyniku, a Esc z U02 wraca do zapytania. Nieudany odczyt franczyzy po wyszukiwaniu pokazuje błąd, z którego Enter wraca do tej listy.
+- Lista: zapowiedzi bez roku na górze, potem data premiery malejąco (dzień, miesiąc, rok; sam rok liczy się jak koniec roku), przy remisie alfabetycznie (W-03). Rok pochodzi z daty premiery, a bez niej z roku sezonu; ta sama reguła obowiązuje w U02. Bez roku kolumna pokazuje „—”. Tytuł angielski, gdy istnieje, inaczej romaji. Kolumny Rok, Tytuł, Typ, Status wyrównane pod nagłówkiem; status jak w U02. Bez liczby odcinków.
 - Wyszukiwanie w toku: w miejscu listy „Szukam tytułu…”; Esc przerywa.
 - Brak tytułu po poprawnie zakończonym wyszukiwaniu AniList: „Brak tytułu w AniList, szukam wydań na Nyaa” → wyszukiwanie wpisanego hasła → stara lista wydań wg grup. Na wynikach pozostaje notka „Brak tytułu w AniList, wyniki dla hasła”; Esc wraca do zapytania. To przejście nie dotyczy awarii AniList (W-08).
 - AniList niedostępny: „AniList nie odpowiada · spróbuj za 1 min” (czas z ochłodzenia).
@@ -76,11 +78,13 @@ Po Enter na „Pobierz” widok przechodzi do Przetwarzania z zaznaczonymi nowym
 │  2021  The Slime Diaries                                TV  zakończony │
 │  2022  … the Movie: Scarlet Bond                        Film zakończony│
 │                                                                        │
-│ Enter odcinki · Esc tytuły                                             │
+│ Enter odcinki · G wydania wg grup · Esc tytuły                         │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Grupy i kolejność według spec W-04 i plan E1 §10.5.1. Kursor startuje na wpisie wybranym w U01.
+- Grupy według spec W-04 i plan E1 §10.5.1. W grupie: wpisy bez roku na górze, potem data premiery rosnąco (sam rok jak koniec roku). Kursor startuje na wpisie wybranym w U01 albo na pierwszym wyniku, gdy U01 pominięto.
+- Esc wraca do U01, gdy była pokazana, inaczej do zapytania (stopka „Esc wróć”).
+- `G` otwiera starą listę wydań dla podświetlonego wpisu, jeśli jest wśród wyników wyszukiwania; inaczej notka „G działa dla tytułów z wyników wyszukiwania”.
 - Status dotyczy wpisu: „w emisji”, „zakończony”, „zapowiedź”, „przerwa w emisji”, „anulowany”.
 - Lista przerwana na limicie: ostatni wiersz „Lista niepełna — pokazano najbliższe powiązania”.
 - Film w E1: Enter otwiera U03 z jednym wierszem „Film” i notką „Pobieranie filmów zależy od pomiaru E1” (spec U-21).
@@ -90,7 +94,7 @@ Po Enter na „Pobierz” widok przechodzi do Przetwarzania z zaznaczonymi nowym
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
 │ Anime › Slime › Season 4 (2026)                                        │
-│ Zaznaczone: 3, 5                                                       │
+│ Zaznaczone (2): 3, 5                                                   │
 │                                                                        │
 │      Nr  Tytuł                         Emisja          Stan            │
 │  [ ]  1  The Beginning of…             7.07 18:00      Nie zamówiono   │
@@ -103,14 +107,15 @@ Po Enter na „Pobierz” widok przechodzi do Przetwarzania z zaznaczonymi nowym
 │ DODATKI (informacja)                                                   │
 │       S1  Veldora's Journal            12.01.2027                      │
 │                                                                        │
-│ Space zaznacz · A wyemitowane · Z zakres · D podgląd · Esc wpisy       │
+│ Space zaznacz · A wszystkie/żadne · Z zakres · D podgląd · Esc wpisy   │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 Stopka w kolejnych etapach: E2 dodaje „P pobierz ponownie”, E3 dodaje „O subskrybuj” (tylko dla wpisu spełniającego spec U-10).
 
 - Space lub Enter zaznacza/odznacza podświetlony odcinek. Zaznaczyć można tylko odcinek w stanie „Nie zamówiono”; przy innym stanie notka, np. „E3 jest już zlecony · P pobierz ponownie” (E2+) albo „E24 jeszcze nie wyemitowano”.
-- `A` zaznacza wszystkie wyemitowane odcinki w stanie „Nie zamówiono”.
+- Nad listą „Zaznaczone (n): 3, 5”, a bez zaznaczeń „Zaznaczone: —”.
+- `A` przełącza: zaznacza wszystkie wyemitowane odcinki w stanie „Nie zamówiono”, a gdy wszystkie już są zaznaczone — czyści zaznaczenie.
 - `Z` otwiera pole w stopce „Zakres: [1,3,9-12 albo 5-]” (tylko liczby całkowite). Enter zatwierdza, Esc zamyka. `5-` znaczy „od 5 do ostatniego znanego”. Zakres zastępuje zaznaczenie. Numer nieistniejący → notka „Brak odcinka 30 w tym wpisie”, zaznaczenie bez zmian.
 - `D` otwiera U04 dla zaznaczonych; bez zaznaczeń — dla podświetlonego.
 - Emisja: data i godzina lokalna; bez daty „—”. Przyszły odcinek ma stan „Czeka na emisję”, gdy obejmuje go subskrypcja (E3), inaczej „Nie wyemitowano”. Odcinka „Nie wyemitowano” nie da się zaznaczyć do pobrania.
@@ -167,6 +172,7 @@ Stopka w kolejnych etapach: E2 dodaje „P pobierz ponownie”, E3 dodaje „O s
 ```
 
 - Kolejność: zgodni według rankingu, potem niepewni, potem niezgodni. Powód tożsamości dla podświetlonego wiersza, po polsku.
+- Kolumna Seedy jest widoczna przy każdej szerokości (także 50 kolumn); tytuł wydania skraca się pierwszy. Szerokość kolumny Język wynika z najdłuższej etykiety na liście.
 - Widoczne rozdzielczości (spec U-24): 1080p, 2160p i nieznana. 720p i niższe są ukryte, jeśli istnieje choć jedno zgodne 1080p lub 2160p; inaczej widać wszystkie.
 - E1: Enter nic nie robi (stopka: „Esc podgląd”).
 - E2: Enter na `zgodny` ustawia sugestię i wraca do U04. Enter na `niepewny` pyta w stopce: „To wydanie może nie być E3 serii Slime S4. Wybrać mimo to? Enter tak · Esc nie”. Enter na `niezgodny` pyta: „Heurystyka uznała to za inny materiał: <powód>. Wybrać mimo to? Enter tak · Esc nie”.
@@ -346,10 +352,11 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 | Wszystkie | Esc / Ctrl+C (bez zaznaczenia tekstu) | O ekran wstecz; w polu tekstowym najpierw wyłącza edycję | bez zmian |
 | Pole tekstowe | wszystkie litery, Space, Delete | Tekst, nigdy skrót | bez zmian |
 | U01 | Enter / `/` | Wybierz tytuł / edytuj zapytanie | E1 |
-| U01 | G | Stara lista wydań wg grup (pomost) | E1–E2; usuwane w E3 |
+| U01, U02 | G | Stara lista wydań wg grup (pomost); w U02 tylko dla wpisu z wyników wyszukiwania | E1–E2; usuwane w E3 |
 | U02 | Enter | Odcinki wpisu | E1 |
 | U03, U08 | Space, Enter | Zaznacz/odznacz odcinek | E1 |
-| U03, U08 | A | Zaznacz wszystkie wyemitowane niezamówione | E1 |
+| U03 | A | Zaznacz wszystkie wyemitowane niezamówione; gdy wszystkie są zaznaczone — odznacz | E1 |
+| U08 | A | Zaznacz wszystkie wyemitowane niezamówione | E1 |
 | U03, U08 | Z | Zakres | E1 |
 | U03, U08 | D | Podgląd pobrania | E1 |
 | U03, U08 | P | Pobierz ponownie podświetlony | E2 |

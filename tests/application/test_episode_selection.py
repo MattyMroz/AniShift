@@ -13,6 +13,7 @@ from anishift.application.episode_identity import IdentityVerdict, classify
 from anishift.application.episode_selection import (
     AniZipMapping,
     EntryGroup,
+    FranchiseEntry,
     FranchiseGraph,
     ListedEpisode,
     ListedSpecial,
@@ -383,14 +384,25 @@ def test_franchise_view_orders_groups_by_start_and_keeps_every_anime_relation() 
     assert view.complete
 
 
-def test_franchise_view_undated_entry_follows_dated_entries_of_its_group() -> None:
+def test_franchise_view_undated_entry_leads_its_group_and_year_only_closes_its_year() -> None:
+    year_only: dict[str, Any] = {**_node(4, "OVA", {"romaji": "D"}, year=2030), "startDate": {"year": 2030}}
     graph: FranchiseGraph = _graph(
-        _node(1, "TV", {"romaji": "A"}, year=2018, edges=[_edge("SIDE_STORY", 2), _edge("SIDE_STORY", 3)]),
+        _node(
+            1,
+            "TV",
+            {"romaji": "A"},
+            year=2018,
+            edges=[_edge("SIDE_STORY", 2), _edge("SIDE_STORY", 3), _edge("SIDE_STORY", 4), _edge("SIDE_STORY", 5)],
+        ),
         _node(2, "OVA", {"romaji": "B"}),
         _node(3, "OVA", {"romaji": "C"}, year=2030),
+        year_only,
+        {**_node(5, "OVA", {"romaji": "E"}), "startDate": {"year": 2031, "month": 2, "day": 3}, "seasonYear": 2030},
     )
-    assert [entry.anilist_id for entry in franchise_view(graph, 1).entries] == [1, 3, 2]
-    assert franchise_view(graph, 1).entries[2].status == "FINISHED"
+    entries: tuple[FranchiseEntry, ...] = franchise_view(graph, 1).entries
+    assert [entry.anilist_id for entry in entries] == [1, 2, 3, 4, 5]
+    assert entries[1].status == "FINISHED"
+    assert (entries[3].year, entries[3].start, entries[4].year) == (2030, None, 2031)
 
 
 def test_franchise_view_unexpanded_chain_is_incomplete() -> None:

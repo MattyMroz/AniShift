@@ -38,6 +38,7 @@ from anishift.application.acquisition import (
     read_episode,
     series_directory_name,
 )
+from anishift.application.cancellation import CancellationToken
 from anishift.application.control_views import decode_view, encode_view
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_selection import (
@@ -129,7 +130,7 @@ class _TitleCatalog:
             )
         return self.schedules.get(anilist_id, SeasonAiring(anilist_id, TitleStatus.UNKNOWN, None, ()))
 
-    def franchise(self, anilist_id: int) -> FranchiseGraph:
+    def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> FranchiseGraph:
         self.franchised.append(anilist_id)
         return self.graphs[anilist_id]
 

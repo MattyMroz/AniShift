@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime
 from enum import StrEnum
 from http import HTTPStatus
 from time import perf_counter
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 
@@ -24,6 +24,9 @@ from anishift.services.catalog.types import (
     is_cour_title,
 )
 from anishift.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from anishift.application.cancellation import CancellationToken
 
 __all__ = [
     "ANILIST_URL",
@@ -55,7 +58,7 @@ OFFSET_FORMATS: Final[frozenset[str]] = frozenset({"TV", "TV_SHORT", "ONA"})
 
 SEARCH_QUERY: Final[str] = """
 query ($search: String, $limit: Int) { Page(perPage: $limit) { media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
-  id title { romaji english native } synonyms seasonYear season format episodes status
+  id title { romaji english native } synonyms seasonYear startDate { year month day } season format episodes status
   relations { edges { relationType node { id episodes format } } } } } }
 """
 """Search request returning the candidate fields and the direct relation edges."""
@@ -162,13 +165,15 @@ class AniListCatalog:
         """Return how many episodes aired before *candidate*, following its prequel chain."""
         return sum(entry.episodes for entry in self.prequel_episodes(candidate))
 
-    def franchise(self, anilist_id: int) -> FranchiseGraph:
+    def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> FranchiseGraph:
         """Fetch the depth-three anime graph, expanding missing chain frontiers at most four times."""
         started: float = perf_counter()
         graph: FranchiseGraph = FranchiseGraph(anilist_id, {}, frozenset(), False)
         pending: list[int] = [anilist_id]
         try:
             for _ in range(_MAX_FRANCHISE_REQUESTS):
+                if cancel is not None:
+                    cancel.raise_if_cancelled()
                 data: Mapping[str, Any] = self._post(_franchise_query(), {"ids": pending})
                 graph = parse_franchise_page(data, anilist_id, frozenset(pending), graph)
                 if graph.complete:
@@ -370,18 +375,25 @@ def _candidate(node: Mapping[str, Any]) -> TitleCandidate | None:
     romaji: str = _text(names.get("romaji"))
     if not isinstance(anilist_id, int) or not romaji:
         return None
+    start: object = node.get("startDate")
+    started: Mapping[str, Any] = start if isinstance(start, Mapping) else {}
+    try:
+        premiere: date | None = _start_date(started)
+    except TitleCatalogError:
+        premiere = None
     return TitleCandidate(
         anilist_id=anilist_id,
         romaji=romaji,
         english=_text(names.get("english")) or None,
         native=_text(names.get("native")) or None,
         synonyms=_synonyms(node.get("synonyms")),
-        year=_number(node.get("seasonYear")),
+        year=_number(started.get("year")) or _number(node.get("seasonYear")),
         season=_text(node.get("season")) or None,
         format=_text(node.get("format")) or None,
         episodes=_number(node.get("episodes")),
         status=_status(node.get("status")),
         prequel_ids=_prequel_ids(node),
+        start=premiere,
     )
 
 

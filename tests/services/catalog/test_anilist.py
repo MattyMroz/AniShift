@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Final
 
 import httpx
 import pytest
 
+from anishift.application.cancellation import EventCancellationToken
 from anishift.application.episode_selection import FranchiseGraph
-from anishift.errors import ErrorCode
+from anishift.errors import ErrorCode, ExecutionError
 from anishift.services.catalog.anilist import ANILIST_URL, AniListCatalog
 from anishift.services.catalog.errors import TitleCatalogError
 from anishift.services.catalog.types import EpisodeAiring, PrequelEntry, SeasonAiring, TitleCandidate, TitleStatus
@@ -66,6 +67,30 @@ def test_franchise_four_requests_leave_unexpanded_frontier_incomplete() -> None:
     assert calls == [1, 2, 3, 4]
     assert not graph.complete
     assert set(graph.nodes) == {1, 2, 3, 4, 5}
+
+
+@pytest.mark.unit
+def test_franchise_cancelled_after_the_first_request_sends_no_further_requests() -> None:
+    calls: list[int] = []
+    cancel: EventCancellationToken = EventCancellationToken()
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        identifier: int = json.loads(request.content)["variables"]["ids"][0]
+        calls.append(identifier)
+        cancel.cancel()
+        child: dict[str, Any] = {"id": identifier + 1, "type": "ANIME", "format": "TV", "title": {"romaji": "Next"}}
+        node: dict[str, Any] = {
+            "id": identifier,
+            "type": "ANIME",
+            "format": "TV",
+            "title": {"romaji": "Root"},
+            "relations": {"edges": [{"relationType": "SEQUEL", "node": child}]},
+        }
+        return httpx.Response(200, json=_page([node]))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http, pytest.raises(ExecutionError):
+        AniListCatalog(http).franchise(1, cancel=cancel)
+    assert calls == [1]
 
 
 @pytest.mark.unit
@@ -248,6 +273,32 @@ def test_search_sends_the_requested_limit() -> None:
         catalog.search("solo leveling", limit=3)
 
     assert json.loads(seen[0].content)["variables"]["limit"] == 3
+
+
+@pytest.mark.parametrize(
+    ("start", "year", "premiere"),
+    [
+        ({"year": 2024, "month": 12, "day": 28}, 2024, date(2024, 12, 28)),
+        ({"year": 2026, "month": None, "day": None}, 2026, None),
+        ({"year": 2024, "month": 2, "day": 30}, 2024, None),
+        (None, 2025, None),
+    ],
+)
+def test_search_takes_the_year_from_the_premiere_date_before_the_season_year(
+    start: dict[str, object] | None, year: int, premiere: date | None
+) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content)["query"])
+        return httpx.Response(200, json=_page([{**_SOLO_LEVELING, "startDate": start}]))
+
+    catalog, http = _catalog(handler)
+    with http:
+        candidate: TitleCandidate = catalog.search("solo leveling")[0]
+
+    assert "startDate { year month day }" in seen[0]
+    assert (candidate.year, candidate.start) == (year, premiere)
 
 
 def test_search_maps_an_unknown_status_and_missing_fields() -> None:

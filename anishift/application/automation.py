@@ -494,6 +494,7 @@ class AutomationOwner:
         self._previews: dict[str, _Preview] = {}
         self._previews_lock: threading.Lock = threading.Lock()
         self._source_checks: dict[str, EventCancellationToken] = {}
+        self._catalog_reads: dict[str, EventCancellationToken] = {}
         self._closed_sessions: set[str] = set()
         self._sessions: set[str] = set()
         self._client_sessions: dict[str, str] = {}
@@ -1121,9 +1122,10 @@ class AutomationOwner:
         with self._previews_lock:
             self._sessions.discard(session_id)
             self._closed_sessions.add(session_id)
-            token: EventCancellationToken | None = self._source_checks.pop(session_id, None)
-            if token is not None:
-                token.cancel()
+            for tokens in (self._source_checks, self._catalog_reads):
+                token: EventCancellationToken | None = tokens.pop(session_id, None)
+                if token is not None:
+                    token.cancel()
             client_ids: set[str] = {
                 client for client, session in self._client_sessions.items() if session == session_id
             }
@@ -3242,7 +3244,11 @@ class AutomationOwner:
             else acquisition.requests("user")
         )
         with budget:
-            read: ControlResponse | None = _catalog_read(acquisition, payload)
+            read: ControlResponse | None = (
+                self._franchise_read(request, acquisition)
+                if payload.get("operation") == "franchise"
+                else _catalog_read(acquisition, payload)
+            )
             if read is not None:
                 return read
             candidate: TitleCandidate = decode_view(TitleCandidate, payload.get("candidate"))
@@ -3266,6 +3272,22 @@ class AutomationOwner:
                     )
                 )
             )
+
+    def _franchise_read(self, request: ControlRequest, acquisition: AcquisitionService) -> ControlResponse:
+        token: EventCancellationToken = EventCancellationToken()
+        session: str | None = request.session_id
+        if session is not None:
+            with self._previews_lock:
+                if session in self._closed_sessions:
+                    return _refuse(RefusalReason.SESSION_CLOSED)
+                self._catalog_reads[session] = token
+        try:
+            anilist_id: int = decode_view(int, request.payload.get("anilist_id"))
+            return ControlResponse.succeeded(encode_view(acquisition.franchise(anilist_id, cancel=token)))
+        finally:
+            if session is not None:
+                with self._previews_lock:
+                    self._catalog_reads.pop(session, None)
 
     def _download_command(self, request: ControlRequest) -> ControlResponse:
         acquisition: AcquisitionService | None = self._service.acquisition
@@ -5395,10 +5417,6 @@ def _catalog_read(acquisition: AcquisitionService, payload: Mapping[str, object]
         )
     if operation == "search":
         return ControlResponse.succeeded(encode_view(acquisition.search(str(payload.get("query", "")))))
-    if operation == "franchise":
-        return ControlResponse.succeeded(
-            encode_view(acquisition.franchise(decode_view(int, payload.get("anilist_id"))))
-        )
     if operation == "episodes":
         return ControlResponse.succeeded(encode_view(acquisition.episodes(decode_view(int, payload.get("anilist_id")))))
     if operation != "offer":

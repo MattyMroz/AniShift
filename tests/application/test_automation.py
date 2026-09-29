@@ -56,6 +56,7 @@ from anishift.application.automation import (
     TRANSFER_CHECK_INTERVAL_S,
     AutomationOwner,
 )
+from anishift.application.cancellation import EventCancellationToken
 from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
@@ -539,7 +540,16 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
                 "Page": {
                     "media": []
                     if scenario in {"empty", "source_failed"}
-                    else [{"id": 1, "title": {"romaji": "Fixture"}, "status": "FINISHED"}]
+                    else [
+                        {
+                            "id": 1,
+                            "type": "ANIME",
+                            "format": "TV",
+                            "title": {"romaji": "Fixture"},
+                            "status": "FINISHED",
+                            "relations": {"edges": []},
+                        }
+                    ]
                 }
             }
         }
@@ -594,8 +604,8 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
             frame: str = controller.render(120, 30).plain
             assert "private-provider-payload" not in frame
             if scenario == "titles":
-                assert "Enter wybierz" in frame
-                assert sent == ["graphql.anilist.co"]
+                assert "Enter odcinki" in frame
+                assert sent == ["graphql.anilist.co", "graphql.anilist.co"]
             elif scenario == "catalog_failed":
                 assert "AniList nie odpowiada" in frame
                 assert sent == ["graphql.anilist.co"]
@@ -7556,6 +7566,142 @@ def test_episode_selection_crosses_owner_ipc_with_the_provider_reason_preserved(
             assert all(value not in "".join(captured) for value in ("https://", "Slime", "kitsu"))
         finally:
             loguru_logger.remove(handler_id)
+            session.close()
+            server.close()
+            owner.request_shutdown()
+            thread.join(_TIMEOUT_S)
+            service.close()
+        assert not thread.is_alive()
+
+
+@pytest.mark.integration
+def test_interrupted_catalogue_channel_stops_the_owner_franchise_expansion(tmp_path: Path) -> None:
+    requested: list[int] = []
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        identifier: int = json.loads(request.content)["variables"]["ids"][0]
+        requested.append(identifier)
+        entered.set()
+        assert release.wait(_TIMEOUT_S)
+        child: dict[str, object] = {"id": identifier + 1, "type": "ANIME", "format": "TV", "title": {"romaji": "Next"}}
+        node: dict[str, object] = {
+            "id": identifier,
+            "type": "ANIME",
+            "format": "TV",
+            "title": {"romaji": "Root"},
+            "relations": {"edges": [{"relationType": "SEQUEL", "node": child}]},
+        }
+        return httpx.Response(200, json={"data": {"Page": {"media": [node]}}})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        acquisition: AcquisitionService = AcquisitionService(
+            source=_NoSource(),
+            client=QBittorrentClient("http://unused.test", http=http),
+            workspace_root=tmp_path,
+            parse_name=parse_release_name,
+            title_catalog=AniListCatalog(http),
+        )
+        service: AppService = _real_service(tmp_path, acquisition=acquisition)
+        owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME))
+        thread: threading.Thread = _serving(owner)
+        key: bytes = os.urandom(32)
+        endpoint: str = control_endpoint(tmp_path)
+        server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+        session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+        failures: list[ControlError] = []
+
+        def read() -> None:
+            try:
+                session.franchise(1)
+            except ControlError as error:
+                failures.append(error)
+
+        reader: threading.Thread = threading.Thread(target=read, daemon=True)
+        try:
+            reader.start()
+            assert entered.wait(_TIMEOUT_S)
+            session.interrupt_reads()
+            reader.join(_TIMEOUT_S)
+            assert failures
+            deadline: float = time.monotonic() + _TIMEOUT_S
+            while owner._catalog_reads and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert not owner._catalog_reads
+            release.set()
+        finally:
+            release.set()
+            session.close()
+            server.close()
+            owner.request_shutdown()
+            thread.join(_TIMEOUT_S)
+            service.close()
+        assert not thread.is_alive()
+    assert requested == [1]
+
+
+@pytest.mark.integration
+def test_a_catalogue_channel_opened_after_an_interrupt_is_discarded_and_the_next_read_works(tmp_path: Path) -> None:
+    requested: list[int] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requested.append(json.loads(request.content)["variables"]["ids"][0])
+        media: list[dict[str, object]] = [
+            {"id": requested[-1], "type": "ANIME", "format": "TV", "title": {"romaji": "R"}, "relations": {"edges": []}}
+        ]
+        return httpx.Response(200, json={"data": {"Page": {"media": media}}})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        acquisition: AcquisitionService = AcquisitionService(
+            source=_NoSource(),
+            client=QBittorrentClient("http://unused.test", http=http),
+            workspace_root=tmp_path,
+            parse_name=parse_release_name,
+            title_catalog=AniListCatalog(http),
+        )
+        service: AppService = _real_service(tmp_path, acquisition=acquisition)
+        owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME))
+        thread: threading.Thread = _serving(owner)
+        key: bytes = os.urandom(32)
+        endpoint: str = control_endpoint(tmp_path)
+        server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+        connecting: threading.Event = threading.Event()
+        proceed: threading.Event = threading.Event()
+        opened: list[ControlClient] = []
+
+        def connect() -> ControlClient:
+            if opened:
+                connecting.set()
+                assert proceed.wait(_TIMEOUT_S)
+            client: ControlClient = ControlClient(endpoint, key)
+            opened.append(client)
+            return client
+
+        session: ResidentSession = ResidentSession(tmp_path, connect)
+        cancel: EventCancellationToken = EventCancellationToken()
+        failures: list[Exception] = []
+
+        def read() -> None:
+            try:
+                session.franchise(1, cancel=cancel)
+            except (ControlError, ExecutionError) as error:
+                failures.append(error)
+
+        reader: threading.Thread = threading.Thread(target=read, daemon=True)
+        try:
+            reader.start()
+            assert connecting.wait(_TIMEOUT_S)
+            cancel.cancel()
+            session.interrupt_reads()
+            proceed.set()
+            reader.join(_TIMEOUT_S)
+            assert [type(failure) for failure in failures] == [ControlError]
+            assert requested == []
+            assert session.franchise(1).selected_id == 1
+            assert requested == [1]
+        finally:
+            proceed.set()
             session.close()
             server.close()
             owner.request_shutdown()

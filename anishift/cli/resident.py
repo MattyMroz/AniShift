@@ -53,6 +53,9 @@ if TYPE_CHECKING:
 _SESSION_CLOSED: Final[str] = "The panel session is closed"
 """Refusal raised for a catalogue read started after the session closed."""
 
+_READ_INTERRUPTED: Final[str] = "The catalogue read was interrupted"
+"""Refusal raised for a catalogue read started before the latest `interrupt_reads`."""
+
 
 class ResidentSession:
     """Keep one editing identity and delegate its work to the authenticated owner."""
@@ -69,6 +72,7 @@ class ResidentSession:
         self._catalog_lock: threading.Lock = threading.Lock()
         self._state_lock: threading.Lock = threading.Lock()
         self._closed: bool = False
+        self._interrupts: int = 0
         self._external: dict[str, dict[str, object]] = {}
 
     def discover(self, *, cancel: CancellationToken | None = None) -> InspectedWorkspace:
@@ -234,9 +238,23 @@ class ResidentSession:
             ),
         )
 
-    def franchise(self, anilist_id: int) -> Franchise:
-        """Read the franchise view of one entry through the owner."""
-        return decode_view(Franchise, self._episode_read({"operation": "franchise", "anilist_id": anilist_id}))
+    def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> Franchise:
+        """Read the franchise view of one entry through the owner; `interrupt_reads` stops its expansion."""
+        token: CancellationToken = cancel or NeverCancelledToken()
+        view: Franchise = decode_view(
+            Franchise, self._episode_read({"operation": "franchise", "anilist_id": anilist_id}, token)
+        )
+        token.raise_if_cancelled()
+        return view
+
+    def interrupt_reads(self) -> None:
+        """Refuse reads started earlier and close the catalogue channel, so the owner cancels its read."""
+        with self._state_lock:
+            self._interrupts += 1
+            catalog: ControlClient | None = self._catalog
+            self._catalog = None
+        if catalog is not None:
+            catalog.close()
 
     def episodes(self, anilist_id: int) -> EpisodeListing:
         """Read the episode list of one entry through the owner."""
@@ -472,23 +490,40 @@ class ResidentSession:
         with self._lock:
             return self._client.call(kind, {"client_id": self._client_id, **(payload or {})}, instance_id=instance_id)
 
-    def _episode_read(self, payload: Mapping[str, object]) -> Mapping[str, object]:
-        with self._catalog_lock:
-            return self._catalog_channel().call("acquisition", payload, timeout_s=episode_read_timeout_s())
-
-    def _catalog_channel(self) -> ControlClient:
+    def _episode_read(
+        self, payload: Mapping[str, object], cancel: CancellationToken | None = None
+    ) -> Mapping[str, object]:
+        token: CancellationToken = cancel or NeverCancelledToken()
         with self._state_lock:
-            if self._closed:
-                raise ControlError(_SESSION_CLOSED, code=ControlErrorCode.REFUSED)
+            interrupts: int = self._interrupts
+        with self._catalog_lock:
+            token.raise_if_cancelled()
+            channel: ControlClient = self._catalog_channel(interrupts)
+            token.raise_if_cancelled()
+            with self._state_lock:
+                self._require_current(interrupts)
+            return channel.call("acquisition", payload, timeout_s=episode_read_timeout_s())
+
+    def _catalog_channel(self, interrupts: int) -> ControlClient:
+        with self._state_lock:
+            self._require_current(interrupts)
             if self._catalog is not None:
                 return self._catalog
         opened: ControlClient = self._connect()
         with self._state_lock:
-            if not self._closed:
+            if not self._closed and self._interrupts == interrupts:
                 self._catalog = opened
                 return opened
         opened.close()
+        with self._state_lock:
+            self._require_current(interrupts)
         raise ControlError(_SESSION_CLOSED, code=ControlErrorCode.REFUSED)
+
+    def _require_current(self, interrupts: int) -> None:
+        if self._closed:
+            raise ControlError(_SESSION_CLOSED, code=ControlErrorCode.REFUSED)
+        if self._interrupts != interrupts:
+            raise ControlError(_READ_INTERRUPTED, code=ControlErrorCode.REFUSED)
 
     def _register(self, payload: Mapping[str, object], cancel: CancellationToken | None) -> InspectedSourceGroup:
         token: CancellationToken = cancel or NeverCancelledToken()

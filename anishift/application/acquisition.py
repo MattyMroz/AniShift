@@ -38,6 +38,7 @@ from anishift.utils.logger import get_logger
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
 
+    from anishift.application.cancellation import CancellationToken
     from anishift.application.episode_selection import (
         AniZipMapping,
         EpisodeKey,
@@ -174,8 +175,8 @@ class TitleCatalog(Protocol):
         """Return the known episode dates of one season."""
         ...
 
-    def franchise(self, anilist_id: int) -> FranchiseGraph:
-        """Return the anime relation graph rooted at one entry."""
+    def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> FranchiseGraph:
+        """Return the anime relation graph rooted at one entry, stopping before a request after *cancel*."""
         ...
 
 
@@ -679,17 +680,17 @@ class AcquisitionService:
             raise ValueError(msg)
         return self._title_catalog.airing_schedule(anilist_id)
 
-    def franchise(self, anilist_id: int) -> Franchise:
+    def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> Franchise:
         """Return the franchise view rooted at one entry, remembering its graph while fresh."""
-        return franchise_view(self._franchise_graph(anilist_id), anilist_id)
+        return franchise_view(self._franchise_graph(anilist_id, cancel), anilist_id)
 
-    def _franchise_graph(self, anilist_id: int) -> FranchiseGraph:
+    def _franchise_graph(self, anilist_id: int, cancel: CancellationToken | None = None) -> FranchiseGraph:
         now: float = self._clock()
         with self._memory_lock:
             entry: _Remembered = self._remembered(anilist_id)
             graph: FranchiseGraph | None = entry.graph if entry.fresh(entry.graph_at, now) else None
         if graph is None:
-            fetched: FranchiseGraph = self._titles().franchise(anilist_id)
+            fetched: FranchiseGraph = self._titles().franchise(anilist_id, cancel=cancel)
             with self._memory_lock:
                 entry = self._remembered(anilist_id)
                 if fetched.complete or entry.graph is None or not entry.graph.complete:

@@ -154,9 +154,17 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `interactive/app.py`, `interactive/settings.py`, `interactive/manual.py`, `run.py`
 - `AnimeController` jest właścicielem stanu Anime. Enter na TITLES otwiera ENTRIES → EPISODES →
   OFFER → CANDIDATES przez `franchise`/`episodes`/`offer`; ta droga służy wyłącznie do podglądu.
-  `G` otwiera dawną drogę RESULTS z pobieraniem i subskrypcjami. `StateController` przekazuje
+  Po wyszukiwaniu `_find_titles` od razu czyta franczyzę pierwszego wyniku; TITLES pojawia się
+  (`_titles_shown`) tylko, gdy któryś wynik nie jest w `Franchise.entries` — nie w `FranchiseGraph.nodes`,
+  bo niewidoczne węzły byłyby wtedy nieosiągalne. Esc z ENTRIES wraca do TITLES albo QUERY według
+  `_titles_shown`. Kolejność TITLES i ENTRIES liczy wyłącznie `premiere_order` z fasady.
+  `G` otwiera dawną drogę RESULTS z pobieraniem i subskrypcjami, także z ENTRIES dla wpisu obecnego
+  w `_candidates`. `StateController` przekazuje
   klawisze i przewijanie. Sieć działa w wątku `anishift-anime`; Esc lub zmiana zakładki unieważnia
-  spóźnione wyniki przez licznik generacji i zatrzymuje kolejne zapytania ofert. `render()` nie robi I/O.
+  spóźnione wyniki przez licznik generacji i zatrzymuje kolejne zapytania ofert. Esc z BUSY anuluje też
+  `_work_cancel`, a w trybie rezydenta zamyka kanał katalogu (`interrupt_reads`); owner anuluje wtedy
+  rozwijanie franczyzy tej sesji przed kolejnym żądaniem AniList. Nowa franczyza zawsze ustawia kursor
+  ENTRIES na wybranym wpisie (`_adopt_franchise`), także gdy zostaje TITLES. `render()` nie robi I/O.
   `_HOME_MENU_ROWS` i `_HOME_CHROME_ROWS` liczą rzeczywiste wiersze menu.
   `interactive/anime.py`, `interactive/state.py`, `interactive/prompts.py`
 - Zakres odcinków zastępuje zaznaczenia i przyjmuje nieciągłe numery całkowite; nawigacja i powroty
@@ -175,8 +183,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   klawiszem. Panel otwiera wybór numerów; dopiero Enter przyjmuje zakres przez ownera.
   Po wyborze tytułu `O` używa PODŚWIETLONEJ grupy. `interactive/anime.py`, `interactive/state.py`
 - Pusta lista wyników nie jest ślepym zaułkiem: przy `filtered > 0` nazywa filtr, a `F` i `Esc`
-  działają jak na pełnej liście. `Esc` z wyników wraca do TITLES, gdy kandydaci są w pamięci —
-  dlatego nowe hasło czyści `_candidates`. Teksty błędów tłumaczy `_PROBLEM_TEXTS`
+  działają jak na pełnej liście. `Esc` z wyników wraca do TITLES, gdy kandydaci są w pamięci, a do
+  ENTRIES, gdy TITLES pominięto (`_titles_shown`) — dlatego nowe hasło czyści `_candidates`. Teksty błędów tłumaczy `_PROBLEM_TEXTS`
   (`ErrorCode` → polskie zdanie), a nie warstwa domenowa. `interactive/anime.py`
 - Anime opens a group locally; Enter/Space toggles a release and explicit Download submits
   only the open group's draft. Each numbered episode has at most one pending variant;

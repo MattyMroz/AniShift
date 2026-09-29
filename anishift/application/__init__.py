@@ -115,6 +115,7 @@ from anishift.application.episode_selection import (
     RankedCandidate,
     ReleaseFacts,
     StreamCandidate,
+    premiere_order,
 )
 from anishift.application.events import (
     RunEvent,
@@ -320,6 +321,7 @@ __all__ = [
     "parse_release_name",
     "plan_auto",
     "plan_manual",
+    "premiere_order",
     "preview_plan",
     "read_episode",
     "ready_group_ids",

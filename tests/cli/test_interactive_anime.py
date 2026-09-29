@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from time import monotonic
@@ -23,6 +23,7 @@ from anishift.application import (
     DownloadReceipt,
     EpisodeRange,
     EpisodeReading,
+    Franchise,
     RefusalReason,
     ReleaseCatalog,
     ReleaseChoice,
@@ -164,6 +165,7 @@ def _service(
             "search": search,
             "download": download,
             "find_titles": lambda text: (),
+            "franchise": lambda identifier, **options: Franchise(identifier, (), (), True),
             "season_context": lambda candidate: _season(),
             "search_title": lambda candidate, **options: _catalog(()),
         }
@@ -1676,8 +1678,13 @@ def test_enter_lists_titles_by_descending_year_with_english_names_and_format_onl
 
     assert asked == ["solo leveling"]
     assert _screen(controller) is _Screen.TITLES
-    assert "2024 · Solo Leveling · TV" in listed
-    assert "2025 · Solo Leveling Season 2 · TV" in listed
+    rows: list[str] = listed.splitlines()
+    header: str = next(line for line in rows if "Tytuł" in line)
+    first: str = next(line for line in rows if "Solo Leveling " in line and "2024" in line)
+    second: str = next(line for line in rows if "Solo Leveling Season 2" in line)
+    assert all(label in header for label in ("Rok", "Typ", "Status"))
+    assert header.index("Status") == first.index("zakończony") == second.index("w emisji")
+    assert header.index("Typ") == first.index("TV") == second.index("TV")
     assert listed.index("2025") < listed.index("2024")
     assert "odc." not in listed
     assert "Ore dake" not in listed
@@ -1686,6 +1693,30 @@ def test_enter_lists_titles_by_descending_year_with_english_names_and_format_onl
     controller.handle_key("escape")
 
     assert _screen(controller) is _Screen.QUERY
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("width", [50, 100])
+def test_titles_put_announcements_first_then_newest_premiere_by_full_date(width: int) -> None:
+    found: tuple[TitleCandidate, ...] = (
+        replace(_title("Spring", year=2024), anilist_id=2, start=date(2024, 4, 6)),
+        replace(_title("Year Only", year=2024), anilist_id=3),
+        replace(_title("Announced", year=None, status=TitleStatus.NOT_YET_RELEASED), anilist_id=4),
+        replace(_title("Autumn", year=2024), anilist_id=5, start=date(2024, 10, 5)),
+        replace(_title("Older", year=2023), anilist_id=6, start=date(2023, 12, 30)),
+    )
+    controller: AnimeController = _controller(_service(extra={"find_titles": lambda text: found}))
+    _type(controller, "season")
+    controller.handle_key("enter")
+    _settle(controller)
+    rows: list[str] = controller.render(width, 30).plain.splitlines()
+    names: list[str] = ["Announced", "Year Only", "Autumn", "Spring", "Older"]
+    listed: list[str] = [next(line for line in rows if name in line) for name in names]
+    header: str = next(line for line in rows if "Tytuł" in line)
+    assert [rows.index(line) for line in listed] == sorted(rows.index(line) for line in listed)
+    assert listed[0][header.index("Rok")] == "—"
+    assert "zapowiedź" in listed[0]
+    assert all(Text(line).cell_len <= width for line in rows)
 
 
 def test_choosing_a_candidate_searches_its_releases_with_the_parsed_filter_and_the_season_context() -> None:
@@ -2161,7 +2192,9 @@ def test_application_focused_query_uses_shared_shortcuts_and_submits_only_on_ent
 
     application: interactive_app._InteractiveApplication = _application(monkeypatch, _service(search=search))
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    application._resident = cast("ResidentSession", SimpleNamespace(find_titles=lambda title: (), search=search))
+    application._resident = cast(
+        "ResidentSession", SimpleNamespace(find_titles=lambda title: (), search=search, interrupt_reads=lambda: None)
+    )
     application._show_state()
     assert application._state is not None
     panel: StateController = application._state
@@ -2216,7 +2249,9 @@ def test_application_tab_cancels_pending_search_and_returns_to_an_idle_draft(
 
     application: interactive_app._InteractiveApplication = _application(monkeypatch, _service(search=search))
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    application._resident = cast("ResidentSession", SimpleNamespace(find_titles=lambda title: (), search=search))
+    application._resident = cast(
+        "ResidentSession", SimpleNamespace(find_titles=lambda title: (), search=search, interrupt_reads=lambda: None)
+    )
     application._show_state()
     assert application._state is not None
     panel: StateController = application._state

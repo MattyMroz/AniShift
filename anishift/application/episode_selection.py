@@ -35,6 +35,7 @@ __all__ = [
     "franchise_traversal",
     "franchise_view",
     "identity_target",
+    "premiere_order",
     "rank_candidates",
     "release_facts",
     "suggestion",
@@ -71,6 +72,9 @@ _UNKNOWN_YEAR: Final[int] = 9999
 
 _UNKNOWN_STATUS: Final[str] = "UNKNOWN"
 """Status value of an entry whose AniList status is absent."""
+
+_YEAR_END_MONTH: Final[int] = 13
+"""Sort month placing a premiere known only by its year after every full date of that year."""
 
 _RELEASING: Final[str] = "RELEASING"
 """AniList status whose aired count comes from past schedule dates."""
@@ -515,7 +519,7 @@ def _entry(node: JsonObject, relation: str, *, in_chain: bool) -> FranchiseEntry
         native=title.get("native"),
         format=node.get("format"),
         status=status if isinstance(status, str) else _UNKNOWN_STATUS,
-        year=node.get("seasonYear") or start.get("year"),
+        year=start.get("year") or node.get("seasonYear"),
         start=_start_date(start),
         relation=relation,
         group=_group(node.get("format"), in_chain=in_chain),
@@ -537,8 +541,17 @@ def _start_date(start: JsonObject) -> date | None:
     return date(start["year"], start["month"], start["day"])
 
 
-def _entry_order(entry: FranchiseEntry) -> tuple[int, bool, date, int]:
-    return tuple(EntryGroup).index(entry.group), entry.start is None, entry.start or date.min, entry.anilist_id
+def premiere_order(year: int | None, start: date | None) -> tuple[bool, int, int, int]:
+    """Order premieres ascending with undated entries first; a year without a full date closes its year."""
+    if year is None:
+        return False, 0, 0, 0
+    if start is None:
+        return True, year, _YEAR_END_MONTH, 0
+    return True, year, start.month, start.day
+
+
+def _entry_order(entry: FranchiseEntry) -> tuple[int, tuple[bool, int, int, int], int]:
+    return tuple(EntryGroup).index(entry.group), premiere_order(entry.year, entry.start), entry.anilist_id
 
 
 def _titles(node: JsonObject, *, sort_keys: bool = False) -> list[str]:
