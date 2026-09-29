@@ -43,7 +43,6 @@ from anishift.application import (
     TitleStatus,
     order_groups,
     parse_query,
-    parse_release_name,
     premiere_order,
 )
 from anishift.application.cancellation import EventCancellationToken
@@ -77,10 +76,10 @@ _WORKER_NAME: Final[str] = "anishift-anime"
 _MIN_RESOLUTION_LABEL: Final[str] = "1080p"
 """Lowest release quality the catalog lists, named for the user."""
 
-_QUERY_HINT: Final[str] = "Enter edytuj · ←→ widok · Esc wróć"
+_QUERY_HINT: Final[str] = "←→ widok · Esc wróć"
 """Keyboard hint of the title input."""
 
-_TITLES_HINT: Final[str] = "Enter wybierz · G wydania wg grup (stara wersja) · / szukaj · Esc wróć"
+_TITLES_HINT: Final[str] = "Enter wybierz · G grupy · / szukaj · Esc wróć"
 """Keyboard hint of the title candidate list."""
 
 _BUSY_HINT: Final[str] = "Esc anuluj"
@@ -186,7 +185,7 @@ _COMMAND_FAILED: Final[str] = (
 
 _ENTRY_GROUPS: Final[dict[EntryGroup, str]] = {
     EntryGroup.SEASON: "SEZONY I CZĘŚCI",
-    EntryGroup.EXTRA: "DODATKI",
+    EntryGroup.EXTRA: "Dodatki",
     EntryGroup.OTHER: "FILMY I INNE",
 }
 """Section headings of the franchise projection."""
@@ -211,14 +210,11 @@ _VERDICT_LABELS: Final[dict[IdentityVerdict, str]] = {
 _DATE_COLUMNS: Final[int] = 75
 """Minimum episode view width retaining the local airing timestamp."""
 
-_SEED_COLUMNS: Final[int] = 70
-"""Minimum release row width retaining its seeder measurement."""
-
-_SIZE_COLUMNS: Final[int] = 90
-"""Minimum release row width retaining its approximate file size."""
-
 _MIN_RELEASE_TITLE: Final[int] = 5
 """Release title cells kept before the container label or language column narrows."""
+
+_SHORT_REASON_LENGTH: Final[int] = 72
+"""Maximum explanation length in the compact candidate detail."""
 
 _REASON_TEXTS: Final[dict[str, str]] = {
     "Mapped absolute number exceeds the local episode range under a specific title.": (
@@ -393,6 +389,7 @@ class AnimeController:
         self._searched: str = ""
         self._candidates: tuple[TitleCandidate, ...] = ()
         self._titles_shown: bool = False
+        self._entries_skipped: bool = False
         self._highlighted: int = 0
         self._candidate: TitleCandidate | None = None
         self._context: SeasonContext | None = None
@@ -424,11 +421,13 @@ class AnimeController:
         self._franchise: Franchise | None = None
         self._entry: FranchiseEntry | None = None
         self._listing: EpisodeListing | None = None
+        self._listing_preloaded: bool = False
         self._episode_marks: set[int] = set()
         self._offer_numbers: tuple[int, ...] = ()
         self._offers: dict[int, EpisodeOffer] = {}
         self._offers_running: bool = False
         self._release_candidates: tuple[RankedCandidate, ...] = ()
+        self._candidate_details_open: bool = False
         self._positions: dict[_Screen, int] = {}
         self._offsets: dict[_Screen, int] = {}
         self._visible_count: int = 1
@@ -562,12 +561,18 @@ class AnimeController:
             return False
         if self._input_focused and key == "interrupt" and editor.handle(key):
             return True
+        if self._screen is _Screen.EPISODES and key in {"escape", "interrupt"}:
+            self._range = None
+            return True
         if key in {"escape", "interrupt"} and self._input_focused:
             self._input_focused = False
             return True
         if not self._input_focused:
             if key == "enter" or (self._screen is _Screen.QUERY and key == "text:/"):
                 self._input_focused = True
+            elif self._screen is _Screen.QUERY and (key.startswith(("text:", "paste:")) or key in {"space", "paste"}):
+                self._input_focused = True
+                editor.handle(key)
             return key not in {"escape", "interrupt"}
         return editor.handle(key)
 
@@ -680,7 +685,9 @@ class AnimeController:
         if not self._candidates:
             self._screen = _Screen.QUERY
             return
-        self._screen = _Screen.TITLES if self._titles_shown else _Screen.ENTRIES
+        self._screen = (
+            _Screen.EPISODES if self._entries_skipped else _Screen.TITLES if self._titles_shown else _Screen.ENTRIES
+        )
 
     def _apply_results_key(self, key: str) -> None:
         if key in {"up", "down"}:
@@ -750,10 +757,13 @@ class AnimeController:
         return AnimeResult.CONTINUE
 
     def _handle_episode_screen(self, key: str) -> None:
+        if self._screen is _Screen.CANDIDATES and (
+            key == "text:?" or (self._candidate_details_open and key in {"escape", "interrupt"})
+        ):
+            self._candidate_details_open = key == "text:?" and not self._candidate_details_open
+            return
         if self._screen is _Screen.EPISODES and self._range_input is not None:
-            if key in {"escape", "interrupt"}:
-                self._range = None
-            elif key == "enter":
+            if key == "enter":
                 typed: str = self._range_input.text
                 self._range = None
                 self._apply_episode_range(typed)
@@ -762,10 +772,13 @@ class AnimeController:
         if key in {"escape", "interrupt"}:
             self._back_episode_screen()
             return
+        if self._handle_episode_shortcut(key):
+            return
         count: int = self._episode_screen_count()
         if not count:
             return
         if key in {"up", "down", "home", "end", "pageup", "pagedown"}:
+            self._candidate_details_open = False
             self._navigate_episode_screen(key, count)
             return
         if self._screen is _Screen.ENTRIES and key == "enter":
@@ -785,6 +798,21 @@ class AnimeController:
         if self._screen is _Screen.OFFER:
             return len(self._offer_numbers)
         return len(self._release_candidates)
+
+    def _handle_episode_shortcut(self, key: str) -> bool:
+        if self._screen is not _Screen.EPISODES:
+            return False
+        if key.casefold() == "text:g" and self._episode_groups_available():
+            self._entry_releases()
+            return True
+        if key.casefold() != "text:s":
+            return False
+        self._notice = (
+            "Subskrypcje: użyj G grupy"
+            if self._episode_groups_available()
+            else "Subskrypcje: wróć do tytułów lub wpisów i użyj G"
+        )
+        return True
 
     def _navigate_episode_screen(self, key: str, count: int) -> None:
         position: int = self._positions.get(self._screen, 0)
@@ -806,21 +834,25 @@ class AnimeController:
             self._offers_running = False
             self._screen = _Screen.EPISODES
         elif self._screen is _Screen.EPISODES:
-            self._screen = _Screen.ENTRIES
+            self._screen = _Screen.QUERY if self._entries_skipped else _Screen.ENTRIES
         else:
             self._screen = _Screen.TITLES if self._titles_shown else _Screen.QUERY
 
     def _entry_releases(self) -> None:
-        if self._franchise is None:
-            return
-        entry: FranchiseEntry = self._franchise.entries[self._positions.get(_Screen.ENTRIES, 0)]
-        candidate: TitleCandidate | None = next(
-            (item for item in self._candidates if item.anilist_id == entry.anilist_id), None
-        )
+        candidate: TitleCandidate | None = self._entry_release_candidate()
         if candidate is None:
             self._notice = _ENTRY_ONLY_RELEASES
             return
         self._start_title_search(candidate)
+
+    def _entry_release_candidate(self) -> TitleCandidate | None:
+        if self._franchise is None or not self._franchise.entries:
+            return None
+        entry: FranchiseEntry = self._franchise.entries[self._positions.get(_Screen.ENTRIES, 0)]
+        return next((item for item in self._candidates if item.anilist_id == entry.anilist_id), None)
+
+    def _episode_groups_available(self) -> bool:
+        return self._entries_skipped and self._entry_release_candidate() is not None
 
     def _episode_key(self, key: str) -> None:
         listing: EpisodeListing | None = self._listing
@@ -900,6 +932,12 @@ class AnimeController:
         entry: FranchiseEntry = self._franchise.entries[self._positions.get(_Screen.ENTRIES, 0)]
         same: bool = self._entry == entry and self._listing is not None
         self._entry = entry
+        preloaded: bool = self._listing_preloaded
+        self._listing_preloaded = False
+        if same and preloaded:
+            self._screen = _Screen.EPISODES
+            self._follow_cursor = True
+            return
         if not same:
             self._listing = None
             self._episode_marks.clear()
@@ -914,6 +952,10 @@ class AnimeController:
         try:
             listing: EpisodeListing = self._acquisition.episodes(entry.anilist_id)
         except Exception as problem:  # noqa: BLE001 - the UI worker reports a failed command without a partial view
+            with self._lock:
+                if generation != self._generation:
+                    return
+                self._entries_skipped = False
             self._catalog_failure(generation, problem, _Screen.ENTRIES, "anizip")
             return
         with self._lock:
@@ -929,6 +971,10 @@ class AnimeController:
             )
             self._follow_cursor = True
             self._screen = _Screen.EPISODES
+            if self._entries_skipped and listing.specials:
+                self._entries_skipped = False
+                self._listing_preloaded = True
+                self._screen = _Screen.ENTRIES
             self._worker = None
         self._invalidate()
 
@@ -1005,6 +1051,7 @@ class AnimeController:
             item for item in offer.candidates if not high or item.facts.resolution in {1080, 2160, None}
         )
         self._positions[_Screen.CANDIDATES] = 0
+        self._candidate_details_open = False
         self._offsets[_Screen.CANDIDATES] = 0
         self._follow_cursor = True
         self._screen = _Screen.CANDIDATES
@@ -1114,6 +1161,8 @@ class AnimeController:
         self._searched = text
         self._candidates = ()
         self._titles_shown = False
+        self._entries_skipped = False
+        self._listing_preloaded = False
         self._candidate = None
         self._groups = ()
         self._rows = ()
@@ -1365,17 +1414,33 @@ class AnimeController:
         self._invalidate()
 
     def _show_titles(self, generation: int, candidates: tuple[TitleCandidate, ...], franchise: Franchise) -> None:
+        entry: FranchiseEntry | None = None
         with self._lock:
             if generation != self._generation:
                 return
-            self._worker = None
             self._store_titles(candidates, franchise)
             if self._titles_shown:
                 self._screen = _Screen.TITLES
             else:
                 self._highlighted = self._candidates.index(candidates[0])
                 self._screen = _Screen.ENTRIES
+            if len(candidates) == 1 and len(franchise.entries) == 1 and franchise.complete:
+                entry = franchise.entries[0]
+                if entry.group is EntryGroup.EXTRA or entry.anilist_id != candidates[0].anilist_id:
+                    entry = None
+            if entry is not None:
+                self._entries_skipped = True
+                self._entry = entry
+                self._positions[_Screen.EPISODES] = 0
+                self._offsets[_Screen.EPISODES] = 0
+                self._screen = _Screen.BUSY
+                self._busy = "Wczytuję odcinki…"
+                self._busy_return = _Screen.QUERY
+            else:
+                self._worker = None
         self._invalidate()
+        if entry is not None:
+            self._load_episodes(entry, generation)
 
     def _store_titles(self, candidates: tuple[TitleCandidate, ...], franchise: Franchise | None) -> None:
         ordered: list[TitleCandidate] = sorted(
@@ -1578,8 +1643,9 @@ class AnimeController:
         widths: tuple[int, ...] = (4, max(columns - 36, 1), 5, 17)
         lines: list[tuple[str, int | None]] = [(_columns(("Rok", "Tytuł", "Typ", "Status"), widths), None)]
         previous: EntryGroup | None = None
+        grouped: bool = franchise is not None and len({entry.group for entry in franchise.entries}) > 1
         for index, entry in enumerate(franchise.entries if franchise else ()):
-            if previous != entry.group:
+            if grouped and previous != entry.group:
                 lines.append((_ENTRY_GROUPS[entry.group], None))
                 previous = entry.group
             lines.append(
@@ -1597,12 +1663,12 @@ class AnimeController:
                 )
             )
         if franchise is not None and not franchise.complete:
-            lines.append(("Lista niepełna — pokazano najbliższe powiązania", None))
+            lines.append(("Lista niepełna", None))
         title: str = _safe(self._candidates[self._highlighted].english or self._candidates[self._highlighted].romaji)
         back: str = "Esc tytuły" if self._titles_shown else "Esc wróć"
         footer: tuple[str, ...] = (
             *((self._notice,) if self._notice else ()),
-            f"Enter odcinki · G wydania wg grup · {back}",
+            " · ".join(("Enter odcinki", *(("G grupy",) if self._entry_release_candidate() else ()), back)),
         )
         return self._episode_view(columns, rows, f"Anime \u203a {title}", lines, footer)
 
@@ -1618,13 +1684,16 @@ class AnimeController:
         lines: list[tuple[str, int | None]] = []
         if listing is None or listing.kitsu_id is None:
             lines.append(("Brak mapowania odcinków dla tego wpisu", None))
-            return self._episode_view(columns, rows, self._entry_heading(), lines, ("Esc wróć",))
+            hint: str = "G grupy · Esc wróć" if self._episode_groups_available() else "Esc wróć"
+            return self._episode_view(
+                columns, rows, self._entry_heading(), lines, (*((self._notice,) if self._notice else ()), hint)
+            )
         film: bool = self._entry is not None and self._entry.format == "MOVIE"
         if film:
-            lines.append(("Pobieranie filmów zależy od pomiaru E1", None))
-        lines.append((_marked_label(self._episode_marks), None))
-        fallback_dates: bool = any(episode.airs_at_fallback for episode in listing.episodes)
-        date_width: int = (22 if fallback_dates else 11) if columns >= _DATE_COLUMNS else 0
+            lines.append(("Tylko podgląd wydań", None))
+        if self._episode_marks:
+            lines.append((_marked_label(self._episode_marks), None))
+        date_width: int = 11 if columns >= _DATE_COLUMNS else 0
         widths: tuple[int, ...] = (3, 4, max(columns - 34 - date_width, 1), date_width, 15)
         lines.append((_columns(("", "Nr", "Tytuł", "Emisja", "Stan"), widths), None))
         for index, episode in enumerate(listing.episodes):
@@ -1632,21 +1701,21 @@ class AnimeController:
             number: str = "Film" if film else str(episode.number)
             marker: str = "[x]" if episode.number in self._episode_marks else "[ ]"
             date: str = episode.airs_at.astimezone().strftime("%d.%m %H:%M") if episode.airs_at else "—"
-            if episode.airs_at_fallback:
-                date += " (ani.zip)"
             lines.append((_columns((marker, number, _safe(episode.title or "—"), date, state), widths), index))
         if listing.specials:
-            lines.append(("DODATKI (informacja)", None))
+            lines.append(("Dodatki", None))
             lines.extend(
                 (f"{item.key}  {_safe(item.title or '—')}  {item.airs_on or '—'}", None) for item in listing.specials
             )
         footer: list[str | Text] = []
+        current: int = self._positions.get(_Screen.EPISODES, 0)
+        if listing.episodes and listing.episodes[current].airs_at_fallback:
+            footer.append(f"E{listing.episodes[current].number}: termin emisji niepotwierdzony (ani.zip)")
         if listing.schedule_warning:
             fallback: float = listing.schedule_retry_at.timestamp() if listing.schedule_retry_at else 0.0
-            retry: str = self._retry_hint("anilist", fallback)
-            if not retry or retry == "Możesz spróbować ponownie":
-                retry = "Możesz spróbować ponownie — wróć do wpisów i otwórz wpis"
-            footer.extend(("Terminy emisji niedostępne (AniList)", retry))
+            remaining: int = max(ceil(self._provider_locks.get("anilist", fallback) - self._clock()), 0)
+            retry: str = f"ponów za {remaining} s" if remaining else "wróć i otwórz ponownie"
+            footer.append("Brak terminów emisji (AniList) · " + retry)
         if self._notice:
             footer.append(self._notice)
         if self._range_input is not None:
@@ -1654,7 +1723,11 @@ class AnimeController:
             prompt.append_text(self._range_input.render(max(columns - 10, 1), focused=self._input_focused))
             footer.extend((prompt, "1,3,9-12 albo 5- · Enter zatwierdź · Esc zakończ"))
         else:
-            footer.append("Space zaznacz · A wszystkie/żadne · Z zakres · D podgląd · Esc wpisy")
+            footer.append(
+                "Space zaznacz · A wszystkie/żadne · Z zakres · D podgląd · "
+                + ("G grupy · " if self._episode_groups_available() else "")
+                + ("Esc wróć" if self._entries_skipped else "Esc wpisy")
+            )
         return self._episode_view(columns, rows, self._entry_heading(), lines, footer)
 
     def _entry_heading(self) -> str:
@@ -1664,9 +1737,15 @@ class AnimeController:
         )
 
     def _render_offers(self, columns: int, rows: int) -> Text:
-        widths: tuple[int, ...] = _release_widths(columns - 10)
+        suggestions: tuple[RankedCandidate, ...] = tuple(
+            offer.candidates[offer.suggestion] for offer in self._offers.values() if offer.suggestion is not None
+        )
+        widths: tuple[int, ...] = _release_widths(
+            columns - 10,
+            language=max(Text(label).cell_len for label in ("Język", *map(_language, suggestions))),
+        )
         lines: list[tuple[str, int | None]] = [
-            ("Odc   " + _columns(("Sugerowane wydanie", "Obraz", "Język", "Seedy", "Rozm"), widths), None)
+            ("Odc   " + _columns(("Sugerowane wydanie", "Obraz", "Język", "Seedy"), widths), None)
         ]
         for index, number in enumerate(self._offer_numbers):
             offer: EpisodeOffer | None = self._offers.get(number)
@@ -1679,44 +1758,50 @@ class AnimeController:
                 label = _stream_row(item, widths, uncertain=True)
             lines.append((f"E{number:<3}  {label}", index))
         highlighted: EpisodeOffer | None = self._highlighted_offer()
-        reason: str = _offer_reason(highlighted) if highlighted else ""
+        details: tuple[str, ...] = _offer_details(highlighted) if highlighted else ()
+        width: int = max(columns - 2, 1)
+        console: Console = Console(width=width)
+        footer: list[str | Text] = [
+            line for detail in details for line in Text(detail, style="gray").wrap(console, width)
+        ]
+        footer.append("↑↓ wybierz · Enter/I inne wydania · Esc odcinki")
         return self._episode_view(
             columns,
             rows,
             self._entry_heading() + " \u203a Podgląd",
             lines,
-            (reason, "↑↓ wybierz · Enter/I inne wydania · Esc odcinki"),
+            footer,
         )
 
     def _render_candidates(self, columns: int, rows: int) -> Text:
         widths: tuple[int, ...] = _release_widths(
-            columns - 16,
+            columns - 4,
             unsupported=any(item.facts.supported is False for item in self._release_candidates),
-            seeded=True,
             language=max(Text(label).cell_len for label in ("Język", *map(_language, self._release_candidates))),
         )
-        lines: list[tuple[str, int | None]] = [
-            ("Tożsamość   " + _columns(("Wydanie", "Obraz", "Język", "Seedy", "Rozm"), widths), None)
-        ]
+        lines: list[tuple[str, int | None]] = [(_columns(("Wydanie", "Obraz", "Język", "Seedy"), widths), None)]
         lines.extend(
-            (f"{_VERDICT_LABELS[item.identity.verdict]:10}  {_stream_row(item, widths)}", index)
-            for index, item in enumerate(self._release_candidates)
+            (_stream_row(item, widths, uncertain=True), index) for index, item in enumerate(self._release_candidates)
         )
         footer: list[str | Text] = []
         if self._release_candidates:
             selected: RankedCandidate = self._release_candidates[self._positions.get(_Screen.CANDIDATES, 0)]
-            reason: str = _REASON_TEXTS.get(selected.identity.reason, _identity_fallback(selected.identity.verdict))
             width: int = max(columns - 2, 1)
             console: Console = Console(width=width)
             footer.extend(
                 line
-                for detail in ("Powód: " + reason, _candidate_details(selected))
+                for detail in (
+                    _candidate_reason(selected, full=self._candidate_details_open),
+                    _candidate_details(selected),
+                )
                 for line in Text(detail, style="gray").wrap(console, width)
             )
         else:
             offer: EpisodeOffer | None = self._highlighted_offer()
             lines.append((_empty_offer(offer) if offer else "Brak kandydatów", None))
-        footer.append("Esc podgląd")
+            if offer is not None:
+                footer.append(_offer_check_details(offer))
+        footer.append("Esc szczegóły" if self._candidate_details_open else "? szczegóły · Esc podgląd")
         number: int = self._offer_numbers[self._positions.get(_Screen.OFFER, 0)]
         title: str = _safe(self._entry.english or self._entry.romaji) if self._entry else "—"
         return self._episode_view(columns, rows, f"Inne wydania \u203a {title} \u203a E{number}", lines, footer)
@@ -1977,8 +2062,19 @@ def _year_label(year: int | None) -> str:
 
 def _marked_label(marks: set[int]) -> str:
     if not marks:
-        return "Zaznaczone: —"
-    return f"Zaznaczone ({len(marks)}): " + ", ".join(map(str, sorted(marks)))
+        return ""
+    numbers: list[int] = sorted(marks)
+    ranges: list[str] = []
+    first: int = numbers[0]
+    last: int = first
+    for number in numbers[1:]:
+        if number == last + 1:
+            last = number
+            continue
+        ranges.append(str(first) if first == last else f"{first}–{last}")
+        first = last = number
+    ranges.append(str(first) if first == last else f"{first}–{last}")
+    return f"Zaznaczone ({len(marks)}): " + ", ".join(ranges)
 
 
 def _english_title(candidate: TitleCandidate) -> str:
@@ -2185,15 +2281,12 @@ def _columns(values: Sequence[str], widths: Sequence[int]) -> str:
     ).rstrip()
 
 
-def _release_widths(
-    width: int, *, unsupported: bool = False, seeded: bool = False, language: int = 13
-) -> tuple[int, ...]:
-    seeds: int = 5 if seeded or width >= _SEED_COLUMNS else 0
-    size: int = 7 if width >= _SIZE_COLUMNS else 0
-    fixed: int = seeds + size + 4 + 2 * bool(seeds) + 2 * bool(size)
+def _release_widths(width: int, *, unsupported: bool = False, language: int = 13) -> tuple[int, ...]:
+    seeds: int = 5
+    fixed: int = seeds + 6
     image: int = 13 if unsupported and width - fixed - 13 - language >= _MIN_RELEASE_TITLE else 5
     language = max(min(language, width - fixed - image - _MIN_RELEASE_TITLE), 1)
-    return max(width - fixed - image - language, 1), image, language, seeds, size
+    return max(width - fixed - image - language, 1), image, language, seeds
 
 
 def _stream_row(item: RankedCandidate, widths: tuple[int, ...], *, uncertain: bool = False) -> str:
@@ -2201,40 +2294,49 @@ def _stream_row(item: RankedCandidate, widths: tuple[int, ...], *, uncertain: bo
     container: str = f" ({item.facts.container})"
     if item.facts.supported is False and Text(image + container).cell_len <= widths[1]:
         image += container
-    suffix: str = " (niepewne wydanie)" if uncertain and item.identity.verdict is IdentityVerdict.INSUFFICIENT else ""
-    title: str = _fit_text(_safe(item.stream.release), max(widths[0] - Text(suffix).cell_len, 1)) + suffix
+    prefix: str = ""
+    if uncertain and item.identity.verdict is not IdentityVerdict.MATCH:
+        prefix = "niepewne · " if item.identity.verdict is IdentityVerdict.INSUFFICIENT else "niezgodne · "
+    title: str = prefix + _safe(item.stream.release)
     return _columns(
         (
             title,
             image,
             _language(item),
             str(item.stream.seeders) if item.stream.seeders is not None else "?",
-            _safe(item.stream.size_text or "?"),
         ),
         widths,
     )
 
 
 def _empty_offer(offer: EpisodeOffer) -> str:
-    checked: str = offer.checked_at.astimezone().strftime("%H:%M")
     if not offer.candidates:
-        return f"Brak kandydatów w źródle (sprawdzono {checked})"
-    return f"Brak wydania E{offer.key.number} (sprawdzono {checked}; niezgodnych: {offer.counts.get('mismatch', 0)})"
+        return "Brak wydań w źródle"
+    return f"Brak pasującego wydania E{offer.key.number}"
 
 
-def _offer_reason(offer: EpisodeOffer) -> str:
+def _offer_check_details(offer: EpisodeOffer) -> str:
+    checked: str = offer.checked_at.astimezone().strftime("%H:%M")
+    return f"Sprawdzono {checked} · niezgodnych: {offer.counts.get('mismatch', 0)}"
+
+
+def _offer_details(offer: EpisodeOffer) -> tuple[str, ...]:
     if offer.suggestion is None:
-        return ""
+        return (_offer_check_details(offer),)
     item: RankedCandidate = offer.candidates[offer.suggestion]
-    group: str = _safe(parse_release_name(item.stream.release).group or "—")
-    if item.identity.verdict is IdentityVerdict.INSUFFICIENT:
-        return f"Niepewne wydanie E{offer.key.number}: może nie być tym odcinkiem · grupa: {group}"
-    image: str = f"{item.facts.resolution}p" if item.facts.resolution else "obraz nieznany"
-    platform: str = f" · {item.facts.platform}" if item.facts.platform else ""
-    return (
-        f"Powód E{offer.key.number}: {image} · {_language(item)}{platform} · grupa: {group}"
-        " · pierwsze zgodne według preferencji"
-    )
+    return _candidate_reason(item, full=False), _candidate_details(item)
+
+
+def _candidate_reason(item: RankedCandidate, *, full: bool) -> str:
+    return f"{_VERDICT_LABELS[item.identity.verdict]}: {_identity_reason(item, full=full)}"
+
+
+def _identity_reason(item: RankedCandidate, *, full: bool) -> str:
+    reason: str = _REASON_TEXTS.get(item.identity.reason, _identity_fallback(item.identity.verdict))
+    if full:
+        return reason
+    short: str = reason.split(";", 1)[0].rstrip(".") + "."
+    return short if len(short) <= _SHORT_REASON_LENGTH else _identity_fallback(item.identity.verdict)
 
 
 def _identity_fallback(verdict: IdentityVerdict) -> str:
@@ -2246,7 +2348,12 @@ def _identity_fallback(verdict: IdentityVerdict) -> str:
 
 
 def _candidate_details(item: RankedCandidate) -> str:
-    index: str = str(item.stream.file_index) if item.stream.file_index is not None else "brak"
-    platform: str = item.facts.platform or "—"
-    support: str = f" · format nieobsługiwany ({item.facts.container})" if item.facts.supported is False else ""
-    return f"Plik: {_safe(item.stream.file_name or 'brak')} · indeks: {index} · platforma: {platform}{support}"
+    details: list[str] = []
+    if item.stream.file_name:
+        details.append(f"Plik: {_safe(item.stream.file_name)}")
+    details.append(f"Rozmiar: {_safe(item.stream.size_text or '?')}")
+    if item.facts.platform:
+        details.append(f"platforma: {item.facts.platform}")
+    if item.facts.supported is False:
+        details.append(f"format nieobsługiwany ({item.facts.container})")
+    return " · ".join(details)

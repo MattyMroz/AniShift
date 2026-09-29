@@ -7,6 +7,8 @@ baseline: 0e8a6bf9194d2786d426d3f3a58f48272b3eb087
 
 # UX: wybór odcinka, pobieranie i subskrypcje
 
+**Decyzja orkiestratora 2026-09-29, do potwierdzenia:** uproszczenia zapytania, pomijania pojedynczego wpisu, zaznaczeń i szczegółów wydań oraz kontrakt P/komunikatów F6 poniżej. Nagłówek PANEL, liczniki globalne, status U01, „Nie zamówiono” i zaznaczanie wydań pozostają.
+
 ## 1. Zasady
 
 - Ten dokument jest jedynym źródłem makiet, przejść i klawiszy tej pracy. Wymagania są w [spec.md](spec.md); kolejność budowy w [masterplan.md](masterplan.md).
@@ -15,7 +17,7 @@ baseline: 0e8a6bf9194d2786d426d3f3a58f48272b3eb087
 - `[x]` = zaznaczone w szkicu, `>` = kursor. Zaznaczenie nigdy nie oznacza zlecenia.
 - Każda akcja widoczna w stopce działa klawiszem; skrót literowy nie działa, gdy aktywne jest pole tekstowe.
 - Esc wraca o jeden ekran i odtwarza poprzedni kursor, zaznaczenia i przewinięcie, bez ponownego pobierania danych.
-- Zlecenie powstaje wyłącznie przez: `D` na odcinkach lub wydaniach (E2), `D` albo Enter na „Pobierz” w podglądzie po „Pobierz ponownie” (U04), albo automatycznie dla celu subskrypcji dodanej przez Enter na „Dodaj subskrypcję” (U06). Nawigacja, render, odliczanie, Tab i Esc niczego nie zlecają.
+- Zlecenie powstaje wyłącznie przez: `D` na odcinkach lub wydaniach (E2), także `D pobierz ponownie` w U04b po P, albo automatycznie dla celu subskrypcji dodanej przez Enter na „Dodaj subskrypcję” (U06). Nawigacja, render, odliczanie, Tab i Esc niczego nie zlecają.
 
 ## 2. Przejścia
 
@@ -23,7 +25,7 @@ baseline: 0e8a6bf9194d2786d426d3f3a58f48272b3eb087
 Home ─ Panel ─┬─ Anime ─ U01 Zapytanie/Tytuły ─ U02 Wpisy ─ U03 Odcinki ─┬─ D ─ dobór i pobranie sugestii           (E2)
               │          └─ G ─ stara lista wydań wg grup (pomost E1–E2, bez zmian)
               │                                                         ├─ I ─ U04b Inne wydania ─ D pobierz     (E2)
-              │                                                         ├─ P ─ potwierdzenie ─ U04 Podgląd       (E2)
+              │                                                         ├─ P ─ U04b Alternatywy ─ D ponownie    (E2)
               │                                                         └─ S ─ U06 Szkic subskrypcji             (E3)
               ├─ Subskrypcje ─ U07 Lista ─┬─ D ─ U01 (powrót: U07)                                           (E3)
               │                          ├─ Enter ─ U08 Szczegóły (= U03 w kontekście subskrypcji)          (E3)
@@ -49,12 +51,14 @@ Po zleceniu widok przechodzi do Przetwarzania z nowymi odcinkami — tylko jeśl
 │  2018  That Time I Got Reincarnated as a Slime      TV     zakończony  │
 │  2015  Tensei Shitara Slime (manga PV)              ONA    zakończony  │
 │                                                                        │
-│ Enter wybierz · G wydania wg grup (stara wersja) · / szukaj · Esc wróć │
+│ Enter wybierz · G grupy · / szukaj · Esc wróć                         │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Pole wyszukiwania startuje bez fokusu; Enter na polu lub `/` włącza edycję; Enter w edycji szuka; Esc wyłącza edycję i zostawia tekst.
+- Pole wyszukiwania startuje bez fokusu; pierwszy znak lub wklejenie włącza edycję i wpisuje tekst. Enter na polu lub `/` również włącza edycję; Enter w edycji szuka; Esc wyłącza edycję i zostawia tekst. Automatyczne rozpoczęcie pisania dotyczy tylko zapytania.
 - Ekran pojawia się tylko, gdy choć jeden wynik wyszukiwania nie jest wpisem franczyzy pierwszego wyniku widocznym w U02. Gdy wszystkie wyniki są w U02, wyszukiwanie od razu otwiera U02 z kursorem na pierwszym wyniku, a Esc z U02 wraca do zapytania. Nieudany odczyt franczyzy po wyszukiwaniu pokazuje błąd, z którego Enter wraca do tej listy.
+- Dokładnie jeden wynik i jeden wpis kompletnej franczyzy, bez dodatków, otwiera od razu U03; Esc wraca do zapytania. Wiele wpisów, wpis będący dodatkiem, dodatki z ani.zip lub niepełna lista zachowują U02. Sprawdzenie dodatków może wymagać odczytu odcinków przed decyzją o pominięciu.
+- Przy pominiętym U02 `G grupy` pozostaje dostępne z U03 dla wpisu z wyników wyszukiwania, także bez mapowania odcinków; Esc ze starej listy wraca do U03. Błąd odczytu odcinków wyłącza pominięcie: Enter/Esc z błędu wraca do U02. Lista wczytana przy wykryciu dodatków jest używana przy pierwszym Enter z U02 bez drugiego odczytu; następne jawne wejścia ponawiają odczyt. Nieaktywny ekran zapytania nie pokazuje „Enter edytuj”.
 - Lista: zapowiedzi bez roku na górze, potem data premiery malejąco (dzień, miesiąc, rok; sam rok liczy się jak koniec roku), przy remisie alfabetycznie (W-03). Rok pochodzi z daty premiery, a bez niej z roku sezonu; ta sama reguła obowiązuje w U02. Bez roku kolumna pokazuje „—”. Tytuł angielski, gdy istnieje, inaczej romaji. Kolumny Rok, Tytuł, Typ, Status wyrównane pod nagłówkiem; status jak w U02. Bez liczby odcinków.
 - Wyszukiwanie w toku: w miejscu listy „Szukam tytułu…”; Esc przerywa.
 - Brak tytułu po poprawnie zakończonym wyszukiwaniu AniList: „Brak tytułu w AniList, szukam wydań na Nyaa” → wyszukiwanie wpisanego hasła → stara lista wydań wg grup. Na wynikach pozostaje notka „Brak tytułu w AniList, wyniki dla hasła”; Esc wraca do zapytania. To przejście nie dotyczy awarii AniList (W-08).
@@ -73,22 +77,22 @@ Po zleceniu widok przechodzi do Przetwarzania z nowymi odcinkami — tylko jeśl
 │  2021  … Season 2 Part 2                                TV  zakończony │
 │  2024  … Season 3                                       TV  zakończony │
 │  2026  … Season 4                                       TV  w emisji   │
-│ DODATKI                                                                │
+│ Dodatki                                                               │
 │  2019  … OAD                                            OVA zakończony │
 │ FILMY I INNE                                                           │
 │  2021  The Slime Diaries                                TV  zakończony │
 │  2022  … the Movie: Scarlet Bond                        Film zakończony│
 │                                                                        │
-│ Enter odcinki · G wydania wg grup · Esc tytuły                         │
+│ Enter odcinki · G grupy · Esc tytuły                                   │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 - Grupy według spec W-04 i plan E1 §10.5.1. W grupie: wpisy bez roku na górze, potem data premiery rosnąco (sam rok jak koniec roku). Kursor startuje na wpisie wybranym w U01 albo na pierwszym wyniku, gdy U01 pominięto.
 - Esc wraca do U01, gdy była pokazana, inaczej do zapytania (stopka „Esc wróć”).
-- `G` otwiera starą listę wydań dla podświetlonego wpisu, jeśli jest wśród wyników wyszukiwania; inaczej notka „G działa dla tytułów z wyników wyszukiwania”.
+- `G grupy` pojawia się w stopce tylko dla podświetlonego wpisu obecnego w wynikach wyszukiwania. Poza nimi G zachowuje notkę „G działa dla tytułów z wyników wyszukiwania”. G nadal jest dostępne w U01.
 - Status dotyczy wpisu: „w emisji”, „zakończony”, „zapowiedź”, „przerwa w emisji”, „anulowany”.
-- Lista przerwana na limicie: ostatni wiersz „Lista niepełna — pokazano najbliższe powiązania”.
-- Film w E1: Enter otwiera U03 z jednym wierszem „Film” i notką „Pobieranie filmów zależy od pomiaru E1” (spec U-21).
+- Lista przerwana na limicie: ostatni wiersz „Lista niepełna”. Przy jednej grupie wpisów jej nagłówek znika; przy wielu grupach podział pozostaje.
+- Film w E1: U03 ma jeden wiersz „Film” i notkę „Tylko podgląd wydań”. Faktyczna dostępność pobierania w E2 nadal podlega U-21; UI nie pokazuje nazw etapów ani obietnic obsługi.
 
 ## 5. U03 — odcinki wpisu (E1; D/I/P w E2; S w E3)
 
@@ -105,79 +109,80 @@ Po zleceniu widok przechodzi do Przetwarzania z nowymi odcinkami — tylko jeśl
 │> [x]  5  …                             4.08 18:00      Nie zamówiono   │
 │  …                                                                     │
 │      24  …                             25.09 18:00     Nie wyemitowano │
-│ DODATKI (informacja)                                                   │
+│ Dodatki                                                               │
 │       S1  Veldora's Journal            12.01.2027                      │
 │                                                                        │
 │ Space zaznacz · A wszystkie/żadne · Z zakres · D pobierz · I wydania   │
-│ P ponownie · S niedostępne (E3) · Esc wpisy                            │
+│ P ponownie · Esc wpisy                                                │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-Stopka powyżej obowiązuje w E2. `S` w E2 nie zleca niczego, pokazuje „Subskrypcje: wróć do tytułów i użyj G”. E3 zastępuje niedostępność przez „S subskrybuj” (tylko dla wpisu spełniającego spec U-10); stare O pod G pozostaje w E2.
+Stopka powyżej obowiązuje w E2. Przy pominiętym U02 pokazuje też `G grupy`, jeśli działa dla wpisu. `S` do E3 nie jest wymienione w stopce; naciśnięcie pokazuje „Subskrypcje: użyj G grupy”, gdy G jest dostępne w U03, inaczej „Subskrypcje: wróć do tytułów lub wpisów i użyj G”, bez zlecenia. E3 dodaje „S subskrybuj” (tylko dla wpisu spełniającego spec U-10); stare O pod G pozostaje w E2.
 
 - Space lub Enter zaznacza/odznacza podświetlony odcinek. Zaznaczyć można tylko odcinek w stanie „Nie zamówiono”; przy innym stanie notka, np. „E3 jest już zlecony · P pobierz ponownie” (E2+) albo „E24 jeszcze nie wyemitowano”.
-- Nad listą „Zaznaczone (n): 3, 5”, a bez zaznaczeń „Zaznaczone: —”.
+- Nad listą „Zaznaczone (n): …” z połączonymi zakresami, np. „Zaznaczone (4): 1–3, 7”. Bez zaznaczeń linia znika.
 - `A` przełącza: zaznacza wszystkie wyemitowane odcinki w stanie „Nie zamówiono”, a gdy wszystkie już są zaznaczone — czyści zaznaczenie.
-- `Z` otwiera pole w stopce „Zakres: [1,3,9-12 albo 5-]” (tylko liczby całkowite). Enter zatwierdza, Esc zamyka. `5-` znaczy „od 5 do ostatniego znanego”. Zakres zastępuje zaznaczenie. Numer nieistniejący → notka „Brak odcinka 30 w tym wpisie”, zaznaczenie bez zmian.
+- `Z` otwiera pole w stopce „Zakres: [1,3,9-12 albo 5-]” (tylko liczby całkowite). Enter zatwierdza; jeden Esc zamyka bez zastosowania. Ctrl+C przy zaznaczonym tekście nadal kopiuje. `5-` znaczy „od 5 do ostatniego znanego”. Zakres zastępuje zaznaczenie. Numer nieistniejący → notka „Brak odcinka 30 w tym wpisie”, zaznaczenie bez zmian.
 - `D` dobiera i zleca sugestie zaznaczonych; bez zaznaczeń — podświetlonego, bez U04 i dodatkowego Enter. Powód niezlecenia dotyczy danego odcinka i nie blokuje reszty; sugestia niepewna jest dopuszczona według spec U-03/R-06. Lista pokazuje „Szukam wydania E…”. Esc/Tab i rozłączenie panelu nie przerywają partii ownera; po restarcie przyjęte odcinki pozostają, niezleconą resztę trzeba wybrać ponownie (plan E2 §8.1/§8.7).
 - `I` otwiera U04b podświetlonego odcinka, niezależnie od zaznaczeń innych odcinków.
 - Emisja: data i godzina lokalna; bez daty „—”. Przyszły odcinek ma stan „Czeka na emisję”, gdy obejmuje go subskrypcja (E3), inaczej „Nie wyemitowano”. Odcinka „Nie wyemitowano” nie da się zaznaczyć do pobrania.
+- Kolumna daty nie zawiera „(ani.zip)”. Przy bieżącym odcinku z datą zastępczą szczegół mówi „E3: termin emisji niepotwierdzony (ani.zip)”; data nadal nie dowodzi emisji.
+- F6: stan legacy „może być zlecony” pozostaje odrębny od „Zlecono” i blokuje zwykłe D/A/Z, z jawnym wyjściem P. Po faktycznie przerwanej partii: „Nie zlecono E4–E8 · zaznacz je ponownie” (rzeczywiste numery); bez rutynowej notki o restarcie. Limit tylko po przekroczeniu: „Limit: 100 odcinków · Z zmień zakres”, zaznaczenie bez zmian.
 - Dodatki `S…` nie mają pola wyboru (spec W-06).
 - Brak mapowania ani.zip: zamiast listy „Brak mapowania odcinków dla tego wpisu · Esc wróć”.
-- Terminy emisji niedostępne: notka nad listą „Terminy emisji niedostępne (AniList)”.
+- Terminy emisji niedostępne: jeden komunikat „Brak terminów emisji (AniList) · ponów za N s”; po ochłodzeniu lub bez terminu „Brak terminów emisji (AniList) · wróć i otwórz ponownie”. Bez nowego klawisza ponawiania.
 
-**Pobierz ponownie (E2):** `P` na podświetlonym odcinku, który jest zlecony/pobrany/gotowy, pokazuje w stopce: „Pobrać E3 ponownie? Obecne pliki zostają. Enter tak · Esc nie”. Tak → U04 tylko dla tego odcinka z nową sugestią; zastępowane wydanie jest wyłączone z wyboru; zlecenie dopiero D albo Enter na „Pobierz” (spec P-05). W subskrypcji ręczne zlecenie rezerwuje cel odcinka.
+**Pobierz ponownie (E2):** `P` na zleconym/pobranym/gotowym lub „może być zlecony” otwiera bezpośrednio U04b z alternatywami i oznaczoną sugestią. Wiersz ostrzeżenia: „Obecne pliki zostają”, a dla legacy „E3 może być już zlecony · Obecne pliki zostają”. Zastępowane wydanie jest wyłączone z wyboru. Zgodą na ponowienie jest dopiero `D pobierz ponownie` dla zaznaczonego, a bez zaznaczenia podświetlonego wydania. Nie ma wcześniejszego pytania Enter/Esc ani osobnego U04. R-04 nadal wymaga osobnego potwierdzenia jawnego niepewnego/niezgodnego wyboru. Zgoda legacy dotyczy pokazanych danych konfliktu; zmiana danych ją unieważnia. W subskrypcji ręczne zlecenie rezerwuje cel odcinka.
 
-## 6. U04 — podgląd pobrania i inne wydania (E1; Pobierz w E2)
+## 6. U04 — odczytowy podgląd E1; U04b — wydania i ponowienie E2
 
-W E2 U04 pozostaje tylko podglądem jednego odcinka po P. Poniższa makieta przedstawia ten podgląd; w odczytowym E1 U04 mogło mieć wiele odcinków i nie miało akcji Pobierz. Zwykłe D w E2 pomija U04, a I otwiera bezpośrednio U04b.
+U04 jest wyłącznie odczytowym podglądem E1, bez akcji Pobierz. W E2 zwykłe D pomija podgląd, a I i P otwierają bezpośrednio U04b. Osobne U04 nie uczestniczy w pobieraniu E2.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
 │ Anime › Slime › Season 4 › Pobierz                                     │
 │                                                                        │
-│  Odc  Sugerowane wydanie                  Obraz  Język      Seedy  Rozm│
-│>   3  [Erai-raws] … - 03 [1080p][Multi]   1080p  MultiSub     312  1.4G│
+│  Odc  Sugerowane wydanie                       Obraz  Język      Seedy │
+│>   3  [Erai-raws] … - 03 [1080p][Multi]        1080p  MultiSub     312 │
 │                                                                        │
-│  Powód E3: MultiSub · 1080p · najwięcej seedów wśród zgodnych          │
+│  zgodny: Tytuł i numer odcinka są zgodne.                              │
+│  Plik: … - 03.mkv · Rozmiar: 1.4G                                     │
 │                                                                        │
-│  [ Pobierz odcinek ]                                             (E2)  │
-│                                                                        │
-│ ↑↓ wybierz · Enter/I wydania · D pobierz · Esc odcinki                 │
+│ ↑↓ wybierz · Enter/I wydania · Esc odcinki                             │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 - Wiersze wypełniają się po kolei (jedno zapytanie na odcinek); dopóki trwa, wiersz ma „Szukam…”. Esc przerywa i nie wysyła kolejnych zapytań.
-- Kolumna Język: „PL”, „MultiSub”, „PL · MultiSub” albo „—”. Źródło platformy (NF/CR) i grupa są w wierszu „Powód” pod listą, nie w kolumnach.
-- Rozmiar: przybliżony rozmiar pliku odcinka; brak → „?”. Seedy brak → „?”.
-- Wiersz „Powód” pokazuje uzasadnienie dla podświetlonego odcinka.
+- Kolumna Język: „PL”, „MultiSub”, „PL · MultiSub” albo „—”. Platforma (NF/CR) tylko w szczególe, gdy znana; grupa pozostaje w nazwie wydania.
+- Rozmiar tylko w szczególe bieżącego wydania, brak → „?”. Seedy brak → „?”; Obraz, Język i Seedy pozostają widoczne przy 50–120 kolumnach.
+- Powód sugestii jest krótki i wynika z faktycznej oceny, bez powtarzania pól tabeli ani ogólnika „pierwsze według preferencji”.
+- U04 i U04b używają tej samej formy szczegółu: „werdykt: krótki powód”, np. „niepewny: Brak wskazanego pliku.”. Szerokość kolumny Język w obu widokach wynika z ich widocznych danych; nie rezerwuje pustego miejsca na nieobecne etykiety.
 - E1: wiersz „[ Pobierz … ]” nie istnieje; stopka jak w makiecie bez „Enter pobierz”.
-- E2 po P: ↑↓ dochodzi do „[ Pobierz odcinek ]”; D albo Enter na nim zleca obejrzany odcinek z sugestią, także `niepewną`. Brak sugestii daje powód niezlecenia; I pozwala zmienić wybór.
-- Brak `zgodnego`, ale jest `niepewny` (spec R-06): sugestią jest najlepszy `niepewny` z dopiskiem „(niepewne wydanie)” w wierszu; wiersz „Powód” pokazuje „Niepewne wydanie E7: może nie być tym odcinkiem”.
-- Zmiana wydania w U04b zmienia sugestię tylko tego odcinka w tym podglądzie.
+- Brak `zgodnego`, ale jest `niepewny` (spec R-06): sugestią jest najlepszy `niepewny` z prefiksem „niepewne ·” w wierszu i szczegółem „niepewny: <powód>”. Niepewność dotyczy odcinka wskazanego w nagłówku/wierszu, nie jakości obrazu.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
 │ Inne wydania › Slime S4 E3                                             │
 │                                                                        │
-│    Tożsamość     Wydanie                          Obraz  Język    Seedy │
-│>   zgodny        [Erai-raws] … - 03 [1080p][Multi] 1080p  MultiSub  312 │
-│    zgodny        [SubsPlease] … - 03 (1080p)      1080p  —         820 │
-│    zgodny        [EMBER] … S04E03 (paczka)        1080p  —          45 │
-│    niepewny      … 03                             ?     —           ? │
-│    niezgodny     Tensura Nikki - 03               1080p  —         110 │
+│    Wydanie                                      Obraz  Język    Seedy │
+│>   [Erai-raws] … - 03 [1080p][Multi]             1080p  MultiSub  312 │
+│    [SubsPlease] … - 03 (1080p)                  1080p  —         820 │
+│    [EMBER] … S04E03 (paczka)                    1080p  —          45 │
+│    niepewne · … 03                              ?     —           ? │
+│    niezgodne · Tensura Nikki - 03               1080p  —         110 │
 │                                                                        │
-│  Powód: brak rozpoznanego aliasu tytułu                                │
+│  zgodny: Tytuł i numer odcinka są zgodne.                              │
+│  Plik: … - 03.mkv · Rozmiar: 1.4G                                     │
 │                                                                        │
-│ Space/Enter wybierz · D pobierz · Esc wróć                             │
+│ Space/Enter wybierz · D pobierz · ? szczegóły · Esc wróć               │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Kolejność: zgodni według rankingu, potem niepewni, potem niezgodni. Powód tożsamości dla podświetlonego wiersza, po polsku.
+- Kolejność: zgodni według rankingu, potem niepewni, potem niezgodni. Bez kolumny Tożsamość; tekstowe prefiksy tylko dla wyjątków. Pełny werdykt i krótki powód pod kursorem; `? szczegóły` rozwija pełny powód, Esc zamyka szczegóły. Nazwa pliku i rozmiar pod kursorem; bez indeksu i pustej platformy.
 - Kolumna Seedy jest widoczna przy każdej szerokości (także 50 kolumn); tytuł wydania skraca się pierwszy. Szerokość kolumny Język wynika z najdłuższej etykiety na liście.
 - Widoczne rozdzielczości (spec U-24): 1080p, 2160p i nieznana. 720p i niższe są ukryte, jeśli istnieje choć jedno zgodne 1080p lub 2160p; inaczej widać wszystkie.
-- E1: Enter nic nie robi (stopka: „Esc podgląd”).
-- E2: sugestia jest oznaczona na liście z powodem pod nią. Space/Enter zaznacza jedno wydanie; następny wybór zastępuje poprzedni. D pobiera zaznaczone, a bez zaznaczenia — podświetlone. Nie ma A/Z do pobierania kilku wersji jednego odcinka. Esc wraca do odcinków, a po wejściu z P — do podglądu; wybór po P aktualizuje ten podgląd.
+- E1: Enter nic nie robi (stopka: „? szczegóły · Esc podgląd”).
+- E2: sugestia jest oznaczona na liście z powodem pod nią. Space/Enter zaznacza jedno wydanie; następny wybór zastępuje poprzedni. D pobiera zaznaczone, a bez zaznaczenia — podświetlone. Nie ma A/Z do pobierania kilku wersji jednego odcinka. Esc wraca do odcinków, także po P. Po P stopka mówi `D pobierz ponownie`, z ostrzeżeniem opisanym w §5.
 - Jawny wybór `niepewnego` wymaga przed pobraniem potwierdzenia „To wydanie może nie być E3 serii Slime S4. Wybrać mimo to? Enter tak · Esc nie”; `niezgodny`: „Heurystyka uznała to za inny materiał: <powód>. Wybrać mimo to? Enter tak · Esc nie”. Dotyczy też D bez zaznaczenia. Zmiana wyboru unieważnia potwierdzenie (spec R-04).
 - Wydanie w nieobsługiwanym formacie ma w kolumnie Obraz dopisek „(.avi)” i nie może być wybrane.
 
@@ -190,7 +195,6 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
 │ Wybierz plik › Slime S4 E3 — paczka [EMBER] Season 4                   │
 │                                                                        │
 │>  Season 4/S04E03 - The ... [ABCD1234].mkv            1.3 GB           │
-│   Season 4/S04E03 - The ... [ABCD1234].ass            52 KB            │
 │   Extras/NCOP 03.mkv                                  90 MB            │
 │                                                                        │
 │ Enter ten plik to E3 · Esc wróć                                        │
@@ -288,9 +292,9 @@ To jest U03 tego wpisu z nagłówkiem subskrypcji. Lista zawiera cele subskrypcj
 | ani.zip niedostępny | „Lista odcinków niedostępna (ani.zip) · spróbuj za N s” | jw. |
 | Torrentio niedostępny | „Źródło wydań nie odpowiada · spróbuj za N s” | jw. |
 | Brak mapowania | „Brak mapowania odcinków dla tego wpisu” | Esc |
-| Brak kandydatów | „Brak kandydatów w źródle (sprawdzono HH:MM)” | Esc |
-| Brak zgodnego, jest niepewny | Sugestia z dopiskiem „(niepewne wydanie)”; Powód: „Niepewne wydanie E6: może nie być tym odcinkiem” | Enter → U04b |
-| Brak zgodnego i niepewnego | „Brak wydania E6 (sprawdzono HH:MM; niezgodnych: m)” | Enter → U04b |
+| Brak kandydatów | „Brak wydań w źródle”; czas sprawdzenia i liczniki w szczególe poniżej | Esc |
+| Brak zgodnego, jest niepewny | Sugestia „niepewne · …”; szczegół „niepewny: <powód>” dla wskazanego odcinka | Enter → U04b w E1; I w E2 |
+| Brak zgodnego i niepewnego | „Brak pasującego wydania E6”; czas i liczba niezgodnych poniżej | Enter → U04b w E1; I w E2 |
 | Rezydent nie wykonał nowego polecenia (np. starsza wersja) | „Rezydent nie wykonał polecenia. Jeśli AniShift był właśnie aktualizowany, uruchom go ponownie.” | Esc |
 | Zlecono, lista plików w drodze (E2) | wiersz Przetwarzania „Pobieranie listy plików” | — |
 | Nie ustalono pliku (E2) | „Nie ustalono pliku w paczce” | Enter → U05 |
@@ -326,8 +330,8 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 1. Pobierz jeden odcinek z pojedynczego wydania i dwa (E1, E3) z tej samej paczki.
 2. W trakcie pobierania zamknij panel i uruchom ponownie AniShift.
    Oczekiwane: jeden transfer paczki; pobierają się tylko E1 i E3; po restarcie praca trwa; oba odcinki w Bibliotece z lektorem; E2 nie pojawia się w Przetwarzaniu.
-3. `P` na pobranym odcinku → Tak → podgląd → Pobierz.
-   Oczekiwane: podgląd bez zastępowanego wydania; nowe zlecenie tylko tego odcinka; poprzedni wynik zostaje.
+3. `P` na pobranym odcinku → alternatywy → `D pobierz ponownie`.
+   Oczekiwane: lista bez zastępowanego wydania, ostrzeżenie „Obecne pliki zostają”; nowe zlecenie tylko tego odcinka; poprzedni wynik zostaje. R-04 osobno przy jawnym niepewnym/niezgodnym wyborze.
 
 ### H3 — subskrypcje (koniec E3, 7 dni)
 
@@ -352,10 +356,11 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 | Ekran | Klawisz | Skutek | Etap |
 | --- | --- | --- | --- |
 | Wszystkie poza polem tekstowym | ←→ / Tab / Shift+Tab | Zmiana zakładki (zachowuje stan ekranów) | bez zmian |
-| Wszystkie | Esc / Ctrl+C (bez zaznaczenia tekstu) | O ekran wstecz; w polu tekstowym najpierw wyłącza edycję | bez zmian |
+| Wszystkie | Esc / Ctrl+C (bez zaznaczenia tekstu) | O ekran wstecz; w polu tekstowym najpierw wyłącza edycję, wyjątek: zakres odcinków zamyka od razu | E1: uproszczenie zakresu |
 | Pole tekstowe | wszystkie litery, Space, Delete | Tekst, nigdy skrót | bez zmian |
-| U01 | Enter / `/` | Wybierz tytuł / edytuj zapytanie | E1 |
+| U01 | Enter / `/`; pierwszy znak lub wklejenie w zapytaniu | Wybierz tytuł / edytuj zapytanie; znak i wklejenie rozpoczynają edycję bez utraty tekstu | E1 |
 | U01, U02 | G | Stara lista wydań wg grup (pomost); w U02 tylko dla wpisu z wyników wyszukiwania | E1–E2; usuwane w E3 |
+| U03 po pominięciu U02 | G | Stara lista wydań wpisu z wyników wyszukiwania; Esc z niej wraca do odcinków | E1–E2 |
 | U02 | Enter | Odcinki wpisu | E1 |
 | U03, U08 | Space, Enter | Zaznacz/odznacz odcinek | E1 |
 | U03 | A | Zaznacz wszystkie wyemitowane niezamówione; gdy wszystkie są zaznaczone — odznacz | E1 |
@@ -365,8 +370,9 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 | U03, U08 | P | Pobierz ponownie podświetlony | E2 |
 | U03, U08 | I | Inne wydania podświetlonego odcinka | E2; U08 w E3 |
 | U03 | S | E2: notka o G, bez skutku; E3: szkic subskrypcji | E2/E3 |
-| U04 | Enter / I | Inne wydania podświetlonego; na „[ Pobierz ]” — zlecenie (E2) | E1/E2 |
-| U04 po P | D | Zleć obejrzany odcinek | E2 |
+| U04 | Enter / I | Inne wydania podświetlonego, tylko odczyt | E1 |
+| U04b po P | D | Pobierz ponownie zaznaczone, bez zaznaczeń podświetlone; zgoda na pokazany konflikt legacy, R-04 osobno | E2 |
+| U04b | ? | Pokaż/zwiń pełny powód; Esc zamyka rozwinięte szczegóły | E1/E2 |
 | U04b | Space / Enter | Zaznacz jedno wydanie | E2 |
 | U04b | D | Pobierz zaznaczone, bez zaznaczenia podświetlone; R-04 przed skutkiem | E2 |
 | U05 | Enter | Ten plik to odcinek | E2 |
@@ -384,7 +390,7 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 ## 14. Mały terminal i asynchroniczność
 
 - Nagłówek i stopka są stałe, środek przewijany. Linie przycinane według szerokości komórek terminala.
-- Kolejność obcinania kolumn: rozmiar → seedy → emisja → tytuł odcinka. Numer, stan i tożsamość zostają zawsze.
+- Rozmiar jest szczegółem, nie kolumną. W wydaniach przy 50–120 kolumnach zawsze widać obraz, język i seedy; najpierw skraca się nazwę. Wyjątki tożsamości są tekstem w wierszu, pełny werdykt pod kursorem. W odcinkach znika najpierw emisja, potem skraca się tytuł; numer i stan pozostają.
 - Gdy cztery zakładki się nie mieszczą: „← Subskrypcje (2/4) →” z liczbą liczoną z listy zakładek (dziś wpisane na sztywno `/4`).
 - Ekran zbyt niski na listę: „Powiększ terminal” + działające Esc/Tab.
 - Każdy wynik sieciowy jest przypisany do generacji ekranu; Esc, zmiana zakładki i nowe zapytanie unieważniają spóźnione wyniki. Render nigdy nie wykonuje sieci ani zapisu.

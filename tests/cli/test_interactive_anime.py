@@ -414,10 +414,8 @@ def test_panel_query_requires_focus_and_preserves_text_across_tabs(
         panel.handle_key("left")
         panel.handle_key("left")
         assert not any(span.style == "reverse" for span in panel.render(*size).spans)
-        panel.handle_key("text:ignored")
-        assert anime._query == ""
-        panel.handle_key("enter")
         panel.handle_key("text:abc")
+        assert anime.input_focused
         panel.handle_key("left")
         assert panel._tab == 0
         panel.handle_key("text:x")
@@ -1688,7 +1686,7 @@ def test_enter_lists_titles_by_descending_year_with_english_names_and_format_onl
     assert listed.index("2025") < listed.index("2024")
     assert "odc." not in listed
     assert "Ore dake" not in listed
-    assert "G wydania wg grup (stara wersja)" in listed
+    assert "G grupy" in listed
 
     controller.handle_key("escape")
 
@@ -2143,8 +2141,8 @@ def test_application_explicit_query_focus_edits_then_returns_home_with_the_draft
         assert not any(span.style == "reverse" for span in application._render_frame(*size).spans)
         for key in ("text:d", "text:o", "paste:ignored"):
             application._handle_key(key)
-        assert anime._query == ""
-        application._handle_key("enter")
+        assert anime._query == "doignored"
+        application._handle_key("select-all")
         assert anime._worker is None
         assert any(span.style == "reverse" for span in application._render_frame(*size).spans)
         for key in ("text:osh", "left", "text:x", "backspace", "right", "text:i"):
@@ -2156,7 +2154,7 @@ def test_application_explicit_query_focus_edits_then_returns_home_with_the_draft
         assert anime._query == "oshi"
         opened: str = application._render_frame(*size).plain
         assert not any(span.style == "reverse" for span in application._render_frame(*size).spans)
-        assert "Enter edytuj" in opened
+        assert "Enter edytuj" not in opened
         assert len(opened.splitlines()) <= size[1]
         assert all(Text(line).cell_len <= size[0] for line in opened.splitlines())
         for leave, destination, back in (("left", 3, "right"), ("right", 1, "left")):

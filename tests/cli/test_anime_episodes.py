@@ -15,6 +15,10 @@ from typing import Any, Final, cast
 import httpx
 import pytest
 from loguru import logger as loguru_logger
+from prompt_toolkit.application import Application
+from prompt_toolkit.application.current import set_app
+from prompt_toolkit.input import DummyInput
+from prompt_toolkit.output import DummyOutput
 from rich.text import Text
 
 from anishift.application import (
@@ -33,6 +37,7 @@ from anishift.application import (
     ListedEpisode,
     ListedSpecial,
     RankedCandidate,
+    ReleaseCatalog,
     ReleaseFacts,
     StreamCandidate,
     TitleCandidate,
@@ -114,7 +119,7 @@ def _offer(key: EpisodeKey, candidates: tuple[RankedCandidate, ...] | None = Non
 
 class _Catalog:
     def __init__(self) -> None:
-        self.view: Franchise = Franchise(1, (_entry(),), (), True)
+        self.view: Franchise = Franchise(1, (_entry(), _entry(2)), (), True)
         self.titles: tuple[TitleCandidate, ...] = (_title(),)
         self.listing: EpisodeListing = _listing()
         self.calls: list[tuple[str, int]] = []
@@ -164,8 +169,10 @@ def _key(controller: AnimeController, key: str) -> None:
 
 
 def _open(controller: AnimeController) -> None:
-    for key in ("text:/", "text:slime", "enter", "enter"):
+    for key in ("text:/", "text:slime", "enter"):
         _key(controller, key)
+    if controller._screen is _Screen.ENTRIES:
+        _key(controller, "enter")
     assert controller._screen is _Screen.EPISODES
 
 
@@ -221,6 +228,220 @@ def test_search_opens_entries_directly_when_every_result_is_a_displayed_franchis
     assert "Esc wróć" in _frame(controller)
     _key(controller, "escape")
     assert _at(controller) is _Screen.QUERY
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("first", ["text:slime", "paste:slime"])
+@pytest.mark.parametrize("complete", [True, False])
+@pytest.mark.parametrize("extras", [True, False])
+def test_single_complete_entry_skips_entries_only_without_extras(first: str, complete: bool, extras: bool) -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.view = Franchise(1, (_entry(),), (), complete)
+    catalog.listing = replace(catalog.listing, specials=catalog.listing.specials if extras else ())
+    controller: AnimeController = _controller(catalog)
+    _key(controller, first)
+    assert controller.input_focused
+    assert controller._query == "slime"
+    assert catalog.calls == []
+    _key(controller, "enter")
+    skipped: bool = complete and not extras
+    assert _at(controller) is (_Screen.EPISODES if skipped else _Screen.ENTRIES)
+    if skipped:
+        assert not controller._episode_marks
+        assert not controller._offers
+    else:
+        assert "SEZONY I CZĘŚCI" not in _frame(controller)
+        assert ("Lista niepełna" in _frame(controller)) is (not complete)
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.QUERY
+
+
+@pytest.mark.unit
+def test_extra_entry_does_not_skip_the_franchise_screen() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.view = Franchise(1, (replace(_entry(), group=EntryGroup.EXTRA),), (), True)
+    catalog.listing = replace(catalog.listing, specials=())
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.ENTRIES
+    assert catalog.calls == [("titles", 5), ("franchise", 1)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mapped", [True, False])
+def test_skipped_entry_keeps_groups_and_subscription_route_reachable(mapped: bool) -> None:
+    class GroupCatalog(_Catalog):
+        def search_title(self, candidate: TitleCandidate, **options: object) -> ReleaseCatalog:
+            self.calls.append(("releases", candidate.anilist_id))
+            return ReleaseCatalog((), 0)
+
+    catalog: GroupCatalog = GroupCatalog()
+    catalog.view = Franchise(1, (_entry(),), (), True)
+    catalog.listing = replace(catalog.listing, specials=(), kitsu_id=10 if mapped else None)
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.EPISODES
+    assert "G grupy" in _frame(controller)
+    _key(controller, "text:s")
+    assert controller._notice == "Subskrypcje: użyj G grupy"
+    assert "Subskrypcje: użyj G grupy" in _frame(controller)
+    _key(controller, "text:g")
+    assert _at(controller) is _Screen.RESULTS
+    assert catalog.calls[-1] == ("releases", 1)
+    assert "O subskrybuj" in _frame(controller)
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.EPISODES
+    assert "G grupy" in _frame(controller)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("back", ["escape", "enter"])
+def test_skipped_entry_catalogue_failure_returns_to_entries_and_allows_retry(back: str) -> None:
+    class FailingCatalog(_Catalog):
+        def episodes(self, identifier: int) -> EpisodeListing:
+            listing: EpisodeListing = super().episodes(identifier)
+            if self.calls.count(("episodes", identifier)) == 1:
+                raise ControlError("offline", reason=ErrorCode.EPISODE_CATALOG_FAILED.value, answered=True)
+            return listing
+
+    catalog: FailingCatalog = FailingCatalog()
+    catalog.view = Franchise(1, (_entry(),), (), True)
+    catalog.listing = replace(catalog.listing, specials=())
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.PROBLEM
+    assert "Lista odcinków niedostępna" in _frame(controller)
+    assert controller.handle_key(back).value == "continue"
+    assert _at(controller) is _Screen.ENTRIES
+    assert "G grupy" in _frame(controller)
+    _key(controller, "enter")
+    assert _at(controller) is _Screen.EPISODES
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.ENTRIES
+    assert catalog.calls.count(("episodes", 1)) == 2
+
+
+@pytest.mark.unit
+def test_preloaded_extra_listing_is_consumed_once_before_explicit_refresh() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.view = Franchise(1, (_entry(),), (), True)
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.ENTRIES
+    assert catalog.calls.count(("episodes", 1)) == 1
+    _key(controller, "enter")
+    assert _at(controller) is _Screen.EPISODES
+    assert "Dodatki" in _frame(controller)
+    assert catalog.calls.count(("episodes", 1)) == 1
+    for key in ("escape", "enter"):
+        _key(controller, key)
+    assert catalog.calls.count(("episodes", 1)) == 2
+
+
+@pytest.mark.unit
+def test_new_search_resets_skipped_entry_navigation() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.view = Franchise(1, (_entry(),), (), True)
+    catalog.listing = replace(catalog.listing, specials=())
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime", "enter", "escape"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.QUERY
+    catalog.view = Franchise(1, (_entry(), _entry(2)), (), True)
+    for key in ("text:/", "enter", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.EPISODES
+    assert "G grupy" not in _frame(controller)
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.ENTRIES
+
+
+@pytest.mark.unit
+def test_single_unrelated_franchise_entry_does_not_skip_title_selection() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.view = Franchise(1, (_entry(9),), (), True)
+    catalog.listing = replace(catalog.listing, specials=())
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.TITLES
+    assert catalog.calls == [("titles", 5), ("franchise", 1)]
+    _key(controller, "enter")
+    assert _at(controller) is _Screen.ENTRIES
+    assert "G grupy" not in _frame(controller)
+
+
+@pytest.mark.unit
+def test_episode_range_escape_discards_input_and_keeps_marks() -> None:
+    controller: AnimeController = _controller(_Catalog())
+    _open(controller)
+    for key in ("space", "text:z", "text:2-4", "escape"):
+        _key(controller, key)
+    assert controller._range_input is None
+    assert not controller.input_focused
+    assert controller._episode_marks == {1}
+    assert _at(controller) is _Screen.EPISODES
+
+
+@pytest.mark.unit
+def test_episode_range_interrupt_copies_selected_text_before_closing() -> None:
+    controller: AnimeController = _controller(_Catalog())
+    _open(controller)
+    app: Application[None] = Application(input=DummyInput(), output=DummyOutput())
+    with set_app(app):
+        for key in ("text:z", "text:1-3", "select-all", "interrupt"):
+            _key(controller, key)
+        assert app.clipboard.get_data().text == "1-3"
+        assert controller._range == "1-3"
+        assert controller.input_focused
+        assert not controller._episode_marks
+        _key(controller, "escape")
+        assert controller._range_input is None
+
+
+@pytest.mark.unit
+def test_skipped_entry_drops_late_episode_results_after_escape() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.view = Franchise(1, (_entry(),), (), True)
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    class SlowCatalog(_Catalog):
+        def episodes(self, identifier: int) -> EpisodeListing:
+            entered.set()
+            assert release.wait(5)
+            return replace(super().episodes(identifier), specials=())
+
+    slow: SlowCatalog = SlowCatalog()
+    slow.view = catalog.view
+    controller: AnimeController = _controller(slow)
+    _key(controller, "paste:slime")
+    controller.handle_key("enter")
+    worker: threading.Thread | None = controller._worker
+    try:
+        assert entered.wait(5)
+        controller.handle_key("escape")
+        assert _at(controller) is _Screen.QUERY
+    finally:
+        release.set()
+        assert worker is not None
+        worker.join(5)
+    assert not worker.is_alive()
+    assert _at(controller) is _Screen.QUERY
+    assert controller._listing is None
+
+
+@pytest.mark.unit
+def test_episode_marks_compress_only_contiguous_numbers() -> None:
+    controller: AnimeController = _controller(_Catalog())
+    _open(controller)
+    for key in ("text:z", "text:1-3,6", "enter"):
+        _key(controller, key)
+    assert "Zaznaczone (4): 1–3, 6" in _frame(controller)
 
 
 @pytest.mark.unit
@@ -334,6 +555,16 @@ def test_entry_releases_open_only_for_an_entry_found_by_the_search(moves: tuple[
 
 
 @pytest.mark.unit
+def test_entry_group_shortcut_follows_available_search_results() -> None:
+    controller: AnimeController = _controller(_Catalog())
+    for key in ("paste:slime", "enter"):
+        _key(controller, key)
+    assert "G grupy" in _frame(controller)
+    _key(controller, "down")
+    assert "G grupy" not in _frame(controller)
+
+
+@pytest.mark.unit
 def test_a_toggles_every_aired_episode_and_the_label_counts_marks() -> None:
     catalog: _Catalog = _Catalog()
     catalog.listing = replace(
@@ -342,10 +573,10 @@ def test_a_toggles_every_aired_episode_and_the_label_counts_marks() -> None:
     )
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    assert "Zaznaczone: —" in _frame(controller)
+    assert "Zaznaczone" not in _frame(controller)
     _key(controller, "text:a")
     assert controller._episode_marks == {1, 2, 3, 4}
-    assert "Zaznaczone (4): 1, 2, 3, 4" in _frame(controller)
+    assert "Zaznaczone (4): 1–4" in _frame(controller)
     _key(controller, "text:A")
     assert controller._episode_marks == set()
     for key in ("down", "space", "text:a"):
@@ -355,7 +586,7 @@ def test_a_toggles_every_aired_episode_and_the_label_counts_marks() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize("unsupported", [False, True])
-@pytest.mark.parametrize("width", [50, 100, 120])
+@pytest.mark.parametrize("width", [50, 80, 100, 120])
 def test_other_releases_always_show_aligned_seeds(width: int, unsupported: bool) -> None:
     catalog: _Catalog = _Catalog()
     first: RankedCandidate = _candidate()
@@ -368,16 +599,90 @@ def test_other_releases_always_show_aligned_seeds(width: int, unsupported: bool)
     for key in ("text:d", "text:i"):
         _key(controller, key)
     lines: list[str] = controller.render(width, 40).plain.splitlines()
-    header: str = next(line for line in lines if "Tożsamość" in line)
+    header: str = next(line for line in lines if "Wydanie" in line and "Seedy" in line)
     known: str = next(line for line in lines if "321" in line)
-    unknown: str = next(line for line in lines if "zgodny" in line and "321" not in line)
+    unknown: str = next(line for line in lines if "[Group]" in line and "321" not in line)
     assert header.index("Seedy") == known.index("321")
     assert unknown[header.index("Seedy")] == "?"
     if unsupported:
         assert "PL · MultiSub" in known
-        assert ("1080p (.avi)" in known) is (width > 50)
+        assert "1080p (.avi)" in known[header.index("Obraz") : header.index("Język")]
         assert "format nieobsługiwany (.avi)" in " ".join(" ".join(lines).split())
     assert all(Text(line).cell_len <= width for line in lines)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("width", [50, 80, 120])
+@pytest.mark.parametrize("verdict", list(IdentityVerdict))
+def test_release_views_keep_decision_columns_and_put_size_in_details(width: int, verdict: IdentityVerdict) -> None:
+    catalog: _Catalog = _Catalog()
+    item: RankedCandidate = _candidate(verdict)
+    item = replace(
+        item,
+        facts=replace(item.facts, polish=True, multisub=True),
+        stream=replace(item.stream, seeders=321, size_text="1.4 GB"),
+    )
+    catalog.offer_read = lambda key: _offer(key, (item,))
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    for key in ("text:d", "text:i"):
+        _key(controller, key)
+        lines: list[str] = controller.render(width, 24).plain.splitlines()
+        header: str = next(line for line in lines if "Obraz" in line)
+        assert "Seedy" in header
+        assert "Język" in header
+        assert "Rozm" not in header
+        assert "Tożsamość" not in header
+        if key == "text:d" and verdict is IdentityVerdict.MISMATCH:
+            continue
+        row: str = next(line for line in lines if "1080p" in line)
+        assert "PL · MultiSub" in row
+        assert "321" in row
+        assert any("Rozmiar: 1.4 GB" in line for line in lines)
+        assert "indeks:" not in " ".join(lines)
+        assert "platforma: —" not in " ".join(lines)
+        if verdict is IdentityVerdict.INSUFFICIENT:
+            assert "niepewne" in row
+        if verdict is IdentityVerdict.MISMATCH:
+            assert "niezgodne" in row
+
+
+@pytest.mark.unit
+def test_offer_language_width_follows_the_longest_visible_suggestion() -> None:
+    catalog: _Catalog = _Catalog()
+    item: RankedCandidate = replace(_candidate(), stream=replace(_candidate().stream, seeders=321))
+    catalog.offer_read = lambda key: _offer(key, (item,))
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    _key(controller, "text:d")
+    lines: list[str] = controller.render(50, 24).plain.splitlines()
+    compact: str = next(line for line in lines if "Obraz" in line)
+    reason: str = next(line.strip() for line in lines if "zgodny:" in line)
+    _key(controller, "text:i")
+    assert reason in controller.render(50, 24).plain
+    for key in ("escape", "escape"):
+        _key(controller, key)
+    item = replace(item, facts=replace(item.facts, polish=True, multisub=True))
+    _key(controller, "text:d")
+    lines = controller.render(50, 24).plain.splitlines()
+    expanded: str = next(line for line in lines if "Obraz" in line)
+    assert expanded.index("Obraz") < compact.index("Obraz")
+    assert "PL · MultiSub" in "\n".join(lines)
+    assert "321" in "\n".join(lines)
+
+
+@pytest.mark.unit
+def test_extra_group_and_episode_specials_use_the_same_heading() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.view = replace(catalog.view, entries=(_entry(), replace(_entry(2), group=EntryGroup.EXTRA)))
+    controller: AnimeController = _controller(catalog)
+    for key in ("paste:slime", "enter"):
+        _key(controller, key)
+    assert "Dodatki" in _frame(controller)
+    assert "DODATKI" not in _frame(controller)
+    _key(controller, "enter")
+    assert "Dodatki" in _frame(controller)
+    assert "DODATKI" not in _frame(controller)
 
 
 @pytest.mark.unit
@@ -450,8 +755,11 @@ def test_ani_zip_label_follows_each_episode_date_origin_without_a_schedule_warni
     rows: dict[str, str] = {
         name: line for line in _frame(controller).splitlines() for name in ("Episode 1", "Episode 2") if name in line
     }
-    assert "(ani.zip)" in rows["Episode 1"]
+    assert "(ani.zip)" not in rows["Episode 1"]
     assert "(ani.zip)" not in rows["Episode 2"]
+    assert "E1: termin emisji niepotwierdzony (ani.zip)" in _frame(controller)
+    _key(controller, "down")
+    assert "termin emisji niepotwierdzony" not in _frame(controller)
 
 
 @pytest.mark.unit
@@ -501,14 +809,22 @@ def test_preview_without_marks_uses_highlighted_episode_and_future_episode_is_no
 def test_movie_has_one_film_row_and_only_previews_its_first_episode_when_mapped(mapped: bool) -> None:
     catalog: _Catalog = _Catalog()
     catalog.view = replace(catalog.view, entries=(_entry(format="MOVIE"),))
-    catalog.listing = replace(catalog.listing, kitsu_id=10 if mapped else None)
+    catalog.listing = replace(catalog.listing, kitsu_id=10 if mapped else None, specials=())
     controller: AnimeController = _controller(catalog)
-    _open(controller)
+    for key in ("paste:slime", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.EPISODES
+    assert controller._entries_skipped
+    assert catalog.calls.count(("episodes", 1)) == 1
     assert controller._listing is not None
     assert [item.number for item in controller._listing.episodes] == [1]
     assert ("Film" if mapped else "Brak mapowania") in _frame(controller)
     _key(controller, "text:d")
     assert [call for call in catalog.calls if call[0] == "offer"] == ([("offer", 1)] if mapped else [])
+    if mapped:
+        _key(controller, "escape")
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.QUERY
 
 
 @pytest.mark.unit
@@ -554,13 +870,16 @@ def test_offer_verdict_labels_uncertainty_and_empty_suggestion_are_explicit(verd
     _open(controller)
     _key(controller, "text:d")
     frame: str = _frame(controller)
-    assert ("(niepewne wydanie)" in frame) is (verdict is IdentityVerdict.INSUFFICIENT)
-    assert ("Brak wydania E1" in frame) is (verdict is IdentityVerdict.MISMATCH)
+    assert ("niepewne ·" in frame) is (verdict is IdentityVerdict.INSUFFICIENT)
+    assert ("Brak pasującego wydania E1" in frame) is (verdict is IdentityVerdict.MISMATCH)
+    reason: str = "niepewny: Brak wskazanego pliku."
     if verdict is IdentityVerdict.INSUFFICIENT:
-        assert "Niepewne wydanie E1: może nie być tym odcinkiem" in frame
+        assert reason in frame
     _key(controller, "text:i")
-    assert "Powód: Brak wskazanego pliku." in _frame(controller)
-    assert "indeks: brak" in _frame(controller)
+    if verdict is IdentityVerdict.INSUFFICIENT:
+        assert reason in _frame(controller)
+    assert "Brak wskazanego pliku." in _frame(controller)
+    assert "indeks:" not in _frame(controller)
 
 
 @pytest.mark.unit
@@ -656,16 +975,16 @@ def test_catalogue_headers_name_the_work_and_columns_align_at_both_widths(width:
     assert header.index("Stan") == episode.index("Nie zamówiono")
     _key(controller, "text:d")
     offers: list[str] = controller.render(width, 40).plain.splitlines()
-    assert any("grupa: Group" in line for line in offers)
+    assert any("Plik:" in line for line in offers)
     header = next(line for line in offers if "Sugerowane" in line)
     offered: str = next(line for line in offers if "E1" in line and "1080p" in line and "Powód" not in line)
     assert header.index("Obraz") == offered.index("1080p")
     _key(controller, "text:i")
     candidates: list[str] = controller.render(width, 40).plain.splitlines()
     assert "Inne wydania \u203a Slime \u203a E1" in candidates[0]
-    header = next(line for line in candidates if "Tożsamość" in line)
+    header = next(line for line in candidates if "Wydanie" in line and "Seedy" in line)
     image_column: int = Text(header[: header.index("Obraz")]).cell_len
-    release_rows: list[str] = [line for line in candidates if "zgodny" in line]
+    release_rows: list[str] = [line for line in candidates if "1080p" in line]
     assert len(release_rows) == 2
     assert all(Text(line[: line.index("1080p")]).cell_len == image_column for line in release_rows)
     assert all(Text(line).cell_len <= width for line in candidates)
@@ -688,8 +1007,12 @@ def test_candidate_reason_and_file_details_remain_complete_at_fifty_columns() ->
     _key(controller, "text:i")
     frame: str = controller.render(50, 24).plain
     normalized: str = " ".join(frame.split())
-    assert "Powód: " + _REASON_TEXTS[reason] in normalized
-    assert f"Plik: {filename} · indeks: brak · platforma: —" in normalized
+    assert _REASON_TEXTS[reason] not in normalized
+    assert f"Plik: {filename} · Rozmiar: ?" in normalized
+    _key(controller, "text:?")
+    assert _REASON_TEXTS[reason] in " ".join(controller.render(50, 24).plain.split())
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.CANDIDATES
     assert all(Text(line).cell_len <= 50 for line in frame.splitlines())
     assert "Esc podgląd" in frame
 
@@ -824,18 +1147,18 @@ def test_schedule_warning_survives_navigation_and_explicit_reentry_refreshes_onl
     _open(controller)
     if not before:
         controller.refresh_provider_locks(locks)
-    assert "spróbuj za 120 s" in _frame(controller)
+    assert "ponów za 120 s" in _frame(controller)
     _key(controller, "down")
-    assert "Terminy emisji niedostępne (AniList)" in _frame(controller)
+    assert "Brak terminów emisji (AniList)" in _frame(controller)
     now[0] = 1120
-    assert "Możesz spróbować ponownie" in _frame(controller)
+    assert "wróć i otwórz ponownie" in _frame(controller)
     assert len(catalog.calls) == 3
     catalog.listing = _listing()
     _key(controller, "escape")
     assert len(catalog.calls) == 3
     _key(controller, "enter")
     assert len(catalog.calls) == 4
-    assert "Terminy emisji niedostępne" not in _frame(controller)
+    assert "Brak terminów emisji" not in _frame(controller)
 
 
 @pytest.mark.unit
@@ -1106,12 +1429,12 @@ def test_movie_entry_previews_through_movie_endpoint_without_admission(tmp_path:
     now: list[float] = [datetime(2026, 9, 29, tzinfo=UTC).timestamp()]
     with _running_panel(tmp_path, ["movie"], sent, now, remote=remote) as (controller, _, _):
         _open(controller)
-        assert "Pobieranie filmów zależy od pomiaru E1" in _frame(controller)
+        assert "Tylko podgląd wydań" in _frame(controller)
         assert controller._listing is not None
         assert len(controller._listing.episodes) == 1
         _key(controller, "text:d")
         assert controller._offers[1].key == EpisodeKey(139498, 1)
-        assert "Brak kandydatów w źródle" in _frame(controller)
+        assert "Brak wydań w źródle" in _frame(controller)
         assert "torrentio.strem.fun/stream/movie/kitsu:99.json" in sent
         assert not any("/stream/series/" in url for url in sent)
 
@@ -1206,8 +1529,8 @@ def test_partial_schedule_429_keeps_episode_list_until_explicit_reentry_after_de
         _open(controller)
         assert panel is not None
         panel._receive(panel._parent, {"event": "state_changed", "payload": panel._parent.command("status")})
-        assert "Terminy emisji niedostępne (AniList)" in _frame(controller)
-        assert "spróbuj za 90 s" in _frame(controller)
+        assert "Brak terminów emisji (AniList)" in _frame(controller)
+        assert "ponów za 90 s" in _frame(controller)
         assert controller._listing is not None
         assert len(controller._listing.episodes) == 24
         assert controller._listing.aired is None
@@ -1219,10 +1542,10 @@ def test_partial_schedule_429_keeps_episode_list_until_explicit_reentry_after_de
         reads: int = len(sent)
         now[0] += 90
         _key(controller, "down")
-        assert "Możesz spróbować ponownie" in _frame(controller)
+        assert "wróć i otwórz ponownie" in _frame(controller)
         assert len(sent) == reads
         scenario[0] = "ok"
         _key(controller, "escape")
         _key(controller, "enter")
-        assert "Terminy emisji niedostępne" not in _frame(controller)
+        assert "Brak terminów emisji" not in _frame(controller)
         assert len(sent) == reads + 1

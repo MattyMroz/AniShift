@@ -157,9 +157,15 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Po wyszukiwaniu `_find_titles` od razu czyta franczyzę pierwszego wyniku; TITLES pojawia się
   (`_titles_shown`) tylko, gdy któryś wynik nie jest w `Franchise.entries` — nie w `FranchiseGraph.nodes`,
   bo niewidoczne węzły byłyby wtedy nieosiągalne. Esc z ENTRIES wraca do TITLES albo QUERY według
-  `_titles_shown`. Kolejność TITLES i ENTRIES liczy wyłącznie `premiere_order` z fasady.
+  `_titles_shown`. `_entries_skipped` skips ENTRIES only for one matching result and one complete
+  franchise entry without extras; episodes are read first to check ani.zip specials. Esc then returns
+  to QUERY. An episode-read failure clears skipping and returns to ENTRIES. `_listing_preloaded`
+  consumes the already-read special-bearing listing on the first Enter; later explicit entry refreshes.
+  New search resets both flags. Kolejność TITLES i ENTRIES liczy wyłącznie `premiere_order` z fasady.
   `G` otwiera dawną drogę RESULTS z pobieraniem i subskrypcjami, także z ENTRIES dla wpisu obecnego
-  w `_candidates`. `StateController` przekazuje
+  w `_candidates`. G also works on EPISODES when `_entries_skipped` is true and that entry is among
+  search results, including missing mapping; the footer advertises it only then. Leaving RESULTS
+  returns to EPISODES in this case. `StateController` przekazuje
   klawisze i przewijanie. Sieć działa w wątku `anishift-anime`; Esc lub zmiana zakładki unieważnia
   spóźnione wyniki przez licznik generacji i zatrzymuje kolejne zapytania ofert. Esc z BUSY anuluje też
   `_work_cancel`, a w trybie rezydenta zamyka kanał katalogu (`interrupt_reads`); owner anuluje wtedy
@@ -184,7 +190,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Po wyborze tytułu `O` używa PODŚWIETLONEJ grupy. `interactive/anime.py`, `interactive/state.py`
 - Pusta lista wyników nie jest ślepym zaułkiem: przy `filtered > 0` nazywa filtr, a `F` i `Esc`
   działają jak na pełnej liście. `Esc` z wyników wraca do TITLES, gdy kandydaci są w pamięci, a do
-  ENTRIES, gdy TITLES pominięto (`_titles_shown`) — dlatego nowe hasło czyści `_candidates`. Teksty błędów tłumaczy `_PROBLEM_TEXTS`
+  ENTRIES, gdy TITLES pominięto (`_titles_shown`), albo EPISODES po pominięciu ENTRIES
+  (`_entries_skipped`) — dlatego nowe hasło czyści `_candidates`. Teksty błędów tłumaczy `_PROBLEM_TEXTS`
   (`ErrorCode` → polskie zdanie), a nie warstwa domenowa. `interactive/anime.py`
 - Anime opens a group locally; Enter/Space toggles a release and explicit Download submits
   only the open group's draft. Each numbered episode has at most one pending variant;
@@ -214,10 +221,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   się go odróżnić. `interactive/prompts.py`
 - Paste uses `Keys.BracketedPaste` → `paste:`; the editor rejects control characters
   and masks secrets. Left/Right/Home/End move the text cursor in shared `TextInput`.
-  AnimeController owns explicit input focus: Enter activates the idle query; focused
+  AnimeController owns input focus: the first character or paste activates the idle query and
+  inserts its text; Enter and `/` also activate it. This implicit activation is query-only. Focused
   arrows edit, Enter submits, and Esc or unselected Ctrl+C blurs without clearing.
-  Selected Ctrl+C copies without blurring. Range/group prompts open
-  focused; a second Esc closes the blurred prompt. Panel derives arrow routing from
+  Selected Ctrl+C copies without blurring. Range/group prompts open focused. The catalogue episode
+  range closes on one Esc or unselected Ctrl+C without applying; legacy range/group prompts still
+  blur first and close on the second Esc. Panel derives arrow routing from
   that focus; Tab/Backtab always switch, preserving drafts but blurring inputs and
   invalidating late completions. Only focused fields render a caret or selection;
   the shared block caret highlights the existing grapheme, or one trailing space at
