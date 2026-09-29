@@ -1,7 +1,7 @@
 ---
 kind: specification
 status: do-akceptacji-właściciela
-updated: 2026-09-28
+updated: 2026-09-29
 baseline: 0e8a6bf9194d2786d426d3f3a58f48272b3eb087
 ---
 
@@ -129,7 +129,7 @@ Przepływ ścieżki ręcznej i subskrypcji (punkt odcięcia, cel, próba, dopusz
 
 - **R-01** Dla każdego wybranego odcinka aplikacja pyta Torrentio o kandydatów i ocenia każdego heurystyką tożsamości (U-03).
 - **R-02** Kandydaci `zgodni` są ułożeni według U-04, U-05, U-06 i U-23. Pierwszy jest sugestią.
-- **R-03** Sugestia jest pokazana przed zatwierdzeniem pobrania: odcinek, wydanie, rozdzielczość, deklarowany język (PL / MultiSub / inne), źródło (NF/CR, gdy podane), seedy, przybliżony rozmiar pliku, krótki powód wyboru.
+- **R-03** `I` z listy odcinków pokazuje wydania podświetlonego odcinka i oznaczoną sugestię: odcinek, wydanie, rozdzielczość, deklarowany język (PL / MultiSub / inne), źródło (NF/CR, gdy podane), seedy, przybliżony rozmiar pliku, krótki powód wyboru. Space/Enter wybiera jedno wydanie; `D` pobiera zaznaczone, a bez zaznaczenia — podświetlone, z potwierdzeniami R-04. Zwykłe `D` na liście odcinków nie wymaga podglądu; `P` zachowuje podgląd przed zleceniem (P-05). Decyzja właściciela 2026-09-29, plan E2 §8.1.
 - **R-04** „Inne wydania” pokazuje wszystkich kandydatów odcinka z oceną tożsamości i powodem. Użytkownik może wybrać innego `zgodnego` bez pytania, `niepewnego` po potwierdzeniu „To wydanie może nie być tym odcinkiem”, a `niezgodnego` po potwierdzeniu z powodem heurystyki („Heurystyka uznała to za inny materiał: …”). Automat nigdy nie wybiera `niezgodnego`; `niepewnego` bierze tylko wtedy, gdy nie ma `zgodnego` (U-03). Ręczny wybór `niezgodnego` istnieje, bo prototyp heurystyki z badania błędnie odrzucił 2 zgodne wydania na 231.
 - **R-05** Brak seedów lub rozmiaru pokazuje „?”, nie zero. Zero seedów nie wyklucza kandydata.
 - **R-06** Brak zgodnego kandydata, ale jest `niepewny`: sugestią jest najlepszy `niepewny` z oznaczeniem „Niepewne wydanie E6: może nie być tym odcinkiem”, a pobrany plik ma w Bibliotece oznaczenie „niepewne”. Brak `zgodnego` i `niepewnego`: „Brak wydania E6 (sprawdzono HH:MM; niezgodnych: m)”, a pobranie wymaga ręcznego wyboru z „Inne wydania”.
@@ -138,18 +138,18 @@ Przepływ ścieżki ręcznej i subskrypcji (punkt odcięcia, cel, próba, dopusz
 
 ### 5.3 Pobieranie jednorazowe
 
-- **P-01** Na liście odcinków: Spacja/Enter zaznacza odcinek, `A` zaznacza wszystkie wyemitowane zwykłe odcinki, `Z` pozwala wpisać listę i zakresy (`1,3,9-12`) albo „od N” (`5-`). Zaznaczenie 1 i 3 nie zamawia 2. Numery są całkowite — tak numerują odcinki ani.zip i harmonogram AniList; odcinki „.5” występują jako dodatki `S…` albo osobne wpisy.
-- **P-02** `D` otwiera podgląd pobrania (R-03) dla zaznaczonych odcinków. Enter na „Pobierz” zleca wszystkie odcinki z sugestią. Odcinki bez sugestii są wypisane jako niepobrane z powodem; nie blokują zlecenia reszty.
+- **P-01** Na liście odcinków: Spacja/Enter zaznacza odcinek, `A` przełącza wszystkie/żadne spośród wyemitowanych zwykłych odcinków uprawnionych do zwykłego pobrania, `Z` pozwala wpisać listę i zakresy (`1,3,9-12`) albo „od N” (`5-`). Zaznaczenie 1 i 3 nie zamawia 2. Numery są całkowite — tak numerują odcinki ani.zip i harmonogram AniList; odcinki „.5” występują jako dodatki `S…` albo osobne wpisy.
+- **P-02** `D` dobiera i zleca sugestie zaznaczonych odcinków, a bez zaznaczeń — podświetlonego, bez osobnego podglądu i drugiego Enter. Odcinki bez sugestii lub z błędem źródła są wypisane jako niezlecone z powodem; nie blokują zlecenia reszty. Sugestia `niepewna` jest dopuszczona według U-03/R-06. Decyzja właściciela 2026-09-29.
 - **P-03** Po zleceniu widok przechodzi do Przetwarzania i pokazuje zlecone odcinki (o ile użytkownik nie opuścił ekranu w trakcie).
 - **P-04** Zlecenie jest trwałe: przetrwa zamknięcie panelu, restart rezydenta i komputera.
-- **P-05** Odcinek zlecony, pobrany lub gotowy ma na liście swój stan i nie da się go zaznaczyć do zwykłego Pobierz. `P` („Pobierz ponownie”, E2) na podświetlonym odcinku po potwierdzeniu jednym wierszem pokazuje wybrane wydanie w podglądzie (R-03) przed pobraniem; zastępowane wydanie jest wyłączone z wyboru. Przyjęte wydanie `niepewne` zamienia się tylko w ten sposób, nigdy automatycznie (plan przepływu W-g). Ręczne zlecenie odcinka w trakcie subskrypcji rezerwuje jej cel (plan przepływu §3.6 przejścia 17–19).
+- **P-05** Odcinek zlecony, pobrany lub gotowy ma na liście swój stan i nie da się go zaznaczyć do zwykłego Pobierz. `P` („Pobierz ponownie”, E2) na podświetlonym odcinku po potwierdzeniu jednym wierszem pokazuje wybrane wydanie w podglądzie U04 (ux §6) przed pobraniem; zastępowane wydanie jest wyłączone z wyboru. Przyjęte wydanie `niepewne` zamienia się tylko w ten sposób, nigdy automatycznie (plan przepływu W-g). Ręczne zlecenie odcinka w trakcie subskrypcji rezerwuje jej cel (plan przepływu §3.6 przejścia 17–19).
 - **P-06** Kilka odcinków z tej samej paczki to jeden transfer w qBittorrencie. Dołożenie odcinka do pobieranej paczki dopisuje jego pliki do tego transferu.
 - **P-07** Odcinek przechodzi do przetwarzania, gdy wszystkie jego pliki są kompletne na dysku (qBittorrent zgłasza 100% i plik istnieje z oczekiwanym rozmiarem), niezależnie od pozostałych plików paczki. Próba subskrypcji przechodzi przed tłumaczeniem/TTS kontrolę po pobraniu H2, o ile H2 zostaje (plan przepływu §3.3 bramka przyjęcia, §5.4). Awaria włączonej H2 kończy tylko H2 wynikiem „niewykonana” (widocznym i zapisanym w rejestrze); przyjęcie nadal wymaga U-07/U-08 (bramka przyjęcia, plan przepływu §3.3, §3.6 przejścia 14–15).
 - **P-08** Pliki paczki, których nikt nie zamówił, a które qBittorrent zapisał przez wspólne kawałki, nie są przetwarzane automatycznie.
 
 ### 5.4 Subskrypcje
 
-- **S-01** Na liście odcinków wpisu spełniającego U-10 `O` otwiera szkic subskrypcji: tytuł, sezon, „od odcinka N” wyliczone z punktu odcięcia (U-09, bez edycji), co zostanie pobrane później, data następnej emisji, notka o wyemitowanych odcinkach spoza subskrypcji z podpowiedzią pobrania ręcznego. Enter na „Dodaj subskrypcję” zapisuje.
+- **S-01** Na liście odcinków wpisu spełniającego U-10 `S` w E3 otwiera szkic subskrypcji: tytuł, sezon, „od odcinka N” wyliczone z punktu odcięcia (U-09, bez edycji), co zostanie pobrane później, data następnej emisji, notka o wyemitowanych odcinkach spoza subskrypcji z podpowiedzią pobrania ręcznego. Enter na „Dodaj subskrypcję” zapisuje. W E2 `S` jest nieaktywne i pokazuje „Subskrypcje: wróć do tytułów i użyj G”; stare `O` pod `G` pozostaje dostępne. Decyzja właściciela 2026-09-29.
 - **S-02** Usunięte (plan przepływu §7): wyemitowane odcinki nie są zlecane przez subskrypcję; pobiera się je ręcznie (§5.3). Cele subskrypcji są szukane po emisji (U-14, U-15).
 - **S-03** Zakładka Subskrypcje pokazuje wszystkie aktywne subskrypcje w kolejności: najpierw wpisy z problemem, potem według najbliższej emisji, wpisy bez terminu i wstrzymane na końcu; remis alfabetycznie. Kolejność zmienia się tylko po emisji odcinka albo zmianie stanu, nie co sekundę. Wiersz: tytuł i sezon, zakres („od 5”, wyliczony), `Pobrano x/y` (y = liczba celów albo `?`), `Gotowe z`, oraz jedno z: odliczanie do emisji następnego odcinka, „Czeka na wydanie E6 (od 2 dni)”, „Kontrola E6”, „Termin nieznany”, „Przerwa w emisji”, „Wstrzymana”, opis problemu (np. „E6: wyczerpano próby (3 z 3)”).
 - **S-04** Nad listą jest widoczna akcja „Dodaj subskrypcję”. Otwiera wyszukiwarkę Anime; Esc wraca do listy; po dodaniu widok wraca do listy z nowym wpisem podświetlonym.
