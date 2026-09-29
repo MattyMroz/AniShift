@@ -68,6 +68,7 @@ __all__ = [
     "ReleaseCatalog",
     "ReleaseChoice",
     "SeasonContext",
+    "SelectiveTorrentClient",
     "SeriesGroup",
     "StreamSource",
     "TitleCatalog",
@@ -273,6 +274,20 @@ class TorrentManagement(Protocol):
 
     def close(self) -> None:
         """Release process management resources."""
+        ...
+
+
+class SelectiveTorrentClient(TorrentClient, Protocol):
+    """Metadata-only admission and verified selection supported by a managed private client."""
+
+    def add_metadata(self, info_hash: str, *, trackers: tuple[str, ...] = (), save_path: Path, category: str) -> None:
+        """Fetch metadata of a recorded new hash and stop before downloading its content."""
+        ...
+
+    def select_files(
+        self, info_hash: str, files: tuple[TorrentFile, ...], selected: frozenset[int], *, save_path: Path
+    ) -> tuple[TorrentFile, ...]:
+        """Apply the saved union to a stopped owned transfer and verify it without resuming."""
         ...
 
 

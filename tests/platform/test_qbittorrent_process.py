@@ -405,7 +405,8 @@ def test_private_clients_download_concurrently_reconnect_and_stop_independently(
                 "Session\\LSDEnabled=false\n"
                 "Session\\PeXEnabled=false\n"
                 "[Preferences]\n"
-                "Connection\\UPnP=false\n",
+                "Connection\\UPnP=false\n"
+                "Advanced\\updateCheck=false\n",
                 encoding="utf-8",
             )
         first: ManagedQBittorrent = ManagedQBittorrent(tmp_path / "first", http=http)

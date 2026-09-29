@@ -191,6 +191,15 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   przyjętego transferu blokują Auto w jego katalogu do odczytania metadanych. Po `COMPLETE`
   właściciel zleca zwykłą inspekcję plików; gdy brak `ACCEPTED`, nie odpytuje klienta.
   `transfers.py`, `automation.py`
+- Selective metadata helpers in `transfers.py` use a unique exact video basename before H1 on
+  original full paths; source `fileIdx` never selects a file. No unique match returns an empty
+  selection for U05. Sidecars require the exact directory and stem. `file_map_revision` excludes
+  progress/priorities, validates unique Windows paths/indexes, and `selection_union` checks every
+  index/path/size against that map. Persist the union and revision before calling the manager.
+- `acquisition_staging.py` derives `temp/.acquisition/<operation_id>/data` from the supplied workspace;
+  it creates no run marker. Validate Windows paths and ancestors from the supplied directory downward
+  for links before filesystem I/O; junctions above the workspace are outside that boundary.
+  F2 helpers do not admit work, start content or publish files; lifecycle integration belongs to the owner.
 - `ProcessingRequest` zachowuje pełny niejawny dla UI `RunSettingsSnapshot`, wybrane
   `GroupIntent` i `RebuildRequest`. Zagnieżdżone listy ustawień z JSON wracają do krotek;
   nazwy pól zawierające segment sekretu są odrzucane. Stare zlecenia bez `intents` nadal

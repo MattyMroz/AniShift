@@ -2,27 +2,41 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Final
 
+from anishift.application.acquisition_staging import torrent_relative_path
 from anishift.application.control import AcquisitionState
+from anishift.application.discovery import SOURCE_SUBTITLE_FORMATS, VIDEO_SOURCE_SUFFIXES
+from anishift.application.episode_identity import IdentityVerdict, classify
 from anishift.application.events import failure_code, sanitize_event_message
+from anishift.application.products import PRODUCT_SUFFIXES
 from anishift.errors import AniShiftError
 from anishift.platform.directory_watch import source_is_available
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from anishift.application.acquisition import AcquisitionService
-    from anishift.application.control import AcquisitionConfirmation
+    from anishift.application.control import AcquisitionConfirmation, TorrentioReference
     from anishift.services.torrents import TorrentFile, TorrentInfo
 
-__all__ = ["TransferInspector", "flat_layout", "reserved_stem"]
+__all__ = [
+    "TransferInspector",
+    "episode_files",
+    "file_map_revision",
+    "flat_layout",
+    "reserved_stem",
+    "selection_union",
+    "video_sidecars",
+]
 
 logger = get_logger(__name__)
 
@@ -255,6 +269,82 @@ class TransferInspector:
 def reserved_stem(name: str) -> str:
     """Return the comparable core of one flat name, so a video and its sidecars share one reservation."""
     return Path(name.replace("\\", "/")).stem.casefold()
+
+
+def file_map_revision(files: Sequence[TorrentFile]) -> str:
+    """Identify a unique safe metadata map independently of progress and priorities."""
+    identities: list[tuple[int, str, int]] = sorted((item.index, item.name, item.size) for item in files)
+    paths: list[str] = [str(torrent_relative_path(name)).casefold() for _index, name, _size in identities]
+    if len({item.index for item in files}) != len(files) or len(set(paths)) != len(paths):
+        msg = "A torrent file map requires unique indexes and Windows paths"
+        raise ValueError(msg)
+    return hashlib.sha256(json.dumps(identities, ensure_ascii=True).encode()).hexdigest()
+
+
+def episode_files(
+    files: Sequence[TorrentFile], reference: TorrentioReference, target: Mapping[str, object], release: str
+) -> tuple[TorrentFile, ...]:
+    """Select one uniquely named video, otherwise one decisive H1 match, with its exact sidecars."""
+    file_map_revision(files)
+    videos: tuple[TorrentFile, ...] = tuple(
+        item for item in files if torrent_relative_path(item.name).suffix.casefold() in VIDEO_SOURCE_SUFFIXES
+    )
+    named: tuple[TorrentFile, ...] = tuple(
+        item for item in videos if torrent_relative_path(item.name).name == reference.file_name
+    )
+    if len(named) == 1:
+        return video_sidecars(files, named[0])
+    matched: tuple[TorrentFile, ...] = tuple(
+        item
+        for item in videos
+        if classify(
+            target,
+            {
+                "release": release,
+                "path": item.name,
+                "filename": torrent_relative_path(item.name).name,
+            },
+        ).verdict
+        is IdentityVerdict.MATCH
+    )
+    return video_sidecars(files, matched[0]) if len(matched) == 1 else ()
+
+
+def video_sidecars(files: Sequence[TorrentFile], video: TorrentFile) -> tuple[TorrentFile, ...]:
+    """Bind an exact video identity and only supported same-directory, same-stem sidecars."""
+    file_map_revision(files)
+    path: PurePosixPath = torrent_relative_path(video.name)
+    if path.suffix.casefold() not in VIDEO_SOURCE_SUFFIXES or not any(
+        (item.index, item.name, item.size) == (video.index, video.name, video.size) for item in files
+    ):
+        msg = "The selected video is not in the current file map"
+        raise ValueError(msg)
+    suffixes: frozenset[str] = frozenset(SOURCE_SUBTITLE_FORMATS) | frozenset(
+        item.suffix for item in PRODUCT_SUFFIXES if item.audio_profile is not None
+    )
+    return tuple(
+        item
+        for item in files
+        if item.index == video.index
+        or (
+            torrent_relative_path(item.name).parent == path.parent
+            and torrent_relative_path(item.name).stem == path.stem
+            and torrent_relative_path(item.name).suffix.casefold() in suffixes
+        )
+    )
+
+
+def selection_union(files: Sequence[TorrentFile], selections: Sequence[Sequence[TorrentFile]]) -> frozenset[int]:
+    """Combine admitted episode sets without letting a stale file identity select another path."""
+    file_map_revision(files)
+    identities: set[tuple[int, str, int]] = {(item.index, item.name, item.size) for item in files}
+    selected: set[tuple[int, str, int]] = {
+        (item.index, item.name, item.size) for selection in selections for item in selection
+    }
+    if not selected <= identities:
+        msg = "The selection no longer matches the torrent file map"
+        raise ValueError(msg)
+    return frozenset(index for index, _name, _size in selected)
 
 
 def flat_layout(files: Sequence[TorrentFile], reserved: frozenset[str]) -> tuple[tuple[int, str, int], ...]:

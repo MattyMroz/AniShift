@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from enum import StrEnum
 from http import HTTPStatus
+from ipaddress import ip_address
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final
+from urllib.parse import SplitResult, urlencode, urlsplit
 
 import httpx
 from pydantic import TypeAdapter, ValidationError
@@ -18,7 +21,7 @@ from anishift.services.torrents.errors import TorrentClientError
 from anishift.services.torrents.types import TorrentFile, TorrentInfo
 from anishift.utils.logger import get_logger
 
-__all__ = ["QBittorrentClient"]
+__all__ = ["QBittorrentClient", "magnet_url"]
 
 logger = get_logger(__name__)
 
@@ -114,6 +117,43 @@ class QBittorrentClient:
         data: dict[str, str] = {"urls": torrent_url, "savepath": str(save_path), "category": category}
         if stopped:
             data.update(_STOPPED_ON_ADD)
+        self._add(data)
+
+    def add_metadata(self, info_hash: str, *, trackers: tuple[str, ...] = (), save_path: Path, category: str) -> None:
+        """Fetch magnet metadata and stop before content using the explicit metadata stop condition."""
+        self._add(
+            {
+                "urls": magnet_url(info_hash, trackers),
+                "savepath": str(save_path),
+                "category": category,
+                "stopped": "false",
+                "stopCondition": "MetadataReceived",
+                "autoTMM": "false",
+                "contentLayout": "Original",
+                "useDownloadPath": "false",
+            }
+        )
+
+    def set_file_priority(self, info_hash: str, indexes: frozenset[int], priority: int) -> None:
+        """Set one explicit group of file indexes to omitted or normal priority."""
+        if (
+            not indexes
+            or any(type(index) is not int or index < 0 for index in indexes)
+            or type(priority) is not int
+            or priority not in {0, 1}
+        ):
+            raise self._refused(_Refusal.REQUEST)
+        self._request(
+            "POST",
+            "/torrents/filePrio",
+            data={
+                "hash": info_hash,
+                "id": "|".join(str(index) for index in sorted(indexes)),
+                "priority": str(priority),
+            },
+        )
+
+    def _add(self, data: Mapping[str, str]) -> None:
         response: httpx.Response = self._request("POST", "/torrents/add", data=data, accept_errors=True)
         if not _torrent_accepted(response):
             raise TorrentClientError(
@@ -124,7 +164,7 @@ class QBittorrentClient:
                     details={"operation": "qbittorrent_add", "status": response.status_code},
                 )
             )
-        logger.info("Added a torrent to qBittorrent", category=category)
+        logger.info("Added a torrent to qBittorrent", category=data["category"])
 
     def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
         """Return the torrents the client tracks under *category*."""
@@ -271,16 +311,20 @@ class QBittorrentClient:
 
 
 def _torrent_accepted(response: httpx.Response) -> bool:
-    """Whether ``torrents/add`` took the torrent: ``Ok.`` before Web API 2.11, else a 202 report without failures."""
-    if response.status_code == HTTPStatus.OK:
-        return response.text.strip() == OK_BODY
-    if response.status_code != HTTPStatus.ACCEPTED:
+    """Accept legacy ``Ok.`` or a successful immediate or pending Web API report."""
+    if response.status_code == HTTPStatus.OK and response.text.strip() == OK_BODY:
+        return True
+    if response.status_code not in {HTTPStatus.OK, HTTPStatus.ACCEPTED}:
         return False
     try:
         report: object = response.json()
     except ValueError:
         return False
-    return isinstance(report, dict) and report.get("failure_count") == 0
+    if not isinstance(report, dict) or _nonnegative_integer(report.get("failure_count")) != 0:
+        return False
+    success: int | None = _nonnegative_integer(report.get("success_count", 0))
+    pending: int | None = _nonnegative_integer(report.get("pending_count", 0))
+    return success is not None and pending is not None and success + pending >= 1
 
 
 def _torrent_info(entry: Mapping[str, object]) -> TorrentInfo:
@@ -298,3 +342,43 @@ def _torrent_info(entry: Mapping[str, object]) -> TorrentInfo:
 
 def _nonnegative_integer(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def magnet_url(info_hash: str, trackers: tuple[str, ...] = ()) -> str:
+    """Encode a v1 magnet with only public, credential-free tracker addresses."""
+    if re.fullmatch(r"[0-9a-fA-F]{40}", info_hash) is None:
+        msg = "A magnet requires a hexadecimal v1 info hash"
+        raise ValueError(msg)
+    fields: list[tuple[str, str]] = [("xt", f"urn:btih:{info_hash.casefold()}")]
+    for tracker in dict.fromkeys(trackers):
+        if not _public_tracker(tracker):
+            msg = "A magnet tracker must be a public address without credentials or query parameters"
+            raise ValueError(msg)
+        fields.append(("tr", tracker))
+    return "magnet:?" + urlencode(fields)
+
+
+def _public_tracker(value: str) -> bool:
+    if not value.isprintable() or any(character.isspace() for character in value) or "\\" in value:
+        return False
+    try:
+        parts: SplitResult = urlsplit(value)
+        host: str = parts.hostname or ""
+        port: int | None = parts.port
+    except ValueError:
+        return False
+    if (
+        parts.scheme not in {"http", "https", "udp"}
+        or not host
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+    ):
+        return False
+    if port == 0 or host.endswith((".localhost", ".local", ".internal")) or "." not in host:
+        return False
+    try:
+        return ip_address(host).is_global
+    except ValueError:
+        return re.fullmatch(r"[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.[a-zA-Z]+", host) is not None

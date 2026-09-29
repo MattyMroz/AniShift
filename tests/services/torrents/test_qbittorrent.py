@@ -10,7 +10,7 @@ import pytest
 
 from anishift.errors import ErrorCode
 from anishift.services.torrents.errors import TorrentClientError
-from anishift.services.torrents.qbittorrent import QBittorrentClient
+from anishift.services.torrents.qbittorrent import QBittorrentClient, magnet_url
 from anishift.services.torrents.types import TorrentFile, TorrentInfo
 
 BASE_URL = "http://127.0.0.1:8080"
@@ -330,3 +330,125 @@ def test_torrents_rejects_an_unreadable_payload() -> None:
         client.torrents("AniShift")
 
     assert error.value.context.code is ErrorCode.TORRENT_CLIENT_REFUSED
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", [200, 202])
+def test_metadata_add_sends_exact_stop_condition_and_never_starts_content(status: int) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(status, json={"failure_count": 0, "pending_count": 1})
+
+    client, http = _client(handler)
+    with http:
+        client.add_metadata("A" * 40, save_path=Path("staging/data"), category="AniShift")
+    assert len(seen) == 1
+    assert seen[0].url.path == "/api/v2/torrents/add"
+    assert _form(seen[0]) == {
+        "urls": [magnet_url("a" * 40)],
+        "savepath": [str(Path("staging/data"))],
+        "category": ["AniShift"],
+        "stopped": ["false"],
+        "stopCondition": ["MetadataReceived"],
+        "autoTMM": ["false"],
+        "contentLayout": ["Original"],
+        "useDownloadPath": ["false"],
+    }
+
+
+@pytest.mark.unit
+def test_priority_request_uses_actual_indexes_and_form_fields() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200)
+
+    client, http = _client(handler)
+    with http:
+        client.set_file_priority("a" * 40, frozenset({0, 3, 9}), 0)
+        client.set_file_priority("a" * 40, frozenset({3, 9}), 1)
+    assert [_form(item) for item in seen] == [
+        {"hash": ["a" * 40], "id": ["0|3|9"], "priority": ["0"]},
+        {"hash": ["a" * 40], "id": ["3|9"], "priority": ["1"]},
+    ]
+    assert all(item.url.path == "/api/v2/torrents/filePrio" for item in seen)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "tracker",
+    [
+        "http://localhost/announce",
+        "udp://127.0.0.1:123/announce",
+        "http://192.168.0.1/announce",
+        "https://user:password@example.org/announce",
+        "https://example.org/announce?token=secret",
+        "https://example.org/announce#secret",
+        "file:///announce",
+        "https://example.org/\nannounce",
+    ],
+)
+def test_magnet_refuses_nonpublic_or_credential_bearing_trackers(tracker: str) -> None:
+    with pytest.raises(ValueError, match="public address"):
+        magnet_url("a" * 40, (tracker,))
+
+
+@pytest.mark.unit
+def test_magnet_encodes_trackers_and_rejects_hash_injection() -> None:
+    tracker: str = "udp://tracker.example.org:6969/announce"
+    assert parse_qs(magnet_url("A" * 40, (tracker, tracker)).split("?", 1)[1]) == {
+        "xt": ["urn:btih:" + "a" * 40],
+        "tr": [tracker],
+    }
+    with pytest.raises(ValueError, match="hexadecimal v1 info hash"):
+        magnet_url("a" * 40 + "&tr=evil")
+
+
+@pytest.mark.unit
+def test_legacy_stopped_add_keeps_both_flags_without_metadata_stop_condition() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, text="Ok.")
+
+    client, http = _client(handler)
+    with http:
+        client.add_torrent("https://example.org/1.torrent", save_path=Path("legacy"), category="AniShift", stopped=True)
+    assert _form(seen[0]) == {
+        "urls": ["https://example.org/1.torrent"],
+        "savepath": ["legacy"],
+        "category": ["AniShift"],
+        "stopped": ["true"],
+        "paused": ["true"],
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("host", ["127.1", "0x7f.1", "0177.1", "tracker.123"])
+def test_tracker_host_rejects_noncanonical_numeric_addresses(host: str) -> None:
+    with pytest.raises(ValueError, match="public address"):
+        magnet_url("a" * 40, (f"http://{host}/announce",))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "report",
+    [
+        {"failure_count": 0},
+        {"failure_count": 0, "success_count": 0, "pending_count": 0},
+        {"failure_count": 0, "success_count": True},
+        {"failure_count": 0, "pending_count": -1},
+        {"failure_count": False, "success_count": 1},
+    ],
+)
+def test_add_report_requires_at_least_one_real_accepted_or_pending_torrent(report: dict[str, object]) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=report)
+
+    client, http = _client(handler)
+    with http, pytest.raises(TorrentClientError):
+        client.add_metadata("a" * 40, save_path=Path("staging"), category="AniShift")

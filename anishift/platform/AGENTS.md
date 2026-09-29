@@ -13,6 +13,12 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 - `ManagedQBittorrent.released_hashes()` reads and validates only the existing `process.json`.
   Do not replace it with `_load()`: that path can initialize the profile and change ACLs.
   New download admission invalidates the matching release receipt.
+- Metadata admission refuses existing client entries and requires persisted hash ownership;
+  `download_scope` refuses to claim a foreign hash already present in the private client.
+  `select_files` serializes a complete saved union under the manager lock, requires stopped state
+  and the expected staging path/map, reads back all-zero then selected priorities, and never resumes.
+  Validate a nonempty matching file map before attempting stop, so premature selection cannot halt metadata acquisition.
+  The owner remains responsible for durable revisions and refusing stale workers before this boundary.
 - `recycle.py` runs bounded native workers. `restore_worker.py` resolves the exact saved receipt
   inside the virtual Recycle Bin, moves it through Shell to recorded same-volume staging and
   publishes by checked file handle without replacement. Keep parent/path/identity guards;

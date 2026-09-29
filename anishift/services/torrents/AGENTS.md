@@ -50,6 +50,11 @@ te decyzje należą do warstwy aplikacyjnej.
 - qBittorrent: 403 wywołuje jednorazowy `auth/login` i jedno ponowienie; drugi 403 lub `Fails.`
   to `TORRENT_CLIENT_UNAUTHORIZED`, brak połączenia to `TORRENT_CLIENT_UNAVAILABLE`.
 - Hasło klienta nie trafia do logów ani do `ErrorContext.details`.
+- `add_metadata` uses `MetadataReceived`, `stopped=false`, `autoTMM=false`, original layout and
+  no download path. Keep legacy stopped-add semantics separate. qB 5.2.3 can return successful
+  add reports as JSON with HTTP 200 as well as 202; legacy `Ok.` remains accepted.
+- Magnets use encoded v1 hashes and credential-free public tracker URLs. Query-bearing trackers
+  are refused rather than retaining possible credentials. Never copy pilot SSRF preferences into runtime.
 - `TorrentInfo.amount_left` jest `None`, gdy brak poprawnej liczby bajtów; brak pola nie
   oznacza zera. `files()` waliduje typy i zakresy metadanych przed użyciem ich jako dowodu
   kompletności. Priorytet pliku `0` oznacza pominięcie. `qbittorrent.py`, `types.py`

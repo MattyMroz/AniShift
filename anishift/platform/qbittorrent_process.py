@@ -102,6 +102,16 @@ class ManagedQBittorrent:
         """Persist ownership of the ordered hashes before sending any download."""
         with self._lock:
             state: _ProcessState = self._load()
+            hashes = frozenset(value.casefold() for value in hashes)
+            if self._matches_process(state):
+                client: QBittorrentClient = self._required_client()
+                self._assert_ownership(client)
+                foreign: frozenset[str] = (
+                    frozenset(item.info_hash.casefold() for item in client.all_torrents()) - state.hashes
+                )
+                if foreign & hashes:
+                    message: str = "A requested hash is already present without a managed admission"
+                    raise _unavailable(message)
             self._save(
                 replace(
                     state,
@@ -161,9 +171,79 @@ class ManagedQBittorrent:
     def rename_file(self, info_hash: str, old_path: str, new_path: str) -> None:
         """Reserve one destination name in a private transfer that owns the file."""
         with self._lock:
+            self._assert_hash(info_hash)
             client: QBittorrentClient = self._required_client()
             self._assert_ownership(client)
             client.rename_file(info_hash, old_path, new_path)
+
+    def add_metadata(self, info_hash: str, *, trackers: tuple[str, ...] = (), save_path: Path, category: str) -> None:
+        """Submit an owned new hash for metadata only, refusing any existing client entry."""
+        with self._lock:
+            self._assert_hash(info_hash)
+            client: QBittorrentClient = self._required_client()
+            self._assert_ownership(client)
+            if any(item.info_hash.casefold() == info_hash.casefold() for item in client.all_torrents()):
+                message: str = "The transfer already exists and requires reconciliation before metadata admission"
+                raise _unavailable(message)
+            client.add_metadata(info_hash, trackers=trackers, save_path=save_path, category=category)
+
+    def select_files(
+        self, info_hash: str, files: tuple[TorrentFile, ...], selected: frozenset[int], *, save_path: Path
+    ) -> tuple[TorrentFile, ...]:
+        """Apply a complete selection to a stopped owned transfer and return verified readback without starting it."""
+        with self._lock:
+            self._assert_hash(info_hash)
+            client: QBittorrentClient = self._required_client()
+            self._assert_ownership(client)
+            observed: tuple[TorrentFile, ...] = client.files(info_hash)
+            expected: tuple[tuple[int, str, int], ...] = _file_identities(files)
+            indexes: frozenset[int] = frozenset(item.index for item in files)
+            if (
+                not files
+                or len(indexes) != len(files)
+                or not selected <= indexes
+                or _file_identities(observed) != expected
+            ):
+                message: str = "The selected file map changed; refresh metadata before selecting files"
+                raise _unavailable(message)
+            self._assert_stopped(client, info_hash, save_path)
+            self._assert_ownership(client)
+            client.set_file_priority(info_hash, indexes, 0)
+            zero: tuple[TorrentFile, ...] = client.files(info_hash)
+            if _file_identities(zero) != expected or any(item.priority != 0 for item in zero):
+                message = "The client did not confirm the omitted file priorities"
+                raise _unavailable(message)
+            if selected:
+                self._assert_ownership(client)
+                self._assert_stopped(client, info_hash, save_path)
+                client.set_file_priority(info_hash, selected, 1)
+            result: tuple[TorrentFile, ...] = client.files(info_hash)
+            self._assert_stopped(client, info_hash, save_path)
+            if _file_identities(result) != expected or any(
+                item.priority != int(item.index in selected) for item in result
+            ):
+                message = "The client did not confirm the requested file priorities"
+                raise _unavailable(message)
+            logger.info("Verified selective torrent priorities", selected_files=len(selected), total_files=len(files))
+            return result
+
+    def _assert_hash(self, info_hash: str) -> None:
+        if info_hash.casefold() not in self._load().hashes:
+            message: str = "The transfer is not managed by AniShift"
+            raise _unavailable(message)
+
+    def _assert_stopped(self, client: QBittorrentClient, info_hash: str, save_path: Path) -> None:
+        entries: tuple[TorrentInfo, ...] = tuple(
+            item for item in client.all_torrents() if item.info_hash.casefold() == info_hash.casefold()
+        )
+        if len(entries) != 1 or Path(entries[0].save_path).resolve() != save_path.resolve():
+            message: str = "The transfer staging location could not be confirmed"
+            raise _unavailable(message)
+        if entries[0].state not in {"stoppedDL", "stoppedUP", "pausedDL", "pausedUP"}:
+            self._assert_ownership(client)
+            client.stop(info_hash)
+            message = "The transfer must be confirmed stopped before file selection"
+            raise _unavailable(message)
 
     def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
         """Read managed transfers, restoring a previously active private process if needed."""
@@ -499,6 +579,10 @@ def _unavailable(message: str) -> TorrentClientError:
             suggestion="Open AniShift State and retry after resolving the torrent client problem",
         )
     )
+
+
+def _file_identities(files: tuple[TorrentFile, ...]) -> tuple[tuple[int, str, int], ...]:
+    return tuple(sorted((item.index, item.name, item.size) for item in files))
 
 
 def _protect_profile(root: Path) -> None:
