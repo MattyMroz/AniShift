@@ -155,6 +155,62 @@ def test_external_save_directory_is_not_treated_as_a_library_transfer(tmp_path: 
     assert acquisition.file_calls == 0
 
 
+@pytest.mark.parametrize("directory", ["Mushoku Tensei", "../Outside", "../Sibling/Mushoku Tensei"])
+def test_legacy_transfer_preserves_directory_case_and_rejects_escaped_roots(tmp_path: Path, directory: str) -> None:
+    root: Path = tmp_path / "Workspace"
+    target: Path = root / directory
+    target.mkdir(parents=True)
+    (target / "Episode.mkv").write_bytes(b"data")
+    acquisition: _Acquisition = _Acquisition(target)
+
+    result: AcquisitionConfirmation = TransferInspector(acquisition, root).inspect((_confirmation(),))[0]
+
+    if directory == "Mushoku Tensei":
+        assert result.directory == directory
+        assert result.state is AcquisitionState.COMPLETE
+    else:
+        assert result.state is AcquisitionState.UNCERTAIN
+        assert acquisition.file_calls == 0
+
+
+def test_windows_root_comparison_ignores_case_without_lowercasing_the_directory(tmp_path: Path) -> None:
+    root: Path = tmp_path / "Workspace"
+    target: Path = root / "Mushoku Tensei"
+    target.mkdir(parents=True)
+    (target / "Episode.mkv").write_bytes(b"data")
+    acquisition: _Acquisition = _Acquisition(target)
+
+    result: AcquisitionConfirmation = TransferInspector(acquisition, Path(str(root).swapcase())).inspect(
+        (_confirmation(),)
+    )[0]
+
+    assert result.state is AcquisitionState.COMPLETE
+    assert result.directory == "Mushoku Tensei"
+
+
+@pytest.mark.parametrize("extended", [False, True])
+def test_transfer_paths_ignore_resolve_prefix_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, extended: bool
+) -> None:
+    directory: Path = tmp_path / "temp" / ".acquisition" / "operation" / "data"
+    directory.mkdir(parents=True)
+    (directory / "Episode.mkv").write_bytes(b"data")
+    acquisition: _Acquisition = _Acquisition(directory)
+    assert acquisition.info is not None
+    if extended:
+        acquisition.info = replace(acquisition.info, save_path="\\\\?\\" + str(directory))
+
+    def forbidden_resolve(path: Path, *, strict: bool = False) -> Path:
+        raise AssertionError("Transfer containment must not resolve filesystem paths")
+
+    monkeypatch.setattr(Path, "resolve", forbidden_resolve)
+    result: AcquisitionConfirmation = TransferInspector(acquisition, tmp_path).inspect((_confirmation(),))[0]
+
+    assert result.state is AcquisitionState.COMPLETE
+    assert result.directory == "temp/.acquisition/operation/data"
+    assert result.complete_files == ("Episode.mkv",)
+
+
 def test_file_details_follow_progress_and_are_reused_while_it_stands_still(tmp_path: Path) -> None:
     (tmp_path / "Episode.mkv").write_bytes(b"data")
     acquisition: _Acquisition = _Acquisition(tmp_path)

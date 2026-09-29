@@ -26,7 +26,18 @@ from anishift.application.acquisition import (
     ReleaseChoice,
     SeasonContext,
 )
-from anishift.application.acquisition_staging import staging_path, torrent_relative_path
+from anishift.application.acquisition_staging import (
+    SetPublication,
+    clean_staging,
+    copy_staged,
+    lexical_path,
+    publication_path,
+    publish_set,
+    published_copy,
+    staged_file,
+    staging_path,
+    torrent_relative_path,
+)
 from anishift.application.artifacts import ArtifactKind, ArtifactLifetime, ArtifactState, create_group_id
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.control import (
@@ -40,6 +51,7 @@ from anishift.application.control import (
     DeletionStatus,
     EpisodeAssignment,
     EpisodeChoice,
+    EpisodePublication,
     LegacyScope,
     ManualHandledMarker,
     PendingDeletion,
@@ -47,6 +59,7 @@ from anishift.application.control import (
     ProcessingRequest,
     ProductConfirmation,
     ProviderLock,
+    PublishedFile,
     ReadyGroup,
     RecipePreferences,
     RefusalReason,
@@ -123,6 +136,7 @@ from anishift.application.transfers import (
     episode_files,
     file_map_revision,
     flat_layout,
+    flat_names,
     reserved_stem,
     video_sidecars,
 )
@@ -347,6 +361,9 @@ _SEND_CHECKS: Final[int] = 5
 
 _METADATA_STOPPED: Final[str] = "This download was stopped before its file list arrived and cannot resume safely"
 """Problem recorded when resuming a transfer without metadata would let the client fetch every file."""
+
+_CLEANUP_FAILED: Final[str] = "The download staging could not be cleaned; it is retried after a restart"
+"""Problem recorded on a released selective transfer whose own staging is still left."""
 
 _NO_SUBSCRIPTIONS: Final[str] = "This resident was composed without a torrent client"
 """Reason returned for a subscription command with no subscription service behind it."""
@@ -844,6 +861,10 @@ class AutomationOwner:
         self._active_io -= 1
         if problem is not None:
             self._transfers_problem = problem
+        uncleaned: tuple[AcquisitionConfirmation, ...] = self._uncleaned(retry=True)
+        if problem is None and uncleaned and not self._shutting_down:
+            self._active_io += 1
+            self._pool.submit(self._release_completed, frozenset(item.info_hash for item in uncleaned), uncleaned)
         self._publish_state()
 
     def _loop(self) -> None:
@@ -1136,6 +1157,16 @@ class AutomationOwner:
 
     def _file_origin(self, group: InspectedSourceGroup) -> RequestOrigin | None:
         paths: set[Path | None] = {artifact.path for artifact in group.artifacts}
+        for acquisition in reversed(self._state.acquisitions):
+            for assignment in acquisition.assignments:
+                publication: EpisodePublication | None = assignment.publication
+                if publication is not None and any(
+                    self._service.workspace_root / item.name in paths for item in publication.files
+                ):
+                    complete: bool = publication.handed_off and all(
+                        self._service.workspace_root / item.name in paths for item in publication.files
+                    )
+                    return acquisition.origin if complete else None
         for acquisition in reversed(self._state.acquisitions):
             directory: Path = self._service.workspace_root / acquisition.directory
             owned: frozenset[str] = frozenset(
@@ -3857,19 +3888,48 @@ class AutomationOwner:
         transfer: AcquisitionConfirmation
         assignment: EpisodeAssignment
         transfer, assignment = matches[-1]
-        state: str = "downloaded" if transfer.state is AcquisitionState.COMPLETE else "ordered"
-        reason: str | None = transfer.problem
-        if not self._replacement_ready(transfer):
+        uncertain: bool = assignment.choice.verdict is not IdentityVerdict.MATCH
+        if _handed_off(assignment):
+            return self._handed_off_status(key, transfer, assignment, uncertain=uncertain)
+        state: str = "ordered"
+        if transfer.content_started and _selection_confirmed(transfer):
+            state = "downloading"
+        reason: str | None = "transfer_failed" if transfer.problem is not None else None
+        complete: frozenset[str] = frozenset(transfer.complete_files)
+        if assignment.files and all(path in complete for _index, path, _size in assignment.files):
+            state = "downloaded"
+            if assignment.publication is not None and assignment.publication.problem is not None:
+                reason = "publication_failed"
+        elif not self._replacement_ready(transfer):
             reason = "waiting_previous_transfer"
         if assignment.mapped and not assignment.files:
             reason = "episode_file_unresolved"
+        return EpisodeStatus(key, state, reason, assignment.admission_id, transfer.operation_id, uncertain)
+
+    def _handed_off_status(
+        self, key: EpisodeKey, transfer: AcquisitionConfirmation, assignment: EpisodeAssignment, *, uncertain: bool
+    ) -> EpisodeStatus:
+        """Project a handed-off episode through its processing request and ready result, never a guess."""
+        publication: EpisodePublication | None = assignment.publication
+        names: frozenset[str] = frozenset(() if publication is None else (item.name for item in publication.files))
+        group_id: str | None = _published_group(names)
+        if any(item.set_id == group_id for item in self._state.ready_groups):
+            return EpisodeStatus(
+                key, "ready", None, assignment.admission_id, transfer.operation_id, uncertain, group_id
+            )
+        request: ProcessingRequest | None = next(
+            (item for item in reversed(self._state.requests) if group_id in item.group_ids), None
+        )
+        if request is None:
+            return EpisodeStatus(key, "downloaded", None, assignment.admission_id, transfer.operation_id, uncertain)
+        failed: bool = request.state in {RequestState.FAILED, RequestState.PARTIAL, RequestState.CANCELLED}
         return EpisodeStatus(
             key,
-            state,
-            reason,
+            "processing_failed" if failed else "processing",
+            None,
             assignment.admission_id,
             transfer.operation_id,
-            assignment.choice.verdict is not IdentityVerdict.MATCH,
+            uncertain,
         )
 
     def _episode_assignments(self, key: EpisodeKey) -> tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...]:
@@ -4500,6 +4560,7 @@ class AutomationOwner:
                             for before, after in zip(acquisitions, results, strict=True)
                         )
                         results = self._settle_layouts(acquisition, results, reserved)
+                    self._publish_episodes(results)
         except Exception as problem:  # noqa: BLE001
             failure = sanitize_event_message(str(problem))
             nature = (type(problem).__name__, failure_code(problem))
@@ -4682,9 +4743,15 @@ class AutomationOwner:
         stopped: bool = observed in _SELECTABLE_STATES
         try:
             current: AcquisitionConfirmation | None = item
-            if not all(assignment.mapped for assignment in item.active_assignments):
+            if not item.manifest or not all(assignment.mapped for assignment in item.active_assignments):
                 current = self._owned(
-                    partial(self._record_mapping, item, file_map_revision(files), _episode_bindings(item, files))
+                    partial(
+                        self._record_mapping,
+                        item,
+                        file_map_revision(files),
+                        _episode_bindings(item, files),
+                        tuple(torrent_relative_path(entry.name).as_posix() for entry in files),
+                    )
                 )
             if current is not None and current.applied_revision < current.selection_revision:
                 current = self._apply_selection(service, current, files, observed)
@@ -4712,7 +4779,11 @@ class AutomationOwner:
         return True
 
     def _record_mapping(
-        self, item: AcquisitionConfirmation, revision: str, bindings: Mapping[str, tuple[FileReservation, ...]]
+        self,
+        item: AcquisitionConfirmation,
+        revision: str,
+        bindings: Mapping[str, tuple[FileReservation, ...]],
+        manifest: tuple[str, ...],
     ) -> AcquisitionConfirmation | None:
         current: AcquisitionConfirmation | None = self._confirmation(item.operation_id)
         if (
@@ -4727,12 +4798,13 @@ class AutomationOwner:
             else assignment
             for assignment in current.assignments
         )
-        if assignments == current.assignments:
+        if assignments == current.assignments and current.manifest:
             return None
         updated: AcquisitionConfirmation = replace(
             current,
             assignments=assignments,
-            selection_revision=current.selection_revision + 1,
+            selection_revision=current.selection_revision + int(assignments != current.assignments),
+            manifest=current.manifest or manifest,
             updated_at=self._now(),
         )
         if not self._replace_acquisition(updated):
@@ -4832,6 +4904,144 @@ class AutomationOwner:
             if any(assignment.admission_id in previous for assignment in old.assignments)
         )
 
+    def _publish_episodes(self, results: tuple[AcquisitionConfirmation, ...]) -> None:
+        """Publish every episode whose whole set the client and the staging just proved finished."""
+        for item in results:
+            complete: frozenset[str] = frozenset(item.complete_files)
+            for assignment in item.active_assignments:
+                if assignment.files and all(path in complete for _index, path, _size in assignment.files):
+                    self._publish_episode(item, assignment.admission_id)
+
+    def _publish_episode(self, item: AcquisitionConfirmation, admission_id: str) -> None:
+        if not self._may_settle(item):
+            return
+        root: Path = self._service.workspace_root
+        reserved: EpisodePublication | None = self._owned(
+            partial(self._reserve_publication, item.operation_id, admission_id)
+        )
+        if reserved is None:
+            return
+        publication: EpisodePublication = reserved
+        try:
+            private: Path = publication_path(root, item.operation_id)
+            if not publication.copied:
+                data: Path = staging_path(root, item.operation_id)
+                copied: EpisodePublication = replace(
+                    publication, files=tuple(_copied(data, private, file) for file in publication.files)
+                )
+                if (
+                    self._owned(partial(self._update_publication, item.operation_id, admission_id, publication, copied))
+                    is None
+                ):
+                    return
+                publication = copied
+            if not self._may_settle(item):
+                return
+            outcome: SetPublication = publish_set(root, private, publication.files)
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("An episode set could not be published", error_class=type(problem).__name__)
+            failed: EpisodePublication = replace(publication, problem=sanitize_event_message(str(problem)))
+            self._owned(partial(self._update_publication, item.operation_id, admission_id, publication, failed))
+            return
+        self._owned(partial(self._settle_publication, item.operation_id, admission_id, publication, outcome))
+
+    def _reserve_publication(self, operation_id: str, admission_id: str) -> EpisodePublication | None:
+        current: AcquisitionConfirmation | None = self._confirmation(operation_id)
+        assignment: EpisodeAssignment | None = (
+            None
+            if current is None
+            else next((row for row in current.active_assignments if row.admission_id == admission_id), None)
+        )
+        if assignment is None or not assignment.files:
+            return None
+        if assignment.publication is not None:
+            return self._update_publication(operation_id, admission_id, assignment.publication, assignment.publication)
+        reserved: frozenset[str] | None = self._reserved_names()
+        if reserved is None:
+            return None
+        publication: EpisodePublication = EpisodePublication(_published_files(assignment.files, reserved))
+        updated: EpisodePublication | None = self._update_publication(operation_id, admission_id, None, publication)
+        if updated is not None:
+            logger.info("Episode set names reserved", files=len(publication.files))
+        return updated
+
+    def _update_publication(
+        self,
+        operation_id: str,
+        admission_id: str,
+        expected: EpisodePublication | None,
+        publication: EpisodePublication,
+    ) -> EpisodePublication | None:
+        current: AcquisitionConfirmation | None = self._confirmation(operation_id)
+        if (
+            current is None
+            or current.state is not AcquisitionState.ACCEPTED
+            or current.problem is not None
+            or not _selection_confirmed(current)
+            or current.action_pending
+            or current.requested_action in {"stop", "cancel"}
+            or not self._working()
+        ):
+            return None
+        assignment: EpisodeAssignment | None = next(
+            (row for row in current.active_assignments if row.admission_id == admission_id), None
+        )
+        if (
+            assignment is None
+            or assignment.publication != expected
+            or (expected is not None and (expected.handed_off or expected.problem is not None))
+        ):
+            return None
+        if publication == expected:
+            return publication
+        assignments: tuple[EpisodeAssignment, ...] = tuple(
+            replace(row, publication=publication) if row is assignment else row for row in current.assignments
+        )
+        if not self._replace_acquisition(replace(current, assignments=assignments, updated_at=self._now())):
+            return None
+        return publication
+
+    def _settle_publication(
+        self, operation_id: str, admission_id: str, publication: EpisodePublication, outcome: SetPublication
+    ) -> None:
+        root: Path = self._service.workspace_root
+        if outcome.complete:
+            if self._update_publication(operation_id, admission_id, publication, replace(publication, handed_off=True)):
+                logger.info("Episode set published and handed to Auto", files=len(publication.files))
+                self.files_changed(
+                    DirectoryChange(
+                        paths=tuple(root / item.name for item in publication.files), reason="transfer_complete"
+                    )
+                )
+            return
+        if outcome.occupied:
+            reserved: frozenset[str] | None = self._reserved_names()
+            if reserved is None:
+                return
+            stamps: dict[int, PublishedFile] = {item.index: item for item in publication.files}
+            renamed: tuple[PublishedFile, ...] = tuple(
+                replace(stamps[item.index], name=item.name)
+                for item in _published_files(
+                    tuple((item.index, item.source, item.size) for item in publication.files), reserved
+                )
+            )
+            logger.info("A taken episode name was reserved again", files=len(outcome.occupied))
+            self._update_publication(operation_id, admission_id, publication, replace(publication, files=renamed))
+            return
+        lost: frozenset[int] = frozenset(outcome.lost)
+        logger.info("Lost episode copies are made again", files=len(lost))
+        self._update_publication(
+            operation_id,
+            admission_id,
+            publication,
+            replace(
+                publication,
+                files=tuple(
+                    replace(item, digest=None, stamp=None) if item.index in lost else item for item in publication.files
+                ),
+            ),
+        )
+
     def _started_selection(self, operation_id: str, revision: int) -> None:
         current: AcquisitionConfirmation | None = self._confirmation(operation_id)
         if current is None or current.applied_revision != revision:
@@ -4851,7 +5061,7 @@ class AutomationOwner:
         updated: dict[str, AcquisitionConfirmation] = {item.operation_id: item for item in results}
         read: dict[str, tuple[object, ...]] = {item.operation_id: _selection_basis(item) for item in basis}
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
-            updated.get(item.operation_id, item)
+            replace(updated.get(item.operation_id, item), assignments=item.assignments, manifest=item.manifest)
             if updated.get(item.operation_id, item).action_id == item.action_id
             and (not item.selective or read.get(item.operation_id) == _selection_basis(item))
             else item
@@ -4883,7 +5093,7 @@ class AutomationOwner:
         )
         if completed and failure is None:
             self._active_io += 1
-            self._pool.submit(self._release_completed, completed)
+            self._pool.submit(self._release_completed, completed, self._uncleaned())
         self._active_io -= 1
         self._transfers_inspecting = False
         self._schedule_transfers(self._transfers_delay)
@@ -4910,23 +5120,89 @@ class AutomationOwner:
             reason=failure,
         )
 
-    def _release_completed(self, hashes: frozenset[str]) -> None:
+    def _uncleaned(self, *, retry: bool = False) -> tuple[AcquisitionConfirmation, ...]:
+        return tuple(
+            item
+            for item in self._state.acquisitions
+            if item.selective
+            and item.state is AcquisitionState.COMPLETE
+            and not item.cleaned
+            and (retry or item.problem is None)
+        )
+
+    def _release_completed(self, hashes: frozenset[str], uncleaned: tuple[AcquisitionConfirmation, ...] = ()) -> None:
         problem: str | None = None
+        cleaned: dict[str, str | None] = {}
         try:
             acquisition: AcquisitionService | None = self._service.acquisition
             if acquisition is not None:
                 with acquisition.requests("completed_download"):
-                    acquisition.release_completed(hashes)
+                    released: frozenset[str] = acquisition.release_completed(hashes)
                     acquisition.finish_transfers()
+                cleaned = self._clean_released(uncleaned, released)
         except (AniShiftError, OSError, ValueError) as error:
             problem = sanitize_event_message(str(error))
         finally:
-            self._queue.put(lambda: self._released_completed(problem))
+            self._queue.put(lambda: self._released_completed(problem, cleaned))
 
-    def _released_completed(self, problem: str | None) -> None:
+    def _clean_released(
+        self, uncleaned: tuple[AcquisitionConfirmation, ...], released: frozenset[str]
+    ) -> dict[str, str | None]:
+        outcome: dict[str, str | None] = {}
+        for item in uncleaned:
+            if item.info_hash not in released:
+                continue
+            exported: tuple[PublishedFile, ...] = tuple(
+                file
+                for assignment in item.assignments
+                if assignment.publication is not None and assignment.publication.handed_off
+                for file in assignment.publication.files
+                if self._export_is_present(file, assignment.publication)
+            )
+            kept: frozenset[str] = frozenset(
+                path for assignment in item.assignments for _index, path, _size in assignment.files
+            ) - frozenset(file.source for file in exported)
+            try:
+                clean_staging(
+                    self._service.workspace_root,
+                    item.operation_id,
+                    item.info_hash,
+                    item.manifest,
+                    kept,
+                    frozenset(file.index for file in exported),
+                )
+            except (OSError, ValueError) as error:
+                logger.warning("Download staging cleanup failed", error_class=type(error).__name__)
+                outcome[item.operation_id] = _CLEANUP_FAILED
+                continue
+            logger.info("Download staging cleaned", kept=len(kept))
+            outcome[item.operation_id] = None
+        return outcome
+
+    def _export_is_present(self, file: PublishedFile, publication: EpisodePublication) -> bool:
+        root: Path = self._service.workspace_root
+        group_id: str | None = _published_group(frozenset(item.name for item in publication.files))
+        names: tuple[str, ...] = self._owned(
+            lambda: (
+                file.name,
+                *(name for group in self._state.ready_groups if group.set_id == group_id for name in group.sources),
+            )
+        )
+        return any(published_copy(staged_file(root, name), file) for name in names)
+
+    def _released_completed(self, problem: str | None, cleaned: Mapping[str, str | None] | None = None) -> None:
         self._active_io -= 1
         if problem is not None:
             self._transfers_problem = problem
+        settled: Mapping[str, str | None] = cleaned or {}
+        acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
+            replace(item, cleaned=settled[item.operation_id] is None, problem=settled[item.operation_id])
+            if item.operation_id in settled and item.state is AcquisitionState.COMPLETE and not item.cleaned
+            else item
+            for item in self._state.acquisitions
+        )
+        if acquisitions != self._state.acquisitions:
+            self._save(replace(self._state, acquisitions=acquisitions))
         self._publish_state()
 
     def _restore_runs(self, requests: tuple[ProcessingRequest, ...]) -> None:
@@ -5282,6 +5558,7 @@ class AutomationOwner:
                 action_pending=True,
                 action_sent=False,
                 problem=None,
+                assignments=_cleared_publications(item.assignments) if action == "resume" else item.assignments,
             )
             if item.info_hash == info_hash
             else item
@@ -6357,10 +6634,48 @@ def _unfinished_selection(item: AcquisitionConfirmation) -> AcquisitionConfirmat
     if (
         item.selective
         and item.state is AcquisitionState.COMPLETE
-        and (not _selection_confirmed(item) or not all(assignment.files for assignment in item.active_assignments))
+        and (
+            not _selection_confirmed(item) or not all(_handed_off(assignment) for assignment in item.active_assignments)
+        )
     ):
         return replace(item, state=AcquisitionState.ACCEPTED)
     return item
+
+
+def _published_group(names: frozenset[str]) -> str | None:
+    route: WorkflowRoute = resolve_route(Path())
+    for name in sorted(names):
+        candidate: ArtifactName | None = classify_artifact(Path(name), route)
+        if candidate is not None and candidate.is_primary:
+            return create_group_id(Path(), candidate.stem)
+    return None
+
+
+def _cleared_publications(assignments: tuple[EpisodeAssignment, ...]) -> tuple[EpisodeAssignment, ...]:
+    return tuple(
+        replace(row, publication=replace(row.publication, problem=None))
+        if row.publication is not None and row.publication.problem is not None and not row.publication.handed_off
+        else row
+        for row in assignments
+    )
+
+
+def _handed_off(assignment: EpisodeAssignment) -> bool:
+    return assignment.publication is not None and assignment.publication.handed_off
+
+
+def _published_files(files: Sequence[FileReservation], reserved: frozenset[str]) -> tuple[PublishedFile, ...]:
+    return tuple(
+        PublishedFile(index, source, name, size)
+        for (index, name, size), (_index, source, _size) in zip(flat_names(files, reserved), sorted(files), strict=True)
+    )
+
+
+def _copied(data: Path, private: Path, file: PublishedFile) -> PublishedFile:
+    if file.stamp is not None:
+        return file
+    digest, stamp = copy_staged(staged_file(data, file.source), private / str(file.index), file.size)
+    return replace(file, digest=digest, stamp=stamp)
 
 
 def _selection_mismatch(
@@ -6370,7 +6685,7 @@ def _selection_mismatch(
     revision: str = file_map_revision(files)
     return (
         save_path is None
-        or Path(save_path).resolve() != staging.resolve()
+        or lexical_path(save_path) != lexical_path(staging)
         or any(assignment.file_map != revision for assignment in item.active_assignments)
         or frozenset(entry.index for entry in files if entry.priority > 0) != item.wanted_files
     )
@@ -6399,7 +6714,8 @@ def _episode_bindings(
 
 def _selection_basis(item: AcquisitionConfirmation) -> tuple[object, ...]:
     """Return the lifecycle facts a worker read, so a result taken on older ones is dropped."""
-    return (item.state, item.assignments, item.selection_revision, item.applied_revision, item.content_started)
+    assignments: tuple[EpisodeAssignment, ...] = tuple(replace(row, publication=None) for row in item.assignments)
+    return (item.state, assignments, item.selection_revision, item.applied_revision, item.content_started)
 
 
 def _resumable(item: AcquisitionConfirmation, paused: frozenset[str], enabled: frozenset[str] | None) -> bool:
@@ -6533,7 +6849,13 @@ def _assigned_files(acquisition: AcquisitionConfirmation) -> frozenset[str]:
 
 def _reserved_stems(acquisition: AcquisitionConfirmation) -> frozenset[str]:
     """Return the cores one transfer already reserved, because a name it has not chosen yet holds nothing."""
-    return frozenset(reserved_stem(path) for _index, path, _size in acquisition.file_layout)
+    published: frozenset[str] = frozenset(
+        reserved_stem(item.name)
+        for assignment in acquisition.assignments
+        if assignment.publication is not None
+        for item in assignment.publication.files
+    )
+    return published | frozenset(reserved_stem(path) for _index, path, _size in acquisition.file_layout)
 
 
 def _present_stems(root: Path) -> frozenset[str]:

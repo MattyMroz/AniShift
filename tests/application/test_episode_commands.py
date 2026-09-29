@@ -577,6 +577,7 @@ def test_mapping_never_reuses_a_video_held_by_a_replaced_assignment(tmp_path: Pa
                 transfer,
                 file_map_revision(files),
                 automation_module._episode_bindings(transfer, files),
+                (),
             )
         )
         assert result is not None

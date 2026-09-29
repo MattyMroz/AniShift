@@ -49,7 +49,14 @@ _FINGERPRINT: SourceFingerprint = (("episode-01.mkv", 1024, 111),)
 
 _SCHEMA_TWO_SECTIONS: tuple[str, ...] = ("recipes", "ready_groups", "pause_owned_transfers", "pending_deletions")
 
-_SCHEMA_THREE_FIELDS: tuple[str, ...] = ("assignments", "legacy_scope", "selection_revision", "applied_revision")
+_SCHEMA_THREE_FIELDS: tuple[str, ...] = (
+    "assignments",
+    "legacy_scope",
+    "selection_revision",
+    "applied_revision",
+    "manifest",
+    "cleaned",
+)
 
 
 def test_deletion_evidence_round_trips_and_legacy_scope_never_gains_invented_identity(tmp_path: Path) -> None:
@@ -584,6 +591,24 @@ def test_schema_three_round_trips_episode_assignments_and_legacy_scopes(tmp_path
 
     assert store.load() == state
     assert [item.selective for item in store.load().acquisitions] == [False, False, True]
+
+
+def test_schema_three_before_publication_loads_without_rewriting_or_losing_admissions(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    state: WatchState = replace(_state(), acquisitions=(_state().acquisitions[0], _selective()))
+    store.save(state)
+    path: Path = tmp_path / WATCH_STATE_FILE_NAME
+    document: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    for acquisition in cast("list[dict[str, object]]", document["acquisitions"]):
+        acquisition.pop("manifest")
+        acquisition.pop("cleaned")
+        for assignment in cast("list[dict[str, object]]", acquisition["assignments"]):
+            assignment.pop("publication")
+    _write(tmp_path, document)
+    original: bytes = path.read_bytes()
+
+    assert store.load() == state
+    assert path.read_bytes() == original
 
 
 @pytest.mark.parametrize("schema", [1, 2])

@@ -1288,6 +1288,37 @@ class _Owner(_Catalog):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("state", "label"),
+    [
+        ("ordered", "Zlecono"),
+        ("downloading", "Pobieram"),
+        ("downloaded", "Pobrano"),
+        ("processing", "Przetwarzam"),
+        ("processing_failed", "Błąd"),
+        ("ready", "Gotowe"),
+        ("possibly_admitted", "Już zlecone?"),
+        ("future_state", "Zlecono"),
+        ("not_ordered", "Nie zamówiono"),
+    ],
+)
+def test_owner_episode_states_have_explicit_labels(monkeypatch: pytest.MonkeyPatch, state: str, label: str) -> None:
+    owner: _Owner = _Owner()
+    monkeypatch.setattr(
+        owner,
+        "episode_states",
+        lambda anilist_id, numbers: tuple(EpisodeStatus(EpisodeKey(anilist_id, n), state) for n in numbers),
+    )
+    controller: AnimeController = AnimeController(
+        cast("AppService", SimpleNamespace(acquisition=None)), lambda: None, resident=cast("ResidentSession", owner)
+    )
+    _open(controller)
+
+    assert re.search(rf"1\s+Episode 1\s+.*{re.escape(label)}", _frame(controller))
+    assert ("Nie zamówiono" in _frame(controller)) is (state == "not_ordered")
+
+
+@pytest.mark.unit
 def test_download_orders_marked_episodes_through_the_owner_and_stays_on_the_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

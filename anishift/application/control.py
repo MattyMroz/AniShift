@@ -33,8 +33,10 @@ __all__ = [
     "CommandReceipt",
     "EpisodeAssignment",
     "EpisodeChoice",
+    "EpisodePublication",
     "FileObjectIdentities",
     "FileReservation",
+    "FileStamp",
     "LegacyScope",
     "ManualHandledMarker",
     "NarrationTimeline",
@@ -45,6 +47,7 @@ __all__ = [
     "ProcessingRequest",
     "ProductConfirmation",
     "ProviderLock",
+    "PublishedFile",
     "ReadyGroup",
     "RecipePreferences",
     "RequestState",
@@ -92,6 +95,9 @@ type CommandOutcome = Mapping[str, str | int | bool | None]
 
 type FileReservation = tuple[int, str, int]
 """Client file index, the flat path reserved for it and the size its release declares."""
+
+type FileStamp = tuple[int, int, int, int]
+"""Size, modification time, device and inode proving which file object one name holds."""
 
 _NO_EXCEPTIONS: Final[Mapping[str, bool]] = MappingProxyType({})
 """Directory table of a policy carrying nothing but the global switch."""
@@ -342,6 +348,50 @@ class EpisodeChoice:
 
 
 @dataclass(frozen=True, slots=True)
+class PublishedFile:
+    """One staged file of an episode set, its reserved flat name and the proof of its verified copy."""
+
+    index: int
+    source: str
+    name: str
+    size: int
+    digest: str | None = None
+    stamp: FileStamp | None = None
+
+    def __post_init__(self) -> None:
+        require_relative_paths((self.source, self.name), "A published episode file")
+        if "/" in self.name.replace("\\", "/") or self.index < 0 or self.size < 0:
+            msg = "A published episode file needs a flat name, a client index and its declared size"
+            raise ValueError(msg)
+        if (self.digest is None) != (self.stamp is None):
+            msg = "A copied episode file proves both its content and its file object"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodePublication:
+    """Flat set reserved for one episode, copied from staging and handed to Auto as a whole."""
+
+    files: tuple[PublishedFile, ...]
+    handed_off: bool = False
+    problem: str | None = None
+
+    def __post_init__(self) -> None:
+        names: tuple[str, ...] = tuple(item.name.casefold() for item in self.files)
+        if not self.files or len(set(names)) != len(names):
+            msg = "An episode publication reserves one unique name per file"
+            raise ValueError(msg)
+        if self.handed_off and not self.copied:
+            msg = "Only a set whose every copy is proven can be handed to Auto"
+            raise ValueError(msg)
+
+    @property
+    def copied(self) -> bool:
+        """Whether every file of the set has a recorded, verified copy."""
+        return all(item.stamp is not None for item in self.files)
+
+
+@dataclass(frozen=True, slots=True)
 class EpisodeAssignment:
     """One catalogue episode admitted into a selective transfer."""
 
@@ -354,6 +404,7 @@ class EpisodeAssignment:
     files: tuple[FileReservation, ...] = ()
     conflict: tuple[str, ...] = ()
     replaced: bool = False
+    publication: EpisodePublication | None = None
 
     def __post_init__(self) -> None:
         if not self.admission_id.strip() or not self.admitted_at.strip():
@@ -372,6 +423,11 @@ class EpisodeAssignment:
         require_relative_paths((path for _index, path, _size in self.files), "An episode file of a torrent")
         if not all(isinstance(item, str) and item for item in self.conflict):
             msg = "An overridden legacy conflict is named by non-empty references"
+            raise ValueError(msg)
+        if self.publication is not None and sorted(
+            (item.index, item.source, item.size) for item in self.publication.files
+        ) != sorted(self.files):
+            msg = "An episode publication covers exactly the files of its episode"
             raise ValueError(msg)
 
     @property
@@ -426,6 +482,8 @@ class AcquisitionConfirmation:
     legacy_scope: LegacyScope | None = None
     selection_revision: int = 0
     applied_revision: int = 0
+    manifest: tuple[str, ...] = ()
+    cleaned: bool = False
 
     @property
     def selective(self) -> bool:
@@ -452,8 +510,8 @@ class AcquisitionConfirmation:
         if self.assignments and self.legacy_scope is not None:
             msg = "A selective transfer carries episode assignments, never a legacy scope"
             raise ValueError(msg)
-        if self.state is AcquisitionState.ADMITTED and not self.assignments:
-            msg = "Only a selective transfer can wait as an admission"
+        if not self.assignments and (self.state is AcquisitionState.ADMITTED or self.manifest or self.cleaned):
+            msg = "Only a selective transfer can wait as an admission or keep a staging manifest"
             raise ValueError(msg)
         admissions: tuple[str, ...] = tuple(item.admission_id for item in self.assignments)
         if len(set(admissions)) != len(admissions):
@@ -484,6 +542,7 @@ class AcquisitionConfirmation:
             msg = "A reserved file must carry the size its release declares"
             raise ValueError(msg)
         require_relative_paths((path for _index, path, _size in self.file_layout), "A reserved file of a release")
+        require_relative_paths(self.manifest, "A staged file of a selective transfer")
         object.__setattr__(self, "info_hash", self.info_hash.casefold())
 
 

@@ -21,6 +21,7 @@ from anishift.application.control import (
     DeletionStatus,
     EpisodeAssignment,
     EpisodeChoice,
+    EpisodePublication,
     LegacyScope,
     ManualHandledMarker,
     NarrationTimeline,
@@ -29,6 +30,7 @@ from anishift.application.control import (
     ProcessingRequest,
     ProductConfirmation,
     ProviderLock,
+    PublishedFile,
     ReadyGroup,
     RecipePreferences,
     RequestState,
@@ -63,6 +65,7 @@ if TYPE_CHECKING:
         CommandOutcome,
         FileObjectIdentities,
         FileReservation,
+        FileStamp,
         NotificationKey,
         SettingsSnapshot,
         SettingValue,
@@ -105,8 +108,13 @@ _SCHEMA_THREE_ACQUISITION_FIELDS: Final[tuple[str, ...]] = (
     "legacy_scope",
     "selection_revision",
     "applied_revision",
+    "manifest",
+    "cleaned",
 )
 """Acquisition fields schema 3 added, which every schema 3 document must carry and no older one may."""
+
+_PUBLICATION_DEFAULTS: Final[dict[str, object]] = {"manifest": [], "cleaned": False}
+"""Publication fields absent from schema 3 records written before selective publication existed."""
 
 _SCHEMA_TWO_SECTIONS: Final[tuple[str, ...]] = (
     "recipes",
@@ -249,9 +257,19 @@ _ASSIGNMENT_KEYS: Final[frozenset[str]] = frozenset(
         "files",
         "conflict",
         "replaced",
+        "publication",
     }
 )
 """Keys a serialized episode assignment must carry."""
+
+_PUBLICATION_KEYS: Final[frozenset[str]] = frozenset({"files", "handed_off", "problem"})
+"""Keys a serialized episode publication must carry."""
+
+_PUBLISHED_FILE_KEYS: Final[frozenset[str]] = frozenset({"index", "source", "name", "size", "digest", "stamp"})
+"""Keys a serialized published episode file must carry."""
+
+_STAMP_FIELDS: Final[int] = 4
+"""Size, modification time, device and inode of one proven file object."""
 
 _REFERENCE_KEYS: Final[frozenset[str]] = frozenset({"info_hash", "file_index", "file_name", "release", "trackers"})
 """Keys a serialized Torrentio reference must carry."""
@@ -581,6 +599,8 @@ def _encode_acquisition(confirmation: AcquisitionConfirmation) -> dict[str, obje
         ),
         "selection_revision": confirmation.selection_revision,
         "applied_revision": confirmation.applied_revision,
+        "manifest": list(confirmation.manifest),
+        "cleaned": confirmation.cleaned,
     }
 
 
@@ -608,6 +628,25 @@ def _encode_assignment(assignment: EpisodeAssignment) -> dict[str, object]:
         "files": [[index, path, size] for index, path, size in assignment.files],
         "conflict": list(assignment.conflict),
         "replaced": assignment.replaced,
+        "publication": None if assignment.publication is None else _encode_publication(assignment.publication),
+    }
+
+
+def _encode_publication(publication: EpisodePublication) -> dict[str, object]:
+    return {
+        "files": [
+            {
+                "index": item.index,
+                "source": item.source,
+                "name": item.name,
+                "size": item.size,
+                "digest": item.digest,
+                "stamp": None if item.stamp is None else list(item.stamp),
+            }
+            for item in publication.files
+        ],
+        "handed_off": publication.handed_off,
+        "problem": publication.problem,
     }
 
 
@@ -896,7 +935,7 @@ def _decode_acquisition(raw: object, schema_version: int) -> AcquisitionConfirma
     previous: str | None = _optional_text(
         {"previous_operation_id": stored.pop("previous_operation_id", None)}, "previous_operation_id"
     )
-    assignments, scope, revisions = _schema_three_identity(stored, schema_version)
+    assignments, scope, revisions, staging = _schema_three_identity(stored, schema_version)
     document: dict[str, object] = _strict_object(
         {
             "requested_action": None,
@@ -942,18 +981,22 @@ def _decode_acquisition(raw: object, schema_version: int) -> AcquisitionConfirma
         legacy_scope=scope,
         selection_revision=revisions[0],
         applied_revision=revisions[1],
+        manifest=staging[0],
+        cleaned=staging[1],
     )
 
 
 def _schema_three_identity(
     document: dict[str, object], schema_version: int
-) -> tuple[tuple[EpisodeAssignment, ...], LegacyScope | None, tuple[int, int]]:
+) -> tuple[tuple[EpisodeAssignment, ...], LegacyScope | None, tuple[int, int], tuple[tuple[str, ...], bool]]:
     fields: dict[str, object] = {key: document.pop(key) for key in _SCHEMA_THREE_ACQUISITION_FIELDS if key in document}
     if schema_version != WATCH_STATE_SCHEMA_VERSION:
         if fields:
             msg = "An acquisition confirmation older than schema 3 cannot carry episode identity"
             raise ValueError(msg)
-        return (), None, (0, 0)
+        return (), None, (0, 0), ((), False)
+    if not fields.keys() & _PUBLICATION_DEFAULTS.keys():
+        fields.update(_PUBLICATION_DEFAULTS)
     if frozenset(fields) != frozenset(_SCHEMA_THREE_ACQUISITION_FIELDS):
         msg = "A schema 3 acquisition confirmation must state its episode identity"
         raise ValueError(msg)
@@ -973,11 +1016,15 @@ def _schema_three_identity(
         tuple(_decode_assignment(item) for item in _list(fields["assignments"], "episode assignments")),
         scope,
         revisions,
+        (_decode_texts(fields["manifest"], "staging manifest"), _flag(fields, "cleaned")),
     )
 
 
 def _decode_assignment(raw: object) -> EpisodeAssignment:
-    document: dict[str, object] = _strict_object(raw, _ASSIGNMENT_KEYS, "episode assignment")
+    stored: dict[str, object] = _strict_mapping(raw, "episode assignment")
+    document: dict[str, object] = _strict_object(
+        {"publication": None, **stored}, _ASSIGNMENT_KEYS, "episode assignment"
+    )
     reference: dict[str, object] = _strict_object(document["reference"], _REFERENCE_KEYS, "Torrentio reference")
     index: object = reference["file_index"]
     return EpisodeAssignment(
@@ -989,6 +1036,7 @@ def _decode_assignment(raw: object) -> EpisodeAssignment:
         files=_decode_layout(document["files"]),
         conflict=_decode_texts(document["conflict"], "overridden legacy conflict"),
         replaced=_flag(document, "replaced"),
+        publication=None if document["publication"] is None else _decode_publication(document["publication"]),
         choice=EpisodeChoice(
             anilist_id=_whole(document, "anilist_id"),
             number=_whole(document, "number"),
@@ -1005,6 +1053,35 @@ def _decode_assignment(raw: object) -> EpisodeAssignment:
             deviation_confirmed=_flag(document, "deviation_confirmed"),
         ),
     )
+
+
+def _decode_publication(raw: object) -> EpisodePublication:
+    document: dict[str, object] = _strict_object(raw, _PUBLICATION_KEYS, "episode publication")
+    files: list[PublishedFile] = []
+    for item in _list(document["files"], "published episode files"):
+        stored: dict[str, object] = _strict_object(item, _PUBLISHED_FILE_KEYS, "published episode file")
+        stamp: object = stored["stamp"]
+        files.append(
+            PublishedFile(
+                index=_whole(stored, "index"),
+                source=_text(stored, "source"),
+                name=_text(stored, "name"),
+                size=_whole(stored, "size"),
+                digest=_optional_text(stored, "digest"),
+                stamp=None if stamp is None else _decode_stamp(stamp),
+            )
+        )
+    return EpisodePublication(
+        files=tuple(files), handed_off=_flag(document, "handed_off"), problem=_optional_text(document, "problem")
+    )
+
+
+def _decode_stamp(raw: object) -> FileStamp:
+    values: tuple[int, ...] = _decode_whole_numbers(raw, "published file stamp")
+    if len(values) != _STAMP_FIELDS:
+        msg = "A published file stamp carries a size, a modification time, a device and an inode"
+        raise TypeError(msg)
+    return values[0], values[1], values[2], values[3]
 
 
 def _decode_layout(raw: object) -> tuple[FileReservation, ...]:

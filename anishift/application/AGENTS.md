@@ -199,7 +199,15 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `acquisition_staging.py` derives `temp/.acquisition/<operation_id>/data` from the supplied workspace;
   it creates no run marker. Validate Windows paths and ancestors from the supplied directory downward
   for links before filesystem I/O; junctions above the workspace are outside that boundary.
-  F2 helpers do not admit work, start content or publish files; lifecycle integration belongs to the owner.
+  Helpers never admit work or start content; the owner decides every publication and cleanup step.
+- Selective publication saves flat names and verified private copies before exclusive links into root.
+  Auto requires the complete handed-off set; existing requests deduplicate restart admission.
+  Worker merges preserve owner-written publications and manifests. Cleanup requires manager release
+  and matching file identity plus digest in root or proven ReadyStore destinations; unproven originals
+  stay staged. Successful cleanup is recorded even when protected files remain, so polling never
+  rehashes them. Only manifest files and empty directories are removed; I/O failures retry after restart.
+  Schema 3 records predating `manifest`, `cleaned` and `publication` remain readable.
+  `automation.py`, `acquisition_staging.py`, `watch_state.py`
 - `ProcessingRequest` zachowuje pełny niejawny dla UI `RunSettingsSnapshot`, wybrane
   `GroupIntent` i `RebuildRequest`. Zagnieżdżone listy ustawień z JSON wracają do krotek;
   nazwy pól zawierające segment sekretu są odrzucane. Stare zlecenia bez `intents` nadal
@@ -262,7 +270,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   odczycie, tuż przed startem, owner ponownie sprawdza `_may_start_selection` (polityka, action ID,
   `_selection_basis`); resume chroni `_mark_sent`, który odrzuca akcję zastąpioną w trakcie odczytu. Rekord
   selektywny nie przechodzi w `COMPLETE`/release, dopóki selekcja nie jest zastosowana i każde aktywne
-  przypisanie ma pliki; inspektor zachowuje listę plików ukończonego transferu (`stale`). Timeout
+  przypisanie ma przekazany zestaw (`handed_off`); inspektor zachowuje listę plików ukończonego transferu (`stale`). Timeout
   metadanych (`METADATA_TIMEOUT_S`) liczy się w pamięci na próbę; jawne resume zaczyna nową
   (`restart_idle`). Resume bez potwierdzonej selekcji nigdy nie wysyła `resume` do klienta: w `metaDL`
   pobieranie metadanych trwa, zatrzymany transfer bez metadanych dostaje `_METADATA_STOPPED` (znane

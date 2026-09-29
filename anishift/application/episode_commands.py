@@ -72,6 +72,7 @@ class EpisodeStatus:
     admission_id: str | None = None
     operation_id: str | None = None
     uncertain: bool = False
+    set_id: str | None = None
 
 
 def validate_episode_keys(keys: tuple[EpisodeKey, ...]) -> None:

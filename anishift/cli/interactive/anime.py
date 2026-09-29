@@ -135,7 +135,11 @@ _BATCH_STATES: Final[dict[str, str]] = {
 
 _EPISODE_STATE_LABELS: Final[dict[str, str]] = {
     "ordered": "Zlecono",
+    "downloading": "Pobieram",
     "downloaded": "Pobrano",
+    "processing": "Przetwarzam",
+    "processing_failed": "Błąd",
+    "ready": "Gotowe",
     "possibly_admitted": "Już zlecone?",
 }
 """Stan column label of each owner episode state other than not ordered."""
@@ -1042,7 +1046,11 @@ class AnimeController:
         except (AniShiftError, OSError, TypeError) as problem:
             logger.warning("Anime episode states read failed", error_class=type(problem).__name__)
             return {}
-        return {item.key: _EPISODE_STATE_LABELS[item.state] for item in statuses if item.state in _EPISODE_STATE_LABELS}
+        return {
+            item.key: _EPISODE_STATE_LABELS.get(item.state, "Zlecono")
+            for item in statuses
+            if item.state != "not_ordered"
+        }
 
     def _load_episodes(self, entry: FranchiseEntry, generation: int) -> None:
         if self._acquisition is None:

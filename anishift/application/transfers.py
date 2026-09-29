@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Final
 
-from anishift.application.acquisition_staging import torrent_relative_path
+from anishift.application.acquisition_staging import lexical_path, staged_file, torrent_relative_path
 from anishift.application.control import AcquisitionState
 from anishift.application.discovery import SOURCE_SUBTITLE_FORMATS, VIDEO_SOURCE_SUFFIXES
 from anishift.application.episode_identity import IdentityVerdict, classify
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from anishift.application.acquisition import AcquisitionService
-    from anishift.application.control import AcquisitionConfirmation, TorrentioReference
+    from anishift.application.control import AcquisitionConfirmation, FileReservation, TorrentioReference
     from anishift.services.torrents import TorrentFile, TorrentInfo
 
 __all__ = [
@@ -33,6 +33,7 @@ __all__ = [
     "episode_files",
     "file_map_revision",
     "flat_layout",
+    "flat_names",
     "reserved_stem",
     "selection_union",
     "video_sidecars",
@@ -99,7 +100,7 @@ class TransferInspector:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._acquisition: AcquisitionService = acquisition
-        self._root: Path = workspace_root.resolve()
+        self._root: Path = lexical_path(workspace_root)
         self._files: dict[str, _Files] = {}
         self._clock: Callable[[], float] = clock
         self._progress: dict[str, _Progress] = {}
@@ -237,8 +238,14 @@ class TransferInspector:
     def _inspect(self, acquisition: AcquisitionConfirmation, transfer: TorrentInfo | None) -> AcquisitionConfirmation:
         if transfer is None:
             return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
-        directory: Path = Path(transfer.save_path).resolve()
+        directory: Path = lexical_path(transfer.save_path)
         if not directory.is_relative_to(self._root):
+            return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
+        relative: Path = directory.relative_to(self._root)
+        try:
+            if relative.parts:
+                staged_file(self._root, relative.as_posix())
+        except ValueError:
             return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
         finished: bool = transfer.progress == 1.0 and transfer.amount_left == 0 and transfer.state in _COMPLETE_STATES
         files: tuple[TorrentFile, ...] = self._inspect_files(transfer, ready=finished)
@@ -252,7 +259,6 @@ class TransferInspector:
         if finished and transfer.info_hash.casefold() in self._files:
             key: str = transfer.info_hash.casefold()
             self._files[key] = replace(self._files[key], stale=True)
-        relative: Path = directory.relative_to(self._root)
         whole: bool = finished and bool(selected) and len(complete) == len(names)
         candidate: AcquisitionConfirmation = replace(
             acquisition,
@@ -360,17 +366,19 @@ def selection_union(files: Sequence[TorrentFile], selections: Sequence[Sequence[
     return frozenset(index for index, _name, _size in selected)
 
 
-def flat_layout(files: Sequence[TorrentFile], reserved: frozenset[str]) -> tuple[tuple[int, str, int], ...]:
+def flat_layout(files: Sequence[TorrentFile], reserved: frozenset[str]) -> tuple[FileReservation, ...]:
     """Reserve one free flat name per selected file, sharing a core between a video and its sidecars."""
-    selected: tuple[TorrentFile, ...] = tuple(item for item in files if item.priority > 0)
-    if not selected:
-        return ()
+    return flat_names(tuple((item.index, item.name, item.size) for item in files if item.priority > 0), reserved)
+
+
+def flat_names(files: Sequence[FileReservation], reserved: frozenset[str]) -> tuple[FileReservation, ...]:
+    """Give every file one free flat name, sharing a core between a video and its sidecars."""
     taken: set[str] = {value.casefold() for value in reserved}
     cores: dict[str, str] = {}
     used: dict[str, set[str]] = {}
-    layout: list[tuple[int, str, int]] = []
-    for item in sorted(selected, key=lambda entry: entry.index):
-        stem, suffix = _split(item.name)
+    layout: list[FileReservation] = []
+    for index, name, size in sorted(files):
+        stem, suffix = _split(name)
         core: str | None = cores.get(stem.casefold())
         if core is None or suffix.casefold() in used[core]:
             core = _free_core(stem, taken)
@@ -378,7 +386,7 @@ def flat_layout(files: Sequence[TorrentFile], reserved: frozenset[str]) -> tuple
             cores[stem.casefold()] = core
             used[core] = set()
         used[core].add(suffix.casefold())
-        layout.append((item.index, f"{core}{suffix}", item.size))
+        layout.append((index, f"{core}{suffix}", size))
     return tuple(layout)
 
 
@@ -431,13 +439,16 @@ def _safe_path(directory: Path, name: str) -> bool:
         not path.is_absolute()
         and not PureWindowsPath(name).drive
         and ".." not in path.parts
-        and (directory / path).resolve().is_relative_to(directory)
+        and lexical_path(directory / path).is_relative_to(directory)
     )
 
 
 def _ready_file(directory: Path, file: TorrentFile) -> bool:
     """Return whether the client verified every piece of this file and the local bytes match its declared size."""
-    path: Path = directory / file.name.replace("\\", "/")
+    try:
+        path: Path = staged_file(directory, file.name)
+    except ValueError:
+        return False
     if file.progress != 1.0 or not source_is_available(path):
         return False
     try:
