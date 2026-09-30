@@ -20,6 +20,7 @@ from test_selective_lifecycle import _SelectiveNetwork, _until
 
 from anishift.application import automation as automation_module
 from anishift.application.acquisition import AcquisitionService, TorrentClient, TorrentManagement
+from anishift.application.artifacts import create_group_id
 from anishift.application.automation import AutomationOwner
 from anishift.application.control import (
     AcquisitionConfirmation,
@@ -28,6 +29,7 @@ from anishift.application.control import (
     AutomationPolicy,
     EpisodeAssignment,
     LegacyScope,
+    ReadyGroup,
     WatchState,
 )
 from anishift.application.control_views import decode_view, encode_view
@@ -39,6 +41,7 @@ from anishift.application.service import AppService
 from anishift.application.subscriptions import EpisodeOrder, EpisodeState, Subscription, SubscriptionService
 from anishift.application.transfers import file_map_revision
 from anishift.application.watch_state import WatchStateStore
+from anishift.application.workflows import WorkflowTarget
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import (
     ControlClient,
@@ -170,6 +173,94 @@ def _legacy() -> AcquisitionConfirmation:
     )
 
 
+@pytest.mark.parametrize(
+    ("state", "started", "number", "expected"),
+    [
+        (AcquisitionState.ACCEPTED, True, 4, "downloading"),
+        (AcquisitionState.ACCEPTED, False, 4, "ordered"),
+        (AcquisitionState.COMPLETE, True, 4, "downloaded"),
+        (AcquisitionState.FAILED, False, 4, "processing_failed"),
+        (AcquisitionState.ACCEPTED, True, None, "possibly_admitted"),
+    ],
+)
+def test_legacy_episode_projects_proven_transfer_state(
+    tmp_path: Path, state: AcquisitionState, *, started: bool, number: int | None, expected: str
+) -> None:
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    old: AcquisitionConfirmation = replace(
+        _legacy(), state=state, content_started=started, legacy_scope=LegacyScope(_S1, number)
+    )
+    store.save(WatchState(acquisitions=(old,)))
+    with _running(_episode_service(tmp_path), store, inspect_transfers=False) as owner:
+        response: ControlResponse = owner.handle(_request("episode_states", {"anilist_id": _S1, "numbers": [4]}))
+        states: tuple[EpisodeStatus, ...] = decode_view(tuple[EpisodeStatus, ...], response.result["items"])
+        assert states[0].state == expected
+
+
+def test_legacy_hash_refusal_remains_visible_in_episode_states_after_restart(tmp_path: Path) -> None:
+    streams: _Streams = _Streams()
+    streams.answers = {(41024, 4): (_stream(4),)}
+    service: AcquisitionService = _episode_service(tmp_path, streams=streams)
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(replace(_legacy(), info_hash="a" * 40, legacy_scope=None),),
+        )
+    )
+    with _running(service, store, inspect_transfers=False) as owner:
+        assert _download(owner, (4,)).ok
+        _until(lambda: _batch(owner, (4,)).state == "completed")
+        assert _batch(owner, (4,)).results[0].reason == "transfer_recorded"
+    with _running(service, store, inspect_transfers=False) as owner:
+        response: ControlResponse = owner.handle(_request("episode_states", {"anilist_id": _S1, "numbers": [4]}))
+        states: tuple[EpisodeStatus, ...] = decode_view(tuple[EpisodeStatus, ...], response.result["items"])
+        assert states[0].state != "not_ordered"
+        assert states[0].reason == "transfer_recorded"
+
+
+def test_legacy_completed_episode_uses_its_ready_group(tmp_path: Path) -> None:
+    name: str = "Episode 04.mkv"
+    group_id: str = create_group_id(Path(), "Episode 04")
+    old: AcquisitionConfirmation = replace(
+        _legacy(),
+        state=AcquisitionState.COMPLETE,
+        required_files=(name,),
+        file_layout=((0, name, 4),),
+        complete_files=(name,),
+    )
+    ready: ReadyGroup = ReadyGroup(
+        group_id,
+        "relocated",
+        "Episode 04",
+        "",
+        "Episode 04",
+        WorkflowTarget.VIDEO,
+        (f"ready/{name}",),
+        (),
+    )
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    store.save(WatchState(acquisitions=(old,), ready_groups=(ready,)))
+    with _running(_episode_service(tmp_path), store, inspect_transfers=False) as owner:
+        response: ControlResponse = owner.handle(_request("episode_states", {"anilist_id": _S1, "numbers": [4]}))
+        states: tuple[EpisodeStatus, ...] = decode_view(tuple[EpisodeStatus, ...], response.result["items"])
+        assert states[0].state == "ready"
+        assert states[0].set_id == group_id
+
+
+def test_legacy_order_without_transfer_remains_possibly_admitted(tmp_path: Path) -> None:
+    library: _Library = _legacy_library(tmp_path)
+    subscription: Subscription = _subscribe(library, anilist_id=_ENTRY)
+    library.subscriptions._store.save(
+        (replace(subscription, enabled=False, episodes=(EpisodeOrder(Decimal(3), state=EpisodeState.ORDERED),)),)
+    )
+    with _running(_episode_service(tmp_path), library.store, subscriptions=library.subscriptions) as owner:
+        response: ControlResponse = owner.handle(_request("episode_states", {"anilist_id": _ENTRY, "numbers": [3]}))
+        states: tuple[EpisodeStatus, ...] = decode_view(tuple[EpisodeStatus, ...], response.result["items"])
+        assert states[0].state == "possibly_admitted"
+        assert states[0].reason == "episode_possibly_admitted"
+
+
 def test_batch_returns_before_source_and_survives_panel_disconnect(tmp_path: Path) -> None:
     streams: _Streams = _Streams()
     streams.answers = {(41024, 4): (_stream(4),), (41024, 5): (_stream(5, "b", uncertain=True),)}
@@ -238,6 +329,46 @@ def test_batch_source_failure_does_not_prevent_the_next_episode(tmp_path: Path) 
         batch: EpisodeBatch = _batch(owner, (4, 5))
         assert [item.reason for item in batch.results] == ["source_failed", "admitted"]
         assert _download(owner, (4,), "batch").reason == "command_reused"
+
+
+def test_source_validation_failure_only_fails_its_episode_and_continues_the_batch(tmp_path: Path) -> None:
+    streams: _Streams = _Streams()
+    streams.answers = {(41024, 5): (_stream(5),)}
+
+    def before(number: int) -> None:
+        if number == 4:
+            raise ValueError("Invalid source payload")
+
+    streams.before = before
+    service: AcquisitionService = _episode_service(tmp_path, streams=streams)
+    with _running(service, WatchStateStore(tmp_path / "state.json")) as owner:
+        assert _download(owner, (4, 5)).ok
+        _until(lambda: _batch(owner, (4, 5)).state == "completed")
+        assert [item.reason for item in _batch(owner, (4, 5)).results] == ["source_failed", "admitted"]
+
+
+def test_unexpected_batch_failure_preserves_prior_results_and_durably_interrupts_the_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    streams: _Streams = _Streams()
+    streams.answers = {(41024, 5): (_stream(5),)}
+
+    def refuse(*args: object, **kwargs: object) -> ControlResponse:
+        raise ValueError("Unexpected admission defect")
+
+    service: AcquisitionService = _episode_service(tmp_path, streams=streams)
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    with _running(service, store) as owner:
+        monkeypatch.setattr(owner, "admit_episode", refuse)
+        assert _download(owner, (4, 5)).ok
+        _until(lambda: _batch(owner, (4, 5)).state == "interrupted")
+        batch: EpisodeBatch = _batch(owner, (4, 5))
+        assert [item.reason for item in batch.results] == ["no_suggestion"]
+    streams.asked.clear()
+    with _running(service, store, instance="restarted") as owner:
+        assert _batch(owner, (4, 5)).results == batch.results
+        assert _batch(owner, (4, 5)).state == "interrupted"
+        assert not streams.asked
 
 
 def test_restart_replays_interrupted_batch_without_resuming_the_remaining_keys(tmp_path: Path) -> None:

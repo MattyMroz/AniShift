@@ -270,6 +270,10 @@ class TorrentManagement(Protocol):
         """Read persisted release evidence without activating or changing the client."""
         ...
 
+    def finalizable_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
+        """Return released or still managed hashes that can make finalization progress."""
+        ...
+
     def transfer_action(self, info_hash: str, action: str) -> None:
         """Apply an explicit action to a managed transfer."""
         ...
@@ -953,6 +957,12 @@ class AcquisitionService:
         """Release private torrent process resources."""
         if self._torrent_management is not None:
             self._torrent_management.close()
+
+    def finalizable_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
+        """Read which hashes can progress without starting or contacting a torrent client."""
+        if self._torrent_management is None:
+            return frozenset()
+        return self._torrent_management.finalizable_hashes(hashes)
 
     def series_directory(self, choice: ReleaseChoice) -> Path:
         """Return the library directory the files of *choice* will be saved into."""

@@ -1429,6 +1429,38 @@ def _owner_controller(owner: _Owner) -> AnimeController:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("reason", "label"),
+    [
+        ("transfer_failed", "Błąd pobierania"),
+        ("publication_failed", "Błąd eksportu"),
+        ("waiting_previous_transfer", "Czeka na stare"),
+        ("publication_missing", "Brak pliku"),
+        ("transfer_recorded", "Konflikt hasha"),
+        ("source_failed", "Błąd źródła"),
+        ("legacy_unreadable", "Błąd zleceń"),
+    ],
+)
+def test_episode_problem_reason_overrides_ordinary_state_label(reason: str, label: str) -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.statuses[1] = EpisodeStatus(EpisodeKey(1, 1), "downloading", reason)
+    controller: AnimeController = _owner_controller(owner)
+    assert label in _frame(controller)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("state", ["ordered", "possibly_admitted", "ready"])
+@pytest.mark.parametrize("key", ["space", "text:d"])
+def test_only_possible_admission_uses_the_uncertain_repeat_notice(state: str, key: str) -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.statuses[1] = EpisodeStatus(EpisodeKey(1, 1), state)
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, key)
+    assert controller._notice == ("Już zlecone? · P ponów" if state == "possibly_admitted" else "Odcinek już zlecony")
+    assert not owner.batches
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("verdict", [IdentityVerdict.MATCH, IdentityVerdict.INSUFFICIENT, IdentityVerdict.MISMATCH])
 @pytest.mark.parametrize("cancel", [False, True])
 def test_repeat_requires_inspected_conflict_and_separate_identity_consent(

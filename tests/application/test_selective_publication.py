@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -168,6 +169,119 @@ def _root_files(setup: _Setup) -> set[str]:
     return {path.name for path in setup.root.iterdir() if path.suffix in {".mkv", ".ass"}}
 
 
+def test_completed_transfer_retries_an_unconfirmed_release_without_restart(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release: Callable[[frozenset[str]], frozenset[str]] = setup.network.release_completed
+    attempts: list[frozenset[str]] = []
+
+    def delayed(hashes: frozenset[str]) -> frozenset[str]:
+        attempts.append(hashes)
+        return frozenset() if len(attempts) <= automation_module._FINALIZE_ATTEMPTS + 2 else release(hashes)
+
+    monkeypatch.setattr(setup.network, "release_completed", delayed)
+    with _running(setup) as owner:
+        _download(setup, owner)
+        _until(lambda: _settled(owner))
+    assert len(attempts) > automation_module._FINALIZE_ATTEMPTS + 2
+
+
+def test_cleanup_runs_after_release_even_when_finishing_the_client_fails(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse() -> None:
+        raise OSError(13, "Client shutdown failed")
+
+    monkeypatch.setattr(setup.network, "finish_transfers", refuse)
+    with _running(setup) as owner:
+        data: Path = _download(setup, owner)
+        _until(lambda: _settled(owner))
+        assert not data.parent.exists()
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_unmanageable_completed_transfer_parks_until_an_explicit_retry(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch, *, external: bool
+) -> None:
+    attempts: list[frozenset[str]] = []
+
+    def held(hashes: frozenset[str]) -> frozenset[str]:
+        attempts.append(hashes)
+        return frozenset()
+
+    monkeypatch.setattr(setup.network, "release_completed", held)
+    monkeypatch.setattr(setup.network, "finalizable_hashes", lambda hashes: frozenset(), raising=False)
+    with _running(setup) as owner:
+        _download(setup, owner)
+        if external:
+            acquisition: AcquisitionService = cast("AcquisitionService", owner._service.acquisition)
+            monkeypatch.setattr(acquisition, "_torrent_management", None)
+            monkeypatch.setattr(acquisition, "release_completed", held)
+        _until(lambda: _current(owner).state is AcquisitionState.COMPLETE and bool(attempts))
+        time.sleep(0.1)
+        count: int = len(attempts)
+        time.sleep(0.1)
+        assert len(attempts) == count
+        assert owner._on_owner(lambda: owner._transfers_at) is None
+        assert not _current(owner).cleaned
+        assert owner.handle(_request("ready_retry")).ok
+        _until(lambda: len(attempts) > count)
+
+
+def test_cleanup_problem_preserves_downloaded_state_and_material_reason(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: object) -> None:
+        raise OSError(13, "Cleanup failed")
+
+    monkeypatch.setattr(automation_module, "clean_staging", refuse)
+    with _running(setup) as owner:
+        _download(setup, owner)
+        _until(lambda: _current(owner).problem == automation_module._CLEANUP_FAILED)
+        status: dict[str, object] = _status(owner)
+        assert status["state"] == "downloaded"
+        assert status["reason"] == "finalization_failed"
+        response: ControlResponse = owner.handle(_request("status"))
+        materials: list[dict[str, object]] = cast("list[dict[str, object]]", response.result["materials"])
+        row: dict[str, object] = next(item for item in materials if item.get("admission_id"))
+        assert row["stage"] == "waiting"
+        assert row["reason"] == "finalization_failed"
+
+
+def test_finalization_recognizes_cleanup_done_by_a_successor_without_a_second_release(setup: _Setup) -> None:
+    with _running(setup) as owner:
+        _download(setup, owner)
+        _until(lambda: _settled(owner))
+        current: AcquisitionConfirmation = _current(owner)
+
+        def settle() -> None:
+            owner._completion_done.discard(current.operation_id)
+            owner._completion_attempts[current.operation_id] = automation_module._FINALIZE_ATTEMPTS
+            owner._active_io += 1
+            owner._released_completed(None, attempted=(current,))
+
+        owner._on_owner(settle)
+        assert current.operation_id in owner._completion_done
+        assert _current(owner).problem is None
+
+
+def test_cleanup_retries_a_transient_windows_file_lock(setup: _Setup, monkeypatch: pytest.MonkeyPatch) -> None:
+    unlink: Callable[..., None] = Path.unlink
+    denied: list[Path] = []
+
+    def transient(path: Path, *, missing_ok: bool = False) -> None:
+        if path.name == _NAMES[0] and path.parent.name == "Pack" and not denied:
+            denied.append(path)
+            raise PermissionError(13, "Sharing violation", str(path), 32)
+        unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", transient)
+    with _running(setup) as owner:
+        _download(setup, owner)
+        _until(lambda: _settled(owner))
+    assert len(denied) == 1
+
+
 def _status(owner: AutomationOwner) -> dict[str, object]:
     answer: ControlResponse = owner.handle(
         _request("episode_states", {"anilist_id": 500, "numbers": [3]}, command_id="states-1")
@@ -181,6 +295,10 @@ def test_a_finished_episode_is_published_whole_handed_off_released_and_its_stagi
         data: Path = _download(setup, owner)
         _until(lambda: _settled(owner))
         status: dict[str, object] = _status(owner)
+        snapshot: ControlResponse = owner.handle(_request("status"))
+        materials: list[dict[str, object]] = cast("list[dict[str, object]]", snapshot.result["materials"])
+        group_id: str | None = _current(owner).assignments[0].group_id
+        assert any(row.get("group_id") == group_id and row["stage"] == "waiting" for row in materials)
 
     stored: AcquisitionConfirmation = _stored(setup)
     assert stored.manifest == ()
@@ -301,39 +419,40 @@ def test_a_publication_step_taken_on_an_older_saved_step_is_discarded(
 
 
 @pytest.mark.parametrize("recovered", [False, True])
-def test_failed_cleanup_skips_polling_and_retries_once_after_restart(
+def test_failed_cleanup_exhausts_bounded_retries_and_restarts_its_budget_after_restart(
     setup: _Setup, monkeypatch: pytest.MonkeyPatch, *, recovered: bool
 ) -> None:
-    checked: list[str] = []
-
-    def verify(path: Path, item: PublishedFile) -> bool:
-        checked.append(item.name)
-        return published_copy(path, item)
+    attempts: list[int] = []
 
     def refuse(*args: object) -> None:
+        attempts.append(len(attempts))
         raise OSError(13, "Access is denied")
 
-    monkeypatch.setattr(automation_module, "published_copy", verify)
     monkeypatch.setattr("anishift.application.automation.clean_staging", refuse)
     with _running(setup) as owner:
         data: Path = _download(setup, owner)
         _until(lambda: _current(owner).problem == automation_module._CLEANUP_FAILED)
-        assert owner._on_owner(owner._uncleaned) == ()
+        _until(lambda: len(attempts) == automation_module._FINALIZE_ATTEMPTS)
+        assert owner._on_owner(owner._pending_completion) == ()
         assert owner.admit_episode(
             "admit-2", replace(_choice(4), reference=replace(_choice(4).reference, info_hash="next"))
         ).ok
         polled: int = setup.network.info_calls
         _until(lambda: setup.network.info_calls > polled + 5)
-        assert checked == _NAMES
+        assert len(attempts) == automation_module._FINALIZE_ATTEMPTS
+        assert _stored(setup).manifest
+        assert not _stored(setup).cleaned
+        assert (data / "Pack" / _NAMES[0]).read_bytes() == _VIDEO
     if recovered:
         monkeypatch.setattr("anishift.application.automation.clean_staging", clean_staging)
     with _running(setup) as owner:
-        _until(lambda: len(checked) == len(_NAMES) * 2)
         if recovered:
             _until(lambda: _settled(owner))
+        else:
+            _until(lambda: len(attempts) == automation_module._FINALIZE_ATTEMPTS * 2)
         polled = setup.network.info_calls
         _until(lambda: setup.network.info_calls > polled + 5)
-        assert checked == _NAMES * 2
+        assert _stored(setup).cleaned is recovered
 
     assert _stored(setup).problem == (None if recovered else automation_module._CLEANUP_FAILED)
     assert data.parent.exists() is not recovered
@@ -534,6 +653,7 @@ def test_stop_during_copy_preserves_staging_and_blocks_publication(
 def test_cleanup_requires_release_and_the_preserved_copy_even_after_ready_relocation(
     setup: _Setup, monkeypatch: pytest.MonkeyPatch, proof: str
 ) -> None:
+    release: Callable[[frozenset[str]], frozenset[str]] = setup.network.release_completed
     monkeypatch.setattr(setup.network, "release_completed", lambda hashes: frozenset())
     with _running(setup) as owner:
         data: Path = _download(setup, owner)
@@ -555,17 +675,22 @@ def test_cleanup_requires_release_and_the_preserved_copy_even_after_ready_reloca
             assert move is not None
             ready.execute(move)
             assert owner._on_owner(lambda: owner._save(owner._relocated_state(move)))
-        result: dict[str, str | None] = owner._clean_released(
-            (item,), frozenset() if proof == "held" else frozenset({_HASH})
-        )
+    if proof != "held":
+        monkeypatch.setattr(setup.network, "release_completed", release)
+    with _running(setup) as owner:
+        if proof != "held":
+            _until(lambda: _settled(owner))
+        else:
+            assert not _current(owner).cleaned
 
     if proof == "ready":
-        assert result == {item.operation_id: None}
+        assert _stored(setup).manifest == ()
         assert not data.parent.exists()
         assert (setup.root / "ready" / _NAMES[0]).read_bytes() == _VIDEO
     else:
         assert (data / "Pack" / _NAMES[0]).read_bytes() == _VIDEO
-        assert result == ({} if proof == "held" else {item.operation_id: None})
+        assert _stored(setup).manifest == item.manifest
+        assert _stored(setup).cleaned is (proof != "held")
 
 
 def test_episode_states_follow_an_episode_from_ordering_to_its_ready_set(setup: _Setup) -> None:
@@ -621,13 +746,90 @@ def test_cleanup_with_a_protected_original_finishes_once_without_rehashing_on_re
     with _running(setup) as owner:
         data: Path = _download(setup, owner)
         _until(lambda: _settled(owner))
-        assert owner._on_owner(owner._uncleaned) == ()
+        assert owner._on_owner(owner._pending_completion) == ()
     first: list[str] = list(checked)
     with _running(setup) as owner:
-        assert owner._on_owner(owner._uncleaned) == ()
+        assert owner._on_owner(owner._pending_completion) == ()
 
     assert first == _NAMES
     assert checked == first
     assert _stored(setup).cleaned
     assert _stored(setup).problem is None
+    assert _stored(setup).manifest
+    assert _stored(setup).assignments[0].publication is not None
     assert (data / "Pack" / _NAMES[0]).read_bytes() == _VIDEO
+
+
+@pytest.mark.parametrize("terminal", ["complete", "failed"])
+def test_a_new_episode_from_a_terminal_pack_gets_one_new_transfer_after_restart(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch, terminal: str
+) -> None:
+    def release(hashes: frozenset[str]) -> frozenset[str]:
+        setup.network.released.append(hashes)
+        for info_hash in hashes:
+            setup.network.tracked.pop(info_hash, None)
+            setup.network.per_hash.pop(info_hash, None)
+        return hashes
+
+    action: Callable[[str, str], None] = setup.network.transfer_action
+
+    def control(info_hash: str, requested: str) -> None:
+        action(info_hash, requested)
+        if requested == "cancel":
+            setup.network.tracked.pop(info_hash, None)
+            setup.network.per_hash.pop(info_hash, None)
+
+    monkeypatch.setattr(setup.network, "release_completed", release)
+    monkeypatch.setattr(setup.network, "transfer_action", control)
+    with _running(setup) as owner:
+        assert owner.admit_episode("admit-5", _choice(5)).ok
+        data: Path = _download(setup, owner)
+        if terminal == "complete":
+            (data / "Pack" / "Neko to Ryuu - 05.mkv").write_bytes(b"v" * 420)
+            _until(lambda: _settled(owner))
+        else:
+            assert owner.handle(
+                _request("transfer", {"info_hash": _HASH, "action": "cancel"}, command_id="cancel-1")
+            ).ok
+            _until(lambda: _current(owner).state is AcquisitionState.FAILED)
+        previous: AcquisitionConfirmation = _current(owner)
+    with _running(setup) as owner:
+        admitted: ControlResponse = owner.admit_episode("admit-4", _choice(4))
+        assert admitted.ok
+        _until(lambda: len(setup.network.metadata_added) == 2)
+        duplicate: ControlResponse = owner.admit_episode("duplicate-3", _choice(3))
+        assert (duplicate.ok, duplicate.reason) == (False, "episode_admitted")
+        setup.network.deliver(_HASH)
+        _until(lambda: owner.state.acquisitions[-1].content_started)
+        assert len(owner.state.acquisitions) == 2
+        assert owner.state.acquisitions[0] == previous
+        assert owner.state.acquisitions[-1].operation_id != previous.operation_id
+        assert setup.network.metadata_added[1][2] != data
+    assert len(setup.network.metadata_added) == 2
+
+
+def test_lost_handed_off_files_report_a_problem_without_holding_the_remaining_pack(
+    setup: _Setup,
+) -> None:
+    with _running(setup) as owner:
+        assert owner.admit_episode("admit-4", _choice(4)).ok
+        data: Path = _download(setup, owner)
+        setup.network.per_hash[_HASH] = tuple(
+            replace(item, progress=0.0) if item.index in {2, 3} else item for item in setup.network.per_hash[_HASH]
+        )
+        setup.network.tracked[_HASH] = replace(
+            setup.network.tracked[_HASH], state="downloading", progress=0.5, amount_left=451
+        )
+        _until((setup.root / _NAMES[0]).exists)
+        _until(
+            lambda: (publication := _current(owner).assignments[1].publication) is not None and publication.handed_off
+        )
+        (setup.root / _NAMES[0]).unlink()
+        (data / "Pack" / _NAMES[0]).unlink()
+        (data / "Pack" / "Neko to Ryuu - 04.mkv").write_bytes(b"v" * 410)
+        (data / "Pack" / "Neko to Ryuu - 04.ass").write_bytes(b"s" * 41)
+        setup.network.finish(_HASH)
+        _until(lambda: _settled(owner))
+        assert _status(owner)["reason"] == "publication_missing"
+    assert frozenset({_HASH}) in setup.network.released
+    assert (setup.root / "Neko to Ryuu - 04.mkv").read_bytes() == b"v" * 410

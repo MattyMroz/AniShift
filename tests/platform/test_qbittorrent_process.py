@@ -144,6 +144,43 @@ def test_uncertain_or_taken_over_process_is_never_closed(
             manager.close()
 
 
+@pytest.mark.parametrize("ownership", ["owned", "taken_over", "pid_reused", "closed"])
+def test_finalizable_hashes_requires_a_matching_managed_process_or_release_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ownership: str
+) -> None:
+    executable: Path = bundled_binary_path(Binary.QBITTORRENT, root=tmp_path / "bin")
+    monkeypatch.setattr(
+        processes,
+        "_process_identity",
+        lambda pid: None if ownership == "closed" else (789 if ownership == "pid_reused" else 456, str(executable)),
+    )
+    with httpx.Client() as http:
+        manager: ManagedQBittorrent = ManagedQBittorrent(tmp_path / "profile", http=http, bin_root=tmp_path / "bin")
+        manager._state = processes._ProcessState(
+            pid=123,
+            created=456,
+            executable=str(executable),
+            hashes=frozenset({"a", "b"}),
+            taken_over=ownership == "taken_over",
+            released=frozenset({"b"}),
+        )
+        assert manager.finalizable_hashes(frozenset({"a", "b", "foreign"})) == (
+            frozenset({"a", "b"}) if ownership == "owned" else frozenset({"b"})
+        )
+
+
+def test_process_exit_can_outlast_startup_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    elapsed: list[float] = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(time, "sleep", lambda delay: elapsed.__setitem__(0, elapsed[0] + delay))
+    monkeypatch.setattr(ManagedQBittorrent, "_matches_process", lambda self, state: elapsed[0] < 30.0)
+    with httpx.Client() as http:
+        manager: ManagedQBittorrent = ManagedQBittorrent(tmp_path / "profile", http=http)
+        manager._wait_for_exit(processes._ProcessState())
+    assert elapsed[0] == 30.0
+    assert processes._START_TIMEOUT_S == 15.0
+
+
 def test_an_open_own_window_keeps_ownership_and_blocks_only_the_automatic_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

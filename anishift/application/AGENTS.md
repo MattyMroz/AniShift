@@ -205,7 +205,13 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   Worker merges preserve owner-written publications and manifests. Cleanup requires manager release
   and matching file identity plus digest in root or proven ReadyStore destinations; unproven originals
   stay staged. Successful cleanup is recorded even when protected files remain, so polling never
-  rehashes them. Only manifest files and empty directories are removed; I/O failures retry after restart.
+  rehashes them. Compact evidence only when cleanup confirms the operation directory is gone;
+  protected originals retain their manifest and publication proofs. Only manifest files and empty
+  directories are removed; real I/O failures retry in process within a bounded budget, then after
+  restart. Waiting for release or a deferred relocation is not a failure; retries stop while the client
+  cannot make progress (external, taken over, closed) and resume on poll, `ready_retry` or restart.
+  A handed-off set no longer requires its staging originals for transfer completion; missing published
+  files before processing project `publication_missing`, without blocking release of the remaining episodes.
   Schema 3 records predating `manifest`, `cleaned` and `publication` remain readable.
   `automation.py`, `acquisition_staging.py`, `watch_state.py`
 - `ProcessingRequest` zachowuje pełny niejawny dla UI `RunSettingsSnapshot`, wybrane
@@ -246,9 +252,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `AutomationOwner.admit_episode` to synchroniczna bramka I-06: jeden zapis przyjęcia
   `ADMITTED` (selektywne `AcquisitionConfirmation` z `EpisodeAssignment`) razem z receipt,
   bez skutków qB; `ADMITTED` nie jest uzgadniane ani wznawiane, a komenda
-  `transfer` na jego hash dostaje `transfer_not_started`. Kolejne przyjęcie tego samego hasha
-  dopisuje przypisanie do tego samego potwierdzenia; hash legacy, `COMPLETE`, `FAILED` albo
-  z kilkoma rekordami → `transfer_recorded` (priorytety M-06 nietknięte). Konflikt liczy
+  `transfer` na jego hash dostaje `transfer_not_started`. A new episode key joins the only active
+  selective transfer of its hash; after `COMPLETE` or `FAILED` it gets a new operation and staging.
+  Release the previous client entry before adding the same hash again; old episode keys remain protected.
+  Legacy hashes and multiple unfinished transfers refuse with `transfer_recorded`. Konflikt liczy
   `control.episode_conflict`: klucz → `episode_admitted`, `LegacyScope` zapisany albo odczytany
   z subskrypcji (taken, ORDERED/COMPLETE, stare potwierdzenia) → `episode_possibly_admitted`.
   G i subskrypcje w E2 pozostają legacy-unkeyed (przed przyjęciem brak nazwy pliku dla H1;

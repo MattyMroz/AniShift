@@ -330,7 +330,7 @@ def test_a_legacy_download_after_the_gate_adds_nothing_for_the_admitted_episode(
         )
 
     assert not blocked.ok
-    assert blocked.reason == "download_recorded"
+    assert blocked.reason == "episode_admitted"
     assert library.network.added == []
     assert len(library.store.load().acquisitions) == 1
 
@@ -524,7 +524,7 @@ def test_a_panel_download_through_the_resident_channel_is_held_by_the_admitted_e
         with pytest.raises(ControlError) as refusal:
             session.download((_selection(_release(27)),), anilist_id=_ENTRY, episode_offset=24)
 
-    assert refusal.value.reason == "download_recorded"
+    assert refusal.value.reason == "episode_admitted"
     assert library.network.added == []
 
 
@@ -566,7 +566,7 @@ def test_a_panel_download_read_without_season_numbering_holds_the_whole_entry(
             assert owner.admit_episode("admit-1", _choice(3)).ok
             with pytest.raises(ControlError) as refusal:
                 session.download((choice,), anilist_id=_ENTRY)
-            assert refusal.value.reason == "download_recorded"
+            assert refusal.value.reason == "episode_admitted"
         else:
             assert session.download((choice,), anilist_id=_ENTRY).count == 1
             same: ControlResponse = owner.admit_episode("admit-1", _choice(3))

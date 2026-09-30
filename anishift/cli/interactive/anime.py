@@ -24,7 +24,6 @@ from anishift.application import (
     AppService,
     CatalogOrder,
     DownloadReceipt,
-    EntryGroup,
     EpisodeBatch,
     EpisodeFile,
     EpisodeFiles,
@@ -134,8 +133,19 @@ _BATCH_STATES: Final[dict[str, str]] = {
     "episode_not_aired": "Nie wyemitowano",
     "episode_admitted": "Zlecono",
     "episode_possibly_admitted": "Już zlecone?",
+    "transfer_recorded": "Konflikt hasha",
+    "source_failed": "Błąd źródła",
+    "legacy_unreadable": "Błąd zleceń",
+    "episode_file_unresolved": "Wskaż plik",
+    "transfer_failed": "Błąd pobierania",
+    "publication_failed": "Błąd eksportu",
+    "waiting_previous_transfer": "Czeka na stare",
+    "publication_missing": "Brak pliku",
 }
-"""Stan column label of each owner batch result reason."""
+"""Shared column labels for owner batch and episode status reasons."""
+
+_EPISODE_ADMITTED: Final[str] = "Odcinek już zlecony"
+"""Notice shown when the owner refuses an already admitted episode."""
 
 _EPISODE_STATE_LABELS: Final[dict[str, str]] = {
     "ordered": "Zlecono",
@@ -221,13 +231,6 @@ _COMMAND_FAILED: Final[str] = (
     "Rezydent nie wykonał polecenia. Jeśli AniShift był właśnie aktualizowany, uruchom go ponownie."
 )
 """Safe explanation shared by failed catalogue commands and local worker defects."""
-
-_ENTRY_GROUPS: Final[dict[EntryGroup, str]] = {
-    EntryGroup.SEASON: "SEZONY I CZĘŚCI",
-    EntryGroup.EXTRA: "Dodatki",
-    EntryGroup.OTHER: "FILMY I INNE",
-}
-"""Section headings of the franchise projection."""
 
 _ENTRY_STATUSES: Final[dict[str, str]] = {
     "FINISHED": "zakończony",
@@ -408,7 +411,7 @@ class _Row:
 class AnimeController:
     """Own one ephemeral release search while AppService owns the network boundary."""
 
-    def __init__(  # noqa: PLR0915
+    def __init__(
         self,
         service: AppService,
         invalidate: Callable[[], None],
@@ -460,6 +463,12 @@ class AnimeController:
         self._resume_available: bool = False
         self._draft: SubscriptionDraft | None = None
         self._clock: Callable[[], float] = time
+        self._initialize_episode_state()
+        if self._acquisition is None:
+            self._screen = _Screen.PROBLEM
+            self._problem = _UNAVAILABLE
+
+    def _initialize_episode_state(self) -> None:
         self._franchise: Franchise | None = None
         self._entry: FranchiseEntry | None = None
         self._listing: EpisodeListing | None = None
@@ -482,9 +491,6 @@ class AnimeController:
         self._offer_view: EpisodeOfferView | None = None
         self._files: EpisodeFiles | None = None
         self._confirm_choice: RankedCandidate | None = None
-        if self._acquisition is None:
-            self._screen = _Screen.PROBLEM
-            self._problem = _UNAVAILABLE
 
     def handle_key(self, key: str) -> AnimeResult:
         """Apply one normalized terminal key without render-time I/O."""
@@ -988,7 +994,7 @@ class AnimeController:
         if not episode.aired:
             self._notice = f"E{episode.number} jeszcze nie wyemitowano"
         elif not self._episode_available(episode):
-            self._notice = "Już zlecone? · P ponów"
+            self._notice = self._ordered_episode_notice(episode)
         elif episode.number in self._episode_marks:
             self._episode_marks.remove(episode.number)
         else:
@@ -1006,7 +1012,9 @@ class AnimeController:
         )
         if not keys:
             self._notice = (
-                "Już zlecone? · P ponów" if highlighted.aired else f"E{highlighted.number} jeszcze nie wyemitowano"
+                self._ordered_episode_notice(highlighted)
+                if highlighted.aired
+                else f"E{highlighted.number} jeszcze nie wyemitowano"
             )
             return
         self._sending.update(keys)
@@ -1016,6 +1024,18 @@ class AnimeController:
             name=_WORKER_NAME,
             daemon=True,
         ).start()
+
+    def _ordered_episode_notice(self, episode: ListedEpisode) -> str:
+        status: EpisodeStatus | None = (
+            self._episode_states.get(EpisodeKey(self._listing.anilist_id, episode.number))
+            if self._listing is not None
+            else None
+        )
+        return (
+            "Już zlecone? · P ponów"
+            if status is not None and status.state == "possibly_admitted"
+            else _EPISODE_ADMITTED
+        )
 
     def _episode_available(self, episode: ListedEpisode) -> bool:
         if self._listing is None or not episode.aired:
@@ -2682,6 +2702,8 @@ def _stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:  
         return refusal_text(problem), ""
     if isinstance(problem, ControlError) and problem.reason == "response_too_large":
         return "Odpowiedź rezydenta jest za duża", ""
+    if isinstance(problem, ControlError) and problem.reason == "episode_admitted":
+        return _EPISODE_ADMITTED, ""
     if isinstance(problem, ControlError) and problem.code is ControlErrorCode.STALE_PREVIEW:
         return "Wybór lub konflikt zmienił się", "Otwórz podgląd ponownie"
     if isinstance(problem, ControlError) and problem.reason == "download_recorded":
@@ -2707,8 +2729,8 @@ def _stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:  
 
 
 def _episode_status_label(status: EpisodeStatus) -> str:
-    if status.reason == "episode_file_unresolved":
-        return "Wskaż plik"
+    if status.reason in _BATCH_STATES:
+        return _BATCH_STATES[status.reason]
     if status.state == "not_ordered":
         return "Nie zamówiono"
     return _EPISODE_STATE_LABELS.get(status.state, "Zlecono")

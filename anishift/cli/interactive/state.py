@@ -664,7 +664,11 @@ class StateController:
         if self._selected >= len(materials):
             return
         item: Mapping[str, object] = materials[self._selected]
-        if key == "c" and (item.get("stage") == "processing" or item.get("admitted_processing")) and item.get("run_id"):
+        if key != "c":
+            return
+        if item.get("stage") == "download" and item.get("info_hash"):
+            self._command("transfer", {"info_hash": item["info_hash"], "action": "cancel"})
+        elif (item.get("stage") == "processing" or item.get("admitted_processing")) and item.get("run_id"):
             self._command("cancel", {"run_id": item["run_id"]})
 
     def _load_history(self) -> None:
@@ -1231,6 +1235,8 @@ class StateController:
         if self._selected >= len(materials):
             return ""
         item: Mapping[str, object] = materials[self._selected]
+        if item.get("stage") == "download" and item.get("info_hash"):
+            return "C anuluj całe zlecenie"
         if not (item.get("stage") == "processing" or item.get("admitted_processing")) or not item.get("run_id"):
             return ""
         scope: object = item.get("group_ids", [])
@@ -1344,6 +1350,8 @@ class StateController:
     def _download_progress(self, item: Mapping[str, object]) -> tuple[str, float | None]:  # noqa: PLR0911
         fraction: object = item.get("progress")
         measured: float | None = float(fraction) if isinstance(fraction, (int, float)) else None
+        if item.get("reason") == "finalization_failed":
+            return "Finalizacja", None
         if item.get("stage") == "waiting":
             return ("Wstrzymano" if self._snapshot.get("paused") else "Przygotowanie"), None
         if item.get("problem"):
@@ -1394,7 +1402,7 @@ class StateController:
             if item.get("acquisition_state") in {"pending_send", "accepted", "complete"}
             and (
                 item.get("stage") == "download"
-                or (item.get("stage") == "waiting" and item.get("reason") == "preparing")
+                or (item.get("stage") == "waiting" and item.get("reason") in {"preparing", "finalization_failed"})
             )
         ]
         preparing: list[Mapping[str, object]] = [

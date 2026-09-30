@@ -7,9 +7,11 @@ import ntpath
 import os
 import stat
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Final
 
+from anishift.application.ready import retry_file_release
 from anishift.paths import TEMP_DIRECTORY
 
 if TYPE_CHECKING:
@@ -99,11 +101,11 @@ def file_stamp(path: Path) -> FileStamp | None:
     return status.st_size, status.st_mtime_ns, status.st_dev, status.st_ino
 
 
-def copy_staged(source: Path, copy: Path, size: int) -> tuple[str, FileStamp]:
+def copy_staged(source: Path, destination: Path, size: int) -> tuple[str, FileStamp]:
     """Copy one finished staged file into private storage, returning its content digest and the copy's stamp."""
     before: FileStamp | None = file_stamp(source)
-    copy.parent.mkdir(parents=True, exist_ok=True)
-    copy = staged_file(copy.parent, copy.name)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    copy: Path = staged_file(destination.parent, destination.name)
     copy.unlink(missing_ok=True)
     digest: HASH = hashlib.sha256()
     try:
@@ -192,8 +194,8 @@ def clean_staging(  # noqa: PLR0913 - every protected fact stays an explicit cal
     manifest: Sequence[str],
     kept: frozenset[str],
     exported: frozenset[int],
-) -> None:
-    """Remove only the operation's disposable staged files, preserving unproven originals."""
+) -> bool:
+    """Remove disposable staged files and report whether the operation directory is gone."""
     data: Path = staging_path(workspace_root, operation_id)
     private: Path = publication_path(workspace_root, operation_id)
     names: tuple[str, ...] = (
@@ -212,6 +214,7 @@ def clean_staging(  # noqa: PLR0913 - every protected fact stays an explicit cal
     }
     for folder in (*sorted(folders, key=lambda item: len(item.parts), reverse=True), private, data, data.parent):
         _remove_empty(folder)
+    return not _present(data.parent)
 
 
 def _operation_path(workspace_root: Path, operation_id: str, part: str) -> Path:
@@ -239,14 +242,14 @@ def _remove_file(path: Path) -> None:
         return
     if not stat.S_ISREG(status.st_mode):
         raise OSError(_NOT_A_FILE)
-    path.unlink(missing_ok=True)
+    retry_file_release(partial(path.unlink, missing_ok=True))
 
 
 def _remove_empty(folder: Path) -> None:
     if folder.is_symlink() or folder.is_junction():
         raise OSError(_NOT_A_FILE)
     try:
-        folder.rmdir()
+        retry_file_release(folder.rmdir)
     except FileNotFoundError:
         return
     except OSError:

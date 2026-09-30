@@ -259,7 +259,13 @@ class TransferInspector:
         if finished and transfer.info_hash.casefold() in self._files:
             key: str = transfer.info_hash.casefold()
             self._files[key] = replace(self._files[key], stale=True)
-        whole: bool = finished and bool(selected) and len(complete) == len(names)
+        handed_off: frozenset[str] = frozenset(
+            path
+            for assignment in acquisition.assignments
+            if assignment.publication is not None and assignment.publication.handed_off
+            for _index, path, _size in assignment.files
+        )
+        whole: bool = finished and bool(selected) and set(names) <= set(complete) | handed_off
         candidate: AcquisitionConfirmation = replace(
             acquisition,
             directory=relative.as_posix() if relative.parts else "",

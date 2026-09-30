@@ -208,6 +208,10 @@ def test_selected_pack_survives_owner_and_qb_restart_to_two_library_results_with
                 "not_ordered",
                 "ready",
             ]
+            wait_for(
+                lambda: len(cast("list[object]", client.call("status")["library"])) == 2,
+                "two library results",
+            )
             status = client.call("status")
             assert len(cast("list[object]", status["library"])) == 2
             assert WatchStateStore(tmp_path / "watch/state.json").load().acquisitions == state.acquisitions

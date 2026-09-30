@@ -43,6 +43,9 @@ _START_ATTEMPTS: Final[int] = 3
 _START_TIMEOUT_S: Final[float] = 15.0
 """Readiness deadline for one private process launch."""
 
+_EXIT_TIMEOUT_S: Final[float] = 60.0
+"""Deadline for an owned process to flush active downloads and exit after shutdown."""
+
 _POLL_S: Final[float] = 0.25
 """Delay between readiness checks during process startup and shutdown."""
 
@@ -377,6 +380,19 @@ class ManagedQBittorrent:
             self._client = None
             logger.info("Private torrent client closed on request")
 
+    def finalizable_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
+        """Return released or owned live-process hashes without network or process startup."""
+        with self._lock:
+            state: _ProcessState | None = self._state
+            if state is None:
+                try:
+                    state = _STATE.validate_json((self._root / "process.json").read_bytes(), strict=True)
+                except FileNotFoundError:
+                    return frozenset()
+            if state.taken_over or not self._matches_process(state):
+                return state.released & hashes
+            return (state.hashes | state.released) & hashes
+
     def close(self) -> None:
         """Release management while leaving active downloads available for recovery."""
         with self._lock:
@@ -560,14 +576,14 @@ class ManagedQBittorrent:
             raise _unavailable(message)
 
     def _wait_for_exit(self, state: _ProcessState) -> None:
-        deadline: float = time.monotonic() + _START_TIMEOUT_S
+        deadline: float = time.monotonic() + _EXIT_TIMEOUT_S
         while self._matches_process(state) and time.monotonic() < deadline:
             time.sleep(_POLL_S)
         if self._matches_process(state):
             message: str = "The private torrent client did not finish shutting down"
             raise _unavailable(message)
         if self._child is not None:
-            self._child.wait(timeout=_START_TIMEOUT_S)
+            self._child.wait(timeout=_EXIT_TIMEOUT_S)
             self._child = None
 
 

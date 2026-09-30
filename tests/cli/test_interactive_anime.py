@@ -1117,6 +1117,25 @@ def test_incomplete_or_invalid_download_counts_do_not_invent_an_outcome(details:
     assert "Wysłano" not in _frame(controller)
 
 
+def test_legacy_download_of_an_admitted_episode_reports_a_definite_order_without_client_hint() -> None:
+    def download(choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
+        del choices
+        raise ControlError("Already admitted", reason="episode_admitted", answered=True)
+
+    controller: AnimeController = _controller(
+        _service(search=lambda query: _catalog((_choice("11"),)), download=download)
+    )
+    _type(controller, "oshi")
+    controller.handle_key("enter")
+    _settle(controller)
+    for key in ("enter", "space", "text:d"):
+        controller.handle_key(key)
+    _settle(controller)
+    assert "Odcinek już zlecony" in _frame(controller)
+    assert controller._suggestion == ""
+    assert "Sprawdź prywatny klient" not in _frame(controller)
+
+
 def test_a_failed_search_states_a_known_error_code_in_polish() -> None:
     def search(query: str) -> ReleaseCatalog:
         del query

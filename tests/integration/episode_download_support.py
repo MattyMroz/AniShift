@@ -144,10 +144,10 @@ def make_pack(root: Path) -> tuple[bytes, str]:
 def _port() -> int:
     for _attempt in range(20):
         with socket.socket() as tcp, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
-            udp.bind(("127.0.0.1", 0))
-            port: int = udp.getsockname()[1]
+            tcp.bind(("127.0.0.1", 0))
+            port: int = tcp.getsockname()[1]
             try:
-                tcp.bind(("127.0.0.1", port))
+                udp.bind(("127.0.0.1", port))
             except OSError:
                 continue
             return port

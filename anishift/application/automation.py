@@ -31,6 +31,7 @@ from anishift.application.acquisition_staging import (
     SetPublication,
     clean_staging,
     copy_staged,
+    file_stamp,
     lexical_path,
     publication_path,
     publish_set,
@@ -302,6 +303,9 @@ _ADMISSION_REFUSALS: Final[Mapping[AdmissionConflict, str]] = MappingProxyType(
 )
 """Reason returned for each duplicate a new episode admission would create."""
 
+_EPISODE_ADMITTED: Final[str] = "This episode was already admitted"
+"""Reason a legacy download refuses an episode already admitted through its catalogue key."""
+
 _LEGACY_UNREADABLE: Final[str] = "Subscription orders could not be read, so no episode was admitted"
 """Reason returned when the legacy orders an admission must respect cannot be read."""
 
@@ -332,6 +336,9 @@ _PAUSE_ACTION: Final[str] = "pause"
 
 _ACTION_ATTEMPTS: Final[int] = 3
 """Attempts one refused transfer action gets before the pause reports it instead of a done stop."""
+
+_FINALIZE_ATTEMPTS: Final[int] = 3
+"""Real failures allowed per owner session while releasing, cleaning or relocating completed work."""
 
 _STOPPED_TRANSFER_STATES: Final[frozenset[str]] = frozenset(
     {"stoppedDL", "pausedDL", "stoppedUP", "pausedUP", "error", "missingFiles"}
@@ -367,7 +374,7 @@ _SEND_CHECKS: Final[int] = 5
 _METADATA_STOPPED: Final[str] = "This download was stopped before its file list arrived and cannot resume safely"
 """Problem recorded when resuming a transfer without metadata would let the client fetch every file."""
 
-_CLEANUP_FAILED: Final[str] = "The download staging could not be cleaned; it is retried after a restart"
+_CLEANUP_FAILED: Final[str] = "Download finalization failed; bounded retries and restart can retry it"
 """Problem recorded on a released selective transfer whose own staging is still left."""
 
 _NO_SUBSCRIPTIONS: Final[str] = "This resident was composed without a torrent client"
@@ -586,6 +593,9 @@ class AutomationOwner:
         }
         self._ready_inflight: set[str] = set()
         self._ready_problems: dict[str, str] = {}
+        self._ready_attempts: dict[str, int] = {}
+        self._ready_parked: set[str] = set()
+        self._completion_parked: set[str] = set()
         self._recovery_started: bool = False
         self._recovering: bool = False
         service.retain_runs(
@@ -624,6 +634,14 @@ class AutomationOwner:
         self._transfers_at: float | None = None
         self._send_misses: dict[str, int] = {}
         self._transfers_inspecting: bool = False
+        self._transfer_release_lock: threading.Lock = threading.Lock()
+        self._completion_attempts: dict[str, int] = {}
+        self._completion_done: set[str] = {
+            item.operation_id
+            for item in self._state.acquisitions
+            if item.state is AcquisitionState.COMPLETE and (not item.selective or item.cleaned)
+        }
+        self._completion_inflight: bool = False
         self._action_attempts: dict[str, tuple[str, int]] = {}
         self._transfers_problem: str | None = None
         self._transfers_failure: tuple[str, str] | None = None
@@ -866,10 +884,8 @@ class AutomationOwner:
         self._active_io -= 1
         if problem is not None:
             self._transfers_problem = problem
-        uncleaned: tuple[AcquisitionConfirmation, ...] = self._uncleaned(retry=True)
-        if problem is None and uncleaned and not self._shutting_down:
-            self._active_io += 1
-            self._pool.submit(self._release_completed, frozenset(item.info_hash for item in uncleaned), uncleaned)
+        if problem is None:
+            self._finalize_transfers()
         self._publish_state()
 
     def _loop(self) -> None:
@@ -1334,6 +1350,10 @@ class AutomationOwner:
                     self._refresh_transfer_cadence()
                 return ControlResponse.succeeded({"attached": True, "navigation": self._take_panel_navigation()})
             case "ready_retry":
+                self._ready_attempts.clear()
+                self._ready_parked.clear()
+                self._completion_parked.clear()
+                self._finalize_transfers()
                 for request_id, result in tuple(self._run_results.items()):
                     self._prepare_ready(result, None, self._accepted_recipe(request_id))
                 self._retry_ready()
@@ -1593,7 +1613,13 @@ class AutomationOwner:
         materials = {
             group_id: row
             for group_id, row in materials.items()
-            if group_id in requests or not row.get("downloaded") or row.get("source_present")
+            if row.get("episode_state") != "ready"
+            and (
+                group_id in requests
+                or row.get("admission_id")
+                or not row.get("downloaded")
+                or row.get("source_present")
+            )
         }
         completed: dict[str, frozenset[str]] = {}
         for group_id, request in requests.items():
@@ -1697,7 +1723,7 @@ class AutomationOwner:
         return Path(primary or names[0]).name if names else group_id
 
     def _download_materials(self, acquisition: AcquisitionConfirmation) -> dict[str, dict[str, object]]:
-        transfer = next(
+        transfer: TorrentInfo | None = next(
             (
                 item
                 for item in (() if self._transfers is None else self._transfers.snapshot())
@@ -1705,7 +1731,9 @@ class AutomationOwner:
             ),
             None,
         )
-        files = () if self._transfers is None else self._transfers.declared(acquisition.info_hash)
+        files: tuple[TorrentFile, ...] = (
+            () if self._transfers is None else self._transfers.declared(acquisition.info_hash)
+        )
         measured: dict[str, float] = {
             item.name.replace("\\", "/"): item.progress for item in files if item.priority > 0
         }
@@ -1726,6 +1754,8 @@ class AutomationOwner:
             "active": active and acquisition.state is AcquisitionState.ACCEPTED and not acquisition.problem,
             "problem": acquisition.problem,
         }
+        if acquisition.selective and acquisition.assignments:
+            return self._selective_materials(acquisition, common, measured)
         rows: dict[str, dict[str, object]] = {}
         for index, name, _size in acquisition.file_layout:
             relative: Path = (Path(acquisition.directory) / name).parent
@@ -1771,8 +1801,17 @@ class AutomationOwner:
                 "source_present": (self._service.workspace_root / acquisition.directory / name).is_file(),
             }
         for row in rows.values():
-            if row["downloaded"]:
-                row.update(stage="waiting", reason="preparing", active=False)
+            state: str
+            reason: str | None
+            _set_id: str | None
+            state, reason, _set_id = self._lifecycle_status(
+                acquisition, str(row["group_id"]), downloaded=bool(row["downloaded"])
+            )
+            row["episode_state"] = state
+            if state == "downloaded":
+                row.update(stage="waiting", reason=reason or "preparing", active=False)
+            if reason is not None:
+                row["problem"] = reason
         if rows or acquisition.file_layout:
             return rows
         if acquisition.state is AcquisitionState.COMPLETE:
@@ -1787,6 +1826,44 @@ class AutomationOwner:
                 "progress": None if transfer is None else transfer.progress,
             }
         }
+
+    def _selective_materials(
+        self, transfer: AcquisitionConfirmation, common: dict[str, object], measured: dict[str, float]
+    ) -> dict[str, dict[str, object]]:
+        rows: dict[str, dict[str, object]] = {}
+        for assignment in transfer.active_assignments:
+            if transfer.cleaned and not _handed_off(assignment):
+                continue
+            status: EpisodeStatus = self._assignment_status(transfer, assignment)
+            if status.state == "ready":
+                continue
+            publication: EpisodePublication | None = assignment.publication
+            group_id: str | None = assignment.group_id or _published_group(
+                frozenset(() if publication is None else (file.name for file in publication.files))
+            )
+            identity: str = group_id or assignment.admission_id
+            fractions: tuple[float | None, ...] = tuple(measured.get(path) for _index, path, _size in assignment.files)
+            downloaded: bool = _handed_off(assignment) or status.state in {"downloaded", "processing"}
+            progress: float | None = None
+            if downloaded:
+                progress = 1.0
+            elif all(value is not None for value in fractions):
+                progress = min((value for value in fractions if value is not None), default=None)
+            rows[identity] = {
+                **common,
+                "material_id": identity,
+                "group_id": group_id,
+                "admission_id": assignment.admission_id,
+                "name": Path(assignment.video_path or assignment.choice.reference.file_name or "Materiał").name,
+                "progress": progress,
+                "downloaded": downloaded,
+                "stage": "waiting" if downloaded else "download",
+                "reason": status.reason or ("preparing" if downloaded else None),
+                "acquisition_state": "complete" if downloaded else transfer.state.value,
+                "active": common["active"] if status.state == "downloading" else False,
+                "problem": status.reason,
+            }
+        return rows
 
     def _library_details(self, request: ControlRequest) -> ControlResponse:
         identifier: str | None = _text(request.payload, "set_id")
@@ -2437,19 +2514,23 @@ class AutomationOwner:
         if not paused:
             return state
         stopped: frozenset[str] = frozenset(paused)
-        acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
-            replace(
-                item,
-                requested_action="stop",
-                action_id=f"{_PAUSE_ACTION}-{token_hex(_ID_BYTES)}",
-                action_pending=True,
-                action_sent=False,
-            )
-            if item.info_hash in stopped
-            else item
-            for item in state.acquisitions
-        )
-        return replace(state, acquisitions=acquisitions, pause_owned_transfers=paused)
+        acquisitions: list[AcquisitionConfirmation] = []
+        for item in state.acquisitions:
+            updated: AcquisitionConfirmation = item
+            terminal: bool = item.state in {AcquisitionState.COMPLETE, AcquisitionState.FAILED}
+            unsent_resume: bool = item.requested_action == "resume" and item.action_pending and not item.action_sent
+            if terminal and unsent_resume:
+                updated = replace(item, requested_action=None, action_id=None, action_pending=False, action_sent=False)
+            elif not terminal and item.info_hash in stopped:
+                updated = replace(
+                    item,
+                    requested_action="stop",
+                    action_id=f"{_PAUSE_ACTION}-{token_hex(_ID_BYTES)}",
+                    action_pending=True,
+                    action_sent=unsent_resume,
+                )
+            acquisitions.append(updated)
+        return replace(state, acquisitions=tuple(acquisitions), pause_owned_transfers=paused)
 
     def _resumed_transfers(self, state: WatchState) -> WatchState:
         """Take up only the transfers this pause stopped that still carry an active order."""
@@ -3532,6 +3613,8 @@ class AutomationOwner:
             return (), _refuse(RefusalReason.PAUSED)
         existing: set[str] = {item.info_hash for item in self._state.acquisitions}
         unique: dict[str, ReleaseChoice] = {choice.release.info_hash.casefold(): choice for choice in choices}
+        if all(self._admitted_elsewhere(scopes.get(key)) for key in unique):
+            return (), ControlResponse.refused(ControlErrorCode.REFUSED, _EPISODE_ADMITTED, "episode_admitted")
         chosen: tuple[ReleaseChoice, ...] = tuple(
             choice
             for key, choice in unique.items()
@@ -3895,29 +3978,28 @@ class AutomationOwner:
     def _episode_status(self, key: EpisodeKey, legacy: tuple[LegacyScope, ...]) -> EpisodeStatus:
         matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
         if not matches:
-            conflict: AdmissionConflict | None = episode_conflict(self._state, key.anilist_id, key.number, legacy)
-            return EpisodeStatus(
-                key, "possibly_admitted" if conflict else "not_ordered", conflict.value if conflict else None
-            )
+            return self._legacy_episode_status(key, legacy)
         transfer: AcquisitionConfirmation
         assignment: EpisodeAssignment
         transfer, assignment = matches[-1]
+        return self._assignment_status(transfer, assignment)
+
+    def _assignment_status(self, transfer: AcquisitionConfirmation, assignment: EpisodeAssignment) -> EpisodeStatus:
+        key: EpisodeKey = EpisodeKey(assignment.choice.anilist_id, assignment.choice.number)
         uncertain: bool = assignment.choice.verdict is not IdentityVerdict.MATCH
         if _handed_off(assignment):
             return self._handed_off_status(key, transfer, assignment, uncertain=uncertain)
-        state: str = "ordered"
-        if transfer.content_started and _selection_confirmed(transfer):
-            state = "downloading"
         reason: str | None = "transfer_failed" if transfer.problem is not None else None
         complete: frozenset[str] = frozenset(transfer.complete_files)
-        if assignment.files and all(path in complete for _index, path, _size in assignment.files):
-            state = "downloaded"
+        downloaded: bool = bool(assignment.files) and all(path in complete for _index, path, _size in assignment.files)
+        if downloaded:
             if assignment.publication is not None and assignment.publication.problem is not None:
                 reason = "publication_failed"
         elif not self._replacement_ready(transfer):
             reason = "waiting_previous_transfer"
         if assignment.mapped and not assignment.files:
             reason = "episode_file_unresolved"
+        state, reason, _set_id = self._lifecycle_status(transfer, None, downloaded=downloaded, reason=reason)
         return EpisodeStatus(key, state, reason, assignment.admission_id, transfer.operation_id, uncertain)
 
     def _handed_off_status(
@@ -3927,23 +4009,103 @@ class AutomationOwner:
         publication: EpisodePublication | None = assignment.publication
         names: frozenset[str] = frozenset(() if publication is None else (item.name for item in publication.files))
         group_id: str | None = assignment.group_id or _published_group(names)
-        if any(item.set_id == group_id for item in self._state.ready_groups):
-            return EpisodeStatus(
-                key, "ready", None, assignment.admission_id, transfer.operation_id, uncertain, group_id
-            )
+        state: str
+        reason: str | None
+        set_id: str | None
+        state, reason, set_id = self._lifecycle_status(transfer, group_id, downloaded=True)
+        if (
+            state == "downloaded"
+            and publication is not None
+            and any(file_stamp(self._service.workspace_root / item.name) != item.stamp for item in publication.files)
+        ):
+            reason = "publication_missing"
+        return EpisodeStatus(key, state, reason, assignment.admission_id, transfer.operation_id, uncertain, set_id)
+
+    def _lifecycle_status(
+        self,
+        transfer: AcquisitionConfirmation,
+        group_id: str | None,
+        *,
+        downloaded: bool = False,
+        reason: str | None = None,
+    ) -> tuple[str, str | None, str | None]:
+        ready: ReadyGroup | None = next(
+            (item for item in self._state.ready_groups if group_id in {item.set_id, item.group_id}), None
+        )
+        if ready is not None:
+            return "ready", None, ready.set_id
         request: ProcessingRequest | None = next(
             (item for item in reversed(self._state.requests) if group_id in item.group_ids), None
         )
-        if request is None:
-            return EpisodeStatus(key, "downloaded", None, assignment.admission_id, transfer.operation_id, uncertain)
-        failed: bool = request.state in {RequestState.FAILED, RequestState.PARTIAL, RequestState.CANCELLED}
-        return EpisodeStatus(
-            key,
-            "processing_failed" if failed else "processing",
-            None,
-            assignment.admission_id,
-            transfer.operation_id,
-            uncertain,
+        if (transfer.state is AcquisitionState.COMPLETE and transfer.problem) or group_id in self._ready_problems:
+            reason = "finalization_failed"
+        if request is not None:
+            if group_id in self._succeeded_groups(request):
+                return "ready", reason, group_id
+            failed: bool = request.state in {RequestState.FAILED, RequestState.PARTIAL, RequestState.CANCELLED}
+            return "processing_failed" if failed else "processing", reason, None
+        if transfer.state in {AcquisitionState.FAILED, AcquisitionState.UNCERTAIN} or (
+            transfer.problem and transfer.state is not AcquisitionState.COMPLETE
+        ):
+            return "processing_failed", reason or "transfer_failed", None
+        if downloaded or transfer.state is AcquisitionState.COMPLETE:
+            return "downloaded", reason, None
+        started: bool = transfer.content_started and (not transfer.selective or _selection_confirmed(transfer))
+        return "downloading" if started else "ordered", reason, None
+
+    def _legacy_episode_status(self, key: EpisodeKey, legacy: tuple[LegacyScope, ...]) -> EpisodeStatus:
+        records: tuple[AcquisitionConfirmation, ...] = self._legacy_episode_records(key)
+        exact: tuple[AcquisitionConfirmation, ...] = tuple(
+            item
+            for item in records
+            if (item.legacy_scope.number if item.legacy_scope is not None else _local_number(item.episode))
+            == key.number
+        )
+        if len(exact) == len(records) == 1:
+            transfer: AcquisitionConfirmation = exact[0]
+            rows: dict[str, dict[str, object]] = self._download_materials(transfer)
+            groups: tuple[str, ...] = tuple(identifier for identifier, row in rows.items() if row.get("group_id"))
+            state: str
+            reason: str | None
+            set_id: str | None
+            state, reason, set_id = self._lifecycle_status(transfer, groups[0] if len(groups) == 1 else None)
+            return EpisodeStatus(key, state, reason, operation_id=transfer.operation_id, set_id=set_id)
+        conflict: AdmissionConflict | None = episode_conflict(self._state, key.anilist_id, key.number, legacy)
+        if conflict is not None:
+            return EpisodeStatus(key, "possibly_admitted", conflict.value)
+        for view, _target in self._episode_offers.values():
+            if view.offer.key != key or view.offer.suggestion is None:
+                continue
+            candidate: RankedCandidate = view.offer.candidates[view.offer.suggestion]
+            if self._transfer_conflict(candidate.stream.info_hash):
+                return EpisodeStatus(key, "processing_failed", AdmissionConflict.TRANSFER_RECORDED.value)
+        for receipt in reversed(self._state.command_receipts):
+            if receipt.outcome.get("kind") != "episode_download":
+                continue
+            batch: EpisodeBatch = decode_view(EpisodeBatch, json.loads(str(receipt.outcome["batch"])))
+            result: EpisodeResult | None = next((item for item in batch.results if item.key == key), None)
+            if result is not None:
+                return EpisodeStatus(
+                    key, "processing_failed" if result.reason == "transfer_recorded" else "not_ordered", result.reason
+                )
+        return EpisodeStatus(key, "not_ordered")
+
+    def _legacy_episode_records(self, key: EpisodeKey) -> tuple[AcquisitionConfirmation, ...]:
+        service: SubscriptionService | None = self._service.subscriptions
+        subscriptions: set[str] = {
+            item.subscription_id
+            for item in (() if service is None else service.list())
+            if item.anilist_id == key.anilist_id
+        }
+        return tuple(
+            item
+            for item in self._state.acquisitions
+            if (item.legacy_scope is not None and item.legacy_scope.covers(key.anilist_id, key.number))
+            or (
+                item.legacy_scope is None
+                and item.subscription_id in subscriptions
+                and _local_number(item.episode) in {None, key.number}
+            )
         )
 
     def _episode_assignments(self, key: EpisodeKey) -> tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...]:
@@ -3959,11 +4121,7 @@ class AutomationOwner:
         scopes: tuple[LegacyScope, ...] | None = self._legacy_scopes()
         if scopes is None:
             raise ValueError(_LEGACY_UNREADABLE)
-        references: list[str] = [
-            _episode_conflict_reference(item)
-            for item in self._state.acquisitions
-            if item.legacy_scope is not None and item.legacy_scope.covers(key.anilist_id, key.number)
-        ]
+        references: list[str] = [_episode_conflict_reference(item) for item in self._legacy_episode_records(key)]
         service: SubscriptionService | None = self._service.subscriptions
         if service is not None:
             for subscription in service.list():
@@ -3985,13 +4143,6 @@ class AutomationOwner:
                     f"{item.info_hash}:{item.acquisition_id}:{item.repeat_id}"
                     for item in subscription.episodes
                     if str(item.number) in numbers and _local_number(item.number) in {None, key.number}
-                )
-                references.extend(
-                    _episode_conflict_reference(item)
-                    for item in self._state.acquisitions
-                    if item.subscription_id == subscription.subscription_id
-                    and item.legacy_scope is None
-                    and _local_number(item.episode) in {None, key.number}
                 )
         return tuple(sorted(set(references)))
 
@@ -4165,6 +4316,7 @@ class AutomationOwner:
         return response
 
     def _episode_download(self, request: ControlRequest) -> ControlResponse:  # noqa: PLR0911
+        batch: EpisodeBatch
         try:
             keys: tuple[EpisodeKey, ...] = decode_view(tuple[EpisodeKey, ...], request.payload.get("keys"))
             validate_episode_keys(keys)
@@ -4176,7 +4328,7 @@ class AutomationOwner:
         if receipt is not None:
             if receipt.outcome.get("kind") != "episode_download":
                 return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
-            batch: EpisodeBatch = decode_view(EpisodeBatch, json.loads(str(receipt.outcome["batch"])))
+            batch = decode_view(EpisodeBatch, json.loads(str(receipt.outcome["batch"])))
             if batch.keys != keys:
                 return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
             if batch.state == "accepted" and batch.instance_id != self._instance_id:
@@ -4221,44 +4373,48 @@ class AutomationOwner:
         return replace(batch, results=tuple(known[key] for key in batch.keys if key in known))
 
     def _run_episode_batch(self, batch: EpisodeBatch) -> None:
+        """Isolate unexpected worker failures and durably terminate the admitted batch without replaying its tail."""
         try:
-            for key in batch.keys:
-                if not self._on_owner(self._working):
-                    break
-                self._publish(
-                    {
-                        "event": "episode_searching",
-                        "payload": {
-                            "command_id": batch.command_id,
-                            "key": encode_view(key),
-                        },
-                    },
-                    terminal=False,
-                )
-                result: EpisodeResult = self._download_episode(batch.command_id, key)
-                batch = replace(batch, results=(*batch.results, result))
-                if not self._on_owner(partial(self._save_batch, batch)):
-                    break
-                self._publish(
-                    {
-                        "event": "episode_result",
-                        "payload": {
-                            "command_id": batch.command_id,
-                            **encode_view(result),
-                        },
-                    },
-                    terminal=True,
-                )
-            batch = replace(batch, state="completed" if len(batch.results) == len(batch.keys) else "interrupted")
-            self._on_owner(partial(self._save_batch, batch))
-            self._publish({"event": "episode_batch", "payload": encode_view(batch)}, terminal=True)
-        except Exception as problem:  # noqa: BLE001 - terminate this admitted batch without resuming it
-            logger.warning("Episode batch interrupted", error_class=type(problem).__name__)
-            interrupted: EpisodeBatch = replace(batch, state="interrupted")
-            self._on_owner(partial(self._save_batch, interrupted))
-            self._publish({"event": "episode_batch", "payload": encode_view(interrupted)}, terminal=True)
+            self._advance_episode_batch(batch)
+        except Exception as problem:  # noqa: BLE001
+            logger.warning("Episode batch interrupted by an unexpected failure", error_class=type(problem).__name__)
+            recovered: EpisodeBatch = self._on_owner(partial(self._interrupted_episode_batch, batch))
+            self._finish_episode_batch(replace(recovered, state="interrupted"))
         finally:
             self._queue.put(self._finish_io)
+
+    def _advance_episode_batch(self, batch: EpisodeBatch) -> None:
+        for key in batch.keys:
+            if not self._on_owner(self._working):
+                break
+            self._publish(
+                {"event": "episode_searching", "payload": {"command_id": batch.command_id, "key": encode_view(key)}},
+                terminal=False,
+            )
+            result: EpisodeResult = self._download_episode(batch.command_id, key)
+            batch = replace(batch, results=(*batch.results, result))
+            if not self._on_owner(partial(self._save_batch, batch)):
+                break
+            self._publish(
+                {"event": "episode_result", "payload": {"command_id": batch.command_id, **encode_view(result)}},
+                terminal=True,
+            )
+        self._finish_episode_batch(
+            replace(batch, state="completed" if len(batch.results) == len(batch.keys) else "interrupted")
+        )
+
+    def _finish_episode_batch(self, batch: EpisodeBatch) -> None:
+        self._on_owner(partial(self._save_batch, batch))
+        self._publish({"event": "episode_batch", "payload": encode_view(batch)}, terminal=True)
+
+    def _interrupted_episode_batch(self, batch: EpisodeBatch) -> EpisodeBatch:
+        receipt: CommandReceipt | None = next(
+            (item for item in self._state.command_receipts if item.command_id == batch.command_id), None
+        )
+        saved: EpisodeBatch = (
+            decode_view(EpisodeBatch, json.loads(str(receipt.outcome["batch"]))) if receipt is not None else batch
+        )
+        return self._recover_episode_results(saved)
 
     def _download_episode(self, command_id: str, key: EpisodeKey) -> EpisodeResult:
         acquisition: AcquisitionService | None = self._service.acquisition
@@ -4277,11 +4433,17 @@ class AutomationOwner:
                 offer: EpisodeOffer
                 target: dict[str, object]
                 offer, target = acquisition.prepare_episode(key)
-            if offer.suggestion is None:
-                return EpisodeResult(key, "no_suggestion")
-            candidate: RankedCandidate = offer.candidates[offer.suggestion]
-            if candidate.identity.verdict is IdentityVerdict.MISMATCH or candidate.facts.supported is False:
-                return EpisodeResult(key, "no_suggestion")
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("Episode batch lookup failed", error_class=type(problem).__name__)
+            return EpisodeResult(key, failure_code(problem) or "source_failed")
+        candidate: RankedCandidate | None = None if offer.suggestion is None else offer.candidates[offer.suggestion]
+        if (
+            candidate is None
+            or candidate.identity.verdict is IdentityVerdict.MISMATCH
+            or candidate.facts.supported is False
+        ):
+            return EpisodeResult(key, "no_suggestion")
+        try:
             choice: EpisodeChoice = _episode_choice(offer.key, candidate, target, confirmed=False)
             response: ControlResponse = self.admit_episode(f"{command_id}:episode:{key.number}", choice)
             return EpisodeResult(
@@ -4290,8 +4452,8 @@ class AutomationOwner:
                 str(response.result["admission_id"]) if response.ok else None,
                 str(response.result["operation_id"]) if response.ok else None,
             )
-        except (AniShiftError, OSError, ValueError) as problem:
-            logger.warning("Episode batch lookup failed", error_class=type(problem).__name__)
+        except (AniShiftError, OSError) as problem:
+            logger.warning("Episode batch admission failed", error_class=type(problem).__name__)
             return EpisodeResult(key, failure_code(problem) or "source_failed")
 
     def _admit_episode(
@@ -4323,7 +4485,13 @@ class AutomationOwner:
             conflict=conflict,
         )
         shared: AcquisitionConfirmation | None = next(
-            (item for item in self._state.acquisitions if item.info_hash == choice.reference.info_hash), None
+            (
+                item
+                for item in self._state.acquisitions
+                if item.info_hash == choice.reference.info_hash
+                and item.state not in {AcquisitionState.COMPLETE, AcquisitionState.FAILED}
+            ),
+            None,
         )
         confirmation: AcquisitionConfirmation = (
             AcquisitionConfirmation(
@@ -4407,15 +4575,18 @@ class AutomationOwner:
         duplicate: AdmissionConflict | None = episode_conflict(self._state, choice.anilist_id, choice.number, legacy)
         if previous is not None or (conflict and not matches):
             duplicate = None
-        recorded: tuple[AcquisitionConfirmation, ...] = tuple(
-            item for item in self._state.acquisitions if item.info_hash == choice.reference.info_hash
-        )
-        if duplicate is None and recorded and not _joinable(recorded):
+        if duplicate is None and self._transfer_conflict(choice.reference.info_hash):
             duplicate = AdmissionConflict.TRANSFER_RECORDED
         if duplicate is None:
             return None
         logger.info("Episode admission refused", reason=duplicate.value)
         return ControlResponse.refused(ControlErrorCode.REFUSED, _ADMISSION_REFUSALS[duplicate], duplicate.value)
+
+    def _transfer_conflict(self, info_hash: str) -> bool:
+        recorded: tuple[AcquisitionConfirmation, ...] = tuple(
+            item for item in self._state.acquisitions if item.info_hash == info_hash.casefold()
+        )
+        return bool(recorded) and not _joinable(recorded)
 
     def _legacy_scopes(self) -> tuple[LegacyScope, ...] | None:
         service: SubscriptionService | None = self._service.subscriptions
@@ -4502,15 +4673,22 @@ class AutomationOwner:
             self._transfers_at = max(time.monotonic(), self._transfers_at + self._transfers_delay - previous)
 
     def _schedule_transfers(self, delay: float = 0.0) -> None:
-        if self._shutting_down or self._transfers is None or self._transfers_inspecting:
+        if self._shutting_down or self._transfers_inspecting:
             return
         working: bool = self._state.policy.auto_enabled
         selective: bool = self._selective_client()
-        active: bool = any(
+        active: bool = self._transfers is not None and any(
             (_polled(item, selective=selective) and working) or _transfer_action(item)
             for item in self._state.acquisitions
         )
-        self._transfers_at = time.monotonic() + delay if active else None
+        pending: bool = bool(self._pending_completion()) or any(
+            self._ready_attempts.get(group_id, 0) < _FINALIZE_ATTEMPTS
+            for group_id, move in self._ready_moves.items()
+            if group_id not in self._ready_inflight
+            and group_id not in self._ready_parked
+            and (working or not move.deferred)
+        )
+        self._transfers_at = time.monotonic() + delay if active or pending else None
 
     def _selective_client(self) -> bool:
         return self._service.acquisition is not None and self._service.acquisition.selective
@@ -4521,11 +4699,13 @@ class AutomationOwner:
         selective: bool = self._selective_client()
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
             item
-            for item in self._state.acquisitions
+            for item in (() if self._transfers is None else self._state.acquisitions)
             if (_polled(item, selective=selective) and self._working()) or _transfer_action(item)
         )
         self._transfers_at = None
         if not acquisitions:
+            self._finalize_transfers()
+            self._retry_ready()
             return
         self._transfers_inspecting = True
         self._active_io += 1
@@ -4583,32 +4763,25 @@ class AutomationOwner:
         acquisitions: tuple[AcquisitionConfirmation, ...],
         reserved: frozenset[str] | None,
     ) -> None:
+        """Isolate poll-worker failures, report their cause and always return settlement to the owner."""
         basis: tuple[AcquisitionConfirmation, ...] = acquisitions
         results: tuple[AcquisitionConfirmation, ...] = ()
         failure: str | None = None
         nature: tuple[str, str] | None = None
         try:
-            if self._transfers is not None:
-                acquisition: AcquisitionService | None = self._service.acquisition
-                if acquisition is not None:
-                    with acquisition.requests("transfer"):
-                        acquisitions = self._apply_transfer_actions(acquisition, acquisitions)
-                        for item in acquisitions:
-                            if item.state is AcquisitionState.ADMITTED:
-                                self._send_selective(acquisition, item)
-                        acquisitions = tuple(
-                            item for item in acquisitions if item.state is not AcquisitionState.ADMITTED
-                        )
-                        results = acquisitions
-                        results = self._transfers.inspect(
-                            acquisitions, stall_after_s=self._state.policy.transfer_stall_s
-                        )
-                        results = tuple(
-                            _unfinished_selection(self._unseen_send(before, after))
-                            for before, after in zip(acquisitions, results, strict=True)
-                        )
-                        results = self._settle_layouts(acquisition, results, reserved)
-                    self._publish_episodes(results)
+            acquisition: AcquisitionService | None = self._service.acquisition
+            if self._transfers is None or acquisition is None:
+                return
+            with acquisition.requests("transfer"):
+                acquisitions = self._advance_transfer_actions(acquisition, acquisitions)
+                results = acquisitions
+                results = self._transfers.inspect(acquisitions, stall_after_s=self._state.policy.transfer_stall_s)
+                results = tuple(
+                    _unfinished_selection(self._unseen_send(before, after))
+                    for before, after in zip(acquisitions, results, strict=True)
+                )
+                results = self._settle_layouts(acquisition, results, reserved)
+            self._publish_episodes(results)
         except Exception as problem:  # noqa: BLE001
             failure = sanitize_event_message(str(problem))
             nature = (type(problem).__name__, failure_code(problem))
@@ -4616,6 +4789,15 @@ class AutomationOwner:
                 self._transfers.reset_clock()
         finally:
             self._queue.put(lambda: self._record_transfers(results, failure, nature, basis))
+
+    def _advance_transfer_actions(
+        self, service: AcquisitionService, acquisitions: tuple[AcquisitionConfirmation, ...]
+    ) -> tuple[AcquisitionConfirmation, ...]:
+        updated: tuple[AcquisitionConfirmation, ...] = self._apply_transfer_actions(service, acquisitions)
+        for item in updated:
+            if item.state is AcquisitionState.ADMITTED:
+                self._send_selective(service, item)
+        return tuple(item for item in updated if item.state is not AcquisitionState.ADMITTED)
 
     def _unseen_send(self, before: AcquisitionConfirmation, after: AcquisitionConfirmation) -> AcquisitionConfirmation:
         """Keep checking a submitted selective transfer the client does not list yet, then report it for resume."""
@@ -4726,10 +4908,16 @@ class AutomationOwner:
         return True
 
     def _send_selective(self, service: AcquisitionService, item: AcquisitionConfirmation) -> None:
+        with self._transfer_release_lock:
+            self._send_selective_locked(service, item)
+
+    def _send_selective_locked(self, service: AcquisitionService, item: AcquisitionConfirmation) -> None:
         """Record the send intent of one admitted transfer, then ask the client for its metadata only."""
         try:
+            if not self._release_previous_transfer(service, item):
+                return
             directory: Path = staging_path(self._service.workspace_root, item.operation_id)
-        except ValueError as problem:
+        except (AniShiftError, OSError, ValueError) as problem:
             logger.warning("The staging directory of an admission is unusable", error_class=type(problem).__name__)
             return
         sent: AcquisitionConfirmation | None = self._owned(partial(self._begin_send, item.operation_id, directory))
@@ -4742,6 +4930,37 @@ class AutomationOwner:
             logger.warning("A selective transfer was not confirmed by the client", error_class=type(problem).__name__)
             state = AcquisitionState.UNCERTAIN
         self._owned(partial(self._finish_send, item.operation_id, state))
+
+    def _release_previous_transfer(self, service: AcquisitionService, item: AcquisitionConfirmation) -> bool:
+        previous: tuple[AcquisitionConfirmation, ...] = self._owned(
+            lambda: tuple(
+                old
+                for old in self._state.acquisitions
+                if old.info_hash == item.info_hash and old.operation_id != item.operation_id
+            )
+        )
+        if not previous:
+            return True
+        transfer: TorrentInfo | None = next(
+            (entry for entry in service.transfers() if entry.info_hash.casefold() == item.info_hash), None
+        )
+        if transfer is None:
+            self._transfers_forget(item.info_hash)
+            return True
+        predecessor: AcquisitionConfirmation = previous[-1]
+        if Path(transfer.save_path) != staging_path(self._service.workspace_root, predecessor.operation_id):
+            return False
+        if predecessor.state is AcquisitionState.COMPLETE:
+            released: frozenset[str] = service.release_completed(frozenset({item.info_hash}))
+            if not predecessor.cleaned:
+                cleaned: dict[str, tuple[str | None, bool]] = self._clean_released((predecessor,), released)
+                self._owned(partial(self._record_cleanup, cleaned))
+        elif predecessor.state is AcquisitionState.FAILED:
+            service.control_transfer(item.info_hash, "cancel")
+        else:
+            return False
+        self._transfers_forget(item.info_hash)
+        return not any(entry.info_hash.casefold() == item.info_hash for entry in service.transfers())
 
     def _begin_send(self, operation_id: str, directory: Path) -> AcquisitionConfirmation | None:
         current: AcquisitionConfirmation | None = self._confirmation(operation_id)
@@ -5135,13 +5354,18 @@ class AutomationOwner:
         self._action_attempts = {
             key: value for key, value in self._action_attempts.items() if pending.get(key) == value[0]
         }
+        if any(
+            before.state is not AcquisitionState.COMPLETE and after.state is AcquisitionState.COMPLETE
+            for before in basis
+            for after in results
+            if before.operation_id == after.operation_id
+        ):
+            self._ready_attempts.clear()
+        self._ready_parked.clear()
+        self._completion_parked.clear()
         self._retry_ready()
-        completed: frozenset[str] = frozenset(
-            item.info_hash for item in self._state.acquisitions if item.state is AcquisitionState.COMPLETE
-        )
-        if completed and failure is None:
-            self._active_io += 1
-            self._pool.submit(self._release_completed, completed, self._uncleaned())
+        if failure is None:
+            self._finalize_transfers()
         self._active_io -= 1
         self._transfers_inspecting = False
         self._schedule_transfers(self._transfers_delay)
@@ -5168,35 +5392,69 @@ class AutomationOwner:
             reason=failure,
         )
 
-    def _uncleaned(self, *, retry: bool = False) -> tuple[AcquisitionConfirmation, ...]:
+    def _pending_completion(self) -> tuple[AcquisitionConfirmation, ...]:
         return tuple(
             item
             for item in self._state.acquisitions
-            if item.selective
-            and item.state is AcquisitionState.COMPLETE
-            and not item.cleaned
-            and (retry or item.problem is None)
+            if item.state is AcquisitionState.COMPLETE
+            and item.operation_id not in self._completion_done
+            and item.operation_id not in self._completion_parked
+            and self._completion_attempts.get(item.operation_id, 0) < _FINALIZE_ATTEMPTS
         )
 
+    def _finalize_transfers(self) -> None:
+        if self._shutting_down or self._completion_inflight:
+            return
+        pending: tuple[AcquisitionConfirmation, ...] = self._pending_completion()
+        if not pending:
+            return
+        self._completion_inflight = True
+        self._active_io += 1
+        self._pool.submit(self._release_completed, frozenset(item.info_hash for item in pending), pending)
+
     def _release_completed(self, hashes: frozenset[str], uncleaned: tuple[AcquisitionConfirmation, ...] = ()) -> None:
+        with self._transfer_release_lock:
+            self._release_completed_locked(hashes, uncleaned)
+
+    def _release_completed_locked(self, hashes: frozenset[str], uncleaned: tuple[AcquisitionConfirmation, ...]) -> None:
         problem: str | None = None
-        cleaned: dict[str, str | None] = {}
+        cleaned: dict[str, tuple[str | None, bool]] = {}
+        released: frozenset[str] = frozenset()
+        parked: frozenset[str] = frozenset()
         try:
             acquisition: AcquisitionService | None = self._service.acquisition
-            if acquisition is not None:
-                with acquisition.requests("completed_download"):
-                    released: frozenset[str] = acquisition.release_completed(hashes)
-                    acquisition.finish_transfers()
-                cleaned = self._clean_released(uncleaned, released)
+            if acquisition is None:
+                return
+            hashes = self._owned(
+                lambda: (
+                    hashes
+                    - frozenset(
+                        item.info_hash
+                        for item in self._state.acquisitions
+                        if item.state
+                        not in {AcquisitionState.COMPLETE, AcquisitionState.FAILED, AcquisitionState.ADMITTED}
+                    )
+                )
+            )
+            with acquisition.requests("completed_download"):
+                released = acquisition.release_completed(hashes)
+            cleaned = self._clean_released(
+                tuple(item for item in uncleaned if item.selective and not item.cleaned), released
+            )
+            try:
+                acquisition.finish_transfers()
+            except (AniShiftError, OSError, ValueError) as error:
+                logger.warning("Completed client shutdown failed", error_class=type(error).__name__)
+            parked = hashes - released - acquisition.finalizable_hashes(hashes)
         except (AniShiftError, OSError, ValueError) as error:
             problem = sanitize_event_message(str(error))
         finally:
-            self._queue.put(lambda: self._released_completed(problem, cleaned))
+            self._queue.put(lambda: self._released_completed(problem, cleaned, uncleaned, released, parked))
 
     def _clean_released(
         self, uncleaned: tuple[AcquisitionConfirmation, ...], released: frozenset[str]
-    ) -> dict[str, str | None]:
-        outcome: dict[str, str | None] = {}
+    ) -> dict[str, tuple[str | None, bool]]:
+        outcome: dict[str, tuple[str | None, bool]] = {}
         for item in uncleaned:
             if item.info_hash not in released:
                 continue
@@ -5211,7 +5469,7 @@ class AutomationOwner:
                 path for assignment in item.assignments for _index, path, _size in assignment.files
             ) - frozenset(file.source for file in exported)
             try:
-                clean_staging(
+                removed: bool = clean_staging(
                     self._service.workspace_root,
                     item.operation_id,
                     item.info_hash,
@@ -5221,10 +5479,10 @@ class AutomationOwner:
                 )
             except (OSError, ValueError) as error:
                 logger.warning("Download staging cleanup failed", error_class=type(error).__name__)
-                outcome[item.operation_id] = _CLEANUP_FAILED
+                outcome[item.operation_id] = (_CLEANUP_FAILED, False)
                 continue
             logger.info("Download staging cleaned", kept=len(kept))
-            outcome[item.operation_id] = None
+            outcome[item.operation_id] = (None, removed)
         return outcome
 
     def _export_is_present(self, file: PublishedFile, publication: EpisodePublication) -> bool:
@@ -5238,29 +5496,54 @@ class AutomationOwner:
         )
         return any(published_copy(staged_file(root, name), file) for name in names)
 
-    def _released_completed(self, problem: str | None, cleaned: Mapping[str, str | None] | None = None) -> None:
+    def _released_completed(
+        self,
+        problem: str | None,
+        cleaned: Mapping[str, tuple[str | None, bool]] | None = None,
+        attempted: tuple[AcquisitionConfirmation, ...] = (),
+        released: frozenset[str] = frozenset(),
+        parked: frozenset[str] = frozenset(),
+    ) -> None:
         self._active_io -= 1
+        self._completion_inflight = False
         if problem is not None:
             self._transfers_problem = problem
-        settled: Mapping[str, str | None] = cleaned or {}
+        settled: Mapping[str, tuple[str | None, bool]] = cleaned or {}
+        self._record_cleanup(settled)
+        if parked:
+            logger.info("Download finalization parked until a client or explicit retry event", transfers=len(parked))
+        for item in attempted:
+            if item.info_hash in parked:
+                self._completion_parked.add(item.operation_id)
+            current: AcquisitionConfirmation | None = self._confirmation(item.operation_id)
+            if current is None:
+                continue
+            if current.cleaned or (item.info_hash in released and not current.selective):
+                self._completion_done.add(item.operation_id)
+                continue
+            if problem is not None or settled.get(item.operation_id, (None, False))[0] is not None:
+                self._completion_attempts[item.operation_id] = self._completion_attempts.get(item.operation_id, 0) + 1
+            if (
+                current.selective
+                and not current.cleaned
+                and self._completion_attempts.get(item.operation_id, 0) >= _FINALIZE_ATTEMPTS
+            ):
+                self._replace_acquisition(replace(current, problem=current.problem or _CLEANUP_FAILED))
+                logger.warning("Completed transfer finalization exhausted its retry budget")
+        self._schedule_transfers(self._transfers_delay)
+        self._publish_state()
+
+    def _record_cleanup(self, settled: Mapping[str, tuple[str | None, bool]]) -> None:
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
-            compact_acquisition(
-                replace(
-                    item,
-                    cleaned=settled[item.operation_id] is None,
-                    problem=settled[item.operation_id],
-                    assignments=tuple(_retained_episode(row) for row in item.assignments)
-                    if settled[item.operation_id] is None
-                    else item.assignments,
-                )
-            )
+            _cleaned_acquisition(item, *settled[item.operation_id])
             if item.operation_id in settled and item.state is AcquisitionState.COMPLETE and not item.cleaned
             else item
             for item in self._state.acquisitions
         )
         if acquisitions != self._state.acquisitions:
             self._save(replace(self._state, acquisitions=acquisitions))
-        self._publish_state()
+
+        self._completion_done.update(item.operation_id for item in self._state.acquisitions if item.cleaned)
 
     def _restore_runs(self, requests: tuple[ProcessingRequest, ...]) -> None:
         try:
@@ -5487,6 +5770,12 @@ class AutomationOwner:
         if self._shutting_down:
             return
         for group_id, move in self._ready_moves.items():
+            if group_id in self._ready_parked:
+                continue
+            if move.deferred and not self._working():
+                continue
+            if self._ready_attempts.get(group_id, 0) >= _FINALIZE_ATTEMPTS:
+                continue
             if group_id in self._ready_inflight or {move.group_id, move.destination_group_id}.intersection(
                 self._deleting_groups()
             ):
@@ -5497,6 +5786,7 @@ class AutomationOwner:
 
     def _move_ready(self, move: ReadyMove, acquisitions: tuple[AcquisitionConfirmation, ...]) -> None:
         problem: str | None = None
+        parked: bool = False
         staged: ReadyMove = move
         try:
             owners: dict[str, AcquisitionConfirmation] = _file_owners(move, acquisitions)
@@ -5511,14 +5801,21 @@ class AutomationOwner:
             if self._ready_store is not None:
                 staged = self._ready_store.defer(move, held)
                 self._ready_store.execute(staged)
+            held_hashes: frozenset[str] = frozenset(
+                owner.info_hash for source, owner in owners.items() if source in staged.deferred
+            )
+            parked = bool(staged.deferred) and (acquisition is None or not acquisition.finalizable_hashes(held_hashes))
         except (AniShiftError, OSError, ValueError) as error:
             problem = sanitize_event_message(str(error)) or "Relocation could not finish"
         finally:
-            self._queue.put(lambda: self._record_ready(staged, problem))
+            self._queue.put(lambda: self._record_ready(staged, problem, parked=parked))
 
-    def _record_ready(self, move: ReadyMove, problem: str | None) -> None:
+    def _record_ready(self, move: ReadyMove, problem: str | None, *, parked: bool = False) -> None:
         self._active_io -= 1
         self._ready_inflight.discard(move.group_id)
+        if parked:
+            self._ready_parked.add(move.group_id)
+            logger.info("Deferred relocation parked until a client or explicit retry event")
         if problem is None:
             try:
                 if not self._save(self._relocated_state(move)):
@@ -5527,6 +5824,8 @@ class AutomationOwner:
                 problem = sanitize_event_message(str(error)) or "Relocated checkpoint needs retry"
         if problem is not None:
             self._ready_problems[move.group_id] = problem
+            self._ready_attempts[move.group_id] = self._ready_attempts.get(move.group_id, 0) + 1
+            logger.warning("Ready relocation failed", attempts=self._ready_attempts[move.group_id])
             self._publish_ready(move)
             return
         self._run_results = {
@@ -5543,6 +5842,7 @@ class AutomationOwner:
                 self._ready_store.acknowledge(move)
         except OSError:
             self._ready_problems[move.group_id] = "Files and state are saved; relocation acknowledgement needs retry"
+            self._ready_attempts[move.group_id] = self._ready_attempts.get(move.group_id, 0) + 1
             self._publish_ready(move)
             return
         self._ready_moves.pop(move.group_id, None)
@@ -5587,6 +5887,7 @@ class AutomationOwner:
         )
 
     def _publish_ready(self, move: ReadyMove) -> None:
+        self._schedule_transfers(self._transfers_delay)
         self._publish_state()
         for request in self._state.requests:
             if {move.group_id, move.destination_group_id}.intersection(request.group_ids):
@@ -5616,8 +5917,17 @@ class AutomationOwner:
                 action_sent=False,
                 problem=None,
                 assignments=_cleared_publications(item.assignments) if action == "resume" else item.assignments,
+                selection_revision=item.selection_revision
+                + int(action == "resume" and item.selective and item.problem == _SELECTION_MISMATCH),
+                content_started=False
+                if action == "resume" and item.selective and item.problem == _SELECTION_MISMATCH
+                else item.content_started,
             )
             if item.info_hash == info_hash
+            and (
+                not item.selective
+                or item is next(row for row in reversed(self._state.acquisitions) if row.info_hash == info_hash)
+            )
             else item
             for item in self._state.acquisitions
         )
@@ -6669,11 +6979,10 @@ def _polled(item: AcquisitionConfirmation, *, selective: bool) -> bool:
 
 
 def _joinable(recorded: Sequence[AcquisitionConfirmation]) -> bool:
-    """Answer whether one more episode may join the only, still unfinished selective transfer of its hash."""
+    """Allow selective history with at most one unfinished transfer to accept a new episode key."""
     return (
-        len(recorded) == 1
-        and recorded[0].selective
-        and recorded[0].state not in {AcquisitionState.COMPLETE, AcquisitionState.FAILED}
+        all(item.selective for item in recorded)
+        and sum(item.state not in {AcquisitionState.COMPLETE, AcquisitionState.FAILED} for item in recorded) <= 1
     )
 
 
@@ -6734,6 +7043,16 @@ def _retained_episode(assignment: EpisodeAssignment) -> EpisodeAssignment:
         group_id=_published_group(frozenset(file.name for file in publication.files)),
         video_path=None if video is None else video.source,
     )
+
+
+def _cleaned_acquisition(item: AcquisitionConfirmation, problem: str | None, removed: bool) -> AcquisitionConfirmation:
+    updated: AcquisitionConfirmation = replace(
+        item,
+        cleaned=problem is None,
+        problem=problem,
+        assignments=tuple(_retained_episode(row) for row in item.assignments) if problem is None else item.assignments,
+    )
+    return compact_acquisition(updated) if removed else updated
 
 
 def _published_files(files: Sequence[FileReservation], reserved: frozenset[str]) -> tuple[PublishedFile, ...]:

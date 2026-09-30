@@ -233,6 +233,9 @@ class _TorrentNetwork:
         self.released.append(hashes)
         return hashes
 
+    def finalizable_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
+        return hashes
+
     def released_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
         return hashes & frozenset(value for batch in self.released for value in batch)
 
@@ -4728,6 +4731,150 @@ def test_a_finished_group_relocates_its_product_and_leaves_the_source_its_transf
     assert recorded.sources == ()
     assert (audiobook / "Book.txt").read_text(encoding="utf-8") == "Zażółć gęślą jaźń."
     assert not (tmp_path / "ready" / "Book.txt").exists()
+
+
+def test_relocation_retries_a_single_failure_without_any_active_transfer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    _prepared_audiobook(tmp_path)
+    folder: Path = tmp_path / "audiobook"
+    write_text_source(folder / "Other.txt", "Text")
+    (folder / "Other.m4a").write_bytes(b"recording")
+    journal: ReadyStore = ReadyStore(tmp_path / "control" / "relocations", tmp_path)
+    group: SourceGroup = next(item for item in discover_groups(tmp_path).groups if item.stem == "Other")
+    assert journal.prepare(group, (folder / "Other.m4a",)) is not None
+    execute: Callable[[ReadyStore, ReadyMove], None] = ReadyStore.execute
+    failed: list[str] = []
+
+    def transient(store: ReadyStore, move: ReadyMove) -> None:
+        if not failed:
+            failed.append(move.group_id)
+            raise OSError(13, "Temporary relocation failure")
+        execute(store, move)
+
+    monkeypatch.setattr(ReadyStore, "execute", transient)
+    service: AppService = _real_service(tmp_path)
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    owner: AutomationOwner = _relocating_owner(tmp_path, service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: len(owner.state.ready_groups) == 2)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert len(failed) == 1
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("deferred", [False, True])
+def test_relocation_counts_only_real_failures_and_reports_exhaustion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, deferred: bool
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    _prepared_audiobook(tmp_path)
+    service: AppService = _real_service(tmp_path)
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    owner: AutomationOwner = _relocating_owner(tmp_path, service, store)
+    journal: ReadyStore = cast("ReadyStore", owner._ready_store)
+    execute: Callable[[ReadyMove], None] = journal.execute
+    defer: Callable[[ReadyMove, tuple[str, ...]], ReadyMove] = journal.defer
+    calls: list[str] = []
+
+    def held(current: ReadyMove, names: tuple[str, ...]) -> ReadyMove:
+        if len(calls) <= automation_module._FINALIZE_ATTEMPTS + 2:
+            return defer(current, (current.files[0].source,))
+        return defer(current, names)
+
+    def attempt(current: ReadyMove) -> None:
+        calls.append(current.group_id)
+        if not deferred:
+            raise OSError(13, "Relocation unavailable")
+        execute(current)
+
+    monkeypatch.setattr(journal, "execute", attempt)
+    if deferred:
+        monkeypatch.setattr(journal, "defer", held)
+    thread: threading.Thread = _serving(owner)
+    try:
+        if deferred:
+            for count in range(1, automation_module._FINALIZE_ATTEMPTS + 4):
+
+                def settled(expected: int = count) -> bool:
+                    return len(calls) >= expected and not owner._ready_inflight
+
+                assert _await(settled)
+                assert owner.handle(_request("ready_retry")).ok
+            assert _await(lambda: bool(owner.state.ready_groups) and not owner.state.ready_groups[0].pending_sources)
+            assert len(calls) > automation_module._FINALIZE_ATTEMPTS + 2
+        else:
+            assert _await(lambda: len(calls) == automation_module._FINALIZE_ATTEMPTS)
+            assert _await(lambda: bool(owner._ready_problems))
+            response: ControlResponse = owner.handle(_request("status"))
+            relocations: list[dict[str, object]] = cast("list[dict[str, object]]", response.result["relocations"])
+            assert any("Relocation unavailable" in str(item["problem"]) for item in relocations)
+            time.sleep(0.1)
+            assert len(calls) == automation_module._FINALIZE_ATTEMPTS
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_unmanageable_deferred_relocation_does_not_keep_an_idle_timer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, external: bool
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    audiobook: Path = _prepared_audiobook(tmp_path)
+    size: int = (audiobook / "Book.txt").stat().st_size
+    network: _TorrentNetwork = _TorrentNetwork()
+    monkeypatch.setattr(network, "finalizable_hashes", lambda hashes: frozenset(), raising=False)
+    acquisition: AcquisitionService = AcquisitionService(
+        source=network,
+        client=cast("TorrentClient", network),
+        workspace_root=tmp_path,
+        parse_name=parse_release_name,
+        torrent_management=None if external else cast("TorrentManagement", network),
+    )
+    attempts: list[frozenset[str]] = []
+
+    def held(hashes: frozenset[str]) -> frozenset[str]:
+        attempts.append(hashes)
+        return frozenset()
+
+    monkeypatch.setattr(acquisition, "release_completed", held)
+    service: AppService = _real_service(tmp_path, acquisition=acquisition)
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(
+                replace(
+                    _owned(("Book.txt",), (), RequestOrigin.USER, size, directory="audiobook"),
+                    state=AcquisitionState.COMPLETE,
+                ),
+            ),
+        )
+    )
+    owner: AutomationOwner = _relocating_owner(tmp_path, service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: bool(owner.state.ready_groups) and bool(attempts))
+        time.sleep(0.1)
+        count: int = len(attempts)
+        time.sleep(0.1)
+        assert len(attempts) == count
+        assert owner._on_owner(lambda: owner._transfers_at) is None
+        assert owner.state.ready_groups[0].pending_sources == ("audiobook/Book.txt",)
+        assert owner.handle(_request("ready_retry")).ok
+        assert _await(lambda: len(attempts) > count)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
 
 
 def test_a_transfer_that_released_its_file_lets_the_deferred_source_reach_ready(

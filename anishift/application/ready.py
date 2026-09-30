@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from typing import Final
 
@@ -278,18 +279,7 @@ class ReadyStore:
         return tuple(destinations)
 
     def _relocate(self, item: ReadyFile) -> None:
-        attempts: int = 0
-        while True:
-            try:
-                self._move_file(item)
-            except OSError as error:
-                if attempts >= _RELEASE_ATTEMPTS or getattr(error, "winerror", None) not in _TRANSIENT_DENIALS:
-                    raise
-                attempts += 1
-                logger.debug("Relocation waits for a reader to release a file", attempts=attempts)
-                time.sleep(_RELEASE_DELAY_S)
-                continue
-            return
+        retry_file_release(partial(self._move_file, item))
 
     def _move_file(self, item: ReadyFile) -> None:
         source: Path = self._workspace / item.source
@@ -328,6 +318,22 @@ class ReadyStore:
             message: str = "Relocation requires a safe group identifier"
             raise ExecutionError(message)
         return self._directory / f"{group_id}.json"
+
+
+def retry_file_release(operation: Callable[[], None]) -> None:
+    """Retry a file operation while Windows reports a transient handle denial."""
+    attempts: int = 0
+    while True:
+        try:
+            operation()
+        except OSError as error:
+            if attempts >= _RELEASE_ATTEMPTS or getattr(error, "winerror", None) not in _TRANSIENT_DENIALS:
+                raise
+            attempts += 1
+            logger.debug("File operation waits for handle release", attempts=attempts)
+            time.sleep(_RELEASE_DELAY_S)
+            continue
+        return
 
 
 def _relative_posix(directory: Path, root: Path) -> str:

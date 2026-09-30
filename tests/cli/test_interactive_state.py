@@ -160,11 +160,11 @@ def test_processing_renders_named_owner_download_states_without_invented_measure
         assert "hash" not in frame
         assert "░" in frame
         assert ("█" in frame) is percentage
-        assert "C anuluj" not in frame
+        assert "C anuluj" in frame
         assert len(frame.splitlines()) <= rows
         assert all(len(line) <= columns for line in frame.splitlines())
         controller.handle_key("text:c")
-        assert calls == []
+        assert calls == [("transfer", {"info_hash": "hash", "action": "cancel"})]
     finally:
         controller.close()
         controller._thread.join(5)
@@ -197,6 +197,11 @@ def test_download_handoff_keeps_selection_until_real_task_start_and_removes_fini
         assert "Przygotowanie" in controller.render(80, 24).plain
         assert " |   0% | " in controller.render(80, 24).plain
         assert "C anuluj" not in controller.render(80, 24).plain
+        item.update(reason="finalization_failed", problem="finalization_failed", acquisition_state="complete")
+        assert "Finalizacja" in controller.render(80, 24).plain
+        assert "Episode 01.mkv" in controller.render(80, 24).plain
+        assert "Błąd pobierania" not in controller.render(80, 24).plain
+        item.update(reason="preparing", problem=None)
         controller.handle_key("text:c")
         assert calls == []
         item.update(stage="processing", state="accepted", run_id="run", group_ids=["a"])

@@ -19,10 +19,14 @@ from anishift.application.control import (
     AcquisitionState,
     AutomationPolicy,
     EpisodeChoice,
+    ProcessingRequest,
+    RequestState,
+    SourceSelection,
     TorrentioReference,
     WatchState,
 )
 from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.intents import RequestOrigin
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.errors import ConfigError, ErrorCode, ErrorContext
 from anishift.platform.local_control import ControlResponse
@@ -222,6 +226,83 @@ def _view(owner: AutomationOwner) -> dict[str, object]:
 
 def _starts(setup: _Setup, count: int = 1) -> Callable[[], bool]:
     return lambda: len(setup.network.started) >= count
+
+
+def test_repeated_pause_preserves_ownership_of_an_unsent_resume(setup: _Setup, monkeypatch: pytest.MonkeyPatch) -> None:
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    torrents: Callable[[str], tuple[TorrentInfo, ...]] = setup.network.torrents
+
+    def gated(category: str) -> tuple[TorrentInfo, ...]:
+        entered.set()
+        assert release.wait(_TIMEOUT_S)
+        return torrents(category)
+
+    with _running(setup) as owner:
+        assert owner.admit_episode("admit-1", _choice(3)).ok
+        _until(lambda: bool(setup.network.metadata_added))
+        setup.network.deliver(_HASH)
+        _until(lambda: owner.state.acquisitions[0].content_started)
+        assert owner.handle(_request("set_auto", {"enabled": False}, command_id="pause-1")).ok
+        _until(lambda: owner.state.acquisitions[0].action_sent and not owner.state.acquisitions[0].action_pending)
+        monkeypatch.setattr(setup.network, "torrents", gated)
+        try:
+            assert owner.handle(_request("set_auto", {"enabled": True}, command_id="resume-1")).ok
+            assert entered.wait(_TIMEOUT_S)
+            assert owner.handle(_request("set_auto", {"enabled": False}, command_id="pause-2")).ok
+        finally:
+            release.set()
+        _until(lambda: not owner.state.acquisitions[0].action_pending)
+        assert owner.handle(_request("set_auto", {"enabled": True}, command_id="resume-2")).ok
+        _until(lambda: (_HASH, "resume") in setup.network.actions)
+
+
+def test_completed_selective_episode_keeps_its_material_identity_until_processing(setup: _Setup) -> None:
+    from test_selective_publication import _download, _settled  # noqa: PLC0415
+
+    with _running(setup) as owner:
+        _download(setup, owner)
+        _until(lambda: _settled(owner))
+        group_id: str | None = owner.state.acquisitions[0].assignments[0].group_id
+        assert group_id is not None
+        response: ControlResponse = owner.handle(_request("status"))
+        materials: list[dict[str, object]] = cast("list[dict[str, object]]", response.result["materials"])
+        row: dict[str, object] = next(item for item in materials if item.get("group_id") == group_id)
+        assert row["stage"] == "waiting"
+        assert row["reason"] == "preparing"
+        request: ProcessingRequest = ProcessingRequest(
+            "processing",
+            1,
+            (group_id,),
+            {},
+            RequestOrigin.USER,
+            SourceSelection.AUTO,
+            None,
+            {},
+            RequestState.ACCEPTED,
+            1,
+            "2026-09-30T00:00:00+00:00",
+        )
+        assert owner._on_owner(lambda: owner._save(replace(owner.state, requests=(request,))))
+        response = owner.handle(_request("status"))
+        materials = cast("list[dict[str, object]]", response.result["materials"])
+        processing: dict[str, object] = next(item for item in materials if item.get("group_id") == group_id)
+        assert processing["material_id"] == row["material_id"]
+        assert processing["stage"] == "processing"
+
+
+def test_explicit_resume_preserves_confirmed_content_start_without_starting_twice(setup: _Setup) -> None:
+    with _running(setup) as owner:
+        assert owner.admit_episode("admit", _choice(3)).ok
+        _until(lambda: bool(setup.network.metadata_added))
+        setup.network.deliver(_HASH)
+        _until(lambda: owner.state.acquisitions[0].content_started)
+        assert owner.handle(_request("transfer", {"info_hash": _HASH, "action": "stop"}, command_id="stop")).ok
+        _until(lambda: not owner.state.acquisitions[0].action_pending)
+        assert owner.handle(_request("transfer", {"info_hash": _HASH, "action": "resume"}, command_id="resume")).ok
+        _until(lambda: not owner.state.acquisitions[0].action_pending)
+        _until(lambda: owner.state.acquisitions[0].content_started)
+        assert setup.network.started == [_HASH, _HASH]
 
 
 def test_an_admitted_episode_gets_metadata_then_a_saved_verified_selection_before_its_content_starts(
@@ -675,6 +756,26 @@ def test_the_end_of_a_global_pause_never_restarts_a_selection_whose_priorities_c
 
     assert _stored(setup).problem == automation_module._SELECTION_MISMATCH
     assert setup.network.started == [_HASH]
+
+
+def test_explicit_resume_after_a_selection_mismatch_reapplies_the_saved_union_before_start(setup: _Setup) -> None:
+    with _running(setup) as owner:
+        assert owner.admit_episode("admit-1", _choice(3)).ok
+        _until(lambda: bool(setup.network.metadata_added))
+        setup.network.deliver(_HASH)
+        _until(_starts(setup))
+        owner.handle(_request("transfer", {"info_hash": _HASH, "action": "stop"}, command_id="stop-1"))
+        _until(lambda: not _view(owner)["action_pending"])
+        setup.network.per_hash[_HASH] = tuple(replace(item, priority=1) for item in setup.network.per_hash[_HASH])
+        owner.handle(_request("transfer", {"info_hash": _HASH, "action": "resume"}, command_id="resume-1"))
+        _until(lambda: _view(owner)["problem"] == automation_module._SELECTION_MISMATCH)
+    with _running(setup) as owner:
+        assert owner.handle(_request("transfer", {"info_hash": _HASH, "action": "resume"}, command_id="resume-2")).ok
+        _until(_starts(setup, 2))
+    assert setup.network.selections == [(_HASH, frozenset({0, 1}))] * 2
+    assert (_stored(setup).selection_revision, _stored(setup).applied_revision) == (2, 2)
+    assert _stored(setup).problem is None
+    assert setup.network.unapproved_starts == []
 
 
 def test_a_finished_transfer_with_an_unresolved_episode_is_neither_complete_nor_released(setup: _Setup) -> None:
