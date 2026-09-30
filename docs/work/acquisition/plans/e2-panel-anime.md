@@ -359,8 +359,10 @@ startu nie jest naprawiany przez komunikat CLI.
 - **D2: zaznaczanie tekstu myszą**; Ctrl+C i C do schowka Windows, bez selekcji C wiersz.
 - **D3: TAK, wszystkie powiązane wpisy**, także spin-offy i 7.5; domena w P2b.
 - Główny rozmiar 80; 50 działa. M01 u góry czy pośrodku: decyzja po PNG.
-- **D4 (30.09): stała klatka §4 na każdym ekranie Anime**, kolumna treści
-  wyśrodkowana w poziomie; M01 dziedziczy tę klatkę.
+- **D4 (30.09): stała klatka §4 na każdym ekranie Panelu** (Anime,
+  Subskrypcje, Przetwarzanie, Biblioteka), kolumna treści wyśrodkowana
+  w poziomie; M01 dziedziczy tę klatkę. Długie nazwy obcinane jednym `…`,
+  bez łamania wiersza.
 - **D5 (30.09): usunąć teraz stary katalog grup Nyaa, selektor odcinków,
   G i S z zakładki Anime.** Subskrypcje zakłada się ponownie w E3. Istniejące
   subskrypcje działają dalej w swojej zakładce.
