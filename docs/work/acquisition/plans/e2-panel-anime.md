@@ -359,6 +359,32 @@ startu nie jest naprawiany przez komunikat CLI.
 - **D2: zaznaczanie tekstu myszą**; Ctrl+C i C do schowka Windows, bez selekcji C wiersz.
 - **D3: TAK, wszystkie powiązane wpisy**, także spin-offy i 7.5; domena w P2b.
 - Główny rozmiar 80; 50 działa. M01 u góry czy pośrodku: decyzja po PNG.
+- **D4 (30.09): stała klatka §4 na każdym ekranie Anime**, kolumna treści
+  wyśrodkowana w poziomie; M01 dziedziczy tę klatkę.
+- **D5 (30.09): usunąć teraz stary katalog grup Nyaa, selektor odcinków,
+  G i S z zakładki Anime.** Subskrypcje zakłada się ponownie w E3. Istniejące
+  subskrypcje działają dalej w swojej zakładce.
+- **D6 (30.09): kursor startuje na pierwszym wybieralnym wierszu od góry.**
+  Zapowiedzi bez emisji są widoczne, przygaszone i niewybieralne.
+- **D7 (30.09): jeden model stanu odcinka dla D, starego G i subskrypcji:**
+  pusto → Zlecono → Pobieram → Pobrano → Przetwarzam → Gotowe, plus Błąd.
+  Odcinek zostaje w Przetwarzaniu przez całe przetwarzanie.
+- **D8 (30.09): przed nowym kodem użyć istniejącego** (`utils/rich_console`,
+  Rich, Prompt Toolkit, repo). Spinner tylko z jednego źródła.
+
+## 16. Domknięcie P2/P3
+
+Zakres: `AnimeController` zachowuje okablowanie rezydenta i API §8. Każdy
+ekran Anime renderuje `anime_view` z `AnimeSnapshot`. Tytuł bez mapowania
+ani.zip idzie zwykłą listą odcinków z AniList i D/I; Nyaa najwyżej jako
+kandydaci w I. Usuwane: ekrany RESULTS, katalog i wybór grupy, stary selektor
+odcinków, obejścia z `0ac8b9e` i `4b51c24`, `AnimeResult.SUBSCRIBE`
+w Anime, lokalne kopie spinnera. P2b (7.5, speciale) odłożone
+do refaktoryzacji.
+
+Warunek wyjścia: bramki repo, regresje §12, PNG 50/80/120 ekranów
+wyszukiwania, wpisów, odcinków i wydań, przegląd innego modelu, potem
+odbiór F8 właściciela.
 
 ## 15. Odbiór
 
