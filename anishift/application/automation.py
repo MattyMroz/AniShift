@@ -43,6 +43,7 @@ from anishift.application.acquisition_staging import (
 from anishift.application.artifacts import ArtifactKind, ArtifactLifetime, ArtifactState, create_group_id
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.control import (
+    REMOVED_FROM_CLIENT,
     AcquisitionConfirmation,
     AcquisitionState,
     AdmissionConflict,
@@ -887,7 +888,18 @@ class AutomationOwner:
             return
         with acquisition.requests("recovery"):
             present: frozenset[str] = acquisition.queued_hashes()
-        self._on_owner(lambda: self._reconcile_acquisitions(present))
+            missing: frozenset[str] = self._on_owner(
+                lambda: frozenset(
+                    item.info_hash
+                    for item in self._state.acquisitions
+                    if item.state is AcquisitionState.UNCERTAIN
+                    and item.selective
+                    and item.client_confirmed
+                    and item.info_hash not in present
+                )
+            )
+            removed: frozenset[str] = acquisition.finalizable_hashes(missing) - acquisition.released_hashes(missing)
+        self._on_owner(lambda: self._reconcile_acquisitions(present, removed=removed))
 
     def _prepared_client(self, problem: str | None) -> None:
         self._active_io -= 1
@@ -4121,7 +4133,7 @@ class AutomationOwner:
         matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = tuple(
             (transfer, assignment)
             for transfer in self._state.acquisitions
-            for assignment in transfer.assignments
+            for assignment in transfer.protected_assignments
             if (assignment.choice.anilist_id, assignment.choice.number) == (key.anilist_id, key.number)
         )
         return tuple(sorted(matches, key=lambda item: not item[1].replaced))
@@ -4653,9 +4665,18 @@ class AutomationOwner:
         self._schedule_transfers()
         return service.record_check(subscription, confirmed, offered, checked)
 
-    def _reconcile_acquisitions(self, present: frozenset[str]) -> None:
+    def _reconcile_acquisitions(self, present: frozenset[str], *, removed: frozenset[str] = frozenset()) -> None:
         acquisitions: list[AcquisitionConfirmation] = []
         for item in self._state.acquisitions:
+            if (
+                item.info_hash in removed
+                and item.state is AcquisitionState.UNCERTAIN
+                and item.selective
+                and item.client_confirmed
+            ):
+                acquisitions.append(replace(item, state=AcquisitionState.FAILED, problem=REMOVED_FROM_CLIENT))
+                logger.info("Recovered a previously confirmed transfer removed from its managed client")
+                continue
             state: AcquisitionState = item.state
             if item.info_hash in present and state in {AcquisitionState.PENDING_SEND, AcquisitionState.UNCERTAIN}:
                 state = AcquisitionState.ACCEPTED

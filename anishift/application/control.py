@@ -73,6 +73,9 @@ __all__ = [
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
+REMOVED_FROM_CLIENT: Final[str] = "removed_from_client"
+"""Terminal reason for a previously acknowledged transfer missing from its managed client."""
+
 WATCH_STATE_SCHEMA_VERSION: Final[int] = 3
 """Current schema of the persisted automation state."""
 
@@ -499,7 +502,20 @@ class AcquisitionConfirmation:
     @property
     def active_assignments(self) -> tuple[EpisodeAssignment, ...]:
         """Episodes of this transfer that no later explicit repeat replaced."""
-        return tuple(item for item in self.assignments if not item.replaced)
+        return tuple(item for item in self.protected_assignments if not item.replaced)
+
+    @property
+    def protected_assignments(self) -> tuple[EpisodeAssignment, ...]:
+        """Admissions retained unless the user ended their transfer before publication."""
+        ended: bool = self.state is AcquisitionState.FAILED and (
+            self.problem == REMOVED_FROM_CLIENT or self.requested_action == "cancel"
+        )
+        return tuple(item for item in self.assignments if not ended or item.publication is not None)
+
+    @property
+    def client_confirmed(self) -> bool:
+        """Whether durable state proves the client previously acknowledged this transfer."""
+        return self.content_started or self.applied_revision > 0
 
     @property
     def wanted_files(self) -> frozenset[int]:
@@ -934,7 +950,7 @@ def episode_conflict(
     if any(
         item.choice.anilist_id == anilist_id and item.choice.number == number
         for acquisition in state.acquisitions
-        for item in acquisition.assignments
+        for item in acquisition.protected_assignments
     ):
         return AdmissionConflict.ADMITTED
     recorded: tuple[LegacyScope, ...] = tuple(
@@ -950,7 +966,7 @@ def legacy_conflict(state: WatchState, scope: LegacyScope) -> bool:
     return any(
         scope.covers(item.choice.anilist_id, item.choice.number)
         for acquisition in state.acquisitions
-        for item in acquisition.assignments
+        for item in acquisition.protected_assignments
     )
 
 

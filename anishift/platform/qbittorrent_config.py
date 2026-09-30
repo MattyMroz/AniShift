@@ -163,6 +163,7 @@ def write_managed_profile(root: Path, *, web_port: int, torrent_port: int, passw
     values: dict[str, dict[str, str]] = {
         "LegalNotice": {"Accepted": "true"},
         "Preferences": {
+            "Advanced\\updateCheck": "false",
             "WebUI\\Enabled": "true",
             "WebUI\\Address": _LOOPBACK,
             "WebUI\\Port": str(web_port),

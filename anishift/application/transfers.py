@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Final
 
 from anishift.application.acquisition_staging import lexical_path, staged_file, torrent_relative_path
-from anishift.application.control import AcquisitionState
+from anishift.application.control import REMOVED_FROM_CLIENT, AcquisitionState
 from anishift.application.discovery import SOURCE_SUBTITLE_FORMATS, VIDEO_SOURCE_SUFFIXES
 from anishift.application.episode_identity import IdentityVerdict, classify
 from anishift.application.events import failure_code, sanitize_event_message
@@ -140,6 +140,19 @@ class TransferInspector:
             return ()
         self._acquisition.resume_unconfirmed(frozenset(item.info_hash for item in acquisitions))
         transfers: dict[str, TorrentInfo] = {item.info_hash.casefold(): item for item in self._acquisition.transfers()}
+        missing: frozenset[str] = frozenset(
+            item.info_hash
+            for item in acquisitions
+            if item.selective
+            and item.client_confirmed
+            and item.state is not AcquisitionState.FAILED
+            and item.info_hash not in transfers
+        )
+        removed: frozenset[str] = (
+            (self._acquisition.finalizable_hashes(missing) - self._acquisition.released_hashes(missing))
+            if missing
+            else frozenset()
+        )
         active: set[str] = {item.info_hash for item in acquisitions}
         self._record_progress({key: value for key, value in transfers.items() if key in active}, stall_after_s)
         self._files = {key: value for key, value in self._files.items() if key in active}
@@ -148,6 +161,18 @@ class TransferInspector:
         natures: set[tuple[str, str]] = set()
         reason: str | None = None
         for acquisition in acquisitions:
+            if (
+                acquisition.info_hash in removed
+                and acquisition.client_confirmed
+                and acquisition.state is not AcquisitionState.FAILED
+            ):
+                results.append(
+                    _updated(
+                        acquisition, replace(acquisition, state=AcquisitionState.FAILED, problem=REMOVED_FROM_CLIENT)
+                    )
+                )
+                logger.info("Previously confirmed transfer removed from its managed client")
+                continue
             if acquisition.state is AcquisitionState.FAILED or acquisition.problem is not None:
                 results.append(acquisition)
                 continue

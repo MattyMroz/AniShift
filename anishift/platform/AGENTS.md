@@ -7,6 +7,7 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 - `child_processes.py` przypisuje proces rezydenta Windows do Job Object: narzędzia
   potomne kończą się także po nagłym zabiciu właściciela. Prywatny qBittorrent i panel
   są uruchamiane z jawnym breakaway. Nie zamykaj uchwytu joba ręcznie w żywym rezydencie.
+- `write_managed_profile` disables qBittorrent update checks only in the private profile; updates arrive through the `anishift setup` manifest.
 - `ManagedQBittorrent` dowodzi własności przez PID, czas utworzenia, własną binarkę
   i katalog profilu potwierdzony w API. GUI przejęte przez użytkownika blokuje automatyczne
   zamknięcie. Zwolnienie ukończonego torrenta zachowuje media (`deleteFiles=false`).

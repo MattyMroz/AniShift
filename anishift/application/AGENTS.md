@@ -286,6 +286,11 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   Selektywne `PENDING_SEND` jest uzgadniane z klientem bez ponownego add: niewidoczny hash dostaje do
   `_SEND_CHECKS` odczytów, potem `UNCERTAIN` z `_SEND_UNCONFIRMED`, a resume sprawdza go od nowa.
   `automation.py`, `transfers.py`
+- Confirmed selective transfers missing from a successful managed-client read become `FAILED` with
+  `removed_from_client`; startup reconciles old `UNCERTAIN` records only with durable confirmation
+  (`content_started` or `applied_revision > 0`). Unconfirmed sends retain protection. `protected_assignments`
+  is shared by episode conflicts and status: removal or confirmed cancel releases only admissions without
+  publication; publication evidence, files and historical records remain intact for fresh-staging reorders.
 - `episode_download` saves one batch receipt before source reads; each admission has a receipt keyed
   by batch ID and episode number. Disconnect preserves the batch, restart marks unfinished batches
   interrupted without resuming their remaining keys. Recover admission results from individual receipts

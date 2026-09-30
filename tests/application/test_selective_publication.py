@@ -186,6 +186,37 @@ def test_completed_transfer_retries_an_unconfirmed_release_without_restart(
     assert len(attempts) > automation_module._FINALIZE_ATTEMPTS + 2
 
 
+@pytest.mark.parametrize("cancel", [False, True])
+def test_removal_or_cancel_preserves_a_handed_off_episode(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch, *, cancel: bool
+) -> None:
+    monkeypatch.setattr(setup.network, "release_completed", lambda hashes: frozenset())
+    with _running(setup) as owner:
+        _download(setup, owner)
+        _until(lambda: _current(owner).assignments[0].publication is not None)
+        _until(
+            lambda: (publication := _current(owner).assignments[0].publication) is not None and publication.handed_off
+        )
+        before: set[str] = _root_files(setup)
+        if cancel:
+            assert owner.handle(_request("transfer", {"info_hash": _HASH, "action": "cancel"})).ok
+            _until(lambda: _current(owner).state is AcquisitionState.FAILED)
+        else:
+            setup.network.tracked.clear()
+
+            def inspect_removed() -> None:
+                assert owner._replace_acquisition(
+                    replace(_current(owner), state=AcquisitionState.ACCEPTED, content_started=True)
+                )
+                owner._schedule_transfers()
+
+            owner._on_owner(inspect_removed)
+            _until(lambda: _current(owner).state is AcquisitionState.FAILED)
+        assert not owner.admit_episode("again", _choice(3)).ok
+        assert _status(owner)["state"] != "not_ordered"
+        assert _root_files(setup) == before
+
+
 def test_cleanup_runs_after_release_even_when_finishing_the_client_fails(
     setup: _Setup, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -798,7 +829,10 @@ def test_a_new_episode_from_a_terminal_pack_gets_one_new_transfer_after_restart(
         assert admitted.ok
         _until(lambda: len(setup.network.metadata_added) == 2)
         duplicate: ControlResponse = owner.admit_episode("duplicate-3", _choice(3))
-        assert (duplicate.ok, duplicate.reason) == (False, "episode_admitted")
+        protected: bool = terminal == "complete" or any(
+            item.choice.number == 3 and item.publication is not None for item in previous.assignments
+        )
+        assert (duplicate.ok, duplicate.reason) == ((False, "episode_admitted") if protected else (True, ""))
         setup.network.deliver(_HASH)
         _until(lambda: owner.state.acquisitions[-1].content_started)
         assert len(owner.state.acquisitions) == 2

@@ -645,6 +645,54 @@ def _mapped_transfer(*, replaced: bool = False) -> tuple[AcquisitionConfirmation
     return transfer, files
 
 
+@pytest.mark.parametrize("outcome", ["removed", "restored", "cancel", "unconfirmed", "external", "accepted_unseen"])
+def test_missing_or_cancelled_episode_releases_only_confirmed_managed_orders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    current: AcquisitionConfirmation
+    files: tuple[TorrentFile, ...]
+    current, files = _mapped_transfer()
+    current, service, network = _resume_fixture(tmp_path, current, files)
+    current = replace(current, requested_action=None, action_id=None, action_pending=False)
+    if outcome == "cancel":
+        network.before_action = network.tracked.clear
+    if outcome in {"restored", "unconfirmed"}:
+        current = replace(current, state=AcquisitionState.UNCERTAIN)
+    if outcome == "unconfirmed":
+        current = replace(current, applied_revision=0, problem=automation_module._SEND_UNCONFIRMED)
+    if outcome == "accepted_unseen":
+        current = replace(current, applied_revision=0, content_started=False)
+    if outcome == "external":
+        monkeypatch.setattr(service, "_torrent_management", None)
+    if outcome != "cancel":
+        network.tracked.clear()
+    streams: _Streams = _Streams()
+    streams.answers = {(41024, 4): (_stream(4),)}
+    service._stream_source = streams
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(current,)))
+    with _running(service, store) as owner:
+        if outcome == "cancel":
+            assert owner.handle(_request("transfer", {"info_hash": current.info_hash, "action": "cancel"})).ok
+        if outcome in {"unconfirmed", "external", "accepted_unseen"}:
+            _until(lambda: owner.state.acquisitions[0].state is AcquisitionState.UNCERTAIN)
+            assert owner.state.acquisitions[0].problem != "removed_from_client"
+            refused: ControlResponse = owner.admit_episode("again", current.assignments[0].choice)
+            assert (refused.ok, refused.reason) == (False, "episode_admitted")
+            return
+        _until(lambda: owner.state.acquisitions[0].state is AcquisitionState.FAILED)
+        if outcome != "cancel":
+            assert owner.state.acquisitions[0].problem == "removed_from_client"
+        response: ControlResponse = owner.handle(_request("episode_states", {"anilist_id": _S1, "numbers": [4]}))
+        assert decode_view(EpisodeStatus, cast("list[object]", response.result["items"])[0]).state == "not_ordered"
+        assert _download(owner, (4,)).ok
+        _until(lambda: len(owner.state.acquisitions) == 2)
+        assert owner.state.acquisitions[-1].operation_id != current.operation_id
+        _until(lambda: len(network.metadata_added) == 1)
+        assert current.operation_id not in str(network.metadata_added[0][2])
+
+
 def test_manual_file_choice_refuses_a_video_assigned_to_another_episode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
