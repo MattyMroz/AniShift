@@ -4852,7 +4852,13 @@ class AutomationOwner:
     ) -> tuple[AcquisitionConfirmation, ...]:
         taken: set[str] | None = None if reserved is None else set(reserved)
         settled: list[AcquisitionConfirmation] = []
+        present: frozenset[str] = frozenset(
+            entry.info_hash.casefold() for entry in (() if self._transfers is None else self._transfers.snapshot())
+        )
         for item in results:
+            if item.info_hash not in present:
+                settled.append(item)
+                continue
             if item.selective:
                 settled.append(self._settle_selection(service, item))
                 continue

@@ -185,6 +185,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   a niepewne przekazanie blokuje ponowne dodanie hasha i innej wersji tego samego numeru.
   Usunięcie subskrypcji nie usuwa potwierdzenia. Obecność hasha w kliencie oznacza
   `ACCEPTED`, nigdy kompletność pliku. `automation.py`, `subscriptions.py`
+- `TransferInspector` requires three consecutive successful list reads missing a hash before an uncertain/removed transition; the per-hash in-memory counter resets on presence or removal from inspection.
 - `TransferInspector` odczytuje zbiorczą listę aktywnych transferów; metadane plików
   odświeża po ich uzyskaniu i przy przejściu do kompletności. Do Auto dopuszcza wybrane
   pliki po dowodzie klienta, zgodności rozmiaru i lokalnej dostępności. Nieznane nazwy

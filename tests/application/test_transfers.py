@@ -235,7 +235,10 @@ def test_a_missing_transfer_keeps_its_identity_as_uncertain(tmp_path: Path) -> N
     acquisition: _Acquisition = _Acquisition(tmp_path)
     acquisition.info = None
 
-    result: AcquisitionConfirmation = TransferInspector(acquisition, tmp_path).inspect((_confirmation(),))[0]
+    inspector: TransferInspector = TransferInspector(acquisition, tmp_path)
+    for _ in range(2):
+        assert inspector.inspect((_confirmation(),)) == (_confirmation(),)
+    result: AcquisitionConfirmation = inspector.inspect((_confirmation(),))[0]
 
     assert result.state is AcquisitionState.UNCERTAIN
     assert result.operation_id == "op-1"

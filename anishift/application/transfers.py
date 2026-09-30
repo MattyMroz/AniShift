@@ -73,6 +73,9 @@ _FIRST_ORDINAL: Final[int] = 2
 _FAILURES_BEFORE_PROBLEM: Final[int] = 3
 """Consecutive failed inspections of one transfer before its release stops with a visible problem."""
 
+_MISSING_BEFORE_TRANSITION: Final[int] = 3
+"""Consecutive successful list reads missing a hash before its transfer becomes uncertain or removed."""
+
 
 @dataclass(frozen=True, slots=True)
 class _Files:
@@ -109,6 +112,7 @@ class TransferInspector:
         self._snapshot: tuple[TorrentInfo, ...] = ()
         self._failures: frozenset[tuple[str, str]] = frozenset()
         self._refused: dict[str, int] = {}
+        self._missing: dict[str, int] = {}
 
     def snapshot(self) -> tuple[TorrentInfo, ...]:
         """Read the last transfer observations without contacting the client."""
@@ -136,10 +140,13 @@ class TransferInspector:
         if not acquisitions:
             self._files.clear()
             self._refused.clear()
+            self._missing.clear()
             self._note_failures(frozenset(), None)
             return ()
         self._acquisition.resume_unconfirmed(frozenset(item.info_hash for item in acquisitions))
         transfers: dict[str, TorrentInfo] = {item.info_hash.casefold(): item for item in self._acquisition.transfers()}
+        active: set[str] = {item.info_hash for item in acquisitions}
+        self._missing = {key: self._missing.get(key, 0) + 1 for key in active if key not in transfers}
         missing: frozenset[str] = frozenset(
             item.info_hash
             for item in acquisitions
@@ -147,13 +154,13 @@ class TransferInspector:
             and item.client_confirmed
             and item.state is not AcquisitionState.FAILED
             and item.info_hash not in transfers
+            and self._missing[item.info_hash] >= _MISSING_BEFORE_TRANSITION
         )
         removed: frozenset[str] = (
             (self._acquisition.finalizable_hashes(missing) - self._acquisition.released_hashes(missing))
             if missing
             else frozenset()
         )
-        active: set[str] = {item.info_hash for item in acquisitions}
         self._record_progress({key: value for key, value in transfers.items() if key in active}, stall_after_s)
         self._files = {key: value for key, value in self._files.items() if key in active}
         self._refused = {key: value for key, value in self._refused.items() if key in active}
@@ -161,6 +168,9 @@ class TransferInspector:
         natures: set[tuple[str, str]] = set()
         reason: str | None = None
         for acquisition in acquisitions:
+            if 0 < self._missing.get(acquisition.info_hash, 0) < _MISSING_BEFORE_TRANSITION:
+                results.append(acquisition)
+                continue
             if (
                 acquisition.info_hash in removed
                 and acquisition.client_confirmed
@@ -262,22 +272,24 @@ class TransferInspector:
 
     def _inspect(self, acquisition: AcquisitionConfirmation, transfer: TorrentInfo | None) -> AcquisitionConfirmation:
         if transfer is None:
-            return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
+            return self._uncertain(acquisition, "missing_from_list")
         directory: Path = lexical_path(transfer.save_path)
         if not directory.is_relative_to(self._root):
-            return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
+            return self._uncertain(acquisition, "save_path_outside_workspace")
         relative: Path = directory.relative_to(self._root)
         try:
             if relative.parts:
                 staged_file(self._root, relative.as_posix())
         except ValueError:
-            return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
+            return self._uncertain(acquisition, "save_path_invalid")
         finished: bool = transfer.progress == 1.0 and transfer.amount_left == 0 and transfer.state in _COMPLETE_STATES
         files: tuple[TorrentFile, ...] = self._inspect_files(transfer, ready=finished)
         selected: tuple[TorrentFile, ...] = tuple(item for item in files if item.priority > 0)
         names: tuple[str, ...] = tuple(item.name.replace("\\", "/") for item in selected)
-        if any(not _safe_path(directory, name) for name in names) or _reservation_broken(acquisition, selected, names):
-            return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
+        if any(not _safe_path(directory, name) for name in names):
+            return self._uncertain(acquisition, "file_name_invalid")
+        if _reservation_broken(acquisition, selected, names):
+            return self._uncertain(acquisition, "reservation_mismatch")
         complete: tuple[str, ...] = _complete_files(
             directory, selected, names, settling=transfer.state in _SETTLING_STATES
         )
@@ -299,6 +311,11 @@ class TransferInspector:
             state=AcquisitionState.COMPLETE if whole else AcquisitionState.ACCEPTED,
         )
         return _updated(acquisition, candidate)
+
+    def _uncertain(self, acquisition: AcquisitionConfirmation, reason: str) -> AcquisitionConfirmation:
+        if acquisition.state is not AcquisitionState.UNCERTAIN:
+            logger.info("Transfer became uncertain", reason=reason)
+        return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
 
     def _inspect_files(self, transfer: TorrentInfo, *, ready: bool) -> tuple[TorrentFile, ...]:
         info_hash: str = transfer.info_hash.casefold()

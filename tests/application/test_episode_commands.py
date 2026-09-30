@@ -39,7 +39,7 @@ from anishift.application.episode_selection import EpisodeKey, StreamCandidate
 from anishift.application.intents import RequestOrigin
 from anishift.application.service import AppService
 from anishift.application.subscriptions import EpisodeOrder, EpisodeState, Subscription, SubscriptionService
-from anishift.application.transfers import file_map_revision
+from anishift.application.transfers import TransferInspector, file_map_revision
 from anishift.application.watch_state import WatchStateStore
 from anishift.application.workflows import WorkflowTarget
 from anishift.cli.resident import ResidentSession
@@ -691,6 +691,96 @@ def test_missing_or_cancelled_episode_releases_only_confirmed_managed_orders(
         assert owner.state.acquisitions[-1].operation_id != current.operation_id
         _until(lambda: len(network.metadata_added) == 1)
         assert current.operation_id not in str(network.metadata_added[0][2])
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_transient_missing_hash_keeps_acceptance_and_presence_resets_the_removal_budget(
+    tmp_path: Path, *, confirmed: bool
+) -> None:
+    current: AcquisitionConfirmation
+    files: tuple[TorrentFile, ...]
+    current, files = _mapped_transfer()
+    current, service, network = _resume_fixture(tmp_path, current, files)
+    current = replace(
+        current,
+        applied_revision=int(confirmed),
+        content_started=confirmed,
+        requested_action=None,
+        action_id=None,
+        action_pending=False,
+    )
+    inspector: TransferInspector = TransferInspector(service, tmp_path)
+    present: TorrentInfo = network.tracked.pop(current.info_hash)
+    for _ in range(2):
+        assert inspector.inspect((current,)) == (current,)
+        network.tracked[current.info_hash] = present
+        current = inspector.inspect((current,))[0]
+        assert current.state is AcquisitionState.ACCEPTED
+        assert current.problem is None
+        network.tracked.clear()
+    for _ in range(2):
+        assert inspector.inspect((current,)) == (current,)
+    terminal: AcquisitionConfirmation = inspector.inspect((current,))[0]
+    assert terminal.state is (AcquisitionState.FAILED if confirmed else AcquisitionState.UNCERTAIN)
+    assert terminal.problem == ("removed_from_client" if confirmed else None)
+
+
+@pytest.mark.parametrize("mode", ["legacy_start", "legacy_rename", "selective"])
+def test_layout_settlement_waits_for_a_present_hash_despite_cached_files(tmp_path: Path, mode: str) -> None:
+    current: AcquisitionConfirmation
+    files: tuple[TorrentFile, ...]
+    current, files = _mapped_transfer()
+    if mode == "legacy_rename":
+        files = tuple(replace(item, name=f"Pack/{item.name}") for item in files)
+    current, service, network = _resume_fixture(tmp_path, current, files)
+    current = replace(current, requested_action=None, action_id=None, action_pending=False, content_started=False)
+    if mode == "selective":
+        current = replace(
+            current,
+            applied_revision=0,
+            assignments=tuple(replace(item, files=(), file_map=None) for item in current.assignments),
+        )
+    else:
+        current = replace(
+            current,
+            assignments=(),
+            selection_revision=0,
+            applied_revision=0,
+            file_layout=((files[0].index, files[0].name, files[0].size),) if mode == "legacy_start" else (),
+        )
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(current,)))
+    owner: AutomationOwner = AutomationOwner(_real_service(tmp_path, acquisition=service), store, instance_id="test")
+    inspector: TransferInspector = TransferInspector(service, tmp_path)
+    owner._transfers = inspector
+    try:
+        current = inspector.inspect((current,))[0]
+        owner._state = replace(owner.state, acquisitions=(current,))
+        assert inspector.declared(current.info_hash)
+        present: TorrentInfo = network.tracked.pop(current.info_hash)
+        selections: int = len(network.selections)
+        assert inspector.inspect((current,)) == (current,)
+        assert owner._settle_layouts(service, (current,), frozenset()) == (current,)
+        assert network.started == []
+        assert network.renamed == []
+        assert len(network.selections) == selections
+        assert owner.state.acquisitions == (current,)
+        network.tracked[current.info_hash] = present
+        current = inspector.inspect((current,))[0]
+        owner._state = replace(owner.state, acquisitions=(current,))
+        result: AcquisitionConfirmation = owner._settle_layouts(service, (current,), frozenset())[0]
+        if mode == "legacy_rename":
+            assert network.renamed
+            owner._state = replace(owner.state, acquisitions=(result,))
+            result = owner._settle_layouts(service, (result,), frozenset())[0]
+        assert network.started == [current.info_hash]
+        if mode == "selective":
+            assert len(network.selections) == selections + 1
+        else:
+            assert result.content_started
+    finally:
+        owner._pool.shutdown(wait=True)
+        owner._service.close()
 
 
 def test_manual_file_choice_refuses_a_video_assigned_to_another_episode(
