@@ -1,0 +1,206 @@
+"""Allowlisted, nonauthoritative evidence appended by the acquisition owner."""
+
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Final
+
+import httpx
+
+from anishift.application.control_views import encode_view
+from anishift.errors import AniShiftError
+from anishift.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from anishift.application.control import EpisodeAssignment
+    from anishift.application.episode_selection import EpisodeOffer, StreamCandidate
+
+logger = get_logger(__name__)
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_TARGET_FIELDS: Final[tuple[str, ...]] = (
+    "aliases",
+    "type",
+    "local_episode",
+    "season",
+    "episode",
+    "absolute",
+    "episode_title",
+    "other_series",
+    "other_episode_titles",
+)
+"""Exact runtime H1 target keys, excluding arbitrary catalogue metadata."""
+
+_UNSAFE_TEXT: Final[re.Pattern[str]] = re.compile(r"(?:[a-z][a-z0-9+.-]*://|magnet:)", re.I)
+"""URLs cannot enter local decision evidence."""
+
+_ABSOLUTE_PATH: Final[re.Pattern[str]] = re.compile(r"^(?:[a-z]:[\\/]|[\\/])", re.I)
+"""Rooted paths are refused only in evidence path fields."""
+
+_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "source",
+        "key",
+        "target",
+        "candidates",
+        "suggestion",
+        "episodes",
+        "with_length",
+        "error",
+        "http_status",
+        "command_id",
+        "operation_id",
+        "admission_id",
+        "info_hash",
+        "file_name",
+        "verdict",
+        "reason",
+        "deviation_confirmed",
+        "previous_admission_id",
+        "conflict",
+        "anilist_id",
+        "number",
+        "stream",
+        "identity",
+        "facts",
+        "name",
+        "file_index",
+        "release",
+        "path",
+        "seeders",
+        "size_text",
+        "provider",
+        "tags",
+        "resolution",
+        "polish",
+        "multisub",
+        "platform",
+        "dub_only",
+        "container",
+        "supported",
+        *_TARGET_FIELDS,
+    }
+)
+"""Closed evidence fields at every nesting level; unknown transport data is refused."""
+
+
+def _evidence(value: object, field: str = "") -> None:
+    if isinstance(value, Mapping):
+        if not value.keys() <= _FIELDS:
+            msg = "Unknown decision evidence fields"
+            raise ValueError(msg)
+        for key, item in value.items():
+            _evidence(item, key)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _evidence(item, field)
+        return
+    if value is None or type(value) in {int, float, bool}:
+        return
+    if (
+        isinstance(value, str)
+        and not _UNSAFE_TEXT.search(value)
+        and (field not in {"path", "file_name"} or not _ABSOLUTE_PATH.match(value))
+    ):
+        return
+    msg = "Decision evidence contains an unsupported or private value"
+    raise ValueError(msg)
+
+
+def target_view(target: Mapping[str, object]) -> dict[str, object]:
+    """Project only the inputs understood by the frozen H1 target contract."""
+    return {key: target[key] for key in _TARGET_FIELDS if key in target}
+
+
+def stream_view(stream: StreamCandidate) -> dict[str, object]:
+    """Retain replay inputs without magnets, trackers or transport metadata."""
+    return {
+        "info_hash": stream.info_hash,
+        "name": stream.name,
+        "file_index": stream.file_index,
+        "file_name": stream.file_name,
+        "release": stream.release,
+        "path": stream.path,
+        "seeders": stream.seeders,
+        "size_text": stream.size_text,
+        "provider": stream.provider,
+        "tags": stream.tags,
+    }
+
+
+def offer_check(offer: EpisodeOffer, target: Mapping[str, object]) -> dict[str, object]:
+    """Record the actual assessment order and suggestion of one live source read."""
+    return {
+        "source": "torrentio",
+        "key": encode_view(offer.key),
+        "target": target_view(target),
+        "candidates": [
+            {
+                "stream": stream_view(item.stream),
+                "identity": encode_view(item.identity),
+                "facts": encode_view(item.facts),
+            }
+            for item in offer.candidates
+        ],
+        "suggestion": offer.suggestion,
+    }
+
+
+def source_error(source: str, anilist_id: int, number: int | None, error: BaseException) -> dict[str, object]:
+    """Keep only a source error code and HTTP status, never its message or payload."""
+    cause: BaseException | None = error
+    status: int | None = None
+    while cause is not None:
+        if isinstance(cause, httpx.HTTPStatusError):
+            status = cause.response.status_code
+            break
+        cause = cause.__cause__
+    return {
+        "source": source,
+        "key": {"anilist_id": anilist_id, "number": number},
+        "error": error.context.code.value if isinstance(error, AniShiftError) else type(error).__name__,
+        "http_status": status,
+    }
+
+
+def admission_decision(assignment: EpisodeAssignment, operation_id: str) -> dict[str, object]:
+    """Describe a durable admission and its explicit replacement relationship."""
+    return {
+        "operation_id": operation_id,
+        "admission_id": assignment.admission_id,
+        "key": {"anilist_id": assignment.choice.anilist_id, "number": assignment.choice.number},
+        "info_hash": assignment.choice.reference.info_hash,
+        "file_name": assignment.choice.reference.file_name,
+        "target": target_view(assignment.choice.target),
+        "verdict": assignment.choice.verdict.value,
+        "reason": assignment.choice.reason,
+        "deviation_confirmed": assignment.choice.deviation_confirmed,
+        "previous_admission_id": assignment.previous_admission_id,
+        "conflict": assignment.conflict,
+    }
+
+
+def append_decision(path: Path, kind: str, payload: Mapping[str, object]) -> None:
+    """Append trusted allowlisted evidence without making admission depend on the journal."""
+    try:
+        _evidence(payload)
+        record: dict[str, object] = {
+            "schema": 1,
+            "rules": "e1",
+            "kind": kind,
+            "at": datetime.now(UTC).isoformat(),
+            "entry": "manual",
+            **payload,
+        }
+        line: str = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(line + "\n")
+    except (OSError, ValueError, TypeError) as error:
+        logger.warning("Decision journal append failed", error_class=type(error).__name__)

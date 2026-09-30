@@ -1497,7 +1497,10 @@ def test_schedule_warning_survives_navigation_and_explicit_reentry_refreshes_onl
 @pytest.mark.unit
 def test_provider_locks_reach_anime_at_attachment_and_later_state_changed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda *args: {}, library=lambda: ()))
+    session: ResidentSession = cast(
+        "ResidentSession",
+        SimpleNamespace(command=lambda *args: {}, library=lambda: (), acquisition_states=lambda hashes: []),
+    )
     panel: StateController = StateController(session, lambda: None)
     controller: AnimeController = _controller(_Catalog())
     lock: dict[str, object] = {"provider": "anilist", "until": datetime.fromtimestamp(1090, UTC).isoformat()}

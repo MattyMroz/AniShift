@@ -328,6 +328,39 @@ def test_a_temporary_file_left_by_a_crash_changes_nothing(tmp_path: Path) -> Non
     assert store.load() == state
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("loaded", [False, True])
+def test_saving_a_known_readable_file_copies_bytes_without_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, loaded: bool
+) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    first: WatchState = _state()
+    store.save(first)
+    if loaded:
+        store = _store(tmp_path)
+        assert store.load() == first
+    original: bytes = (tmp_path / WATCH_STATE_FILE_NAME).read_bytes()
+
+    def unexpected_parse(text: str) -> WatchState:
+        raise AssertionError(text)
+
+    monkeypatch.setattr("anishift.application.watch_state._parse", unexpected_parse)
+    store.save(replace(first, policy=AutomationPolicy(auto_enabled=False)))
+    assert (tmp_path / f"{WATCH_STATE_FILE_NAME}.bak").read_bytes() == original
+    assert (tmp_path / WATCH_STATE_FILE_NAME).is_file()
+
+
+@pytest.mark.integration
+def test_saving_an_unknown_corrupt_file_preserves_the_existing_backup(tmp_path: Path) -> None:
+    path: Path = tmp_path / WATCH_STATE_FILE_NAME
+    backup: Path = path.with_name(f"{path.name}.bak")
+    path.write_bytes(b"{broken")
+    backup.write_bytes(b"previous-readable-backup")
+    _store(tmp_path).save(_state())
+    assert backup.read_bytes() == b"previous-readable-backup"
+    assert _store(tmp_path).load() == _state()
+
+
 def test_saving_overwrites_a_temporary_file_left_by_a_crash(tmp_path: Path) -> None:
     store: WatchStateStore = _store(tmp_path)
     (tmp_path / f"{WATCH_STATE_FILE_NAME}.tmp").write_text("{ not json", encoding="utf-8")

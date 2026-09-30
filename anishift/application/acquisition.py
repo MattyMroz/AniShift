@@ -7,7 +7,8 @@ import threading
 import time
 import unicodedata
 from collections import Counter, OrderedDict
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -15,6 +16,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
+from anishift.application.acquisition_decisions import offer_check, source_error
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_selection import (
     EpisodeOffer,
@@ -520,6 +522,23 @@ class AcquisitionService:
         self._clock: Callable[[], float] = clock
         self._memory: OrderedDict[int, _Remembered] = OrderedDict()
         self._memory_lock: threading.Lock = threading.Lock()
+        self._decision_sink: ContextVar[Callable[[dict[str, object]], None] | None] = ContextVar(
+            "decision_sink", default=None
+        )
+
+    @contextmanager
+    def observe_decisions(self, sink: Callable[[dict[str, object]], None]) -> Iterator[None]:
+        """Forward actual source reads to the current operation's owner."""
+        token: Token[Callable[[dict[str, object]], None] | None] = self._decision_sink.set(sink)
+        try:
+            yield
+        finally:
+            self._decision_sink.reset(token)
+
+    def _decision(self, payload: dict[str, object]) -> None:
+        sink: Callable[[dict[str, object]], None] | None = self._decision_sink.get()
+        if sink is not None:
+            sink(payload)
 
     def requests(self, reason: str) -> AbstractContextManager[None]:
         """Share one metadata budget across the adapters used by an operation."""
@@ -773,18 +792,25 @@ class AcquisitionService:
             msg = "A movie has only its first row"
             raise ValueError(msg)
         streams: tuple[StreamCandidate, ...] = ()
-        if mapping.kitsu_id is not None and movie:
-            streams = self._streams().movie_streams(mapping.kitsu_id)
-        elif mapping.kitsu_id is not None:
-            streams = self._streams().streams(mapping.kitsu_id, key.number)
         target: dict[str, object] = identity_target(graph, key.anilist_id, mapping, key.number)
+        try:
+            if mapping.kitsu_id is not None and movie:
+                streams = self._streams().movie_streams(mapping.kitsu_id)
+            elif mapping.kitsu_id is not None:
+                streams = self._streams().streams(mapping.kitsu_id, key.number)
+        except (AniShiftError, OSError, ValueError) as error:
+            self._decision(source_error("torrentio", key.anilist_id, key.number, error))
+            raise
         ranked: tuple[RankedCandidate, ...] = rank_candidates(target, streams)
         counts: dict[str, int] = {
             verdict.value: sum(1 for item in ranked if item.identity.verdict is verdict) for verdict in IdentityVerdict
         }
         suggested: int | None = suggestion(ranked)
         logger.info("Episode offer ranked", count=len(ranked), suggested=suggested is not None, movie=movie)
-        return EpisodeOffer(key, ranked, suggested, datetime.fromtimestamp(self._clock(), UTC), counts), target
+        offer: EpisodeOffer = EpisodeOffer(key, ranked, suggested, datetime.fromtimestamp(self._clock(), UTC), counts)
+        if mapping.kitsu_id is not None:
+            self._decision(offer_check(offer, target))
+        return offer, target
 
     def _titles(self) -> TitleCatalog:
         if self._title_catalog is None:
@@ -813,7 +839,19 @@ class AcquisitionService:
         if self._episode_catalog is None:
             msg = "No episode catalog is configured"
             raise ValueError(msg)
-        mapping: AniZipMapping = self._episode_catalog.mapping(anilist_id)
+        try:
+            mapping: AniZipMapping = self._episode_catalog.mapping(anilist_id)
+        except (AniShiftError, OSError, ValueError) as error:
+            self._decision(source_error("ani.zip", anilist_id, None, error))
+            raise
+        self._decision(
+            {
+                "source": "ani.zip",
+                "key": {"anilist_id": anilist_id, "number": None},
+                "episodes": len(mapping.raw_episodes),
+                "with_length": sum(row.get("length") is not None for row in mapping.raw_episodes.values()),
+            }
+        )
         with self._memory_lock:
             entry = self._remembered(anilist_id)
             entry.mapping, entry.mapping_at = mapping, now

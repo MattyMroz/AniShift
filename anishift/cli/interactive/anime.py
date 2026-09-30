@@ -512,15 +512,26 @@ class AnimeController:
             self._draft = None
             return draft
 
-    def refresh_acquisitions(self, acquisitions: Sequence[Mapping[str, object]]) -> None:
+    def refresh_acquisitions(
+        self, acquisitions: Sequence[Mapping[str, object]], *, hashes: tuple[str, ...] | None = None
+    ) -> None:
         """Apply recorded owner facts without creating a local admission history."""
         with self._lock:
+            if hashes is not None and hashes != tuple(
+                dict.fromkeys(row.choice.release.info_hash for row in self._rows if row.choice is not None)
+            ):
+                return
             self._recorded = {
                 str(item["info_hash"]).casefold(): str(item.get("state", ""))
                 for item in acquisitions
                 if item.get("info_hash")
             }
             self._marked = {index for index in self._marked if not self._recorded_label(self._rows[index].choice)}
+
+    def acquisition_hashes(self) -> tuple[str, ...]:
+        """Return only the release hashes currently displayed by the legacy catalogue."""
+        with self._lock:
+            return tuple(dict.fromkeys(row.choice.release.info_hash for row in self._rows if row.choice is not None))
 
     def take_downloaded(self) -> str | None:
         """Consume completion only while its initiating generation remains current."""
@@ -1630,6 +1641,16 @@ class AnimeController:
         self._titles_shown = any(item.anilist_id not in members for item in candidates)
 
     def _show_results(self, generation: int, catalog: ReleaseCatalog, listing: _Listing) -> None:
+        recorded: list[Mapping[str, object]] | None = None
+        if self._resident is not None:
+            hashes: tuple[str, ...] = tuple(
+                choice.release.info_hash for group in catalog.groups for choice in group.choices
+            )
+            try:
+                recorded = self._resident.acquisition_states(hashes)
+            except (AniShiftError, OSError) as problem:
+                self._report(generation, problem, _Screen.QUERY)
+                return
         with self._lock:
             if generation != self._generation:
                 return
@@ -1649,6 +1670,8 @@ class AnimeController:
             self._notice = ""
             self._selected = self._choices[0] if self._choices else 0
             self._screen = _Screen.RESULTS
+            if recorded is not None:
+                self._recorded = {str(item["info_hash"]).casefold(): str(item["state"]) for item in recorded}
         self._invalidate()
 
     def _show_done(self, generation: int, sentence: str, choices: Sequence[ReleaseChoice] = ()) -> None:

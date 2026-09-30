@@ -58,7 +58,7 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
   z limitem podnosi `OSError` i psuje połączenie, więc ramka ponad limit kończy je bez odpowiedzi.
   Dlatego `ControlServer._respond` mierzy zakodowaną odpowiedź: ponad limit wysyła odmowę
   `REFUSED` z `reason="response_too_large"` (bez obcinania treści), a połączenie obsługuje
-  kolejne polecenia. Zdarzenia `publish` nie mają tej kontroli. `local_control.py`
+  kolejne polecenia. `local_control.py`
 - `PipeListener.accept()` blokuje na `WaitForMultipleObjects(..., INFINITE)`, więc `close()` budzi
   wątek accept własnym połączeniem do siebie; samo zamknięcie listenera go nie odblokuje.
   `local_control.py`

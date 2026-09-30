@@ -226,7 +226,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   wywołującego. `_finish_run` zawsze zamyka handler i sesję oraz zawsze rozwiązuje `RunHandle`,
   bo nierozwiązany handle wiesza `execute` na zawsze. `service.py`
 - `WatchStateStore` zapisuje atomowo: `state.json.tmp` + `fsync`, kopia czytelnego `state.json`
-  do `state.json.bak`, dopiero potem `replace`. Uszkodzony JSON, nieznany klucz i nieobsługiwana
+  do `state.json.bak` (bez parsowania po udanym `load()` lub `save()` tej instancji;
+  nieznany plik wymaga walidacji), dopiero potem `replace`. Uszkodzony JSON, nieznany klucz i nieobsługiwana
   wersja schematu dają `ConfigError`, nigdy pustego stanu; brak pliku to stan domyślny z pracującą
   automatyzacją, a zapisana pauza pozostaje pauzą. `WATCH_STATE_SCHEMA_VERSION` to `3`, a loader przyjmuje 1, 2 i 3: starszy plik `load()` migruje
   raz, zostawia kopię `state.json.v<wersja>.bak` i przepisuje plik, więc drugi `load()` nie zmienia bajtów.

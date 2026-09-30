@@ -567,8 +567,12 @@ class ControlClient:
             _close_quietly(self._connection)
 
     def _send(self, frame: Mapping[str, object]) -> None:
+        encoded: bytes = _encode_frame(frame)
+        if len(encoded) > MAX_FRAME_BYTES:
+            message: str = "The request exceeds the frame limit"
+            raise ControlError(message, code=ControlErrorCode.REFUSED, reason="request_too_large")
         try:
-            self._connection.send_bytes(_encode_frame(frame))
+            self._connection.send_bytes(encoded)
         except (OSError, ValueError) as problem:
             msg = "The resident closed the control connection"
             raise ControlError(msg, code=ControlErrorCode.REFUSED) from problem
@@ -654,12 +658,29 @@ class _ServedConnection:
 
     def publish(self, frame: Mapping[str, object], terminal: bool) -> None:
         """Queue one event, replacing the pending event of the same task or state."""
+        if len(_encode_frame(frame)) > MAX_FRAME_BYTES:
+            logger.warning("A control event passed the frame limit")
+            frame = {
+                "v": PROTOCOL_VERSION,
+                "event": "control_problem",
+                "payload": {"reason": "event_too_large", "refresh_required": True},
+            }
+            terminal = True
         self._outbox.put(frame, terminal=terminal)
         self._pending.set()
 
     def send(self, frame: Mapping[str, object]) -> bool:
         """Write one frame, reporting whether the connection is still usable."""
         payload: bytes = _encode_frame(frame)
+        if len(payload) > MAX_FRAME_BYTES:
+            logger.warning("Refused an oversized outgoing control frame")
+            payload = _encode_frame(
+                {
+                    "v": PROTOCOL_VERSION,
+                    "event": "control_problem",
+                    "payload": {"reason": "event_too_large", "refresh_required": True},
+                }
+            )
         with self._send_lock:
             try:
                 self._connection.send_bytes(payload)

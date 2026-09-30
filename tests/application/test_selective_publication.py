@@ -182,10 +182,17 @@ def test_a_finished_episode_is_published_whole_handed_off_released_and_its_stagi
         _until(lambda: _settled(owner))
         status: dict[str, object] = _status(owner)
 
-    publication: EpisodePublication | None = _publication(setup)
-    assert publication is not None
-    assert publication.handed_off
-    assert [item.name for item in publication.files] == _NAMES
+    stored: AcquisitionConfirmation = _stored(setup)
+    assert stored.manifest == ()
+    assert stored.assignments[0].publication is None
+    assert stored.assignments[0].choice.target == {}
+    assert stored.assignments[0].group_id is not None
+    assert stored.required_files == ()
+    assert stored.assignments[0].video_path == f"Pack/{_NAMES[0]}"
+    with _running(setup) as restarted:
+        duplicate: ControlResponse = restarted.admit_episode("duplicate-after-cleanup", _choice(3))
+        assert not duplicate.ok
+        assert duplicate.reason == "episode_admitted"
     assert (setup.root / _NAMES[0]).read_bytes() == _VIDEO
     assert (setup.root / _NAMES[1]).read_bytes() == _SUBTITLES
     assert frozenset({_HASH}) in setup.network.released
@@ -211,10 +218,8 @@ def test_a_name_taken_before_publication_moves_the_whole_set_to_one_free_core(
         _download(setup, owner)
         _until(lambda: _settled(owner))
 
-    publication: EpisodePublication | None = _publication(setup)
-    assert publication is not None
     assert set(reserved) == {("Neko to Ryuu - 03 [2].mkv", "Neko to Ryuu - 03 [2].ass")}
-    assert [item.name for item in publication.files] == ["Neko to Ryuu - 03 [2].mkv", "Neko to Ryuu - 03 [2].ass"]
+    assert _stored(setup).assignments[0].group_id == create_group_id(Path(), "Neko to Ryuu - 03 [2]")
     assert (setup.root / _NAMES[0]).read_bytes() == b"foreign"
     assert (setup.root / "Neko to Ryuu - 03 [2].mkv").read_bytes() == _VIDEO
     assert (setup.root / "Neko to Ryuu - 03 [2].ass").read_bytes() == _SUBTITLES
@@ -236,10 +241,8 @@ def test_a_name_taken_after_the_first_link_moves_the_whole_set_without_replacing
         _download(setup, owner)
         _until(lambda: _settled(owner))
 
-    publication: EpisodePublication | None = _publication(setup)
-    assert publication is not None
-    assert publication.problem is None
-    assert publication.handed_off
+    assert _stored(setup).problem is None
+    assert _stored(setup).assignments[0].group_id is not None
     assert (setup.root / _NAMES[1]).read_bytes() == b"foreign"
     assert not (setup.root / _NAMES[0]).exists()
     assert (setup.root / "Neko to Ryuu - 03 [2].mkv").read_bytes() == _VIDEO
@@ -365,10 +368,11 @@ def test_a_failed_copy_is_reported_and_an_explicit_resume_publishes_the_set(
     assert (setup.root / _NAMES[0]).read_bytes() == _VIDEO
 
 
-def test_auto_ignores_a_set_that_is_not_handed_off_yet(setup: _Setup) -> None:
+def test_auto_ignores_a_set_that_is_not_handed_off_yet(setup: _Setup, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(setup.network, "release_completed", lambda hashes: frozenset())
     with _running(setup) as owner:
         _download(setup, owner)
-        _until(lambda: _settled(owner))
+        _until(lambda: _current(owner).state is AcquisitionState.COMPLETE)
         stored: AcquisitionConfirmation = _stored(setup)
         publication: EpisodePublication | None = stored.assignments[0].publication
         assert publication is not None

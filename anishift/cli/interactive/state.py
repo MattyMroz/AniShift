@@ -494,7 +494,6 @@ class StateController:
         """Reuse the session's one search controller inside the Anime tab."""
         with self._lock:
             self._anime = controller
-            controller.refresh_acquisitions(_rows(self._snapshot.get("acquisitions")))
             controller.refresh_provider_locks(_rows(self._snapshot.get("provider_locks")))
 
     def poll(self) -> None:
@@ -900,7 +899,7 @@ class StateController:
             if self._stop.wait(_RECONNECT_S):
                 break
 
-    def _receive(self, session: ResidentSession, frame: Mapping[str, object]) -> None:
+    def _receive(self, session: ResidentSession, frame: Mapping[str, object]) -> None:  # noqa: PLR0912, PLR0915
         payload: object = frame.get("payload")
         if frame.get("event") == "panel_open":
             with self._lock:
@@ -908,6 +907,11 @@ class StateController:
             self._invalidate()
             return
         if not isinstance(payload, Mapping):
+            return
+        if frame.get("event") == "control_problem":
+            with self._lock:
+                self._notify("Widok nieaktualny: odpowiedź przekracza limit.")
+            self._invalidate()
             return
         if frame.get("event") == "state_changed":
             subscriptions: list[Mapping[str, object]] = _rows(
@@ -919,6 +923,13 @@ class StateController:
             with self._lock:
                 previous_details: LibrarySet | None = self._details
             details: LibrarySet | None = self._refresh_details(session, previous_details)
+            anime: AnimeController | None = self._anime
+            hashes: tuple[str, ...] = anime.acquisition_hashes() if anime is not None else ()
+            acquisition_states: list[Mapping[str, object]] = (
+                session.acquisition_states(hashes) if anime is not None else []
+            )
+            draft: SubscriptionDraft | None = self._draft
+            work: Mapping[str, object] = self._draft_work(session, draft)
             with self._lock:
                 context: tuple[str, str] | None = self._library_context()
                 if payload != self._snapshot:
@@ -928,15 +939,17 @@ class StateController:
                 self._preserve_library_selection(payload)
                 self._snapshot = payload
                 self._select_library_target(payload)
-                if self._anime is not None:
-                    self._anime.refresh_acquisitions(_rows(payload.get("acquisitions")))
+                if self._anime is not None and self._anime is anime:
+                    self._anime.refresh_acquisitions(acquisition_states, hashes=hashes)
                     self._anime.refresh_provider_locks(_rows(payload.get("provider_locks")))
                 if self._details is previous_details:
                     self._details = details
                     if previous_details is not None and details is None:
                         self._selected = self._detail_selection
                 self._subscriptions = subscriptions
-                self._refresh_draft_work()
+                states: object = work.get("work_states")
+                if self._draft is draft and draft is not None and isinstance(states, Mapping):
+                    draft.refresh_work_states(states)
                 self._connected = True
                 self._observe_downloads()
                 if self._notice_version < self._state_version and not self._notice_persistent:
@@ -949,6 +962,17 @@ class StateController:
         elif frame.get("event") == "run_event":
             self._receive_progress(session, decode_view(RunEvent, payload))
         self._invalidate()
+
+    @staticmethod
+    def _draft_work(session: ResidentSession, draft: SubscriptionDraft | None) -> Mapping[str, object]:
+        if draft is None or draft.subscription is None:
+            return {}
+        try:
+            return session.command("subscription_get", {"subscription_id": draft.subscription.subscription_id})
+        except ControlError as error:
+            if error.code is not ControlErrorCode.INVALID_PAYLOAD:
+                raise
+            return {}
 
     def _receive_progress(self, session: ResidentSession, event: RunEvent) -> None:
         with self._lock:
@@ -963,17 +987,6 @@ class StateController:
             progress[1].emit(event)
             self._preserve_processing_selection(previous, self._processing_row_ids())
             self._observe_downloads()
-
-    def _refresh_draft_work(self) -> None:
-        draft: SubscriptionDraft | None = self._draft
-        if draft is None or draft.subscription is None:
-            return
-        item: Mapping[str, object] = next(
-            (item for item in self._subscriptions if item["subscription_id"] == draft.subscription.subscription_id), {}
-        )
-        states: object = item.get("work_states")
-        if isinstance(states, Mapping):
-            draft.refresh_work_states(states)
 
     def _preserve_tab_selection(
         self,

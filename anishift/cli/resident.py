@@ -413,6 +413,17 @@ class ResidentSession:
         """Send a validated user action through the owner's command boundary."""
         return self._call(kind, payload)
 
+    def acquisition_states(self, hashes: Sequence[str]) -> list[Mapping[str, object]]:
+        """Read durable states only for the currently displayed release hashes."""
+        rows: list[Mapping[str, object]] = []
+        for start in range(0, len(hashes), 1000):
+            values: object = self._call("acquisition_states", {"hashes": list(hashes[start : start + 1000])}).get(
+                "items"
+            )
+            if isinstance(values, list):
+                rows.extend(value for value in values if isinstance(value, Mapping))
+        return rows
+
     def observe(self, *, panel: bool = False) -> Iterator[Mapping[str, object]]:
         """Subscribe before reading the snapshot so concurrent progress is not lost."""
         events: ControlClient = self._connect()

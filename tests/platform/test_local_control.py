@@ -774,6 +774,69 @@ def test_an_answer_above_the_frame_limit_is_refused_and_the_connection_keeps_ser
     assert "xxxx" not in "".join(captured)
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("over", [0, 1])
+def test_utf8_event_boundary_preserves_the_channel(tmp_path: Path, over: int) -> None:
+    frame: dict[str, object] = {"v": PROTOCOL_VERSION, "event": "boundary", "payload": {"text": ""}}
+    remaining: int = MAX_FRAME_BYTES - len(local_control._encode_frame(frame)) + over
+    frame["payload"] = {"text": "ą" * (remaining // 2) + "x" * (remaining % 2)}
+    assert len(local_control._encode_frame(frame)) == MAX_FRAME_BYTES + over
+    server, endpoint, key = _serving(_state_dir(tmp_path), _echo)
+    client: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    commands: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    try:
+        client.subscribe()
+        events: Iterator[Mapping[str, object]] = client.events()
+        server.broadcast(frame)
+        first: Mapping[str, object] = next(events)
+        assert first["event"] == ("control_problem" if over else "boundary")
+        server.broadcast({"event": "following", "payload": {}})
+        assert next(events)["event"] == "following"
+        assert commands.call("echo", {"echo": "alive"})["echo"] == "alive"
+    finally:
+        client.close()
+        commands.close()
+        server.close()
+
+
+@pytest.mark.unit
+def test_oversized_request_is_refused_locally_and_next_command_works(tmp_path: Path) -> None:
+    server, endpoint, key = _serving(_state_dir(tmp_path), _echo)
+    client: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    try:
+        with pytest.raises(ControlError, match="frame limit"):
+            client.call("echo", {"echo": "ą" * MAX_FRAME_BYTES})
+        assert client.call("echo", {"echo": "alive"})["echo"] == "alive"
+    finally:
+        client.close()
+        server.close()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("over", [0, 1])
+def test_utf8_response_boundary_preserves_the_same_command_channel(tmp_path: Path, over: int) -> None:
+    frame: dict[str, object] = local_control._response_frame("boundary", ControlResponse.succeeded({"text": ""}))
+    remaining: int = MAX_FRAME_BYTES - len(local_control._encode_frame(frame)) + over
+    text: str = "ą" * (remaining // 2) + "x" * (remaining % 2)
+
+    def handler(request: ControlRequest) -> ControlResponse:
+        return ControlResponse.succeeded({"text": text}) if request.kind == "boundary" else _echo(request)
+
+    server, endpoint, key = _serving(_state_dir(tmp_path), handler)
+    client: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    try:
+        if over:
+            with pytest.raises(ControlError) as refused:
+                client.call("boundary", command_id="boundary")
+            assert refused.value.reason == "response_too_large"
+        else:
+            assert client.call("boundary", command_id="boundary") == {"text": text}
+        assert client.call("echo", {"echo": "alive"})["echo"] == "alive"
+    finally:
+        client.close()
+        server.close()
+
+
 def test_a_slow_handler_never_blocks_another_connection(tmp_path: Path) -> None:
     state_dir: Path = _state_dir(tmp_path)
     entered = threading.Event()

@@ -26,6 +26,7 @@ from anishift.application.acquisition import (
     ReleaseChoice,
     SeasonContext,
 )
+from anishift.application.acquisition_decisions import admission_decision, append_decision
 from anishift.application.acquisition_staging import (
     SetPublication,
     clean_staging,
@@ -70,6 +71,7 @@ from anishift.application.control import (
     TorrentioReference,
     WatchState,
     auto_admissible,
+    compact_acquisition,
     episode_conflict,
     legacy_conflict,
     mark_manual_handled,
@@ -184,6 +186,9 @@ __all__ = ["AutomationOwner"]
 logger = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
+
+_ACQUISITION_STATE_LIMIT: Final[int] = 1000
+"""Maximum release hashes in a bounded legacy catalogue status read."""
 
 OWNER_THREAD_NAME: Final[str] = "anishift-owner"
 """Name of the one thread every command of the resident is performed on."""
@@ -699,7 +704,7 @@ class AutomationOwner:
                 self._group_versions.update(dict.fromkeys(affected, self._file_version))
 
     def _acquisition_groups(self, acquisition: AcquisitionConfirmation) -> list[str]:
-        groups: set[str] = set()
+        groups: set[str] = {row.group_id for row in acquisition.assignments if row.group_id is not None}
         for name in sorted(_assigned_files(acquisition)):
             relative: Path = (Path(acquisition.directory) / name).parent
             candidate: ArtifactName | None = classify_artifact(Path(name), resolve_route(relative))
@@ -1159,6 +1164,8 @@ class AutomationOwner:
         paths: set[Path | None] = {artifact.path for artifact in group.artifacts}
         for acquisition in reversed(self._state.acquisitions):
             for assignment in acquisition.assignments:
+                if assignment.group_id is not None and assignment.group_id == group.group_id:
+                    return acquisition.origin
                 publication: EpisodePublication | None = assignment.publication
                 if publication is not None and any(
                     self._service.workspace_root / item.name in paths for item in publication.files
@@ -1307,6 +1314,17 @@ class AutomationOwner:
                 return self._reacquire_command(request)
             case "status":
                 return ControlResponse.succeeded(self._status())
+            case "acquisition_states":
+                hashes: tuple[str, ...] | None = _identifiers(request.payload, "hashes")
+                if hashes is None or len(hashes) > _ACQUISITION_STATE_LIMIT:
+                    return _invalid("Acquisition states require at most 1000 hashes")
+                selected: frozenset[str] = frozenset(value.casefold() for value in hashes)
+                recorded: dict[str, str] = {
+                    item.info_hash: item.state.value for item in self._state.acquisitions if item.info_hash in selected
+                }
+                return ControlResponse.succeeded(
+                    {"items": [{"info_hash": info_hash, "state": state} for info_hash, state in recorded.items()]}
+                )
             case "panel_attach":
                 if request.session_id is None:
                     return _invalid("A panel requires a connected session")
@@ -1491,6 +1509,7 @@ class AutomationOwner:
                     "group_ids": self._acquisition_groups(item),
                 }
                 for item in self._state.acquisitions
+                if item.state is not AcquisitionState.COMPLETE or item.problem is not None or item.action_pending
             ],
             "transfers": [
                 {"info_hash": item.info_hash, "name": item.name, "progress": item.progress, "state": item.state}
@@ -3255,12 +3274,7 @@ class AutomationOwner:
 
     def _subscriptions_list_command(self, _request: ControlRequest, service: SubscriptionService) -> ControlResponse:
         return ControlResponse.succeeded(
-            {
-                "subscriptions": [
-                    {**_subscription_view(item, self._clock()), "work_states": self._subscription_work_states(item)}
-                    for item in service.list()
-                ]
-            }
+            {"subscriptions": [_subscription_view(item, self._clock()) for item in service.list()]}
         )
 
     def _subscription_work_states(self, subscription: Subscription) -> dict[str, str]:
@@ -3395,7 +3409,7 @@ class AutomationOwner:
             if payload.get("operation") in _EPISODE_READS
             else acquisition.requests("user")
         )
-        with budget:
+        with budget, acquisition.observe_decisions(partial(self._record_decision, command_id=request.command_id)):
             read: ControlResponse | None = (
                 self._franchise_read(request, acquisition)
                 if payload.get("operation") == "franchise"
@@ -3912,7 +3926,7 @@ class AutomationOwner:
         """Project a handed-off episode through its processing request and ready result, never a guess."""
         publication: EpisodePublication | None = assignment.publication
         names: frozenset[str] = frozenset(() if publication is None else (item.name for item in publication.files))
-        group_id: str | None = _published_group(names)
+        group_id: str | None = assignment.group_id or _published_group(names)
         if any(item.set_id == group_id for item in self._state.ready_groups):
             return EpisodeStatus(
                 key, "ready", None, assignment.admission_id, transfer.operation_id, uncertain, group_id
@@ -3997,7 +4011,10 @@ class AutomationOwner:
         if isinstance(prepared, ControlResponse):
             return prepared
         previous, conflict = prepared
-        with acquisition.episode_requests():
+        with (
+            acquisition.episode_requests(),
+            acquisition.observe_decisions(partial(self._record_decision, command_id=generation)),
+        ):
             listing: EpisodeListing = acquisition.episodes(key.anilist_id)
             if not any(item.number == key.number and item.aired for item in listing.episodes):
                 return ControlResponse.refused(
@@ -4058,7 +4075,8 @@ class AutomationOwner:
         )
         filtered: EpisodeOffer = replace(offer, candidates=candidates, suggestion=suggestion(candidates))
         unknown: bool = bool(conflict) or any(
-            not assignment.files for _item, assignment in self._episode_assignments(offer.key)
+            not assignment.files and assignment.video_path is None
+            for _item, assignment in self._episode_assignments(offer.key)
         )
         view: EpisodeOfferView = EpisodeOfferView(generation, self._instance_id, filtered, previous, conflict, unknown)
         self._episode_offers[session] = view, target
@@ -4068,6 +4086,10 @@ class AutomationOwner:
         for _transfer, assignment in self._episode_assignments(key):
             reference: TorrentioReference = assignment.choice.reference
             if reference.info_hash != stream.info_hash.casefold():
+                continue
+            if assignment.video_path is not None and stream.path is not None:
+                if assignment.video_path.replace("\\", "/") == stream.path.replace("\\", "/"):
+                    return True
                 continue
             if not assignment.files:
                 if (
@@ -4243,7 +4265,12 @@ class AutomationOwner:
         if acquisition is None:
             return EpisodeResult(key, "acquisition_unavailable")
         try:
-            with acquisition.episode_requests():
+            with (
+                acquisition.episode_requests(),
+                acquisition.observe_decisions(
+                    partial(self._record_decision, command_id=f"{command_id}:episode:{key.number}")
+                ),
+            ):
                 listing: EpisodeListing = acquisition.episodes(key.anilist_id)
                 if not any(item.number == key.number and item.aired for item in listing.episodes):
                     return EpisodeResult(key, "episode_not_aired")
@@ -4332,9 +4359,30 @@ class AutomationOwner:
         if not self._save(record_command(candidate, CommandReceipt(command_id, now, outcome))):
             return ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED)
         logger.info("Episode admitted", anilist_id=choice.anilist_id, number=choice.number, shared=shared is not None)
+        evidence: dict[str, object] = {
+            "command_id": command_id,
+            **admission_decision(assignment, confirmation.operation_id),
+        }
+        append_decision(self._store.history_path().with_name("decisions.jsonl"), "selection", evidence)
+        if previous is not None or conflict:
+            append_decision(
+                self._store.history_path().with_name("decisions.jsonl"),
+                "correction",
+                {**evidence, "reason": "legacy_conflict_override" if conflict else "replacement"},
+            )
         self._schedule_transfers()
         self._publish_state()
         return ControlResponse.succeeded(dict(outcome))
+
+    def _record_decision(self, payload: dict[str, object], *, command_id: str) -> None:
+        self._on_owner(
+            partial(
+                append_decision,
+                self._store.history_path().with_name("decisions.jsonl"),
+                "check",
+                {"command_id": command_id, **payload},
+            )
+        )
 
     def _admission_refusal(
         self,
@@ -5196,7 +5244,16 @@ class AutomationOwner:
             self._transfers_problem = problem
         settled: Mapping[str, str | None] = cleaned or {}
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
-            replace(item, cleaned=settled[item.operation_id] is None, problem=settled[item.operation_id])
+            compact_acquisition(
+                replace(
+                    item,
+                    cleaned=settled[item.operation_id] is None,
+                    problem=settled[item.operation_id],
+                    assignments=tuple(_retained_episode(row) for row in item.assignments)
+                    if settled[item.operation_id] is None
+                    else item.assignments,
+                )
+            )
             if item.operation_id in settled and item.state is AcquisitionState.COMPLETE and not item.cleaned
             else item
             for item in self._state.acquisitions
@@ -6633,6 +6690,7 @@ def _unfinished_selection(item: AcquisitionConfirmation) -> AcquisitionConfirmat
     """Keep a selective transfer accepted until every admitted episode has files and the client finished them."""
     if (
         item.selective
+        and not item.cleaned
         and item.state is AcquisitionState.COMPLETE
         and (
             not _selection_confirmed(item) or not all(_handed_off(assignment) for assignment in item.active_assignments)
@@ -6661,7 +6719,21 @@ def _cleared_publications(assignments: tuple[EpisodeAssignment, ...]) -> tuple[E
 
 
 def _handed_off(assignment: EpisodeAssignment) -> bool:
-    return assignment.publication is not None and assignment.publication.handed_off
+    return assignment.group_id is not None or (assignment.publication is not None and assignment.publication.handed_off)
+
+
+def _retained_episode(assignment: EpisodeAssignment) -> EpisodeAssignment:
+    publication: EpisodePublication | None = assignment.publication
+    if publication is None or not publication.handed_off:
+        return assignment
+    video: PublishedFile | None = next(
+        (file for file in publication.files if Path(file.source).suffix.casefold() in VIDEO_SOURCE_SUFFIXES), None
+    )
+    return replace(
+        assignment,
+        group_id=_published_group(frozenset(file.name for file in publication.files)),
+        video_path=None if video is None else video.source,
+    )
 
 
 def _published_files(files: Sequence[FileReservation], reserved: frozenset[str]) -> tuple[PublishedFile, ...]:
@@ -6932,7 +7004,6 @@ def _subscription_view(subscription: Subscription, now: datetime | None = None) 
         "end_state": subscription.end_state.value,
         "anilist_id": subscription.anilist_id,
         "calendar_problem": subscription.calendar_problem,
-        "episodes": [encode_view(episode) for episode in subscription.episodes],
         "airing_at": None if nearest is None else nearest[0].isoformat(),
         "airing_episode": None if nearest is None else str(nearest[1]),
     }

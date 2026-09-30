@@ -4446,7 +4446,11 @@ def test_subscription_list_keeps_valid_rows_when_one_saved_airing_is_malformed(t
             subscription.subscription_id: None,
             "valid": "2030-01-01T21:00:00+00:00",
         }
-        assert cast("list[dict[str, object]]", rows[0]["episodes"])[0]["airing_at"] == "not-a-date"
+        assert all("episodes" not in row and "work_states" not in row for row in rows)
+        details: ControlResponse = owner.handle(
+            _request("subscription_get", {"subscription_id": subscription.subscription_id})
+        )
+        assert cast("list[dict[str, object]]", details.result["episodes"])[0]["airing_at"] == "not-a-date"
         assert (tmp_path / "subscriptions.json").read_bytes() == before
         assert network.added == []
     finally:

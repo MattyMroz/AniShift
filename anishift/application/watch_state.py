@@ -258,6 +258,8 @@ _ASSIGNMENT_KEYS: Final[frozenset[str]] = frozenset(
         "conflict",
         "replaced",
         "publication",
+        "group_id",
+        "video_path",
     }
 )
 """Keys a serialized episode assignment must carry."""
@@ -308,6 +310,7 @@ class WatchStateStore:
 
     def __init__(self, path: Path, *, subscriptions_path: Path | None = None) -> None:
         self._path: Path = path
+        self._readable: bool = False
         self._subscriptions_path: Path = (
             subscriptions_path if subscriptions_path is not None else path.parent.parent / SUBSCRIPTIONS_FILE_NAME
         )
@@ -325,6 +328,7 @@ class WatchStateStore:
 
     def load(self) -> WatchState:
         """Read the stored automation state, migrating an older schema once, never answering empty."""
+        self._readable = False
         try:
             text: str = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -332,6 +336,7 @@ class WatchStateStore:
         except (OSError, UnicodeDecodeError) as problem:
             raise _invalid_file() from problem
         stored: WatchState = _parse(text)
+        self._readable = True
         if stored.schema_version == WATCH_STATE_SCHEMA_VERSION:
             return stored
         return self._upgrade(text, stored)
@@ -349,6 +354,7 @@ class WatchStateStore:
             os.fsync(handle.fileno())
         self._back_up()
         temporary.replace(self._path)
+        self._readable = True
 
     def _upgrade(self, text: str, stored: WatchState) -> WatchState:
         backup: Path = self._path.with_name(
@@ -392,15 +398,16 @@ class WatchStateStore:
 
     def _back_up(self) -> None:
         try:
-            text: str = self._path.read_text(encoding="utf-8")
-        except OSError, UnicodeDecodeError:
+            content: bytes = self._path.read_bytes()
+        except OSError:
             return
-        try:
-            _parse(text)
-        except ConfigError:
-            logger.warning("Kept an unreadable automation state out of the backup")
-            return
-        self._path.with_name(f"{self._path.name}{_BACKUP_SUFFIX}").write_text(text, encoding="utf-8", newline="\n")
+        if not self._readable:
+            try:
+                _parse(content.decode("utf-8"))
+            except ConfigError, UnicodeDecodeError:
+                logger.warning("Kept an unreadable automation state out of the backup")
+                return
+        self._path.with_name(f"{self._path.name}{_BACKUP_SUFFIX}").write_bytes(content)
 
 
 def _parse(text: str) -> WatchState:
@@ -629,6 +636,8 @@ def _encode_assignment(assignment: EpisodeAssignment) -> dict[str, object]:
         "conflict": list(assignment.conflict),
         "replaced": assignment.replaced,
         "publication": None if assignment.publication is None else _encode_publication(assignment.publication),
+        "group_id": assignment.group_id,
+        "video_path": assignment.video_path,
     }
 
 
@@ -1023,7 +1032,7 @@ def _schema_three_identity(
 def _decode_assignment(raw: object) -> EpisodeAssignment:
     stored: dict[str, object] = _strict_mapping(raw, "episode assignment")
     document: dict[str, object] = _strict_object(
-        {"publication": None, **stored}, _ASSIGNMENT_KEYS, "episode assignment"
+        {"publication": None, "group_id": None, "video_path": None, **stored}, _ASSIGNMENT_KEYS, "episode assignment"
     )
     reference: dict[str, object] = _strict_object(document["reference"], _REFERENCE_KEYS, "Torrentio reference")
     index: object = reference["file_index"]
@@ -1037,6 +1046,8 @@ def _decode_assignment(raw: object) -> EpisodeAssignment:
         conflict=_decode_texts(document["conflict"], "overridden legacy conflict"),
         replaced=_flag(document, "replaced"),
         publication=None if document["publication"] is None else _decode_publication(document["publication"]),
+        group_id=_optional_text(document, "group_id"),
+        video_path=_optional_text(document, "video_path"),
         choice=EpisodeChoice(
             anilist_id=_whole(document, "anilist_id"),
             number=_whole(document, "number"),

@@ -217,6 +217,7 @@ class _PausedClient:
         self.release: threading.Event = threading.Event()
         self.failure: ControlError | None = None
         self.confirmed: bool = True
+        self.acquisitions: list[dict[str, object]] = []
 
     def call(
         self,
@@ -229,6 +230,8 @@ class _PausedClient:
         del instance_id
         del command_id
         self.calls.append(kind)
+        if kind == "acquisition_states":
+            return {"items": self.acquisitions}
         if kind == "acquisition":
             if payload["operation"] == "titles":
                 return {"items": []}
@@ -2199,7 +2202,13 @@ def test_application_focused_query_uses_shared_shortcuts_and_submits_only_on_ent
     application: interactive_app._InteractiveApplication = _application(monkeypatch, _service(search=search))
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     application._resident = cast(
-        "ResidentSession", SimpleNamespace(find_titles=lambda title: (), search=search, interrupt_reads=lambda: None)
+        "ResidentSession",
+        SimpleNamespace(
+            find_titles=lambda title: (),
+            search=search,
+            interrupt_reads=lambda: None,
+            acquisition_states=lambda hashes: [],
+        ),
     )
     application._show_state()
     assert application._state is not None
@@ -2256,7 +2265,13 @@ def test_application_tab_cancels_pending_search_and_returns_to_an_idle_draft(
     application: interactive_app._InteractiveApplication = _application(monkeypatch, _service(search=search))
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     application._resident = cast(
-        "ResidentSession", SimpleNamespace(find_titles=lambda title: (), search=search, interrupt_reads=lambda: None)
+        "ResidentSession",
+        SimpleNamespace(
+            find_titles=lambda title: (),
+            search=search,
+            interrupt_reads=lambda: None,
+            acquisition_states=lambda hashes: [],
+        ),
     )
     application._show_state()
     assert application._state is not None
@@ -2416,6 +2431,8 @@ def test_stale_download_notice_counts_already_recorded_choices(admitted: int) ->
 
     def call(kind: str, payload: Mapping[str, object], **options: object) -> Mapping[str, object]:
         del options
+        if kind == "acquisition_states":
+            return {"items": []}
         if kind == "acquisition":
             return {"items": []} if payload["operation"] == "titles" else encode_view(_catalog(choices))
         assert kind == "download"
@@ -2448,6 +2465,8 @@ def test_a_resident_download_carries_only_the_known_title_and_season_offset(titl
 
     def call(kind: str, payload: Mapping[str, object], **options: object) -> Mapping[str, object]:
         del options
+        if kind == "acquisition_states":
+            return {"items": []}
         if kind == "download":
             payloads.append(payload)
             return encode_view(DownloadReceipt(1, Path("workspace")))
@@ -2509,11 +2528,12 @@ def test_owner_refresh_clears_marks_and_blocks_fresh_selection(
     panel, anime, client = paused_anime
     _paused_download(panel, anime)
     panel.handle_key("escape")
+    client.acquisitions = [{"info_hash": _choice("10").release.info_hash, "state": state}]
     panel._receive(
         panel._parent,
         {
             "event": "state_changed",
-            "payload": {"acquisitions": [{"info_hash": _choice("10").release.info_hash, "state": state}]},
+            "payload": {"acquisitions": []},
         },
     )
     assert not anime._marked

@@ -59,6 +59,7 @@ __all__ = [
     "TranslateRecipe",
     "WatchState",
     "auto_admissible",
+    "compact_acquisition",
     "episode_conflict",
     "legacy_conflict",
     "mark_manual_handled",
@@ -405,6 +406,8 @@ class EpisodeAssignment:
     conflict: tuple[str, ...] = ()
     replaced: bool = False
     publication: EpisodePublication | None = None
+    group_id: str | None = None
+    video_path: str | None = None
 
     def __post_init__(self) -> None:
         if not self.admission_id.strip() or not self.admitted_at.strip():
@@ -421,6 +424,8 @@ class EpisodeAssignment:
             msg = "An episode file must carry the size its torrent declares"
             raise ValueError(msg)
         require_relative_paths((path for _index, path, _size in self.files), "An episode file of a torrent")
+        if self.video_path is not None:
+            require_relative_paths((self.video_path,), "A retained episode video")
         if not all(isinstance(item, str) and item for item in self.conflict):
             msg = "An overridden legacy conflict is named by non-empty references"
             raise ValueError(msg)
@@ -544,6 +549,35 @@ class AcquisitionConfirmation:
         require_relative_paths((path for _index, path, _size in self.file_layout), "A reserved file of a release")
         require_relative_paths(self.manifest, "A staged file of a selective transfer")
         object.__setattr__(self, "info_hash", self.info_hash.casefold())
+
+
+def compact_acquisition(item: AcquisitionConfirmation) -> AcquisitionConfirmation:
+    """Discard staging evidence only after a selective transfer's successful cleanup."""
+    if not item.selective or not item.cleaned or item.state is not AcquisitionState.COMPLETE:
+        return item
+    assignments: tuple[EpisodeAssignment, ...] = tuple(
+        replace(
+            assignment,
+            choice=replace(
+                assignment.choice,
+                target={},
+                reference=replace(
+                    assignment.choice.reference,
+                    trackers=(),
+                    release="",
+                    file_index=None,
+                    file_name=Path(assignment.video_path).name
+                    if assignment.video_path is not None
+                    else assignment.choice.reference.file_name,
+                ),
+            ),
+            files=(),
+            file_map=None,
+            publication=None,
+        )
+        for assignment in item.assignments
+    )
+    return replace(item, manifest=(), file_layout=(), required_files=(), complete_files=(), assignments=assignments)
 
 
 @dataclass(frozen=True, slots=True)

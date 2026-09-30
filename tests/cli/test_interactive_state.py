@@ -279,6 +279,49 @@ def test_local_admitted_material_is_preparing_before_progress_restore_and_first_
         controller._thread.join(5)
 
 
+@pytest.mark.unit
+def test_deleted_open_subscription_does_not_interrupt_state_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    subscription: Subscription = Subscription(
+        "series",
+        "query",
+        "Series",
+        "Group",
+        Decimal(1),
+        1080,
+        frozenset(),
+        "2026-09-16",
+        None,
+        episodes=(EpisodeOrder(Decimal(1), state=EpisodeState.COMPLETE),),
+    )
+    requests: list[str] = []
+
+    def command(kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
+        requests.append(kind)
+        if kind == "subscription_get":
+            assert payload == {"subscription_id": "series"}
+            raise ControlError("Unknown subscription", code=ControlErrorCode.INVALID_PAYLOAD, answered=True)
+        assert kind == "subscriptions_list"
+        return {"subscriptions": []}
+
+    session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=command))
+    controller: StateController = StateController(session, lambda: None)
+    draft: SubscriptionDraft = SubscriptionDraft.from_subscription(subscription, {"1": "completed"})
+    controller._draft = draft
+    try:
+        for enabled in (True, False):
+            payload: dict[str, object] = {"auto_enabled": enabled}
+            controller._receive(session, {"event": "state_changed", "payload": payload})
+            assert controller._connected
+            assert controller._snapshot == payload
+            assert controller._draft is draft
+            assert draft.completed == {Decimal(1)}
+        assert requests == ["subscriptions_list", "subscription_get"] * 2
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
 def test_download_clock_tracks_observed_activity_freezes_and_drops_removed_materials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1714,7 +1757,12 @@ def test_repeat_preserves_mixed_draft_until_separate_range_confirmation(
         commands.append(request.kind)
         current: Subscription = service.list()[0]
         if request.kind == "subscription_get":
-            return ControlResponse.succeeded({**encode_view(current), "work_states": {"3": "completed"}})
+            return ControlResponse.succeeded(
+                {
+                    **encode_view(current),
+                    "work_states": {"3": "completed" if current.episodes[2].state is EpisodeState.COMPLETE else "due"},
+                }
+            )
         if request.kind in {"subscription_retry_prepare", "subscription_repeat"} and refused:
             return ControlResponse.refused(ControlErrorCode.REFUSED, "Refused", RefusalReason.PAUSED.value)
         if request.kind == "subscription_retry_prepare":
@@ -1731,9 +1779,7 @@ def test_repeat_preserves_mixed_draft_until_separate_range_confirmation(
                 encode_view(service.set_range("series", selected=(Decimal(2), Decimal(3)), future_from=None))
             )
         result: dict[str, object] = (
-            {"subscriptions": [{"subscription_id": "series", "work_states": {"3": "due"}}]}
-            if request.kind == "subscriptions_list"
-            else {}
+            {"subscriptions": [{"subscription_id": "series"}]} if request.kind == "subscriptions_list" else {}
         )
         return ControlResponse.succeeded(result)
 
