@@ -29,9 +29,12 @@ from anishift.application import (
     AutomationOwner,
     EntryGroup,
     EpisodeBatch,
+    EpisodeFile,
+    EpisodeFiles,
     EpisodeKey,
     EpisodeListing,
     EpisodeOffer,
+    EpisodeOfferView,
     EpisodeRange,
     EpisodeStatus,
     Franchise,
@@ -1268,12 +1271,20 @@ class _Owner(_Catalog):
         super().__init__()
         self.release: threading.Event = threading.Event()
         self.batches: list[tuple[tuple[EpisodeKey, ...], str]] = []
+        self.admitted: set[int] = {2}
 
     def episode_states(self, anilist_id: int, numbers: Sequence[int]) -> tuple[EpisodeStatus, ...]:
         return tuple(
-            EpisodeStatus(EpisodeKey(anilist_id, number), "ordered" if number == 2 else "not_ordered")
+            EpisodeStatus(EpisodeKey(anilist_id, number), "ordered" if number in self.admitted else "not_ordered")
             for number in numbers
         )
+
+    def episode_offer(self, key: EpisodeKey, *, repeat: bool = False) -> EpisodeOfferView:
+        self.calls.append(("repeat" if repeat else "offer", key.number))
+        return EpisodeOfferView("offer", "fixture", self.offer_read(key))
+
+    def interrupt_reads(self) -> None:
+        self.calls.append(("interrupt", 0))
 
     def episode_download(self, keys: Sequence[EpisodeKey], *, command_id: str) -> EpisodeBatch:
         self.batches.append((tuple(keys), command_id))
@@ -1284,6 +1295,7 @@ class _Owner(_Catalog):
             EpisodeResult(keys[0], "admitted", "a1", "o1"),
             EpisodeResult(keys[1], "no_suggestion"),
         )
+        self.admitted.add(keys[0].number)
         return EpisodeBatch(command_id, "fixture", tuple(keys), "completed", results)
 
 
@@ -1333,7 +1345,7 @@ def test_download_orders_marked_episodes_through_the_owner_and_stays_on_the_list
         _key(controller, key)
     assert _at(controller) is _Screen.EPISODES
     assert "szukam" in _frame(controller)
-    assert "Zaznaczone" not in _frame(controller)
+    assert controller._episode_marks == {1, 3}
     owner.release.set()
     deadline: float = time.monotonic() + 10
     while controller._sending and time.monotonic() < deadline:
@@ -1342,12 +1354,369 @@ def test_download_orders_marked_episodes_through_the_owner_and_stays_on_the_list
     assert _at(controller) is _Screen.EPISODES
     assert "Zlecono E1" in frame
     assert re.search(r"1\s+Episode 1\s+.*Zlecono", frame)
-    assert re.search(r"3\s+Episode 3\s+.*Brak wydania", frame)
+    assert re.search(r"3\s+Episode 3\s+.*Nie zamówiono", frame)
+    assert "E3: Brak wydania" in frame
     assert [keys for keys, _ in owner.batches] == [(EpisodeKey(1, 1), EpisodeKey(1, 3))] * 2
     assert len({command_id for _, command_id in owner.batches}) == 1
+    assert controller._episode_marks == {3}
     assert not any(operation == "offer" for operation, _ in owner.calls)
     _key(controller, "text:i")
     assert _at(controller) is _Screen.OFFER
+
+
+class _ChoiceOwner(_Owner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.statuses: dict[int, EpisodeStatus] = {
+            1: EpisodeStatus(EpisodeKey(1, 1), "possibly_admitted", "episode_possibly_admitted"),
+            2: EpisodeStatus(EpisodeKey(1, 2), "ordered", "episode_file_unresolved", "admission"),
+        }
+        self.choices: list[tuple[EpisodeOfferView, StreamCandidate, str, bool, bool]] = []
+        self.file_choices: list[tuple[EpisodeFiles, EpisodeFile, str]] = []
+        self.files: EpisodeFiles = EpisodeFiles(
+            "admission", "revision-1", (EpisodeFile(7, "Season 1/Slime - 02.mkv", 1000),)
+        )
+        self.refusal: ControlError | None = None
+
+    def episode_states(self, anilist_id: int, numbers: Sequence[int]) -> tuple[EpisodeStatus, ...]:
+        self.calls.append(("states", len(numbers)))
+        return tuple(
+            self.statuses.get(number, EpisodeStatus(EpisodeKey(anilist_id, number), "not_ordered"))
+            for number in numbers
+        )
+
+    def episode_offer(self, key: EpisodeKey, *, repeat: bool = False) -> EpisodeOfferView:
+        view: EpisodeOfferView = super().episode_offer(key, repeat=repeat)
+        return replace(view, conflict=("legacy:1",), unknown_previous=True) if repeat else view
+
+    def episode_choose(
+        self,
+        offer: EpisodeOfferView,
+        candidate: StreamCandidate,
+        *,
+        command_id: str,
+        deviation_confirmed: bool = False,
+        conflict_confirmed: bool = False,
+    ) -> Mapping[str, object]:
+        self.choices.append((offer, candidate, command_id, deviation_confirmed, conflict_confirmed))
+        if self.refusal is not None:
+            raise self.refusal
+        self.statuses[offer.offer.key.number] = EpisodeStatus(offer.offer.key, "ordered")
+        return {"admission_id": "new"}
+
+    def episode_files(self, admission_id: str) -> EpisodeFiles:
+        self.calls.append(("files", 1))
+        assert admission_id == self.files.admission_id
+        return self.files
+
+    def episode_file_choose(
+        self, files: EpisodeFiles, selected: EpisodeFile, *, command_id: str
+    ) -> Mapping[str, object]:
+        self.file_choices.append((files, selected, command_id))
+        if self.refusal is not None:
+            self.files = replace(self.files, revision="revision-2", files=(EpisodeFile(9, "New/02.mkv", 2000),))
+            raise self.refusal
+        self.statuses[2] = EpisodeStatus(EpisodeKey(1, 2), "ordered", admission_id="admission")
+        return {"admission_id": "admission"}
+
+
+def _owner_controller(owner: _Owner) -> AnimeController:
+    controller: AnimeController = AnimeController(
+        cast("AppService", SimpleNamespace(acquisition=None)), lambda: None, resident=cast("ResidentSession", owner)
+    )
+    _open(controller)
+    return controller
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("verdict", [IdentityVerdict.MATCH, IdentityVerdict.INSUFFICIENT, IdentityVerdict.MISMATCH])
+@pytest.mark.parametrize("cancel", [False, True])
+def test_repeat_requires_inspected_conflict_and_separate_identity_consent(
+    verdict: IdentityVerdict, cancel: bool
+) -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.offer_read = lambda key: _offer(key, (_candidate(verdict),))
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "text:p")
+    assert _at(controller) is _Screen.OFFER
+    frame: str = controller.render(50, 24).plain
+    assert "Obecne pliki zostają" in frame
+    assert "Nie można potwierdzić odmienności wydania" in frame
+    assert all(Text(line).cell_len <= 50 for line in frame.splitlines())
+    assert not owner.choices
+    _key(controller, "enter")
+    if cancel and verdict is IdentityVerdict.MATCH:
+        _key(controller, "escape")
+        _key(controller, "escape")
+        assert not owner.choices
+        return
+    _key(controller, "text:d")
+    if verdict is not IdentityVerdict.MATCH:
+        assert _at(controller) is _Screen.PROBLEM
+        assert not owner.choices
+        assert "Enter potwierdź" in controller.render(50, 24).plain
+        _key(controller, "escape" if cancel else "enter")
+    assert len(owner.choices) == (0 if cancel else 1)
+    if not cancel:
+        view, stream, command, deviation, conflict = owner.choices[0]
+        assert view.conflict == ("legacy:1",)
+        assert stream == _candidate(verdict).stream
+        assert command
+        assert deviation is (verdict is not IdentityVerdict.MATCH)
+        assert conflict
+        assert _at(controller) is _Screen.EPISODES
+
+
+@pytest.mark.unit
+def test_changed_repeat_conflict_is_refused_in_existing_problem_view() -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.refusal = ControlError("changed", code=ControlErrorCode.STALE_PREVIEW, reason="episode_changed")
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "text:p")
+    _key(controller, "text:d")
+    assert _at(controller) is _Screen.PROBLEM
+    assert "Wybór lub konflikt zmienił się" in controller.render(50, 24).plain
+    assert len(owner.choices) == 1
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.EPISODES
+    assert owner.statuses[1].state == "possibly_admitted"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("cancel", [False, True])
+def test_unresolved_episode_uses_offer_list_and_submits_exact_file_revision(cancel: bool) -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "down")
+    assert "Enter wskaż plik" in controller.render(50, 24).plain
+    _key(controller, "enter")
+    assert _at(controller) is _Screen.OFFER
+    frame: str = controller.render(50, 24).plain
+    assert "Season 1/Slime - 02.mkv" in frame
+    assert "1,000 B" in frame
+    assert all(Text(line).cell_len <= 50 for line in frame.splitlines())
+    _key(controller, "escape" if cancel else "enter")
+    assert _at(controller) is _Screen.EPISODES
+    assert len(owner.file_choices) == (0 if cancel else 1)
+    if not cancel:
+        files, selected, command = owner.file_choices[0]
+        assert files == owner.files
+        assert selected == EpisodeFile(7, "Season 1/Slime - 02.mkv", 1000)
+        assert command
+
+
+@pytest.mark.unit
+def test_stale_file_revision_refreshes_list_without_resubmitting() -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.refusal = ControlError("changed", code=ControlErrorCode.STALE_PREVIEW, reason="file_map_changed")
+    controller: AnimeController = _owner_controller(owner)
+    for key in ("down", "enter", "enter"):
+        _key(controller, key)
+    frame: str = controller.render(50, 24).plain
+    assert "Lista plików zmieniła się" in frame
+    assert "New/02.mkv" in frame
+    assert len(owner.file_choices) == 1
+    assert owner.file_choices[0][0].revision == "revision-1"
+    owner.refusal = None
+    _key(controller, "enter")
+    assert len(owner.file_choices) == 2
+    assert owner.file_choices[1][0].revision == "revision-2"
+    assert owner.file_choices[1][1] == EpisodeFile(9, "New/02.mkv", 2000)
+    assert owner.file_choices[1][2] != owner.file_choices[0][2]
+
+
+@pytest.mark.unit
+def test_more_than_one_hundred_marks_refuses_before_ipc_and_preserves_selection() -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.statuses.clear()
+    owner.listing = replace(owner.listing, episodes=tuple(ListedEpisode(n, aired=True) for n in range(1, 102)))
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "text:a")
+    calls: list[tuple[str, int]] = owner.calls.copy()
+    _key(controller, "text:d")
+    assert controller._episode_marks == set(range(1, 102))
+    assert owner.calls == calls
+    assert not owner.batches
+    assert "Limit: 100 odcinków" in controller.render(50, 24).plain
+
+
+@pytest.mark.unit
+def test_fresh_panel_reads_admitted_and_unordered_states_beyond_first_hundred() -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.listing = replace(owner.listing, episodes=tuple(ListedEpisode(n, aired=True) for n in range(1, 103)))
+    owner.statuses[101] = EpisodeStatus(EpisodeKey(1, 101), "ordered")
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "end")
+    assert "Nie zamówiono" in controller.render(50, 24).plain
+    _key(controller, "up")
+    assert "P ponów" in controller.render(50, 24).plain
+    _key(controller, "text:a")
+    assert 101 not in controller._episode_marks
+    assert 102 in controller._episode_marks
+    assert ("states", 100) in owner.calls
+    assert ("states", 2) in owner.calls
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("leave", ["escape", "tab"])
+def test_episode_batch_survives_navigation_without_late_view_change(
+    monkeypatch: pytest.MonkeyPatch,
+    leave: str,
+) -> None:
+    monkeypatch.setattr(anime_module, "_BATCH_POLL_S", 0.0)
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    owner: _Owner = _Owner()
+    controller: AnimeController = _owner_controller(owner)
+    for key in ("space", "down", "down", "space", "text:d"):
+        _key(controller, key)
+    panel: StateController = StateController(cast("ResidentSession", owner), lambda: None)
+    panel.attach_anime(controller)
+    panel._tab = 0
+    panel.handle_key(leave)
+    screen: _Screen = controller._screen
+    tab: int = panel._tab
+    owner.release.set()
+    deadline: float = time.monotonic() + 10
+    while controller._sending and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not controller._sending
+    panel.poll()
+    assert controller._screen is screen
+    assert panel._tab == tab
+    assert len(owner.batches) == 2
+    assert len({command for _, command in owner.batches}) == 1
+
+
+@pytest.mark.unit
+def test_inspection_uses_only_cursor_and_render_navigation_never_submit() -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    controller: AnimeController = _owner_controller(owner)
+    for key in ("down", "down", "space", "down", "space", "text:i"):
+        _key(controller, key)
+    assert owner.calls[-1] == ("offer", 4)
+    calls: list[tuple[str, int]] = owner.calls.copy()
+    for key in ("enter", "down", "up", "text:?", "escape", "escape", "escape"):
+        controller.render(50, 24)
+        _key(controller, key)
+    assert owner.calls == calls
+    assert not owner.choices
+    assert not owner.file_choices
+    assert not owner.batches
+    assert controller._episode_marks == {3, 4}
+
+
+@pytest.mark.unit
+def test_owner_refresh_removes_newly_admitted_marks_and_retains_uncertain_file_problem() -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    controller: AnimeController = _owner_controller(owner)
+    for key in ("down", "down", "space"):
+        _key(controller, key)
+    owner.statuses[3] = EpisodeStatus(
+        EpisodeKey(1, 3),
+        "ordered",
+        "episode_file_unresolved",
+        "another-panel",
+        uncertain=True,
+    )
+    controller.refresh_episode_states()
+    assert not controller._episode_marks
+    frame: str = controller.render(50, 24).plain
+    assert "Enter wskaż plik" in frame
+    assert "P ponów" in frame
+    assert "Space zaznacz" not in frame
+    _key(controller, "text:d")
+    assert not owner.batches
+    assert not owner.choices
+
+
+@pytest.mark.unit
+def test_cursor_download_interrupted_batch_preserves_only_unaccepted_marks(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    controller: AnimeController = _owner_controller(owner)
+    finished: threading.Event = threading.Event()
+    controller._invalidate = finished.set
+
+    def download(keys: Sequence[EpisodeKey], *, command_id: str) -> EpisodeBatch:
+        owner.batches.append((tuple(keys), command_id))
+        owner.statuses[keys[0].number] = EpisodeStatus(keys[0], "ordered")
+        return EpisodeBatch(command_id, "fixture", tuple(keys), "interrupted", (EpisodeResult(keys[0], "admitted"),))
+
+    monkeypatch.setattr(owner, "episode_download", download)
+    for key in ("down", "down", "text:d"):
+        _key(controller, key)
+    assert finished.wait(10)
+    assert owner.batches[0][0] == (EpisodeKey(1, 3),)
+    assert len(owner.batches) == 1
+    finished.clear()
+    for key in ("down", "space", "down", "space", "text:d"):
+        _key(controller, key)
+    assert finished.wait(10)
+    assert controller._episode_marks == {5}
+    assert "Nie zlecono E5" in controller.render(50, 24).plain
+    assert owner.batches[1][0] == (EpisodeKey(1, 4), EpisodeKey(1, 5))
+    assert owner.batches[0][1] != owner.batches[1][1]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("screen", list(_Screen))
+@pytest.mark.parametrize("tab", [0, 2])
+@pytest.mark.parametrize("changed", [False, True])
+@pytest.mark.parametrize("following", [False, True])
+def test_state_event_reads_only_one_visible_episode_page_when_active_and_changed(
+    monkeypatch: pytest.MonkeyPatch,
+    screen: _Screen,
+    tab: int,
+    changed: bool,
+    following: bool,
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.listing = replace(owner.listing, episodes=tuple(ListedEpisode(n, aired=True) for n in range(1, 1001)))
+    controller: AnimeController = _owner_controller(owner)
+    reads: list[tuple[int, ...]] = []
+
+    def states(anilist_id: int, numbers: Sequence[int]) -> tuple[EpisodeStatus, ...]:
+        assert anilist_id == 1
+        reads.append(tuple(numbers))
+        return tuple(EpisodeStatus(EpisodeKey(1, n), "not_ordered") for n in numbers)
+
+    monkeypatch.setattr(owner, "episode_states", states)
+    session: ResidentSession = cast(
+        "ResidentSession",
+        SimpleNamespace(command=lambda *args: {}, library=lambda: (), acquisition_states=lambda hashes: []),
+    )
+    panel: StateController = StateController(session, lambda: None)
+    panel.attach_anime(controller)
+    panel._tab = tab
+    controller._screen = screen
+    controller._positions[_Screen.EPISODES] = 750
+    controller._offsets[_Screen.EPISODES] = 300
+    controller._follow_cursor = following
+    payload: dict[str, object] = {"auto_enabled": True}
+    panel._snapshot = {} if changed else payload.copy()
+    try:
+        panel._receive(session, {"event": "state_changed", "payload": payload})
+        expected: bool = screen is _Screen.EPISODES and tab == 0 and changed
+        assert len(reads) == int(expected)
+        if expected:
+            assert len(reads[0]) <= 100
+            assert (751 if following else 301) in reads[0]
+        panel._receive(session, {"event": "state_changed", "payload": payload.copy()})
+        assert len(reads) == int(expected)
+    finally:
+        panel.close()
+        panel._thread.join(5)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("sending", [False, True])
+def test_escape_interrupts_reads_but_not_sending_independently_of_busy_label(sending: bool) -> None:
+    owner: _Owner = _Owner()
+    controller: AnimeController = _owner_controller(owner)
+    controller._start_work("Same label", _Screen.EPISODES, sending=sending)
+    _key(controller, "escape")
+    assert (("interrupt", 0) in owner.calls) is (not sending)
+    assert _at(controller) is _Screen.EPISODES
 
 
 @pytest.mark.unit

@@ -924,6 +924,10 @@ class StateController:
                 previous_details: LibrarySet | None = self._details
             details: LibrarySet | None = self._refresh_details(session, previous_details)
             anime: AnimeController | None = self._anime
+            with self._lock:
+                refresh_episodes: bool = self._tab == _Tab.ANIME and payload != self._snapshot
+            if anime is not None and refresh_episodes:
+                anime.refresh_episode_states()
             hashes: tuple[str, ...] = anime.acquisition_hashes() if anime is not None else ()
             acquisition_states: list[Mapping[str, object]] = (
                 session.acquisition_states(hashes) if anime is not None else []
