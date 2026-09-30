@@ -155,6 +155,7 @@ class RefusalReason(StrEnum):
     NOT_RESUMABLE = "not_resumable"
     PAUSED = "paused"
     SHUTTING_DOWN = "shutting_down"
+    TRANSFER_METADATA_PENDING = "transfer_metadata_pending"
 
 
 class SourceSelection(StrEnum):

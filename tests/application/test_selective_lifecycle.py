@@ -688,7 +688,10 @@ def test_an_unsaved_acceptance_is_reconciled_from_the_client_without_a_second_ad
 
 
 @pytest.mark.parametrize("moment", ["mapping", "selection"])
-def test_a_stop_requested_while_files_are_selected_keeps_the_content_stopped(setup: _Setup, moment: str) -> None:
+@pytest.mark.parametrize("selected", [False, True])
+def test_stop_during_selection_requires_a_previously_confirmed_scope(
+    setup: _Setup, moment: str, *, selected: bool
+) -> None:
     owners: list[AutomationOwner] = []
     answers: list[ControlResponse] = []
 
@@ -698,21 +701,30 @@ def test_a_stop_requested_while_files_are_selected_keeps_the_content_stopped(set
                 owners[0].handle(_request("transfer", {"info_hash": _HASH, "action": "stop"}, command_id="stop-1"))
             )
 
-    if moment == "mapping":
-        setup.network.before_info = request_stop
-    else:
-        setup.network.before_select = request_stop
     with _running(setup) as owner:
         owners.append(owner)
         assert owner.admit_episode("admit-1", _choice(3)).ok
         _until(lambda: bool(setup.network.metadata_added))
+        if selected:
+            setup.network.deliver(_HASH)
+            _until(_starts(setup))
+        if moment == "mapping":
+            setup.network.before_info = request_stop
+        else:
+            setup.network.before_select = request_stop
+        if selected:
+            assert owner.admit_episode("admit-2", _choice(4)).ok
         setup.network.deliver(_HASH)
         _until(lambda: bool(answers))
+        if not selected:
+            _until(_starts(setup))
         polled: int = setup.network.info_calls
         _until(lambda: setup.network.info_calls > polled + 3)
 
-    assert answers[0].ok
-    assert setup.network.started == []
+    assert answers[0].ok is selected
+    if not selected:
+        assert answers[0].reason == "transfer_metadata_pending"
+    assert setup.network.started == [_HASH]
     assert (_HASH, "resume") not in setup.network.actions
 
 

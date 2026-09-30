@@ -742,7 +742,6 @@ def test_pausing_a_batch_stops_before_reading_its_next_episode(tmp_path: Path) -
 @pytest.mark.parametrize(
     ("state", "problem"),
     [
-        (AcquisitionState.UNCERTAIN, None),
         (AcquisitionState.PENDING_SEND, None),
         (AcquisitionState.ACCEPTED, automation_module._SELECTION_MISMATCH),
         (AcquisitionState.ACCEPTED, automation_module._METADATA_STOPPED),
@@ -758,14 +757,29 @@ def test_repeat_waiting_for_an_unsettled_predecessor_has_an_explicit_episode_rea
     streams.answers = {(41024, 4): (_stream(4, "b"),)}
     store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
     store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(old,)))
-    with _running(_episode_service(tmp_path, streams=streams), store) as owner:
+    with _running(_episode_service(tmp_path, streams=streams), store, inspect_transfers=False) as owner:
         view: EpisodeOfferView = _offer(owner, repeat=True)
         assert _choose(owner, view, confirm=True).ok
+        _until(lambda: owner._active_io == 0)
+        owner._on_owner(
+            lambda: owner._save(
+                replace(
+                    owner.state,
+                    acquisitions=(replace(owner.state.acquisitions[0], state=state), *owner.state.acquisitions[1:]),
+                )
+            )
+        )
+        assert owner.state.acquisitions[0].state is state
         response: ControlResponse = owner.handle(_request("episode_states", {"anilist_id": _S1, "numbers": [4]}))
         assert (
             decode_view(EpisodeStatus, cast("list[object]", response.result["items"])[0]).reason
             == "waiting_previous_transfer"
         )
+        materials: list[dict[str, object]] = cast(
+            "list[dict[str, object]]", owner.handle(_request("status")).result["materials"]
+        )
+        waiting: dict[str, object] = next(row for row in materials if row.get("reason") == "waiting_previous_transfer")
+        assert waiting["problem"] is None
 
 
 def test_failed_batch_result_save_still_publishes_a_terminal_batch(
@@ -862,7 +876,7 @@ def _resume_fixture(
 
 def test_resume_waits_until_the_replaced_transfer_scope_is_confirmed(tmp_path: Path) -> None:
     old, files = _mapped_transfer(replaced=True)
-    old = replace(old, state=AcquisitionState.UNCERTAIN)
+    old = replace(old, selection_revision=2)
     assignment: EpisodeAssignment = replace(
         old.assignments[0],
         admission_id="new-admission",
@@ -881,6 +895,96 @@ def test_resume_waits_until_the_replaced_transfer_scope_is_confirmed(tmp_path: P
         assert not result.action_pending
         assert (current.info_hash, "resume") not in network.actions
         assert not network.started
+
+
+@pytest.mark.parametrize("same_hash", [False, True])
+def test_restored_repeat_starts_past_an_uncertain_predecessor_only_for_another_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, same_hash: bool
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    old: AcquisitionConfirmation
+    files: tuple[TorrentFile, ...]
+    old, files = _mapped_transfer(replaced=True)
+    old = replace(old, state=AcquisitionState.UNCERTAIN, directory="temp/.acquisition/old-transfer/data")
+    info_hash: str = old.info_hash if same_hash else "b" * 40
+    assignment: EpisodeAssignment = replace(
+        old.assignments[0],
+        admission_id="new-admission",
+        replaced=False,
+        previous_admission_id="old-admission",
+        choice=_legacy_choice(4, info_hash, anilist_id=_S1),
+    )
+    current: AcquisitionConfirmation = replace(
+        old,
+        operation_id="new-transfer",
+        info_hash=info_hash,
+        state=AcquisitionState.ACCEPTED,
+        assignments=(assignment,),
+    )
+    current, service, network = _resume_fixture(tmp_path, current, files)
+    current = replace(current, requested_action=None, action_id=None, action_pending=False)
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(old, current)))
+    with _running(service, store) as owner:
+        if same_hash:
+            assert not owner._on_owner(lambda: owner._replacement_ready(current))
+            owner._start_selection(service, current)
+            assert network.started == []
+        else:
+            _until(lambda: network.started == [info_hash])
+            _until(lambda: owner.state.acquisitions[-1].content_started)
+
+
+@pytest.mark.parametrize("state", [AcquisitionState.ACCEPTED, AcquisitionState.PENDING_SEND])
+def test_stop_refuses_selective_metadata_without_recording_or_sending_an_action(
+    tmp_path: Path, state: AcquisitionState
+) -> None:
+    current: AcquisitionConfirmation
+    files: tuple[TorrentFile, ...]
+    current, files = _mapped_transfer()
+    current, service, network = _resume_fixture(tmp_path, current, files)
+    current = replace(
+        current,
+        state=state,
+        applied_revision=0,
+        requested_action=None,
+        action_id=None,
+        action_pending=False,
+    )
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    with _running(service, store, inspect_transfers=False) as owner:
+
+        def request_stop() -> None:
+            assert owner._save(replace(owner.state, acquisitions=(current,)))
+            response: ControlResponse = owner._transfer_command(
+                _request("transfer", {"info_hash": current.info_hash, "action": "stop"})
+            )
+            assert not response.ok
+            assert response.code is ControlErrorCode.REFUSED
+            assert response.reason == "transfer_metadata_pending"
+            assert owner.state.acquisitions == (current,)
+            assert store.load().acquisitions == (current,)
+
+        owner._on_owner(request_stop)
+        assert network.actions == []
+
+
+def test_explicit_resume_starts_a_stopped_client_without_pause_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    current: AcquisitionConfirmation
+    files: tuple[TorrentFile, ...]
+    current, files = _mapped_transfer()
+    current, service, network = _resume_fixture(tmp_path, current, files)
+    current = replace(current, requested_action=None, action_id=None, action_pending=False, content_started=True)
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(current,)))
+    with _running(service, store) as owner:
+        assert owner.state.pause_owned_transfers == ()
+        assert owner.handle(_request("transfer", {"info_hash": current.info_hash, "action": "resume"})).ok
+        _until(lambda: (current.info_hash, "resume") in network.actions)
+        _until(lambda: network.started == [current.info_hash])
 
 
 def test_resume_drops_a_scope_changed_during_its_fresh_client_read(tmp_path: Path) -> None:

@@ -28,7 +28,7 @@ from anishift.application import (
     decode_view,
 )
 from anishift.application.events import RunEvent, sanitize_event_message
-from anishift.cli.interactive.anime import AnimeController, AnimeResult
+from anishift.cli.interactive.anime import EPISODE_REASON_LABELS, AnimeController, AnimeResult
 from anishift.cli.interactive.menu import (
     append_wrapped_row,
     fit_entries,
@@ -112,6 +112,9 @@ _REFUSAL_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
         RefusalReason.NOT_RESUMABLE.value: "Tej pracy nie da się wznowić",
         RefusalReason.PAUSED.value: "AniShift jest wstrzymany · wybierz Wznów, aby podjąć pracę",
         RefusalReason.SHUTTING_DOWN.value: "AniShift się kończy · nie przyjmuje już nowej pracy",
+        RefusalReason.TRANSFER_METADATA_PENDING.value: (
+            "Trwa przygotowanie pobrania · poczekaj na potwierdzenie wyboru plików"
+        ),
     }
 )
 """Polish sentence the panel shows for every refusal cause the resident names."""
@@ -664,11 +667,17 @@ class StateController:
         if self._selected >= len(materials):
             return
         item: Mapping[str, object] = materials[self._selected]
-        if key != "c":
+        if key not in {"c", "w"}:
             return
         if item.get("stage") == "download" and item.get("info_hash"):
-            self._command("transfer", {"info_hash": item["info_hash"], "action": "cancel"})
-        elif (item.get("stage") == "processing" or item.get("admitted_processing")) and item.get("run_id"):
+            toggle: tuple[str, str] | None = _download_toggle(item)
+            if key == "w" and toggle is None:
+                return
+            action: str = toggle[0] if key == "w" and toggle is not None else "cancel"
+            self._command("transfer", {"info_hash": item["info_hash"], "action": action})
+        elif (
+            key == "c" and (item.get("stage") == "processing" or item.get("admitted_processing")) and item.get("run_id")
+        ):
             self._command("cancel", {"run_id": item["run_id"]})
 
     def _load_history(self) -> None:
@@ -1236,7 +1245,8 @@ class StateController:
             return ""
         item: Mapping[str, object] = materials[self._selected]
         if item.get("stage") == "download" and item.get("info_hash"):
-            return "C anuluj całe zlecenie"
+            toggle: tuple[str, str] | None = _download_toggle(item)
+            return (f"W {toggle[1]} · " if toggle is not None else "") + "C anuluj całe zlecenie"
         if not (item.get("stage") == "processing" or item.get("admitted_processing")) or not item.get("run_id"):
             return ""
         scope: object = item.get("group_ids", [])
@@ -1356,10 +1366,12 @@ class StateController:
             return ("Wstrzymano" if self._snapshot.get("paused") else "Przygotowanie"), None
         if item.get("problem"):
             return "Wymaga uwagi", None
+        if item.get("reason") == "waiting_previous_transfer":
+            return EPISODE_REASON_LABELS["waiting_previous_transfer"], None
         if not self._connected or self._snapshot.get("transfers_problem"):
             return "Brak odczytu", None
         state: object = item.get("state")
-        if state in {"pausedDL", "stoppedDL", "pausedUP", "stoppedUP"}:
+        if _download_toggle(item) == ("resume", "wznów"):
             return "Wstrzymano", measured
         if state in {"metaDL", "forcedMetaDL"} or item.get("acquisition_state") == "pending_send":
             return "Metadane", measured
@@ -1468,6 +1480,19 @@ def _rows(value: object) -> list[Mapping[str, object]]:
 def _safe_text(value: object) -> str:
     message: str = sanitize_event_message(str(value)) or ""
     return _CLIENT_PROBLEMS.get(message, message)
+
+
+def _download_toggle(item: Mapping[str, object]) -> tuple[str, str] | None:
+    if item.get("acquisition_state") == "pending_send" or item.get("state") in {
+        "metaDL",
+        "forcedMetaDL",
+        "error",
+        "missingFiles",
+    }:
+        return None
+    if item.get("state") in {"pausedDL", "stoppedDL", "pausedUP", "stoppedUP"}:
+        return "resume", "wznów"
+    return "stop", "wstrzymaj"
 
 
 def _relocation_problems(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:

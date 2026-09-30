@@ -170,6 +170,125 @@ def test_processing_renders_named_owner_download_states_without_invented_measure
         controller._thread.join(5)
 
 
+@pytest.mark.parametrize(
+    ("state", "action", "hint"),
+    [
+        ("stoppedDL", "resume", "W wznów"),
+        ("pausedDL", "resume", "W wznów"),
+        ("downloading", "stop", "W wstrzymaj"),
+        ("stalledDL", "stop", "W wstrzymaj"),
+        ("queuedDL", "stop", "W wstrzymaj"),
+    ],
+)
+def test_processing_toggles_one_download_with_w(
+    monkeypatch: pytest.MonkeyPatch, state: str, action: str, hint: str
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller._connected = True
+    controller._snapshot = {
+        "materials": [
+            {
+                "material_id": "download",
+                "info_hash": "hash",
+                "stage": "download",
+                "acquisition_state": "accepted",
+                "state": state,
+                "name": "Episode.mkv",
+            }
+        ]
+    }
+    calls: list[object] = []
+    monkeypatch.setattr(controller, "_command", lambda *args: calls.append(args))
+    try:
+        assert hint in controller.render(120, 40).plain
+        controller.handle_key("text:w")
+        assert calls == [("transfer", {"info_hash": "hash", "action": action})]
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+@pytest.mark.parametrize(
+    ("state", "acquisition_state"),
+    [
+        ("metaDL", "accepted"),
+        ("forcedMetaDL", "accepted"),
+        (None, "pending_send"),
+        ("stoppedDL", "pending_send"),
+        ("error", "accepted"),
+        ("missingFiles", "accepted"),
+    ],
+)
+def test_processing_only_allows_cancel_for_metadata_and_client_errors(
+    monkeypatch: pytest.MonkeyPatch, state: str | None, acquisition_state: str
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller._connected = True
+    controller._snapshot = {
+        "materials": [
+            {
+                "material_id": "download",
+                "info_hash": "hash",
+                "stage": "download",
+                "acquisition_state": acquisition_state,
+                "state": state,
+                "name": "Episode.mkv",
+            }
+        ]
+    }
+    calls: list[object] = []
+    monkeypatch.setattr(controller, "_command", lambda *args: calls.append(args))
+    try:
+        assert "W " not in controller._processing_hint()
+        assert "C anuluj" in controller.render(120, 40).plain
+        controller.handle_key("text:w")
+        assert calls == []
+        controller.handle_key("text:c")
+        assert calls == [("transfer", {"info_hash": "hash", "action": "cancel"})]
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+def test_metadata_stop_refusal_has_a_polish_explanation() -> None:
+    problem: ControlError = ControlError(
+        "Metadata selection is unconfirmed",
+        code=ControlErrorCode.REFUSED,
+        reason="transfer_metadata_pending",
+        answered=True,
+    )
+    assert refusal_text(problem) == "Trwa przygotowanie pobrania · poczekaj na potwierdzenie wyboru plików"
+
+
+def test_processing_labels_predecessor_wait_without_attention_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller._connected = True
+    controller._snapshot = {
+        "materials": [
+            {
+                "material_id": "download",
+                "info_hash": "hash",
+                "stage": "download",
+                "acquisition_state": "accepted",
+                "state": "stoppedDL",
+                "name": "Episode.mkv",
+                "reason": "waiting_previous_transfer",
+                "problem": None,
+            }
+        ]
+    }
+    try:
+        frame: str = controller.render(120, 40).plain
+        assert "Czeka na stare" in frame
+        assert "Wymaga uwagi" not in frame
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
 def test_download_handoff_keeps_selection_until_real_task_start_and_removes_finished_material(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

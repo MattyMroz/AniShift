@@ -127,7 +127,7 @@ _BATCH_POLL_S: Final[float] = 1.0
 _BATCH_WAIT_S: Final[float] = 180.0
 """Longest time the panel follows one episode batch before leaving it to the owner."""
 
-_BATCH_STATES: Final[dict[str, str]] = {
+EPISODE_REASON_LABELS: Final[dict[str, str]] = {
     "admitted": "Zlecono",
     "no_suggestion": "Brak wydania",
     "episode_not_aired": "Nie wyemitowano",
@@ -1076,7 +1076,7 @@ class AnimeController:
                 return
             admitted: list[str] = [f"E{key.number}" for key in keys if results.get(key) == "admitted"]
             refusals: list[str] = [
-                f"E{item.key.number}: {_BATCH_STATES.get(item.reason, 'Błąd zlecenia')}"
+                f"E{item.key.number}: {EPISODE_REASON_LABELS.get(item.reason, 'Błąd zlecenia')}"
                 for item in batch.results
                 if item.reason != "admitted"
             ]
@@ -2729,8 +2729,8 @@ def _stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:  
 
 
 def _episode_status_label(status: EpisodeStatus) -> str:
-    if status.reason in _BATCH_STATES:
-        return _BATCH_STATES[status.reason]
+    if status.reason in EPISODE_REASON_LABELS:
+        return EPISODE_REASON_LABELS[status.reason]
     if status.state == "not_ordered":
         return "Nie zamówiono"
     return _EPISODE_STATE_LABELS.get(status.state, "Zlecono")

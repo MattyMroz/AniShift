@@ -287,6 +287,10 @@ _REFUSALS: Final[Mapping[RefusalReason, tuple[ControlErrorCode, str]]] = Mapping
             ControlErrorCode.REFUSED,
             "The resident is shutting down and admits no new work",
         ),
+        RefusalReason.TRANSFER_METADATA_PENDING: (
+            ControlErrorCode.REFUSED,
+            "A selective transfer cannot be stopped before its file selection is confirmed",
+        ),
     }
 )
 """Protocol code and English message of every cause this owner refuses a command for."""
@@ -314,6 +318,11 @@ _COMMAND_REUSED: Final[str] = "This command identifier already admitted another 
 
 _TRANSFER_NOT_STARTED: Final[str] = "This episode is admitted but its transfer has not started yet"
 """Reason returned when a client action targets an admission that has no transfer lifecycle."""
+
+_MATERIAL_PROBLEM_REASONS: Final[frozenset[str]] = frozenset(
+    {"transfer_failed", "publication_failed", "publication_missing", "finalization_failed", "episode_file_unresolved"}
+)
+"""Episode reasons that describe a material error rather than ordinary waiting or preparation."""
 
 _UNREADABLE_DESTINATION: Final[str] = "The download destination could not be read, so no name was reserved"
 """Problem recorded against one release when its destination cannot be listed before a reservation."""
@@ -1861,7 +1870,7 @@ class AutomationOwner:
                 "reason": status.reason or ("preparing" if downloaded else None),
                 "acquisition_state": "complete" if downloaded else transfer.state.value,
                 "active": common["active"] if status.state == "downloading" else False,
-                "problem": status.reason,
+                "problem": transfer.problem or (status.reason if status.reason in _MATERIAL_PROBLEM_REASONS else None),
             }
         return rows
 
@@ -5162,6 +5171,7 @@ class AutomationOwner:
         return all(
             old.operation_id == item.operation_id
             or old.state in {AcquisitionState.ADMITTED, AcquisitionState.COMPLETE, AcquisitionState.FAILED}
+            or (old.state is AcquisitionState.UNCERTAIN and old.info_hash != item.info_hash)
             or (
                 old.state is AcquisitionState.ACCEPTED
                 and old.problem is None
@@ -5908,6 +5918,11 @@ class AutomationOwner:
             return _refuse(RefusalReason.SHUTTING_DOWN)
         if action == "resume" and not self._state.policy.auto_enabled:
             return _refuse(RefusalReason.PAUSED)
+        current: AcquisitionConfirmation = next(
+            item for item in reversed(self._state.acquisitions) if item.info_hash == info_hash
+        )
+        if action == "stop" and current.selective and current.applied_revision == 0:
+            return _refuse(RefusalReason.TRANSFER_METADATA_PENDING)
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
             replace(
                 item,
@@ -5942,11 +5957,10 @@ class AutomationOwner:
             replace(self._state, acquisitions=acquisitions, pause_owned_transfers=remaining),
             outcome,
         )
-        if refusal is not None:
-            return refusal
-        self._schedule_transfers()
-        self._publish_state()
-        return ControlResponse.succeeded(outcome)
+        if refusal is None:
+            self._schedule_transfers()
+            self._publish_state()
+        return refusal if refusal is not None else ControlResponse.succeeded(outcome)
 
     def _apply_transfer_actions(
         self, service: AcquisitionService, acquisitions: tuple[AcquisitionConfirmation, ...]
