@@ -410,6 +410,16 @@ startu nie jest naprawiany przez komunikat CLI.
   gdy nie mieści się w jednej.
 - **D16 (01.10): role.** `opus55` koduje, `astra` recenzuje. Zrzuty PNG bez
   dodatkowych ramek.
+- **D19 (01.10, doprecyzowuje D17 i D18):** kontekst wersalikami: `ANIME` oraz
+  `ANIME › <tytuł> (<rok>)`. Pole wyszukiwania stoi dokładnie w środkowym
+  wierszu obszaru treści, a `ANIME` dwa wiersze nad nim.
+- **D20 (01.10): nawigacja i tabela odcinków.** ↑/↓ zawijają na krańcach
+  listy, jak w `4dc8f61`; Home/End i strony zatrzymują się na krańcu. Każdy
+  wiersz odcinka ma pole `[ ]`, także w toku. Kolumna Stan ma stałą szerokość,
+  więc zmiana stanu ani spinner nie przesuwają tabeli. Kółko nie przewija
+  listy, która mieści się na ekranie.
+- **D21 (01.10, zastępuje „niezamówiony = pusto” z D7):** wyemitowany,
+  niezlecony odcinek ma Stan `Do pobrania`.
 
 ## 16. Domknięcie P2/P3
 
