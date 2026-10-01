@@ -542,3 +542,20 @@ def test_cursor_highlights_a_ready_row_and_keeps_its_green_state() -> None:
     assert styles["A Promise"] == "brand_accent"
     assert styles["Gotowe"] == "success"
     assert styles["\u276f "] == "brand_accent"
+
+
+@pytest.mark.parametrize("width", [50, 80, 120])
+def test_an_episode_in_progress_keeps_its_checkbox_in_line_with_the_others(width: int) -> None:
+    items: tuple[AnimeRow, ...] = (replace(rows()[0], status="Pobieram", eligible=False), rows()[1], rows()[3])
+    frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.EPISODES, "Slime", items), width, 24, 0)
+    lines: list[str] = frame.text.plain.splitlines()[frame.first_row : frame.first_row + len(items)]
+    assert len({line.index("[ ]") for line in lines}) == 1
+
+
+def test_up_and_down_wrap_around_the_episode_list() -> None:
+    view: AnimePanel
+    view, _, _ = panel()
+    view.handle("up")
+    assert view.state.cursor == len(rows()) - 1
+    view.handle("down")
+    assert view.state.cursor == 0

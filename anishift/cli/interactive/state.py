@@ -1140,12 +1140,15 @@ class StateController:
         footer = footer[: max(rows - 2, 1)]
         wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(tuple(label for label, _ in entries), columns)
         remaining: int = max(rows - 1 - len(footer), 1)
-        start, end = visible_window(len(entries), selected, remaining + 7, heights=tuple(map(len, wrapped)))
+        heights: tuple[int, ...] = tuple(map(len, wrapped))
+        start, end = visible_window(len(entries), selected, remaining + 7, heights=heights)
         viewport: int = self._viewport()
         if self._follow_cursor.get(viewport, True):
             self._offsets[viewport] = start
         else:
-            start = min(self._offsets.get(viewport, 0), max(len(entries) - 1, 0))
+            last: int = visible_window(len(entries), len(entries) - 1, remaining + 7, heights=heights)[0]
+            start = min(self._offsets.get(viewport, 0), last)
+            self._offsets[viewport] = start
             end = len(entries)
         content: Text = Text()
         markers: int = 2 if any(checked is not None for _label, checked in entries) else 0

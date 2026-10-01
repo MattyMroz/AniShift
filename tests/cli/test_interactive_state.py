@@ -1784,6 +1784,27 @@ def test_notification_refusal_is_visible_across_unrelated_panel_refreshes(monkey
         controller.close()
 
 
+def test_wheel_does_not_scroll_a_list_that_fits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    session: ResidentSession = cast(
+        "ResidentSession", SimpleNamespace(command=lambda kind: {"subscriptions": []}, library=lambda: ())
+    )
+    controller: StateController = StateController(session, lambda: None)
+    controller._tab = state_module._Tab.FILES
+    controller._snapshot = {"library": [{"set_id": f"set-{index}", "name": f"Episode {index}"} for index in range(3)]}
+    controller._connected = True
+    controller.set_notice("")
+    try:
+        before: str = controller.render(80, 24).plain
+        for _ in range(3):
+            controller.scroll(1)
+            assert controller.render(80, 24).plain == before
+        controller.scroll(-1)
+        assert controller._offsets[state_module._Tab.FILES] == 0
+    finally:
+        controller.close()
+
+
 def test_library_return_keeps_identity_and_detached_scroll_after_an_inactive_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

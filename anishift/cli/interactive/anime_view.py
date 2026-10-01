@@ -337,7 +337,11 @@ def _item(  # noqa: PLR0913
         canvas.put(
             row,
             4 if snapshot.screen is AnimeScreen.RELEASES else 2,
-            "[x]" if item.key in snapshot.selected else "[ ]" if item.eligible else "   ",
+            "[x]"
+            if item.key in snapshot.selected
+            else "[ ]"
+            if item.eligible or snapshot.screen is AnimeScreen.EPISODES
+            else "   ",
             "brand_accent" if item.key in snapshot.selected else "gray",
         )
     if snapshot.screen is AnimeScreen.RELEASES:

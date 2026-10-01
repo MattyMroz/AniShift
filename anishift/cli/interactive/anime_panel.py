@@ -164,6 +164,8 @@ class AnimePanel:
         target: int = max(0, min(destinations[key], len(self.state.items) - 1))
         direction: int = -1 if key in {"up", "pageup", "end"} else 1
         beyond: list[int] = [index for index in available if (index - target) * direction >= 0]
+        if key in {"up", "down"} and not [index for index in available if (index - self.state.cursor) * direction > 0]:
+            beyond = [available[-1] if key == "up" else available[0]]
         self.state.cursor = min(beyond, key=lambda index: abs(index - target)) if beyond else self.state.cursor
         self.state.offset = min(self.state.offset, self.state.cursor)
         self.state.offset = max(self.state.offset, self.state.cursor - visible + 1)
