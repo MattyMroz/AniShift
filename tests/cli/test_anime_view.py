@@ -573,3 +573,10 @@ def test_changing_episode_states_never_shift_the_table(width: int) -> None:
             frame: AnimeFrame = render_anime(snapshot, width, 24, 0)
             starts.add(frame.text.plain.splitlines()[frame.first_row].index("A Pro"))
     assert len(starts) == 1
+
+
+def test_selection_summary_joins_consecutive_numbers_into_ranges() -> None:
+    numbers: tuple[str, ...] = ("1", "2", "3", "4", "6", "7", "7.5", "8", "9", "11", "13", "14", "15")
+    items: tuple[AnimeRow, ...] = tuple(AnimeRow(number, f"Odcinek {number}", number=number) for number in numbers)
+    snapshot: AnimeSnapshot = AnimeSnapshot(AnimeScreen.EPISODES, "Slime", items, selected=frozenset(numbers))
+    assert "Zaznaczone: 13 (1-4, 6-7, 7.5, 8-9, 11, 13-15)" in render_anime(snapshot, 120, 30, 0).text.plain

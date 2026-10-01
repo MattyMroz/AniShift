@@ -379,10 +379,21 @@ def _value_style(value: str, *, active: bool, item: AnimeRow, searching: bool) -
     return "brand_accent" if active else "white_bold"
 
 
+def _number_ranges(numbers: list[str]) -> list[str]:
+    runs: list[list[str]] = []
+    for number in numbers:
+        previous: str = runs[-1][-1] if runs else ""
+        if previous.isdigit() and number.isdigit() and int(number) == int(previous) + 1:
+            runs[-1].append(number)
+        else:
+            runs.append([number])
+    return [run[0] if len(run) == 1 else f"{run[0]}-{run[-1]}" for run in runs]
+
+
 def _footer(canvas: _Canvas, snapshot: AnimeSnapshot, keys: tuple[str, ...], title_width: int) -> None:
     selected: list[str] = [item.number for item in snapshot.items if item.key in snapshot.selected]
     summary: Text = Text(
-        f"Zaznaczone: {len(selected)} ({', '.join(selected)})"
+        f"Zaznaczone: {len(selected)} ({', '.join(_number_ranges(selected))})"
         if selected and snapshot.screen is AnimeScreen.EPISODES
         else "",
         style="brand_accent",

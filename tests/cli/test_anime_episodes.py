@@ -715,7 +715,7 @@ def test_episode_marks_compress_only_contiguous_numbers() -> None:
     _open(controller)
     for key in ("text:z", "text:1-3,6", "enter"):
         _key(controller, key)
-    assert "Zaznaczone: 4 (1, 2, 3, 6)" in _frame(controller)
+    assert "Zaznaczone: 4 (1-3, 6)" in _frame(controller)
 
 
 @pytest.mark.unit
@@ -850,7 +850,7 @@ def test_a_toggles_every_aired_episode_and_the_label_counts_marks() -> None:
     assert "Zaznaczone" not in _frame(controller)
     _key(controller, "text:a")
     assert controller._episode_marks == {1, 2, 3, 4}
-    assert "Zaznaczone: 4 (1, 2, 3, 4)" in _frame(controller)
+    assert "Zaznaczone: 4 (1-4)" in _frame(controller)
     _key(controller, "text:A")
     assert controller._episode_marks == set()
     for key in ("down", "space", "text:a"):
