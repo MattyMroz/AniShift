@@ -373,6 +373,43 @@ startu nie jest naprawiany przez komunikat CLI.
   Odcinek zostaje w Przetwarzaniu przez całe przetwarzanie.
 - **D8 (30.09): przed nowym kodem użyć istniejącego** (`utils/rich_console`,
   Rich, Prompt Toolkit, repo). Spinner tylko z jednego źródła.
+- **D9 (01.10, zastępuje §4 i D4 w części wyglądu): jeden styl Panelu**,
+  taki jak w Subskrypcjach. Czarne tło terminala, `PANEL`, zakładki
+  `Anime · Subskrypcje · Przetwarzanie · Biblioteka`, istniejące role kolorów.
+  Żadnych nowych stylów, teł, ramek ani redesignu.
+- **D10 (01.10): układ na każdej zakładce.** `PANEL` i zakładki na górze,
+  klawisze i informacja na dole. Treść (pole wyszukiwania, tabele, „Brak
+  pozycji”) wyśrodkowana w pionie i w poziomie w obszarze między górą a dołem.
+  Nie centrować całego bloku z nagłówkiem i stopką.
+  Uzupełnienie z 01.10, po teście na żywo: linia kontekstu (`Anime`,
+  `Anime › <tytuł> (<rok>)`) jest zawsze przyklejona u góry, zaraz pod
+  zakładkami. Na środku stoi wyłącznie tabela albo pole wyszukiwania.
+- **D17 (01.10): wyszukiwarka jak w panelu sprzed tygodnia** (przed P2/P3):
+  ten sam wygląd i to samo zachowanie przy wpisywaniu tekstu. Zmienia się
+  tylko położenie, czyli środek obszaru treści.
+  Doprecyzowanie z 01.10, według zrzutu właściciela: ekran wyszukiwania nie ma
+  linii kontekstu pod zakładkami. Na środku stoi blok jak w `4dc8f61`:
+  nagłówek `ANIME` (wersaliki), pod nim pole `> tekst█`. Podczas szukania:
+  `ANIME` i niebieskie `Szukam tytułu…`. Po powrocie do wyszukiwarki nie
+  zostaje stary kontekst (`Anime › <tytuł>`). Linia kontekstu przyklejona
+  u góry dotyczy tylko ekranów z tabelą.
+- **D18 (01.10, zastępuje „kontekst przyklejony u góry” z D10):** linia kontekstu
+  stoi bezpośrednio nad tabelą, z jedną pustą linią odstępu. Razem z tabelą
+  tworzy blok wyśrodkowany w pionie, tak samo jak `ANIME` nad polem
+  wyszukiwania. Kontekst opisuje bieżący ekran. Lista franczyzy pokazuje
+  `Anime`, a nie wpis otwarty wcześniej. Wpis pojawia się tylko na ekranach
+  odcinków i wydań tego wpisu.
+- **D11 (01.10): pauza zatrzymuje tylko automat.** Ręczne D w Anime działa
+  zawsze. Akcji właściciela się nie blokuje. Jedyny wyjątek: odcinek aktywnie
+  w toku (`W toku · C anuluj w Przetwarzaniu`).
+- **D12 (01.10): D na Gotowe/Pobrano/Błąd pobiera ponownie**, bez ekranu zgody.
+- **D13 (01.10): status wpisu we franczyzie:** zakończone / w emisji / zapowiedź.
+- **D14 (01.10): kursor podświetla na niebiesko każdy wiersz**, także Gotowe;
+  kolor stanu (zielone Gotowe) zostaje.
+- **D15 (01.10): pełna nazwa w dolnej informacji** może zająć do 2 linii,
+  gdy nie mieści się w jednej.
+- **D16 (01.10): role.** `opus55` koduje, `astra` recenzuje. Zrzuty PNG bez
+  dodatkowych ramek.
 
 ## 16. Domknięcie P2/P3
 
