@@ -42,6 +42,7 @@ Użytkownik wybiera w AniShift tytuł → sezon → odcinki i klika Pobierz albo
 | E3 | Subskrypcje na wspólnym mechanizmie | Subskrybuj z listy odcinków, zakładka Subskrypcje (lista, szczegóły, dodaj, usuń, wstrzymaj, szukaj teraz), harmonogram U-13–U-15, autozamknięcie, przeniesienie starych subskrypcji; usunięty pomost `G` i stara droga grup w UI | E2; źródło świeżych odcinków rozstrzygnięte (U-02: tylko Torrentio) | Testy fake clock (emisja, brak wydania, koniec sezonu, restart, izolacja problemów); migracja na kopii; H3: tydzień bez dotykania | planned |
 | E4 | Kontrola zawartości po pobraniu | PL napisy → bez tłumaczenia; obce → tłumaczenie; brak napisów → jedna zamiana wydania; lektor zawsze | E2; N-05 | Testy planera na syntetykach; H4 na prawdziwym odcinku z PL i bez PL | planned |
 | E5 | Sprzątanie i przełączenie | Usunięte martwe ścieżki (grupy, kategorie, aktywne wyszukiwanie Nyaa — U-02; fallback W-08 według osobnej decyzji), aktualne `AGENTS.md`/`README.md`, PR-y scalone, nowa wersja działa u właściciela | E3, E4 | Pełne bramki, niezależne review implementacji, działający rezydent u właściciela przez 7 dni bez interwencji | planned |
+| E6 | Biblioteka jako widok tytułów | Biblioteka w układzie ekranu Anime: lista tytułów → Enter → `BIBLIOTEKA › <tytuł>` z odcinkami (numer, tytuł odcinka, Emisja, Stan); zaznaczanie i usuwanie wielu; rozpoznanie plików ręcznych przez AniList z jawnym „nie rozpoznano” | E2; E3 (nadchodzące odcinki subskrypcji); osobny plan zaakceptowany przez właściciela | Szczegóły w „Stany etapów” E6; H6 właściciela na własnej Bibliotece | planned |
 
 Gałąź i PR E00 ustala jego plan; E1 startuje od stanu po E00 (nie od samego `0e8a6bf`).
 
@@ -113,6 +114,23 @@ Gałęzie: `work/local-automation/06-efficiency` scalono do `main` przez PR #56 
 
 - **Cel:** jeden mechanizm w kodzie i dokumentacji, nowa wersja u właściciela.
 - **Stan po:** usunięte `_group_queries`, filtry grup i kategorii, aktywne wyszukiwanie Nyaa (U-02; fallback W-08 według osobnej decyzji), nieużywane eksporty; zaktualizowane scoped `AGENTS.md` i `README.md`; PR-y scalone; 7 dni pracy u właściciela.
+
+### E6 — Biblioteka jako widok tytułów
+
+Pomysł właściciela z 2026-10-01, podczas E2. Wykonanie po E2 według osobnego planu; kolejność względem E4/E5 ustala właściciel.
+
+- **Problem:** Biblioteka pokazuje surowe nazwy plików mkv, z których trudno odczytać tytuł i odcinek. Jedno anime ma różne zapisy w nazwach. Dla Slime S4 `parse_release_name` daje trzy tytuły: „That Time I Got Reincarnated as a Slime” s4, „Tensei Shitara Slime Datta Ken 4th Season” (Erai-raws) oraz „Tensei Shitara Slime Datta Ken” s4 (Judas).
+- **Czym jest Biblioteka:** wszystko, co zostało przetworzone (mkv i inne pliki). Użytkownika interesują nazwa dzieła, numer odcinka i tytuł odcinka.
+- **Układ:** jak ekran Anime, dla spójności. Najpierw lista tytułów, Enter otwiera sezon z odcinkami; kontekst nad tabelą w stylu D19 (`BIBLIOTEKA` / `BIBLIOTEKA › <tytuł>`). Kolumny Emisja i Stan: Gotowe albo stany subskrypcji.
+- **Zaznaczanie zostaje**, m.in. do usuwania kilku odcinków naraz; Kosz i Ctrl+Z działają jak dziś (B-03).
+- **Możliwe połączenie z Subskrypcjami:** w sezonie widać także odcinki, które dopiero się pobiorą, z datą emisji. Zależy od działających subskrypcji E3.
+- **Obawa właściciela:** przy wielu tytułach przewijanie strzałkami będzie męczące. Plan E6 musi to rozwiązać (np. wyszukiwarka jak D17); nie zgadywać rozwiązania przed planem.
+- **Dysk bez zmian:** `workspace/ready/` zostaje płaskie, bez folderów w Eksploratorze (U-19). Grupowanie istnieje tylko w widoku.
+- **Pliki pobrane przez Anime:** tytuł i numer z zapisanego klucza AniList (`EpisodeChoice` ma `anilist_id` i `number`), bez zgadywania z nazwy.
+- **Pliki ręczne (Judas, Erai-raws, inne):** tytuł z nazwy pliku. Pytanie właściciela: czy heurystyka może rozpoznać taki plik przez AniList i ile to trwa przy 100 plikach. Szacunek do sprawdzenia pomiarem w planie E6, nie zmierzony: jedno zapytanie AniList na serię, wynik w cache, ograniczenie limitem AniList na minutę; kilka serii to sekundy, setki serii to minuty. Ryzyko złego sezonu: przy braku pewności „nie rozpoznano” i ręczny wybór, nigdy ciche przypisanie.
+- **Punkty wejścia w kodzie:** `LibrarySet` / `LibraryFile` w `anishift/application/control_views.py`; widok Biblioteki w `anishift/cli/interactive/state.py` (`_library_rows`, `_library_detail_entries`); `parse_release_name` w `anishift/services/torrents/names.py`.
+- **Nie zawiera:** zmian układu plików na dysku, odtwarzacza, synchronizacji z MAL/AniList (spec §10).
+- **Warunek wyjścia:** osobny plan E6 zaakceptowany i wykonany; testy widoku i rozpoznawania; pomiar czasu rozpoznania przy ~100 plikach; H6 — właściciel ocenia Bibliotekę na własnych plikach.
 
 ## Ryzyka kierunku
 

@@ -266,6 +266,7 @@ Jeden odcinek ma w każdym widoku ten sam stan, wyliczany z trwałych danych rez
 | Nyaa jako drugie źródło świeżych odcinków | Decyzja 2026-09-28: nie jest potrzebne — Torrentio ma zgodne wydania dla wszystkich odcinków pilota (U-02, plan przepływu §5.1) | Rejestr decyzji pokaże odcinki bez wydania w Torrentio |
 | Wyszukiwanie innych treści niż anime | Zgłoszone przez właściciela jako możliwe w przyszłości; poza tą pracą | Osobne zamówienie |
 | AnimeSchedule (przesunięcia emisji) | Wymaga tokenu i atrybucji; AniList wystarcza | Zgłoszony problem z datami AniList |
+| Biblioteka jako widok tytułów (pomysł właściciela 2026-10-01) | Poza zakresem E2; zależy od subskrypcji E3 | Etap E6 w masterplanie i osobny plan zaakceptowany przez właściciela |
 
 ## 12. Odrzucone
 
