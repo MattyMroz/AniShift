@@ -369,7 +369,7 @@ def test_unordered_episode_label_depends_on_airing_not_on_presence_of_owner_reco
         controller._episode_states[EpisodeKey(1, 1)] = EpisodeStatus(EpisodeKey(1, 1), "not_ordered")
     lines: list[str] = controller.render(80, 24).plain.splitlines()
     row: int = _first_row(controller)
-    assert lines[row][lines[row - 1].index("Stan") :].strip() == ("" if aired else "Nie wyemitowano")
+    assert lines[row][lines[row - 1].index("Stan") :].strip() == ("Do pobrania" if aired else "Nie wyemitowano")
     assert not lines[-4].strip()
 
 

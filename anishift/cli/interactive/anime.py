@@ -641,8 +641,8 @@ class AnimeController:
                 EpisodeKey(self._listing.anilist_id, episode.number)
             )
             label: str = _episode_status_label(status) if status else ""
-            if not label and not episode.aired:
-                label = "Nie wyemitowano"
+            if not label:
+                label = "Do pobrania" if episode.aired else "Nie wyemitowano"
             film: bool = self._entry is not None and self._entry.format == "MOVIE"
             detail: str = ""
             if status is not None and status.reason == "episode_file_unresolved":

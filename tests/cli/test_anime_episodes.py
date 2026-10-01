@@ -1246,7 +1246,7 @@ def test_catalogue_headers_name_the_work_and_columns_align_at_both_widths(width:
     episodes: list[str] = controller.render(width, 40).plain.splitlines()
     header: str = next(line for line in episodes if "Stan" in line)
     episode: str = next(line for line in episodes if "Episode 1" in line)
-    assert episode[header.index("Stan") :].strip() == ""
+    assert episode[header.index("Stan") :].strip() == "Do pobrania"
     _key(controller, "text:i")
     offers: list[str] = controller.render(width, 40).plain.splitlines()
     assert "Plik:" in controller._view.items[0].detail
@@ -1338,7 +1338,7 @@ class _Owner(_Catalog):
         ("ready", "Gotowe"),
         ("possibly_admitted", "Już zlecone?"),
         ("future_state", "Zlecono"),
-        ("not_ordered", ""),
+        ("not_ordered", "Do pobrania"),
     ],
 )
 def test_owner_episode_states_have_explicit_labels(monkeypatch: pytest.MonkeyPatch, state: str, label: str) -> None:

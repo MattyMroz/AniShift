@@ -53,6 +53,9 @@ MIN_ROWS: Final[int] = HEADER_ROWS + 1 + FOOTER_ROWS
 _MARGIN: Final[int] = 4
 """Cells kept free around centered blocks."""
 
+_EPISODE_STATUS_WIDTH: Final[int] = len("Nie wyemitowano")
+"""Fixed Stan column width, so a changing episode state never shifts the centered table."""
+
 NAVIGATION_KEYS: Final[tuple[str, ...]] = ("←→ widok", "↑↓ wybierz")
 """Navigation hints appended to table screens and dropped first when space runs out."""
 
@@ -226,7 +229,8 @@ def render_anime(snapshot: AnimeSnapshot, columns: int, rows: int, now: float) -
     heading: int = _QUERY_HEADING_ROWS if query else _CONTEXT_ROWS if snapshot.screen in _LIST_SCREENS else HEADER_ROWS
     height: int = heading + (1 if query else max(shown, 1))
     canvas: _Canvas = _Canvas(width, rows)
-    start: int = max(min((rows - len(keys) - height) // 2, rows - FOOTER_ROWS - height), 0)
+    middle: int = (rows - len(keys) - 1) // 2 - heading if query else (rows - len(keys) - height) // 2
+    start: int = max(min(middle, rows - FOOTER_ROWS - height), 0)
     canvas.top = start + heading
     if not query:
         canvas.center(start, Text(snapshot.title, "white_bold"), selectable=True)
@@ -295,6 +299,8 @@ def _widths(snapshot: AnimeSnapshot, spec: _Table, limit: int, now: float) -> li
     for item in snapshot.items:
         for position, value in enumerate(_values(snapshot, item, now)):
             widths[position] = max(widths[position], Text(value).cell_len)
+    if snapshot.screen is AnimeScreen.EPISODES:
+        widths[-1] = _EPISODE_STATUS_WIDTH
     total: int = spec.prefix + sum(widths) + 2 * (len(widths) - 1)
     if total > limit:
         widths[spec.title] = max(widths[spec.title] - (total - limit), Text(spec.labels[spec.title]).cell_len)

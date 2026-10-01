@@ -195,8 +195,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   On table and list screens the context line sits directly above the column labels, separated by
   the global-status row (blank unless set); context and table form one block centered between
   tabs and keys, and a scrolling table keeps the context fixed above its labels.
-  The search screen, and work started from it (`_busy_return` QUERY), has no context line: it centers
-  the `4dc8f61` block `ANIME`, one blank line, then `> ` plus `TextInput.render` at
+  The search screen, and work started from it (`_busy_return` QUERY), has no context line: the field
+  sits on the middle content row, with `ANIME` and one blank line above it; the field is `> ` plus `TextInput.render` at
   `anime_state.query_left` (a 32-cell box centered until the text widens it) or the blue busy sentence.
   The context names the current screen: `_shown_entry` (episodes/releases of that entry) is set
   when an entry opens and cleared by the `_screen` setter on QUERY/TITLES/ENTRIES, which show

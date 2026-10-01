@@ -490,7 +490,9 @@ def test_content_is_centered_between_top_and_bottom_pinned_keys(screen: AnimeScr
     state: AnimeViewState = AnimeViewState(
         screen=screen,
         title="Slime",
-        items=() if screen is AnimeScreen.QUERY else rows()[:2],
+        items=()
+        if screen is AnimeScreen.QUERY
+        else tuple(replace(item, status="Nie wyemitowano") for item in rows()[:2]),
         query=TextInput("slime"),
     )
     frame: AnimeFrame = render_anime(state.snapshot(columns), columns, height, 0)
@@ -502,7 +504,7 @@ def test_content_is_centered_between_top_and_bottom_pinned_keys(screen: AnimeScr
     assert above == heading
     assert len(lines) == height
     assert lines[-1].strip()
-    assert abs(above - below) <= 1
+    assert abs((frame.first_row if screen is AnimeScreen.QUERY else above) - below) <= 1
     assert screen is AnimeScreen.QUERY or abs(left - right) <= 1
 
 
@@ -520,7 +522,7 @@ def test_a_scrolled_long_table_keeps_its_context_above_the_column_labels(offset:
     assert lines[0].strip().endswith("…")
     assert lines[0].count("…") == 1
     assert "Emisja" in lines[2]
-    assert f"Odcinek {offset + 1}" in lines[frame.first_row]
+    assert f"] {offset + 1} " in lines[frame.first_row]
 
 
 def test_long_title_uses_two_bottom_lines_without_moving_the_table() -> None:
@@ -559,3 +561,15 @@ def test_up_and_down_wrap_around_the_episode_list() -> None:
     assert view.state.cursor == len(rows()) - 1
     view.handle("down")
     assert view.state.cursor == 0
+
+
+@pytest.mark.parametrize("width", [50, 80, 120])
+def test_changing_episode_states_never_shift_the_table(width: int) -> None:
+    starts: set[int] = set()
+    for status in ("", "Zlecono", "Przetwarzam", "Nie wyemitowano"):
+        items: tuple[AnimeRow, ...] = (replace(rows()[1], status=status), rows()[0])
+        for searching in (frozenset(), frozenset({"three"})):
+            snapshot: AnimeSnapshot = AnimeSnapshot(AnimeScreen.EPISODES, "Slime", items, searching=searching)
+            frame: AnimeFrame = render_anime(snapshot, width, 24, 0)
+            starts.add(frame.text.plain.splitlines()[frame.first_row].index("A Pro"))
+    assert len(starts) == 1
