@@ -31,7 +31,7 @@ review; nie testować z właścicielem kodu, którego rezydent nie załadował.
 | Nr | Etap | Stan |
 | --- | --- | --- |
 | 1 | Panel Anime P2/P3 (D9–D16) → review `astra` → commit | zrobione (`b68f4a9`, D9–D21) |
-| 2 | Restart rezydenta, test orkiestratora na żywo według scenariusza §11 `e2-pobieranie.md` | czeka |
-| 3 | F8: odbiór H2 właściciela, poprawki z odbioru w pętli 2–5 | czeka |
-| 4 | `outcomes/e2.md`, AGENTS, status E2 | czeka |
+| 2 | Restart rezydenta, test orkiestratora na żywo według scenariusza §11 `e2-pobieranie.md` | zrobione (`971dc3b`, wynik w `outcomes/e2.md`) |
+| 3 | F8: odbiór H2 właściciela, poprawki z odbioru w pętli 2–5 | czeka na właściciela (lista kroków w `outcomes/e2.md`) |
+| 4 | `outcomes/e2.md`, AGENTS, status E2 | zrobione (status `PENDING HUMAN`) |
 | 5 | Audyt całości i plan refaktoryzacji do akceptacji właściciela | czeka |
